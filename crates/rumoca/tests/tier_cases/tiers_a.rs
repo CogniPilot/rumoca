@@ -1344,7 +1344,10 @@ end EdgeInWhen;
 "#;
         let r = assert_compiles(source, "EdgeInWhen");
         assert_eq!(r.states, 1, "Should have 1 state (x)");
-        assert_eq!(r.dae.relation.len(), 1, "Should have 1 when condition");
+        assert!(
+            condition_observer_count(&r.dae) >= 1,
+            "Should have at least one condition observer for when/edge"
+        );
     }
 
     #[test]

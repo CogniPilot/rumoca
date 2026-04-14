@@ -129,6 +129,52 @@ fn test_render_expr_function() {
 }
 
 #[test]
+fn test_embedded_c_alg_rhs_indexes_common_array_binary_rhs() {
+    let rhs = dae::Expression::Binary {
+        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        lhs: Box::new(dae::Expression::VarRef {
+            name: "error_dot".into(),
+            subscripts: Vec::new(),
+        }),
+        rhs: Box::new(dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Add(Default::default()),
+            lhs: Box::new(dae::Expression::VarRef {
+                name: "error".into(),
+                subscripts: Vec::new(),
+            }),
+            rhs: Box::new(dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Pre,
+                args: vec![dae::Expression::VarRef {
+                    name: "q".into(),
+                    subscripts: Vec::new(),
+                }],
+            }),
+        }),
+    };
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {
+                "rhs": serde_json::to_value(rhs).unwrap()
+            }
+        ]
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "powf", "float_literals": true, "subscript_underscore": true} %}
+{{ alg_rhs_for_var("error_dot[2]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("(error_2 + pre(q_2))"),
+        "expected indexed array algebraic RHS in generated C, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("WARNING: no equation found for error_dot[2]"),
+        "codegen should not fall back to warning stub for indexed array algebraics:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_mul_elem_rendering_can_use_backend_function() {
     let lhs = rumoca_ir_flat::Expression::VarRef {
         name: "a".into(),

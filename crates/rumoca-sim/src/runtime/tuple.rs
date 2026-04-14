@@ -1,4 +1,5 @@
 use crate::runtime::assignment::canonical_var_ref_key;
+use crate::runtime::scalar_eval::eval_scalar_bool_expr_fast;
 use rumoca_eval_dae::runtime::VarEnv;
 use rumoca_ir_dae as dae;
 
@@ -89,14 +90,10 @@ pub fn extract_direct_tuple_function_assignment(
     }
 }
 
-fn extract_active_tuple_assignment_from_expr<'a, FEvalCondition>(
+fn extract_active_tuple_assignment_from_expr_with_guard_env<'a>(
     expr: &'a dae::Expression,
-    env: &VarEnv<f64>,
-    eval_condition: FEvalCondition,
-) -> Option<TupleFunctionAssignment<'a>>
-where
-    FEvalCondition: Copy + Fn(&dae::Expression, &VarEnv<f64>) -> bool,
-{
+    guard_env: &VarEnv<f64>,
+) -> Option<TupleFunctionAssignment<'a>> {
     if let Some(assignment) = extract_direct_tuple_function_assignment(expr) {
         return Some(assignment);
     }
@@ -104,37 +101,41 @@ where
         dae::Expression::Unary {
             op: rumoca_ir_core::OpUnary::Minus(_),
             rhs,
-        } => extract_active_tuple_assignment_from_expr(rhs, env, eval_condition),
+        } => extract_active_tuple_assignment_from_expr_with_guard_env(rhs, guard_env),
         dae::Expression::If {
             branches,
             else_branch,
         } => {
             for (condition, value) in branches {
-                if eval_condition(condition, env) {
-                    return extract_active_tuple_assignment_from_expr(value, env, eval_condition);
+                match eval_scalar_bool_expr_fast(condition, guard_env) {
+                    Some(true) => {
+                        return extract_active_tuple_assignment_from_expr_with_guard_env(
+                            value, guard_env,
+                        );
+                    }
+                    Some(false) => continue,
+                    None => return None,
                 }
             }
-            extract_active_tuple_assignment_from_expr(else_branch, env, eval_condition)
+            extract_active_tuple_assignment_from_expr_with_guard_env(else_branch, guard_env)
         }
         _ => None,
     }
 }
 
-fn extract_active_discrete_tuple_function_assignment<'a, FEvalCondition, FIsZeroLiteral>(
+fn extract_active_discrete_tuple_function_assignment_with_guard_env<'a, FIsZeroLiteral>(
     residual: &'a dae::Expression,
-    env: &VarEnv<f64>,
-    eval_condition: FEvalCondition,
+    guard_env: &VarEnv<f64>,
     is_zero_literal: FIsZeroLiteral,
 ) -> Option<TupleFunctionAssignment<'a>>
 where
-    FEvalCondition: Copy + Fn(&dae::Expression, &VarEnv<f64>) -> bool,
     FIsZeroLiteral: Copy + Fn(&dae::Expression) -> bool,
 {
     if let Some(assignment) = extract_direct_tuple_function_assignment(residual) {
         return Some(assignment);
     }
     if let Some(assignment) =
-        extract_active_tuple_assignment_from_expr(residual, env, eval_condition)
+        extract_active_tuple_assignment_from_expr_with_guard_env(residual, guard_env)
     {
         return Some(assignment);
     }
@@ -147,35 +148,41 @@ where
         return None;
     };
     if is_zero_literal(lhs.as_ref()) {
-        return extract_active_tuple_assignment_from_expr(rhs, env, eval_condition);
+        return extract_active_tuple_assignment_from_expr_with_guard_env(rhs, guard_env);
     }
     if is_zero_literal(rhs.as_ref()) {
-        return extract_active_tuple_assignment_from_expr(lhs, env, eval_condition);
+        return extract_active_tuple_assignment_from_expr_with_guard_env(lhs, guard_env);
     }
     None
 }
 
-pub fn discrete_tuple_function_assignment_from_equation<'a, FEvalCondition, FIsZeroLiteral>(
+pub fn discrete_tuple_function_assignment_from_equation<'a, FIsZeroLiteral>(
     eq: &'a dae::Equation,
     env: &VarEnv<f64>,
-    eval_condition: FEvalCondition,
     is_zero_literal: FIsZeroLiteral,
 ) -> Option<TupleFunctionAssignment<'a>>
 where
-    FEvalCondition: Copy + Fn(&dae::Expression, &VarEnv<f64>) -> bool,
+    FIsZeroLiteral: Copy + Fn(&dae::Expression) -> bool,
+{
+    discrete_tuple_function_assignment_from_equation_with_guard_env(eq, env, is_zero_literal)
+}
+
+pub fn discrete_tuple_function_assignment_from_equation_with_guard_env<'a, FIsZeroLiteral>(
+    eq: &'a dae::Equation,
+    guard_env: &VarEnv<f64>,
+    is_zero_literal: FIsZeroLiteral,
+) -> Option<TupleFunctionAssignment<'a>>
+where
     FIsZeroLiteral: Copy + Fn(&dae::Expression) -> bool,
 {
     if eq.lhs.is_some() {
         return None;
     }
-    extract_active_discrete_tuple_function_assignment(&eq.rhs, env, eval_condition, is_zero_literal)
-}
-
-fn projected_output_name(resolved_name: &dae::VarName, output_name: &str, suffix: &str) -> String {
-    if suffix.is_empty() {
-        return format!("{}.{}", resolved_name.as_str(), output_name);
-    }
-    format!("{}.{}{}", resolved_name.as_str(), output_name, suffix)
+    extract_active_discrete_tuple_function_assignment_with_guard_env(
+        &eq.rhs,
+        guard_env,
+        is_zero_literal,
+    )
 }
 
 fn dims_total_size(dims: &[i64]) -> Option<usize> {
@@ -202,31 +209,43 @@ fn evaluate_projected_function_output(
     args: &[dae::Expression],
     env: &VarEnv<f64>,
 ) -> f64 {
-    let projected = projected_output_name(resolved_name, output_name, suffix);
-    let value =
-        rumoca_eval_dae::runtime::eval_function_call_pub(&dae::VarName::new(projected), args, env);
+    let value = rumoca_eval_dae::runtime::eval_projected_function_output_pub(
+        resolved_name,
+        output_name,
+        suffix,
+        args,
+        env,
+    );
     if value.is_finite() { value } else { 0.0 }
 }
 
+struct TupleOutputEvalContext<'a> {
+    resolved_name: &'a dae::VarName,
+    output_name: &'a str,
+    args: &'a [dae::Expression],
+    eval_env: &'a VarEnv<f64>,
+}
+
 fn apply_tuple_scalar_output_target(
-    resolved_name: &dae::VarName,
-    output_name: &str,
+    output_ctx: &TupleOutputEvalContext<'_>,
     suffix: &str,
     target: &str,
-    args: &[dae::Expression],
     env: &mut VarEnv<f64>,
     set_target_value: &mut impl FnMut(&mut VarEnv<f64>, &str, f64) -> bool,
 ) -> bool {
-    let new_value =
-        evaluate_projected_function_output(resolved_name, output_name, suffix, args, env);
+    let new_value = evaluate_projected_function_output(
+        output_ctx.resolved_name,
+        output_ctx.output_name,
+        suffix,
+        output_ctx.args,
+        output_ctx.eval_env,
+    );
     set_target_value(env, target, new_value)
 }
 
 fn apply_tuple_array_output_target(
-    resolved_name: &dae::VarName,
-    output_name: &str,
+    output_ctx: &TupleOutputEvalContext<'_>,
     target_base: &str,
-    args: &[dae::Expression],
     dims: &[i64],
     env: &mut VarEnv<f64>,
     set_target_value: &mut impl FnMut(&mut VarEnv<f64>, &str, f64) -> bool,
@@ -242,8 +261,13 @@ fn apply_tuple_array_output_target(
     let mut values = Vec::with_capacity(size);
     for index in 1..=size {
         let suffix = format!("[{index}]");
-        let value =
-            evaluate_projected_function_output(resolved_name, output_name, &suffix, args, env);
+        let value = evaluate_projected_function_output(
+            output_ctx.resolved_name,
+            output_ctx.output_name,
+            &suffix,
+            output_ctx.args,
+            output_ctx.eval_env,
+        );
         let key = format!("{target_base}[{index}]");
         changed |= set_target_value(env, key.as_str(), value);
         values.push(value);
@@ -262,6 +286,7 @@ fn apply_tuple_array_output_target(
 pub fn apply_discrete_tuple_function_assignment(
     tuple_assignment: &TupleFunctionAssignment<'_>,
     env: &mut VarEnv<f64>,
+    eval_env: &VarEnv<f64>,
     implicit_clock_active: bool,
     expr_uses_previous: impl Fn(&dae::Expression) -> bool,
     mut set_target_value: impl FnMut(&mut VarEnv<f64>, &str, f64) -> bool,
@@ -276,7 +301,7 @@ pub fn apply_discrete_tuple_function_assignment(
     }
 
     let Some((resolved_name, output_names)) =
-        rumoca_eval_dae::runtime::resolve_function_call_outputs_pub(name, env)
+        rumoca_eval_dae::runtime::resolve_function_call_outputs_pub(name, eval_env)
     else {
         on_unresolved_function_outputs(name);
         return false;
@@ -287,14 +312,18 @@ pub fn apply_discrete_tuple_function_assignment(
         let Some(output_name) = output_names.get(idx) else {
             break;
         };
+        let output_ctx = TupleOutputEvalContext {
+            resolved_name: &resolved_name,
+            output_name,
+            args,
+            eval_env,
+        };
 
         if !target.suffix.is_empty() {
             changed_any |= apply_tuple_scalar_output_target(
-                &resolved_name,
-                output_name,
+                &output_ctx,
                 target.suffix.as_str(),
                 target.key.as_str(),
-                args,
                 env,
                 &mut set_target_value,
             );
@@ -308,10 +337,8 @@ pub fn apply_discrete_tuple_function_assignment(
             .unwrap_or_default();
         if dims_total_size(&dims).is_some_and(|size| size > 1) {
             changed_any |= apply_tuple_array_output_target(
-                &resolved_name,
-                output_name,
+                &output_ctx,
                 target.base_name.as_str(),
-                args,
                 &dims,
                 env,
                 &mut set_target_value,
@@ -320,11 +347,9 @@ pub fn apply_discrete_tuple_function_assignment(
         }
 
         changed_any |= apply_tuple_scalar_output_target(
-            &resolved_name,
-            output_name,
+            &output_ctx,
             "",
             target.base_name.as_str(),
-            args,
             env,
             &mut set_target_value,
         );
@@ -337,7 +362,6 @@ pub fn apply_discrete_tuple_function_assignment(
 mod tests {
     use super::*;
     use rumoca_core::Span;
-    use rumoca_eval_dae::runtime::sim_float::SimFloat;
 
     #[test]
     fn extract_direct_tuple_function_assignment_detects_tuple_call_form() {
@@ -410,12 +434,61 @@ mod tests {
             "tuple_if",
         );
         let env = VarEnv::<f64>::new();
-        let assignment = discrete_tuple_function_assignment_from_equation(
-            &eq,
-            &env,
-            |cond, env| rumoca_eval_dae::runtime::eval_expr::<f64>(cond, env).to_bool(),
-            |expr| matches!(expr, dae::Expression::Literal(dae::Literal::Integer(0))),
-        )
+        let assignment = discrete_tuple_function_assignment_from_equation(&eq, &env, |expr| {
+            matches!(expr, dae::Expression::Literal(dae::Literal::Integer(0)))
+        })
+        .expect("active tuple assignment");
+        assert_eq!(assignment.targets[0].key, "x");
+    }
+
+    #[test]
+    fn discrete_tuple_function_assignment_from_equation_selects_noevent_wrapped_if_branch() {
+        let branch_true = dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            lhs: Box::new(dae::Expression::Tuple {
+                elements: vec![dae::Expression::VarRef {
+                    name: dae::VarName::new("x"),
+                    subscripts: vec![],
+                }],
+            }),
+            rhs: Box::new(dae::Expression::FunctionCall {
+                name: dae::VarName::new("f"),
+                args: vec![],
+                is_constructor: false,
+            }),
+        };
+        let branch_false = dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            lhs: Box::new(dae::Expression::Tuple {
+                elements: vec![dae::Expression::VarRef {
+                    name: dae::VarName::new("y"),
+                    subscripts: vec![],
+                }],
+            }),
+            rhs: Box::new(dae::Expression::FunctionCall {
+                name: dae::VarName::new("g"),
+                args: vec![],
+                is_constructor: false,
+            }),
+        };
+        let eq = dae::Equation::residual(
+            dae::Expression::If {
+                branches: vec![(
+                    dae::Expression::BuiltinCall {
+                        function: dae::BuiltinFunction::NoEvent,
+                        args: vec![dae::Expression::Literal(dae::Literal::Boolean(true))],
+                    },
+                    branch_true,
+                )],
+                else_branch: Box::new(branch_false),
+            },
+            Span::DUMMY,
+            "tuple_if_noevent",
+        );
+        let env = VarEnv::<f64>::new();
+        let assignment = discrete_tuple_function_assignment_from_equation(&eq, &env, |expr| {
+            matches!(expr, dae::Expression::Literal(dae::Literal::Integer(0)))
+        })
         .expect("active tuple assignment");
         assert_eq!(assignment.targets[0].key, "x");
     }

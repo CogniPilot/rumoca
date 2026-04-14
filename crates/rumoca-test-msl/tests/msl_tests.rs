@@ -460,6 +460,10 @@ struct MslModelResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    sim_build_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sim_run_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_wall_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_trace_file: Option<String>,

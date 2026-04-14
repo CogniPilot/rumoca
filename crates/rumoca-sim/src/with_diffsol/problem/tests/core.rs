@@ -1,3 +1,4 @@
+use super::jacobian_and_newton::{jacobian_ad, jacobian_fd};
 use super::*;
 
 /// Build a system with a chain of algebraic dependencies.

@@ -389,6 +389,31 @@ fn log_skip(debug_eq_filter: bool, reason: &str, eq: &flat::Equation) {
     }
 }
 
+fn log_kept_if_matches_patterns(eq: &flat::Equation, scalar_count: usize) {
+    let Ok(patterns) = std::env::var("RUMOCA_DEBUG_EQ_FILTER_PATTERNS") else {
+        return;
+    };
+    let patterns: Vec<_> = patterns
+        .split(',')
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .collect();
+    if patterns.is_empty() {
+        return;
+    }
+    let origin = eq.origin.to_string();
+    let residual = format!("{:?}", eq.residual);
+    if patterns
+        .iter()
+        .any(|pattern| origin.contains(pattern) || residual.contains(pattern))
+    {
+        eprintln!(
+            "eq-filter kept origin={} scalar_count={} residual={residual}",
+            eq.origin, scalar_count
+        );
+    }
+}
+
 struct EqFilterContext<'a> {
     flat: &'a flat::Model,
     outputs_with_component_eqs: &'a HashSet<flat::VarName>,
@@ -549,10 +574,76 @@ fn pre_of_target(target: &flat::VarName) -> flat::Expression {
     }
 }
 
+fn const_subscript_index_expr(expr: &flat::Expression) -> Option<i64> {
+    let value = match expr {
+        flat::Expression::Literal(flat::Literal::Integer(value)) => *value as f64,
+        flat::Expression::Literal(flat::Literal::Real(value)) => *value,
+        flat::Expression::Unary {
+            op: rumoca_ir_core::OpUnary::Minus(_),
+            rhs,
+        } => -const_subscript_index_expr(rhs)? as f64,
+        flat::Expression::Unary {
+            op: rumoca_ir_core::OpUnary::Plus(_),
+            rhs,
+        } => const_subscript_index_expr(rhs)? as f64,
+        flat::Expression::Binary { op, lhs, rhs } => {
+            let lhs = const_subscript_index_expr(lhs)? as f64;
+            let rhs = const_subscript_index_expr(rhs)? as f64;
+            match op {
+                rumoca_ir_core::OpBinary::Add(_) => lhs + rhs,
+                rumoca_ir_core::OpBinary::Sub(_) => lhs - rhs,
+                rumoca_ir_core::OpBinary::Mul(_) => lhs * rhs,
+                rumoca_ir_core::OpBinary::Div(_) => lhs / rhs,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+
+    (value.is_finite() && value.fract() == 0.0).then_some(value as i64)
+}
+
+fn render_subscript(subscript: &flat::Subscript) -> String {
+    match subscript {
+        flat::Subscript::Index(index) => index.to_string(),
+        flat::Subscript::Colon => ":".to_string(),
+        // MLS Chapter 10 indexing: explicit assignment targets must resolve
+        // constant scalar subscripts to the concrete element name they define.
+        flat::Subscript::Expr(expr) => const_subscript_index_expr(expr)
+            .map_or_else(|| format!("{expr:?}"), |index| index.to_string()),
+    }
+}
+
+fn append_rendered_subscripts(
+    name: &flat::VarName,
+    subscripts: &[flat::Subscript],
+) -> flat::VarName {
+    if subscripts.is_empty() {
+        return name.clone();
+    }
+    let rendered = subscripts
+        .iter()
+        .map(render_subscript)
+        .collect::<Vec<_>>()
+        .join(",");
+    flat::VarName::new(format!("{}[{rendered}]", name.as_str()))
+}
+
 fn explicit_assignment_target(expr: &flat::Expression) -> Option<flat::VarName> {
     match expr {
-        flat::Expression::VarRef { name, .. } => Some(name.clone()),
-        flat::Expression::Index { base, .. } => explicit_assignment_target(base),
+        // MLS Appendix B B.1c with MLS Chapter 10 indexing: explicit discrete
+        // assignments must preserve the full indexed/field-qualified target.
+        flat::Expression::VarRef { name, subscripts } => {
+            Some(append_rendered_subscripts(name, subscripts))
+        }
+        flat::Expression::Index { base, subscripts } => {
+            let base = explicit_assignment_target(base)?;
+            Some(append_rendered_subscripts(&base, subscripts))
+        }
+        flat::Expression::FieldAccess { base, field } => {
+            let base = explicit_assignment_target(base)?;
+            Some(flat::VarName::new(format!("{}.{}", base.as_str(), field)))
+        }
         _ => None,
     }
 }
@@ -751,6 +842,7 @@ pub(super) fn classify_equations(
             continue;
         };
 
+        log_kept_if_matches_patterns(eq, scalar_count);
         if debug_eq_filter {
             stats.record_kept(&eq.origin);
         }

@@ -5,7 +5,8 @@ mod emit;
 use crate::compiled::VarLayout;
 use crate::compiled::ad::lower_residual_ad;
 use crate::compiled::lower::{
-    LowerError, lower_discrete_rhs, lower_expression_rows_from_expressions, lower_initial_residual,
+    LowerError, lower_discrete_rhs, lower_expression_rows_from_expressions_with_runtime_metadata,
+    lower_initial_expression_rows_from_expressions_with_runtime_metadata, lower_initial_residual,
     lower_residual, lower_root_conditions,
 };
 use rumoca_ir_dae as dae;
@@ -254,6 +255,15 @@ pub fn compile_jacobian_v_wasm(
     Ok(CompiledJacobianVWasm { kernel })
 }
 
+pub fn compile_initial_jacobian_v_wasm(
+    dae_model: &dae::Dae,
+) -> Result<CompiledJacobianVWasm, WasmCompileError> {
+    let layout = VarLayout::from_dae(dae_model);
+    let rows = crate::compiled::lower_initial_residual_ad(dae_model, &layout)?;
+    let kernel = CompiledKernelWasm::from_rows(rows, layout.y_scalars(), layout.p_scalars())?;
+    Ok(CompiledJacobianVWasm { kernel })
+}
+
 pub fn compile_root_conditions_wasm(
     dae_model: &dae::Dae,
 ) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
@@ -267,7 +277,26 @@ pub fn compile_expressions_wasm(
     expressions: &[dae::Expression],
 ) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
     let layout = VarLayout::from_dae(dae_model);
-    let rows = lower_expression_rows_from_expressions(expressions, &layout, &dae_model.functions)?;
+    let rows = lower_expression_rows_from_expressions_with_runtime_metadata(
+        expressions,
+        &layout,
+        &dae_model.functions,
+        &dae_model.clock_intervals,
+    )?;
+    compile_expression_rows_wasm(layout.y_scalars(), layout.p_scalars(), rows)
+}
+
+pub fn compile_initial_expressions_wasm(
+    dae_model: &dae::Dae,
+    expressions: &[dae::Expression],
+) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
+    let layout = VarLayout::from_dae(dae_model);
+    let rows = lower_initial_expression_rows_from_expressions_with_runtime_metadata(
+        expressions,
+        &layout,
+        &dae_model.functions,
+        &dae_model.clock_intervals,
+    )?;
     compile_expression_rows_wasm(layout.y_scalars(), layout.p_scalars(), rows)
 }
 

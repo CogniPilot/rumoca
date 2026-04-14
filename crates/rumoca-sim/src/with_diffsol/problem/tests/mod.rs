@@ -1,3 +1,13 @@
+use super::core::{
+    InitJacobianEvalContext, apply_discrete_partition_updates, build_init_jacobian_colored,
+    build_init_jacobian_dense, build_runtime_alias_adjacency, collect_runtime_alias_anchor_names,
+    extract_direct_assignment, propagate_runtime_alias_components_from_env,
+    propagate_runtime_direct_assignments_from_env, seed_direct_assignment_initial_values,
+    seed_runtime_direct_assignment_values,
+    seed_runtime_direct_assignment_values_with_context_and_env,
+    seed_runtime_direct_assignment_values_with_context_and_env_and_blocked_solver_cols,
+    solver_vector_names,
+};
 use super::*;
 use crate::with_diffsol::test_support::{binop, eq_from, lit, var};
 use rumoca_core::Span;
@@ -10,6 +20,351 @@ mod runtime_state_chain;
 
 use blt_linear::apply_substitutions_to_env;
 use jacobian::assert_jacobians_close;
+
+fn named_arg_expr(name: &str, value: dae::Expression) -> dae::Expression {
+    dae::Expression::FunctionCall {
+        name: dae::VarName::new(format!("__rumoca_named_arg__.{name}")),
+        args: vec![value],
+        is_constructor: false,
+    }
+}
+
+fn insert_parameter_start(dae: &mut dae::Dae, name: &str, dims: &[i64], start: dae::Expression) {
+    let mut var = dae::Variable::new(dae::VarName::new(name));
+    var.dims = dims.to_vec();
+    var.start = Some(start);
+    dae.parameters.insert(dae::VarName::new(name), var);
+}
+
+fn external_table_constructor_expr(
+    constructor_name: &str,
+    table_var: &str,
+    columns_var: &str,
+) -> dae::Expression {
+    dae::Expression::FunctionCall {
+        name: dae::VarName::new(constructor_name),
+        args: vec![
+            dae::Expression::Literal(dae::Literal::String("NoName".to_string())),
+            dae::Expression::Literal(dae::Literal::String("NoName".to_string())),
+            var(table_var),
+            lit(0.0),
+            var(columns_var),
+            lit(1.0),
+            lit(1.0),
+            lit(0.0),
+            lit(1.0),
+            dae::Expression::Literal(dae::Literal::Boolean(false)),
+            dae::Expression::Literal(dae::Literal::String(",".to_string())),
+            lit(0.0),
+        ],
+        is_constructor: false,
+    }
+}
+
+fn next_time_event_expr(table_id_var: &str) -> dae::Expression {
+    dae::Expression::FunctionCall {
+        name: dae::VarName::new("getNextTimeEvent"),
+        args: vec![var(table_id_var), lit(0.0)],
+        is_constructor: false,
+    }
+}
+
+fn parameter_values_by_name(
+    dae: &dae::Dae,
+    params: &[f64],
+) -> std::collections::HashMap<String, Vec<f64>> {
+    let mut values_by_name = std::collections::HashMap::new();
+    let mut pidx = 0usize;
+    for (name, var) in &dae.parameters {
+        let size = var.size();
+        if size == 0 {
+            continue;
+        }
+        values_by_name.insert(
+            name.as_str().to_string(),
+            params[pidx..pidx + size].to_vec(),
+        );
+        pidx += size;
+    }
+    values_by_name
+}
+
+fn boolean_table_mod_comprehension(shift_index: bool) -> dae::Expression {
+    let mod_arg = if shift_index {
+        binop(OpBinary::Add(Default::default()), var("i"), lit(1.0))
+    } else {
+        var("i")
+    };
+    dae::Expression::ArrayComprehension {
+        expr: Box::new(dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Mod,
+            args: vec![mod_arg, lit(2.0)],
+        }),
+        indices: vec![dae::ComprehensionIndex {
+            name: "i".to_string(),
+            range: dae::Expression::Range {
+                start: Box::new(lit(1.0)),
+                step: None,
+                end: Box::new(var("booleanTable.n")),
+            },
+        }],
+        filter: None,
+    }
+}
+
+fn boolean_table_rows_expr(start_value: bool) -> dae::Expression {
+    dae::Expression::Array {
+        elements: vec![
+            dae::Expression::Array {
+                elements: vec![
+                    var("booleanTable.table[1]"),
+                    lit(if start_value { 1.0 } else { 0.0 }),
+                ],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![
+                    var("booleanTable.table"),
+                    boolean_table_mod_comprehension(start_value),
+                ],
+                is_matrix: true,
+            },
+        ],
+        is_matrix: true,
+    }
+}
+
+fn boolean_table_dynamic_table_start_expr() -> dae::Expression {
+    dae::Expression::If {
+        branches: vec![(
+            binop(
+                OpBinary::Gt(Default::default()),
+                var("booleanTable.n"),
+                lit(0.0),
+            ),
+            dae::Expression::If {
+                branches: vec![(
+                    var("booleanTable.startValue"),
+                    boolean_table_rows_expr(true),
+                )],
+                else_branch: Box::new(boolean_table_rows_expr(false)),
+            },
+        )],
+        else_branch: Box::new(dae::Expression::Array {
+            elements: vec![lit(0.0), lit(0.0)],
+            is_matrix: true,
+        }),
+    }
+}
+
+fn build_zero_sized_dynamic_boolean_time_table_dae() -> dae::Dae {
+    let mut dae = dae::Dae::new();
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.table",
+        &[3],
+        dae::Expression::Array {
+            elements: vec![lit(1.0), lit(2.0), lit(3.0)],
+            is_matrix: false,
+        },
+    );
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.n",
+        &[],
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Size,
+            args: vec![var("booleanTable.table"), lit(1.0)],
+        },
+    );
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.startValue",
+        &[],
+        dae::Expression::Literal(dae::Literal::Boolean(false)),
+    );
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.combiTimeTable.columns",
+        &[1],
+        dae::Expression::Array {
+            elements: vec![lit(2.0)],
+            is_matrix: false,
+        },
+    );
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.combiTimeTable.table",
+        &[0, 2],
+        boolean_table_dynamic_table_start_expr(),
+    );
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.combiTimeTable.tableID",
+        &[],
+        external_table_constructor_expr(
+            "ExternalCombiTimeTable",
+            "booleanTable.combiTimeTable.table",
+            "booleanTable.combiTimeTable.columns",
+        ),
+    );
+    insert_parameter_start(
+        &mut dae,
+        "probe.nextEvent",
+        &[],
+        next_time_event_expr("booleanTable.combiTimeTable.tableID"),
+    );
+    dae
+}
+
+fn build_recheck_dynamic_boolean_time_table_dae() -> dae::Dae {
+    let mut dae = dae::Dae::new();
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.table",
+        &[9],
+        dae::Expression::Array {
+            elements: vec![
+                lit(1.0),
+                lit(0.0),
+                lit(2.0),
+                lit(1.0),
+                lit(3.0),
+                lit(0.0),
+                lit(4.0),
+                lit(1.0),
+                lit(5.0),
+            ],
+            is_matrix: false,
+        },
+    );
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.n",
+        &[],
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Size,
+            args: vec![var("booleanTable.table"), lit(1.0)],
+        },
+    );
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.combiTimeTable.columns",
+        &[],
+        lit(2.0),
+    );
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.combiTimeTable.tableID",
+        &[],
+        external_table_constructor_expr(
+            "ExternalCombiTimeTable",
+            "booleanTable.combiTimeTable.table",
+            "booleanTable.combiTimeTable.columns",
+        ),
+    );
+    insert_parameter_start(
+        &mut dae,
+        "booleanTable.combiTimeTable.table",
+        &[0, 2],
+        dae::Expression::Array {
+            elements: vec![
+                dae::Expression::ArrayComprehension {
+                    expr: Box::new(var("i")),
+                    indices: vec![dae::ComprehensionIndex {
+                        name: "i".to_string(),
+                        range: dae::Expression::Range {
+                            start: Box::new(lit(1.0)),
+                            step: None,
+                            end: Box::new(var("booleanTable.n")),
+                        },
+                    }],
+                    filter: None,
+                },
+                var("booleanTable.table"),
+            ],
+            is_matrix: true,
+        },
+    );
+    insert_parameter_start(
+        &mut dae,
+        "probe.nextEvent",
+        &[],
+        next_time_event_expr("booleanTable.combiTimeTable.tableID"),
+    );
+    dae
+}
+
+fn build_compiled_external_table_constructor_probe_dae() -> dae::Dae {
+    let mut dae = dae::Dae::new();
+    insert_parameter_start(
+        &mut dae,
+        "integerTable.combiTimeTable.columns",
+        &[],
+        lit(2.0),
+    );
+    insert_parameter_start(
+        &mut dae,
+        "integerTable.combiTimeTable.table",
+        &[6, 2],
+        dae::Expression::Array {
+            elements: vec![
+                dae::Expression::Array {
+                    elements: vec![lit(0.0), lit(0.0)],
+                    is_matrix: true,
+                },
+                dae::Expression::Array {
+                    elements: vec![lit(1.0), lit(2.0)],
+                    is_matrix: true,
+                },
+                dae::Expression::Array {
+                    elements: vec![lit(2.0), lit(4.0)],
+                    is_matrix: true,
+                },
+                dae::Expression::Array {
+                    elements: vec![lit(3.0), lit(6.0)],
+                    is_matrix: true,
+                },
+                dae::Expression::Array {
+                    elements: vec![lit(4.0), lit(4.0)],
+                    is_matrix: true,
+                },
+                dae::Expression::Array {
+                    elements: vec![lit(6.0), lit(2.0)],
+                    is_matrix: true,
+                },
+            ],
+            is_matrix: true,
+        },
+    );
+    insert_parameter_start(
+        &mut dae,
+        "integerTable.combiTimeTable.tableID",
+        &[],
+        external_table_constructor_expr(
+            "Modelica.Blocks.Types.ExternalCombiTimeTable",
+            "integerTable.combiTimeTable.table",
+            "integerTable.combiTimeTable.columns",
+        ),
+    );
+    insert_parameter_start(
+        &mut dae,
+        "probe.nextEvent",
+        &[],
+        next_time_event_expr("integerTable.combiTimeTable.tableID"),
+    );
+    insert_parameter_start(
+        &mut dae,
+        "probe.count",
+        &[],
+        dae::Expression::FunctionCall {
+            name: dae::VarName::new("Integer"),
+            args: vec![lit(3.7)],
+            is_constructor: false,
+        },
+    );
+    dae
+}
 
 #[test]
 fn test_count_empty_dae() {
@@ -27,14 +382,214 @@ fn test_default_params_empty() {
 }
 
 #[test]
-fn test_default_params_with_budget_rejects_non_finite_values() {
+fn test_default_params_support_capitalized_integer_intrinsic() {
     let mut dae = dae::Dae::new();
     let mut p = dae::Variable::new(dae::VarName::new("p"));
     p.start = Some(dae::Expression::FunctionCall {
-        name: dae::VarName::new("missingFunction"),
-        args: vec![],
+        name: dae::VarName::new("Integer"),
+        args: vec![lit(3.7)],
         is_constructor: false,
     });
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    let params = default_params(&dae);
+    assert_eq!(params, vec![3.0]);
+}
+
+#[test]
+fn test_default_params_rewrite_hidden_direct_assignment_bindings() {
+    let mut dae = dae::Dae::new();
+    let mut u = dae::Variable::new(dae::VarName::new("u"));
+    u.start = Some(lit(2.0));
+    dae.inputs.insert(dae::VarName::new("u"), u);
+
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(binop(
+        rumoca_ir_core::OpBinary::Add(Default::default()),
+        var("hidden"),
+        lit(1.0),
+    ));
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    dae.f_x.push(eq_from(binop(
+        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        var("hidden"),
+        var("u"),
+    )));
+
+    let params = default_params(&dae);
+    assert_eq!(params, vec![3.0]);
+}
+
+#[test]
+fn test_default_params_support_flattened_field_projection_array_refs() {
+    let mut dae = dae::Dae::new();
+
+    let mut ri = dae::Variable::new(dae::VarName::new("cellData.Ri"));
+    ri.start = Some(lit(0.01));
+    dae.parameters.insert(dae::VarName::new("cellData.Ri"), ri);
+
+    let mut r1 = dae::Variable::new(dae::VarName::new("cellData.rcData[1].R"));
+    r1.start = Some(lit(0.002));
+    dae.parameters
+        .insert(dae::VarName::new("cellData.rcData[1].R"), r1);
+
+    let mut r2 = dae::Variable::new(dae::VarName::new("cellData.rcData[2].R"));
+    r2.start = Some(lit(0.001));
+    dae.parameters
+        .insert(dae::VarName::new("cellData.rcData[2].R"), r2);
+
+    let mut r0 = dae::Variable::new(dae::VarName::new("cellData.R0"));
+    r0.start = Some(binop(
+        OpBinary::Sub(Default::default()),
+        var("cellData.Ri"),
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Sum,
+            args: vec![var("cellData.rcData.R")],
+        },
+    ));
+    dae.parameters.insert(dae::VarName::new("cellData.R0"), r0);
+
+    let params = default_params(&dae);
+    assert_eq!(params, vec![0.01, 0.002, 0.001, 0.007]);
+}
+
+#[test]
+fn test_default_params_support_strings_length_runtime_special() {
+    let mut dae = dae::Dae::new();
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(dae::Expression::FunctionCall {
+        name: dae::VarName::new("Modelica.Utilities.Strings.length"),
+        args: vec![dae::Expression::Literal(dae::Literal::String(
+            "hello".to_string(),
+        ))],
+        is_constructor: false,
+    });
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    let params = default_params(&dae);
+    assert_eq!(params, vec![5.0]);
+}
+
+#[test]
+fn test_default_params_support_full_path_name_runtime_placeholder() {
+    let mut dae = dae::Dae::new();
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(dae::Expression::FunctionCall {
+        name: dae::VarName::new("Modelica.Utilities.Files.fullPathName"),
+        args: vec![dae::Expression::Literal(dae::Literal::String(
+            "a.txt".to_string(),
+        ))],
+        is_constructor: false,
+    });
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    let params = default_params(&dae);
+    assert_eq!(params, vec![0.0]);
+}
+
+#[test]
+fn test_default_params_prefer_find_last_runtime_special_over_user_function_body() {
+    let mut dae = dae::Dae::new();
+
+    let mut find_last =
+        dae::Function::new("Modelica.Utilities.Strings.findLast", Default::default());
+    find_last
+        .inputs
+        .push(dae::FunctionParam::new("string", "String"));
+    find_last
+        .inputs
+        .push(dae::FunctionParam::new("searchString", "String"));
+    find_last
+        .inputs
+        .push(dae::FunctionParam::new("startIndex", "Integer"));
+    find_last
+        .inputs
+        .push(dae::FunctionParam::new("caseSensitive", "Boolean"));
+    find_last
+        .outputs
+        .push(dae::FunctionParam::new("index", "Integer"));
+    find_last
+        .body
+        .push(dae::Statement::While(dae::StatementBlock {
+            cond: dae::Expression::Literal(dae::Literal::Boolean(true)),
+            stmts: vec![dae::Statement::Assignment {
+                comp: dae::ComponentReference {
+                    local: false,
+                    parts: vec![dae::ComponentRefPart {
+                        ident: "index".to_string(),
+                        subs: vec![],
+                    }],
+                    def_id: None,
+                },
+                value: lit(1.0),
+            }],
+        }));
+    dae.functions.insert(
+        dae::VarName::new("Modelica.Utilities.Strings.findLast"),
+        find_last,
+    );
+
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(dae::Expression::FunctionCall {
+        name: dae::VarName::new("Modelica.Utilities.Strings.findLast"),
+        args: vec![
+            dae::Expression::Literal(dae::Literal::String("ab.csv".to_string())),
+            dae::Expression::Literal(dae::Literal::String(".csv".to_string())),
+            named_arg_expr(
+                "caseSensitive",
+                dae::Expression::Literal(dae::Literal::Boolean(false)),
+            ),
+        ],
+        is_constructor: false,
+    });
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    let params = default_params(&dae);
+    assert_eq!(params, vec![3.0]);
+}
+
+#[test]
+fn test_default_params_support_named_function_arguments_on_compiled_path() {
+    let mut dae = dae::Dae::new();
+    let mut function = dae::Function::new("Pkg.f", Default::default());
+    function.inputs.push(dae::FunctionParam::new("a", "Real"));
+    function.inputs.push(dae::FunctionParam::new("b", "Real"));
+    function.outputs.push(dae::FunctionParam::new("y", "Real"));
+    function.body.push(dae::Statement::Assignment {
+        comp: dae::ComponentReference {
+            local: false,
+            parts: vec![dae::ComponentRefPart {
+                ident: "y".to_string(),
+                subs: vec![],
+            }],
+            def_id: None,
+        },
+        value: binop(
+            rumoca_ir_core::OpBinary::Sub(Default::default()),
+            var("a"),
+            var("b"),
+        ),
+    });
+    dae.functions.insert(dae::VarName::new("Pkg.f"), function);
+
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(dae::Expression::FunctionCall {
+        name: dae::VarName::new("Pkg.f"),
+        args: vec![named_arg_expr("b", lit(2.0)), named_arg_expr("a", lit(7.0))],
+        is_constructor: false,
+    });
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    let params = default_params(&dae);
+    assert_eq!(params, vec![5.0]);
+}
+
+#[test]
+fn test_default_params_with_budget_rejects_non_finite_values() {
+    let mut dae = dae::Dae::new();
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(lit(f64::NAN));
     dae.parameters.insert(dae::VarName::new("p"), p);
 
     let budget = crate::TimeoutBudget::new(None);
@@ -44,6 +599,57 @@ fn test_default_params_with_budget_rejects_non_finite_values() {
         matches!(err, crate::SimError::SolverError(ref msg) if msg.contains("non-finite parameter")),
         "unexpected error: {err:?}"
     );
+}
+
+#[test]
+fn test_default_params_with_budget_falls_back_for_unsupported_start_rows() {
+    let mut dae = dae::Dae::new();
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(dae::Expression::BuiltinCall {
+        function: dae::BuiltinFunction::Sample,
+        args: vec![lit(1.0), lit(1.0)],
+    });
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    let budget = crate::TimeoutBudget::new(None);
+    let params = default_params_with_budget(&dae, &budget)
+        .expect("unsupported compiled start rows should fall back to reference evaluation");
+    assert_eq!(params, vec![0.0]);
+}
+
+#[test]
+fn test_default_params_with_budget_resolves_self_contained_array_parameter_starts() {
+    let mut dae = dae::Dae::new();
+
+    let mut table = dae::Variable::new(dae::VarName::new("table"));
+    table.dims = vec![3];
+    table.start = Some(dae::Expression::Array {
+        elements: vec![lit(10.0), lit(20.0), lit(30.0)],
+        is_matrix: false,
+    });
+    dae.parameters.insert(dae::VarName::new("table"), table);
+
+    let mut idx = dae::Variable::new(dae::VarName::new("idx"));
+    idx.start = Some(lit(2.0));
+    dae.parameters.insert(dae::VarName::new("idx"), idx);
+
+    let mut selected = dae::Variable::new(dae::VarName::new("selected"));
+    selected.start = Some(dae::Expression::Index {
+        base: Box::new(var("table")),
+        subscripts: vec![dae::Subscript::Expr(Box::new(
+            dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Integer,
+                args: vec![var("idx")],
+            },
+        ))],
+    });
+    dae.parameters
+        .insert(dae::VarName::new("selected"), selected);
+
+    let budget = crate::TimeoutBudget::new(None);
+    let params = default_params_with_budget(&dae, &budget)
+        .expect("self-contained array parameter starts should still seed dependent parameters");
+    assert_eq!(params, vec![10.0, 20.0, 30.0, 2.0, 20.0]);
 }
 
 #[test]
@@ -219,6 +825,349 @@ fn test_default_params_constant_array_index_uses_selected_entry() {
 }
 
 #[test]
+fn test_default_params_preserve_matrix_start_row_order_in_parameter_env() {
+    let mut dae = dae::Dae::new();
+
+    let mut table = dae::Variable::new(dae::VarName::new("timeTable.table"));
+    table.dims = vec![6, 2];
+    // MLS Chapter 10 array literals preserve written row order; the compiled
+    // parameter/start path must feed the same row-major flattened values into
+    // the runtime env that interpreted array evaluation would produce.
+    table.start = Some(dae::Expression::Array {
+        elements: vec![
+            dae::Expression::Array {
+                elements: vec![lit(0.0), lit(0.0)],
+                is_matrix: false,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(1.0), lit(2.1)],
+                is_matrix: false,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(2.0), lit(4.2)],
+                is_matrix: false,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(3.0), lit(6.3)],
+                is_matrix: false,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(4.0), lit(4.2)],
+                is_matrix: false,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(6.0), lit(2.1)],
+                is_matrix: false,
+            },
+        ],
+        is_matrix: true,
+    });
+    dae.parameters
+        .insert(dae::VarName::new("timeTable.table"), table);
+
+    let params = default_params(&dae);
+    assert_eq!(
+        params,
+        vec![0.0, 0.0, 1.0, 2.1, 2.0, 4.2, 3.0, 6.3, 4.0, 4.2, 6.0, 2.1]
+    );
+
+    let env = rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(&dae, &params, 0.0);
+    assert_eq!(env.get("timeTable.table[1,1]"), 0.0);
+    assert_eq!(env.get("timeTable.table[1,2]"), 0.0);
+    assert_eq!(env.get("timeTable.table[2,1]"), 1.0);
+    assert!((env.get("timeTable.table[2,2]") - 2.1).abs() < 1e-12);
+}
+
+#[test]
+fn test_default_params_preserve_matrix_start_row_order_with_matrix_rows() {
+    let mut dae = dae::Dae::new();
+
+    let mut table = dae::Variable::new(dae::VarName::new("timeTable.table"));
+    table.dims = vec![7, 2];
+    table.start = Some(dae::Expression::Array {
+        elements: vec![
+            dae::Expression::Array {
+                elements: vec![lit(0.0), lit(0.0)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(1.0), lit(2.1)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(2.0), lit(4.2)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(3.0), lit(6.3)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(4.0), lit(4.2)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(6.0), lit(2.1)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(6.0), lit(2.1)],
+                is_matrix: true,
+            },
+        ],
+        is_matrix: true,
+    });
+    dae.parameters
+        .insert(dae::VarName::new("timeTable.table"), table);
+
+    let params = default_params(&dae);
+    assert_eq!(
+        params,
+        vec![
+            0.0, 0.0, 1.0, 2.1, 2.0, 4.2, 3.0, 6.3, 4.0, 4.2, 6.0, 2.1, 6.0, 2.1
+        ]
+    );
+
+    let env = rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(&dae, &params, 0.0);
+    assert_eq!(env.get("timeTable.table[1,1]"), 0.0);
+    assert_eq!(env.get("timeTable.table[1,2]"), 0.0);
+    assert_eq!(env.get("timeTable.table[2,1]"), 1.0);
+    assert!((env.get("timeTable.table[2,2]") - 2.1).abs() < 1e-12);
+}
+
+#[test]
+fn test_default_params_materialize_zero_sized_dynamic_time_table_starts() {
+    let dae = build_zero_sized_dynamic_boolean_time_table_dae();
+    let params = default_params(&dae);
+    let values_by_name = parameter_values_by_name(&dae, &params);
+
+    let table_id = values_by_name["booleanTable.combiTimeTable.tableID"][0];
+    let next_event = values_by_name["probe.nextEvent"][0];
+    assert!(
+        table_id > 0.0,
+        "expected registered external table id, got {table_id}"
+    );
+    assert!(
+        (next_event - 1.0).abs() < 1e-12,
+        "expected first time event at 1.0, got {next_event}"
+    );
+}
+
+#[test]
+fn test_default_params_recheck_earlier_table_id_after_dynamic_table_materializes() {
+    let dae = build_recheck_dynamic_boolean_time_table_dae();
+    let params = default_params(&dae);
+    let values_by_name = parameter_values_by_name(&dae, &params);
+
+    let table_id = values_by_name["booleanTable.combiTimeTable.tableID"][0];
+    let next_event = values_by_name["probe.nextEvent"][0];
+    assert!(
+        table_id > 0.0,
+        "expected registered external table id, got {table_id}"
+    );
+    assert!(
+        (next_event - 1.0).abs() < 1.0e-12,
+        "expected first time event at 1.0, got {next_event}"
+    );
+}
+
+#[test]
+fn test_default_params_support_qualified_external_time_table_constructor() {
+    let mut dae = dae::Dae::new();
+
+    let mut columns = dae::Variable::new(dae::VarName::new("integerTable.combiTimeTable.columns"));
+    columns.start = Some(lit(2.0));
+    dae.parameters.insert(
+        dae::VarName::new("integerTable.combiTimeTable.columns"),
+        columns,
+    );
+
+    let mut table = dae::Variable::new(dae::VarName::new("integerTable.combiTimeTable.table"));
+    table.dims = vec![6, 2];
+    table.start = Some(dae::Expression::Array {
+        elements: vec![
+            dae::Expression::Array {
+                elements: vec![lit(0.0), lit(0.0)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(1.0), lit(2.0)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(2.0), lit(4.0)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(3.0), lit(6.0)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(4.0), lit(4.0)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(6.0), lit(2.0)],
+                is_matrix: true,
+            },
+        ],
+        is_matrix: true,
+    });
+    dae.parameters.insert(
+        dae::VarName::new("integerTable.combiTimeTable.table"),
+        table,
+    );
+
+    let mut table_id = dae::Variable::new(dae::VarName::new("integerTable.combiTimeTable.tableID"));
+    table_id.start = Some(dae::Expression::FunctionCall {
+        name: dae::VarName::new("Modelica.Blocks.Types.ExternalCombiTimeTable"),
+        args: vec![
+            dae::Expression::Literal(dae::Literal::String("NoName".to_string())),
+            dae::Expression::Literal(dae::Literal::String("NoName".to_string())),
+            var("integerTable.combiTimeTable.table"),
+            lit(0.0),
+            var("integerTable.combiTimeTable.columns"),
+            lit(1.0),
+            lit(1.0),
+            lit(0.0),
+            lit(1.0),
+            dae::Expression::Literal(dae::Literal::Boolean(false)),
+            dae::Expression::Literal(dae::Literal::String(",".to_string())),
+            lit(0.0),
+        ],
+        is_constructor: false,
+    });
+    dae.parameters.insert(
+        dae::VarName::new("integerTable.combiTimeTable.tableID"),
+        table_id,
+    );
+
+    let mut next_event = dae::Variable::new(dae::VarName::new("probe.nextEvent"));
+    next_event.start = Some(dae::Expression::FunctionCall {
+        name: dae::VarName::new("getNextTimeEvent"),
+        args: vec![var("integerTable.combiTimeTable.tableID"), lit(0.0)],
+        is_constructor: false,
+    });
+    dae.parameters
+        .insert(dae::VarName::new("probe.nextEvent"), next_event);
+
+    let params = default_params(&dae);
+    let mut values_by_name = std::collections::HashMap::new();
+    let mut pidx = 0usize;
+    for (name, var) in &dae.parameters {
+        let sz = var.size();
+        if sz == 0 {
+            continue;
+        }
+        values_by_name.insert(name.as_str().to_string(), params[pidx..pidx + sz].to_vec());
+        pidx += sz;
+    }
+
+    let table_id = values_by_name["integerTable.combiTimeTable.tableID"][0];
+    let next_event = values_by_name["probe.nextEvent"][0];
+    assert!(
+        table_id > 0.0,
+        "expected registered external table id, got {table_id}"
+    );
+    assert!(
+        (next_event - 1.0).abs() < 1.0e-12,
+        "expected first time event at 1.0, got {next_event}"
+    );
+}
+
+#[test]
+fn test_default_params_skip_compiled_external_table_constructor_rows() {
+    let dae = build_compiled_external_table_constructor_probe_dae();
+    let ctx = build_compiled_var_start_context(
+        &dae,
+        dae.parameters
+            .iter()
+            .map(|(name, var)| (name.as_str().to_string(), var.clone())),
+    )
+    .expect("compiled start context should build for mixed rows")
+    .expect("mixed start rows should still produce a compiled context");
+
+    assert!(
+        !ctx.rows_by_name
+            .contains_key("integerTable.combiTimeTable.tableID"),
+        "external table constructor rows must stay on the reference path"
+    );
+    assert!(
+        ctx.rows_by_name.contains_key("probe.nextEvent"),
+        "compiled getters should remain available after skipping constructor rows"
+    );
+    assert!(
+        !ctx.rows_by_name.contains_key("probe.count"),
+        "self-contained scalar starts should stay on the reference path"
+    );
+}
+
+#[test]
+fn test_default_params_initial_parameter_pass_skips_zero_sized_array_slots() {
+    let mut dae = dae::Dae::new();
+
+    let mut dyn_table = dae::Variable::new(dae::VarName::new("dyn.table"));
+    dyn_table.dims = vec![0, 2];
+    dyn_table.start = Some(dae::Expression::Array {
+        elements: vec![
+            dae::Expression::Array {
+                elements: vec![lit(0.0), lit(1.0)],
+                is_matrix: true,
+            },
+            dae::Expression::Array {
+                elements: vec![lit(1.0), lit(2.0)],
+                is_matrix: true,
+            },
+        ],
+        is_matrix: true,
+    });
+    dae.parameters
+        .insert(dae::VarName::new("dyn.table"), dyn_table);
+
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(lit(3.0));
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    let mut q = dae::Variable::new(dae::VarName::new("q"));
+    q.start = Some(lit(4.0));
+    dae.parameters.insert(dae::VarName::new("q"), q);
+
+    // MLS §8.6 initialization equations operate on the realized parameter
+    // vector; zero-sized array declarations must not consume phantom scalar
+    // slots during that pass.
+    dae.initial_equations.push(dae::Equation::explicit(
+        dae::VarName::new("q"),
+        var("p"),
+        Span::DUMMY,
+        "test",
+    ));
+
+    let params = default_params(&dae);
+    assert_eq!(params, vec![3.0, 3.0]);
+}
+
+#[test]
+fn test_default_params_broadcast_array_parameter_start_chain() {
+    let mut dae = dae::Dae::new();
+
+    let mut c = dae::Variable::new(dae::VarName::new("c"));
+    c.start = Some(lit(2.0));
+    dae.constants.insert(dae::VarName::new("c"), c);
+
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(binop(OpBinary::Add(Default::default()), var("c"), lit(1.0)));
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    let mut arr = dae::Variable::new(dae::VarName::new("arr"));
+    arr.dims = vec![2];
+    arr.start = Some(var("p"));
+    dae.parameters.insert(dae::VarName::new("arr"), arr);
+
+    let params = default_params(&dae);
+    assert_eq!(params, vec![3.0, 3.0, 3.0]);
+}
+
+#[test]
 fn test_initialize_state_vector_respects_state_then_algebraic_order() {
     let mut dae = dae::Dae::new();
     dae.states.insert(
@@ -232,6 +1181,133 @@ fn test_initialize_state_vector_respects_state_then_algebraic_order() {
     let mut y = vec![1.0, 2.0];
     initialize_state_vector(&dae, &mut y);
     assert_eq!(y, vec![0.0, 0.0]);
+}
+
+#[test]
+fn test_initialize_state_vector_uses_runtime_tail_parameter_chain() {
+    let mut dae = dae::Dae::new();
+
+    let mut c = dae::Variable::new(dae::VarName::new("c"));
+    c.start = Some(lit(2.0));
+    dae.constants.insert(dae::VarName::new("c"), c);
+
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(binop(OpBinary::Add(Default::default()), var("c"), lit(1.0)));
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    let mut x = dae::Variable::new(dae::VarName::new("x"));
+    x.start = Some(binop(OpBinary::Add(Default::default()), var("p"), lit(2.0)));
+    dae.states.insert(dae::VarName::new("x"), x);
+
+    let mut y = vec![0.0; 1];
+    initialize_state_vector(&dae, &mut y);
+    assert!((y[0] - 5.0).abs() < 1.0e-12);
+}
+
+#[test]
+fn test_initialize_state_vector_rewrites_known_direct_assignment_chain() {
+    let mut dae = dae::Dae::new();
+
+    let mut u = dae::Variable::new(dae::VarName::new("u"));
+    u.start = Some(lit(2.0));
+    dae.inputs.insert(dae::VarName::new("u"), u);
+
+    dae.algebraics.insert(
+        dae::VarName::new("a"),
+        dae::Variable::new(dae::VarName::new("a")),
+    );
+    dae.outputs.insert(
+        dae::VarName::new("y"),
+        dae::Variable::new(dae::VarName::new("y")),
+    );
+
+    let mut x = dae::Variable::new(dae::VarName::new("x"));
+    x.start = Some(binop(OpBinary::Add(Default::default()), var("y"), lit(1.0)));
+    dae.states.insert(dae::VarName::new("x"), x);
+
+    dae.f_x.push(eq_from(binop(
+        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        var("a"),
+        var("u"),
+    )));
+    dae.f_x.push(eq_from(binop(
+        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        var("y"),
+        var("a"),
+    )));
+
+    let mut y = vec![0.0; 3];
+    initialize_state_vector(&dae, &mut y);
+    assert!((y[0] - 3.0).abs() < 1.0e-12);
+}
+
+#[test]
+fn test_initialize_state_vector_rewrites_missing_live_alias_binding() {
+    let mut dae = dae::Dae::new();
+
+    dae.outputs.insert(
+        dae::VarName::new("manualSeed1_y"),
+        dae::Variable::new(dae::VarName::new("manualSeed1_y")),
+    );
+
+    let mut probe = dae::Variable::new(dae::VarName::new("probe"));
+    probe.start = Some(binop(
+        OpBinary::Add(Default::default()),
+        var("manualSeed1.y"),
+        lit(1.0),
+    ));
+    dae.algebraics.insert(dae::VarName::new("probe"), probe);
+
+    dae.f_x.push(dae::Equation {
+        lhs: Some(dae::VarName::new("manualSeed1_y")),
+        rhs: var("manualSeed1.y"),
+        span: rumoca_core::Span::DUMMY,
+        origin: String::new(),
+        scalar_count: 1,
+    });
+
+    let mut y = vec![0.0; 2];
+    initialize_state_vector(&dae, &mut y);
+    assert!((y[0] - 1.0).abs() < 1.0e-12);
+}
+
+#[test]
+fn test_initialize_state_vector_scalarizes_array_start_values() {
+    let mut dae = dae::Dae::new();
+
+    let mut p = dae::Variable::new(dae::VarName::new("p"));
+    p.start = Some(lit(2.0));
+    dae.parameters.insert(dae::VarName::new("p"), p);
+
+    let mut x = dae::Variable::new(dae::VarName::new("x"));
+    x.dims = vec![2];
+    x.start = Some(dae::Expression::Array {
+        elements: vec![
+            var("p"),
+            binop(OpBinary::Add(Default::default()), var("p"), lit(1.0)),
+        ],
+        is_matrix: false,
+    });
+    dae.states.insert(dae::VarName::new("x"), x);
+
+    let mut y = vec![0.0; 2];
+    initialize_state_vector(&dae, &mut y);
+    assert_eq!(y, vec![2.0, 3.0]);
+}
+
+#[test]
+fn test_initialize_state_vector_falls_back_when_compiled_start_row_is_unsupported() {
+    let mut dae = dae::Dae::new();
+    let mut x = dae::Variable::new(dae::VarName::new("x"));
+    x.start = Some(dae::Expression::BuiltinCall {
+        function: dae::BuiltinFunction::Sample,
+        args: vec![lit(1.0), lit(1.0)],
+    });
+    dae.states.insert(dae::VarName::new("x"), x);
+
+    let mut y = vec![0.0];
+    initialize_state_vector(&dae, &mut y);
+    assert_eq!(y, vec![0.0]);
 }
 
 #[test]
@@ -371,840 +1447,5 @@ fn test_extract_direct_assignment_with_indexed_target() {
     assert!((eval_expr::<f64>(solution, &VarEnv::new()) - 2.5).abs() < 1e-12);
 }
 
-#[test]
-fn test_apply_initial_section_assignments_propagates_aliases_into_pre_equations() {
-    rumoca_eval_dae::runtime::clear_pre_values();
-
-    let mut dae = dae::Dae::new();
-    dae.discrete_valued.insert(
-        dae::VarName::new("active"),
-        dae::Variable::new(dae::VarName::new("active")),
-    );
-    dae.discrete_valued.insert(
-        dae::VarName::new("localActive"),
-        dae::Variable::new(dae::VarName::new("localActive")),
-    );
-    dae.discrete_valued.insert(
-        dae::VarName::new("newActive"),
-        dae::Variable::new(dae::VarName::new("newActive")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("z"),
-        dae::Variable::new(dae::VarName::new("z")),
-    );
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("z"),
-        lit(0.0),
-    )));
-    dae.f_m.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("active"),
-        var("localActive"),
-    )));
-    dae.initial_equations.push(dae::Equation::explicit(
-        dae::VarName::new("active"),
-        lit(1.0),
-        Span::DUMMY,
-        "initial active",
-    ));
-    let pre_new_active = dae::Expression::BuiltinCall {
-        function: dae::BuiltinFunction::Pre,
-        args: vec![var("newActive")],
-    };
-    let pre_local_active = dae::Expression::BuiltinCall {
-        function: dae::BuiltinFunction::Pre,
-        args: vec![var("localActive")],
-    };
-    dae.initial_equations.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        pre_new_active,
-        pre_local_active,
-    )));
-
-    let p = default_params(&dae);
-    let mut y = vec![0.0; dae.f_x.len()];
-    initialize_state_vector(&dae, &mut y);
-    apply_initial_section_assignments(&dae, &mut y, &p, 0.0);
-
-    let pre_local = rumoca_eval_dae::runtime::get_pre_value("localActive")
-        .expect("pre(localActive) should be seeded from initial alias closure");
-    let pre_new = rumoca_eval_dae::runtime::get_pre_value("newActive")
-        .expect("pre(newActive) should follow explicit initial pre equation");
-    assert!(
-        (pre_local - 1.0).abs() < 1e-12,
-        "expected pre(localActive)=1 from active=1 + alias equation, got {pre_local}"
-    );
-    assert!(
-        (pre_new - 1.0).abs() < 1e-12,
-        "expected pre(newActive)=1 from pre(newActive)=pre(localActive), got {pre_new}"
-    );
-}
-
-#[test]
-fn test_seed_direct_assignment_handles_size1_indexed_lhs() {
-    let mut dae = dae::Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("aux"),
-        dae::Variable::new(dae::VarName::new("aux")),
-    );
-    let mut p_var = dae::Variable::new(dae::VarName::new("p"));
-    p_var.start = Some(lit(1.25));
-    dae.parameters.insert(dae::VarName::new("p"), p_var);
-    dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(dae::Expression::VarRef {
-            name: dae::VarName::new("aux"),
-            subscripts: vec![dae::Subscript::Index(1)],
-        }),
-        rhs: Box::new(var("p")),
-    }));
-
-    let n_x = count_states(&dae);
-    let p = default_params(&dae);
-    let mut y = vec![0.0; dae.f_x.len()];
-    initialize_state_vector(&dae, &mut y);
-
-    let updates = seed_direct_assignment_initial_values(&dae, &mut y, &p, n_x, false, 0.0);
-    assert!(updates > 0);
-    assert!((y[0] - 1.25).abs() < 1e-12);
-}
-
-#[test]
-fn test_seed_direct_assignment_updates_all_array_slots_from_base_target() {
-    let mut dae = dae::Dae::new();
-    let mut aw = dae::Variable::new(dae::VarName::new("aw"));
-    aw.dims = vec![3];
-    dae.algebraics.insert(dae::VarName::new("aw"), aw);
-
-    let rhs = dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(var("aw")),
-        rhs: Box::new(dae::Expression::Array {
-            elements: vec![lit(1.0), lit(2.0), lit(3.0)],
-            is_matrix: false,
-        }),
-    };
-    dae.f_x.push(eq_from(rhs));
-
-    let n_x = count_states(&dae);
-    let p = default_params(&dae);
-    let n_unknowns = dae.algebraics.values().map(|var| var.size()).sum::<usize>();
-    let mut y = vec![0.0; n_unknowns];
-    initialize_state_vector(&dae, &mut y);
-
-    let updates = seed_direct_assignment_initial_values(&dae, &mut y, &p, n_x, false, 0.0);
-    assert!(
-        updates >= 3,
-        "expected array assignment seeding updates for all slots"
-    );
-    assert!((y[0] - 1.0).abs() < 1e-12);
-    assert!((y[1] - 2.0).abs() < 1e-12);
-    assert!((y[2] - 3.0).abs() < 1e-12);
-}
-
-#[test]
-fn test_seed_direct_assignment_ignores_orphaned_variable_pin_equations() {
-    let mut dae = dae::Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    let mut p_var = dae::Variable::new(dae::VarName::new("p"));
-    p_var.start = Some(lit(2.0));
-    dae.parameters.insert(dae::VarName::new("p"), p_var);
-
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-            lhs: Box::new(var("x")),
-            rhs: Box::new(var("p")),
-        },
-        span: rumoca_core::Span::DUMMY,
-        origin: "equation from model".to_string(),
-        scalar_count: 1,
-    });
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-            lhs: Box::new(var("x")),
-            rhs: Box::new(lit(0.0)),
-        },
-        span: rumoca_core::Span::DUMMY,
-        origin: "orphaned_variable_pin".to_string(),
-        scalar_count: 1,
-    });
-
-    let n_x = count_states(&dae);
-    let p = default_params(&dae);
-    let mut y = vec![0.0; dae.f_x.len()];
-    initialize_state_vector(&dae, &mut y);
-
-    let updates = seed_direct_assignment_initial_values(&dae, &mut y, &p, n_x, false, 0.0);
-    assert!(updates > 0);
-    assert!(
-        (y[0] - 2.0).abs() < 1e-12,
-        "seeding should use physical direct assignment, not orphaned-variable pin"
-    );
-}
-
-#[test]
-fn test_runtime_projection_not_required_for_unique_acyclic_direct_assignments() {
-    let mut dae = dae::Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("y"),
-        dae::Variable::new(dae::VarName::new("y")),
-    );
-    dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(var("x")),
-        rhs: Box::new(lit(1.0)),
-    }));
-    dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(var("y")),
-        rhs: Box::new(dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(Default::default()),
-            lhs: Box::new(var("x")),
-            rhs: Box::new(lit(2.0)),
-        }),
-    }));
-
-    assert!(
-        !runtime_projection_required(&dae, 0),
-        "unique acyclic direct assignments should use fast direct seeding"
-    );
-}
-
-#[test]
-fn test_seed_runtime_direct_assignments_resolves_acyclic_unknown_chain() {
-    let mut dae = dae::Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("y"),
-        dae::Variable::new(dae::VarName::new("y")),
-    );
-    dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(var("x")),
-        rhs: Box::new(lit(1.0)),
-    }));
-    dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(var("y")),
-        rhs: Box::new(dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(Default::default()),
-            lhs: Box::new(var("x")),
-            rhs: Box::new(lit(2.0)),
-        }),
-    }));
-
-    let mut y = vec![0.0; dae.f_x.len()];
-    let params = default_params(&dae);
-    let updates = seed_runtime_direct_assignment_values(&dae, &mut y, &params, 0, 0.0);
-    let names = solver_vector_names(&dae, y.len());
-    let idx_for = |needle: &str| {
-        names
-            .iter()
-            .position(|name| name == needle)
-            .unwrap_or_else(|| panic!("missing solver variable '{needle}' in {:?}", names))
-    };
-    let x_idx = idx_for("x");
-    let y_idx = idx_for("y");
-    assert!(
-        updates > 0,
-        "runtime direct-assignment seeding should update acyclic chain variables"
-    );
-    assert!(
-        (y[x_idx] - 1.0).abs() < 1.0e-12,
-        "expected x=1 from x:=1 (names={names:?}, y={y:?})"
-    );
-    assert!(
-        (y[y_idx] - 3.0).abs() < 1.0e-12,
-        "expected y=x+2 to resolve in the same seeding pass chain (names={names:?}, y={y:?})"
-    );
-}
-
-#[test]
-fn test_runtime_projection_required_for_duplicate_direct_assignment_targets() {
-    let mut dae = dae::Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("y"),
-        dae::Variable::new(dae::VarName::new("y")),
-    );
-    dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(var("x")),
-        rhs: Box::new(lit(1.0)),
-    }));
-    dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(var("x")),
-        rhs: Box::new(var("y")),
-    }));
-
-    assert!(
-        runtime_projection_required(&dae, 0),
-        "multiple equations assigning the same target require Newton projection"
-    );
-}
-
-#[test]
-fn test_runtime_projection_required_for_direct_assignment_cycles() {
-    let mut dae = dae::Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("y"),
-        dae::Variable::new(dae::VarName::new("y")),
-    );
-    dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(var("x")),
-        rhs: Box::new(var("y")),
-    }));
-    dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(var("y")),
-        rhs: Box::new(var("x")),
-    }));
-
-    assert!(
-        runtime_projection_required(&dae, 0),
-        "cyclic direct assignments require Newton projection"
-    );
-}
-
-#[test]
-fn test_runtime_projection_required_for_runtime_discrete_builtins() {
-    let mut dae = dae::Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
-        lhs: Box::new(var("x")),
-        rhs: Box::new(dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Pre,
-            args: vec![var("x")],
-        }),
-    }));
-
-    assert!(
-        runtime_projection_required(&dae, 0),
-        "assignments that depend on runtime discrete/event builtins must use runtime projection"
-    );
-}
-
-// =========================================================================
-// AD Jacobian vs Finite-Difference comparison tests
-// =========================================================================
-
-/// Helper: compute the full n×n Jacobian matrix using AD (one column per
-/// basis vector).
-fn jacobian_ad(dae: &dae::Dae, y: &[f64], p: &[f64], t: f64, n_x: usize) -> Vec<Vec<f64>> {
-    let n = y.len();
-    let mut jac = vec![vec![0.0; n]; n];
-    for col in 0..n {
-        let mut v = vec![0.0; n];
-        v[col] = 1.0;
-        let mut jv = vec![0.0; n];
-        eval_jacobian_vector_ad(dae, y, p, t, &v, &mut jv, n_x);
-        for row in 0..n {
-            jac[row][col] = jv[row];
-        }
-    }
-    jac
-}
-
-/// Helper: compute the full n×n Jacobian matrix using central finite
-/// differences: J[i][j] ≈ (f(y+h*e_j) - f(y-h*e_j)) / (2h).
-fn jacobian_fd(dae: &dae::Dae, y: &[f64], p: &[f64], t: f64, n_x: usize) -> Vec<Vec<f64>> {
-    let n = y.len();
-    let h = 1e-7;
-    let mut jac = vec![vec![0.0; n]; n];
-    for col in 0..n {
-        let mut y_plus = y.to_vec();
-        let mut y_minus = y.to_vec();
-        y_plus[col] += h;
-        y_minus[col] -= h;
-        let mut f_plus = vec![0.0; n];
-        let mut f_minus = vec![0.0; n];
-        eval_rhs_equations(dae, &y_plus, p, t, &mut f_plus, n_x);
-        eval_rhs_equations(dae, &y_minus, p, t, &mut f_minus, n_x);
-        for row in 0..n {
-            jac[row][col] = (f_plus[row] - f_minus[row]) / (2.0 * h);
-        }
-    }
-    jac
-}
-
-#[test]
-fn test_solve_initial_algebraic_accepts_consistent_singular_initial_point() {
-    // Structurally singular IC Jacobian: two unknowns (a, b) but both equations
-    // constrain only `a`. The default starts y=0 are already consistent.
-    let mut dae = dae::Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("a"),
-        dae::Variable::new(dae::VarName::new("a")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("b"),
-        dae::Variable::new(dae::VarName::new("b")),
-    );
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("a"),
-        lit(0.0),
-    )));
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("a"),
-        lit(0.0),
-    )));
-
-    let timeout = crate::TimeoutBudget::new(None);
-    let ok = solve_initial_algebraic(&mut dae, 0, 1e-9, &timeout)
-        .expect("IC solve should not error on consistent singular point");
-    assert!(
-        ok,
-        "IC solve should accept an already-consistent initial point without Newton singular failure"
-    );
-}
-
-#[test]
-fn test_solve_initial_algebraic_writes_seeded_solution_on_singular_jacobian() {
-    let mut dae = dae::Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("aux"),
-        dae::Variable::new(dae::VarName::new("aux")),
-    );
-
-    let mut p_var = dae::Variable::new(dae::VarName::new("p"));
-    p_var.start = Some(lit(2.5));
-    dae.parameters.insert(dae::VarName::new("p"), p_var);
-
-    // Direct assignment gives a meaningful IC seed for aux.
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("aux"),
-        var("p"),
-    )));
-    // Constant residual row keeps Newton singular and non-convergent.
-    dae.f_x.push(eq_from(lit(1.0)));
-
-    let timeout = crate::TimeoutBudget::new(None);
-    let ok = solve_initial_algebraic(&mut dae, 0, 1e-9, &timeout)
-        .expect("IC solve should gracefully handle singular Jacobian");
-    assert!(!ok, "singular system should report non-converged IC solve");
-
-    let aux_start = dae
-        .algebraics
-        .get(&dae::VarName::new("aux"))
-        .and_then(|v| v.start.as_ref())
-        .expect("aux start should be written from seeded IC estimate");
-    let aux_val = eval_expr::<f64>(aux_start, &VarEnv::new());
-    assert!(
-        (aux_val - 2.5).abs() < 1e-12,
-        "seeded aux start should be retained when Newton fails singular"
-    );
-}
-
-#[test]
-fn test_solve_initial_algebraic_errors_when_residual_stays_non_finite_after_perturbation() {
-    let mut dae = dae::Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("z"),
-        dae::Variable::new(dae::VarName::new("z")),
-    );
-    let denom = binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("z"),
-        var("z"),
-    );
-    let inv = binop(
-        rumoca_ir_core::OpBinary::Div(Default::default()),
-        lit(1.0),
-        denom,
-    );
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("z"),
-        inv,
-    )));
-
-    let timeout = crate::TimeoutBudget::new(None);
-    let err = solve_initial_algebraic(&mut dae, 0, 1e-9, &timeout)
-        .expect_err("non-finite IC residual should fail fast");
-    match err {
-        crate::SimError::SolverError(msg) => {
-            assert!(
-                msg.contains("initial-condition residual is non-finite"),
-                "unexpected error message: {msg}"
-            );
-        }
-        other => panic!("unexpected error: {other}"),
-    }
-}
-
-#[test]
-fn test_project_runtime_keeps_direct_assigned_state_free() {
-    let mut dae = dae::Dae::new();
-    dae.states.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("z"),
-        dae::Variable::new(dae::VarName::new("z")),
-    );
-
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Der,
-            args: vec![var("x")],
-        },
-        var("z"),
-    )));
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("x"),
-        var("time"),
-    )));
-
-    let timeout = crate::TimeoutBudget::new(None);
-    let projected =
-        project_algebraics_with_fixed_states_at_time(&dae, &[0.0, 0.0], 1, 2.0, 1e-9, &timeout)
-            .expect("runtime projection should not error")
-            .expect("runtime projection should converge");
-
-    assert!((projected[0] - 2.0).abs() < 1e-9);
-    assert!(projected[1].abs() < 1e-9);
-}
-
-#[test]
-fn test_project_runtime_converges_on_rank_deficient_consistent_system() {
-    let mut dae = dae::Dae::new();
-    dae.states.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("a"),
-        dae::Variable::new(dae::VarName::new("a")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("b"),
-        dae::Variable::new(dae::VarName::new("b")),
-    );
-
-    // State row (fixed during runtime projection).
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Der,
-            args: vec![var("x")],
-        },
-        lit(0.0),
-    )));
-    // Rank-deficient algebraic rows: both constrain only `a`.
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("a"),
-        lit(1.0),
-    )));
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("a"),
-        lit(1.0),
-    )));
-
-    let timeout = crate::TimeoutBudget::new(None);
-    let projected = project_algebraics_with_fixed_states_at_time(
-        &dae,
-        &[0.0, 0.0, 0.0],
-        1,
-        0.0,
-        1e-9,
-        &timeout,
-    )
-    .expect("runtime projection should not error")
-    .expect("rank-deficient but consistent runtime projection should converge");
-
-    assert!((projected[1] - 1.0).abs() < 1e-9);
-    assert!(projected[2].is_finite());
-}
-
-fn assert_matrix_close(lhs: &nalgebra::DMatrix<f64>, rhs: &nalgebra::DMatrix<f64>, tol: f64) {
-    assert_eq!(lhs.nrows(), rhs.nrows());
-    assert_eq!(lhs.ncols(), rhs.ncols());
-    for i in 0..lhs.nrows() {
-        for j in 0..lhs.ncols() {
-            let a = lhs[(i, j)];
-            let b = rhs[(i, j)];
-            assert!(
-                (a - b).abs() <= tol,
-                "matrix mismatch at ({i}, {j}): {a} vs {b}"
-            );
-        }
-    }
-}
-
-fn build_coloring_test_dae() -> dae::Dae {
-    let mut dae = dae::Dae::new();
-    dae.states.insert(
-        dae::VarName::new("x1"),
-        dae::Variable::new(dae::VarName::new("x1")),
-    );
-    dae.states.insert(
-        dae::VarName::new("x2"),
-        dae::Variable::new(dae::VarName::new("x2")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("z1"),
-        dae::Variable::new(dae::VarName::new("z1")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("z2"),
-        dae::Variable::new(dae::VarName::new("z2")),
-    );
-
-    // ODE rows first
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Der,
-            args: vec![var("x1")],
-        },
-        var("z1"),
-    )));
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Der,
-            args: vec![var("x2")],
-        },
-        var("z2"),
-    )));
-
-    // Algebraic rows
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("z1"),
-        binop(
-            rumoca_ir_core::OpBinary::Mul(Default::default()),
-            var("x1"),
-            var("x1"),
-        ),
-    )));
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("z2"),
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Sin,
-            args: vec![var("x2")],
-        },
-    )));
-
-    dae
-}
-
-fn init_jac_ctx<'a>(
-    dae: &'a dae::Dae,
-    y: &'a [f64],
-    p: &'a [f64],
-    t_eval: f64,
-    n_x: usize,
-    use_initial: bool,
-) -> InitJacobianEvalContext<'a> {
-    InitJacobianEvalContext {
-        dae,
-        y,
-        p,
-        t_eval,
-        n_x,
-        use_initial,
-    }
-}
-
-#[test]
-fn test_build_init_jacobian_colored_matches_dense() {
-    let dae = build_coloring_test_dae();
-    let y = vec![0.25, -0.4, 0.6, -0.7];
-    let p = default_params(&dae);
-    let fixed = vec![false, false];
-    let timeout = crate::TimeoutBudget::new(None);
-    let ctx = init_jac_ctx(&dae, &y, &p, 0.0, 2, false);
-
-    let dense =
-        build_init_jacobian_dense(&ctx, &fixed, &timeout).expect("dense Jacobian should build");
-    let colored = build_init_jacobian_colored(&ctx, &fixed, &timeout)
-        .expect("colored Jacobian build should not error")
-        .expect("colored Jacobian should not fallback for this test case");
-
-    assert_matrix_close(&dense, &colored, 1e-12);
-}
-
-#[test]
-fn test_build_init_jacobian_colored_respects_fixed_state_locking() {
-    let dae = build_coloring_test_dae();
-    let y = vec![0.25, -0.4, 0.6, -0.7];
-    let p = default_params(&dae);
-    let fixed = vec![true, false];
-    let timeout = crate::TimeoutBudget::new(None);
-    let ctx = init_jac_ctx(&dae, &y, &p, 0.0, 2, false);
-
-    let dense =
-        build_init_jacobian_dense(&ctx, &fixed, &timeout).expect("dense Jacobian should build");
-    let colored = build_init_jacobian_colored(&ctx, &fixed, &timeout)
-        .expect("colored Jacobian build should not error")
-        .expect("colored Jacobian should not fallback for this test case");
-
-    assert_matrix_close(&dense, &colored, 1e-12);
-    assert_eq!(colored[(0, 0)], 1.0);
-    for j in 1..colored.ncols() {
-        assert_eq!(colored[(0, j)], 0.0);
-        assert_eq!(colored[(j, 0)], 0.0);
-    }
-}
-
-fn build_time_switch_jacobian_dae() -> dae::Dae {
-    let mut dae = dae::Dae::new();
-    dae.states.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    dae.algebraics.insert(
-        dae::VarName::new("z"),
-        dae::Variable::new(dae::VarName::new("z")),
-    );
-
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Der,
-            args: vec![var("x")],
-        },
-        var("z"),
-    )));
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        var("z"),
-        dae::Expression::If {
-            branches: vec![(
-                binop(
-                    rumoca_ir_core::OpBinary::Lt(Default::default()),
-                    var("time"),
-                    lit(1.0),
-                ),
-                var("x"),
-            )],
-            else_branch: Box::new(binop(
-                rumoca_ir_core::OpBinary::Mul(Default::default()),
-                lit(2.0),
-                var("x"),
-            )),
-        },
-    )));
-
-    dae
-}
-
-#[test]
-fn test_build_init_jacobian_respects_time_dependent_if_branches() {
-    let dae = build_time_switch_jacobian_dae();
-    let y = vec![0.25, 0.5];
-    let p = default_params(&dae);
-    let fixed = vec![false];
-    let timeout = crate::TimeoutBudget::new(None);
-    let ctx_before = init_jac_ctx(&dae, &y, &p, 0.5, 1, false);
-    let ctx_after = init_jac_ctx(&dae, &y, &p, 2.0, 1, false);
-
-    let jac_before = build_init_jacobian_dense(&ctx_before, &fixed, &timeout)
-        .expect("dense Jacobian before event should build");
-    let jac_after = build_init_jacobian_dense(&ctx_after, &fixed, &timeout)
-        .expect("dense Jacobian after event should build");
-    assert!((jac_before[(1, 0)] + 1.0).abs() < 1e-12);
-    assert!((jac_after[(1, 0)] + 2.0).abs() < 1e-12);
-
-    let colored_before = build_init_jacobian_colored(&ctx_before, &fixed, &timeout)
-        .expect("colored Jacobian before event should not error")
-        .expect("colored Jacobian before event should build");
-    let colored_after = build_init_jacobian_colored(&ctx_after, &fixed, &timeout)
-        .expect("colored Jacobian after event should not error")
-        .expect("colored Jacobian after event should build");
-    assert_matrix_close(&jac_before, &colored_before, 1e-12);
-    assert_matrix_close(&jac_after, &colored_after, 1e-12);
-}
-
-#[test]
-fn test_eval_jacobian_vector_seeds_size1_array_aliases() {
-    let mut dae = dae::Dae::new();
-    dae.states.insert(
-        dae::VarName::new("x"),
-        dae::Variable::new(dae::VarName::new("x")),
-    );
-    let mut y_arr = dae::Variable::new(dae::VarName::new("y"));
-    y_arr.dims = vec![1];
-    dae.outputs.insert(dae::VarName::new("y"), y_arr);
-
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Der,
-            args: vec![var("x")],
-        },
-        lit(0.0),
-    )));
-    dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
-        dae::Expression::VarRef {
-            name: dae::VarName::new("y[1]"),
-            subscripts: vec![],
-        },
-        var("x"),
-    )));
-
-    let y = vec![0.0, 0.0];
-    let p = default_params(&dae);
-    let mut out = vec![0.0; 2];
-    let v = vec![0.0, 1.0];
-    eval_jacobian_vector_ad(&dae, &y, &p, 0.0, &v, &mut out, 1);
-
-    assert!(
-        (out[1] - 1.0).abs() < 1e-12,
-        "expected dy[1] derivative to propagate through y[1] alias"
-    );
-}
-
-// =========================================================================
-// BLT elimination numerical equivalence tests
-//
-// Verify that the reduced DAE (after eliminate_trivial) is numerically
-// equivalent to the original DAE at concrete test points.
-//
-// Approach: evaluate the original residual with eliminated variables
-// computed from substitutions, then evaluate the reduced residual.
-// The remaining equations' residuals must match.
-// =========================================================================
+mod jacobian_and_newton;
+mod seed_runtime;

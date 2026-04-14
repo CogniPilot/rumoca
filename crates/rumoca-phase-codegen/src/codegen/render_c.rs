@@ -506,7 +506,7 @@ fn find_algebraic_rhs_array_element(
     let rhs_side = get_field(&binary, "rhs").ok()?;
 
     // Check if one side is a VarRef matching the base name (no subscripts)
-    // and the other side is an Array
+    // and the other side is an array-valued expression.
     let array_expr = if is_var_ref_of(&lhs_side, base_name) {
         &rhs_side
     } else if is_var_ref_of(&rhs_side, base_name) {
@@ -515,15 +515,155 @@ fn find_algebraic_rhs_array_element(
         return None;
     };
 
-    // Extract element from Array
-    let array = get_field(array_expr, "Array").ok()?;
-    let elements = get_field(&array, "elements").ok()?;
-    let len = elements.len()?;
-    if index > len {
+    render_array_expr_at_index(array_expr, index, cfg)
+}
+
+fn render_array_expr_at_index(expr: &Value, index: usize, cfg: &ExprConfig) -> Option<String> {
+    if let Ok(array) = get_field(expr, "Array") {
+        let elements = get_field(&array, "elements").ok()?;
+        let len = elements.len()?;
+        if index == 0 || index > len {
+            return None;
+        }
+        let elem = elements.get_item(&minijinja::Value::from(index - 1)).ok()?;
+        return render_expression(&elem, cfg).ok();
+    }
+
+    if let Ok(var_ref) = get_field(expr, "VarRef") {
+        return render_indexed_var_ref(&var_ref, index, cfg);
+    }
+
+    if let Ok(binary) = get_field(expr, "Binary") {
+        return render_binary_array_expr_at_index(&binary, index, cfg);
+    }
+
+    if let Ok(unary) = get_field(expr, "Unary") {
+        let rhs = get_field(&unary, "rhs").ok()?;
+        let rhs_render = render_array_expr_at_index_or_scalar(&rhs, index, cfg)?;
+        let op = get_field(&unary, "op").ok()?;
+        let op_str = render_expr::get_unop_string(&op, cfg).ok()?;
+        return Some(format!("({op_str}{rhs_render})"));
+    }
+
+    if let Ok(if_expr) = get_field(expr, "If") {
+        let branches = get_field(&if_expr, "branches").ok()?;
+        let else_branch = get_field(&if_expr, "else_branch").ok()?;
+        let else_render = render_array_expr_at_index_or_scalar(&else_branch, index, cfg)?;
+        let Some(branch_count) = branches.len() else {
+            return Some(else_render);
+        };
+        let mut result = else_render;
+        for branch_idx in (0..branch_count).rev() {
+            let branch = branches.get_item(&Value::from(branch_idx)).ok()?;
+            let cond = branch.get_item(&Value::from(0)).ok()?;
+            let branch_expr = branch.get_item(&Value::from(1)).ok()?;
+            let cond_render = render_expression(&cond, cfg).ok()?;
+            let branch_render = render_array_expr_at_index_or_scalar(&branch_expr, index, cfg)?;
+            result = format!("(({cond_render}) ? ({branch_render}) : ({result}))");
+        }
+        return Some(result);
+    }
+
+    if let Ok(builtin) = get_field(expr, "BuiltinCall") {
+        return render_builtin_array_expr_at_index(&builtin, index, cfg);
+    }
+
+    None
+}
+
+fn render_array_expr_at_index_or_scalar(
+    expr: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    render_array_expr_at_index(expr, index, cfg).or_else(|| render_expression(expr, cfg).ok())
+}
+
+fn render_indexed_var_ref(var_ref: &Value, index: usize, cfg: &ExprConfig) -> Option<String> {
+    let subscripts = get_field(var_ref, "subscripts").ok()?;
+    if subscripts.len().unwrap_or(0) != 0 {
         return None;
     }
-    let elem = elements.get_item(&minijinja::Value::from(index - 1)).ok()?;
-    render_expression(&elem, cfg).ok()
+
+    let raw_name = get_field(var_ref, "name")
+        .ok()
+        .map(|n| {
+            get_field(&n, "0")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|_| n.to_string())
+        })
+        .unwrap_or_default();
+    let name = if cfg.sanitize_dots {
+        super::sanitize_name(&raw_name)
+    } else {
+        super::escape_reserved_keyword(&raw_name)
+    };
+
+    if cfg.subscript_underscore {
+        Some(format!("{name}_{index}"))
+    } else if cfg.one_based_index {
+        Some(format!("{name}[{index}]"))
+    } else {
+        Some(format!("{}[{}]", name, index - 1))
+    }
+}
+
+fn render_binary_array_expr_at_index(
+    binary: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let lhs = get_field(binary, "lhs").ok()?;
+    let rhs = get_field(binary, "rhs").ok()?;
+    let lhs_render = render_array_expr_at_index_or_scalar(&lhs, index, cfg)?;
+    let rhs_render = render_array_expr_at_index_or_scalar(&rhs, index, cfg)?;
+    let op = get_field(binary, "op").ok()?;
+    if render_expr::is_mul_elem_op(&op)
+        && let Some(func) = &cfg.mul_elem_fn
+    {
+        return Some(format!("{func}({lhs_render}, {rhs_render})"));
+    }
+    if render_expr::is_exp_op(&op) {
+        if let Some(power_fn) = &cfg.power_fn {
+            return Some(format!("{power_fn}({lhs_render}, {rhs_render})"));
+        }
+        if cfg
+            .power
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            return Some(format!("{}({lhs_render}, {rhs_render})", cfg.power));
+        }
+    }
+    let op_str = render_expr::get_binop_string(&op, cfg).ok()?;
+    Some(format!("({lhs_render} {op_str} {rhs_render})"))
+}
+
+fn render_builtin_array_expr_at_index(
+    builtin: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let func_name = get_field(builtin, "function").ok()?.to_string();
+    let args = get_field(builtin, "args").ok()?;
+    match func_name.as_str() {
+        "Smooth" => {
+            let inner = args.get_item(&Value::from(1)).ok()?;
+            render_array_expr_at_index_or_scalar(&inner, index, cfg)
+        }
+        "NoEvent" | "Homotopy" | "Previous" | "Hold" | "NoClock" | "SubSample" | "SuperSample"
+        | "ShiftSample" | "BackSample" => {
+            let inner = args.get_item(&Value::from(0)).ok()?;
+            render_array_expr_at_index_or_scalar(&inner, index, cfg)
+        }
+        "Pre" => {
+            let inner = args.get_item(&Value::from(0)).ok()?;
+            let selected = render_array_expr_at_index_or_scalar(&inner, index, cfg)?;
+            Some(format!("pre({selected})"))
+        }
+        _ => None,
+    }
 }
 
 /// Flatten a Value expression tree of Add/Sub into signed terms.

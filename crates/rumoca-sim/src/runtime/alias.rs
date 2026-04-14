@@ -76,14 +76,12 @@ pub fn build_runtime_alias_adjacency(
         {
             continue;
         }
-        if target == source_key {
-            continue;
-        }
-        adjacency
-            .entry(target.clone())
-            .or_default()
-            .push(source_key.clone());
-        adjacency.entry(source_key).or_default().push(target);
+        insert_runtime_alias_edges(
+            dae_model,
+            &mut adjacency,
+            target.as_str(),
+            source_key.as_str(),
+        );
     }
     adjacency
 }
@@ -104,6 +102,186 @@ pub fn insert_name_and_base(set: &mut HashSet<String>, name: &str) {
     {
         set.insert(base);
     }
+}
+
+fn lookup_known_assignment_variable<'a>(
+    dae_model: &'a dae::Dae,
+    name: &str,
+) -> Option<&'a dae::Variable> {
+    let base = dae::component_base_name(name).unwrap_or_else(|| name.to_string());
+    dae_model
+        .states
+        .get(&dae::VarName::new(base.clone()))
+        .or_else(|| dae_model.algebraics.get(&dae::VarName::new(base.clone())))
+        .or_else(|| {
+            dae_model
+                .discrete_reals
+                .get(&dae::VarName::new(base.clone()))
+        })
+        .or_else(|| {
+            dae_model
+                .discrete_valued
+                .get(&dae::VarName::new(base.clone()))
+        })
+        .or_else(|| dae_model.inputs.get(&dae::VarName::new(base.clone())))
+        .or_else(|| dae_model.outputs.get(&dae::VarName::new(base.clone())))
+        .or_else(|| dae_model.parameters.get(&dae::VarName::new(base.clone())))
+        .or_else(|| dae_model.constants.get(&dae::VarName::new(base)))
+}
+
+fn array_alias_linear_size(dae_model: &dae::Dae, lhs: &str, rhs: &str) -> Option<usize> {
+    if lhs.contains('[') || rhs.contains('[') {
+        return None;
+    }
+
+    let lhs_var = lookup_known_assignment_variable(dae_model, lhs)?;
+    let rhs_var = lookup_known_assignment_variable(dae_model, rhs)?;
+    if lhs_var.dims != rhs_var.dims || lhs_var.dims.is_empty() {
+        return None;
+    }
+
+    lhs_var.dims.iter().try_fold(1usize, |acc, &dim| {
+        let width = usize::try_from(dim).ok()?;
+        acc.checked_mul(width)
+    })
+}
+
+fn expand_array_anchor_names(dae_model: &dae::Dae, anchors: &mut HashSet<String>) {
+    let existing: Vec<String> = anchors.iter().cloned().collect();
+    for name in existing {
+        if name.contains('[') {
+            continue;
+        }
+        let has_explicit_indexed_anchor = anchors.iter().any(|candidate| {
+            candidate != &name
+                && candidate.contains('[')
+                && dae::component_base_name(candidate.as_str()).is_some_and(|base| base == name)
+        });
+        if has_explicit_indexed_anchor {
+            continue;
+        }
+        let Some(var) = lookup_known_assignment_variable(dae_model, name.as_str()) else {
+            continue;
+        };
+        if var.dims.is_empty() {
+            continue;
+        }
+        let Some(total) = var.dims.iter().try_fold(1usize, |acc, &dim| {
+            let width = usize::try_from(dim).ok()?;
+            acc.checked_mul(width)
+        }) else {
+            continue;
+        };
+        if total <= 1 {
+            continue;
+        }
+        for index in 1..=total {
+            anchors.insert(format!("{name}[{index}]"));
+        }
+    }
+}
+
+fn insert_alias_edge(adjacency: &mut HashMap<String, Vec<String>>, lhs: String, rhs: String) {
+    if lhs == rhs {
+        return;
+    }
+    adjacency.entry(lhs.clone()).or_default().push(rhs.clone());
+    adjacency.entry(rhs).or_default().push(lhs);
+}
+
+fn insert_runtime_alias_edges(
+    dae_model: &dae::Dae,
+    adjacency: &mut HashMap<String, Vec<String>>,
+    target: &str,
+    source: &str,
+) {
+    // MLS §9.2 / §10.1: array connector equalities preserve per-element
+    // equality. Expand `x = G1.x` into elementwise alias edges so runtime
+    // propagation follows the actual array members, not just the base name.
+    if let Some(total) = array_alias_linear_size(dae_model, target, source).filter(|&n| n > 1) {
+        insert_alias_edge(adjacency, target.to_string(), format!("{target}[1]"));
+        insert_alias_edge(adjacency, source.to_string(), format!("{source}[1]"));
+        for index in 1..=total {
+            insert_alias_edge(
+                adjacency,
+                format!("{target}[{index}]"),
+                format!("{source}[{index}]"),
+            );
+        }
+        return;
+    }
+
+    insert_alias_edge(adjacency, target.to_string(), source.to_string());
+}
+
+fn collect_explicit_array_alias_values(
+    dae_model: &dae::Dae,
+    env: &VarEnv<f64>,
+    source: &str,
+    dst: &str,
+) -> Option<(Vec<i64>, Vec<f64>)> {
+    if source.contains('[') || dst.contains('[') {
+        return None;
+    }
+
+    let source_var = lookup_known_assignment_variable(dae_model, source)?;
+    let dst_var = lookup_known_assignment_variable(dae_model, dst)?;
+    if source_var.dims != dst_var.dims || source_var.dims.is_empty() {
+        return None;
+    }
+
+    let total = source_var.dims.iter().try_fold(1usize, |acc, &dim| {
+        let width = usize::try_from(dim).ok()?;
+        acc.checked_mul(width)
+    })?;
+    if total <= 1 {
+        return None;
+    }
+
+    let mut values = Vec::with_capacity(total);
+    for idx in 0..total {
+        let key = format!("{source}[{}]", idx + 1);
+        values.push(env.vars.get(key.as_str()).copied()?);
+    }
+    Some((source_var.dims.clone(), values))
+}
+
+fn apply_alias_update(
+    dae_model: &dae::Dae,
+    env: &mut VarEnv<f64>,
+    explicit_updates: &mut HashSet<String>,
+    dst: &str,
+    source: &str,
+    scalar_value: f64,
+) -> usize {
+    if let Some((dims, values)) = collect_explicit_array_alias_values(dae_model, env, source, dst) {
+        let mut staged = VarEnv::new();
+        rumoca_eval_dae::runtime::set_array_entries(&mut staged, dst, &dims, &values);
+        let mut applied = 0usize;
+        for (name, value) in staged.vars {
+            if env
+                .vars
+                .get(name.as_str())
+                .is_none_or(|existing| (existing - value).abs() > 1.0e-12)
+            {
+                env.set(name.as_str(), value);
+                insert_name_and_base(explicit_updates, name.as_str());
+                applied += 1;
+            }
+        }
+        if applied > 0 {
+            insert_name_and_base(explicit_updates, dst);
+        }
+        return applied;
+    }
+
+    let old_value = env.vars.get(dst).copied().unwrap_or(0.0);
+    if (old_value - scalar_value).abs() <= 1.0e-12 {
+        return 0;
+    }
+    env.set(dst, scalar_value);
+    insert_name_and_base(explicit_updates, dst);
+    1
 }
 
 fn collect_non_alias_assignment_targets_from_expr(
@@ -293,6 +471,32 @@ pub fn collect_runtime_alias_anchor_names(dae_model: &dae::Dae, n_x: usize) -> H
     // definition.
     anchors.retain(|name| !alias_members.contains(name) || non_alias_targets.contains(name));
 
+    let adjacency = build_runtime_alias_adjacency_with_known_assignments(dae_model, n_x);
+    let mut visited = HashSet::new();
+    let mut component_has_anchor = HashMap::new();
+    for node in adjacency.keys() {
+        if !visited.insert(node.clone()) {
+            continue;
+        }
+        let component = collect_alias_component(node, &adjacency, &mut visited);
+        let has_anchor = component.iter().any(|name| anchors.contains(name));
+        for name in component {
+            component_has_anchor.insert(name, has_anchor);
+        }
+    }
+
+    for name in &alias_members {
+        // MLS §8 equality semantics: when an alias component already has a
+        // non-alias runtime anchor, keep alias-only peer names out of the
+        // anchor set so stale connector/input aliases cannot overwrite the
+        // defining right-hand side during runtime capture.
+        if !crate::runtime::assignment::is_runtime_unknown_name(dae_model, name.as_str())
+            && !component_has_anchor.get(name).copied().unwrap_or(false)
+        {
+            insert_name_and_base(&mut anchors, name.as_str());
+        }
+    }
+
     for name in rumoca_eval_dae::analysis::runtime_defined_unknown_names(dae_model) {
         if alias_members.contains(name.as_str()) {
             continue;
@@ -300,6 +504,7 @@ pub fn collect_runtime_alias_anchor_names(dae_model: &dae::Dae, n_x: usize) -> H
         insert_name_and_base(&mut anchors, name.as_str());
     }
 
+    expand_array_anchor_names(dae_model, &mut anchors);
     anchors
 }
 
@@ -429,12 +634,10 @@ pub fn propagate_discrete_alias_equalities(
     explicit_updates: &mut HashSet<String>,
     mut on_update: impl FnMut(&DiscreteAliasUpdate),
 ) -> bool {
-    if explicit_updates.is_empty() {
-        return false;
-    }
-
+    let allow_discrete_bias = !explicit_updates.is_empty();
+    let non_alias_runtime_targets = collect_non_alias_runtime_assignment_targets(dae_model, 0);
     let mut changed_any = false;
-    let max_passes = (dae_model.f_z.len() + dae_model.f_m.len() + dae_model.f_x.len()).clamp(1, 4);
+    let max_passes = (dae_model.f_z.len() + dae_model.f_m.len() + dae_model.f_x.len()).clamp(1, 64);
     for _ in 0..max_passes {
         let mut changed_pass = false;
         for eq in dae_model
@@ -460,11 +663,23 @@ pub fn propagate_discrete_alias_equalities(
                 Some((rhs.as_str(), lhs_value))
             } else if rhs_explicit && !lhs_explicit {
                 Some((lhs.as_str(), rhs_value))
-            } else if crate::runtime::assignment::is_discrete_name(dae_model, lhs.as_str())
+            } else if eq.lhs.is_some()
+                && !lhs_explicit
+                && crate::runtime::assignment::is_runtime_unknown_name(dae_model, rhs.as_str())
+                && !crate::runtime::assignment::is_runtime_unknown_name(dae_model, lhs.as_str())
+            {
+                // Preserve explicit equation direction for connector-style
+                // aliases such as `assignClock1.u[i] = add.y` during event
+                // settle. Those are not undirected equalities; the LHS should
+                // materialize the current RHS value.
+                Some((lhs.as_str(), rhs_value))
+            } else if allow_discrete_bias
+                && crate::runtime::assignment::is_discrete_name(dae_model, lhs.as_str())
                 && !crate::runtime::assignment::is_discrete_name(dae_model, rhs.as_str())
             {
                 Some((rhs.as_str(), lhs_value))
-            } else if crate::runtime::assignment::is_discrete_name(dae_model, rhs.as_str())
+            } else if allow_discrete_bias
+                && crate::runtime::assignment::is_discrete_name(dae_model, rhs.as_str())
                 && !crate::runtime::assignment::is_discrete_name(dae_model, lhs.as_str())
             {
                 Some((lhs.as_str(), rhs_value))
@@ -474,13 +689,21 @@ pub fn propagate_discrete_alias_equalities(
             let Some((dst, value)) = direction else {
                 continue;
             };
-            let old_value = env.vars.get(dst).copied().unwrap_or(0.0);
-            if (old_value - value).abs() <= 1.0e-12 {
+            let source = if dst == lhs {
+                rhs.as_str()
+            } else {
+                lhs.as_str()
+            };
+            if non_alias_runtime_targets.contains(dst)
+                && !non_alias_runtime_targets.contains(source)
+            {
                 continue;
             }
-
-            env.set(dst, value);
-            explicit_updates.insert(dst.to_string());
+            let old_value = env.vars.get(dst).copied().unwrap_or(0.0);
+            let updates = apply_alias_update(dae_model, env, explicit_updates, dst, source, value);
+            if updates == 0 {
+                continue;
+            }
             changed_pass = true;
             changed_any = true;
             on_update(&DiscreteAliasUpdate {
@@ -534,50 +757,122 @@ pub fn propagate_runtime_alias_components_from_env(
     n_x: usize,
     env: &mut VarEnv<f64>,
 ) -> usize {
-    if y.is_empty() {
+    let ctx = build_runtime_alias_propagation_context(dae_model, y.len(), n_x);
+    propagate_runtime_alias_components_from_env_with_context(&ctx, y, n_x, env)
+}
+
+pub(crate) struct RuntimeAliasPropagationContext {
+    solver_maps: crate::runtime::layout::SolverNameIndexMaps,
+    runtime_anchors: HashSet<String>,
+    adjacency: HashMap<String, Vec<String>>,
+}
+
+pub(crate) fn build_runtime_alias_propagation_context(
+    dae_model: &dae::Dae,
+    y_len: usize,
+    n_x: usize,
+) -> RuntimeAliasPropagationContext {
+    RuntimeAliasPropagationContext {
+        solver_maps: crate::runtime::layout::build_solver_name_index_maps(dae_model, y_len),
+        runtime_anchors: collect_runtime_alias_anchor_names(dae_model, n_x),
+        adjacency: build_runtime_alias_adjacency_with_known_assignments(dae_model, n_x),
+    }
+}
+
+pub(crate) fn propagate_runtime_alias_components_from_env_with_context(
+    ctx: &RuntimeAliasPropagationContext,
+    y: &mut [f64],
+    n_x: usize,
+    env: &mut VarEnv<f64>,
+) -> usize {
+    if ctx.adjacency.is_empty() {
         return 0;
     }
 
-    let crate::runtime::layout::SolverNameIndexMaps {
-        names, name_to_idx, ..
-    } = crate::runtime::layout::build_solver_name_index_maps(dae_model, y.len());
-
-    let runtime_anchors = collect_runtime_alias_anchor_names(dae_model, n_x);
+    let names = &ctx.solver_maps.names;
+    let name_to_idx = &ctx.solver_maps.name_to_idx;
+    let runtime_anchors = &ctx.runtime_anchors;
     let is_runtime_anchor = |name: &str| {
         runtime_anchors.contains(name)
-            || crate::runtime::layout::solver_idx_for_target(name, &name_to_idx)
-                .and_then(|idx| names.get(idx))
-                .is_some_and(|solver_name| runtime_anchors.contains(solver_name))
+            || (!name.contains('[')
+                && crate::runtime::layout::solver_idx_for_target(name, name_to_idx)
+                    .and_then(|idx| names.get(idx))
+                    .is_some_and(|solver_name| runtime_anchors.contains(solver_name)))
     };
-
-    let adjacency = build_runtime_alias_adjacency_with_known_assignments(dae_model, n_x);
-    if adjacency.is_empty() {
-        return 0;
-    }
 
     let mut visited: HashSet<String> = HashSet::new();
     let mut updates = 0usize;
-    for node in adjacency.keys() {
+    for node in ctx.adjacency.keys() {
         if !visited.insert(node.clone()) {
             continue;
         }
-        let component = collect_alias_component(node, &adjacency, &mut visited);
-        if let AliasPropagationOutcome::Applied {
-            updates: component_updates,
-            ..
-        } = propagate_alias_component_from_env(
+        let component = collect_alias_component(node, &ctx.adjacency, &mut visited);
+        let outcome = propagate_alias_component_from_env(
             &component,
             env,
             y,
             n_x,
-            &name_to_idx,
+            name_to_idx,
             &is_runtime_anchor,
-        ) {
+        );
+        if std::env::var_os("RUMOCA_DEBUG_DIGITAL_START").is_some()
+            && component.iter().any(|name| {
+                matches!(
+                    name.as_str(),
+                    "a.y" | "b.y" | "Adder.a" | "Adder.b" | "Enable.y" | "FF.j" | "FF.k" | "MUX.d"
+                )
+            })
+        {
+            let anchors = collect_component_anchor_values(&component, env, &is_runtime_anchor);
+            let values = collect_component_values(&component, env);
+            eprintln!(
+                "DEBUG alias component={component:?} anchors={anchors:?} values={values:?} outcome={outcome:?}"
+            );
+        }
+        if let AliasPropagationOutcome::Applied {
+            updates: component_updates,
+            ..
+        } = outcome
+        {
             updates += component_updates;
         }
     }
 
     updates
+}
+
+fn insert_alias_dependency_name_and_base(names: &mut HashSet<String>, name: &str) -> bool {
+    let mut changed = names.insert(name.to_string());
+    if let Some(base) = dae::component_base_name(name)
+        && base != name
+    {
+        changed |= names.insert(base);
+    }
+    changed
+}
+
+pub(crate) fn extend_runtime_alias_dependency_closure(
+    ctx: &RuntimeAliasPropagationContext,
+    names: &mut HashSet<String>,
+) -> bool {
+    if ctx.adjacency.is_empty() {
+        return false;
+    }
+
+    let mut changed_any = false;
+    let mut visited = HashSet::new();
+    let seeds: Vec<String> = names.iter().cloned().collect();
+    for seed in seeds {
+        if !ctx.adjacency.contains_key(seed.as_str()) || !visited.insert(seed.clone()) {
+            continue;
+        }
+        let component = collect_alias_component(seed.as_str(), &ctx.adjacency, &mut visited);
+        for member in component {
+            changed_any |= insert_alias_dependency_name_and_base(names, member.as_str());
+        }
+    }
+
+    changed_any
 }
 
 #[cfg(test)]
@@ -714,5 +1009,399 @@ mod tests {
         let anchors = collect_runtime_alias_anchor_names(&dae_model, 0);
         assert!(anchors.contains("y"));
         assert!(!anchors.contains("x"));
+    }
+
+    #[test]
+    fn propagate_discrete_alias_equalities_preserves_direct_lhs_direction_for_indexed_connectors() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.inputs.insert(
+            dae::VarName::new("assignClock1.u"),
+            dae::Variable {
+                name: dae::VarName::new("assignClock1.u"),
+                dims: vec![2],
+                ..Default::default()
+            },
+        );
+        dae_model.outputs.insert(
+            dae::VarName::new("add.y"),
+            dae::Variable::new(dae::VarName::new("add.y")),
+        );
+        dae_model.f_z.push(dae::Equation::explicit(
+            dae::VarName::new("assignClock1.u[1]"),
+            dae::Expression::VarRef {
+                name: dae::VarName::new("add.y"),
+                subscripts: vec![],
+            },
+            Span::DUMMY,
+            "assignClock input alias",
+        ));
+
+        let mut env = VarEnv::<f64>::new();
+        env.set("assignClock1.u[1]", 0.0);
+        env.set("add.y", 1.0);
+        let mut explicit_updates = HashSet::new();
+
+        assert_eq!(
+            crate::runtime::assignment::extract_alias_pair_from_equation(
+                &dae_model,
+                &dae_model.f_z[0]
+            ),
+            Some(("assignClock1.u[1]".to_string(), "add.y".to_string()))
+        );
+        assert!(!crate::runtime::assignment::is_runtime_unknown_name(
+            &dae_model,
+            "assignClock1.u[1]"
+        ));
+        assert!(crate::runtime::assignment::is_runtime_unknown_name(
+            &dae_model, "add.y"
+        ));
+
+        let changed = propagate_discrete_alias_equalities(
+            &dae_model,
+            &mut env,
+            &mut explicit_updates,
+            |_| {},
+        );
+
+        assert!(changed);
+        assert_eq!(
+            env.vars.get("assignClock1.u[1]").copied().unwrap_or(0.0),
+            1.0
+        );
+        assert!(explicit_updates.contains("assignClock1.u[1]"));
+    }
+
+    #[test]
+    fn propagate_discrete_alias_equalities_copies_explicit_array_alias_values() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("src"),
+            dae::Variable {
+                name: dae::VarName::new("src"),
+                dims: vec![2],
+                ..Default::default()
+            },
+        );
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("dst"),
+            dae::Variable {
+                name: dae::VarName::new("dst"),
+                dims: vec![2],
+                ..Default::default()
+            },
+        );
+        dae_model.f_m.push(dae::Equation::explicit(
+            dae::VarName::new("dst"),
+            dae::Expression::VarRef {
+                name: dae::VarName::new("src"),
+                subscripts: vec![],
+            },
+            Span::DUMMY,
+            "dst = src",
+        ));
+
+        let mut env = VarEnv::<f64>::new();
+        rumoca_eval_dae::runtime::set_array_entries(&mut env, "src", &[2], &[2.0, 4.0]);
+        rumoca_eval_dae::runtime::set_array_entries(&mut env, "dst", &[2], &[0.0, 0.0]);
+        let mut explicit_updates = HashSet::new();
+        insert_name_and_base(&mut explicit_updates, "src");
+
+        let changed = propagate_discrete_alias_equalities(
+            &dae_model,
+            &mut env,
+            &mut explicit_updates,
+            |_| {},
+        );
+
+        assert!(changed);
+        assert_eq!(env.vars.get("dst").copied(), Some(2.0));
+        assert_eq!(env.vars.get("dst[1]").copied(), Some(2.0));
+        assert_eq!(env.vars.get("dst[2]").copied(), Some(4.0));
+        assert!(explicit_updates.contains("dst"));
+    }
+
+    #[test]
+    fn propagate_discrete_alias_equalities_reaches_long_explicit_chain() {
+        let mut dae_model = dae::Dae::default();
+        for name in ["a", "b", "c", "d", "e", "f"] {
+            dae_model.discrete_valued.insert(
+                dae::VarName::new(name),
+                dae::Variable::new(dae::VarName::new(name)),
+            );
+        }
+        for (lhs, rhs) in [("b", "a"), ("c", "b"), ("d", "c"), ("e", "d"), ("f", "e")] {
+            dae_model.f_m.push(dae::Equation::explicit(
+                dae::VarName::new(lhs),
+                dae::Expression::VarRef {
+                    name: dae::VarName::new(rhs),
+                    subscripts: vec![],
+                },
+                Span::DUMMY,
+                format!("{lhs} = {rhs}"),
+            ));
+        }
+
+        let mut env = VarEnv::<f64>::new();
+        for name in ["b", "c", "d", "e", "f"] {
+            env.set(name, 0.0);
+        }
+        env.set("a", 3.0);
+        let mut explicit_updates = HashSet::from([String::from("a")]);
+
+        let changed = propagate_discrete_alias_equalities(
+            &dae_model,
+            &mut env,
+            &mut explicit_updates,
+            |_| {},
+        );
+
+        assert!(changed);
+        assert_eq!(env.vars.get("f").copied().unwrap_or(0.0), 3.0);
+    }
+
+    #[test]
+    fn propagate_runtime_alias_components_updates_env_only_alias_peer_without_solver_slots() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("src"),
+            dae::Variable::new(dae::VarName::new("src")),
+        );
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("dst"),
+            dae::Variable::new(dae::VarName::new("dst")),
+        );
+        dae_model.f_z.push(dae::Equation::explicit(
+            dae::VarName::new("src"),
+            dae::Expression::Literal(dae::Literal::Real(3.0)),
+            Span::DUMMY,
+            "src = 3.0",
+        ));
+        dae_model.f_z.push(dae::Equation::explicit(
+            dae::VarName::new("dst"),
+            dae::Expression::VarRef {
+                name: dae::VarName::new("src"),
+                subscripts: vec![],
+            },
+            Span::DUMMY,
+            "dst = src",
+        ));
+
+        let ctx = build_runtime_alias_propagation_context(&dae_model, 0, 0);
+        let mut y = Vec::new();
+        let mut env = VarEnv::<f64>::new();
+        env.set("src", 3.0);
+        env.set("dst", 0.0);
+
+        let updates =
+            propagate_runtime_alias_components_from_env_with_context(&ctx, &mut y, 0, &mut env);
+
+        assert_eq!(updates, 1);
+        assert_eq!(env.vars.get("dst").copied(), Some(3.0));
+    }
+
+    #[test]
+    fn propagate_runtime_alias_components_updates_indexed_connector_chain_from_non_alias_source() {
+        let mut dae_model = dae::Dae::default();
+        for name in ["b.y", "Adder.b", "Adder.XOR.x[1]", "Adder.XOR.G1.x[1]"] {
+            dae_model.discrete_valued.insert(
+                dae::VarName::new(name),
+                dae::Variable::new(dae::VarName::new(name)),
+            );
+        }
+        dae_model.f_z.push(dae::Equation::explicit(
+            dae::VarName::new("b.y"),
+            dae::Expression::Literal(dae::Literal::Real(3.0)),
+            Span::DUMMY,
+            "b.y = 3.0",
+        ));
+        for (lhs, rhs) in [
+            ("Adder.b", "b.y"),
+            ("Adder.XOR.x[1]", "Adder.b"),
+            ("Adder.XOR.G1.x[1]", "Adder.XOR.x[1]"),
+        ] {
+            dae_model.f_z.push(dae::Equation::explicit(
+                dae::VarName::new(lhs),
+                dae::Expression::VarRef {
+                    name: dae::VarName::new(rhs),
+                    subscripts: vec![],
+                },
+                Span::DUMMY,
+                format!("{lhs} = {rhs}"),
+            ));
+        }
+
+        let ctx = build_runtime_alias_propagation_context(&dae_model, 0, 0);
+        let mut y = Vec::new();
+        let mut env = VarEnv::<f64>::new();
+        env.set("b.y", 3.0);
+        env.set("Adder.b", 0.0);
+        env.set("Adder.XOR.x[1]", 0.0);
+        env.set("Adder.XOR.G1.x[1]", 0.0);
+
+        let updates =
+            propagate_runtime_alias_components_from_env_with_context(&ctx, &mut y, 0, &mut env);
+
+        assert_eq!(updates, 3);
+        assert_eq!(env.vars.get("Adder.b").copied(), Some(3.0));
+        assert_eq!(env.vars.get("Adder.XOR.x[1]").copied(), Some(3.0));
+        assert_eq!(env.vars.get("Adder.XOR.G1.x[1]").copied(), Some(3.0));
+    }
+
+    #[test]
+    fn propagate_runtime_alias_components_expand_array_alias_equation_elementwise() {
+        let mut dae_model = dae::Dae::default();
+        for name in ["src", "dst"] {
+            dae_model.discrete_valued.insert(
+                dae::VarName::new(name),
+                dae::Variable {
+                    name: dae::VarName::new(name),
+                    dims: vec![2],
+                    ..Default::default()
+                },
+            );
+        }
+        dae_model.f_z.push(dae::Equation::explicit(
+            dae::VarName::new("src"),
+            dae::Expression::Literal(dae::Literal::Real(0.0)),
+            Span::DUMMY,
+            "src = 0.0",
+        ));
+        dae_model.f_m.push(dae::Equation::explicit(
+            dae::VarName::new("dst"),
+            dae::Expression::VarRef {
+                name: dae::VarName::new("src"),
+                subscripts: vec![],
+            },
+            Span::DUMMY,
+            "dst = src",
+        ));
+
+        let ctx = build_runtime_alias_propagation_context(&dae_model, 0, 0);
+        let mut y = Vec::new();
+        let mut env = VarEnv::<f64>::new();
+        rumoca_eval_dae::runtime::set_array_entries(&mut env, "src", &[2], &[2.0, 4.0]);
+        rumoca_eval_dae::runtime::set_array_entries(&mut env, "dst", &[2], &[0.0, 0.0]);
+
+        let updates =
+            propagate_runtime_alias_components_from_env_with_context(&ctx, &mut y, 0, &mut env);
+
+        assert_eq!(updates, 3);
+        assert_eq!(env.vars.get("dst").copied(), Some(2.0));
+        assert_eq!(env.vars.get("dst[1]").copied(), Some(2.0));
+        assert_eq!(env.vars.get("dst[2]").copied(), Some(4.0));
+    }
+
+    #[test]
+    fn propagate_discrete_alias_equalities_does_not_demote_direct_runtime_anchor_from_alias_peer() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("a.y"),
+            dae::Variable::new(dae::VarName::new("a.y")),
+        );
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("Adder.AND.x[2]"),
+            dae::Variable::new(dae::VarName::new("Adder.AND.x[2]")),
+        );
+        dae_model.f_x.push(dae::Equation::explicit(
+            dae::VarName::new("a.y"),
+            dae::Expression::Literal(dae::Literal::Real(3.0)),
+            Span::DUMMY,
+            "a.y = 3",
+        ));
+        dae_model.f_m.push(dae::Equation::explicit(
+            dae::VarName::new("Adder.AND.x[2]"),
+            dae::Expression::VarRef {
+                name: dae::VarName::new("a.y"),
+                subscripts: vec![],
+            },
+            Span::DUMMY,
+            "explicit connection equation: Adder.AND.x[2] = a.y",
+        ));
+
+        let mut env = VarEnv::<f64>::new();
+        env.set("a.y", 3.0);
+        env.set("Adder.AND.x[2]", 0.0);
+        let mut explicit_updates = HashSet::from([String::from("Adder.AND.x[2]")]);
+
+        let changed = propagate_discrete_alias_equalities(
+            &dae_model,
+            &mut env,
+            &mut explicit_updates,
+            |_| {},
+        );
+
+        assert!(!changed);
+        assert_eq!(env.get("a.y"), 3.0);
+        assert_eq!(env.get("Adder.AND.x[2]"), 0.0);
+    }
+
+    #[test]
+    fn collect_runtime_alias_anchor_names_includes_non_runtime_unknown_alias_sources() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.inputs.insert(
+            dae::VarName::new("Enable.x"),
+            dae::Variable::new(dae::VarName::new("Enable.x")),
+        );
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("Enable.y"),
+            dae::Variable::new(dae::VarName::new("Enable.y")),
+        );
+        dae_model.f_m.push(dae::Equation::explicit(
+            dae::VarName::new("Enable.y"),
+            dae::Expression::VarRef {
+                name: dae::VarName::new("Enable.x"),
+                subscripts: vec![],
+            },
+            Span::DUMMY,
+            "Enable.y = Enable.x",
+        ));
+
+        let anchors = collect_runtime_alias_anchor_names(&dae_model, 0);
+        assert!(anchors.contains("Enable.x"));
+    }
+
+    #[test]
+    fn collect_runtime_alias_anchor_names_does_not_readd_alias_only_input_when_component_is_anchored()
+     {
+        let mut dae_model = dae::Dae::default();
+        dae_model.inputs.insert(
+            dae::VarName::new("feedback.u2"),
+            dae::Variable::new(dae::VarName::new("feedback.u2")),
+        );
+        dae_model.discrete_reals.insert(
+            dae::VarName::new("sample1.y"),
+            dae::Variable::new(dae::VarName::new("sample1.y")),
+        );
+        dae_model.f_z.push(dae::Equation::residual(
+            dae::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                lhs: Box::new(dae::Expression::VarRef {
+                    name: dae::VarName::new("sample1.y"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(dae::Expression::Literal(dae::Literal::Real(2.0))),
+            },
+            Span::DUMMY,
+            "sample1.y = 2.0",
+        ));
+        dae_model.f_z.push(dae::Equation::residual(
+            dae::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                lhs: Box::new(dae::Expression::VarRef {
+                    name: dae::VarName::new("sample1.y"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(dae::Expression::VarRef {
+                    name: dae::VarName::new("feedback.u2"),
+                    subscripts: vec![],
+                }),
+            },
+            Span::DUMMY,
+            "sample1.y = feedback.u2",
+        ));
+
+        let anchors = collect_runtime_alias_anchor_names(&dae_model, 0);
+        assert!(anchors.contains("sample1.y"));
+        assert!(!anchors.contains("feedback.u2"));
     }
 }

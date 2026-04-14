@@ -375,7 +375,7 @@ pub(super) fn propagate_record_binding_to_fields(
     } else {
         &effective
     };
-    let preserve_declared_defaults = is_default_record_constructor_call(binding_expr);
+    let preserve_declared_defaults = is_default_record_constructor_call(binding_expr, nested_class);
 
     for (field_name, field_comp) in components {
         let field_qn = ast::QualifiedName::from_ident(field_name);
@@ -434,12 +434,36 @@ fn project_record_field_binding(
     }
 }
 
-fn is_default_record_constructor_call(expr: &ast::Expression) -> bool {
+fn is_default_record_constructor_call(
+    expr: &ast::Expression,
+    nested_class: &ast::ClassDef,
+) -> bool {
     match expr {
-        ast::Expression::FunctionCall { args, .. } => args.is_empty(),
-        ast::Expression::Parenthesized { inner } => is_default_record_constructor_call(inner),
+        // MLS §12.6: only `R()` for the declared record `R` preserves the
+        // record's own field defaults. A different zero-argument record
+        // constructor (e.g. `BaseData x = Derived()`) must still project the
+        // bound record fields rather than freezing the declared base defaults.
+        ast::Expression::FunctionCall { comp, args } => {
+            args.is_empty() && record_constructor_matches_class(comp, nested_class)
+        }
+        ast::Expression::Parenthesized { inner } => {
+            is_default_record_constructor_call(inner, nested_class)
+        }
         _ => false,
     }
+}
+
+fn record_constructor_matches_class(
+    comp: &ast::ComponentReference,
+    nested_class: &ast::ClassDef,
+) -> bool {
+    if let (Some(comp_def_id), Some(class_def_id)) = (comp.def_id, nested_class.def_id) {
+        return comp_def_id == class_def_id;
+    }
+
+    comp.parts
+        .last()
+        .is_some_and(|part| part.ident.text.as_ref() == nested_class.name.text.as_ref())
 }
 
 fn has_declared_field_default(comp: &ast::Component) -> bool {
@@ -1201,6 +1225,100 @@ mod tests {
             *else_base.as_ref(),
             make_comp_ref_expr(&["cellDataOriginal"])
         );
+    }
+
+    #[test]
+    fn test_propagate_record_binding_preserves_matching_default_record_constructor() {
+        let mut nested_record = ast::ClassDef {
+            name: make_token("BaseData"),
+            class_type: ast::ClassType::Record,
+            ..Default::default()
+        };
+        nested_record.components.insert(
+            "mu_i".to_string(),
+            ast::Component {
+                binding: Some(make_int_expr(1)),
+                start: make_int_expr(1),
+                ..Default::default()
+            },
+        );
+
+        let mut ctx = InstantiateContext::new();
+        let binding_expr = ast::Expression::FunctionCall {
+            comp: ast::ComponentReference {
+                local: false,
+                parts: vec![ast::ComponentRefPart {
+                    ident: make_token("BaseData"),
+                    subs: None,
+                }],
+                def_id: None,
+            },
+            args: Vec::new(),
+        };
+
+        propagate_record_binding_to_fields(
+            &ast::ClassTree::default(),
+            &mut ctx,
+            &binding_expr,
+            None,
+            &nested_record,
+            &IndexMap::new(),
+        );
+
+        assert!(
+            ctx.mod_env().active.is_empty(),
+            "matching zero-argument record constructors should preserve declared defaults"
+        );
+    }
+
+    #[test]
+    fn test_propagate_record_binding_projects_subtype_default_record_constructor_fields() {
+        let mut nested_record = ast::ClassDef {
+            name: make_token("BaseData"),
+            class_type: ast::ClassType::Record,
+            ..Default::default()
+        };
+        nested_record.components.insert(
+            "mu_i".to_string(),
+            ast::Component {
+                binding: Some(make_int_expr(1)),
+                start: make_int_expr(1),
+                ..Default::default()
+            },
+        );
+
+        let mut ctx = InstantiateContext::new();
+        let binding_expr = ast::Expression::FunctionCall {
+            comp: ast::ComponentReference {
+                local: false,
+                parts: vec![ast::ComponentRefPart {
+                    ident: make_token("M350_50A"),
+                    subs: None,
+                }],
+                def_id: None,
+            },
+            args: Vec::new(),
+        };
+
+        propagate_record_binding_to_fields(
+            &ast::ClassTree::default(),
+            &mut ctx,
+            &binding_expr,
+            None,
+            &nested_record,
+            &IndexMap::new(),
+        );
+
+        let field_mod = ctx
+            .mod_env()
+            .active
+            .get(&ast::QualifiedName::from_ident("mu_i"))
+            .expect("subtype default record constructor should project field binding");
+        let ast::Expression::FieldAccess { base, field } = &field_mod.value else {
+            panic!("subtype constructor field should be projected");
+        };
+        assert_eq!(field, "mu_i");
+        assert_eq!(base.as_ref(), &binding_expr);
     }
 
     #[test]

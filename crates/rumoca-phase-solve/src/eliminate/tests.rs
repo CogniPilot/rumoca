@@ -636,6 +636,69 @@ fn test_eliminate_trivial_keeps_runtime_partition_defined_output() {
 }
 
 #[test]
+fn test_eliminate_trivial_keeps_branch_local_analog_helper_unknown() {
+    let mut dae = Dae::new();
+
+    let mut node = dae::Variable::new(VarName::new("node"));
+    node.fixed = Some(true);
+    node.start = Some(lit(0.0));
+    dae.algebraics.insert(VarName::new("node"), node);
+    dae.algebraics
+        .insert(VarName::new("vAK"), dae::Variable::new(VarName::new("vAK")));
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("vAK")),
+            rhs: Box::new(var_ref("node")),
+        },
+        span: Span::DUMMY,
+        origin: "direct_alias".to_string(),
+        scalar_count: 1,
+    });
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Smooth,
+                args: vec![
+                    lit(0.0),
+                    Expression::If {
+                        branches: vec![(
+                            Expression::Binary {
+                                op: rumoca_ir_core::OpBinary::Lt(Default::default()),
+                                lhs: Box::new(var_ref("vAK")),
+                                rhs: Box::new(lit(1.0)),
+                            },
+                            var_ref("vAK"),
+                        )],
+                        else_branch: Box::new(lit(1.0)),
+                    },
+                ],
+            }),
+            rhs: Box::new(var_ref("node")),
+        },
+        span: Span::DUMMY,
+        origin: "smooth_row".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae);
+
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .all(|sub| sub.var_name.as_str() != "vAK"),
+        "branch-local smooth/noEvent helper unknown should remain live"
+    );
+    assert!(dae.algebraics.contains_key(&VarName::new("vAK")));
+}
+
+#[test]
 fn test_eliminate_trivial_blt_keeps_fixed_alias_unknown_against_state() {
     let mut dae = Dae::new();
 
@@ -1492,6 +1555,114 @@ fn test_boundary_keeps_connection_eq_touching_runtime_discrete_target() {
 }
 
 #[test]
+fn test_boundary_keeps_zero_unknown_runtime_discrete_assignment_used_by_f_m() {
+    let mut dae = Dae::new();
+    dae.discrete_valued.insert(
+        VarName::new("Enable.y"),
+        dae::Variable::new(VarName::new("Enable.y")),
+    );
+    dae.discrete_valued.insert(
+        VarName::new("Counter.enable"),
+        dae::Variable::new(VarName::new("Counter.enable")),
+    );
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("Enable.y")),
+            rhs: Box::new(Expression::If {
+                branches: vec![(
+                    Expression::Binary {
+                        op: OpBinary::Ge(Default::default()),
+                        lhs: Box::new(var_ref("time")),
+                        rhs: Box::new(lit(1.0)),
+                    },
+                    lit(4.0),
+                )],
+                else_branch: Box::new(lit(3.0)),
+            }),
+        },
+        span: Span::DUMMY,
+        origin: "digital source".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_m.push(dae::Equation {
+        lhs: Some(VarName::new("Counter.enable")),
+        rhs: var_ref("Enable.y"),
+        span: Span::DUMMY,
+        origin: "explicit connection equation: Counter.enable = Enable.y".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae);
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(
+        dae.f_x.len(),
+        1,
+        "runtime discrete source row must remain live"
+    );
+    assert!(
+        dae.f_x.iter().any(|eq| eq.origin == "digital source"),
+        "time-driven discrete assignment should not be dropped by boundary elimination"
+    );
+}
+
+#[test]
+fn test_eliminate_trivial_keeps_sampled_value_source_unknown() {
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+    dae.algebraics
+        .insert(VarName::new("u"), dae::Variable::new(VarName::new("u")));
+    dae.discrete_reals
+        .insert(VarName::new("clk"), dae::Variable::new(VarName::new("clk")));
+    dae.discrete_reals
+        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("u")),
+            rhs: Box::new(var_ref("x")),
+        },
+        span: Span::DUMMY,
+        origin: "u = x".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_z.push(dae::Equation {
+        lhs: Some(VarName::new("clk")),
+        rhs: Expression::FunctionCall {
+            name: VarName::new("Clock"),
+            args: vec![lit(0.1)],
+            is_constructor: false,
+        },
+        span: Span::DUMMY,
+        origin: "clk".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_z.push(dae::Equation {
+        lhs: Some(VarName::new("y")),
+        rhs: Expression::BuiltinCall {
+            function: BuiltinFunction::Sample,
+            args: vec![var_ref("u"), var_ref("clk")],
+        },
+        span: Span::DUMMY,
+        origin: "y = sample(u, clk)".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae);
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(dae.f_x.len(), 1);
+    assert!(
+        dae.algebraics.contains_key(&VarName::new("u")),
+        "sampled continuous helper source must stay live for f_z/f_m value reads"
+    );
+}
+
+#[test]
 fn test_boundary_keeps_state_only_algebraic_constraint() {
     let mut dae = Dae::new();
 
@@ -1635,5 +1806,95 @@ fn test_boundary_preserves_indexed_array_connection_constraints() {
     assert!(
         refs.contains(&VarName::new("product.u[1]")),
         "indexed array constraint product.u[1] must remain live after elimination"
+    );
+}
+
+#[test]
+fn test_boundary_keeps_internal_discrete_connection_chain_for_runtime_alias_paths() {
+    let mut dae = Dae::new();
+    for name in [
+        "src.y",
+        "adder.b",
+        "adder.xor.x[1]",
+        "adder.xor.g1.x[1]",
+        "adder.xor.g1.auxiliary[1]",
+    ] {
+        dae.discrete_valued
+            .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+    }
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("src.y")),
+            rhs: Box::new(Expression::If {
+                branches: vec![(
+                    Expression::Binary {
+                        op: OpBinary::Lt(Default::default()),
+                        lhs: Box::new(var_ref("time")),
+                        rhs: Box::new(lit(0.2)),
+                    },
+                    lit(3.0),
+                )],
+                else_branch: Box::new(lit(4.0)),
+            }),
+        },
+        span: Span::DUMMY,
+        origin: "digital source".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("src.y")),
+            rhs: Box::new(var_ref("adder.b")),
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: src.y = adder.b".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("adder.b")),
+            rhs: Box::new(var_ref("adder.xor.x[1]")),
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: adder.b = adder.xor.x[1]".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("adder.xor.x[1]")),
+            rhs: Box::new(var_ref("adder.xor.g1.x[1]")),
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: adder.xor.x[1] = adder.xor.g1.x[1]".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("adder.xor.g1.auxiliary[1]")),
+            rhs: Box::new(var_ref("adder.xor.g1.x[1]")),
+        },
+        span: Span::DUMMY,
+        origin: "gate auxiliary".to_string(),
+        scalar_count: 1,
+    });
+
+    let _ = eliminate_trivial(&mut dae);
+
+    assert!(
+        dae.f_x
+            .iter()
+            .any(|eq| eq.origin == "connection equation: adder.xor.x[1] = adder.xor.g1.x[1]"),
+        "internal discrete connector aliases must remain live after boundary elimination"
     );
 }

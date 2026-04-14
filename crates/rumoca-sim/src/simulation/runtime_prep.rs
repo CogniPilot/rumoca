@@ -4,7 +4,7 @@ use rumoca_core::{
     Span, maybe_elapsed_seconds as trace_timer_elapsed_seconds,
     maybe_start_timer_if as trace_timer_start_if,
 };
-use rumoca_eval_dae::runtime::{VarEnv, build_env, eval_expr};
+use rumoca_eval_dae::runtime::{VarEnv, build_runtime_parameter_tail_env};
 use rumoca_ir_core::{OpBinary, OpUnary};
 use rumoca_ir_dae as dae;
 
@@ -37,6 +37,23 @@ impl From<TimeoutExceeded> for MassMatrixBuildError {
 }
 
 const MASS_MATRIX_EPS: f64 = 1.0e-15;
+
+#[cfg(not(target_arch = "wasm32"))]
+type CompiledExpressionRows = rumoca_eval_dae::compiled::CompiledExpressionRows;
+#[cfg(target_arch = "wasm32")]
+type CompiledExpressionRows = rumoca_eval_dae::compiled::CompiledExpressionRowsWasm;
+
+struct CompiledMassMatrixRow {
+    active_cols: Vec<usize>,
+    compiled_rows: CompiledExpressionRows,
+}
+
+struct CompiledMassMatrixContext {
+    zero_y: Vec<f64>,
+    compiled_p: Vec<f64>,
+    row_plans: Vec<CompiledMassMatrixRow>,
+    out_scratch: Vec<f64>,
+}
 
 fn real_expr(value: f64) -> dae::Expression {
     dae::Expression::Literal(dae::Literal::Real(value))
@@ -241,44 +258,54 @@ fn state_non_derivable_error(
     non_derivable_error(row, state_name.to_string(), eq.origin.clone(), reason)
 }
 
-fn build_mass_matrix_env(
+#[cfg(not(target_arch = "wasm32"))]
+fn compile_mass_matrix_expression_rows(
     dae_model: &dae::Dae,
-    state_names: &[dae::VarName],
+    expressions: &[dae::Expression],
+) -> Result<CompiledExpressionRows, String> {
+    rumoca_eval_dae::compiled::compile_expressions(
+        dae_model,
+        expressions,
+        rumoca_eval_dae::compiled::Backend::Cranelift,
+    )
+    .map_err(|err| err.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn compile_mass_matrix_expression_rows(
+    dae_model: &dae::Dae,
+    expressions: &[dae::Expression],
+) -> Result<CompiledExpressionRows, String> {
+    rumoca_eval_dae::compiled::compile_expressions_wasm(dae_model, expressions)
+        .map_err(|err| err.to_string())
+}
+
+fn build_mass_matrix_parameter_tail_env(
+    dae_model: &dae::Dae,
     param_values: &[f64],
     budget: &TimeoutBudget,
     trace: bool,
 ) -> Result<VarEnv<f64>, MassMatrixBuildError> {
     let env_t0 = trace_timer_start_if(trace);
     if trace {
-        eprintln!("[sim-trace] mass_matrix compute start: build_env");
+        eprintln!("[sim-trace] mass_matrix compute start: runtime tail env");
     }
-    let mut env_zero = build_env(
-        dae_model,
-        &vec![0.0; dae_model.f_x.len()],
-        param_values,
-        0.0,
-    );
-    for state_name in state_names {
-        let key = format!("der({})", state_name.as_str());
-        env_zero.set(&key, 0.0);
-    }
+    let env_zero = build_runtime_parameter_tail_env(dae_model, param_values, 0.0);
     budget.check()?;
     if trace {
         eprintln!(
-            "[sim-trace] mass_matrix compute done: build_env elapsed={:.3}s",
+            "[sim-trace] mass_matrix compute done: runtime tail env elapsed={:.3}s",
             trace_timer_elapsed_seconds(env_t0)
         );
     }
     Ok(env_zero)
 }
 
-fn fill_mass_matrix_row(
+fn build_compiled_mass_matrix_row(
     dae_model: &dae::Dae,
     row: usize,
-    row_coeffs: &mut [f64],
     state_names: &[dae::VarName],
-    env_zero: &VarEnv<f64>,
-) -> Result<(), MassMatrixBuildError> {
+) -> Result<CompiledMassMatrixRow, MassMatrixBuildError> {
     let Some(eq) = dae_model.f_x.get(row) else {
         return Err(row_non_derivable_error(
             dae_model,
@@ -288,12 +315,12 @@ fn fill_mass_matrix_row(
         ));
     };
 
-    let mut row_has_der = false;
-    for (col, state_name) in state_names.iter().enumerate().take(row_coeffs.len()) {
+    let mut expressions = Vec::new();
+    let mut active_cols = Vec::new();
+    for (col, state_name) in state_names.iter().enumerate() {
         if !expr_contains_der_of(&eq.rhs, state_name) {
             continue;
         }
-        row_has_der = true;
         let coeff_expr = coeff_expr_for_derivative(&eq.rhs, state_name)
             .map_err(|reason| state_non_derivable_error(eq, row, state_name, reason))?;
         let Some(coeff_expr) = coeff_expr else {
@@ -304,21 +331,11 @@ fn fill_mass_matrix_row(
                 "unable to isolate derivative coefficient",
             ));
         };
-        let coeff_val = eval_expr::<f64>(&coeff_expr, env_zero);
-        if !coeff_val.is_finite() {
-            return Err(state_non_derivable_error(
-                eq,
-                row,
-                state_name,
-                "derivative coefficient evaluates to a non-finite value",
-            ));
-        }
-        if coeff_val.abs() > MASS_MATRIX_EPS {
-            row_coeffs[col] = coeff_val;
-        }
+        expressions.push(coeff_expr);
+        active_cols.push(col);
     }
 
-    if !row_has_der {
+    if active_cols.is_empty() {
         return Err(row_non_derivable_error(
             dae_model,
             state_names,
@@ -326,7 +343,102 @@ fn fill_mass_matrix_row(
             "equation row does not contain any der(state) term",
         ));
     }
-    if row_coeffs.iter().all(|c| c.abs() <= MASS_MATRIX_EPS) {
+    let compiled_rows =
+        compile_mass_matrix_expression_rows(dae_model, &expressions).map_err(|err| {
+            row_non_derivable_error(
+                dae_model,
+                state_names,
+                row,
+                format!("compiled derivative coefficient row unsupported: {err}"),
+            )
+        })?;
+
+    Ok(CompiledMassMatrixRow {
+        active_cols,
+        compiled_rows,
+    })
+}
+
+fn build_compiled_mass_matrix_context(
+    dae_model: &dae::Dae,
+    n_x: usize,
+    state_names: &[dae::VarName],
+    param_values: &[f64],
+    budget: &TimeoutBudget,
+    trace: bool,
+) -> Result<CompiledMassMatrixContext, MassMatrixBuildError> {
+    let tail_env = build_mass_matrix_parameter_tail_env(dae_model, param_values, budget, trace)?;
+    let sim_context =
+        crate::runtime::layout::SimulationContext::from_dae(dae_model, dae_model.f_x.len());
+    let compiled_p = sim_context.compiled_parameter_vector_from_env(param_values, &tail_env);
+    let mut row_plans = Vec::with_capacity(n_x);
+    for row in 0..n_x {
+        if row.is_multiple_of(16) {
+            budget.check()?;
+        }
+        row_plans.push(build_compiled_mass_matrix_row(dae_model, row, state_names)?);
+    }
+    Ok(CompiledMassMatrixContext {
+        zero_y: vec![0.0; dae_model.f_x.len()],
+        compiled_p,
+        row_plans,
+        out_scratch: Vec::new(),
+    })
+}
+
+fn fill_mass_matrix_row(
+    dae_model: &dae::Dae,
+    row: usize,
+    row_coeffs: &mut [f64],
+    state_names: &[dae::VarName],
+    compiled: &mut CompiledMassMatrixContext,
+) -> Result<(), MassMatrixBuildError> {
+    let Some(eq) = dae_model.f_x.get(row) else {
+        return Err(row_non_derivable_error(
+            dae_model,
+            state_names,
+            row,
+            "state row is missing from f_x",
+        ));
+    };
+    let plan = compiled.row_plans.get(row).ok_or_else(|| {
+        row_non_derivable_error(dae_model, state_names, row, "missing compiled row plan")
+    })?;
+    compiled.out_scratch.resize(plan.active_cols.len(), 0.0);
+    plan.compiled_rows
+        .call(
+            compiled.zero_y.as_slice(),
+            compiled.compiled_p.as_slice(),
+            0.0,
+            compiled.out_scratch.as_mut_slice(),
+        )
+        .map_err(|err| {
+            row_non_derivable_error(
+                dae_model,
+                state_names,
+                row,
+                format!("compiled derivative coefficient row call failed: {err}"),
+            )
+        })?;
+
+    let mut has_nonzero = false;
+    for (idx, col) in plan.active_cols.iter().copied().enumerate() {
+        let coeff_val = compiled.out_scratch.get(idx).copied().unwrap_or(0.0);
+        if !coeff_val.is_finite() {
+            return Err(state_non_derivable_error(
+                eq,
+                row,
+                &state_names[col],
+                "derivative coefficient evaluates to a non-finite value",
+            ));
+        }
+        if coeff_val.abs() > MASS_MATRIX_EPS {
+            row_coeffs[col] = coeff_val;
+            has_nonzero = true;
+        }
+    }
+
+    if !has_nonzero {
         return Err(row_non_derivable_error(
             dae_model,
             state_names,
@@ -334,7 +446,6 @@ fn fill_mass_matrix_row(
             "all derivative coefficients evaluate to approximately zero",
         ));
     }
-
     Ok(())
 }
 
@@ -374,7 +485,14 @@ pub fn compute_mass_matrix(
     }
     let state_names = expand_state_scalar_names(dae_model);
     let mut mass_matrix = vec![vec![0.0; n_x]; n_x];
-    let env_zero = build_mass_matrix_env(dae_model, &state_names, param_values, budget, trace)?;
+    let mut compiled = build_compiled_mass_matrix_context(
+        dae_model,
+        n_x,
+        &state_names,
+        param_values,
+        budget,
+        trace,
+    )?;
 
     for (row, row_coeffs) in mass_matrix.iter_mut().enumerate().take(n_x) {
         if row.is_multiple_of(16) {
@@ -383,7 +501,7 @@ pub fn compute_mass_matrix(
         if trace && row > 0 && row.is_multiple_of(50) {
             eprintln!("[sim-trace] mass_matrix compute progress: row={row}/{n_x}");
         }
-        fill_mass_matrix_row(dae_model, row, row_coeffs, &state_names, &env_zero)?;
+        fill_mass_matrix_row(dae_model, row, row_coeffs, &state_names, &mut compiled)?;
     }
 
     if trace {
@@ -756,6 +874,10 @@ fn sort_pin_candidates(candidates: &mut [PinScalarCandidate]) {
     });
 }
 
+fn should_force_preferred_pin_fallback(candidate: &PinScalarCandidate) -> bool {
+    !(candidate.is_substitution_linked && candidate.refs == 0)
+}
+
 struct PinTraceMeta<'a> {
     n_x: usize,
     n_z_slots: usize,
@@ -876,16 +998,27 @@ pub fn pin_orphaned_variables(
         .iter()
         .filter(|candidate| candidate.is_preferred)
         .count();
+    let preferred_fallback_available = all_vars
+        .iter()
+        .filter(|candidate| {
+            candidate.is_preferred && should_force_preferred_pin_fallback(candidate)
+        })
+        .count();
     let excess = if excess_by_count > 0 {
         excess_by_count
     } else {
-        preferred_available.min(raw_excess)
+        preferred_fallback_available.min(raw_excess)
     };
     if excess == 0 {
         if sim_trace_enabled() {
             eprintln!(
-                "[sim-trace] pin_orphaned_variables: skipping pinning after exclusion/preference resolution; slots={} raw_vars={} effective_vars={} raw_excess={} preferred_available={}",
-                n_z_slots, n_z_vars_raw, n_z_vars_effective, raw_excess, preferred_available
+                "[sim-trace] pin_orphaned_variables: skipping pinning after exclusion/preference resolution; slots={} raw_vars={} effective_vars={} raw_excess={} preferred_available={} preferred_fallback_available={}",
+                n_z_slots,
+                n_z_vars_raw,
+                n_z_vars_effective,
+                raw_excess,
+                preferred_available,
+                preferred_fallback_available
             );
         }
         return;
@@ -902,4 +1035,132 @@ pub fn pin_orphaned_variables(
     };
     trace_pin_candidates(&trace_meta, &all_vars);
     append_pin_equations(dae_model, &all_vars, excess);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_phase_solve::StructuralError;
+    use rumoca_phase_solve::eliminate::{EliminationResult, Substitution};
+
+    fn residual(rhs: dae::Expression, origin: &str) -> dae::Equation {
+        dae::Equation {
+            lhs: None,
+            rhs,
+            span: Span::DUMMY,
+            origin: origin.to_string(),
+            scalar_count: 1,
+        }
+    }
+
+    #[test]
+    fn pin_orphaned_variables_skips_substitution_linked_preferred_fallback_helper() {
+        let mut dae_model = dae::Dae::default();
+
+        let mut expr = dae::Variable::new(dae::VarName::new("multiSwitch.expr"));
+        expr.dims = vec![2];
+        expr.start = Some(dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Fill,
+            args: vec![
+                dae::Expression::Literal(dae::Literal::Real(0.0)),
+                dae::Expression::Literal(dae::Literal::Integer(2)),
+            ],
+        });
+        dae_model
+            .algebraics
+            .insert(dae::VarName::new("multiSwitch.expr"), expr);
+
+        dae_model.outputs.insert(
+            dae::VarName::new("multiSwitch.y"),
+            dae::Variable::new(dae::VarName::new("multiSwitch.y")),
+        );
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("flag"),
+            dae::Variable::new(dae::VarName::new("flag")),
+        );
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("multiSwitch.firstActiveIndex"),
+            dae::Variable::new(dae::VarName::new("multiSwitch.firstActiveIndex")),
+        );
+
+        // MLS Appendix B runtime-defined output: keep this excluded from the
+        // orphan-pin candidate set so only the unmatched helper remains.
+        dae_model.f_x.push(residual(
+            dae::Expression::Binary {
+                op: OpBinary::Sub(Default::default()),
+                lhs: Box::new(dae::Expression::VarRef {
+                    name: dae::VarName::new("multiSwitch.y"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(dae::Expression::BuiltinCall {
+                    function: dae::BuiltinFunction::Pre,
+                    args: vec![dae::Expression::VarRef {
+                        name: dae::VarName::new("flag"),
+                        subscripts: vec![],
+                    }],
+                }),
+            },
+            "runtime-defined output",
+        ));
+        dae_model.f_x.push(residual(
+            dae::Expression::Literal(dae::Literal::Real(0.0)),
+            "constant slack",
+        ));
+
+        match rumoca_phase_solve::build_ic_plan(&dae_model, 0) {
+            Err(StructuralError::Singular {
+                unmatched_unknowns, ..
+            }) => {
+                assert!(
+                    unmatched_unknowns
+                        .iter()
+                        .any(|name| name == "multiSwitch.expr[1]")
+                );
+                assert!(
+                    unmatched_unknowns
+                        .iter()
+                        .any(|name| name == "multiSwitch.expr[2]")
+                );
+            }
+            other => panic!("expected singular IC plan, got {other:?}"),
+        }
+
+        let elim = EliminationResult {
+            substitutions: vec![Substitution {
+                var_name: dae::VarName::new("multiSwitch.y"),
+                expr: dae::Expression::If {
+                    branches: vec![(
+                        dae::Expression::Binary {
+                            op: OpBinary::Eq(Default::default()),
+                            lhs: Box::new(dae::Expression::VarRef {
+                                name: dae::VarName::new("multiSwitch.firstActiveIndex"),
+                                subscripts: vec![],
+                            }),
+                            rhs: Box::new(dae::Expression::Literal(dae::Literal::Integer(0))),
+                        },
+                        dae::Expression::Literal(dae::Literal::Real(2.0)),
+                    )],
+                    else_branch: Box::new(dae::Expression::VarRef {
+                        name: dae::VarName::new("multiSwitch.expr"),
+                        subscripts: vec![dae::Subscript::Expr(Box::new(dae::Expression::VarRef {
+                            name: dae::VarName::new("multiSwitch.firstActiveIndex"),
+                            subscripts: vec![],
+                        }))],
+                    }),
+                },
+                env_keys: vec!["multiSwitch.y".to_string()],
+            }],
+            n_eliminated: 1,
+        };
+
+        pin_orphaned_variables(&mut dae_model, &elim);
+
+        assert!(
+            dae_model
+                .f_x
+                .iter()
+                .all(|eq| eq.origin != "orphaned_variable_pin"),
+            "substitution-linked unmatched helpers should not be force-pinned when effective slots already suffice"
+        );
+    }
 }

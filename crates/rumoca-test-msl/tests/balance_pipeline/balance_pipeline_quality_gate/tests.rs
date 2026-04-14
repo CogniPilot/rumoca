@@ -219,6 +219,30 @@ fn trace_accuracy_small_channel_drift() -> MslTraceAccuracyStatsBaseline {
     }
 }
 
+fn trace_accuracy_near_promoted_to_high() -> MslTraceAccuracyStatsBaseline {
+    MslTraceAccuracyStatsBaseline {
+        agreement_high: 9,
+        agreement_high_percent: Some(90.0),
+        agreement_minor: 0,
+        agreement_minor_percent: Some(0.0),
+        agreement_deviation: 1,
+        agreement_deviation_percent: Some(10.0),
+        ..trace_accuracy_baseline()
+    }
+}
+
+fn trace_accuracy_acceptable_band_regressed() -> MslTraceAccuracyStatsBaseline {
+    MslTraceAccuracyStatsBaseline {
+        agreement_high: 7,
+        agreement_high_percent: Some(70.0),
+        agreement_minor: 0,
+        agreement_minor_percent: Some(0.0),
+        agreement_deviation: 3,
+        agreement_deviation_percent: Some(30.0),
+        ..trace_accuracy_baseline()
+    }
+}
+
 fn trace_accuracy_ci_channel_share_baseline() -> MslTraceAccuracyStatsBaseline {
     MslTraceAccuracyStatsBaseline {
         models_compared: 107,
@@ -387,6 +411,52 @@ fn trace_channel_share_tolerances_allow_small_runner_drift() {
             .iter()
             .all(|reason| !reason.contains("trace severe channel")),
         "unexpected severe-channel regression reason: {reasons:?}"
+    );
+}
+
+#[test]
+fn trace_near_to_high_promotion_does_not_trigger_regression() {
+    let baseline = MslQualityBaseline {
+        trace_accuracy_stats: Some(trace_accuracy_baseline()),
+        ..baseline_quality_template()
+    };
+    let parity = MslParityGateInput {
+        total_models: Some(10),
+        runtime_context: None,
+        runtime_ratio_stats: None,
+        trace_accuracy_stats: Some(trace_accuracy_near_promoted_to_high()),
+    };
+
+    let mut reasons = Vec::new();
+    push_trace_regression_reasons(&mut reasons, &baseline, Some(&parity));
+    assert!(
+        reasons
+            .iter()
+            .all(|reason| !reason.contains("trace acceptable-agreement model share regressed")),
+        "unexpected acceptable-band regression reason: {reasons:?}"
+    );
+}
+
+#[test]
+fn trace_acceptable_band_regression_reason_triggers_on_real_drop() {
+    let baseline = MslQualityBaseline {
+        trace_accuracy_stats: Some(trace_accuracy_baseline()),
+        ..baseline_quality_template()
+    };
+    let parity = MslParityGateInput {
+        total_models: Some(10),
+        runtime_context: None,
+        runtime_ratio_stats: None,
+        trace_accuracy_stats: Some(trace_accuracy_acceptable_band_regressed()),
+    };
+
+    let mut reasons = Vec::new();
+    push_trace_regression_reasons(&mut reasons, &baseline, Some(&parity));
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("trace acceptable-agreement model share regressed")),
+        "expected acceptable-band regression reason, got: {reasons:?}"
     );
 }
 

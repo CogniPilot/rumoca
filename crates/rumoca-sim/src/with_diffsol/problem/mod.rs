@@ -5,6 +5,7 @@ use diffsol::{
 };
 use rumoca_ir_dae as dae;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 type BuiltinFunction = dae::BuiltinFunction;
 type Dae = dae::Dae;
@@ -17,15 +18,19 @@ type VarName = dae::VarName;
 type Variable = dae::Variable;
 
 use crate::runtime::assignment::evaluate_direct_assignment_values;
+use crate::runtime::timeout::{wall_clock_elapsed_seconds, wall_clock_now};
 use crate::sparsity::SparsityValidation;
 use crate::sparsity::{
     greedy_column_coloring, structural_column_sparsity, validate_solver_sparsity,
 };
+#[cfg(test)]
 use rumoca_eval_dae::runtime::dual::Dual;
+#[cfg(test)]
+use rumoca_eval_dae::runtime::eval_expr;
 use rumoca_eval_dae::runtime::sim_float::SimFloat;
-use rumoca_eval_dae::runtime::{
-    VarEnv, build_env, eval_array_values, eval_expr, lift_env, map_var_to_env, set_array_entries,
-};
+use rumoca_eval_dae::runtime::{VarEnv, set_array_entries};
+#[cfg(test)]
+use rumoca_eval_dae::runtime::{build_env, lift_env, map_var_to_env};
 type M = FaerSparseMat<f64>;
 type V = <M as MatrixCommon>::V;
 type T = <M as MatrixCommon>::T;
@@ -43,6 +48,49 @@ fn sim_introspect_enabled() -> bool {
     std::env::var("RUMOCA_SIM_INTROSPECT").is_ok()
 }
 
+fn default_param_trace_match(name: &str) -> bool {
+    let Ok(raw) = std::env::var("RUMOCA_SIM_TRACE_DEFAULT_PARAMS_MATCH") else {
+        return false;
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .any(|token| name.contains(token))
+}
+
+fn trace_default_param_eval(name: &str, path: &str, values: &[f64], env: &VarEnv<f64>) {
+    if !default_param_trace_match(name) {
+        return;
+    }
+    eprintln!(
+        "[sim-trace] default-param name={} path={} values={:?} dims={:?}",
+        name,
+        path,
+        values,
+        env.dims.get(name)
+    );
+    if let Some(table_name) = name
+        .strip_suffix(".tableID")
+        .map(|base| format!("{base}.table"))
+    {
+        let mut indexed = Vec::new();
+        for idx in 1..=12 {
+            let key = format!("{table_name}[{idx}]");
+            if let Some(value) = env.vars.get(key.as_str()) {
+                indexed.push((idx, *value));
+            }
+        }
+        eprintln!(
+            "[sim-trace] default-param table={} base={:?} dims={:?} indexed={:?}",
+            table_name,
+            env.vars.get(table_name.as_str()),
+            env.dims.get(table_name.as_str()),
+            indexed
+        );
+    }
+}
+
+#[cfg(test)]
 fn apply_dae_sign<S: SimFloat>(val: S, i: usize, n_x: usize) -> S {
     if i < n_x { -val } else { val }
 }
@@ -82,23 +130,383 @@ fn expand_values_to_size(raw: Vec<f64>, sz: usize) -> Vec<f64> {
     out
 }
 
-fn eval_var_start_values(var: &dae::Variable, env: &VarEnv<f64>) -> Vec<f64> {
-    let sz = var.size();
-    if sz <= 1 {
-        return vec![
-            var.start
-                .as_ref()
-                .map(|expr| eval_expr::<f64>(expr, env))
-                .unwrap_or(0.0),
-        ];
+fn infer_materialized_dims(raw_dims: &[i64], value_len: usize) -> Vec<i64> {
+    if raw_dims.is_empty() || value_len == 0 {
+        return raw_dims.to_vec();
     }
 
-    let Some(start) = var.start.as_ref() else {
-        return vec![0.0; sz];
-    };
+    let mut dims: Vec<i64> = raw_dims.iter().map(|&dim| dim.max(0)).collect();
+    let zero_positions: Vec<usize> = dims
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, dim)| (*dim == 0).then_some(idx))
+        .collect();
+    if zero_positions.is_empty() {
+        return dims;
+    }
 
-    let raw = eval_array_values::<f64>(start, env);
-    expand_values_to_size(raw, sz)
+    if zero_positions.len() == 1 {
+        let idx = zero_positions[0];
+        let known_product = dims
+            .iter()
+            .enumerate()
+            .filter(|(pos, _)| *pos != idx)
+            .map(|(_, dim)| (*dim).max(1) as usize)
+            .product::<usize>()
+            .max(1);
+        dims[idx] = (value_len / known_product).max(1) as i64;
+        return dims;
+    }
+
+    if dims.len() == 2 {
+        let cols = dims[1].max(1) as usize;
+        dims[0] = (value_len / cols).max(1) as i64;
+        dims[1] = cols as i64;
+        return dims;
+    }
+
+    dims[0] = value_len as i64;
+    for dim in dims.iter_mut().skip(1) {
+        if *dim == 0 {
+            *dim = 1;
+        }
+    }
+    dims
+}
+
+fn has_materialized_array_values(var: &dae::Variable, values: &[f64]) -> bool {
+    !var.dims.is_empty() && !values.is_empty()
+}
+
+fn set_materialized_array_entries(
+    env: &mut VarEnv<f64>,
+    name: &str,
+    var: &dae::Variable,
+    values: &[f64],
+) {
+    let dims = infer_materialized_dims(&var.dims, values.len());
+    if !dims.is_empty() {
+        std::sync::Arc::make_mut(&mut env.dims).insert(name.to_string(), dims.clone());
+    }
+    set_array_entries(env, name, &dims, values);
+}
+
+fn materialized_array_entries_match(
+    env: &VarEnv<f64>,
+    name: &str,
+    var: &dae::Variable,
+    values: &[f64],
+) -> bool {
+    let dims = infer_materialized_dims(&var.dims, values.len());
+    if !dims.is_empty() && env.dims.get(name) != Some(&dims) {
+        return false;
+    }
+    for (idx, value) in values.iter().enumerate() {
+        let key = format!("{name}[{}]", idx + 1);
+        let Some(current) = env.vars.get(key.as_str()).copied() else {
+            return false;
+        };
+        if current.to_bits() != value.to_bits() {
+            return false;
+        }
+    }
+    true
+}
+
+struct CompiledVarStartContext {
+    compiled_rows: CompiledRuntimeExpressionContext,
+    rows_by_name: HashMap<String, Range<usize>>,
+}
+
+struct CompiledVarStartScratch {
+    zero_y: Vec<f64>,
+    y_scratch: Vec<f64>,
+    out_scratch: Vec<f64>,
+}
+
+struct CompiledVarStartPass<'a> {
+    rows_by_name: &'a HashMap<String, Range<usize>>,
+    values: &'a [f64],
+}
+
+impl<'a> CompiledVarStartPass<'a> {
+    fn values_for_name(&self, name: &str) -> Option<&'a [f64]> {
+        let range = self.rows_by_name.get(name)?;
+        self.values.get(range.clone())
+    }
+}
+
+impl CompiledVarStartScratch {
+    fn new(dae: &dae::Dae) -> Self {
+        let zero_y = vec![0.0; count_solver_scalars(dae)];
+        Self {
+            y_scratch: Vec::with_capacity(zero_y.len()),
+            zero_y,
+            out_scratch: Vec::new(),
+        }
+    }
+
+    fn eval(
+        &mut self,
+        compiled: Option<&CompiledVarStartContext>,
+        name: &str,
+        env: &VarEnv<f64>,
+        params: &[f64],
+    ) -> Option<Vec<f64>> {
+        let compiled = compiled?;
+        eval_compiled_var_start_values(
+            compiled,
+            name,
+            &self.zero_y,
+            env,
+            params,
+            &mut self.y_scratch,
+            &mut self.out_scratch,
+        )
+    }
+}
+
+fn count_solver_scalars(dae: &dae::Dae) -> usize {
+    dae.states.values().map(dae::Variable::size).sum::<usize>()
+        + dae
+            .algebraics
+            .values()
+            .map(dae::Variable::size)
+            .sum::<usize>()
+        + dae.outputs.values().map(dae::Variable::size).sum::<usize>()
+}
+
+fn expr_uses_env_start_eval(expr: &dae::Expression) -> bool {
+    let mut refs = HashSet::new();
+    expr.collect_var_refs(&mut refs);
+    !refs.is_empty()
+}
+
+fn build_compiled_var_start_context(
+    dae: &dae::Dae,
+    vars: impl IntoIterator<Item = (String, dae::Variable)>,
+) -> Result<Option<CompiledVarStartContext>, crate::SimError> {
+    let trace_timing = sim_trace_enabled();
+    let mut candidates = Vec::new();
+
+    for (name, var) in vars {
+        let Some(start) = var.start.as_ref() else {
+            continue;
+        };
+        if var.size() == 0 {
+            // MLS Chapter 10 array expressions may determine the realized array
+            // extent at evaluation time. Do not freeze dynamic array starts as
+            // zero compiled rows; fall back to reference evaluation instead.
+            continue;
+        }
+        if expr_requires_reference_start_eval(start) {
+            // External table constructors allocate host-backed table handles.
+            // Keep those starts on the reference path until compiled start rows
+            // gain real constructor lowering instead of producing numeric zero.
+            continue;
+        }
+        if !expr_uses_env_start_eval(start) {
+            // Self-contained literal/table starts do not benefit from compiled
+            // row construction. Keep them on the reference path so large
+            // constant parameter arrays do not get scalarized into compiled
+            // start rows just to read data that never depends on env state.
+            continue;
+        }
+        candidates.push((name, var));
+    }
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    let scalarization_timer = trace_timing.then(wall_clock_now);
+    let scalarization = crate::equation_scalarize::build_expression_scalarization_context(dae);
+    if let Some(scalarization_timer) = scalarization_timer {
+        eprintln!(
+            "[sim-trace] default-params build_start_scalarization_context vars={} {:.3}s",
+            candidates.len(),
+            wall_clock_elapsed_seconds(scalarization_timer)
+        );
+    }
+
+    let mut expressions = Vec::new();
+    let mut rows_by_name = HashMap::new();
+
+    for (name, var) in candidates {
+        let row_start = expressions.len();
+        let Some(start) = var.start.as_ref() else {
+            continue;
+        };
+        expressions.extend(crate::equation_scalarize::scalarize_expression_rows(
+            start,
+            var.size(),
+            &scalarization,
+        ));
+        let name_key = name;
+        rows_by_name.insert(name_key.clone(), row_start..expressions.len());
+    }
+
+    if expressions.is_empty() {
+        return Ok(None);
+    }
+
+    let compile_timer = trace_timing.then(wall_clock_now);
+    let compiled_rows = match build_compiled_runtime_expression_context_for_start_rows(
+        dae,
+        count_solver_scalars(dae),
+        &expressions,
+        false,
+    ) {
+        Ok(compiled_rows) => compiled_rows,
+        Err(crate::SimError::CompiledEval(_)) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if let Some(compile_timer) = compile_timer {
+        eprintln!(
+            "[sim-trace] default-params compile_start_rows exprs={} names={} {:.3}s",
+            expressions.len(),
+            rows_by_name.len(),
+            wall_clock_elapsed_seconds(compile_timer)
+        );
+    }
+
+    Ok(Some(CompiledVarStartContext {
+        compiled_rows,
+        rows_by_name,
+    }))
+}
+
+fn compiled_var_start_values(
+    name: &str,
+    pass: Option<&CompiledVarStartPass<'_>>,
+) -> Option<Vec<f64>> {
+    let values = pass?.values_for_name(name)?;
+    Some(values.to_vec())
+}
+
+fn eval_compiled_var_start_values(
+    compiled: &CompiledVarStartContext,
+    name: &str,
+    zero_y: &[f64],
+    env: &VarEnv<f64>,
+    params: &[f64],
+    y_scratch: &mut Vec<f64>,
+    out_scratch: &mut Vec<f64>,
+) -> Option<Vec<f64>> {
+    let pass = CompiledVarStartPass {
+        rows_by_name: &compiled.rows_by_name,
+        values: eval_compiled_runtime_expressions_from_env(
+            &compiled.compiled_rows,
+            zero_y,
+            env,
+            params,
+            0.0,
+            y_scratch,
+            out_scratch,
+        ),
+    };
+    compiled_var_start_values(name, Some(&pass))
+}
+
+fn resolve_var_start_values(
+    name: &str,
+    var: &dae::Variable,
+    env: &VarEnv<f64>,
+    params: &[f64],
+    compiled_ctx: Option<&CompiledVarStartContext>,
+    scratch: &mut CompiledVarStartScratch,
+) -> Result<Vec<f64>, crate::SimError> {
+    if var.start.is_none() {
+        return Ok(vec![0.0; var.size()]);
+    }
+
+    if let Some(values) = scratch.eval(compiled_ctx, name, env, params) {
+        trace_default_param_eval(name, "compiled", &values, env);
+        if var.size() == 0 && !var.dims.is_empty() {
+            return Ok(values);
+        }
+        return Ok(expand_values_to_size(values, var.size()));
+    }
+
+    let values = reference_var_start_values(var, env);
+    trace_default_param_eval(name, "reference", &values, env);
+    Ok(values)
+}
+
+fn reference_var_start_values(var: &dae::Variable, env: &VarEnv<f64>) -> Vec<f64> {
+    let size = var.size();
+    let expr = var
+        .start
+        .as_ref()
+        .or(var.nominal.as_ref())
+        .cloned()
+        .unwrap_or(dae::Expression::Literal(dae::Literal::Real(0.0)));
+    if !var.dims.is_empty() {
+        let raw = rumoca_eval_dae::runtime::eval_array_values::<f64>(&expr, env);
+        if size == 0 {
+            return raw;
+        }
+        return expand_values_to_size(raw, size);
+    }
+    if size <= 1 {
+        return vec![rumoca_eval_dae::runtime::eval_expr::<f64>(&expr, env)];
+    }
+    let raw = rumoca_eval_dae::runtime::eval_array_values::<f64>(&expr, env);
+    expand_values_to_size(raw, size)
+}
+
+fn expr_requires_reference_start_eval(expr: &dae::Expression) -> bool {
+    match expr {
+        dae::Expression::FunctionCall { name, args, .. } => {
+            let short_name = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+            matches!(
+                short_name,
+                "ExternalCombiTimeTable" | "ExternalCombiTable1D"
+            ) || args.iter().any(expr_requires_reference_start_eval)
+        }
+        dae::Expression::Binary { lhs, rhs, .. } => {
+            expr_requires_reference_start_eval(lhs) || expr_requires_reference_start_eval(rhs)
+        }
+        dae::Expression::Unary { rhs, .. } => expr_requires_reference_start_eval(rhs),
+        dae::Expression::BuiltinCall { args, .. } => {
+            args.iter().any(expr_requires_reference_start_eval)
+        }
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, branch)| {
+                expr_requires_reference_start_eval(cond)
+                    || expr_requires_reference_start_eval(branch)
+            }) || expr_requires_reference_start_eval(else_branch)
+        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
+            elements.iter().any(expr_requires_reference_start_eval)
+        }
+        dae::Expression::Index { base, .. } => expr_requires_reference_start_eval(base),
+        dae::Expression::FieldAccess { base, .. } => expr_requires_reference_start_eval(base),
+        dae::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expr_requires_reference_start_eval(expr)
+                || indices
+                    .iter()
+                    .any(|idx| expr_requires_reference_start_eval(&idx.range))
+                || filter
+                    .as_ref()
+                    .is_some_and(|filter| expr_requires_reference_start_eval(filter))
+        }
+        dae::Expression::Range { start, step, end } => {
+            expr_requires_reference_start_eval(start)
+                || step
+                    .as_ref()
+                    .is_some_and(|step| expr_requires_reference_start_eval(step))
+                || expr_requires_reference_start_eval(end)
+        }
+        _ => false,
+    }
 }
 
 fn scalar_subscript_string(sub: &dae::Subscript) -> Option<String> {
@@ -440,7 +848,7 @@ fn build_parameter_layout(dae: &dae::Dae) -> HashMap<String, ParameterLayout> {
     let mut layout = HashMap::new();
     let mut offset = 0usize;
     for (name, var) in &dae.parameters {
-        let size = var.size().max(1);
+        let size = var.size();
         layout.insert(
             name.as_str().to_string(),
             ParameterLayout {
@@ -493,7 +901,13 @@ fn resolve_parameter_target_indices(
 fn populate_parameter_values_into_env(dae: &dae::Dae, env: &mut VarEnv<f64>, params: &[f64]) {
     let mut pidx = 0usize;
     for (name, var) in &dae.parameters {
-        let size = var.size().max(1);
+        let size = var.size();
+        if size == 0 {
+            // MLS Chapter 10 dynamic arrays may materialize only in the env.
+            // Do not invent a scalar parameter slot for zero-sized array
+            // declarations here; that misaligns all later parameter indices.
+            continue;
+        }
         if size == 1 {
             env.set(name.as_str(), params.get(pidx).copied().unwrap_or(0.0));
             pidx += 1;
@@ -516,6 +930,7 @@ fn expression_refs_available_in_env<T: SimFloat>(expr: &dae::Expression, env: &V
         .all(|name| env.vars.contains_key(name.as_str()))
 }
 
+#[cfg(test)]
 fn should_skip_missing_direct_assignment_target(
     dae: &dae::Dae,
     target: &str,
@@ -536,6 +951,7 @@ fn should_skip_missing_direct_assignment_target(
         && crate::runtime::assignment::assignment_solution_is_alias_varref(dae, solution)
 }
 
+#[cfg(test)]
 pub(crate) fn populate_missing_direct_assignment_targets_in_env<T: SimFloat>(
     dae: &dae::Dae,
     env: &mut VarEnv<T>,
@@ -668,6 +1084,8 @@ fn reevaluate_parameters_once(
     dae: &dae::Dae,
     env: &mut VarEnv<f64>,
     params: &mut [f64],
+    compiled_ctx: Option<&CompiledVarStartContext>,
+    scratch: &mut CompiledVarStartScratch,
     check: &mut dyn FnMut() -> Result<(), crate::SimError>,
 ) -> Result<bool, crate::SimError> {
     let mut changed = false;
@@ -675,26 +1093,85 @@ fn reevaluate_parameters_once(
     for (name, var) in &dae.parameters {
         check()?;
         let sz = var.size();
-        if sz <= 1 {
-            let value = var
-                .start
-                .as_ref()
-                .map(|expr| eval_expr::<f64>(expr, env))
-                .unwrap_or(0.0);
+        let values =
+            resolve_var_start_values(name.as_str(), var, env, params, compiled_ctx, scratch)?;
+        if !has_materialized_array_values(var, &values) {
+            let value = values.into_iter().next().unwrap_or(0.0);
             env.set(name.as_str(), value);
             write_param_value(params, pidx, value, &mut changed);
             pidx += 1;
             continue;
         }
 
-        let element_vals = eval_var_start_values(var, env);
-        set_array_entries(env, name.as_str(), &var.dims, &element_vals);
-        for value in element_vals {
+        let materialized_changed =
+            !materialized_array_entries_match(env, name.as_str(), var, &values);
+        set_materialized_array_entries(env, name.as_str(), var, &values);
+        changed |= materialized_changed;
+        for value in values.into_iter().take(sz) {
             write_param_value(params, pidx, value, &mut changed);
             pidx += 1;
         }
     }
     Ok(changed)
+}
+
+fn init_default_param_env(dae: &dae::Dae) -> VarEnv<f64> {
+    rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(dae, &[], 0.0)
+}
+
+fn apply_constant_start_pass(
+    dae: &dae::Dae,
+    env: &mut VarEnv<f64>,
+    compiled_ctx: Option<&CompiledVarStartContext>,
+    scratch: &mut CompiledVarStartScratch,
+    pass_idx: usize,
+    strict_non_finite: bool,
+    check: &mut dyn FnMut() -> Result<(), crate::SimError>,
+) -> Result<(), crate::SimError> {
+    for (name, var) in &dae.constants {
+        check()?;
+        if var.start.is_none() {
+            continue;
+        }
+        let values = resolve_var_start_values(name.as_str(), var, env, &[], compiled_ctx, scratch)?;
+        if !has_materialized_array_values(var, &values) {
+            let value = values.first().copied().unwrap_or(0.0);
+            ensure_finite_constant_pass(name.as_str(), value, pass_idx, strict_non_finite)?;
+            env.set(name.as_str(), value);
+            continue;
+        }
+        if pass_idx == 1 {
+            ensure_finite_array_values(name.as_str(), "constant", &values, strict_non_finite)?;
+        }
+        set_materialized_array_entries(env, name.as_str(), var, &values);
+    }
+    Ok(())
+}
+
+fn seed_parameter_starts(
+    dae: &dae::Dae,
+    env: &mut VarEnv<f64>,
+    compiled_ctx: Option<&CompiledVarStartContext>,
+    scratch: &mut CompiledVarStartScratch,
+    check: &mut dyn FnMut() -> Result<(), crate::SimError>,
+) -> Result<Vec<f64>, crate::SimError> {
+    let mut params = Vec::new();
+    for (name, var) in &dae.parameters {
+        check()?;
+        let values =
+            resolve_var_start_values(name.as_str(), var, env, &params, compiled_ctx, scratch)?;
+        if !has_materialized_array_values(var, &values) {
+            let value = values.into_iter().next().unwrap_or(0.0);
+            env.set(name.as_str(), value);
+            params.push(value);
+            continue;
+        }
+        set_materialized_array_entries(env, name.as_str(), var, &values);
+        if var.size() > 0 {
+            params.extend(values);
+        }
+    }
+    Ok(params)
 }
 
 fn default_params_with_checker<F>(
@@ -705,97 +1182,154 @@ fn default_params_with_checker<F>(
 where
     F: FnMut() -> Result<(), crate::SimError>,
 {
+    let trace_timing = sim_trace_enabled();
     check()?;
-
-    let mut env = VarEnv::<f64>::new();
-
-    if !dae.functions.is_empty() {
-        env.functions = std::sync::Arc::new(rumoca_eval_dae::runtime::collect_user_functions(dae));
-    }
-
-    env.dims = std::sync::Arc::new(rumoca_eval_dae::runtime::collect_var_dims(dae));
-    env.start_exprs = std::sync::Arc::new(rumoca_eval_dae::runtime::collect_var_starts(dae));
-    env.enum_literal_ordinals = std::sync::Arc::new(dae.enum_literal_ordinals.clone());
-
-    for &(fqn, value) in rumoca_eval_dae::runtime::MODELICA_CONSTANTS {
-        env.set(fqn, value);
-    }
+    let constant_start_ctx = build_var_start_context_with_trace(
+        dae,
+        dae.constants
+            .iter()
+            .map(|(name, var)| (name.as_str().to_string(), var.clone())),
+        "build_constant_start_ctx",
+        trace_timing,
+    )?;
+    let parameter_start_ctx = build_var_start_context_with_trace(
+        dae,
+        dae.parameters
+            .iter()
+            .map(|(name, var)| (name.as_str().to_string(), var.clone())),
+        "build_parameter_start_ctx",
+        trace_timing,
+    )?;
+    let mut scratch = CompiledVarStartScratch::new(dae);
+    let mut env = init_default_param_env(dae);
 
     for pass_idx in 0..2 {
         check()?;
-        for (name, var) in &dae.constants {
-            check()?;
-            let Some(start) = var.start.as_ref() else {
-                continue;
-            };
-            let size = var.size();
-            if size <= 1 {
-                let value = eval_expr::<f64>(start, &env);
-                ensure_finite_constant_pass(name.as_str(), value, pass_idx, strict_non_finite)?;
-                env.set(name.as_str(), value);
-                continue;
-            }
-
-            let raw_values = eval_array_values::<f64>(start, &env);
-            let values = expand_values_to_size(raw_values, size);
-            if pass_idx == 1 {
-                ensure_finite_array_values(name.as_str(), "constant", &values, strict_non_finite)?;
-            }
-            set_array_entries(&mut env, name.as_str(), &var.dims, &values);
+        let timer = trace_timing.then(wall_clock_now);
+        apply_constant_start_pass(
+            dae,
+            &mut env,
+            constant_start_ctx.as_ref(),
+            &mut scratch,
+            pass_idx,
+            strict_non_finite,
+            &mut check,
+        )?;
+        if let Some(timer) = timer {
+            eprintln!(
+                "[sim-trace] default-params constant_pass{} {:.3}s",
+                pass_idx + 1,
+                wall_clock_elapsed_seconds(timer)
+            );
         }
     }
 
-    let mut params = Vec::new();
-    for (name, var) in &dae.parameters {
-        check()?;
-        let sz = var.size();
-        if sz <= 1 {
-            let value = var
-                .start
-                .as_ref()
-                .map(|expr| eval_expr::<f64>(expr, &env))
-                .unwrap_or(0.0);
-            env.set(name.as_str(), value);
-            params.push(value);
-        } else {
-            let element_vals = eval_var_start_values(var, &env);
-            set_array_entries(&mut env, name.as_str(), &var.dims, &element_vals);
-            params.extend(element_vals);
-        }
+    let timer = trace_timing.then(wall_clock_now);
+    let mut params = seed_parameter_starts(
+        dae,
+        &mut env,
+        parameter_start_ctx.as_ref(),
+        &mut scratch,
+        &mut check,
+    )?;
+    if let Some(timer) = timer {
+        eprintln!(
+            "[sim-trace] default-params seed_parameter_starts {:.3}s",
+            wall_clock_elapsed_seconds(timer)
+        );
     }
 
     let max_recheck_passes = dae.parameters.len().clamp(1, 32);
-    for _ in 0..max_recheck_passes {
+    for pass_idx in 0..max_recheck_passes {
         check()?;
-        let changed = reevaluate_parameters_once(dae, &mut env, &mut params, &mut check)?;
+        let timer = trace_timing.then(wall_clock_now);
+        let changed = reevaluate_parameters_once(
+            dae,
+            &mut env,
+            &mut params,
+            parameter_start_ctx.as_ref(),
+            &mut scratch,
+            &mut check,
+        )?;
+        if let Some(timer) = timer {
+            eprintln!(
+                "[sim-trace] default-params reevaluate_pass{} {:.3}s changed={}",
+                pass_idx + 1,
+                wall_clock_elapsed_seconds(timer),
+                changed
+            );
+        }
         if !changed {
             break;
         }
     }
 
+    let timer = trace_timing.then(wall_clock_now);
     let _ = apply_initial_parameter_initialization(dae, &mut env, &mut params, &mut check)?;
+    if let Some(timer) = timer {
+        eprintln!(
+            "[sim-trace] default-params apply_initial_parameter_initialization {:.3}s",
+            wall_clock_elapsed_seconds(timer)
+        );
+    }
 
+    validate_parameter_values(dae, &params, strict_non_finite, &mut check)?;
+    check()?;
+    Ok(params)
+}
+
+fn build_var_start_context_with_trace<I>(
+    dae: &dae::Dae,
+    vars: I,
+    label: &str,
+    trace_timing: bool,
+) -> Result<Option<CompiledVarStartContext>, crate::SimError>
+where
+    I: IntoIterator<Item = (String, dae::Variable)>,
+{
+    let timer = trace_timing.then(wall_clock_now);
+    let ctx = build_compiled_var_start_context(dae, vars)?;
+    if let Some(timer) = timer {
+        eprintln!(
+            "[sim-trace] default-params {label} {:.3}s compiled={}",
+            wall_clock_elapsed_seconds(timer),
+            ctx.is_some()
+        );
+    }
+    Ok(ctx)
+}
+
+fn validate_parameter_values<F>(
+    dae: &dae::Dae,
+    params: &[f64],
+    strict_non_finite: bool,
+    check: &mut F,
+) -> Result<(), crate::SimError>
+where
+    F: FnMut() -> Result<(), crate::SimError>,
+{
     let mut pidx = 0usize;
     for (name, var) in &dae.parameters {
         check()?;
         let sz = var.size();
+        if sz == 0 {
+            continue;
+        }
         if sz <= 1 {
             ensure_finite_value(name.as_str(), "parameter", params[pidx], strict_non_finite)?;
             pidx += 1;
-        } else {
-            let next = pidx + sz;
-            ensure_finite_array_values(
-                name.as_str(),
-                "parameter",
-                &params[pidx..next],
-                strict_non_finite,
-            )?;
-            pidx = next;
+            continue;
         }
+        let next = pidx + sz;
+        ensure_finite_array_values(
+            name.as_str(),
+            "parameter",
+            &params[pidx..next],
+            strict_non_finite,
+        )?;
+        pidx = next;
     }
-
-    check()?;
-    Ok(params)
+    Ok(())
 }
 
 fn ensure_finite_constant_pass(
@@ -810,7 +1344,7 @@ fn ensure_finite_constant_pass(
     ensure_finite_value(name, "constant", value, strict_non_finite)
 }
 
-pub fn default_params(dae: &dae::Dae) -> Vec<f64> {
+pub(crate) fn default_params(dae: &dae::Dae) -> Vec<f64> {
     default_params_with_checker(dae, || Ok(()), false)
         .expect("default parameter evaluation without timeout checks should be infallible")
 }
@@ -822,10 +1356,13 @@ pub(crate) fn default_params_with_budget(
     default_params_with_checker(dae, || budget.check().map_err(crate::SimError::from), true)
 }
 
+#[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(test)]
 static RHS_SIGNAL_DEBUG_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(test)]
 fn eval_rhs_generic<S: SimFloat>(dae: &dae::Dae, env: &VarEnv<S>, n_x: usize, out: &mut [S]) {
     let mut env = env.clone();
     populate_missing_direct_assignment_targets_in_env(dae, &mut env, n_x);
@@ -860,7 +1397,8 @@ fn eval_rhs_generic<S: SimFloat>(dae: &dae::Dae, env: &VarEnv<S>, n_x: usize, ou
     }
 }
 
-pub(crate) fn eval_rhs_equations(
+#[cfg(test)]
+pub(super) fn eval_rhs_equations(
     dae: &dae::Dae,
     y: &[f64],
     p: &[f64],
@@ -872,7 +1410,8 @@ pub(crate) fn eval_rhs_equations(
     eval_rhs_generic(dae, &env, n_x, out);
 }
 
-pub(crate) fn eval_rhs_equations_initial(
+#[cfg(test)]
+fn eval_rhs_equations_initial(
     dae: &dae::Dae,
     y: &[f64],
     p: &[f64],
@@ -885,6 +1424,7 @@ pub(crate) fn eval_rhs_equations_initial(
     eval_rhs_generic(dae, &env, n_x, out);
 }
 
+#[cfg(test)]
 fn seed_state_duals(env: &mut VarEnv<Dual>, dae: &dae::Dae, v: &[f64]) {
     let mut seed_env = VarEnv::<f64>::new();
     let mut idx = 0usize;
@@ -904,7 +1444,8 @@ fn seed_state_duals(env: &mut VarEnv<Dual>, dae: &dae::Dae, v: &[f64]) {
     }
 }
 
-pub(crate) fn eval_jacobian_vector_ad(
+#[cfg(test)]
+pub(super) fn eval_jacobian_vector_ad(
     dae: &dae::Dae,
     y: &[f64],
     p: &[f64],
@@ -923,7 +1464,8 @@ pub(crate) fn eval_jacobian_vector_ad(
     }
 }
 
-pub(crate) fn eval_jacobian_vector_ad_initial(
+#[cfg(test)]
+fn eval_jacobian_vector_ad_initial(
     dae: &dae::Dae,
     y: &[f64],
     p: &[f64],
@@ -944,12 +1486,49 @@ pub(crate) fn eval_jacobian_vector_ad_initial(
 }
 
 mod core;
-pub(crate) use core::*;
+#[cfg(test)]
+pub(crate) use core::apply_initial_section_assignments;
+pub(crate) use core::{
+    RuntimeDirectSeedContext, apply_initial_section_assignments_strict,
+    build_problem_with_overrides_and_params, build_problem_with_params,
+    build_runtime_direct_seed_context, initialize_state_vector_with_params,
+    seed_runtime_direct_assignment_values_with_context,
+    seed_runtime_direct_assignment_values_with_context_and_env,
+};
+#[cfg(test)]
+pub(crate) use core::{build_problem, initialize_state_vector};
+use core::{clamp_finite, extract_direct_assignment};
 
 mod init;
+#[cfg(test)]
+pub(crate) use init::runtime_projection_required;
+#[cfg(test)]
+pub(crate) use init::seed_runtime_direct_assignments;
+#[cfg(test)]
+pub(crate) use init::solve_initial_algebraic;
 pub(crate) use init::{
-    initial_free_residual_inf, project_algebraics_with_fixed_states_at_time,
-    runtime_projection_required, seed_runtime_direct_assignments, solve_initial_algebraic,
+    RuntimeProjectionContext, RuntimeProjectionMasks, RuntimeProjectionScratch,
+    RuntimeProjectionStep, build_runtime_projection_masks, no_state_runtime_projection_required,
+    project_algebraics_with_cached_runtime_jacobian_step_in_place,
+    project_algebraics_with_fixed_states_at_time,
+    project_algebraics_with_fixed_states_at_time_with_context_and_cache_in_place,
+    solve_initial_algebraic_with_params,
+};
+
+mod runtime_newton;
+use runtime_newton::{
+    CompiledEvalContext, CompiledInitialNewtonContext, CompiledRuntimeExpressionContext,
+    build_compiled_eval_context, build_compiled_initial_newton_context,
+    build_compiled_runtime_expression_context,
+    build_compiled_runtime_expression_context_for_start_rows, call_compiled_expression_rows,
+    call_compiled_jacobian, call_compiled_residual, eval_compiled_initial_jacobian,
+    eval_compiled_initial_residual, eval_compiled_runtime_expressions_from_env,
+};
+pub(crate) use runtime_newton::{
+    CompiledRuntimeNewtonContext, CompiledSyntheticRootContext, SharedInputOverrides,
+    build_compiled_runtime_newton_context, build_compiled_synthetic_root_context,
+    compiled_synthetic_roots_still_armed, eval_compiled_runtime_jacobian,
+    eval_compiled_runtime_residual,
 };
 
 #[cfg(test)]

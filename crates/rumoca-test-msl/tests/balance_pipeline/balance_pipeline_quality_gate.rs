@@ -28,8 +28,8 @@ pub(super) const BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
 pub(super) const INITIAL_BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
 /// Allowed drop in trace high-agreement model percentage (absolute percentage points).
 pub(super) const TRACE_HIGH_PERCENT_DROP_TOLERANCE_PP: f64 = 3.0;
-/// Allowed drop in trace near-agreement model percentage (absolute percentage points).
-pub(super) const TRACE_NEAR_PERCENT_DROP_TOLERANCE_PP: f64 = 3.0;
+/// Allowed drop in total acceptable trace-model share (`high + near`, absolute percentage points).
+pub(super) const TRACE_ACCEPTABLE_PERCENT_DROP_TOLERANCE_PP: f64 = 3.0;
 /// Allowed increase in trace deviation model percentage (absolute percentage points).
 pub(super) const TRACE_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP: f64 = 3.0;
 /// Hard guard for models that contain any deviation channel (absolute percentage points).
@@ -1592,14 +1592,18 @@ pub(super) fn push_trace_regression_reasons(
                 ));
             }
 
-            let near_floor = (baseline_pct.near - TRACE_NEAR_PERCENT_DROP_TOLERANCE_PP).max(0.0);
-            if current.near + SIM_RATE_GATE_EPSILON < near_floor {
+            // Treat `high + near` as the acceptable band so improvements from
+            // near-agreement into high-agreement do not fail the gate.
+            let acceptable_floor = ((baseline_pct.high + baseline_pct.near)
+                - TRACE_ACCEPTABLE_PERCENT_DROP_TOLERANCE_PP)
+                .max(0.0);
+            if (current.high + current.near) + SIM_RATE_GATE_EPSILON < acceptable_floor {
                 reasons.push(format!(
-                    "trace near-agreement model share regressed: current={:.2}% < floor={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
-                    current.near,
-                    near_floor,
-                    baseline_pct.near,
-                    TRACE_NEAR_PERCENT_DROP_TOLERANCE_PP
+                    "trace acceptable-agreement model share regressed: current={:.2}% < floor={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
+                    current.high + current.near,
+                    acceptable_floor,
+                    baseline_pct.high + baseline_pct.near,
+                    TRACE_ACCEPTABLE_PERCENT_DROP_TOLERANCE_PP
                 ));
             }
 

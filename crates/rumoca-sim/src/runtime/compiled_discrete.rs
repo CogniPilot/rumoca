@@ -264,13 +264,14 @@ fn compile_scalar_expression_rows(
         .map_err(|err| err.to_string())
 }
 
-pub fn settle_runtime_event_updates_with_compiled_discrete(
+fn settle_runtime_event_updates_with_compiled_discrete_inner(
     dae_model: &dae::Dae,
     y: &mut [f64],
     p: &[f64],
     n_x: usize,
     t_eval: f64,
     compiled_discrete: Option<&CompiledDiscreteEventContext>,
+    freeze_pre: bool,
 ) -> VarEnv<f64> {
     let y_len = y.len();
     let input = crate::EventSettleInput {
@@ -279,33 +280,101 @@ pub fn settle_runtime_event_updates_with_compiled_discrete(
         p,
         n_x,
         t_eval,
+        is_initial: false,
     };
     let Some(compiled_discrete) = compiled_discrete else {
-        return crate::settle_runtime_event_updates_default(input);
+        return if freeze_pre {
+            crate::runtime::event::settle_runtime_event_updates_default_frozen_pre(input)
+        } else {
+            crate::settle_runtime_event_updates_default(input)
+        };
     };
 
     let mut y_scratch = vec![0.0; y_len];
     let mut out_scratch = vec![0.0; 1];
-    crate::settle_runtime_event_updates(
-        input,
-        crate::runtime::assignment::propagate_runtime_direct_assignments_from_env,
-        crate::runtime::alias::propagate_runtime_alias_components_from_env,
-        |dae_model, env| {
-            crate::runtime::discrete::apply_discrete_partition_updates_with_scalar_override(
-                dae_model,
-                env,
-                |eq, _target, _solution, env, _implicit_clock_active| {
-                    compiled_discrete.eval_scalar_rhs(
-                        eq,
-                        env,
-                        p,
-                        t_eval,
-                        y_scratch.as_mut_slice(),
-                        out_scratch.as_mut_slice(),
-                    )
-                },
-            )
-        },
-        crate::runtime::layout::sync_solver_values_from_env,
+    if freeze_pre {
+        crate::runtime::event::settle_runtime_event_updates_frozen_pre(
+            input,
+            crate::runtime::assignment::propagate_runtime_direct_assignments_from_env,
+            crate::runtime::alias::propagate_runtime_alias_components_from_env,
+            |dae_model, env| {
+                crate::runtime::discrete::apply_discrete_partition_updates_with_scalar_override(
+                    dae_model,
+                    env,
+                    |eq, _target, _solution, env, _implicit_clock_active| {
+                        compiled_discrete.eval_scalar_rhs(
+                            eq,
+                            env,
+                            p,
+                            t_eval,
+                            y_scratch.as_mut_slice(),
+                            out_scratch.as_mut_slice(),
+                        )
+                    },
+                )
+            },
+            crate::runtime::layout::sync_solver_values_from_env,
+        )
+    } else {
+        crate::settle_runtime_event_updates(
+            input,
+            crate::runtime::assignment::propagate_runtime_direct_assignments_from_env,
+            crate::runtime::alias::propagate_runtime_alias_components_from_env,
+            |dae_model, env| {
+                crate::runtime::discrete::apply_discrete_partition_updates_with_scalar_override(
+                    dae_model,
+                    env,
+                    |eq, _target, _solution, env, _implicit_clock_active| {
+                        compiled_discrete.eval_scalar_rhs(
+                            eq,
+                            env,
+                            p,
+                            t_eval,
+                            y_scratch.as_mut_slice(),
+                            out_scratch.as_mut_slice(),
+                        )
+                    },
+                )
+            },
+            crate::runtime::layout::sync_solver_values_from_env,
+        )
+    }
+}
+
+pub fn settle_runtime_event_updates_with_compiled_discrete(
+    dae_model: &dae::Dae,
+    y: &mut [f64],
+    p: &[f64],
+    n_x: usize,
+    t_eval: f64,
+    compiled_discrete: Option<&CompiledDiscreteEventContext>,
+) -> VarEnv<f64> {
+    settle_runtime_event_updates_with_compiled_discrete_inner(
+        dae_model,
+        y,
+        p,
+        n_x,
+        t_eval,
+        compiled_discrete,
+        false,
+    )
+}
+
+pub(crate) fn settle_runtime_event_updates_frozen_pre_with_compiled_discrete(
+    dae_model: &dae::Dae,
+    y: &mut [f64],
+    p: &[f64],
+    n_x: usize,
+    t_eval: f64,
+    compiled_discrete: Option<&CompiledDiscreteEventContext>,
+) -> VarEnv<f64> {
+    settle_runtime_event_updates_with_compiled_discrete_inner(
+        dae_model,
+        y,
+        p,
+        n_x,
+        t_eval,
+        compiled_discrete,
+        true,
     )
 }

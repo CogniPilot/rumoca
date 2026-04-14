@@ -9,6 +9,7 @@ pub mod eliminate {
 }
 pub(crate) mod integration;
 mod prepare;
+mod prepared_sim;
 pub mod problem;
 pub mod stepper;
 
@@ -17,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use diffsol::{
     FaerSparseLU, OdeEquations, OdeSolverMethod, OdeSolverProblem, OdeSolverStopReason, VectorHost,
 };
+use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 
 pub(crate) type Dae = dae::Dae;
@@ -28,8 +30,16 @@ pub(crate) type VarName = dae::VarName;
 type Variable = dae::Variable;
 
 use rumoca_core::Span;
+use rumoca_ir_core::OpBinary;
 
-pub(crate) use crate::simulation::dae_prepare::*;
+pub(crate) use crate::simulation::dae_prepare::REGULARIZATION_LEVELS;
+#[cfg(test)]
+pub(crate) use crate::simulation::dae_prepare::{
+    demote_alias_states_without_der, demote_coupled_derivative_states,
+    demote_direct_assigned_states, demote_orphan_states_without_equation_refs,
+    demote_states_without_assignable_derivative_rows, demote_states_without_derivative_refs,
+    index_reduce_missing_state_derivatives, promote_der_algebraics_to_states,
+};
 use crate::{
     SolverDeadlineGuard, TimeoutBudget, TimeoutExceeded, is_solver_timeout_panic, timeline,
 };
@@ -37,7 +47,7 @@ pub(crate) use rumoca_core::{
     maybe_elapsed_seconds as trace_timer_elapsed_seconds,
     maybe_start_timer_if as trace_timer_start_if,
 };
-pub(crate) use rumoca_eval_dae::runtime::{self as eval, build_env, eval_expr};
+use rumoca_eval_dae::runtime::{self as eval};
 
 pub(crate) type LS = FaerSparseLU<f64>;
 use crate::equation_scalarize::build_output_names;
@@ -47,9 +57,15 @@ use crate::equation_scalarize::{build_complex_field_map, build_var_dims_map, ind
 use crate::projection_maps::{
     build_component_index_projection_map, build_function_output_projection_map,
 };
-pub(crate) use integration::map_solver_panic;
+use integration::map_solver_panic;
 use integration::*;
 use prepare::*;
+#[cfg(test)]
+pub(crate) use prepared_sim::collect_no_state_schedule_events;
+pub use prepared_sim::simulate;
+pub(crate) use prepared_sim::{
+    build_simulation, run_prepared_simulation, validate_parameter_override,
+};
 
 /// Prepare a DAE for simulation/codegen using the same structural passes that
 /// the diffsol runtime uses before integration.
@@ -151,6 +167,25 @@ pub struct SimVariableMeta {
     pub nominal: Option<String>,
     pub fixed: Option<bool>,
     pub description: Option<String>,
+}
+
+pub(crate) struct PreparedSimulation {
+    dae: Dae,
+    elim: eliminate::EliminationResult,
+    opts: SimOptions,
+    state: PreparedSimulationState,
+}
+
+enum PreparedSimulationState {
+    Algebraic(PreparedAlgebraicSimulation),
+    Dynamic(PreparedDynamicSimulation),
+}
+
+struct PreparedAlgebraicSimulation {}
+
+struct PreparedDynamicSimulation {
+    mass_matrix: MassMatrix,
+    ic_blocks: Vec<rumoca_phase_solve::IcBlock>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -465,6 +500,7 @@ fn evaluate_runtime_discrete_channels(
         .iter()
         .map(|_| Vec::with_capacity(times.len()))
         .collect();
+    let use_frozen_pre = crate::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
     eval::clear_pre_values();
 
     for (sample_idx, &t_eval) in times.iter().enumerate() {
@@ -474,13 +510,19 @@ fn evaluate_runtime_discrete_channels(
                 y[col_idx] = value;
             }
         }
-        let env = crate::settle_runtime_event_updates_default(crate::EventSettleInput {
+        let settle_input = crate::EventSettleInput {
             dae,
             y: &mut y,
             p: param_values,
             n_x,
             t_eval,
-        });
+            is_initial: false,
+        };
+        let env = if use_frozen_pre {
+            crate::runtime::event::settle_runtime_event_updates_default_frozen_pre(settle_input)
+        } else {
+            crate::runtime::event::settle_runtime_event_updates_default(settle_input)
+        };
         for (channel_idx, name) in discrete_names.iter().enumerate() {
             let value = env
                 .vars
@@ -498,6 +540,114 @@ fn evaluate_runtime_discrete_channels(
     }
 
     (discrete_names, discrete_data)
+}
+
+fn refresh_runtime_observed_solver_channels(
+    dae: &Dae,
+    n_x: usize,
+    param_values: &[f64],
+    times: &[f64],
+    solver_names: &[String],
+    solver_data: &mut [Vec<f64>],
+) {
+    if times.is_empty() || solver_names.is_empty() || solver_data.is_empty() {
+        return;
+    }
+
+    let solver_len = solver_data.len().min(solver_names.len());
+    if solver_len == 0 {
+        return;
+    }
+
+    let n_eq = dae.f_x.len();
+    let projection_masks = (n_eq > 0 && n_x < n_eq && solver_len >= n_eq)
+        .then(|| problem::build_runtime_projection_masks(dae, n_x, n_eq));
+    let projection_runtime_ctx = projection_masks
+        .as_ref()
+        .and_then(|_| problem::build_compiled_runtime_newton_context(dae, n_eq).ok());
+    let projection_direct_seed_ctx = projection_masks
+        .as_ref()
+        .map(|_| problem::build_runtime_direct_seed_context(dae, solver_len, n_x));
+    let projection_timeout = TimeoutBudget::new(None);
+    let mut projection_jacobian = None;
+    let mut projection_seed_env = None;
+    let mut projection_scratch = problem::RuntimeProjectionScratch::default();
+    let use_frozen_pre = crate::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
+
+    eval::clear_pre_values();
+    for (sample_idx, &t_eval) in times.iter().enumerate() {
+        let mut y = vec![0.0; solver_len];
+        for (col_idx, series) in solver_data.iter().enumerate().take(solver_len) {
+            if let Some(value) = series.get(sample_idx).copied() {
+                y[col_idx] = value;
+            }
+        }
+
+        // MLS §8 equations are equalities, and connector zero-sum equations
+        // are ordinary equations as well. Re-project continuous algebraics at
+        // the observation instant before refreshing runtime channels so traced
+        // connector/alias algebraics do not lag stale solver interpolation.
+        if let Some(masks) = projection_masks.as_ref() {
+            let y_seed = y.clone();
+            let _ = problem::project_algebraics_with_fixed_states_at_time_with_context_and_cache_in_place(
+                dae,
+                y.as_mut_slice(),
+                problem::RuntimeProjectionContext {
+                    p: param_values,
+                    compiled_runtime: projection_runtime_ctx.as_ref(),
+                    fixed_cols: &masks.fixed_cols,
+                    ignored_rows: &masks.ignored_rows,
+                    branch_local_analog_cols: &masks.branch_local_analog_cols,
+                    direct_seed_ctx: projection_direct_seed_ctx.as_ref(),
+                    direct_seed_env_cache: Some(&mut projection_seed_env),
+                },
+                problem::RuntimeProjectionStep {
+                    y_seed: y_seed.as_slice(),
+                    n_x,
+                    t_eval,
+                    tol: 1.0e-8,
+                    timeout: &projection_timeout,
+                },
+                Some(&mut projection_jacobian),
+                &mut projection_scratch,
+            );
+        }
+
+        // MLS §16.5.1 preserves sample/hold/pre semantics at observation
+        // instants. Refresh the runtime env before emitting traces so observed
+        // algebraic/output channels satisfy their defining equations instead
+        // of stale solver interpolation slots.
+        let settle_input = crate::EventSettleInput {
+            dae,
+            y: &mut y,
+            p: param_values,
+            n_x,
+            t_eval,
+            is_initial: false,
+        };
+        let env = if use_frozen_pre {
+            crate::runtime::event::settle_runtime_event_updates_default_frozen_pre(settle_input)
+        } else {
+            crate::runtime::event::settle_runtime_event_updates_default(settle_input)
+        };
+
+        for (col_idx, name) in solver_names.iter().enumerate().take(solver_len) {
+            if col_idx < n_x {
+                continue;
+            }
+            let Some(value) = env.vars.get(name.as_str()).copied() else {
+                continue;
+            };
+            if let Some(slot) = solver_data
+                .get_mut(col_idx)
+                .and_then(|series| series.get_mut(sample_idx))
+            {
+                *slot = value;
+            }
+        }
+
+        eval::seed_pre_values_from_env(&env);
+    }
 }
 
 fn merge_runtime_discrete_channels(
@@ -892,6 +1042,12 @@ fn configure_solver_problem_with_profile<Eqn>(
 }
 
 fn build_output_times(t_start: f64, t_end: f64, dt: f64) -> Vec<f64> {
+    if !dt.is_finite() || dt <= 0.0 {
+        if (t_start - t_end).abs() <= 1e-12 {
+            return vec![t_start];
+        }
+        return vec![t_start, t_end];
+    }
     let mut times = Vec::new();
     let mut t = t_start;
     while t <= t_end {
@@ -911,6 +1067,50 @@ pub(crate) fn build_parameter_values(
     budget: &TimeoutBudget,
 ) -> Result<Vec<f64>, SimError> {
     problem::default_params_with_budget(dae, budget)
+}
+
+fn parameter_slice_range(dae: &Dae, target: &str) -> Option<(usize, usize, usize)> {
+    let mut start = 0usize;
+    for (name, var) in &dae.parameters {
+        let size = var.size();
+        if name.as_str() == target {
+            return Some((start, start + size, size));
+        }
+        start += size;
+    }
+    None
+}
+
+fn apply_parameter_overrides(
+    dae: &Dae,
+    params: &mut [f64],
+    overrides: &IndexMap<String, Vec<f64>>,
+) -> Result<(), SimError> {
+    for (name, values) in overrides {
+        let Some((start, end, expected_len)) = parameter_slice_range(dae, name.as_str()) else {
+            return Err(SimError::SolverError(format!(
+                "unknown parameter override '{name}'"
+            )));
+        };
+        if values.len() != expected_len {
+            return Err(SimError::SolverError(format!(
+                "parameter override '{name}' expected {expected_len} value(s), got {}",
+                values.len()
+            )));
+        }
+        params[start..end].copy_from_slice(values);
+    }
+    Ok(())
+}
+
+fn build_parameter_values_with_overrides(
+    dae: &Dae,
+    budget: &TimeoutBudget,
+    overrides: &IndexMap<String, Vec<f64>>,
+) -> Result<Vec<f64>, SimError> {
+    let mut params = build_parameter_values(dae, budget)?;
+    apply_parameter_overrides(dae, params.as_mut_slice(), overrides)?;
+    Ok(params)
 }
 
 const DUMMY_STATE_NAME: &str = "_rumoca_dummy_state";
@@ -1009,21 +1209,102 @@ pub(crate) fn sim_trace_enabled() -> bool {
     crate::simulation::diagnostics::sim_trace_enabled()
 }
 
+fn dump_hotpath_stats_if_enabled() {
+    let Some(stats) = crate::runtime::hotpath_stats::snapshot() else {
+        return;
+    };
+    let per_step = |count: u64| {
+        if stats.solver_steps == 0 {
+            0.0
+        } else {
+            count as f64 / stats.solver_steps as f64
+        }
+    };
+    let per_eval = |count: u64| {
+        if stats.no_state_eval_points == 0 {
+            0.0
+        } else {
+            count as f64 / stats.no_state_eval_points as f64
+        }
+    };
+    eprintln!(
+        concat!(
+            "[sim-hotpath] solver_steps={} root_hits={} no_state_eval_points={} no_state_settles={} ",
+            "clock_edge_evals={} sample_active_checks={} sample_active_true={} ",
+            "held_value_reads={} left_limit_reads={} ",
+            "explicit_clock_inference={} clock_alias_source_scans={} ",
+            "per_step(clock_edge={:.2} sample_active={:.2} held={:.2} left_limit={:.2} infer={:.2} alias_scan={:.2}) ",
+            "per_eval(clock_edge={:.2} sample_active={:.2} held={:.2} left_limit={:.2} infer={:.2} alias_scan={:.2} settles={:.2})"
+        ),
+        stats.solver_steps,
+        stats.root_hits,
+        stats.no_state_eval_points,
+        stats.no_state_settles,
+        stats.clock_edge_evals,
+        stats.sample_active_checks,
+        stats.sample_active_true,
+        stats.held_value_reads,
+        stats.left_limit_reads,
+        stats.explicit_clock_inference,
+        stats.clock_alias_source_scans,
+        per_step(stats.clock_edge_evals),
+        per_step(stats.sample_active_checks),
+        per_step(stats.held_value_reads),
+        per_step(stats.left_limit_reads),
+        per_step(stats.explicit_clock_inference),
+        per_step(stats.clock_alias_source_scans),
+        per_eval(stats.clock_edge_evals),
+        per_eval(stats.sample_active_checks),
+        per_eval(stats.held_value_reads),
+        per_eval(stats.left_limit_reads),
+        per_eval(stats.explicit_clock_inference),
+        per_eval(stats.clock_alias_source_scans),
+        per_eval(stats.no_state_settles),
+    );
+}
+
 fn truncate_debug(s: &str, max_chars: usize) -> String {
     crate::simulation::diagnostics::truncate_debug(s, max_chars)
 }
 
 fn validate_no_initial_division_by_zero(
     dae: &Dae,
+    param_values: &[f64],
     t_start: f64,
-    budget: &TimeoutBudget,
 ) -> Result<(), SimError> {
     let mut y0 = vec![0.0; dae.f_x.len()];
-    problem::initialize_state_vector(dae, &mut y0);
-    let p = build_parameter_values(dae, budget)?;
-    let env = build_env(dae, &y0, &p, t_start);
+    problem::initialize_state_vector_with_params(dae, &mut y0, param_values);
+    let pre_snapshot = eval::snapshot_pre_values();
+    let env = crate::runtime::startup::build_initial_section_env_strict(
+        dae,
+        y0.as_mut_slice(),
+        param_values,
+        t_start,
+    );
+    eval::restore_pre_values(pre_snapshot);
+    let env = env.map_err(SimError::SolverError)?;
+    // MLS §8.6: startup validation must evaluate `initial()` as true.
+    let eval_initial_scalar = |expr: &dae::Expression, env: &eval::VarEnv<f64>| match expr {
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Initial,
+            args,
+        } if args.is_empty() => Some(1.0),
+        _ => crate::runtime::scalar_eval::eval_scalar_expr_fast(expr, env),
+    };
+    let eval_initial_bool = |expr: &dae::Expression, env: &eval::VarEnv<f64>| match expr {
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Initial,
+            args,
+        } if args.is_empty() => Some(true),
+        _ => crate::runtime::scalar_eval::eval_scalar_bool_expr_fast(expr, env),
+    };
     if let Some(site) =
-        crate::simulation::diagnostics::find_initial_division_by_zero_site(dae, &env)
+        crate::simulation::diagnostics::find_initial_division_by_zero_site_with_callbacks(
+            dae,
+            &env,
+            eval_initial_scalar,
+            eval_initial_bool,
+        )
     {
         let msg = format!(
             "division by zero at initialization (t={}): (a={}) / (b={}), divisor expression is: {}, equation {}[{}] origin='{}' rhs={}",
@@ -1049,10 +1330,10 @@ fn dump_transformed_dae_for_diffsol(dae: &Dae, mass_matrix: &MassMatrix) {
     crate::simulation::diagnostics::dump_transformed_dae_for_solver(dae, mass_matrix);
 }
 
-fn dump_initial_vector_for_diffsol(dae: &Dae) {
+fn dump_initial_vector_for_diffsol(dae: &Dae, param_values: &[f64]) {
     let n_total = dae.f_x.len();
     let mut y0 = vec![0.0; n_total];
-    problem::initialize_state_vector(dae, &mut y0);
+    problem::initialize_state_vector_with_params(dae, &mut y0, param_values);
     let mut names = build_output_names(dae);
     names.truncate(n_total);
     crate::simulation::diagnostics::dump_initial_vector_for_solver(&names, &y0);
@@ -1061,363 +1342,24 @@ fn dump_initial_vector_for_diffsol(dae: &Dae) {
 fn dump_initial_residual_summary_for_diffsol(
     dae: &Dae,
     n_x: usize,
-    budget: &TimeoutBudget,
+    param_values: &[f64],
 ) -> Result<(), SimError> {
     if !sim_introspect_enabled() {
         return Ok(());
     }
     let n_total = dae.f_x.len();
     let mut y0 = vec![0.0; n_total];
-    problem::initialize_state_vector(dae, &mut y0);
-    let p = build_parameter_values(dae, budget)?;
-    dump_parameter_vector_for_diffsol(dae, &p);
+    problem::initialize_state_vector_with_params(dae, &mut y0, param_values);
+    dump_parameter_vector_for_diffsol(dae, param_values);
     let mut rhs = vec![0.0; n_total];
-    problem::eval_rhs_equations(dae, &y0, &p, 0.0, &mut rhs, n_x);
+    let compiled_runtime = problem::build_compiled_runtime_newton_context(dae, n_total)?;
+    problem::eval_compiled_runtime_residual(&compiled_runtime, &y0, param_values, 0.0, &mut rhs);
     crate::simulation::diagnostics::dump_initial_residual_summary(dae, &rhs, n_x);
     Ok(())
 }
 
 pub(crate) fn dump_parameter_vector_for_diffsol(dae: &Dae, params: &[f64]) {
     crate::simulation::diagnostics::dump_parameter_vector(dae, params);
-}
-
-fn trace_projection_failed_at_time(t: f64) {
-    if sim_trace_enabled() {
-        eprintln!("[sim-trace] no-state runtime projection failed at t={}", t);
-    }
-}
-
-struct AlgebraicResultSetup {
-    times: Vec<f64>,
-    eval_times: Vec<f64>,
-    y: Vec<f64>,
-    param_values: Vec<f64>,
-    n_x: usize,
-    all_names: Vec<String>,
-    visible_name_set: HashSet<String>,
-    solver_name_to_idx: HashMap<String, usize>,
-    requires_projection: bool,
-}
-
-fn prepare_algebraic_result_setup(
-    dae: &Dae,
-    opts: &SimOptions,
-    elim: &eliminate::EliminationResult,
-    budget: &TimeoutBudget,
-) -> Result<AlgebraicResultSetup, SimError> {
-    let dt = opts.dt.unwrap_or(opts.t_end / 500.0);
-    let times = build_output_times(opts.t_start, opts.t_end, dt);
-    let n_total = dae.f_x.len();
-    let n_x: usize = dae.states.values().map(|v| v.size()).sum();
-
-    let mut y = vec![0.0; n_total];
-    problem::initialize_state_vector(dae, &mut y);
-
-    let param_values = build_parameter_values(dae, budget)?;
-    dump_parameter_vector_for_diffsol(dae, &param_values);
-    let clock_events =
-        timeline::collect_periodic_clock_events(&dae.clock_schedules, opts.t_start, opts.t_end);
-    if sim_introspect_enabled() {
-        let preview: Vec<f64> = clock_events.iter().copied().take(12).collect();
-        eprintln!(
-            "[sim-introspect] no-state clock events count={} preview={:?}",
-            clock_events.len(),
-            preview
-        );
-    }
-    let eval_times = timeline::merge_evaluation_times(&times, &clock_events);
-    let visible_names = build_visible_result_names(dae);
-    let mut all_names = visible_names.clone();
-    all_names.extend(crate::collect_reconstruction_discrete_context_names(
-        dae, elim, &all_names,
-    ));
-    let visible_name_set: HashSet<String> = visible_names
-        .iter()
-        .filter(|name| *name != DUMMY_STATE_NAME)
-        .cloned()
-        .collect();
-    let mut solver_names = visible_names.clone();
-    solver_names.truncate(n_total);
-    let solver_name_to_idx: HashMap<String, usize> = solver_names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| (name.clone(), idx))
-        .collect();
-    let requires_projection = problem::runtime_projection_required(dae, n_x);
-    if sim_trace_enabled() {
-        eprintln!(
-            "[sim-trace] no-state runtime projection required={}",
-            requires_projection
-        );
-    }
-
-    Ok(AlgebraicResultSetup {
-        times,
-        eval_times,
-        y,
-        param_values,
-        n_x,
-        all_names,
-        visible_name_set,
-        solver_name_to_idx,
-        requires_projection,
-    })
-}
-
-fn collect_no_state_sample_data(
-    dae: &Dae,
-    opts: &SimOptions,
-    elim: &eliminate::EliminationResult,
-    budget: &TimeoutBudget,
-    setup: &AlgebraicResultSetup,
-) -> Result<Vec<Vec<f64>>, SimError> {
-    let sample_ctx = crate::NoStateSampleContext {
-        dae,
-        elim,
-        param_values: &setup.param_values,
-        all_names: &setup.all_names,
-        solver_name_to_idx: &setup.solver_name_to_idx,
-        n_x: setup.n_x,
-        t_start: opts.t_start,
-        requires_projection: setup.requires_projection,
-    };
-
-    let (_, data) = crate::collect_algebraic_samples(
-        &sample_ctx,
-        &setup.times,
-        &setup.eval_times,
-        setup.y.clone(),
-        || budget.check().map_err(SimError::from),
-        |y_values, t, do_projection| {
-            if do_projection {
-                let projection = problem::project_algebraics_with_fixed_states_at_time(
-                    dae,
-                    y_values,
-                    setup.n_x,
-                    t,
-                    opts.atol.max(1.0e-8),
-                    budget,
-                )?;
-                if let Some(projected) = projection {
-                    *y_values = projected;
-                    return Ok(());
-                }
-                trace_projection_failed_at_time(t);
-            }
-            let _ = problem::seed_runtime_direct_assignments(
-                dae,
-                y_values,
-                &setup.param_values,
-                setup.n_x,
-                t,
-            );
-            Ok(())
-        },
-    )
-    .map_err(|err| match err {
-        crate::NoStateSampleError::Callback(sim_err) => sim_err,
-        crate::NoStateSampleError::SampleScheduleMismatch { captured, expected } => {
-            SimError::SolverError(format!(
-                "no-state sample schedule mismatch: captured {captured}/{expected} output samples"
-            ))
-        }
-    })?;
-
-    Ok(data)
-}
-
-fn filter_visible_output_series(
-    recon_names: &[String],
-    recon_data: &[Vec<f64>],
-    visible_name_set: &HashSet<String>,
-) -> (Vec<String>, Vec<Vec<f64>>) {
-    let mut final_names: Vec<String> = Vec::new();
-    let mut final_data: Vec<Vec<f64>> = Vec::new();
-    for (name, series) in recon_names.iter().zip(recon_data.iter()) {
-        if visible_name_set.contains(name) {
-            final_names.push(name.clone());
-            final_data.push(series.clone());
-        }
-    }
-    (final_names, final_data)
-}
-
-fn build_algebraic_result(
-    dae: &Dae,
-    opts: &SimOptions,
-    elim: &eliminate::EliminationResult,
-    budget: &TimeoutBudget,
-) -> Result<SimResult, SimError> {
-    let setup = prepare_algebraic_result_setup(dae, opts, elim, budget)?;
-    let data = collect_no_state_sample_data(dae, opts, elim, budget, &setup)?;
-    let (recon_names, recon_data, final_n_states) =
-        crate::finalize_algebraic_outputs(setup.all_names, data, setup.n_x, DUMMY_STATE_NAME);
-    let (mut final_names, mut final_data) =
-        filter_visible_output_series(&recon_names, &recon_data, &setup.visible_name_set);
-
-    if !elim.substitutions.is_empty() {
-        let (extra_names, extra_data) = crate::reconstruct::reconstruct_eliminated(
-            elim,
-            dae,
-            &setup.param_values,
-            &setup.times,
-            &recon_names,
-            &recon_data,
-        );
-        final_names.extend(extra_names);
-        final_data.extend(extra_data);
-    }
-
-    let variable_meta = build_variable_meta(dae, &final_names, final_n_states);
-    Ok(SimResult {
-        times: setup.times,
-        names: final_names,
-        data: final_data,
-        n_states: final_n_states,
-        variable_meta,
-    })
-}
-
-fn run_with_timeout_panic_handling<T, F>(budget: &TimeoutBudget, f: F) -> Result<T, SimError>
-where
-    F: FnOnce() -> Result<T, SimError>,
-{
-    let _solver_deadline_guard = SolverDeadlineGuard::install(budget.deadline());
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-        Ok(result) => result,
-        Err(payload) => {
-            if is_solver_timeout_panic(payload.as_ref()) {
-                return Err(budget.timeout_error().into());
-            }
-            Err(SimError::SolverError(format!(
-                "integration panic: {}",
-                panic_payload_message(payload)
-            )))
-        }
-    }
-}
-
-fn finalize_dynamic_result(
-    dae: &Dae,
-    elim: &eliminate::EliminationResult,
-    param_values: &[f64],
-    n_x: usize,
-    n_total: usize,
-    buf: OutputBuffers,
-) -> SimResult {
-    let mut names = build_output_names(dae);
-    names.truncate(n_total);
-    let solver_names = names.clone();
-    let OutputBuffers {
-        times: output_times,
-        data: output_data,
-        n_total: _,
-        runtime_names,
-        runtime_data,
-    } = buf;
-    let (mut final_names, mut final_data, final_n_states) = (names, output_data, n_x);
-    let runtime_capture_complete =
-        !runtime_names.is_empty() && runtime_data.iter().all(|s| s.len() == output_times.len());
-    if runtime_capture_complete {
-        merge_runtime_discrete_channels(
-            &mut final_names,
-            &mut final_data,
-            runtime_names,
-            runtime_data,
-        );
-    }
-    let (discrete_names, discrete_data) = evaluate_runtime_discrete_channels(
-        dae,
-        n_x,
-        param_values,
-        &output_times,
-        &solver_names,
-        &final_data,
-    );
-    merge_runtime_discrete_channels(
-        &mut final_names,
-        &mut final_data,
-        discrete_names,
-        discrete_data,
-    );
-    if !elim.substitutions.is_empty() {
-        let (extra_names, extra_data) = crate::reconstruct::reconstruct_eliminated(
-            elim,
-            dae,
-            param_values,
-            &output_times,
-            &final_names,
-            &final_data,
-        );
-        final_names.extend(extra_names);
-        final_data.extend(extra_data);
-    }
-    let variable_meta = build_variable_meta(dae, &final_names, final_n_states);
-    SimResult {
-        times: output_times,
-        names: final_names,
-        data: final_data,
-        n_states: final_n_states,
-        variable_meta,
-    }
-}
-
-pub fn simulate(dae: &Dae, opts: &SimOptions) -> Result<SimResult, SimError> {
-    eval::clear_pre_values();
-    let budget = TimeoutBudget::new(opts.max_wall_seconds);
-    validate_simulation_function_support(dae)?;
-    let sim_start = trace_timer_start_if(sim_trace_enabled());
-    let prepared = prepare_dae(dae, opts.scalarize, &budget)?;
-    let mut dae = prepared.dae;
-    let has_dummy = prepared.has_dummy_state;
-    let elim = prepared.elimination;
-    let ic_blocks = prepared.ic_blocks;
-    let mass_matrix = prepared.mass_matrix;
-    if sim_trace_enabled() {
-        eprintln!(
-            "[sim-trace] stage prepare_dae {:.3}s",
-            trace_timer_elapsed_seconds(sim_start)
-        );
-    }
-    validate_simulation_function_support(&dae)?;
-    dump_transformed_dae_for_diffsol(&dae, &mass_matrix);
-
-    let n_x: usize = dae.states.values().map(|v| v.size()).sum();
-    if has_dummy {
-        return run_timeout_result(&budget, || {
-            build_algebraic_result(&dae, opts, &elim, &budget)
-        });
-    }
-    let n_total = dae.f_x.len();
-
-    solve_initial_conditions(&mut dae, &ic_blocks, n_x, opts.atol, &budget)?;
-    if sim_trace_enabled() {
-        eprintln!(
-            "[sim-trace] stage solve_initial_conditions {:.3}s",
-            trace_timer_elapsed_seconds(sim_start)
-        );
-    }
-    validate_no_initial_division_by_zero(&dae, opts.t_start, &budget)?;
-    dump_initial_vector_for_diffsol(&dae);
-    dump_initial_residual_summary_for_diffsol(&dae, n_x, &budget)?;
-
-    let (buf, param_values) = run_with_timeout_panic_handling(&budget, || {
-        integrate_with_fallbacks(&dae, opts, n_total, &mass_matrix, &budget)
-    })?;
-    if sim_trace_enabled() {
-        eprintln!(
-            "[sim-trace] stage integrate_with_fallbacks {:.3}s",
-            trace_timer_elapsed_seconds(sim_start)
-        );
-    }
-    Ok(finalize_dynamic_result(
-        &dae,
-        &elim,
-        &param_values,
-        n_x,
-        n_total,
-        buf,
-    ))
 }
 
 /// Build a [`stepper::SimStepper`] from a DAE and options.
@@ -1435,19 +1377,20 @@ pub(crate) fn build_stepper(
     use crate::equation_scalarize::build_output_names;
     use crate::runtime::layout::SimulationContext;
     use integration::{
-        SolverLoopContext, apply_initial_sections_and_sync_startup_state,
+        SolverLoopContext, StartupSyncInput, apply_initial_sections_and_sync_startup_state,
         build_compiled_discrete_event_context,
     };
 
     eval::clear_pre_values();
+    crate::runtime::clock::reset_runtime_clock_caches();
     let budget = TimeoutBudget::new(Some(30.0));
 
     validate_simulation_function_support(dae)?;
     let prepared = prepare_dae(dae, opts.scalarize, &budget)?;
     let mut dae = prepared.dae;
+    let elim = prepared.elimination;
     let mass_matrix = prepared.mass_matrix;
     let ic_blocks = prepared.ic_blocks;
-    let elim = prepared.elimination;
 
     if prepared.has_dummy_state {
         return Err(SimError::EmptySystem);
@@ -1457,19 +1400,19 @@ pub(crate) fn build_stepper(
 
     let n_x: usize = dae.states.values().map(|v| v.size()).sum();
     let n_total = dae.f_x.len();
+    let param_values = build_parameter_values(&dae, &budget)?;
 
-    solve_initial_conditions(&mut dae, &ic_blocks, n_x, opts.atol, &budget)?;
+    solve_initial_conditions(&mut dae, &ic_blocks, n_x, &param_values, opts.atol, &budget)?;
 
     let input_overrides: problem::SharedInputOverrides = Rc::new(RefCell::new(HashMap::new()));
 
-    let param_values = build_parameter_values(&dae, &budget)?;
-
-    let mut problem_obj = problem::build_problem_with_overrides(
+    let mut problem_obj = problem::build_problem_with_overrides_and_params(
         &dae,
         opts.rtol,
         opts.atol,
         1e-8,
         &mass_matrix,
+        &param_values,
         Some(input_overrides.clone()),
     )?;
 
@@ -1496,15 +1439,20 @@ pub(crate) fn build_stepper(
     let mut solver = problem_ref
         .bdf::<LS>()
         .map_err(|e| SimError::SolverError(format!("Failed to create BDF solver: {e}")))?;
+    let compiled_runtime = problem::build_compiled_runtime_newton_context(&dae, n_total)?;
+    let compiled_synthetic_root = problem::build_compiled_synthetic_root_context(&dae, n_total)?;
 
     apply_initial_sections_and_sync_startup_state(
         &mut solver,
-        &dae,
-        &sim_opts,
-        startup_profile,
-        &param_values,
-        n_x,
-        &budget,
+        StartupSyncInput {
+            dae: &dae,
+            opts: &sim_opts,
+            startup_profile,
+            compiled_runtime: &compiled_runtime,
+            param_values: &param_values,
+            n_x,
+            budget: &budget,
+        },
     )?;
 
     let mut solver_names = build_output_names(&dae);
@@ -1513,15 +1461,21 @@ pub(crate) fn build_stepper(
     let sim_context = SimulationContext::from_dae(&dae, n_total);
 
     let compiled_discrete_event_ctx = build_compiled_discrete_event_context(&dae, n_total)?;
+    let dae_ref: &'static Dae = Box::leak(Box::new(dae.clone()));
+    let opts_ref: &'static SimOptions = Box::leak(Box::new(sim_opts.clone()));
+    let budget_ref: &'static TimeoutBudget = Box::leak(Box::new(budget));
 
     let ctx = SolverLoopContext {
-        dae: dae.clone(),
-        opts: sim_opts,
+        dae: dae_ref,
+        elim: elim.clone(),
+        opts: opts_ref,
         startup_profile,
         n_x,
         param_values: param_values.clone(),
+        compiled_runtime,
+        compiled_synthetic_root,
         discrete_event_ctx: compiled_discrete_event_ctx,
-        budget,
+        budget: budget_ref,
     };
 
     // Type-erased stepper inner
@@ -1533,7 +1487,7 @@ pub(crate) fn build_stepper(
         S: diffsol::OdeSolverMethod<'a, Eqn>,
     {
         solver: S,
-        ctx: SolverLoopContext,
+        ctx: SolverLoopContext<'static>,
         _phantom: std::marker::PhantomData<&'a Eqn>,
     }
 
@@ -1573,13 +1527,18 @@ pub(crate) fn build_stepper(
                         }
                         continue;
                     }
-                    Ok(OdeSolverStopReason::RootFound(_)) => {
-                        // Root events (from conditional expressions) — continue
-                        // but check if we've reached the target time.
-                        if self.solver.state().t >= t_end {
+                    Ok(OdeSolverStopReason::RootFound(t_root)) => {
+                        // SPEC_0003 / SPEC_0022 SIM-001/SIM-008:
+                        // settle event updates on the right limit before
+                        // continuous integration resumes after a root hit.
+                        let _ = integration::apply_event_updates_at_time::<Eqn, S>(
+                            &mut self.solver,
+                            t_root,
+                            &self.ctx,
+                        )?;
+                        if integration::stop_time_reached_with_tol(self.solver.state().t, t_end) {
                             break;
                         }
-                        // Reset stop time after root handling
                         let _ = self.solver.set_stop_time(t_end);
                         continue;
                     }
@@ -1628,7 +1587,7 @@ pub(crate) fn build_stepper(
         S: diffsol::OdeSolverMethod<'a, Eqn>,
     {
         solver: &'b mut S,
-        ctx: &'b SolverLoopContext,
+        ctx: &'b SolverLoopContext<'static>,
         _phantom: std::marker::PhantomData<&'a Eqn>,
     }
 
@@ -1652,7 +1611,7 @@ pub(crate) fn build_stepper(
             integration::set_solver_stop_time::<Eqn, S>(
                 self.solver,
                 stop_time,
-                &self.ctx.budget,
+                self.ctx.budget,
                 "stepper step_until",
             )
             .map_err(|e| SimError::SolverError(format!("Reset stop time: {e}")))?;
@@ -1686,7 +1645,12 @@ pub(crate) fn build_stepper(
         }
 
         fn apply_event_updates(&mut self, event_time: f64) -> Result<(), SimError> {
-            integration::apply_event_updates_at_time::<Eqn, S>(self.solver, event_time, self.ctx)
+            let _ = integration::apply_event_updates_at_time::<Eqn, S>(
+                self.solver,
+                event_time,
+                self.ctx,
+            )?;
+            Ok(())
         }
     }
 

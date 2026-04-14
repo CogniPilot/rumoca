@@ -137,6 +137,10 @@ pub(super) struct MslSimModelResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) sim_seconds: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) sim_build_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) sim_run_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) sim_wall_seconds: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) sim_trace_file: Option<String>,
@@ -150,6 +154,10 @@ pub(super) struct SimWorkerResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     sim_seconds: f64,
+    #[serde(default)]
+    sim_build_seconds: f64,
+    #[serde(default)]
+    sim_run_seconds: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trace_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -170,6 +178,8 @@ pub(super) fn sim_result(
         n_states: Some(n_states),
         n_algebraics: Some(n_algebraics),
         sim_seconds: None,
+        sim_build_seconds: None,
+        sim_run_seconds: None,
         sim_wall_seconds: None,
         sim_trace_file: None,
         sim_trace_error: None,
@@ -298,6 +308,66 @@ pub(super) struct SimRunContext<'a> {
     n_algebraics: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SimTimingBreakdown {
+    sim_seconds: f64,
+    sim_build_seconds: f64,
+    sim_run_seconds: f64,
+    sim_wall_seconds: f64,
+}
+
+impl SimTimingBreakdown {
+    fn timeout(elapsed_secs: f64) -> Self {
+        Self {
+            sim_seconds: elapsed_secs,
+            sim_build_seconds: 0.0,
+            sim_run_seconds: elapsed_secs,
+            sim_wall_seconds: elapsed_secs,
+        }
+    }
+
+    fn from_worker_result(worker_result: &SimWorkerResult, elapsed_secs: f64) -> Self {
+        let sim_seconds =
+            if worker_result.sim_seconds.is_finite() && worker_result.sim_seconds >= 0.0 {
+                worker_result.sim_seconds
+            } else {
+                elapsed_secs
+            };
+        let sim_build_seconds = if worker_result.sim_build_seconds.is_finite()
+            && worker_result.sim_build_seconds >= 0.0
+        {
+            worker_result.sim_build_seconds
+        } else {
+            0.0
+        };
+        let sim_run_seconds =
+            if worker_result.sim_run_seconds.is_finite() && worker_result.sim_run_seconds >= 0.0 {
+                worker_result.sim_run_seconds
+            } else {
+                sim_seconds
+            };
+        let sim_wall_seconds = if elapsed_secs.is_finite() && elapsed_secs >= 0.0 {
+            elapsed_secs
+        } else {
+            sim_seconds
+        };
+        Self {
+            sim_seconds,
+            sim_build_seconds,
+            sim_run_seconds,
+            sim_wall_seconds,
+        }
+    }
+}
+
+struct SimRunOutcome {
+    status: SimStatus,
+    error: Option<String>,
+    timing: SimTimingBreakdown,
+    sim_trace_file: Option<String>,
+    sim_trace_error: Option<String>,
+}
+
 impl SimRunContext<'_> {
     fn solver_fail(&self, error: impl Into<String>) -> MslSimModelResult {
         sim_result(
@@ -315,40 +385,31 @@ impl SimRunContext<'_> {
         solver_timeout_secs: f64,
         process_timeout_secs: f64,
     ) -> MslSimModelResult {
-        let mut timed_out = sim_result(
-            self.model_name,
-            SimStatus::Timeout,
-            Some(format!(
+        self.finish(SimRunOutcome {
+            status: SimStatus::Timeout,
+            error: Some(format!(
                 "worker process timeout after {:.3}s (solver limit {:.3}s, process limit {:.3}s)",
                 elapsed_secs, solver_timeout_secs, process_timeout_secs,
             )),
-            self.n_states,
-            self.n_algebraics,
-        );
-        timed_out.sim_seconds = Some(elapsed_secs);
-        timed_out.sim_wall_seconds = Some(elapsed_secs);
-        timed_out
+            timing: SimTimingBreakdown::timeout(elapsed_secs),
+            sim_trace_file: None,
+            sim_trace_error: None,
+        })
     }
 
-    fn finish(
-        &self,
-        status: SimStatus,
-        error: Option<String>,
-        sim_seconds: f64,
-        sim_wall_seconds: f64,
-        sim_trace_file: Option<String>,
-        sim_trace_error: Option<String>,
-    ) -> MslSimModelResult {
+    fn finish(&self, outcome: SimRunOutcome) -> MslSimModelResult {
         MslSimModelResult {
             name: self.model_name.to_string(),
-            status,
-            error,
+            status: outcome.status,
+            error: outcome.error,
             n_states: Some(self.n_states),
             n_algebraics: Some(self.n_algebraics),
-            sim_seconds: Some(sim_seconds),
-            sim_wall_seconds: Some(sim_wall_seconds),
-            sim_trace_file,
-            sim_trace_error,
+            sim_seconds: Some(outcome.timing.sim_seconds),
+            sim_build_seconds: Some(outcome.timing.sim_build_seconds),
+            sim_run_seconds: Some(outcome.timing.sim_run_seconds),
+            sim_wall_seconds: Some(outcome.timing.sim_wall_seconds),
+            sim_trace_file: outcome.sim_trace_file,
+            sim_trace_error: outcome.sim_trace_error,
         }
     }
 }
@@ -644,77 +705,83 @@ pub(super) fn prepare_simulation_run(
     })
 }
 
-pub(super) fn run_prepared_simulation(run: PreparedSimulationRun) -> MslSimModelResult {
-    let PreparedSimulationRun {
-        model_name,
-        n_states,
-        n_algebraics,
-        output_samples,
-        settings,
-        dae_payload,
-        artifacts,
-    } = run;
-    let ctx = SimRunContext {
-        model_name: &model_name,
-        n_states,
-        n_algebraics,
-    };
-
-    let worker_exe = match resolve_sim_worker_exe() {
-        Ok(path) => path,
-        Err(err) => return ctx.solver_fail(err),
-    };
-
+fn simulation_timeouts(settings: &SimExecutionSettings) -> (f64, f64) {
     let solver_timeout_secs = settings
         .timeout_seconds
         .filter(|secs| secs.is_finite() && *secs > 0.0)
         .unwrap_or_else(sim_timeout_secs);
     let process_timeout_secs = sim_worker_wall_timeout_secs(solver_timeout_secs);
+    (solver_timeout_secs, process_timeout_secs)
+}
 
+fn spawn_prepared_sim_worker(
+    ctx: &SimRunContext<'_>,
+    worker_exe: &Path,
+    run: &PreparedSimulationRun,
+) -> Result<(std::process::Child, f64, f64), Box<MslSimModelResult>> {
+    let (solver_timeout_secs, process_timeout_secs) = simulation_timeouts(&run.settings);
     let mut child = match spawn_sim_worker_process(
         worker_exe,
-        &artifacts,
-        &ctx,
-        &settings,
-        output_samples,
+        &run.artifacts,
+        ctx,
+        &run.settings,
+        run.output_samples,
         solver_timeout_secs,
     ) {
         Ok(child) => child,
-        Err(err) => return ctx.solver_fail(err),
+        Err(err) => return Err(Box::new(ctx.solver_fail(err))),
     };
-    if let Err(err) = write_sim_worker_stdin(&mut child, &dae_payload, &model_name) {
+    if let Err(err) = write_sim_worker_stdin(&mut child, &run.dae_payload, &run.model_name) {
         let _ = child.kill();
         let _ = child.wait();
-        return ctx.solver_fail(err);
+        return Err(Box::new(ctx.solver_fail(err)));
     }
+    Ok((child, solver_timeout_secs, process_timeout_secs))
+}
 
-    let wait_outcome = match wait_for_sim_worker(&mut child, &ctx, process_timeout_secs) {
+fn wait_for_completed_sim_worker(
+    child: &mut std::process::Child,
+    ctx: &SimRunContext<'_>,
+    solver_timeout_secs: f64,
+    process_timeout_secs: f64,
+) -> Result<f64, Box<MslSimModelResult>> {
+    let wait_outcome = match wait_for_sim_worker(child, ctx, process_timeout_secs) {
         Ok(outcome) => outcome,
-        Err(err) => return ctx.solver_fail(err),
+        Err(err) => return Err(Box::new(ctx.solver_fail(err))),
     };
 
-    let elapsed_secs = match wait_outcome {
+    match wait_outcome {
         WorkerWaitOutcome::TimedOut { elapsed_secs } => {
             let _ = child.kill();
             let _ = child.wait();
-            return ctx.timeout(elapsed_secs, solver_timeout_secs, process_timeout_secs);
+            Err(Box::new(ctx.timeout(
+                elapsed_secs,
+                solver_timeout_secs,
+                process_timeout_secs,
+            )))
         }
         WorkerWaitOutcome::Exited {
             status,
             elapsed_secs,
         } => {
             if !status.success() {
-                return ctx.solver_fail(format!("sim worker exited unsuccessfully: {status}"));
+                Err(Box::new(ctx.solver_fail(format!(
+                    "sim worker exited unsuccessfully: {status}"
+                ))))
+            } else {
+                Ok(elapsed_secs)
             }
-            elapsed_secs
         }
-    };
+    }
+}
 
-    let worker_result = match read_sim_worker_result(&artifacts) {
-        Ok(result) => result,
-        Err(err) => return ctx.solver_fail(err),
-    };
-
+fn finalize_sim_worker_result(
+    ctx: &SimRunContext<'_>,
+    artifacts: &SimWorkerArtifacts,
+    worker_result: SimWorkerResult,
+    elapsed_secs: f64,
+) -> MslSimModelResult {
+    let timing = SimTimingBreakdown::from_worker_result(&worker_result, elapsed_secs);
     let status = match parse_sim_status(&worker_result.status) {
         Some(status) => status,
         None => {
@@ -724,30 +791,52 @@ pub(super) fn run_prepared_simulation(run: PreparedSimulationRun) -> MslSimModel
             ));
         }
     };
-
-    let sim_seconds = if worker_result.sim_seconds.is_finite() && worker_result.sim_seconds >= 0.0 {
-        worker_result.sim_seconds
-    } else {
-        elapsed_secs
-    };
-    let sim_wall_seconds = if elapsed_secs.is_finite() && elapsed_secs >= 0.0 {
-        elapsed_secs
-    } else {
-        sim_seconds
-    };
     let sim_trace_file = if matches!(status, SimStatus::Ok) && artifacts.trace_path.is_file() {
         Some(artifacts.trace_relative_path.clone())
     } else {
         None
     };
-    ctx.finish(
+    ctx.finish(SimRunOutcome {
         status,
-        worker_result.error,
-        sim_seconds,
-        sim_wall_seconds,
+        error: worker_result.error,
+        timing,
         sim_trace_file,
-        worker_result.trace_error,
-    )
+        sim_trace_error: worker_result.trace_error,
+    })
+}
+
+pub(super) fn run_prepared_simulation(run: PreparedSimulationRun) -> MslSimModelResult {
+    let model_name = run.model_name.clone();
+    let ctx = SimRunContext {
+        model_name: &model_name,
+        n_states: run.n_states,
+        n_algebraics: run.n_algebraics,
+    };
+
+    let worker_exe = match resolve_sim_worker_exe() {
+        Ok(path) => path,
+        Err(err) => return ctx.solver_fail(err),
+    };
+    let (mut child, solver_timeout_secs, process_timeout_secs) =
+        match spawn_prepared_sim_worker(&ctx, worker_exe, &run) {
+            Ok(spawned) => spawned,
+            Err(result) => return *result,
+        };
+    let elapsed_secs = match wait_for_completed_sim_worker(
+        &mut child,
+        &ctx,
+        solver_timeout_secs,
+        process_timeout_secs,
+    ) {
+        Ok(elapsed_secs) => elapsed_secs,
+        Err(result) => return *result,
+    };
+
+    let worker_result = match read_sim_worker_result(&run.artifacts) {
+        Ok(result) => result,
+        Err(err) => return ctx.solver_fail(err),
+    };
+    finalize_sim_worker_result(&ctx, &run.artifacts, worker_result, elapsed_secs)
 }
 
 pub(super) fn is_trivial_static_model(dae: &Dae) -> bool {
@@ -783,6 +872,8 @@ pub(super) fn try_simulate_dae_with_settings(
             n_states: Some(n_states),
             n_algebraics: Some(n_algebraics),
             sim_seconds: Some(0.0),
+            sim_build_seconds: Some(0.0),
+            sim_run_seconds: Some(0.0),
             sim_wall_seconds: Some(0.0),
             sim_trace_file: None,
             sim_trace_error: None,

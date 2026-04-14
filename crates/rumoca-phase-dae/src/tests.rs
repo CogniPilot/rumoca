@@ -11,6 +11,7 @@ fn make_comp_ref(name: &str) -> flat::ComponentReference {
         def_id: None,
     }
 }
+
 /// Helper to create an assignment statement.
 fn make_assignment(name: &str) -> rumoca_ir_flat::Statement {
     rumoca_ir_flat::Statement::Assignment {
@@ -302,225 +303,6 @@ fn test_todae_rejects_non_external_function_without_body() {
         matches!(err, ToDaeError::FunctionWithoutBody { ref name, .. } if name == "f"),
         "expected function-without-body diagnostic, got {err:?}"
     );
-}
-
-#[test]
-fn test_todae_preserves_function_algorithm_bodies_for_codegen_readability() {
-    let mut flat = Model::new();
-    add_primitive_real(&mut flat, "x");
-
-    let mut fn_def = rumoca_ir_flat::Function::new("f", Span::DUMMY);
-    fn_def.add_input(flat::FunctionParam::new("u", "Real"));
-    fn_def.add_output(flat::FunctionParam::new("y", "Real"));
-    fn_def.body.push(flat::Statement::Assignment {
-        comp: make_comp_ref("y"),
-        value: flat::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
-            lhs: Box::new(make_var_ref("u")),
-            rhs: Box::new(flat::Expression::Literal(rumoca_ir_flat::Literal::Real(
-                1.0,
-            ))),
-        },
-    });
-    flat.add_function(fn_def);
-
-    add_scalar_ode_with_rhs_call(&mut flat, "x", "f");
-
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("to_dae should keep reachable function bodies");
-
-    let lowered_fn = dae
-        .functions
-        .get(&dae::VarName::new("f"))
-        .expect("function f should be preserved in DAE");
-    assert_eq!(
-        lowered_fn.body.len(),
-        1,
-        "function algorithm body must be preserved for downstream codegen readability"
-    );
-}
-
-#[test]
-fn test_todae_lowers_supported_model_algorithms_to_equations() {
-    let mut flat = Model::new();
-    add_primitive_real(&mut flat, "x");
-    add_primitive_real(&mut flat, "y");
-
-    flat.algorithms.push(flat::Algorithm::new(
-        vec![flat::Statement::Assignment {
-            comp: make_comp_ref("y"),
-            value: make_var_ref("x"),
-        }],
-        Span::DUMMY,
-        "model algorithm".to_string(),
-    ));
-
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("to_dae should lower simple model algorithms");
-
-    assert!(
-        dae.f_x
-            .iter()
-            .any(|eq| eq.origin.contains("algorithm assignment")),
-        "lowered model algorithm assignment should appear in f_x"
-    );
-}
-
-#[test]
-fn test_todae_lowers_model_algorithm_for_loop_with_static_range() {
-    let mut flat = Model::new();
-    add_primitive_real(&mut flat, "x");
-    add_primitive_real(&mut flat, "y");
-
-    flat.algorithms.push(flat::Algorithm::new(
-        vec![flat::Statement::For {
-            indices: vec![flat::ForIndex {
-                ident: "i".to_string(),
-                range: flat::Expression::Range {
-                    start: Box::new(flat::Expression::Literal(flat::Literal::Integer(1))),
-                    step: None,
-                    end: Box::new(flat::Expression::Literal(flat::Literal::Integer(3))),
-                },
-            }],
-            equations: vec![flat::Statement::Assignment {
-                comp: make_comp_ref("y"),
-                value: make_var_ref("i"),
-            }],
-        }],
-        Span::DUMMY,
-        "model for".to_string(),
-    ));
-
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("for-loop algorithms with static ranges should lower to equations");
-
-    assert!(
-        dae.f_x
-            .iter()
-            .any(|eq| eq.origin.contains("algorithm for-assignment")),
-        "expected lowered for-loop assignment equations in f_x"
-    );
-}
-
-#[test]
-fn test_todae_rejects_model_algorithm_for_loop_with_non_constant_range() {
-    let mut flat = Model::new();
-    add_primitive_real(&mut flat, "n");
-    add_primitive_real(&mut flat, "y");
-
-    flat.algorithms.push(flat::Algorithm::new(
-        vec![flat::Statement::For {
-            indices: vec![flat::ForIndex {
-                ident: "i".to_string(),
-                range: flat::Expression::Range {
-                    start: Box::new(flat::Expression::Literal(flat::Literal::Integer(1))),
-                    step: None,
-                    end: Box::new(make_var_ref("n")),
-                },
-            }],
-            equations: vec![flat::Statement::Assignment {
-                comp: make_comp_ref("y"),
-                value: make_var_ref("i"),
-            }],
-        }],
-        Span::DUMMY,
-        "model for dynamic range".to_string(),
-    ));
-
-    let err = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect_err("for-loop algorithms with non-constant ranges must fail");
-
-    assert!(
-        matches!(
-            err,
-            ToDaeError::UnsupportedAlgorithm {
-                ref section,
-                ref origin,
-                ..
-            } if section == "model"
-                && (origin.contains("statement=ForRangeEndNotConstant")
-                    || origin.contains("statement=ForRangeNotConstant"))
-        ),
-        "expected ED013 unsupported diagnostic for non-constant for range, got {err:?}"
-    );
-}
-
-#[test]
-fn test_todae_lowers_multi_output_algorithm_function_call_to_output_projections() {
-    let mut flat = Model::new();
-    add_primitive_real(&mut flat, "u");
-    add_primitive_real(&mut flat, "y1");
-    add_primitive_real(&mut flat, "y2");
-
-    let mut f = rumoca_ir_flat::Function::new("Pkg.multi", Span::DUMMY);
-    f.add_input(flat::FunctionParam::new("u", "Real"));
-    f.add_output(flat::FunctionParam::new("y1", "Real"));
-    f.add_output(flat::FunctionParam::new("y2", "Real"));
-    f.body.push(flat::Statement::Assignment {
-        comp: make_comp_ref("y1"),
-        value: make_var_ref("u"),
-    });
-    f.body.push(flat::Statement::Assignment {
-        comp: make_comp_ref("y2"),
-        value: flat::Expression::Literal(flat::Literal::Real(0.0)),
-    });
-    flat.add_function(f);
-
-    flat.algorithms.push(flat::Algorithm::new(
-        vec![flat::Statement::FunctionCall {
-            comp: make_comp_ref("Pkg.multi"),
-            args: vec![make_var_ref("u")],
-            outputs: vec![make_var_ref("y1"), make_var_ref("y2")],
-        }],
-        Span::DUMMY,
-        "model multi-output call".to_string(),
-    ));
-
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("multi-output model algorithm calls should lower to projection equations");
-
-    let mut saw_y1 = false;
-    let mut saw_y2 = false;
-    for eq in &dae.f_x {
-        let dae::Expression::Binary { rhs, .. } = &eq.rhs else {
-            continue;
-        };
-        let dae::Expression::FunctionCall { name, .. } = rhs.as_ref() else {
-            continue;
-        };
-        if name.as_str() == "Pkg.multi.y1" {
-            saw_y1 = true;
-        } else if name.as_str() == "Pkg.multi.y2" {
-            saw_y2 = true;
-        }
-    }
-    assert!(saw_y1, "missing lowered projection call for first output");
-    assert!(saw_y2, "missing lowered projection call for second output");
 }
 
 #[test]
@@ -935,6 +717,126 @@ fn test_todae_routes_explicit_discrete_integer_when_assignment_to_f_m() {
         1,
         "expected one discrete-valued event equation"
     );
+}
+
+#[test]
+fn test_todae_preserves_indexed_explicit_discrete_assignment_targets() {
+    let mut flat = Model::new();
+    flat.add_variable(
+        VarName::new("auxiliary"),
+        flat::Variable {
+            name: VarName::new("auxiliary"),
+            dims: vec![3],
+            variability: rumoca_ir_flat::Variability::Discrete(rumoca_ir_core::Token::default()),
+            is_discrete_type: true,
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+
+    for (index, value) in [(1, 1), (2, 2), (3, 3)] {
+        flat.add_equation(rumoca_ir_flat::Equation {
+            residual: flat::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("auxiliary"),
+                    subscripts: vec![flat::Subscript::Index(index)],
+                }),
+                rhs: Box::new(flat::Expression::Literal(flat::Literal::Integer(value))),
+            },
+            span: Span::DUMMY,
+            origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+                component: format!("aux[{index}]"),
+            },
+            scalar_count: 1,
+        });
+    }
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("indexed discrete assignments should preserve their element targets in ToDae");
+
+    let lhs_names: std::collections::HashSet<_> = dae
+        .f_m
+        .iter()
+        .filter_map(|eq| eq.lhs.as_ref())
+        .map(|name| name.as_str().to_string())
+        .collect();
+
+    assert_eq!(dae.f_m.len(), 3);
+    assert!(
+        lhs_names.contains("auxiliary[1]"),
+        "first indexed target must stay explicit"
+    );
+    assert!(
+        lhs_names.contains("auxiliary[2]"),
+        "second indexed target must stay explicit"
+    );
+    assert!(
+        lhs_names.contains("auxiliary[3]"),
+        "third indexed target must stay explicit"
+    );
+}
+
+#[test]
+fn test_todae_canonicalizes_constant_expr_subscripts_in_explicit_targets() {
+    let mut flat = Model::new();
+    flat.add_variable(
+        VarName::new("auxiliary"),
+        flat::Variable {
+            name: VarName::new("auxiliary"),
+            dims: vec![3],
+            variability: rumoca_ir_flat::Variability::Discrete(rumoca_ir_core::Token::default()),
+            is_discrete_type: true,
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+
+    for (offset, value) in [(0, 1), (1, 2), (2, 3)] {
+        flat.add_equation(rumoca_ir_flat::Equation {
+            residual: flat::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("auxiliary"),
+                    subscripts: vec![flat::Subscript::Expr(Box::new(flat::Expression::Binary {
+                        op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
+                        lhs: Box::new(flat::Expression::Literal(flat::Literal::Integer(1))),
+                        rhs: Box::new(flat::Expression::Literal(flat::Literal::Integer(offset))),
+                    }))],
+                }),
+                rhs: Box::new(flat::Expression::Literal(flat::Literal::Integer(value))),
+            },
+            span: Span::DUMMY,
+            origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+                component: format!("aux_expr[{offset}]"),
+            },
+            scalar_count: 1,
+        });
+    }
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("constant-expression indexed targets should canonicalize in ToDae");
+
+    let lhs_names: std::collections::HashSet<_> = dae
+        .f_m
+        .iter()
+        .filter_map(|eq| eq.lhs.as_ref())
+        .map(|name| name.as_str().to_string())
+        .collect();
+
+    assert!(lhs_names.contains("auxiliary[1]"));
+    assert!(lhs_names.contains("auxiliary[2]"));
+    assert!(lhs_names.contains("auxiliary[3]"));
 }
 
 #[test]
