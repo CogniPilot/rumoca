@@ -420,13 +420,13 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
 /// Try assignment form: `lhs = rhs` where lhs is the target variable.
 /// This is used by prepared discrete partitions that are emitted as direct
 /// assignments rather than residual equations.
-/// 
+///
 /// For guarded when-sample equations, the RHS is an If-expression with a sample()
 /// condition. Extract the state update from the true branch (condition=[sample(...), expr]).
 /// The false branch (pre(var)) is implicit in the solver's discrete semantics.
 fn find_algebraic_rhs_assignment(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
     let lhs = eq.get_attr("lhs").ok()?;
-    
+
     // Handle two forms:
     // 1. lhs is a VarRef object: { "VarRef": { "name": "x" } }
     // 2. lhs is a plain string: "x"
@@ -439,10 +439,10 @@ fn find_algebraic_rhs_assignment(eq: &Value, var_name: &str, cfg: &ExprConfig) -
     } else {
         false
     };
-    
+
     if lhs_matches {
         let rhs = eq.get_attr("rhs").ok()?;
-        
+
         // If the RHS is an If-expression with sample() guard (when-statement),
         // extract the update expression from the true branch, not the full ternary.
         if let Ok(if_expr) = get_field(&rhs, "If") {
@@ -464,7 +464,7 @@ fn find_algebraic_rhs_assignment(eq: &Value, var_name: &str, cfg: &ExprConfig) -
                 }
             }
         }
-        
+
         // Fall back to rendering the entire RHS (for non-guarded cases)
         return render_expression(&rhs, cfg).ok();
     }
@@ -998,11 +998,7 @@ fn synthesize_discrete_statespace_rhs(var_name: &str, dae: &Value) -> Option<Str
                 indexed_alias(&x_name, j)
             ));
         }
-        terms.push(format!(
-            "({} * {})",
-            var_name_to_c_alias(&d_name),
-            e_expr
-        ));
+        terms.push(format!("({} * {})", var_name_to_c_alias(&d_name), e_expr));
         return Some(terms.join(" + "));
     }
 
@@ -1033,11 +1029,7 @@ fn synthesize_discrete_statespace_rhs(var_name: &str, dae: &Value) -> Option<Str
                 indexed_alias(&x_name, j)
             ));
         }
-        terms.push(format!(
-            "({} * {})",
-            indexed_alias(&b_name, i),
-            e_expr
-        ));
+        terms.push(format!("({} * {})", indexed_alias(&b_name, i), e_expr));
         return Some(terms.join(" + "));
     }
 
