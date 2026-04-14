@@ -37,6 +37,7 @@ type VarName = flat::VarName;
 pub(super) fn convert_bindings_to_equations(
     dae: &mut Dae,
     flat: &Model,
+    prefix_children: &FxHashMap<String, Vec<VarName>>,
     state_vars: &HashSet<VarName>,
     connected_inputs: &HashSet<VarName>,
     algorithm_defined_vars: &HashSet<VarName>,
@@ -65,7 +66,7 @@ pub(super) fn convert_bindings_to_equations(
     let defined_by_unknown_rhs = collect_vars_with_unknown_rhs(flat, &unknowns);
 
     for (name, var) in &flat.variables {
-        if !var.is_primitive {
+        if !var.is_primitive && prefix_children.contains_key(name.as_str()) {
             continue;
         }
 

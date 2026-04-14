@@ -5,7 +5,8 @@ mod emit;
 use crate::compiled::VarLayout;
 use crate::compiled::ad::lower_residual_ad;
 use crate::compiled::lower::{
-    LowerError, lower_discrete_rhs, lower_expression_rows_from_expressions, lower_initial_residual,
+    LowerError, lower_discrete_rhs, lower_expression_rows_from_expressions_with_runtime_metadata,
+    lower_initial_expression_rows_from_expressions_with_runtime_metadata, lower_initial_residual,
     lower_residual, lower_root_conditions,
 };
 #[cfg(feature = "wasm")]
@@ -159,6 +160,24 @@ pub fn compile_jacobian_v(
     }
 }
 
+pub fn compile_initial_jacobian_v(
+    dae_model: &dae::Dae,
+    backend: Backend,
+) -> Result<CompiledJacobianV, CompileError> {
+    match backend {
+        Backend::Cranelift => {
+            let layout = VarLayout::from_dae(dae_model);
+            let rows = crate::compiled::lower_initial_residual_ad(dae_model, &layout)?;
+            let jit = emit::compile_jacobian_rows(&rows)?;
+            Ok(CompiledJacobianV { jit })
+        }
+        #[cfg(feature = "wasm")]
+        Backend::Wasm => Err(CompileError::Input(
+            "WASM backend does not yet implement initial Jacobian-vector compilation".to_string(),
+        )),
+    }
+}
+
 fn compile_expression_rows(
     rows: Vec<Vec<crate::compiled::linear_op::LinearOp>>,
     backend: Backend,
@@ -193,8 +212,28 @@ pub fn compile_expressions(
     backend: Backend,
 ) -> Result<CompiledExpressionRows, CompileError> {
     let layout = VarLayout::from_dae(dae_model);
-    let rows = lower_expression_rows_from_expressions(expressions, &layout, &dae_model.functions)?;
+    let rows = lower_expression_rows_from_expressions_with_runtime_metadata(
+        expressions,
+        &layout,
+        &dae_model.functions,
+        &dae_model.clock_intervals,
+    )?;
     compile_expression_rows(rows, backend, "expression kernel")
+}
+
+pub fn compile_initial_expressions(
+    dae_model: &dae::Dae,
+    expressions: &[dae::Expression],
+    backend: Backend,
+) -> Result<CompiledExpressionRows, CompileError> {
+    let layout = VarLayout::from_dae(dae_model);
+    let rows = lower_initial_expression_rows_from_expressions_with_runtime_metadata(
+        expressions,
+        &layout,
+        &dae_model.functions,
+        &dae_model.clock_intervals,
+    )?;
+    compile_expression_rows(rows, backend, "initial-mode expression kernel")
 }
 
 pub fn compile_discrete_rhs(
@@ -217,7 +256,10 @@ pub fn compile_initial_residual(
 
 #[cfg(test)]
 mod tests {
-    use super::{Backend, compile_jacobian_v, compile_residual, compile_root_conditions};
+    use super::{
+        Backend, compile_expressions, compile_initial_expressions, compile_initial_jacobian_v,
+        compile_jacobian_v, compile_residual, compile_root_conditions,
+    };
     use crate::runtime::dual::Dual;
     use crate::runtime::eval::{
         VarEnv, build_env, eval_condition_as_root_dae as eval_condition_as_root,
@@ -234,6 +276,80 @@ mod tests {
             name: dae::VarName::new(name),
             subscripts: vec![],
         }
+    }
+
+    fn lit(value: f64) -> dae::Expression {
+        dae::Expression::Literal(dae::Literal::Real(value))
+    }
+
+    fn int_lit(value: i64) -> dae::Expression {
+        dae::Expression::Literal(dae::Literal::Integer(value))
+    }
+
+    fn arr(elements: Vec<dae::Expression>, is_matrix: bool) -> dae::Expression {
+        dae::Expression::Array {
+            elements,
+            is_matrix,
+        }
+    }
+
+    fn fn_call(name: &str, args: Vec<dae::Expression>) -> dae::Expression {
+        dae::Expression::FunctionCall {
+            name: dae::VarName::new(name),
+            args,
+            is_constructor: false,
+        }
+    }
+
+    fn simple_table_expr() -> dae::Expression {
+        arr(
+            vec![
+                arr(vec![lit(0.0), lit(10.0)], false),
+                arr(vec![lit(2.0), lit(14.0)], false),
+            ],
+            true,
+        )
+    }
+
+    fn columns_expr() -> dae::Expression {
+        arr(vec![int_lit(2)], false)
+    }
+
+    fn external_time_table_id() -> f64 {
+        let env = VarEnv::<f64>::new();
+        eval_expr::<f64>(
+            &fn_call(
+                "ExternalCombiTimeTable",
+                vec![
+                    lit(0.0),
+                    lit(0.0),
+                    simple_table_expr(),
+                    lit(0.0),
+                    columns_expr(),
+                    int_lit(1),
+                    int_lit(1),
+                ],
+            ),
+            &env,
+        )
+    }
+
+    fn external_table1d_id() -> f64 {
+        let env = VarEnv::<f64>::new();
+        eval_expr::<f64>(
+            &fn_call(
+                "ExternalCombiTable1D",
+                vec![
+                    lit(0.0),
+                    lit(0.0),
+                    simple_table_expr(),
+                    columns_expr(),
+                    int_lit(1),
+                    int_lit(1),
+                ],
+            ),
+            &env,
+        )
     }
 
     fn seed_duals_from_v(dae_model: &dae::Dae, env_dual: &mut VarEnv<Dual>, v: &[f64]) {
@@ -310,6 +426,25 @@ mod tests {
         let expected1 = eval_expr::<f64>(&dae_model.f_x[1].rhs, &env);
         assert!((out[0] - expected0).abs() <= 1e-12);
         assert!((out[1] - expected1).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn compile_expressions_zero_fill_missing_inputs_when_slice_is_short() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .states
+            .insert(dae::VarName::new("x"), scalar_var("x"));
+        dae_model
+            .algebraics
+            .insert(dae::VarName::new("z"), scalar_var("z"));
+
+        let compiled =
+            compile_expressions(&dae_model, &[expr_var("z")], Backend::Cranelift).expect("compile");
+        let mut out = vec![1.0; compiled.rows()];
+        compiled
+            .call(&[3.0], &[], 0.0, &mut out)
+            .expect("call compiled expression with short y slice");
+        assert_eq!(out, vec![0.0]);
     }
 
     #[test]
@@ -467,6 +602,259 @@ mod tests {
             .call(&[2.0], &[3.0], 0.0, &mut out)
             .expect("call compiled roots");
         assert_eq!(out, vec![1.0]);
+    }
+
+    #[test]
+    fn compile_expressions_supports_dynamic_subscripts_on_scalarized_enum_constants() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .discrete_valued
+            .insert(dae::VarName::new("xr"), scalar_var("xr"));
+        dae_model
+            .enum_literal_ordinals
+            .insert("Modelica.Electrical.Digital.Interfaces.Logic.U".into(), 1);
+        dae_model
+            .enum_literal_ordinals
+            .insert("Modelica.Electrical.Digital.Interfaces.Logic.1".into(), 4);
+        dae_model.constants.insert(
+            dae::VarName::new("LogicValues[1]"),
+            dae::Variable {
+                name: dae::VarName::new("LogicValues[1]"),
+                start: Some(dae::Expression::VarRef {
+                    name: dae::VarName::new("Modelica.Electrical.Digital.Interfaces.Logic.'U'"),
+                    subscripts: vec![],
+                }),
+                ..Default::default()
+            },
+        );
+        dae_model.constants.insert(
+            dae::VarName::new("LogicValues[2]"),
+            dae::Variable {
+                name: dae::VarName::new("LogicValues[2]"),
+                start: Some(dae::Expression::VarRef {
+                    name: dae::VarName::new("Modelica.Electrical.Digital.Interfaces.Logic.'1'"),
+                    subscripts: vec![],
+                }),
+                ..Default::default()
+            },
+        );
+
+        let expr = dae::Expression::VarRef {
+            name: dae::VarName::new("LogicValues"),
+            subscripts: vec![dae::Subscript::Expr(Box::new(expr_var("xr")))],
+        };
+        let compiled =
+            compile_expressions(&dae_model, &[expr], Backend::Cranelift).expect("compile exprs");
+        let mut out = vec![0.0; compiled.rows()];
+
+        compiled
+            .call(&[], &[1.0], 0.0, &mut out)
+            .expect("call compiled exprs for index 1");
+        assert_eq!(out, vec![1.0]);
+
+        compiled
+            .call(&[], &[2.0], 0.0, &mut out)
+            .expect("call compiled exprs for index 2");
+        assert_eq!(out, vec![4.0]);
+    }
+
+    #[test]
+    fn compile_expressions_support_table_bounds_helpers() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .parameters
+            .insert(dae::VarName::new("table_id"), scalar_var("table_id"));
+
+        let expressions = vec![
+            fn_call("getTimeTableTmin", vec![expr_var("table_id")]),
+            fn_call("getTimeTableTmax", vec![expr_var("table_id")]),
+        ];
+        let compiled =
+            compile_expressions(&dae_model, &expressions, Backend::Cranelift).expect("compile");
+        let table_id = external_time_table_id();
+        let mut out = vec![0.0; compiled.rows()];
+        compiled
+            .call(&[], &[table_id], 0.0, &mut out)
+            .expect("call compiled bounds helpers");
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 0.0).abs() < 1e-12);
+        assert!((out[1] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compile_expressions_support_interval_intrinsic_for_clocked_varref_metadata() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .discrete_reals
+            .insert(dae::VarName::new("PI.u"), scalar_var("PI.u"));
+        dae_model.clock_intervals.insert("PI.u".to_string(), 0.1);
+
+        let compiled = compile_expressions(
+            &dae_model,
+            &[fn_call("interval", vec![expr_var("PI.u")])],
+            Backend::Cranelift,
+        )
+        .expect("compile interval(varref)");
+        let mut out = vec![0.0; compiled.rows()];
+        compiled
+            .call(&[], &[], 0.0, &mut out)
+            .expect("call compiled interval(varref)");
+        // MLS §16.5.1: interval(v) uses the associated clock interval of v.
+        assert!((out[0] - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compile_expressions_support_complex_constructor_in_scalar_context() {
+        let dae_model = dae::Dae::default();
+        let compiled = compile_expressions(
+            &dae_model,
+            &[dae::Expression::FunctionCall {
+                name: dae::VarName::new("Complex"),
+                args: vec![lit(1.25), lit(-0.5)],
+                is_constructor: true,
+            }],
+            Backend::Cranelift,
+        )
+        .expect("compile Complex constructor");
+        let mut out = vec![0.0; compiled.rows()];
+        compiled
+            .call(&[], &[], 0.0, &mut out)
+            .expect("call compiled Complex constructor");
+        assert!((out[0] - 1.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compile_expressions_support_table_lookup_helpers() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .parameters
+            .insert(dae::VarName::new("table_id"), scalar_var("table_id"));
+
+        let expressions = vec![
+            fn_call(
+                "getTimeTableValueNoDer",
+                vec![expr_var("table_id"), int_lit(1), lit(1.0)],
+            ),
+            fn_call(
+                "getTable1DValueNoDer",
+                vec![expr_var("table_id"), int_lit(1), lit(1.0)],
+            ),
+        ];
+        let compiled =
+            compile_expressions(&dae_model, &expressions, Backend::Cranelift).expect("compile");
+        let time_table_id = external_time_table_id();
+        let table1d_id = external_table1d_id();
+        assert_eq!(compiled.rows(), 2);
+
+        let compiled_time = compile_expressions(
+            &dae_model,
+            &[fn_call(
+                "getTimeTableValueNoDer",
+                vec![expr_var("table_id"), int_lit(1), lit(1.0)],
+            )],
+            Backend::Cranelift,
+        )
+        .expect("compile time-table lookup");
+        let mut out_time = vec![0.0; compiled_time.rows()];
+        compiled_time
+            .call(&[], &[time_table_id], 0.0, &mut out_time)
+            .expect("call compiled time-table lookup");
+        assert!((out_time[0] - 12.0).abs() < 1e-12);
+
+        let compiled_1d = compile_expressions(
+            &dae_model,
+            &[fn_call(
+                "getTable1DValueNoDer",
+                vec![expr_var("table_id"), int_lit(1), lit(1.0)],
+            )],
+            Backend::Cranelift,
+        )
+        .expect("compile table1d lookup");
+        let mut out_1d = vec![0.0; compiled_1d.rows()];
+        compiled_1d
+            .call(&[], &[table1d_id], 0.0, &mut out_1d)
+            .expect("call compiled table1d lookup");
+        assert!((out_1d[0] - 12.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compile_expressions_support_time_table_next_event_helper() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .parameters
+            .insert(dae::VarName::new("table_id"), scalar_var("table_id"));
+
+        let expression = fn_call("getNextTimeEvent", vec![expr_var("table_id"), lit(0.0)]);
+        let compiled =
+            compile_expressions(&dae_model, &[expression], Backend::Cranelift).expect("compile");
+        let table_id = external_time_table_id();
+        let mut out = vec![0.0; compiled.rows()];
+        compiled
+            .call(&[], &[table_id], 0.0, &mut out)
+            .expect("call compiled next-event helper");
+        assert_eq!(out.len(), 1);
+        assert!((out[0] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compile_initial_expressions_treat_initial_builtin_as_true() {
+        let dae_model = dae::Dae::default();
+        let expression = dae::Expression::If {
+            branches: vec![(
+                dae::Expression::BuiltinCall {
+                    function: dae::BuiltinFunction::Initial,
+                    args: vec![],
+                },
+                lit(3.0),
+            )],
+            else_branch: Box::new(lit(-1.0)),
+        };
+        let compiled = compile_initial_expressions(&dae_model, &[expression], Backend::Cranelift)
+            .expect("compile initial-mode expressions");
+        let mut out = vec![0.0; compiled.rows()];
+        compiled
+            .call(&[], &[], 0.0, &mut out)
+            .expect("call compiled initial-mode expressions");
+        assert_eq!(out, vec![3.0]);
+    }
+
+    #[test]
+    fn compile_initial_jacobian_v_treats_initial_builtin_as_true() {
+        // MLS §8.6: initial() is true during initialization.
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .algebraics
+            .insert(dae::VarName::new("x"), scalar_var("x"));
+        dae_model.f_x.push(dae::Equation::residual(
+            dae::Expression::If {
+                branches: vec![(
+                    dae::Expression::BuiltinCall {
+                        function: dae::BuiltinFunction::Initial,
+                        args: vec![],
+                    },
+                    dae::Expression::Binary {
+                        op: rumoca_ir_core::OpBinary::Mul(Default::default()),
+                        lhs: Box::new(expr_var("x")),
+                        rhs: Box::new(expr_var("x")),
+                    },
+                )],
+                else_branch: Box::new(dae::Expression::Binary {
+                    op: rumoca_ir_core::OpBinary::Mul(Default::default()),
+                    lhs: Box::new(lit(3.0)),
+                    rhs: Box::new(expr_var("x")),
+                }),
+            },
+            Default::default(),
+            "initial jv row",
+        ));
+
+        let compiled =
+            compile_initial_jacobian_v(&dae_model, Backend::Cranelift).expect("compile initial jv");
+        let mut out = vec![0.0; 1];
+        compiled
+            .call(&[2.0], &[], 0.0, &[1.0], &mut out)
+            .expect("call compiled initial jv");
+        assert_eq!(out, vec![4.0]);
     }
 
     #[cfg(feature = "wasm")]

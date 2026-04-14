@@ -1,11 +1,12 @@
 use crate::equation_scalarize::scalarize_equations;
 use crate::simulation::dae_prepare::{
     demote_alias_states_without_der, demote_coupled_derivative_states,
-    demote_direct_assigned_states, demote_orphan_states_without_equation_refs,
-    demote_states_without_assignable_derivative_rows, demote_states_without_derivative_refs,
-    eliminate_derivative_aliases, expand_compound_derivatives,
-    index_reduce_missing_state_derivatives, normalize_ode_equation_signs,
-    promote_der_algebraics_to_states, substitute_standalone_state_derivatives_in_non_ode_rows,
+    demote_direct_assigned_states, demote_exact_alias_component_states,
+    demote_orphan_states_without_equation_refs, demote_states_without_assignable_derivative_rows,
+    demote_states_without_derivative_refs, eliminate_derivative_aliases,
+    expand_compound_derivatives, index_reduce_missing_state_derivatives,
+    normalize_ode_equation_signs, promote_der_algebraics_to_states,
+    substitute_standalone_state_derivatives_in_non_ode_rows,
 };
 use crate::simulation::introspection::trace_flow_array_alias_watch;
 use crate::simulation::pipeline::{PreparedSimulation, run_logged_phase};
@@ -25,6 +26,7 @@ struct RuntimeAliasSubstitution {
     var_name: VarName,
     expr: dae::Expression,
     equation_index: usize,
+    preserve_defining_equation: bool,
 }
 
 fn expr_contains_var_ref(expr: &dae::Expression, var_name: &VarName) -> bool {
@@ -95,6 +97,72 @@ fn expr_contains_any_event_or_clock_operator(expr: &dae::Expression) -> bool {
         }
         dae::Expression::FieldAccess { base, .. } => {
             expr_contains_any_event_or_clock_operator(base)
+        }
+        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {
+            false
+        }
+    }
+}
+
+fn expr_contains_branch_local_analog_operator(expr: &dae::Expression) -> bool {
+    match expr {
+        dae::Expression::BuiltinCall { function, args } => {
+            matches!(
+                function,
+                dae::BuiltinFunction::Homotopy
+                    | dae::BuiltinFunction::NoEvent
+                    | dae::BuiltinFunction::Smooth
+            ) || args.iter().any(expr_contains_branch_local_analog_operator)
+        }
+        dae::Expression::Binary { lhs, rhs, .. } => {
+            expr_contains_branch_local_analog_operator(lhs)
+                || expr_contains_branch_local_analog_operator(rhs)
+        }
+        dae::Expression::Unary { rhs, .. } => expr_contains_branch_local_analog_operator(rhs),
+        dae::Expression::FunctionCall { args, .. } => {
+            args.iter().any(expr_contains_branch_local_analog_operator)
+        }
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, val)| {
+                expr_contains_branch_local_analog_operator(cond)
+                    || expr_contains_branch_local_analog_operator(val)
+            }) || expr_contains_branch_local_analog_operator(else_branch)
+        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => elements
+            .iter()
+            .any(expr_contains_branch_local_analog_operator),
+        dae::Expression::Range { start, step, end } => {
+            expr_contains_branch_local_analog_operator(start)
+                || step
+                    .as_deref()
+                    .is_some_and(expr_contains_branch_local_analog_operator)
+                || expr_contains_branch_local_analog_operator(end)
+        }
+        dae::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expr_contains_branch_local_analog_operator(expr)
+                || indices
+                    .iter()
+                    .any(|idx| expr_contains_branch_local_analog_operator(&idx.range))
+                || filter
+                    .as_deref()
+                    .is_some_and(expr_contains_branch_local_analog_operator)
+        }
+        dae::Expression::Index { base, subscripts } => {
+            expr_contains_branch_local_analog_operator(base)
+                || subscripts.iter().any(|sub| match sub {
+                    dae::Subscript::Expr(expr) => expr_contains_branch_local_analog_operator(expr),
+                    _ => false,
+                })
+        }
+        dae::Expression::FieldAccess { base, .. } => {
+            expr_contains_branch_local_analog_operator(base)
         }
         dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {
             false
@@ -256,6 +324,23 @@ fn apply_runtime_alias_substitutions_expr(
     out
 }
 
+fn dae_has_runtime_surfaces(dae: &Dae) -> bool {
+    !dae.f_z.is_empty()
+        || !dae.f_m.is_empty()
+        || !dae.f_c.is_empty()
+        || !dae.relation.is_empty()
+        || !dae.synthetic_root_conditions.is_empty()
+        || !dae.clock_constructor_exprs.is_empty()
+}
+
+fn runtime_alias_target_size(dae: &Dae, target_name: &VarName) -> Option<usize> {
+    if let Some(var) = dae.algebraics.get(target_name) {
+        return Some(var.size());
+    }
+    let var = dae.outputs.get(target_name)?;
+    (!dae_has_runtime_surfaces(dae)).then_some(var.size())
+}
+
 fn build_runtime_alias_substitutions(dae: &Dae) -> Vec<RuntimeAliasSubstitution> {
     let mut substitutions = Vec::new();
     let runtime_defined_discrete_targets: std::collections::HashSet<String> = dae
@@ -275,7 +360,7 @@ fn build_runtime_alias_substitutions(dae: &Dae) -> Vec<RuntimeAliasSubstitution>
         let Some(target_name) = extract_runtime_assignment_target_name(&eq.rhs) else {
             continue;
         };
-        let Some(_target_size) = dae.algebraics.get(&target_name).map(|var| var.size()) else {
+        let Some(_target_size) = runtime_alias_target_size(dae, &target_name) else {
             continue;
         };
         if runtime_defined_discrete_targets.contains(target_name.as_str()) {
@@ -294,7 +379,21 @@ fn build_runtime_alias_substitutions(dae: &Dae) -> Vec<RuntimeAliasSubstitution>
             var_name: target_name,
             expr: solution,
             equation_index: eq_idx,
+            preserve_defining_equation: false,
         });
+    }
+    let snapshot = substitutions.clone();
+    for sub in &mut substitutions {
+        // MLS §3.7.4.4 and §3.7.5: branch-local analog helpers that remain
+        // live inside homotopy/smooth/noEvent expressions must keep a real
+        // defining constraint after alias normalization.
+        sub.preserve_defining_equation =
+            expr_lists_reference_var_in_branch_local_analog_context_after_substitution_excluding_f_x_equation(
+                dae,
+                &sub.var_name,
+                sub.equation_index,
+                &snapshot,
+            );
     }
     substitutions
 }
@@ -323,8 +422,13 @@ fn apply_runtime_alias_substitutions(dae: &mut Dae, substitutions: &[RuntimeAlia
     if substitutions.is_empty() {
         return;
     }
-    for eq in &mut dae.f_x {
-        eq.rhs = apply_runtime_alias_substitutions_expr(&eq.rhs, substitutions);
+    for (eq_idx, eq) in dae.f_x.iter_mut().enumerate() {
+        let filtered = substitutions
+            .iter()
+            .filter(|sub| !(sub.preserve_defining_equation && sub.equation_index == eq_idx))
+            .cloned()
+            .collect::<Vec<_>>();
+        eq.rhs = apply_runtime_alias_substitutions_expr(&eq.rhs, &filtered);
     }
     for eq in &mut dae.f_z {
         eq.rhs = apply_runtime_alias_substitutions_expr(&eq.rhs, substitutions);
@@ -376,6 +480,58 @@ fn expr_lists_reference_var(dae: &Dae, var_name: &VarName) -> bool {
             .any(|expr| expr_contains_var_ref(expr, var_name))
 }
 
+fn expr_lists_reference_var_in_branch_local_analog_context_after_substitution_excluding_f_x_equation(
+    dae: &Dae,
+    var_name: &VarName,
+    excluded_index: usize,
+    substitutions: &[RuntimeAliasSubstitution],
+) -> bool {
+    dae.f_x.iter().enumerate().any(|(idx, eq)| {
+        idx != excluded_index
+            && expr_contains_branch_local_analog_operator(&eq.rhs)
+            && expr_contains_var_ref(
+                &apply_runtime_alias_substitutions_expr(&eq.rhs, substitutions),
+                var_name,
+            )
+    }) || dae.f_z.iter().any(|eq| {
+        expr_contains_branch_local_analog_operator(&eq.rhs)
+            && expr_contains_var_ref(
+                &apply_runtime_alias_substitutions_expr(&eq.rhs, substitutions),
+                var_name,
+            )
+    }) || dae.f_m.iter().any(|eq| {
+        expr_contains_branch_local_analog_operator(&eq.rhs)
+            && expr_contains_var_ref(
+                &apply_runtime_alias_substitutions_expr(&eq.rhs, substitutions),
+                var_name,
+            )
+    }) || dae.f_c.iter().any(|eq| {
+        expr_contains_branch_local_analog_operator(&eq.rhs)
+            && expr_contains_var_ref(
+                &apply_runtime_alias_substitutions_expr(&eq.rhs, substitutions),
+                var_name,
+            )
+    }) || dae.relation.iter().any(|expr| {
+        expr_contains_branch_local_analog_operator(expr)
+            && expr_contains_var_ref(
+                &apply_runtime_alias_substitutions_expr(expr, substitutions),
+                var_name,
+            )
+    }) || dae.synthetic_root_conditions.iter().any(|expr| {
+        expr_contains_branch_local_analog_operator(expr)
+            && expr_contains_var_ref(
+                &apply_runtime_alias_substitutions_expr(expr, substitutions),
+                var_name,
+            )
+    }) || dae.clock_constructor_exprs.iter().any(|expr| {
+        expr_contains_branch_local_analog_operator(expr)
+            && expr_contains_var_ref(
+                &apply_runtime_alias_substitutions_expr(expr, substitutions),
+                var_name,
+            )
+    })
+}
+
 fn apply_runtime_alias_substitutions_to_elimination(
     elim: &mut eliminate::EliminationResult,
     substitutions: &[RuntimeAliasSubstitution],
@@ -386,6 +542,19 @@ fn apply_runtime_alias_substitutions_to_elimination(
     for sub in &mut elim.substitutions {
         sub.expr = apply_runtime_alias_substitutions_expr(&sub.expr, substitutions);
     }
+}
+
+fn runtime_alias_reconstruction_substitutions(
+    substitutions: &[RuntimeAliasSubstitution],
+) -> Vec<rumoca_phase_solve::eliminate::Substitution> {
+    substitutions
+        .iter()
+        .map(|sub| rumoca_phase_solve::eliminate::Substitution {
+            var_name: sub.var_name.clone(),
+            expr: sub.expr.clone(),
+            env_keys: vec![sub.var_name.as_str().to_string()],
+        })
+        .collect()
 }
 
 fn normalize_runtime_aliases_collect(dae: &mut Dae) -> (usize, Vec<RuntimeAliasSubstitution>) {
@@ -402,7 +571,6 @@ fn normalize_runtime_aliases_collect(dae: &mut Dae) -> (usize, Vec<RuntimeAliasS
             continue;
         }
         dae.algebraics.shift_remove(&sub.var_name);
-        dae.outputs.shift_remove(&sub.var_name);
         removable_eq_indices.push(sub.equation_index);
         removed += 1;
     }
@@ -538,7 +706,7 @@ pub(super) fn run_prepare_structure_passes(
     })?;
     debug_print_after_expand(dae);
 
-    run_logged_phase(trace, "eliminate_derivative_aliases(phase1b)", || {
+    run_logged_phase(trace, "eliminate_derivative_aliases(phase1b2)", || {
         run_timeout_step(budget, || eliminate_derivative_aliases(dae))
     })?;
 
@@ -921,6 +1089,10 @@ fn normalize_runtime_aliases_and_update_elim(
 ) {
     let (n_normalized, runtime_alias_substitutions) = normalize_runtime_aliases_collect(dae);
     apply_runtime_alias_substitutions_to_elimination(elim, &runtime_alias_substitutions);
+    elim.substitutions
+        .extend(runtime_alias_reconstruction_substitutions(
+            &runtime_alias_substitutions,
+        ));
     if trace && n_normalized > 0 {
         eprintln!(
             "[sim-trace] normalized {} runtime alias variables into core-state equations/events",
@@ -971,8 +1143,22 @@ fn prepare_dae_core(
     }
 
     let mut dae = dae.clone();
+    let mut n_demoted_exact_alias_states = 0usize;
+    run_logged_phase(trace, "demote_exact_alias_component_states(phase0)", || {
+        run_timeout_step(budget, || {
+            // MLS §8 equations and connector-generated equalities are
+            // exact alias constraints. Run duplicate-state demotion before
+            // trivial elimination erases those alias edges.
+            n_demoted_exact_alias_states = demote_exact_alias_component_states(&mut dae);
+        })
+    })?;
+    if n_demoted_exact_alias_states > 0 {
+        eprintln!(
+            "[prepare_dae] demoted {} exact-alias duplicate states",
+            n_demoted_exact_alias_states
+        );
+    }
     let disable_trivial_elim = std::env::var("RUMOCA_SIM_DISABLE_TRIVIAL_ELIM").is_ok();
-
     budget.check()?;
     let mut elim = run_trivial_elimination_phase(&mut dae, trace, disable_trivial_elim);
     budget.check()?;
@@ -1133,6 +1319,13 @@ mod tests {
         }
     }
 
+    fn der(name: &str) -> dae::Expression {
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Der,
+            args: vec![var(name)],
+        }
+    }
+
     #[test]
     fn test_normalize_runtime_aliases_rewrites_event_surfaces_to_core_states() {
         let mut dae = Dae::new();
@@ -1214,6 +1407,162 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_runtime_aliases_preserves_continuous_only_outputs() {
+        let mut dae = Dae::new();
+        dae.states
+            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        dae.outputs
+            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+
+        dae.f_x.push(eq(sub(der("x"), add(var("y"), int(1)))));
+        dae.f_x.push(eq(sub(var("y"), var("x"))));
+
+        let normalized = normalize_runtime_aliases_collect(&mut dae).0;
+        assert_eq!(
+            normalized, 1,
+            "expected continuous output aliases to normalize"
+        );
+        assert!(
+            dae.outputs.contains_key(&VarName::new("y")),
+            "visible outputs should stay declared after alias normalization"
+        );
+        assert_eq!(
+            dae.f_x.len(),
+            1,
+            "alias rows should be removed after rewrite"
+        );
+        assert!(
+            dae.f_x
+                .iter()
+                .any(|eq| expr_contains_var_ref(&eq.rhs, &VarName::new("x"))),
+            "remaining equations should reference the structural source"
+        );
+    }
+
+    #[test]
+    fn test_normalize_runtime_aliases_updates_elim_for_continuous_only_outputs() {
+        let mut dae = Dae::new();
+        dae.states
+            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        dae.outputs
+            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        dae.f_x.push(eq(sub(der("x"), add(var("y"), int(1)))));
+        dae.f_x.push(eq(sub(var("y"), var("x"))));
+
+        let mut elim = eliminate::EliminationResult::default();
+        normalize_runtime_aliases_and_update_elim(&mut dae, &mut elim, false);
+
+        assert!(
+            elim.substitutions.iter().any(|sub| {
+                sub.var_name == VarName::new("y")
+                    && expr_contains_var_ref(&sub.expr, &VarName::new("x"))
+            }),
+            "normalized visible outputs must remain reconstructible after prepare"
+        );
+    }
+
+    #[test]
+    fn test_normalize_runtime_aliases_keeps_output_used_by_runtime_surfaces() {
+        let mut dae = Dae::new();
+        dae.states
+            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        dae.outputs
+            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+
+        dae.f_x.push(eq(sub(var("y"), var("x"))));
+        let root = lt(var("y"), int(0));
+        dae.relation.push(root.clone());
+        dae.f_c.push(eq(root));
+
+        let normalized = normalize_runtime_aliases_collect(&mut dae).0;
+        assert_eq!(normalized, 0, "root-facing output alias must stay intact");
+        assert!(dae.outputs.contains_key(&VarName::new("y")));
+        assert_eq!(dae.f_x.len(), 1);
+    }
+
+    #[test]
+    fn test_runtime_alias_substitution_keeps_defining_row_for_branch_local_helper() {
+        let mut dae = Dae::new();
+        dae.algebraics
+            .insert(VarName::new("u"), dae::Variable::new(VarName::new("u")));
+        dae.algebraics
+            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        dae.algebraics
+            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+
+        dae.f_x.push(dae::Equation::residual(
+            sub(var("u"), var("x")),
+            Span::DUMMY,
+            "binding equation for u",
+        ));
+        dae.f_x.push(dae::Equation::residual(
+            sub(
+                var("y"),
+                dae::Expression::BuiltinCall {
+                    function: dae::BuiltinFunction::Homotopy,
+                    args: vec![var("x"), var("u")],
+                },
+            ),
+            Span::DUMMY,
+            "equation from y",
+        ));
+
+        let substitutions = build_runtime_alias_substitutions(&dae);
+        let u_sub = substitutions
+            .iter()
+            .find(|sub| sub.var_name == VarName::new("u"))
+            .expect("u substitution");
+        assert!(u_sub.preserve_defining_equation);
+
+        apply_runtime_alias_substitutions(&mut dae, std::slice::from_ref(u_sub));
+
+        assert!(
+            expr_contains_var_ref(&dae.f_x[0].rhs, &VarName::new("u")),
+            "branch-local helper must keep its defining row"
+        );
+        assert!(
+            !expr_contains_var_ref(&dae.f_x[1].rhs, &VarName::new("u")),
+            "other equations should still rewrite to the structural source"
+        );
+    }
+
+    #[test]
+    fn test_runtime_alias_substitution_does_not_keep_plain_surviving_alias_rows() {
+        let mut dae = Dae::new();
+        dae.algebraics
+            .insert(VarName::new("u"), dae::Variable::new(VarName::new("u")));
+        dae.algebraics
+            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        dae.algebraics
+            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+
+        dae.f_x.push(dae::Equation::residual(
+            sub(var("u"), var("x")),
+            Span::DUMMY,
+            "binding equation for u",
+        ));
+        dae.f_x.push(dae::Equation::residual(
+            sub(var("y"), add(var("x"), var("u"))),
+            Span::DUMMY,
+            "equation from y",
+        ));
+
+        let substitutions = build_runtime_alias_substitutions(&dae);
+        let u_sub = substitutions
+            .iter()
+            .find(|sub| sub.var_name == VarName::new("u"))
+            .expect("u substitution");
+        assert!(!u_sub.preserve_defining_equation);
+
+        apply_runtime_alias_substitutions(&mut dae, std::slice::from_ref(u_sub));
+
+        assert!(
+            !expr_contains_var_ref(&dae.f_x[0].rhs, &VarName::new("u")),
+            "plain surviving aliases should still collapse"
+        );
+    }
+
+    #[test]
     fn test_substitute_standalone_state_derivatives_rewrites_non_ode_rows() {
         let mut dae = Dae::new();
         dae.states
@@ -1255,6 +1604,105 @@ mod tests {
             expr_contains_var_ref(&dae.f_x[1].rhs, &VarName::new("z")),
             "rewritten non-ODE row should reference the selected derivative expression"
         );
+    }
+
+    #[test]
+    fn test_exact_alias_state_demotion_runs_before_trivial_elimination() {
+        let mut dae = Dae::new();
+        let mut x = dae::Variable::new(VarName::new("x"));
+        x.fixed = Some(true);
+        x.start = Some(int(0));
+        dae.states.insert(VarName::new("x"), x);
+        dae.states
+            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        dae.algebraics
+            .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        dae.algebraics
+            .insert(VarName::new("vx"), dae::Variable::new(VarName::new("vx")));
+        dae.algebraics
+            .insert(VarName::new("vy"), dae::Variable::new(VarName::new("vy")));
+
+        // MLS §8 simple equalities define one exact alias component here:
+        // x = a and y = a. The state-selection pass must see that component
+        // before trivial elimination removes one of the alias edges.
+        dae.f_x.push(eq(sub(var("x"), var("a"))));
+        dae.f_x.push(eq(sub(var("y"), var("a"))));
+        dae.f_x.push(eq(sub(var("vx"), der("x"))));
+        dae.f_x.push(eq(sub(var("vy"), der("y"))));
+        dae.f_x.push(eq(sub(var("a"), int(0))));
+
+        let demoted = demote_exact_alias_component_states(&mut dae);
+        assert_eq!(
+            demoted, 1,
+            "exact alias demotion should fire before elimination"
+        );
+
+        let _elim = run_trivial_elimination_phase(&mut dae, false, false);
+
+        assert!(
+            dae.states.contains_key(&VarName::new("x")),
+            "canonical fixed/start state should be retained"
+        );
+        assert!(
+            !dae.states.contains_key(&VarName::new("y")),
+            "duplicate exact-alias state should be demoted before trivial elimination"
+        );
+        assert!(
+            dae.f_x
+                .iter()
+                .all(|eq| !crate::simulation::dae_prepare::expr_contains_der_of(
+                    &eq.rhs,
+                    &VarName::new("y")
+                )),
+            "later prepare passes must not keep der(demoted_state) alive after exact alias demotion"
+        );
+    }
+
+    #[test]
+    fn test_alias_state_demotion_only_handles_remaining_state_non_state_aliases() {
+        let mut dae = Dae::new();
+        dae.states
+            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        dae.states
+            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        dae.algebraics
+            .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+        dae.algebraics
+            .insert(VarName::new("vx"), dae::Variable::new(VarName::new("vx")));
+
+        // Phase 0 should collapse the exact alias component x = a = y first.
+        dae.f_x.push(eq(sub(var("x"), var("a"))));
+        dae.f_x.push(eq(sub(var("y"), var("a"))));
+        dae.f_x.push(eq(sub(var("vx"), der("x"))));
+
+        let exact_demoted = demote_exact_alias_component_states(&mut dae);
+        assert_eq!(exact_demoted, 1, "exact alias phase should pick one state");
+        assert!(dae.states.contains_key(&VarName::new("x")));
+        assert!(!dae.states.contains_key(&VarName::new("y")));
+
+        // Phase 1e should not try to demote the remaining state-to-state case
+        // again; only the surviving state-to-non-state alias remains, and x has
+        // a standalone derivative row so it must stay a state.
+        let alias_demoted = demote_alias_states_without_der(&mut dae);
+        assert_eq!(alias_demoted, 0);
+        assert!(dae.states.contains_key(&VarName::new("x")));
+    }
+
+    #[test]
+    fn test_alias_state_demotion_demotes_state_non_state_no_der_case() {
+        let mut dae = Dae::new();
+        dae.states
+            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        dae.algebraics
+            .insert(VarName::new("a"), dae::Variable::new(VarName::new("a")));
+
+        dae.f_x.push(eq(sub(var("x"), var("a"))));
+        dae.f_x.push(eq(sub(var("a"), int(0))));
+
+        let alias_demoted = demote_alias_states_without_der(&mut dae);
+        assert_eq!(alias_demoted, 1);
+        assert!(!dae.states.contains_key(&VarName::new("x")));
+        assert!(dae.algebraics.contains_key(&VarName::new("x")));
     }
 
     #[test]

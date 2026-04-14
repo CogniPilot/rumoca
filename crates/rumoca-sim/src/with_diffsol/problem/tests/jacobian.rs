@@ -1,3 +1,4 @@
+use super::jacobian_and_newton::{jacobian_ad, jacobian_fd};
 use super::*;
 
 /// Helper: compare two Jacobian matrices entry-by-entry.

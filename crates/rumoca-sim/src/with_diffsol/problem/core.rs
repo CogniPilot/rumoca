@@ -6,6 +6,8 @@ pub(super) struct InitJacobianEvalContext<'a> {
     pub(super) t_eval: f64,
     pub(super) n_x: usize,
     pub(super) use_initial: bool,
+    pub(super) compiled_initial: Option<&'a CompiledInitialNewtonContext>,
+    pub(super) compiled_runtime: Option<&'a CompiledRuntimeNewtonContext>,
 }
 
 pub(super) fn eval_init_jacobian_vector(
@@ -14,476 +16,25 @@ pub(super) fn eval_init_jacobian_vector(
     out: &mut [f64],
 ) {
     if ctx.use_initial {
-        eval_jacobian_vector_ad_initial(ctx.dae, ctx.y, ctx.p, ctx.t_eval, v, out, ctx.n_x);
+        // MLS §8.6: initial() is true during the initialization phase, so the
+        // IC Jacobian must come from initial-mode compiled kernels.
+        let compiled_initial = ctx
+            .compiled_initial
+            .expect("compiled initial Newton context required for initial Jacobian evaluation");
+        eval_compiled_initial_jacobian(compiled_initial, ctx.y, ctx.p, ctx.t_eval, v, out);
     } else {
-        eval_jacobian_vector_ad(ctx.dae, ctx.y, ctx.p, ctx.t_eval, v, out, ctx.n_x);
+        let compiled_runtime = ctx
+            .compiled_runtime
+            .expect("compiled runtime Newton context required for non-initial Jacobian evaluation");
+        eval_compiled_runtime_jacobian(compiled_runtime, ctx.y, ctx.p, ctx.t_eval, v, out);
     }
 }
 
-pub(super) fn build_param_env(dae: &Dae) -> VarEnv<f64> {
-    let mut env = VarEnv::<f64>::new();
-
-    if !dae.functions.is_empty() {
-        env.functions = std::sync::Arc::new(rumoca_eval_dae::runtime::collect_user_functions(dae));
-    }
-
-    env.dims = std::sync::Arc::new(rumoca_eval_dae::runtime::collect_var_dims(dae));
-    env.start_exprs = std::sync::Arc::new(rumoca_eval_dae::runtime::collect_var_starts(dae));
-    env.enum_literal_ordinals = std::sync::Arc::new(dae.enum_literal_ordinals.clone());
-
-    for &(fqn, value) in rumoca_eval_dae::runtime::MODELICA_CONSTANTS {
-        env.set(fqn, value);
-    }
-
-    for _ in 0..2 {
-        for (name, var) in &dae.constants {
-            let Some(start) = var.start.as_ref() else {
-                continue;
-            };
-            let size = var.size();
-            if size <= 1 {
-                env.set(name.as_str(), eval_expr::<f64>(start, &env));
-                continue;
-            }
-            let raw = if matches!(start, Expression::Array { .. }) {
-                eval_array_values::<f64>(start, &env)
-            } else {
-                vec![eval_expr::<f64>(start, &env); size]
-            };
-            let values = expand_values_to_size(raw, size);
-            set_array_entries(&mut env, name.as_str(), &var.dims, &values);
-        }
-    }
-
-    for (name, var) in &dae.parameters {
-        let sz = var.size();
-        if sz <= 1 {
-            let val = var
-                .start
-                .as_ref()
-                .map(|expr| eval_expr::<f64>(expr, &env))
-                .unwrap_or(0.0);
-            env.set(name.as_str(), val);
-        } else {
-            let vals = eval_var_start_values(var, &env);
-            set_array_entries(&mut env, name.as_str(), &var.dims, &vals);
-        }
-    }
-
-    for (name, var) in &dae.parameters {
-        let sz = var.size();
-        if sz <= 1 {
-            let val = var
-                .start
-                .as_ref()
-                .map(|expr| eval_expr::<f64>(expr, &env))
-                .unwrap_or(0.0);
-            env.set(name.as_str(), val);
-        } else {
-            let vals = eval_var_start_values(var, &env);
-            set_array_entries(&mut env, name.as_str(), &var.dims, &vals);
-        }
-    }
-
-    env
-}
-
-pub(super) fn extract_direct_assignment(rhs: &Expression) -> Option<(String, &Expression)> {
-    crate::runtime::assignment::extract_direct_assignment(rhs)
-}
-
-fn direct_assignment_from_equation(eq: &Equation) -> Option<(String, &Expression)> {
-    crate::runtime::assignment::direct_assignment_from_equation(eq)
-}
-
-pub(crate) fn apply_initial_section_assignments(
-    dae: &Dae,
-    y: &mut [f64],
-    p: &[f64],
-    t_eval: f64,
-) -> usize {
-    crate::apply_initial_section_assignments(dae, y, p, t_eval)
-}
-
-pub(super) fn solver_idx_for_target(
-    target: &str,
-    name_to_idx: &HashMap<String, usize>,
-) -> Option<usize> {
-    crate::runtime::layout::solver_idx_for_target(target, name_to_idx)
-}
-
-pub(super) fn log_ic_direct_seed(name: &str, value: f64) {
-    if sim_introspect_enabled() {
-        eprintln!("[sim-introspect] IC direct seed {} = {}", name, value);
-    }
-}
+#[path = "seed.rs"]
+mod seed;
+pub(crate) use seed::*;
 
 #[cfg(test)]
-pub(crate) fn apply_discrete_partition_updates(dae: &Dae, env: &mut VarEnv<f64>) -> bool {
-    crate::runtime::discrete::apply_discrete_partition_updates(dae, env)
-}
-
-pub(super) fn apply_seeded_values_to_indices(
-    y: &mut [f64],
-    env: &mut VarEnv<f64>,
-    names: &[String],
-    indices: &[usize],
-    values: &[f64],
-    n_x: usize,
-) -> (bool, usize) {
-    crate::runtime::assignment::apply_seeded_values_to_indices(
-        y,
-        env,
-        names,
-        indices,
-        values,
-        n_x,
-        log_ic_direct_seed,
-    )
-}
-
-#[cfg(test)]
-fn apply_runtime_values_to_indices(
-    y: &mut [f64],
-    env: &mut VarEnv<f64>,
-    names: &[String],
-    indices: &[usize],
-    values: &[f64],
-    n_x: usize,
-) -> (bool, usize) {
-    crate::runtime::assignment::apply_runtime_values_to_indices(y, env, names, indices, values, n_x)
-}
-
-#[cfg(test)]
-pub(super) fn build_runtime_alias_adjacency(dae: &Dae, n_x: usize) -> HashMap<String, Vec<String>> {
-    crate::runtime::alias::build_runtime_alias_adjacency_with_known_assignments(dae, n_x)
-}
-
-#[cfg(test)]
-pub(super) fn collect_runtime_alias_anchor_names(dae: &Dae, n_x: usize) -> HashSet<String> {
-    crate::runtime::alias::collect_runtime_alias_anchor_names(dae, n_x)
-}
-
-#[cfg(test)]
-pub(crate) fn propagate_runtime_alias_components_from_env(
-    dae: &Dae,
-    y: &mut [f64],
-    n_x: usize,
-    env: &mut VarEnv<f64>,
-) -> usize {
-    crate::runtime::alias::propagate_runtime_alias_components_from_env(dae, y, n_x, env)
-}
-
-pub(super) fn seed_direct_assignment_initial_values(
-    dae: &Dae,
-    y: &mut [f64],
-    p: &[f64],
-    n_x: usize,
-    use_initial: bool,
-    t_eval: f64,
-) -> usize {
-    seed_direct_assignment_initial_values_with_overrides(
-        dae,
-        y,
-        p,
-        n_x,
-        None,
-        DirectAssignmentSeedOptions {
-            use_initial,
-            t_eval,
-            skip_unknown_alias_pairs: false,
-            allow_unsolved_solver_sources: false,
-        },
-    )
-}
-
-pub(super) fn seed_runtime_direct_assignment_values(
-    dae: &Dae,
-    y: &mut [f64],
-    p: &[f64],
-    n_x: usize,
-    t_eval: f64,
-) -> usize {
-    seed_direct_assignment_initial_values_with_overrides(
-        dae,
-        y,
-        p,
-        n_x,
-        None,
-        DirectAssignmentSeedOptions {
-            use_initial: false,
-            t_eval,
-            skip_unknown_alias_pairs: true,
-            allow_unsolved_solver_sources: true,
-        },
-    )
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct DirectAssignmentSeedOptions {
-    pub(super) use_initial: bool,
-    pub(super) t_eval: f64,
-    pub(super) skip_unknown_alias_pairs: bool,
-    pub(super) allow_unsolved_solver_sources: bool,
-}
-
-type SolverNameIndexMaps = crate::runtime::layout::SolverNameIndexMaps;
-
-fn build_solver_name_index_maps(dae: &Dae, y_len: usize) -> SolverNameIndexMaps {
-    crate::runtime::layout::build_solver_name_index_maps(dae, y_len)
-}
-
-fn apply_seed_env_overrides(env: &mut VarEnv<f64>, seed_env: Option<&VarEnv<f64>>) {
-    let Some(seed_env) = seed_env else {
-        return;
-    };
-    for (name, value) in &seed_env.vars {
-        env.set(name, *value);
-    }
-}
-
-struct DirectSeedPassContext<'a> {
-    dae: &'a Dae,
-    n_x: usize,
-    y_len: usize,
-    options: DirectAssignmentSeedOptions,
-    names: &'a [String],
-    name_to_idx: &'a HashMap<String, usize>,
-    base_to_indices: &'a HashMap<String, Vec<usize>>,
-    target_assignment_stats:
-        &'a HashMap<String, crate::runtime::assignment::DirectAssignmentTargetStats>,
-}
-
-fn apply_seed_direct_assignment_equation(
-    ctx: &DirectSeedPassContext<'_>,
-    eq: &Equation,
-    y: &mut [f64],
-    env: &mut VarEnv<f64>,
-) -> (bool, usize) {
-    if eq.origin == "orphaned_variable_pin" {
-        return (false, 0);
-    }
-    let Some((target, solution)) = direct_assignment_from_equation(eq) else {
-        return (false, 0);
-    };
-    let is_alias_solution =
-        crate::runtime::assignment::assignment_solution_is_alias_varref(ctx.dae, solution);
-    if ctx.options.skip_unknown_alias_pairs && is_alias_solution {
-        return (false, 0);
-    }
-    let source_known = crate::runtime::assignment::direct_assignment_source_is_known(
-        ctx.dae,
-        solution,
-        ctx.n_x,
-        ctx.y_len,
-        |target| solver_idx_for_target(target, ctx.name_to_idx),
-    );
-    let trace_target = should_trace_direct_seed_target(target.as_str());
-    if trace_target {
-        eprintln!(
-            "[sim-introspect] runtime direct seed candidate target={} source_known={} allow_unsolved={}",
-            target, source_known, ctx.options.allow_unsolved_solver_sources
-        );
-    }
-    let target_stats = ctx
-        .target_assignment_stats
-        .get(target.as_str())
-        .copied()
-        .unwrap_or_default();
-    if target_stats.total > 1 && target_stats.non_alias != 1 {
-        log_runtime_direct_seed_skip_multiple_assignments(
-            trace_target,
-            target.as_str(),
-            target_stats.total,
-        );
-        return (false, 0);
-    }
-    if target_stats.total > 1 && target_stats.non_alias == 1 && is_alias_solution {
-        return (false, 0);
-    }
-    if !source_known && !ctx.options.allow_unsolved_solver_sources {
-        return (false, 0);
-    }
-
-    if !target.contains('[')
-        && let Some(indices) = ctx.base_to_indices.get(target.as_str())
-        && indices.len() > 1
-    {
-        let values = evaluate_direct_assignment_values(solution, env, indices.len());
-        let (branch_changed, branch_updates) =
-            apply_seeded_values_to_indices(y, env, ctx.names, indices, &values, ctx.n_x);
-        return (branch_changed, branch_updates);
-    }
-
-    let Some(var_idx) = solver_idx_for_target(target.as_str(), ctx.name_to_idx) else {
-        log_runtime_direct_seed_skip_no_solver_index(trace_target, target.as_str());
-        return (false, 0);
-    };
-    if var_idx < ctx.n_x || var_idx >= y.len() {
-        return (false, 0);
-    }
-
-    let value = clamp_finite(eval_expr::<f64>(solution, env));
-    if trace_target {
-        eprintln!(
-            "[sim-introspect] runtime direct seed eval target={} idx={} value={}",
-            target, var_idx, value
-        );
-    }
-    if (y[var_idx] - value).abs() <= 1e-12 {
-        return (false, 0);
-    }
-
-    y[var_idx] = value;
-    if let Some(name) = ctx.names.get(var_idx) {
-        env.set(name, value);
-        log_ic_direct_seed(name, value);
-    }
-    (true, 1)
-}
-
-pub(super) fn seed_direct_assignment_initial_values_with_overrides(
-    dae: &Dae,
-    y: &mut [f64],
-    p: &[f64],
-    n_x: usize,
-    seed_env: Option<&VarEnv<f64>>,
-    options: DirectAssignmentSeedOptions,
-) -> usize {
-    if dae.f_x.len() <= n_x || y.is_empty() {
-        return 0;
-    }
-
-    let SolverNameIndexMaps {
-        names,
-        name_to_idx,
-        base_to_indices,
-    } = build_solver_name_index_maps(dae, y.len());
-    let target_assignment_stats =
-        crate::runtime::assignment::collect_direct_assignment_target_stats(
-            dae,
-            n_x,
-            options.skip_unknown_alias_pairs,
-        );
-    let pass_ctx = DirectSeedPassContext {
-        dae,
-        n_x,
-        y_len: y.len(),
-        options,
-        names: &names,
-        name_to_idx: &name_to_idx,
-        base_to_indices: &base_to_indices,
-        target_assignment_stats: &target_assignment_stats,
-    };
-
-    let mut updates = 0usize;
-    let max_passes = y.len().max(4);
-    for _ in 0..max_passes {
-        let mut changed = false;
-        let mut env = build_env(dae, y, p, options.t_eval);
-        env.is_initial = options.use_initial;
-        apply_seed_env_overrides(&mut env, seed_env);
-        populate_missing_direct_assignment_targets_in_env(dae, &mut env, n_x);
-
-        for eq in dae.f_x.iter().skip(n_x) {
-            let (eq_changed, eq_updates) =
-                apply_seed_direct_assignment_equation(&pass_ctx, eq, y, &mut env);
-            changed |= eq_changed;
-            updates += eq_updates;
-        }
-
-        if !changed {
-            break;
-        }
-    }
-    updates
-}
-
-#[cfg(test)]
-pub(crate) fn propagate_runtime_direct_assignments_from_env(
-    dae: &Dae,
-    y: &mut [f64],
-    n_x: usize,
-    env: &mut VarEnv<f64>,
-) -> usize {
-    if dae.f_x.len() <= n_x || y.is_empty() {
-        return 0;
-    }
-
-    let SolverNameIndexMaps {
-        names,
-        name_to_idx,
-        base_to_indices,
-    } = build_solver_name_index_maps(dae, y.len());
-    let target_assignment_stats =
-        crate::runtime::assignment::collect_direct_assignment_target_stats(dae, n_x, true);
-
-    let mut updates = 0usize;
-    let max_passes = y.len().max(4);
-    for _ in 0..max_passes {
-        let mut changed = false;
-        for eq in dae.f_x.iter().skip(n_x) {
-            if eq.origin == "orphaned_variable_pin" {
-                continue;
-            }
-            let Some((target, solution)) = direct_assignment_from_equation(eq) else {
-                continue;
-            };
-            let is_alias_solution =
-                crate::runtime::assignment::assignment_solution_is_alias_varref(dae, solution);
-            if is_alias_solution {
-                continue;
-            }
-            let target_stats = target_assignment_stats
-                .get(target.as_str())
-                .copied()
-                .unwrap_or_default();
-            if target_stats.total > 1 && target_stats.non_alias != 1 {
-                maybe_log_runtime_direct_propagation_skip(target.as_str(), target_stats.total);
-                continue;
-            }
-
-            if !target.contains('[')
-                && let Some(indices) = base_to_indices.get(target.as_str())
-                && indices.len() > 1
-            {
-                let values = evaluate_direct_assignment_values(solution, env, indices.len());
-                let (branch_changed, branch_updates) =
-                    apply_runtime_values_to_indices(y, env, &names, indices, &values, n_x);
-                changed |= branch_changed;
-                updates += branch_updates;
-                continue;
-            }
-
-            let value = clamp_finite(eval_expr::<f64>(solution, env));
-            if let Some(var_idx) = solver_idx_for_target(target.as_str(), &name_to_idx)
-                && var_idx >= n_x
-                && var_idx < y.len()
-                && (y[var_idx] - value).abs() > 1e-12
-            {
-                y[var_idx] = value;
-                changed = true;
-                updates += 1;
-            }
-            if env
-                .vars
-                .get(target.as_str())
-                .is_none_or(|existing| (existing - value).abs() > 1e-12)
-            {
-                env.set(target.as_str(), value);
-                changed = true;
-                updates += 1;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    updates
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn build_problem(
     dae: &Dae,
     rtol: f64,
@@ -491,16 +42,46 @@ pub(crate) fn build_problem(
     algebraic_eps: f64,
     mass_matrix: &crate::with_diffsol::MassMatrix,
 ) -> Result<OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = V, T = T, C = C>>, SimError> {
-    build_problem_with_overrides(dae, rtol, atol, algebraic_eps, mass_matrix, None)
+    let params = default_params(dae);
+    build_problem_with_overrides_and_params(
+        dae,
+        rtol,
+        atol,
+        algebraic_eps,
+        mass_matrix,
+        &params,
+        None,
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn build_problem_with_overrides(
+pub(crate) fn build_problem_with_params(
     dae: &Dae,
     rtol: f64,
     atol: f64,
     algebraic_eps: f64,
     mass_matrix: &crate::with_diffsol::MassMatrix,
+    param_values: &[f64],
+) -> Result<OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = V, T = T, C = C>>, SimError> {
+    build_problem_with_overrides_and_params(
+        dae,
+        rtol,
+        atol,
+        algebraic_eps,
+        mass_matrix,
+        param_values,
+        None,
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn build_problem_with_overrides_and_params(
+    dae: &Dae,
+    rtol: f64,
+    atol: f64,
+    algebraic_eps: f64,
+    mass_matrix: &crate::with_diffsol::MassMatrix,
+    param_values: &[f64],
     input_overrides: Option<SharedInputOverrides>,
 ) -> Result<OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = V, T = T, C = C> + use<>>, SimError>
 {
@@ -508,8 +89,7 @@ pub(crate) fn build_problem_with_overrides(
     let n_eq = dae.f_x.len();
     let n_z = n_eq - n_x;
     let n_total = n_x + n_z;
-
-    let params = default_params(dae);
+    let params = param_values.to_vec();
 
     let dae_init = dae.clone();
     let ProblemCompiledKernels {
@@ -565,9 +145,9 @@ pub(crate) fn build_problem_with_overrides(
             apply_mass_matrix_update(&mass_matrix_owned, n_x, n_total, algebraic_eps, v, beta, y);
         })
         .init(
-            move |_p: &V, _t: T, y: &mut V| {
+            move |p: &V, _t: T, y: &mut V| {
                 crate::with_diffsol::integration::panic_on_expired_solver_deadline();
-                initialize_state_vector(&dae_init, y.as_mut_slice())
+                initialize_state_vector_with_params(&dae_init, y.as_mut_slice(), p.as_slice())
             },
             n_total.max(1),
         )
@@ -594,23 +174,33 @@ pub(crate) fn build_problem_with_overrides(
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn build_problem(
+pub(crate) fn build_problem_with_params(
     dae: &Dae,
     rtol: f64,
     atol: f64,
     algebraic_eps: f64,
     mass_matrix: &crate::with_diffsol::MassMatrix,
+    param_values: &[f64],
 ) -> Result<OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = V, T = T, C = C>>, SimError> {
-    build_problem_with_overrides(dae, rtol, atol, algebraic_eps, mass_matrix, None)
+    build_problem_with_overrides_and_params(
+        dae,
+        rtol,
+        atol,
+        algebraic_eps,
+        mass_matrix,
+        param_values,
+        None,
+    )
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn build_problem_with_overrides(
+pub(crate) fn build_problem_with_overrides_and_params(
     dae: &Dae,
     rtol: f64,
     atol: f64,
     algebraic_eps: f64,
     mass_matrix: &crate::with_diffsol::MassMatrix,
+    param_values: &[f64],
     input_overrides: Option<SharedInputOverrides>,
 ) -> Result<OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = V, T = T, C = C> + use<>>, SimError>
 {
@@ -618,7 +208,7 @@ pub(crate) fn build_problem_with_overrides(
     let n_eq = dae.f_x.len();
     let n_z = n_eq - n_x;
     let n_total = n_x + n_z;
-    let params = default_params(dae);
+    let params = param_values.to_vec();
 
     let dae_init = dae.clone();
     let ProblemCompiledKernels {
@@ -674,9 +264,9 @@ pub(crate) fn build_problem_with_overrides(
             apply_mass_matrix_update(&mass_matrix_owned, n_x, n_total, algebraic_eps, v, beta, y);
         })
         .init(
-            move |_p: &V, _t: T, y: &mut V| {
+            move |p: &V, _t: T, y: &mut V| {
                 crate::with_diffsol::integration::panic_on_expired_solver_deadline();
-                initialize_state_vector(&dae_init, y.as_mut_slice())
+                initialize_state_vector_with_params(&dae_init, y.as_mut_slice(), p.as_slice())
             },
             n_total.max(1),
         )
@@ -726,12 +316,7 @@ struct ProblemCompiledKernels {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn compile_problem_kernels(dae: &Dae, n_total: usize) -> Result<ProblemCompiledKernels, SimError> {
-    let sim_context = crate::runtime::layout::SimulationContext::from_dae(dae, n_total);
-    let compiled_eval_ctx = CompiledEvalContext {
-        dae: dae.clone(),
-        sim_context,
-        input_overrides: None,
-    };
+    let compiled_eval_ctx = build_compiled_eval_context(dae, n_total);
     let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
     let compiled_eval_ctx_root = compiled_eval_ctx.clone();
@@ -768,12 +353,7 @@ fn compile_problem_kernels(dae: &Dae, n_total: usize) -> Result<ProblemCompiledK
 
 #[cfg(target_arch = "wasm32")]
 fn compile_problem_kernels(dae: &Dae, n_total: usize) -> Result<ProblemCompiledKernels, SimError> {
-    let sim_context = crate::runtime::layout::SimulationContext::from_dae(dae, n_total);
-    let compiled_eval_ctx = CompiledEvalContext {
-        dae: dae.clone(),
-        sim_context,
-        input_overrides: None,
-    };
+    let compiled_eval_ctx = build_compiled_eval_context(dae, n_total);
     let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
     let compiled_eval_ctx_root = compiled_eval_ctx.clone();
@@ -876,134 +456,6 @@ fn eval_root_callback(
     );
 }
 
-/// Shared input override map for injecting external control inputs into the simulation.
-pub(crate) type SharedInputOverrides =
-    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, f64>>>;
-
-#[derive(Clone)]
-struct CompiledEvalContext {
-    dae: Dae,
-    sim_context: crate::runtime::layout::SimulationContext,
-    input_overrides: Option<SharedInputOverrides>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn call_compiled_residual(
-    compiled_residual: &rumoca_eval_dae::compiled::CompiledResidual,
-    ctx: &CompiledEvalContext,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    out: &mut [f64],
-) {
-    let compiled_p = build_compiled_eval_param_vector(ctx, y, p, t);
-    if let Err(err) = compiled_residual.call(y, &compiled_p, t, out) {
-        panic!("compiled residual call failed: {err}");
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn call_compiled_residual(
-    compiled_residual: &rumoca_eval_dae::compiled::CompiledResidualWasm,
-    ctx: &CompiledEvalContext,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    out: &mut [f64],
-) {
-    let compiled_p = build_compiled_eval_param_vector(ctx, y, p, t);
-    if let Err(err) = compiled_residual.call(y, &compiled_p, t, out) {
-        panic!("compiled residual call failed: {err}");
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn call_compiled_jacobian(
-    compiled_jacobian: &rumoca_eval_dae::compiled::CompiledJacobianV,
-    ctx: &CompiledEvalContext,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    v: &[f64],
-    out: &mut [f64],
-) {
-    let compiled_p = build_compiled_eval_param_vector(ctx, y, p, t);
-    if let Err(err) = compiled_jacobian.call(y, &compiled_p, t, v, out) {
-        panic!("compiled Jacobian-vector call failed: {err}");
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn call_compiled_jacobian(
-    compiled_jacobian: &rumoca_eval_dae::compiled::CompiledJacobianVWasm,
-    ctx: &CompiledEvalContext,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    v: &[f64],
-    out: &mut [f64],
-) {
-    let compiled_p = build_compiled_eval_param_vector(ctx, y, p, t);
-    if let Err(err) = compiled_jacobian.call(y, &compiled_p, t, v, out) {
-        panic!("compiled Jacobian-vector call failed: {err}");
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn call_compiled_expression_rows(
-    compiled_rows: &rumoca_eval_dae::compiled::CompiledExpressionRows,
-    ctx: &CompiledEvalContext,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    out: &mut [f64],
-) {
-    let compiled_p = build_compiled_eval_param_vector(ctx, y, p, t);
-    if let Err(err) = compiled_rows.call(y, &compiled_p, t, out) {
-        panic!("compiled expression rows call failed: {err}");
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn call_compiled_expression_rows(
-    compiled_rows: &rumoca_eval_dae::compiled::CompiledExpressionRowsWasm,
-    ctx: &CompiledEvalContext,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    out: &mut [f64],
-) {
-    let compiled_p = build_compiled_eval_param_vector(ctx, y, p, t);
-    if let Err(err) = compiled_rows.call(y, &compiled_p, t, out) {
-        panic!("compiled expression rows call failed: {err}");
-    }
-}
-
-fn build_compiled_eval_param_vector(
-    ctx: &CompiledEvalContext,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-) -> Vec<f64> {
-    let mut compiled_p = ctx.sim_context.compiled_parameter_vector(&ctx.dae, y, p, t);
-    let Some(overrides) = &ctx.input_overrides else {
-        return compiled_p;
-    };
-    let map = overrides.borrow();
-    if map.is_empty() {
-        return compiled_p;
-    }
-    let input_range = ctx.sim_context.input_range();
-    for (i, name) in ctx.sim_context.input_scalar_names().iter().enumerate() {
-        if let Some(&val) = map.get(name)
-            && let Some(slot) = compiled_p.get_mut(input_range.start + i)
-        {
-            *slot = val;
-        }
-    }
-    compiled_p
-}
-
 fn log_precomputed_synthetic_root_conditions(roots: &[Expression]) {
     if sim_trace_enabled() && !roots.is_empty() {
         eprintln!(
@@ -1020,6 +472,10 @@ fn log_precomputed_synthetic_root_conditions(roots: &[Expression]) {
 
 pub(super) fn clamp_finite(v: f64) -> f64 {
     if v.is_finite() { v } else { 0.0 }
+}
+
+fn equation_key(eq: &Equation) -> usize {
+    eq as *const Equation as usize
 }
 
 pub(super) fn find_fixed_state_indices(dae: &Dae) -> Vec<bool> {
@@ -1124,7 +580,7 @@ pub(super) fn log_init_linear_system_diagnostics(
 
 pub(super) fn build_init_jacobian_dense(
     ctx: &InitJacobianEvalContext<'_>,
-    fixed: &[bool],
+    fixed_cols: &[bool],
     timeout: &crate::TimeoutBudget,
 ) -> Result<nalgebra::DMatrix<f64>, crate::SimError> {
     let n_total = ctx.y.len();
@@ -1134,7 +590,7 @@ pub(super) fn build_init_jacobian_dense(
 
     for j in 0..n_total {
         timeout.check()?;
-        if j < fixed.len() && fixed[j] {
+        if j < fixed_cols.len() && fixed_cols[j] {
             continue;
         }
         v.fill(0.0);
@@ -1145,17 +601,16 @@ pub(super) fn build_init_jacobian_dense(
             jac[(i, j)] = clamp_finite(jv[i]);
         }
     }
-    lock_fixed_state_rows_and_cols(&mut jac, fixed);
     Ok(jac)
 }
 
 pub(super) fn build_init_jacobian_colored(
     ctx: &InitJacobianEvalContext<'_>,
-    fixed: &[bool],
+    fixed_cols: &[bool],
     timeout: &crate::TimeoutBudget,
 ) -> Result<Option<nalgebra::DMatrix<f64>>, crate::SimError> {
     let n_total = ctx.y.len();
-    let active_cols = active_init_columns(n_total, ctx.n_x, fixed);
+    let active_cols = active_init_columns(n_total, ctx.n_x, fixed_cols);
     if active_cols.is_empty() {
         return Ok(Some(nalgebra::DMatrix::<f64>::zeros(n_total, n_total)));
     }
@@ -1215,40 +670,88 @@ pub(super) fn build_init_jacobian_colored(
         }
     }
 
-    lock_fixed_state_rows_and_cols(&mut jac, fixed);
     Ok(Some(jac))
 }
 
+fn collect_init_value_expressions(dae: &Dae) -> Vec<dae::Expression> {
+    let scalarization = crate::equation_scalarize::build_expression_scalarization_context(dae);
+    dae.states
+        .values()
+        .chain(dae.algebraics.values())
+        .chain(dae.outputs.values())
+        .flat_map(|var| {
+            let expr = var
+                .start
+                .as_ref()
+                .or(var.nominal.as_ref())
+                .cloned()
+                .unwrap_or(dae::Expression::Literal(dae::Literal::Real(0.0)));
+            crate::equation_scalarize::scalarize_expression_rows(&expr, var.size(), &scalarization)
+        })
+        .collect()
+}
+
+fn write_init_values_from_slice(y: &mut [f64], values: &[f64]) {
+    for (idx, value) in values.iter().copied().enumerate().take(y.len()) {
+        y[idx] = clamp_finite(value);
+    }
+}
+
+fn reference_init_value_values(dae: &Dae, env: &VarEnv<f64>) -> Vec<f64> {
+    dae.states
+        .values()
+        .chain(dae.algebraics.values())
+        .chain(dae.outputs.values())
+        .flat_map(|var| {
+            let expr = var
+                .start
+                .as_ref()
+                .or(var.nominal.as_ref())
+                .cloned()
+                .unwrap_or(dae::Expression::Literal(dae::Literal::Real(0.0)));
+            let size = var.size();
+            if size <= 1 {
+                return vec![rumoca_eval_dae::runtime::eval_expr::<f64>(&expr, env)];
+            }
+            let raw = rumoca_eval_dae::runtime::eval_array_values::<f64>(&expr, env);
+            super::expand_values_to_size(raw, size)
+        })
+        .collect()
+}
+
+#[cfg(test)]
 pub(crate) fn initialize_state_vector(dae: &Dae, y: &mut [f64]) {
-    let env = build_param_env(dae);
-    let mut idx = 0;
-    for var in dae.states.values() {
-        let vals = eval_var_start_values(var, &env);
-        for v in &vals {
-            if idx < y.len() {
-                y[idx] = *v;
-            }
-            idx += 1;
-        }
+    let p = default_params(dae);
+    initialize_state_vector_with_params(dae, y, &p);
+}
+
+pub(crate) fn initialize_state_vector_with_params(dae: &Dae, y: &mut [f64], p: &[f64]) {
+    let env = rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(dae, p, 0.0);
+    let expressions = collect_init_value_expressions(dae);
+    if expressions.is_empty() {
+        return;
     }
-    for var in dae.algebraics.values() {
-        let vals = eval_var_start_values(var, &env);
-        for v in &vals {
-            if idx < y.len() {
-                y[idx] = *v;
-            }
-            idx += 1;
-        }
-    }
-    for var in dae.outputs.values() {
-        let vals = eval_var_start_values(var, &env);
-        for v in &vals {
-            if idx < y.len() {
-                y[idx] = *v;
-            }
-            idx += 1;
-        }
-    }
+
+    let compiled =
+        build_compiled_runtime_expression_context_for_start_rows(dae, y.len(), &expressions, false);
+    let Ok(compiled) = compiled else {
+        let values = reference_init_value_values(dae, &env);
+        write_init_values_from_slice(y, &values);
+        return;
+    };
+    let zero_y = vec![0.0; y.len()];
+    let mut y_scratch = Vec::with_capacity(y.len());
+    let mut out_scratch = Vec::new();
+    let values = eval_compiled_runtime_expressions_from_env(
+        &compiled,
+        &zero_y,
+        &env,
+        p,
+        0.0,
+        &mut y_scratch,
+        &mut out_scratch,
+    );
+    write_init_values_from_slice(y, values);
 }
 
 #[cfg(test)]
@@ -1273,16 +776,6 @@ pub(super) fn should_trace_direct_seed_target(target: &str) -> bool {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .any(|pat| target.contains(pat))
-}
-
-pub(super) fn log_runtime_direct_seed_skip_no_solver_index(trace_target: bool, target: &str) {
-    if !trace_target {
-        return;
-    }
-    eprintln!(
-        "[sim-introspect] runtime direct seed skipped target={} (no solver index)",
-        target
-    );
 }
 
 pub(super) fn log_runtime_direct_seed_skip_multiple_assignments(
@@ -1368,9 +861,9 @@ pub(super) fn log_init_sparsity_validation(dae: &Dae, report: &SparsityValidatio
     }
 }
 
-pub(super) fn active_init_columns(n_total: usize, _n_x: usize, fixed: &[bool]) -> Vec<usize> {
+pub(super) fn active_init_columns(n_total: usize, _n_x: usize, fixed_cols: &[bool]) -> Vec<usize> {
     (0..n_total)
-        .filter(|&j| !(j < fixed.len() && fixed[j]))
+        .filter(|&j| !(j < fixed_cols.len() && fixed_cols[j]))
         .collect()
 }
 
@@ -1409,20 +902,6 @@ pub(super) fn runtime_ic_sparsity_validation_enabled() -> bool {
             !s.is_empty() && s != "0" && s != "false" && s != "no"
         })
         .unwrap_or(false)
-}
-
-pub(super) fn lock_fixed_state_rows_and_cols(jac: &mut nalgebra::DMatrix<f64>, fixed: &[bool]) {
-    let n_total = jac.nrows();
-    for (idx, is_fixed) in fixed.iter().copied().enumerate() {
-        if !is_fixed || idx >= n_total {
-            continue;
-        }
-        for col in 0..n_total {
-            jac[(idx, col)] = 0.0;
-            jac[(col, idx)] = 0.0;
-        }
-        jac[(idx, idx)] = 1.0;
-    }
 }
 
 pub(super) fn log_coloring_fallback(reason: &str) {

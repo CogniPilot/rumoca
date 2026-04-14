@@ -61,51 +61,21 @@ fn trace_ic_newton_result(mode: &str, converged: bool) {
 fn solve_ic_with_newton(
     dae: &mut Dae,
     n_x: usize,
+    param_values: &[f64],
     atol: f64,
     budget: &TimeoutBudget,
-    mode: &str,
 ) -> Result<(), SimError> {
-    let newton_ok = problem::solve_initial_algebraic(dae, n_x, atol, budget)?;
-    trace_ic_newton_result(mode, newton_ok);
+    let newton_ok =
+        problem::solve_initial_algebraic_with_params(dae, n_x, atol, budget, param_values)?;
+    trace_ic_newton_result("startup", newton_ok);
     Ok(())
-}
-
-fn ic_residual_requires_newton(
-    dae: &Dae,
-    n_x: usize,
-    atol: f64,
-    budget: &TimeoutBudget,
-) -> Result<bool, SimError> {
-    let residual_inf = problem::initial_free_residual_inf(dae, n_x, budget)?;
-    let residual_limit = (atol * 10.0).max(1.0e-8);
-    if sim_trace_enabled() {
-        eprintln!(
-            "[sim-trace] IC BLT residual quality residual_inf={} limit={}",
-            residual_inf, residual_limit
-        );
-    }
-    Ok(!residual_inf.is_finite() || residual_inf > residual_limit)
-}
-
-fn force_ic_newton_via_env() -> bool {
-    std::env::var("RUMOCA_SIM_FORCE_IC_NEWTON")
-        .map(|v| {
-            let s = v.trim().to_ascii_lowercase();
-            !s.is_empty() && s != "0" && s != "false" && s != "no"
-        })
-        .unwrap_or(false)
-}
-
-fn log_ic_quality_fallback() {
-    if sim_trace_enabled() {
-        eprintln!("[sim-trace] IC BLT residual quality check failed; running full-Newton fallback");
-    }
 }
 
 pub(crate) fn solve_initial_conditions(
     dae: &mut Dae,
     ic_blocks: &[rumoca_phase_solve::IcBlock],
     n_x: usize,
+    param_values: &[f64],
     atol: f64,
     budget: &TimeoutBudget,
 ) -> Result<(), SimError> {
@@ -118,35 +88,7 @@ pub(crate) fn solve_initial_conditions(
                 atol
             );
         }
-        if !ic_blocks.is_empty() {
-            let blt_ok = crate::solve_initial_blt_with_deadline(
-                dae,
-                n_x,
-                ic_blocks,
-                atol,
-                budget.deadline(),
-            )
-            .map_err(|e| match e {
-                crate::IcSolveError::Timeout => SimError::from(budget.timeout_error()),
-            })?;
-            if sim_trace_enabled() {
-                eprintln!("[sim-trace] IC BLT result converged={}", blt_ok);
-            }
-            let force_newton = force_ic_newton_via_env();
-            if force_newton && sim_trace_enabled() {
-                eprintln!("[sim-trace] IC full-Newton forced by RUMOCA_SIM_FORCE_IC_NEWTON");
-            }
-            let mut fallback_newton = !blt_ok || force_newton;
-            if blt_ok && !force_newton && ic_residual_requires_newton(dae, n_x, atol, budget)? {
-                fallback_newton = true;
-                log_ic_quality_fallback();
-            }
-            if fallback_newton {
-                solve_ic_with_newton(dae, n_x, atol, budget, "fallback")?;
-            }
-        } else {
-            solve_ic_with_newton(dae, n_x, atol, budget, "only")?;
-        }
+        solve_ic_with_newton(dae, n_x, param_values, atol, budget)?;
         Ok(())
     })
 }
@@ -272,10 +214,33 @@ fn classify_solver_error(msg: &str) -> &'static str {
 
 struct IntegrationCtx<'a> {
     dae: &'a Dae,
+    elim: &'a eliminate::EliminationResult,
     opts: &'a SimOptions,
     n_total: usize,
     mass_matrix: &'a MassMatrix,
+    param_values: &'a [f64],
     budget: &'a TimeoutBudget,
+}
+
+fn prefer_alt_implicit_first(ctx: &IntegrationCtx<'_>) -> bool {
+    matches!(ctx.opts.solver_mode, SimSolverMode::Auto)
+        && !ctx.dae.states.is_empty()
+        && dae_prefers_alt_implicit(ctx.dae)
+}
+
+fn alt_implicit_levels(ctx: &IntegrationCtx<'_>) -> &'static [f64] {
+    const CLOCKED_STATEFUL_LEVELS: &[f64] = &[1e-1, 1e-2, 1e-3, 1e-4, 1e-6, 1e-8];
+    if prefer_alt_implicit_first(ctx) {
+        CLOCKED_STATEFUL_LEVELS
+    } else {
+        REGULARIZATION_LEVELS
+    }
+}
+
+fn dae_prefers_alt_implicit(dae: &Dae) -> bool {
+    !dae.clock_schedules.is_empty()
+        || !dae.triggered_clock_conditions.is_empty()
+        || crate::runtime::clock::dae_may_have_discrete_clock_activity(dae)
 }
 
 fn has_non_finite_output(buf: &OutputBuffers) -> bool {
@@ -288,8 +253,39 @@ const MAX_ACCEPTABLE_OUTPUT_MAGNITUDE: f64 = 1.0e120;
 const MAX_ACCEPTABLE_OUTPUT_REL_GROWTH: f64 = 1.0e8;
 const MAX_ACCEPTABLE_OUTPUT_ABS_GROWTH_FLOOR: f64 = 1.0e12;
 
-fn first_excessive_finite_output(buf: &OutputBuffers) -> Option<(usize, usize, f64)> {
-    buf.data.iter().enumerate().find_map(|(col_idx, col)| {
+#[derive(Clone, Copy)]
+struct OutputMagnitudeGate {
+    n_states: usize,
+    n_algebraics: usize,
+    n_outputs: usize,
+}
+
+impl OutputMagnitudeGate {
+    fn from_dae(dae: &Dae) -> Self {
+        Self {
+            n_states: dae.states.values().map(|v| v.size()).sum(),
+            n_algebraics: dae.algebraics.values().map(|v| v.size()).sum(),
+            n_outputs: dae.outputs.values().map(|v| v.size()).sum(),
+        }
+    }
+
+    fn should_check_column(self, col_idx: usize) -> bool {
+        if col_idx < self.n_states {
+            return true;
+        }
+        let output_start = self.n_states + self.n_algebraics;
+        col_idx >= output_start && col_idx < output_start + self.n_outputs
+    }
+}
+
+fn first_excessive_finite_series(
+    data: &[Vec<f64>],
+    gate: OutputMagnitudeGate,
+) -> Option<(usize, usize, f64)> {
+    data.iter().enumerate().find_map(|(col_idx, col)| {
+        if !gate.should_check_column(col_idx) {
+            return None;
+        }
         let baseline = col.first().copied().unwrap_or(0.0).abs().max(1.0);
         let growth_limit = (baseline * MAX_ACCEPTABLE_OUTPUT_REL_GROWTH)
             .max(MAX_ACCEPTABLE_OUTPUT_ABS_GROWTH_FLOOR);
@@ -301,36 +297,62 @@ fn first_excessive_finite_output(buf: &OutputBuffers) -> Option<(usize, usize, f
     })
 }
 
-fn handle_attempt(
+fn first_excessive_finite_output(
+    buf: &OutputBuffers,
+    gate: OutputMagnitudeGate,
+) -> Option<(usize, usize, f64)> {
+    first_excessive_finite_series(&buf.data, gate)
+}
+
+struct AttemptSpec {
     method: &'static str,
     eps: f64,
     profile: SolverStartupProfile,
-    attempt: Result<(OutputBuffers, Vec<f64>), SimError>,
+    magnitude_gate: OutputMagnitudeGate,
     nan_msg: String,
     track_startup_t0: bool,
+}
+
+fn handle_attempt(
+    spec: &AttemptSpec,
+    attempt: Result<(OutputBuffers, Vec<f64>), SimError>,
     state: &mut FallbackState,
 ) -> Result<Option<(OutputBuffers, Vec<f64>)>, SimError> {
     match attempt {
         Ok((buf, _y0)) if has_non_finite_output(&buf) => {
             state.record_non_startup_failure();
-            state.record_attempt_failure(method, eps, profile, "nan_inf_output", &nan_msg);
+            state.record_attempt_failure(
+                spec.method,
+                spec.eps,
+                spec.profile,
+                "nan_inf_output",
+                &spec.nan_msg,
+            );
             Ok(None)
         }
         Ok((buf, y0)) => {
-            if let Some((col_idx, time_idx, value)) = first_excessive_finite_output(&buf) {
+            if let Some((col_idx, time_idx, value)) =
+                first_excessive_finite_output(&buf, spec.magnitude_gate)
+            {
                 state.record_non_startup_failure();
                 let detail = format!(
                     "Unstable output magnitude (>{MAX_ACCEPTABLE_OUTPUT_MAGNITUDE:.1e}) \
                      at col={col_idx} sample={time_idx} value={value}"
                 );
-                state.record_attempt_failure(method, eps, profile, "unstable_output", &detail);
+                state.record_attempt_failure(
+                    spec.method,
+                    spec.eps,
+                    spec.profile,
+                    "unstable_output",
+                    &detail,
+                );
                 return Ok(None);
             }
             Ok(Some((buf, y0)))
         }
         Err(SimError::SolverError(msg)) => {
             if is_startup_t0_error(&msg) {
-                state.record_startup_t0_failure(method, &msg, track_startup_t0);
+                state.record_startup_t0_failure(spec.method, &msg, spec.track_startup_t0);
             } else {
                 state.record_non_startup_failure();
             }
@@ -338,15 +360,15 @@ fn handle_attempt(
                 state.saw_step_size_error = true;
             }
             let class = classify_solver_error(&msg);
-            state.record_attempt_failure(method, eps, profile, class, &msg);
+            state.record_attempt_failure(spec.method, spec.eps, spec.profile, class, &msg);
             Ok(None)
         }
         Err(SimError::Timeout { seconds }) => {
             state.record_non_startup_failure();
             state.record_attempt_failure(
-                method,
-                eps,
-                profile,
+                spec.method,
+                spec.eps,
+                spec.profile,
                 "timeout",
                 &format!("timeout after {seconds:.3}s"),
             );
@@ -354,7 +376,13 @@ fn handle_attempt(
         }
         Err(e) => {
             state.record_non_startup_failure();
-            state.record_attempt_failure(method, eps, profile, "error", &e.to_string());
+            state.record_attempt_failure(
+                spec.method,
+                spec.eps,
+                spec.profile,
+                "error",
+                &e.to_string(),
+            );
             Err(e)
         }
     }
@@ -368,26 +396,30 @@ fn try_regularized_bdf(
     track_startup_t0: bool,
     state: &mut FallbackState,
 ) -> Result<Option<(OutputBuffers, Vec<f64>)>, SimError> {
+    let magnitude_gate = OutputMagnitudeGate::from_dae(ctx.dae);
     for &eps in regularization_levels {
         let attempt = try_integrate(
-            ctx.dae,
-            ctx.opts,
+            &IntegrationRunInput {
+                dae: ctx.dae,
+                elim: ctx.elim,
+                opts: ctx.opts,
+                n_total: ctx.n_total,
+                mass_matrix: ctx.mass_matrix,
+                param_values: ctx.param_values,
+                budget: ctx.budget,
+            },
             eps,
-            ctx.n_total,
-            ctx.mass_matrix,
             profile,
-            ctx.budget,
         );
-        let nan_msg = format!("NaN/Inf in output at eps={eps}{nan_suffix}");
-        if let Some(result) = handle_attempt(
-            "BDF",
+        let spec = AttemptSpec {
+            method: "BDF",
             eps,
             profile,
-            attempt,
-            nan_msg,
+            magnitude_gate,
+            nan_msg: format!("NaN/Inf in output at eps={eps}{nan_suffix}"),
             track_startup_t0,
-            state,
-        )? {
+        };
+        if let Some(result) = handle_attempt(&spec, attempt, state)? {
             return Ok(Some(result));
         }
     }
@@ -401,26 +433,30 @@ fn try_regularized_tr_bdf2(
     track_startup_t0: bool,
     state: &mut FallbackState,
 ) -> Result<Option<(OutputBuffers, Vec<f64>)>, SimError> {
-    for &eps in REGULARIZATION_LEVELS {
+    let magnitude_gate = OutputMagnitudeGate::from_dae(ctx.dae);
+    for &eps in alt_implicit_levels(ctx) {
         let attempt = try_integrate_tr_bdf2(
-            ctx.dae,
-            ctx.opts,
+            &IntegrationRunInput {
+                dae: ctx.dae,
+                elim: ctx.elim,
+                opts: ctx.opts,
+                n_total: ctx.n_total,
+                mass_matrix: ctx.mass_matrix,
+                param_values: ctx.param_values,
+                budget: ctx.budget,
+            },
             eps,
-            ctx.n_total,
-            ctx.mass_matrix,
             profile,
-            ctx.budget,
         );
-        let nan_msg = format!("NaN/Inf in output (TR-BDF2) at eps={eps}{nan_suffix}");
-        if let Some(result) = handle_attempt(
-            "TR-BDF2",
+        let spec = AttemptSpec {
+            method: "TR-BDF2",
             eps,
             profile,
-            attempt,
-            nan_msg,
+            magnitude_gate,
+            nan_msg: format!("NaN/Inf in output (TR-BDF2) at eps={eps}{nan_suffix}"),
             track_startup_t0,
-            state,
-        )? {
+        };
+        if let Some(result) = handle_attempt(&spec, attempt, state)? {
             return Ok(Some(result));
         }
         if should_fail_fast_startup_auto(ctx.opts, state) {
@@ -437,26 +473,30 @@ fn try_regularized_esdirk34(
     track_startup_t0: bool,
     state: &mut FallbackState,
 ) -> Result<Option<(OutputBuffers, Vec<f64>)>, SimError> {
-    for &eps in REGULARIZATION_LEVELS {
+    let magnitude_gate = OutputMagnitudeGate::from_dae(ctx.dae);
+    for &eps in alt_implicit_levels(ctx) {
         let attempt = try_integrate_esdirk34(
-            ctx.dae,
-            ctx.opts,
+            &IntegrationRunInput {
+                dae: ctx.dae,
+                elim: ctx.elim,
+                opts: ctx.opts,
+                n_total: ctx.n_total,
+                mass_matrix: ctx.mass_matrix,
+                param_values: ctx.param_values,
+                budget: ctx.budget,
+            },
             eps,
-            ctx.n_total,
-            ctx.mass_matrix,
             profile,
-            ctx.budget,
         );
-        let nan_msg = format!("NaN/Inf in output (ESDIRK34) at eps={eps}{nan_suffix}");
-        if let Some(result) = handle_attempt(
-            "ESDIRK34",
+        let spec = AttemptSpec {
+            method: "ESDIRK34",
             eps,
             profile,
-            attempt,
-            nan_msg,
+            magnitude_gate,
+            nan_msg: format!("NaN/Inf in output (ESDIRK34) at eps={eps}{nan_suffix}"),
             track_startup_t0,
-            state,
-        )? {
+        };
+        if let Some(result) = handle_attempt(&spec, attempt, state)? {
             return Ok(Some(result));
         }
         if should_fail_fast_startup_auto(ctx.opts, state) {
@@ -639,19 +679,29 @@ fn try_auto_late_robust_bdf(
 
 pub(crate) fn integrate_with_fallbacks(
     dae: &Dae,
+    elim: &eliminate::EliminationResult,
     opts: &SimOptions,
     n_total: usize,
     mass_matrix: &MassMatrix,
+    param_values: &[f64],
     budget: &TimeoutBudget,
 ) -> Result<(OutputBuffers, Vec<f64>), SimError> {
     let mut state = FallbackState::default();
     let ctx = IntegrationCtx {
         dae,
+        elim,
         opts,
         n_total,
         mass_matrix,
+        param_values,
         budget,
     };
+
+    if prefer_alt_implicit_first(&ctx)
+        && let Some(result) = try_alt_implicit_stage(&ctx, &mut state)?
+    {
+        return Ok(result);
+    }
 
     if let Some(result) = try_bdf_stage(&ctx, &mut state)? {
         return Ok(result);
@@ -677,6 +727,143 @@ mod tests {
         let msg = "ODE solver error: Step size is too small at time = 2.0027";
         assert!(is_step_size_error(msg));
         assert!(!is_step_size_t0_error(msg));
+    }
+
+    #[test]
+    fn test_prefer_alt_implicit_first_for_stateful_clocked_auto_models() {
+        let mut dae = Dae::default();
+        dae.clock_schedules.push(dae::ClockSchedule {
+            period_seconds: 0.1,
+            phase_seconds: 0.0,
+        });
+        dae.states.insert(
+            dae::VarName::new("x"),
+            dae::Variable::new(dae::VarName::new("x")),
+        );
+        let mass_matrix = vec![vec![1.0]];
+        let budget = TimeoutBudget::new(None);
+        let elim = eliminate::EliminationResult::default();
+        let ctx = IntegrationCtx {
+            dae: &dae,
+            elim: &elim,
+            opts: &SimOptions::default(),
+            n_total: 1,
+            param_values: &[],
+            mass_matrix: &mass_matrix,
+            budget: &budget,
+        };
+        assert!(prefer_alt_implicit_first(&ctx));
+    }
+
+    #[test]
+    fn test_prefer_alt_implicit_first_for_stateful_discrete_clock_activity_without_schedule() {
+        let mut dae = Dae::default();
+        dae.states.insert(
+            dae::VarName::new("x"),
+            dae::Variable::new(dae::VarName::new("x")),
+        );
+        dae.f_z.push(dae::Equation {
+            lhs: Some(dae::VarName::new("z")),
+            rhs: dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Sample,
+                args: vec![dae::Expression::VarRef {
+                    name: dae::VarName::new("u"),
+                    subscripts: Vec::new(),
+                }],
+            },
+            span: rumoca_core::Span::DUMMY,
+            origin: "z = sample(u)".to_string(),
+            scalar_count: 1,
+        });
+        let mass_matrix = vec![vec![1.0]];
+        let budget = TimeoutBudget::new(None);
+        let elim = eliminate::EliminationResult::default();
+        let ctx = IntegrationCtx {
+            dae: &dae,
+            elim: &elim,
+            opts: &SimOptions::default(),
+            n_total: 1,
+            param_values: &[],
+            mass_matrix: &mass_matrix,
+            budget: &budget,
+        };
+        assert!(prefer_alt_implicit_first(&ctx));
+    }
+
+    #[test]
+    fn test_prefer_alt_implicit_first_skips_no_state_clocked_models() {
+        let mut dae = Dae::default();
+        dae.clock_schedules.push(dae::ClockSchedule {
+            period_seconds: 0.1,
+            phase_seconds: 0.0,
+        });
+        let mass_matrix: MassMatrix = Vec::new();
+        let budget = TimeoutBudget::new(None);
+        let elim = eliminate::EliminationResult::default();
+        let ctx = IntegrationCtx {
+            dae: &dae,
+            elim: &elim,
+            opts: &SimOptions::default(),
+            n_total: 0,
+            param_values: &[],
+            mass_matrix: &mass_matrix,
+            budget: &budget,
+        };
+        assert!(!prefer_alt_implicit_first(&ctx));
+    }
+
+    #[test]
+    fn test_alt_implicit_levels_bias_high_regularization_for_stateful_clocked_auto_models() {
+        let mut dae = Dae::default();
+        dae.clock_schedules.push(dae::ClockSchedule {
+            period_seconds: 0.1,
+            phase_seconds: 0.0,
+        });
+        dae.states.insert(
+            dae::VarName::new("x"),
+            dae::Variable::new(dae::VarName::new("x")),
+        );
+        let mass_matrix = vec![vec![1.0]];
+        let budget = TimeoutBudget::new(None);
+        let elim = eliminate::EliminationResult::default();
+        let ctx = IntegrationCtx {
+            dae: &dae,
+            elim: &elim,
+            opts: &SimOptions::default(),
+            n_total: 1,
+            param_values: &[],
+            mass_matrix: &mass_matrix,
+            budget: &budget,
+        };
+        assert_eq!(
+            alt_implicit_levels(&ctx),
+            &[1e-1, 1e-2, 1e-3, 1e-4, 1e-6, 1e-8]
+        );
+    }
+
+    #[test]
+    fn first_excessive_finite_series_ignores_internal_algebraic_columns() {
+        let gate = OutputMagnitudeGate {
+            n_states: 1,
+            n_algebraics: 1,
+            n_outputs: 1,
+        };
+        let data = vec![vec![0.0, 0.0], vec![0.0, 2.0e12], vec![0.0, 0.0]];
+        assert_eq!(first_excessive_finite_series(&data, gate), None);
+    }
+
+    #[test]
+    fn first_excessive_finite_series_flags_state_columns() {
+        let gate = OutputMagnitudeGate {
+            n_states: 1,
+            n_algebraics: 1,
+            n_outputs: 1,
+        };
+        let data = vec![vec![0.0, 2.0e12], vec![0.0, 0.0], vec![0.0, 0.0]];
+        assert_eq!(
+            first_excessive_finite_series(&data, gate),
+            Some((0, 1, 2.0e12))
+        );
     }
 
     #[test]
@@ -760,5 +947,48 @@ mod tests {
             ..FallbackState::default()
         };
         assert!(!should_fail_fast_startup_auto(&opts, &state));
+    }
+
+    #[test]
+    fn test_solve_initial_conditions_ignores_legacy_blt_plan_and_uses_newton() {
+        let mut dae = Dae::new();
+        dae.algebraics.insert(
+            dae::VarName::new("z"),
+            dae::Variable::new(dae::VarName::new("z")),
+        );
+        dae.f_x.push(dae::Equation {
+            lhs: None,
+            rhs: dae::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                lhs: Box::new(dae::Expression::VarRef {
+                    name: dae::VarName::new("z"),
+                    subscripts: Vec::new(),
+                }),
+                rhs: Box::new(dae::Expression::Literal(dae::Literal::Real(1.0))),
+            },
+            span: rumoca_core::Span::DUMMY,
+            origin: "test".to_string(),
+            scalar_count: 1,
+        });
+
+        let legacy_plan = vec![rumoca_phase_solve::IcBlock::ScalarDirect {
+            var_idx: 99,
+            var_name: "missing".to_string(),
+            solution_expr: dae::Expression::Literal(dae::Literal::Real(0.0)),
+        }];
+        let budget = TimeoutBudget::new(None);
+        solve_initial_conditions(&mut dae, &legacy_plan, 0, &[], 1e-10, &budget)
+            .expect("startup Newton should ignore legacy BLT plan");
+
+        let value = dae
+            .algebraics
+            .get(&dae::VarName::new("z"))
+            .and_then(|var| var.start.as_ref())
+            .and_then(|expr| match expr {
+                dae::Expression::Literal(dae::Literal::Real(value)) => Some(*value),
+                _ => None,
+            })
+            .expect("finalized algebraic start should be written");
+        assert!((value - 1.0).abs() < 1e-9);
     }
 }

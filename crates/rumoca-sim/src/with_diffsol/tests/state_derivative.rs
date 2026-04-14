@@ -685,3 +685,57 @@ fn test_compute_mass_matrix_handles_indexed_der_after_scalarization() {
     assert!((mass[1][0]).abs() < 1e-12);
     assert!((mass[1][1] - 1.0).abs() < 1e-12);
 }
+
+#[test]
+fn test_compute_mass_matrix_uses_runtime_tail_start_values_in_compiled_coefficients() {
+    fn der(name: &str) -> Expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args: vec![var_ref(name)],
+        }
+    }
+    fn mul(lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op: OpBinary::Mul(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+    fn add(lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op: OpBinary::Add(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+
+    let mut p_var = Variable::new(VarName::new("p"));
+    p_var.start = Some(real(0.0));
+    dae.parameters.insert(VarName::new("p"), p_var);
+
+    let mut u_var = Variable::new(VarName::new("u"));
+    u_var.start = Some(add(var_ref("p"), real(1.0)));
+    dae.inputs.insert(VarName::new("u"), u_var);
+
+    let mut d_var = Variable::new(VarName::new("d"));
+    d_var.start = Some(add(var_ref("u"), real(2.0)));
+    dae.discrete_reals.insert(VarName::new("d"), d_var);
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(mul(var_ref("d"), der("x")), real(0.0)),
+        span: Span::DUMMY,
+        origin: "ode_x_runtime_tail".to_string(),
+        scalar_count: 1,
+    });
+
+    let budget = TimeoutBudget::new(None);
+    let mass = crate::compute_mass_matrix(&dae, 1, &[3.0], &budget).expect("mass matrix");
+    assert_eq!(mass.len(), 1);
+    assert_eq!(mass[0].len(), 1);
+    assert!((mass[0][0] - 6.0).abs() < 1e-12);
+}

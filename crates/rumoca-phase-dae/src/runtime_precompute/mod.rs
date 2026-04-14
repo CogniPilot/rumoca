@@ -1140,6 +1140,75 @@ mod tests {
     }
 
     #[test]
+    fn test_runtime_precompute_assigns_clock_interval_to_algebraic_alias_chain() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.inputs.insert(
+            dae::VarName::new("u"),
+            dae::Variable::new(dae::VarName::new("u")),
+        );
+        dae_model.algebraics.insert(
+            dae::VarName::new("feedback.y"),
+            dae::Variable::new(dae::VarName::new("feedback.y")),
+        );
+        dae_model.algebraics.insert(
+            dae::VarName::new("PI.u"),
+            dae::Variable::new(dae::VarName::new("PI.u")),
+        );
+        dae_model.discrete_reals.insert(
+            dae::VarName::new("sample2.y"),
+            dae::Variable::new(dae::VarName::new("sample2.y")),
+        );
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("sample2.clock"),
+            dae::Variable::new(dae::VarName::new("sample2.clock")),
+        );
+
+        dae_model.f_z.push(dae::Equation::explicit(
+            dae::VarName::new("sample2.clock"),
+            dae::Expression::FunctionCall {
+                name: dae::VarName::new("Clock"),
+                args: vec![dae::Expression::Literal(dae::Literal::Real(0.1))],
+                is_constructor: false,
+            },
+            Span::DUMMY,
+            "explicit_clock_alias",
+        ));
+        dae_model.f_z.push(dae::Equation::explicit(
+            dae::VarName::new("sample2.y"),
+            dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Sample,
+                args: vec![var("u"), var("sample2.clock")],
+            },
+            Span::DUMMY,
+            "explicit_sample_value",
+        ));
+        dae_model.f_x.push(dae::Equation::residual(
+            dae::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                lhs: Box::new(var("sample2.y")),
+                rhs: Box::new(var("feedback.y")),
+            },
+            Span::DUMMY,
+            "sample_alias",
+        ));
+        dae_model.f_x.push(dae::Equation::residual(
+            dae::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                lhs: Box::new(var("feedback.y")),
+                rhs: Box::new(var("PI.u")),
+            },
+            Span::DUMMY,
+            "controller_input_alias",
+        ));
+
+        populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+        assert!((dae_model.clock_intervals["sample2.clock"] - 0.1).abs() <= 1e-12);
+        assert!((dae_model.clock_intervals["sample2.y"] - 0.1).abs() <= 1e-12);
+        assert!((dae_model.clock_intervals["feedback.y"] - 0.1).abs() <= 1e-12);
+        assert!((dae_model.clock_intervals["PI.u"] - 0.1).abs() <= 1e-12);
+    }
+
+    #[test]
     fn test_runtime_precompute_does_not_assign_fallback_interval_for_non_sample_clock_ops() {
         let mut dae_model = dae::Dae::default();
         dae_model.discrete_valued.insert(
@@ -1231,6 +1300,84 @@ mod tests {
     }
 
     #[test]
+    fn test_runtime_precompute_extracts_fractional_shift_sample_schedule() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.f_m.push(dae::Equation::residual(
+            dae::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                lhs: Box::new(var("b")),
+                rhs: Box::new(dae::Expression::FunctionCall {
+                    name: dae::VarName::new("shiftSample"),
+                    args: vec![
+                        dae::Expression::FunctionCall {
+                            name: dae::VarName::new("Clock"),
+                            args: vec![dae::Expression::Literal(dae::Literal::Real(0.2))],
+                            is_constructor: false,
+                        },
+                        dae::Expression::Literal(dae::Literal::Real(1.0)),
+                        dae::Expression::Literal(dae::Literal::Real(5.0)),
+                    ],
+                    is_constructor: false,
+                }),
+            },
+            Span::DUMMY,
+            "test_fractional_shifted_clock_constructor",
+        ));
+
+        populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+        assert!(
+            dae_model.clock_schedules.iter().any(|sched| {
+                (sched.period_seconds - 0.2).abs() <= 1e-12
+                    && (sched.phase_seconds - 0.04).abs() <= 1e-12
+            }),
+            "expected shiftSample(Clock(0.2), 1, 5) to shift by 1/5 of the base period"
+        );
+    }
+
+    #[test]
+    fn test_runtime_precompute_extracts_fractional_back_sample_schedule() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.f_m.push(dae::Equation::residual(
+            dae::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                lhs: Box::new(var("b")),
+                rhs: Box::new(dae::Expression::FunctionCall {
+                    name: dae::VarName::new("backSample"),
+                    args: vec![
+                        dae::Expression::FunctionCall {
+                            name: dae::VarName::new("shiftSample"),
+                            args: vec![
+                                dae::Expression::FunctionCall {
+                                    name: dae::VarName::new("Clock"),
+                                    args: vec![dae::Expression::Literal(dae::Literal::Real(0.2))],
+                                    is_constructor: false,
+                                },
+                                dae::Expression::Literal(dae::Literal::Real(2.0)),
+                                dae::Expression::Literal(dae::Literal::Real(5.0)),
+                            ],
+                            is_constructor: false,
+                        },
+                        dae::Expression::Literal(dae::Literal::Real(1.0)),
+                        dae::Expression::Literal(dae::Literal::Real(5.0)),
+                    ],
+                    is_constructor: false,
+                }),
+            },
+            Span::DUMMY,
+            "test_fractional_back_sample_clock_constructor",
+        ));
+
+        populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+        assert!(
+            dae_model.clock_schedules.iter().any(|sched| {
+                (sched.period_seconds - 0.2).abs() <= 1e-12
+                    && (sched.phase_seconds - 0.04).abs() <= 1e-12
+            }),
+            "expected backSample(shiftSample(Clock(0.2), 2, 5), 1, 5) to land at phase 0.04"
+        );
+    }
+
+    #[test]
     fn test_runtime_precompute_resolves_shift_sample_via_sample_clock_alias_chain() {
         let mut dae_model = dae::Dae::default();
 
@@ -1316,7 +1463,7 @@ mod tests {
         assert!(
             dae_model.clock_schedules.iter().any(|sched| {
                 (sched.period_seconds - 0.02).abs() <= 1e-12
-                    && (sched.phase_seconds - 1.0).abs() <= 1e-12
+                    && (sched.phase_seconds - 0.02).abs() <= 1e-12
             }),
             "expected shifted periodic schedule resolved through sample clock aliases"
         );
@@ -1393,7 +1540,7 @@ mod tests {
         assert!(
             dae_model.clock_schedules.iter().any(|sched| {
                 (sched.period_seconds - 0.02).abs() <= 1e-12
-                    && (sched.phase_seconds - 1.0).abs() <= 1e-12
+                    && (sched.phase_seconds - 0.02).abs() <= 1e-12
             }),
             "expected shifted periodic schedule resolved through reversed connection alias equation"
         );

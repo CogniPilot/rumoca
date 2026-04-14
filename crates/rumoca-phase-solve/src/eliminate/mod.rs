@@ -45,6 +45,18 @@ pub struct EliminationResult {
     pub n_eliminated: usize,
 }
 
+struct ZeroUnknownEliminationCtx<'a> {
+    dae: &'a Dae,
+    state_names: &'a [VarName],
+    all_unknowns: &'a [VarName],
+    resolved: &'a HashSet<VarName>,
+    runtime_protected_unknowns: &'a HashSet<String>,
+    runtime_defined_discrete_targets: &'a HashSet<String>,
+    substitutions: &'a mut Vec<Substitution>,
+    eliminated_eq_indices: &'a mut Vec<usize>,
+    eliminated_eq_flags: &'a mut [bool],
+}
+
 /// Eliminate trivially solvable equations from the DAE.
 ///
 /// Pipeline:
@@ -161,45 +173,33 @@ fn resolve_boundary_equations(dae: &mut Dae) -> EliminationResult {
         let has_state_derivative = state_names
             .iter()
             .any(|sn| expr_contains_der_of(&eq_rhs, sn));
-        if is_connection_eq {
-            // Connection equations that touch runtime-discrete targets (f_m/f_z
-            // assignment lhs names) must stay live. Boundary elimination only
-            // substitutes through f_x; dropping these edges can disconnect
-            // discrete alias paths and freeze discrete connector inputs at
-            // default zero.
-            let touches_runtime_discrete_targets = expr_references_any_runtime_discrete_target(
-                &eq_rhs,
-                &runtime_defined_discrete_targets,
-            );
-            if touches_runtime_discrete_targets {
-                continue;
-            }
-            if live.len() > 1 {
-                // Preserve multi-unknown connection equations through structural
-                // solving. After prior substitutions reduce a connection equation
-                // to a single unknown assignment, allow elimination.
-                continue;
-            }
+        if should_skip_connection_equation(
+            dae,
+            &eq_rhs,
+            is_connection_eq,
+            live.len(),
+            &runtime_defined_discrete_targets,
+        ) {
+            continue;
         }
         if live.is_empty() {
-            // Keep equations that still reference non-scalar unknowns.
-            // Only drop truly constant/redundant constraints.
-            let references_state_value =
-                state_names.iter().any(|sn| expr_contains_var(&eq_rhs, sn));
-            if !has_state_derivative
-                && !references_state_value
-                && !has_any_live_unknown(&eq_rhs, &all_unknowns, &resolved, dae)
-            {
-                maybe_push_non_unknown_alias_substitution(
-                    dae,
-                    &eq_rhs,
-                    &runtime_protected_unknowns,
-                    &runtime_defined_discrete_targets,
-                    &mut substitutions,
-                );
-                eliminated_eq_indices.push(eq_idx);
-                eliminated_eq_flags[eq_idx] = true;
-            }
+            let mut zero_unknown_ctx = ZeroUnknownEliminationCtx {
+                dae,
+                state_names: &state_names,
+                all_unknowns: &all_unknowns,
+                resolved: &resolved,
+                runtime_protected_unknowns: &runtime_protected_unknowns,
+                runtime_defined_discrete_targets: &runtime_defined_discrete_targets,
+                substitutions: &mut substitutions,
+                eliminated_eq_indices: &mut eliminated_eq_indices,
+                eliminated_eq_flags: &mut eliminated_eq_flags,
+            };
+            try_eliminate_zero_unknown_equation(
+                eq_idx,
+                &eq_rhs,
+                has_state_derivative,
+                &mut zero_unknown_ctx,
+            );
             continue;
         }
 
@@ -244,6 +244,69 @@ fn resolve_boundary_equations(dae: &mut Dae) -> EliminationResult {
         substitutions,
         n_eliminated,
     }
+}
+
+fn should_skip_connection_equation(
+    dae: &Dae,
+    eq_rhs: &Expression,
+    is_connection_eq: bool,
+    live_count: usize,
+    runtime_defined_discrete_targets: &HashSet<String>,
+) -> bool {
+    if !is_connection_eq {
+        return false;
+    }
+    // MLS Appendix B B.1b/B.1c: discrete signal paths remain event-discrete
+    // constraints at runtime. Boundary elimination only substitutes through
+    // f_x; dropping connection aliases on any discrete path can disconnect
+    // internal connector chains and freeze downstream values at defaults.
+    let touches_runtime_discrete_path =
+        expr_references_any_runtime_discrete_target(eq_rhs, runtime_defined_discrete_targets)
+            || expr_references_any_discrete_name(dae, eq_rhs);
+    if touches_runtime_discrete_path {
+        return true;
+    }
+    // Preserve multi-unknown connection equations through structural solving.
+    // After prior substitutions reduce a connection equation to a single
+    // unknown assignment, allow elimination.
+    live_count > 1
+}
+
+fn try_eliminate_zero_unknown_equation(
+    eq_idx: usize,
+    eq_rhs: &Expression,
+    has_state_derivative: bool,
+    ctx: &mut ZeroUnknownEliminationCtx<'_>,
+) {
+    let references_state_value = ctx
+        .state_names
+        .iter()
+        .any(|sn| expr_contains_var(eq_rhs, sn));
+    if has_state_derivative
+        || references_state_value
+        || has_any_live_unknown(eq_rhs, ctx.all_unknowns, ctx.resolved, ctx.dae)
+    {
+        return;
+    }
+    // MLS Appendix B / §8.3 / §16.5.1: a zero-unknown equation may still
+    // define a live runtime discrete/event value. Do not drop those rows
+    // unless they can be substituted safely through every runtime consumer.
+    if should_preserve_runtime_known_assignment(ctx.dae, eq_rhs) {
+        return;
+    }
+    let n_subs_before = ctx.substitutions.len();
+    maybe_push_non_unknown_alias_substitution(
+        ctx.dae,
+        eq_rhs,
+        ctx.runtime_protected_unknowns,
+        ctx.runtime_defined_discrete_targets,
+        ctx.substitutions,
+    );
+    if assignment_target_name(eq_rhs).is_some() && ctx.substitutions.len() == n_subs_before {
+        return;
+    }
+    ctx.eliminated_eq_indices.push(eq_idx);
+    ctx.eliminated_eq_flags[eq_idx] = true;
 }
 
 fn choose_solvable_unknown_for_elimination(
@@ -823,7 +886,10 @@ fn eliminate_via_blt(
 }
 
 fn runtime_protected_unknown_names(dae: &Dae) -> HashSet<String> {
-    rumoca_eval_dae::analysis::runtime_defined_continuous_unknown_names(dae)
+    let mut protected = rumoca_eval_dae::analysis::runtime_defined_continuous_unknown_names(dae);
+    protected.extend(branch_local_analog_protected_unknown_names(dae));
+    protected.extend(clocked_value_source_protected_unknown_names(dae));
+    protected
 }
 
 fn runtime_defined_discrete_target_names(dae: &Dae) -> HashSet<String> {
@@ -846,6 +912,276 @@ fn is_runtime_protected_unknown(name: &VarName, protected: &HashSet<String>) -> 
     protected.contains(name.as_str())
 }
 
+fn branch_local_analog_protected_unknown_names(dae: &Dae) -> HashSet<String> {
+    let mut protected = HashSet::new();
+    for eq in &dae.f_x {
+        if !expr_contains_branch_local_analog_operator(&eq.rhs) {
+            continue;
+        }
+
+        // MLS §3.3 / §3.7.5: noEvent/smooth preserve the value semantics of
+        // the enclosed expression while only changing event generation or
+        // differentiability treatment. Keep continuous helper unknowns that
+        // appear inside those branch-local analog rows so structural
+        // elimination does not rewrite them away into a numerically wider
+        // solve than the original Modelica equation system.
+        let mut refs = HashSet::new();
+        eq.rhs.collect_var_refs(&mut refs);
+        for name in refs {
+            maybe_protect_branch_local_unknown(dae, &mut protected, &name);
+        }
+        if let Some(target) = assignment_target_name(&eq.rhs) {
+            maybe_protect_branch_local_unknown(dae, &mut protected, &target);
+        }
+    }
+    protected
+}
+
+fn clocked_value_source_protected_unknown_names(dae: &Dae) -> HashSet<String> {
+    let mut protected = HashSet::new();
+    for eq in dae.f_z.iter().chain(dae.f_m.iter()) {
+        collect_clocked_value_source_unknowns(dae, &eq.rhs, &mut protected);
+    }
+    protected
+}
+
+fn collect_clocked_value_source_unknowns(
+    dae: &Dae,
+    expr: &Expression,
+    protected: &mut HashSet<String>,
+) {
+    match expr {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Sample,
+            args,
+        } => {
+            if let Some(source) = args.first() {
+                // MLS §16.5.1: sampled-value equations read the source signal
+                // at clock ticks. Keep continuous helper unknowns that feed the
+                // sampled value alive so structural elimination does not leave
+                // a dangling sampled source in f_z/f_m.
+                let mut refs = HashSet::new();
+                source.collect_var_refs(&mut refs);
+                for name in refs {
+                    maybe_protect_branch_local_unknown(dae, protected, &name);
+                }
+            }
+            for arg in args {
+                collect_clocked_value_source_unknowns(dae, arg, protected);
+            }
+        }
+        Expression::BuiltinCall { args, .. } => {
+            for arg in args {
+                collect_clocked_value_source_unknowns(dae, arg, protected);
+            }
+        }
+        Expression::FunctionCall { name, args, .. } => {
+            let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+            if matches!(
+                short,
+                "hold"
+                    | "previous"
+                    | "noClock"
+                    | "subSample"
+                    | "superSample"
+                    | "shiftSample"
+                    | "backSample"
+            ) && let Some(source) = args.first()
+            {
+                let mut refs = HashSet::new();
+                source.collect_var_refs(&mut refs);
+                for name in refs {
+                    maybe_protect_branch_local_unknown(dae, protected, &name);
+                }
+            }
+            for arg in args {
+                collect_clocked_value_source_unknowns(dae, arg, protected);
+            }
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            collect_clocked_value_source_unknowns(dae, lhs, protected);
+            collect_clocked_value_source_unknowns(dae, rhs, protected);
+        }
+        Expression::Unary { rhs, .. } | Expression::FieldAccess { base: rhs, .. } => {
+            collect_clocked_value_source_unknowns(dae, rhs, protected);
+        }
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (condition, value) in branches {
+                collect_clocked_value_source_unknowns(dae, condition, protected);
+                collect_clocked_value_source_unknowns(dae, value, protected);
+            }
+            collect_clocked_value_source_unknowns(dae, else_branch, protected);
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+            for element in elements {
+                collect_clocked_value_source_unknowns(dae, element, protected);
+            }
+        }
+        Expression::Range { start, step, end } => {
+            collect_clocked_value_source_unknowns(dae, start, protected);
+            if let Some(step) = step.as_deref() {
+                collect_clocked_value_source_unknowns(dae, step, protected);
+            }
+            collect_clocked_value_source_unknowns(dae, end, protected);
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            collect_clocked_value_source_unknowns(dae, expr, protected);
+            for index in indices {
+                collect_clocked_value_source_unknowns(dae, &index.range, protected);
+            }
+            if let Some(filter) = filter.as_deref() {
+                collect_clocked_value_source_unknowns(dae, filter, protected);
+            }
+        }
+        Expression::Index { base, subscripts } => {
+            collect_clocked_value_source_unknowns(dae, base, protected);
+            for subscript in subscripts {
+                if let dae::Subscript::Expr(expr) = subscript {
+                    collect_clocked_value_source_unknowns(dae, expr, protected);
+                }
+            }
+        }
+        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => {}
+    }
+}
+
+fn maybe_protect_branch_local_unknown(dae: &Dae, protected: &mut HashSet<String>, name: &VarName) {
+    if dae.algebraics.contains_key(name) || dae.outputs.contains_key(name) {
+        protected.insert(name.as_str().to_string());
+    }
+
+    let Some(base) = dae::component_base_name(name.as_str()) else {
+        return;
+    };
+    let base = VarName::new(base);
+    if dae.algebraics.contains_key(&base) || dae.outputs.contains_key(&base) {
+        protected.insert(base.as_str().to_string());
+    }
+}
+
+fn expr_contains_branch_local_analog_operator(expr: &Expression) -> bool {
+    match expr {
+        Expression::BuiltinCall { function, args } => {
+            matches!(function, BuiltinFunction::Smooth | BuiltinFunction::NoEvent)
+                || args.iter().any(expr_contains_branch_local_analog_operator)
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            expr_contains_branch_local_analog_operator(lhs)
+                || expr_contains_branch_local_analog_operator(rhs)
+        }
+        Expression::Unary { rhs, .. } | Expression::FieldAccess { base: rhs, .. } => {
+            expr_contains_branch_local_analog_operator(rhs)
+        }
+        Expression::FunctionCall { args, .. } => {
+            args.iter().any(expr_contains_branch_local_analog_operator)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(condition, value)| {
+                expr_contains_branch_local_analog_operator(condition)
+                    || expr_contains_branch_local_analog_operator(value)
+            }) || expr_contains_branch_local_analog_operator(else_branch)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => elements
+            .iter()
+            .any(expr_contains_branch_local_analog_operator),
+        Expression::Range { start, step, end } => {
+            expr_contains_branch_local_analog_operator(start)
+                || step
+                    .as_deref()
+                    .is_some_and(expr_contains_branch_local_analog_operator)
+                || expr_contains_branch_local_analog_operator(end)
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expr_contains_branch_local_analog_operator(expr)
+                || indices
+                    .iter()
+                    .any(|idx| expr_contains_branch_local_analog_operator(&idx.range))
+                || filter
+                    .as_deref()
+                    .is_some_and(expr_contains_branch_local_analog_operator)
+        }
+        Expression::Index { base, subscripts } => {
+            expr_contains_branch_local_analog_operator(base)
+                || subscripts.iter().any(|subscript| match subscript {
+                    rumoca_ir_dae::Subscript::Expr(expr) => {
+                        expr_contains_branch_local_analog_operator(expr)
+                    }
+                    rumoca_ir_dae::Subscript::Index(_) | rumoca_ir_dae::Subscript::Colon => false,
+                })
+        }
+        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => false,
+    }
+}
+
+fn assignment_target_name(expr: &Expression) -> Option<VarName> {
+    let Expression::Binary { op, lhs, rhs } = expr else {
+        return None;
+    };
+    if !matches!(op, OpBinary::Sub(_)) {
+        return None;
+    }
+    if let Expression::VarRef { name, subscripts } = lhs.as_ref()
+        && subscripts.is_empty()
+    {
+        return Some(name.clone());
+    }
+    if let Expression::VarRef { name, subscripts } = rhs.as_ref()
+        && subscripts.is_empty()
+    {
+        return Some(name.clone());
+    }
+    None
+}
+
+fn runtime_partition_or_event_refs_var(dae: &Dae, var_name: &VarName) -> bool {
+    dae.f_z
+        .iter()
+        .any(|eq| expr_contains_var(&eq.rhs, var_name))
+        || dae
+            .f_m
+            .iter()
+            .any(|eq| expr_contains_var(&eq.rhs, var_name))
+        || dae
+            .f_c
+            .iter()
+            .any(|eq| expr_contains_var(&eq.rhs, var_name))
+        || dae
+            .relation
+            .iter()
+            .any(|expr| expr_contains_var(expr, var_name))
+        || dae
+            .synthetic_root_conditions
+            .iter()
+            .any(|expr| expr_contains_var(expr, var_name))
+        || dae
+            .clock_constructor_exprs
+            .iter()
+            .any(|expr| expr_contains_var(expr, var_name))
+}
+
+fn should_preserve_runtime_known_assignment(dae: &Dae, eq_rhs: &Expression) -> bool {
+    let Some(target) = assignment_target_name(eq_rhs) else {
+        return false;
+    };
+    dae.discrete_reals.contains_key(&target)
+        || dae.discrete_valued.contains_key(&target)
+        || runtime_partition_or_event_refs_var(dae, &target)
+}
+
 fn expr_references_any_runtime_discrete_target(
     expr: &Expression,
     runtime_defined_discrete_targets: &HashSet<String>,
@@ -861,6 +1197,19 @@ fn expr_references_any_runtime_discrete_target(
         runtime_defined_discrete_targets.contains(raw)
             || dae::component_base_name(raw)
                 .is_some_and(|base| runtime_defined_discrete_targets.contains(base.as_str()))
+    })
+}
+
+fn expr_references_any_discrete_name(dae: &Dae, expr: &Expression) -> bool {
+    let mut refs: HashSet<VarName> = HashSet::new();
+    expr.collect_var_refs(&mut refs);
+    refs.iter().any(|name| {
+        dae.discrete_reals.contains_key(name)
+            || dae.discrete_valued.contains_key(name)
+            || dae::component_base_name(name.as_str()).is_some_and(|base| {
+                let base = VarName::new(base.as_str());
+                dae.discrete_reals.contains_key(&base) || dae.discrete_valued.contains_key(&base)
+            })
     })
 }
 

@@ -277,7 +277,7 @@ fn validate_discrete_valued_solved_form(dae_model: &dae::Dae) -> Result<(), ToDa
 
     for (lhs, equation) in &assignments {
         let mut refs = HashSet::new();
-        collect_current_var_refs(&equation.rhs, &mut refs);
+        collect_current_var_refs_for_assignment(&equation.rhs, lhs, &mut refs);
 
         let mut lhs_deps = Vec::new();
         for var_ref in refs {
@@ -378,47 +378,130 @@ fn resolve_assignment_target(
         .find(|candidate| targets.contains(candidate))
 }
 
-struct CurrentVarRefCollector<'a> {
-    out: &'a mut HashSet<dae::VarName>,
+fn collect_current_var_refs_for_assignment(
+    expr: &dae::Expression,
+    target: &dae::VarName,
+    out: &mut HashSet<dae::VarName>,
+) {
+    collect_current_var_refs_with_initial_guard(expr, target, false, out);
 }
 
-impl dae::ExpressionVisitor for CurrentVarRefCollector<'_> {
-    fn visit_var_ref(&mut self, name: &dae::VarName, subscripts: &[dae::Subscript]) {
-        self.out.insert(name.clone());
-        for subscript in subscripts {
-            self.visit_subscript(subscript);
+fn collect_current_var_refs_with_initial_guard(
+    expr: &dae::Expression,
+    target: &dae::VarName,
+    allow_current_target: bool,
+    out: &mut HashSet<dae::VarName>,
+) {
+    match expr {
+        dae::Expression::VarRef { name, subscripts } => {
+            if !(allow_current_target && name == target) {
+                out.insert(name.clone());
+            }
+            for subscript in subscripts {
+                collect_current_var_refs_in_subscript(subscript, target, out);
+            }
         }
-    }
-
-    fn visit_builtin_call(&mut self, function: &dae::BuiltinFunction, args: &[dae::Expression]) {
-        if matches!(function, dae::BuiltinFunction::Pre) {
-            return;
+        dae::Expression::Binary { lhs, rhs, .. } => {
+            collect_current_var_refs_with_initial_guard(lhs, target, false, out);
+            collect_current_var_refs_with_initial_guard(rhs, target, false, out);
         }
-        for arg in args {
-            self.visit_expression(arg);
+        dae::Expression::Unary { rhs, .. } => {
+            collect_current_var_refs_with_initial_guard(rhs, target, false, out);
         }
-    }
-
-    fn visit_function_call(
-        &mut self,
-        name: &dae::VarName,
-        args: &[dae::Expression],
-        is_constructor: bool,
-    ) {
-        let short_name = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-        if short_name == "previous" {
-            return;
+        dae::Expression::BuiltinCall { function, args } => {
+            if matches!(function, dae::BuiltinFunction::Pre) {
+                return;
+            }
+            for arg in args {
+                collect_current_var_refs_with_initial_guard(arg, target, false, out);
+            }
         }
-        let _ = is_constructor;
-        for arg in args {
-            self.visit_expression(arg);
+        dae::Expression::FunctionCall { name, args, .. } => {
+            let short_name = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+            if function_call_uses_left_limit_value(short_name) {
+                return;
+            }
+            for arg in args {
+                collect_current_var_refs_with_initial_guard(arg, target, false, out);
+            }
         }
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, value) in branches {
+                collect_current_var_refs_with_initial_guard(cond, target, false, out);
+                let allow_value_target = is_initial_builtin_call(cond);
+                collect_current_var_refs_with_initial_guard(value, target, allow_value_target, out);
+            }
+            collect_current_var_refs_with_initial_guard(else_branch, target, false, out);
+        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
+            for element in elements {
+                collect_current_var_refs_with_initial_guard(element, target, false, out);
+            }
+        }
+        dae::Expression::Range { start, step, end } => {
+            collect_current_var_refs_with_initial_guard(start, target, false, out);
+            if let Some(step) = step {
+                collect_current_var_refs_with_initial_guard(step, target, false, out);
+            }
+            collect_current_var_refs_with_initial_guard(end, target, false, out);
+        }
+        dae::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            collect_current_var_refs_with_initial_guard(expr, target, false, out);
+            for index in indices {
+                collect_current_var_refs_with_initial_guard(&index.range, target, false, out);
+            }
+            if let Some(filter) = filter {
+                collect_current_var_refs_with_initial_guard(filter, target, false, out);
+            }
+        }
+        dae::Expression::Index { base, subscripts } => {
+            collect_current_var_refs_with_initial_guard(base, target, false, out);
+            for subscript in subscripts {
+                collect_current_var_refs_in_subscript(subscript, target, out);
+            }
+        }
+        dae::Expression::FieldAccess { base, .. } => {
+            collect_current_var_refs_with_initial_guard(base, target, false, out);
+        }
+        dae::Expression::Literal(_) | dae::Expression::Empty => {}
     }
 }
 
-fn collect_current_var_refs(expr: &dae::Expression, out: &mut HashSet<dae::VarName>) {
-    let mut collector = CurrentVarRefCollector { out };
-    dae::ExpressionVisitor::visit_expression(&mut collector, expr);
+fn collect_current_var_refs_in_subscript(
+    subscript: &dae::Subscript,
+    target: &dae::VarName,
+    out: &mut HashSet<dae::VarName>,
+) {
+    if let dae::Subscript::Expr(expr) = subscript {
+        collect_current_var_refs_with_initial_guard(expr, target, false, out);
+    }
+}
+
+fn function_call_uses_left_limit_value(name: &str) -> bool {
+    matches!(
+        name,
+        // MLS §16.5.1: previous(..) and hold(..) read stored clocked values
+        // from the associated clock history instead of creating a same-tick
+        // current-value dependency in the discrete solved form.
+        "previous" | "hold"
+    )
+}
+
+fn is_initial_builtin_call(expr: &dae::Expression) -> bool {
+    matches!(
+        expr,
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Initial,
+            args,
+        } if args.is_empty()
+    )
 }
 
 fn find_cycle(deps: &HashMap<dae::VarName, Vec<dae::VarName>>) -> Option<Vec<dae::VarName>> {
@@ -492,9 +575,13 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
         let key = dae::VarName::new(name);
         if !dae_model.discrete_reals.contains_key(&key)
             && !dae_model.discrete_valued.contains_key(&key)
+            && !dae_model.algebraics.contains_key(&key)
+            && !dae_model.outputs.contains_key(&key)
+            && !dae_model.inputs.contains_key(&key)
+            && !dae_model.states.contains_key(&key)
         {
             return Err(ToDaeError::runtime_metadata_violation(format!(
-                "clock interval key `{name}` must reference a discrete variable in DAE",
+                "clock interval key `{name}` must reference a runtime variable in DAE",
             )));
         }
     }
@@ -693,6 +780,59 @@ mod tests {
     }
 
     #[test]
+    fn fm_cycle_through_hold_is_accepted() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .discrete_valued
+            .insert(dae::VarName::new("a"), bool_var("a"));
+        dae_model
+            .discrete_valued
+            .insert(dae::VarName::new("b"), bool_var("b"));
+        dae_model.f_m.push(dae::Equation::explicit(
+            dae::VarName::new("a"),
+            call("hold", vec![var_ref("b")]),
+            rumoca_core::Span::DUMMY,
+            "a = hold(b)",
+        ));
+        dae_model.f_m.push(dae::Equation::explicit(
+            dae::VarName::new("b"),
+            var_ref("a"),
+            rumoca_core::Span::DUMMY,
+            "b = a",
+        ));
+
+        validate_appendix_b_invariants(&dae_model).expect(
+            "hold(..) should break current-value cycle detection in f_m solved-form validation",
+        );
+    }
+
+    #[test]
+    fn fm_initial_branch_current_self_ref_is_accepted() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .discrete_valued
+            .insert(dae::VarName::new("a"), bool_var("a"));
+        dae_model.f_m.push(dae::Equation::explicit(
+            dae::VarName::new("a"),
+            dae::Expression::If {
+                branches: vec![(
+                    dae::Expression::BuiltinCall {
+                        function: dae::BuiltinFunction::Initial,
+                        args: vec![],
+                    },
+                    var_ref("a"),
+                )],
+                else_branch: Box::new(pre_var("a")),
+            },
+            rumoca_core::Span::DUMMY,
+            "a = if initial() then a else pre(a)",
+        ));
+
+        validate_appendix_b_invariants(&dae_model)
+            .expect("MLS §8.6 initial-branch self reference should pass validation");
+    }
+
+    #[test]
     fn strict_solver_dae_rejects_sample_in_fx() {
         let mut dae_model = dae::Dae::default();
         dae_model.f_x.push(dae::Equation::residual(
@@ -745,5 +885,20 @@ mod tests {
         let err = validate_appendix_b_invariants(&dae_model)
             .expect_err("clock interval key without matching discrete variable must fail");
         assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
+    }
+
+    #[test]
+    fn runtime_metadata_accepts_clock_interval_for_algebraic_variable() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.algebraics.insert(
+            dae::VarName::new("clockedAlg"),
+            dae::Variable::new(dae::VarName::new("clockedAlg")),
+        );
+        dae_model
+            .clock_intervals
+            .insert("clockedAlg".to_string(), 0.1);
+
+        validate_appendix_b_invariants(&dae_model)
+            .expect("clock interval metadata should accept algebraic clocked variables");
     }
 }

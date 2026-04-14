@@ -6,6 +6,7 @@ use crate::source_root_api::sync_project_sources_with_cache_root_for_tests;
 
 mod lsp_diagnostics_tests;
 mod source_root_api_tests;
+mod wasm_cache_tests;
 
 static SESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1801,137 +1802,80 @@ fn test_simulate_model_wrapper_returns_time_series_payload() {
 }
 
 #[test]
-fn test_wasm_lsp_completion_keeps_local_members_on_ast_fast_path() {
+fn test_simulate_model_wrapper_surfaces_velocity_series_for_reinit_model() {
     let _guard = session_test_guard();
     clear_source_root_cache();
-    reset_session_cache_stats();
 
     let source = r#"
-    model Plane
-      Real x, y, theta;
+    model BallWasmSmoke
+      parameter Real e = 0.8;
+      Real x(start = 1.0);
+      Real v(start = 0.0);
     equation
-      der(x) = cos(theta);
-      der(y) = sin(theta);
-      der(theta) = 1;
-    end Plane;
-
-    model Sim
-      Plane p1, p2;
-    equation
-      p1.x = 1;
-    end Sim;
+      der(x) = v;
+      der(v) = -9.81;
+      when x < 0 then
+        reinit(v, -e * pre(v));
+      end when;
+    end BallWasmSmoke;
     "#;
 
-    let before = session_cache_stats();
-    let first_json = lsp_completion(source, 12, "      p1.".len() as u32).expect("cold completion");
-    let after_first = session_cache_stats();
-    let first_delta = after_first.delta_since(before);
-    let first_items: Vec<serde_json::Value> =
-        serde_json::from_str(&first_json).expect("completion payload should be valid JSON");
-    assert!(
-        first_items
+    let json = simulate_model(source, "BallWasmSmoke", 1.5, 0.01, "auto")
+        .expect("simulate_model wrapper should handle reinit state export");
+    let simulation: serde_json::Value =
+        serde_json::from_str(&json).expect("simulation payload should be valid JSON");
+    let payload = simulation
+        .get("payload")
+        .expect("simulation output should include nested payload");
+    let names = payload["names"]
+        .as_array()
+        .expect("simulation payload should include names");
+    let all_data = payload["allData"]
+        .as_array()
+        .expect("simulation payload should include allData columns");
+    let times = all_data[0]
+        .as_array()
+        .expect("simulation payload should include time samples");
+    let name_index = |name: &str| {
+        names
             .iter()
-            .any(|item| item.get("label").and_then(|v| v.as_str()) == Some("x")),
-        "expected member completion for x, got: {first_items:?}"
-    );
-    assert_eq!(
-        first_delta.semantic_navigation_builds, 0,
-        "local member completion should stay off semantic navigation"
-    );
-    assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "completion should avoid populating the standard resolved session"
-    );
+            .position(|value| value.as_str() == Some(name))
+            .expect("expected named simulation series")
+    };
+    let x_idx = name_index("x");
+    let v_idx = name_index("v");
+    let x: Vec<f64> = all_data[x_idx + 1]
+        .as_array()
+        .expect("x series should be present")
+        .iter()
+        .map(|value| value.as_f64().expect("x samples must be numeric"))
+        .collect();
+    let v: Vec<f64> = all_data[v_idx + 1]
+        .as_array()
+        .expect("v series should be present")
+        .iter()
+        .map(|value| value.as_f64().expect("v samples must be numeric"))
+        .collect();
 
-    let second_json =
-        lsp_completion(source, 12, "      p1.".len() as u32).expect("warm completion");
-    let second_delta = session_cache_stats().delta_since(after_first);
-    let second_items: Vec<serde_json::Value> =
-        serde_json::from_str(&second_json).expect("completion payload should be valid JSON");
-    assert_eq!(
-        first_items, second_items,
-        "warm completion should preserve completion results"
+    assert!(
+        times.len() >= 20,
+        "expected at least 20 samples for reinit smoke, got {}",
+        times.len()
     );
     assert_eq!(
-        second_delta.semantic_navigation_builds, 0,
-        "warm completion should keep using the AST fast path"
+        payload.get("nStates").and_then(|value| value.as_u64()),
+        Some(2)
     );
     assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "warm completion should still avoid the standard resolved session"
-    );
-
-    clear_source_root_cache();
-}
-
-#[test]
-fn test_wasm_lsp_diagnostics_reuse_semantic_diagnostics_cache() {
-    let _guard = session_test_guard();
-    clear_source_root_cache();
-    reset_session_cache_stats();
-
-    let source = r#"
-    model M
-      Real x(start=0);
-    equation
-      der(x) = -x;
-    end M;
-    "#;
-
-    let before = session_cache_stats();
-    let first_json = lsp_diagnostics(source).expect("cold diagnostics");
-    let after_first = session_cache_stats();
-    let first_delta = after_first.delta_since(before);
-    let first_diagnostics: Vec<serde_json::Value> =
-        serde_json::from_str(&first_json).expect("diagnostics payload should be valid JSON");
-    assert!(
-        first_diagnostics.is_empty(),
-        "expected clean diagnostics for valid model, got: {first_diagnostics:?}"
+        x.iter()
+            .copied()
+            .zip(x.iter().copied().skip(1))
+            .any(|(prev, next)| next < prev),
+        "expected x to decrease under gravity, got x={x:?}"
     );
     assert!(
-        first_delta.interface_semantic_diagnostics_builds >= 1,
-        "cold diagnostics should build interface-stage diagnostics artifacts"
-    );
-    assert!(
-        first_delta.body_semantic_diagnostics_builds >= 1,
-        "cold diagnostics should build body-stage diagnostics artifacts"
-    );
-    assert!(
-        first_delta.model_stage_semantic_diagnostics_builds >= 1,
-        "cold diagnostics should build model-stage diagnostics artifacts"
-    );
-
-    let second_json = lsp_diagnostics(source).expect("warm diagnostics");
-    let second_delta = session_cache_stats().delta_since(after_first);
-    let second_diagnostics: Vec<serde_json::Value> =
-        serde_json::from_str(&second_json).expect("diagnostics payload should be valid JSON");
-    assert_eq!(
-        first_diagnostics, second_diagnostics,
-        "warm diagnostics should preserve the diagnostics payload"
-    );
-    assert_eq!(
-        second_delta.interface_semantic_diagnostics_builds, 0,
-        "warm diagnostics should not rebuild interface-stage diagnostics artifacts"
-    );
-    assert_eq!(
-        second_delta.body_semantic_diagnostics_builds, 0,
-        "warm diagnostics should not rebuild body-stage diagnostics artifacts"
-    );
-    assert_eq!(
-        second_delta.model_stage_semantic_diagnostics_builds, 0,
-        "warm diagnostics should not rebuild model-stage diagnostics artifacts"
-    );
-    assert!(
-        second_delta.interface_semantic_diagnostics_cache_hits >= 1,
-        "warm diagnostics should reuse the interface-stage diagnostics cache"
-    );
-    assert!(
-        second_delta.body_semantic_diagnostics_cache_hits >= 1,
-        "warm diagnostics should reuse the body-stage diagnostics cache"
-    );
-    assert!(
-        second_delta.model_stage_semantic_diagnostics_cache_hits >= 1,
-        "warm diagnostics should reuse the model-stage diagnostics cache"
+        v.iter().copied().any(|value| value < -0.5),
+        "expected nonzero downward speed, got v={v:?}"
     );
 
     clear_source_root_cache();

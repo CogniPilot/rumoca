@@ -1,4 +1,5 @@
 use super::schedule::RuntimeStopSchedule;
+use crate::runtime::hotpath_stats;
 use rumoca_ir_dae as dae;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -66,12 +67,14 @@ where
         let outcome = backend.step_until(active_stop)?;
         if !matches!(outcome, StepUntilOutcome::Finished) {
             stats.steps += 1;
+            hotpath_stats::inc_solver_step();
         }
 
         match outcome {
             StepUntilOutcome::InternalStep => {}
             StepUntilOutcome::RootFound { t_root } => {
                 stats.root_hits += 1;
+                hotpath_stats::inc_root_hit();
                 backend.apply_event_updates(t_root)?;
                 let state_after = backend.read_state();
                 if stop_time_reached_with_tol(state_after.t, t_end) {
@@ -84,7 +87,7 @@ where
                 if stop_time_reached_with_tol(state_after_step.t, t_end) {
                     break;
                 }
-                backend.apply_event_updates(active_stop)?;
+                backend.apply_event_updates(state_after_step.t)?;
                 let state_after_event = backend.read_state();
                 if stop_time_reached_with_tol(state_after_event.t, t_end) {
                     break;
@@ -203,6 +206,24 @@ mod tests {
         assert_eq!(stats.root_hits, 0);
         assert_eq!(backend.event_updates.len(), 1);
         assert!((backend.event_updates[0] - 0.5).abs() <= 1.0e-12);
+    }
+
+    #[test]
+    fn stop_reached_uses_backend_stop_time_for_event_update() {
+        let mut backend = MockBackend {
+            t: 0.0,
+            steps: VecDeque::from(vec![MockStep::Stop { t: 0.35 }, MockStep::Finished]),
+            ..Default::default()
+        };
+        let dae_model = dae::Dae {
+            scheduled_time_events: vec![1.0],
+            ..Default::default()
+        };
+
+        let stats = run_with_runtime_schedule(&mut backend, &dae_model, 0.0, 1.0, || Ok(()))
+            .expect("orchestration should honor backend-provided stop instant");
+        assert_eq!(stats.steps, 1);
+        assert_eq!(backend.event_updates, vec![0.35]);
     }
 
     #[test]

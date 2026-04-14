@@ -2,11 +2,63 @@ use std::any::Any;
 use std::cell::Cell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
-use std::time::Instant;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) type WallClockInstant = f64;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type WallClockInstant = std::time::Instant;
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub(crate) fn wall_clock_now() -> WallClockInstant {
+    js_sys::Date::now() / 1_000.0
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+pub(crate) fn wall_clock_now() -> WallClockInstant {
+    std::time::Instant::now()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub(crate) fn wall_clock_elapsed_seconds(started_at: WallClockInstant) -> f64 {
+    (wall_clock_now() - started_at).max(0.0)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+pub(crate) fn wall_clock_elapsed_seconds(started_at: WallClockInstant) -> f64 {
+    started_at.elapsed().as_secs_f64()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn wall_clock_deadline_after(seconds: f64) -> WallClockInstant {
+    wall_clock_now() + seconds
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn wall_clock_deadline_after(seconds: f64) -> WallClockInstant {
+    wall_clock_now() + Duration::from_secs_f64(seconds)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn wall_clock_expired(deadline: WallClockInstant) -> bool {
+    wall_clock_now() >= deadline
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn wall_clock_expired(deadline: WallClockInstant) -> bool {
+    wall_clock_now() >= deadline
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimeoutBudget {
-    deadline: Option<Instant>,
+    deadline: Option<WallClockInstant>,
     seconds: Option<f64>,
 }
 
@@ -19,17 +71,13 @@ pub struct TimeoutExceeded {
 impl TimeoutBudget {
     pub fn new(max_wall_seconds: Option<f64>) -> Self {
         let seconds = max_wall_seconds.filter(|s| s.is_finite() && *s > 0.0);
-        #[cfg(target_arch = "wasm32")]
-        let deadline = None;
-        #[cfg(not(target_arch = "wasm32"))]
-        let deadline = seconds.map(|s| Instant::now() + Duration::from_secs_f64(s));
+        let deadline = seconds.map(wall_clock_deadline_after);
         Self { deadline, seconds }
     }
 
     #[inline]
     pub fn check(&self) -> Result<(), TimeoutExceeded> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.deadline.is_some_and(|d| Instant::now() >= d) {
+        if self.deadline.is_some_and(wall_clock_expired) {
             return Err(self.timeout_error());
         }
         Ok(())
@@ -43,7 +91,7 @@ impl TimeoutBudget {
     }
 
     #[inline]
-    pub fn deadline(&self) -> Option<Instant> {
+    pub(crate) fn deadline(&self) -> Option<WallClockInstant> {
         self.deadline
     }
 }
@@ -52,15 +100,15 @@ impl TimeoutBudget {
 pub struct SolverTimeoutPanic;
 
 thread_local! {
-    static SOLVER_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+    static SOLVER_DEADLINE: Cell<Option<WallClockInstant>> = const { Cell::new(None) };
 }
 
 pub struct SolverDeadlineGuard {
-    prev: Option<Instant>,
+    prev: Option<WallClockInstant>,
 }
 
 impl SolverDeadlineGuard {
-    pub fn install(deadline: Option<Instant>) -> Self {
+    pub fn install(deadline: Option<WallClockInstant>) -> Self {
         let prev = SOLVER_DEADLINE.with(|cell| {
             let prev = cell.get();
             cell.set(deadline);
@@ -78,12 +126,9 @@ impl Drop for SolverDeadlineGuard {
 
 #[inline]
 pub fn panic_on_expired_solver_deadline() {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let expired = SOLVER_DEADLINE.with(|cell| cell.get().is_some_and(|d| Instant::now() >= d));
-        if expired {
-            std::panic::panic_any(SolverTimeoutPanic);
-        }
+    let expired = SOLVER_DEADLINE.with(|cell| cell.get().is_some_and(wall_clock_expired));
+    if expired {
+        std::panic::panic_any(SolverTimeoutPanic);
     }
 }
 

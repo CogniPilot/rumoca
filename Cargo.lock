@@ -3421,6 +3421,7 @@ dependencies = [
  "diffsol",
  "getrandom 0.3.4",
  "indexmap",
+ "js-sys",
  "levenberg-marquardt",
  "nalgebra",
  "rumoca-core",

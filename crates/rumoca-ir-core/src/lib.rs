@@ -385,7 +385,7 @@ impl BuiltinFunction {
             "homotopy" => Some(Self::Homotopy),
             "semiLinear" => Some(Self::SemiLinear),
             "delay" => Some(Self::Delay),
-            "integer" => Some(Self::Integer),
+            "integer" | "Integer" => Some(Self::Integer),
             // Reduction
             "sum" => Some(Self::Sum),
             "product" => Some(Self::Product),

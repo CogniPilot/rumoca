@@ -1,5 +1,19 @@
 use super::*;
 
+fn assert_no_model_query_builds(
+    delta: rumoca_session::compile::SessionCacheStatsSnapshot,
+    context: &str,
+) {
+    for (stage, builds) in [
+        ("instantiated_model", delta.instantiated_model_builds),
+        ("typed_model", delta.typed_model_builds),
+        ("flat_model", delta.flat_model_builds),
+        ("dae_model", delta.dae_model_builds),
+    ] {
+        assert_eq!(builds, 0, "{context} should not build {stage}");
+    }
+}
+
 fn assert_save_diagnostics_timings(
     cold: &LoggedDiagnosticsTimingSummary,
     warm: &LoggedDiagnosticsTimingSummary,
@@ -57,7 +71,11 @@ fn assert_save_diagnostics_timings(
             >= 1,
         "warm save diagnostics should reuse cached model-stage diagnostics"
     );
-    assert_no_model_query_activity(warm.session_cache_delta, "warm save diagnostics");
+    // Session cache stats are process-global, so unrelated parallel LSP tests can
+    // contribute incidental cache misses. The stable invariant for the warm save
+    // path is that it does not rebuild model stages once semantic diagnostics are
+    // already cached.
+    assert_no_model_query_builds(warm.session_cache_delta, "warm save diagnostics");
 }
 
 fn assert_stale_save_diagnostics_timing(entry: &LoggedDiagnosticsTimingSummary) {

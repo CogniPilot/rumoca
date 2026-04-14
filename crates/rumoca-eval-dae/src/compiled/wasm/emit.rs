@@ -286,7 +286,25 @@ fn max_register_for_op(op: &LinearOp) -> usize {
         | LinearOp::LoadTime { dst }
         | LinearOp::LoadY { dst, .. }
         | LinearOp::LoadP { dst, .. }
-        | LinearOp::LoadSeed { dst, .. } => dst as usize,
+        | LinearOp::LoadSeed { dst, .. }
+        | LinearOp::TableBounds { dst, .. } => dst as usize,
+        LinearOp::TableLookup {
+            dst,
+            table_id,
+            column,
+            input,
+        } => dst.max(table_id).max(column).max(input) as usize,
+        LinearOp::TableLookupSlope {
+            dst,
+            table_id,
+            column,
+            input,
+        } => dst.max(table_id).max(column).max(input) as usize,
+        LinearOp::TableNextEvent {
+            dst,
+            table_id,
+            time,
+        } => dst.max(table_id).max(time) as usize,
         LinearOp::Unary { dst, arg, .. } => (dst.max(arg)) as usize,
         LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
             dst.max(lhs).max(rhs) as usize
@@ -349,6 +367,12 @@ impl<'a> BodyEmitter<'a> {
                 self.push(Instruction::LocalGet(SEED_PTR_PARAM));
                 self.push(Instruction::F64Load(memarg_for_index(index)?));
                 self.set_reg(dst);
+            }
+            LinearOp::TableBounds { .. }
+            | LinearOp::TableLookup { .. }
+            | LinearOp::TableLookupSlope { .. }
+            | LinearOp::TableNextEvent { .. } => {
+                return Err("WASM backend does not yet support host-backed table ops".to_string());
             }
             LinearOp::Unary { dst, op, arg } => self.emit_unary(dst, op, arg)?,
             LinearOp::Binary { dst, op, lhs, rhs } => self.emit_binary(dst, op, lhs, rhs)?,

@@ -451,6 +451,10 @@ impl Session {
 
     pub fn finish_source_root_read_prewarm(&mut self, session_revision: u64) {
         if self.source_root_indexing.read_prewarm_session_revision == Some(session_revision) {
+            // Session-owned source-root prewarm runs on detached snapshots.
+            // Merge any AST-tier warmth it discovered back into the host
+            // session before clearing the pending marker.
+            self.sync_query_state_from_snapshots();
             self.source_root_indexing.read_prewarm_session_revision = None;
         }
     }

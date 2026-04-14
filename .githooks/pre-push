@@ -6,6 +6,11 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# Git passes ref update records on stdin to pre-push hooks. None of the local
+# verification commands consume that stream, and inheriting it can perturb test
+# processes that probe stdin.
+exec </dev/null
+
 required_toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml | head -n 1)"
 active_toolchain="$(rustup show active-toolchain 2>/dev/null | awk '{print $1}')"
 if [[ -n "$required_toolchain" && "$active_toolchain" != "$required_toolchain"* ]]; then

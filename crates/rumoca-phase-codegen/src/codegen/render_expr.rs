@@ -604,12 +604,7 @@ fn render_literal(literal: &Value, cfg: &ExprConfig) -> RenderResult {
     if let Ok(real) = get_field(literal, "Real") {
         if cfg.float_literals {
             let s = real.to_string();
-            // Ensure it has a decimal point and f suffix
-            return Ok(if s.contains('.') {
-                format!("{}f", s)
-            } else {
-                format!("{}.0f", s)
-            });
+            return Ok(render_c_float_literal(&s));
         }
         return Ok(real.to_string());
     }
@@ -630,6 +625,14 @@ fn render_literal(literal: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(format!("\"{}\"", s));
     }
     Ok("0".to_string())
+}
+
+fn render_c_float_literal(literal_text: &str) -> String {
+    if literal_text.contains(['.', 'e', 'E']) {
+        format!("{literal_text}f")
+    } else {
+        format!("{literal_text}.0f")
+    }
 }
 
 fn render_if(if_expr: &Value, cfg: &ExprConfig) -> RenderResult {
@@ -916,4 +919,21 @@ fn render_field_access(fa: &Value, cfg: &ExprConfig) -> RenderResult {
         .map(|v| v.to_string())
         .map_err(|_| render_err("FieldAccess missing 'field'"))?;
     Ok(format!("{base}.{field}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_c_float_literal;
+
+    #[test]
+    fn test_render_c_float_literal_preserves_scientific_notation() {
+        assert_eq!(render_c_float_literal("1e-6"), "1e-6f");
+        assert_eq!(render_c_float_literal("1E-6"), "1E-6f");
+    }
+
+    #[test]
+    fn test_render_c_float_literal_adds_fraction_to_integer_text() {
+        assert_eq!(render_c_float_literal("1"), "1.0f");
+        assert_eq!(render_c_float_literal("1.25"), "1.25f");
+    }
 }

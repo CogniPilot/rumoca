@@ -20,7 +20,7 @@ type Expression = dae::Expression;
 
 /// BLT IC-solver failure modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IcSolveError {
+pub(crate) enum IcSolveError {
     /// IC solving exceeded the caller-provided wall-clock deadline.
     Timeout,
 }
@@ -698,7 +698,7 @@ fn write_var_start(var: &mut rumoca_ir_dae::Variable, y: &[f64], idx: &mut usize
 /// Returns `true` if all blocks converged, `false` otherwise (graceful degradation).
 ///
 /// Returns `Err(IcSolveError::Timeout)` if the provided deadline is exceeded.
-pub fn solve_initial_blt_with_deadline(
+pub(crate) fn solve_initial_blt_with_deadline(
     dae: &mut Dae,
     n_x: usize,
     ic_blocks: &[IcBlock],
@@ -824,7 +824,12 @@ fn solve_ic_block(
 }
 
 /// Solve BLT initialization without a wall-clock deadline.
-pub fn solve_initial_blt(dae: &mut Dae, n_x: usize, ic_blocks: &[IcBlock], tol: f64) -> bool {
+pub(crate) fn solve_initial_blt(
+    dae: &mut Dae,
+    n_x: usize,
+    ic_blocks: &[IcBlock],
+    tol: f64,
+) -> bool {
     solve_initial_blt_with_deadline(dae, n_x, ic_blocks, tol, None).unwrap_or(false)
 }
 

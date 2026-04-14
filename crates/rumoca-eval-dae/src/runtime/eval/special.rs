@@ -67,6 +67,9 @@ fn eval_stream_special_function<T: SimFloat>(
                 .map(|arg| eval_expr::<T>(arg, env))
                 .unwrap_or_else(T::zero),
         ),
+        // Accept impure stream/file helpers in simulation so examples that only
+        // observe the returned success flag remain executable.
+        "writeRealMatrix" => Some(T::one()),
         _ => None,
     }
 }
@@ -389,7 +392,7 @@ fn eval_misc_intrinsic_function<T: SimFloat>(
                 .map(|expr| eval_expr::<T>(expr, env))
                 .unwrap_or_else(T::zero),
         ),
-        "getInstanceName" | "loadResource" => Some(T::zero()),
+        "getInstanceName" | "loadResource" | "fullPathName" => Some(T::zero()),
         "isValidTable" => Some(T::one()),
         "isEmpty" => {
             if let Some(Expression::Literal(Literal::String(s))) = args.first() {
@@ -458,7 +461,8 @@ fn eval_qualified_special_function<T: SimFloat>(
     match name {
         "Modelica.Math.Random.Utilities.initialStateWithXorshift64star"
         | "Modelica.Math.Random.Generators.Xorshift64star.initialState"
-        | "Modelica.Math.Random.Generators.Xorshift128plus.initialState" => {
+        | "Modelica.Math.Random.Generators.Xorshift128plus.initialState"
+        | "Modelica.Math.Random.Generators.Xorshift1024star.initialState" => {
             let local_seed = eval_integer_arg(args, 0, env);
             let global_seed = eval_integer_arg(args, 1, env);
             let n_state = eval_integer_arg(args, 2, env).max(1);
@@ -467,13 +471,158 @@ fn eval_qualified_special_function<T: SimFloat>(
             Some(T::from_f64(clamp_i64_to_positive_u31(mixed) as f64))
         }
         "Modelica.Math.Random.Generators.Xorshift64star.random"
-        | "Modelica.Math.Random.Generators.Xorshift128plus.random" => {
+        | "Modelica.Math.Random.Generators.Xorshift128plus.random"
+        | "Modelica.Math.Random.Generators.Xorshift1024star.random" => {
             let state_tag = args
                 .first()
                 .map(|expr| eval_expr::<T>(expr, env).real().to_bits())
                 .unwrap_or(1);
             let id = clamp_i64_to_positive_u31(scramble_seed(state_tag));
             Some(T::from_f64(impure_random_value(id)))
+        }
+        _ => None,
+    }
+}
+
+fn runtime_special_output_names(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        "Modelica.Math.Random.Utilities.initialStateWithXorshift64star"
+        | "Modelica.Math.Random.Generators.Xorshift64star.initialState"
+        | "Modelica.Math.Random.Generators.Xorshift128plus.initialState"
+        | "Modelica.Math.Random.Generators.Xorshift1024star.initialState" => Some(&["state"]),
+        "Modelica.Math.Random.Generators.Xorshift64star.random"
+        | "Modelica.Math.Random.Generators.Xorshift128plus.random"
+        | "Modelica.Math.Random.Generators.Xorshift1024star.random" => {
+            Some(&["result", "stateOut"])
+        }
+        _ => None,
+    }
+}
+
+fn resolve_runtime_special_target(
+    requested_name: &str,
+) -> Option<(VarName, Option<OutputProjection>)> {
+    if runtime_special_output_names(requested_name).is_some() {
+        return Some((VarName::new(requested_name), None));
+    }
+
+    let mut split_positions: Vec<usize> =
+        requested_name.match_indices('.').map(|(i, _)| i).collect();
+    split_positions.reverse();
+    for split_idx in split_positions {
+        let base_name = &requested_name[..split_idx];
+        let suffix = &requested_name[split_idx + 1..];
+        let Some(projection) = parse_projection_suffix(suffix) else {
+            continue;
+        };
+        if runtime_special_output_names(base_name).is_some() {
+            return Some((VarName::new(base_name), Some(projection)));
+        }
+    }
+    None
+}
+
+fn random_state_len<T: SimFloat>(
+    base_name: &str,
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> Option<usize> {
+    match base_name {
+        "Modelica.Math.Random.Utilities.initialStateWithXorshift64star" => {
+            Some(eval_integer_arg(args, 2, env).max(1) as usize)
+        }
+        "Modelica.Math.Random.Generators.Xorshift64star.initialState"
+        | "Modelica.Math.Random.Generators.Xorshift64star.random" => Some(2),
+        "Modelica.Math.Random.Generators.Xorshift128plus.initialState"
+        | "Modelica.Math.Random.Generators.Xorshift128plus.random" => Some(4),
+        "Modelica.Math.Random.Generators.Xorshift1024star.initialState"
+        | "Modelica.Math.Random.Generators.Xorshift1024star.random" => Some(33),
+        _ => None,
+    }
+}
+
+fn unit_from_u64(sample: u64) -> f64 {
+    (((sample >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))).clamp(f64::EPSILON, 1.0)
+}
+
+fn initial_state_values<T: SimFloat>(
+    base_name: &str,
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> Option<Vec<T>> {
+    let len = random_state_len(base_name, args, env)?;
+    let local_seed = eval_integer_arg(args, 0, env);
+    let global_seed = eval_integer_arg(args, 1, env);
+    let mut state = scramble_seed(
+        (local_seed as u64)
+            ^ ((global_seed as u64) << 1)
+            ^ (len as u64).wrapping_mul(0x9E3779B97F4A7C15),
+    )
+    .max(1);
+    let mut out = Vec::with_capacity(len);
+    for idx in 0..len {
+        state = scramble_seed(state ^ (idx as u64 + 1).wrapping_mul(0xD1B54A32D192ED03)).max(1);
+        out.push(T::from_f64(clamp_i64_to_positive_u31(state) as f64));
+    }
+    Some(out)
+}
+
+fn random_result_and_state<T: SimFloat>(
+    base_name: &str,
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> Option<(T, Vec<T>)> {
+    let len = random_state_len(base_name, args, env)?;
+    let seed_values = args
+        .first()
+        .map(|expr| eval_array_like_f64_values(expr, env))
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| vec![1.0]);
+    let mut state = seed_values
+        .iter()
+        .fold(0u64, |acc, value| acc ^ scramble_seed(value.to_bits()))
+        ^ scramble_seed(
+            base_name
+                .bytes()
+                .fold(0u64, |acc, b| acc.wrapping_mul(16777619) ^ b as u64),
+        );
+    if state == 0 {
+        state = 0x9E3779B97F4A7C15;
+    }
+
+    let mut out = Vec::with_capacity(len);
+    for idx in 0..len {
+        state = scramble_seed(state ^ (idx as u64 + 1).wrapping_mul(0x94D049BB133111EB)).max(1);
+        out.push(T::from_f64(clamp_i64_to_positive_u31(state) as f64));
+    }
+    let mut sample_state = state.max(1);
+    let result = T::from_f64(unit_from_u64(xorshift64star_next(&mut sample_state)));
+    Some((result, out))
+}
+
+fn project_special_output<T: SimFloat>(values: &[T], projection: &OutputProjection) -> T {
+    let idx = projection.indices.first().copied().unwrap_or(1).max(1) as usize - 1;
+    values
+        .get(idx)
+        .copied()
+        .unwrap_or_else(|| values.first().copied().unwrap_or_else(T::zero))
+}
+
+fn eval_projected_runtime_special_function<T: SimFloat>(
+    base_name: &str,
+    projection: &OutputProjection,
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> Option<T> {
+    match projection.output_name.as_str() {
+        "result" => random_result_and_state(base_name, args, env).map(|(result, _)| result),
+        "stateOut" => {
+            let (_, state) = random_result_and_state(base_name, args, env)?;
+            Some(project_special_output(&state, projection))
+        }
+        "state" => {
+            let state = initial_state_values(base_name, args, env)?;
+            Some(project_special_output(&state, projection))
         }
         _ => None,
     }
@@ -529,6 +678,7 @@ pub fn is_runtime_special_function_short_name(short_name: &str) -> bool {
             | "cardinality"
             | "array"
             | "getInstanceName"
+            | "fullPathName"
             | "loadResource"
             | "isValidTable"
             | "isEmpty"
@@ -541,6 +691,7 @@ pub fn is_runtime_special_function_short_name(short_name: &str) -> bool {
             | "find"
             | "findLast"
             | "substring"
+            | "writeRealMatrix"
     )
 }
 
@@ -550,8 +701,10 @@ fn is_runtime_special_function_qualified_name(name: &str) -> bool {
         "Modelica.Math.Random.Utilities.initialStateWithXorshift64star"
             | "Modelica.Math.Random.Generators.Xorshift64star.initialState"
             | "Modelica.Math.Random.Generators.Xorshift128plus.initialState"
+            | "Modelica.Math.Random.Generators.Xorshift1024star.initialState"
             | "Modelica.Math.Random.Generators.Xorshift64star.random"
             | "Modelica.Math.Random.Generators.Xorshift128plus.random"
+            | "Modelica.Math.Random.Generators.Xorshift1024star.random"
     )
 }
 
@@ -561,6 +714,7 @@ pub fn is_runtime_special_function_name(name: &str) -> bool {
     let short_name = name.rsplit('.').next().unwrap_or(name);
     is_runtime_special_function_short_name(short_name)
         || is_runtime_special_function_qualified_name(name)
+        || resolve_runtime_special_target(name).is_some()
 }
 
 fn eval_special_function_call<T: SimFloat>(
@@ -568,6 +722,14 @@ fn eval_special_function_call<T: SimFloat>(
     args: &[Expression],
     env: &VarEnv<T>,
 ) -> Option<T> {
+    if let Some((resolved_name, Some(projection))) = resolve_runtime_special_target(name) {
+        return eval_projected_runtime_special_function(
+            resolved_name.as_str(),
+            &projection,
+            args,
+            env,
+        );
+    }
     if let Some(v) = eval_qualified_special_function(name, args, env) {
         return Some(v);
     }
@@ -660,6 +822,17 @@ pub fn resolve_function_call_outputs_pub<T: SimFloat>(
     name: &VarName,
     env: &VarEnv<T>,
 ) -> Option<(VarName, Vec<String>)> {
+    if let Some((resolved_name, projection)) = resolve_runtime_special_target(name.as_str()) {
+        if projection.is_some() {
+            return None;
+        }
+        let output_names = runtime_special_output_names(resolved_name.as_str())?
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        return Some((resolved_name, output_names));
+    }
+
     let (resolved_name, projection) = resolve_user_function_target(name.as_str(), env)?;
     if projection.is_some() {
         return None;
@@ -681,6 +854,22 @@ pub fn resolve_function_call_outputs_pub_dae<T: SimFloat>(
     let flat_name = VarName::new(name.as_str());
     let (resolved, outputs) = resolve_function_call_outputs_pub(&flat_name, env)?;
     Some((dae::VarName::new(resolved.as_str()), outputs))
+}
+
+fn projected_function_output_name(
+    resolved_name: &VarName,
+    output_name: &str,
+    suffix: &str,
+) -> VarName {
+    if suffix.is_empty() {
+        return VarName::new(format!("{}.{}", resolved_name.as_str(), output_name));
+    }
+    VarName::new(format!(
+        "{}.{}{}",
+        resolved_name.as_str(),
+        output_name,
+        suffix
+    ))
 }
 
 struct RecursionDepthGuard;
@@ -1428,6 +1617,12 @@ pub(super) fn eval_function_call<T: SimFloat>(
     if is_constructor {
         return eval_constructor_call(name, args, env);
     }
+    if name.as_str() == "Complex" {
+        // MLS §6.7.1: Complex is the built-in operator-record constructor.
+        // Flattened/runtime paths may still surface it as a plain function call,
+        // so preserve constructor semantics even when `is_constructor` is lost.
+        return eval_constructor_call(name, args, env);
+    }
     // Try qualified builtin resolution:
     // "Modelica.Math.sin" → "sin" → BuiltinFunction::Sin
     let short_name = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
@@ -1442,7 +1637,15 @@ pub(super) fn eval_function_call<T: SimFloat>(
         return result;
     }
 
-    // Preserve user-function lookup precedence for qualified alias cases.
+    if is_runtime_special_function_name(name.as_str())
+        && let Some(result) = eval_special_function_call(name.as_str(), args, env)
+    {
+        return result;
+    }
+
+    // Runtime special functions must bypass structured user-function bodies so
+    // standard library helpers like BooleanVectors.firstTrueIndex keep their
+    // declared runtime semantics on the simulation path.
     if let Some(result) = eval_user_function_call(name, args, env) {
         return result;
     }
@@ -1514,8 +1717,33 @@ pub fn eval_function_call_pub_dae<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> T {
     let flat_name = VarName::new(name.as_str());
-    let flat_args: Vec<Expression> = args.iter().map(super::clone_expr).collect();
+    let flat_args: Vec<Expression> = args.to_vec();
     eval_function_call(&flat_name, &flat_args, false, env)
+}
+
+/// Evaluate a specific projected function output via its resolved base function name.
+pub fn eval_projected_function_output_pub<T: SimFloat>(
+    resolved_name: &VarName,
+    output_name: &str,
+    suffix: &str,
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> T {
+    let projected = projected_function_output_name(resolved_name, output_name, suffix);
+    eval_function_call(&projected, args, false, env)
+}
+
+/// DAE-IR wrapper for `eval_projected_function_output_pub`.
+pub fn eval_projected_function_output_pub_dae<T: SimFloat>(
+    resolved_name: &dae::VarName,
+    output_name: &str,
+    suffix: &str,
+    args: &[dae::Expression],
+    env: &VarEnv<T>,
+) -> T {
+    let flat_name = VarName::new(resolved_name.as_str());
+    let flat_args: Vec<Expression> = args.to_vec();
+    eval_projected_function_output_pub(&flat_name, output_name, suffix, &flat_args, env)
 }
 
 pub(super) fn eval_if<T: SimFloat>(
@@ -1524,7 +1752,7 @@ pub(super) fn eval_if<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> T {
     for (cond, then_expr) in branches {
-        if eval_expr::<T>(cond, env).to_bool() {
+        if crate::runtime::eval::eval_condition_truth(cond, env) {
             return eval_expr::<T>(then_expr, env);
         }
     }

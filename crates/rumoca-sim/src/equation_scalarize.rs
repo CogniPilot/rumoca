@@ -153,13 +153,11 @@ impl<'a> IndexProjectionContext<'a> {
 
     fn project(&self, expr: &Expression) -> Expression {
         match expr {
-            Expression::Array { elements, .. } => {
-                if self.i >= 1 && self.i <= elements.len() {
-                    elements[self.i - 1].clone()
-                } else {
-                    expr.clone()
-                }
-            }
+            Expression::Array {
+                elements,
+                is_matrix,
+            } => project_array_literal_scalar(elements, *is_matrix, self.i)
+                .unwrap_or_else(|| expr.clone()),
             Expression::VarRef { name, subscripts } => self.project_var_ref(name, subscripts, expr),
             Expression::Binary { op, lhs, rhs } => Expression::Binary {
                 op: op.clone(),
@@ -216,6 +214,47 @@ impl<'a> IndexProjectionContext<'a> {
     }
 }
 
+fn project_array_literal_scalar(
+    elements: &[Expression],
+    is_matrix: bool,
+    scalar_index: usize,
+) -> Option<Expression> {
+    if scalar_index == 0 {
+        return None;
+    }
+    if !is_matrix {
+        return elements.get(scalar_index - 1).cloned();
+    }
+
+    let first = elements.first()?;
+    let Expression::Array {
+        elements: first_row,
+        ..
+    } = first
+    else {
+        // MLS §10.4: a single-row matrix literal is encoded as `is_matrix=true`
+        // with scalar elements. Preserve the written row order on the compiled
+        // scalarization path so it matches interpreted array evaluation.
+        return elements.get(scalar_index - 1).cloned();
+    };
+    let cols = first_row.len();
+    if cols == 0 {
+        return None;
+    }
+
+    let flat = scalar_index - 1;
+    let row = flat / cols;
+    let col = flat % cols;
+    let Expression::Array {
+        elements: row_elements,
+        ..
+    } = elements.get(row)?
+    else {
+        return None;
+    };
+    row_elements.get(col).cloned()
+}
+
 pub fn index_into_expr(
     expr: &Expression,
     i: usize,
@@ -232,6 +271,45 @@ pub fn index_into_expr(
         function_output_index_map,
     }
     .project(expr)
+}
+
+pub(crate) struct ExpressionScalarizationContext {
+    var_dims: HashMap<String, Vec<i64>>,
+    complex_fields: HashMap<String, [Option<String>; 2]>,
+    component_index_map: HashMap<String, HashMap<usize, String>>,
+    function_output_index_map: HashMap<String, HashMap<usize, String>>,
+}
+
+pub(crate) fn build_expression_scalarization_context(dae: &Dae) -> ExpressionScalarizationContext {
+    ExpressionScalarizationContext {
+        var_dims: build_var_dims_map(dae),
+        complex_fields: build_complex_field_map(dae),
+        component_index_map: build_component_index_projection_map(dae),
+        function_output_index_map: build_function_output_projection_map(dae),
+    }
+}
+
+pub(crate) fn scalarize_expression_rows(
+    expr: &Expression,
+    output_len: usize,
+    ctx: &ExpressionScalarizationContext,
+) -> Vec<Expression> {
+    if output_len <= 1 {
+        return vec![expr.clone()];
+    }
+
+    (1..=output_len)
+        .map(|index| {
+            index_into_expr(
+                expr,
+                index,
+                &ctx.var_dims,
+                &ctx.complex_fields,
+                &ctx.component_index_map,
+                &ctx.function_output_index_map,
+            )
+        })
+        .collect()
 }
 
 pub fn scalar_targets_for_lhs(lhs: &str, scalar_names: &[String]) -> Vec<String> {
@@ -853,6 +931,46 @@ mod tests {
                 "z".to_string(),
                 "y[1]".to_string(),
                 "y[2]".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn scalarize_expression_rows_flattens_matrix_literals_row_major() {
+        let ctx = ExpressionScalarizationContext {
+            var_dims: HashMap::new(),
+            complex_fields: HashMap::new(),
+            component_index_map: HashMap::new(),
+            function_output_index_map: HashMap::new(),
+        };
+        let expr = Expression::Array {
+            elements: vec![
+                Expression::Array {
+                    elements: vec![
+                        Expression::Literal(Literal::Integer(1)),
+                        Expression::Literal(Literal::Integer(2)),
+                    ],
+                    is_matrix: true,
+                },
+                Expression::Array {
+                    elements: vec![
+                        Expression::Literal(Literal::Integer(3)),
+                        Expression::Literal(Literal::Integer(4)),
+                    ],
+                    is_matrix: true,
+                },
+            ],
+            is_matrix: true,
+        };
+
+        let rows = scalarize_expression_rows(&expr, 4, &ctx);
+        assert_eq!(
+            rows,
+            vec![
+                Expression::Literal(Literal::Integer(1)),
+                Expression::Literal(Literal::Integer(2)),
+                Expression::Literal(Literal::Integer(3)),
+                Expression::Literal(Literal::Integer(4)),
             ]
         );
     }

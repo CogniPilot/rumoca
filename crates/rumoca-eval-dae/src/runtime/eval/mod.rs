@@ -21,252 +21,6 @@ type VarName = dae::VarName;
 
 const MAX_FUNC_RECURSION: usize = 64;
 
-fn clone_builtin(function: dae::BuiltinFunction) -> dae::BuiltinFunction {
-    dae::BuiltinFunction::from_name(function.name()).expect("DAE builtin set mismatch")
-}
-
-fn clone_expr(expr: &dae::Expression) -> dae::Expression {
-    match expr {
-        dae::Expression::Binary { op, lhs, rhs } => dae::Expression::Binary {
-            op: op.clone(),
-            lhs: Box::new(clone_expr(lhs)),
-            rhs: Box::new(clone_expr(rhs)),
-        },
-        dae::Expression::Unary { op, rhs } => dae::Expression::Unary {
-            op: op.clone(),
-            rhs: Box::new(clone_expr(rhs)),
-        },
-        dae::Expression::VarRef { name, subscripts } => dae::Expression::VarRef {
-            name: dae::VarName::new(name.as_str()),
-            subscripts: subscripts.iter().map(clone_subscript).collect(),
-        },
-        dae::Expression::BuiltinCall { function, args } => dae::Expression::BuiltinCall {
-            function: clone_builtin(*function),
-            args: args.iter().map(clone_expr).collect(),
-        },
-        dae::Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-        } => dae::Expression::FunctionCall {
-            name: dae::VarName::new(name.as_str()),
-            args: args.iter().map(clone_expr).collect(),
-            is_constructor: *is_constructor,
-        },
-        dae::Expression::Literal(literal) => dae::Expression::Literal(match literal {
-            dae::Literal::Real(v) => dae::Literal::Real(*v),
-            dae::Literal::Integer(v) => dae::Literal::Integer(*v),
-            dae::Literal::Boolean(v) => dae::Literal::Boolean(*v),
-            dae::Literal::String(v) => dae::Literal::String(v.clone()),
-        }),
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => dae::Expression::If {
-            branches: branches
-                .iter()
-                .map(|(cond, value)| (clone_expr(cond), clone_expr(value)))
-                .collect(),
-            else_branch: Box::new(clone_expr(else_branch)),
-        },
-        dae::Expression::Array {
-            elements,
-            is_matrix,
-        } => dae::Expression::Array {
-            elements: elements.iter().map(clone_expr).collect(),
-            is_matrix: *is_matrix,
-        },
-        dae::Expression::Tuple { elements } => dae::Expression::Tuple {
-            elements: elements.iter().map(clone_expr).collect(),
-        },
-        dae::Expression::Range { start, step, end } => dae::Expression::Range {
-            start: Box::new(clone_expr(start)),
-            step: step.as_ref().map(|value| Box::new(clone_expr(value))),
-            end: Box::new(clone_expr(end)),
-        },
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => dae::Expression::ArrayComprehension {
-            expr: Box::new(clone_expr(expr)),
-            indices: indices
-                .iter()
-                .map(|index| dae::ComprehensionIndex {
-                    name: index.name.clone(),
-                    range: clone_expr(&index.range),
-                })
-                .collect(),
-            filter: filter.as_ref().map(|value| Box::new(clone_expr(value))),
-        },
-        dae::Expression::Index { base, subscripts } => dae::Expression::Index {
-            base: Box::new(clone_expr(base)),
-            subscripts: subscripts.iter().map(clone_subscript).collect(),
-        },
-        dae::Expression::FieldAccess { base, field } => dae::Expression::FieldAccess {
-            base: Box::new(clone_expr(base)),
-            field: field.clone(),
-        },
-        dae::Expression::Empty => dae::Expression::Empty,
-    }
-}
-
-fn clone_subscript(subscript: &dae::Subscript) -> dae::Subscript {
-    match subscript {
-        dae::Subscript::Index(i) => dae::Subscript::Index(*i),
-        dae::Subscript::Colon => dae::Subscript::Colon,
-        dae::Subscript::Expr(expr) => dae::Subscript::Expr(Box::new(clone_expr(expr))),
-    }
-}
-
-fn clone_component_ref(comp: &dae::ComponentReference) -> dae::ComponentReference {
-    dae::ComponentReference {
-        local: comp.local,
-        parts: comp
-            .parts
-            .iter()
-            .map(|part| dae::ComponentRefPart {
-                ident: part.ident.clone(),
-                subs: part.subs.iter().map(clone_subscript).collect(),
-            })
-            .collect(),
-        def_id: comp.def_id,
-    }
-}
-
-fn clone_statement(statement: &dae::Statement) -> dae::Statement {
-    match statement {
-        dae::Statement::Empty => dae::Statement::Empty,
-        dae::Statement::Assignment { comp, value } => dae::Statement::Assignment {
-            comp: clone_component_ref(comp),
-            value: clone_expr(value),
-        },
-        dae::Statement::Return => dae::Statement::Return,
-        dae::Statement::Break => dae::Statement::Break,
-        dae::Statement::For { indices, equations } => dae::Statement::For {
-            indices: indices
-                .iter()
-                .map(|idx| dae::ForIndex {
-                    ident: idx.ident.clone(),
-                    range: clone_expr(&idx.range),
-                })
-                .collect(),
-            equations: equations.iter().map(clone_statement).collect(),
-        },
-        dae::Statement::While(block) => dae::Statement::While(dae::StatementBlock {
-            cond: clone_expr(&block.cond),
-            stmts: block.stmts.iter().map(clone_statement).collect(),
-        }),
-        dae::Statement::If {
-            cond_blocks,
-            else_block,
-        } => dae::Statement::If {
-            cond_blocks: cond_blocks
-                .iter()
-                .map(|block| dae::StatementBlock {
-                    cond: clone_expr(&block.cond),
-                    stmts: block.stmts.iter().map(clone_statement).collect(),
-                })
-                .collect(),
-            else_block: else_block
-                .as_ref()
-                .map(|stmts| stmts.iter().map(clone_statement).collect()),
-        },
-        dae::Statement::When(blocks) => dae::Statement::When(
-            blocks
-                .iter()
-                .map(|block| dae::StatementBlock {
-                    cond: clone_expr(&block.cond),
-                    stmts: block.stmts.iter().map(clone_statement).collect(),
-                })
-                .collect(),
-        ),
-        dae::Statement::FunctionCall {
-            comp,
-            args,
-            outputs,
-        } => dae::Statement::FunctionCall {
-            comp: clone_component_ref(comp),
-            args: args.iter().map(clone_expr).collect(),
-            outputs: outputs.iter().map(clone_expr).collect(),
-        },
-        dae::Statement::Reinit { variable, value } => dae::Statement::Reinit {
-            variable: clone_component_ref(variable),
-            value: clone_expr(value),
-        },
-        dae::Statement::Assert {
-            condition,
-            message,
-            level,
-        } => dae::Statement::Assert {
-            condition: clone_expr(condition),
-            message: clone_expr(message),
-            level: level.as_ref().map(clone_expr),
-        },
-    }
-}
-
-fn clone_function(function: &dae::Function) -> dae::Function {
-    dae::Function {
-        name: dae::VarName::new(function.name.as_str()),
-        inputs: function
-            .inputs
-            .iter()
-            .map(|param| dae::FunctionParam {
-                name: param.name.clone(),
-                type_name: param.type_name.clone(),
-                dims: param.dims.clone(),
-                default: param.default.as_ref().map(clone_expr),
-                description: param.description.clone(),
-            })
-            .collect(),
-        outputs: function
-            .outputs
-            .iter()
-            .map(|param| dae::FunctionParam {
-                name: param.name.clone(),
-                type_name: param.type_name.clone(),
-                dims: param.dims.clone(),
-                default: param.default.as_ref().map(clone_expr),
-                description: param.description.clone(),
-            })
-            .collect(),
-        locals: function
-            .locals
-            .iter()
-            .map(|param| dae::FunctionParam {
-                name: param.name.clone(),
-                type_name: param.type_name.clone(),
-                dims: param.dims.clone(),
-                default: param.default.as_ref().map(clone_expr),
-                description: param.description.clone(),
-            })
-            .collect(),
-        body: function.body.iter().map(clone_statement).collect(),
-        pure: function.pure,
-        external: function
-            .external
-            .as_ref()
-            .map(|external| dae::ExternalFunction {
-                language: external.language.clone(),
-                function_name: external.function_name.clone(),
-                output_name: external.output_name.clone(),
-                arg_names: external.arg_names.clone(),
-            }),
-        derivatives: function
-            .derivatives
-            .iter()
-            .map(|der| dae::DerivativeAnnotation {
-                derivative_function: der.derivative_function.clone(),
-                order: der.order,
-                zero_derivative: der.zero_derivative.clone(),
-                no_derivative: der.no_derivative.clone(),
-            })
-            .collect(),
-        span: function.span,
-    }
-}
-
 mod external_table;
 use external_table::{ExternalTableSpec, lookup_external_table, register_external_table};
 mod pre_seed;
@@ -280,6 +34,11 @@ use array_helpers::{
     eval_field_access_array_values, eval_unary_builtin_array_values, infer_dims_from_values,
 };
 use builtin_table::{eval_builtin_product, eval_builtin_sum};
+#[cfg(any(feature = "cranelift", test))]
+pub(crate) use builtin_table::{
+    eval_table_bound_value, eval_table_lookup_slope_value, eval_table_lookup_value,
+    eval_time_table_next_event_value,
+};
 pub use clock_eval::infer_clock_timing_seconds;
 use clock_eval::{
     clock_tick_value, eval_builtin_sample, eval_time_seconds, infer_clock_timing_from_call,
@@ -297,6 +56,7 @@ macro_rules! warn_once {
 mod special;
 pub use special::{
     eval_builtin_pub, eval_condition_as_root, eval_function_call_pub, eval_function_call_pub_dae,
+    eval_projected_function_output_pub, eval_projected_function_output_pub_dae,
     is_runtime_special_function_name, is_runtime_special_function_short_name,
     resolve_function_call_outputs_pub, resolve_function_call_outputs_pub_dae,
 };
@@ -304,6 +64,8 @@ use special::{eval_function_call, eval_if};
 mod eval_expr_impl;
 pub use eval_expr_impl::eval_expr;
 use eval_expr_impl::*;
+
+pub const INIT_HOMOTOPY_LAMBDA_KEY: &str = "__rumoca_init_homotopy_lambda";
 
 static WARNED_ARRAY_BUILTINS: AtomicBool = AtomicBool::new(false);
 static WARNED_USER_FUNCTIONS: AtomicBool = AtomicBool::new(false);
@@ -313,7 +75,7 @@ static WARNED_TABLE_INVALID_BOUNDS: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static FUNC_RECURSION_DEPTH: Cell<usize> = const { Cell::new(0) };
     static FUNC_CALL_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    static PRE_VALUES: RefCell<HashMap<String, f64>> = RefCell::new(HashMap::new());
+    static PRE_VALUES: RefCell<IndexMap<String, f64>> = RefCell::new(IndexMap::new());
 }
 #[derive(Debug, Clone)]
 pub struct FunctionClosure {
@@ -362,6 +124,20 @@ impl<T: SimFloat> VarEnv<T> {
     }
 }
 
+/// Evaluate a lowered boolean condition with Modelica when-vector semantics.
+///
+/// MLS §8.3.5 permits vectorized when-conditions; Rumoca lowers
+/// `when {c1, c2, ...}` into `Array` / `Tuple` guards that are active when any
+/// listed condition is true.
+pub fn eval_condition_truth<T: SimFloat>(expr: &dae::Expression, env: &VarEnv<T>) -> bool {
+    match expr {
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => elements
+            .iter()
+            .any(|element| eval_condition_truth(element, env)),
+        _ => eval_expr::<T>(expr, env).to_bool(),
+    }
+}
+
 pub fn clear_pre_values() {
     PRE_VALUES.with(|values| values.borrow_mut().clear());
     distribution_clock::clear_clock_special_states();
@@ -371,11 +147,11 @@ pub fn clear_pre_values() {
 /// conditions inside guarded when-equations.
 pub const IMPLICIT_CLOCK_ACTIVE_ENV_KEY: &str = "__rumoca_implicit_clock_active";
 
-pub fn snapshot_pre_values() -> HashMap<String, f64> {
+pub fn snapshot_pre_values() -> IndexMap<String, f64> {
     PRE_VALUES.with(|values| values.borrow().clone())
 }
 
-pub fn restore_pre_values(values: HashMap<String, f64>) {
+pub fn restore_pre_values(values: IndexMap<String, f64>) {
     PRE_VALUES.with(|store| {
         *store.borrow_mut() = values;
     });
@@ -384,6 +160,18 @@ pub fn restore_pre_values(values: HashMap<String, f64>) {
 pub fn seed_pre_values_from_env<T: SimFloat>(env: &VarEnv<T>) {
     PRE_VALUES.with(|values| {
         let mut map = values.borrow_mut();
+        let same_layout = map.len() == env.vars.len()
+            && map
+                .keys()
+                .zip(env.vars.keys())
+                .all(|(cached, current)| cached == current);
+        if same_layout {
+            for ((_, cached), (_, current)) in map.iter_mut().zip(env.vars.iter()) {
+                *cached = current.real();
+            }
+            return;
+        }
+
         map.clear();
         for (name, value) in &env.vars {
             map.insert(name.clone(), value.real());
@@ -393,6 +181,34 @@ pub fn seed_pre_values_from_env<T: SimFloat>(env: &VarEnv<T>) {
 
 fn lookup_pre_value(name: &str) -> Option<f64> {
     PRE_VALUES.with(|values| values.borrow().get(name).copied())
+}
+
+pub(super) fn previous_start_or_default<T: SimFloat>(arg: &dae::Expression, env: &VarEnv<T>) -> T {
+    let dae::Expression::VarRef { name, subscripts } = arg else {
+        return T::zero();
+    };
+
+    let key = if subscripts.is_empty() {
+        name.as_str().to_string()
+    } else {
+        let indices = eval_subscript_indices(subscripts, env);
+        format!("{}[{}]", name.as_str(), indices.join(","))
+    };
+
+    if let Some(start) = env.start_exprs.get(key.as_str()) {
+        return eval_expr::<T>(start, env);
+    }
+    if let Some(normalized) = normalize_var_name::<T>(&key, env)
+        && let Some(start) = env.start_exprs.get(normalized.as_str())
+    {
+        return eval_expr::<T>(start, env);
+    }
+    if let Some(base_name) = unity_subscript_base_name(&key)
+        && let Some(start) = env.start_exprs.get(base_name.as_str())
+    {
+        return eval_expr::<T>(start, env);
+    }
+    T::zero()
 }
 
 /// Return the current cached `pre()` value for a scalar variable name.
@@ -410,6 +226,64 @@ pub fn set_pre_value(name: &str, value: f64) {
     });
 }
 
+fn lowered_pre_parameter_target(name: &str) -> Option<&str> {
+    name.strip_prefix("__pre__.")
+}
+
+fn try_seed_lowered_pre_parameter_from_store(
+    env: &mut VarEnv<f64>,
+    name: &str,
+    var: &rumoca_ir_dae::Variable,
+) -> bool {
+    // MLS §3.7.5 / pre-lowering: lowered `pre(x)` parameters must reflect the
+    // event left-limit store, not the static runtime parameter vector.
+    let Some(target_name) = lowered_pre_parameter_target(name) else {
+        return false;
+    };
+
+    let size = var.size();
+    if size <= 1 {
+        let Some(value) = get_pre_value(target_name) else {
+            return false;
+        };
+        if var.dims.is_empty() {
+            env.set(name, value);
+        } else {
+            set_array_entries(env, name, &var.dims, &[value]);
+        }
+        return true;
+    }
+
+    let mut values = Vec::with_capacity(size);
+    let mut found_any = false;
+    for flat_idx in 0..size {
+        let key = flat_index_to_subscripts(flat_idx, &var.dims)
+            .map(|subs| format_multi_subscript_key(target_name, &subs))
+            .unwrap_or_else(|| format!("{target_name}[{}]", flat_idx + 1));
+        if let Some(value) = get_pre_value(&key) {
+            values.push(value);
+            found_any = true;
+        } else {
+            values.push(f64::NAN);
+        }
+    }
+
+    let fallback =
+        get_pre_value(target_name).or_else(|| values.iter().copied().find(|v| v.is_finite()));
+    if !found_any && fallback.is_none() {
+        return false;
+    }
+
+    let fill = fallback.unwrap_or(0.0);
+    for value in &mut values {
+        if !value.is_finite() {
+            *value = fill;
+        }
+    }
+    set_array_entries(env, name, &var.dims, &values);
+    true
+}
+
 /// Map a variable (possibly array) into the environment from a value slice.
 ///
 /// Scalar variables get a single entry. Array variables with `dims=[n]` get
@@ -423,6 +297,12 @@ pub fn map_var_to_env<T: SimFloat>(
     idx: &mut usize,
 ) {
     let sz = var.size();
+    if sz == 0 {
+        // MLS Chapter 10 dynamic arrays may materialize only in the env. A
+        // zero-sized declaration must not consume a flattened solver/parameter
+        // slot, or every later runtime binding shifts out of alignment.
+        return;
+    }
     if sz <= 1 {
         if *idx < y.len() {
             if var.dims.is_empty() {
@@ -545,13 +425,46 @@ pub fn build_env(dae: &Dae, y: &[f64], p: &[f64], t: f64) -> VarEnv<f64> {
     env.set("time", t);
 
     map_solver_vectors_into_env(&mut env, dae, y);
-    map_parameter_vector_into_env(&mut env, dae, p);
-    configure_env_metadata(&mut env, dae);
-    inject_modelica_constants(&mut env);
-    bind_constants_and_inputs(&mut env, dae);
-    seed_discrete_values(&mut env, dae);
+    populate_runtime_parameter_tail(&mut env, dae, p);
 
     env
+}
+
+/// Build only the parameter/input/discrete runtime tail for a DAE env.
+///
+/// This excludes solver-vector slots (`states`, `algebraics`, `outputs`) and
+/// is intended for callers that only need runtime tail bindings such as input
+/// or discrete start values.
+pub fn build_runtime_parameter_tail_env(dae: &Dae, p: &[f64], t: f64) -> VarEnv<f64> {
+    let mut env = VarEnv::new();
+    env.set("time", t);
+    populate_runtime_parameter_tail(&mut env, dae, p);
+    env
+}
+
+fn populate_runtime_parameter_tail(env: &mut VarEnv<f64>, dae: &Dae, p: &[f64]) {
+    map_parameter_vector_into_env(env, dae, p);
+    configure_env_metadata(env, dae);
+    bind_missing_parameter_values(env, dae);
+    inject_modelica_constants(env);
+    bind_constants_and_inputs(env, dae);
+    seed_discrete_values(env, dae);
+}
+
+/// Refresh solver- and parameter-backed runtime slots in an existing env.
+///
+/// This preserves already-settled discrete/runtime tail values while updating
+/// the current solver state, parameters, and time.
+pub fn refresh_env_solver_and_parameter_values(
+    env: &mut VarEnv<f64>,
+    dae: &Dae,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+) {
+    env.set("time", t);
+    map_solver_vectors_into_env(env, dae, y);
+    map_parameter_vector_into_env(env, dae, p);
 }
 
 fn map_solver_vectors_into_env(env: &mut VarEnv<f64>, dae: &Dae, y: &[f64]) {
@@ -571,6 +484,7 @@ fn map_parameter_vector_into_env(env: &mut VarEnv<f64>, dae: &Dae, p: &[f64]) {
     let mut pidx = 0;
     for (name, var) in &dae.parameters {
         map_var_to_env(env, name.as_str(), var, p, &mut pidx);
+        let _ = try_seed_lowered_pre_parameter_from_store(env, name.as_str(), var);
     }
 }
 
@@ -579,7 +493,7 @@ fn configure_env_metadata(env: &mut VarEnv<f64>, dae: &Dae) {
         let func_map: IndexMap<String, dae::Function> = dae
             .functions
             .iter()
-            .map(|(name, func)| (name.as_str().to_string(), clone_function(func)))
+            .map(|(name, func)| (name.as_str().to_string(), func.clone()))
             .collect();
         env.functions = Arc::new(func_map);
     }
@@ -606,14 +520,18 @@ fn bind_start_value(env: &mut VarEnv<f64>, name: &str, var: &rumoca_ir_dae::Vari
     let Some(start) = var.start.as_ref() else {
         return;
     };
-    let start = clone_expr(start);
     let size = var.size();
     if size <= 1 {
-        env.set(name, eval_expr::<f64>(&start, env));
+        let value = eval_expr::<f64>(start, env);
+        if var.dims.is_empty() {
+            env.set(name, value);
+        } else {
+            set_array_entries(env, name, &var.dims, &[value]);
+        }
         return;
     }
 
-    let raw_values: Vec<f64> = eval_array_values::<f64>(&start, env);
+    let raw_values: Vec<f64> = eval_array_values::<f64>(start, env);
     let values = if raw_values.len() == size {
         raw_values
     } else if raw_values.is_empty() {
@@ -642,6 +560,24 @@ fn bind_constants_and_inputs(env: &mut VarEnv<f64>, dae: &Dae) {
     for _ in 0..2 {
         for (name, var) in &dae.inputs {
             bind_start_value(env, name.as_str(), var);
+        }
+    }
+}
+
+fn bind_missing_parameter_values(env: &mut VarEnv<f64>, dae: &Dae) {
+    let max_passes = dae.parameters.len().clamp(1, 8);
+    for _ in 0..max_passes {
+        let mut changed = false;
+        for (name, var) in &dae.parameters {
+            if env.vars.contains_key(name.as_str()) {
+                continue;
+            }
+            let before_len = env.vars.len();
+            bind_start_value(env, name.as_str(), var);
+            changed |= env.vars.len() != before_len || env.vars.contains_key(name.as_str());
+        }
+        if !changed {
+            break;
         }
     }
 }
@@ -716,7 +652,7 @@ pub fn collect_var_starts(dae: &Dae) -> IndexMap<String, dae::Expression> {
         .chain(dae.discrete_valued.iter())
     {
         if let Some(start) = &var.start {
-            map.insert(name.as_str().to_string(), clone_expr(start));
+            map.insert(name.as_str().to_string(), start.clone());
         }
     }
     map
@@ -726,7 +662,7 @@ pub fn collect_var_starts(dae: &Dae) -> IndexMap<String, dae::Expression> {
 pub fn collect_user_functions(dae: &Dae) -> IndexMap<String, dae::Function> {
     dae.functions
         .iter()
-        .map(|(name, func)| (name.as_str().to_string(), clone_function(func)))
+        .map(|(name, func)| (name.as_str().to_string(), func.clone()))
         .collect()
 }
 
@@ -755,8 +691,7 @@ pub fn eval_const_expr(expr: &dae::Expression) -> f64 {
 
 /// Evaluate a DAE expression by converting it to flat IR first.
 pub fn eval_expr_dae<T: SimFloat>(expr: &dae::Expression, env: &VarEnv<T>) -> T {
-    let converted = clone_expr(expr);
-    eval_expr::<T>(&converted, env)
+    eval_expr::<T>(expr, env)
 }
 
 /// Evaluate a constant DAE expression.
@@ -766,8 +701,7 @@ pub fn eval_const_expr_dae(expr: &dae::Expression) -> f64 {
 
 /// Evaluate a DAE expression as a flattened array of scalar values.
 pub fn eval_array_values_dae<T: SimFloat>(expr: &dae::Expression, env: &VarEnv<T>) -> Vec<T> {
-    let converted = clone_expr(expr);
-    eval_array_values::<T>(&converted, env)
+    eval_array_values::<T>(expr, env)
 }
 
 /// Infer a periodic clock timing from a DAE expression.
@@ -775,14 +709,12 @@ pub fn infer_clock_timing_seconds_dae(
     expr: &dae::Expression,
     env: &VarEnv<f64>,
 ) -> Option<(f64, f64)> {
-    let converted = clone_expr(expr);
-    infer_clock_timing_seconds(&converted, env)
+    infer_clock_timing_seconds(expr, env)
 }
 
 /// Evaluate a DAE root condition expression into a signed root value.
 pub fn eval_condition_as_root_dae(expr: &dae::Expression, env: &VarEnv<f64>) -> f64 {
-    let converted = clone_expr(expr);
-    eval_condition_as_root(&converted, env)
+    eval_condition_as_root(expr, env)
 }
 
 /// Evaluate an expression as a flattened array of scalar values.
@@ -902,7 +834,7 @@ fn collect_if_values<T: SimFloat>(
     out: &mut Vec<T>,
 ) {
     for (cond, then_expr) in branches {
-        if eval_expr::<T>(cond, env).to_bool() {
+        if eval_condition_truth(cond, env) {
             collect_array_values(then_expr, env, out);
             return;
         }
