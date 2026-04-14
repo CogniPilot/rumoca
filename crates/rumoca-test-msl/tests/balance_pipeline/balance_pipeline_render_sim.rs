@@ -130,6 +130,8 @@ pub(super) fn maybe_run_simulation(
                 n_states: Some(result.dae.states.len()),
                 n_algebraics: Some(result.dae.algebraics.len()),
                 sim_seconds: Some(0.0),
+                sim_build_seconds: Some(0.0),
+                sim_run_seconds: Some(0.0),
                 sim_wall_seconds: Some(0.0),
                 sim_trace_file: None,
                 sim_trace_error: None,
@@ -207,6 +209,8 @@ pub(super) fn convert_compile_result_entry(
         model_result.sim_status = Some(sim.status.to_string());
         model_result.sim_error = sim.error;
         model_result.sim_seconds = sim.sim_seconds;
+        model_result.sim_build_seconds = sim.sim_build_seconds;
+        model_result.sim_run_seconds = sim.sim_run_seconds;
         model_result.sim_wall_seconds = sim.sim_wall_seconds;
         model_result.sim_trace_file = sim.sim_trace_file;
         model_result.sim_trace_error = sim.sim_trace_error;

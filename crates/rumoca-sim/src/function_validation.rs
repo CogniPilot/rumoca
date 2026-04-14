@@ -144,6 +144,7 @@ fn is_runtime_intrinsic_short_name(short: &str) -> bool {
             | "String"
             | "array"
             | "getInstanceName"
+            | "fullPathName"
             | "loadResource"
             | "isValidTable"
     )
@@ -154,6 +155,8 @@ fn is_builtin_or_runtime_special(name: &VarName) -> bool {
     BuiltinFunction::from_name(short).is_some()
         || BuiltinFunction::from_name(&short.to_ascii_lowercase()).is_some()
         || is_runtime_intrinsic_short_name(short)
+        // MLS §6.7.1: Complex is the built-in operator-record constructor.
+        || short == "Complex"
         || eval::is_runtime_special_function_name(name.as_str())
 }
 
@@ -1012,4 +1015,62 @@ pub fn validate_simulation_function_support(dae: &Dae) -> Result<(), FunctionVal
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_simulation_function_support_allows_complex_constructor_without_body() {
+        let mut dae = Dae::default();
+        dae.functions.insert(
+            VarName::new("Complex"),
+            dae::Function::new("Complex", Default::default()),
+        );
+        dae.outputs.insert(
+            VarName::new("y"),
+            dae::Variable {
+                name: VarName::new("y"),
+                start: Some(Expression::FunctionCall {
+                    name: VarName::new("Complex"),
+                    args: vec![
+                        Expression::Literal(dae::Literal::Real(1.0)),
+                        Expression::Literal(dae::Literal::Real(2.0)),
+                    ],
+                    is_constructor: true,
+                }),
+                ..Default::default()
+            },
+        );
+
+        validate_simulation_function_support(&dae)
+            .expect("Complex constructor should be accepted during function validation");
+    }
+
+    #[test]
+    fn validate_simulation_function_support_allows_runtime_special_projection_names() {
+        let mut dae = Dae::default();
+        dae.outputs.insert(
+            VarName::new("x"),
+            dae::Variable {
+                name: VarName::new("x"),
+                start: Some(Expression::FunctionCall {
+                    name: VarName::new(
+                        "Modelica.Math.Random.Generators.Xorshift64star.random.stateOut[1]",
+                    ),
+                    args: vec![Expression::VarRef {
+                        name: VarName::new("state"),
+                        subscripts: vec![],
+                    }],
+                    is_constructor: false,
+                }),
+                ..Default::default()
+            },
+        );
+
+        validate_simulation_function_support(&dae).expect(
+            "projected runtime-special random outputs should be accepted during function validation",
+        );
+    }
 }

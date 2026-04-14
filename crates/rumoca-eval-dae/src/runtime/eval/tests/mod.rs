@@ -10,9 +10,12 @@ type OpBinary = rumoca_ir_core::OpBinary;
 type Statement = dae::Statement;
 type Subscript = dae::Subscript;
 type VarName = dae::VarName;
+mod clock_and_tables;
 mod complex_array_projection;
+mod env_refresh;
 mod pre_seed_regressions;
 mod shift_sample_value_form;
+mod string_specials;
 mod table_ad_edges;
 mod vector_binary_ops;
 
@@ -124,6 +127,285 @@ fn simple_table_if_expr() -> dae::Expression {
         branches: vec![(bool_lit(true), simple_table_expr())],
         else_branch: Box::new(arr(vec![arr(vec![lit(0.0), lit(0.0)], false)], true)),
     }
+}
+
+fn interaction_time_table_expr() -> dae::Expression {
+    arr(
+        vec![
+            arr(vec![lit(0.0), lit(0.0)], false),
+            arr(vec![lit(1.0), lit(2.1)], false),
+            arr(vec![lit(2.0), lit(4.2)], false),
+            arr(vec![lit(3.0), lit(6.3)], false),
+            arr(vec![lit(4.0), lit(4.2)], false),
+            arr(vec![lit(6.0), lit(2.1)], false),
+        ],
+        true,
+    )
+}
+
+fn abs_expr(expr: dae::Expression) -> dae::Expression {
+    dae::Expression::BuiltinCall {
+        function: dae::BuiltinFunction::Abs,
+        args: vec![expr],
+    }
+}
+
+fn table_entry(row: dae::Expression, col: i64) -> dae::Expression {
+    dae::Expression::VarRef {
+        name: dae::VarName::new("table"),
+        subscripts: vec![
+            dae::Subscript::Expr(Box::new(row)),
+            dae::Subscript::Index(col),
+        ],
+    }
+}
+
+fn assign_stmt(name: &str, value: dae::Expression) -> dae::Statement {
+    dae::Statement::Assignment {
+        comp: comp_ref(name),
+        value,
+    }
+}
+
+fn statement_block(cond: dae::Expression, stmts: Vec<dae::Statement>) -> dae::StatementBlock {
+    dae::StatementBlock { cond, stmts }
+}
+
+fn interaction_time_table_locals() -> Vec<dae::FunctionParam> {
+    vec![
+        dae::FunctionParam::new("columns", "Integer").with_default(int_lit(2)),
+        dae::FunctionParam::new("ncol", "Integer").with_default(int_lit(2)),
+        dae::FunctionParam::new("nrow", "Integer").with_default(dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Size,
+            args: vec![var("table"), int_lit(1)],
+        }),
+        dae::FunctionParam::new("next0", "Integer"),
+        dae::FunctionParam::new("tp", "Real"),
+        dae::FunctionParam::new("dt", "Real"),
+    ]
+}
+
+fn interaction_time_table_pre_start_block() -> dae::StatementBlock {
+    statement_block(
+        binop(
+            OpBinary::Lt(Default::default()),
+            var("tp"),
+            var("startTimeScaled"),
+        ),
+        vec![
+            assign_stmt("nextEventScaled", var("startTimeScaled")),
+            assign_stmt("a", lit(0.0)),
+            assign_stmt("b", var("offset")),
+        ],
+    )
+}
+
+fn interaction_time_table_single_row_block() -> dae::StatementBlock {
+    statement_block(
+        binop(OpBinary::Lt(Default::default()), var("nrow"), int_lit(2)),
+        vec![
+            assign_stmt("a", lit(0.0)),
+            assign_stmt(
+                "b",
+                binop(
+                    OpBinary::Add(Default::default()),
+                    var("offset"),
+                    table_entry(int_lit(1), 2),
+                ),
+            ),
+        ],
+    )
+}
+
+fn interaction_time_table_dt_if() -> dae::Statement {
+    dae::Statement::If {
+        cond_blocks: vec![statement_block(
+            binop(
+                OpBinary::Le(Default::default()),
+                var("dt"),
+                binop(
+                    OpBinary::Mul(Default::default()),
+                    var("TimeEps"),
+                    abs_expr(table_entry(var("next"), 1)),
+                ),
+            ),
+            vec![
+                assign_stmt("a", lit(0.0)),
+                assign_stmt(
+                    "b",
+                    binop(
+                        OpBinary::Add(Default::default()),
+                        var("offset"),
+                        table_entry(var("next"), 2),
+                    ),
+                ),
+            ],
+        )],
+        else_block: Some(vec![
+            assign_stmt(
+                "a",
+                binop(
+                    OpBinary::Div(Default::default()),
+                    binop(
+                        OpBinary::Sub(Default::default()),
+                        table_entry(var("next"), 2),
+                        table_entry(var("next0"), 2),
+                    ),
+                    var("dt"),
+                ),
+            ),
+            assign_stmt(
+                "b",
+                binop(
+                    OpBinary::Sub(Default::default()),
+                    binop(
+                        OpBinary::Add(Default::default()),
+                        var("offset"),
+                        table_entry(var("next0"), 2),
+                    ),
+                    binop(
+                        OpBinary::Mul(Default::default()),
+                        var("a"),
+                        table_entry(var("next0"), 1),
+                    ),
+                ),
+            ),
+        ]),
+    }
+}
+
+fn interaction_time_table_active_statements() -> Vec<dae::Statement> {
+    vec![
+        assign_stmt(
+            "tp",
+            binop(
+                OpBinary::Sub(Default::default()),
+                var("tp"),
+                var("shiftTimeScaled"),
+            ),
+        ),
+        dae::Statement::While(statement_block(
+            binop(
+                OpBinary::And(Default::default()),
+                binop(OpBinary::Lt(Default::default()), var("next"), var("nrow")),
+                binop(
+                    OpBinary::Ge(Default::default()),
+                    var("tp"),
+                    table_entry(var("next"), 1),
+                ),
+            ),
+            vec![assign_stmt(
+                "next",
+                binop(OpBinary::Add(Default::default()), var("next"), int_lit(1)),
+            )],
+        )),
+        dae::Statement::If {
+            cond_blocks: vec![statement_block(
+                binop(OpBinary::Lt(Default::default()), var("next"), var("nrow")),
+                vec![assign_stmt(
+                    "nextEventScaled",
+                    binop(
+                        OpBinary::Add(Default::default()),
+                        var("shiftTimeScaled"),
+                        table_entry(var("next"), 1),
+                    ),
+                )],
+            )],
+            else_block: None,
+        },
+        dae::Statement::If {
+            cond_blocks: vec![statement_block(
+                binop(OpBinary::Eq(Default::default()), var("next"), int_lit(1)),
+                vec![assign_stmt("next", int_lit(2))],
+            )],
+            else_block: None,
+        },
+        assign_stmt(
+            "next0",
+            binop(OpBinary::Sub(Default::default()), var("next"), int_lit(1)),
+        ),
+        assign_stmt(
+            "dt",
+            binop(
+                OpBinary::Sub(Default::default()),
+                table_entry(var("next"), 1),
+                table_entry(var("next0"), 1),
+            ),
+        ),
+        interaction_time_table_dt_if(),
+    ]
+}
+
+fn interaction_time_table_body() -> Vec<dae::Statement> {
+    vec![
+        assign_stmt("next", var("last")),
+        assign_stmt(
+            "nextEventScaled",
+            binop(
+                OpBinary::Sub(Default::default()),
+                var("timeScaled"),
+                binop(
+                    OpBinary::Mul(Default::default()),
+                    var("TimeEps"),
+                    abs_expr(var("timeScaled")),
+                ),
+            ),
+        ),
+        assign_stmt(
+            "tp",
+            binop(
+                OpBinary::Add(Default::default()),
+                var("timeScaled"),
+                binop(
+                    OpBinary::Mul(Default::default()),
+                    var("TimeEps"),
+                    abs_expr(var("timeScaled")),
+                ),
+            ),
+        ),
+        dae::Statement::If {
+            cond_blocks: vec![interaction_time_table_pre_start_block()],
+            else_block: Some(vec![dae::Statement::If {
+                cond_blocks: vec![interaction_time_table_single_row_block()],
+                else_block: Some(interaction_time_table_active_statements()),
+            }]),
+        },
+        assign_stmt(
+            "b",
+            binop(
+                OpBinary::Sub(Default::default()),
+                var("b"),
+                binop(
+                    OpBinary::Mul(Default::default()),
+                    var("a"),
+                    var("shiftTimeScaled"),
+                ),
+            ),
+        ),
+    ]
+}
+
+fn interaction_time_table_coeff_function() -> dae::Function {
+    let mut f = dae::Function::new(
+        "Modelica.Blocks.Sources.TimeTable.getInterpolationCoefficients",
+        Default::default(),
+    );
+    f.add_input(dae::FunctionParam::new("table", "Real").with_dims(vec![6, 2]));
+    f.add_input(dae::FunctionParam::new("offset", "Real"));
+    f.add_input(dae::FunctionParam::new("startTimeScaled", "Real"));
+    f.add_input(dae::FunctionParam::new("timeScaled", "Real"));
+    f.add_input(dae::FunctionParam::new("last", "Integer"));
+    f.add_input(dae::FunctionParam::new("TimeEps", "Real"));
+    f.add_input(dae::FunctionParam::new("shiftTimeScaled", "Real"));
+    f.add_output(dae::FunctionParam::new("a", "Real"));
+    f.add_output(dae::FunctionParam::new("b", "Real"));
+    f.add_output(dae::FunctionParam::new("nextEventScaled", "Real"));
+    f.add_output(dae::FunctionParam::new("next", "Integer"));
+    for local in interaction_time_table_locals() {
+        f.add_local(local);
+    }
+    f.body = interaction_time_table_body();
+    f
 }
 
 fn eval_table1d_dual(u: Dual, extrapolation: i64) -> Dual {
@@ -638,6 +920,26 @@ fn test_eval_field_access_on_constructor_complex_components() {
 }
 
 #[test]
+fn test_eval_field_access_after_array_literal_index() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("i", 2.0);
+    env.set("left.im", 4.0);
+    env.set("right.im", 9.0);
+    let expr = dae::Expression::FieldAccess {
+        base: Box::new(dae::Expression::Index {
+            base: Box::new(dae::Expression::Array {
+                elements: vec![var("left"), var("right")],
+                is_matrix: false,
+            }),
+            subscripts: vec![dae::Subscript::Expr(Box::new(var("i")))],
+        }),
+        field: "im".to_string(),
+    };
+
+    assert_eq!(eval_expr::<f64>(&expr, &env), 9.0);
+}
+
+#[test]
 fn test_eval_constructor_call_scalar_fallback_uses_first_argument() {
     let env = VarEnv::<f64>::new();
     let expr = dae::Expression::FunctionCall {
@@ -1048,6 +1350,39 @@ fn test_eval_function_call_projected_complex_output_from_single_arg_constructor(
 }
 
 #[test]
+fn test_eval_function_call_projected_complex_output_from_plain_complex_call() {
+    let mut env = VarEnv::<f64>::new();
+    let mut funcs = IndexMap::new();
+
+    funcs.insert(
+        "Complex".to_string(),
+        dae::Function::new("Complex", Default::default()),
+    );
+
+    let mut f = dae::Function::new("Pkg.plainComplex", Default::default());
+    f.add_output(dae::FunctionParam::new("x", "Modelica.ComplexMath.Complex"));
+    f.body = vec![dae::Statement::Assignment {
+        comp: comp_ref("x"),
+        value: dae::Expression::FunctionCall {
+            name: dae::VarName::new("Complex"),
+            args: vec![lit(2.0), lit(-3.0)],
+            is_constructor: false,
+        },
+    }];
+    funcs.insert("Pkg.plainComplex".to_string(), f);
+    env.functions = std::sync::Arc::new(funcs);
+
+    assert_eq!(
+        eval_expr::<f64>(&fn_call("Pkg.plainComplex.x.re", vec![]), &env),
+        2.0
+    );
+    assert_eq!(
+        eval_expr::<f64>(&fn_call("Pkg.plainComplex.x.im", vec![]), &env),
+        -3.0
+    );
+}
+
+#[test]
 fn test_eval_function_call_projected_complex_output_uses_component_var_ref() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
@@ -1265,607 +1600,69 @@ fn test_eval_function_call_external_stub_falls_back_to_special_handler() {
 }
 
 #[test]
-fn test_eval_clock_special_functions_are_finite() {
-    let mut env = VarEnv::<f64>::new();
-    env.set("time", 0.0);
-
-    let clock_expr = fn_call("Clock", vec![lit(0.02)]);
-    let sub_expr = fn_call("subSample", vec![clock_expr.clone(), lit(2.0)]);
-    let super_expr = fn_call("superSample", vec![clock_expr.clone(), lit(2.0)]);
-    let shift_expr = fn_call(
-        "shiftSample",
-        vec![clock_expr.clone(), lit(1.0), lit(100.0)],
-    );
-    let back_expr = fn_call("backSample", vec![clock_expr.clone(), lit(1.0), lit(100.0)]);
-    let hold_expr = fn_call("hold", vec![lit(7.0)]);
-    let previous_expr = fn_call("previous", vec![lit(3.0)]);
-    let interval_expr = fn_call("interval", vec![clock_expr.clone()]);
-    let first_tick_expr = fn_call("firstTick", vec![]);
-
-    for expr in [
-        clock_expr,
-        sub_expr,
-        super_expr,
-        shift_expr,
-        back_expr,
-        hold_expr,
-        previous_expr,
-        interval_expr,
-        first_tick_expr,
-    ] {
-        let v = eval_expr::<f64>(&expr, &env);
-        assert!(v.is_finite(), "clock special function returned non-finite");
-    }
-}
-
-#[test]
-fn test_eval_interval_for_clocked_var_uses_env_clock_interval_metadata() {
-    let mut env = VarEnv::<f64>::new();
-    env.set("time", 0.0);
-    env.clock_intervals = std::sync::Arc::new(IndexMap::from([("pulse.simTime".to_string(), 0.1)]));
-
-    let interval_expr = fn_call("interval", vec![var("pulse.simTime")]);
-    let value = eval_expr::<f64>(&interval_expr, &env);
-    assert!(
-        (value - 0.1).abs() <= 1e-12,
-        "expected interval(pulse.simTime)=0.1, got {value}"
-    );
-}
-
-#[test]
-fn test_eval_subsample_counter_clock_uses_factor_resolution_ratio() {
-    let mut env = VarEnv::<f64>::new();
-    env.set("factor", 20.0);
-    env.set("resolutionFactor", 1000.0);
-
-    let sub_expr = fn_call(
-        "subSample",
-        vec![
-            fn_call("Clock", vec![var("factor")]),
-            var("resolutionFactor"),
-        ],
-    );
-
-    for (time, expected_tick) in [
-        (0.0, true),
-        (0.01, false),
-        (0.02, true),
-        (0.03, false),
-        (0.04, true),
-    ] {
-        env.set("time", time);
-        let value = eval_expr::<f64>(&sub_expr, &env);
-        assert_eq!(
-            value > 0.5,
-            expected_tick,
-            "subSample(Clock(factor), resolutionFactor) tick mismatch at t={time}: value={value}"
-        );
-    }
-}
-
-#[test]
-fn test_eval_builtin_sample_with_clock_returns_sampled_value_not_event_tick() {
-    clear_pre_values();
-
-    let mut env = VarEnv::<f64>::new();
-    env.set("x", 10.0);
-    env.set("time", 0.0);
-
-    let sample_expr = dae::Expression::BuiltinCall {
-        function: dae::BuiltinFunction::Sample,
-        args: vec![var("x"), fn_call("Clock", vec![lit(0.5)])],
-    };
-
-    // Tick at t=0.0 captures x=10.
-    assert_eq!(eval_expr::<f64>(&sample_expr, &env), 10.0);
-
-    // Clocked-value sample form should evaluate the sampled expression, not the
-    // boolean event indicator from sample(start, interval).
-    env.set("x", 20.0);
-    env.set("time", 0.25);
-    assert_eq!(eval_expr::<f64>(&sample_expr, &env), 20.0);
-
-    // Also at event instants, return sampled value.
-    env.set("time", 0.5);
-    assert_eq!(eval_expr::<f64>(&sample_expr, &env), 20.0);
-}
-
-#[test]
-fn test_eval_builtin_sample_start_interval_keeps_event_boolean_semantics() {
-    clear_pre_values();
-
-    let mut env = VarEnv::<f64>::new();
-    let sample_event_expr = dae::Expression::BuiltinCall {
-        function: dae::BuiltinFunction::Sample,
-        args: vec![lit(0.0), lit(0.5)],
-    };
-
-    env.set("time", 0.0);
-    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 1.0);
-
-    env.set("time", 0.25);
-    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 0.0);
-
-    env.set("time", 0.5);
-    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 1.0);
-}
-
-#[test]
-fn test_eval_builtin_sample_internal_three_arg_form_uses_start_and_interval() {
-    clear_pre_values();
-
-    let mut env = VarEnv::<f64>::new();
-    let sample_event_expr = dae::Expression::BuiltinCall {
-        function: dae::BuiltinFunction::Sample,
-        args: vec![lit(3.0), lit(0.5), lit(0.1)],
-    };
-
-    env.set("time", 0.0);
-    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 0.0);
-
-    env.set("time", 0.5);
-    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 1.0);
-
-    env.set("time", 0.6);
-    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 1.0);
-
-    env.set("time", 0.65);
-    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 0.0);
-}
-
-#[test]
-fn test_eval_stream_special_functions_passthrough() {
-    let mut env = VarEnv::<f64>::new();
-    env.set("port.h_outflow", 123.0);
-
-    let actual_stream = fn_call("actualStream", vec![var("port.h_outflow")]);
-    let in_stream = fn_call("inStream", vec![var("port.h_outflow")]);
-
-    assert_eq!(eval_expr::<f64>(&actual_stream, &env), 123.0);
-    assert_eq!(eval_expr::<f64>(&in_stream, &env), 123.0);
-}
-
-#[test]
-fn test_eval_state_accessor_special_functions() {
-    let mut env = VarEnv::<f64>::new();
-    env.set("state.T", 312.5);
-    env.set("state.p", 101325.0);
-    env.set("state.d", 998.2);
-    env.set("state.h", 2.6e5);
-    env.set("state.u", 2.4e5);
-    env.set("state.s", 900.0);
-    env.set("state_a.T", 315.0);
-    env.set("states[1].T", 320.0);
-    env.set("medium.state.T", 333.0);
-    env.set("media[2].state.T", 346.0);
-
-    assert_eq!(
-        eval_expr::<f64>(&fn_call("Medium.temperature", vec![var("state")]), &env),
-        312.5
-    );
-    assert_eq!(
-        eval_expr::<f64>(&fn_call("Medium.pressure", vec![var("state")]), &env),
-        101325.0
-    );
-    assert_eq!(
-        eval_expr::<f64>(&fn_call("Medium.density", vec![var("state")]), &env),
-        998.2
-    );
-    assert_eq!(
-        eval_expr::<f64>(
-            &fn_call("Medium.specificEnthalpy", vec![var("state")]),
-            &env
-        ),
-        2.6e5
-    );
-    assert_eq!(
-        eval_expr::<f64>(
-            &fn_call("Medium.specificInternalEnergy", vec![var("state")]),
-            &env
-        ),
-        2.4e5
-    );
-    assert_eq!(
-        eval_expr::<f64>(&fn_call("Medium.specificEntropy", vec![var("state")]), &env),
-        900.0
-    );
-    assert_eq!(
-        eval_expr::<f64>(&fn_call("Medium.temperature", vec![var("state_a")]), &env),
-        315.0
-    );
-    assert_eq!(
-        eval_expr::<f64>(&fn_call("Medium.temperature", vec![var("states")]), &env),
-        320.0
-    );
-    assert_eq!(
-        eval_expr::<f64>(
-            &fn_call(
-                "Medium.temperature",
-                vec![dae::Expression::FieldAccess {
-                    base: Box::new(var("medium")),
-                    field: "state".to_string(),
-                }],
-            ),
-            &env
-        ),
-        333.0
-    );
-    assert_eq!(
-        eval_expr::<f64>(
-            &fn_call(
-                "Medium.temperature",
-                vec![dae::Expression::FieldAccess {
-                    base: Box::new(dae::Expression::VarRef {
-                        name: dae::VarName::new("media"),
-                        subscripts: vec![dae::Subscript::Index(2)],
-                    }),
-                    field: "state".to_string(),
-                }],
-            ),
-            &env
-        ),
-        346.0
-    );
-
-    let h_from_phx = eval_expr::<f64>(
-        &fn_call(
-            "Medium.specificEnthalpy",
-            vec![fn_call(
-                "Medium.setState_phX",
-                vec![lit(2.0e5), lit(4.2e5), arr(vec![lit(1.0)], false)],
-            )],
-        ),
-        &env,
-    );
-    assert!((h_from_phx - 4.2e5).abs() < 1e-9);
-
-    let t_from_ptx = eval_expr::<f64>(
-        &fn_call(
-            "Medium.temperature",
-            vec![fn_call(
-                "Medium.setState_pTX",
-                vec![lit(1.5e5), lit(333.0), arr(vec![lit(1.0)], false)],
-            )],
-        ),
-        &env,
-    );
-    assert!((t_from_ptx - 333.0).abs() < 1e-9);
-}
-
-#[test]
-fn test_eval_state_accessor_temperature_setstate_phx_uses_user_helper() {
+fn test_runtime_special_function_precedence_over_user_body() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
+    let mut first_true = dae::Function::new(
+        "Modelica.Math.BooleanVectors.firstTrueIndex",
+        Default::default(),
+    );
+    first_true.add_input(dae::FunctionParam::new("u", "Boolean").with_dims(vec![0]));
+    first_true.add_input(dae::FunctionParam::new("nu", "Integer"));
+    first_true.add_output(
+        dae::FunctionParam::new("index", "Integer")
+            .with_default(dae::Expression::Literal(dae::Literal::Integer(2))),
+    );
     funcs.insert(
-        "Medium.temperature_phX".to_string(),
-        user_function_with_default_output("Medium.temperature_phX", 347.5),
+        "Modelica.Math.BooleanVectors.firstTrueIndex".to_string(),
+        first_true,
     );
     env.functions = std::sync::Arc::new(funcs);
 
-    let expr = fn_call(
-        "Medium.temperature",
-        vec![fn_call(
-            "Medium.setState_phX",
-            vec![lit(1.2e5), lit(4.0e5), arr(vec![lit(1.0)], false)],
-        )],
-    );
-    assert!((eval_expr::<f64>(&expr, &env) - 347.5).abs() < 1e-9);
-}
-
-#[test]
-fn test_eval_builtin_sample_behaviour() {
-    let mut env = VarEnv::<f64>::new();
-    env.set("u", 3.5);
-    env.set("time", 0.0);
-
-    let sampled_value = dae::Expression::BuiltinCall {
-        function: dae::BuiltinFunction::Sample,
-        args: vec![var("u")],
+    let expr = dae::Expression::FunctionCall {
+        name: dae::VarName::new("Modelica.Math.BooleanVectors.firstTrueIndex"),
+        args: vec![
+            arr(vec![bool_lit(true), bool_lit(true)], false),
+            dae::Expression::Literal(dae::Literal::Integer(2)),
+        ],
+        is_constructor: false,
     };
-    assert!((eval_expr::<f64>(&sampled_value, &env) - 3.5).abs() < 1e-12);
 
-    let sample_tick = dae::Expression::BuiltinCall {
-        function: dae::BuiltinFunction::Sample,
-        args: vec![lit(0.0), lit(0.5)],
-    };
-    assert_eq!(eval_expr::<f64>(&sample_tick, &env), 1.0);
-    env.set("time", 0.25);
-    assert_eq!(eval_expr::<f64>(&sample_tick, &env), 0.0);
-}
-
-#[test]
-fn test_eval_function_call_builtin_case_insensitive_alias() {
-    let env = VarEnv::<f64>::new();
-    let expr = fn_call("Integer", vec![lit(1.8)]);
     assert_eq!(eval_expr::<f64>(&expr, &env), 1.0);
 }
 
 #[test]
-fn test_eval_special_distribution_density_overloads() {
+fn test_eval_expr_homotopy_blends_during_initial_phase() {
     let mut env = VarEnv::<f64>::new();
+    env.is_initial = true;
+    env.set(INIT_HOMOTOPY_LAMBDA_KEY, 0.25);
 
-    env.set("u", 0.0);
-    env.set("u_min", -2.0);
-    env.set("u_max", 2.0);
-    let uniform = eval_expr::<f64>(
-        &fn_call("distribution", vec![var("u"), var("u_min"), var("u_max")]),
-        &env,
-    );
-    assert!((uniform - 0.25).abs() < 1e-12);
-
-    env.set("mu", 0.0);
-    env.set("sigma", 2.0);
-    let normal = eval_expr::<f64>(
-        &fn_call("distribution", vec![var("u"), var("mu"), var("sigma")]),
-        &env,
-    );
-    assert!((normal - 0.199_471_140_200_716_35).abs() < 1e-12);
-
-    env.set("lambda", 3.0);
-    env.set("k", 1.5);
-    env.set("u", 1.0);
-    let weibull = eval_expr::<f64>(
-        &fn_call("distribution", vec![var("u"), var("lambda"), var("k")]),
-        &env,
-    );
-    assert!(weibull.is_finite() && weibull > 0.0);
-}
-
-#[test]
-fn test_eval_builtin_cat_array_values() {
-    let env = VarEnv::<f64>::new();
-    let cat_expr = dae::Expression::BuiltinCall {
-        function: dae::BuiltinFunction::Cat,
+    let expr = dae::Expression::BuiltinCall {
+        function: dae::BuiltinFunction::Homotopy,
         args: vec![
-            int_lit(1),
-            arr(vec![lit(1.0), lit(2.0)], false),
-            arr(vec![lit(3.0)], false),
+            dae::Expression::Literal(dae::Literal::Real(10.0)),
+            dae::Expression::Literal(dae::Literal::Real(2.0)),
         ],
     };
 
-    let scalar = eval_expr::<f64>(&cat_expr, &env);
-    assert!((scalar - 1.0).abs() < 1e-12);
-
-    let values = eval_array_like_f64_values(&cat_expr, &env);
-    assert_eq!(values, vec![1.0, 2.0, 3.0]);
+    assert!((eval_expr::<f64>(&expr, &env) - 4.0).abs() < 1e-12);
 }
 
 #[test]
-fn test_table1d_lookup_dual_linear_ad_slope() {
-    let mut env = VarEnv::<Dual>::new();
-    let constructor = fn_call(
-        "ExternalCombiTable1D",
-        vec![
-            lit(0.0),
-            lit(0.0),
-            simple_table_expr(),
-            columns_expr(),
-            int_lit(1), // LinearSegments
-            int_lit(1), // HoldLastPoint
-        ],
-    );
-    let table_id = eval_expr::<Dual>(&constructor, &env).real();
-    assert!(table_id > 0.0);
-    env.set("table_id", Dual::from_f64(table_id));
-    env.set("u", Dual::new(1.0, 1.0));
-
-    let lookup = fn_call(
-        "getTable1DValueNoDer",
-        vec![var("table_id"), int_lit(1), var("u")],
-    );
-    let y = eval_expr::<Dual>(&lookup, &env);
-    assert!((y.re - 12.0).abs() < 1e-12);
-    assert!((y.du - 2.0).abs() < 1e-12);
-}
-
-#[test]
-fn test_table1d_hold_extrapolation_clamps_ad_slope_to_zero() {
-    let mut env = VarEnv::<Dual>::new();
-    let constructor = fn_call(
-        "ExternalCombiTable1D",
-        vec![
-            lit(0.0),
-            lit(0.0),
-            simple_table_expr(),
-            columns_expr(),
-            int_lit(1), // LinearSegments
-            int_lit(1), // HoldLastPoint
-        ],
-    );
-    let table_id = eval_expr::<Dual>(&constructor, &env).real();
-    assert!(table_id > 0.0);
-    env.set("table_id", Dual::from_f64(table_id));
-    env.set("u", Dual::new(5.0, 1.0));
-
-    let lookup = fn_call(
-        "getTable1DValueNoDer",
-        vec![var("table_id"), int_lit(1), var("u")],
-    );
-    let y = eval_expr::<Dual>(&lookup, &env);
-    assert!((y.re - 14.0).abs() < 1e-12);
-    assert!(y.du.abs() < 1e-12);
-}
-
-#[test]
-fn test_table1d_constructor_uses_start_expr_fallback_for_dynamic_dims() {
+fn test_eval_expr_homotopy_returns_actual_after_initial_phase() {
     let mut env = VarEnv::<f64>::new();
-    env.dims = Arc::new(IndexMap::from([("tbl".to_string(), vec![0, 2])]));
-    env.start_exprs = Arc::new(IndexMap::from([("tbl".to_string(), simple_table_expr())]));
+    env.is_initial = false;
+    env.set(INIT_HOMOTOPY_LAMBDA_KEY, 0.0);
 
-    let constructor = fn_call(
-        "ExternalCombiTable1D",
-        vec![
-            lit(0.0),
-            lit(0.0),
-            var("tbl"),
-            columns_expr(),
-            int_lit(1),
-            int_lit(1),
+    let expr = dae::Expression::BuiltinCall {
+        function: dae::BuiltinFunction::Homotopy,
+        args: vec![
+            dae::Expression::Literal(dae::Literal::Real(10.0)),
+            dae::Expression::Literal(dae::Literal::Real(2.0)),
         ],
-    );
-    let table_id = eval_expr::<f64>(&constructor, &env);
-    assert!(table_id > 0.0);
-
-    env.set("table_id", table_id);
-    env.set("u", 1.0);
-    let lookup = fn_call(
-        "getTable1DValueNoDer",
-        vec![var("table_id"), int_lit(1), var("u")],
-    );
-    let y = eval_expr::<f64>(&lookup, &env);
-    assert!((y - 12.0).abs() < 1e-12);
-}
-
-#[test]
-fn test_time_table_bounds_and_lookup() {
-    let mut env = VarEnv::<f64>::new();
-    let constructor = fn_call(
-        "ExternalCombiTimeTable",
-        vec![
-            lit(0.0),
-            lit(0.0),
-            simple_table_expr(),
-            lit(0.0), // startTime
-            columns_expr(),
-            int_lit(1), // LinearSegments
-            int_lit(1), // HoldLastPoint
-        ],
-    );
-    let table_id = eval_expr::<f64>(&constructor, &env);
-    assert!(table_id > 0.0);
-    env.set("table_id", table_id);
-
-    let t_min = eval_expr::<f64>(&fn_call("getTimeTableTmin", vec![var("table_id")]), &env);
-    let t_max = eval_expr::<f64>(&fn_call("getTimeTableTmax", vec![var("table_id")]), &env);
-    assert!((t_min - 0.0).abs() < 1e-12);
-    assert!((t_max - 2.0).abs() < 1e-12);
-
-    let y = eval_expr::<f64>(
-        &fn_call(
-            "getTimeTableValueNoDer",
-            vec![var("table_id"), int_lit(1), lit(1.0)],
-        ),
-        &env,
-    );
-    assert!((y - 12.0).abs() < 1e-12);
-}
-
-#[test]
-fn test_time_table_constructor_uses_if_matrix_start_fallback() {
-    let mut env = VarEnv::<f64>::new();
-    env.dims = Arc::new(IndexMap::from([("table_dyn".to_string(), vec![0, 2])]));
-    env.start_exprs = Arc::new(IndexMap::from([(
-        "table_dyn".to_string(),
-        simple_table_if_expr(),
-    )]));
-
-    let constructor = fn_call(
-        "ExternalCombiTimeTable",
-        vec![
-            lit(0.0),
-            lit(0.0),
-            var("table_dyn"),
-            lit(0.0), // startTime
-            columns_expr(),
-            int_lit(1), // LinearSegments
-            int_lit(1), // HoldLastPoint
-        ],
-    );
-    let table_id = eval_expr::<f64>(&constructor, &env);
-    assert!(table_id > 0.0);
-
-    env.set("table_id", table_id);
-    let y = eval_expr::<f64>(
-        &fn_call(
-            "getTimeTableValueNoDer",
-            vec![var("table_id"), int_lit(1), lit(1.0)],
-        ),
-        &env,
-    );
-    assert!((y - 12.0).abs() < 1e-12);
-}
-
-#[test]
-fn test_eval_array_values_handles_array_comprehension() {
-    let env = VarEnv::<f64>::new();
-    let expr = dae::Expression::ArrayComprehension {
-        expr: Box::new(var("i")),
-        indices: vec![dae::ComprehensionIndex {
-            name: "i".to_string(),
-            range: dae::Expression::Range {
-                start: Box::new(int_lit(1)),
-                step: None,
-                end: Box::new(int_lit(4)),
-            },
-        }],
-        filter: None,
     };
-    let values = eval_array_values::<f64>(&expr, &env);
-    assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0]);
-}
 
-#[test]
-fn test_time_table_next_event_edges() {
-    let mut env = VarEnv::<f64>::new();
-    let constructor = fn_call(
-        "ExternalCombiTimeTable",
-        vec![
-            lit(0.0),
-            lit(0.0),
-            simple_table_expr(),
-            lit(0.0),
-            columns_expr(),
-            int_lit(1), // LinearSegments
-            int_lit(1), // HoldLastPoint
-        ],
-    );
-    let table_id = eval_expr::<f64>(&constructor, &env);
-    assert!(table_id > 0.0);
-    env.set("table_id", table_id);
-
-    let before_start = eval_expr::<f64>(
-        &fn_call("getNextTimeEvent", vec![var("table_id"), lit(-0.25)]),
-        &env,
-    );
-    assert!((before_start - 0.0).abs() < 1e-12);
-
-    let at_start = eval_expr::<f64>(
-        &fn_call("getNextTimeEvent", vec![var("table_id"), lit(0.0)]),
-        &env,
-    );
-    assert!((at_start - 2.0).abs() < 1e-12);
-
-    let at_end = eval_expr::<f64>(
-        &fn_call("getNextTimeEvent", vec![var("table_id"), lit(2.0)]),
-        &env,
-    );
-    assert!(at_end.is_infinite() && at_end.is_sign_positive());
-}
-
-#[test]
-fn test_time_table_next_event_periodic_wrap() {
-    let mut env = VarEnv::<f64>::new();
-    let constructor = fn_call(
-        "ExternalCombiTimeTable",
-        vec![
-            lit(0.0),
-            lit(0.0),
-            simple_table_expr(),
-            lit(0.0),
-            columns_expr(),
-            int_lit(1), // LinearSegments
-            int_lit(3), // Periodic extrapolation
-        ],
-    );
-    let table_id = eval_expr::<f64>(&constructor, &env);
-    assert!(table_id > 0.0);
-    env.set("table_id", table_id);
-
-    let next_after_end = eval_expr::<f64>(
-        &fn_call("getNextTimeEvent", vec![var("table_id"), lit(2.25)]),
-        &env,
-    );
-    assert!((next_after_end - 4.0).abs() < 1e-12);
+    assert!((eval_expr::<f64>(&expr, &env) - 10.0).abs() < 1e-12);
 }
 
 #[test]
@@ -1962,6 +1759,25 @@ fn test_random_runtime_special_qualified_xorshift_calls_are_supported() {
         &env,
     );
     assert!(r > 0.0 && r <= 1.0);
+}
+
+#[test]
+fn test_random_runtime_special_projected_state_output_is_supported() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("state[1]", 12345.0);
+    env.set("state[2]", 67890.0);
+    std::sync::Arc::make_mut(&mut env.dims).insert("state".to_string(), vec![2]);
+
+    let projected = eval_expr::<f64>(
+        &fn_call(
+            "Modelica.Math.Random.Generators.Xorshift64star.random.stateOut[1]",
+            vec![var("state")],
+        ),
+        &env,
+    );
+
+    assert!(projected.is_finite());
+    assert!(projected >= 1.0);
 }
 
 #[test]

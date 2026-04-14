@@ -8,7 +8,9 @@ use std::time::Instant;
 
 use clap::Parser;
 use rumoca_session::compile::Dae;
-use rumoca_session::runtime::{SimError, SimOptions, SimResult, SimSolverMode, simulate_dae};
+use rumoca_session::runtime::{
+    SimError, SimOptions, SimResult, SimSolverMode, build_simulation, run_prepared_simulation,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "rumoca-sim-worker")]
@@ -55,6 +57,10 @@ struct SimWorkerResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     sim_seconds: f64,
+    #[serde(default)]
+    sim_build_seconds: f64,
+    #[serde(default)]
+    sim_run_seconds: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trace_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,11 +121,19 @@ fn push_named_value_detail(
     }
 }
 
-fn sim_worker_result(status: &str, error: Option<String>, sim_seconds: f64) -> SimWorkerResult {
+fn sim_worker_result(
+    status: &str,
+    error: Option<String>,
+    sim_seconds: f64,
+    sim_build_seconds: f64,
+    sim_run_seconds: f64,
+) -> SimWorkerResult {
     SimWorkerResult {
         status: status.to_string(),
         error,
         sim_seconds,
+        sim_build_seconds,
+        sim_run_seconds,
         trace_file: None,
         trace_error: None,
     }
@@ -133,7 +147,12 @@ fn first_non_finite_sample(result: &SimResult) -> Option<(usize, usize, f64)> {
     })
 }
 
-fn classify_success(result: &SimResult, elapsed: f64) -> SimWorkerResult {
+fn classify_success(
+    result: &SimResult,
+    elapsed: f64,
+    sim_build_seconds: f64,
+    sim_run_seconds: f64,
+) -> SimWorkerResult {
     let first_non_finite = first_non_finite_sample(result);
     if let Some((col_idx, time_idx, value)) = first_non_finite {
         let var_name = result
@@ -188,20 +207,35 @@ fn classify_success(result: &SimResult, elapsed: f64) -> SimWorkerResult {
                 var_name, col_idx, t, value, detail_suffix
             )),
             elapsed,
+            sim_build_seconds,
+            sim_run_seconds,
         );
     }
 
-    sim_worker_result("sim_ok", None, elapsed)
+    sim_worker_result("sim_ok", None, elapsed, sim_build_seconds, sim_run_seconds)
 }
 
-fn classify_solver_error(err: SimError, elapsed: f64) -> SimWorkerResult {
+fn classify_solver_error(
+    err: SimError,
+    elapsed: f64,
+    sim_build_seconds: f64,
+    sim_run_seconds: f64,
+) -> SimWorkerResult {
     match err {
         SimError::Timeout { seconds } => sim_worker_result(
             "sim_timeout",
             Some(format!("timeout after {:.3}s", seconds)),
             elapsed,
+            sim_build_seconds,
+            sim_run_seconds,
         ),
-        other => sim_worker_result("sim_solver_fail", Some(other.to_string()), elapsed),
+        other => sim_worker_result(
+            "sim_solver_fail",
+            Some(other.to_string()),
+            elapsed,
+            sim_build_seconds,
+            sim_run_seconds,
+        ),
     }
 }
 
@@ -325,6 +359,8 @@ fn run(args: &Args) -> SimWorkerResult {
                 status: "sim_solver_fail".to_string(),
                 error: Some(err),
                 sim_seconds: 0.0,
+                sim_build_seconds: 0.0,
+                sim_run_seconds: 0.0,
                 trace_file: None,
                 trace_error: None,
             };
@@ -349,12 +385,24 @@ fn run(args: &Args) -> SimWorkerResult {
     }
 
     let sim_start = Instant::now();
-    let outcome =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulate_dae(&dae, &opts)));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let build_started = Instant::now();
+        let prepared = build_simulation(&dae, &opts);
+        let sim_build_seconds = build_started.elapsed().as_secs_f64();
+        let prepared = prepared.map_err(|err| (err, sim_build_seconds, 0.0))?;
+
+        let run_started = Instant::now();
+        let result = run_prepared_simulation(&prepared);
+        let sim_run_seconds = run_started.elapsed().as_secs_f64();
+        result
+            .map(|result| (result, sim_build_seconds, sim_run_seconds))
+            .map_err(|err| (err, sim_build_seconds, sim_run_seconds))
+    }));
     let elapsed = sim_start.elapsed().as_secs_f64();
     match outcome {
-        Ok(Ok(result)) => {
-            let mut worker_result = classify_success(&result, elapsed);
+        Ok(Ok((result, sim_build_seconds, sim_run_seconds))) => {
+            let mut worker_result =
+                classify_success(&result, elapsed, sim_build_seconds, sim_run_seconds);
             if worker_result.status == "sim_ok"
                 && let Some(trace_path) = args.trace_json.as_deref()
             {
@@ -369,11 +417,15 @@ fn run(args: &Args) -> SimWorkerResult {
             }
             worker_result
         }
-        Ok(Err(err)) => classify_solver_error(err, elapsed),
+        Ok(Err((err, sim_build_seconds, sim_run_seconds))) => {
+            classify_solver_error(err, elapsed, sim_build_seconds, sim_run_seconds)
+        }
         Err(panic_info) => sim_worker_result(
             "sim_solver_fail",
             Some(format!("panic: {}", panic_message(panic_info))),
             elapsed,
+            0.0,
+            0.0,
         ),
     }
 }

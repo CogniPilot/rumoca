@@ -300,6 +300,12 @@ pub(super) fn eval_field_access<T: SimFloat>(
     field: &str,
     env: &VarEnv<T>,
 ) -> T {
+    if let dae::Expression::Index { base, subscripts } = base
+        && let Some(value) = eval_indexed_field_access(base, subscripts, field, env)
+    {
+        return value;
+    }
+
     if let Some(path) = eval_field_access_path(base, env) {
         let key = format!("{path}.{field}");
         if let Some(value) = env.vars.get(&key).copied() {
@@ -332,6 +338,47 @@ pub(super) fn eval_field_access<T: SimFloat>(
     }
 
     T::zero()
+}
+
+fn eval_indexed_field_access<T: SimFloat>(
+    base: &dae::Expression,
+    subscripts: &[dae::Subscript],
+    field: &str,
+    env: &VarEnv<T>,
+) -> Option<T> {
+    let indices = eval_index_subscripts(subscripts, env)?;
+    eval_indexed_field_from_nested_expr(base, &indices, field, env)
+}
+
+fn eval_indexed_field_from_nested_expr<T: SimFloat>(
+    expr: &dae::Expression,
+    indices: &[usize],
+    field: &str,
+    env: &VarEnv<T>,
+) -> Option<T> {
+    if indices.is_empty() {
+        return Some(eval_field_access(expr, field, env));
+    }
+
+    match expr {
+        // MLS Chapter 10 array indexing selects the element before later
+        // component projection, so array/tuple literals must recurse first.
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
+            let idx0 = indices[0].checked_sub(1)?;
+            let element = elements.get(idx0)?;
+            eval_indexed_field_from_nested_expr(element, &indices[1..], field, env)
+        }
+        _ => {
+            let path = eval_field_access_path(expr, env)?;
+            let joined = indices
+                .iter()
+                .map(|idx| idx.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let key = format!("{path}[{joined}].{field}");
+            env.vars.get(&key).copied()
+        }
+    }
 }
 
 pub(super) fn eval_literal<T: SimFloat>(lit: &dae::Literal) -> T {
@@ -382,6 +429,9 @@ pub(super) fn eval_var_ref<T: SimFloat>(
 /// Look up a variable with no explicit subscripts.
 /// Handles names with embedded subscript expressions like `x[(2-1)]`.
 pub(super) fn eval_var_ref_no_subscripts<T: SimFloat>(raw: &str, env: &VarEnv<T>) -> T {
+    if let Some(value) = lowered_pre_parameter_value(raw, env) {
+        return value;
+    }
     if let Some(&v) = env.vars.get(raw) {
         return v;
     }
@@ -417,6 +467,24 @@ pub(super) fn eval_var_ref_no_subscripts<T: SimFloat>(raw: &str, env: &VarEnv<T>
         return T::from_f64(ordinal as f64);
     }
     T::zero()
+}
+
+fn lowered_pre_parameter_value<T: SimFloat>(raw: &str, env: &VarEnv<T>) -> Option<T> {
+    let target = raw.strip_prefix("__pre__.")?;
+    if let Some(value) = lookup_pre_value(target) {
+        return Some(T::from_f64(value));
+    }
+    if let Some(normalized) = normalize_var_name::<T>(target, env)
+        && let Some(value) = lookup_pre_value(normalized.as_str())
+    {
+        return Some(T::from_f64(value));
+    }
+    if let Some(base_name) = unity_subscript_base_name(target)
+        && let Some(value) = lookup_pre_value(base_name.as_str())
+    {
+        return Some(T::from_f64(value));
+    }
+    None
 }
 
 pub(super) fn lookup_enum_literal_ordinal(
@@ -682,7 +750,182 @@ pub(super) fn eval_unary<T: SimFloat>(
     }
 }
 
+fn sample_call_is_event_indicator<T: SimFloat>(args: &[dae::Expression], env: &VarEnv<T>) -> bool {
+    match args {
+        // Lowered internal form: sample(id, start, interval).
+        [_, _, _, ..] => true,
+        // MLS §16.5.1: sample(value, clockExpr) is not an event boolean.
+        [_, clock, ..] => infer_clock_timing_from_expr(clock, env).is_none(),
+        _ => false,
+    }
+}
+
+fn exact_clock_expr_is_left_limit_false<T: SimFloat>(
+    name: &dae::VarName,
+    args: &[dae::Expression],
+    env: &VarEnv<T>,
+) -> bool {
+    let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+    matches!(
+        short,
+        "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample" | "firstTick"
+    ) && infer_clock_timing_from_call(short, args, env).is_some()
+}
+
+fn left_limit_time_value(time: f64) -> f64 {
+    if !time.is_finite() {
+        return time;
+    }
+    if time == 0.0 {
+        return -f64::from_bits(1);
+    }
+    let bits = time.to_bits();
+    if time > 0.0 {
+        f64::from_bits(bits.saturating_sub(1))
+    } else {
+        f64::from_bits(bits.saturating_add(1))
+    }
+}
+
+fn eval_expr_left_limit<T: SimFloat>(expr: &dae::Expression, env: &VarEnv<T>) -> T {
+    match expr {
+        dae::Expression::Literal(_) => eval_expr::<T>(expr, env),
+        dae::Expression::VarRef { name, subscripts }
+            if name.as_str() == "time" && subscripts.is_empty() =>
+        {
+            T::from_f64(left_limit_time_value(env.get("time").real()))
+        }
+        dae::Expression::VarRef { .. } => eval_expr::<T>(expr, env),
+        dae::Expression::Binary { op, lhs, rhs } => {
+            let l = eval_expr_left_limit::<T>(lhs, env);
+            let r = eval_expr_left_limit::<T>(rhs, env);
+            match op {
+                rumoca_ir_core::OpBinary::Add(_) | rumoca_ir_core::OpBinary::AddElem(_) => l + r,
+                rumoca_ir_core::OpBinary::Sub(_) | rumoca_ir_core::OpBinary::SubElem(_) => l - r,
+                rumoca_ir_core::OpBinary::Mul(_) | rumoca_ir_core::OpBinary::MulElem(_) => l * r,
+                rumoca_ir_core::OpBinary::Div(_) | rumoca_ir_core::OpBinary::DivElem(_) => l / r,
+                rumoca_ir_core::OpBinary::Exp(_) | rumoca_ir_core::OpBinary::ExpElem(_) => {
+                    l.powf(r)
+                }
+                rumoca_ir_core::OpBinary::And(_) => T::from_bool(l.to_bool() && r.to_bool()),
+                rumoca_ir_core::OpBinary::Or(_) => T::from_bool(l.to_bool() || r.to_bool()),
+                rumoca_ir_core::OpBinary::Lt(_) => T::from_bool(l.lt(r)),
+                rumoca_ir_core::OpBinary::Le(_) => T::from_bool(l.le(r)),
+                rumoca_ir_core::OpBinary::Gt(_) => T::from_bool(l.gt(r)),
+                rumoca_ir_core::OpBinary::Ge(_) => T::from_bool(l.ge(r)),
+                rumoca_ir_core::OpBinary::Eq(_) => T::from_bool(l.eq_approx(r)),
+                rumoca_ir_core::OpBinary::Neq(_) => T::from_bool(!l.eq_approx(r)),
+                rumoca_ir_core::OpBinary::Empty | rumoca_ir_core::OpBinary::Assign(_) => T::zero(),
+            }
+        }
+        dae::Expression::Unary { op, rhs } => {
+            let r = eval_expr_left_limit::<T>(rhs, env);
+            match op {
+                rumoca_ir_core::OpUnary::Minus(_) | rumoca_ir_core::OpUnary::DotMinus(_) => -r,
+                rumoca_ir_core::OpUnary::Plus(_)
+                | rumoca_ir_core::OpUnary::DotPlus(_)
+                | rumoca_ir_core::OpUnary::Empty => r,
+                rumoca_ir_core::OpUnary::Not(_) => T::from_bool(!r.to_bool()),
+            }
+        }
+        dae::Expression::BuiltinCall { function, args } => match function {
+            // MLS §16.5.1 / Appendix B: sample(start, interval) is an event
+            // indicator, so its left-limit value is false at the tick.
+            dae::BuiltinFunction::Sample if sample_call_is_event_indicator(args, env) => T::zero(),
+            // Derived event indicators are also false on the event left-limit.
+            dae::BuiltinFunction::Edge | dae::BuiltinFunction::Change => T::zero(),
+            dae::BuiltinFunction::NoEvent | dae::BuiltinFunction::Delay => args
+                .first()
+                .map(|arg| eval_expr_left_limit::<T>(arg, env))
+                .unwrap_or_else(T::zero),
+            dae::BuiltinFunction::Smooth if args.len() >= 2 => {
+                eval_expr_left_limit::<T>(&args[1], env)
+            }
+            dae::BuiltinFunction::Homotopy => args
+                .first()
+                .map(|arg| eval_expr_left_limit::<T>(arg, env))
+                .unwrap_or_else(T::zero),
+            dae::BuiltinFunction::Pre => eval_builtin_pre(args, env),
+            _ => eval_expr::<T>(expr, env),
+        },
+        dae::Expression::FunctionCall { name, args, .. }
+            if exact_clock_expr_is_left_limit_false(name, args, env) =>
+        {
+            T::zero()
+        }
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (condition, value) in branches {
+                if eval_expr_left_limit::<T>(condition, env).to_bool() {
+                    return eval_expr_left_limit::<T>(value, env);
+                }
+            }
+            eval_expr_left_limit::<T>(else_branch, env)
+        }
+        dae::Expression::FieldAccess { .. }
+        | dae::Expression::FunctionCall { .. }
+        | dae::Expression::Array { .. }
+        | dae::Expression::Index { .. }
+        | dae::Expression::Range { .. }
+        | dae::Expression::Tuple { .. }
+        | dae::Expression::ArrayComprehension { .. }
+        | dae::Expression::Empty => eval_expr::<T>(expr, env),
+    }
+}
+
 pub(super) fn eval_builtin_pre<T: SimFloat>(args: &[dae::Expression], env: &VarEnv<T>) -> T {
+    let Some(arg0) = args.first() else {
+        return T::zero();
+    };
+
+    if matches!(
+        arg0,
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Initial,
+            ..
+        }
+    ) {
+        // MLS §8.6: `initial()` is true only during the initial event, so its
+        // left-limit value is false and `edge(initial())` fires exactly once.
+        return T::zero();
+    }
+
+    if let dae::Expression::VarRef { name, subscripts } = arg0 {
+        let key = if subscripts.is_empty() {
+            name.as_str().to_string()
+        } else {
+            let indices = eval_subscript_indices(subscripts, env);
+            format!("{}[{}]", name.as_str(), indices.join(","))
+        };
+
+        if let Some(value) = lookup_pre_value(&key) {
+            return T::from_f64(value);
+        }
+        if let Some(normalized) = normalize_var_name::<T>(&key, env)
+            && let Some(value) = lookup_pre_value(normalized.as_str())
+        {
+            return T::from_f64(value);
+        }
+        if let Some(base_name) = unity_subscript_base_name(&key)
+            && let Some(value) = lookup_pre_value(base_name.as_str())
+        {
+            return T::from_f64(value);
+        }
+    }
+
+    let mut pre_env = env.clone();
+    for (name, value) in snapshot_pre_values() {
+        if name == "time" {
+            continue;
+        }
+        pre_env.set(name.as_str(), T::from_f64(value));
+    }
+    eval_expr_left_limit::<T>(arg0, &pre_env)
+}
+
+pub(super) fn eval_builtin_previous<T: SimFloat>(args: &[dae::Expression], env: &VarEnv<T>) -> T {
     let Some(arg0) = args.first() else {
         return T::zero();
     };
@@ -708,9 +951,13 @@ pub(super) fn eval_builtin_pre<T: SimFloat>(args: &[dae::Expression], env: &VarE
         {
             return T::from_f64(value);
         }
+        // MLS §16.5.1 / §16.4: at the first clock tick, previous(v) reads the
+        // declared start value of v, or the type default when no explicit
+        // start is present. It must not fall through to the current env value.
+        return previous_start_or_default(arg0, env);
     }
 
-    eval_expr::<T>(arg0, env)
+    eval_builtin_pre(args, env)
 }
 
 pub(super) fn eval_builtin<T: SimFloat>(
@@ -819,6 +1066,20 @@ pub(super) fn eval_builtin_math_and_event<T: SimFloat>(
     args: &[dae::Expression],
     env: &VarEnv<T>,
 ) -> T {
+    if let Some(value) = eval_builtin_trigonometric(function, args, env) {
+        return value;
+    }
+    if let Some(value) = eval_builtin_event_like(function, args, env) {
+        return value;
+    }
+    eval_builtin_array_fallback(function, args, env)
+}
+
+fn eval_builtin_trigonometric<T: SimFloat>(
+    function: dae::BuiltinFunction,
+    args: &[dae::Expression],
+    env: &VarEnv<T>,
+) -> Option<T> {
     let arg = |i: usize| -> T {
         args.get(i)
             .map(|a| eval_expr::<T>(a, env))
@@ -826,77 +1087,99 @@ pub(super) fn eval_builtin_math_and_event<T: SimFloat>(
     };
 
     match function {
-        // Trigonometric
-        dae::BuiltinFunction::Sin => arg(0).sin(),
-        dae::BuiltinFunction::Cos => arg(0).cos(),
-        dae::BuiltinFunction::Tan => arg(0).tan(),
-        dae::BuiltinFunction::Asin => arg(0).asin(),
-        dae::BuiltinFunction::Acos => arg(0).acos(),
-        dae::BuiltinFunction::Atan => arg(0).atan(),
-        dae::BuiltinFunction::Atan2 => arg(0).atan2(arg(1)),
-        // Hyperbolic
-        dae::BuiltinFunction::Sinh => arg(0).sinh(),
-        dae::BuiltinFunction::Cosh => arg(0).cosh(),
-        dae::BuiltinFunction::Tanh => arg(0).tanh(),
-        // Exponential/logarithmic
-        dae::BuiltinFunction::Exp => arg(0).exp(),
-        dae::BuiltinFunction::Log => arg(0).ln(),
-        dae::BuiltinFunction::Log10 => arg(0).log10(),
+        dae::BuiltinFunction::Sin => Some(arg(0).sin()),
+        dae::BuiltinFunction::Cos => Some(arg(0).cos()),
+        dae::BuiltinFunction::Tan => Some(arg(0).tan()),
+        dae::BuiltinFunction::Asin => Some(arg(0).asin()),
+        dae::BuiltinFunction::Acos => Some(arg(0).acos()),
+        dae::BuiltinFunction::Atan => Some(arg(0).atan()),
+        dae::BuiltinFunction::Atan2 => Some(arg(0).atan2(arg(1))),
+        dae::BuiltinFunction::Sinh => Some(arg(0).sinh()),
+        dae::BuiltinFunction::Cosh => Some(arg(0).cosh()),
+        dae::BuiltinFunction::Tanh => Some(arg(0).tanh()),
+        dae::BuiltinFunction::Exp => Some(arg(0).exp()),
+        dae::BuiltinFunction::Log => Some(arg(0).ln()),
+        dae::BuiltinFunction::Log10 => Some(arg(0).log10()),
+        _ => None,
+    }
+}
 
-        // Event-related / pass-through
+fn eval_builtin_event_like<T: SimFloat>(
+    function: dae::BuiltinFunction,
+    args: &[dae::Expression],
+    env: &VarEnv<T>,
+) -> Option<T> {
+    let arg = |i: usize| -> T {
+        args.get(i)
+            .map(|a| eval_expr::<T>(a, env))
+            .unwrap_or(T::zero())
+    };
+
+    match function {
         dae::BuiltinFunction::Edge => {
             let current = arg(0).to_bool();
             let previous = eval_builtin_pre(&args[..args.len().min(1)], env).to_bool();
-            if current && !previous {
+            Some(if current && !previous {
                 T::one()
             } else {
                 T::zero()
-            }
+            })
         }
         dae::BuiltinFunction::Change => {
-            let current = arg(0).to_bool();
-            let previous = eval_builtin_pre(&args[..args.len().min(1)], env).to_bool();
-            if current != previous {
+            let current = arg(0);
+            let previous = eval_builtin_pre(&args[..args.len().min(1)], env);
+            Some(if !current.eq_approx(previous) {
                 T::one()
             } else {
                 T::zero()
-            }
+            })
         }
-        dae::BuiltinFunction::Initial => {
-            if env.is_initial {
-                T::one()
-            } else {
-                T::zero()
-            }
-        }
-        dae::BuiltinFunction::Terminal => T::zero(),
-        dae::BuiltinFunction::Sample => eval_builtin_sample(args, env),
-        dae::BuiltinFunction::Reinit => arg(1),
-        dae::BuiltinFunction::NoEvent | dae::BuiltinFunction::Delay => arg(0),
-        dae::BuiltinFunction::Smooth => arg(1),
-        dae::BuiltinFunction::Homotopy => arg(0),
+        dae::BuiltinFunction::Initial => Some(if env.is_initial { T::one() } else { T::zero() }),
+        dae::BuiltinFunction::Terminal => Some(T::zero()),
+        dae::BuiltinFunction::Sample => Some(eval_builtin_sample(args, env)),
+        dae::BuiltinFunction::Reinit => Some(arg(1)),
+        dae::BuiltinFunction::NoEvent | dae::BuiltinFunction::Delay => Some(arg(0)),
+        dae::BuiltinFunction::Smooth => Some(arg(1)),
+        dae::BuiltinFunction::Homotopy => Some(eval_builtin_homotopy(args, env)),
+        _ => None,
+    }
+}
 
-        // Reduction operators
+fn eval_builtin_homotopy<T: SimFloat>(args: &[dae::Expression], env: &VarEnv<T>) -> T {
+    if !env.is_initial || args.len() < 2 {
+        return args
+            .first()
+            .map(|expr| eval_expr::<T>(expr, env))
+            .unwrap_or_else(T::zero);
+    }
+    // MLS §3.7.4.3: a translator may solve initialization equations
+    // with a continuation from simplified -> actual, but ordinary
+    // runtime evaluation must end at `actual`.
+    let lambda = env
+        .vars
+        .get(INIT_HOMOTOPY_LAMBDA_KEY)
+        .copied()
+        .unwrap_or_else(T::one);
+    let actual = eval_expr::<T>(&args[0], env);
+    let simplified = eval_expr::<T>(&args[1], env);
+    simplified * (T::one() - lambda) + actual * lambda
+}
+
+fn eval_builtin_array_fallback<T: SimFloat>(
+    function: dae::BuiltinFunction,
+    args: &[dae::Expression],
+    env: &VarEnv<T>,
+) -> T {
+    let arg = |i: usize| -> T {
+        args.get(i)
+            .map(|a| eval_expr::<T>(a, env))
+            .unwrap_or(T::zero())
+    };
+
+    match function {
         dae::BuiltinFunction::Sum => eval_builtin_sum(args, env),
         dae::BuiltinFunction::Product => eval_builtin_product(args, env),
-
-        // Size builtin: size(A, dim) → dimension of A along dim
-        dae::BuiltinFunction::Size => {
-            if let Some(dae::Expression::VarRef { name, .. }) = args.first()
-                && let Some(d) = env.dims.get(name.as_str())
-            {
-                let dim_idx = if args.len() > 1 {
-                    arg(1).real() as usize
-                } else {
-                    1
-                };
-                let val = d.get(dim_idx.saturating_sub(1)).copied().unwrap_or(1);
-                return T::from_f64(val as f64);
-            }
-            T::one()
-        }
-
-        // Array functions with scalar fallbacks
+        dae::BuiltinFunction::Size => eval_builtin_size(args, env),
         dae::BuiltinFunction::Zeros => T::zero(),
         dae::BuiltinFunction::Ones => T::one(),
         dae::BuiltinFunction::Fill
@@ -912,8 +1195,6 @@ pub(super) fn eval_builtin_math_and_event<T: SimFloat>(
             .copied()
             .map(T::from_f64)
             .unwrap_or_else(T::zero),
-
-        // Unsupported array functions
         _ => {
             warn_once!(
                 WARNED_ARRAY_BUILTINS,
@@ -924,4 +1205,19 @@ pub(super) fn eval_builtin_math_and_event<T: SimFloat>(
             T::nan()
         }
     }
+}
+
+fn eval_builtin_size<T: SimFloat>(args: &[dae::Expression], env: &VarEnv<T>) -> T {
+    let dim_idx = if args.len() > 1 {
+        eval_expr::<T>(&args[1], env).real() as usize
+    } else {
+        1
+    };
+    if let Some(dae::Expression::VarRef { name, .. }) = args.first()
+        && let Some(dims) = env.dims.get(name.as_str())
+    {
+        let value = dims.get(dim_idx.saturating_sub(1)).copied().unwrap_or(1);
+        return T::from_f64(value as f64);
+    }
+    T::one()
 }

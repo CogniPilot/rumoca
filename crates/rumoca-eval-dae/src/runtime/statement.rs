@@ -57,7 +57,7 @@ fn eval_if_statement<T: SimFloat>(
     env: &mut VarEnv<T>,
 ) {
     for block in cond_blocks {
-        if eval::eval_expr(&block.cond, env).to_bool() {
+        if eval::eval_condition_truth(&block.cond, env) {
             eval_statements(&block.stmts, env);
             return;
         }
@@ -85,7 +85,7 @@ fn eval_for_statement<T: SimFloat>(
 fn eval_while_statement<T: SimFloat>(block: &dae::StatementBlock, env: &mut VarEnv<T>) {
     let max_iterations = 10_000;
     for _ in 0..max_iterations {
-        if !eval::eval_expr(&block.cond, env).to_bool() {
+        if !eval::eval_condition_truth(&block.cond, env) {
             break;
         }
         eval_statements(&block.stmts, env);
@@ -94,18 +94,11 @@ fn eval_while_statement<T: SimFloat>(block: &dae::StatementBlock, env: &mut VarE
 
 fn eval_when_statement<T: SimFloat>(blocks: &[dae::StatementBlock], env: &mut VarEnv<T>) {
     for block in blocks {
-        if eval::eval_expr(&block.cond, env).to_bool() {
+        if eval::eval_condition_truth(&block.cond, env) {
             eval_statements(&block.stmts, env);
             return;
         }
     }
-}
-
-fn projected_output_name(resolved_name: &dae::VarName, output_name: &str, suffix: &str) -> String {
-    if suffix.is_empty() {
-        return format!("{}.{}", resolved_name.as_str(), output_name);
-    }
-    format!("{}.{}{}", resolved_name.as_str(), output_name, suffix)
 }
 
 fn maybe_log_unsupported_output_target(
@@ -189,8 +182,42 @@ fn apply_projected_function_outputs<T: SimFloat>(
             continue;
         };
 
-        let projected = projected_output_name(&resolved_name, output_name, &target_suffix);
-        let value = eval::eval_function_call_pub(&dae::VarName::new(projected), args, env);
+        if target_suffix.is_empty() {
+            let dims = env
+                .dims
+                .get(target_key.as_str())
+                .cloned()
+                .unwrap_or_default();
+            let total = dims
+                .iter()
+                .try_fold(1usize, |acc, dim| match usize::try_from(*dim) {
+                    Ok(dim) => acc.checked_mul(dim),
+                    Err(_) => None,
+                });
+            if !dims.is_empty()
+                && let Some(total) = total
+                && total > 1
+            {
+                let values = eval_projected_function_output_array(
+                    &resolved_name,
+                    output_name,
+                    args,
+                    env,
+                    total,
+                );
+                eval::set_array_entries(env, &target_key, &dims, &values);
+                assigned_outputs += 1;
+                continue;
+            }
+        }
+
+        let value = eval::eval_projected_function_output_pub(
+            &resolved_name,
+            output_name,
+            &target_suffix,
+            args,
+            env,
+        );
         env.set(&target_key, value);
         maybe_log_timetable_assignment(trace_algorithm_calls, &target_key, value.real());
         assigned_outputs += 1;
@@ -205,6 +232,26 @@ fn apply_projected_function_outputs<T: SimFloat>(
         assigned_outputs,
     );
     assigned_outputs > 0
+}
+
+fn eval_projected_function_output_array<T: SimFloat>(
+    resolved_name: &dae::VarName,
+    output_name: &str,
+    args: &[dae::Expression],
+    env: &VarEnv<T>,
+    total: usize,
+) -> Vec<T> {
+    let mut values = Vec::with_capacity(total);
+    for i in 1..=total {
+        values.push(eval::eval_projected_function_output_pub(
+            resolved_name,
+            output_name,
+            &format!("[{i}]"),
+            args,
+            env,
+        ));
+    }
+    values
 }
 
 fn eval_function_call_statement<T: SimFloat>(

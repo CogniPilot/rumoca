@@ -512,6 +512,110 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
     );
 }
 
+#[test]
+fn test_todae_merges_sequential_when_statements_for_same_target_in_source_order() {
+    let mut flat = Model::new();
+    for name in ["c1", "c2", "y"] {
+        flat.add_variable(
+            VarName::new(name),
+            flat::Variable {
+                name: VarName::new(name),
+                is_discrete_type: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    let mut algorithm = flat::Algorithm::new(Vec::new(), Span::DUMMY, "algorithm");
+    algorithm.outputs.push(VarName::new("y"));
+    algorithm
+        .statements
+        .push(flat::Statement::When(vec![flat::StatementBlock {
+            cond: make_var_ref("c1"),
+            stmts: vec![flat::Statement::Assignment {
+                comp: make_comp_ref("y"),
+                value: Expression::Literal(Literal::Boolean(false)),
+            }],
+        }]));
+    algorithm
+        .statements
+        .push(flat::Statement::When(vec![flat::StatementBlock {
+            cond: make_var_ref("c2"),
+            stmts: vec![flat::Statement::Assignment {
+                comp: make_comp_ref("y"),
+                value: Expression::Literal(Literal::Boolean(true)),
+            }],
+        }]));
+    flat.algorithms.push(algorithm);
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("sequential when-statements should lower to one ordered discrete equation");
+
+    let eq = dae
+        .f_m
+        .iter()
+        .find(|eq| eq.lhs.as_ref() == Some(&dae::VarName::new("y")))
+        .expect("expected lowered discrete equation for y");
+    let dae::Expression::If {
+        branches,
+        else_branch,
+    } = &eq.rhs
+    else {
+        panic!("expected merged when lowering to an If expression");
+    };
+    assert_eq!(
+        branches.len(),
+        2,
+        "expected both when-statements to be preserved"
+    );
+    assert!(
+        matches!(
+            &branches[0].1,
+            dae::Expression::Literal(dae::Literal::Boolean(true))
+        ),
+        "later when-statement must win when both guards are true"
+    );
+    assert!(
+        matches!(
+            &branches[1].1,
+            dae::Expression::Literal(dae::Literal::Boolean(false))
+        ),
+        "earlier when-statement must be preserved as lower-priority branch"
+    );
+    let dae::Expression::If {
+        branches: initial_branches,
+        else_branch: inactive_else,
+    } = else_branch.as_ref()
+    else {
+        panic!("ordinary when lowering must preserve the initial-section value before pre(y)");
+    };
+    assert_eq!(initial_branches.len(), 1);
+    assert!(matches!(
+        &initial_branches[0].0,
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Initial,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &initial_branches[0].1,
+        dae::Expression::VarRef { .. }
+    ));
+    assert!(matches!(
+        inactive_else.as_ref(),
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Pre,
+            ..
+        }
+    ));
+}
+
 fn add_tick_based_discrete_vars(flat: &mut Model) {
     for name in ["counter", "startOutput"] {
         flat.add_variable(
@@ -657,6 +761,184 @@ fn test_todae_routes_zero_minus_if_discrete_assignments_to_f_m() {
             "orientation {label}: if-residual assignment must not remain in continuous partition"
         );
     }
+}
+
+#[test]
+fn test_todae_keeps_time_guarded_discrete_output_binding_and_alias_consumer() {
+    let mut flat = Model::new();
+    flat.add_variable(
+        VarName::new("Enable.stepTime"),
+        flat::Variable {
+            name: VarName::new("Enable.stepTime"),
+            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_core::Token::default()),
+            is_primitive: true,
+            binding: Some(Expression::Literal(Literal::Real(1.0))),
+            ..Default::default()
+        },
+    );
+    flat.add_variable(
+        VarName::new("Enable.y"),
+        flat::Variable {
+            name: VarName::new("Enable.y"),
+            causality: rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
+            is_discrete_type: true,
+            is_primitive: false,
+            ..Default::default()
+        },
+    );
+    flat.add_variable(
+        VarName::new("Counter.enable"),
+        flat::Variable {
+            name: VarName::new("Counter.enable"),
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            is_discrete_type: true,
+            is_primitive: false,
+            ..Default::default()
+        },
+    );
+
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: sub_expr(
+            make_var_ref("Enable.y"),
+            Expression::If {
+                branches: vec![(
+                    ge_expr(make_var_ref("time"), make_var_ref("Enable.stepTime")),
+                    Expression::Literal(Literal::Integer(4)),
+                )],
+                else_branch: Box::new(Expression::Literal(Literal::Integer(3))),
+            },
+        ),
+        span: Span::DUMMY,
+        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "Enable".to_string(),
+        },
+        scalar_count: 1,
+    });
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: sub_expr(make_var_ref("Counter.enable"), make_var_ref("Enable.y")),
+        span: Span::DUMMY,
+        origin: rumoca_ir_flat::EquationOrigin::Connection {
+            lhs: "Counter.enable".to_string(),
+            rhs: "Enable.y".to_string(),
+        },
+        scalar_count: 1,
+    });
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("todae should preserve time-guarded discrete output bindings");
+
+    assert!(
+        dae.discrete_valued
+            .contains_key(&dae::VarName::new("Enable.y"))
+            || dae
+                .discrete_reals
+                .contains_key(&dae::VarName::new("Enable.y")),
+        "discrete output binding target must stay in the discrete variable partition",
+    );
+    assert!(
+        dae.discrete_valued
+            .contains_key(&dae::VarName::new("Counter.enable"))
+            || dae
+                .discrete_reals
+                .contains_key(&dae::VarName::new("Counter.enable")),
+        "discrete alias consumer must stay in the discrete variable partition",
+    );
+    assert!(
+        dae.f_m.iter().any(|eq| eq
+            .lhs
+            .as_ref()
+            .is_some_and(|lhs| lhs.as_str() == "Enable.y")),
+        "time-guarded discrete output binding must be routed to f_m",
+    );
+    assert!(
+        dae.f_m.iter().any(|eq| {
+            eq.lhs
+                .as_ref()
+                .is_some_and(|lhs| lhs.as_str() == "Counter.enable")
+        }),
+        "discrete alias consumer must stay in f_m",
+    );
+}
+
+#[test]
+fn test_todae_converts_non_primitive_leaf_discrete_binding_to_f_m() {
+    let mut flat = Model::new();
+    flat.add_variable(
+        VarName::new("Enable.stepTime"),
+        flat::Variable {
+            name: VarName::new("Enable.stepTime"),
+            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_core::Token::default()),
+            is_primitive: true,
+            binding: Some(Expression::Literal(Literal::Real(1.0))),
+            ..Default::default()
+        },
+    );
+    flat.add_variable(
+        VarName::new("Enable.y"),
+        flat::Variable {
+            name: VarName::new("Enable.y"),
+            causality: rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
+            is_discrete_type: true,
+            is_primitive: false,
+            binding: Some(Expression::If {
+                branches: vec![(
+                    ge_expr(make_var_ref("time"), make_var_ref("Enable.stepTime")),
+                    Expression::Literal(Literal::Integer(4)),
+                )],
+                else_branch: Box::new(Expression::Literal(Literal::Integer(3))),
+            }),
+            ..Default::default()
+        },
+    );
+    flat.add_variable(
+        VarName::new("Counter.enable"),
+        flat::Variable {
+            name: VarName::new("Counter.enable"),
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            is_discrete_type: true,
+            is_primitive: false,
+            ..Default::default()
+        },
+    );
+
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: sub_expr(make_var_ref("Counter.enable"), make_var_ref("Enable.y")),
+        span: Span::DUMMY,
+        origin: rumoca_ir_flat::EquationOrigin::Connection {
+            lhs: "Counter.enable".to_string(),
+            rhs: "Enable.y".to_string(),
+        },
+        scalar_count: 1,
+    });
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("todae should keep non-primitive leaf discrete bindings");
+
+    assert!(
+        dae.f_m.iter().any(|eq| eq
+            .lhs
+            .as_ref()
+            .is_some_and(|lhs| lhs.as_str() == "Enable.y")),
+        "non-primitive leaf discrete bindings must contribute an explicit f_m producer",
+    );
+    assert!(
+        dae.f_m.iter().any(|eq| {
+            eq.lhs
+                .as_ref()
+                .is_some_and(|lhs| lhs.as_str() == "Counter.enable")
+        }),
+        "the discrete alias consumer must remain in f_m alongside the producer",
+    );
 }
 
 #[test]
@@ -982,6 +1264,89 @@ fn test_when_clause_guard_for_var_condition_uses_edge_activation() {
     }
 }
 
+#[test]
+fn test_when_clause_guard_for_vector_var_conditions_uses_edge_activation_per_element() {
+    let mut flat = Model::new();
+    for name in ["trigger", "reset"] {
+        flat.add_variable(
+            VarName::new(name),
+            flat::Variable {
+                name: VarName::new(name),
+                variability: rumoca_ir_core::Variability::Discrete(
+                    rumoca_ir_core::Token::default(),
+                ),
+                is_discrete_type: true,
+                is_primitive: true,
+                start: Some(Expression::Literal(Literal::Boolean(false))),
+                ..Default::default()
+            },
+        );
+    }
+    flat.add_variable(
+        VarName::new("y"),
+        flat::Variable {
+            name: VarName::new("y"),
+            variability: rumoca_ir_core::Variability::Discrete(rumoca_ir_core::Token::default()),
+            is_primitive: true,
+            start: Some(Expression::Literal(Literal::Integer(0))),
+            ..Default::default()
+        },
+    );
+
+    let mut when_clause = flat::WhenClause::new(
+        Expression::Array {
+            elements: vec![make_var_ref("trigger"), make_var_ref("reset")],
+            is_matrix: false,
+        },
+        Span::DUMMY,
+    );
+    when_clause.add_equation(flat::WhenEquation::assign(
+        VarName::new("y"),
+        Expression::Literal(Literal::Integer(1)),
+        Span::DUMMY,
+        "when vector assignment",
+    ));
+    flat.when_clauses.push(when_clause);
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("vector when clause should lower to guarded discrete update");
+
+    let guarded = dae
+        .f_m
+        .iter()
+        .chain(dae.f_z.iter())
+        .find(|eq| eq.lhs.as_ref().is_some_and(|name| name.as_str() == "y"))
+        .expect("expected guarded when equation for y in discrete partitions");
+
+    let dae::Expression::If { branches, .. } = &guarded.rhs else {
+        panic!("guarded when equation should lower to if-expression");
+    };
+    assert_eq!(branches.len(), 1);
+    let dae::Expression::Array { elements, .. } = &branches[0].0 else {
+        panic!("expected vectorized guard condition");
+    };
+    assert_eq!(elements.len(), 2);
+    for (element, expected) in elements.iter().zip(["trigger", "reset"]) {
+        let dae::Expression::BuiltinCall { function, args } = element else {
+            panic!("each vectorized guard element should be lowered to edge(...)");
+        };
+        assert_eq!(*function, dae::BuiltinFunction::Edge);
+        assert_eq!(args.len(), 1);
+        match &args[0] {
+            dae::Expression::VarRef { name, subscripts } => {
+                assert_eq!(name.as_str(), expected);
+                assert!(subscripts.is_empty());
+            }
+            other => panic!("expected edge argument to be VarRef({expected}), got {other:?}"),
+        }
+    }
+}
+
 fn make_lt_expr(lhs: &str, rhs: i64) -> Expression {
     Expression::Binary {
         op: rumoca_ir_core::OpBinary::Lt(rumoca_ir_core::Token::default()),
@@ -1089,15 +1454,19 @@ fn test_when_boolean_alias_guard_matches_inline_relational_guard() {
     let alias_guard = extract_guard_expr_for_lhs(&alias_dae, "z");
     let expected_guard = make_lt_expr("x", 0);
 
+    let expected_edge_guard = dae::Expression::BuiltinCall {
+        function: dae::BuiltinFunction::Edge,
+        args: vec![flat_to_dae_expression(&expected_guard)],
+    };
     assert_eq!(
         format!("{direct_guard:?}"),
-        format!("{expected_guard:?}"),
-        "direct guard should stay relational"
+        format!("{expected_edge_guard:?}"),
+        "MLS §8.3.5.1: direct relational when-guards should fire on false->true edges"
     );
     assert_eq!(
         format!("{alias_guard:?}"),
-        format!("{expected_guard:?}"),
-        "boolean alias guard should lower to the same relational condition"
+        format!("{expected_edge_guard:?}"),
+        "MLS §8.3.5.1: boolean alias guards should lower to the same edge-wrapped relation"
     );
 
     let edge_alias_condition = format!(

@@ -54,6 +54,7 @@ fn select_models_preserves_generated_target_file_order() {
         batch_timeout_seconds: 30,
         stop_time: 1.0,
         use_experiment_stop_time: false,
+        benchmark_mode: false,
         max_models: 0,
         balance_results_file: None,
         target_models_file: None,
@@ -157,6 +158,8 @@ fn ensure_runtime_ratio_stats_present_detects_missing_stats() {
             trace_error: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_sim_seconds: Some(1.0),
+            rumoca_sim_build_seconds: None,
+            rumoca_sim_run_seconds: None,
             rumoca_sim_wall_seconds: Some(1.0),
             rumoca_trace_file: None,
             rumoca_trace_error: None,
@@ -166,6 +169,7 @@ fn ensure_runtime_ratio_stats_present_detects_missing_stats() {
         all_results,
         batch_timings: Vec::new(),
         pending_batches: Vec::new(),
+        next_batch_idx: 0,
     };
     let metrics = compute_run_metrics(1, &state);
     let error = ensure_runtime_ratio_stats_present(&metrics, both_success_model_count(&state))
@@ -221,6 +225,8 @@ fn merge_cached_results_for_resume_hydrates_missing_omc_timing() {
             trace_error: None,
             rumoca_status: None,
             rumoca_sim_seconds: None,
+            rumoca_sim_build_seconds: None,
+            rumoca_sim_run_seconds: None,
             rumoca_sim_wall_seconds: None,
             rumoca_trace_file: None,
             rumoca_trace_error: None,
@@ -281,6 +287,8 @@ fn ensure_omc_trace_artifacts_regenerates_missing_json_from_cached_csv() {
             trace_error: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_sim_seconds: Some(0.4),
+            rumoca_sim_build_seconds: None,
+            rumoca_sim_run_seconds: None,
             rumoca_sim_wall_seconds: Some(0.42),
             rumoca_trace_file: None,
             rumoca_trace_error: None,
@@ -341,6 +349,8 @@ fn ensure_omc_trace_artifacts_regenerates_missing_json_from_error_result_with_cs
             trace_error: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_sim_seconds: Some(0.4),
+            rumoca_sim_build_seconds: None,
+            rumoca_sim_run_seconds: None,
             rumoca_sim_wall_seconds: Some(0.42),
             rumoca_trace_file: None,
             rumoca_trace_error: None,
@@ -424,6 +434,8 @@ fn quantify_trace_differences_skips_excluded_model_before_trace_loading() {
             trace_error: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_sim_seconds: Some(0.1),
+            rumoca_sim_build_seconds: None,
+            rumoca_sim_run_seconds: None,
             rumoca_sim_wall_seconds: Some(0.11),
             rumoca_trace_file: None,
             rumoca_trace_error: None,
@@ -489,6 +501,8 @@ fn quantify_trace_differences_includes_error_status_model_with_existing_traces()
             trace_error: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_sim_seconds: Some(0.1),
+            rumoca_sim_build_seconds: None,
+            rumoca_sim_run_seconds: None,
             rumoca_sim_wall_seconds: Some(0.11),
             rumoca_trace_file: Some(format!("sim_traces/rumoca/{model_name}.json")),
             rumoca_trace_error: None,
@@ -525,6 +539,7 @@ fn load_trace_exclusions_reads_model_list() {
         batch_timeout_seconds: 1,
         stop_time: 1.0,
         use_experiment_stop_time: false,
+        benchmark_mode: false,
         max_models: 0,
         balance_results_file: None,
         target_models_file: None,
@@ -537,4 +552,113 @@ fn load_trace_exclusions_reads_model_list() {
         exclusions.get("Modelica.Blocks.Examples.Noise.ImpureGenerator"),
         Some(&STOCHASTIC_TRACE_EXCLUSION_REASON.to_string())
     );
+}
+
+#[test]
+fn attach_omc_wall_seconds_amortizes_multi_model_batches_in_benchmark_mode() {
+    let mut results = BTreeMap::new();
+    for model_name in ["A", "B"] {
+        results.insert(
+            model_name.to_string(),
+            SimModelResult {
+                status: "success".to_string(),
+                error: None,
+                sim_system_seconds: None,
+                total_system_seconds: None,
+                omc_wall_seconds: None,
+                result_file: None,
+                trace_file: None,
+                trace_error: None,
+                rumoca_status: None,
+                rumoca_sim_seconds: None,
+                rumoca_sim_build_seconds: None,
+                rumoca_sim_run_seconds: None,
+                rumoca_sim_wall_seconds: None,
+                rumoca_trace_file: None,
+                rumoca_trace_error: None,
+            },
+        );
+    }
+
+    attach_omc_wall_seconds(
+        &mut results,
+        &["A".to_string(), "B".to_string()],
+        12.0,
+        true,
+    );
+
+    assert_eq!(results["A"].omc_wall_seconds, Some(6.0));
+    assert_eq!(results["B"].omc_wall_seconds, Some(6.0));
+}
+
+#[test]
+fn should_retry_split_batch_only_in_benchmark_mode_for_partial_or_timeout_batches() {
+    let batch = PendingBatch {
+        batch_idx: 0,
+        start_idx: 0,
+        end_idx: 4,
+        models: vec![
+            "A".to_string(),
+            "B".to_string(),
+            "C".to_string(),
+            "D".to_string(),
+        ],
+    };
+    let output = SimBatchRunOutput {
+        requested_models: 4,
+        parsed_models: 2,
+        elapsed_seconds: 1.0,
+        timed_out: false,
+        results: BTreeMap::new(),
+    };
+    let benchmark_args = Args {
+        dry_run: false,
+        batch_size: 4,
+        resume: false,
+        workers: 1,
+        omc_threads: 1,
+        batch_timeout_seconds: 30,
+        stop_time: 1.0,
+        use_experiment_stop_time: false,
+        benchmark_mode: true,
+        max_models: 0,
+        balance_results_file: None,
+        target_models_file: None,
+        trace_exclusions_file: None,
+    };
+    let isolation_args = Args {
+        benchmark_mode: false,
+        ..benchmark_args.clone()
+    };
+
+    assert!(should_retry_split_batch(&benchmark_args, &batch, &output));
+    assert!(!should_retry_split_batch(&isolation_args, &batch, &output));
+}
+
+#[test]
+fn split_pending_batch_preserves_order_and_assigns_fresh_indices() {
+    let batch = PendingBatch {
+        batch_idx: 7,
+        start_idx: 10,
+        end_idx: 14,
+        models: vec![
+            "A".to_string(),
+            "B".to_string(),
+            "C".to_string(),
+            "D".to_string(),
+        ],
+    };
+    let mut next_batch_idx = 20;
+    let split = split_pending_batch(batch, &mut next_batch_idx);
+
+    assert_eq!(split.len(), 2);
+    assert_eq!(split[0].batch_idx, 20);
+    assert_eq!(split[0].start_idx, 10);
+    assert_eq!(split[0].end_idx, 12);
+    assert_eq!(split[0].models, vec!["A".to_string(), "B".to_string()]);
+    assert_eq!(split[1].batch_idx, 21);
+    assert_eq!(split[1].start_idx, 12);
+    assert_eq!(split[1].end_idx, 14);
+    assert_eq!(split[1].models, vec!["C".to_string(), "D".to_string()]);
+    assert_eq!(next_batch_idx, 22);
 }

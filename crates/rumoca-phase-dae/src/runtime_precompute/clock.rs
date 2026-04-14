@@ -619,37 +619,6 @@ pub(super) fn canonical_var_ref_key(
     Some(key)
 }
 
-fn extract_assignment_from_simple_residual<'a>(
-    expr: &'a dae::Expression,
-    constants: &HashMap<String, f64>,
-) -> Option<(String, &'a dae::Expression)> {
-    let dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(_),
-        lhs,
-        rhs,
-    } = expr
-    else {
-        return None;
-    };
-
-    let lhs_key = if let dae::Expression::VarRef { name, subscripts } = lhs.as_ref() {
-        canonical_var_ref_key(name, subscripts, constants)
-    } else {
-        None
-    };
-    let rhs_key = if let dae::Expression::VarRef { name, subscripts } = rhs.as_ref() {
-        canonical_var_ref_key(name, subscripts, constants)
-    } else {
-        None
-    };
-
-    match (lhs_key, rhs_key) {
-        (Some(target), _) => Some((target, rhs.as_ref())),
-        (None, Some(target)) => Some((target, lhs.as_ref())),
-        (None, None) => None,
-    }
-}
-
 fn collect_assignments_from_residual<'a>(
     expr: &'a dae::Expression,
     constants: &HashMap<String, f64>,
@@ -666,9 +635,34 @@ fn collect_assignments_from_residual<'a>(
             collect_assignments_from_residual(else_branch, constants, out);
         }
         _ => {
-            if let Some((target, source)) = extract_assignment_from_simple_residual(expr, constants)
-            {
-                out.push((target, source));
+            let dae::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Sub(_),
+                lhs,
+                rhs,
+            } = expr
+            else {
+                return;
+            };
+
+            let lhs_key = if let dae::Expression::VarRef { name, subscripts } = lhs.as_ref() {
+                canonical_var_ref_key(name, subscripts, constants)
+            } else {
+                None
+            };
+            let rhs_key = if let dae::Expression::VarRef { name, subscripts } = rhs.as_ref() {
+                canonical_var_ref_key(name, subscripts, constants)
+            } else {
+                None
+            };
+
+            match (lhs_key, rhs_key) {
+                (Some(lhs_key), Some(rhs_key)) => {
+                    out.push((lhs_key, rhs.as_ref()));
+                    out.push((rhs_key, lhs.as_ref()));
+                }
+                (Some(target), None) => out.push((target, rhs.as_ref())),
+                (None, Some(target)) => out.push((target, lhs.as_ref())),
+                (None, None) => {}
             }
         }
     }
@@ -716,11 +710,7 @@ fn infer_clock_intervals_by_variable(
     let sources = build_clock_source_map(dae_model, constants);
     let mut intervals = IndexMap::new();
 
-    for name in dae_model
-        .discrete_reals
-        .keys()
-        .chain(dae_model.discrete_valued.keys())
-    {
+    for name in clock_interval_candidate_names(dae_model) {
         let expr = dae::Expression::VarRef {
             name: name.clone(),
             subscripts: Vec::new(),
@@ -769,11 +759,7 @@ fn add_implicit_sample_fallback_intervals(
     // clock. If a model has one unique static periodic schedule, apply that
     // period only for unresolved variables whose defining expression contains
     // an implicit one-argument sample(..) form.
-    for name in dae_model
-        .discrete_reals
-        .keys()
-        .chain(dae_model.discrete_valued.keys())
-    {
+    for name in clock_interval_candidate_names(dae_model) {
         if intervals.contains_key(name.as_str()) {
             continue;
         }
@@ -782,6 +768,18 @@ fn add_implicit_sample_fallback_intervals(
         }
         intervals.insert(name.as_str().to_string(), fallback_period);
     }
+}
+
+fn clock_interval_candidate_names(dae_model: &dae::Dae) -> Vec<&dae::VarName> {
+    dae_model
+        .states
+        .keys()
+        .chain(dae_model.algebraics.keys())
+        .chain(dae_model.outputs.keys())
+        .chain(dae_model.inputs.keys())
+        .chain(dae_model.discrete_reals.keys())
+        .chain(dae_model.discrete_valued.keys())
+        .collect()
 }
 
 fn variable_has_implicit_clock_source(
@@ -976,7 +974,9 @@ fn infer_shift_like_timing(
             visiting,
         )?;
         if resolution.is_finite() && resolution != 0.0 {
-            shift / resolution
+            // MLS §16.5.2: shiftSample/backSample shift by a fraction of the
+            // source clock interval, not by an absolute number of seconds.
+            (shift / resolution) * base.0
         } else {
             shift * base.0
         }

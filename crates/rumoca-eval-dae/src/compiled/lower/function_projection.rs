@@ -86,18 +86,13 @@ impl<'a> LowerBuilder<'a> {
             });
         }
 
-        let mut scope = Scope::new();
-
-        for (idx, input) in function.inputs.iter().enumerate() {
-            let reg = if let Some(arg_expr) = args.get(idx) {
-                self.lower_expr(arg_expr, caller_scope, call_depth + 1)?
-            } else if let Some(default) = input.default.as_ref() {
-                self.lower_expr(default, &scope, call_depth + 1)?
-            } else {
-                self.emit_const(0.0)
-            };
-            scope.insert(input.name.clone(), reg);
-        }
+        let mut scope = self.bind_function_inputs(
+            &projection.base_function_name,
+            &function.inputs,
+            args,
+            caller_scope,
+            call_depth,
+        )?;
 
         for param in function.outputs.iter().chain(function.locals.iter()) {
             let values = if let Some(default) = param.default.as_ref() {
@@ -113,6 +108,16 @@ impl<'a> LowerBuilder<'a> {
         let projection_key = format_projection_scope_key(projection);
         if let Some(reg) = scope.get(&projection_key).copied() {
             return Ok(reg);
+        }
+
+        if projection.indices.is_empty()
+            && let Some(field) = projection.output_field.as_deref()
+            && let Some(index) = constructor_positional_field_index(field)
+        {
+            let indexed_key = format_subscript_binding_key(&projection.output_name, &[index + 1]);
+            if let Some(reg) = scope.get(&indexed_key).copied() {
+                return Ok(reg);
+            }
         }
 
         if projection.indices.len() == 1 && projection.indices[0] == 1 {

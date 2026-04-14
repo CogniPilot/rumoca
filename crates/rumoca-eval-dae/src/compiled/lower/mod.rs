@@ -6,12 +6,23 @@ use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 
 mod array_values;
+mod expression_rows;
+mod function_calls;
 mod function_projection;
+mod helpers;
 mod root_conditions;
 
+pub use expression_rows::{
+    lower_expression_rows_from_expressions,
+    lower_expression_rows_from_expressions_with_runtime_metadata,
+    lower_initial_expression_rows_from_expressions,
+    lower_initial_expression_rows_from_expressions_with_runtime_metadata,
+};
 use function_projection::format_subscript_binding_key;
+use helpers::*;
 
 const MAX_FUNCTION_INLINE_DEPTH: usize = 64;
+const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
 
 type Scope = IndexMap<String, Reg>;
 
@@ -62,52 +73,25 @@ pub fn lower_residual(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let n_x: usize = dae_model.states.values().map(|v| v.size()).sum();
-    let mut rows = Vec::with_capacity(dae_model.f_x.len());
-    for (row_idx, eq) in dae_model.f_x.iter().enumerate() {
-        if eq.scalar_count != 1 {
-            return Err(LowerError::Unsupported {
-                reason: format!(
-                    "array residual row unsupported in PR2 (origin={} scalar_count={})",
-                    eq.origin, eq.scalar_count
-                ),
-            });
-        }
-
-        let mut builder = LowerBuilder::new(layout, &dae_model.functions);
-        let scope = Scope::new();
-        let row = builder.lower_expr(&eq.rhs, &scope, 0)?;
-        let signed = if row_idx < n_x {
-            builder.emit_unary(UnaryOp::Neg, row)
-        } else {
-            row
-        };
-        builder.ops.push(LinearOp::StoreOutput { src: signed });
-        rows.push(builder.ops);
-    }
-    Ok(rows)
+    expression_rows::lower_residual_rows_with_mode(dae_model, layout, false)
 }
 
 pub fn lower_initial_residual(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    lower_expression_rows_with_mode(
-        dae_model.initial_equations.iter(),
-        layout,
-        &dae_model.functions,
-        true,
-    )
+    expression_rows::lower_residual_rows_with_mode(dae_model, layout, true)
 }
 
 pub fn lower_discrete_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    lower_expression_rows_with_mode(
+    expression_rows::lower_expression_rows_with_mode(
         dae_model.f_z.iter().chain(dae_model.f_m.iter()),
         layout,
         &dae_model.functions,
+        &dae_model.clock_intervals,
         false,
     )
 }
@@ -119,53 +103,10 @@ pub fn lower_root_conditions(
     root_conditions::lower_root_conditions(dae_model, layout)
 }
 
-pub fn lower_expression_rows_from_expressions(
-    expressions: &[dae::Expression],
-    layout: &VarLayout,
-    functions: &IndexMap<dae::VarName, dae::Function>,
-) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let mut rows = Vec::with_capacity(expressions.len());
-    for expression in expressions {
-        rows.push(lower_expression_row(expression, layout, functions, false)?);
-    }
-    Ok(rows)
-}
-
-fn lower_expression_rows_with_mode<'a>(
-    equations: impl IntoIterator<Item = &'a dae::Equation>,
-    layout: &VarLayout,
-    functions: &IndexMap<dae::VarName, dae::Function>,
-    is_initial_mode: bool,
-) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let equations: Vec<&dae::Equation> = equations.into_iter().collect();
-    let mut rows = Vec::with_capacity(equations.len());
-    for equation in equations {
-        rows.push(lower_expression_row(
-            &equation.rhs,
-            layout,
-            functions,
-            is_initial_mode,
-        )?);
-    }
-    Ok(rows)
-}
-
-fn lower_expression_row(
-    expression: &dae::Expression,
-    layout: &VarLayout,
-    functions: &IndexMap<dae::VarName, dae::Function>,
-    is_initial_mode: bool,
-) -> Result<Vec<LinearOp>, LowerError> {
-    let mut builder = LowerBuilder::new_with_mode(layout, functions, is_initial_mode);
-    let scope = Scope::new();
-    let value = builder.lower_expr(expression, &scope, 0)?;
-    builder.ops.push(LinearOp::StoreOutput { src: value });
-    Ok(builder.ops)
-}
-
 struct LowerBuilder<'a> {
     layout: &'a VarLayout,
     functions: &'a IndexMap<dae::VarName, dae::Function>,
+    clock_intervals: Option<&'a IndexMap<String, f64>>,
     indexed_bindings: IndexMap<String, Vec<IndexedBinding>>,
     is_initial_mode: bool,
     ops: Vec<LinearOp>,
@@ -192,7 +133,7 @@ enum SubscriptEvalMode {
 
 impl<'a> LowerBuilder<'a> {
     fn new(layout: &'a VarLayout, functions: &'a IndexMap<dae::VarName, dae::Function>) -> Self {
-        Self::new_with_mode(layout, functions, false)
+        Self::new_with_metadata(layout, functions, None, false)
     }
 
     fn new_with_mode(
@@ -200,9 +141,28 @@ impl<'a> LowerBuilder<'a> {
         functions: &'a IndexMap<dae::VarName, dae::Function>,
         is_initial_mode: bool,
     ) -> Self {
+        Self::new_with_metadata(layout, functions, None, is_initial_mode)
+    }
+
+    fn new_with_runtime_metadata(
+        layout: &'a VarLayout,
+        functions: &'a IndexMap<dae::VarName, dae::Function>,
+        clock_intervals: &'a IndexMap<String, f64>,
+        is_initial_mode: bool,
+    ) -> Self {
+        Self::new_with_metadata(layout, functions, Some(clock_intervals), is_initial_mode)
+    }
+
+    fn new_with_metadata(
+        layout: &'a VarLayout,
+        functions: &'a IndexMap<dae::VarName, dae::Function>,
+        clock_intervals: Option<&'a IndexMap<String, f64>>,
+        is_initial_mode: bool,
+    ) -> Self {
         Self {
             layout,
             functions,
+            clock_intervals,
             indexed_bindings: build_indexed_binding_map(layout),
             is_initial_mode,
             ops: Vec::new(),
@@ -278,9 +238,11 @@ impl<'a> LowerBuilder<'a> {
                 branches,
                 else_branch,
             } => self.lower_if(branches, else_branch, scope, call_depth),
-            dae::Expression::FunctionCall { name, args, .. } => {
-                self.lower_function_call(name, args, scope, call_depth)
-            }
+            dae::Expression::FunctionCall {
+                name,
+                args,
+                is_constructor,
+            } => self.lower_function_call(name, args, *is_constructor, scope, call_depth),
             dae::Expression::FieldAccess { base, field } => {
                 self.lower_field_access(base, field, scope, call_depth)
             }
@@ -374,6 +336,18 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
+        if let Some(reg) =
+            self.lower_structural_index_expr(base, subscripts, scope, call_depth, None)?
+        {
+            return Ok(reg);
+        }
+
+        if let Ok(key) = indexed_binding_key(base, subscripts)
+            && let Some(reg) = scope.get(&key).copied()
+        {
+            return Ok(reg);
+        }
+
         if let Ok(key) = indexed_binding_key(base, subscripts)
             && let Some(slot) = self.layout.binding(&key)
         {
@@ -403,22 +377,17 @@ impl<'a> LowerBuilder<'a> {
             DynamicSubscriptSemantics::Index => SubscriptEvalMode::Round,
         };
         let subscript_regs = self.lower_subscript_regs(subscripts, scope, call_depth, mode)?;
-        let candidates = self
-            .indexed_bindings
-            .get(base_key)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter(|entry| entry.indices.len() == subscript_regs.len())
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let candidates = indexed_entries_for_key(self.layout, &self.indexed_bindings, base_key)
+            .into_iter()
+            .filter(|entry| entry.indices.len() == subscript_regs.len())
+            .collect::<Vec<_>>();
 
         let fallback = match semantics {
             DynamicSubscriptSemantics::VarRef => {
                 if let Some(slot) = self.layout.binding(base_key) {
                     self.emit_slot_load(slot)?
+                } else if let Some(first) = candidates.first() {
+                    self.emit_slot_load(first.slot)?
                 } else {
                     return Err(LowerError::MissingBinding {
                         name: base_key.to_string(),
@@ -501,16 +470,134 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
+        if matches!(field, "re" | "im")
+            && let dae::Expression::FunctionCall { name, args, .. } = base
+        {
+            let projected_name = format!("{}.{}", name.as_str(), field);
+            if let Some(reg) =
+                self.lower_complex_math_sum_projection(&projected_name, args, scope, call_depth)?
+            {
+                return Ok(reg);
+            }
+        }
+
+        if matches!(field, "re" | "im")
+            && let Some(reg) =
+                self.lower_complex_operator_field_access(base, field, scope, call_depth)?
+        {
+            return Ok(reg);
+        }
+
+        if let dae::Expression::Index { base, subscripts } = base
+            && let Some(reg) =
+                self.lower_structural_index_expr(base, subscripts, scope, call_depth, Some(field))?
+        {
+            return Ok(reg);
+        }
+
         if let Some(reg) = self.lower_constructor_field_access(base, field, scope, call_depth)? {
             return Ok(reg);
         }
 
+        if let Some(values) = self.lower_structural_field_values(base, field, scope, call_depth)? {
+            if let Some(first) = values.into_iter().next() {
+                return Ok(first);
+            }
+            return Ok(self.emit_const(0.0));
+        }
+
         let key = field_access_binding_key(base, field)?;
+        if let Some(reg) = scope.get(&key).copied() {
+            return Ok(reg);
+        }
         let slot = self
             .layout
             .binding(&key)
             .ok_or(LowerError::MissingBinding { name: key })?;
         self.emit_slot_load(slot)
+    }
+
+    fn lower_complex_operator_field_access(
+        &mut self,
+        base: &dae::Expression,
+        field: &str,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let (re, im) = match base {
+            // MLS operator overloading for Complex numbers is flattened into
+            // ordinary expression trees. Projected `re/im` access must recover
+            // the selected component from the complex arithmetic result.
+            dae::Expression::Binary { op, lhs, rhs } => {
+                let (lhs_re, lhs_im) = self.lower_complex_operand_parts(lhs, scope, call_depth)?;
+                let (rhs_re, rhs_im) = self.lower_complex_operand_parts(rhs, scope, call_depth)?;
+                match op {
+                    rumoca_ir_core::OpBinary::Add(_) => (
+                        self.emit_binary(BinaryOp::Add, lhs_re, rhs_re),
+                        self.emit_binary(BinaryOp::Add, lhs_im, rhs_im),
+                    ),
+                    rumoca_ir_core::OpBinary::Sub(_) => (
+                        self.emit_binary(BinaryOp::Sub, lhs_re, rhs_re),
+                        self.emit_binary(BinaryOp::Sub, lhs_im, rhs_im),
+                    ),
+                    rumoca_ir_core::OpBinary::Mul(_) => {
+                        let ac = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_re);
+                        let bd = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_im);
+                        let ad = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_im);
+                        let bc = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_re);
+                        (
+                            self.emit_binary(BinaryOp::Sub, ac, bd),
+                            self.emit_binary(BinaryOp::Add, ad, bc),
+                        )
+                    }
+                    rumoca_ir_core::OpBinary::Div(_) => {
+                        let rr2 = self.emit_binary(BinaryOp::Mul, rhs_re, rhs_re);
+                        let ri2 = self.emit_binary(BinaryOp::Mul, rhs_im, rhs_im);
+                        let denom = self.emit_binary(BinaryOp::Add, rr2, ri2);
+                        let lhs_rr = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_re);
+                        let lhs_ri = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_im);
+                        let li_rr = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_re);
+                        let li_ri = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_im);
+                        let re_num = self.emit_binary(BinaryOp::Add, lhs_rr, li_ri);
+                        let im_num = self.emit_binary(BinaryOp::Sub, li_rr, lhs_ri);
+                        (
+                            self.emit_binary(BinaryOp::Div, re_num, denom),
+                            self.emit_binary(BinaryOp::Div, im_num, denom),
+                        )
+                    }
+                    _ => return Ok(None),
+                }
+            }
+            dae::Expression::Unary {
+                op: rumoca_ir_core::OpUnary::Minus(_),
+                rhs,
+            } => {
+                let (rhs_re, rhs_im) = self.lower_complex_operand_parts(rhs, scope, call_depth)?;
+                (
+                    self.emit_unary(UnaryOp::Neg, rhs_re),
+                    self.emit_unary(UnaryOp::Neg, rhs_im),
+                )
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(if field == "re" { re } else { im }))
+    }
+
+    fn lower_complex_operand_parts(
+        &mut self,
+        expr: &dae::Expression,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<(Reg, Reg), LowerError> {
+        let re = match self.lower_field_access(expr, "re", scope, call_depth) {
+            Ok(value) => value,
+            Err(_) => self.lower_expr(expr, scope, call_depth)?,
+        };
+        let im = match self.lower_field_access(expr, "im", scope, call_depth) {
+            Ok(value) => value,
+            Err(_) => self.emit_const(0.0),
+        };
+        Ok((re, im))
     }
 
     fn lower_constructor_field_access(
@@ -529,10 +616,10 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         };
 
-        if !*is_constructor {
+        if !self.is_record_constructor_call(name, *is_constructor) {
             let projected_name = dae::VarName::new(format!("{}.{}", name.as_str(), field));
             return self
-                .lower_function_call(&projected_name, args, caller_scope, call_depth)
+                .lower_function_call(&projected_name, args, false, caller_scope, call_depth)
                 .map(Some);
         }
 
@@ -699,6 +786,17 @@ impl<'a> LowerBuilder<'a> {
                 let q = self.emit_binary(BinaryOp::Div, x, y);
                 Ok(self.emit_unary(UnaryOp::Trunc, q))
             }
+            // Keep the compiled PR2 numeric path aligned with Rumoca's runtime
+            // evaluator, which currently uses truncation-based `%` semantics
+            // for both `mod` and `rem`.
+            dae::BuiltinFunction::Mod | dae::BuiltinFunction::Rem => {
+                let x = arg(self, 0)?;
+                let y = arg(self, 1)?;
+                let q = self.emit_binary(BinaryOp::Div, x, y);
+                let q_trunc = self.emit_unary(UnaryOp::Trunc, q);
+                let product = self.emit_binary(BinaryOp::Mul, q_trunc, y);
+                Ok(self.emit_binary(BinaryOp::Sub, x, product))
+            }
             dae::BuiltinFunction::NoEvent
             | dae::BuiltinFunction::Delay
             | dae::BuiltinFunction::Homotopy => arg(self, 0),
@@ -714,6 +812,10 @@ impl<'a> LowerBuilder<'a> {
                 Ok(self.emit_select(cond, pos, neg))
             }
             dae::BuiltinFunction::Der => Ok(self.emit_const(0.0)),
+            // MLS §8.6: before the start of integration, v = pre(v) holds.
+            // Initial-mode expression rows can therefore lower pre(v) to the
+            // current startup value instead of rejecting the row.
+            dae::BuiltinFunction::Pre if self.is_initial_mode => arg(self, 0),
             dae::BuiltinFunction::Initial => {
                 Ok(self.emit_const(if self.is_initial_mode { 1.0 } else { 0.0 }))
             }
@@ -737,8 +839,6 @@ impl<'a> LowerBuilder<'a> {
             | dae::BuiltinFunction::Reinit
             | dae::BuiltinFunction::Sample
             | dae::BuiltinFunction::Terminal
-            | dae::BuiltinFunction::Rem
-            | dae::BuiltinFunction::Mod
             | dae::BuiltinFunction::Ndims
             | dae::BuiltinFunction::OuterProduct
             | dae::BuiltinFunction::Symmetric
@@ -874,9 +974,30 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         name: &dae::VarName,
         args: &[dae::Expression],
+        is_constructor: bool,
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
+        if self.is_record_constructor_call(name, is_constructor) {
+            let (named_args, positional_args) =
+                function_calls::split_named_and_positional_call_args(name.as_str(), args)?;
+            if let Some(expr) = named_args
+                .get("re")
+                .copied()
+                .or_else(|| positional_args.first().copied())
+            {
+                // Modelica.Complex and other scalar record constructors use
+                // declared field order; numeric scalar contexts read the first
+                // field unless a projection selects another component.
+                return self.lower_expr(expr, caller_scope, call_depth + 1);
+            }
+            return Ok(self.emit_const(0.0));
+        }
+
+        if let Some(reg) = self.lower_runtime_string_special_intrinsic(name.as_str(), args)? {
+            return Ok(reg);
+        }
+
         if call_depth >= MAX_FUNCTION_INLINE_DEPTH {
             if let Some(reg) =
                 self.try_lower_intrinsic_function_call(name, args, caller_scope, call_depth)?
@@ -917,18 +1038,8 @@ impl<'a> LowerBuilder<'a> {
             });
         }
 
-        let mut scope = Scope::new();
-
-        for (idx, input) in function.inputs.iter().enumerate() {
-            let reg = if let Some(arg_expr) = args.get(idx) {
-                self.lower_expr(arg_expr, caller_scope, call_depth + 1)?
-            } else if let Some(default) = input.default.as_ref() {
-                self.lower_expr(default, &scope, call_depth + 1)?
-            } else {
-                self.emit_const(0.0)
-            };
-            scope.insert(input.name.clone(), reg);
-        }
+        let mut scope =
+            self.bind_function_inputs(name, &function.inputs, args, caller_scope, call_depth)?;
 
         for param in function.outputs.iter().chain(function.locals.iter()) {
             let reg = if let Some(default) = param.default.as_ref() {
@@ -950,24 +1061,31 @@ impl<'a> LowerBuilder<'a> {
         Ok(self.emit_const(0.0))
     }
 
-    fn try_lower_intrinsic_function_call(
-        &mut self,
-        name: &dae::VarName,
-        args: &[dae::Expression],
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Option<Reg>, LowerError> {
-        let call_name = name.as_str();
-        if intrinsic_short_name(call_name) == "interval" {
-            return self
-                .lower_interval_intrinsic(args, scope, call_depth)
-                .map(Some);
-        }
-        if let Some(builtin) = resolve_intrinsic_builtin(call_name) {
-            let reg = self.lower_builtin(builtin, args, scope, call_depth)?;
-            return Ok(Some(reg));
-        }
-        Ok(None)
+    fn emit_table_bounds(&mut self, table_id: Reg, max: bool) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::TableBounds { dst, table_id, max });
+        dst
+    }
+
+    fn emit_table_lookup(&mut self, table_id: Reg, column: Reg, input: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::TableLookup {
+            dst,
+            table_id,
+            column,
+            input,
+        });
+        dst
+    }
+
+    fn emit_table_next_event(&mut self, table_id: Reg, time: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::TableNextEvent {
+            dst,
+            table_id,
+            time,
+        });
+        dst
     }
 
     fn lower_interval_intrinsic(
@@ -991,64 +1109,84 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
-        let dae::Expression::FunctionCall { name, args, .. } = expr else {
-            return Ok(None);
-        };
-        let short = intrinsic_short_name(name.as_str());
-        match short {
-            "Clock" => {
-                if args.is_empty() {
-                    return Ok(Some(self.emit_const(1.0)));
+        match expr {
+            // MLS §16.5.1: interval(v) returns the associated clock interval for
+            // the clocked variable v when that metadata is known at runtime.
+            dae::Expression::VarRef { name, subscripts } if subscripts.is_empty() => Ok(self
+                .clock_intervals
+                .and_then(|intervals| intervals.get(name.as_str()).copied())
+                .map(|value| self.emit_const(value))),
+            dae::Expression::FunctionCall { name, args, .. } => {
+                let short = intrinsic_short_name(name.as_str());
+                match short {
+                    "Clock" => self.lower_clock_interval_clock_call(args, scope, call_depth),
+                    "subSample" => {
+                        self.lower_scaled_clock_interval(args, scope, call_depth, BinaryOp::Mul)
+                    }
+                    "superSample" => {
+                        self.lower_scaled_clock_interval(args, scope, call_depth, BinaryOp::Div)
+                    }
+                    "shiftSample" | "backSample" => {
+                        self.lower_passthrough_clock_interval(args, scope, call_depth)
+                    }
+                    _ => Ok(None),
                 }
-                if args.len() == 1 {
-                    return self.lower_expr(&args[0], scope, call_depth).map(Some);
-                }
-                let numerator = self.lower_expr(&args[0], scope, call_depth)?;
-                let denominator = self.lower_expr(&args[1], scope, call_depth)?;
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn lower_clock_interval_clock_call(
+        &mut self,
+        args: &[dae::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        match args {
+            [] => Ok(Some(self.emit_const(1.0))),
+            [interval] => self.lower_expr(interval, scope, call_depth).map(Some),
+            [numerator_expr, denominator_expr, ..] => {
+                let numerator = self.lower_expr(numerator_expr, scope, call_depth)?;
+                let denominator = self.lower_expr(denominator_expr, scope, call_depth)?;
                 Ok(Some(self.emit_binary(
                     BinaryOp::Div,
                     numerator,
                     denominator,
                 )))
             }
-            "subSample" => {
-                let Some(base_expr) = args.first() else {
-                    return Ok(None);
-                };
-                let Some(base) = self.lower_clock_interval_expr(base_expr, scope, call_depth)?
-                else {
-                    return Ok(None);
-                };
-                let factor = if let Some(factor_expr) = args.get(1) {
-                    self.lower_expr(factor_expr, scope, call_depth)?
-                } else {
-                    self.emit_const(1.0)
-                };
-                Ok(Some(self.emit_binary(BinaryOp::Mul, base, factor)))
-            }
-            "superSample" => {
-                let Some(base_expr) = args.first() else {
-                    return Ok(None);
-                };
-                let Some(base) = self.lower_clock_interval_expr(base_expr, scope, call_depth)?
-                else {
-                    return Ok(None);
-                };
-                let factor = if let Some(factor_expr) = args.get(1) {
-                    self.lower_expr(factor_expr, scope, call_depth)?
-                } else {
-                    self.emit_const(1.0)
-                };
-                Ok(Some(self.emit_binary(BinaryOp::Div, base, factor)))
-            }
-            "shiftSample" | "backSample" => {
-                let Some(base_expr) = args.first() else {
-                    return Ok(None);
-                };
-                self.lower_clock_interval_expr(base_expr, scope, call_depth)
-            }
-            _ => Ok(None),
         }
+    }
+
+    fn lower_scaled_clock_interval(
+        &mut self,
+        args: &[dae::Expression],
+        scope: &Scope,
+        call_depth: usize,
+        op: BinaryOp,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(base_expr) = args.first() else {
+            return Ok(None);
+        };
+        let Some(base) = self.lower_clock_interval_expr(base_expr, scope, call_depth)? else {
+            return Ok(None);
+        };
+        let factor = match args.get(1) {
+            Some(factor_expr) => self.lower_expr(factor_expr, scope, call_depth)?,
+            None => self.emit_const(1.0),
+        };
+        Ok(Some(self.emit_binary(op, base, factor)))
+    }
+
+    fn lower_passthrough_clock_interval(
+        &mut self,
+        args: &[dae::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(base_expr) = args.first() else {
+            return Ok(None);
+        };
+        self.lower_clock_interval_expr(base_expr, scope, call_depth)
     }
 
     /// Returns `true` when lowering should stop due to `return`.
@@ -1453,498 +1591,13 @@ impl<'a> LowerBuilder<'a> {
             .find(|(key, _)| key.as_str() == name.as_str())
             .map(|(_, value)| value)
     }
-}
 
-fn build_indexed_binding_map(layout: &VarLayout) -> IndexMap<String, Vec<IndexedBinding>> {
-    let mut grouped: IndexMap<String, Vec<IndexedBinding>> = IndexMap::new();
-    for (key, slot) in layout.bindings() {
-        let Some((base, indices)) = parse_indexed_binding_key(key) else {
-            continue;
-        };
-        grouped.entry(base).or_default().push(IndexedBinding {
-            slot: *slot,
-            indices,
-        });
+    fn is_record_constructor_call(&self, name: &dae::VarName, is_constructor: bool) -> bool {
+        is_constructor
+            || self
+                .lookup_function(name)
+                .is_some_and(|function| is_record_constructor_signature(name, function))
     }
-    grouped
-}
-
-fn parse_indexed_binding_key(key: &str) -> Option<(String, Vec<usize>)> {
-    let open = key.rfind('[')?;
-    if !key.ends_with(']') || open >= key.len().saturating_sub(1) {
-        return None;
-    }
-    let base = key[..open].to_string();
-    if base.is_empty() {
-        return None;
-    }
-    let contents = &key[open + 1..key.len() - 1];
-    let mut indices = Vec::new();
-    for raw in contents.split(',') {
-        let parsed = raw.trim().parse::<usize>().ok()?;
-        if parsed == 0 {
-            return None;
-        }
-        indices.push(parsed);
-    }
-    if indices.is_empty() {
-        return None;
-    }
-    Some((base, indices))
-}
-
-fn sorted_flat_entries(entries: &[IndexedBinding]) -> Vec<&IndexedBinding> {
-    let mut flat = entries
-        .iter()
-        .filter(|entry| entry.indices.len() == 1)
-        .collect::<Vec<_>>();
-    flat.sort_by_key(|entry| entry.indices[0]);
-    flat
-}
-
-fn infer_indexed_dims(entries: &[IndexedBinding]) -> Vec<usize> {
-    let has_multi_dim = entries.iter().any(|entry| entry.indices.len() > 1);
-    if has_multi_dim {
-        let mut dims = Vec::<usize>::new();
-        for entry in entries.iter().filter(|entry| entry.indices.len() > 1) {
-            if entry.indices.len() > dims.len() {
-                dims.resize(entry.indices.len(), 0);
-            }
-            for (idx, value) in entry.indices.iter().enumerate() {
-                dims[idx] = dims[idx].max(*value);
-            }
-        }
-        return dims;
-    }
-
-    let flat_count = entries
-        .iter()
-        .filter(|entry| entry.indices.len() == 1)
-        .count();
-    if flat_count > 0 {
-        return vec![flat_count];
-    }
-    Vec::new()
-}
-
-fn static_subscript_indices(
-    subscripts: &[dae::Subscript],
-) -> Result<Option<Vec<usize>>, LowerError> {
-    if subscripts.is_empty() {
-        return Ok(Some(Vec::new()));
-    }
-    let mut indices = Vec::with_capacity(subscripts.len());
-    for sub in subscripts {
-        match sub {
-            dae::Subscript::Index(v) if *v > 0 => indices.push(*v as usize),
-            dae::Subscript::Expr(expr) => match lower_static_index_expr(expr)? {
-                Some(value) => indices.push(value),
-                None => return Ok(None),
-            },
-            dae::Subscript::Colon => {
-                return Err(LowerError::Unsupported {
-                    reason: "slice subscript `:` is unsupported in PR2".to_string(),
-                });
-            }
-            _ => {
-                return Err(LowerError::Unsupported {
-                    reason: "non-positive subscript is unsupported".to_string(),
-                });
-            }
-        }
-    }
-    Ok(Some(indices))
-}
-
-fn dynamic_binding_base_key(expr: &dae::Expression) -> Result<String, LowerError> {
-    match expr {
-        dae::Expression::VarRef { name, subscripts } => {
-            if subscripts.is_empty() {
-                return Ok(name.as_str().to_string());
-            }
-            append_subscripts_to_key(name.as_str().to_string(), subscripts)
-        }
-        dae::Expression::Index { base, subscripts } => {
-            let base_key = dynamic_binding_base_key(base)?;
-            append_subscripts_to_key(base_key, subscripts)
-        }
-        dae::Expression::FieldAccess { base, field } => {
-            let base_key = dynamic_binding_base_key(base)?;
-            Ok(format!("{base_key}.{field}"))
-        }
-        _ => Err(LowerError::Unsupported {
-            reason: format!(
-                "unsupported base expression for dynamic binding path: {}",
-                expr_tag(expr)
-            ),
-        }),
-    }
-}
-
-fn lower_subscript_index(subscript: &dae::Subscript) -> Result<usize, LowerError> {
-    match subscript {
-        dae::Subscript::Index(v) if *v > 0 => Ok(*v as usize),
-        dae::Subscript::Expr(expr) => lower_index_expr(expr),
-        dae::Subscript::Colon => Err(LowerError::Unsupported {
-            reason: "slice subscript `:` is unsupported in PR2".to_string(),
-        }),
-        _ => Err(LowerError::Unsupported {
-            reason: "non-positive subscript is unsupported".to_string(),
-        }),
-    }
-}
-
-fn indexed_binding_key(
-    base: &dae::Expression,
-    subscripts: &[dae::Subscript],
-) -> Result<String, LowerError> {
-    let base_key = binding_base_key(base)?;
-    append_subscripts_to_key(base_key, subscripts)
-}
-
-fn field_access_binding_key(base: &dae::Expression, field: &str) -> Result<String, LowerError> {
-    let base_key = binding_base_key(base)?;
-    Ok(format!("{base_key}.{field}"))
-}
-
-fn binding_base_key(expr: &dae::Expression) -> Result<String, LowerError> {
-    match expr {
-        dae::Expression::VarRef { name, subscripts } => {
-            if subscripts.is_empty() {
-                Ok(name.as_str().to_string())
-            } else {
-                append_subscripts_to_key(name.as_str().to_string(), subscripts)
-            }
-        }
-        dae::Expression::Index { base, subscripts } => indexed_binding_key(base, subscripts),
-        dae::Expression::FieldAccess { base, field } => field_access_binding_key(base, field),
-        _ => Err(LowerError::Unsupported {
-            reason: format!(
-                "unsupported base expression for binding path: {}",
-                expr_tag(expr)
-            ),
-        }),
-    }
-}
-
-fn append_subscripts_to_key(
-    base: String,
-    subscripts: &[dae::Subscript],
-) -> Result<String, LowerError> {
-    if subscripts.is_empty() {
-        return Ok(base);
-    }
-
-    let mut indices = Vec::with_capacity(subscripts.len());
-    for sub in subscripts {
-        indices.push(lower_subscript_index(sub)?);
-    }
-
-    if indices.len() == 1 {
-        return Ok(format!("{base}[{}]", indices[0]));
-    }
-
-    let suffix = indices
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    Ok(format!("{base}[{suffix}]"))
-}
-
-fn constructor_positional_field_index(field: &str) -> Option<usize> {
-    match field {
-        "re" => Some(0),
-        "im" => Some(1),
-        _ => None,
-    }
-}
-
-fn lower_index_expr(expr: &dae::Expression) -> Result<usize, LowerError> {
-    match lower_static_index_expr(expr)? {
-        Some(index) => Ok(index),
-        None => Err(LowerError::Unsupported {
-            reason: "dynamic subscript expressions are unsupported in PR2".to_string(),
-        }),
-    }
-}
-
-fn lower_static_index_expr(expr: &dae::Expression) -> Result<Option<usize>, LowerError> {
-    let Some(raw) = lower_static_index_numeric(expr)? else {
-        return Ok(None);
-    };
-
-    let rounded = raw.round();
-    if rounded.is_finite() && rounded > 0.0 && (rounded - raw).abs() < f64::EPSILON {
-        return Ok(Some(rounded as usize));
-    }
-
-    Err(LowerError::Unsupported {
-        reason: "subscript expression did not evaluate to a positive integer".to_string(),
-    })
-}
-
-fn lower_static_index_numeric(expr: &dae::Expression) -> Result<Option<f64>, LowerError> {
-    match expr {
-        dae::Expression::Literal(dae::Literal::Integer(v)) => Ok(Some(*v as f64)),
-        dae::Expression::Literal(dae::Literal::Real(v)) => Ok(Some(*v)),
-        dae::Expression::Unary {
-            op:
-                rumoca_ir_core::OpUnary::Plus(_)
-                | rumoca_ir_core::OpUnary::DotPlus(_)
-                | rumoca_ir_core::OpUnary::Empty,
-            rhs,
-        } => lower_static_index_numeric(rhs),
-        dae::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Minus(_) | rumoca_ir_core::OpUnary::DotMinus(_),
-            rhs,
-        } => Ok(lower_static_index_numeric(rhs)?.map(|value| -value)),
-        dae::Expression::Binary { op, lhs, rhs } => {
-            let Some(l) = lower_static_index_numeric(lhs)? else {
-                return Ok(None);
-            };
-            let Some(r) = lower_static_index_numeric(rhs)? else {
-                return Ok(None);
-            };
-            let value = match op {
-                rumoca_ir_core::OpBinary::Add(_) | rumoca_ir_core::OpBinary::AddElem(_) => l + r,
-                rumoca_ir_core::OpBinary::Sub(_) | rumoca_ir_core::OpBinary::SubElem(_) => l - r,
-                rumoca_ir_core::OpBinary::Mul(_) | rumoca_ir_core::OpBinary::MulElem(_) => l * r,
-                rumoca_ir_core::OpBinary::Div(_) | rumoca_ir_core::OpBinary::DivElem(_) => l / r,
-                rumoca_ir_core::OpBinary::Exp(_) | rumoca_ir_core::OpBinary::ExpElem(_) => {
-                    l.powf(r)
-                }
-                _ => return Ok(None),
-            };
-            Ok(Some(value))
-        }
-        _ => Ok(None),
-    }
-}
-
-fn compile_time_var_key(
-    name: &dae::VarName,
-    subscripts: &[dae::Subscript],
-    const_scope: &IndexMap<String, f64>,
-) -> Result<String, LowerError> {
-    if subscripts.is_empty() {
-        return Ok(name.as_str().to_string());
-    }
-    let mut indices = Vec::with_capacity(subscripts.len());
-    for sub in subscripts {
-        let index = compile_time_subscript_index(sub, const_scope)?;
-        indices.push(index.to_string());
-    }
-    if indices.len() == 1 {
-        Ok(format!("{}[{}]", name.as_str(), indices[0]))
-    } else {
-        Ok(format!("{}[{}]", name.as_str(), indices.join(",")))
-    }
-}
-
-fn compile_time_subscript_index(
-    subscript: &dae::Subscript,
-    const_scope: &IndexMap<String, f64>,
-) -> Result<usize, LowerError> {
-    match subscript {
-        dae::Subscript::Index(value) if *value > 0 => Ok(*value as usize),
-        dae::Subscript::Expr(expr) => compile_time_index_expr(expr, const_scope),
-        dae::Subscript::Colon => Err(LowerError::Unsupported {
-            reason: "slice subscript `:` is unsupported in compile-time context".to_string(),
-        }),
-        _ => Err(LowerError::Unsupported {
-            reason: "non-positive subscript is unsupported in compile-time context".to_string(),
-        }),
-    }
-}
-
-fn compile_time_index_expr(
-    expr: &dae::Expression,
-    const_scope: &IndexMap<String, f64>,
-) -> Result<usize, LowerError> {
-    let raw = match expr {
-        dae::Expression::Literal(dae::Literal::Integer(v)) => *v as f64,
-        dae::Expression::Literal(dae::Literal::Real(v)) => *v,
-        dae::Expression::VarRef { name, subscripts } if subscripts.is_empty() => *const_scope
-            .get(name.as_str())
-            .ok_or_else(|| LowerError::Unsupported {
-                reason: format!(
-                    "subscript variable `{}` is not compile-time bound",
-                    name.as_str()
-                ),
-            })?,
-        dae::Expression::Unary {
-            op:
-                rumoca_ir_core::OpUnary::Plus(_)
-                | rumoca_ir_core::OpUnary::DotPlus(_)
-                | rumoca_ir_core::OpUnary::Empty,
-            rhs,
-        } => compile_time_index_expr(rhs, const_scope)? as f64,
-        dae::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Minus(_) | rumoca_ir_core::OpUnary::DotMinus(_),
-            rhs,
-        } => -(compile_time_index_expr(rhs, const_scope)? as f64),
-        _ => {
-            return Err(LowerError::Unsupported {
-                reason: "dynamic subscript expressions are unsupported in compile-time context"
-                    .to_string(),
-            });
-        }
-    };
-
-    let rounded = raw.round();
-    if rounded.is_finite() && rounded > 0.0 && (rounded - raw).abs() < f64::EPSILON {
-        return Ok(rounded as usize);
-    }
-
-    Err(LowerError::Unsupported {
-        reason: "subscript expression did not evaluate to a positive integer".to_string(),
-    })
-}
-
-fn assignment_target_name(comp: &dae::ComponentReference) -> Result<String, LowerError> {
-    if comp.parts.is_empty() {
-        return Err(LowerError::InvalidFunction {
-            name: "<anonymous>".to_string(),
-            reason: "assignment target has no path parts".to_string(),
-        });
-    }
-    if comp.parts.iter().any(|part| !part.subs.is_empty()) {
-        return Err(LowerError::Unsupported {
-            reason: format!(
-                "subscripted assignment target `{}` is unsupported in PR2",
-                comp.to_var_name().as_str()
-            ),
-        });
-    }
-    Ok(comp.to_var_name().as_str().to_string())
-}
-
-fn eval_literal(literal: &dae::Literal) -> f64 {
-    match literal {
-        dae::Literal::Real(v) => *v,
-        dae::Literal::Integer(v) => *v as f64,
-        dae::Literal::Boolean(v) => {
-            if *v {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        dae::Literal::String(_) => 0.0,
-    }
-}
-
-fn expr_tag(expr: &dae::Expression) -> &'static str {
-    match expr {
-        dae::Expression::Binary { .. } => "Binary",
-        dae::Expression::Unary { .. } => "Unary",
-        dae::Expression::VarRef { .. } => "VarRef",
-        dae::Expression::BuiltinCall { .. } => "BuiltinCall",
-        dae::Expression::FunctionCall { .. } => "FunctionCall",
-        dae::Expression::Literal(_) => "Literal",
-        dae::Expression::If { .. } => "If",
-        dae::Expression::Array { .. } => "Array",
-        dae::Expression::Tuple { .. } => "Tuple",
-        dae::Expression::Range { .. } => "Range",
-        dae::Expression::ArrayComprehension { .. } => "ArrayComprehension",
-        dae::Expression::Index { .. } => "Index",
-        dae::Expression::FieldAccess { .. } => "FieldAccess",
-        dae::Expression::Empty => "Empty",
-    }
-}
-
-fn statement_tag(statement: &dae::Statement) -> &'static str {
-    match statement {
-        dae::Statement::Empty => "Empty",
-        dae::Statement::Assignment { .. } => "Assignment",
-        dae::Statement::Return => "Return",
-        dae::Statement::Break => "Break",
-        dae::Statement::For { .. } => "For",
-        dae::Statement::While { .. } => "While",
-        dae::Statement::If { .. } => "If",
-        dae::Statement::When { .. } => "When",
-        dae::Statement::FunctionCall { .. } => "FunctionCall",
-        dae::Statement::Reinit { .. } => "Reinit",
-        dae::Statement::Assert { .. } => "Assert",
-    }
-}
-
-fn unsupported_conditional_return() -> LowerError {
-    LowerError::Unsupported {
-        reason: "conditional return in function if-statement is unsupported in PR6".to_string(),
-    }
-}
-
-fn resolve_intrinsic_builtin(name: &str) -> Option<dae::BuiltinFunction> {
-    dae::BuiltinFunction::from_name(name).or_else(|| {
-        name.rsplit('.')
-            .next()
-            .and_then(dae::BuiltinFunction::from_name)
-    })
-}
-
-fn intrinsic_short_name(name: &str) -> &str {
-    name.rsplit('.').next().unwrap_or(name)
-}
-
-fn collect_scope_names(entry: &Scope, branches: &[Scope], else_scope: &Scope) -> Vec<String> {
-    let mut names: Vec<String> = entry.keys().cloned().collect();
-    for scoped in branches.iter().chain(std::iter::once(else_scope)) {
-        names.extend(
-            scoped
-                .keys()
-                .filter(|name| !entry.contains_key(*name))
-                .cloned(),
-        );
-    }
-    names
-}
-
-fn merge_branch_select(
-    builder: &mut LowerBuilder<'_>,
-    cond: Reg,
-    branch_scope: &Scope,
-    name: &str,
-    merged: Reg,
-) -> Reg {
-    match branch_scope.get(name).copied() {
-        Some(branch_value) => builder.emit_select(cond, branch_value, merged),
-        None => merged,
-    }
-}
-
-fn build_range_values(start: i64, end: i64, step: i64) -> Vec<f64> {
-    let mut values = Vec::new();
-    let mut current = start;
-    while if step > 0 {
-        current <= end
-    } else {
-        current >= end
-    } {
-        values.push(current as f64);
-        let Some(next) = current.checked_add(step) else {
-            break;
-        };
-        current = next;
-    }
-    values
-}
-
-fn eval_builtin_arg(
-    builder: &LowerBuilder<'_>,
-    args: &[dae::Expression],
-    idx: usize,
-    const_scope: &IndexMap<String, f64>,
-) -> Result<f64, LowerError> {
-    let Some(expr) = args.get(idx) else {
-        return Ok(0.0);
-    };
-    builder.eval_compile_time_expr(expr, const_scope)
-}
-
-fn bool_to_f64(value: bool) -> f64 {
-    if value { 1.0 } else { 0.0 }
 }
 
 #[cfg(test)]

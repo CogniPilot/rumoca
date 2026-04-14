@@ -57,6 +57,10 @@ pub(crate) struct Args {
     /// Use model annotation(experiment(StopTime=...)) when available
     #[arg(long, default_value_t = false)]
     use_experiment_stop_time: bool,
+    /// Benchmark-oriented mode: allow amortized per-model OMC wall timing for
+    /// multi-model batches and retry failed/time-out batches as smaller groups.
+    #[arg(long, default_value_t = false)]
+    benchmark_mode: bool,
     /// Limit target model count (0 = all)
     #[arg(long, default_value_t = 0)]
     max_models: usize,
@@ -83,6 +87,8 @@ struct SimModelResult {
     trace_error: Option<String>,
     rumoca_status: Option<String>,
     rumoca_sim_seconds: Option<f64>,
+    rumoca_sim_build_seconds: Option<f64>,
+    rumoca_sim_run_seconds: Option<f64>,
     rumoca_sim_wall_seconds: Option<f64>,
     rumoca_trace_file: Option<String>,
     rumoca_trace_error: Option<String>,
@@ -102,6 +108,7 @@ struct SimRunState {
     all_results: BTreeMap<String, SimModelResult>,
     batch_timings: Vec<BatchTimingDetail>,
     pending_batches: Vec<PendingBatch>,
+    next_batch_idx: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -117,6 +124,8 @@ struct TraceModelMetric {
     metric: ModelDeviationMetric,
     rumoca_sim_wall_seconds: Option<f64>,
     rumoca_sim_seconds: Option<f64>,
+    rumoca_sim_build_seconds: Option<f64>,
+    rumoca_sim_run_seconds: Option<f64>,
     omc_sim_system_seconds: Option<f64>,
     omc_total_system_seconds: Option<f64>,
     omc_wall_seconds: Option<f64>,
@@ -134,6 +143,8 @@ struct ModelSelection {
 struct RumocaRuntime {
     status: String,
     sim_seconds: Option<f64>,
+    sim_build_seconds: Option<f64>,
+    sim_run_seconds: Option<f64>,
     sim_wall_seconds: Option<f64>,
     trace_file: Option<String>,
     trace_error: Option<String>,
@@ -160,6 +171,8 @@ struct RunMetrics {
     total_omc_total_system_seconds: f64,
     total_omc_wall_seconds: f64,
     total_rumoca_sim_seconds: f64,
+    total_rumoca_sim_build_seconds: f64,
+    total_rumoca_sim_run_seconds: f64,
     total_rumoca_sim_wall_seconds: f64,
     system_ratio_all_positive: Option<RuntimeRatioStats>,
     system_ratio_both_success: Option<RuntimeRatioStats>,
@@ -437,6 +450,14 @@ fn print_selection_summary(
         selection.selection_seconds
     );
     println!("Batch size: {batch_size}");
+    println!(
+        "Benchmark mode: {}",
+        if args.benchmark_mode {
+            "warm/amortized"
+        } else {
+            "isolation"
+        }
+    );
     if args.use_experiment_stop_time {
         println!("stopTime policy: model annotation experiment(StopTime) when available");
     } else {
@@ -498,6 +519,7 @@ fn prepare_run_state(
         all_results,
         batch_timings,
         pending_batches,
+        next_batch_idx: n_batches,
     }
 }
 
@@ -592,27 +614,79 @@ fn run_pending_batches(
     work_dir: &Path,
     state: &mut SimRunState,
 ) -> Result<()> {
+    let mut pending = std::mem::take(&mut state.pending_batches);
+    while !pending.is_empty() {
+        let outputs = execute_batch_round(args, workers, work_dir, pending.clone())?;
+        let mut retry_batches = Vec::new();
+        for (batch, output) in outputs {
+            state.batch_timings.push(BatchTimingDetail {
+                batch_idx: batch.batch_idx,
+                requested_models: output.requested_models,
+                parsed_models: output.parsed_models,
+                elapsed_seconds: round3(output.elapsed_seconds),
+                timed_out: output.timed_out,
+                skipped: false,
+            });
+            if should_retry_split_batch(args, &batch, &output) {
+                retry_batches.extend(split_pending_batch(batch, &mut state.next_batch_idx));
+            } else {
+                state.all_results.extend(output.results);
+            }
+        }
+        pending = retry_batches;
+    }
+    Ok(())
+}
+
+fn execute_batch_round(
+    args: &Args,
+    workers: usize,
+    work_dir: &Path,
+    pending_batches: Vec<PendingBatch>,
+) -> Result<Vec<(PendingBatch, SimBatchRunOutput)>> {
+    let paths = MslPaths::current();
     if workers == 1 {
-        run_batches_serial(args, work_dir, state)?;
-        return Ok(());
+        return pending_batches
+            .into_iter()
+            .map(|batch| {
+                println!(
+                    "Processing batch {} (models {}-{}, {} model(s))...",
+                    batch.batch_idx,
+                    batch.start_idx + 1,
+                    batch.end_idx,
+                    batch.models.len()
+                );
+                run_sim_batch(&paths, args, work_dir, batch.clone()).map(|output| {
+                    println!(
+                        "  Batch {}: {}/{} in {:.1}s [{}]",
+                        batch.batch_idx,
+                        output.parsed_models,
+                        output.requested_models,
+                        output.elapsed_seconds,
+                        if output.timed_out { "timeout" } else { "ok" }
+                    );
+                    (batch, output)
+                })
+            })
+            .collect();
     }
     println!(
         "Running {} batches with {workers} workers...",
-        state.pending_batches.len()
+        pending_batches.len()
     );
-    let total_batches = state.pending_batches.len();
+    let total_batches = pending_batches.len();
     let work_dir = work_dir.to_path_buf();
-    let paths = MslPaths::current();
     let args = args.clone();
-    let outputs = run_parallel_batches_with_progress(
-        state.pending_batches.clone(),
+    run_parallel_batches_with_progress(
+        pending_batches,
         workers,
         move |batch| run_sim_batch(&paths, &args, &work_dir, batch),
         move |batch, output| {
             println!(
-                "  Done batch {}/{} (models {}-{}): {}/{} in {:.1}s [{}]",
+                "  Done batch {}/{} (batch_idx={}, models {}-{}): {}/{} in {:.1}s [{}]",
                 batch.batch_idx + 1,
                 total_batches,
+                batch.batch_idx,
                 batch.start_idx + 1,
                 batch.end_idx,
                 output.parsed_models,
@@ -621,55 +695,43 @@ fn run_pending_batches(
                 if output.timed_out { "timeout" } else { "ok" }
             );
         },
-    )?;
-    consume_batch_outputs(state, outputs);
-    Ok(())
+    )
 }
 
-fn run_batches_serial(args: &Args, work_dir: &Path, state: &mut SimRunState) -> Result<()> {
-    let paths = MslPaths::current();
-    for batch in state.pending_batches.clone() {
-        println!(
-            "Processing batch {}/{} (models {}-{})...",
-            batch.batch_idx + 1,
-            state.pending_batches.len(),
-            batch.start_idx + 1,
-            batch.end_idx
-        );
-        let output = run_sim_batch(&paths, args, work_dir, batch.clone())?;
-        println!(
-            "  Batch {}: {}/{} in {:.1}s [{}]",
-            batch.batch_idx,
-            output.parsed_models,
-            output.requested_models,
-            output.elapsed_seconds,
-            if output.timed_out { "timeout" } else { "ok" }
-        );
-        state.all_results.extend(output.results);
-        state.batch_timings.push(BatchTimingDetail {
-            batch_idx: batch.batch_idx,
-            requested_models: output.requested_models,
-            parsed_models: output.parsed_models,
-            elapsed_seconds: round3(output.elapsed_seconds),
-            timed_out: output.timed_out,
-            skipped: false,
-        });
-    }
-    Ok(())
+fn should_retry_split_batch(args: &Args, batch: &PendingBatch, output: &SimBatchRunOutput) -> bool {
+    args.benchmark_mode
+        && batch.models.len() > 1
+        && (output.timed_out || output.parsed_models < output.requested_models)
 }
 
-fn consume_batch_outputs(state: &mut SimRunState, outputs: Vec<(PendingBatch, SimBatchRunOutput)>) {
-    for (batch, output) in outputs {
-        state.all_results.extend(output.results);
-        state.batch_timings.push(BatchTimingDetail {
-            batch_idx: batch.batch_idx,
-            requested_models: output.requested_models,
-            parsed_models: output.parsed_models,
-            elapsed_seconds: round3(output.elapsed_seconds),
-            timed_out: output.timed_out,
-            skipped: false,
-        });
+fn split_pending_batch(batch: PendingBatch, next_batch_idx: &mut usize) -> Vec<PendingBatch> {
+    if batch.models.len() <= 1 {
+        return vec![batch];
     }
+    let mid = batch.models.len() / 2;
+    let left_models = batch.models[..mid].to_vec();
+    let right_models = batch.models[mid..].to_vec();
+    let left_end = batch.start_idx + left_models.len();
+    let right_start = left_end;
+    let left = PendingBatch {
+        batch_idx: next_batch_idx_value(next_batch_idx),
+        start_idx: batch.start_idx,
+        end_idx: left_end,
+        models: left_models,
+    };
+    let right = PendingBatch {
+        batch_idx: next_batch_idx_value(next_batch_idx),
+        start_idx: right_start,
+        end_idx: batch.end_idx,
+        models: right_models,
+    };
+    vec![left, right]
+}
+
+fn next_batch_idx_value(next_batch_idx: &mut usize) -> usize {
+    let value = *next_batch_idx;
+    *next_batch_idx += 1;
+    value
 }
 
 fn run_sim_batch(
@@ -715,15 +777,21 @@ fn run_sim_batch(
     let elapsed_seconds = start.elapsed().as_secs_f64();
 
     let mut results = parse_sim_results(work_dir, batch.batch_idx);
+    let parsed_models = results.len();
     let omc_records = parse_omc_simulation_records(&format!("{}\n{}", run.stdout, run.stderr));
     attach_omc_record_metrics(&mut results, &batch.models, &omc_records);
     attach_omc_traces(paths, &mut results);
     fill_missing_batch_entries(&mut results, &batch.models, run.timed_out);
-    attach_omc_wall_seconds(&mut results, &batch.models, elapsed_seconds);
+    attach_omc_wall_seconds(
+        &mut results,
+        &batch.models,
+        elapsed_seconds,
+        args.benchmark_mode,
+    );
 
     Ok(SimBatchRunOutput {
         requested_models: batch.models.len(),
-        parsed_models: results.len(),
+        parsed_models,
         elapsed_seconds,
         timed_out: run.timed_out,
         results,
@@ -734,12 +802,22 @@ fn attach_omc_wall_seconds(
     results: &mut BTreeMap<String, SimModelResult>,
     batch_models: &[String],
     elapsed_seconds: f64,
+    benchmark_mode: bool,
 ) {
-    if batch_models.len() != 1 || !elapsed_seconds.is_finite() || elapsed_seconds < 0.0 {
+    if !elapsed_seconds.is_finite() || elapsed_seconds < 0.0 {
         return;
     }
-    if let Some(result) = batch_models.first().and_then(|name| results.get_mut(name)) {
-        result.omc_wall_seconds = Some(elapsed_seconds);
+    let per_model_elapsed = if batch_models.len() == 1 {
+        elapsed_seconds
+    } else if benchmark_mode {
+        elapsed_seconds / batch_models.len() as f64
+    } else {
+        return;
+    };
+    for model_name in batch_models {
+        if let Some(result) = results.get_mut(model_name) {
+            result.omc_wall_seconds = Some(per_model_elapsed);
+        }
     }
 }
 
@@ -856,6 +934,8 @@ fn parse_sim_entry(entry: &str) -> Option<(String, SimModelResult)> {
             trace_error: None,
             rumoca_status: None,
             rumoca_sim_seconds: None,
+            rumoca_sim_build_seconds: None,
+            rumoca_sim_run_seconds: None,
             rumoca_sim_wall_seconds: None,
             rumoca_trace_file: None,
             rumoca_trace_error: None,
@@ -944,6 +1024,8 @@ fn attach_omc_record_metrics(
                 trace_error: None,
                 rumoca_status: None,
                 rumoca_sim_seconds: None,
+                rumoca_sim_build_seconds: None,
+                rumoca_sim_run_seconds: None,
                 rumoca_sim_wall_seconds: None,
                 rumoca_trace_file: None,
                 rumoca_trace_error: None,
@@ -1169,6 +1251,8 @@ fn fill_missing_batch_entries(
                 trace_error: None,
                 rumoca_status: None,
                 rumoca_sim_seconds: None,
+                rumoca_sim_build_seconds: None,
+                rumoca_sim_run_seconds: None,
                 rumoca_sim_wall_seconds: None,
                 rumoca_trace_file: None,
                 rumoca_trace_error: None,
@@ -1188,6 +1272,8 @@ fn attach_rumoca_runtime(
         };
         result.rumoca_status = Some(runtime.status.clone());
         result.rumoca_sim_seconds = runtime.sim_seconds;
+        result.rumoca_sim_build_seconds = runtime.sim_build_seconds;
+        result.rumoca_sim_run_seconds = runtime.sim_run_seconds;
         result.rumoca_sim_wall_seconds = runtime.sim_wall_seconds;
         result.rumoca_trace_file = runtime.trace_file.clone();
         result.rumoca_trace_error = runtime.trace_error.clone();
@@ -1290,6 +1376,8 @@ fn load_rumoca_runtime(path: PathBuf) -> Result<HashMap<String, RumocaRuntime>> 
             RumocaRuntime {
                 status: status.to_string(),
                 sim_seconds: parse_json_float(model.get("sim_seconds")),
+                sim_build_seconds: parse_json_float(model.get("sim_build_seconds")),
+                sim_run_seconds: parse_json_float(model.get("sim_run_seconds")),
                 sim_wall_seconds: parse_json_float(model.get("sim_wall_seconds")),
                 trace_file: model
                     .get("sim_trace_file")
@@ -1404,6 +1492,8 @@ fn quantify_trace_differences(
                 metric,
                 rumoca_sim_wall_seconds: omc_model.rumoca_sim_wall_seconds,
                 rumoca_sim_seconds: omc_model.rumoca_sim_seconds,
+                rumoca_sim_build_seconds: omc_model.rumoca_sim_build_seconds,
+                rumoca_sim_run_seconds: omc_model.rumoca_sim_run_seconds,
                 omc_sim_system_seconds: omc_model.sim_system_seconds,
                 omc_total_system_seconds: omc_model.total_system_seconds,
                 omc_wall_seconds: omc_model.omc_wall_seconds,
@@ -1564,6 +1654,8 @@ fn compute_run_metrics(total: usize, state: &SimRunState) -> RunMetrics {
         total_omc_total_system_seconds: runtime_totals.total_omc_total_system_seconds,
         total_omc_wall_seconds: runtime_totals.total_omc_wall_seconds,
         total_rumoca_sim_seconds: runtime_totals.total_rumoca_sim_seconds,
+        total_rumoca_sim_build_seconds: runtime_totals.total_rumoca_sim_build_seconds,
+        total_rumoca_sim_run_seconds: runtime_totals.total_rumoca_sim_run_seconds,
         total_rumoca_sim_wall_seconds: runtime_totals.total_rumoca_sim_wall_seconds,
         system_ratio_all_positive: ratio_stats.system_ratio_all_positive,
         system_ratio_both_success: ratio_stats.system_ratio_both_success,
@@ -1581,6 +1673,8 @@ struct RuntimeTotals {
     total_omc_total_system_seconds: f64,
     total_omc_wall_seconds: f64,
     total_rumoca_sim_seconds: f64,
+    total_rumoca_sim_build_seconds: f64,
+    total_rumoca_sim_run_seconds: f64,
     total_rumoca_sim_wall_seconds: f64,
 }
 
@@ -1622,6 +1716,20 @@ fn compute_runtime_totals(state: &SimRunState) -> RuntimeTotals {
                 .filter(|result| result.rumoca_status.as_deref() == Some("sim_ok"))
                 .filter_map(|result| result.rumoca_sim_seconds),
         ),
+        total_rumoca_sim_build_seconds: sum_metric(
+            state
+                .all_results
+                .values()
+                .filter(|result| result.rumoca_status.as_deref() == Some("sim_ok"))
+                .filter_map(|result| result.rumoca_sim_build_seconds),
+        ),
+        total_rumoca_sim_run_seconds: sum_metric(
+            state
+                .all_results
+                .values()
+                .filter(|result| result.rumoca_status.as_deref() == Some("sim_ok"))
+                .filter_map(rumoca_runtime_sim_seconds),
+        ),
         total_rumoca_sim_wall_seconds: sum_metric(
             state
                 .all_results
@@ -1635,7 +1743,10 @@ fn compute_runtime_totals(state: &SimRunState) -> RuntimeTotals {
 fn compute_runtime_ratio_buckets(state: &SimRunState) -> RuntimeRatioBuckets {
     let system_ratio_all_positive =
         compute_runtime_ratio_stats(state.all_results.values().filter_map(|result| {
-            runtime_pair(result.rumoca_sim_seconds, result.sim_system_seconds)
+            runtime_pair(
+                rumoca_runtime_sim_seconds(result),
+                result.sim_system_seconds,
+            )
         }));
     let wall_ratio_all_positive =
         compute_runtime_ratio_stats(state.all_results.values().filter_map(|result| {
@@ -1646,7 +1757,10 @@ fn compute_runtime_ratio_buckets(state: &SimRunState) -> RuntimeRatioBuckets {
     });
     let system_ratio_both_success =
         compute_runtime_ratio_stats(both_success.clone().filter_map(|result| {
-            runtime_pair(result.rumoca_sim_seconds, result.sim_system_seconds)
+            runtime_pair(
+                rumoca_runtime_sim_seconds(result),
+                result.sim_system_seconds,
+            )
         }));
     let wall_ratio_both_success = compute_runtime_ratio_stats(both_success.filter_map(|result| {
         runtime_pair(result.rumoca_sim_wall_seconds, result.omc_wall_seconds)
@@ -1657,6 +1771,10 @@ fn compute_runtime_ratio_buckets(state: &SimRunState) -> RuntimeRatioBuckets {
         wall_ratio_all_positive,
         wall_ratio_both_success,
     }
+}
+
+fn rumoca_runtime_sim_seconds(result: &SimModelResult) -> Option<f64> {
+    result.rumoca_sim_run_seconds.or(result.rumoca_sim_seconds)
 }
 
 fn sum_metric(values: impl Iterator<Item = f64>) -> f64 {

@@ -128,7 +128,7 @@ pub mod runtime {
 pub mod compile {
     pub use rumoca_core as core;
     pub use rumoca_ir_ast::ResolvedTree;
-    pub use rumoca_ir_dae::Dae;
+    pub use rumoca_ir_dae::{Dae, VarName, Variable};
     pub use rumoca_ir_flat::Model as FlatModel;
 
     pub use crate::instrumentation::{

@@ -120,14 +120,18 @@ fn candidate_model_count(all_results: &BTreeMap<String, SimModelResult>) -> usiz
         .count()
 }
 
-fn trace_runtime_totals(metrics: &[TraceModelMetric]) -> (f64, f64, f64, Option<f64>) {
+fn trace_runtime_totals(metrics: &[TraceModelMetric]) -> (f64, f64, f64, f64, Option<f64>) {
     let total_rumoca_wall = metrics
         .iter()
         .filter_map(|metric| metric.rumoca_sim_wall_seconds)
         .sum::<f64>();
+    let total_rumoca_build = metrics
+        .iter()
+        .filter_map(|metric| metric.rumoca_sim_build_seconds)
+        .sum::<f64>();
     let total_rumoca_sim = metrics
         .iter()
-        .filter_map(|metric| metric.rumoca_sim_seconds)
+        .filter_map(|metric| metric.rumoca_sim_run_seconds.or(metric.rumoca_sim_seconds))
         .sum::<f64>();
     let total_omc_sim = metrics
         .iter()
@@ -140,6 +144,7 @@ fn trace_runtime_totals(metrics: &[TraceModelMetric]) -> (f64, f64, f64, Option<
     };
     (
         total_rumoca_wall,
+        total_rumoca_build,
         total_rumoca_sim,
         total_omc_sim,
         speedup_ratio,
@@ -152,7 +157,7 @@ fn build_trace_report_payload(
     metrics: &[TraceModelMetric],
     candidate: usize,
 ) -> Value {
-    let (total_rumoca_wall, total_rumoca_sim, total_omc_sim, speedup_ratio) =
+    let (total_rumoca_wall, total_rumoca_build, total_rumoca_sim, total_omc_sim, speedup_ratio) =
         trace_runtime_totals(metrics);
     json!({
         "generated_at_unix_seconds": unix_timestamp_seconds(),
@@ -190,6 +195,7 @@ fn build_trace_report_payload(
             "violation_mass_mean_per_model": trace_summary.violation_mass_mean_per_model,
             "violation_mass_mean_per_channel": trace_summary.violation_mass_mean_per_channel,
             "total_rumoca_sim_wall_seconds": total_rumoca_wall,
+            "total_rumoca_sim_build_seconds": total_rumoca_build,
             "total_rumoca_sim_seconds": total_rumoca_sim,
             "total_omc_sim_system_seconds": total_omc_sim,
             "omc_sim_over_rumoca_sim_speedup_ratio": speedup_ratio,
@@ -214,24 +220,18 @@ pub(super) fn write_trace_report(
     write_pretty_json(&trace_file, &payload)
 }
 
-pub(super) fn build_sim_output_payload(
+fn build_timing_payload(
     args: &Args,
-    paths: &MslPaths,
-    selection: &ModelSelection,
     context: &FinalizeContext,
     metrics: &RunMetrics,
-    trace_summary: &TraceOutputSummary,
     state: &SimRunState,
 ) -> Value {
-    let target_selection = json!({
-        "source_file": selection.source_file.display().to_string(),
-        "rule": selection.rule,
-    });
-    let timing = json!({
-        "selection_seconds": round3(selection.selection_seconds),
+    json!({
+        "selection_seconds": round3(0.0),
         "batch_size_requested": args.batch_size,
         "batch_size_effective": context.effective_batch_size,
         "batch_timeout_seconds": args.batch_timeout_seconds,
+        "benchmark_mode": args.benchmark_mode,
         "workers_requested": args.workers,
         "workers_used": context.workers,
         "omc_threads": args.omc_threads,
@@ -240,25 +240,38 @@ pub(super) fn build_sim_output_payload(
         "batches_skipped": metrics.skipped_batches,
         "batch_elapsed_stats": metrics.batch_stats,
         "batch_details": state.batch_timings,
-    });
+    })
+}
+
+fn build_runtime_comparison_payload(args: &Args, metrics: &RunMetrics) -> Value {
     let runtime_ratio_stats = json!({
         "system_ratio_all_positive": metrics.system_ratio_all_positive,
         "system_ratio_both_success": metrics.system_ratio_both_success,
         "wall_ratio_all_positive": metrics.wall_ratio_all_positive,
         "wall_ratio_both_success": metrics.wall_ratio_both_success,
     });
-    let runtime_comparison = json!({
+    json!({
         "ratio_definition": "omc_over_rumoca_higher_is_better",
         "ratio_metric_system": "omc_timeSimulation_over_rumoca_sim_seconds",
         "ratio_metric_wall": "omc_external_wall_over_rumoca_external_wall",
+        "omc_wall_metric_note": if args.benchmark_mode {
+            "omc_wall_seconds is amortized per-model batch wall time for multi-model OMC batches"
+        } else {
+            "omc_wall_seconds is direct per-model external wall time from single-model OMC batches"
+        },
         "total_omc_sim_system_seconds": round3(metrics.total_omc_sim_system_seconds),
         "total_omc_total_system_seconds": round3(metrics.total_omc_total_system_seconds),
         "total_omc_wall_seconds": round3(metrics.total_omc_wall_seconds),
         "total_rumoca_sim_seconds": round3(metrics.total_rumoca_sim_seconds),
+        "total_rumoca_sim_build_seconds": round3(metrics.total_rumoca_sim_build_seconds),
+        "total_rumoca_sim_run_seconds": round3(metrics.total_rumoca_sim_run_seconds),
         "total_rumoca_sim_wall_seconds": round3(metrics.total_rumoca_sim_wall_seconds),
         "ratio_stats": runtime_ratio_stats,
-    });
-    let trace_comparison = json!({
+    })
+}
+
+fn build_trace_comparison_payload(paths: &MslPaths, trace_summary: &TraceOutputSummary) -> Value {
+    json!({
         "report_file": paths.results_dir.join("sim_trace_comparison.json").display().to_string(),
         "models_compared": trace_summary.models_compared,
         "missing_trace_models": trace_summary.missing_trace_models,
@@ -296,7 +309,26 @@ pub(super) fn build_sim_output_payload(
         "mean_model_mean_channel_bounded_normalized_l1": trace_summary.mean_model_mean_channel_bounded_normalized_l1,
         "max_model_max_channel_bounded_normalized_l1": trace_summary.max_model_max_channel_bounded_normalized_l1,
         "global_max_channel_bounded_normalized_l1": trace_summary.max_model_max_channel_bounded_normalized_l1,
+    })
+}
+
+pub(super) fn build_sim_output_payload(
+    args: &Args,
+    paths: &MslPaths,
+    selection: &ModelSelection,
+    context: &FinalizeContext,
+    metrics: &RunMetrics,
+    trace_summary: &TraceOutputSummary,
+    state: &SimRunState,
+) -> Value {
+    let target_selection = json!({
+        "source_file": selection.source_file.display().to_string(),
+        "rule": selection.rule,
     });
+    let mut timing = build_timing_payload(args, context, metrics, state);
+    timing["selection_seconds"] = json!(round3(selection.selection_seconds));
+    let runtime_comparison = build_runtime_comparison_payload(args, metrics);
+    let trace_comparison = build_trace_comparison_payload(paths, trace_summary);
     json!({
         "msl_version": MSL_VERSION,
         "omc_version": context.omc_version,

@@ -1,17 +1,27 @@
 use super::*;
 use rumoca_core::OptionalTimer;
 
-fn trace_step_failure_diagnostics(dae: &Dae, y: &[f64], t: f64, param_values: &[f64]) {
+fn trace_step_failure_diagnostics(
+    dae: &Dae,
+    compiled_runtime: &problem::CompiledRuntimeNewtonContext,
+    y: &[f64],
+    t: f64,
+    param_values: &[f64],
+) {
     if !sim_trace_enabled() {
         return;
     }
 
-    let env = build_env(dae, y, param_values, t);
-    let residuals = collect_residual_diagnostics(dae, &env);
+    let residuals = collect_residual_diagnostics(dae, compiled_runtime, y, param_values, t);
     trace_residual_diagnostics(dae, t, &residuals);
-    trace_function_eval_diagnostics(dae, &env, &residuals);
+    if jacobian_failure_introspection_enabled()
+        && residuals_need_function_eval_diagnostics(dae, &residuals)
+    {
+        // Function-level previews remain structural best-effort only.
+        trace_function_eval_diagnostics(dae, &residuals);
+    }
     let names = trace_state_value_diagnostics(dae, y);
-    trace_jacobian_failure_diagnostics(dae, y, t, param_values, &names);
+    trace_jacobian_failure_diagnostics(compiled_runtime, dae, y, t, param_values, &names);
 }
 
 pub(crate) struct IntegrationOutput {
@@ -22,8 +32,9 @@ pub(crate) struct IntegrationOutput {
 }
 
 impl IntegrationOutput {
-    pub(super) fn new(opts: &SimOptions, n_total: usize, y0: &[f64]) -> Self {
-        let (t_out_list, out_len, buf, t_out_idx) = initialize_output_capture(opts, n_total, y0);
+    pub(super) fn new(dae: &Dae, opts: &SimOptions, n_total: usize, y0: &[f64]) -> Self {
+        let (t_out_list, out_len, buf, t_out_idx) =
+            initialize_output_capture(dae, opts, n_total, y0);
         Self {
             t_out_list,
             out_len,
@@ -61,152 +72,8 @@ impl IntegrationOutput {
     }
 }
 
-struct RuntimeChannelCapture {
-    names: Vec<String>,
-    solver_name_to_idx: HashMap<String, usize>,
-}
-
-#[derive(Clone, Copy)]
-enum RuntimeSampleMode {
-    Initialization,
-    Regular,
-}
-
-fn runtime_capture_target_names(dae: &Dae, _solver_names: &[String]) -> Vec<String> {
-    collect_discrete_channel_names(dae)
-}
-
-fn sample_clock_arg_is_explicit_clock(
-    dae: &Dae,
-    clock_expr: &Expression,
-    env: &eval::VarEnv<f64>,
-) -> bool {
-    if let Expression::FunctionCall { name, .. } = clock_expr {
-        let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-        if matches!(
-            short,
-            "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample" | "firstTick"
-        ) {
-            return true;
-        }
-    }
-    if eval::infer_clock_timing_seconds(clock_expr, env).is_some() {
-        return true;
-    }
-    if let Expression::VarRef { name, subscripts } = clock_expr
-        && subscripts.is_empty()
-    {
-        let key = dae::VarName::new(name.as_str());
-        return dae.discrete_reals.contains_key(&key) || dae.discrete_valued.contains_key(&key);
-    }
-    false
-}
-
-fn expr_uses_implicit_sample_clock(dae: &Dae, expr: &Expression, env: &eval::VarEnv<f64>) -> bool {
-    match expr {
-        Expression::BuiltinCall { function, args } => {
-            let is_implicit_sample = if *function == BuiltinFunction::Sample {
-                if args.len() <= 1 {
-                    true
-                } else {
-                    !sample_clock_arg_is_explicit_clock(dae, &args[1], env)
-                }
-            } else {
-                false
-            };
-            is_implicit_sample
-                || args
-                    .iter()
-                    .any(|arg| expr_uses_implicit_sample_clock(dae, arg, env))
-        }
-        Expression::FunctionCall { args, .. } => args
-            .iter()
-            .any(|arg| expr_uses_implicit_sample_clock(dae, arg, env)),
-        Expression::Binary { lhs, rhs, .. } => {
-            expr_uses_implicit_sample_clock(dae, lhs, env)
-                || expr_uses_implicit_sample_clock(dae, rhs, env)
-        }
-        Expression::Unary { rhs, .. } => expr_uses_implicit_sample_clock(dae, rhs, env),
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches.iter().any(|(cond, value)| {
-                expr_uses_implicit_sample_clock(dae, cond, env)
-                    || expr_uses_implicit_sample_clock(dae, value, env)
-            }) || expr_uses_implicit_sample_clock(dae, else_branch, env)
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => elements
-            .iter()
-            .any(|item| expr_uses_implicit_sample_clock(dae, item, env)),
-        Expression::Range { start, step, end } => {
-            expr_uses_implicit_sample_clock(dae, start, env)
-                || step
-                    .as_ref()
-                    .is_some_and(|value| expr_uses_implicit_sample_clock(dae, value, env))
-                || expr_uses_implicit_sample_clock(dae, end, env)
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            expr_uses_implicit_sample_clock(dae, expr, env)
-                || indices
-                    .iter()
-                    .any(|idx| expr_uses_implicit_sample_clock(dae, &idx.range, env))
-                || filter
-                    .as_ref()
-                    .is_some_and(|value| expr_uses_implicit_sample_clock(dae, value, env))
-        }
-        Expression::Index { base, subscripts } => {
-            expr_uses_implicit_sample_clock(dae, base, env)
-                || subscripts.iter().any(|sub| match sub {
-                    dae::Subscript::Expr(value) => expr_uses_implicit_sample_clock(dae, value, env),
-                    _ => false,
-                })
-        }
-        Expression::FieldAccess { base, .. } => expr_uses_implicit_sample_clock(dae, base, env),
-        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => false,
-    }
-}
-
-fn settle_runtime_discrete_capture_env(
-    dae: &Dae,
-    y: &mut [f64],
-    p: &[f64],
-    n_x: usize,
-    t_eval: f64,
-) -> eval::VarEnv<f64> {
-    crate::settle_runtime_event_updates(
-        crate::EventSettleInput {
-            dae,
-            y,
-            p,
-            n_x,
-            t_eval,
-        },
-        crate::runtime::assignment::propagate_runtime_direct_assignments_from_env,
-        crate::runtime::alias::propagate_runtime_alias_components_from_env,
-        |dae, env| {
-            crate::runtime::discrete::apply_discrete_partition_updates_with_scalar_override(
-                dae,
-                env,
-                |_eq, target, solution, env, implicit_clock_active| {
-                    if implicit_clock_active && expr_uses_implicit_sample_clock(dae, solution, env)
-                    {
-                        return Some(env.vars.get(target).copied().unwrap_or(0.0));
-                    }
-                    None
-                },
-            )
-        },
-        crate::runtime::layout::sync_solver_values_from_env,
-    )
-}
-
-pub(super) type BdfTraceCtx = crate::RuntimeTraceContext;
-pub(super) type BdfProgressSnapshot = crate::RuntimeProgressSnapshot;
+mod runtime_capture;
+use runtime_capture::*;
 
 fn startup_profile_label(profile: SolverStartupProfile) -> &'static str {
     match profile {
@@ -298,13 +165,28 @@ pub(super) struct ResidualDiagnostic {
     rhs: String,
 }
 
-pub(super) fn collect_residual_diagnostics(
+fn collect_residual_diagnostics(
     dae: &Dae,
-    env: &eval::VarEnv<f64>,
+    compiled_runtime: &problem::CompiledRuntimeNewtonContext,
+    y: &[f64],
+    param_values: &[f64],
+    t: f64,
 ) -> Vec<ResidualDiagnostic> {
+    let mut residual_values = vec![0.0_f64; dae.f_x.len()];
+    problem::eval_compiled_runtime_residual(
+        compiled_runtime,
+        y,
+        param_values,
+        t,
+        &mut residual_values,
+    );
     let mut residuals = Vec::with_capacity(dae.f_x.len());
-    for (idx, eq) in dae.f_x.iter().enumerate() {
-        let residual = eval_expr::<f64>(&eq.rhs, env);
+    for (idx, (eq, residual)) in dae
+        .f_x
+        .iter()
+        .zip(residual_values.iter().copied())
+        .enumerate()
+    {
         residuals.push(ResidualDiagnostic {
             eq_idx: idx,
             abs: if residual.is_finite() {
@@ -326,7 +208,49 @@ pub(super) fn collect_residual_diagnostics(
     residuals
 }
 
-pub(super) fn trace_residual_diagnostics(dae: &Dae, t: f64, residuals: &[ResidualDiagnostic]) {
+struct JacobianFailureSummary {
+    row_norms: Vec<f64>,
+    col_norms: Vec<f64>,
+    jac_preview: Vec<Vec<f64>>,
+}
+
+fn collect_jacobian_failure_summary(
+    compiled_runtime: &problem::CompiledRuntimeNewtonContext,
+    y: &[f64],
+    param_values: &[f64],
+    t: f64,
+) -> JacobianFailureSummary {
+    let n_total = y.len();
+    let preview_n = n_total.min(8);
+    let mut row_norms = vec![0.0_f64; n_total];
+    let mut col_norms = vec![0.0_f64; n_total];
+    let mut jac_preview = vec![vec![0.0_f64; preview_n]; preview_n];
+    let mut v = vec![0.0_f64; n_total];
+    let mut jv = vec![0.0_f64; n_total];
+
+    for col in 0..n_total {
+        v[col] = 1.0;
+        problem::eval_compiled_runtime_jacobian(compiled_runtime, y, param_values, t, &v, &mut jv);
+        v[col] = 0.0;
+        col_norms[col] = jv.iter().fold(0.0_f64, |acc, value| acc.max(value.abs()));
+        if col < preview_n {
+            for row in 0..preview_n {
+                jac_preview[row][col] = jv[row];
+            }
+        }
+        for (row, val) in jv.iter().copied().enumerate() {
+            row_norms[row] = row_norms[row].max(val.abs());
+        }
+    }
+
+    JacobianFailureSummary {
+        row_norms,
+        col_norms,
+        jac_preview,
+    }
+}
+
+fn trace_residual_diagnostics(dae: &Dae, t: f64, residuals: &[ResidualDiagnostic]) {
     let worst = residuals.first().map(|entry| entry.abs).unwrap_or(0.0);
     let non_finite_rows = residuals.iter().filter(|entry| entry.non_finite).count();
     eprintln!(
@@ -366,7 +290,7 @@ pub(super) fn sorted_value_rows(y: &[f64]) -> Vec<(usize, f64, bool)> {
     rows
 }
 
-pub(super) fn trace_state_value_diagnostics(dae: &Dae, y: &[f64]) -> Vec<String> {
+fn trace_state_value_diagnostics(dae: &Dae, y: &[f64]) -> Vec<String> {
     let mut names = build_output_names(dae);
     names.truncate(y.len());
     for (rank, (idx, abs, non_finite)) in sorted_value_rows(y).iter().take(8).enumerate() {
@@ -380,7 +304,7 @@ pub(super) fn trace_state_value_diagnostics(dae: &Dae, y: &[f64]) -> Vec<String>
     names
 }
 
-pub(super) fn jacobian_failure_introspection_enabled() -> bool {
+fn jacobian_failure_introspection_enabled() -> bool {
     std::env::var("RUMOCA_SIM_INTROSPECT_JAC_FAILURE")
         .map(|v| {
             let s = v.trim().to_ascii_lowercase();
@@ -389,41 +313,47 @@ pub(super) fn jacobian_failure_introspection_enabled() -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn safe_eval_expr_for_failure(expr: &Expression, env: &eval::VarEnv<f64>) -> String {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eval_expr::<f64>(expr, env))) {
-        Ok(value) => format!("{value}"),
-        Err(payload) => format!("panic({})", panic_payload_message(payload)),
+fn expr_contains_function_eval_site(expr: &Expression) -> bool {
+    match expr {
+        // Only user-function calls justify another best-effort env build here.
+        Expression::FunctionCall { .. } => true,
+        Expression::Binary { lhs, rhs, .. } => {
+            expr_contains_function_eval_site(lhs) || expr_contains_function_eval_site(rhs)
+        }
+        Expression::Unary { rhs, .. } => expr_contains_function_eval_site(rhs),
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expr_contains_function_eval_site(cond) || expr_contains_function_eval_site(value)
+            }) || expr_contains_function_eval_site(else_branch)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+            elements.iter().any(expr_contains_function_eval_site)
+        }
+        Expression::Index { base, .. } => expr_contains_function_eval_site(base),
+        _ => false,
     }
 }
 
-pub(super) fn trace_function_calls_in_expr(
-    expr: &Expression,
-    env: &eval::VarEnv<f64>,
-    remaining: &mut usize,
-) -> usize {
+fn residuals_need_function_eval_diagnostics(dae: &Dae, residuals: &[ResidualDiagnostic]) -> bool {
+    residuals
+        .iter()
+        .take(4)
+        .filter_map(|row| dae.f_x.get(row.eq_idx))
+        .any(|eq| expr_contains_function_eval_site(&eq.rhs))
+}
+
+fn trace_function_calls_in_expr(expr: &Expression, remaining: &mut usize) -> usize {
     if *remaining == 0 {
         return 0;
     }
     match expr {
-        Expression::BuiltinCall { function, args } => {
-            let value = safe_eval_expr_for_failure(expr, env);
-            let arg_values = args
-                .iter()
-                .take(4)
-                .map(|arg| safe_eval_expr_for_failure(arg, env))
-                .collect::<Vec<_>>()
-                .join(", ");
-            eprintln!(
-                "[sim-introspect]   function-eval builtin={:?} value={} args=[{}] expr={}",
-                function,
-                value,
-                arg_values,
-                truncate_debug(&format!("{:?}", expr), 180)
-            );
-            *remaining -= 1;
-            let mut found = 1usize;
+        Expression::BuiltinCall { args, .. } => {
+            let mut found = 0usize;
             for arg in args {
-                found += trace_function_calls_in_expr(arg, env, remaining);
+                found += trace_function_calls_in_expr(arg, remaining);
                 if *remaining == 0 {
                     break;
                 }
@@ -431,24 +361,22 @@ pub(super) fn trace_function_calls_in_expr(
             found
         }
         Expression::FunctionCall { name, args, .. } => {
-            let value = safe_eval_expr_for_failure(expr, env);
             let arg_values = args
                 .iter()
                 .take(4)
-                .map(|arg| safe_eval_expr_for_failure(arg, env))
+                .map(|arg| truncate_debug(&format!("{:?}", arg), 120))
                 .collect::<Vec<_>>()
                 .join(", ");
             eprintln!(
-                "[sim-introspect]   function-eval call={} value={} args=[{}] expr={}",
+                "[sim-introspect]   function-preview call={} args=[{}] expr={}",
                 name,
-                value,
                 arg_values,
                 truncate_debug(&format!("{:?}", expr), 180)
             );
             *remaining -= 1;
             let mut found = 1usize;
             for arg in args {
-                found += trace_function_calls_in_expr(arg, env, remaining);
+                found += trace_function_calls_in_expr(arg, remaining);
                 if *remaining == 0 {
                     break;
                 }
@@ -456,47 +384,43 @@ pub(super) fn trace_function_calls_in_expr(
             found
         }
         Expression::Binary { lhs, rhs, .. } => {
-            trace_function_calls_in_expr(lhs, env, remaining)
-                + trace_function_calls_in_expr(rhs, env, remaining)
+            trace_function_calls_in_expr(lhs, remaining)
+                + trace_function_calls_in_expr(rhs, remaining)
         }
-        Expression::Unary { rhs, .. } => trace_function_calls_in_expr(rhs, env, remaining),
+        Expression::Unary { rhs, .. } => trace_function_calls_in_expr(rhs, remaining),
         Expression::If {
             branches,
             else_branch,
         } => {
             let mut found = 0usize;
             for (cond, value) in branches {
-                found += trace_function_calls_in_expr(cond, env, remaining);
+                found += trace_function_calls_in_expr(cond, remaining);
                 if *remaining == 0 {
                     return found;
                 }
-                found += trace_function_calls_in_expr(value, env, remaining);
+                found += trace_function_calls_in_expr(value, remaining);
                 if *remaining == 0 {
                     return found;
                 }
             }
-            found + trace_function_calls_in_expr(else_branch, env, remaining)
+            found + trace_function_calls_in_expr(else_branch, remaining)
         }
         Expression::Array { elements, .. } | Expression::Tuple { elements } => {
             let mut found = 0usize;
             for elem in elements {
-                found += trace_function_calls_in_expr(elem, env, remaining);
+                found += trace_function_calls_in_expr(elem, remaining);
                 if *remaining == 0 {
                     break;
                 }
             }
             found
         }
-        Expression::Index { base, .. } => trace_function_calls_in_expr(base, env, remaining),
+        Expression::Index { base, .. } => trace_function_calls_in_expr(base, remaining),
         _ => 0,
     }
 }
 
-pub(super) fn trace_function_eval_diagnostics(
-    dae: &Dae,
-    env: &eval::VarEnv<f64>,
-    residuals: &[ResidualDiagnostic],
-) {
+fn trace_function_eval_diagnostics(dae: &Dae, residuals: &[ResidualDiagnostic]) {
     if !jacobian_failure_introspection_enabled() {
         return;
     }
@@ -512,7 +436,7 @@ pub(super) fn trace_function_eval_diagnostics(
             "[sim-introspect] function-eval equation f_x[{}] origin='{}' abs_residual={}",
             row.eq_idx, row.origin, row.abs
         );
-        let found = trace_function_calls_in_expr(&eq.rhs, env, &mut remaining);
+        let found = trace_function_calls_in_expr(&eq.rhs, &mut remaining);
         if found == 0 {
             eprintln!(
                 "[sim-introspect]   no function calls found in f_x[{}]",
@@ -522,7 +446,8 @@ pub(super) fn trace_function_eval_diagnostics(
     }
 }
 
-pub(super) fn trace_jacobian_failure_diagnostics(
+fn trace_jacobian_failure_diagnostics(
+    compiled_runtime: &problem::CompiledRuntimeNewtonContext,
     dae: &Dae,
     y: &[f64],
     t: f64,
@@ -533,37 +458,13 @@ pub(super) fn trace_jacobian_failure_diagnostics(
         return;
     }
 
+    let JacobianFailureSummary {
+        row_norms,
+        col_norms,
+        jac_preview,
+    } = collect_jacobian_failure_summary(compiled_runtime, y, param_values, t);
     let n_total = y.len();
-    let n_x: usize = dae.states.values().map(|v| v.size()).sum();
-    let mut row_norms = vec![0.0_f64; n_total];
-    let mut col_norms = vec![0.0_f64; n_total];
-    let preview_n = n_total.min(8);
-    let mut jac_preview = vec![vec![0.0_f64; preview_n]; preview_n];
-    let mut v = vec![0.0_f64; n_total];
-    let mut jv = vec![0.0_f64; n_total];
-
-    for col in 0..n_total {
-        v[col] = 1.0;
-        crate::with_diffsol::problem::eval_jacobian_vector_ad(
-            dae,
-            y,
-            param_values,
-            t,
-            &v,
-            &mut jv,
-            n_x,
-        );
-        v[col] = 0.0;
-        col_norms[col] = jv.iter().fold(0.0_f64, |acc, value| acc.max(value.abs()));
-        if col < preview_n {
-            for row in 0..preview_n {
-                jac_preview[row][col] = jv[row];
-            }
-        }
-        for (row, val) in jv.iter().copied().enumerate() {
-            row_norms[row] = row_norms[row].max(val.abs());
-        }
-    }
+    let preview_n = jac_preview.len();
 
     let near_zero_rows: Vec<usize> = row_norms
         .iter()
@@ -652,12 +553,22 @@ pub(super) fn record_outputs_until(
 }
 
 pub(super) fn initialize_output_capture(
+    dae: &Dae,
     opts: &SimOptions,
     n_total: usize,
     y0: &[f64],
 ) -> (Vec<f64>, usize, OutputBuffers, usize) {
     let dt = opts.dt.unwrap_or(opts.t_end / 500.0);
-    let t_out_list = build_output_times(opts.t_start, opts.t_end, dt);
+    let coarse_times = build_output_times(opts.t_start, opts.t_end, dt);
+    let event_times =
+        crate::timeline::collect_runtime_schedule_events(dae, opts.t_start, opts.t_end);
+    // MLS §16.5.1 / Appendix B: stateful clocked and scheduled event updates
+    // are observable at event instants, not only on the coarse output grid.
+    let t_out_list = crate::timeline::merge_output_times_with_event_observations(
+        &coarse_times,
+        &event_times,
+        opts.t_end,
+    );
     let out_len = t_out_list.len();
     let mut buf = OutputBuffers::new(n_total, out_len);
     buf.record(opts.t_start, y0);
@@ -819,14 +730,17 @@ where
     }
 }
 
-pub(super) struct SolverLoopContext {
-    pub(crate) dae: Dae,
-    pub(crate) opts: SimOptions,
-    pub(crate) startup_profile: SolverStartupProfile,
-    pub(crate) n_x: usize,
-    pub(crate) param_values: Vec<f64>,
-    pub(crate) discrete_event_ctx: Option<CompiledDiscreteEventContext>,
-    pub(crate) budget: TimeoutBudget,
+pub(super) struct SolverLoopContext<'a> {
+    pub(super) dae: &'a Dae,
+    pub(super) elim: eliminate::EliminationResult,
+    pub(super) opts: &'a SimOptions,
+    pub(super) startup_profile: SolverStartupProfile,
+    pub(super) n_x: usize,
+    pub(super) param_values: Vec<f64>,
+    pub(super) compiled_runtime: problem::CompiledRuntimeNewtonContext,
+    pub(super) compiled_synthetic_root: problem::CompiledSyntheticRootContext,
+    pub(super) discrete_event_ctx: Option<CompiledDiscreteEventContext>,
+    pub(super) budget: &'a TimeoutBudget,
 }
 
 #[derive(Debug)]
@@ -850,11 +764,30 @@ pub(crate) fn event_restart_time(opts: &SimOptions, t_event: f64) -> f64 {
 
 const SYNTHETIC_ROOT_RESTART_RECHECK_LIMIT: usize = 32;
 
-fn synthetic_root_restart_clearance(atol: f64) -> f64 {
-    atol.abs().clamp(1.0e-6, 1.0e-4)
+fn synthetic_root_restart_clearance(dae: &Dae, opts: &SimOptions) -> f64 {
+    let atol_clearance = opts.atol.abs().clamp(1.0e-6, 1.0e-4);
+    let dt_clearance = opts
+        .dt
+        .filter(|dt| dt.is_finite() && *dt > 0.0)
+        .map(|dt| (dt * 1.0e-2).clamp(1.0e-6, 1.0e-3))
+        .unwrap_or(1.0e-6);
+    let clock_interval_clearance = dae
+        .clock_intervals
+        .values()
+        .copied()
+        .filter(|interval| interval.is_finite() && *interval > 0.0)
+        // Scheduled-clock models can keep the same synthetic root armed across
+        // the immediate right limit, so use the same order of clearance as the
+        // post-event restart floor to avoid dozens of rechecks on one surface.
+        .map(|interval| (interval * 1.0e-2).clamp(1.0e-6, 1.0e-3))
+        .fold(1.0e-6, f64::max);
+    atol_clearance
+        .max(dt_clearance)
+        .max(clock_interval_clearance)
 }
 
 fn next_restart_time_if_synthetic_roots_still_armed(
+    compiled_synthetic_root: &problem::CompiledSyntheticRootContext,
     dae: &Dae,
     y: &[f64],
     param_values: &[f64],
@@ -865,16 +798,24 @@ fn next_restart_time_if_synthetic_roots_still_armed(
     if dae.synthetic_root_conditions.is_empty() {
         return None;
     }
-    let env = build_env(dae, y, param_values, restart_t);
-    let clearance = synthetic_root_restart_clearance(atol);
-    let armed = dae.synthetic_root_conditions.iter().any(|condition| {
-        let root = rumoca_eval_dae::runtime::eval_condition_as_root(condition, &env);
-        root.is_finite() && root.abs() <= clearance
-    });
+    let clearance =
+        synthetic_root_restart_clearance(dae, opts).max(atol.abs().clamp(1.0e-6, 1.0e-4));
+    let armed = problem::compiled_synthetic_roots_still_armed(
+        compiled_synthetic_root,
+        y,
+        param_values,
+        restart_t,
+        clearance,
+    );
     if !armed {
         return None;
     }
-    let next_restart_t = event_restart_time(opts, restart_t);
+    // Synthetic roots are evaluated with a numeric clearance band, so when the
+    // same surface is still armed after projection we need to move by at least
+    // that clearance width instead of reusing the generic event epsilon. This
+    // avoids repeated right-limit reprojections on the same root surface.
+    let next_restart_t =
+        event_restart_time(opts, restart_t).max((restart_t + clearance).min(opts.t_end));
     (!time_match_with_tol(next_restart_t, restart_t)).then_some(next_restart_t)
 }
 
@@ -902,7 +843,28 @@ fn profile_startup_step_hint(opts: &SimOptions, profile: SolverStartupProfile) -
     }
 }
 
+fn event_restart_interval_floor(dae: &Dae, opts: &SimOptions) -> Option<f64> {
+    let dt_interval = opts
+        .dt
+        .filter(|dt| dt.is_finite() && *dt > 0.0)
+        .map(f64::abs);
+    let clock_interval = dae
+        .clock_intervals
+        .values()
+        .copied()
+        .filter(|dt| dt.is_finite() && *dt > 0.0)
+        .min_by(|lhs, rhs| lhs.total_cmp(rhs));
+    let interval = match (dt_interval, clock_interval) {
+        (Some(lhs), Some(rhs)) => Some(lhs.min(rhs)),
+        (Some(lhs), None) => Some(lhs),
+        (None, Some(rhs)) => Some(rhs),
+        (None, None) => None,
+    }?;
+    Some((interval * 1.0e-2).clamp(1.0e-6, 1.0e-2))
+}
+
 pub(super) fn event_restart_step_hint(
+    dae: &Dae,
     opts: &SimOptions,
     t: f64,
     profile: SolverStartupProfile,
@@ -927,6 +889,13 @@ pub(super) fn event_restart_step_hint(
     }
     if !time_match_with_tol(t, opts.t_start) {
         hint = (hint * 0.1).max(1.0e-10);
+        // MLS §16.5 synchronous clocks are scheduled events. Once we are on the
+        // right limit, restarting with a small fraction of the known interval
+        // keeps the solver on the post-event branch without collapsing every
+        // exact-clock restart back to the startup-sized step.
+        if let Some(interval_floor) = event_restart_interval_floor(dae, opts) {
+            hint = hint.max(interval_floor);
+        }
     }
     if hint.is_finite() && hint > 0.0 {
         Some(hint)
@@ -952,24 +921,25 @@ where
         solver_interpolate_to_vec::<Eqn, S>(
             solver,
             t_sample,
-            &ctx.budget,
+            ctx.budget,
             "interpolate(active stop recovery)",
         )
     })?;
     let projected = maybe_project_scheduled_event_state(
-        &ctx.dae,
+        ctx.dae,
         &y_at_stop,
         ctx.n_x,
         stop_t,
         ctx.opts.atol,
-        &ctx.budget,
+        ctx.budget,
     )?;
     overwrite_solver_state::<Eqn, S>(
         solver,
         SolverStateOverwriteInput {
-            opts: &ctx.opts,
+            dae: ctx.dae,
+            opts: ctx.opts,
             startup_profile: ctx.startup_profile,
-            dae: &ctx.dae,
+            compiled_runtime: &ctx.compiled_runtime,
             param_values: ctx.param_values.as_slice(),
             n_x: ctx.n_x,
             t: stop_t,
@@ -977,7 +947,7 @@ where
         },
     )?;
     refresh_pre_values_from_state(
-        &ctx.dae,
+        ctx.dae,
         solver.state().y.as_slice(),
         ctx.param_values.as_slice(),
         stop_t,
@@ -985,7 +955,7 @@ where
     set_solver_stop_time::<Eqn, S>(
         solver,
         ctx.opts.t_end,
-        &ctx.budget,
+        ctx.budget,
         "Reset stop time after active stop recovery",
     )
     .map_err(reset_stop_time_error)
@@ -1003,7 +973,7 @@ where
     S: OdeSolverMethod<'a, Eqn>,
 {
     let t_before = solver.state().t;
-    match solver_step_reason::<Eqn, S>(solver, &ctx.budget) {
+    match solver_step_reason::<Eqn, S>(solver, ctx.budget) {
         Ok(reason) => Ok(StepAdvance::Advanced(reason)),
         Err(SimError::SolverError(msg)) => {
             let current_t = solver.state().t;
@@ -1057,56 +1027,42 @@ pub(super) fn apply_event_updates_at_time<'a, Eqn, S>(
     solver: &mut S,
     t_event: f64,
     ctx: &SolverLoopContext,
-) -> Result<(), SimError>
+) -> Result<EventObservationResult, SimError>
 where
     Eqn: OdeEquations<T = f64> + 'a,
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'a, Eqn>,
 {
-    let current_t = solver.state().t;
-    let current_y = solver.state().y.as_slice().to_vec();
-    let mut y_at_event =
-        sample_state_at_stop(current_t, t_event, current_y.as_slice(), |t_sample| {
-            solver_interpolate_to_vec::<Eqn, S>(
-                solver,
-                t_sample,
-                &ctx.budget,
-                "interpolate(event update)",
-            )
-        })?;
+    let mut y_at_event = sample_event_state::<Eqn, S>(solver, t_event, ctx)?;
     refresh_pre_values_from_state(
-        &ctx.dae,
+        ctx.dae,
         y_at_event.as_slice(),
         ctx.param_values.as_slice(),
         t_event,
     );
-    let mut restart_t = event_restart_time(&ctx.opts, t_event);
-    let event_env = settle_runtime_event_updates(
-        &ctx.dae,
-        y_at_event.as_mut_slice(),
+    let mut restart_t = event_restart_time(ctx.opts, t_event);
+    let use_frozen_pre = runtime_event_uses_frozen_pre_values(
+        ctx.dae,
+        ctx.opts,
+        y_at_event.as_slice(),
         ctx.param_values.as_slice(),
-        ctx.n_x,
         t_event,
-        ctx.discrete_event_ctx.as_ref(),
     );
+    let mut event_env = settle_event_runtime_env(ctx, &mut y_at_event, t_event, use_frozen_pre);
     eval::seed_pre_values_from_env(&event_env);
-    let mut projected = maybe_project_scheduled_event_state(
-        &ctx.dae,
-        y_at_event.as_slice(),
-        ctx.n_x,
-        restart_t,
-        ctx.opts.atol,
-        &ctx.budget,
-    )?;
+    let event_observation_state =
+        project_event_state_with_seed_env(ctx, &y_at_event, t_event, &event_env)?;
+    let mut projected = project_event_state_with_seed_env(ctx, &y_at_event, restart_t, &event_env)?;
     // SPEC_0022 SIM-001/SIM-008 (MLS App B): event updates must settle before
     // continuous integration resumes, so keep nudging the right-limit restart
     // if a synthetic root is still numerically on the zero surface.
     for _ in 0..SYNTHETIC_ROOT_RESTART_RECHECK_LIMIT {
         let Some(next_restart_t) = next_restart_time_if_synthetic_roots_still_armed(
-            &ctx.dae,
+            &ctx.compiled_synthetic_root,
+            ctx.dae,
             projected.as_slice(),
             ctx.param_values.as_slice(),
-            &ctx.opts,
+            ctx.opts,
             restart_t,
             ctx.opts.atol,
         ) else {
@@ -1119,36 +1075,141 @@ where
             );
         }
         restart_t = next_restart_t;
-        projected = maybe_project_scheduled_event_state(
-            &ctx.dae,
-            y_at_event.as_slice(),
-            ctx.n_x,
-            restart_t,
-            ctx.opts.atol,
-            &ctx.budget,
-        )?;
+        projected = project_event_state_with_seed_env(ctx, &y_at_event, restart_t, &event_env)?;
     }
+    let event_capture_env =
+        build_event_capture_env(ctx, &event_observation_state, t_event, &event_env);
     y_at_event = projected;
     overwrite_solver_state::<Eqn, S>(
         solver,
         SolverStateOverwriteInput {
-            opts: &ctx.opts,
+            dae: ctx.dae,
+            opts: ctx.opts,
             startup_profile: ctx.startup_profile,
-            dae: &ctx.dae,
+            compiled_runtime: &ctx.compiled_runtime,
             param_values: ctx.param_values.as_slice(),
             n_x: ctx.n_x,
             t: restart_t,
             y: y_at_event.as_slice(),
         },
     )?;
-    let final_env = build_env(
-        &ctx.dae,
-        y_at_event.as_slice(),
+    eval::refresh_env_solver_and_parameter_values(
+        &mut event_env,
+        ctx.dae,
+        solver.state().y.as_slice(),
         ctx.param_values.as_slice(),
         restart_t,
     );
-    eval::seed_pre_values_from_env(&final_env);
-    Ok(())
+    let _ = crate::runtime::alias::propagate_runtime_alias_components_from_env(
+        ctx.dae,
+        y_at_event.as_mut_slice(),
+        ctx.n_x,
+        &mut event_env,
+    );
+    eval::seed_pre_values_from_env(&event_env);
+    Ok(EventObservationResult {
+        state: event_observation_state,
+        runtime_env: event_capture_env,
+    })
+}
+
+fn sample_event_state<'a, Eqn, S>(
+    solver: &mut S,
+    t_event: f64,
+    ctx: &SolverLoopContext,
+) -> Result<Vec<f64>, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let current_t = solver.state().t;
+    let current_y = solver.state().y.as_slice().to_vec();
+    sample_state_at_stop(current_t, t_event, current_y.as_slice(), |t_sample| {
+        solver_interpolate_to_vec::<Eqn, S>(
+            solver,
+            t_sample,
+            ctx.budget,
+            "interpolate(event update)",
+        )
+    })
+}
+
+fn settle_event_runtime_env(
+    ctx: &SolverLoopContext,
+    y_at_event: &mut [f64],
+    t_event: f64,
+    use_frozen_pre: bool,
+) -> eval::VarEnv<f64> {
+    if use_frozen_pre {
+        // MLS §16.5.1: synchronous clock partitions use event-entry left-limit
+        // values for the full settle round on a tick. Pure time-threshold
+        // synthetic roots must do the same, or `pre(z)+...` counters will
+        // spuriously re-fire on every settle pass at one event instant.
+        settle_runtime_event_updates_frozen_pre(
+            ctx.dae,
+            y_at_event,
+            ctx.param_values.as_slice(),
+            ctx.n_x,
+            t_event,
+            ctx.discrete_event_ctx.as_ref(),
+        )
+    } else {
+        settle_runtime_event_updates(
+            ctx.dae,
+            y_at_event,
+            ctx.param_values.as_slice(),
+            ctx.n_x,
+            t_event,
+            ctx.discrete_event_ctx.as_ref(),
+        )
+    }
+}
+
+fn project_event_state_with_seed_env(
+    ctx: &SolverLoopContext,
+    y_at_event: &[f64],
+    t_eval: f64,
+    seed_env: &eval::VarEnv<f64>,
+) -> Result<Vec<f64>, SimError> {
+    // MLS §16.5.1 / Appendix B: event-row observations must expose the
+    // right-limit settled state at the event instant itself, not the later
+    // restart state used to resume continuous integration.
+    project_scheduled_event_state_with_seed_env(ScheduledEventProjectionInput {
+        dae: ctx.dae,
+        y_at_stop: y_at_event,
+        p: ctx.param_values.as_slice(),
+        n_x: ctx.n_x,
+        t_stop: t_eval,
+        atol: ctx.opts.atol,
+        budget: ctx.budget,
+        compiled_runtime: &ctx.compiled_runtime,
+        seed_env,
+    })
+}
+
+fn build_event_capture_env(
+    ctx: &SolverLoopContext,
+    event_observation_state: &[f64],
+    t_event: f64,
+    event_env: &eval::VarEnv<f64>,
+) -> eval::VarEnv<f64> {
+    let mut event_capture_env = event_env.clone();
+    let mut event_capture_state = event_observation_state.to_vec();
+    eval::refresh_env_solver_and_parameter_values(
+        &mut event_capture_env,
+        ctx.dae,
+        event_capture_state.as_slice(),
+        ctx.param_values.as_slice(),
+        t_event,
+    );
+    let _ = crate::runtime::alias::propagate_runtime_alias_components_from_env(
+        ctx.dae,
+        event_capture_state.as_mut_slice(),
+        ctx.n_x,
+        &mut event_capture_env,
+    );
+    event_capture_env
 }
 
 struct DiffsolBackend<'a, Eqn, S>
@@ -1159,7 +1220,7 @@ where
 {
     solver: S,
     output: IntegrationOutput,
-    ctx: SolverLoopContext,
+    ctx: SolverLoopContext<'a>,
     bdf_trace: Option<BdfTraceCtx>,
     bdf_last_log: OptionalTimer,
     steps: usize,
@@ -1167,6 +1228,7 @@ where
     stalled_output_steps: usize,
     last_output_idx: usize,
     runtime_capture: Option<RuntimeChannelCapture>,
+    dynamic_stop_hints: Option<RuntimeDynamicStopHints>,
     _phantom: std::marker::PhantomData<&'a Eqn>,
 }
 
@@ -1181,11 +1243,11 @@ where
     fn new(
         solver: S,
         mut output: IntegrationOutput,
-        ctx: SolverLoopContext,
+        ctx: SolverLoopContext<'a>,
         bdf_trace: Option<BdfTraceCtx>,
         solver_names: Vec<String>,
-    ) -> Self {
-        let runtime_names = runtime_capture_target_names(&ctx.dae, &solver_names);
+    ) -> Result<Self, SimError> {
+        let runtime_names = runtime_capture_target_names(ctx.dae, &solver_names);
         if !runtime_names.is_empty() {
             output
                 .buf
@@ -1199,11 +1261,20 @@ where
                 .enumerate()
                 .map(|(idx, name)| (name.clone(), idx))
                 .collect();
+            let settle_ctx = build_runtime_discrete_capture_context(
+                ctx.dae,
+                &ctx.elim,
+                solver_names.len(),
+                ctx.n_x,
+                runtime_names.as_slice(),
+            );
             Some(RuntimeChannelCapture {
                 names: runtime_names,
                 solver_name_to_idx,
+                settle_ctx,
             })
         };
+        let dynamic_stop_hints = RuntimeDynamicStopHints::from_dae(ctx.dae);
         let last_output_idx = output.t_out_idx;
         let mut backend = Self {
             solver,
@@ -1216,12 +1287,13 @@ where
             stalled_output_steps: 0,
             last_output_idx,
             runtime_capture,
+            dynamic_stop_hints,
             _phantom: std::marker::PhantomData,
         };
         let t0 = backend.solver.state().t;
         let y0 = backend.solver.state().y.as_slice().to_vec();
-        backend.record_runtime_sample(t0, y0.as_slice(), RuntimeSampleMode::Initialization);
-        backend
+        backend.record_runtime_sample(t0, y0.as_slice(), RuntimeSampleMode::Initialization)?;
+        Ok(backend)
     }
 
     fn into_parts(self) -> (S, IntegrationOutput, usize, usize) {
@@ -1244,7 +1316,7 @@ where
         }
         let output_idx_before = self.output.t_out_idx;
         self.output
-            .record_until::<Eqn, S>(&self.solver, t_limit, &self.ctx.budget)?;
+            .record_until::<Eqn, S>(&self.solver, t_limit, self.ctx.budget)?;
         let output_idx_after = self.output.t_out_idx;
         let new_samples = output_idx_after.saturating_sub(output_idx_before);
         if new_samples > 0 {
@@ -1262,7 +1334,7 @@ where
                     t_sample,
                     sample_state.as_slice(),
                     RuntimeSampleMode::Regular,
-                );
+                )?;
             }
         }
         if self.output.t_out_idx == self.last_output_idx {
@@ -1287,26 +1359,44 @@ where
         t_sample: f64,
         sample_state: &[f64],
         mode: RuntimeSampleMode,
-    ) -> Option<Vec<f64>> {
-        let capture = self.runtime_capture.as_ref()?;
+    ) -> Result<Option<Vec<f64>>, SimError> {
+        let Some(capture) = self.runtime_capture.as_ref() else {
+            return Ok(None);
+        };
         let mut y = sample_state.to_vec();
         let env = match mode {
             RuntimeSampleMode::Initialization => {
                 // Keep startup channels consistent with initialized solver state.
-                build_env(
-                    &self.ctx.dae,
-                    y.as_slice(),
+                crate::runtime::startup::build_initial_section_env_strict(
+                    self.ctx.dae,
+                    y.as_mut_slice(),
                     self.ctx.param_values.as_slice(),
                     t_sample,
                 )
+                .map_err(SimError::CompiledEval)?
             }
-            RuntimeSampleMode::Regular => settle_runtime_discrete_capture_env(
-                &self.ctx.dae,
-                y.as_mut_slice(),
-                self.ctx.param_values.as_slice(),
-                self.ctx.n_x,
-                t_sample,
-            ),
+            RuntimeSampleMode::Regular => {
+                if runtime_event_matches_schedule(self.ctx.dae, self.ctx.opts, t_sample) {
+                    let mut env = crate::runtime::event::build_runtime_env(
+                        self.ctx.dae,
+                        y.as_mut_slice(),
+                        self.ctx.param_values.as_slice(),
+                        t_sample,
+                    );
+                    seed_capture_pre_values(&mut env, &capture.names);
+                    env
+                } else {
+                    settle_runtime_discrete_capture_env_with_context(
+                        self.ctx.dae,
+                        &self.ctx.elim,
+                        y.as_mut_slice(),
+                        self.ctx.param_values.as_slice(),
+                        self.ctx.n_x,
+                        t_sample,
+                        &capture.settle_ctx,
+                    )
+                }
+            }
         };
         let values: Vec<f64> = capture
             .names
@@ -1324,7 +1414,7 @@ where
                     .unwrap_or(0.0)
             })
             .collect();
-        Some(values)
+        Ok(Some(values))
     }
 
     fn record_runtime_sample(
@@ -1332,25 +1422,13 @@ where
         t_sample: f64,
         sample_state: &[f64],
         mode: RuntimeSampleMode,
-    ) {
-        let Some(values) = self.evaluate_runtime_sample_values(t_sample, sample_state, mode) else {
-            return;
+    ) -> Result<(), SimError> {
+        let Some(values) = self.evaluate_runtime_sample_values(t_sample, sample_state, mode)?
+        else {
+            return Ok(());
         };
         self.output.buf.record_runtime_values(values.as_slice());
-    }
-
-    fn overwrite_runtime_sample_at_time(
-        &mut self,
-        t_sample: f64,
-        sample_state: &[f64],
-        mode: RuntimeSampleMode,
-    ) {
-        let Some(values) = self.evaluate_runtime_sample_values(t_sample, sample_state, mode) else {
-            return;
-        };
-        self.output
-            .buf
-            .overwrite_runtime_values_at_time(t_sample, values.as_slice());
+        Ok(())
     }
 }
 
@@ -1372,7 +1450,7 @@ where
         }
         if let Some(trace_ctx) = self.bdf_trace {
             check_budget_or_trace_timeout(
-                &self.ctx.budget,
+                self.ctx.budget,
                 trace_ctx,
                 self.steps,
                 self.root_hits,
@@ -1383,15 +1461,34 @@ where
         } else {
             self.ctx.budget.check()?;
         }
+        let current_t = self.solver.state().t;
+        let mut effective_stop = stop_time;
+        if let Some(hints) = self.dynamic_stop_hints.as_ref()
+            && let Some(dynamic_stop) = next_dynamic_runtime_stop_time(
+                &RuntimeDynamicStopInput {
+                    dae: self.ctx.dae,
+                    elim: &self.ctx.elim,
+                    p: self.ctx.param_values.as_slice(),
+                    n_x: self.ctx.n_x,
+                    hints,
+                },
+                self.solver.state().y.as_slice(),
+                current_t,
+                stop_time,
+            )
+        {
+            effective_stop = dynamic_stop;
+        }
+
         set_solver_stop_time::<Eqn, S>(
             &mut self.solver,
-            stop_time,
-            &self.ctx.budget,
+            effective_stop,
+            self.ctx.budget,
             "Reset stop time",
         )
         .map_err(reset_stop_time_error)?;
 
-        let active_stop_at_step = stop_time;
+        let active_stop_at_step = effective_stop;
         let reason = loop {
             let maybe_trace_ctx = self.bdf_trace;
             let steps = self.steps;
@@ -1412,7 +1509,8 @@ where
                         msg,
                     );
                     trace_step_failure_diagnostics(
-                        &self.ctx.dae,
+                        self.ctx.dae,
+                        &self.ctx.compiled_runtime,
                         y,
                         current_t,
                         self.ctx.param_values.as_slice(),
@@ -1445,15 +1543,18 @@ where
     }
 
     fn apply_event_updates(&mut self, event_time: f64) -> Result<(), Self::Error> {
-        apply_event_updates_at_time::<Eqn, S>(&mut self.solver, event_time, &self.ctx)?;
-        // Event updates happen after step output capture; rewrite the event-row
-        // runtime channels with post-event settled values to match right-limit semantics.
-        let post_event_state = self.solver.state().y.as_slice().to_vec();
-        self.overwrite_runtime_sample_at_time(
-            event_time,
-            post_event_state.as_slice(),
-            RuntimeSampleMode::Regular,
-        );
+        let event_observation =
+            apply_event_updates_at_time::<Eqn, S>(&mut self.solver, event_time, &self.ctx)?;
+        if let Some(capture) = self.runtime_capture.as_ref() {
+            let values: Vec<f64> = capture
+                .names
+                .iter()
+                .map(|name| observed_runtime_sample_value(capture, &event_observation, name))
+                .collect();
+            self.output
+                .buf
+                .overwrite_runtime_values_at_time(event_time, values.as_slice());
+        }
         Ok(())
     }
 }
@@ -1474,117 +1575,122 @@ where
     Ok(())
 }
 pub(super) fn try_integrate(
-    dae: &Dae,
-    opts: &SimOptions,
+    input: &IntegrationRunInput<'_>,
     eps: f64,
-    n_total: usize,
-    mass_matrix: &MassMatrix,
     startup_profile: SolverStartupProfile,
-    budget: &TimeoutBudget,
 ) -> Result<(OutputBuffers, Vec<f64>), SimError> {
     let trace_ctx = bdf_trace_ctx(sim_trace_enabled(), eps, startup_profile);
-    budget.check()?;
-    let mut problem = problem::build_problem(dae, opts.rtol, opts.atol, eps, mass_matrix)?;
-    configure_solver_problem_with_profile(&mut problem, opts, startup_profile);
+    input.budget.check()?;
+    let mut problem = problem::build_problem_with_params(
+        input.dae,
+        input.opts.rtol,
+        input.opts.atol,
+        eps,
+        input.mass_matrix,
+        input.param_values,
+    )?;
+    configure_solver_problem_with_profile(&mut problem, input.opts, startup_profile);
     let mut solver = problem
         .bdf::<LS>()
         .map_err(|e| SimError::SolverError(format!("Failed to create BDF solver: {e}")))?;
-    trace_bdf_start(trace_ctx, problem.h0, opts.max_wall_seconds);
-    let n_x = problem::count_states(dae);
-    let param_values = build_parameter_values(dae, budget)?;
+    trace_bdf_start(trace_ctx, problem.h0, input.opts.max_wall_seconds);
+    let n_x = problem::count_states(input.dae);
+    let compiled_runtime =
+        problem::build_compiled_runtime_newton_context(input.dae, input.n_total)?;
+    let compiled_synthetic_root =
+        problem::build_compiled_synthetic_root_context(input.dae, input.n_total)?;
     apply_initial_sections_and_sync_startup_state(
         &mut solver,
-        dae,
-        opts,
-        startup_profile,
-        &param_values,
-        n_x,
-        budget,
+        StartupSyncInput {
+            dae: input.dae,
+            opts: input.opts,
+            startup_profile,
+            compiled_runtime: &compiled_runtime,
+            param_values: input.param_values,
+            n_x,
+            budget: input.budget,
+        },
     )?;
-    let mut solver_names = build_output_names(dae);
-    solver_names.truncate(n_total);
-    let output = IntegrationOutput::new(opts, n_total, solver.state().y.as_slice());
-    let compiled_discrete_event_ctx = build_compiled_discrete_event_context(dae, n_total)?;
+    let mut solver_names = build_output_names(input.dae);
+    solver_names.truncate(input.n_total);
+    let output = IntegrationOutput::new(
+        input.dae,
+        input.opts,
+        input.n_total,
+        solver.state().y.as_slice(),
+    );
+    let compiled_discrete_event_ctx =
+        build_compiled_discrete_event_context(input.dae, input.n_total)?;
 
     let ctx = SolverLoopContext {
-        dae: dae.clone(),
-        opts: opts.clone(),
+        dae: input.dae,
+        elim: input.elim.clone(),
+        opts: input.opts,
         startup_profile,
         n_x,
-        param_values: param_values.clone(),
+        param_values: input.param_values.to_vec(),
+        compiled_runtime,
+        compiled_synthetic_root,
         discrete_event_ctx: compiled_discrete_event_ctx,
-        budget: *budget,
+        budget: input.budget,
     };
     let output = {
         let mut backend =
-            DiffsolBackend::new(solver, output, ctx, Some(trace_ctx), solver_names.clone());
-        let stats =
-            crate::run_with_runtime_schedule(&mut backend, dae, opts.t_start, opts.t_end, || {
-                budget.check().map_err(SimError::from)
-            })?;
+            DiffsolBackend::new(solver, output, ctx, Some(trace_ctx), solver_names.clone())?;
+        let stats = crate::run_with_runtime_schedule(
+            &mut backend,
+            input.dae,
+            input.opts.t_start,
+            input.opts.t_end,
+            || input.budget.check().map_err(SimError::from),
+        )?;
         let final_t = crate::SimulationBackend::read_state(&backend).t;
         trace_bdf_done(trace_ctx, stats.steps, stats.root_hits, final_t);
         let (_solver, output, _steps, _roots) = backend.into_parts();
         output
     };
-
-    Ok((output.buf, param_values))
+    Ok((output.buf, input.param_values.to_vec()))
 }
 pub(super) fn try_integrate_tr_bdf2(
-    dae: &Dae,
-    opts: &SimOptions,
+    input: &IntegrationRunInput<'_>,
     eps: f64,
-    n_total: usize,
-    mass_matrix: &MassMatrix,
     startup_profile: SolverStartupProfile,
-    budget: &TimeoutBudget,
 ) -> Result<(OutputBuffers, Vec<f64>), SimError> {
     let trace_enabled = sim_trace_enabled();
     let start = trace_timer_start_if(trace_enabled);
-    budget.check()?;
-    let mut problem = problem::build_problem(dae, opts.rtol, opts.atol, eps, mass_matrix)?;
-    configure_solver_problem_with_profile(&mut problem, opts, startup_profile);
+    input.budget.check()?;
+    let mut problem = problem::build_problem_with_params(
+        input.dae,
+        input.opts.rtol,
+        input.opts.atol,
+        eps,
+        input.mass_matrix,
+        input.param_values,
+    )?;
+    configure_solver_problem_with_profile(&mut problem, input.opts, startup_profile);
     if trace_enabled {
         eprintln!(
             "[sim-trace] TR-BDF2 start eps={} profile={:?} h0={} max_wall={:?}",
-            eps, startup_profile, problem.h0, opts.max_wall_seconds
+            eps, startup_profile, problem.h0, input.opts.max_wall_seconds
         );
     }
     let mut solver = problem
         .tr_bdf2::<LS>()
         .map_err(|e| SimError::SolverError(format!("Failed to create TR-BDF2 solver: {e}")))?;
-    let n_x = problem::count_states(dae);
-    let param_values = build_parameter_values(dae, budget)?;
-    apply_initial_sections_and_sync_startup_state(
-        &mut solver,
-        dae,
-        opts,
-        startup_profile,
-        &param_values,
-        n_x,
-        budget,
-    )?;
-    let mut solver_names = build_output_names(dae);
-    solver_names.truncate(n_total);
-    let output = IntegrationOutput::new(opts, n_total, solver.state().y.as_slice());
-    let compiled_discrete_event_ctx = build_compiled_discrete_event_context(dae, n_total)?;
-    let ctx = SolverLoopContext {
-        dae: dae.clone(),
-        opts: opts.clone(),
-        startup_profile,
-        n_x,
-        param_values: param_values.clone(),
-        discrete_event_ctx: compiled_discrete_event_ctx,
-        budget: *budget,
-    };
+    let PreparedIntegrationLoop {
+        param_values,
+        output,
+        ctx,
+        solver_names,
+    } = prepare_integration_loop(&mut solver, input, startup_profile)?;
     let (output, stats, final_t) = {
-        let mut backend = DiffsolBackend::new(solver, output, ctx, None, solver_names.clone());
+        let mut backend = DiffsolBackend::new(solver, output, ctx, None, solver_names.clone())?;
         let stats = match crate::run_with_runtime_schedule(
             &mut backend,
-            dae,
-            opts.t_start,
-            opts.t_end,
-            || budget.check().map_err(SimError::from),
+            input.dae,
+            input.opts.t_start,
+            input.opts.t_end,
+            || input.budget.check().map_err(SimError::from),
         ) {
             Ok(stats) => stats,
             Err(err) => {
@@ -1620,6 +1726,74 @@ pub(super) fn try_integrate_tr_bdf2(
     Ok((output.buf, param_values))
 }
 
+pub(super) struct PreparedIntegrationLoop<'a> {
+    pub(super) param_values: Vec<f64>,
+    pub(super) output: IntegrationOutput,
+    pub(super) ctx: SolverLoopContext<'a>,
+    pub(super) solver_names: Vec<String>,
+}
+
+pub(super) fn prepare_integration_loop<'a, Eqn, S>(
+    solver: &mut S,
+    input: &IntegrationRunInput<'a>,
+    startup_profile: SolverStartupProfile,
+) -> Result<PreparedIntegrationLoop<'a>, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let n_x = problem::count_states(input.dae);
+    let compiled_runtime =
+        problem::build_compiled_runtime_newton_context(input.dae, input.n_total)?;
+    let compiled_synthetic_root =
+        problem::build_compiled_synthetic_root_context(input.dae, input.n_total)?;
+    apply_initial_sections_and_sync_startup_state(
+        solver,
+        StartupSyncInput {
+            dae: input.dae,
+            opts: input.opts,
+            startup_profile,
+            compiled_runtime: &compiled_runtime,
+            param_values: input.param_values,
+            n_x,
+            budget: input.budget,
+        },
+    )?;
+    let solver_names = truncated_solver_names(input.dae, input.n_total);
+    let output = IntegrationOutput::new(
+        input.dae,
+        input.opts,
+        input.n_total,
+        solver.state().y.as_slice(),
+    );
+    let discrete_event_ctx = build_compiled_discrete_event_context(input.dae, input.n_total)?;
+    let ctx = SolverLoopContext {
+        dae: input.dae,
+        elim: input.elim.clone(),
+        opts: input.opts,
+        startup_profile,
+        n_x,
+        param_values: input.param_values.to_vec(),
+        compiled_runtime,
+        compiled_synthetic_root,
+        discrete_event_ctx,
+        budget: input.budget,
+    };
+    Ok(PreparedIntegrationLoop {
+        param_values: input.param_values.to_vec(),
+        output,
+        ctx,
+        solver_names,
+    })
+}
+
+fn truncated_solver_names(dae: &Dae, n_total: usize) -> Vec<String> {
+    let mut solver_names = build_output_names(dae);
+    solver_names.truncate(n_total);
+    solver_names
+}
+
 mod solver_state;
 pub(super) use solver_state::{
     SolverStateOverwriteInput, interpolate_output_state, overwrite_solver_state,
@@ -1631,9 +1805,13 @@ pub(crate) use esdirk34::try_integrate_esdirk34;
 
 mod event_settle;
 pub(crate) use event_settle::settle_runtime_event_updates;
-use event_settle::{CompiledDiscreteEventContext, maybe_project_scheduled_event_state};
-pub(crate) use event_settle::{
-    apply_initial_sections_and_sync_startup_state, build_compiled_discrete_event_context,
+pub(super) use event_settle::{
+    CompiledDiscreteEventContext, StartupSyncInput, apply_initial_sections_and_sync_startup_state,
+    build_compiled_discrete_event_context, settle_runtime_event_updates_frozen_pre,
+};
+use event_settle::{
+    ScheduledEventProjectionInput, maybe_project_scheduled_event_state,
+    project_scheduled_event_state_with_seed_env,
 };
 
 mod fallback;
@@ -1643,61 +1821,4 @@ pub(crate) use fallback::{
 };
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use rumoca_ir_dae as ir_dae;
-
-    fn time_lt_expr(rhs: f64) -> ir_dae::Expression {
-        ir_dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Lt(Default::default()),
-            lhs: Box::new(ir_dae::Expression::VarRef {
-                name: ir_dae::VarName::new("time"),
-                subscripts: Vec::new(),
-            }),
-            rhs: Box::new(ir_dae::Expression::Literal(ir_dae::Literal::Real(rhs))),
-        }
-    }
-
-    #[test]
-    fn next_restart_time_if_synthetic_roots_still_armed_advances_time_root_surface() {
-        let mut dae = Dae::new();
-        dae.synthetic_root_conditions.push(time_lt_expr(1.0e-6));
-        let opts = SimOptions::default();
-        let restart_t = event_restart_time(&opts, 0.0);
-        let next_restart_t = next_restart_time_if_synthetic_roots_still_armed(
-            &dae,
-            &[],
-            &[],
-            &opts,
-            restart_t,
-            opts.atol,
-        )
-        .expect("restart should advance when synthetic root remains armed");
-        assert!(
-            next_restart_t > restart_t,
-            "expected restart time to advance beyond the synthetic root surface, got restart_t={} next_restart_t={}",
-            restart_t,
-            next_restart_t
-        );
-    }
-
-    #[test]
-    fn next_restart_time_if_synthetic_roots_still_armed_keeps_cleared_root() {
-        let mut dae = Dae::new();
-        dae.synthetic_root_conditions.push(time_lt_expr(-1.0));
-        let opts = SimOptions::default();
-        let restart_t = event_restart_time(&opts, 0.0);
-        assert!(
-            next_restart_time_if_synthetic_roots_still_armed(
-                &dae,
-                &[],
-                &[],
-                &opts,
-                restart_t,
-                opts.atol
-            )
-            .is_none(),
-            "restart time should stay put when synthetic roots are already cleared"
-        );
-    }
-}
+mod tests;

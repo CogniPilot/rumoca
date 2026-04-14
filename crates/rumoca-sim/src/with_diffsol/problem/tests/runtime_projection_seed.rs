@@ -1,4 +1,5 @@
 use super::*;
+use crate::with_diffsol::problem::init::project_algebraics_with_fixed_states_at_time_with_context;
 
 #[test]
 fn test_project_runtime_seeds_direct_assignments_before_newton() {
@@ -189,6 +190,8 @@ fn test_runtime_projection_handles_hidden_step_source_intermediate_target() {
     assert!((projected[2] - 24.0).abs() < 1e-9);
     assert!((projected[3] - 24.0).abs() < 1e-9);
 }
+
+pub(super) mod reduced_solver;
 
 #[test]
 fn test_runtime_projection_ignores_fixed_differential_rows() {
@@ -1449,6 +1452,84 @@ fn test_discrete_if_residual_direct_shape_updates_active_branch_target() {
 }
 
 #[test]
+fn test_runtime_projection_settles_discrete_branch_before_runtime_newton() {
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.algebraics
+        .insert(VarName::new("s"), Variable::new(VarName::new("s")));
+    dae.algebraics
+        .insert(VarName::new("v"), Variable::new(VarName::new("v")));
+    dae.discrete_valued
+        .insert(VarName::new("off"), Variable::new(VarName::new("off")));
+
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args: vec![var("x")],
+        },
+        lit(0.0),
+    )));
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Add(Default::default()),
+        var("s"),
+        lit(9.0),
+    )));
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("v"),
+        var("s"),
+    )));
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("v"),
+        Expression::If {
+            branches: vec![(var("off"), var("s"))],
+            else_branch: Box::new(lit(10.0)),
+        },
+    )));
+    dae.f_m.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("off"),
+        binop(OpBinary::Lt(Default::default()), var("s"), lit(0.0)),
+    )));
+
+    rumoca_eval_dae::runtime::clear_pre_values();
+    let mut pre_env = build_env(&dae, &[0.0, -9.0, -9.0], &[], 0.0);
+    pre_env.set("off", 0.0);
+    rumoca_eval_dae::runtime::seed_pre_values_from_env(&pre_env);
+
+    let mut runtime_seed_env = Some(pre_env);
+    let timeout = crate::TimeoutBudget::new(None);
+    let projected = project_algebraics_with_fixed_states_at_time_with_context(
+        &dae,
+        &[0.0, -9.0, -9.0],
+        1,
+        RuntimeProjectionContext {
+            p: &[],
+            compiled_runtime: None,
+            fixed_cols: &[true, false, false, false],
+            ignored_rows: &[true, false, false, false],
+            branch_local_analog_cols: &[],
+            direct_seed_ctx: None,
+            direct_seed_env_cache: Some(&mut runtime_seed_env),
+        },
+        0.0,
+        1.0e-9,
+        &timeout,
+    )
+    .expect("runtime projection should not error")
+    .expect("runtime projection should converge with settled discrete branch");
+
+    // MLS §8.6: runtime projection at ordinary events must re-evaluate normal
+    // equations against the updated discrete fixed point, not a stale pre(off).
+    assert!((projected[1] + 9.0).abs() < 1.0e-12);
+    assert!((projected[2] + 9.0).abs() < 1.0e-12);
+    rumoca_eval_dae::runtime::clear_pre_values();
+}
+
+#[test]
 fn test_seed_runtime_direct_assignments_accepts_time_source() {
     let mut dae = Dae::new();
     dae.algebraics
@@ -1463,6 +1544,131 @@ fn test_seed_runtime_direct_assignments_accepts_time_source() {
     let updates = seed_runtime_direct_assignments(&dae, &mut y, &[], 0, 0.6);
     assert!(updates > 0, "runtime seeding should update u from time");
     assert!((y[0] - 0.6).abs() < 1.0e-12);
+}
+
+#[test]
+fn test_runtime_direct_seed_keeps_time_driven_branch_candidate() {
+    let mut dae = Dae::new();
+    dae.algebraics
+        .insert(VarName::new("u"), Variable::new(VarName::new("u")));
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("u"),
+        Expression::If {
+            branches: vec![(
+                binop(OpBinary::Lt(Default::default()), var("time"), lit(0.5)),
+                lit(1.0),
+            )],
+            else_branch: Box::new(lit(2.0)),
+        },
+    )));
+
+    let ctx = build_runtime_direct_seed_context(&dae, 1, 0);
+    let mut y = vec![0.0];
+    let updates = seed_runtime_direct_assignment_values_with_context(&ctx, &dae, &mut y, &[], 1.0);
+
+    assert!(
+        updates > 0,
+        "time-driven branch should still be direct-seeded"
+    );
+    assert!(
+        (y[0] - 2.0).abs() < 1.0e-12,
+        "expected seeded branch value 2.0, got {}",
+        y[0]
+    );
+}
+
+#[test]
+fn test_runtime_direct_seed_skips_solver_dependent_branch_candidate() {
+    let mut dae = Dae::new();
+    dae.algebraics
+        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
+    dae.algebraics
+        .insert(VarName::new("b"), Variable::new(VarName::new("b")));
+
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("a"),
+        lit(1.0),
+    )));
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("b"),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::NoEvent,
+            args: vec![Expression::If {
+                branches: vec![(
+                    binop(OpBinary::Gt(Default::default()), var("a"), lit(0.0)),
+                    lit(2.0),
+                )],
+                else_branch: Box::new(lit(-2.0)),
+            }],
+        },
+    )));
+
+    let ctx = build_runtime_direct_seed_context(&dae, 2, 0);
+    let mut y = vec![0.0, 99.0];
+    let updates = seed_runtime_direct_assignment_values_with_context(&ctx, &dae, &mut y, &[], 0.0);
+
+    assert!(
+        updates > 0,
+        "branch-free defining equation should still seed"
+    );
+    assert!(
+        (y[0] - 1.0).abs() < 1.0e-12,
+        "expected a to seed from its literal definition, got {}",
+        y[0]
+    );
+    assert!(
+        (y[1] - 99.0).abs() < 1.0e-12,
+        "solver-dependent branch target must stay unseeded, got {}",
+        y[1]
+    );
+}
+
+#[test]
+fn test_runtime_direct_seed_skips_branch_through_env_only_intermediate() {
+    let mut dae = Dae::new();
+    for name in ["a", "b", "c"] {
+        dae.algebraics
+            .insert(VarName::new(name), Variable::new(VarName::new(name)));
+    }
+
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("a"),
+        var("c"),
+    )));
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("b"),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::NoEvent,
+            args: vec![Expression::If {
+                branches: vec![(
+                    binop(OpBinary::Gt(Default::default()), var("a"), lit(0.0)),
+                    lit(2.0),
+                )],
+                else_branch: Box::new(lit(-2.0)),
+            }],
+        },
+    )));
+
+    let ctx = build_runtime_direct_seed_context(&dae, 3, 0);
+    let mut y = vec![99.0, 77.0, -3.0];
+    let updates = seed_runtime_direct_assignment_values_with_context(&ctx, &dae, &mut y, &[], 0.0);
+
+    assert!(updates > 0, "the non-branch intermediate may still seed");
+    assert!(
+        (y[0] + 3.0).abs() < 1.0e-12,
+        "expected env-only intermediate a to seed from c, got {}",
+        y[0]
+    );
+    assert!(
+        (y[1] - 77.0).abs() < 1.0e-12,
+        "branch target must stay unseeded when its condition depends on an env-only intermediate sourced from an unsolved solver unknown, got {}",
+        y[1]
+    );
 }
 
 #[test]

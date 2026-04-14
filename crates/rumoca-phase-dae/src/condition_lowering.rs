@@ -90,6 +90,95 @@ fn is_event_suppressed_wrapper(expr: &dae::Expression) -> bool {
     )
 }
 
+fn is_relation_extracting_event_wrapper(expr: &dae::Expression) -> bool {
+    matches!(
+        expr,
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Edge | dae::BuiltinFunction::Change,
+            ..
+        }
+    )
+}
+
+fn is_non_relation_condition(expr: &dae::Expression) -> bool {
+    matches!(
+        expr,
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Initial,
+            ..
+        }
+    )
+}
+
+fn is_relational_binary_op(op: &rumoca_ir_core::OpBinary) -> bool {
+    matches!(
+        op,
+        rumoca_ir_core::OpBinary::Lt(_)
+            | rumoca_ir_core::OpBinary::Le(_)
+            | rumoca_ir_core::OpBinary::Gt(_)
+            | rumoca_ir_core::OpBinary::Ge(_)
+            | rumoca_ir_core::OpBinary::Eq(_)
+            | rumoca_ir_core::OpBinary::Neq(_)
+    )
+}
+
+fn expression_contains_relational_operator(expr: &dae::Expression) -> bool {
+    match expr {
+        dae::Expression::Binary { op, lhs, rhs } => {
+            is_relational_binary_op(op)
+                || expression_contains_relational_operator(lhs)
+                || expression_contains_relational_operator(rhs)
+        }
+        dae::Expression::Unary { rhs, .. } => expression_contains_relational_operator(rhs),
+        dae::Expression::BuiltinCall { args, .. } | dae::Expression::FunctionCall { args, .. } => {
+            args.iter().any(expression_contains_relational_operator)
+        }
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expression_contains_relational_operator(cond)
+                    || expression_contains_relational_operator(value)
+            }) || expression_contains_relational_operator(else_branch)
+        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
+            elements.iter().any(expression_contains_relational_operator)
+        }
+        dae::Expression::Range { start, step, end } => {
+            expression_contains_relational_operator(start)
+                || step
+                    .as_deref()
+                    .is_some_and(expression_contains_relational_operator)
+                || expression_contains_relational_operator(end)
+        }
+        dae::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expression_contains_relational_operator(expr)
+                || indices
+                    .iter()
+                    .any(|idx| expression_contains_relational_operator(&idx.range))
+                || filter
+                    .as_deref()
+                    .is_some_and(expression_contains_relational_operator)
+        }
+        dae::Expression::Index { base, subscripts } => {
+            expression_contains_relational_operator(base)
+                || subscripts.iter().any(|sub| match sub {
+                    dae::Subscript::Expr(expr) => expression_contains_relational_operator(expr),
+                    dae::Subscript::Index(_) | dae::Subscript::Colon => false,
+                })
+        }
+        dae::Expression::FieldAccess { base, .. } => expression_contains_relational_operator(base),
+        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {
+            false
+        }
+    }
+}
+
 fn collect_if_condition_candidates(
     expr: &dae::Expression,
     span: Span,
@@ -195,7 +284,13 @@ fn collect_if_condition_candidates_for_if(
 ) {
     for (condition, value) in branches {
         let cond_suppressed = suppress_events || is_event_suppressed_wrapper(condition);
-        if !cond_suppressed {
+        // MLS Appendix B B.1d: canonical conditions live on relation(v), so
+        // event combinators like edge/change contribute their underlying
+        // relational guard via the builtin walk below, not as wrapper roots.
+        if !cond_suppressed
+            && !is_relation_extracting_event_wrapper(condition)
+            && !is_non_relation_condition(condition)
+        {
             out.push(ConditionCandidate {
                 expr: condition.clone(),
                 span,
@@ -221,6 +316,20 @@ fn collect_if_condition_candidates_for_builtin(
             function,
             dae::BuiltinFunction::NoEvent | dae::BuiltinFunction::Smooth
         );
+    if !suppressed
+        && matches!(
+            function,
+            dae::BuiltinFunction::Edge | dae::BuiltinFunction::Change
+        )
+        && let Some(arg) = args.first()
+        && expression_contains_relational_operator(arg)
+    {
+        out.push(ConditionCandidate {
+            expr: arg.clone(),
+            span,
+            source: source.clone(),
+        });
+    }
     for arg in args {
         collect_if_condition_candidates(arg, span, source.clone(), suppressed, out);
     }

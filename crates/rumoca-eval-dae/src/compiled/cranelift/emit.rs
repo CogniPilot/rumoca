@@ -1,18 +1,85 @@
 use super::CompileError;
 use crate::compiled::linear_op::{BinaryOp, CompareOp, LinearOp, UnaryOp};
+use crate::runtime::eval::{
+    eval_table_bound_value, eval_table_lookup_slope_value, eval_table_lookup_value,
+    eval_time_table_next_event_value,
+};
 use cranelift_codegen::ir::condcodes::FloatCC;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, types};
-use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings;
 use cranelift_codegen::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
+use std::cell::RefCell;
 use std::collections::HashMap;
+
+#[derive(Clone)]
+enum RowPlan {
+    Simple(SimpleRowPlan),
+    General(GeneralRowPlan),
+}
+
+#[derive(Clone)]
+struct SimpleRowPlan {
+    ops: Box<[SimpleOp]>,
+    reg_count: usize,
+    output_src: usize,
+}
+
+#[derive(Clone)]
+struct GeneralRowPlan {
+    ops: Box<[LinearOp]>,
+    reg_count: usize,
+    output_src: usize,
+}
+
+#[derive(Clone, Copy)]
+enum SimpleOp {
+    Const {
+        dst: u32,
+        value: f64,
+    },
+    LoadTime {
+        dst: u32,
+    },
+    LoadY {
+        dst: u32,
+        index: u32,
+    },
+    LoadP {
+        dst: u32,
+        index: u32,
+    },
+    Unary {
+        dst: u32,
+        op: UnaryOp,
+        arg: u32,
+    },
+    Binary {
+        dst: u32,
+        op: BinaryOp,
+        lhs: u32,
+        rhs: u32,
+    },
+    Compare {
+        dst: u32,
+        op: CompareOp,
+        lhs: u32,
+        rhs: u32,
+    },
+    Select {
+        dst: u32,
+        cond: u32,
+        if_true: u32,
+        if_false: u32,
+    },
+}
 
 pub(crate) struct CompiledResidualRows {
     _module: JITModule,
-    rows: Vec<Vec<LinearOp>>,
+    rows: Vec<RowPlan>,
+    regs_scratch: RefCell<Vec<f64>>,
 }
 
 impl CompiledResidualRows {
@@ -23,15 +90,10 @@ impl CompiledResidualRows {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        if out.len() < self.rows.len() {
-            return Err(CompileError::Input(format!(
-                "output buffer too small: {} < {}",
-                out.len(),
-                self.rows.len()
-            )));
-        }
+        let mut regs_scratch = self.regs_scratch.borrow_mut();
+        validate_output_len(out, self.rows.len())?;
         for (index, row) in self.rows.iter().enumerate() {
-            out[index] = execute_row(row, y, p, t, None)?;
+            out[index] = execute_row(row, &mut regs_scratch, y, p, t, None);
         }
         Ok(())
     }
@@ -43,7 +105,8 @@ impl CompiledResidualRows {
 
 pub(crate) struct CompiledJacobianRows {
     _module: JITModule,
-    rows: Vec<Vec<LinearOp>>,
+    rows: Vec<RowPlan>,
+    regs_scratch: RefCell<Vec<f64>>,
 }
 
 impl CompiledJacobianRows {
@@ -62,8 +125,9 @@ impl CompiledJacobianRows {
                 self.rows.len()
             )));
         }
+        let mut regs_scratch = self.regs_scratch.borrow_mut();
         for (index, row) in self.rows.iter().enumerate() {
-            out[index] = execute_row(row, y, p, t, Some(v))?;
+            out[index] = execute_row(row, &mut regs_scratch, y, p, t, Some(v));
         }
         Ok(())
     }
@@ -100,9 +164,14 @@ pub(crate) fn compile_residual_rows(
         .module
         .finalize_definitions()
         .map_err(to_backend_err)?;
+    let rows = rows
+        .iter()
+        .map(|row| plan_row(row))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(CompiledResidualRows {
         _module: emitter.module,
-        rows: rows.to_vec(),
+        rows,
+        regs_scratch: RefCell::new(Vec::new()),
     })
 }
 
@@ -123,7 +192,11 @@ pub(crate) fn compile_jacobian_rows(
         .map_err(to_backend_err)?;
     Ok(CompiledJacobianRows {
         _module: emitter.module,
-        rows: rows.to_vec(),
+        rows: rows
+            .iter()
+            .map(|row| plan_row(row))
+            .collect::<Result<_, _>>()?,
+        regs_scratch: RefCell::new(Vec::new()),
     })
 }
 
@@ -153,7 +226,6 @@ impl CraneliftEmitter {
         let pointer_type = self.module.target_config().pointer_type();
 
         let mut signature = self.module.make_signature();
-        signature.call_conv = CallConv::SystemV;
         signature.params.push(AbiParam::new(pointer_type)); // y
         signature.params.push(AbiParam::new(pointer_type)); // p
         signature.params.push(AbiParam::new(types::F64)); // t
@@ -241,21 +313,29 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 self.insert(dst, value)
             }
             LinearOp::LoadTime { dst } => self.insert(dst, self.t_value),
-            LinearOp::LoadY { dst, index } => {
-                let value = load_f64(self.fb, self.flags, self.y_ptr, index)?;
-                self.insert(dst, value)
+            LinearOp::LoadY { dst, index } => self.lower_loaded_reg(dst, self.y_ptr, index),
+            LinearOp::LoadP { dst, index } => self.lower_loaded_reg(dst, self.p_ptr, index),
+            LinearOp::LoadSeed { dst, index } => self.lower_seed_reg(dst, index),
+            LinearOp::TableBounds { dst, table_id, max } => {
+                self.lower_table_bounds(dst, table_id, max)
             }
-            LinearOp::LoadP { dst, index } => {
-                let value = load_f64(self.fb, self.flags, self.p_ptr, index)?;
-                self.insert(dst, value)
-            }
-            LinearOp::LoadSeed { dst, index } => {
-                let base = self.v_ptr.ok_or_else(|| {
-                    CompileError::Backend("LoadSeed in row without seed input".to_string())
-                })?;
-                let value = load_f64(self.fb, self.flags, base, index)?;
-                self.insert(dst, value)
-            }
+            LinearOp::TableLookup {
+                dst,
+                table_id,
+                column,
+                input,
+            } => self.lower_table_lookup(dst, table_id, column, input, TableHostFn::Lookup),
+            LinearOp::TableLookupSlope {
+                dst,
+                table_id,
+                column,
+                input,
+            } => self.lower_table_lookup(dst, table_id, column, input, TableHostFn::LookupSlope),
+            LinearOp::TableNextEvent {
+                dst,
+                table_id,
+                time,
+            } => self.lower_table_next_event(dst, table_id, time),
             LinearOp::Unary { dst, op, arg } => {
                 let x = lookup_reg(self.regs, arg)?;
                 let value = emit_unary_op(self.fb, self.module, self.math, op, x)?;
@@ -279,17 +359,101 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 cond,
                 if_true,
                 if_false,
-            } => {
-                let cond_value = lookup_reg(self.regs, cond)?;
-                let t = lookup_reg(self.regs, if_true)?;
-                let f = lookup_reg(self.regs, if_false)?;
-                let zero = self.fb.ins().f64const(0.0);
-                let is_true = self.fb.ins().fcmp(FloatCC::NotEqual, cond_value, zero);
-                let value = self.fb.ins().select(is_true, t, f);
-                self.insert(dst, value)
-            }
+            } => self.lower_select(dst, cond, if_true, if_false),
             LinearOp::StoreOutput { src } => Ok(Some(lookup_reg(self.regs, src)?)),
         }
+    }
+
+    fn lower_loaded_reg(
+        &mut self,
+        dst: u32,
+        base: cranelift_codegen::ir::Value,
+        index: usize,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let value = load_f64(self.fb, self.flags, base, index)?;
+        self.insert(dst, value)
+    }
+
+    fn lower_seed_reg(
+        &mut self,
+        dst: u32,
+        index: usize,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let base = self.v_ptr.ok_or_else(|| {
+            CompileError::Backend("LoadSeed in row without seed input".to_string())
+        })?;
+        self.lower_loaded_reg(dst, base, index)
+    }
+
+    fn lower_table_bounds(
+        &mut self,
+        dst: u32,
+        table_id: u32,
+        max: bool,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let table_id = lookup_reg(self.regs, table_id)?;
+        let kind = if max {
+            TableHostFn::BoundsMax
+        } else {
+            TableHostFn::BoundsMin
+        };
+        let value = call_table_host(self.fb, self.module, self.math, kind, &[table_id])?;
+        self.insert(dst, value)
+    }
+
+    fn lower_table_lookup(
+        &mut self,
+        dst: u32,
+        table_id: u32,
+        column: u32,
+        input: u32,
+        kind: TableHostFn,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let table_id = lookup_reg(self.regs, table_id)?;
+        let column = lookup_reg(self.regs, column)?;
+        let input = lookup_reg(self.regs, input)?;
+        let value = call_table_host(
+            self.fb,
+            self.module,
+            self.math,
+            kind,
+            &[table_id, column, input],
+        )?;
+        self.insert(dst, value)
+    }
+
+    fn lower_table_next_event(
+        &mut self,
+        dst: u32,
+        table_id: u32,
+        time: u32,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let table_id = lookup_reg(self.regs, table_id)?;
+        let time = lookup_reg(self.regs, time)?;
+        let value = call_table_host(
+            self.fb,
+            self.module,
+            self.math,
+            TableHostFn::NextEvent,
+            &[table_id, time],
+        )?;
+        self.insert(dst, value)
+    }
+
+    fn lower_select(
+        &mut self,
+        dst: u32,
+        cond: u32,
+        if_true: u32,
+        if_false: u32,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let cond_value = lookup_reg(self.regs, cond)?;
+        let t = lookup_reg(self.regs, if_true)?;
+        let f = lookup_reg(self.regs, if_false)?;
+        let zero = self.fb.ins().f64const(0.0);
+        let is_true = self.fb.ins().fcmp(FloatCC::NotEqual, cond_value, zero);
+        let value = self.fb.ins().select(is_true, t, f);
+        self.insert(dst, value)
     }
 
     fn insert(
@@ -306,6 +470,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 struct MathImports {
     unary: HashMap<UnaryMathFn, FuncId>,
     binary: HashMap<BinaryMathFn, FuncId>,
+    table: HashMap<TableHostFn, FuncId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -360,6 +525,35 @@ impl BinaryMathFn {
         match self {
             Self::Pow => "rumoca_host_powf",
             Self::Atan2 => "rumoca_host_atan2",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TableHostFn {
+    BoundsMin,
+    BoundsMax,
+    Lookup,
+    LookupSlope,
+    NextEvent,
+}
+
+impl TableHostFn {
+    fn symbol(self) -> &'static str {
+        match self {
+            Self::BoundsMin => "rumoca_host_table_bounds_min",
+            Self::BoundsMax => "rumoca_host_table_bounds_max",
+            Self::Lookup => "rumoca_host_table_lookup",
+            Self::LookupSlope => "rumoca_host_table_lookup_slope",
+            Self::NextEvent => "rumoca_host_table_next_event",
+        }
+    }
+
+    fn arity(self) -> usize {
+        match self {
+            Self::BoundsMin | Self::BoundsMax => 1,
+            Self::Lookup | Self::LookupSlope => 3,
+            Self::NextEvent => 2,
         }
     }
 }
@@ -527,7 +721,6 @@ fn call_unary_math(
         existing
     } else {
         let mut sig = module.make_signature();
-        sig.call_conv = CallConv::SystemV;
         sig.params.push(AbiParam::new(types::F64));
         sig.returns.push(AbiParam::new(types::F64));
         let func_id = module
@@ -557,7 +750,6 @@ fn call_binary_math(
         existing
     } else {
         let mut sig = module.make_signature();
-        sig.call_conv = CallConv::SystemV;
         sig.params.push(AbiParam::new(types::F64));
         sig.params.push(AbiParam::new(types::F64));
         sig.returns.push(AbiParam::new(types::F64));
@@ -576,43 +768,403 @@ fn call_binary_math(
         .ok_or_else(|| CompileError::Backend(format!("no return value for {}", function.symbol())))
 }
 
+fn call_table_host(
+    fb: &mut FunctionBuilder<'_>,
+    module: &mut JITModule,
+    math: &mut MathImports,
+    function: TableHostFn,
+    args: &[cranelift_codegen::ir::Value],
+) -> Result<cranelift_codegen::ir::Value, CompileError> {
+    let func_id = if let Some(existing) = math.table.get(&function).copied() {
+        existing
+    } else {
+        let mut sig = module.make_signature();
+        for _ in 0..function.arity() {
+            sig.params.push(AbiParam::new(types::F64));
+        }
+        sig.returns.push(AbiParam::new(types::F64));
+        let func_id = module
+            .declare_function(function.symbol(), Linkage::Import, &sig)
+            .map_err(to_backend_err)?;
+        math.table.insert(function, func_id);
+        func_id
+    };
+    let callee = module.declare_func_in_func(func_id, fb.func);
+    let call = fb.ins().call(callee, args);
+    let values = fb.inst_results(call);
+    values
+        .first()
+        .copied()
+        .ok_or_else(|| CompileError::Backend(format!("no return value for {}", function.symbol())))
+}
+
+fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
+    let mut reg_count = 0usize;
+    for op in row {
+        reg_count = reg_count.max(max_reg_index(*op).map_or(0, |index| index + 1));
+    }
+    let mut defined = vec![false; reg_count];
+    for op in row {
+        validate_row_sources(&defined, *op)?;
+        if let Some(dst) = dst_reg(*op) {
+            defined[dst] = true;
+        }
+    }
+    let output_src = match row.last().copied() {
+        Some(LinearOp::StoreOutput { src }) => src as usize,
+        _ => {
+            return Err(CompileError::Backend(
+                "compiled row is missing final StoreOutput".to_string(),
+            ));
+        }
+    };
+
+    let body = &row[..row.len().saturating_sub(1)];
+    if body.iter().copied().all(is_simple_linear_op) {
+        let ops = body
+            .iter()
+            .copied()
+            .map(lower_simple_op)
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(RowPlan::Simple(SimpleRowPlan {
+            ops: ops.into_boxed_slice(),
+            reg_count,
+            output_src,
+        }));
+    }
+
+    Ok(RowPlan::General(GeneralRowPlan {
+        ops: body.to_vec().into_boxed_slice(),
+        reg_count,
+        output_src,
+    }))
+}
+
+fn is_simple_linear_op(op: LinearOp) -> bool {
+    !matches!(
+        op,
+        LinearOp::LoadSeed { .. }
+            | LinearOp::TableBounds { .. }
+            | LinearOp::TableLookup { .. }
+            | LinearOp::TableLookupSlope { .. }
+            | LinearOp::TableNextEvent { .. }
+            | LinearOp::StoreOutput { .. }
+    )
+}
+
+fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
+    match op {
+        LinearOp::Const { dst, value } => Ok(SimpleOp::Const { dst, value }),
+        LinearOp::LoadTime { dst } => Ok(SimpleOp::LoadTime { dst }),
+        LinearOp::LoadY { dst, index } => Ok(SimpleOp::LoadY {
+            dst,
+            index: lower_runtime_index(index, "LoadY")?,
+        }),
+        LinearOp::LoadP { dst, index } => Ok(SimpleOp::LoadP {
+            dst,
+            index: lower_runtime_index(index, "LoadP")?,
+        }),
+        LinearOp::Unary { dst, op, arg } => Ok(SimpleOp::Unary { dst, op, arg }),
+        LinearOp::Binary { dst, op, lhs, rhs } => Ok(SimpleOp::Binary { dst, op, lhs, rhs }),
+        LinearOp::Compare { dst, op, lhs, rhs } => Ok(SimpleOp::Compare { dst, op, lhs, rhs }),
+        LinearOp::Select {
+            dst,
+            cond,
+            if_true,
+            if_false,
+        } => Ok(SimpleOp::Select {
+            dst,
+            cond,
+            if_true,
+            if_false,
+        }),
+        LinearOp::LoadSeed { .. }
+        | LinearOp::TableBounds { .. }
+        | LinearOp::TableLookup { .. }
+        | LinearOp::TableLookupSlope { .. }
+        | LinearOp::TableNextEvent { .. }
+        | LinearOp::StoreOutput { .. } => Err(CompileError::Backend(
+            "attempted to lower non-simple runtime op onto the simple row path".to_string(),
+        )),
+    }
+}
+
+fn lower_runtime_index(index: usize, kind: &str) -> Result<u32, CompileError> {
+    u32::try_from(index)
+        .map_err(|_| CompileError::Backend(format!("{kind} index exceeds u32 runtime plan")))
+}
+
+fn max_reg_index(op: LinearOp) -> Option<usize> {
+    match op {
+        LinearOp::Const { dst, .. }
+        | LinearOp::LoadTime { dst }
+        | LinearOp::LoadY { dst, .. }
+        | LinearOp::LoadP { dst, .. }
+        | LinearOp::LoadSeed { dst, .. }
+        | LinearOp::TableBounds { dst, .. }
+        | LinearOp::TableLookup { dst, .. }
+        | LinearOp::TableLookupSlope { dst, .. }
+        | LinearOp::TableNextEvent { dst, .. } => Some(dst as usize),
+        LinearOp::Unary { dst, arg, .. } => Some((dst.max(arg)) as usize),
+        LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
+            Some(dst.max(lhs).max(rhs) as usize)
+        }
+        LinearOp::Select {
+            dst,
+            cond,
+            if_true,
+            if_false,
+        } => Some(dst.max(cond).max(if_true).max(if_false) as usize),
+        LinearOp::StoreOutput { src } => Some(src as usize),
+    }
+}
+
+fn dst_reg(op: LinearOp) -> Option<usize> {
+    match op {
+        LinearOp::Const { dst, .. }
+        | LinearOp::LoadTime { dst }
+        | LinearOp::LoadY { dst, .. }
+        | LinearOp::LoadP { dst, .. }
+        | LinearOp::LoadSeed { dst, .. }
+        | LinearOp::TableBounds { dst, .. }
+        | LinearOp::TableLookup { dst, .. }
+        | LinearOp::TableLookupSlope { dst, .. }
+        | LinearOp::TableNextEvent { dst, .. }
+        | LinearOp::Unary { dst, .. }
+        | LinearOp::Binary { dst, .. }
+        | LinearOp::Compare { dst, .. }
+        | LinearOp::Select { dst, .. } => Some(dst as usize),
+        LinearOp::StoreOutput { .. } => None,
+    }
+}
+
+fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileError> {
+    match op {
+        LinearOp::TableBounds { table_id, .. } => validate_reg_defined(defined, table_id),
+        LinearOp::TableLookup {
+            table_id,
+            column,
+            input,
+            ..
+        } => {
+            validate_reg_defined(defined, table_id)?;
+            validate_reg_defined(defined, column)?;
+            validate_reg_defined(defined, input)
+        }
+        LinearOp::TableLookupSlope {
+            table_id,
+            column,
+            input,
+            ..
+        } => {
+            validate_reg_defined(defined, table_id)?;
+            validate_reg_defined(defined, column)?;
+            validate_reg_defined(defined, input)
+        }
+        LinearOp::TableNextEvent { table_id, time, .. } => {
+            validate_reg_defined(defined, table_id)?;
+            validate_reg_defined(defined, time)
+        }
+        LinearOp::Unary { arg, .. } => validate_reg_defined(defined, arg),
+        LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
+            validate_reg_defined(defined, lhs)?;
+            validate_reg_defined(defined, rhs)
+        }
+        LinearOp::Select {
+            cond,
+            if_true,
+            if_false,
+            ..
+        } => {
+            validate_reg_defined(defined, cond)?;
+            validate_reg_defined(defined, if_true)?;
+            validate_reg_defined(defined, if_false)
+        }
+        LinearOp::StoreOutput { src } => validate_reg_defined(defined, src),
+        LinearOp::Const { .. }
+        | LinearOp::LoadTime { .. }
+        | LinearOp::LoadY { .. }
+        | LinearOp::LoadP { .. }
+        | LinearOp::LoadSeed { .. } => Ok(()),
+    }
+}
+
+fn validate_reg_defined(defined: &[bool], reg: u32) -> Result<(), CompileError> {
+    if defined.get(reg as usize).copied().unwrap_or(false) {
+        return Ok(());
+    }
+    Err(CompileError::Backend(format!(
+        "compiled row references undefined register r{reg}"
+    )))
+}
+
+#[inline(always)]
 fn execute_row(
-    row: &[LinearOp],
+    row: &RowPlan,
+    regs_scratch: &mut Vec<f64>,
     y: &[f64],
     p: &[f64],
     t: f64,
     seed: Option<&[f64]>,
-) -> Result<f64, CompileError> {
-    let mut regs: Vec<f64> = Vec::new();
-    let mut out = 0.0;
+) -> f64 {
+    match row {
+        RowPlan::Simple(row) => execute_simple_row(row, regs_scratch, y, p, t),
+        RowPlan::General(row) => execute_general_row(row, regs_scratch, y, p, t, seed),
+    }
+}
 
-    for op in row {
-        match *op {
-            LinearOp::Const { dst, value } => set_reg_value(&mut regs, dst, value),
-            LinearOp::LoadTime { dst } => set_reg_value(&mut regs, dst, t),
+#[inline(always)]
+fn validate_output_len(out: &[f64], row_count: usize) -> Result<(), CompileError> {
+    if out.len() >= row_count {
+        return Ok(());
+    }
+    Err(CompileError::Input(format!(
+        "output buffer too small: {} < {}",
+        out.len(),
+        row_count
+    )))
+}
+
+#[inline(always)]
+fn execute_simple_row(
+    row: &SimpleRowPlan,
+    regs_scratch: &mut Vec<f64>,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+) -> f64 {
+    let regs = runtime_reg_slice(regs_scratch, row.reg_count);
+    for op in row.ops.iter().copied() {
+        match op {
+            SimpleOp::Const { dst, value } => set_reg_value(regs, dst as usize, value),
+            SimpleOp::LoadTime { dst } => set_reg_value(regs, dst as usize, t),
+            SimpleOp::LoadY { dst, index } => {
+                set_reg_value(regs, dst as usize, *y.get(index as usize).unwrap_or(&0.0))
+            }
+            SimpleOp::LoadP { dst, index } => {
+                set_reg_value(regs, dst as usize, *p.get(index as usize).unwrap_or(&0.0))
+            }
+            SimpleOp::Unary { dst, op, arg } => {
+                let x = read_reg_value(regs, arg as usize);
+                set_reg_value(regs, dst as usize, apply_unary(op, x));
+            }
+            SimpleOp::Binary { dst, op, lhs, rhs } => {
+                let lhs = read_reg_value(regs, lhs as usize);
+                let rhs = read_reg_value(regs, rhs as usize);
+                set_reg_value(regs, dst as usize, apply_binary(op, lhs, rhs));
+            }
+            SimpleOp::Compare { dst, op, lhs, rhs } => {
+                let lhs = read_reg_value(regs, lhs as usize);
+                let rhs = read_reg_value(regs, rhs as usize);
+                set_reg_value(regs, dst as usize, apply_compare(op, lhs, rhs));
+            }
+            SimpleOp::Select {
+                dst,
+                cond,
+                if_true,
+                if_false,
+            } => {
+                let cond = read_reg_value(regs, cond as usize);
+                let if_true = read_reg_value(regs, if_true as usize);
+                let if_false = read_reg_value(regs, if_false as usize);
+                set_reg_value(
+                    regs,
+                    dst as usize,
+                    if cond != 0.0 { if_true } else { if_false },
+                );
+            }
+        }
+    }
+    read_reg_value(regs, row.output_src)
+}
+
+#[inline(always)]
+fn execute_general_row(
+    row: &GeneralRowPlan,
+    regs_scratch: &mut Vec<f64>,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    seed: Option<&[f64]>,
+) -> f64 {
+    let regs = runtime_reg_slice(regs_scratch, row.reg_count);
+    for op in row.ops.iter().copied() {
+        match op {
+            LinearOp::Const { dst, value } => set_reg_value(regs, dst as usize, value),
+            LinearOp::LoadTime { dst } => set_reg_value(regs, dst as usize, t),
             LinearOp::LoadY { dst, index } => {
-                set_reg_value(&mut regs, dst, *y.get(index).unwrap_or(&0.0))
+                set_reg_value(regs, dst as usize, *y.get(index).unwrap_or(&0.0))
             }
             LinearOp::LoadP { dst, index } => {
-                set_reg_value(&mut regs, dst, *p.get(index).unwrap_or(&0.0))
+                set_reg_value(regs, dst as usize, *p.get(index).unwrap_or(&0.0))
             }
             LinearOp::LoadSeed { dst, index } => {
-                let v = seed.and_then(|s| s.get(index)).copied().unwrap_or(0.0);
-                set_reg_value(&mut regs, dst, v);
+                let value = seed
+                    .and_then(|values| values.get(index))
+                    .copied()
+                    .unwrap_or(0.0);
+                set_reg_value(regs, dst as usize, value);
+            }
+            LinearOp::TableBounds { dst, table_id, max } => {
+                let table_id = read_reg_value(regs, table_id as usize);
+                set_reg_value(regs, dst as usize, eval_table_bound_value(table_id, max));
+            }
+            LinearOp::TableLookup {
+                dst,
+                table_id,
+                column,
+                input,
+            } => {
+                let table_id = read_reg_value(regs, table_id as usize);
+                let column = read_reg_value(regs, column as usize);
+                let input = read_reg_value(regs, input as usize);
+                set_reg_value(
+                    regs,
+                    dst as usize,
+                    eval_table_lookup_value(table_id, column, input),
+                );
+            }
+            LinearOp::TableLookupSlope {
+                dst,
+                table_id,
+                column,
+                input,
+            } => {
+                let table_id = read_reg_value(regs, table_id as usize);
+                let column = read_reg_value(regs, column as usize);
+                let input = read_reg_value(regs, input as usize);
+                set_reg_value(
+                    regs,
+                    dst as usize,
+                    eval_table_lookup_slope_value(table_id, column, input),
+                );
+            }
+            LinearOp::TableNextEvent {
+                dst,
+                table_id,
+                time,
+            } => {
+                let table_id = read_reg_value(regs, table_id as usize);
+                let time = read_reg_value(regs, time as usize);
+                set_reg_value(
+                    regs,
+                    dst as usize,
+                    eval_time_table_next_event_value(table_id, time),
+                );
             }
             LinearOp::Unary { dst, op, arg } => {
-                let x = read_reg_value(&regs, arg)?;
-                set_reg_value(&mut regs, dst, apply_unary(op, x));
+                let x = read_reg_value(regs, arg as usize);
+                set_reg_value(regs, dst as usize, apply_unary(op, x));
             }
             LinearOp::Binary { dst, op, lhs, rhs } => {
-                let l = read_reg_value(&regs, lhs)?;
-                let r = read_reg_value(&regs, rhs)?;
-                set_reg_value(&mut regs, dst, apply_binary(op, l, r));
+                let lhs = read_reg_value(regs, lhs as usize);
+                let rhs = read_reg_value(regs, rhs as usize);
+                set_reg_value(regs, dst as usize, apply_binary(op, lhs, rhs));
             }
             LinearOp::Compare { dst, op, lhs, rhs } => {
-                let l = read_reg_value(&regs, lhs)?;
-                let r = read_reg_value(&regs, rhs)?;
-                set_reg_value(&mut regs, dst, apply_compare(op, l, r));
+                let lhs = read_reg_value(regs, lhs as usize);
+                let rhs = read_reg_value(regs, rhs as usize);
+                set_reg_value(regs, dst as usize, apply_compare(op, lhs, rhs));
             }
             LinearOp::Select {
                 dst,
@@ -620,34 +1172,40 @@ fn execute_row(
                 if_true,
                 if_false,
             } => {
-                let c = read_reg_value(&regs, cond)?;
-                let t_val = read_reg_value(&regs, if_true)?;
-                let f_val = read_reg_value(&regs, if_false)?;
-                set_reg_value(&mut regs, dst, if c != 0.0 { t_val } else { f_val });
+                let cond = read_reg_value(regs, cond as usize);
+                let if_true = read_reg_value(regs, if_true as usize);
+                let if_false = read_reg_value(regs, if_false as usize);
+                set_reg_value(
+                    regs,
+                    dst as usize,
+                    if cond != 0.0 { if_true } else { if_false },
+                );
             }
-            LinearOp::StoreOutput { src } => {
-                out = read_reg_value(&regs, src)?;
-            }
+            LinearOp::StoreOutput { .. } => {}
         }
     }
-
-    Ok(out)
+    read_reg_value(regs, row.output_src)
 }
 
-fn set_reg_value(regs: &mut Vec<f64>, reg: u32, value: f64) {
-    let idx = reg as usize;
-    if idx >= regs.len() {
-        regs.resize(idx + 1, 0.0);
+#[inline(always)]
+fn runtime_reg_slice(regs_scratch: &mut Vec<f64>, reg_count: usize) -> &mut [f64] {
+    if regs_scratch.len() < reg_count {
+        regs_scratch.resize(reg_count, 0.0);
     }
-    regs[idx] = value;
+    &mut regs_scratch[..reg_count]
 }
 
-fn read_reg_value(regs: &[f64], reg: u32) -> Result<f64, CompileError> {
-    regs.get(reg as usize)
-        .copied()
-        .ok_or_else(|| CompileError::Backend(format!("missing source register r{reg}")))
+#[inline(always)]
+fn set_reg_value(regs: &mut [f64], reg: usize, value: f64) {
+    regs[reg] = value;
 }
 
+#[inline(always)]
+fn read_reg_value(regs: &[f64], reg: usize) -> f64 {
+    regs[reg]
+}
+
+#[inline(always)]
 fn apply_unary(op: UnaryOp, value: f64) -> f64 {
     match op {
         UnaryOp::Neg => -value,
@@ -687,6 +1245,7 @@ fn apply_unary(op: UnaryOp, value: f64) -> f64 {
     }
 }
 
+#[inline(always)]
 fn apply_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
     match op {
         BinaryOp::Add => lhs + rhs,
@@ -720,6 +1279,7 @@ fn apply_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
     }
 }
 
+#[inline(always)]
 fn apply_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
     let value = match op {
         CompareOp::Lt => lhs < rhs,
@@ -754,6 +1314,26 @@ fn register_math_symbols(builder: &mut JITBuilder) {
     builder.symbol("rumoca_host_ceil", rumoca_host_ceil as *const u8);
     builder.symbol("rumoca_host_trunc", rumoca_host_trunc as *const u8);
     builder.symbol("rumoca_host_powf", rumoca_host_powf as *const u8);
+    builder.symbol(
+        "rumoca_host_table_bounds_min",
+        rumoca_host_table_bounds_min as *const u8,
+    );
+    builder.symbol(
+        "rumoca_host_table_bounds_max",
+        rumoca_host_table_bounds_max as *const u8,
+    );
+    builder.symbol(
+        "rumoca_host_table_lookup",
+        rumoca_host_table_lookup as *const u8,
+    );
+    builder.symbol(
+        "rumoca_host_table_lookup_slope",
+        rumoca_host_table_lookup_slope as *const u8,
+    );
+    builder.symbol(
+        "rumoca_host_table_next_event",
+        rumoca_host_table_next_event as *const u8,
+    );
 }
 
 extern "C" fn rumoca_host_sin(x: f64) -> f64 {
@@ -806,4 +1386,58 @@ extern "C" fn rumoca_host_trunc(x: f64) -> f64 {
 }
 extern "C" fn rumoca_host_powf(x: f64, y: f64) -> f64 {
     x.powf(y)
+}
+
+extern "C" fn rumoca_host_table_bounds_min(table_id: f64) -> f64 {
+    eval_table_bound_value(table_id, false)
+}
+
+extern "C" fn rumoca_host_table_bounds_max(table_id: f64) -> f64 {
+    eval_table_bound_value(table_id, true)
+}
+
+extern "C" fn rumoca_host_table_lookup(table_id: f64, column: f64, input: f64) -> f64 {
+    eval_table_lookup_value(table_id, column, input)
+}
+
+extern "C" fn rumoca_host_table_lookup_slope(table_id: f64, column: f64, input: f64) -> f64 {
+    eval_table_lookup_slope_value(table_id, column, input)
+}
+
+extern "C" fn rumoca_host_table_next_event(table_id: f64, time: f64) -> f64 {
+    eval_time_table_next_event_value(table_id, time)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_row_uses_simple_runtime_plan_for_plain_residual_rows() {
+        let row = vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::LoadP { dst: 1, index: 0 },
+            LinearOp::Binary {
+                dst: 2,
+                op: BinaryOp::Add,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ];
+
+        let plan = plan_row(&row).expect("simple plan");
+        assert!(matches!(plan, RowPlan::Simple(_)));
+    }
+
+    #[test]
+    fn plan_row_keeps_seed_rows_on_general_runtime_plan() {
+        let row = vec![
+            LinearOp::LoadSeed { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+        ];
+
+        let plan = plan_row(&row).expect("general plan");
+        assert!(matches!(plan, RowPlan::General(_)));
+    }
 }

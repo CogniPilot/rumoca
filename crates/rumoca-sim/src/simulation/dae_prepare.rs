@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_dae as dae;
@@ -611,11 +612,15 @@ pub fn eliminate_derivative_aliases(dae: &mut Dae) {
         let mut alias_idx = None;
         let mut alias_var = None;
         for &idx in &der_eq_indices {
-            if let Some(var) = try_extract_derivative_alias(&dae.f_x[idx], state_name) {
-                alias_idx = Some(idx);
-                alias_var = Some(var);
-                break;
+            let Some(var) = try_extract_derivative_alias(&dae.f_x[idx], state_name) else {
+                continue;
+            };
+            if !dae.algebraics.contains_key(&var) {
+                continue;
             }
+            alias_idx = Some(idx);
+            alias_var = Some(var);
+            break;
         }
 
         let Some(alias_idx) = alias_idx else {
@@ -637,10 +642,31 @@ pub fn eliminate_derivative_aliases(dae: &mut Dae) {
         substitutions.push((alias_var, der_expr));
     }
 
-    // Apply substitutions to all equations
+    // MLS Appendix B / §16.5.1: eliminating a continuous derivative helper
+    // must rewrite every runtime/event surface that can still read that helper.
+    // Otherwise later sampled/event partitions can retain dangling sources such
+    // as `sample(sample1.u)` after `sample1.u = der(x)` has been removed.
     for (old_name, replacement) in &substitutions {
         for eq in &mut dae.f_x {
             eq.rhs = substitute_var_in_expr(&eq.rhs, old_name, replacement);
+        }
+        for eq in &mut dae.f_z {
+            eq.rhs = substitute_var_in_expr(&eq.rhs, old_name, replacement);
+        }
+        for eq in &mut dae.f_m {
+            eq.rhs = substitute_var_in_expr(&eq.rhs, old_name, replacement);
+        }
+        for eq in &mut dae.f_c {
+            eq.rhs = substitute_var_in_expr(&eq.rhs, old_name, replacement);
+        }
+        for expr in &mut dae.relation {
+            *expr = substitute_var_in_expr(expr, old_name, replacement);
+        }
+        for expr in &mut dae.synthetic_root_conditions {
+            *expr = substitute_var_in_expr(expr, old_name, replacement);
+        }
+        for expr in &mut dae.clock_constructor_exprs {
+            *expr = substitute_var_in_expr(expr, old_name, replacement);
         }
     }
 
@@ -877,121 +903,363 @@ pub fn try_extract_state_alias_pair(rhs: &Expression) -> Option<(VarName, VarNam
     Some((lhs_name.clone(), rhs_name.clone()))
 }
 
-fn grow_alias_demotion_set(
-    to_demote: &mut HashSet<String>,
-    candidate: &VarName,
-    candidate_has_der: bool,
-    linked: &VarName,
-) -> bool {
-    if candidate_has_der
-        || !to_demote.contains(linked.as_str())
-        || to_demote.contains(candidate.as_str())
-    {
-        return false;
+fn state_select_rank(state_select: rumoca_ir_core::StateSelect) -> u8 {
+    match state_select {
+        rumoca_ir_core::StateSelect::Never => 0,
+        rumoca_ir_core::StateSelect::Avoid => 1,
+        rumoca_ir_core::StateSelect::Default => 2,
+        rumoca_ir_core::StateSelect::Prefer => 3,
+        rumoca_ir_core::StateSelect::Always => 4,
     }
-    to_demote.insert(candidate.as_str().to_string());
-    true
 }
 
-/// Conservative state-selection helper for alias-constrained states.
+fn choose_exact_alias_state_representative<'a>(
+    dae: &'a Dae,
+    component_states: &'a [VarName],
+) -> Option<&'a VarName> {
+    component_states.iter().min_by_key(|name| {
+        let var = dae
+            .states
+            .get(*name)
+            .expect("component state representative must exist");
+        (
+            Reverse(state_select_rank(var.state_select)),
+            Reverse(u8::from(var.fixed == Some(true))),
+            Reverse(u8::from(var.start.is_some())),
+            name.as_str().to_string(),
+        )
+    })
+}
+
+fn exact_alias_member_variable<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a Variable> {
+    dae.states
+        .get(name)
+        .or_else(|| dae.algebraics.get(name))
+        .or_else(|| dae.outputs.get(name))
+}
+
+fn propagate_exact_alias_member_metadata_to_canonical_state(
+    dae: &mut Dae,
+    component_members: &[VarName],
+    canonical_state: &VarName,
+) {
+    let donor = component_members
+        .iter()
+        .filter(|name| *name != canonical_state)
+        .filter_map(|name| exact_alias_member_variable(dae, name).map(|var| (name, var)))
+        .filter(|(_, var)| var.fixed == Some(true) || var.start.is_some())
+        .min_by_key(|(name, var)| {
+            (
+                Reverse(u8::from(var.fixed == Some(true))),
+                Reverse(u8::from(var.start.is_some())),
+                name.as_str().to_string(),
+            )
+        })
+        .map(|(_, var)| (var.fixed, var.start.clone()));
+
+    let Some(canonical_var) = dae.states.get_mut(canonical_state) else {
+        return;
+    };
+    let Some((donor_fixed, donor_start)) = donor else {
+        return;
+    };
+
+    if canonical_var.fixed.is_none() && donor_fixed == Some(true) {
+        canonical_var.fixed = donor_fixed;
+    }
+    if canonical_var.start.is_none() && donor_start.is_some() {
+        canonical_var.start = donor_start;
+    }
+}
+
+fn rewrite_component_member_derivatives_in_equations(
+    equations: &mut [Equation],
+    member_name: &VarName,
+    canonical_state: &VarName,
+) {
+    let replacement = symbolic_der_var_ref(canonical_state);
+    for eq in equations {
+        eq.rhs = substitute_der_of_state(&eq.rhs, member_name, &replacement);
+    }
+}
+
+fn rewrite_component_member_derivatives_in_exprs(
+    exprs: &mut [Expression],
+    member_name: &VarName,
+    canonical_state: &VarName,
+) {
+    let replacement = symbolic_der_var_ref(canonical_state);
+    for expr in exprs {
+        *expr = substitute_der_of_state(expr, member_name, &replacement);
+    }
+}
+
+/// Demote duplicate states connected only through exact alias equalities.
 ///
-/// Demotion rules:
-/// - state <-> state alias: if one side has a standalone der-row and the other
-///   does not, demote the no-der side (and propagate across chains).
-/// - state <-> non-state alias: if the state has no standalone der-row, demote it.
-pub fn demote_alias_states_without_der(dae: &mut Dae) -> usize {
-    let max_rounds = dae.states.len().clamp(1, 8);
-    let mut total_demoted = 0usize;
+/// MLS simple equality equations and generated connection equations express
+/// exact value equality. If a component of exact `a = b` aliases contains a
+/// state, all `der(member)` references in that component must observe the same
+/// trajectory. Rumoca therefore rewrites `der(alias_member)` to the canonical
+/// state early, and if the component contains multiple states it demotes the
+/// duplicates before derivative-alias cleanup runs.
+fn push_component_neighbor_if_unvisited(
+    visited: &mut HashSet<String>,
+    stack: &mut Vec<String>,
+    component: &mut Vec<String>,
+    neighbor: &str,
+) {
+    let neighbor = neighbor.to_string();
+    if !visited.insert(neighbor.clone()) {
+        return;
+    }
+    stack.push(neighbor.clone());
+    component.push(neighbor);
+}
 
-    for _ in 0..max_rounds {
-        let state_names: Vec<VarName> = dae.states.keys().cloned().collect();
-        if state_names.is_empty() {
-            break;
+fn rewrite_exact_alias_component_member_derivatives(
+    dae: &mut Dae,
+    component_members: &[VarName],
+    canonical_state: &VarName,
+) {
+    for member_name in component_members {
+        if *member_name == *canonical_state {
+            continue;
         }
-        let state_name_set: HashSet<String> = state_names
-            .iter()
-            .map(|name| name.as_str().to_string())
-            .collect();
-        let has_der: HashMap<String, bool> = state_names
-            .iter()
-            .map(|name| {
-                (
-                    name.as_str().to_string(),
-                    state_has_standalone_der_equation(dae, name, &state_names),
-                )
-            })
-            .collect();
+        rewrite_component_member_derivatives_in_equations(
+            &mut dae.f_x,
+            member_name,
+            canonical_state,
+        );
+        rewrite_component_member_derivatives_in_equations(
+            &mut dae.f_z,
+            member_name,
+            canonical_state,
+        );
+        rewrite_component_member_derivatives_in_equations(
+            &mut dae.f_m,
+            member_name,
+            canonical_state,
+        );
+        rewrite_component_member_derivatives_in_equations(
+            &mut dae.initial_equations,
+            member_name,
+            canonical_state,
+        );
+        rewrite_component_member_derivatives_in_exprs(
+            &mut dae.relation,
+            member_name,
+            canonical_state,
+        );
+        rewrite_component_member_derivatives_in_exprs(
+            &mut dae.synthetic_root_conditions,
+            member_name,
+            canonical_state,
+        );
+        rewrite_component_member_derivatives_in_exprs(
+            &mut dae.triggered_clock_conditions,
+            member_name,
+            canonical_state,
+        );
+        rewrite_component_member_derivatives_in_exprs(
+            &mut dae.clock_constructor_exprs,
+            member_name,
+            canonical_state,
+        );
+    }
+}
 
-        let alias_pairs: Vec<(VarName, VarName)> = dae
-            .f_x
-            .iter()
-            .filter_map(|eq| try_extract_state_alias_pair(&eq.rhs))
-            .filter(|(a, b)| {
-                state_name_set.contains(a.as_str()) || state_name_set.contains(b.as_str())
-            })
-            .collect();
-        if alias_pairs.is_empty() {
-            break;
-        }
-
-        let mut to_demote: HashSet<String> = HashSet::new();
-        for (a, b) in &alias_pairs {
-            let a_is_state = state_name_set.contains(a.as_str());
-            let b_is_state = state_name_set.contains(b.as_str());
-            let a_has_der = a_is_state && has_der.get(a.as_str()).copied().unwrap_or(false);
-            let b_has_der = b_is_state && has_der.get(b.as_str()).copied().unwrap_or(false);
-
-            if a_is_state && b_is_state && a_has_der != b_has_der {
-                let demoted = match a_has_der {
-                    true => b,
-                    false => a,
-                };
-                to_demote.insert(demoted.as_str().to_string());
-            }
-            if a_is_state && b_is_state {
-                continue;
-            }
-
-            if a_is_state && !b_is_state && !a_has_der {
-                to_demote.insert(a.as_str().to_string());
-            }
-            if b_is_state && !a_is_state && !b_has_der {
-                to_demote.insert(b.as_str().to_string());
-            }
-        }
-
-        // Propagate through alias chains: if a no-der state aliases a state
-        // selected for demotion, demote it as well.
-        let mut grown = true;
-        while grown {
-            grown = false;
-            for (a, b) in &alias_pairs {
-                let a_has_der = has_der.get(a.as_str()).copied().unwrap_or(false);
-                let b_has_der = has_der.get(b.as_str()).copied().unwrap_or(false);
-                grown |= grow_alias_demotion_set(&mut to_demote, a, a_has_der, b);
-                grown |= grow_alias_demotion_set(&mut to_demote, b, b_has_der, a);
-            }
-        }
-
-        if to_demote.is_empty() {
-            break;
-        }
-
-        let mut demoted_this_round = 0usize;
-        let to_demote_names: Vec<VarName> = to_demote.into_iter().map(VarName::new).collect();
-        for name in to_demote_names {
-            if let Some(var) = dae.states.shift_remove(&name) {
-                dae.algebraics.insert(name.clone(), var);
-                demoted_this_round += 1;
-            }
-        }
-        if demoted_this_round == 0 {
-            break;
-        }
-        total_demoted += demoted_this_round;
+pub fn demote_exact_alias_component_states(dae: &mut Dae) -> usize {
+    let alias_pairs: Vec<(VarName, VarName)> = dae
+        .f_x
+        .iter()
+        .filter_map(|eq| try_extract_state_alias_pair(&eq.rhs))
+        .filter(|(a, b)| a != b)
+        .collect();
+    if alias_pairs.is_empty() {
+        return 0;
     }
 
-    total_demoted
+    let mut adjacency: HashMap<String, HashSet<String>> = HashMap::new();
+    for (a, b) in &alias_pairs {
+        adjacency
+            .entry(a.as_str().to_string())
+            .or_default()
+            .insert(b.as_str().to_string());
+        adjacency
+            .entry(b.as_str().to_string())
+            .or_default()
+            .insert(a.as_str().to_string());
+    }
+
+    let mut nodes: Vec<String> = adjacency.keys().cloned().collect();
+    nodes.sort();
+    let mut visited = HashSet::new();
+    let mut demotions = Vec::new();
+
+    for root in nodes {
+        if !visited.insert(root.clone()) {
+            continue;
+        }
+
+        let mut stack = vec![root.clone()];
+        let mut component = vec![root];
+        while let Some(node) = stack.pop() {
+            let Some(neighbors) = adjacency.get(&node) else {
+                continue;
+            };
+            for neighbor in neighbors {
+                push_component_neighbor_if_unvisited(
+                    &mut visited,
+                    &mut stack,
+                    &mut component,
+                    neighbor,
+                );
+            }
+        }
+
+        let mut component_members: Vec<VarName> = component
+            .iter()
+            .map(|name| VarName::new(name.clone()))
+            .collect();
+        component_members.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        let mut component_states: Vec<VarName> = component_members
+            .iter()
+            .filter_map(|name| dae.states.get_key_value(name))
+            .map(|(name, _)| name.clone())
+            .collect();
+        if component_states.is_empty() {
+            continue;
+        }
+        component_states.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        let Some(canonical_state) = choose_exact_alias_state_representative(dae, &component_states)
+        else {
+            continue;
+        };
+        let canonical_state = canonical_state.clone();
+        propagate_exact_alias_member_metadata_to_canonical_state(
+            dae,
+            &component_members,
+            &canonical_state,
+        );
+
+        rewrite_exact_alias_component_member_derivatives(dae, &component_members, &canonical_state);
+
+        for state_name in component_states {
+            if state_name != canonical_state {
+                demotions.push((state_name, canonical_state.clone()));
+            }
+        }
+    }
+
+    let mut demoted = 0usize;
+    for (state_name, _canonical_state) in demotions {
+        if let Some(var) = dae.states.shift_remove(&state_name) {
+            dae.algebraics.insert(state_name, var);
+            demoted += 1;
+        }
+    }
+
+    demoted
+}
+
+/// Demote remaining no-der states that are still exact aliases of non-state
+/// unknowns after exact alias components have been collapsed.
+///
+/// MLS §8 simple equalities define exact alias relations, but
+/// [`demote_exact_alias_component_states`] already chooses one state
+/// representative per multi-state alias component earlier in prepare. The only
+/// remaining structural case here is `state = non_state` with no standalone
+/// `der(state)` row.
+pub fn demote_alias_states_without_der(dae: &mut Dae) -> usize {
+    let state_names: Vec<VarName> = dae.states.keys().cloned().collect();
+    if state_names.is_empty() {
+        return 0;
+    }
+
+    let state_name_set: HashSet<String> = state_names
+        .iter()
+        .map(|name| name.as_str().to_string())
+        .collect();
+    let has_der: HashMap<String, bool> = state_names
+        .iter()
+        .map(|name| {
+            (
+                name.as_str().to_string(),
+                state_has_standalone_der_equation(dae, name, &state_names),
+            )
+        })
+        .collect();
+
+    let mut adjacency: HashMap<String, HashSet<String>> = HashMap::new();
+    for (a, b) in dae
+        .f_x
+        .iter()
+        .filter_map(|eq| try_extract_state_alias_pair(&eq.rhs))
+    {
+        if !(state_name_set.contains(a.as_str()) || state_name_set.contains(b.as_str())) {
+            continue;
+        }
+        adjacency
+            .entry(a.as_str().to_string())
+            .or_default()
+            .insert(b.as_str().to_string());
+        adjacency
+            .entry(b.as_str().to_string())
+            .or_default()
+            .insert(a.as_str().to_string());
+    }
+    if adjacency.is_empty() {
+        return 0;
+    }
+
+    let mut visited = HashSet::new();
+    let mut to_demote = HashSet::new();
+    for state_name in &state_names {
+        let start = state_name.as_str().to_string();
+        if visited.contains(&start) || !adjacency.contains_key(&start) {
+            continue;
+        }
+        let component = collect_alias_connected_names(&adjacency, &start);
+        visited.extend(component.iter().cloned());
+        let component_has_der = component
+            .iter()
+            .any(|name| has_der.get(name).copied().unwrap_or(false));
+        for name in component {
+            if !state_name_set.contains(name.as_str()) {
+                continue;
+            }
+            if !component_has_der || !has_der.get(name.as_str()).copied().unwrap_or(false) {
+                to_demote.insert(name);
+            }
+        }
+    }
+
+    let mut demoted = 0usize;
+    for name in to_demote.into_iter().map(VarName::new) {
+        if let Some(var) = dae.states.shift_remove(&name) {
+            dae.algebraics.insert(name.clone(), var);
+            demoted += 1;
+        }
+    }
+    demoted
+}
+
+fn collect_alias_connected_names(
+    adjacency: &HashMap<String, HashSet<String>>,
+    start: &str,
+) -> HashSet<String> {
+    let mut component = HashSet::from([start.to_string()]);
+    let mut stack = vec![start.to_string()];
+    while let Some(name) = stack.pop() {
+        for neighbor in adjacency.get(&name).into_iter().flatten() {
+            if component.insert(neighbor.clone()) {
+                stack.push(neighbor.clone());
+            }
+        }
+    }
+    component
 }
 
 /// Demote states that appear only in coupled-derivative equations (rows with

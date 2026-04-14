@@ -311,6 +311,12 @@ struct MslSummary {
     /// Total solver/integration seconds (sum of per-model worker-reported runtime).
     #[serde(default)]
     total_sim_seconds: f64,
+    /// Total simulator build/setup seconds reported by workers.
+    #[serde(default)]
+    total_sim_build_seconds: f64,
+    /// Total simulator run/integration seconds reported by workers.
+    #[serde(default)]
+    total_sim_run_seconds: f64,
     /// Total per-model wall/system time including process overhead.
     #[serde(default)]
     total_sim_wall_seconds: f64,
@@ -368,6 +374,8 @@ struct ResultCounters {
     sim_balance_fail: usize,
     sim_attempted: usize,
     total_sim_seconds: f64,
+    total_sim_build_seconds: f64,
+    total_sim_run_seconds: f64,
     total_sim_wall_seconds: f64,
 }
 
@@ -499,6 +507,8 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         sim_balance_fail: 0,
         sim_attempted: 0,
         total_sim_seconds: 0.0,
+        total_sim_build_seconds: 0.0,
+        total_sim_run_seconds: 0.0,
         total_sim_wall_seconds: 0.0,
         sim_target_models: Vec::new(),
     }
@@ -534,6 +544,8 @@ fn phase_error_result(
         sim_status: None,
         sim_error: None,
         sim_seconds: None,
+        sim_build_seconds: None,
+        sim_run_seconds: None,
         sim_wall_seconds: None,
         sim_trace_file: None,
         sim_trace_error: None,
@@ -636,6 +648,8 @@ pub(super) fn summarize_success_result(
         sim_status: None,
         sim_error: None,
         sim_seconds: None,
+        sim_build_seconds: None,
+        sim_run_seconds: None,
         sim_wall_seconds: None,
         sim_trace_file: None,
         sim_trace_error: None,

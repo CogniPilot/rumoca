@@ -77,6 +77,32 @@ pub enum LinearOp {
         dst: Reg,
         index: usize,
     },
+    /// Host-backed table bound lookup (`*_Tmin`, `*_Tmax`, `*_AbscissaUmin`, `*_AbscissaUmax`).
+    TableBounds {
+        dst: Reg,
+        table_id: Reg,
+        max: bool,
+    },
+    /// Host-backed table lookup (`getTimeTableValue*`, `getTable1DValue*`).
+    TableLookup {
+        dst: Reg,
+        table_id: Reg,
+        column: Reg,
+        input: Reg,
+    },
+    /// Host-backed table lookup slope d(lookup)/d(input) for AD rows.
+    TableLookupSlope {
+        dst: Reg,
+        table_id: Reg,
+        column: Reg,
+        input: Reg,
+    },
+    /// Host-backed table next-event lookup (`getNextTimeEvent`).
+    TableNextEvent {
+        dst: Reg,
+        table_id: Reg,
+        time: Reg,
+    },
     Unary {
         dst: Reg,
         op: UnaryOp,

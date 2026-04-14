@@ -4,13 +4,14 @@
 //! injecting input values between steps, and reading outputs — suitable for
 //! controller-in-the-loop and real-time use cases.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use rumoca_eval_dae::runtime::VarEnv;
 use rumoca_ir_dae as dae;
 use rumoca_phase_solve::eliminate::EliminationResult;
 
-use super::problem::SharedInputOverrides;
 use super::{Dae, SimError};
 use crate::TimeoutBudget;
 use crate::runtime::layout::SimulationContext;
@@ -65,7 +66,7 @@ pub struct SimStepper {
     pub(crate) sim_context: SimulationContext,
     #[allow(dead_code)]
     pub(crate) param_values: Vec<f64>,
-    pub(crate) input_overrides: SharedInputOverrides,
+    pub(crate) input_overrides: Rc<RefCell<HashMap<String, f64>>>,
     #[allow(dead_code)]
     pub(crate) n_x: usize,
     #[allow(dead_code)]

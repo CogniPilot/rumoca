@@ -1,27 +1,188 @@
+use super::core::{
+    InitJacobianEvalContext, build_init_jacobian_colored, build_init_jacobian_dense, clamp_finite,
+    extract_direct_assignment, find_fixed_state_indices, initialize_state_vector_with_params,
+    log_init_linear_system_diagnostics, seed_direct_assignment_initial_values,
+    seed_runtime_direct_assignment_values,
+    seed_runtime_direct_assignment_values_with_context_and_env_and_blocked_solver_cols,
+    solver_idx_for_target, solver_vector_names,
+};
 use super::*;
+mod initial_solve;
+pub(crate) use initial_solve::*;
+
+mod projection_apply;
+pub(crate) use projection_apply::*;
+
+mod projection_masks;
+pub(crate) use projection_masks::*;
+
 fn build_init_jacobian(
     ctx: &InitJacobianEvalContext<'_>,
-    fixed: &[bool],
+    fixed_cols: &[bool],
+    runtime_fd_jac_cols: &[bool],
+    runtime_seed_env: Option<&VarEnv<f64>>,
+    ignored_rows: &[bool],
+    homotopy_lambda: f64,
     timeout: &crate::TimeoutBudget,
 ) -> Result<nalgebra::DMatrix<f64>, crate::SimError> {
-    if !ctx.use_initial {
-        return build_init_jacobian_dense(ctx, fixed, timeout);
+    if homotopy_lambda < 1.0 - f64::EPSILON
+        || (ctx.use_initial && ctx.compiled_initial.is_none())
+        || (!ctx.use_initial && ctx.compiled_runtime.is_none())
+    {
+        return build_runtime_initial_jacobian_dense(
+            ctx,
+            fixed_cols,
+            runtime_seed_env,
+            homotopy_lambda,
+            timeout,
+        );
     }
-    if let Some(jac) = build_init_jacobian_colored(ctx, fixed, timeout)? {
-        return Ok(jac);
+
+    let mut jac = if !ctx.use_initial {
+        build_init_jacobian_dense(ctx, fixed_cols, timeout)?
+    } else if let Some(jac) = build_init_jacobian_colored(ctx, fixed_cols, timeout)? {
+        jac
+    } else {
+        if sim_trace_enabled() {
+            eprintln!("[sim-trace] IC Jacobian coloring fallback -> dense assembly");
+        }
+        build_init_jacobian_dense(ctx, fixed_cols, timeout)?
+    };
+    overwrite_runtime_fd_jacobian_cols(
+        &mut jac,
+        ctx,
+        fixed_cols,
+        runtime_fd_jac_cols,
+        runtime_seed_env,
+        ignored_rows,
+        timeout,
+    )?;
+    Ok(jac)
+}
+
+fn build_runtime_initial_jacobian_dense(
+    ctx: &InitJacobianEvalContext<'_>,
+    fixed_cols: &[bool],
+    runtime_seed_env: Option<&VarEnv<f64>>,
+    homotopy_lambda: f64,
+    timeout: &crate::TimeoutBudget,
+) -> Result<nalgebra::DMatrix<f64>, crate::SimError> {
+    let n_total = ctx.y.len();
+    let eval_mode = IcEvalMode {
+        compiled_initial: None,
+        compiled_runtime: None,
+        runtime_seed_env: runtime_seed_env.cloned(),
+        use_initial: ctx.use_initial,
+        is_initial_phase: true,
+        homotopy_lambda,
+        t_eval: ctx.t_eval,
+        n_x: ctx.n_x,
+        ignored_rows: None,
+    };
+    let mut base_rhs = vec![0.0; n_total];
+    eval_ic_rhs_at_time(ctx.dae, ctx.y, ctx.p, &eval_mode, &mut base_rhs);
+
+    let mut jac = nalgebra::DMatrix::<f64>::zeros(n_total, n_total);
+    let mut y_perturbed = ctx.y.to_vec();
+    let mut rhs_perturbed = vec![0.0; n_total];
+    for j in 0..n_total {
+        timeout.check()?;
+        if fixed_cols.get(j).copied().unwrap_or(false) {
+            continue;
+        }
+        let step = runtime_fd_jacobian_step(ctx.y[j]);
+        y_perturbed.copy_from_slice(ctx.y);
+        y_perturbed[j] += step;
+        eval_ic_rhs_at_time(ctx.dae, &y_perturbed, ctx.p, &eval_mode, &mut rhs_perturbed);
+        for i in 0..n_total {
+            jac[(i, j)] = clamp_finite((rhs_perturbed[i] - base_rhs[i]) / step);
+        }
     }
-    if sim_trace_enabled() {
-        eprintln!("[sim-trace] IC Jacobian coloring fallback -> dense assembly");
-    }
-    build_init_jacobian_dense(ctx, fixed, timeout)
+    Ok(jac)
 }
 
 struct NewtonInitConfig<'a> {
     n_x: usize,
-    fixed: &'a [bool],
+    fixed_cols: &'a [bool],
+    ignored_rows: &'a [bool],
+    runtime_fd_jac_cols: &'a [bool],
     use_initial: bool,
+    is_initial_phase: bool,
+    homotopy_lambda: f64,
+    compiled_initial: Option<&'a CompiledInitialNewtonContext>,
+    compiled_runtime: Option<&'a CompiledRuntimeNewtonContext>,
+    runtime_seed_env: Option<VarEnv<f64>>,
     t_eval: f64,
     timeout: &'a crate::TimeoutBudget,
+}
+
+type CachedNewtonJacobian = Option<nalgebra::DMatrix<f64>>;
+type NewtonStepOutcome = Result<Option<(f64, CachedNewtonJacobian)>, crate::SimError>;
+
+fn runtime_fd_jacobian_step(value: f64) -> f64 {
+    1.0e-8 * value.abs().max(1.0)
+}
+
+fn overwrite_runtime_fd_jacobian_cols(
+    jac: &mut nalgebra::DMatrix<f64>,
+    ctx: &InitJacobianEvalContext<'_>,
+    fixed_cols: &[bool],
+    runtime_fd_jac_cols: &[bool],
+    runtime_seed_env: Option<&VarEnv<f64>>,
+    ignored_rows: &[bool],
+    timeout: &crate::TimeoutBudget,
+) -> Result<(), crate::SimError> {
+    if ctx.use_initial || !runtime_fd_jac_cols.iter().any(|&flag| flag) {
+        return Ok(());
+    }
+
+    // MLS equations.tex "Events and Synchronization": relations inside
+    // noEvent/smooth are taken literally during continuous integration, so the
+    // runtime Jacobian columns for those branch-local analog unknowns must be
+    // built from the same literal residual evaluator as the Newton residual.
+    let eval_mode = IcEvalMode {
+        compiled_initial: ctx.compiled_initial,
+        compiled_runtime: ctx.compiled_runtime,
+        runtime_seed_env: runtime_seed_env.cloned(),
+        use_initial: false,
+        is_initial_phase: false,
+        homotopy_lambda: 1.0,
+        t_eval: ctx.t_eval,
+        n_x: ctx.n_x,
+        ignored_rows: Some(ignored_rows),
+    };
+    let n_total = ctx.y.len();
+    let mut base_rhs = vec![0.0; n_total];
+    eval_ic_rhs_at_time(ctx.dae, ctx.y, ctx.p, &eval_mode, &mut base_rhs);
+    zero_ignored_residual_rows(&mut base_rhs, ignored_rows);
+
+    let mut y_perturbed = ctx.y.to_vec();
+    let mut rhs_perturbed = vec![0.0; n_total];
+    let mut overwritten = 0usize;
+    for j in 0..n_total {
+        timeout.check()?;
+        if fixed_cols.get(j).copied().unwrap_or(false)
+            || !runtime_fd_jac_cols.get(j).copied().unwrap_or(false)
+        {
+            continue;
+        }
+        let step = runtime_fd_jacobian_step(ctx.y[j]);
+        y_perturbed.copy_from_slice(ctx.y);
+        y_perturbed[j] += step;
+        eval_ic_rhs_at_time(ctx.dae, &y_perturbed, ctx.p, &eval_mode, &mut rhs_perturbed);
+        zero_ignored_residual_rows(&mut rhs_perturbed, ignored_rows);
+        for i in 0..n_total {
+            jac[(i, j)] = clamp_finite((rhs_perturbed[i] - base_rhs[i]) / step);
+        }
+        overwritten += 1;
+    }
+    if sim_trace_enabled() && overwritten > 0 {
+        eprintln!(
+            "[sim-trace] runtime projection finite-difference Jacobian columns={}",
+            overwritten
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,28 +218,49 @@ fn solve_newton_linear_system_square(
 fn solve_newton_linear_system_reduced(
     jac: &nalgebra::DMatrix<f64>,
     rhs: &nalgebra::DVector<f64>,
-    fixed: &[bool],
+    ignored_rows: &[bool],
+    fixed_cols: &[bool],
 ) -> Option<(nalgebra::DVector<f64>, NewtonLinearSolveMethod)> {
     let n_total = jac.ncols();
     let active_cols: Vec<usize> = (0..n_total)
-        .filter(|&j| j >= fixed.len() || !fixed[j])
+        .filter(|&j| j >= fixed_cols.len() || !fixed_cols[j])
+        .collect();
+    let active_rows: Vec<usize> = (0..jac.nrows())
+        .filter(|&i| i >= ignored_rows.len() || !ignored_rows[i])
         .collect();
 
-    if active_cols.is_empty() {
+    if active_cols.is_empty() || active_rows.is_empty() {
         return Some((
             nalgebra::DVector::zeros(n_total),
             NewtonLinearSolveMethod::LeastSquaresPseudoInverse,
         ));
     }
-    if active_cols.len() == n_total {
+    if active_cols.len() == n_total && active_rows.len() == jac.nrows() {
         return solve_newton_linear_system_square(jac, rhs);
     }
 
-    let mut jac_reduced = nalgebra::DMatrix::<f64>::zeros(jac.nrows(), active_cols.len());
-    for (reduced_col, &full_col) in active_cols.iter().enumerate() {
-        jac_reduced
-            .column_mut(reduced_col)
-            .copy_from(&jac.column(full_col));
+    // Runtime projection can ignore residual rows independently from fixed
+    // solver columns because equation ordering may diverge from solver-vector
+    // ordering after DAE lowering/reordering.
+    let mut jac_reduced = nalgebra::DMatrix::<f64>::zeros(active_rows.len(), active_cols.len());
+    for (reduced_row, &full_row) in active_rows.iter().enumerate() {
+        for (reduced_col, &full_col) in active_cols.iter().enumerate() {
+            jac_reduced[(reduced_row, reduced_col)] = jac[(full_row, full_col)];
+        }
+    }
+    let rhs_reduced = nalgebra::DVector::from_iterator(
+        active_rows.len(),
+        active_rows.iter().map(|&full_row| rhs[full_row]),
+    );
+
+    if active_rows.len() == active_cols.len() {
+        let (delta_reduced, method) =
+            solve_newton_linear_system_square(&jac_reduced, &rhs_reduced)?;
+        let mut delta_full = nalgebra::DVector::<f64>::zeros(n_total);
+        for (reduced_col, &full_col) in active_cols.iter().enumerate() {
+            delta_full[full_col] = delta_reduced[reduced_col];
+        }
+        return Some((delta_full, method));
     }
 
     let scale = jac_reduced
@@ -86,7 +268,7 @@ fn solve_newton_linear_system_reduced(
         .fold(0.0_f64, |max_abs, value| max_abs.max(value.abs()));
     let eps = (scale.max(1.0)) * 1.0e-12;
     let pinv = jac_reduced.svd(true, true).pseudo_inverse(eps).ok()?;
-    let delta_reduced = pinv * rhs;
+    let delta_reduced = pinv * rhs_reduced;
     if !delta_reduced.iter().all(|value| value.is_finite()) {
         return None;
     }
@@ -101,10 +283,13 @@ fn solve_newton_linear_system_reduced(
     ))
 }
 
-fn free_residual_inf(rhs: &[f64], _n_x: usize, fixed: &[bool]) -> f64 {
+#[cfg(test)]
+mod reduced_linear_solve_tests;
+
+fn free_residual_inf(rhs: &[f64], _n_x: usize, ignored_rows: &[bool]) -> f64 {
     rhs.iter()
         .enumerate()
-        .filter(|(idx, _)| !fixed.get(*idx).copied().unwrap_or(false))
+        .filter(|(idx, _)| !ignored_rows.get(*idx).copied().unwrap_or(false))
         .map(|(_, value)| value.abs())
         .fold(
             0.0_f64,
@@ -112,11 +297,12 @@ fn free_residual_inf(rhs: &[f64], _n_x: usize, fixed: &[bool]) -> f64 {
         )
 }
 
-fn zero_fixed_residual_rows(rhs: &mut [f64], fixed: &[bool]) {
+fn zero_ignored_residual_rows(rhs: &mut [f64], ignored_rows: &[bool]) {
     for (idx, value) in rhs.iter_mut().enumerate() {
-        if fixed.get(idx).copied().unwrap_or(false) {
-            // Runtime projection holds fixed states constant, so their residual
-            // rows must not feed the Newton right-hand side.
+        if ignored_rows.get(idx).copied().unwrap_or(false) {
+            // Runtime projection can ignore residual rows independently from
+            // fixed solver columns because equation ordering may diverge from
+            // solver-vector ordering after DAE lowering/reordering.
             *value = 0.0;
         }
     }
@@ -129,45 +315,212 @@ fn newton_init_step(
     p: &[f64],
     config: &NewtonInitConfig<'_>,
 ) -> Result<Option<f64>, crate::SimError> {
-    config.timeout.check()?;
-    let n_total = y.len();
-    let mut rhs = vec![0.0; n_total];
-    if config.use_initial {
-        eval_rhs_equations_initial(dae, y, p, config.t_eval, &mut rhs, config.n_x);
-    } else {
-        eval_rhs_equations(dae, y, p, config.t_eval, &mut rhs, config.n_x);
+    newton_init_step_with_cached_jacobian(iter, dae, y, p, config, None, false)
+        .map(|result| result.map(|(free_norm_after, _)| free_norm_after))
+}
+
+fn build_newton_rhs_vector(rhs: &[f64]) -> nalgebra::DVector<f64> {
+    let mut out = nalgebra::DVector::zeros(rhs.len());
+    fill_newton_rhs_vector(rhs, &mut out);
+    out
+}
+
+fn fill_newton_rhs_vector(rhs: &[f64], out: &mut nalgebra::DVector<f64>) {
+    if out.len() != rhs.len() {
+        *out = nalgebra::DVector::zeros(rhs.len());
     }
-    config.timeout.check()?;
+    for (dst, src) in out.iter_mut().zip(rhs.iter()) {
+        *dst = clamp_finite(-*src);
+    }
+}
 
-    let free_norm_before = free_residual_inf(&rhs, config.n_x, config.fixed);
-    zero_fixed_residual_rows(&mut rhs, config.fixed);
+#[derive(Default)]
+pub(crate) struct RuntimeProjectionScratch {
+    rhs: Vec<f64>,
+    rhs_after: Vec<f64>,
+    rhs_vec: nalgebra::DVector<f64>,
+}
 
-    let jac_ctx = InitJacobianEvalContext {
+impl RuntimeProjectionScratch {
+    fn rhs(&mut self, len: usize) -> &mut [f64] {
+        ensure_runtime_projection_vec_len(&mut self.rhs, len);
+        &mut self.rhs
+    }
+
+    fn rhs_after(&mut self, len: usize) -> &mut [f64] {
+        ensure_runtime_projection_vec_len(&mut self.rhs_after, len);
+        &mut self.rhs_after
+    }
+
+    fn refill_rhs_vector(&mut self) -> &nalgebra::DVector<f64> {
+        fill_newton_rhs_vector(&self.rhs, &mut self.rhs_vec);
+        &self.rhs_vec
+    }
+}
+
+fn ensure_runtime_projection_vec_len(buf: &mut Vec<f64>, len: usize) {
+    if buf.len() != len {
+        buf.resize(len, 0.0);
+    }
+}
+
+fn solve_newton_delta_with_cached_jacobian(
+    iter: usize,
+    dae: &Dae,
+    rhs: &[f64],
+    jac_ctx: &InitJacobianEvalContext<'_>,
+    config: &NewtonInitConfig<'_>,
+    cached_jac: Option<&nalgebra::DMatrix<f64>>,
+    cache_built_jac: bool,
+) -> Result<
+    Option<(
+        nalgebra::DVector<f64>,
+        NewtonLinearSolveMethod,
+        CachedNewtonJacobian,
+    )>,
+    crate::SimError,
+> {
+    let r_vec = build_newton_rhs_vector(rhs);
+    solve_newton_delta_with_cached_jacobian_from_r_vec(
+        iter,
+        NewtonLinearSolveContext {
+            dae,
+            rhs_for_diagnostics: Some(rhs),
+            jac_ctx,
+            config,
+        },
+        &r_vec,
+        cached_jac,
+        cache_built_jac,
+    )
+}
+
+struct NewtonLinearSolveContext<'a> {
+    dae: &'a Dae,
+    rhs_for_diagnostics: Option<&'a [f64]>,
+    jac_ctx: &'a InitJacobianEvalContext<'a>,
+    config: &'a NewtonInitConfig<'a>,
+}
+
+fn solve_newton_delta_with_cached_jacobian_from_r_vec(
+    iter: usize,
+    solve_ctx: NewtonLinearSolveContext<'_>,
+    r_vec: &nalgebra::DVector<f64>,
+    cached_jac: Option<&nalgebra::DMatrix<f64>>,
+    cache_built_jac: bool,
+) -> Result<
+    Option<(
+        nalgebra::DVector<f64>,
+        NewtonLinearSolveMethod,
+        CachedNewtonJacobian,
+    )>,
+    crate::SimError,
+> {
+    let NewtonLinearSolveContext {
         dae,
-        y,
-        p,
-        t_eval: config.t_eval,
-        n_x: config.n_x,
-        use_initial: config.use_initial,
+        rhs_for_diagnostics,
+        jac_ctx,
+        config,
+    } = solve_ctx;
+    let mut built_jac = None;
+    let mut delta = if let Some(cached) = cached_jac {
+        solve_newton_linear_system_reduced(cached, r_vec, config.ignored_rows, config.fixed_cols)
+    } else {
+        built_jac = Some(build_init_jacobian(
+            jac_ctx,
+            config.fixed_cols,
+            config.runtime_fd_jac_cols,
+            config.runtime_seed_env.as_ref(),
+            config.ignored_rows,
+            config.homotopy_lambda,
+            config.timeout,
+        )?);
+        solve_newton_linear_system_reduced(
+            built_jac
+                .as_ref()
+                .expect("fresh Newton Jacobian must exist before solve"),
+            r_vec,
+            config.ignored_rows,
+            config.fixed_cols,
+        )
     };
-    let jac = build_init_jacobian(&jac_ctx, config.fixed, config.timeout)?;
-    if sim_introspect_enabled() && !config.use_initial && iter == 0 {
-        log_init_linear_system_diagnostics(dae, &jac, &rhs, config.n_x);
+    if delta.is_none() {
+        built_jac = Some(build_init_jacobian(
+            jac_ctx,
+            config.fixed_cols,
+            config.runtime_fd_jac_cols,
+            config.runtime_seed_env.as_ref(),
+            config.ignored_rows,
+            config.homotopy_lambda,
+            config.timeout,
+        )?);
+        delta = solve_newton_linear_system_reduced(
+            built_jac
+                .as_ref()
+                .expect("fresh Newton Jacobian must exist after cached fallback"),
+            r_vec,
+            config.ignored_rows,
+            config.fixed_cols,
+        )
     }
-    let neg_r: Vec<f64> = rhs.iter().map(|v| clamp_finite(-v)).collect();
-    let r_vec = nalgebra::DVector::from_vec(neg_r);
-    let delta = solve_newton_linear_system_reduced(&jac, &r_vec, config.fixed);
-    config.timeout.check()?;
-    let Some((mut delta, solve_method)) = delta else {
+    let jac_for_diagnostics = built_jac
+        .as_ref()
+        .or(cached_jac)
+        .expect("Newton Jacobian must be available before solve");
+    if sim_introspect_enabled() && !config.use_initial && iter == 0 {
+        if let Some(rhs) = rhs_for_diagnostics {
+            log_init_linear_system_diagnostics(dae, jac_for_diagnostics, rhs, config.n_x);
+        } else {
+            let fallback_rhs = r_vec.iter().map(|v| clamp_finite(-*v)).collect::<Vec<_>>();
+            log_init_linear_system_diagnostics(dae, jac_for_diagnostics, &fallback_rhs, config.n_x);
+        }
+    }
+    let Some((delta, solve_method)) = delta else {
         if sim_trace_enabled() {
             eprintln!(
                 "[sim-trace] IC Newton iter={} singular Jacobian (failed linear solve)",
                 iter
             );
         }
-        log_init_linear_system_diagnostics(dae, &jac, &rhs, config.n_x);
+        if let Some(rhs) = rhs_for_diagnostics {
+            log_init_linear_system_diagnostics(dae, jac_for_diagnostics, rhs, config.n_x);
+        } else {
+            let fallback_rhs = r_vec.iter().map(|v| clamp_finite(-*v)).collect::<Vec<_>>();
+            log_init_linear_system_diagnostics(dae, jac_for_diagnostics, &fallback_rhs, config.n_x);
+        }
         return Ok(None);
     };
+    let jac_to_cache = if cache_built_jac { built_jac } else { None };
+    Ok(Some((delta, solve_method, jac_to_cache)))
+}
+
+struct NewtonDeltaApplyContext<'a> {
+    dae: &'a Dae,
+    p: &'a [f64],
+    eval_mode: IcEvalMode<'a>,
+    ignored_rows: &'a [bool],
+    free_norm_before: f64,
+}
+
+fn apply_newton_delta_and_measure_residual(
+    iter: usize,
+    ctx: &NewtonDeltaApplyContext<'_>,
+    y: &mut [f64],
+    delta: nalgebra::DVector<f64>,
+    solve_method: NewtonLinearSolveMethod,
+) -> Result<f64, crate::SimError> {
+    let mut rhs_after = vec![0.0; y.len()];
+    apply_newton_delta_and_measure_residual_into(iter, ctx, y, delta, solve_method, &mut rhs_after)
+}
+
+fn apply_newton_delta_and_measure_residual_into(
+    iter: usize,
+    ctx: &NewtonDeltaApplyContext<'_>,
+    y: &mut [f64],
+    mut delta: nalgebra::DVector<f64>,
+    solve_method: NewtonLinearSolveMethod,
+    rhs_after: &mut [f64],
+) -> Result<f64, crate::SimError> {
     if sim_trace_enabled() && solve_method != NewtonLinearSolveMethod::Lu {
         eprintln!(
             "[sim-trace] IC Newton iter={} non-LU linear solve method={:?}",
@@ -183,7 +536,7 @@ fn newton_init_step(
         );
     }
 
-    if !config.use_initial {
+    if !ctx.eval_mode.use_initial {
         let delta_inf = delta.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
         let y_inf = y.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
         let max_step = 10.0 * (1.0 + y_inf);
@@ -201,32 +554,244 @@ fn newton_init_step(
         }
     }
 
-    for i in 0..n_total {
+    for i in 0..y.len() {
         if delta[i].is_finite() {
             y[i] += delta[i];
         }
     }
 
-    config.timeout.check()?;
-    let mut rhs_after = vec![0.0; n_total];
-    if config.use_initial {
-        eval_rhs_equations_initial(dae, y, p, config.t_eval, &mut rhs_after, config.n_x);
-    } else {
-        eval_rhs_equations(dae, y, p, config.t_eval, &mut rhs_after, config.n_x);
-    }
-    let free_norm_after = free_residual_inf(&rhs_after, config.n_x, config.fixed);
+    eval_ic_rhs_at_time(ctx.dae, y, ctx.p, &ctx.eval_mode, rhs_after);
+    let free_norm_after = free_residual_inf(rhs_after, ctx.eval_mode.n_x, ctx.ignored_rows);
     if sim_trace_enabled() {
         eprintln!(
             "[sim-trace] IC Newton iter={} residual_inf(before)={} residual_inf(after)={}",
-            iter, free_norm_before, free_norm_after
+            iter, ctx.free_norm_before, free_norm_after
         );
     }
+    Ok(free_norm_after)
+}
 
-    Ok(Some(free_norm_after))
+fn newton_init_step_with_cached_jacobian(
+    iter: usize,
+    dae: &Dae,
+    y: &mut [f64],
+    p: &[f64],
+    config: &NewtonInitConfig<'_>,
+    cached_jac: Option<&nalgebra::DMatrix<f64>>,
+    cache_built_jac: bool,
+) -> NewtonStepOutcome {
+    config.timeout.check()?;
+    let n_total = y.len();
+    let eval_mode = IcEvalMode {
+        compiled_initial: config.compiled_initial,
+        compiled_runtime: config.compiled_runtime,
+        runtime_seed_env: config.runtime_seed_env.clone(),
+        use_initial: config.use_initial,
+        is_initial_phase: config.is_initial_phase,
+        homotopy_lambda: config.homotopy_lambda,
+        t_eval: config.t_eval,
+        n_x: config.n_x,
+        ignored_rows: Some(config.ignored_rows),
+    };
+    let mut rhs = vec![0.0; n_total];
+    eval_ic_rhs_at_time(dae, y, p, &eval_mode, &mut rhs);
+    config.timeout.check()?;
+
+    let free_norm_before = free_residual_inf(&rhs, config.n_x, config.ignored_rows);
+    zero_ignored_residual_rows(&mut rhs, config.ignored_rows);
+
+    let jac_ctx = InitJacobianEvalContext {
+        dae,
+        y,
+        p,
+        t_eval: config.t_eval,
+        n_x: config.n_x,
+        use_initial: config.use_initial,
+        compiled_initial: config.compiled_initial,
+        compiled_runtime: config.compiled_runtime,
+    };
+    let Some((delta, solve_method, jac_to_cache)) = solve_newton_delta_with_cached_jacobian(
+        iter,
+        dae,
+        &rhs,
+        &jac_ctx,
+        config,
+        cached_jac,
+        cache_built_jac,
+    )?
+    else {
+        return Ok(None);
+    };
+    config.timeout.check()?;
+    let delta_apply_ctx = NewtonDeltaApplyContext {
+        dae,
+        p,
+        eval_mode,
+        ignored_rows: config.ignored_rows,
+        free_norm_before,
+    };
+    let free_norm_after =
+        apply_newton_delta_and_measure_residual(iter, &delta_apply_ctx, y, delta, solve_method)?;
+    Ok(Some((free_norm_after, jac_to_cache)))
+}
+
+struct CachedNewtonStep<'a> {
+    iter: usize,
+    cached_jac: Option<&'a nalgebra::DMatrix<f64>>,
+    cache_built_jac: bool,
+}
+
+fn newton_init_step_with_cached_jacobian_in_place(
+    step: CachedNewtonStep<'_>,
+    dae: &Dae,
+    y: &mut [f64],
+    p: &[f64],
+    config: &NewtonInitConfig<'_>,
+    scratch: &mut RuntimeProjectionScratch,
+) -> NewtonStepOutcome {
+    config.timeout.check()?;
+    let n_total = y.len();
+    let eval_mode = IcEvalMode {
+        compiled_initial: config.compiled_initial,
+        compiled_runtime: config.compiled_runtime,
+        runtime_seed_env: config.runtime_seed_env.clone(),
+        use_initial: config.use_initial,
+        is_initial_phase: config.is_initial_phase,
+        homotopy_lambda: config.homotopy_lambda,
+        t_eval: config.t_eval,
+        n_x: config.n_x,
+        ignored_rows: Some(config.ignored_rows),
+    };
+    {
+        let rhs = scratch.rhs(n_total);
+        eval_ic_rhs_at_time(dae, y, p, &eval_mode, rhs);
+    }
+    config.timeout.check()?;
+
+    let free_norm_before = free_residual_inf(&scratch.rhs, config.n_x, config.ignored_rows);
+    zero_ignored_residual_rows(&mut scratch.rhs, config.ignored_rows);
+
+    let jac_ctx = InitJacobianEvalContext {
+        dae,
+        y,
+        p,
+        t_eval: config.t_eval,
+        n_x: config.n_x,
+        use_initial: config.use_initial,
+        compiled_initial: config.compiled_initial,
+        compiled_runtime: config.compiled_runtime,
+    };
+    let Some((delta, solve_method, jac_to_cache)) =
+        solve_newton_delta_with_cached_jacobian_from_r_vec(
+            step.iter,
+            NewtonLinearSolveContext {
+                dae,
+                rhs_for_diagnostics: None,
+                jac_ctx: &jac_ctx,
+                config,
+            },
+            scratch.refill_rhs_vector(),
+            step.cached_jac,
+            step.cache_built_jac,
+        )?
+    else {
+        return Ok(None);
+    };
+    config.timeout.check()?;
+    let delta_apply_ctx = NewtonDeltaApplyContext {
+        dae,
+        p,
+        eval_mode,
+        ignored_rows: config.ignored_rows,
+        free_norm_before,
+    };
+    let free_norm_after = apply_newton_delta_and_measure_residual_into(
+        step.iter,
+        &delta_apply_ctx,
+        y,
+        delta,
+        solve_method,
+        scratch.rhs_after(n_total),
+    )?;
+    Ok(Some((free_norm_after, jac_to_cache)))
+}
+
+fn newton_init_step_from_current_rhs_in_place(
+    step: CachedNewtonStep<'_>,
+    dae: &Dae,
+    y: &mut [f64],
+    p: &[f64],
+    config: &NewtonInitConfig<'_>,
+    free_norm_before: f64,
+    scratch: &mut RuntimeProjectionScratch,
+) -> NewtonStepOutcome {
+    zero_ignored_residual_rows(&mut scratch.rhs, config.ignored_rows);
+    let eval_mode = IcEvalMode {
+        compiled_initial: config.compiled_initial,
+        compiled_runtime: config.compiled_runtime,
+        runtime_seed_env: config.runtime_seed_env.clone(),
+        use_initial: config.use_initial,
+        is_initial_phase: config.is_initial_phase,
+        homotopy_lambda: config.homotopy_lambda,
+        t_eval: config.t_eval,
+        n_x: config.n_x,
+        ignored_rows: Some(config.ignored_rows),
+    };
+    let jac_ctx = InitJacobianEvalContext {
+        dae,
+        y,
+        p,
+        t_eval: config.t_eval,
+        n_x: config.n_x,
+        use_initial: config.use_initial,
+        compiled_initial: config.compiled_initial,
+        compiled_runtime: config.compiled_runtime,
+    };
+    let Some((delta, solve_method, jac_to_cache)) =
+        solve_newton_delta_with_cached_jacobian_from_r_vec(
+            step.iter,
+            NewtonLinearSolveContext {
+                dae,
+                rhs_for_diagnostics: None,
+                jac_ctx: &jac_ctx,
+                config,
+            },
+            scratch.refill_rhs_vector(),
+            step.cached_jac,
+            step.cache_built_jac,
+        )?
+    else {
+        return Ok(None);
+    };
+    config.timeout.check()?;
+    let delta_apply_ctx = NewtonDeltaApplyContext {
+        dae,
+        p,
+        eval_mode,
+        ignored_rows: config.ignored_rows,
+        free_norm_before,
+    };
+    let free_norm_after = apply_newton_delta_and_measure_residual_into(
+        step.iter,
+        &delta_apply_ctx,
+        y,
+        delta,
+        solve_method,
+        scratch.rhs_after(y.len()),
+    )?;
+    Ok(Some((free_norm_after, jac_to_cache)))
 }
 
 fn equations_use_initial(dae: &Dae) -> bool {
     !dae.initial_equations.is_empty() || dae.f_x.iter().any(|eq| expr_contains_initial(&eq.rhs))
+}
+
+fn equations_use_homotopy(dae: &Dae) -> bool {
+    dae.f_x.iter().any(|eq| expr_contains_homotopy(&eq.rhs))
+        || dae
+            .initial_equations
+            .iter()
+            .any(|eq| expr_contains_homotopy(&eq.rhs))
 }
 
 fn should_write_partial_ic_solution(
@@ -356,21 +921,155 @@ fn residual_row_details(
     )
 }
 
+fn build_initial_eval_env_preserving_pre_values(
+    dae: &Dae,
+    y: &[f64],
+    p: &[f64],
+    t_eval: f64,
+) -> Result<VarEnv<f64>, crate::SimError> {
+    // MLS §8.6: initialization diagnostics/start persistence must see the
+    // same initial-section fixed point as `initial()`/`pre(...)` startup
+    // seeding, without leaving diagnostic-only mutations in the global pre
+    // cache.
+    let pre_snapshot = rumoca_eval_dae::runtime::snapshot_pre_values();
+    let mut startup_y = y.to_vec();
+    let env = crate::runtime::startup::build_initial_section_env_strict(
+        dae,
+        startup_y.as_mut_slice(),
+        p,
+        t_eval,
+    )
+    .map_err(crate::SimError::SolverError);
+    rumoca_eval_dae::runtime::restore_pre_values(pre_snapshot);
+    env
+}
+
+fn build_runtime_eval_env_preserving_pre_values(
+    dae: &Dae,
+    y: &[f64],
+    p: &[f64],
+    n_x: usize,
+    t_eval: f64,
+    ignored_rows: Option<&[bool]>,
+    runtime_seed_env: Option<&VarEnv<f64>>,
+) -> Result<VarEnv<f64>, crate::SimError> {
+    let pre_snapshot = rumoca_eval_dae::runtime::snapshot_pre_values();
+    let mut y_work = y.to_vec();
+    let mut env = runtime_seed_env
+        .cloned()
+        .unwrap_or_else(|| crate::runtime::event::build_runtime_state_env(dae, y, p, t_eval));
+    rumoca_eval_dae::runtime::refresh_env_solver_and_parameter_values(&mut env, dae, y, p, t_eval);
+    if !runtime_projection_needs_settled_discrete_env(dae, ignored_rows) {
+        return Ok(env);
+    }
+
+    let use_frozen_pre = crate::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
+    let mut guard_env: Option<VarEnv<f64>> = None;
+    let settled = crate::runtime::event::settle_runtime_event_updates_with_base_env(
+        crate::EventSettleInput {
+            dae,
+            y: &mut y_work,
+            p,
+            n_x,
+            t_eval,
+            is_initial: false,
+        },
+        env,
+        crate::runtime::assignment::propagate_runtime_direct_assignments_from_env,
+        crate::runtime::alias::propagate_runtime_alias_components_from_env,
+        |dae, env| {
+            let guard_env = guard_env.get_or_insert_with(|| env.clone());
+            crate::runtime::discrete::apply_discrete_partition_updates_with_guard_env_and_scalar_override(
+                dae,
+                env,
+                guard_env,
+                |_eq, _target, _solution, _env, _implicit_clock_active| None,
+            )
+        },
+        crate::runtime::layout::sync_solver_values_from_env,
+        !use_frozen_pre,
+    );
+    rumoca_eval_dae::runtime::restore_pre_values(pre_snapshot);
+    Ok(settled)
+}
+
+fn runtime_projection_needs_settled_discrete_env(dae: &Dae, ignored_rows: Option<&[bool]>) -> bool {
+    !(dae.f_z.is_empty() && dae.f_m.is_empty())
+        && dae.f_x.iter().enumerate().any(|(idx, eq)| {
+            !ignored_rows
+                .and_then(|rows| rows.get(idx))
+                .copied()
+                .unwrap_or(false)
+                && crate::runtime::no_state::expr_reads_event_updated_discrete_var(dae, &eq.rhs)
+        })
+}
+
+#[cfg(test)]
+mod runtime_projection_gate_tests;
+
+fn build_ic_eval_env(
+    dae: &Dae,
+    y: &[f64],
+    p: &[f64],
+    mode: &IcEvalMode<'_>,
+) -> Result<VarEnv<f64>, crate::SimError> {
+    let mut env = if mode.use_initial {
+        build_initial_eval_env_preserving_pre_values(dae, y, p, mode.t_eval)
+    } else {
+        // MLS §8.6: after initialization solve, ordinary event iteration must
+        // repeatedly re-evaluate normal equations with v -> pre(v) updates
+        // until discrete variables reach a fixed point. Runtime projection
+        // residuals therefore need a locally settled discrete environment.
+        build_runtime_eval_env_preserving_pre_values(
+            dae,
+            y,
+            p,
+            mode.n_x,
+            mode.t_eval,
+            mode.ignored_rows,
+            mode.runtime_seed_env.as_ref(),
+        )
+    }?;
+    env.is_initial = mode.is_initial_phase;
+    if mode.is_initial_phase {
+        env.set(
+            rumoca_eval_dae::runtime::INIT_HOMOTOPY_LAMBDA_KEY,
+            mode.homotopy_lambda,
+        );
+    }
+    Ok(env)
+}
+
 fn log_non_finite_ic_residual_rows(
     dae: &Dae,
     rhs: &[f64],
     y: &[f64],
     p: &[f64],
+    n_x: usize,
     use_initial: bool,
     phase: &str,
 ) {
     if !ic_non_finite_row_diagnostics_enabled() {
         return;
     }
-    let mut eval_env = build_env(dae, y, p, 0.0);
-    if use_initial {
-        eval_env.is_initial = true;
-    }
+    let eval_mode = IcEvalMode {
+        compiled_initial: None,
+        compiled_runtime: None,
+        runtime_seed_env: None,
+        use_initial,
+        is_initial_phase: true,
+        homotopy_lambda: 1.0,
+        t_eval: 0.0,
+        n_x,
+        ignored_rows: None,
+    };
+    let Ok(eval_env) = build_ic_eval_env(dae, y, p, &eval_mode) else {
+        eprintln!(
+            "[sim-trace] IC non-finite residual diagnostics skipped: failed to build {} eval env",
+            if use_initial { "initial" } else { "runtime" }
+        );
+        return;
+    };
     let non_finite_params = collect_non_finite_params(dae, &eval_env);
     log_non_finite_params(&non_finite_params);
     let mut rows: Vec<(usize, f64, bool)> = rhs
@@ -448,18 +1147,173 @@ fn expr_contains_initial(expr: &Expression) -> bool {
     }
 }
 
-fn eval_ic_rhs(dae: &Dae, y: &[f64], p: &[f64], use_initial: bool, n_x: usize, out: &mut [f64]) {
-    if use_initial {
-        eval_rhs_equations_initial(dae, y, p, 0.0, out, n_x);
-    } else {
-        eval_rhs_equations(dae, y, p, 0.0, out, n_x);
+fn expr_contains_homotopy(expr: &Expression) -> bool {
+    match expr {
+        Expression::BuiltinCall { function, args } => {
+            if *function == BuiltinFunction::Homotopy {
+                return true;
+            }
+            args.iter().any(expr_contains_homotopy)
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            expr_contains_homotopy(lhs) || expr_contains_homotopy(rhs)
+        }
+        Expression::Unary { rhs, .. } => expr_contains_homotopy(rhs),
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches
+                .iter()
+                .any(|(c, e)| expr_contains_homotopy(c) || expr_contains_homotopy(e))
+                || expr_contains_homotopy(else_branch)
+        }
+        Expression::FunctionCall { args, .. } => args.iter().any(expr_contains_homotopy),
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+            elements.iter().any(expr_contains_homotopy)
+        }
+        Expression::Index { base, .. } => expr_contains_homotopy(base),
+        _ => false,
     }
 }
 
-struct IcResidualContext<'a> {
+#[derive(Clone)]
+struct IcEvalMode<'a> {
+    compiled_initial: Option<&'a CompiledInitialNewtonContext>,
+    compiled_runtime: Option<&'a CompiledRuntimeNewtonContext>,
+    runtime_seed_env: Option<VarEnv<f64>>,
     use_initial: bool,
+    is_initial_phase: bool,
+    homotopy_lambda: f64,
+    t_eval: f64,
     n_x: usize,
-    fixed: &'a [bool],
+    ignored_rows: Option<&'a [bool]>,
+}
+
+fn eval_runtime_ic_residual(
+    dae: &Dae,
+    y: &[f64],
+    p: &[f64],
+    mode: &IcEvalMode<'_>,
+    out: &mut [f64],
+) {
+    let eval_env = build_ic_eval_env(dae, y, p, mode)
+        .unwrap_or_else(|err| panic!("runtime eval env required for residual evaluation: {err}"));
+    for (slot, eq) in out.iter_mut().zip(dae.f_x.iter()) {
+        *slot = rumoca_eval_dae::runtime::eval_expr::<f64>(&eq.rhs, &eval_env);
+    }
+}
+
+fn expr_needs_runtime_residual_eval(expr: &Expression) -> bool {
+    match expr {
+        // MLS §3.3 / §3.7.5: noEvent/smooth preserve value semantics while
+        // suppressing event generation. Keep runtime projection on the scalar
+        // evaluator for those branch-sensitive rows until the compiled runtime
+        // residual path proves equivalent on the op-amp limiter family.
+        Expression::BuiltinCall { function, args } => {
+            matches!(function, BuiltinFunction::NoEvent | BuiltinFunction::Smooth)
+                || args.iter().any(expr_needs_runtime_residual_eval)
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            expr_needs_runtime_residual_eval(lhs) || expr_needs_runtime_residual_eval(rhs)
+        }
+        Expression::Unary { rhs, .. } | Expression::FieldAccess { base: rhs, .. } => {
+            expr_needs_runtime_residual_eval(rhs)
+        }
+        Expression::FunctionCall { args, .. } => args.iter().any(expr_needs_runtime_residual_eval),
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expr_needs_runtime_residual_eval(cond) || expr_needs_runtime_residual_eval(value)
+            }) || expr_needs_runtime_residual_eval(else_branch)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+            elements.iter().any(expr_needs_runtime_residual_eval)
+        }
+        Expression::Range { start, step, end } => {
+            expr_needs_runtime_residual_eval(start)
+                || step
+                    .as_deref()
+                    .is_some_and(expr_needs_runtime_residual_eval)
+                || expr_needs_runtime_residual_eval(end)
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expr_needs_runtime_residual_eval(expr)
+                || indices
+                    .iter()
+                    .any(|index| expr_needs_runtime_residual_eval(&index.range))
+                || filter
+                    .as_deref()
+                    .is_some_and(expr_needs_runtime_residual_eval)
+        }
+        Expression::Index { base, subscripts } => {
+            expr_needs_runtime_residual_eval(base)
+                || subscripts.iter().any(|subscript| match subscript {
+                    dae::Subscript::Expr(expr) => expr_needs_runtime_residual_eval(expr),
+                    dae::Subscript::Index(_) | dae::Subscript::Colon => false,
+                })
+        }
+        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => false,
+    }
+}
+
+fn dae_needs_runtime_residual_eval(dae: &Dae) -> bool {
+    dae.f_x
+        .iter()
+        .any(|eq| expr_needs_runtime_residual_eval(&eq.rhs))
+}
+
+fn eval_ic_rhs_at_time(dae: &Dae, y: &[f64], p: &[f64], mode: &IcEvalMode<'_>, out: &mut [f64]) {
+    if mode.use_initial
+        && (mode.homotopy_lambda - 1.0).abs() <= f64::EPSILON
+        && let Some(compiled_initial) = mode.compiled_initial
+    {
+        // MLS §8.6: initial() is true during initialization, so the IC
+        // residual stays on the initial-mode compiled kernel whenever the
+        // residual is evaluating the final actual system.
+        eval_compiled_initial_residual(compiled_initial, y, p, mode.t_eval, out);
+    } else {
+        if let Some(compiled_runtime) = mode.compiled_runtime
+            && !mode.is_initial_phase
+            && mode.runtime_seed_env.is_none()
+            && !dae_needs_runtime_residual_eval(dae)
+        {
+            eval_compiled_runtime_residual(compiled_runtime, y, p, mode.t_eval, out);
+        } else {
+            eval_runtime_ic_residual(dae, y, p, mode, out);
+        }
+    }
+}
+
+fn build_initial_newton_context_if_needed(
+    dae: &Dae,
+    n_total: usize,
+    use_initial: bool,
+) -> Result<Option<CompiledInitialNewtonContext>, crate::SimError> {
+    use_initial
+        .then(|| build_compiled_initial_newton_context(dae, n_total))
+        .transpose()
+}
+
+fn build_runtime_newton_context_if_needed(
+    dae: &Dae,
+    n_total: usize,
+    use_initial: bool,
+) -> Result<Option<CompiledRuntimeNewtonContext>, crate::SimError> {
+    (!use_initial)
+        .then(|| build_compiled_runtime_newton_context(dae, n_total))
+        .transpose()
+}
+
+struct IcResidualContext<'a> {
+    eval_mode: IcEvalMode<'a>,
+    ignored_rows: &'a [bool],
     timeout: &'a crate::TimeoutBudget,
 }
 
@@ -476,8 +1330,9 @@ fn ensure_perturbed_residual_is_finite(
 
     ctx.timeout.check()?;
     let mut rhs_perturbed = vec![0.0; dae.f_x.len()];
-    eval_ic_rhs(dae, y, p, ctx.use_initial, ctx.n_x, &mut rhs_perturbed);
-    let perturbed_free_norm = free_residual_inf(&rhs_perturbed, ctx.n_x, ctx.fixed);
+    eval_ic_rhs_at_time(dae, y, p, &ctx.eval_mode, &mut rhs_perturbed);
+    let perturbed_free_norm =
+        free_residual_inf(&rhs_perturbed, ctx.eval_mode.n_x, ctx.ignored_rows);
     if sim_trace_enabled() {
         eprintln!(
             "[sim-trace] IC residual_inf(after-perturb)={}",
@@ -490,7 +1345,8 @@ fn ensure_perturbed_residual_is_finite(
             &rhs_perturbed,
             y,
             p,
-            ctx.use_initial,
+            ctx.eval_mode.n_x,
+            ctx.eval_mode.use_initial,
             "after_perturb",
         );
         return Err(non_finite_initial_residual_error(
@@ -513,7 +1369,10 @@ struct IcFinalizeState<'a> {
     seeded_y: &'a [f64],
 }
 
-fn finalize_best_or_seeded_solution(dae: &mut Dae, state: &IcFinalizeState<'_>) {
+fn finalize_best_or_seeded_solution(
+    dae: &mut Dae,
+    state: &IcFinalizeState<'_>,
+) -> Result<(), crate::SimError> {
     let mut wrote_solution = false;
     if should_write_partial_ic_solution(
         state.best_r_inf,
@@ -521,12 +1380,13 @@ fn finalize_best_or_seeded_solution(dae: &mut Dae, state: &IcFinalizeState<'_>) 
         state.tol,
         state.best_y,
     ) {
-        finalize_initial_solution(dae, state.best_y, state.p, state.n_x, state.fixed, 0.0);
+        finalize_initial_solution(dae, state.best_y, state.p, state.n_x, state.fixed, 0.0)?;
         wrote_solution = true;
     }
     if !wrote_solution && should_write_seeded_ic_solution(state.seeded_updates, state.seeded_y) {
-        finalize_initial_solution(dae, state.seeded_y, state.p, state.n_x, state.fixed, 0.0);
+        finalize_initial_solution(dae, state.seeded_y, state.p, state.n_x, state.fixed, 0.0)?;
     }
+    Ok(())
 }
 
 struct IcNewtonContext<'a> {
@@ -539,574 +1399,6 @@ struct IcNewtonContext<'a> {
     seeded_updates: usize,
     seeded_y: &'a [f64],
     initial_free_norm: f64,
-}
-
-fn run_initial_newton_iterations(
-    dae: &mut Dae,
-    y: &mut Vec<f64>,
-    ctx: &IcNewtonContext<'_>,
-) -> Result<bool, crate::SimError> {
-    let first_r_inf = ctx
-        .initial_free_norm
-        .is_finite()
-        .then_some(ctx.initial_free_norm);
-    let mut prev_r_inf = f64::INFINITY;
-    let mut stagnant_iters = 0usize;
-    let mut best_r_inf = f64::INFINITY;
-    let mut best_y = y.clone();
-
-    for iter in 0..50 {
-        ctx.timeout.check()?;
-        let Some(r_inf) = newton_init_step(iter, dae, y, ctx.p, ctx.newton_config)? else {
-            let finalize_state = IcFinalizeState {
-                p: ctx.p,
-                n_x: ctx.n_x,
-                fixed: ctx.fixed,
-                tol: ctx.tol,
-                best_r_inf,
-                first_r_inf,
-                best_y: &best_y,
-                seeded_updates: ctx.seeded_updates,
-                seeded_y: ctx.seeded_y,
-            };
-            finalize_best_or_seeded_solution(dae, &finalize_state);
-            return Ok(false);
-        };
-        if sim_trace_enabled() {
-            eprintln!("[sim-trace] IC Newton iter={} residual_inf={}", iter, r_inf);
-        }
-        if r_inf.is_finite() && r_inf < best_r_inf {
-            best_r_inf = r_inf;
-            best_y.clone_from(y);
-        }
-        if r_inf < ctx.tol {
-            finalize_initial_solution(dae, y, ctx.p, ctx.n_x, ctx.fixed, 0.0);
-            return Ok(true);
-        }
-
-        if prev_r_inf.is_finite() && r_inf.is_finite() {
-            let ratio = r_inf / prev_r_inf.max(f64::MIN_POSITIVE);
-            stagnant_iters = if ratio > 0.95 { stagnant_iters + 1 } else { 0 };
-            if iter >= 6 && stagnant_iters >= 4 {
-                trace_ic_newton_stagnation(iter, r_inf, prev_r_inf);
-                break;
-            }
-        } else {
-            stagnant_iters = 0;
-        }
-        prev_r_inf = r_inf;
-    }
-
-    if sim_trace_enabled() {
-        eprintln!(
-            "[sim-trace] IC Newton finished converged=false best_residual_inf={} first_residual_inf={}",
-            best_r_inf,
-            first_r_inf.unwrap_or(f64::NAN)
-        );
-    }
-    let finalize_state = IcFinalizeState {
-        p: ctx.p,
-        n_x: ctx.n_x,
-        fixed: ctx.fixed,
-        tol: ctx.tol,
-        best_r_inf,
-        first_r_inf,
-        best_y: &best_y,
-        seeded_updates: ctx.seeded_updates,
-        seeded_y: ctx.seeded_y,
-    };
-    finalize_best_or_seeded_solution(dae, &finalize_state);
-    Ok(false)
-}
-
-pub(crate) fn solve_initial_algebraic(
-    dae: &mut Dae,
-    n_x: usize,
-    tol: f64,
-    timeout: &crate::TimeoutBudget,
-) -> Result<bool, crate::SimError> {
-    let n_eq = dae.f_x.len();
-    let n_z = n_eq - n_x;
-    if n_z == 0 {
-        return Ok(true);
-    }
-
-    let use_initial = equations_use_initial(dae);
-
-    let mut y = vec![0.0; n_eq];
-    initialize_state_vector(dae, &mut y);
-    let p = default_params(dae);
-    let initial_updates = apply_initial_section_assignments(dae, &mut y, &p, 0.0);
-    if sim_trace_enabled() {
-        eprintln!(
-            "[sim-trace] IC initial-section seeding updates={}",
-            initial_updates
-        );
-        let env_check = build_env(dae, &y, &p, 0.0);
-        eprintln!(
-            "[sim-trace] IC initial-section env check: count={:?} T_start={:?}",
-            env_check.vars.get("vIn.signalSource.count"),
-            env_check.vars.get("vIn.signalSource.T_start")
-        );
-    }
-    let fixed = find_fixed_state_indices(dae);
-    let newton_config = NewtonInitConfig {
-        n_x,
-        fixed: &fixed,
-        use_initial,
-        t_eval: 0.0,
-        timeout,
-    };
-
-    if sim_trace_enabled() {
-        eprintln!(
-            "[sim-trace] IC Newton start n_eq={} n_x={} n_z={} fixed_states={} tol={} use_initial={}",
-            n_eq,
-            n_x,
-            n_z,
-            fixed.iter().filter(|&&f| f).count(),
-            tol,
-            use_initial
-        );
-    }
-
-    let seeded_updates =
-        seed_direct_assignment_initial_values(dae, &mut y, &p, n_x, use_initial, 0.0);
-    if sim_trace_enabled() && seeded_updates > 0 {
-        eprintln!(
-            "[sim-trace] IC direct-assignment seeding updates={}",
-            seeded_updates
-        );
-    }
-    let seeded_y = y.clone();
-
-    timeout.check()?;
-    let mut rhs_initial = vec![0.0; n_eq];
-    eval_ic_rhs(dae, &y, &p, use_initial, n_x, &mut rhs_initial);
-    let initial_free_norm = free_residual_inf(&rhs_initial, n_x, &fixed);
-    if sim_trace_enabled() {
-        eprintln!(
-            "[sim-trace] IC initial residual_inf(before-perturb)={}",
-            initial_free_norm
-        );
-    }
-    if !initial_free_norm.is_finite() {
-        log_non_finite_ic_residual_rows(dae, &rhs_initial, &y, &p, use_initial, "before_perturb");
-    }
-    if initial_free_norm <= tol {
-        finalize_initial_solution(dae, &y, &p, n_x, &fixed, 0.0);
-        return Ok(true);
-    }
-
-    for val in &mut y[n_x..n_eq] {
-        if *val == 0.0 {
-            *val = 1e-6;
-        }
-    }
-
-    let residual_ctx = IcResidualContext {
-        use_initial,
-        n_x,
-        fixed: &fixed,
-        timeout,
-    };
-    ensure_perturbed_residual_is_finite(dae, &y, &p, &residual_ctx, initial_free_norm)?;
-
-    let newton_ctx = IcNewtonContext {
-        p: &p,
-        newton_config: &newton_config,
-        tol,
-        timeout,
-        n_x,
-        fixed: &fixed,
-        seeded_updates,
-        seeded_y: &seeded_y,
-        initial_free_norm,
-    };
-    run_initial_newton_iterations(dae, &mut y, &newton_ctx)
-}
-
-pub(crate) fn initial_free_residual_inf(
-    dae: &Dae,
-    n_x: usize,
-    timeout: &crate::TimeoutBudget,
-) -> Result<f64, crate::SimError> {
-    let n_eq = dae.f_x.len();
-    if n_eq == 0 {
-        return Ok(0.0);
-    }
-    let use_initial = equations_use_initial(dae);
-    let mut y = vec![0.0; n_eq];
-    initialize_state_vector(dae, &mut y);
-    let p = default_params(dae);
-    let _ = apply_initial_section_assignments(dae, &mut y, &p, 0.0);
-    let fixed = find_fixed_state_indices(dae);
-
-    timeout.check()?;
-    let mut rhs = vec![0.0; n_eq];
-    if use_initial {
-        eval_rhs_equations_initial(dae, &y, &p, 0.0, &mut rhs, n_x);
-    } else {
-        eval_rhs_equations(dae, &y, &p, 0.0, &mut rhs, n_x);
-    }
-    Ok(free_residual_inf(&rhs, n_x, &fixed))
-}
-
-pub(crate) fn project_algebraics_with_fixed_states_at_time(
-    dae: &Dae,
-    y_seed: &[f64],
-    n_x: usize,
-    t_eval: f64,
-    tol: f64,
-    timeout: &crate::TimeoutBudget,
-) -> Result<Option<Vec<f64>>, crate::SimError> {
-    let n_eq = dae.f_x.len();
-    if n_eq == 0 || n_x >= n_eq || y_seed.len() < n_eq {
-        return Ok(Some(y_seed.get(..n_eq).unwrap_or(y_seed).to_vec()));
-    }
-
-    let mut y = y_seed[..n_eq].to_vec();
-    let p = default_params(dae);
-    let direct_seed_updates = seed_runtime_direct_assignment_values(dae, &mut y, &p, n_x, t_eval);
-    if sim_trace_enabled() && direct_seed_updates > 0 {
-        eprintln!(
-            "[sim-trace] runtime projection direct-seed updates={} t={}",
-            direct_seed_updates, t_eval
-        );
-    }
-    let fixed = build_runtime_projection_fixed_mask(dae, n_x, n_eq);
-    let newton_config = NewtonInitConfig {
-        n_x,
-        fixed: &fixed,
-        use_initial: false,
-        t_eval,
-        timeout,
-    };
-
-    timeout.check()?;
-    let mut rhs_initial = vec![0.0; n_eq];
-    eval_rhs_equations(dae, &y, &p, t_eval, &mut rhs_initial, n_x);
-    for rhs_i in rhs_initial.iter_mut().take(n_x) {
-        *rhs_i = 0.0;
-    }
-    let initial_free_norm = free_residual_inf(&rhs_initial, n_x, &fixed);
-    if initial_free_norm <= tol {
-        return Ok(Some(y));
-    }
-
-    let mut prev_r_inf = f64::INFINITY;
-    let mut stagnant_iters = 0usize;
-    for iter in 0..12 {
-        timeout.check()?;
-        let Some(r_inf) = newton_init_step(iter, dae, &mut y, &p, &newton_config)? else {
-            return Ok(None);
-        };
-        if r_inf < tol {
-            return Ok(Some(y));
-        }
-
-        if prev_r_inf.is_finite() && r_inf.is_finite() {
-            let ratio = r_inf / prev_r_inf.max(f64::MIN_POSITIVE);
-            if ratio > 0.98 {
-                stagnant_iters += 1;
-            } else {
-                stagnant_iters = 0;
-            }
-            if iter >= 4 && stagnant_iters >= 3 {
-                return Ok(None);
-            }
-        } else {
-            stagnant_iters = 0;
-        }
-        prev_r_inf = r_inf;
-    }
-    Ok(None)
-}
-
-fn build_runtime_projection_fixed_mask(dae: &Dae, n_x: usize, n_eq: usize) -> Vec<bool> {
-    let mut fixed = vec![false; n_eq];
-    for f in fixed.iter_mut().take(n_x.min(n_eq)) {
-        *f = true;
-    }
-
-    let target_assignment_stats =
-        crate::runtime::assignment::collect_direct_assignment_target_stats(dae, n_x, false);
-    let names = solver_vector_names(dae, n_eq);
-    let name_to_idx: std::collections::HashMap<String, usize> = names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| (name.clone(), idx))
-        .collect();
-
-    for eq in dae.f_x.iter().skip(n_x) {
-        let Some((target, solution)) = runtime_direct_assignment(dae, eq) else {
-            continue;
-        };
-        if !runtime_projection_target_is_exogenous(dae, solution, n_x, n_eq, &name_to_idx) {
-            continue;
-        }
-        let Some(idx) = solver_idx_for_target(target.as_str(), &name_to_idx) else {
-            continue;
-        };
-        let is_alias_solution =
-            crate::runtime::assignment::assignment_solution_is_alias_varref(dae, solution);
-        if !runtime_projection_target_can_be_seeded(
-            target.as_str(),
-            is_alias_solution,
-            &target_assignment_stats,
-        ) {
-            continue;
-        }
-        if idx < n_x {
-            fixed[idx] = false;
-        } else if idx < n_eq {
-            fixed[idx] = true;
-        }
-    }
-
-    propagate_runtime_projection_state_dependencies(dae, n_x, &name_to_idx, &mut fixed);
-
-    for (idx, name) in names.iter().enumerate().skip(n_x) {
-        if dae
-            .f_x
-            .get(idx)
-            .is_some_and(|eq| eq.origin == "orphaned_variable_pin")
-        {
-            fixed[idx] = true;
-            continue;
-        }
-        let base = component_base_name(name).unwrap_or_else(|| name.to_string());
-        let key = VarName::new(base);
-        if dae.discrete_reals.contains_key(&key) || dae.discrete_valued.contains_key(&key) {
-            fixed[idx] = true;
-        }
-    }
-    fixed
-}
-
-fn runtime_projection_target_can_be_seeded(
-    target: &str,
-    is_alias_solution: bool,
-    stats: &std::collections::HashMap<
-        String,
-        crate::runtime::assignment::DirectAssignmentTargetStats,
-    >,
-) -> bool {
-    let target_stats = stats.get(target).copied().unwrap_or_default();
-    if target_stats.total > 1 && target_stats.non_alias != 1 {
-        return false;
-    }
-    !(target_stats.total > 1 && target_stats.non_alias == 1 && is_alias_solution)
-}
-
-fn runtime_projection_target_is_exogenous(
-    dae: &Dae,
-    solution: &Expression,
-    n_x: usize,
-    n_eq: usize,
-    name_to_idx: &std::collections::HashMap<String, usize>,
-) -> bool {
-    crate::runtime::assignment::direct_assignment_source_is_known(
-        dae,
-        solution,
-        n_x,
-        n_eq,
-        |target| solver_idx_for_target(target, name_to_idx),
-    )
-}
-
-fn propagate_runtime_projection_state_dependencies(
-    dae: &Dae,
-    n_x: usize,
-    name_to_idx: &std::collections::HashMap<String, usize>,
-    fixed: &mut [bool],
-) {
-    let max_rows = n_x.min(dae.f_x.len()).min(fixed.len());
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for row in 0..max_rows {
-            if fixed[row] {
-                continue;
-            }
-            let mut refs = std::collections::HashSet::new();
-            dae.f_x[row].rhs.collect_var_refs(&mut refs);
-            for ref_name in refs {
-                changed |= clear_fixed_dependency(ref_name.as_str(), name_to_idx, max_rows, fixed);
-            }
-        }
-    }
-}
-
-fn clear_fixed_dependency(
-    ref_name: &str,
-    name_to_idx: &std::collections::HashMap<String, usize>,
-    max_rows: usize,
-    fixed: &mut [bool],
-) -> bool {
-    let Some(idx) = dependency_to_unfix(ref_name, name_to_idx, max_rows, fixed) else {
-        return false;
-    };
-    fixed[idx] = false;
-    true
-}
-
-fn dependency_to_unfix(
-    ref_name: &str,
-    name_to_idx: &std::collections::HashMap<String, usize>,
-    max_rows: usize,
-    fixed: &[bool],
-) -> Option<usize> {
-    solver_idx_for_target(ref_name, name_to_idx).filter(|&idx| idx < max_rows && fixed[idx])
-}
-
-fn variable_size_for_target(dae: &Dae, target: &str) -> Option<usize> {
-    let lookup = |name: &str| {
-        dae.states
-            .get(&VarName::new(name))
-            .or_else(|| dae.algebraics.get(&VarName::new(name)))
-            .or_else(|| dae.outputs.get(&VarName::new(name)))
-            .map(|var| var.size())
-    };
-    lookup(target).or_else(|| component_base_name(target).and_then(|base| lookup(&base)))
-}
-
-fn runtime_direct_assignment<'a>(dae: &Dae, eq: &'a Equation) -> Option<(String, &'a Expression)> {
-    if eq.origin == "orphaned_variable_pin" {
-        return None;
-    }
-
-    if let Some((target, solution)) = extract_direct_assignment(&eq.rhs) {
-        let target_size = variable_size_for_target(dae, target.as_str())?;
-        if !target.contains('[') && target_size > 1 {
-            return None;
-        }
-        return Some((target, solution));
-    }
-
-    if let Some(lhs) = eq.lhs.as_ref() {
-        let lhs_size = variable_size_for_target(dae, lhs.as_str())?;
-        if lhs_size > 1 {
-            return None;
-        }
-        return Some((lhs.as_str().to_string(), &eq.rhs));
-    }
-
-    None
-}
-
-fn direct_assignment_graph_has_cycle(edges: &std::collections::HashMap<usize, Vec<usize>>) -> bool {
-    let mut indegree: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-    for (&src, deps) in edges {
-        indegree.entry(src).or_insert(0);
-        for &dst in deps {
-            *indegree.entry(dst).or_insert(0) += 1;
-        }
-    }
-
-    let mut queue = std::collections::VecDeque::new();
-    for (&node, &deg) in &indegree {
-        if deg == 0 {
-            queue.push_back(node);
-        }
-    }
-
-    let mut visited = 0usize;
-    while let Some(node) = queue.pop_front() {
-        visited += 1;
-        if let Some(deps) = edges.get(&node) {
-            for &dst in deps {
-                decrement_indegree_and_enqueue(&mut indegree, &mut queue, dst);
-            }
-        }
-    }
-
-    visited != indegree.len()
-}
-
-fn decrement_indegree_and_enqueue(
-    indegree: &mut std::collections::HashMap<usize, usize>,
-    queue: &mut std::collections::VecDeque<usize>,
-    dst: usize,
-) {
-    let Some(deg) = indegree.get_mut(&dst) else {
-        return;
-    };
-    *deg -= 1;
-    if *deg == 0 {
-        queue.push_back(dst);
-    }
-}
-
-pub(crate) fn runtime_projection_required(dae: &Dae, n_x: usize) -> bool {
-    let n_total = dae.f_x.len();
-    if n_x >= n_total {
-        return false;
-    }
-
-    let names = solver_vector_names(dae, n_total);
-    let name_to_idx: std::collections::HashMap<String, usize> = names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| (name.clone(), idx))
-        .collect();
-    let mut assigned_targets: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut edges: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
-
-    for eq in dae.f_x.iter().skip(n_x) {
-        if eq.origin == "orphaned_variable_pin" {
-            continue;
-        }
-        let Some((target, solution)) = runtime_direct_assignment(dae, eq) else {
-            return true;
-        };
-        let Some(target_idx) = solver_idx_for_target(target.as_str(), &name_to_idx) else {
-            return true;
-        };
-        if target_idx < n_x || target_idx >= n_total {
-            return true;
-        }
-        if !assigned_targets.insert(target_idx) {
-            return true;
-        }
-
-        let mut refs = std::collections::HashSet::new();
-        solution.collect_var_refs(&mut refs);
-        for ref_name in refs {
-            let Some(dep_idx) = solver_idx_for_target(ref_name.as_str(), &name_to_idx) else {
-                continue;
-            };
-            if dep_idx < n_x || dep_idx >= n_total {
-                continue;
-            }
-            if dep_idx == target_idx {
-                return true;
-            }
-            edges.entry(target_idx).or_default().push(dep_idx);
-        }
-    }
-
-    for idx in n_x..n_total {
-        let is_pinned = dae
-            .f_x
-            .get(idx)
-            .is_some_and(|eq| eq.origin == "orphaned_variable_pin");
-        if !is_pinned && !assigned_targets.contains(&idx) {
-            return true;
-        }
-    }
-
-    direct_assignment_graph_has_cycle(&edges)
-}
-
-pub(crate) fn seed_runtime_direct_assignments(
-    dae: &Dae,
-    y: &mut [f64],
-    p: &[f64],
-    n_x: usize,
-    t_eval: f64,
-) -> usize {
-    seed_runtime_direct_assignment_values(dae, y, p, n_x, t_eval)
 }
 
 fn write_var_start(var: &mut rumoca_ir_dae::Variable, y: &[f64], idx: &mut usize) {
@@ -1185,41 +1477,17 @@ fn write_discrete_start_from_env(
     true
 }
 
-fn persist_initial_section_discrete_starts(
+pub(super) fn persist_initial_section_discrete_starts(
     dae: &mut Dae,
     y: &[f64],
     p: &[f64],
     t_eval: f64,
-) -> usize {
+) -> Result<usize, crate::SimError> {
     if dae.discrete_reals.is_empty() && dae.discrete_valued.is_empty() {
-        return 0;
+        return Ok(0);
     }
 
-    let mut env = build_env(dae, y, p, t_eval);
-    env.is_initial = true;
-    let max_passes = dae.initial_equations.len().clamp(1, 32);
-    for _ in 0..max_passes {
-        let mut changed = false;
-        for eq in &dae.initial_equations {
-            let assignment = eq
-                .lhs
-                .as_ref()
-                .map(|lhs| (lhs.as_str().to_string(), &eq.rhs))
-                .or_else(|| extract_direct_assignment(&eq.rhs));
-            let Some((target, solution)) = assignment else {
-                continue;
-            };
-            let value = clamp_finite(eval_expr::<f64>(solution, &env));
-            let prev = env.vars.get(target.as_str()).copied().unwrap_or(0.0);
-            if (prev - value).abs() > 1e-12 {
-                env.set(target.as_str(), value);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    let env = build_initial_eval_env_preserving_pre_values(dae, y, p, t_eval)?;
 
     let mut updates = 0usize;
     for (name, var) in &mut dae.discrete_reals {
@@ -1232,7 +1500,7 @@ fn persist_initial_section_discrete_starts(
             updates += 1;
         }
     }
-    updates
+    Ok(updates)
 }
 
 fn finalize_initial_solution(
@@ -1242,13 +1510,14 @@ fn finalize_initial_solution(
     n_x: usize,
     fixed: &[bool],
     t_eval: f64,
-) {
+) -> Result<(), crate::SimError> {
     write_solved_ics(dae, y, n_x, fixed);
-    let discrete_updates = persist_initial_section_discrete_starts(dae, y, p, t_eval);
+    let discrete_updates = persist_initial_section_discrete_starts(dae, y, p, t_eval)?;
     if sim_trace_enabled() && discrete_updates > 0 {
         eprintln!(
             "[sim-trace] persisted initial-section discrete starts updates={}",
             discrete_updates
         );
     }
+    Ok(())
 }

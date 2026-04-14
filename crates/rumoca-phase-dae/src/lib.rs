@@ -119,6 +119,13 @@ fn log_todae_subphase(label: &str, start: rumoca_core::timing::OptionalTimer) {
     }
 }
 
+fn run_todae_phase<R>(timing_enabled: bool, label: &str, f: impl FnOnce() -> R) -> R {
+    let start = maybe_start_timer_if(timing_enabled);
+    let result = f();
+    log_todae_subphase(label, start);
+    result
+}
+
 /// Options controlling ToDAE conversion strictness.
 #[derive(Debug, Clone, Copy)]
 pub struct ToDaeOptions {
@@ -142,6 +149,7 @@ pub fn to_dae(flat: &Model) -> Result<Dae, ToDaeError> {
 /// Convert a Model to DAE with configurable strictness.
 pub fn to_dae_with_options(flat: &Model, options: ToDaeOptions) -> Result<Dae, ToDaeError> {
     let mut dae = Dae::new();
+    let todae_subphase_timing = todae_subphase_timing_enabled();
 
     // Fail fast on unresolved or non-executable function calls so unsupported
     // evaluation paths don't leak into simulation.
@@ -199,74 +207,106 @@ pub fn to_dae_with_options(flat: &Model, options: ToDaeOptions) -> Result<Dae, T
         definition_analysis::collect_record_equation_defined_vars(flat, &prefix_children);
 
     // Third pass: convert variable bindings to equations (MLS §4.4.1)
-    convert_bindings_to_equations(
-        &mut dae,
-        flat,
-        &state_vars,
-        &connected_inputs,
-        &algorithm_defined_vars,
-        &record_eq_defined_vars,
-    );
+    run_todae_phase(todae_subphase_timing, "binding_conversion", || {
+        convert_bindings_to_equations(
+            &mut dae,
+            flat,
+            &prefix_children,
+            &state_vars,
+            &connected_inputs,
+            &algorithm_defined_vars,
+            &record_eq_defined_vars,
+        );
+    });
 
     // Build prefix count map for efficient scalar count inference
     let prefix_counts = build_prefix_counts(flat);
 
     // Fourth pass: classify equations
-    classify_equations(&mut dae, flat, &prefix_counts);
+    run_todae_phase(todae_subphase_timing, "equation_classification", || {
+        classify_equations(&mut dae, flat, &prefix_counts);
+    });
 
     // Process initial equations
-    initial::convert_initial_equations(&mut dae, flat, &prefix_counts, infer_equation_scalar_count);
+    run_todae_phase(todae_subphase_timing, "initial_equations", || {
+        initial::convert_initial_equations(
+            &mut dae,
+            flat,
+            &prefix_counts,
+            infer_equation_scalar_count,
+        );
+    });
 
     // Process when clauses into discrete update sets.
-    for when in &flat.when_clauses {
-        let dae_when = convert_when_clause(when, &state_vars, flat)?;
-        route_discrete_event_equations(&mut dae, &dae_when);
-    }
+    run_todae_phase(todae_subphase_timing, "when_conversion", || {
+        for when in &flat.when_clauses {
+            let dae_when = convert_when_clause(when, &state_vars, flat)?;
+            route_discrete_event_equations(&mut dae, &dae_when);
+        }
+        Ok::<(), ToDaeError>(())
+    })?;
 
     // Process model/initial algorithms strictly through equation lowering.
-    lower_algorithms_to_equations(&mut dae, flat)?;
-    canonicalize_discrete_assignment_equations(&mut dae);
-    populate_canonical_conditions(&mut dae, flat);
+    run_todae_phase(todae_subphase_timing, "algorithm_lowering", || {
+        lower_algorithms_to_equations(&mut dae, flat)
+    })?;
+    run_todae_phase(
+        todae_subphase_timing,
+        "canonicalize_discrete_assignments",
+        || {
+            canonicalize_discrete_assignment_equations(&mut dae);
+        },
+    );
+    run_todae_phase(todae_subphase_timing, "canonical_conditions", || {
+        populate_canonical_conditions(&mut dae, flat);
+    });
     // MLS §3.7.5: Lower pre() operator calls to dedicated parameter symbols.
     // This must run after equation construction but before parameter sorting,
     // so that the new __pre__ parameters are included in dependency ordering.
-    pre_lowering::lower_pre_operator(&mut dae);
+    run_todae_phase(todae_subphase_timing, "pre_lowering", || {
+        pre_lowering::lower_pre_operator(&mut dae);
+    });
 
     dae.functions = flat_to_dae_function_map(&flat.functions);
     dae.enum_literal_ordinals = flat.enum_literal_ordinals.clone();
+    finalize_lowered_dae(&mut dae, flat, &state_vars, todae_subphase_timing, options)?;
 
+    Ok(dae)
+}
+
+fn finalize_lowered_dae(
+    dae: &mut Dae,
+    flat: &Model,
+    state_vars: &HashSet<VarName>,
+    todae_subphase_timing: bool,
+    options: ToDaeOptions,
+) -> Result<(), ToDaeError> {
     // Sort parameters so that start-value dependencies are satisfied in order.
     // If parameter A's start expression references parameter B, B must appear
     // before A so that code generators can evaluate start values sequentially.
-    sort_parameters_by_start_dependency(&mut dae);
+    run_todae_phase(todae_subphase_timing, "parameter_sort", || {
+        sort_parameters_by_start_dependency(dae);
+    });
 
     // Scalarize vector equations whose expressions reference "phantom" base names.
     // Connector arrays like `plug_p.pin[3]` produce scalarized variables but some
     // component equations still reference the unsubscripted base (`plug_p.pin.v`).
     // Expanding them into per-element scalar equations ensures all backends can
     // resolve every VarRef to a declared variable.
-    dae_lowering::scalarize_phantom_vector_equations(&mut dae);
+    run_todae_phase(todae_subphase_timing, "scalarize_phantom", || {
+        dae_lowering::scalarize_phantom_vector_equations(dae);
+    });
+    run_todae_phase(todae_subphase_timing, "runtime_precompute", || {
+        populate_runtime_precompute(dae)
+    })?;
+    run_todae_phase(todae_subphase_timing, "appendix_b_validation", || {
+        appendix_b_validation::validate_appendix_b_invariants(dae)
+    })?;
 
-    let todae_subphase_timing = todae_subphase_timing_enabled();
-    let runtime_precompute_start = maybe_start_timer_if(todae_subphase_timing);
-    populate_runtime_precompute(&mut dae)?;
-    log_todae_subphase("runtime_precompute", runtime_precompute_start);
-    let appendix_b_start = maybe_start_timer_if(todae_subphase_timing);
-    appendix_b_validation::validate_appendix_b_invariants(&dae)?;
-    log_todae_subphase("appendix_b_validation", appendix_b_start);
-
-    // MLS §4.7: Count interface flow variables (flows in top-level connectors)
-    // These count toward the equation size, not as unknowns, because they'll
-    // receive their defining equations from external connections.
+    // MLS §4.7 / §4.8 / §9.4: propagate interface counts from flatten.
     dae.interface_flow_count = count_interface_flows(flat);
-
-    // MLS §9.4: Propagate break edge excess from flatten phase.
     dae.oc_break_edge_scalar_count = flat.oc_break_edge_scalar_count;
-
-    // MLS §4.8: Count overconstrained connector interface contributions.
-    // Uses all OC vars for connectivity, filtered to components with top-level vars.
-    // Positive = root equations needed, negative = redundant equations (cycles).
-    let oc_correction = count_overconstrained_interface(flat, &state_vars);
+    let oc_correction = count_overconstrained_interface(flat, state_vars);
     if oc_correction >= 0 {
         dae.overconstrained_interface_count = oc_correction;
     } else {
@@ -274,32 +314,28 @@ pub fn to_dae_with_options(flat: &Model, options: ToDaeOptions) -> Result<Dae, T
         dae.oc_break_edge_scalar_count += (-oc_correction) as usize;
     }
 
-    // Final compile-phase safety check on the generated DAE catches unresolved
-    // constructor field projections introduced during ToDae conversion.
-    let constructor_projection_start = maybe_start_timer_if(todae_subphase_timing);
-    validate_dae_constructor_field_projections(&dae)?;
-    log_todae_subphase(
+    run_todae_phase(
+        todae_subphase_timing,
         "constructor_projection_validation",
-        constructor_projection_start,
-    );
+        || validate_dae_constructor_field_projections(dae),
+    )?;
     let known_flat_var_names: HashSet<String> = flat
         .variables
         .keys()
         .map(|name| name.as_str().to_string())
         .collect();
-    let reference_validation_start = maybe_start_timer_if(todae_subphase_timing);
-    validate_dae_references(&dae, &known_flat_var_names)?;
-    log_todae_subphase("reference_validation", reference_validation_start);
+    run_todae_phase(todae_subphase_timing, "reference_validation", || {
+        validate_dae_references(dae, &known_flat_var_names)
+    })?;
 
     if options.error_on_unbalanced
         && !dae.is_partial
-        && rumoca_eval_dae::analysis::balance(&dae) != 0
+        && rumoca_eval_dae::analysis::balance(dae) != 0
     {
-        let (equations, unknowns) = balance_counting::compute_balance_counts(&dae);
+        let (equations, unknowns) = balance_counting::compute_balance_counts(dae);
         return Err(ToDaeError::unbalanced(equations, unknowns));
     }
-
-    Ok(dae)
+    Ok(())
 }
 
 /// Determine if an algebraic variable should be stored in discretes or derivative_aliases.
@@ -546,6 +582,7 @@ fn insert_discrete_var(
 fn convert_bindings_to_equations(
     dae: &mut Dae,
     flat: &Model,
+    prefix_children: &FxHashMap<String, Vec<VarName>>,
     state_vars: &HashSet<VarName>,
     connected_inputs: &HashSet<VarName>,
     algorithm_defined_vars: &HashSet<VarName>,
@@ -554,6 +591,7 @@ fn convert_bindings_to_equations(
     binding_conversion::convert_bindings_to_equations(
         dae,
         flat,
+        prefix_children,
         state_vars,
         connected_inputs,
         algorithm_defined_vars,
@@ -653,5 +691,7 @@ fn classify_equations(dae: &mut Dae, flat: &Model, prefix_counts: &FxHashMap<Str
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_algorithm_lowering;
 #[cfg(test)]
 mod tests_conditions;

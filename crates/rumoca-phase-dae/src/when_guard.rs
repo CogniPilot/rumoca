@@ -414,20 +414,49 @@ fn unfold_boolean_aliases_field_access(
     }
 }
 
-pub(super) fn when_guard_activation_expr(dae: &Dae, when_condition: &Expression) -> Expression {
+fn when_guard_scalar_activation_expr(dae: &Dae, when_condition: &Expression) -> Expression {
     let unfolded = unfold_boolean_aliases_in_expr(dae, when_condition, &mut HashSet::new(), 0);
-    if expression_contains_relational_operator(&unfolded) {
-        return unfolded;
-    }
     // MLS §8.3.5.1: when-equation assignments fire on the false->true edge
-    // of the condition, not while the condition remains true.
+    // of the condition, not while the condition remains true. Keep the
+    // canonical relational subexpressions visible under edge(...) so the
+    // relation analysis still exposes the underlying condition roots.
     match when_condition {
-        Expression::VarRef { .. } | Expression::Index { .. } | Expression::FieldAccess { .. } => {
+        Expression::VarRef { .. } | Expression::Index { .. } | Expression::FieldAccess { .. }
+            if !expression_contains_relational_operator(&unfolded) =>
+        {
             Expression::BuiltinCall {
                 function: BuiltinFunction::Edge,
                 args: vec![when_condition.clone()],
             }
         }
-        _ => when_condition.clone(),
+        _ => Expression::BuiltinCall {
+            function: BuiltinFunction::Edge,
+            args: vec![unfolded],
+        },
+    }
+}
+
+pub(super) fn when_guard_activation_expr(dae: &Dae, when_condition: &Expression) -> Expression {
+    match when_condition {
+        // MLS §8.3.5: vectorized when-conditions trigger when any listed
+        // condition becomes true, so each scalar Boolean guard needs its own
+        // activation edge instead of leaving the aggregate guard level-active.
+        Expression::Array {
+            elements,
+            is_matrix,
+        } => Expression::Array {
+            elements: elements
+                .iter()
+                .map(|element| when_guard_activation_expr(dae, element))
+                .collect(),
+            is_matrix: *is_matrix,
+        },
+        Expression::Tuple { elements } => Expression::Tuple {
+            elements: elements
+                .iter()
+                .map(|element| when_guard_activation_expr(dae, element))
+                .collect(),
+        },
+        _ => when_guard_scalar_activation_expr(dae, when_condition),
     }
 }

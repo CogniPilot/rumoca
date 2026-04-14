@@ -255,7 +255,7 @@ pub(super) fn eval_clock_special_function<T: SimFloat>(
                 .map(|a| eval_expr::<T>(a, env))
                 .unwrap_or_else(T::zero),
         ),
-        "previous" => Some(eval_builtin(BuiltinFunction::Pre, args, env)),
+        "previous" => Some(eval_builtin_previous(args, env)),
         "interval" => {
             if let Some(arg) = args.first()
                 && let Some(timing) = infer_clock_timing_from_expr(arg, env)

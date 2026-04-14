@@ -15,6 +15,7 @@ pub(super) fn lower_root_conditions(
                 condition,
                 layout,
                 &dae_model.functions,
+                &dae_model.clock_intervals,
             )?);
         }
     }
@@ -26,6 +27,7 @@ pub(super) fn lower_root_conditions(
                 condition,
                 layout,
                 &dae_model.functions,
+                &dae_model.clock_intervals,
             )?);
         }
     }
@@ -36,8 +38,10 @@ fn lower_root_condition_row(
     condition: &dae::Expression,
     layout: &VarLayout,
     functions: &IndexMap<dae::VarName, dae::Function>,
+    clock_intervals: &IndexMap<String, f64>,
 ) -> Result<Vec<LinearOp>, LowerError> {
-    let mut builder = LowerBuilder::new(layout, functions);
+    let mut builder =
+        LowerBuilder::new_with_runtime_metadata(layout, functions, clock_intervals, false);
     let scope = Scope::new();
     let root_value = match condition {
         dae::Expression::Binary { op, lhs, rhs } => match op {

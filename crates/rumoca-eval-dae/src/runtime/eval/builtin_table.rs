@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(any(feature = "cranelift", test))]
+use crate::runtime::dual::Dual;
 
 pub(super) fn eval_builtin_sum<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> T {
     if args.len() == 1 {
@@ -43,58 +45,49 @@ fn eval_table_id_arg<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn eval_table_col_arg<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> usize {
+fn eval_table_col_arg<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> f64 {
     args.get(1)
-        .map(|e| eval_expr::<T>(e, env).real().round() as i64)
-        .unwrap_or(1)
-        .max(1) as usize
-        - 1
+        .map(|e| eval_expr::<T>(e, env).real())
+        .unwrap_or(1.0)
 }
 
-fn eval_table_bounds_call<T: SimFloat>(args: &[Expression], env: &VarEnv<T>, max: bool) -> T {
-    let table_id = eval_table_id_arg(args, env);
+fn table_col_index_from_real(col_arg: f64) -> usize {
+    (col_arg.round() as i64).max(1) as usize - 1
+}
+
+pub(crate) fn eval_table_bound_value(table_id: f64, max: bool) -> f64 {
     let Some(spec) = lookup_external_table(table_id) else {
-        return T::zero();
+        return 0.0;
     };
     table_x_bounds(&spec)
-        .map(|(min, upper)| {
-            if max {
-                T::from_f64(upper)
-            } else {
-                T::from_f64(min)
-            }
-        })
-        .unwrap_or_else(T::zero)
+        .map(|(min, upper)| if max { upper } else { min })
+        .unwrap_or(0.0)
 }
 
-fn eval_table_lookup_call<T: SimFloat>(
-    args: &[Expression],
-    env: &VarEnv<T>,
-    input_arg_idx: usize,
-) -> T {
-    let table_id = eval_table_id_arg(args, env);
-    let col_idx = eval_table_col_arg(args, env);
-    let x = args
-        .get(input_arg_idx)
-        .map(|e| eval_expr::<T>(e, env))
-        .unwrap_or_else(T::zero);
+#[cfg(any(feature = "cranelift", test))]
+pub(crate) fn eval_table_lookup_value(table_id: f64, col_arg: f64, x: f64) -> f64 {
     let Some(spec) = lookup_external_table(table_id) else {
-        return T::zero();
+        return 0.0;
     };
+    let col_idx = table_col_index_from_real(col_arg);
     eval_table_1d_lookup(&spec, col_idx, x)
 }
 
-fn eval_time_table_next_event_call<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> T {
-    let table_id = eval_table_id_arg(args, env);
-    let time_in = args
-        .get(1)
-        .map(|e| eval_expr::<T>(e, env).real())
-        .unwrap_or(0.0);
+#[cfg(any(feature = "cranelift", test))]
+pub(crate) fn eval_table_lookup_slope_value(table_id: f64, col_arg: f64, x: f64) -> f64 {
     let Some(spec) = lookup_external_table(table_id) else {
-        return T::from_f64(f64::INFINITY);
+        return 0.0;
+    };
+    let col_idx = table_col_index_from_real(col_arg);
+    eval_table_1d_lookup(&spec, col_idx, Dual::new(x, 1.0)).du
+}
+
+pub(crate) fn eval_time_table_next_event_value(table_id: f64, time_in: f64) -> f64 {
+    let Some(spec) = lookup_external_table(table_id) else {
+        return f64::INFINITY;
     };
     if spec.data.is_empty() {
-        return T::from_f64(f64::INFINITY);
+        return f64::INFINITY;
     }
 
     let knots: Vec<f64> = spec
@@ -104,12 +97,11 @@ fn eval_time_table_next_event_call<T: SimFloat>(args: &[Expression], env: &VarEn
         .filter(|x| x.is_finite())
         .collect();
     if knots.is_empty() {
-        return T::from_f64(f64::INFINITY);
+        return f64::INFINITY;
     }
 
-    // Return the first strict future knot; if none exists, there are no more
-    // scheduled table time events in this horizon. For periodic extrapolation,
-    // search across neighboring cycles.
+    // Modelica.Blocks.Tables.Internal.getNextTimeEvent follows the next strict
+    // future knot. For periodic extrapolation, the search wraps across cycles.
     let eps = 1e-12_f64;
     if spec.extrapolation == 3
         && let Some((x_min, x_max)) = table_x_bounds(&spec)
@@ -125,17 +117,47 @@ fn eval_time_table_next_event_call<T: SimFloat>(args: &[Expression], env: &VarEn
                 .filter(|candidate| *candidate > time_in + eps)
                 .min_by(|a, b| a.total_cmp(b));
             if let Some(best) = best {
-                return T::from_f64(best);
+                return best;
             }
         }
     }
 
-    for &x in &knots {
-        if x > time_in + eps {
-            return T::from_f64(x);
-        }
-    }
-    T::from_f64(f64::INFINITY)
+    knots
+        .into_iter()
+        .find(|x| *x > time_in + eps)
+        .unwrap_or(f64::INFINITY)
+}
+
+fn eval_table_bounds_call<T: SimFloat>(args: &[Expression], env: &VarEnv<T>, max: bool) -> T {
+    let table_id = eval_table_id_arg(args, env);
+    T::from_f64(eval_table_bound_value(table_id, max))
+}
+
+fn eval_table_lookup_call<T: SimFloat>(
+    args: &[Expression],
+    env: &VarEnv<T>,
+    input_arg_idx: usize,
+) -> T {
+    let table_id = eval_table_id_arg(args, env);
+    let Some(spec) = lookup_external_table(table_id) else {
+        return T::zero();
+    };
+    let col_arg = eval_table_col_arg(args, env);
+    let col_idx = table_col_index_from_real(col_arg);
+    let x = args
+        .get(input_arg_idx)
+        .map(|e| eval_expr::<T>(e, env))
+        .unwrap_or_else(T::zero);
+    eval_table_1d_lookup(&spec, col_idx, x)
+}
+
+fn eval_time_table_next_event_call<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> T {
+    let table_id = eval_table_id_arg(args, env);
+    let time_in = args
+        .get(1)
+        .map(|e| eval_expr::<T>(e, env).real())
+        .unwrap_or(0.0);
+    T::from_f64(eval_time_table_next_event_value(table_id, time_in))
 }
 
 pub(super) fn eval_external_table_function<T: SimFloat>(

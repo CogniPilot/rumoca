@@ -103,22 +103,185 @@ fn test_stateful_discrete_updates_respect_intermediate_scheduled_events() {
     )
     .expect("stateful simulation should succeed");
 
-    let y_out_idx = result
+    let y_idx = result
         .names
         .iter()
-        .position(|name| name == "y_out")
-        .unwrap_or_else(|| panic!("missing y_out channel, got {:?}", result.names));
-    let y_out = &result.data[y_out_idx];
-    assert_eq!(y_out.len(), result.times.len());
-    assert_eq!(result.times.len(), 2, "expected coarse output schedule");
+        .position(|name| name == "y")
+        .unwrap_or_else(|| panic!("missing y channel, got {:?}", result.names));
+    let y = &result.data[y_idx];
+    assert_eq!(y.len(), result.times.len());
+    for expected_event in [0.01, 0.02, 0.03, 0.04] {
+        assert!(
+            result
+                .times
+                .iter()
+                .any(|t| (*t - expected_event).abs() < 1.0e-12),
+            "expected output schedule to expose scheduled event {expected_event}, got {:?}",
+            result.times
+        );
+    }
 
-    // With four scheduled events in (0, 0.05), y should increment four times.
-    let y0 = y_out.first().copied().unwrap_or_default();
-    let y_end = y_out.last().copied().unwrap_or_default();
+    // MLS §16.5.1: the final output at t_end observes the same tick semantics
+    // as any other scheduled sample instant, so this setup increments once at
+    // 0.01, 0.02, 0.03, 0.04, and again at the terminal tick 0.05.
+    let y0 = y.first().copied().unwrap_or_default();
+    let y_end = y.last().copied().unwrap_or_default();
     assert!(
-        (y_end - (y0 + 4.0)).abs() < 1.0e-9,
-        "expected y_out to increment by four across scheduled events, got start={y0} end={y_end}; series={y_out:?}, times={:?}",
+        (y_end - (y0 + 5.0)).abs() < 1.0e-9,
+        "expected y to increment by five across scheduled ticks including t_end, got start={y0} end={y_end}; series={y:?}, times={:?}",
         result.times
+    );
+}
+
+#[test]
+fn test_no_state_projection_uses_solver_layout_for_mixed_visible_discrete_channels() {
+    let mut dae = Dae::new();
+    dae.algebraics
+        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
+    dae.outputs
+        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
+    dae.discrete_valued
+        .insert(VarName::new("flag"), Variable::new(VarName::new("flag")));
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: OpBinary::Sub(Default::default()),
+            lhs: Box::new(Expression::Binary {
+                op: OpBinary::Add(Default::default()),
+                lhs: Box::new(var_ref("a")),
+                rhs: Box::new(var_ref("y")),
+            }),
+            rhs: Box::new(real(10.0)),
+        },
+        span: Span::DUMMY,
+        origin: "linear_coupling_sum".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: OpBinary::Sub(Default::default()),
+            lhs: Box::new(Expression::Binary {
+                op: OpBinary::Sub(Default::default()),
+                lhs: Box::new(var_ref("a")),
+                rhs: Box::new(var_ref("y")),
+            }),
+            rhs: Box::new(real(4.0)),
+        },
+        span: Span::DUMMY,
+        origin: "linear_coupling_diff".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_m.push(dae::Equation::explicit(
+        VarName::new("flag"),
+        Expression::Literal(Literal::Integer(1)),
+        Span::DUMMY,
+        "flag := 1",
+    ));
+
+    let result = simulate(
+        &dae,
+        &SimOptions {
+            t_start: 0.0,
+            t_end: 1.0,
+            dt: Some(0.5),
+            max_wall_seconds: Some(2.0),
+            ..SimOptions::default()
+        },
+    )
+    .expect("no-state simulation should preserve mixed visible channel layout");
+
+    let y_idx = result
+        .names
+        .iter()
+        .position(|name| name == "y")
+        .unwrap_or_else(|| panic!("missing y output, got {:?}", result.names));
+    let flag_idx = result
+        .names
+        .iter()
+        .position(|name| name == "flag")
+        .unwrap_or_else(|| panic!("missing flag output, got {:?}", result.names));
+
+    for (&t, &value) in result.times.iter().zip(result.data[y_idx].iter()) {
+        assert!(
+            (value - 3.0).abs() < 1.0e-9,
+            "expected solver output y=3.0 at t={t}, got {value}; names={:?}",
+            result.names
+        );
+    }
+    for (&t, &value) in result.times.iter().zip(result.data[flag_idx].iter()) {
+        assert!(
+            (value - 1.0).abs() < 1.0e-9,
+            "expected discrete flag=1.0 at t={t}, got {value}; names={:?}",
+            result.names
+        );
+    }
+}
+
+#[test]
+fn test_stepper_applies_discrete_updates_after_synthetic_root() {
+    let mut dae = Dae::new();
+
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.discrete_reals
+        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("x")],
+            },
+            var_ref("y"),
+        ),
+        span: Span::DUMMY,
+        origin: "x_tracks_y".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_z.push(dae::Equation {
+        lhs: Some(VarName::new("y")),
+        rhs: Expression::If {
+            branches: vec![(
+                Expression::Binary {
+                    op: OpBinary::Lt(Default::default()),
+                    lhs: Box::new(var_ref("time")),
+                    rhs: Box::new(real(0.05)),
+                },
+                Expression::BuiltinCall {
+                    function: BuiltinFunction::Pre,
+                    args: vec![var_ref("y")],
+                },
+            )],
+            else_branch: Box::new(Expression::Binary {
+                op: OpBinary::Add(Default::default()),
+                lhs: Box::new(Expression::BuiltinCall {
+                    function: BuiltinFunction::Pre,
+                    args: vec![var_ref("y")],
+                }),
+                rhs: Box::new(real(1.0)),
+            }),
+        },
+        span: Span::DUMMY,
+        origin: "y_root_counter".to_string(),
+        scalar_count: 1,
+    });
+    dae.synthetic_root_conditions.push(Expression::Binary {
+        op: OpBinary::Lt(Default::default()),
+        lhs: Box::new(var_ref("time")),
+        rhs: Box::new(real(0.05)),
+    });
+
+    let mut stepper = stepper::SimStepper::new(&dae, stepper::StepperOptions::default())
+        .expect("stepper should initialize");
+    stepper.step(0.1).expect("stepper should cross the root");
+
+    let x = stepper.get("x").expect("stepper should expose state x");
+    assert!(
+        (x - 0.05).abs() < 2.0e-3,
+        "expected x to integrate only after the root-settled y update, got x={x}"
     );
 }
 
@@ -174,6 +337,252 @@ fn test_output_buffers_overwrite_runtime_values_at_event_time() {
 
     assert!(buf.overwrite_runtime_values_at_time(0.5, &[1.0]));
     assert_eq!(buf.runtime_data[0], vec![0.0, 1.0, 0.0]);
+}
+
+#[test]
+fn test_refresh_runtime_observed_solver_channels_recomputes_alias_outputs() {
+    let mut dae = Dae::default();
+    dae.algebraics.insert(
+        VarName::new("sample2.u"),
+        Variable::new(VarName::new("sample2.u")),
+    );
+    dae.outputs.insert(
+        VarName::new("ramp.y"),
+        Variable::new(VarName::new("ramp.y")),
+    );
+
+    dae.f_x.push(dae::Equation {
+        lhs: Some(VarName::new("sample2.u")),
+        rhs: var_ref("time"),
+        span: Span::DUMMY,
+        origin: "sample2.u = time".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(var_ref("ramp.y"), var_ref("sample2.u")),
+        span: Span::DUMMY,
+        origin: "ramp.y = sample2.u".to_string(),
+        scalar_count: 1,
+    });
+
+    let solver_names = build_output_names(&dae);
+    assert_eq!(
+        solver_names,
+        vec!["sample2.u".to_string(), "ramp.y".to_string()]
+    );
+    let times = vec![0.0, 0.12, 0.27];
+    let mut solver_data = vec![vec![0.0; times.len()], vec![0.0; times.len()]];
+
+    refresh_runtime_observed_solver_channels(&dae, 0, &[], &times, &solver_names, &mut solver_data);
+
+    assert_eq!(solver_data[0], times);
+    assert_eq!(solver_data[1], times);
+}
+
+#[test]
+fn test_refresh_runtime_observed_solver_channels_reprojects_zero_sum_algebraics() {
+    let mut dae = Dae::default();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.algebraics.insert(
+        VarName::new("torque.flange.tau"),
+        Variable::new(VarName::new("torque.flange.tau")),
+    );
+    dae.algebraics.insert(
+        VarName::new("load.flange_a.tau"),
+        Variable::new(VarName::new("load.flange_a.tau")),
+    );
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("x")],
+            },
+            real(0.0),
+        ),
+        span: Span::DUMMY,
+        origin: "hold state".to_string(),
+        scalar_count: 1,
+    });
+    // MLS connectors: flow connection sets generate zero-sum equations.
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: OpBinary::Add(Default::default()),
+            lhs: Box::new(var_ref("torque.flange.tau")),
+            rhs: Box::new(var_ref("load.flange_a.tau")),
+        },
+        span: Span::DUMMY,
+        origin: "0 = torque.flange.tau + load.flange_a.tau".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: var_ref("torque.flange.tau"),
+        span: Span::DUMMY,
+        origin: "0 = torque.flange.tau".to_string(),
+        scalar_count: 1,
+    });
+
+    let solver_names = build_output_names(&dae);
+    assert_eq!(
+        solver_names,
+        vec![
+            "x".to_string(),
+            "torque.flange.tau".to_string(),
+            "load.flange_a.tau".to_string(),
+        ]
+    );
+
+    let times = vec![0.1];
+    let mut solver_data = vec![vec![0.0], vec![0.0], vec![1.0]];
+    refresh_runtime_observed_solver_channels(&dae, 1, &[], &times, &solver_names, &mut solver_data);
+
+    assert_eq!(solver_data[0], vec![0.0]);
+    assert!((solver_data[1][0] - 0.0).abs() <= 1.0e-12);
+    assert!((solver_data[2][0] - 0.0).abs() <= 1.0e-12);
+}
+
+#[test]
+fn test_refresh_runtime_observed_solver_channels_skips_fixed_alias_target_seeding() {
+    let mut dae = Dae::default();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.algebraics
+        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
+    dae.algebraics
+        .insert(VarName::new("b"), Variable::new(VarName::new("b")));
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("x")],
+            },
+            real(0.0),
+        ),
+        span: Span::DUMMY,
+        origin: "hold state".to_string(),
+        scalar_count: 1,
+    });
+    // MLS §8 / §9: grounded connector-style equalities stay simultaneous, so
+    // runtime projection should treat a = x - 0 as an exact continuous alias.
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(var_ref("a"), sub(var_ref("x"), real(0.0))),
+        span: Span::DUMMY,
+        origin: "a = x - 0".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(var_ref("b"), var_ref("a")),
+        span: Span::DUMMY,
+        origin: "b = a".to_string(),
+        scalar_count: 1,
+    });
+
+    let solver_names = crate::runtime::layout::solver_vector_names(&dae, dae.f_x.len());
+    assert_eq!(
+        solver_names,
+        vec!["x".to_string(), "a".to_string(), "b".to_string()]
+    );
+
+    let times = vec![0.1];
+    // Keep x and the already-observed b value correct while leaving the alias
+    // source a stale. Observation-time projection must not clobber b from the
+    // stale alias source before Newton sees the fixed-mask layout.
+    let mut solver_data = vec![vec![1.0], vec![0.0], vec![1.0]];
+
+    refresh_runtime_observed_solver_channels(&dae, 1, &[], &times, &solver_names, &mut solver_data);
+
+    assert!((solver_data[0][0] - 1.0).abs() <= 1.0e-12);
+    assert!((solver_data[2][0] - 1.0).abs() <= 1.0e-12);
+}
+
+#[test]
+fn test_refresh_runtime_observed_solver_channels_preserves_state_values_between_reinit_events() {
+    let mut dae = Dae::default();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.states
+        .insert(VarName::new("v"), Variable::new(VarName::new("v")));
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("x")],
+            },
+            var_ref("v"),
+        ),
+        span: Span::DUMMY,
+        origin: "der(x) = v".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("v")],
+            },
+            real(0.0),
+        ),
+        span: Span::DUMMY,
+        origin: "der(v) = 0".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_z.push(dae::Equation {
+        lhs: Some(VarName::new("v")),
+        rhs: Expression::If {
+            branches: vec![(
+                Expression::Binary {
+                    op: OpBinary::Lt(Default::default()),
+                    lhs: Box::new(var_ref("x")),
+                    rhs: Box::new(real(0.0)),
+                },
+                Expression::Unary {
+                    op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+                    rhs: Box::new(Expression::BuiltinCall {
+                        function: BuiltinFunction::Pre,
+                        args: vec![var_ref("v")],
+                    }),
+                },
+            )],
+            else_branch: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Pre,
+                args: vec![var_ref("v")],
+            }),
+        },
+        span: Span::DUMMY,
+        origin: "guarded reinit(v)".to_string(),
+        scalar_count: 1,
+    });
+
+    rumoca_eval_dae::runtime::clear_pre_values();
+    let mut pre_env = rumoca_eval_dae::runtime::build_env(&dae, &[1.0, 0.0], &[], 0.0);
+    rumoca_eval_dae::runtime::seed_pre_values_from_env(&pre_env);
+    // Keep the seed env live so later tests do not inherit stale values.
+    pre_env.vars.clear();
+
+    let solver_names = build_output_names(&dae);
+    assert_eq!(solver_names, vec!["x".to_string(), "v".to_string()]);
+
+    let times = vec![0.1];
+    let mut solver_data = vec![vec![0.95], vec![-0.981]];
+    refresh_runtime_observed_solver_channels(&dae, 2, &[], &times, &solver_names, &mut solver_data);
+
+    assert!((solver_data[0][0] - 0.95).abs() <= 1.0e-12);
+    assert!(
+        (solver_data[1][0] + 0.981).abs() <= 1.0e-12,
+        "state refresh must not replay guarded reinit(v) between actual events"
+    );
 }
 
 #[test]
@@ -356,6 +765,8 @@ fn test_overwrite_solver_state_recomputes_dy_from_updated_event_state() {
         SolverStartupProfile::Default,
     );
     let mut solver = problem.bdf::<LS>().expect("build BDF solver");
+    let compiled_runtime =
+        problem::build_compiled_runtime_newton_context(&dae, 2).expect("compile runtime Newton");
 
     // Seed a bogus derivative to ensure overwrite recomputes it from the DAE.
     {
@@ -366,9 +777,10 @@ fn test_overwrite_solver_state_recomputes_dy_from_updated_event_state() {
     overwrite_solver_state::<_, _>(
         &mut solver,
         SolverStateOverwriteInput {
+            dae: &dae,
             opts: &SimOptions::default(),
             startup_profile: SolverStartupProfile::Default,
-            dae: &dae,
+            compiled_runtime: &compiled_runtime,
             param_values: &[],
             n_x: 1,
             t: 0.75,
@@ -1164,714 +1576,11 @@ fn test_scalarize_mixed_scalar_and_array() {
     assert_eq!(dae.f_x[2].lhs.as_ref().unwrap().as_str(), "z");
 }
 
-#[test]
-fn test_simulate_empty_dae() {
-    let dae = Dae::new();
-    let result = simulate(&dae, &SimOptions::default());
-    assert!(matches!(result, Err(SimError::EmptySystem)));
-}
-
-#[test]
-fn test_simulate_no_state_time_dependent_output_evolves_over_time() {
-    let mut dae = Dae::new();
-    dae.outputs
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
-
-    // 0 = y - (if time < 0.5 then 1 else 2)
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            var_ref("y"),
-            Expression::If {
-                branches: vec![(
-                    Expression::Binary {
-                        op: OpBinary::Lt(Default::default()),
-                        lhs: Box::new(var_ref("time")),
-                        rhs: Box::new(real(0.5)),
-                    },
-                    real(1.0),
-                )],
-                else_branch: Box::new(real(2.0)),
-            },
-        ),
-        span: Span::DUMMY,
-        origin: "alg_time_switch".to_string(),
-        scalar_count: 1,
-    });
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_start: 0.0,
-            t_end: 1.0,
-            dt: Some(0.1),
-            max_wall_seconds: Some(5.0),
-            ..SimOptions::default()
-        },
-    )
-    .expect("no-state time-dependent simulation should succeed");
-
-    assert_eq!(
-        result.n_states, 0,
-        "dummy state must be hidden from outputs"
-    );
-    assert!(
-        !result
-            .names
-            .iter()
-            .any(|name| name == "_rumoca_dummy_state"),
-        "dummy state should not leak into result names"
-    );
-    let y_idx = result
-        .names
-        .iter()
-        .position(|name| name == "y")
-        .expect("result should include y output");
-    let y = &result.data[y_idx];
-    assert!(
-        !y.is_empty(),
-        "expected output samples for y over the requested time horizon"
-    );
-    let first = *y.first().expect("first sample");
-    let last = *y.last().expect("last sample");
-    assert!(
-        (first - 1.0).abs() < 1.0e-6,
-        "y(0) should match the first branch value, got {first}"
-    );
-    assert!(
-        (last - 2.0).abs() < 1.0e-6,
-        "y(t_end) should switch to the second branch value, got {last}"
-    );
-}
-
-#[test]
-fn test_simulate_no_state_skips_ic_newton_for_singular_algebraic_seed() {
-    let mut dae = Dae::new();
-    dae.outputs
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
-
-    // Add algebraics that are structurally singular (`0 = a - a`). These are
-    // harmless for sampled algebraic projection but can stall IC Newton if run
-    // up-front on no-state systems.
-    for idx in 0..40 {
-        let name = VarName::new(format!("a{idx}"));
-        let mut var = Variable::new(name.clone());
-        var.start = Some(real(1.0));
-        dae.algebraics.insert(name.clone(), var);
-        dae.f_x.push(dae::Equation {
-            lhs: None,
-            rhs: sub(var_ref(name.as_str()), var_ref(name.as_str())),
-            span: Span::DUMMY,
-            origin: "singular_alg_identity".to_string(),
-            scalar_count: 1,
-        });
-    }
-
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(var_ref("y"), real(1.0)),
-        span: Span::DUMMY,
-        origin: "output_assignment".to_string(),
-        scalar_count: 1,
-    });
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_start: 0.0,
-            t_end: 0.1,
-            dt: Some(0.1),
-            max_wall_seconds: Some(0.2),
-            ..SimOptions::default()
-        },
-    )
-    .expect("no-state simulation should bypass IC Newton and complete");
-
-    let y_idx = result
-        .names
-        .iter()
-        .position(|name| name == "y")
-        .expect("result should include y");
-    assert!(
-        result.data[y_idx].iter().all(|v| (v - 1.0).abs() < 1.0e-6),
-        "y should stay at assigned value"
-    );
-}
-
-#[test]
-fn test_simulate_timeout_enforced_during_initialization() {
-    let mut dae = Dae::new();
-    dae.states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-    dae.algebraics
-        .insert(VarName::new("z"), Variable::new(VarName::new("z")));
-
-    // 0 = z - der(x)
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: Expression::Binary {
-            op: OpBinary::Sub(Default::default()),
-            lhs: Box::new(Expression::VarRef {
-                name: VarName::new("z"),
-                subscripts: vec![],
-            }),
-            rhs: Box::new(Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![Expression::VarRef {
-                    name: VarName::new("x"),
-                    subscripts: vec![],
-                }],
-            }),
-        },
-        span: Span::DUMMY,
-        origin: "test".to_string(),
-        scalar_count: 1,
-    });
-    // 0 = z - 1
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: Expression::Binary {
-            op: OpBinary::Sub(Default::default()),
-            lhs: Box::new(Expression::VarRef {
-                name: VarName::new("z"),
-                subscripts: vec![],
-            }),
-            rhs: Box::new(Expression::Literal(Literal::Real(1.0))),
-        },
-        span: Span::DUMMY,
-        origin: "test".to_string(),
-        scalar_count: 1,
-    });
-
-    let opts = SimOptions {
-        max_wall_seconds: Some(f64::MIN_POSITIVE),
-        ..SimOptions::default()
-    };
-    let result = simulate(&dae, &opts);
-    assert!(
-        matches!(result, Err(SimError::Timeout { .. })),
-        "expected timeout, got {result:?}"
-    );
-}
-
-#[test]
-fn test_simulate_fails_fast_for_unsupported_external_function_call() {
-    let mut dae = Dae::new();
-    dae.states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![var_ref("x")],
-            },
-            Expression::FunctionCall {
-                name: VarName::new("f"),
-                args: vec![var_ref("x")],
-                is_constructor: false,
-            },
-        ),
-        span: Span::DUMMY,
-        origin: "ode".to_string(),
-        scalar_count: 1,
-    });
-
-    let mut external_stub = rumoca_ir_dae::Function::new("f", Span::DUMMY);
-    external_stub.external = Some(ExternalFunction {
-        language: "C".to_string(),
-        function_name: Some("f".to_string()),
-        output_name: None,
-        arg_names: vec!["x".to_string()],
-    });
-    dae.functions.insert(VarName::new("f"), external_stub);
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_end: 0.1,
-            max_wall_seconds: Some(1.0),
-            ..SimOptions::default()
-        },
-    );
-    assert!(
-        matches!(result, Err(SimError::UnsupportedFunction { .. })),
-        "expected unsupported function error, got {result:?}"
-    );
-}
-
-#[test]
-fn test_simulate_rejects_member_style_function_call_without_exact_definition() {
-    let mut dae = Dae::new();
-    dae.states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![var_ref("x")],
-            },
-            Expression::FunctionCall {
-                name: VarName::new("world.gravityAcceleration"),
-                args: vec![var_ref("x")],
-                is_constructor: false,
-            },
-        ),
-        span: Span::DUMMY,
-        origin: "ode".to_string(),
-        scalar_count: 1,
-    });
-
-    let mut fn_def = rumoca_ir_dae::Function::new(
-        "Modelica.Mechanics.MultiBody.World.gravityAcceleration",
-        Span::DUMMY,
-    );
-    fn_def.body.push(rumoca_ir_dae::Statement::Return);
-    dae.functions.insert(fn_def.name.clone(), fn_def);
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_end: 0.1,
-            max_wall_seconds: Some(1.0),
-            ..SimOptions::default()
-        },
-    );
-    assert!(
-        matches!(
-            result,
-            Err(SimError::UnsupportedFunction { ref name, .. })
-                if name == "world.gravityAcceleration"
-        ),
-        "expected unresolved member-style function to fail fast, got {result:?}"
-    );
-}
-
-#[test]
-fn test_simulate_rejects_constructor_field_projection_without_definition() {
-    let mut dae = Dae::new();
-    dae.states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-
-    let constructor_field = Expression::FieldAccess {
-        base: Box::new(Expression::FunctionCall {
-            name: VarName::new("My.Record"),
-            args: vec![real(2.0), real(3.0)],
-            is_constructor: true,
-        }),
-        field: "C".to_string(),
-    };
-
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![var_ref("x")],
-            },
-            constructor_field,
-        ),
-        span: Span::DUMMY,
-        origin: "ode".to_string(),
-        scalar_count: 1,
-    });
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_end: 0.1,
-            max_wall_seconds: Some(1.0),
-            ..SimOptions::default()
-        },
-    );
-    assert!(
-        matches!(
-            result,
-            Err(SimError::UnsupportedFunction { ref name, .. }) if name == "My.Record.C"
-        ),
-        "expected unresolved constructor field projection to fail fast, got {result:?}"
-    );
-}
-
-#[test]
-fn test_simulate_allows_constructor_field_projection_with_signature() {
-    let mut dae = Dae::new();
-    dae.states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-
-    let constructor_field = Expression::FieldAccess {
-        base: Box::new(Expression::FunctionCall {
-            name: VarName::new("My.Record"),
-            args: vec![real(2.0), real(3.0)],
-            is_constructor: true,
-        }),
-        field: "C".to_string(),
-    };
-
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![var_ref("x")],
-            },
-            constructor_field,
-        ),
-        span: Span::DUMMY,
-        origin: "ode".to_string(),
-        scalar_count: 1,
-    });
-
-    let mut record_ctor = rumoca_ir_dae::Function::new("My.Record", Span::DUMMY);
-    record_ctor.inputs.push(rumoca_ir_dae::FunctionParam {
-        name: "R".to_string(),
-        type_name: "Real".to_string(),
-        dims: Vec::new(),
-        default: None,
-        description: None,
-    });
-    record_ctor.inputs.push(rumoca_ir_dae::FunctionParam {
-        name: "C".to_string(),
-        type_name: "Real".to_string(),
-        dims: Vec::new(),
-        default: None,
-        description: None,
-    });
-    dae.functions.insert(record_ctor.name.clone(), record_ctor);
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_end: 0.1,
-            max_wall_seconds: Some(1.0),
-            ..SimOptions::default()
-        },
-    );
-    assert!(
-        result.is_ok(),
-        "constructor field projection with constructor signature should be simulatable, got {result:?}"
-    );
-}
-
-#[test]
-fn test_validate_simulation_support_allows_assert_statement_message_helpers() {
-    let mut dae = Dae::new();
-    dae.algebraics
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: Expression::Binary {
-            op: OpBinary::Sub(Default::default()),
-            lhs: Box::new(var_ref("y")),
-            rhs: Box::new(Expression::FunctionCall {
-                name: VarName::new("Modelica.Utilities.Strings.length"),
-                args: vec![Expression::Literal(Literal::String("hello".to_string()))],
-                is_constructor: false,
-            }),
-        },
-        span: Span::DUMMY,
-        origin: "string-helper".to_string(),
-        scalar_count: 1,
-    });
-
-    let result = validate_simulation_function_support(&dae);
-    assert!(
-        result.is_ok(),
-        "assert message helpers should not block simulation preflight, got {result:?}"
-    );
-}
-
-#[test]
-fn test_validate_simulation_support_allows_assert_function_call_message_helpers() {
-    let mut dae = Dae::new();
-    dae.algebraics
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: Expression::Binary {
-            op: OpBinary::Sub(Default::default()),
-            lhs: Box::new(var_ref("y")),
-            rhs: Box::new(Expression::FunctionCall {
-                name: VarName::new("Modelica.Utilities.Strings.length"),
-                args: vec![Expression::Literal(Literal::String("hello".to_string()))],
-                is_constructor: false,
-            }),
-        },
-        span: Span::DUMMY,
-        origin: "string-helper-2".to_string(),
-        scalar_count: 1,
-    });
-
-    let result = validate_simulation_function_support(&dae);
-    assert!(
-        result.is_ok(),
-        "assert(...) call should be accepted in simulation preflight, got {result:?}"
-    );
-}
-
-#[test]
-fn test_validate_simulation_support_allows_time_table_next_event_function() {
-    let mut dae = Dae::new();
-    dae.parameters.insert(
-        VarName::new("table_id"),
-        Variable::new(VarName::new("table_id")),
-    );
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: Expression::FunctionCall {
-            name: VarName::new("Modelica.Blocks.Tables.Internal.getNextTimeEvent"),
-            args: vec![var_ref("table_id"), real(0.0)],
-            is_constructor: false,
-        },
-        span: Span::DUMMY,
-        origin: "next-time-event".to_string(),
-        scalar_count: 1,
-    });
-
-    let result = validate_simulation_function_support(&dae);
-    assert!(
-        result.is_ok(),
-        "table next-time-event helper should be accepted in simulation preflight, got {result:?}"
-    );
-}
-
-#[test]
-fn test_validate_simulation_support_allows_function_parameter_call_aliases() {
-    let mut dae = Dae::new();
-    dae.states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![var_ref("x")],
-            },
-            Expression::FunctionCall {
-                name: VarName::new("wrapper"),
-                args: vec![
-                    Expression::FunctionCall {
-                        name: VarName::new("fun_impl"),
-                        args: vec![real(2.0)],
-                        is_constructor: false,
-                    },
-                    var_ref("x"),
-                ],
-                is_constructor: false,
-            },
-        ),
-        span: Span::DUMMY,
-        origin: "ode".to_string(),
-        scalar_count: 1,
-    });
-
-    let mut fun_impl = rumoca_ir_dae::Function::new("fun_impl", Span::DUMMY);
-    fun_impl
-        .inputs
-        .push(rumoca_ir_dae::FunctionParam::new("u", "Real"));
-    fun_impl
-        .inputs
-        .push(rumoca_ir_dae::FunctionParam::new("a", "Real"));
-    fun_impl
-        .outputs
-        .push(
-            rumoca_ir_dae::FunctionParam::new("y", "Real").with_default(Expression::Binary {
-                op: OpBinary::Add(Default::default()),
-                lhs: Box::new(var_ref("u")),
-                rhs: Box::new(var_ref("a")),
-            }),
-        );
-    fun_impl.body.push(Statement::Empty);
-    dae.functions.insert(fun_impl.name.clone(), fun_impl);
-
-    let mut wrapper = rumoca_ir_dae::Function::new("wrapper", Span::DUMMY);
-    wrapper.inputs.push(rumoca_ir_dae::FunctionParam::new(
-        "f",
-        "Pkg.Interfaces.PartialFunction",
-    ));
-    wrapper
-        .inputs
-        .push(rumoca_ir_dae::FunctionParam::new("x", "Real"));
-    wrapper
-        .outputs
-        .push(rumoca_ir_dae::FunctionParam::new("y", "Real").with_default(
-            Expression::FunctionCall {
-                name: VarName::new("wrapper.f"),
-                args: vec![var_ref("x")],
-                is_constructor: false,
-            },
-        ));
-    wrapper.body.push(Statement::Empty);
-    dae.functions.insert(wrapper.name.clone(), wrapper);
-
-    let result = validate_simulation_function_support(&dae);
-    assert!(
-        result.is_ok(),
-        "function-typed input aliases (wrapper.f) should be accepted in simulation preflight, got {result:?}"
-    );
-}
-
-#[test]
-fn test_simulate_rejects_reachable_nested_unsupported_external_function() {
-    let mut dae = Dae::new();
-    dae.states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![var_ref("x")],
-            },
-            Expression::FunctionCall {
-                name: VarName::new("wrapper"),
-                args: vec![],
-                is_constructor: false,
-            },
-        ),
-        span: Span::DUMMY,
-        origin: "ode".to_string(),
-        scalar_count: 1,
-    });
-
-    let mut bad = rumoca_ir_dae::Function::new("bad_external", Span::DUMMY);
-    bad.external = Some(ExternalFunction {
-        language: "C".to_string(),
-        function_name: Some("bad_external".to_string()),
-        output_name: None,
-        arg_names: vec![],
-    });
-    dae.functions.insert(VarName::new("bad_external"), bad);
-
-    let mut wrapper = rumoca_ir_dae::Function::new("wrapper", Span::DUMMY);
-    wrapper.body.push(rumoca_ir_dae::Statement::FunctionCall {
-        comp: comp_ref("bad_external"),
-        args: vec![],
-        outputs: vec![],
-    });
-    dae.functions.insert(VarName::new("wrapper"), wrapper);
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_end: 0.1,
-            max_wall_seconds: Some(1.0),
-            ..SimOptions::default()
-        },
-    );
-    assert!(
-        matches!(
-            result,
-            Err(SimError::UnsupportedFunction { ref name, .. }) if name == "bad_external"
-        ),
-        "expected reachable nested external function to fail preflight, got {result:?}"
-    );
-}
-
-#[test]
-fn test_validate_simulation_support_ignores_unreachable_nested_unsupported_function() {
-    let mut dae = Dae::new();
-    dae.states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![var_ref("x")],
-            },
-            real(0.0),
-        ),
-        span: Span::DUMMY,
-        origin: "ode".to_string(),
-        scalar_count: 1,
-    });
-
-    let mut bad = rumoca_ir_dae::Function::new("bad_external", Span::DUMMY);
-    bad.external = Some(ExternalFunction {
-        language: "C".to_string(),
-        function_name: Some("bad_external".to_string()),
-        output_name: None,
-        arg_names: vec![],
-    });
-    dae.functions.insert(VarName::new("bad_external"), bad);
-
-    let mut wrapper = rumoca_ir_dae::Function::new("wrapper", Span::DUMMY);
-    wrapper.body.push(rumoca_ir_dae::Statement::FunctionCall {
-        comp: comp_ref("bad_external"),
-        args: vec![],
-        outputs: vec![],
-    });
-    dae.functions.insert(VarName::new("wrapper"), wrapper);
-
-    let result = validate_simulation_function_support(&dae);
-    assert!(
-        result.is_ok(),
-        "unreachable nested unsupported functions should not fail simulation preflight, got {result:?}"
-    );
-}
-
-#[test]
-fn test_simulate_reports_division_by_zero_at_initialization() {
-    let mut dae = Dae::new();
-    dae.states
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-    dae.parameters
-        .insert(VarName::new("p"), Variable::new(VarName::new("p")));
-
-    // 0 = der(x) - (1 / p), with p defaulting to 0.0.
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![var_ref("x")],
-            },
-            Expression::Binary {
-                op: OpBinary::Div(Default::default()),
-                lhs: Box::new(real(1.0)),
-                rhs: Box::new(var_ref("p")),
-            },
-        ),
-        span: Span::DUMMY,
-        origin: "ode_with_div_zero".to_string(),
-        scalar_count: 1,
-    });
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_end: 0.1,
-            max_wall_seconds: Some(1.0),
-            ..SimOptions::default()
-        },
-    );
-    match result {
-        Err(SimError::SolverError(msg)) => {
-            assert!(
-                msg.contains("division by zero at initialization"),
-                "expected division-by-zero diagnostic, got: {msg}"
-            );
-            assert!(
-                msg.contains("divisor expression is: p"),
-                "expected divisor expression in diagnostic, got: {msg}"
-            );
-            assert!(
-                msg.contains("origin='ode_with_div_zero'"),
-                "expected equation origin in diagnostic, got: {msg}"
-            );
-        }
-        other => panic!("expected solver error, got: {other:?}"),
-    }
-}
-
 mod clocked_sampling;
 mod core;
 mod direct_assignment_demotion;
 mod scalarization_regressions;
 mod solver_regressions;
 mod state_derivative;
+mod stateful_no_state;
 mod stepper_input_discontinuity;

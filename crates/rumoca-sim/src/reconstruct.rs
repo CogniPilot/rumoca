@@ -154,23 +154,53 @@ pub fn apply_eliminated_substitutions_to_env(
     elim: &eliminate::EliminationResult,
     env: &mut eval::VarEnv<f64>,
 ) {
+    let _ = apply_eliminated_substitutions_to_env_changed(elim, env);
+}
+
+pub(crate) fn apply_eliminated_substitutions_to_env_changed(
+    elim: &eliminate::EliminationResult,
+    env: &mut eval::VarEnv<f64>,
+) -> bool {
     if elim.substitutions.is_empty() {
-        return;
+        return false;
     }
 
     let n_subs = elim.substitutions.len();
     let (ordered_subs, cyclic_subs) = substitution_eval_order(elim);
     let mut vals = vec![0.0_f64; n_subs];
+    let mut changed = false;
 
     for &sub_idx in &ordered_subs {
         let sub = &elim.substitutions[sub_idx];
         let value = eval_expr(&sub.expr, env);
-        apply_substitution_value(env, &mut vals[sub_idx], &sub.env_keys, value);
+        if std::env::var_os("RUMOCA_DEBUG_COUNTER_ENABLE").is_some() {
+            let debug_match = sub.var_name.as_str().contains("Enable")
+                || sub.var_name.as_str().contains("Counter.enable")
+                || sub
+                    .env_keys
+                    .iter()
+                    .any(|key| key.contains("Enable") || key.contains("Counter.enable"));
+            if debug_match {
+                eprintln!(
+                    "DEBUG reconstruct ordered sub_idx={sub_idx} var={} env_keys={:?} value={value} expr={:?}",
+                    sub.var_name, sub.env_keys, sub.expr,
+                );
+            }
+        }
+        changed |= apply_substitution_value(env, &mut vals[sub_idx], &sub.env_keys, value);
     }
 
     if !cyclic_subs.is_empty() {
-        evaluate_cyclic_substitutions_to_fixpoint(&cyclic_subs, elim, 0, env, &mut vals);
+        let max_cycle_passes = (cyclic_subs.len() * 4).clamp(1, 128);
+        for _ in 0..max_cycle_passes {
+            if !evaluate_cyclic_substitutions_once(&cyclic_subs, elim, 0, env, &mut vals) {
+                break;
+            }
+            changed = true;
+        }
     }
+
+    changed
 }
 
 #[cfg(test)]
@@ -606,8 +636,9 @@ mod tests {
             n_eliminated: 1,
         };
 
-        // p0 occupies one parameter slot in runtime mapping despite size()==0.
-        let params = vec![99.0, 2.0];
+        // Zero-sized parameter declarations must not consume phantom runtime
+        // slots, so p1 maps directly to the first realized parameter value.
+        let params = vec![2.0];
         let times = vec![0.0, 1.0];
         let (names, data) = reconstruct_eliminated(&elim, &dae, &params, &times, &[], &[]);
 

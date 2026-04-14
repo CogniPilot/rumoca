@@ -22,6 +22,8 @@ pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounter
         if let Some(ref status) = result.sim_status {
             counters.sim_attempted += 1;
             counters.total_sim_seconds += result.sim_seconds.unwrap_or(0.0);
+            counters.total_sim_build_seconds += result.sim_build_seconds.unwrap_or(0.0);
+            counters.total_sim_run_seconds += result.sim_run_seconds.unwrap_or(0.0);
             counters.total_sim_wall_seconds += result.sim_wall_seconds.unwrap_or(0.0);
             match status.as_str() {
                 "sim_ok" => counters.sim_ok += 1,
@@ -104,6 +106,8 @@ fn build_summary_from_counters(
         sim_balance_fail: counters.sim_balance_fail,
         sim_attempted: counters.sim_attempted,
         total_sim_seconds: counters.total_sim_seconds,
+        total_sim_build_seconds: counters.total_sim_build_seconds,
+        total_sim_run_seconds: counters.total_sim_run_seconds,
         total_sim_wall_seconds: counters.total_sim_wall_seconds,
         sim_target_models,
     }

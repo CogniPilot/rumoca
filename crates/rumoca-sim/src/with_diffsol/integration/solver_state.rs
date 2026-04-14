@@ -6,7 +6,7 @@ use super::{
 };
 use crate::TimeoutBudget;
 use crate::with_diffsol::{
-    Dae, SimError, SimOptions, SolverStartupProfile, interp_err, map_solver_panic, problem,
+    SimError, SimOptions, SolverStartupProfile, interp_err, map_solver_panic, problem,
     sim_trace_enabled,
 };
 pub(crate) fn solver_state_to_vec<'a, Eqn, S>(solver: &S) -> Vec<f64>
@@ -70,9 +70,10 @@ where
 }
 
 pub(crate) struct SolverStateOverwriteInput<'a> {
+    pub(crate) dae: &'a crate::with_diffsol::Dae,
     pub(crate) opts: &'a SimOptions,
     pub(crate) startup_profile: SolverStartupProfile,
-    pub(crate) dae: &'a Dae,
+    pub(crate) compiled_runtime: &'a problem::CompiledRuntimeNewtonContext,
     pub(crate) param_values: &'a [f64],
     pub(crate) n_x: usize,
     pub(crate) t: f64,
@@ -95,29 +96,25 @@ where
             input.y.len()
         )));
     }
+    let n_x = input.n_x.min(state_len);
 
     let mut rhs = vec![0.0; state_len];
-    problem::eval_rhs_equations(
-        input.dae,
+    problem::eval_compiled_runtime_residual(
+        input.compiled_runtime,
         input.y,
         input.param_values,
         input.t,
         &mut rhs,
-        input.n_x,
     );
 
-    let restart_h = event_restart_step_hint(input.opts, input.t, input.startup_profile);
+    let restart_h = event_restart_step_hint(input.dae, input.opts, input.t, input.startup_profile);
     let state = solver.state_mut();
     *state.t = input.t;
     state.y.as_mut_slice().copy_from_slice(input.y);
     let dy = state.dy.as_mut_slice();
-    if dy.len() == rhs.len() {
-        dy.copy_from_slice(&rhs);
-    } else {
-        dy.fill(0.0);
-        let copy_len = dy.len().min(rhs.len());
-        dy[..copy_len].copy_from_slice(&rhs[..copy_len]);
-    }
+    dy.fill(0.0);
+    let copy_len = n_x.min(dy.len()).min(rhs.len());
+    dy[..copy_len].copy_from_slice(&rhs[..copy_len]);
     state.dg.as_mut_slice().fill(0.0);
     for ds in state.ds.iter_mut() {
         ds.as_mut_slice().fill(0.0);

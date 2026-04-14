@@ -51,11 +51,22 @@ pub(super) fn infer_clock_timing_from_expr<T: SimFloat>(
     expr: &dae::Expression,
     env: &VarEnv<T>,
 ) -> Option<ClockTiming> {
-    let dae::Expression::FunctionCall { name, args, .. } = expr else {
-        return None;
-    };
-    let short_name = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-    infer_clock_timing_from_call(short_name, args, env)
+    match expr {
+        dae::Expression::FunctionCall { name, args, .. } => {
+            let short_name = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+            infer_clock_timing_from_call(short_name, args, env)
+        }
+        dae::Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
+            // MLS §16.5.1: sampled values and clocked variables keep the period
+            // of their associated clock. Runtime metadata precomputes that
+            // association for alias-backed explicit clock connectors.
+            env.clock_intervals
+                .get(name.as_str())
+                .and_then(|period| valid_positive_period(*period))
+                .map(|period| ClockTiming { period, phase: 0.0 })
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn infer_clock_counter_form<T: SimFloat>(
@@ -137,7 +148,9 @@ pub(super) fn infer_clock_timing_from_call<T: SimFloat>(
             let offset = if args.len() >= 3 {
                 let resolution = eval_expr::<T>(&args[2], env).real();
                 if resolution.is_finite() && resolution != 0.0 {
-                    shift / resolution
+                    // MLS §16.5.2: shiftSample/backSample shift by a fraction
+                    // of interval(u), not by an absolute number of seconds.
+                    (shift / resolution) * base.period
                 } else {
                     shift * base.period
                 }

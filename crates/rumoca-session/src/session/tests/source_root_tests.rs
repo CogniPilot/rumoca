@@ -352,6 +352,44 @@ fn source_root_read_prewarm_state_is_session_owned_and_clears_on_revision_change
 }
 
 #[test]
+fn source_root_read_prewarm_finish_promotes_namespace_cache_to_host_session() {
+    let mut session = Session::default();
+    session.replace_parsed_source_set(
+        "Modelica",
+        SourceRootKind::DurableExternal,
+        vec![(
+            "Modelica/package.mo".to_string(),
+            parse_definition(
+                "package Modelica\n  package Electrical\n    package Analog\n      model Resistor\n      end Resistor;\n    end Analog;\n  end Electrical;\nend Modelica;\n",
+                "Modelica/package.mo",
+            ),
+        )],
+        None,
+    );
+
+    let revision = session.revision();
+    assert!(session.begin_source_root_read_prewarm(revision));
+
+    let snapshot = session.snapshot();
+    snapshot.prewarm_source_root_read_queries();
+
+    assert!(
+        session.namespace_class_names_cached().is_empty(),
+        "host session should remain cold until the background prewarm is marked complete"
+    );
+
+    session.finish_source_root_read_prewarm(revision);
+
+    assert!(
+        session
+            .namespace_class_names_cached()
+            .iter()
+            .any(|name| name == "Modelica.Electrical.Analog.Resistor"),
+        "finishing a source-root read prewarm should merge warmed namespace completion back into the host session"
+    );
+}
+
+#[test]
 fn workspace_refresh_plan_targets_detached_subtree_without_full_root_fallback() {
     let mut session = Session::default();
     let uri = "workspace/NewFolder/Test.mo";

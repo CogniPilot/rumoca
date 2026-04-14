@@ -2,7 +2,7 @@
 
 use crate::compiled::layout::VarLayout;
 use crate::compiled::linear_op::{BinaryOp, CompareOp, LinearOp, Reg, UnaryOp};
-use crate::compiled::lower::{LowerError, lower_residual};
+use crate::compiled::lower::{LowerError, lower_initial_residual, lower_residual};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy)]
@@ -16,6 +16,14 @@ pub fn lower_residual_ad(
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let primal_rows = lower_residual(dae_model, layout)?;
+    primal_rows.iter().map(|row| lower_row_ad(row)).collect()
+}
+
+pub fn lower_initial_residual_ad(
+    dae_model: &rumoca_ir_dae::Dae,
+    layout: &VarLayout,
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    let primal_rows = lower_initial_residual(dae_model, layout)?;
     primal_rows.iter().map(|row| lower_row_ad(row)).collect()
 }
 
@@ -51,6 +59,23 @@ impl AdBuilder {
             LinearOp::LoadY { dst, index } => self.lower_load_y(dst, index),
             LinearOp::LoadP { dst, index } => self.lower_load_p(dst, index),
             LinearOp::LoadSeed { .. } => Err(unsupported("unexpected LoadSeed in primal row")),
+            LinearOp::TableBounds { dst, table_id, max } => {
+                self.lower_table_bounds(dst, table_id, max)
+            }
+            LinearOp::TableLookup {
+                dst,
+                table_id,
+                column,
+                input,
+            } => self.lower_table_lookup(dst, table_id, column, input),
+            LinearOp::TableLookupSlope { .. } => {
+                Err(unsupported("unexpected TableLookupSlope in primal row"))
+            }
+            LinearOp::TableNextEvent {
+                dst,
+                table_id,
+                time,
+            } => self.lower_table_next_event(dst, table_id, time),
             LinearOp::Unary { dst, op, arg } => self.lower_unary(dst, op, arg),
             LinearOp::Binary { dst, op, lhs, rhs } => self.lower_binary(dst, op, lhs, rhs),
             LinearOp::Compare { dst, op, lhs, rhs } => self.lower_compare(dst, op, lhs, rhs),
@@ -84,6 +109,42 @@ impl AdBuilder {
 
     fn lower_load_p(&mut self, dst: Reg, index: usize) -> Result<(), LowerError> {
         let re = self.emit_load_p(index);
+        let du = self.zero_reg();
+        self.bind(dst, DualReg { re, du })
+    }
+
+    fn lower_table_bounds(&mut self, dst: Reg, table_id: Reg, max: bool) -> Result<(), LowerError> {
+        let table = self.lookup(table_id)?;
+        let re = self.emit_table_bounds(table.re, max);
+        let du = self.zero_reg();
+        self.bind(dst, DualReg { re, du })
+    }
+
+    fn lower_table_lookup(
+        &mut self,
+        dst: Reg,
+        table_id: Reg,
+        column: Reg,
+        input: Reg,
+    ) -> Result<(), LowerError> {
+        let table = self.lookup(table_id)?;
+        let column = self.lookup(column)?;
+        let input = self.lookup(input)?;
+        let re = self.emit_table_lookup(table.re, column.re, input.re);
+        let slope = self.emit_table_lookup_slope(table.re, column.re, input.re);
+        let du = self.emit_binary(BinaryOp::Mul, slope, input.du);
+        self.bind(dst, DualReg { re, du })
+    }
+
+    fn lower_table_next_event(
+        &mut self,
+        dst: Reg,
+        table_id: Reg,
+        time: Reg,
+    ) -> Result<(), LowerError> {
+        let table = self.lookup(table_id)?;
+        let time = self.lookup(time)?;
+        let re = self.emit_table_next_event(table.re, time.re);
         let du = self.zero_reg();
         self.bind(dst, DualReg { re, du })
     }
@@ -442,6 +503,44 @@ impl AdBuilder {
         dst
     }
 
+    fn emit_table_bounds(&mut self, table_id: Reg, max: bool) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::TableBounds { dst, table_id, max });
+        dst
+    }
+
+    fn emit_table_lookup(&mut self, table_id: Reg, column: Reg, input: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::TableLookup {
+            dst,
+            table_id,
+            column,
+            input,
+        });
+        dst
+    }
+
+    fn emit_table_lookup_slope(&mut self, table_id: Reg, column: Reg, input: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::TableLookupSlope {
+            dst,
+            table_id,
+            column,
+            input,
+        });
+        dst
+    }
+
+    fn emit_table_next_event(&mut self, table_id: Reg, time: Reg) -> Reg {
+        let dst = self.alloc_reg();
+        self.ops.push(LinearOp::TableNextEvent {
+            dst,
+            table_id,
+            time,
+        });
+        dst
+    }
+
     fn emit_unary(&mut self, op: UnaryOp, arg: Reg) -> Reg {
         let dst = self.alloc_reg();
         self.ops.push(LinearOp::Unary { dst, op, arg });
@@ -530,7 +629,9 @@ mod tests {
     use crate::compiled::linear_op::{BinaryOp, CompareOp, LinearOp, Reg, UnaryOp};
     use crate::runtime::dual::Dual;
     use crate::runtime::eval::{
-        VarEnv, build_env, eval_expr_dae as eval_expr, lift_env, map_var_to_env,
+        VarEnv, build_env, eval_expr_dae as eval_expr, eval_table_bound_value,
+        eval_table_lookup_slope_value, eval_table_lookup_value, eval_time_table_next_event_value,
+        lift_env, map_var_to_env,
     };
     use rumoca_ir_dae as dae;
 
@@ -634,6 +735,53 @@ mod tests {
                 LinearOp::LoadSeed { dst, index } => {
                     write_reg(&mut regs, dst, v.get(index).copied().unwrap_or(0.0))
                 }
+                LinearOp::TableBounds { dst, table_id, max } => {
+                    let table_id = read_reg(&regs, table_id);
+                    write_reg(&mut regs, dst, eval_table_bound_value(table_id, max));
+                }
+                LinearOp::TableLookup {
+                    dst,
+                    table_id,
+                    column,
+                    input,
+                } => {
+                    let table_id = read_reg(&regs, table_id);
+                    let column = read_reg(&regs, column);
+                    let input = read_reg(&regs, input);
+                    write_reg(
+                        &mut regs,
+                        dst,
+                        eval_table_lookup_value(table_id, column, input),
+                    );
+                }
+                LinearOp::TableLookupSlope {
+                    dst,
+                    table_id,
+                    column,
+                    input,
+                } => {
+                    let table_id = read_reg(&regs, table_id);
+                    let column = read_reg(&regs, column);
+                    let input = read_reg(&regs, input);
+                    write_reg(
+                        &mut regs,
+                        dst,
+                        eval_table_lookup_slope_value(table_id, column, input),
+                    );
+                }
+                LinearOp::TableNextEvent {
+                    dst,
+                    table_id,
+                    time,
+                } => {
+                    let table_id = read_reg(&regs, table_id);
+                    let time = read_reg(&regs, time);
+                    write_reg(
+                        &mut regs,
+                        dst,
+                        eval_time_table_next_event_value(table_id, time),
+                    );
+                }
                 LinearOp::Unary { dst, op, arg } => {
                     let value = read_reg(&regs, arg);
                     write_reg(&mut regs, dst, apply_unary(op, value));
@@ -706,6 +854,67 @@ mod tests {
             name: dae::VarName::new(name),
             subscripts: vec![],
         }
+    }
+
+    fn lit(value: f64) -> dae::Expression {
+        dae::Expression::Literal(dae::Literal::Real(value))
+    }
+
+    fn int_lit(value: i64) -> dae::Expression {
+        dae::Expression::Literal(dae::Literal::Integer(value))
+    }
+
+    fn fn_call(name: &str, args: Vec<dae::Expression>) -> dae::Expression {
+        dae::Expression::FunctionCall {
+            name: dae::VarName::new(name),
+            args,
+            is_constructor: false,
+        }
+    }
+
+    fn simple_table_expr() -> dae::Expression {
+        dae::Expression::Array {
+            elements: vec![
+                dae::Expression::Array {
+                    elements: vec![lit(0.0), lit(10.0), lit(20.0)],
+                    is_matrix: false,
+                },
+                dae::Expression::Array {
+                    elements: vec![lit(1.0), lit(12.0), lit(24.0)],
+                    is_matrix: false,
+                },
+                dae::Expression::Array {
+                    elements: vec![lit(2.0), lit(14.0), lit(28.0)],
+                    is_matrix: false,
+                },
+            ],
+            is_matrix: true,
+        }
+    }
+
+    fn columns_expr() -> dae::Expression {
+        dae::Expression::Array {
+            elements: vec![int_lit(2), int_lit(3)],
+            is_matrix: false,
+        }
+    }
+
+    fn external_table1d_id() -> f64 {
+        let env = VarEnv::<f64>::new();
+        eval_expr::<f64>(
+            &fn_call(
+                "ExternalCombiTable1D",
+                vec![
+                    lit(0.0),
+                    lit(0.0),
+                    simple_table_expr(),
+                    columns_expr(),
+                    int_lit(1),
+                    int_lit(1),
+                ],
+            ),
+            &env,
+        )
     }
 
     fn binary_math_expressions(
@@ -952,5 +1161,50 @@ mod tests {
             let reference = reference_row_jv(&dae_model, i, &y, &p_vals, t, &seed);
             assert!((compiled - reference).abs() <= 1e-10, "row {i}");
         }
+    }
+
+    #[test]
+    fn lower_residual_ad_supports_host_backed_table_ops() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .algebraics
+            .insert(dae::VarName::new("u"), scalar_var("u"));
+        dae_model
+            .parameters
+            .insert(dae::VarName::new("table_id"), scalar_var("table_id"));
+
+        let table_id = expression_var("table_id");
+        let u = expression_var("u");
+        let lookup = fn_call(
+            "getTable1DValueNoDer",
+            vec![table_id.clone(), int_lit(1), u],
+        );
+        let tmax = fn_call("getTable1DAbscissaUmax", vec![table_id.clone()]);
+        let next_event = fn_call("getNextTimeEvent", vec![table_id, lit(0.25)]);
+        let rhs = dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Add(Default::default()),
+            lhs: Box::new(dae::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Add(Default::default()),
+                lhs: Box::new(lookup),
+                rhs: Box::new(tmax),
+            }),
+            rhs: Box::new(next_event),
+        };
+        dae_model.f_x.push(dae::Equation::residual(
+            rhs,
+            Default::default(),
+            "table_row",
+        ));
+
+        let layout = VarLayout::from_dae(&dae_model);
+        let rows = lower_residual_ad(&dae_model, &layout)
+            .expect("AD lowering should support host-backed table ops");
+
+        let y = vec![1.25];
+        let p_vals = vec![external_table1d_id()];
+        let seed = vec![1.0];
+        let t = 0.0;
+
+        assert_rows_match_dual_reference(&dae_model, &rows, &y, &p_vals, t, &seed);
     }
 }
