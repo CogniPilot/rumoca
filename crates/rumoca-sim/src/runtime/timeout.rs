@@ -1,56 +1,28 @@
+#[cfg(target_arch = "wasm32")]
+use instant::Instant;
 use std::any::Any;
 use std::cell::Cell;
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) type WallClockInstant = f64;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) type WallClockInstant = std::time::Instant;
+use std::time::Instant;
 
-#[cfg(target_arch = "wasm32")]
+pub(crate) type WallClockInstant = Instant;
+
 #[inline]
 pub(crate) fn wall_clock_now() -> WallClockInstant {
-    js_sys::Date::now() / 1_000.0
+    Instant::now()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[inline]
-pub(crate) fn wall_clock_now() -> WallClockInstant {
-    std::time::Instant::now()
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-pub(crate) fn wall_clock_elapsed_seconds(started_at: WallClockInstant) -> f64 {
-    (wall_clock_now() - started_at).max(0.0)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 pub(crate) fn wall_clock_elapsed_seconds(started_at: WallClockInstant) -> f64 {
     started_at.elapsed().as_secs_f64()
 }
 
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn wall_clock_deadline_after(seconds: f64) -> WallClockInstant {
-    wall_clock_now() + seconds
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn wall_clock_deadline_after(seconds: f64) -> WallClockInstant {
     wall_clock_now() + Duration::from_secs_f64(seconds)
 }
 
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn wall_clock_expired(deadline: WallClockInstant) -> bool {
-    wall_clock_now() >= deadline
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn wall_clock_expired(deadline: WallClockInstant) -> bool {
     wall_clock_now() >= deadline

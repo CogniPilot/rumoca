@@ -5,8 +5,11 @@
 //! - Single-variable Newton for `ScalarNewton`
 //! - Levenberg-Marquardt for `TornBlock` and `CoupledLM`
 
+#[cfg(target_arch = "wasm32")]
+use instant::Instant;
 use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
 use nalgebra::{Dyn, OMatrix, OVector, U1, Vector};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use rumoca_eval_dae::runtime::dual::Dual;
