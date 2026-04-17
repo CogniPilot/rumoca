@@ -3131,8 +3131,8 @@ dependencies = [
  "rumoca-phase-typecheck",
  "rumoca-session",
  "rumoca-sim",
- "rumoca-sim-diffsol",
  "rumoca-sim-fb",
+ "rumoca-solver-diffsol",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "rumoca-viz-web",
@@ -3158,7 +3158,7 @@ dependencies = [
  "rumoca",
  "rumoca-session",
  "rumoca-sim",
- "rumoca-sim-diffsol",
+ "rumoca-solver-diffsol",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde_json",
@@ -3175,8 +3175,8 @@ dependencies = [
  "lsp-types",
  "rumoca-session",
  "rumoca-sim",
- "rumoca-sim-diffsol",
- "rumoca-sim-rk45",
+ "rumoca-solver-diffsol",
+ "rumoca-solver-rk45",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
  "serde",
@@ -3185,6 +3185,22 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-rayon",
+]
+
+[[package]]
+name = "rumoca-codec"
+version = "0.8.12"
+dependencies = [
+ "indexmap",
+]
+
+[[package]]
+name = "rumoca-codec-flatbuffers"
+version = "0.8.12"
+dependencies = [
+ "anyhow",
+ "rumoca-codec",
+ "serde",
 ]
 
 [[package]]
@@ -3245,22 +3261,6 @@ dependencies = [
  "rumoca-ir-core",
  "rumoca-ir-flat",
  "thiserror 2.0.17",
-]
-
-[[package]]
-name = "rumoca-io"
-version = "0.8.12"
-dependencies = [
- "indexmap",
-]
-
-[[package]]
-name = "rumoca-io-fb"
-version = "0.8.12"
-dependencies = [
- "anyhow",
- "rumoca-io",
- "serde",
 ]
 
 [[package]]
@@ -3467,7 +3467,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-sim-diffsol"
+name = "rumoca-sim-fb"
+version = "0.8.12"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "gilrs",
+ "rumoca-codec",
+ "rumoca-codec-flatbuffers",
+ "rumoca-session",
+ "rumoca-solver-diffsol",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "tiny_http",
+ "toml",
+ "tungstenite",
+]
+
+[[package]]
+name = "rumoca-solver-diffsol"
 version = "0.8.12"
 dependencies = [
  "diffsol",
@@ -3486,26 +3505,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-sim-fb"
-version = "0.8.12"
-dependencies = [
- "anyhow",
- "crossterm",
- "gilrs",
- "rumoca-io",
- "rumoca-io-fb",
- "rumoca-session",
- "rumoca-sim-diffsol",
- "serde",
- "serde_json",
- "signal-hook",
- "tiny_http",
- "toml",
- "tungstenite",
-]
-
-[[package]]
-name = "rumoca-sim-rk45"
+name = "rumoca-solver-rk45"
 version = "0.8.12"
 dependencies = [
  "getrandom 0.3.4",
@@ -3542,7 +3542,7 @@ dependencies = [
  "rumoca-phase-typecheck",
  "rumoca-session",
  "rumoca-sim",
- "rumoca-sim-diffsol",
+ "rumoca-solver-diffsol",
  "serde",
  "serde_json",
  "tar",
@@ -3567,7 +3567,7 @@ dependencies = [
  "rayon",
  "rumoca-session",
  "rumoca-sim",
- "rumoca-sim-diffsol",
+ "rumoca-solver-diffsol",
  "rumoca-viz-web",
  "serde",
  "serde_json",
@@ -3612,7 +3612,7 @@ dependencies = [
  "lsp-types",
  "rumoca-session",
  "rumoca-sim",
- "rumoca-sim-diffsol",
+ "rumoca-solver-diffsol",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",

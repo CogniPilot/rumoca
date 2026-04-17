@@ -21,7 +21,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rumoca_sim_diffsol::{SimStepper, StepperOptions};
+use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 use rumoca_viz_web::THREE_JS;
 use tungstenite::{Message, accept};
 

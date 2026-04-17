@@ -27,7 +27,7 @@ use rumoca_sim::{
     SimOptions, SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
 };
-use rumoca_sim_diffsol::simulate_dae;
+use rumoca_solver_diffsol::simulate_dae;
 use rumoca_tool_fmt::FormatOptions;
 use rumoca_tool_lint::{LintLevel, LintOptions, lint as lint_source};
 use serde_json::{Value, json};

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::Path;
 
-use rumoca_io_fb::config::{
+use rumoca_codec_flatbuffers::config::{
     MessageConfig as FlatbufferMessageConfig, SchemaConfig as FlatbufferSchemaConfig,
 };
 

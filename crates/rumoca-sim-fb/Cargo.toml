@@ -8,10 +8,10 @@ repository.workspace = true
 
 [dependencies]
 # Internal crates
-rumoca-io = { workspace = true }
-rumoca-io-fb = { workspace = true }
+rumoca-codec = { workspace = true }
+rumoca-codec-flatbuffers = { workspace = true }
 rumoca-session = { workspace = true }
-rumoca-sim-diffsol = { workspace = true }
+rumoca-solver-diffsol = { workspace = true }
 
 # External dependencies
 anyhow = { workspace = true }

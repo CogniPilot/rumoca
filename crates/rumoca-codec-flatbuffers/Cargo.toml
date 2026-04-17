@@ -1,5 +1,5 @@
 [package]
-name = "rumoca-io-fb"
+name = "rumoca-codec-flatbuffers"
 description = "FlatBuffer schema reflection and codec support for Rumoca lockstep I/O"
 version.workspace = true
 edition.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rumoca-io = { workspace = true }
+rumoca-codec = { workspace = true }
 
 anyhow = { workspace = true }
 serde = { workspace = true }

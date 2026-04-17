@@ -1,5 +1,5 @@
 [package]
-name = "rumoca-io"
+name = "rumoca-codec"
 description = "Transport-neutral lockstep I/O contracts for Rumoca"
 version.workspace = true
 edition.workspace = true

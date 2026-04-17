@@ -26,7 +26,7 @@ clap_complete = { workspace = true }
 mimalloc = { workspace = true }
 rumoca-session = { workspace = true }
 rumoca-sim = { workspace = true }
-rumoca-sim-diffsol = { workspace = true }
+rumoca-solver-diffsol = { workspace = true }
 rumoca-viz-web = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }

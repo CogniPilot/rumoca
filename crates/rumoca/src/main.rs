@@ -1416,7 +1416,7 @@ fn run_simulation(
     workspace_root: Option<&Path>,
 ) -> Result<()> {
     use rumoca_sim::SimOptions;
-    use rumoca_sim_diffsol::simulate_dae;
+    use rumoca_solver_diffsol::simulate_dae;
 
     let opts = SimOptions {
         t_end,

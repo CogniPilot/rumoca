@@ -33,7 +33,7 @@ use rumoca_sim::{
     SimOptions, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
     build_simulation_metrics_value, build_simulation_payload, dae_balance, dae_balance_detail,
 };
-use rumoca_sim_diffsol::simulate_dae;
+use rumoca_solver_diffsol::simulate_dae;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;

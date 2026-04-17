@@ -1,6 +1,6 @@
 //! FlatBuffer lockstep simulation app with 3D viewer.
 //!
-//! The reusable protocol types live in `rumoca-io` and `rumoca-io-fb`.
+//! The reusable protocol types live in `rumoca-codec` and `rumoca-codec-flatbuffers`.
 //! This crate owns the current end-to-end app loop, including the quadrotor
 //! example path, viewer, and controller process wiring.
 
@@ -13,9 +13,9 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use config::SimFbConfig;
-use rumoca_io_fb::bfbs::SchemaSet;
+use rumoca_codec_flatbuffers::bfbs::SchemaSet;
 use rumoca_session::compile::Session;
-use rumoca_sim_diffsol::{SimStepper, StepperOptions};
+use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 
 /// Arguments for the sim-fb command.
 pub struct SimFbArgs {

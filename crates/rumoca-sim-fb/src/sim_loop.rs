@@ -1,7 +1,7 @@
 //! Lockstep simulation loop with UDP FlatBuffer I/O for the current app/demo.
 //!
-//! The reusable named-signal contract lives in `rumoca-io`, while the
-//! FlatBuffer schema/codecs live in `rumoca-io-fb`. This module owns the
+//! The reusable named-signal contract lives in `rumoca-codec`, while the
+//! FlatBuffer schema/codecs live in `rumoca-codec-flatbuffers`. This module owns the
 //! concrete quadrotor/controller/viewer application loop on top of those
 //! lower layers.
 
@@ -15,10 +15,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use gilrs::{Axis, Button, Gilrs};
-use rumoca_io::SignalFrame;
-use rumoca_io_fb::bfbs::SchemaSet;
-use rumoca_io_fb::codec::{PackCodec, UnpackCodec};
-use rumoca_sim_diffsol::{SimStepper, StepperOptions};
+use rumoca_codec::SignalFrame;
+use rumoca_codec_flatbuffers::bfbs::SchemaSet;
+use rumoca_codec_flatbuffers::codec::{PackCodec, UnpackCodec};
+use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 use tungstenite::{Message, accept};
 
 use crate::config::SimFbConfig;

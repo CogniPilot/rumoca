@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, SimResult};
-use rumoca_sim_diffsol::simulate_dae;
+use rumoca_solver_diffsol::simulate_dae;
 
 fn example_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -19,11 +19,11 @@ members = [
     "crates/rumoca-phase-dae",
     "crates/rumoca-phase-solve",
     "crates/rumoca-eval-dae",
-    "crates/rumoca-io",
-    "crates/rumoca-io-fb",
+    "crates/rumoca-codec",
+    "crates/rumoca-codec-flatbuffers",
     "crates/rumoca-sim",
-    "crates/rumoca-sim-diffsol",
-    "crates/rumoca-sim-rk45",
+    "crates/rumoca-solver-diffsol",
+    "crates/rumoca-solver-rk45",
     "crates/rumoca-viz-web",
     "crates/rumoca-phase-typecheck",
     # Session and tools
@@ -65,11 +65,11 @@ rumoca-phase-dae = { path = "crates/rumoca-phase-dae" }
 rumoca-phase-solve = { path = "crates/rumoca-phase-solve" }
 rumoca-eval-dae = { path = "crates/rumoca-eval-dae", default-features = false }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
-rumoca-io = { path = "crates/rumoca-io" }
-rumoca-io-fb = { path = "crates/rumoca-io-fb" }
+rumoca-codec = { path = "crates/rumoca-codec" }
+rumoca-codec-flatbuffers = { path = "crates/rumoca-codec-flatbuffers" }
 rumoca-sim = { path = "crates/rumoca-sim" }
-rumoca-sim-diffsol = { path = "crates/rumoca-sim-diffsol" }
-rumoca-sim-rk45 = { path = "crates/rumoca-sim-rk45" }
+rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
+rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
 rumoca-viz-web = { path = "crates/rumoca-viz-web" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-session = { path = "crates/rumoca-session" }
