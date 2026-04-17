@@ -551,7 +551,7 @@ fn apply_startup_scalar_value(
     Ok((changed, updates))
 }
 
-pub(crate) fn build_initial_section_env(
+pub fn build_initial_section_env(
     dae_model: &dae::Dae,
     y: &mut [f64],
     p: &[f64],
@@ -560,7 +560,7 @@ pub(crate) fn build_initial_section_env(
     build_initial_section_env_with_updates(dae_model, y, p, t_eval).0
 }
 
-pub(crate) fn build_initial_section_env_strict(
+pub fn build_initial_section_env_strict(
     dae_model: &dae::Dae,
     y: &mut [f64],
     p: &[f64],
@@ -581,7 +581,7 @@ pub fn refresh_pre_values_from_state_with_initial_assignments(
         .expect("non-strict startup pre refresh should not fail");
 }
 
-pub(crate) fn refresh_pre_values_from_state_with_initial_assignments_strict(
+pub fn refresh_pre_values_from_state_with_initial_assignments_strict(
     dae_model: &dae::Dae,
     y: &[f64],
     p: &[f64],
@@ -644,7 +644,7 @@ pub fn apply_initial_section_assignments(
     build_initial_section_env_with_updates(dae_model, y, p, t_eval).1
 }
 
-pub(crate) fn apply_initial_section_assignments_strict(
+pub fn apply_initial_section_assignments_strict(
     dae_model: &dae::Dae,
     y: &mut [f64],
     p: &[f64],

@@ -4,7 +4,7 @@ pub mod clock;
 pub mod compiled_discrete;
 pub mod discrete;
 pub mod event;
-pub(crate) mod hotpath_stats;
+pub mod hotpath_stats;
 pub mod layout;
 pub mod no_state;
 pub mod orchestration;

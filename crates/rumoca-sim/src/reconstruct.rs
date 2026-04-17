@@ -157,7 +157,7 @@ pub fn apply_eliminated_substitutions_to_env(
     let _ = apply_eliminated_substitutions_to_env_changed(elim, env);
 }
 
-pub(crate) fn apply_eliminated_substitutions_to_env_changed(
+pub fn apply_eliminated_substitutions_to_env_changed(
     elim: &eliminate::EliminationResult,
     env: &mut eval::VarEnv<f64>,
 ) -> bool {

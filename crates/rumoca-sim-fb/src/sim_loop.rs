@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use gilrs::{Axis, Button, Gilrs};
-use rumoca_sim::{SimStepper, StepperOptions};
+use rumoca_sim_diffsol::{SimStepper, StepperOptions};
 use tungstenite::{Message, accept};
 
 use crate::bfbs::SchemaSet;

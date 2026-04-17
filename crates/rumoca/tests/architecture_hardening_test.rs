@@ -304,7 +304,10 @@ fn test_no_manual_msl_ignore_markers() {
 #[test]
 fn test_sim_sources_use_ir_namespace_aliases() {
     let root = workspace_root();
-    let sim_dirs = [root.join("crates/rumoca-sim/src")];
+    let sim_dirs = [
+        root.join("crates/rumoca-sim/src"),
+        root.join("crates/rumoca-sim-diffsol/src"),
+    ];
 
     let mut offenders = Vec::new();
     for dir in sim_dirs {
@@ -323,17 +326,19 @@ fn test_sim_sources_use_ir_namespace_aliases() {
 
 #[test]
 fn test_sim_diffsol_dag_boundary_no_flat_or_ast_dependency() {
-    let cargo_toml = workspace_root().join("crates/rumoca-sim/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim Cargo.toml");
+    for crate_name in ["rumoca-sim", "rumoca-sim-diffsol"] {
+        let cargo_toml = workspace_root().join(format!("crates/{crate_name}/Cargo.toml"));
+        let content = fs::read_to_string(&cargo_toml).expect("read sim Cargo.toml");
 
-    assert!(
-        !content.contains("rumoca-ir-flat"),
-        "rumoca-sim must not depend on rumoca-ir-flat"
-    );
-    assert!(
-        !content.contains("rumoca-ir-ast"),
-        "rumoca-sim must not depend on rumoca-ir-ast"
-    );
+        assert!(
+            !content.contains("rumoca-ir-flat"),
+            "{crate_name} must not depend on rumoca-ir-flat"
+        );
+        assert!(
+            !content.contains("rumoca-ir-ast"),
+            "{crate_name} must not depend on rumoca-ir-ast"
+        );
+    }
 }
 
 #[test]
@@ -551,7 +556,11 @@ fn test_session_runtime_uses_sim_facade() {
 
     assert!(
         section_contains_dependency(&content, "dependencies", "rumoca-sim"),
-        "rumoca-session must depend on rumoca-sim for runtime/simulation APIs"
+        "rumoca-session must depend on rumoca-sim for runtime contracts"
+    );
+    assert!(
+        section_contains_dependency(&content, "dependencies", "rumoca-sim-diffsol"),
+        "rumoca-session must depend on rumoca-sim-diffsol for the concrete diffsol runtime"
     );
     assert!(
         section_contains_dependency(&content, "dependencies", "rumoca-phase-solve"),
@@ -590,21 +599,13 @@ Author reminder: session should orchestrate and expose facades, not implement ev
 }
 
 #[test]
-fn test_sim_facade_models_diffsol_as_optional_feature() {
+fn test_sim_contract_crate_has_no_backend_dependency() {
     let cargo_toml = workspace_root().join("crates/rumoca-sim/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim Cargo.toml");
 
     assert!(
-        content.contains("[features]"),
-        "rumoca-sim must declare crate features"
-    );
-    assert!(
-        content.contains("diffsol = [\"dep:diffsol\"]"),
-        "rumoca-sim must model diffsol backend as a crate feature"
-    );
-    assert!(
-        content.contains("diffsol = { version = \"0.10\", optional = true }"),
-        "diffsol dependency must stay optional behind the `diffsol` feature"
+        !section_contains_dependency(&content, "dependencies", "diffsol"),
+        "rumoca-sim must not depend on the concrete diffsol backend package"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-phase-codegen"),
@@ -615,6 +616,25 @@ Author reminder: keep codegen/template rendering in session/runtime facade, not 
         !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
         "rumoca-sim must not depend on rumoca-viz-web; \
 Author reminder: keep visualization assets outside the runtime-contract crate."
+    );
+}
+
+#[test]
+fn test_sim_diffsol_crate_owns_backend_dependency() {
+    let cargo_toml = workspace_root().join("crates/rumoca-sim-diffsol/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim-diffsol Cargo.toml");
+
+    assert!(
+        section_contains_dependency(&content, "dependencies", "rumoca-sim"),
+        "rumoca-sim-diffsol must depend on rumoca-sim for runtime contracts and shared helpers"
+    );
+    assert!(
+        section_contains_dependency(&content, "dependencies", "diffsol"),
+        "rumoca-sim-diffsol must own the concrete diffsol dependency"
+    );
+    assert!(
+        !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
+        "rumoca-sim-diffsol must not depend on rumoca-viz-web"
     );
 }
 

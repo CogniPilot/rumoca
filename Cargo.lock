@@ -3131,6 +3131,7 @@ dependencies = [
  "rumoca-phase-typecheck",
  "rumoca-session",
  "rumoca-sim",
+ "rumoca-sim-diffsol",
  "rumoca-sim-fb",
  "rumoca-sim-report",
  "rumoca-tool-fmt",
@@ -3175,6 +3176,7 @@ dependencies = [
  "lsp-types",
  "rumoca-session",
  "rumoca-sim",
+ "rumoca-sim-diffsol",
  "rumoca-sim-report",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
@@ -3423,6 +3425,7 @@ dependencies = [
  "rumoca-phase-solve",
  "rumoca-phase-typecheck",
  "rumoca-sim",
+ "rumoca-sim-diffsol",
  "serde",
  "serde_json",
  "tempfile",
@@ -3434,7 +3437,6 @@ dependencies = [
 name = "rumoca-sim"
 version = "0.8.12"
 dependencies = [
- "diffsol",
  "getrandom 0.3.4",
  "indexmap",
  "instant",
@@ -3451,6 +3453,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-sim-diffsol"
+version = "0.8.12"
+dependencies = [
+ "diffsol",
+ "getrandom 0.3.4",
+ "indexmap",
+ "instant",
+ "levenberg-marquardt",
+ "nalgebra",
+ "rumoca-core",
+ "rumoca-eval-dae",
+ "rumoca-ir-core",
+ "rumoca-ir-dae",
+ "rumoca-phase-solve",
+ "rumoca-sim",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "rumoca-sim-fb"
 version = "0.8.12"
 dependencies = [
@@ -3458,7 +3479,7 @@ dependencies = [
  "crossterm",
  "gilrs",
  "rumoca-session",
- "rumoca-sim",
+ "rumoca-sim-diffsol",
  "serde",
  "serde_json",
  "signal-hook",

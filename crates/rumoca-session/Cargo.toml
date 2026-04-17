@@ -24,7 +24,8 @@ rumoca-phase-dae = { workspace = true }
 rumoca-phase-solve = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-core = { workspace = true }
-rumoca-sim = { workspace = true, features = ["diffsol"] }
+rumoca-sim = { workspace = true }
+rumoca-sim-diffsol = { workspace = true }
 anyhow = { workspace = true }
 indexmap = { workspace = true }
 rayon = { workspace = true }

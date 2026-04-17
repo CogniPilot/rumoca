@@ -472,7 +472,7 @@ where
     }
 }
 
-pub(crate) fn find_initial_division_by_zero_site_with_callbacks<FEvalScalar, FEvalBool>(
+pub fn find_initial_division_by_zero_site_with_callbacks<FEvalScalar, FEvalBool>(
     dae: &dae::Dae,
     env: &VarEnv<f64>,
     eval_scalar: FEvalScalar,

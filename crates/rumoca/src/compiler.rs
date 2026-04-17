@@ -603,7 +603,7 @@ impl CompilationResult {
         scalarize: bool,
     ) -> Result<String, CompilerError> {
         let prepared = prepare_dae_for_template_codegen(&self.dae, scalarize)
-            .map_err(CompilerError::TemplateError)?;
+            .map_err(|error| CompilerError::TemplateError(error.to_string()))?;
         let native_json = dae_to_template_json(&self.dae);
         let mut prepared_json = dae_to_template_json(&prepared);
         let _ = augment_prepared_with_native_observables(&native_json, &mut prepared_json);
@@ -619,7 +619,7 @@ impl CompilationResult {
         scalarize: bool,
     ) -> Result<String, CompilerError> {
         let prepared = prepare_dae_for_template_codegen(&self.dae, scalarize)
-            .map_err(CompilerError::TemplateError)?;
+            .map_err(|error| CompilerError::TemplateError(error.to_string()))?;
         render_dae_template_with_name(&prepared, template, model_name)
             .map_err(CompilerError::TemplateError)
     }

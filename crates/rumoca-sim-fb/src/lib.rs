@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use bfbs::SchemaSet;
 use config::SilConfig;
 use rumoca_session::compile::Session;
-use rumoca_sim::{SimStepper, StepperOptions};
+use rumoca_sim_diffsol::{SimStepper, StepperOptions};
 
 /// Arguments for the sim-fb command.
 pub struct SimFbArgs {
