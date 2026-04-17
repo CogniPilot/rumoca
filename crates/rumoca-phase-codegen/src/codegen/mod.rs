@@ -7,7 +7,7 @@
 //! For common cases, templates can use the built-in `render_expr` function
 //! which handles the recursive tree walking with configurable operator syntax.
 
-use crate::errors::CodegenError;
+use crate::errors::{CodegenError, render_err};
 use minijinja::{Environment, UndefinedBehavior, Value};
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
@@ -285,6 +285,7 @@ fn create_environment() -> Environment<'static> {
 
     // Custom function for detecting self-referential (builtin alias) functions
     env.add_function("is_self_call", is_self_call_function);
+    env.add_function("fail", fail_function);
 
     // Extract explicit ODE rhs from residual equation: 0 = der(x) - expr → expr
     env.add_function("ode_rhs", render_c::ode_rhs_function);
@@ -410,6 +411,18 @@ fn product_filter(value: Value) -> Value {
         }
     }
     Value::from(result)
+}
+
+/// Fail template rendering with an explicit message.
+///
+/// Templates use this to declare target-specific capability constraints
+/// without pushing those policies into Rust-side backend branching.
+fn fail_function(message: Value) -> RenderResult {
+    let msg = message
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| message.to_string());
+    Err(render_err(msg))
 }
 
 /// Detect whether a function is a trivial self-call (builtin alias).

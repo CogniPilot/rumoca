@@ -347,64 +347,6 @@ for i, t in enumerate(tgrid):
 "#;
 
 // ============================================================================
-// Embedded C CSV driver template
-// ============================================================================
-
-fn sanitize_c_name(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-fn embedded_c_csv_main(model_name: &str, _n_states: usize, state_names: &[&str]) -> String {
-    let header_cols: Vec<String> = state_names.iter().map(|n| format!(",{n}")).collect();
-    let print_cols: Vec<String> = state_names
-        .iter()
-        .map(|n| format!("        printf(\",%.10g\", m.{});", sanitize_c_name(n)))
-        .collect();
-
-    format!(
-        r#"#include <stdio.h>
-#include <math.h>
-#include "{model_name}.h"
-
-int main(void) {{
-    {model_name}_t m;
-    {model_name}_init(&m);
-
-    double t = 0.0;
-    double dt = 0.001;
-    int steps = 1000;
-
-    printf("time{header_cols}\n");
-
-    for (int i = 0; i <= steps; i++) {{
-        printf("%.10g", t);
-{print_cols}
-        printf("\n");
-
-        if (i < steps) {{
-            {model_name}_step(&m, t, dt);
-            t += dt;
-        }}
-    }}
-
-    return 0;
-}}
-"#,
-        model_name = model_name,
-        header_cols = header_cols.join(""),
-        print_cols = print_cols.join("\n"),
-    )
-}
-
-// ============================================================================
 // CasADi MX runtime tests
 // ============================================================================
 
@@ -457,63 +399,38 @@ fn casadi_sx_oscillator() {
 }
 
 // ============================================================================
-// Embedded C runtime tests
+// Embedded C template compatibility tests
 // ============================================================================
 
-fn embedded_c_trace_test(source: &str, model_name: &str) {
+fn embedded_c_rejects_continuous_model(source: &str, model_name: &str) {
     let dae = prepare_dae(source, model_name);
-    let header =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::EMBEDDED_C_H, model_name)
-            .expect("render header template");
-    let impl_c = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::EMBEDDED_C_IMPL,
-        model_name,
-    )
-    .expect("render impl template");
-
-    // State names must be sorted alphabetically to match JSON serialization order
-    // (serde_json::Map uses BTreeMap, so templates see states in sorted order)
-    let mut state_names: Vec<&str> = dae.states.keys().map(|k| k.as_str()).collect();
-    state_names.sort();
-    let main_c = embedded_c_csv_main(model_name, state_names.len(), &state_names);
-
-    let header_name = format!("{}.h", model_name);
-    let impl_name = format!("{}.c", model_name);
-    let csv = compile_and_run_c(
-        &[
-            (&header_name, &header),
-            (&impl_name, &impl_c),
-            ("main.c", &main_c),
-        ],
-        &[],
-    );
-    let backend_traces = parse_csv_traces(&csv);
-
-    let opts = SimOptions {
-        t_end: 1.0,
-        ..SimOptions::default()
-    };
-    let sim = simulate_dae(&dae, &opts).expect("rumoca simulation");
-    assert_traces_match(&backend_traces, &dae, &sim, C_TOLERANCE, "Embedded C");
+    for template in [templates::EMBEDDED_C_H, templates::EMBEDDED_C_IMPL] {
+        let err = rumoca_phase_codegen::render_template_with_name(&dae, template, model_name)
+            .expect_err("embedded C must reject continuous f_x models");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("only support discrete models") || msg.contains("dae.f_x must be empty"),
+            "expected embedded-C continuous-model rejection, got: {msg}"
+        );
+    }
 }
 
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn embedded_c_ball() {
-    embedded_c_trace_test(BALL_SOURCE, "Ball");
+    embedded_c_rejects_continuous_model(BALL_SOURCE, "Ball");
 }
 
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn embedded_c_param_decay() {
-    embedded_c_trace_test(PARAM_DECAY_SOURCE, "ParamDecay");
+    embedded_c_rejects_continuous_model(PARAM_DECAY_SOURCE, "ParamDecay");
 }
 
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn embedded_c_oscillator() {
-    embedded_c_trace_test(OSCILLATOR_SOURCE, "Oscillator");
+    embedded_c_rejects_continuous_model(OSCILLATOR_SOURCE, "Oscillator");
 }
 
 // ============================================================================

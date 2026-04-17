@@ -445,23 +445,18 @@ fn find_algebraic_rhs_assignment(eq: &Value, var_name: &str, cfg: &ExprConfig) -
 
         // If the RHS is an If-expression with sample() guard (when-statement),
         // extract the update expression from the true branch, not the full ternary.
-        if let Ok(if_expr) = get_field(&rhs, "If") {
-            // Try to extract the true-branch expression (the state update)
-            if let Ok(branches) = get_field(&if_expr, "branches") {
-                // branches is a list of [condition, expression] pairs
-                if let Some(first_branch) = branches.get_item(&Value::from(0)).ok() {
-                    if let Ok(branch_array) = first_branch.try_iter() {
-                        let items: Vec<_> = branch_array.collect();
-                        if items.len() >= 2 {
-                            // items[0] is the condition (sample(...))
-                            // items[1] is the expression to execute when true
-                            let update_expr = &items[1];
-                            if let Ok(rendered) = render_expression(update_expr, cfg) {
-                                return Some(rendered);
-                            }
-                        }
-                    }
-                }
+        if let Ok(if_expr) = get_field(&rhs, "If")
+            && let Ok(branches) = get_field(&if_expr, "branches")
+            && let Ok(first_branch) = branches.get_item(&Value::from(0))
+            && let Ok(branch_array) = first_branch.try_iter()
+        {
+            // branches is a list of [condition, expression] pairs.
+            let items: Vec<_> = branch_array.take(2).collect();
+            if let Some(rendered) = items
+                .get(1)
+                .and_then(|update_expr| render_expression(update_expr, cfg).ok())
+            {
+                return Some(rendered);
             }
         }
 
@@ -1207,9 +1202,7 @@ fn get_first_dim_for_var_in_dae(dae: &Value, var_name: &str) -> Option<usize> {
         let Ok(dims) = get_field(&var, "dims") else {
             return None;
         };
-        let Some(len) = dims.len() else {
-            return None;
-        };
+        let len = dims.len()?;
         if len == 0 {
             return None;
         }
