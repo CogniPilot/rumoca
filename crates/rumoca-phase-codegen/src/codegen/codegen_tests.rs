@@ -500,6 +500,43 @@ fn test_template_missing_assignment_target_fails_fast() {
 }
 
 #[test]
+fn test_embedded_c_templates_reject_continuous_models() {
+    let mut dae = dae::Dae::new();
+    dae.states.insert(
+        "x".into(),
+        rumoca_ir_dae::Variable {
+            name: "x".into(),
+            start: Some(rumoca_ir_dae::Expression::Literal(
+                rumoca_ir_dae::Literal::Real(1.0),
+            )),
+            ..Default::default()
+        },
+    );
+    dae.f_x.push(rumoca_ir_dae::Equation {
+        lhs: Some("x".into()),
+        rhs: rumoca_ir_dae::Expression::VarRef {
+            name: "x".into(),
+            subscripts: vec![],
+        },
+        span: Default::default(),
+        origin: "test".into(),
+        scalar_count: 1,
+    });
+
+    for template in [
+        crate::templates::EMBEDDED_C_H,
+        crate::templates::EMBEDDED_C_IMPL,
+    ] {
+        let err = render_template(&dae, template).expect_err("continuous DAE must fail fast");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("only support discrete models") || msg.contains("dae.f_x must be empty"),
+            "expected embedded-C continuous-model rejection, got: {msg}"
+        );
+    }
+}
+
+#[test]
 fn test_julia_mtk_template_empty_dae() {
     let dae = dae::Dae::new();
     let result = render_template(&dae, crate::templates::JULIA_MTK).unwrap();

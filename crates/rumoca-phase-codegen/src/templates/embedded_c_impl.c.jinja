@@ -11,6 +11,9 @@
     - Static array dimensions: all array sizes are compile-time constants
     - No recursion: enforced by call-graph validation upstream
 -#}
+{%- if dae.f_x | length > 0 -%}
+{{ fail("Embedded C templates currently only support discrete models; dae.f_x must be empty.") }}
+{%- endif -%}
 {%- set model_name = model_name | default("model") | sanitize -%}
 {%- set cfg = {"prefix": "", "power": "powf", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(float[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum", "float_literals": true} -%}
 {%- macro var_size(vars) -%}
