@@ -13,16 +13,18 @@
 use ::rumoca::CompilationResult as HighLevelCompilationResult;
 use pyo3::prelude::*;
 use pyo3::{PyErr, exceptions::PyRuntimeError};
+use rumoca_session::codegen::render_dae_template_with_json;
 use rumoca_session::compile::{FailedPhase, PhaseResult, Session, SessionConfig, SourceRootKind};
 use rumoca_session::parsing::{
     collect_compile_unit_source_files, collect_model_names, validate_source_syntax,
 };
-use rumoca_session::runtime::{SimOptions, render_dae_template_with_json, simulate_dae};
 use rumoca_session::source_roots::{
     canonical_path_key, merge_source_root_paths, plan_source_root_loads,
     referenced_unloaded_source_root_paths, source_root_source_set_key,
 };
+use rumoca_sim::SimOptions;
 use rumoca_sim::SimSolverMode as RuntimeSimSolverMode;
+use rumoca_sim_diffsol::simulate_dae;
 use rumoca_sim_report::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
@@ -640,123 +642,123 @@ fn builtin_templates_json() -> Value {
                 "id": "sympy.py.jinja",
                 "label": "SymPy (Python)",
                 "language": "python",
-                "source": rumoca_session::runtime::templates::SYMPY,
+                "source": rumoca_session::codegen::templates::SYMPY,
             },
             {
                 "id": "jax.py.jinja",
                 "label": "JAX / Diffrax (Python)",
                 "language": "python",
-                "source": rumoca_session::runtime::templates::JAX,
+                "source": rumoca_session::codegen::templates::JAX,
             },
             {
                 "id": "onnx.py.jinja",
                 "label": "ONNX (Python)",
                 "language": "python",
-                "source": rumoca_session::runtime::templates::ONNX,
+                "source": rumoca_session::codegen::templates::ONNX,
             },
             {
                 "id": "julia_mtk.jl.jinja",
                 "label": "Julia MTK",
                 "language": "julia",
-                "source": rumoca_session::runtime::templates::JULIA_MTK,
+                "source": rumoca_session::codegen::templates::JULIA_MTK,
             },
             {
                 "id": "casadi_sx.py.jinja",
                 "label": "CasADi SX (Python)",
                 "language": "python",
-                "source": rumoca_session::runtime::templates::CASADI_SX,
+                "source": rumoca_session::codegen::templates::CASADI_SX,
             },
             {
                 "id": "casadi_mx.py.jinja",
                 "label": "CasADi MX (Python)",
                 "language": "python",
-                "source": rumoca_session::runtime::templates::CASADI_MX,
+                "source": rumoca_session::codegen::templates::CASADI_MX,
             },
     {
                 "id": "embedded_c.h.jinja",
                 "label": "Embedded C Header",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::EMBEDDED_C_H,
+                "source": rumoca_session::codegen::templates::EMBEDDED_C_H,
             },
             {
                 "id": "embedded_c_impl.c.jinja",
                 "label": "Embedded C Implementation",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::EMBEDDED_C_IMPL,
+                "source": rumoca_session::codegen::templates::EMBEDDED_C_IMPL,
             },
             {
                 "id": "dae_modelica.mo.jinja",
                 "label": "DAE Modelica",
                 "language": "modelica",
-                "source": rumoca_session::runtime::templates::DAE_MODELICA,
+                "source": rumoca_session::codegen::templates::DAE_MODELICA,
             },
             {
                 "id": "flat_modelica.mo.jinja",
                 "label": "Flat Modelica",
                 "language": "modelica",
-                "source": rumoca_session::runtime::templates::FLAT_MODELICA,
+                "source": rumoca_session::codegen::templates::FLAT_MODELICA,
             },
             {
                 "id": "fmi2_model_description.xml.jinja",
                 "label": "FMI 2.0 modelDescription.xml",
                 "language": "xml",
-                "source": rumoca_session::runtime::templates::FMI2_MODEL_DESCRIPTION,
+                "source": rumoca_session::codegen::templates::FMI2_MODEL_DESCRIPTION,
             },
             {
                 "id": "fmi2_model.c.jinja",
                 "label": "FMI 2.0 model.c",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::FMI2_MODEL,
+                "source": rumoca_session::codegen::templates::FMI2_MODEL,
             },
             {
                 "id": "fmi2_test_driver.c.jinja",
                 "label": "FMI 2.0 test driver",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::FMI2_TEST_DRIVER,
+                "source": rumoca_session::codegen::templates::FMI2_TEST_DRIVER,
             },
             {
                 "id": "fmi3_model_description.xml.jinja",
                 "label": "FMI 3.0 modelDescription.xml",
                 "language": "xml",
-                "source": rumoca_session::runtime::templates::FMI3_MODEL_DESCRIPTION,
+                "source": rumoca_session::codegen::templates::FMI3_MODEL_DESCRIPTION,
             },
             {
                 "id": "fmi3_model.c.jinja",
                 "label": "FMI 3.0 model.c",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::FMI3_MODEL,
+                "source": rumoca_session::codegen::templates::FMI3_MODEL,
             },
             {
                 "id": "fmi3_test_driver.c.jinja",
                 "label": "FMI 3.0 test driver",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::FMI3_TEST_DRIVER,
+                "source": rumoca_session::codegen::templates::FMI3_TEST_DRIVER,
             },
         ])
 }
 
 fn builtin_template_source(template_id: &str) -> Option<&'static str> {
     match template_id {
-        "sympy.py.jinja" => Some(rumoca_session::runtime::templates::SYMPY),
-        "jax.py.jinja" => Some(rumoca_session::runtime::templates::JAX),
-        "onnx.py.jinja" => Some(rumoca_session::runtime::templates::ONNX),
-        "julia_mtk.jl.jinja" => Some(rumoca_session::runtime::templates::JULIA_MTK),
-        "casadi_sx.py.jinja" => Some(rumoca_session::runtime::templates::CASADI_SX),
-        "casadi_mx.py.jinja" => Some(rumoca_session::runtime::templates::CASADI_MX),
-        "embedded_c.h.jinja" => Some(rumoca_session::runtime::templates::EMBEDDED_C_H),
-        "embedded_c_impl.c.jinja" => Some(rumoca_session::runtime::templates::EMBEDDED_C_IMPL),
-        "dae_modelica.mo.jinja" => Some(rumoca_session::runtime::templates::DAE_MODELICA),
-        "flat_modelica.mo.jinja" => Some(rumoca_session::runtime::templates::FLAT_MODELICA),
+        "sympy.py.jinja" => Some(rumoca_session::codegen::templates::SYMPY),
+        "jax.py.jinja" => Some(rumoca_session::codegen::templates::JAX),
+        "onnx.py.jinja" => Some(rumoca_session::codegen::templates::ONNX),
+        "julia_mtk.jl.jinja" => Some(rumoca_session::codegen::templates::JULIA_MTK),
+        "casadi_sx.py.jinja" => Some(rumoca_session::codegen::templates::CASADI_SX),
+        "casadi_mx.py.jinja" => Some(rumoca_session::codegen::templates::CASADI_MX),
+        "embedded_c.h.jinja" => Some(rumoca_session::codegen::templates::EMBEDDED_C_H),
+        "embedded_c_impl.c.jinja" => Some(rumoca_session::codegen::templates::EMBEDDED_C_IMPL),
+        "dae_modelica.mo.jinja" => Some(rumoca_session::codegen::templates::DAE_MODELICA),
+        "flat_modelica.mo.jinja" => Some(rumoca_session::codegen::templates::FLAT_MODELICA),
         "fmi2_model_description.xml.jinja" => {
-            Some(rumoca_session::runtime::templates::FMI2_MODEL_DESCRIPTION)
+            Some(rumoca_session::codegen::templates::FMI2_MODEL_DESCRIPTION)
         }
-        "fmi2_model.c.jinja" => Some(rumoca_session::runtime::templates::FMI2_MODEL),
-        "fmi2_test_driver.c.jinja" => Some(rumoca_session::runtime::templates::FMI2_TEST_DRIVER),
+        "fmi2_model.c.jinja" => Some(rumoca_session::codegen::templates::FMI2_MODEL),
+        "fmi2_test_driver.c.jinja" => Some(rumoca_session::codegen::templates::FMI2_TEST_DRIVER),
         "fmi3_model_description.xml.jinja" => {
-            Some(rumoca_session::runtime::templates::FMI3_MODEL_DESCRIPTION)
+            Some(rumoca_session::codegen::templates::FMI3_MODEL_DESCRIPTION)
         }
-        "fmi3_model.c.jinja" => Some(rumoca_session::runtime::templates::FMI3_MODEL),
-        "fmi3_test_driver.c.jinja" => Some(rumoca_session::runtime::templates::FMI3_TEST_DRIVER),
+        "fmi3_model.c.jinja" => Some(rumoca_session::codegen::templates::FMI3_MODEL),
+        "fmi3_test_driver.c.jinja" => Some(rumoca_session::codegen::templates::FMI3_TEST_DRIVER),
         _ => None,
     }
 }

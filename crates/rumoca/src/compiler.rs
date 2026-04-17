@@ -38,19 +38,21 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+use rumoca_session::codegen::{
+    dae_to_template_json, render_dae_template, render_dae_template_with_json,
+    render_dae_template_with_name,
+};
 use rumoca_session::compile::{
     Dae, FailedPhase, FlatModel, PhaseResult, ResolvedTree, Session, SessionConfig, SourceRootKind,
 };
 use rumoca_session::parsing::collect_compile_unit_source_files;
-use rumoca_session::runtime::{
-    dae_balance, dae_is_balanced, dae_to_template_json, prepare_dae_for_template_codegen,
-    render_dae_template, render_dae_template_with_json, render_dae_template_with_name,
-};
 use rumoca_session::source_roots::{
     PackageLayoutError, canonical_path_key, parse_source_root_with_cache, plan_source_root_loads,
     referenced_unloaded_source_root_paths, render_source_root_status_message,
     resolve_source_root_cache_dir, source_root_source_set_key,
 };
+use rumoca_sim::{dae_balance, dae_is_balanced};
+use rumoca_sim_diffsol::prepare_dae_for_template_codegen;
 use serde_json::{Map, Value};
 
 use crate::error::CompilerError;

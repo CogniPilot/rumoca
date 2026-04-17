@@ -22,9 +22,6 @@ use rumoca_session::project::{
     resync_model_sidecars_with_move_hints, write_model_simulation_preset,
     write_plot_views_for_model,
 };
-use rumoca_session::runtime::{
-    SimOptions, SimSolverMode, dae_balance, dae_balance_detail, simulate_dae,
-};
 use rumoca_session::source_roots::{
     PackageLayoutError, SourceRootCacheStatus, SourceRootCacheTiming, canonical_path_key,
     classify_configured_source_root_kind, merge_source_root_paths, parse_source_root_with_cache,
@@ -32,6 +29,8 @@ use rumoca_session::source_roots::{
     render_source_root_indexing_finished_message, render_source_root_indexing_started_message,
     render_source_root_status_message, source_root_paths_changed, source_root_source_set_key,
 };
+use rumoca_sim::{SimOptions, SimSolverMode, dae_balance, dae_balance_detail};
+use rumoca_sim_diffsol::simulate_dae;
 use rumoca_sim_report::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,

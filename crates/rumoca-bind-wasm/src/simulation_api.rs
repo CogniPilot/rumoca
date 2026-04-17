@@ -1,6 +1,7 @@
 use rumoca_session::Session;
-use rumoca_session::runtime::{SimOptions, simulate_dae};
+use rumoca_sim::SimOptions;
 use rumoca_sim::SimSolverMode;
+use rumoca_sim_diffsol::simulate_dae;
 use rumoca_sim_report::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,

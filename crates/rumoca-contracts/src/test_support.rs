@@ -7,8 +7,8 @@ use rumoca_session::compile::{CompilationResult, FailedPhase, PhaseResult};
 use rumoca_session::parsing::{
     ParseError, parse_source_to_ast as parse_to_ast, parse_source_to_ast_with_errors,
 };
-use rumoca_session::runtime::dae_balance;
 use rumoca_session::{Session, SessionConfig};
+use rumoca_sim::dae_balance;
 
 /// Compile a model from source, expecting success.
 /// Returns the CompilationResult for further assertions.

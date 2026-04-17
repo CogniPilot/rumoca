@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_session::runtime::{render_dae_template_with_name, templates as runtime_templates};
+use rumoca_session::codegen::{render_dae_template_with_name, templates as runtime_templates};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]

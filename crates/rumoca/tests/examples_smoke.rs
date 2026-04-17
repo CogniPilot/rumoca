@@ -204,11 +204,11 @@ end Simple;
 
     assert_eq!(result.dae.states.len(), 1, "one array state 'x'");
 
-    let opts = rumoca_session::runtime::SimOptions {
+    let opts = rumoca_sim::SimOptions {
         t_end: 1.0,
         ..Default::default()
     };
-    let sim = rumoca_session::runtime::simulate_dae(&result.dae, &opts)
+    let sim = rumoca_sim_diffsol::simulate_dae(&result.dae, &opts)
         .expect("vector derivative model should simulate without mass-matrix error");
 
     // After t=1, x[1] ≈ 1.0 and x[2] ≈ 2.0 (integrating constants from zero)

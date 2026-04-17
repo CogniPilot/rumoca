@@ -8,9 +8,8 @@ use std::time::Instant;
 
 use clap::Parser;
 use rumoca_session::compile::Dae;
-use rumoca_session::runtime::{
-    SimError, SimOptions, SimResult, SimSolverMode, build_simulation, run_prepared_simulation,
-};
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
+use rumoca_sim_diffsol::{SimError, build_simulation, run_prepared_simulation};
 
 #[derive(Debug, Parser)]
 #[command(name = "rumoca-sim-worker")]

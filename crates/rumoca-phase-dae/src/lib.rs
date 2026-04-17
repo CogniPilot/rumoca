@@ -79,6 +79,12 @@ use variable_analysis::{
 };
 use when_conversion::convert_when_clause;
 
+/// Check whether a compiled DAE is structurally balanced.
+pub fn dae_is_balanced(dae: &dae::Dae) -> bool {
+    let (equations, unknowns) = balance_counting::compute_balance_counts(dae);
+    equations == unknowns
+}
+
 pub use dae_lowering::{
     insert_array_size_args_dae, lower_record_function_params_dae,
     scalarize_phantom_vector_equations,

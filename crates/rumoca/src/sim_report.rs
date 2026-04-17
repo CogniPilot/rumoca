@@ -3,7 +3,7 @@ use std::io;
 use std::path::Path;
 
 use rumoca_session::project::{PlotViewConfig, load_plot_views_for_model};
-use rumoca_session::runtime::SimResult;
+use rumoca_sim::SimResult;
 use rumoca_sim_report::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
@@ -102,7 +102,7 @@ fn hydrate_plot_view(workspace_root: &Path, view: PlotViewConfig) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_session::runtime::SimVariableMeta;
+    use rumoca_sim::SimVariableMeta;
 
     #[test]
     fn builds_shared_report_document() {

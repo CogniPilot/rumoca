@@ -4,16 +4,15 @@ use crate::common::{
 };
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
-use rumoca_session::analysis::{
-    ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces, load_trace_json,
-};
 use rumoca_session::compile::{
     CompilationResult as SessionCompilationResult, Session, SessionConfig,
 };
 use rumoca_session::parsing::parse_files_parallel_lenient;
-use rumoca_session::runtime::{
-    SimOptions, SimResult, SimSolverMode, runtime_defined_unknown_names, simulate_dae,
+use rumoca_sim::sim_trace_compare::{
+    ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces, load_trace_json,
 };
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode, runtime_defined_unknown_names};
+use rumoca_sim_diffsol::simulate_dae;
 use rumoca_viz_web::{UPLOT_CSS, UPLOT_JS};
 use serde::Serialize;
 use std::path::{Path, PathBuf};

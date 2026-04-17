@@ -24,6 +24,8 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_rayon::init_thread_pool;
 
 use rumoca_session::Session;
+use rumoca_session::codegen::render_dae_template_with_json;
+use rumoca_session::codegen::templates as runtime_templates;
 use rumoca_session::compile::{
     CompilationMode, CompilationResult, FailedPhase, PhaseResult, session_cache_stats,
 };
@@ -32,10 +34,8 @@ use rumoca_session::parsing::{
     Causality, ClassDef, Expression, OpBinary, StoredDefinition, Variability, collect_model_names,
     parse_source_to_ast, validate_source_syntax,
 };
-use rumoca_session::runtime::templates as runtime_templates;
-use rumoca_session::runtime::{
-    dae_balance, prepare_dae_for_template_codegen, render_dae_template_with_json,
-};
+use rumoca_sim::dae_balance;
+use rumoca_sim_diffsol::prepare_dae_for_template_codegen;
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use rumoca_tool_lsp::completion_metrics::{
     CompletionTimingSummary, extract_namespace_completion_prefix,

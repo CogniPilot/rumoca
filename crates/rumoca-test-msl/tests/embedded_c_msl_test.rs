@@ -21,9 +21,8 @@ use flate2::read::GzDecoder;
 use rumoca_phase_codegen::templates::{EMBEDDED_C_H, EMBEDDED_C_IMPL};
 use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_session::parsing::parse_files_parallel_lenient;
-use rumoca_session::runtime::{
-    SimOptions, SimResult, prepare_dae_for_template_codegen, simulate_dae,
-};
+use rumoca_sim::{SimOptions, SimResult};
+use rumoca_sim_diffsol::{prepare_dae_for_template_codegen, simulate_dae};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;

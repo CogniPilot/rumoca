@@ -19,6 +19,8 @@ mimalloc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 rumoca-session = { workspace = true }
+rumoca-sim = { workspace = true }
+rumoca-sim-diffsol = { workspace = true }
 
 [dev-dependencies]
 walkdir = "2.5"

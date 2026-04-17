@@ -16,10 +16,11 @@
 //! - `RUMOCA_CASADI_MSL_LIMIT=N` — cap number of models tested
 
 use flate2::read::GzDecoder;
-use rumoca_session::analysis::{ModelDeviationMetric, SimTrace, compare_model_traces};
 use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_session::parsing::parse_files_parallel_lenient;
-use rumoca_session::runtime::{SimOptions, SimResult, simulate_dae};
+use rumoca_sim::sim_trace_compare::{ModelDeviationMetric, SimTrace, compare_model_traces};
+use rumoca_sim::{SimOptions, SimResult};
+use rumoca_sim_diffsol::simulate_dae;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;

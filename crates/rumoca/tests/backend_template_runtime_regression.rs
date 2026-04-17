@@ -12,9 +12,8 @@ use std::{fs, process::Command};
 
 use rumoca::Compiler;
 use rumoca_phase_codegen::templates;
-use rumoca_session::runtime::{
-    SimOptions, SimResult, prepare_dae_for_template_codegen, simulate_dae,
-};
+use rumoca_sim::{SimOptions, SimResult};
+use rumoca_sim_diffsol::{prepare_dae_for_template_codegen, simulate_dae};
 use tempfile::Builder;
 
 // ============================================================================

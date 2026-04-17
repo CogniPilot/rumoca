@@ -8,11 +8,12 @@ use rumoca_session::compile::{
     StrictCompileReport, VarName, Variable, compile_phase_timing_stats,
     reset_compile_phase_timing_stats,
 };
-use rumoca_session::runtime::{
-    SimOptions, SimResult, SimSolverMode, compiled_layout_binding_debug,
-    compiled_layout_related_bindings_debug, simulate_dae,
-};
 use rumoca_session::source_roots::parse_source_root_with_cache;
+use rumoca_sim::{
+    SimOptions, SimResult, SimSolverMode, compiled_layout_binding_debug,
+    compiled_layout_related_bindings_debug,
+};
+use rumoca_sim_diffsol::simulate_dae;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProfileMode {

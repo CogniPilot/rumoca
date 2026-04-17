@@ -221,7 +221,7 @@ enum Backend {
 
 impl Backend {
     fn template(self) -> &'static str {
-        use rumoca_session::runtime::templates;
+        use rumoca_session::codegen::templates;
         match self {
             Backend::CasadiSx => templates::CASADI_SX,
             Backend::CasadiMx => templates::CASADI_MX,
@@ -266,12 +266,12 @@ enum SimulateSolverMode {
     RkLike,
 }
 
-impl From<SimulateSolverMode> for rumoca_session::runtime::SimSolverMode {
+impl From<SimulateSolverMode> for rumoca_sim::SimSolverMode {
     fn from(value: SimulateSolverMode) -> Self {
         match value {
-            SimulateSolverMode::Auto => rumoca_session::runtime::SimSolverMode::Auto,
-            SimulateSolverMode::Bdf => rumoca_session::runtime::SimSolverMode::Bdf,
-            SimulateSolverMode::RkLike => rumoca_session::runtime::SimSolverMode::RkLike,
+            SimulateSolverMode::Auto => rumoca_sim::SimSolverMode::Auto,
+            SimulateSolverMode::Bdf => rumoca_sim::SimSolverMode::Bdf,
+            SimulateSolverMode::RkLike => rumoca_sim::SimSolverMode::RkLike,
         }
     }
 }
@@ -727,7 +727,7 @@ fn run_check(args: CheckArgs) -> Result<()> {
 }
 
 fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
-    use rumoca_session::runtime::{fmi2_templates, fmi3_templates};
+    use rumoca_session::codegen::{fmi2_templates, fmi3_templates};
     use std::fs;
 
     init_debug_tracing(args.input.debug);
@@ -791,7 +791,7 @@ fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
 }
 
 fn run_export_embedded_c(args: ExportEmbeddedCArgs) -> Result<()> {
-    use rumoca_session::runtime::embedded_c_templates;
+    use rumoca_session::codegen::embedded_c_templates;
     use std::fs;
 
     init_debug_tracing(args.input.debug);
@@ -1433,7 +1433,8 @@ fn run_simulation(
     output: Option<&str>,
     workspace_root: Option<&Path>,
 ) -> Result<()> {
-    use rumoca_session::runtime::{SimOptions, simulate_dae};
+    use rumoca_sim::SimOptions;
+    use rumoca_sim_diffsol::simulate_dae;
 
     let opts = SimOptions {
         t_end,

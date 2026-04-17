@@ -550,21 +550,29 @@ Author reminder: use rumoca-session facade APIs instead."
 }
 
 #[test]
-fn test_session_runtime_uses_sim_facade() {
+fn test_session_is_compile_only() {
     let cargo_toml = workspace_root().join("crates/rumoca-session/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-session Cargo.toml");
 
     assert!(
-        section_contains_dependency(&content, "dependencies", "rumoca-sim"),
-        "rumoca-session must depend on rumoca-sim for runtime contracts"
-    );
-    assert!(
-        section_contains_dependency(&content, "dependencies", "rumoca-sim-diffsol"),
-        "rumoca-session must depend on rumoca-sim-diffsol for the concrete diffsol runtime"
+        !section_contains_dependency(&content, "dependencies", "rumoca-sim"),
+        "rumoca-session must not depend on rumoca-sim; runtime contracts belong outside the compile/session facade"
     );
     assert!(
         section_contains_dependency(&content, "dependencies", "rumoca-phase-solve"),
         "rumoca-session must depend on rumoca-phase-solve for structural solve APIs"
+    );
+    assert!(
+        section_contains_dependency(&content, "dependencies", "rumoca-phase-codegen"),
+        "rumoca-session must depend on rumoca-phase-codegen for explicit codegen helpers"
+    );
+    assert!(
+        !section_contains_dependency(&content, "dependencies", "rumoca-sim-diffsol"),
+        "rumoca-session must not depend on rumoca-sim-diffsol; concrete runtime backends belong outside the compile/session facade"
+    );
+    assert!(
+        !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
+        "rumoca-session must not depend on rumoca-viz-web; visualization belongs outside the compile/session facade"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "diffsol"),
@@ -576,7 +584,7 @@ Author reminder: keep backend-specific packages below the session facade."
     assert!(
         !section_contains_dependency(&content, "dependencies", banned),
         "rumoca-session must not depend directly on {banned} in [dependencies]; \
-Author reminder: use rumoca-sim facade APIs from rumoca-session::runtime."
+Author reminder: keep evaluation/runtime internals out of rumoca-session."
     );
 }
 
@@ -610,7 +618,7 @@ fn test_sim_contract_crate_has_no_backend_dependency() {
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-phase-codegen"),
         "rumoca-sim must not depend on rumoca-phase-codegen; \
-Author reminder: keep codegen/template rendering in session/runtime facade, not sim."
+Author reminder: keep codegen/template rendering outside the runtime-contract crate."
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
@@ -710,15 +718,23 @@ Author reminder: use rumoca-session facade types/APIs instead."
 }
 
 #[test]
-fn test_test_msl_uses_session_runtime_facade() {
+fn test_test_msl_uses_explicit_runtime_crates() {
     let cargo_toml = workspace_root().join("crates/rumoca-test-msl/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-test-msl Cargo.toml");
+
+    for required in ["rumoca-session", "rumoca-sim", "rumoca-sim-diffsol"] {
+        assert!(
+            section_contains_dependency(&content, "dependencies", required),
+            "rumoca-test-msl must depend on {required}; \
+Author reminder: compile/session and runtime ownership should be explicit."
+        );
+    }
 
     for banned in ["rumoca", "rumoca-ir-dae", "rumoca-eval-dae", "rumoca-core"] {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
             "rumoca-test-msl must not depend directly on {banned} in [dependencies]; \
-Author reminder: use rumoca-session::runtime and rumoca-session::compile facade APIs."
+Author reminder: use rumoca-session::compile plus explicit runtime crates."
         );
     }
     assert!(
@@ -731,6 +747,33 @@ Author reminder: use rumoca-session facade APIs."
         "rumoca-test-msl must not depend directly on rumoca-core in [dev-dependencies]; \
 Author reminder: use rumoca-session::compile::core facade APIs."
     );
+}
+
+#[test]
+fn test_no_session_runtime_facade_imports_remain() {
+    let mut files = Vec::new();
+    collect_rs_files(&workspace_root().join("crates"), &mut files);
+    for file in files {
+        if normalized_rel_path(
+            file.strip_prefix(workspace_root())
+                .expect("workspace-relative file"),
+        ) == "crates/rumoca/tests/architecture_hardening_test.rs"
+        {
+            continue;
+        }
+        let content = fs::read_to_string(&file).expect("read source file");
+        let has_runtime_import = content.lines().any(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("use rumoca_session::runtime")
+                || trimmed.contains(" rumoca_session::runtime::")
+        });
+        assert!(
+            !has_runtime_import,
+            "source file {} must not import rumoca_session::runtime; \
+Author reminder: use rumoca_session::codegen for template helpers and explicit sim crates for runtime APIs.",
+            file.display()
+        );
+    }
 }
 
 #[test]
