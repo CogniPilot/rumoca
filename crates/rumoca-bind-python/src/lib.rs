@@ -23,7 +23,7 @@ use rumoca_session::source_roots::{
     referenced_unloaded_source_root_paths, source_root_source_set_key,
 };
 use rumoca_sim::SimSolverMode as RuntimeSimSolverMode;
-use rumoca_sim::results_web::{
+use rumoca_sim_report::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
 };

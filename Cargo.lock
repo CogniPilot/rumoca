@@ -3132,6 +3132,7 @@ dependencies = [
  "rumoca-session",
  "rumoca-sim",
  "rumoca-sim-fb",
+ "rumoca-sim-report",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",
@@ -3156,6 +3157,7 @@ dependencies = [
  "rumoca",
  "rumoca-session",
  "rumoca-sim",
+ "rumoca-sim-report",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde_json",
@@ -3172,6 +3174,7 @@ dependencies = [
  "lsp-types",
  "rumoca-session",
  "rumoca-sim",
+ "rumoca-sim-report",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
  "serde",
@@ -3464,6 +3467,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-sim-report"
+version = "0.8.12"
+dependencies = [
+ "rumoca-sim",
+ "serde_json",
+]
+
+[[package]]
 name = "rumoca-test-msl"
 version = "0.8.12"
 dependencies = [
@@ -3553,6 +3564,7 @@ dependencies = [
  "futures-util",
  "lsp-types",
  "rumoca-session",
+ "rumoca-sim-report",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",

@@ -5,9 +5,11 @@ use std::path::Path;
 use rumoca_session::project::{PlotViewConfig, load_plot_views_for_model};
 use rumoca_session::runtime::SimResult;
 use rumoca_sim::results_web::{
-    ResultsHtmlDocument, SimulationRequestSummary, SimulationRunMetrics,
-    build_results_html_document, build_simulation_metrics_value, build_simulation_payload,
-    default_visualization_views_value,
+    ResultsHtmlDocument, build_results_html_document, default_visualization_views_value,
+};
+use rumoca_sim_report::{
+    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
+    build_simulation_payload,
 };
 use serde_json::{Value, json};
 

@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rumoca-sim = { workspace = true }
+rumoca-sim-report = { workspace = true }
 rumoca-session = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 rumoca-tool-lsp = { workspace = true }

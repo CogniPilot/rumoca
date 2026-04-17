@@ -43,7 +43,7 @@ use rumoca_session::{
         write_last_simulation_result_for_model, write_simulation_run,
     },
 };
-use rumoca_sim::results_web::{SimulationRequestSummary, SimulationRunMetrics};
+use rumoca_sim_report::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, PartialLintOptions};
 use walkdir::WalkDir;
 

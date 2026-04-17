@@ -116,8 +116,6 @@ pub(super) struct ProjectReloadTiming {
 pub(super) struct SimulationMetrics {
     pub(super) compile_elapsed: f64,
     pub(super) sim_elapsed: f64,
-    pub(super) point_count: usize,
-    pub(super) variable_count: usize,
     pub(super) prepare_context_seconds: f64,
     pub(super) build_snapshot_seconds: f64,
     pub(super) strict_compile_seconds: f64,
