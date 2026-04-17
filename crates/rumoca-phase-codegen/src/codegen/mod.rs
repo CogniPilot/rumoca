@@ -293,6 +293,14 @@ fn create_environment() -> Environment<'static> {
 
     // Find explicit RHS for an algebraic variable from residual: 0 = y - expr → expr
     env.add_function("alg_rhs_for_var", render_c::alg_rhs_for_var_function);
+    env.add_function(
+        "alg_rhs_for_var_or_self",
+        render_c::alg_rhs_for_var_or_self_function,
+    );
+    env.add_function(
+        "discrete_rhs_for_var",
+        render_c::discrete_rhs_for_var_function,
+    );
 
     // Index into an array expression to render element i (1-based)
     env.add_function(

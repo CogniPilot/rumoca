@@ -1,4 +1,18 @@
-{#- Embedded C header — struct definition with named fields and function prototypes. -#}
+{#- Embedded C header — struct definition with named fields and function prototypes.
+
+    This header generator follows eFMI semantics with the following constraints:
+    - NO der() variables: rejection enforced at IR/DAE level (continuous derivatives forbidden)
+    - ALLOWED: discrete state updates using pre(x): x_next = f(pre(x), u)
+    - ALLOWED: continuous nonlinear functions: y = f(x, u) — evaluated, not integrated
+    - NO built-in integrator: users specify sampling and any integration method
+    - ALLOWED: discrete-valued logic (z, m) with pre() state tracking
+    - All array dimensions statically determined at transpile time
+    
+    Generated struct holds states (x, z, m), inputs (u), parameters (p),
+    constants, and algebraic variables (y, w). The init() function initializes
+    all variables. The step(t, dt) function updates discrete states and re-evaluates
+    algebraic outputs. No ODE solving; all dynamics must be discrete or instantaneous.
+-#}
 {%- set model_name = model_name | default("model") | sanitize -%}
 {%- macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
@@ -44,75 +58,72 @@ typedef float real_t;
 
 {#- Macro to emit struct fields for a variable map -#}
 {%- macro struct_fields(vars) -%}
-{%- for name, var in vars | items -%}
-{%- if var.dims -%}
-{%- set sz = var.dims | product -%}
-{%- for i in range(sz) %}
-    real_t {{ name | sanitize }}_{{ i + 1 }};
-{%- endfor -%}
+{%- for name, var in vars | items %}
+{%- if var.dims %}
+{%- set sz = var.dims | product %}
+    real_t {{ name | sanitize }}[{{ sz }}];
 {%- else %}
     real_t {{ name | sanitize }};
-{%- endif -%}
-{%- endfor -%}
+{%- endif %}
+{%- endfor %}
+{%- endmacro %}
+
+{#- Macro to emit pre_* companion fields for a variable map -#}
+{%- macro pre_fields(vars) -%}
+{%- for name, var in vars | items %}
+{%- if var.dims %}
+{%- set sz = var.dims | product %}
+    real_t pre_{{ name | sanitize }}[{{ sz }}];
+{%- else %}
+    real_t pre_{{ name | sanitize }};
+{%- endif %}
+{%- endfor %}
 {%- endmacro %}
 
 typedef struct {
 {%- if n_x > 0 %}
     /* States */
 {{ struct_fields(dae.x) }}
+{{ pre_fields(dae.x) }}
 {%- endif -%}
 {%- if n_y > 0 %}
+
     /* Algebraic */
 {{ struct_fields(dae.y) }}
 {%- endif -%}
 {%- if n_u > 0 %}
+
     /* Inputs */
 {{ struct_fields(dae.u) }}
 {%- endif -%}
 {%- if n_w > 0 %}
+
     /* Outputs */
 {{ struct_fields(dae.w) }}
 {%- endif -%}
 {%- if n_p > 0 %}
+
     /* Parameters */
 {{ struct_fields(dae.p) }}
 {%- endif -%}
 {%- if n_c > 0 %}
+
     /* Constants */
 {{ struct_fields(dae.constants) }}
 {%- endif -%}
 {%- if n_z > 0 %}
+
     /* Discrete */
 {{ struct_fields(dae.z) }}
-{%- for name, var in dae.z | items -%}
-{%- if var.dims -%}
-{%- set sz = var.dims | product -%}
-{%- for i in range(sz) %}
-    real_t pre_{{ name | sanitize }}_{{ i + 1 }};
-{%- endfor -%}
-{%- else %}
-    real_t pre_{{ name | sanitize }};
-{%- endif -%}
-{%- endfor -%}
+{{ pre_fields(dae.z) }}
 {%- endif -%}
 {%- if n_m > 0 %}
+
     /* Discrete-valued */
 {{ struct_fields(dae.m) }}
-{%- for name, var in dae.m | items -%}
-{%- if var.dims -%}
-{%- set sz = var.dims | product -%}
-{%- for i in range(sz) %}
-    real_t pre_{{ name | sanitize }}_{{ i + 1 }};
-{%- endfor -%}
-{%- else %}
-    real_t pre_{{ name | sanitize }};
-{%- endif -%}
-{%- endfor -%}
+{{ pre_fields(dae.m) }}
 {%- endif %}
 } {{ model_name }}_t;
 
 void {{ model_name }}_init({{ model_name }}_t *m);
 void {{ model_name }}_step({{ model_name }}_t *m, real_t t, real_t dt);
-{%- if n_x > 0 %}
-void {{ model_name }}_derivatives(const {{ model_name }}_t *m, real_t t, real_t xdot[{{ model_name | upper }}_N_X]);
-{%- endif %}
