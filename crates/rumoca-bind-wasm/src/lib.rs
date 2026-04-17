@@ -4,8 +4,10 @@
 //! lives in those crates; this module only provides WASM entry points.
 
 mod class_browser_helpers;
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_api;
 mod source_root_api;
+#[cfg(feature = "stepper-diffsol")]
 mod stepper_api;
 
 use std::{
@@ -35,18 +37,18 @@ use rumoca_session::parsing::{
     parse_source_to_ast, validate_source_syntax,
 };
 use rumoca_sim::dae_balance;
-use rumoca_sim_diffsol::prepare_dae_for_template_codegen;
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use rumoca_tool_lsp::completion_metrics::{
     CompletionTimingSummary, extract_namespace_completion_prefix,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::class_browser_helpers::{
     class_type_label, component_reference_to_path, expression_path, extract_string_literal,
     join_path, token_list_to_text,
 };
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 use crate::simulation_api::{simulate_model_impl, simulate_model_with_project_sources_impl};
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_with_project_sources, compile_with_source_roots,
@@ -55,6 +57,7 @@ pub use crate::source_root_api::{
     load_source_roots, merge_parsed_source_roots, merge_parsed_source_roots_binary,
     parse_source_root_file, sync_project_sources,
 };
+#[cfg(feature = "stepper-diffsol")]
 pub use crate::stepper_api::WasmStepper;
 
 /// Global compilation session containing both bundled source-root and user documents.
@@ -417,429 +420,6 @@ pub fn check(source: &str) -> JsValue {
 // Compilation
 // ==========================================================================
 
-fn as_object(value: &Value) -> Option<&Map<String, Value>> {
-    value.as_object()
-}
-
-fn as_object_mut(value: &mut Value) -> Option<&mut Map<String, Value>> {
-    value.as_object_mut()
-}
-
-fn expr_var_name(expr: &Value) -> Option<String> {
-    let obj = as_object(expr)?;
-    if let Some(var_ref) = obj.get("VarRef").and_then(Value::as_object) {
-        return var_ref
-            .get("name")
-            .and_then(Value::as_str)
-            .map(ToString::to_string);
-    }
-    obj.get("name")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-}
-
-fn is_binary_sub(op: &Value) -> bool {
-    if let Some(text) = op.as_str() {
-        return text == "-" || text.eq_ignore_ascii_case("sub");
-    }
-    let Some(obj) = op.as_object() else {
-        return false;
-    };
-    if obj.contains_key("Sub") {
-        return true;
-    }
-    obj.get("token")
-        .and_then(Value::as_object)
-        .and_then(|tok| tok.get("text"))
-        .and_then(Value::as_str)
-        .is_some_and(|text| text == "-")
-}
-
-fn extract_residual_assignment_expr(residual_expr: &Value, target: &str) -> Option<Value> {
-    let binary = residual_expr
-        .as_object()
-        .and_then(|obj| obj.get("Binary"))
-        .and_then(Value::as_object)?;
-    if !binary.get("op").is_some_and(is_binary_sub) {
-        return None;
-    }
-    let lhs = binary.get("lhs")?;
-    let rhs = binary.get("rhs")?;
-    let lhs_name = expr_var_name(lhs);
-    let rhs_name = expr_var_name(rhs);
-    if lhs_name.as_deref() == Some(target) && rhs_name.as_deref() != Some(target) {
-        return Some(rhs.clone());
-    }
-    if rhs_name.as_deref() == Some(target) && lhs_name.as_deref() != Some(target) {
-        return Some(lhs.clone());
-    }
-    None
-}
-
-fn lhs_var_name(lhs: &Value) -> Option<String> {
-    if let Some(s) = lhs.as_str() {
-        return Some(s.to_string());
-    }
-    expr_var_name(lhs)
-}
-
-fn collect_observable_expr_candidates_from_native(native: &Value, target: &str) -> Vec<Value> {
-    let Some(obj) = native.as_object() else {
-        return Vec::new();
-    };
-    let mut out: Vec<Value> = Vec::new();
-
-    for key in ["f_z", "f_m", "f_c"] {
-        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
-            out.extend(
-                rows.iter()
-                    .filter_map(Value::as_object)
-                    .filter(|row_obj| {
-                        row_obj
-                            .get("lhs")
-                            .and_then(lhs_var_name)
-                            .is_some_and(|name| name == target)
-                    })
-                    .filter_map(|row_obj| row_obj.get("rhs").cloned()),
-            );
-        }
-    }
-
-    for key in ["f_x", "fx"] {
-        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
-            out.extend(
-                rows.iter()
-                    .filter_map(Value::as_object)
-                    .filter_map(|row_obj| {
-                        row_obj
-                            .get("rhs")
-                            .or_else(|| row_obj.get("residual"))
-                            .and_then(|expr| extract_residual_assignment_expr(expr, target))
-                    }),
-            );
-        }
-    }
-
-    out
-}
-
-fn expr_complexity(expr: &Value) -> usize {
-    match expr {
-        Value::Object(map) => {
-            1 + map
-                .values()
-                .map(expr_complexity)
-                .fold(0usize, |acc, n| acc.saturating_add(n))
-        }
-        Value::Array(items) => {
-            1 + items
-                .iter()
-                .map(expr_complexity)
-                .fold(0usize, |acc, n| acc.saturating_add(n))
-        }
-        _ => 1,
-    }
-}
-
-fn is_simple_alias_expr(expr: &Value) -> bool {
-    let is_var_like = |v: &Value| {
-        v.as_object()
-            .is_some_and(|m| m.contains_key("VarRef") || m.contains_key("ComponentReference"))
-    };
-    if is_var_like(expr) {
-        return true;
-    }
-    let Some(obj) = expr.as_object() else {
-        return false;
-    };
-    let Some(unary) = obj.get("Unary").and_then(Value::as_object) else {
-        return false;
-    };
-    unary.get("arg").is_some_and(is_var_like)
-}
-
-fn find_observable_expr_from_native(native: &Value, target: &str) -> Option<Value> {
-    let candidates = collect_observable_expr_candidates_from_native(native, target);
-    if candidates.is_empty() {
-        return None;
-    }
-    candidates.into_iter().max_by_key(|expr| {
-        let non_alias = if is_simple_alias_expr(expr) {
-            0usize
-        } else {
-            1usize
-        };
-        (non_alias, expr_complexity(expr))
-    })
-}
-
-fn component_ref_name(expr: &Value) -> Option<String> {
-    let obj = expr.as_object()?;
-    let cr = obj.get("ComponentReference")?.as_object()?;
-    let parts = cr.get("parts")?.as_array()?;
-    let mut segs: Vec<String> = Vec::new();
-    for part in parts {
-        let part_obj = part.as_object()?;
-        let ident = part_obj.get("ident")?.as_object()?;
-        let text = ident.get("text")?.as_str()?;
-        segs.push(text.to_string());
-    }
-    if segs.is_empty() {
-        return None;
-    }
-    Some(segs.join("."))
-}
-
-fn collect_prepared_symbol_names(
-    prepared_obj: &Map<String, Value>,
-) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
-    for key in [
-        "p",
-        "constants",
-        "cp",
-        "x",
-        "y",
-        "z",
-        "m",
-        "w",
-        "u",
-        "x_dot_alias",
-    ] {
-        if let Some(map) = prepared_obj.get(key).and_then(Value::as_object) {
-            out.extend(map.keys().cloned());
-        }
-    }
-    out
-}
-
-fn rewrite_observable_expr_with_native_aliases(
-    native_json: &Value,
-    expr: &Value,
-    prepared_symbols: &std::collections::HashSet<String>,
-    visiting: &mut std::collections::HashSet<String>,
-    depth: usize,
-) -> Value {
-    if depth > 24 {
-        return expr.clone();
-    }
-
-    if let Some(obj) = expr.as_object() {
-        if let Some(vr) = obj.get("VarRef").and_then(Value::as_object)
-            && let Some(name) = vr.get("name").and_then(Value::as_str)
-            && !prepared_symbols.contains(name)
-            && !visiting.contains(name)
-            && let Some(alias_expr) = find_observable_expr_from_native(native_json, name)
-        {
-            visiting.insert(name.to_string());
-            let rewritten = rewrite_observable_expr_with_native_aliases(
-                native_json,
-                &alias_expr,
-                prepared_symbols,
-                visiting,
-                depth + 1,
-            );
-            visiting.remove(name);
-            return rewritten;
-        }
-
-        if let Some(name) = component_ref_name(expr)
-            && !prepared_symbols.contains(&name)
-            && !visiting.contains(&name)
-            && let Some(alias_expr) = find_observable_expr_from_native(native_json, &name)
-        {
-            visiting.insert(name.clone());
-            let rewritten = rewrite_observable_expr_with_native_aliases(
-                native_json,
-                &alias_expr,
-                prepared_symbols,
-                visiting,
-                depth + 1,
-            );
-            visiting.remove(&name);
-            return rewritten;
-        }
-
-        let mut out = Map::new();
-        for (k, v) in obj {
-            out.insert(
-                k.clone(),
-                rewrite_observable_expr_with_native_aliases(
-                    native_json,
-                    v,
-                    prepared_symbols,
-                    visiting,
-                    depth + 1,
-                ),
-            );
-        }
-        return Value::Object(out);
-    }
-
-    if let Some(arr) = expr.as_array() {
-        return Value::Array(
-            arr.iter()
-                .map(|v| {
-                    rewrite_observable_expr_with_native_aliases(
-                        native_json,
-                        v,
-                        prepared_symbols,
-                        visiting,
-                        depth + 1,
-                    )
-                })
-                .collect(),
-        );
-    }
-
-    expr.clone()
-}
-
-fn augment_prepared_with_native_observables(
-    native_json: &Value,
-    prepared_json: &mut Value,
-) -> Option<usize> {
-    let native_obj = native_json.as_object()?;
-    let prepared_obj = as_object_mut(prepared_json)?;
-    let native_y = native_obj.get("y").and_then(Value::as_object)?;
-    let prepared_y = prepared_obj.get("y").and_then(Value::as_object);
-    let prepared_symbols = collect_prepared_symbol_names(prepared_obj);
-
-    let mut observables: Vec<Value> = Vec::new();
-    for (name, comp) in native_y {
-        if prepared_y.is_some_and(|m| m.contains_key(name)) {
-            continue;
-        }
-        let Some(expr_raw) = find_observable_expr_from_native(native_json, name) else {
-            continue;
-        };
-        let mut visiting = std::collections::HashSet::new();
-        let expr = rewrite_observable_expr_with_native_aliases(
-            native_json,
-            &expr_raw,
-            &prepared_symbols,
-            &mut visiting,
-            0,
-        );
-        let mut entry = Map::new();
-        entry.insert("name".to_string(), Value::String(name.clone()));
-        entry.insert("expr".to_string(), expr);
-        if let Some(comp_obj) = comp.as_object() {
-            if let Some(start) = comp_obj.get("start") {
-                entry.insert("start".to_string(), start.clone());
-            }
-            if let Some(unit) = comp_obj
-                .get("unit")
-                .or_else(|| comp_obj.get("displayUnit"))
-                .or_else(|| comp_obj.get("display_unit"))
-            {
-                entry.insert("unit".to_string(), unit.clone());
-            }
-        }
-        observables.push(Value::Object(entry));
-    }
-
-    if observables.is_empty() {
-        return Some(0);
-    }
-    let n = observables.len();
-    prepared_obj.insert(
-        "__rumoca_observables".to_string(),
-        Value::Array(observables),
-    );
-    Some(n)
-}
-
-fn object_len(value: &Value, key: &str) -> usize {
-    value
-        .get(key)
-        .and_then(Value::as_object)
-        .map_or(0, serde_json::Map::len)
-}
-
-fn attach_prepared_template_metadata(
-    prepared_json: &mut Value,
-    native_json: &Value,
-    status: &str,
-    diagnostics: &[String],
-) {
-    let Some(prepared_obj) = as_object_mut(prepared_json) else {
-        return;
-    };
-    let prepared_obj_ref: &Map<String, Value> = prepared_obj;
-    let obj_len = |key: &str| {
-        prepared_obj_ref
-            .get(key)
-            .and_then(Value::as_object)
-            .map_or(0, serde_json::Map::len)
-    };
-    let arr_len = |key: &str| {
-        prepared_obj_ref
-            .get(key)
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len)
-    };
-    let obj_keys = |key: &str| {
-        prepared_obj_ref
-            .get(key)
-            .and_then(Value::as_object)
-            .map(|map| map.keys().cloned().map(Value::String).collect::<Vec<_>>())
-            .unwrap_or_default()
-    };
-    let observable_count = prepared_obj_ref
-        .get("__rumoca_observables")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    let hints = serde_json::json!({
-        "variable_counts": {
-            "x": obj_len("x"),
-            "y": obj_len("y"),
-            "z": obj_len("z"),
-            "m": obj_len("m"),
-            "w": obj_len("w"),
-            "u": obj_len("u"),
-            "p": obj_len("p"),
-            "constants": obj_len("constants"),
-            "native_y": object_len(native_json, "y"),
-            "observables": observable_count,
-        },
-        "equation_counts": {
-            "f_x": arr_len("f_x"),
-            "f_c": arr_len("f_c"),
-            "f_z": arr_len("f_z"),
-            "f_m": arr_len("f_m"),
-            "when_clauses": arr_len("when_clauses"),
-            "relation": arr_len("relation"),
-            "initial_equations": arr_len("initial_equations"),
-        },
-        "variable_order": {
-            "x": obj_keys("x"),
-            "y": obj_keys("y"),
-            "z": obj_keys("z"),
-            "m": obj_keys("m"),
-            "w": obj_keys("w"),
-            "u": obj_keys("u"),
-            "p": obj_keys("p"),
-            "constants": obj_keys("constants"),
-        },
-        "events": {
-            "has_conditions": arr_len("f_c") > 0,
-            "has_when_clauses": arr_len("when_clauses") > 0,
-            "has_resets": arr_len("f_z") > 0 || arr_len("f_m") > 0,
-        }
-    });
-
-    prepared_obj.insert(
-        "__rumoca_prepared_status".to_string(),
-        Value::String(status.to_string()),
-    );
-    prepared_obj.insert(
-        "__rumoca_prepared_diagnostics".to_string(),
-        Value::Array(diagnostics.iter().cloned().map(Value::String).collect()),
-    );
-    prepared_obj.insert("__rumoca_solver_hints".to_string(), hints);
-}
-
 fn attach_build_metadata(payload: &mut Value) {
     let Some(obj) = payload.as_object_mut() else {
         return;
@@ -858,55 +438,6 @@ fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue>
     let mut dae_native_json =
         serde_json::to_value(dae).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))?;
     attach_build_metadata(&mut dae_native_json);
-    let mut prepared_diagnostics: Vec<String> = Vec::new();
-    let mut prepared_status = "prepared".to_string();
-
-    let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        prepare_dae_for_template_codegen(dae, true)
-    }));
-    let (mut dae_prepared, dae_prepared_error) = match prepared {
-        Ok(Ok(prepped)) => {
-            let mut prepared_json = serde_json::to_value(prepped).map_err(|e| {
-                JsValue::from_str(&format!("JSON error converting prepared DAE: {}", e))
-            })?;
-            if augment_prepared_with_native_observables(&dae_native_json, &mut prepared_json)
-                .is_none()
-            {
-                prepared_diagnostics
-                    .push("unable to augment prepared DAE with native observables".to_string());
-            }
-            (prepared_json, None)
-        }
-        Ok(Err(err)) => {
-            prepared_status = "fallback_native".to_string();
-            let msg = err.to_string();
-            prepared_diagnostics.push(format!(
-                "prepare_dae_for_template_codegen failed; using native DAE: {}",
-                msg
-            ));
-            (dae_native_json.clone(), Some(msg))
-        }
-        Err(panic_payload) => {
-            prepared_status = "fallback_native".to_string();
-            let panic_msg = if let Some(msg) = panic_payload.downcast_ref::<&str>() {
-                (*msg).to_string()
-            } else if let Some(msg) = panic_payload.downcast_ref::<String>() {
-                msg.clone()
-            } else {
-                "unknown panic payload".to_string()
-            };
-            let msg = format!("prepare_dae_for_template_codegen panicked: {}", panic_msg);
-            prepared_diagnostics.push(format!("{}; using native DAE", msg));
-            (dae_native_json.clone(), Some(msg))
-        }
-    };
-    attach_prepared_template_metadata(
-        &mut dae_prepared,
-        &dae_native_json,
-        &prepared_status,
-        &prepared_diagnostics,
-    );
-    attach_build_metadata(&mut dae_prepared);
 
     let num_eqs = dae.num_equations();
     let balance_val = dae_balance(dae);
@@ -923,10 +454,6 @@ fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue>
     let response = serde_json::json!({
         "dae": dae_native_json.clone(),
         "dae_native": dae_native_json,
-        "dae_prepared": dae_prepared,
-        "dae_prepared_status": prepared_status,
-        "dae_prepared_diagnostics": prepared_diagnostics,
-        "dae_prepared_error": dae_prepared_error,
         "balance": balance,
         "pretty": pretty,
     });
@@ -1934,6 +1461,7 @@ pub fn lsp_semantic_token_legend() -> Result<String, JsValue> {
 }
 
 /// Compile and simulate a Modelica model.
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 #[wasm_bindgen]
 pub fn simulate_model(
     source: &str,
@@ -1946,6 +1474,7 @@ pub fn simulate_model(
 }
 
 /// Compile with additional project-local sources and simulate a Modelica model.
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 #[wasm_bindgen]
 pub fn simulate_model_with_project_sources(
     source: &str,

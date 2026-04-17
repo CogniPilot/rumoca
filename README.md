@@ -159,7 +159,7 @@ cargo run -p rumoca-tool-lsp --bin rumoca-lsp
 Assuming you have a template such as `examples/templates/standalone_html.jinja`:
 
 ```bash
-cargo run -p rumoca -- compile path/to/model.mo --model MyModel --template-file examples/templates/standalone_html.jinja --template-prepared > MyModel_standalone.html
+cargo run -p rumoca -- compile path/to/model.mo --model MyModel --template-file examples/templates/standalone_html.jinja > MyModel_standalone.html
 ```
 
 MSL Electrical resistor example (downloads MSL 4.1.0, compiles `Modelica.Electrical.Analog.Examples.Resistor` via a tiny wrapper model, and writes standalone HTML):
@@ -172,7 +172,7 @@ curl -L -o /tmp/ModelicaStandardLibrary-4.1.0.zip https://github.com/modelica/Mo
 printf 'model MslResistorExample\n  import Complex;\n  import ModelicaServices;\n  extends Modelica.Electrical.Analog.Examples.Resistor;\nend MslResistorExample;\n' > /tmp/MslResistorExample.mo
 
 # convert into standalone html
-cargo run -p rumoca -- compile /tmp/MslResistorExample.mo --model MslResistorExample --source-root /tmp/ModelicaStandardLibrary-4.1.0/Modelica --source-root /tmp/ModelicaStandardLibrary-4.1.0/ModelicaServices --source-root /tmp/ModelicaStandardLibrary-4.1.0/Complex.mo --template-file examples/templates/standalone_html.jinja --template-prepared > MslResistorExample_standalone.html
+cargo run -p rumoca -- compile /tmp/MslResistorExample.mo --model MslResistorExample --source-root /tmp/ModelicaStandardLibrary-4.1.0/Modelica --source-root /tmp/ModelicaStandardLibrary-4.1.0/ModelicaServices --source-root /tmp/ModelicaStandardLibrary-4.1.0/Complex.mo --template-file examples/templates/standalone_html.jinja > MslResistorExample_standalone.html
 ```
 
 ### Installation

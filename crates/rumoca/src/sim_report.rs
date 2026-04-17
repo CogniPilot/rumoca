@@ -3,9 +3,8 @@ use std::io;
 use std::path::Path;
 
 use rumoca_session::project::{PlotViewConfig, load_plot_views_for_model};
-use rumoca_sim::SimResult;
-use rumoca_sim_report::{
-    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
+use rumoca_sim::{
+    SimResult, SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
 };
 use rumoca_viz_web::{

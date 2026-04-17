@@ -10,10 +10,10 @@
 use std::collections::HashMap;
 use std::{fs, process::Command};
 
-use rumoca::Compiler;
+use rumoca::{CompilationResult, Compiler};
 use rumoca_phase_codegen::templates;
 use rumoca_sim::{SimOptions, SimResult};
-use rumoca_sim_diffsol::{prepare_dae_for_template_codegen, simulate_dae};
+use rumoca_sim_diffsol::simulate_dae;
 use tempfile::Builder;
 
 // ============================================================================
@@ -59,14 +59,13 @@ fn compile_model(source: &str, model_name: &str) -> rumoca::CompilationResult {
         .expect("compile test model")
 }
 
-fn prepare_dae(source: &str, model_name: &str) -> rumoca_ir_dae::Dae {
-    let compiled = compile_model(source, model_name);
-    prepare_dae_for_template_codegen(&compiled.dae, true).expect("prepare DAE for codegen")
+fn model_dae(source: &str, model_name: &str) -> rumoca_ir_dae::Dae {
+    compile_model(source, model_name).dae
 }
 
 fn render_template(source: &str, model_name: &str, template: &str) -> String {
-    let dae = prepare_dae(source, model_name);
-    rumoca_phase_codegen::render_template_with_name(&dae, template, model_name)
+    compile_model(source, model_name)
+        .render_template_str_with_name(template, model_name)
         .expect("render template")
 }
 
@@ -74,14 +73,14 @@ fn render_template(source: &str, model_name: &str, template: &str) -> String {
 // Reference trace from rumoca's built-in simulator
 // ============================================================================
 
-fn reference_trace(source: &str, model_name: &str, t_end: f64) -> (rumoca_ir_dae::Dae, SimResult) {
-    let dae = prepare_dae(source, model_name);
+fn reference_trace(source: &str, model_name: &str, t_end: f64) -> (CompilationResult, SimResult) {
+    let compiled = compile_model(source, model_name);
     let opts = SimOptions {
         t_end,
         ..SimOptions::default()
     };
-    let sim = simulate_dae(&dae, &opts).expect("rumoca simulation");
-    (dae, sim)
+    let sim = simulate_dae(&compiled.dae, &opts).expect("rumoca simulation");
+    (compiled, sim)
 }
 
 fn extract_sim_trace(sim: &SimResult, var_name: &str) -> Option<Vec<(f64, f64)>> {
@@ -412,7 +411,7 @@ fn casadi_trace_test(source: &str, model_name: &str, template: &str) {
     let csv = run_python(&rendered, CASADI_CSV_DRIVER);
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
-    assert_traces_match(&backend_traces, &dae, &sim, CASADI_TOLERANCE, "CasADi");
+    assert_traces_match(&backend_traces, &dae.dae, &sim, CASADI_TOLERANCE, "CasADi");
 }
 
 #[test]
@@ -460,7 +459,7 @@ fn casadi_sx_oscillator() {
 // ============================================================================
 
 fn embedded_c_trace_test(source: &str, model_name: &str) {
-    let dae = prepare_dae(source, model_name);
+    let dae = model_dae(source, model_name);
     let header =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::EMBEDDED_C_H, model_name)
             .expect("render header template");
@@ -520,7 +519,7 @@ fn embedded_c_oscillator() {
 // ============================================================================
 
 fn fmi2_trace_test(source: &str, model_name: &str) {
-    let dae = prepare_dae(source, model_name);
+    let dae = model_dae(source, model_name);
 
     let model_c =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI2_MODEL, model_name)
@@ -570,7 +569,7 @@ fn fmi2_oscillator() {
 // ============================================================================
 
 fn fmi3_trace_test(source: &str, model_name: &str) {
-    let dae = prepare_dae(source, model_name);
+    let dae = model_dae(source, model_name);
 
     let model_c =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, model_name)
@@ -635,7 +634,7 @@ end TunableParam;
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_tunable_param_xml() {
-    let dae = prepare_dae(TUNABLE_PARAM_SOURCE, "TunableParam");
+    let dae = model_dae(TUNABLE_PARAM_SOURCE, "TunableParam");
     let xml = rumoca_phase_codegen::render_template_with_name(
         &dae,
         templates::FMI3_MODEL_DESCRIPTION,
@@ -671,7 +670,7 @@ fn fmi3_tunable_param_runtime() {
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_directional_derivative() {
-    let dae = prepare_dae(PARAM_DECAY_SOURCE, "ParamDecay");
+    let dae = model_dae(PARAM_DECAY_SOURCE, "ParamDecay");
 
     let model_c =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
@@ -778,7 +777,7 @@ end ArrayDecay;
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_native_array_xml() {
-    let dae = prepare_dae(ARRAY_DECAY_SOURCE, "ArrayDecay");
+    let dae = model_dae(ARRAY_DECAY_SOURCE, "ArrayDecay");
     let xml = rumoca_phase_codegen::render_template_with_name(
         &dae,
         templates::FMI3_MODEL_DESCRIPTION,
@@ -808,7 +807,7 @@ fn fmi3_native_array_runtime() {
     // Test FMI3 C compile + run with array variables (per-variable VR layout).
     // Uses a standalone driver since the reference simulator doesn't handle
     // array state variables directly.
-    let dae = prepare_dae(ARRAY_DECAY_SOURCE, "ArrayDecay");
+    let dae = model_dae(ARRAY_DECAY_SOURCE, "ArrayDecay");
 
     let model_c =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ArrayDecay")
@@ -856,7 +855,7 @@ fn fmi3_native_array_runtime() {
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_adjoint_derivative() {
-    let dae = prepare_dae(PARAM_DECAY_SOURCE, "ParamDecay");
+    let dae = model_dae(PARAM_DECAY_SOURCE, "ParamDecay");
 
     let model_c =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
@@ -1092,7 +1091,7 @@ int main(void) {
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_fmu_state_serialization() {
-    let dae = prepare_dae(PARAM_DECAY_SOURCE, "ParamDecay");
+    let dae = model_dae(PARAM_DECAY_SOURCE, "ParamDecay");
 
     let model_c =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
@@ -1137,7 +1136,7 @@ fn fmi3_fmu_state_serialization() {
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_cosimulation_dostep() {
-    let dae = prepare_dae(BALL_SOURCE, "Ball");
+    let dae = model_dae(BALL_SOURCE, "Ball");
 
     let model_c =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "Ball")
@@ -1224,7 +1223,7 @@ int main(void) {
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_structural_parameter_xml() {
-    let dae = prepare_dae(TUNABLE_PARAM_SOURCE, "TunableParam");
+    let dae = model_dae(TUNABLE_PARAM_SOURCE, "TunableParam");
     let xml = rumoca_phase_codegen::render_template_with_name(
         &dae,
         templates::FMI3_MODEL_DESCRIPTION,
@@ -1254,7 +1253,7 @@ fn fmi3_structural_parameter_xml() {
 #[test]
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_xml_build_config_and_terminals() {
-    let dae = prepare_dae(BALL_SOURCE, "Ball");
+    let dae = model_dae(BALL_SOURCE, "Ball");
     let xml = rumoca_phase_codegen::render_template_with_name(
         &dae,
         templates::FMI3_MODEL_DESCRIPTION,
@@ -1335,7 +1334,7 @@ print(json.dumps({"state_names": state_names, "derivs_at_t0": deriv_vals}))
 "#;
 
 fn sympy_trace_test(source: &str, model_name: &str) {
-    let dae = prepare_dae(source, model_name);
+    let dae = model_dae(source, model_name);
     let rendered =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::SYMPY, model_name)
             .expect("render template");
@@ -1412,7 +1411,7 @@ fn onnx_trace_test(source: &str, model_name: &str) {
     let csv = run_python(&rendered, ONNX_CSV_DRIVER);
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
-    assert_traces_match(&backend_traces, &dae, &sim, C_TOLERANCE, "ONNX");
+    assert_traces_match(&backend_traces, &dae.dae, &sim, C_TOLERANCE, "ONNX");
 }
 
 #[test]
@@ -1469,7 +1468,7 @@ fn jax_trace_test(source: &str, model_name: &str) {
     let csv = run_python(&rendered, JAX_CSV_DRIVER);
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
-    assert_traces_match(&backend_traces, &dae, &sim, JAX_TOLERANCE, "JAX");
+    assert_traces_match(&backend_traces, &dae.dae, &sim, JAX_TOLERANCE, "JAX");
 }
 
 #[test]
@@ -1524,7 +1523,7 @@ equation
 end CoupledGains;
 "#;
 
-    let dae = prepare_dae(SOURCE, "CoupledGains");
+    let dae = model_dae(SOURCE, "CoupledGains");
 
     // At least one algebraic or output variable must survive elimination
     // (the coupled gain blocks create a 2-unknown algebraic loop).

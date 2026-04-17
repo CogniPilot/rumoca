@@ -170,7 +170,7 @@ fn ball_example_renders_standalone_html_template() {
     );
 
     let rendered = result
-        .render_template_prepared(template_path.to_string_lossy().as_ref(), true)
+        .render_template(template_path.to_string_lossy().as_ref())
         .expect("Ball example should render the standalone HTML template");
 
     assert!(

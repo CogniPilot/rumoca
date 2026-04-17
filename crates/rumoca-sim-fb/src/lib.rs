@@ -1,10 +1,9 @@
-//! FlatBuffer-based SIL simulation with 3D viewer.
+//! FlatBuffer lockstep simulation app with 3D viewer.
 //!
-//! Architecture:
-//!   Autopilot ←UDP/FlatBuffers→ Rust (physics) ←WebSocket/JSON→ Browser (3D viz)
+//! The reusable protocol types live in `rumoca-io` and `rumoca-io-fb`.
+//! This crate owns the current end-to-end app loop, including the quadrotor
+//! example path, viewer, and controller process wiring.
 
-pub mod bfbs;
-pub mod codec;
 pub mod config;
 pub mod server;
 pub mod sim_loop;
@@ -13,8 +12,8 @@ use std::path::Path;
 use std::thread;
 
 use anyhow::{Context, Result};
-use bfbs::SchemaSet;
-use config::SilConfig;
+use config::SimFbConfig;
+use rumoca_io_fb::bfbs::SchemaSet;
 use rumoca_session::compile::Session;
 use rumoca_sim_diffsol::{SimStepper, StepperOptions};
 
@@ -24,8 +23,8 @@ pub struct SimFbArgs {
     pub model_source: String,
     /// Model name to simulate.
     pub model_name: String,
-    /// Parsed SIL configuration.
-    pub config: SilConfig,
+    /// Parsed lockstep app configuration.
+    pub config: SimFbConfig,
     /// HTTP server port.
     pub http_port: u16,
     /// WebSocket viz port.
@@ -36,7 +35,7 @@ pub struct SimFbArgs {
     pub debug: bool,
 }
 
-/// Run the sim-fb command.
+/// Run the `sim-fb` lockstep app.
 pub fn run(args: SimFbArgs) -> Result<()> {
     eprintln!("rumoca sim-fb");
     eprintln!("  Model: {}", args.model_name);
@@ -45,7 +44,7 @@ pub fn run(args: SimFbArgs) -> Result<()> {
     if args.scene_script.is_some() {
         eprintln!("  Scene: custom");
     } else {
-        eprintln!("  Scene: default (quadrotor)");
+        eprintln!("  Scene: default (quadrotor example)");
     }
 
     // Load FlatBuffer schemas

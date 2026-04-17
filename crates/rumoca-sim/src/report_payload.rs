@@ -1,5 +1,6 @@
-use rumoca_sim::{SimResult, SimVariableMeta};
 use serde_json::{Value, json};
+
+use crate::{SimResult, SimVariableMeta};
 
 #[derive(Debug, Clone)]
 pub struct SimulationRequestSummary {

@@ -9,12 +9,17 @@ pub mod function_validation;
 mod ic_solve;
 pub mod projection_maps;
 pub mod reconstruct;
+pub mod report_payload;
 pub mod runtime;
 pub mod sim_trace_compare;
 pub mod simulation;
 pub mod sparsity;
 pub mod timeline;
 
+pub use report_payload::{
+    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
+    build_simulation_payload,
+};
 pub use runtime::compiled_discrete::{
     CompiledDiscreteEventContext, build_compiled_discrete_event_context,
     settle_runtime_event_updates_with_compiled_discrete,

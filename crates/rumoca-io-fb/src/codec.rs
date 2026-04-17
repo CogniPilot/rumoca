@@ -1,10 +1,9 @@
-//! Dynamic flatbuffer pack/unpack using schema reflection + routing config.
-//!
-//! Given a `.bfbs` schema and a TOML routing config, this module builds
-//! precompiled "codecs" that can pack and unpack flatbuffer messages at
-//! runtime without any generated code.
+//! Dynamic FlatBuffer pack/unpack using schema reflection plus routing config.
 
+#[cfg(test)]
 use std::collections::HashMap;
+
+use rumoca_io::SignalFrame;
 
 use crate::bfbs::{BaseType, Field, Object, SchemaSet};
 use crate::config::{MessageConfig, RouteEntry};
@@ -182,8 +181,8 @@ impl UnpackCodec {
     }
 
     /// Unpack a flatbuffer message into variable values.
-    pub fn unpack(&self, buf: &[u8]) -> HashMap<String, f64> {
-        let mut values = HashMap::new();
+    pub fn unpack(&self, buf: &[u8]) -> SignalFrame {
+        let mut values = SignalFrame::new();
         if buf.len() < 4 {
             return values;
         }
@@ -484,7 +483,7 @@ impl PackCodec {
     }
 
     /// Pack variable values into a flatbuffer message.
-    pub fn pack(&self, values: &HashMap<String, f64>) -> Vec<u8> {
+    pub fn pack(&self, values: &SignalFrame) -> Vec<u8> {
         let mut buf = self.template.clone();
         for op in &self.ops {
             let val = values.get(&op.var).copied().unwrap_or(0.0);
@@ -770,19 +769,19 @@ mod tests {
         }
 
         // Pack with test values
-        let mut values = HashMap::new();
-        values.insert("gyro_x".into(), 1.0);
-        values.insert("gyro_y".into(), 2.0);
-        values.insert("gyro_z".into(), 3.0);
-        values.insert("accel_x".into(), 0.1);
-        values.insert("accel_y".into(), 0.2);
-        values.insert("accel_z".into(), 9.81);
+        let mut values = SignalFrame::new();
+        values.insert("gyro_x", 1.0);
+        values.insert("gyro_y", 2.0);
+        values.insert("gyro_z", 3.0);
+        values.insert("accel_x", 0.1);
+        values.insert("accel_y", 0.2);
+        values.insert("accel_z", 9.81);
         for i in 0..16 {
             values.insert(format!("rc_{i}"), 1500.0);
         }
-        values.insert("rc_link_quality".into(), 255.0);
-        values.insert("rc_valid".into(), 1.0);
-        values.insert("imu_valid".into(), 1.0);
+        values.insert("rc_link_quality", 255.0);
+        values.insert("rc_valid", 1.0);
+        values.insert("imu_valid", 1.0);
 
         let buf = codec.pack(&values);
         eprintln!("Packed {} bytes", buf.len());
@@ -877,12 +876,12 @@ mod tests {
         };
         let packer = PackCodec::compile(&schema, &pack_config).unwrap();
 
-        let mut values = HashMap::new();
-        values.insert("gx".into(), 1.5);
-        values.insert("gy".into(), -0.5);
-        values.insert("gz".into(), 0.1);
-        values.insert("lq".into(), 200.0);
-        values.insert("imu_ok".into(), 1.0);
+        let mut values = SignalFrame::new();
+        values.insert("gx", 1.5);
+        values.insert("gy", -0.5);
+        values.insert("gz", 0.1);
+        values.insert("lq", 200.0);
+        values.insert("imu_ok", 1.0);
 
         let buf = packer.pack(&values);
 
@@ -1057,19 +1056,19 @@ mod tests {
         expected[118] = imu_valid as u8;
 
         // --- New codec pack ---
-        let mut values = HashMap::new();
-        values.insert("gyro_x".into(), gyro[0] as f64);
-        values.insert("gyro_y".into(), gyro[1] as f64);
-        values.insert("gyro_z".into(), gyro[2] as f64);
-        values.insert("accel_x".into(), accel[0] as f64);
-        values.insert("accel_y".into(), accel[1] as f64);
-        values.insert("accel_z".into(), accel[2] as f64);
+        let mut values = SignalFrame::new();
+        values.insert("gyro_x", gyro[0] as f64);
+        values.insert("gyro_y", gyro[1] as f64);
+        values.insert("gyro_z", gyro[2] as f64);
+        values.insert("accel_x", accel[0] as f64);
+        values.insert("accel_y", accel[1] as f64);
+        values.insert("accel_z", accel[2] as f64);
         for (i, &val) in rc.iter().enumerate() {
             values.insert(format!("rc_{i}"), val as f64);
         }
-        values.insert("rc_link_quality".into(), rc_link_quality as f64);
-        values.insert("rc_valid".into(), rc_valid as u8 as f64);
-        values.insert("imu_valid".into(), imu_valid as u8 as f64);
+        values.insert("rc_link_quality", rc_link_quality as f64);
+        values.insert("rc_valid", rc_valid as u8 as f64);
+        values.insert("imu_valid", imu_valid as u8 as f64);
 
         let actual = codec.pack(&values);
         assert_eq!(actual.len(), 120, "size mismatch");
@@ -1183,17 +1182,17 @@ mod integration_tests {
         let motor_packer = PackCodec::compile(&ss, &motor_pack_cfg).unwrap();
         eprintln!("MotorOutput pack size: {} bytes", motor_packer.size());
 
-        let mut motor_vals = HashMap::new();
-        motor_vals.insert("m0".into(), 0.5);
-        motor_vals.insert("m1".into(), 0.5);
-        motor_vals.insert("m2".into(), 0.5);
-        motor_vals.insert("m3".into(), 0.5);
-        motor_vals.insert("armed".into(), 1.0);
-        motor_vals.insert("test_mode".into(), 0.0);
-        motor_vals.insert("r0".into(), 1500.0);
-        motor_vals.insert("r1".into(), 1500.0);
-        motor_vals.insert("r2".into(), 1500.0);
-        motor_vals.insert("r3".into(), 1500.0);
+        let mut motor_vals = SignalFrame::new();
+        motor_vals.insert("m0", 0.5);
+        motor_vals.insert("m1", 0.5);
+        motor_vals.insert("m2", 0.5);
+        motor_vals.insert("m3", 0.5);
+        motor_vals.insert("armed", 1.0);
+        motor_vals.insert("test_mode", 0.0);
+        motor_vals.insert("r0", 1500.0);
+        motor_vals.insert("r1", 1500.0);
+        motor_vals.insert("r2", 1500.0);
+        motor_vals.insert("r3", 1500.0);
         let motor_buf = motor_packer.pack(&motor_vals);
         eprintln!("Packed MotorOutput: {} bytes", motor_buf.len());
         eprint!("Hex: ");
@@ -1202,7 +1201,7 @@ mod integration_tests {
         }
         eprintln!();
 
-        // Now unpack it the way rumoca_sil does
+        // Now unpack it the way the lockstep sim-fb app does.
         let mut recv_route = HashMap::new();
         recv_route.insert(
             "motors.m0".into(),

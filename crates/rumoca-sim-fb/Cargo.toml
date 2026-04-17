@@ -1,6 +1,6 @@
 [package]
 name = "rumoca-sim-fb"
-description = "FlatBuffer-based SIL simulation with 3D viewer for Rumoca"
+description = "FlatBuffer lockstep simulation app with viewer for Rumoca"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 # Internal crates
+rumoca-io = { workspace = true }
+rumoca-io-fb = { workspace = true }
 rumoca-session = { workspace = true }
 rumoca-sim-diffsol = { workspace = true }
 

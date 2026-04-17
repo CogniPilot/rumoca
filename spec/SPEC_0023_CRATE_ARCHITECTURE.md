@@ -264,18 +264,29 @@ Recommended crate mapping:
 | Responsibility | Preferred Crate Role |
 |----------------|----------------------|
 | compile/session orchestration | `rumoca-session` |
+| transport-neutral lockstep I/O contracts | `rumoca-io` |
+| FlatBuffer schema/codec support for lockstep I/O | `rumoca-io-fb` |
 | backend-neutral runtime contracts | `rumoca-sim` |
 | concrete diffsol backend | `rumoca-sim-diffsol` |
 | simple pure-Rust RK backend | `rumoca-sim-rk45` |
 | shared stepping/runtime loop surface | `rumoca-sim` |
-| report/payload shaping | `rumoca-sim-report` |
+| report/payload shaping | `rumoca-sim` |
 | web/HTML/assets | `rumoca-viz-web` |
+
+Current app note:
+
+- `rumoca-sim-fb` is the current lockstep app/example surface.
+- It may keep the quadrotor/controller/viewer loop, but reusable protocol ownership belongs in
+  `rumoca-io` and `rumoca-io-fb`, not in `rumoca-sim-fb`.
 
 Migration rule:
 
 - Until the split is complete, do not add new APIs that further couple these responsibilities.
 - New CI checks should remove legacy assumptions first, then ratchet toward the target layering as
   each split lands.
+- CLI/bindings/export adapters and shared regression harnesses should render templates through
+  `rumoca-session::codegen`; direct `rumoca-phase-codegen` dependencies are reserved for
+  phase-local codegen tests.
 
 ## Compliance Notes
 

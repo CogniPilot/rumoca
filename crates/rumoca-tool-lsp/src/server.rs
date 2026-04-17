@@ -29,12 +29,11 @@ use rumoca_session::source_roots::{
     render_source_root_indexing_finished_message, render_source_root_indexing_started_message,
     render_source_root_status_message, source_root_paths_changed, source_root_source_set_key,
 };
-use rumoca_sim::{SimOptions, SimSolverMode, dae_balance, dae_balance_detail};
-use rumoca_sim_diffsol::simulate_dae;
-use rumoca_sim_report::{
-    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
-    build_simulation_payload,
+use rumoca_sim::{
+    SimOptions, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
+    build_simulation_metrics_value, build_simulation_payload, dae_balance, dae_balance_detail,
 };
+use rumoca_sim_diffsol::simulate_dae;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;

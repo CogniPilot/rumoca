@@ -43,7 +43,7 @@ use rumoca_session::{
         write_last_simulation_result_for_model, write_simulation_run,
     },
 };
-use rumoca_sim_report::{SimulationRequestSummary, SimulationRunMetrics};
+use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, PartialLintOptions};
 use walkdir::WalkDir;
 
@@ -83,7 +83,7 @@ enum Commands {
     },
     /// Manage workspace-side Rumoca project sidecars
     Project(ProjectArgs),
-    /// Run FlatBuffer-based SIL simulation with 3D viewer
+    /// Run the FlatBuffer lockstep simulation app with 3D viewer
     #[cfg(feature = "sim-fb")]
     SimFb(SimFbArgs),
 }
@@ -127,7 +127,7 @@ struct SimFbArgs {
     #[arg(short, long)]
     model: Option<String>,
 
-    /// Path to SIL config TOML (schema paths, UDP ports, field routing)
+    /// Path to sim-fb config TOML (schema paths, UDP ports, field routing)
     #[arg(long)]
     config: String,
 
@@ -188,10 +188,6 @@ struct CompileArgs {
     /// Template file for custom export (advanced)
     #[arg(short, long)]
     template_file: Option<String>,
-
-    /// Render templates from a structurally prepared DAE instead of raw compile output
-    #[arg(long, requires = "template_file")]
-    template_prepared: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -656,8 +652,8 @@ fn run_sim_fb(args: SimFbArgs) -> Result<()> {
             .to_string()
     });
 
-    let config = rumoca_sim_fb::config::SilConfig::load(Path::new(&args.config))
-        .with_context(|| format!("Load SIL config: {}", args.config))?;
+    let config = rumoca_sim_fb::config::SimFbConfig::load(Path::new(&args.config))
+        .with_context(|| format!("Load sim-fb config: {}", args.config))?;
 
     // Load scene script if provided
     let scene_script = match args.scene {
@@ -687,17 +683,12 @@ fn run_compile(args: CompileArgs) -> Result<()> {
         return Ok(());
     }
     if let Some(backend) = args.backend {
-        let rendered =
-            result.render_template_str_prepared_with_name(backend.template(), &model, true)?;
+        let rendered = result.render_template_str_with_name(backend.template(), &model)?;
         print!("{rendered}");
         return Ok(());
     }
     if let Some(template_file) = args.template_file {
-        if args.template_prepared {
-            print!("{}", result.render_template_prepared(&template_file, true)?);
-        } else {
-            print!("{}", result.render_template(&template_file)?);
-        }
+        print!("{}", result.render_template(&template_file)?);
         return Ok(());
     }
     print_summary(&model, &result);
@@ -766,10 +757,7 @@ fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
     fs::write(&xml_path, &xml)?;
     eprintln!("  wrote {}", xml_path.display());
 
-    // Render and write C source (uses prepared DAE for correct equation structure
-    // and parameter initialization ordering)
-    let c_code =
-        result.render_template_str_prepared_with_name(c_template, &model_identifier, true)?;
+    let c_code = result.render_template_str_with_name(c_template, &model_identifier)?;
     let c_path = sources_dir.join(format!("{}.c", model_identifier));
     fs::write(&c_path, &c_code)?;
     eprintln!("  wrote {}", c_path.display());
@@ -807,21 +795,15 @@ fn run_export_embedded_c(args: ExportEmbeddedCArgs) -> Result<()> {
     fs::create_dir_all(&out_dir)?;
 
     // Render header (.h)
-    let h_code = result.render_template_str_prepared_with_name(
-        embedded_c_templates::EMBEDDED_C_H,
-        &model_identifier,
-        true,
-    )?;
+    let h_code = result
+        .render_template_str_with_name(embedded_c_templates::EMBEDDED_C_H, &model_identifier)?;
     let h_path = out_dir.join(format!("{}.h", model_identifier));
     fs::write(&h_path, &h_code)?;
     eprintln!("  wrote {}", h_path.display());
 
     // Render implementation (.c)
-    let c_code = result.render_template_str_prepared_with_name(
-        embedded_c_templates::EMBEDDED_C_IMPL,
-        &model_identifier,
-        true,
-    )?;
+    let c_code = result
+        .render_template_str_with_name(embedded_c_templates::EMBEDDED_C_IMPL, &model_identifier)?;
     let c_path = out_dir.join(format!("{}.c", model_identifier));
     fs::write(&c_path, &c_code)?;
     eprintln!("  wrote {}", c_path.display());
@@ -1514,8 +1496,7 @@ fn discover_workspace_root_for_model_file(model_file: &str) -> Option<PathBuf> {
 
 fn completion_script(shell: CompletionShell) -> String {
     let top = "compile simulate check export-fmu completions --help -h --version -V";
-    let compile_opts =
-        "--model --source-root --json --template-file --template-prepared --verbose --debug";
+    let compile_opts = "--model --source-root --json --template-file --verbose --debug";
     let simulate_opts = "--model --source-root --t-end --dt --solver --output --verbose --debug";
     let check_opts = "--model --source-root --verbose --debug";
     let export_fmu_opts = "--model --source-root --output --no-build --verbose --debug";
@@ -1573,7 +1554,7 @@ compdef _rumoca rumoca
             "complete -c rumoca -n '__fish_use_subcommand' -a 'check' -d 'Compile and print summary'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'export-fmu' -d 'Export FMI 2.0 FMU'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'completions' -d 'Print completion script'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --source-root --json --template-file --template-prepared --verbose --debug'",
+            "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --source-root --json --template-file --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from simulate' -a '--model --source-root --t-end --output --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from check' -a '--model --source-root --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from export-fmu' -a '--model --source-root --output --verbose --debug'",

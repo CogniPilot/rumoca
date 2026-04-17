@@ -177,6 +177,10 @@ Required boundaries:
 - Interactive stepper APIs MUST be separate from backend-neutral runtime contracts.
 - Reporting payload contracts MUST be separate from visualization assets.
 - Visualization crates MUST NOT own solver/backend policy.
+- Transport-neutral lockstep I/O contracts MUST be separate from protocol codecs and app-specific
+  controller/viewer loops.
+- Protocol codec crates MUST NOT own simulation policy, controller/gamepad handling, HTTP serving,
+  or scene assets.
 
 Transitional rule:
 
@@ -205,10 +209,11 @@ Tier 6 — Binary & Bindings (top-level entry points)
   rumoca-contracts          Specification contract tests
 
 Tier 5 — Integration (combine session + simulation/tools)
+  rumoca-io                 Transport-neutral lockstep I/O contracts
+  rumoca-io-fb              FlatBuffer schema/codec support for lockstep I/O
   rumoca-sim                Runtime contracts + shared simulation helpers
   rumoca-sim-diffsol        Diffsol runtime backend
   rumoca-sim-rk45           Explicit ODE RK45 backend
-  rumoca-sim-report         Simulation payload/report contracts
   rumoca-viz-web            Web visualization assets
   rumoca-tool-lsp           Language server protocol
 
@@ -286,6 +291,12 @@ The newtype wrappers (`ParsedTree`, `ResolvedTree`, etc.) mean an AI doesn't nee
 ### Serde IRs Enable Template-Based Codegen
 
 The IR crates use serde serialization, so code generation templates work from data structures, not code. An AI can write a codegen template by inspecting the serialized IR format without understanding Rust compiler internals.
+
+### Session Owns Compile-Side Codegen Access
+
+Bindings, CLI export paths, and shared regression harnesses should call template render helpers
+through `rumoca-session::codegen`. Direct `rumoca-phase-codegen` dependencies are reserved for
+phase-local codegen tests, which keeps adapter surfaces on the compile/session side of the DAG.
 
 ## How This Helps New Developers
 

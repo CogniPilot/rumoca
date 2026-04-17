@@ -22,13 +22,12 @@ use rumoca_session::source_roots::{
     canonical_path_key, merge_source_root_paths, plan_source_root_loads,
     referenced_unloaded_source_root_paths, source_root_source_set_key,
 };
-use rumoca_sim::SimOptions;
 use rumoca_sim::SimSolverMode as RuntimeSimSolverMode;
-use rumoca_sim_diffsol::simulate_dae;
-use rumoca_sim_report::{
-    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
+use rumoca_sim::{
+    SimOptions, SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
 };
+use rumoca_sim_diffsol::simulate_dae;
 use rumoca_tool_fmt::FormatOptions;
 use rumoca_tool_lint::{LintLevel, LintOptions, lint as lint_source};
 use serde_json::{Value, json};
@@ -242,15 +241,13 @@ impl ProjectSession {
             .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
     }
 
-    #[pyo3(signature = (source, template, model_name=None, filename=None, prepared=false, scalarize=true))]
+    #[pyo3(signature = (source, template, model_name=None, filename=None))]
     fn render_model(
         &mut self,
         source: &str,
         template: &str,
         model_name: Option<&str>,
         filename: Option<&str>,
-        prepared: bool,
-        scalarize: bool,
     ) -> Result<String, PyRuntimeStringError> {
         self.sync_source_root_paths()?;
         let filename = filename.unwrap_or("input.mo");
@@ -261,17 +258,15 @@ impl ProjectSession {
             filename,
             &self.effective_source_root_paths,
         )?;
-        render_compiled_model(&result, &actual_model_name, template, prepared, scalarize)
+        render_compiled_model(&result, &actual_model_name, template)
     }
 
-    #[pyo3(signature = (path, template, model_name=None, prepared=false, scalarize=true))]
+    #[pyo3(signature = (path, template, model_name=None))]
     fn render_model_file(
         &mut self,
         path: &str,
         template: &str,
         model_name: Option<&str>,
-        prepared: bool,
-        scalarize: bool,
     ) -> Result<String, PyRuntimeStringError> {
         self.sync_source_root_paths()?;
         let (result, actual_model_name) = compile_file_in_session(
@@ -280,38 +275,34 @@ impl ProjectSession {
             model_name,
             &self.effective_source_root_paths,
         )?;
-        render_compiled_model(&result, &actual_model_name, template, prepared, scalarize)
+        render_compiled_model(&result, &actual_model_name, template)
     }
 
-    #[pyo3(signature = (source, template_id, model_name=None, filename=None, prepared=true, scalarize=true))]
+    #[pyo3(signature = (source, template_id, model_name=None, filename=None))]
     fn render_builtin_model(
         &mut self,
         source: &str,
         template_id: &str,
         model_name: Option<&str>,
         filename: Option<&str>,
-        prepared: bool,
-        scalarize: bool,
     ) -> Result<String, PyRuntimeStringError> {
         let template = builtin_template_source(template_id).ok_or_else(|| {
             PyRuntimeStringError(format!("Unknown built-in template id: {template_id}"))
         })?;
-        self.render_model(source, template, model_name, filename, prepared, scalarize)
+        self.render_model(source, template, model_name, filename)
     }
 
-    #[pyo3(signature = (path, template_id, model_name=None, prepared=true, scalarize=true))]
+    #[pyo3(signature = (path, template_id, model_name=None))]
     fn render_builtin_file(
         &mut self,
         path: &str,
         template_id: &str,
         model_name: Option<&str>,
-        prepared: bool,
-        scalarize: bool,
     ) -> Result<String, PyRuntimeStringError> {
         let template = builtin_template_source(template_id).ok_or_else(|| {
             PyRuntimeStringError(format!("Unknown built-in template id: {template_id}"))
         })?;
-        self.render_model_file(path, template, model_name, prepared, scalarize)
+        self.render_model_file(path, template, model_name)
     }
 
     #[pyo3(signature = (source, model_name=None, filename=None, t_end=1.0, dt=None, solver=None))]
@@ -538,71 +529,56 @@ fn compile_file_to_json(
 
 /// Compile and render a template against one source string.
 #[pyfunction]
-#[pyo3(signature = (source, template, model_name=None, filename=None, source_roots=None, prepared=false, scalarize=true))]
+#[pyo3(signature = (source, template, model_name=None, filename=None, source_roots=None))]
 fn render_model(
     source: &str,
     template: &str,
     model_name: Option<&str>,
     filename: Option<&str>,
     source_roots: Option<Vec<String>>,
-    prepared: bool,
-    scalarize: bool,
 ) -> Result<String, PyRuntimeStringError> {
     let mut session = ProjectSession::new(source_roots);
-    session.render_model(source, template, model_name, filename, prepared, scalarize)
+    session.render_model(source, template, model_name, filename)
 }
 
 /// Compile and render a template against one model file.
 #[pyfunction]
-#[pyo3(signature = (path, template, model_name=None, source_roots=None, prepared=false, scalarize=true))]
+#[pyo3(signature = (path, template, model_name=None, source_roots=None))]
 fn render_model_file(
     path: &str,
     template: &str,
     model_name: Option<&str>,
     source_roots: Option<Vec<String>>,
-    prepared: bool,
-    scalarize: bool,
 ) -> Result<String, PyRuntimeStringError> {
     let mut session = ProjectSession::new(source_roots);
-    session.render_model_file(path, template, model_name, prepared, scalarize)
+    session.render_model_file(path, template, model_name)
 }
 
 /// Compile and render one built-in template against inline source.
 #[pyfunction]
-#[pyo3(signature = (source, template_id, model_name=None, filename=None, source_roots=None, prepared=true, scalarize=true))]
+#[pyo3(signature = (source, template_id, model_name=None, filename=None, source_roots=None))]
 fn render_builtin_model(
     source: &str,
     template_id: &str,
     model_name: Option<&str>,
     filename: Option<&str>,
     source_roots: Option<Vec<String>>,
-    prepared: bool,
-    scalarize: bool,
 ) -> Result<String, PyRuntimeStringError> {
     let mut session = ProjectSession::new(source_roots);
-    session.render_builtin_model(
-        source,
-        template_id,
-        model_name,
-        filename,
-        prepared,
-        scalarize,
-    )
+    session.render_builtin_model(source, template_id, model_name, filename)
 }
 
 /// Compile and render one built-in template against a model file.
 #[pyfunction]
-#[pyo3(signature = (path, template_id, model_name=None, source_roots=None, prepared=true, scalarize=true))]
+#[pyo3(signature = (path, template_id, model_name=None, source_roots=None))]
 fn render_builtin_file(
     path: &str,
     template_id: &str,
     model_name: Option<&str>,
     source_roots: Option<Vec<String>>,
-    prepared: bool,
-    scalarize: bool,
 ) -> Result<String, PyRuntimeStringError> {
     let mut session = ProjectSession::new(source_roots);
-    session.render_builtin_file(path, template_id, model_name, prepared, scalarize)
+    session.render_builtin_file(path, template_id, model_name)
 }
 
 /// Compile and simulate inline Modelica source.
@@ -1081,18 +1057,10 @@ fn render_compiled_model(
     result: &HighLevelCompilationResult,
     model_name: &str,
     template: &str,
-    prepared: bool,
-    scalarize: bool,
 ) -> Result<String, PyRuntimeStringError> {
-    if prepared {
-        result
-            .render_template_str_prepared_with_name(template, model_name, scalarize)
-            .map_err(|e| PyRuntimeStringError(format!("Template error: {e}")))
-    } else {
-        result
-            .render_template_str_with_name(template, model_name)
-            .map_err(|e| PyRuntimeStringError(format!("Template error: {e}")))
-    }
+    result
+        .render_template_str_with_name(template, model_name)
+        .map_err(|e| PyRuntimeStringError(format!("Template error: {e}")))
 }
 
 fn seconds_since(started: Instant) -> f64 {
@@ -1387,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_builtin_file_uses_prepared_template() {
+    fn test_render_builtin_file_uses_native_dae_template() {
         let fixture = fixture_path("UsesLib.mo");
         let source_root = fixture_path("Lib");
         let rendered = render_builtin_file(
@@ -1395,8 +1363,6 @@ mod tests {
             "dae_modelica.mo.jinja",
             None,
             Some(vec![source_root.to_string_lossy().to_string()]),
-            true,
-            true,
         )
         .expect("render built-in template");
         assert!(rendered.contains("class UsesLib"));

@@ -1,11 +1,12 @@
 use rumoca_session::Session;
-use rumoca_sim::SimOptions;
-use rumoca_sim::SimSolverMode;
-use rumoca_sim_diffsol::simulate_dae;
-use rumoca_sim_report::{
-    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
-    build_simulation_payload,
+use rumoca_sim::{
+    SimOptions, SimResult, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
+    build_simulation_metrics_value, build_simulation_payload,
 };
+#[cfg(feature = "sim-diffsol")]
+use rumoca_sim_diffsol::simulate_dae as simulate_dae_diffsol;
+#[cfg(feature = "sim-rk45")]
+use rumoca_sim_rk45::simulate_dae as simulate_dae_rk45;
 use wasm_bindgen::JsValue;
 
 use crate::{
@@ -53,8 +54,7 @@ fn simulate_model_in_session(
 
     let (opts, solver_label) = build_simulation_options(t_end, dt, solver);
     let sim_started = wasm_timing_start();
-    let sim = simulate_dae(&result.dae, &opts)
-        .map_err(|e| JsValue::from_str(&format!("Simulation error: {}", e)))?;
+    let sim = run_simulation(&result.dae, &opts)?;
     let metrics = SimulationRunMetrics {
         simulate_seconds: Some(wasm_elapsed_ms(sim_started) as f64 / 1000.0),
         ..SimulationRunMetrics::default()
@@ -73,6 +73,71 @@ fn simulate_model_in_session(
         "metrics": build_simulation_metrics_value(&sim, &metrics),
     });
     serde_json::to_string(&output).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
+}
+
+fn run_simulation(
+    dae: &rumoca_session::compile::Dae,
+    opts: &SimOptions,
+) -> Result<SimResult, JsValue> {
+    match opts.solver_mode {
+        SimSolverMode::Auto => simulate_with_default_backend(dae, opts),
+        SimSolverMode::Bdf => simulate_with_diffsol(dae, opts),
+        SimSolverMode::RkLike => simulate_with_rk45(dae, opts),
+    }
+}
+
+#[cfg(feature = "sim-diffsol")]
+fn simulate_with_default_backend(
+    dae: &rumoca_session::compile::Dae,
+    opts: &SimOptions,
+) -> Result<SimResult, JsValue> {
+    simulate_with_diffsol(dae, opts)
+}
+
+#[cfg(all(not(feature = "sim-diffsol"), feature = "sim-rk45"))]
+fn simulate_with_default_backend(
+    dae: &rumoca_session::compile::Dae,
+    opts: &SimOptions,
+) -> Result<SimResult, JsValue> {
+    simulate_with_rk45(dae, opts)
+}
+
+#[cfg(feature = "sim-diffsol")]
+fn simulate_with_diffsol(
+    dae: &rumoca_session::compile::Dae,
+    opts: &SimOptions,
+) -> Result<SimResult, JsValue> {
+    simulate_dae_diffsol(dae, opts)
+        .map_err(|error| JsValue::from_str(&format!("Simulation error (diffsol): {}", error)))
+}
+
+#[cfg(not(feature = "sim-diffsol"))]
+fn simulate_with_diffsol(
+    _dae: &rumoca_session::compile::Dae,
+    _opts: &SimOptions,
+) -> Result<SimResult, JsValue> {
+    Err(JsValue::from_str(
+        "Simulation error: this WASM build does not include the diffsol backend; enable the `sim-diffsol` feature or request an RK-like solver",
+    ))
+}
+
+#[cfg(feature = "sim-rk45")]
+fn simulate_with_rk45(
+    dae: &rumoca_session::compile::Dae,
+    opts: &SimOptions,
+) -> Result<SimResult, JsValue> {
+    simulate_dae_rk45(dae, opts)
+        .map_err(|error| JsValue::from_str(&format!("Simulation error (rk45): {}", error)))
+}
+
+#[cfg(not(feature = "sim-rk45"))]
+fn simulate_with_rk45(
+    _dae: &rumoca_session::compile::Dae,
+    _opts: &SimOptions,
+) -> Result<SimResult, JsValue> {
+    Err(JsValue::from_str(
+        "Simulation error: this WASM build does not include the RK45 backend; enable the `sim-rk45` feature or request `auto`/`bdf` when diffsol is available",
+    ))
 }
 
 pub(crate) fn build_simulation_options(t_end: f64, dt: f64, solver: &str) -> (SimOptions, String) {

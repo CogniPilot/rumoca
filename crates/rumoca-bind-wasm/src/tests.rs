@@ -1351,7 +1351,7 @@ fn test_lsp_completion_reuses_loaded_source_root_namespace_cache_after_local_edi
 }
 
 #[test]
-fn test_compile_to_json_prepared_retains_observables_from_native_orbit_model() {
+fn test_compile_to_json_exposes_orbit_algebraics_from_native_dae() {
     let mut session = Session::default();
     let source = r#"
     model SatelliteOrbit2D
@@ -1403,24 +1403,6 @@ fn test_compile_to_json_prepared_retains_observables_from_native_orbit_model() {
         "native dae should include algebraic variable inv_r, got keys: {:?}",
         native_y.keys().collect::<Vec<_>>()
     );
-
-    let prepared = result
-        .get("dae_prepared")
-        .and_then(|d| d.as_object())
-        .expect("dae_prepared should exist");
-    let observables = prepared
-        .get("__rumoca_observables")
-        .and_then(|v| v.as_array())
-        .expect("dae_prepared.__rumoca_observables should exist");
-    assert!(
-        !observables.is_empty(),
-        "expected prepared dae to retain at least one observable"
-    );
-
-    let observable_names: std::collections::HashSet<String> = observables
-        .iter()
-        .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string))
-        .collect();
     for expected in [
         "inv_r",
         "inv_v2",
@@ -1433,15 +1415,15 @@ fn test_compile_to_json_prepared_retains_observables_from_native_orbit_model() {
         "inv_ecc",
     ] {
         assert!(
-            observable_names.contains(expected),
-            "missing expected retained observable `{expected}`; got: {:?}",
-            observable_names
+            native_y.contains_key(expected),
+            "missing expected algebraic `{expected}`; got: {:?}",
+            native_y.keys().collect::<Vec<_>>()
         );
     }
 }
 
 #[test]
-fn test_render_template_preserves_prepared_observables_from_json_context() {
+fn test_render_template_uses_native_dae_json_context() {
     let mut session = Session::default();
     let source = r#"
     model SatelliteOrbit2D
@@ -1482,13 +1464,13 @@ fn test_render_template_preserves_prepared_observables_from_json_context() {
         .expect("compile should succeed for orbit model");
     let parsed: serde_json::Value =
         serde_json::from_str(&compiled).expect("compile should return valid JSON");
-    let prepared = parsed
-        .get("dae_prepared")
-        .expect("compile response should contain dae_prepared");
+    let native = parsed
+        .get("dae_native")
+        .expect("compile response should contain dae_native");
 
     let rendered = render_template(
-        &prepared.to_string(),
-        "{% for o in dae.__rumoca_observables %}{{ o.name }}\n{% endfor %}",
+        &native.to_string(),
+        "{% for name, comp in dae.y | items %}{{ name }}\n{% endfor %}",
     )
     .expect("render_template should succeed with JSON context");
 
@@ -1505,13 +1487,13 @@ fn test_render_template_preserves_prepared_observables_from_json_context() {
     ] {
         assert!(
             rendered.lines().any(|line| line.trim() == expected),
-            "expected rendered observables to contain `{expected}`, got:\n{rendered}"
+            "expected rendered algebraics to contain `{expected}`, got:\n{rendered}"
         );
     }
 }
 
 #[test]
-fn test_compile_to_json_embeds_prepared_status_and_solver_hints() {
+fn test_compile_to_json_uses_native_only_shape() {
     let mut session = Session::default();
     let source = r#"
     model SimpleDecay
@@ -1526,47 +1508,29 @@ fn test_compile_to_json_embeds_prepared_status_and_solver_hints() {
     let parsed: serde_json::Value =
         serde_json::from_str(&json).expect("compile should return valid JSON");
 
-    let status = parsed
-        .get("dae_prepared_status")
-        .and_then(serde_json::Value::as_str)
-        .expect("compile response should include dae_prepared_status");
     assert!(
-        matches!(status, "prepared" | "fallback_native"),
-        "unexpected dae_prepared_status: {status}"
+        parsed.get("dae").is_some() && parsed.get("dae_native").is_some(),
+        "compile response should include raw DAE payloads"
     );
-
-    let prepared = parsed
-        .get("dae_prepared")
-        .and_then(serde_json::Value::as_object)
-        .expect("compile response should include dae_prepared object");
-    let embedded_status = prepared
-        .get("__rumoca_prepared_status")
-        .and_then(serde_json::Value::as_str)
-        .expect("dae_prepared should include __rumoca_prepared_status");
-    assert_eq!(
-        embedded_status, status,
-        "top-level and embedded prepared status should match"
-    );
-
-    let diagnostics = prepared
-        .get("__rumoca_prepared_diagnostics")
-        .and_then(serde_json::Value::as_array)
-        .expect("dae_prepared should include __rumoca_prepared_diagnostics");
     assert!(
-        diagnostics.iter().all(serde_json::Value::is_string),
-        "prepared diagnostics should be an array of strings"
+        !parsed
+            .as_object()
+            .is_some_and(|obj| obj.contains_key("dae_prepared")),
+        "compile response should not include a prepared DAE shim"
     );
-
-    let hints = prepared
-        .get("__rumoca_solver_hints")
-        .and_then(serde_json::Value::as_object)
-        .expect("dae_prepared should include __rumoca_solver_hints");
     assert!(
-        hints.contains_key("variable_counts")
-            && hints.contains_key("equation_counts")
-            && hints.contains_key("variable_order")
-            && hints.contains_key("events"),
-        "solver hints should include variable/equation/order/events sections"
+        !parsed
+            .as_object()
+            .is_some_and(|obj| obj.contains_key("dae_prepared_status")),
+        "compile response should not include prepared DAE status metadata"
+    );
+    assert!(
+        parsed
+            .get("dae_native")
+            .and_then(|dae| dae.get("__rumoca_build"))
+            .and_then(serde_json::Value::as_object)
+            .is_some(),
+        "native DAE payload should include build metadata"
     );
 }
 
@@ -1738,6 +1702,7 @@ fn test_compile_to_json_recovers_after_syntax_diagnostics() {
     );
 }
 
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
 fn test_simulate_model_wrapper_returns_time_series_payload() {
     let _guard = session_test_guard();
@@ -1801,6 +1766,7 @@ fn test_simulate_model_wrapper_returns_time_series_payload() {
     clear_source_root_cache();
 }
 
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
 fn test_build_simulation_options_uses_solver_request_for_runtime_mode() {
     let (opts, solver_label) =
@@ -1817,6 +1783,7 @@ fn test_build_simulation_options_uses_solver_request_for_runtime_mode() {
     assert_eq!(blank_label, "auto");
 }
 
+#[cfg(feature = "sim-diffsol")]
 #[test]
 fn test_simulate_model_wrapper_surfaces_velocity_series_for_reinit_model() {
     let _guard = session_test_guard();

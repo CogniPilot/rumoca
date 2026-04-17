@@ -1,10 +1,10 @@
-//! Lockstep SIL simulation loop with UDP FlatBuffer I/O.
+//! Lockstep simulation loop with UDP FlatBuffer I/O for the current app/demo.
 //!
-//! Architecture (matches rumoca_sil):
-//!   Main thread: receive motors → step physics → send sensors → viz → repeat
-//!   Background:  HTTP server (3D viewer), WebSocket (state JSON to browser)
+//! The reusable named-signal contract lives in `rumoca-io`, while the
+//! FlatBuffer schema/codecs live in `rumoca-io-fb`. This module owns the
+//! concrete quadrotor/controller/viewer application loop on top of those
+//! lower layers.
 
-use std::collections::HashMap;
 use std::net::{TcpListener, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,12 +15,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use gilrs::{Axis, Button, Gilrs};
+use rumoca_io::SignalFrame;
+use rumoca_io_fb::bfbs::SchemaSet;
+use rumoca_io_fb::codec::{PackCodec, UnpackCodec};
 use rumoca_sim_diffsol::{SimStepper, StepperOptions};
 use tungstenite::{Message, accept};
 
-use crate::bfbs::SchemaSet;
-use crate::codec::{PackCodec, UnpackCodec};
-use crate::config::SilConfig;
+use crate::config::SimFbConfig;
 
 const MAX_SUB_DT: f64 = 0.002;
 const RC_CENTER: i32 = 1500;
@@ -318,28 +319,25 @@ fn axis_to_rc(value: f32, center: i32, half_range: i32) -> i32 {
 
 // ── Sensor values for pack codec ─────────────────────────────────────
 
-fn build_send_values(stepper: &SimStepper, input: &InputState) -> HashMap<String, f64> {
-    let mut v = HashMap::with_capacity(24);
+fn build_send_values(stepper: &SimStepper, input: &InputState) -> SignalFrame {
+    let mut v = SignalFrame::with_capacity(24);
     let get = |name: &str| stepper.get(name).unwrap_or(0.0);
 
-    v.insert("gyro_x".into(), get("gyro_x"));
-    v.insert("gyro_y".into(), get("gyro_y"));
-    v.insert("gyro_z".into(), get("gyro_z"));
-    v.insert("accel_x".into(), get("accel_x"));
-    v.insert("accel_y".into(), get("accel_y"));
-    v.insert("accel_z".into(), get("accel_z"));
+    v.insert("gyro_x", get("gyro_x"));
+    v.insert("gyro_y", get("gyro_y"));
+    v.insert("gyro_z", get("gyro_z"));
+    v.insert("accel_x", get("accel_x"));
+    v.insert("accel_y", get("accel_y"));
+    v.insert("accel_z", get("accel_z"));
 
     for i in 0..16 {
         v.insert(format!("rc_{i}"), input.rc[i] as f64);
     }
 
     let connected = input.is_connected();
-    v.insert(
-        "rc_link_quality".into(),
-        if connected { 255.0 } else { 0.0 },
-    );
-    v.insert("rc_valid".into(), if connected { 1.0 } else { 0.0 });
-    v.insert("imu_valid".into(), 1.0);
+    v.insert("rc_link_quality", if connected { 255.0 } else { 0.0 });
+    v.insert("rc_valid", if connected { 1.0 } else { 0.0 });
+    v.insert("imu_valid", 1.0);
     v
 }
 
@@ -484,15 +482,15 @@ fn download_debug_log(
 
 // ── Main simulation loop ─────────────────────────────────────────────
 
-/// Run the lockstep SIL simulation loop.
+/// Run the current lockstep simulation app loop.
 ///
 /// This function blocks the calling thread. It:
-/// 1. Starts the autopilot process (if configured)
-/// 2. Starts the WebSocket viz thread
-/// 3. Runs the main loop: recv motors → step physics → send sensors
+/// 1. Starts the controller process (if configured)
+/// 2. Starts the WebSocket viewer thread
+/// 3. Runs the main loop: recv outputs → step physics → send inputs
 #[allow(clippy::too_many_lines, clippy::excessive_nesting)]
 pub fn run_sim_loop(
-    cfg: &SilConfig,
+    cfg: &SimFbConfig,
     schema_set: &SchemaSet,
     stepper: &mut SimStepper,
     model_source: &str,

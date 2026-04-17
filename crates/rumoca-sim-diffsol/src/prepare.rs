@@ -1222,26 +1222,6 @@ fn prepare_dae_core(
     Ok((dae, elim, has_dummy))
 }
 
-/// Prepare a DAE for template codegen (CasADi, Julia MTK, etc.).
-///
-/// Runs the shared structural pipeline, then folds start values and sorts
-/// parameters/algebraics for deterministic template iteration order.
-pub(super) fn prepare_dae_for_template_codegen_only(
-    dae: &Dae,
-    scalarize: bool,
-    budget: &TimeoutBudget,
-) -> Result<Dae, SimError> {
-    // Keep template-prepared structure aligned with runtime simulation preparation
-    // (minus solver-only artifacts like IC plan and mass matrix).
-    let (mut dae, _elim, _has_dummy) = prepare_dae_core(dae, scalarize, budget, true)?;
-
-    rumoca_phase_solve::fold_start_values_to_literals(&mut dae);
-    rumoca_phase_solve::sort_parameters_by_start_deps(&mut dae);
-    rumoca_phase_solve::sort_algebraics_by_equation_deps(&mut dae);
-
-    Ok(dae)
-}
-
 /// Prepare a DAE for numerical simulation.
 ///
 /// Runs the shared structural pipeline (with runtime alias normalization),
@@ -1273,6 +1253,7 @@ pub(super) fn prepare_dae(
 mod tests {
     use super::*;
     use rumoca_core::Span;
+    use rumoca_sim::SimOptions;
 
     fn var(name: &str) -> dae::Expression {
         dae::Expression::VarRef {
@@ -1752,27 +1733,28 @@ mod tests {
         dae.relation.push(cond.clone());
         dae.f_c.push(eq(cond));
 
-        let budget = TimeoutBudget::new(None);
-        let prepared = prepare_dae_for_template_codegen_only(&dae, true, &budget)
-            .expect("template codegen preparation should succeed");
+        let prepared =
+            crate::build_simulation(&dae, &SimOptions::default()).expect("runtime prep succeeds");
 
         assert!(
-            !prepared.algebraics.contains_key(&VarName::new("d")),
-            "template-prepared DAE should normalize runtime alias variable `d` out of algebraics"
+            !prepared.dae.algebraics.contains_key(&VarName::new("d")),
+            "runtime-prepared DAE should normalize runtime alias variable `d` out of algebraics"
         );
         assert!(
             !prepared
+                .dae
                 .relation
                 .iter()
                 .any(|expr| expr_contains_var_ref(expr, &VarName::new("d"))),
-            "template-prepared relation roots should not reference eliminated alias `d`"
+            "runtime-prepared relation roots should not reference eliminated alias `d`"
         );
         assert!(
             !prepared
+                .dae
                 .f_c
                 .iter()
                 .any(|eq| expr_contains_var_ref(&eq.rhs, &VarName::new("d"))),
-            "template-prepared condition equations should not reference eliminated alias `d`"
+            "runtime-prepared condition equations should not reference eliminated alias `d`"
         );
     }
 }

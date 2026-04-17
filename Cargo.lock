@@ -3133,7 +3133,6 @@ dependencies = [
  "rumoca-sim",
  "rumoca-sim-diffsol",
  "rumoca-sim-fb",
- "rumoca-sim-report",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "rumoca-viz-web",
@@ -3160,7 +3159,6 @@ dependencies = [
  "rumoca-session",
  "rumoca-sim",
  "rumoca-sim-diffsol",
- "rumoca-sim-report",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde_json",
@@ -3178,7 +3176,7 @@ dependencies = [
  "rumoca-session",
  "rumoca-sim",
  "rumoca-sim-diffsol",
- "rumoca-sim-report",
+ "rumoca-sim-rk45",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
  "serde",
@@ -3247,6 +3245,22 @@ dependencies = [
  "rumoca-ir-core",
  "rumoca-ir-flat",
  "thiserror 2.0.17",
+]
+
+[[package]]
+name = "rumoca-io"
+version = "0.8.12"
+dependencies = [
+ "indexmap",
+]
+
+[[package]]
+name = "rumoca-io-fb"
+version = "0.8.12"
+dependencies = [
+ "anyhow",
+ "rumoca-io",
+ "serde",
 ]
 
 [[package]]
@@ -3478,6 +3492,8 @@ dependencies = [
  "anyhow",
  "crossterm",
  "gilrs",
+ "rumoca-io",
+ "rumoca-io-fb",
  "rumoca-session",
  "rumoca-sim-diffsol",
  "serde",
@@ -3486,14 +3502,6 @@ dependencies = [
  "tiny_http",
  "toml",
  "tungstenite",
-]
-
-[[package]]
-name = "rumoca-sim-report"
-version = "0.8.12"
-dependencies = [
- "rumoca-sim",
- "serde_json",
 ]
 
 [[package]]
@@ -3525,7 +3533,6 @@ dependencies = [
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
- "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
  "rumoca-phase-instantiate",
@@ -3606,7 +3613,6 @@ dependencies = [
  "rumoca-session",
  "rumoca-sim",
  "rumoca-sim-diffsol",
- "rumoca-sim-report",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",

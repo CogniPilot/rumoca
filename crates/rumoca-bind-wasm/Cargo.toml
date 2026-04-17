@@ -12,8 +12,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rumoca-sim = { workspace = true }
-rumoca-sim-diffsol = { workspace = true }
-rumoca-sim-report = { workspace = true }
+rumoca-sim-diffsol = { workspace = true, optional = true }
+rumoca-sim-rk45 = { workspace = true, optional = true }
 rumoca-session = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 rumoca-tool-lsp = { workspace = true }
@@ -31,6 +31,10 @@ wasm-bindgen-rayon = { version = "1.2", optional = true }
 
 [features]
 default = ["console_error_panic_hook"]
+full-web = ["sim-diffsol", "stepper-diffsol"]
+sim-diffsol = ["dep:rumoca-sim-diffsol"]
+sim-rk45 = ["dep:rumoca-sim-rk45"]
+stepper-diffsol = ["sim-diffsol"]
 wasm-rayon = ["dep:wasm-bindgen-rayon"]
 
 [lints]

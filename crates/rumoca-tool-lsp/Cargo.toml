@@ -15,7 +15,6 @@ required-features = ["server"]
 rumoca-session = { workspace = true }
 rumoca-sim = { workspace = true }
 rumoca-sim-diffsol = { workspace = true }
-rumoca-sim-report = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 lsp-types = { workspace = true }

@@ -14,7 +14,6 @@ crate-type = ["cdylib"]
 rumoca = { workspace = true }
 rumoca-sim = { workspace = true }
 rumoca-sim-diffsol = { workspace = true }
-rumoca-sim-report = { workspace = true }
 rumoca-session = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
