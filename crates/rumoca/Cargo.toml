@@ -23,6 +23,7 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-session/tracing"]
 rumoca-session = { workspace = true }
 rumoca-sim = { workspace = true }
 rumoca-sim-report = { workspace = true }
+rumoca-viz-web = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 rumoca-sim-fb = { workspace = true, optional = true }

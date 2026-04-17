@@ -268,7 +268,7 @@ Recommended crate mapping:
 | concrete diffsol backend | `rumoca-sim-diffsol` |
 | interactive stepping | `rumoca-sim-stepper` |
 | report/payload shaping | `rumoca-sim-report` |
-| web/HTML/assets | `rumoca-results-web` |
+| web/HTML/assets | `rumoca-viz-web` |
 
 Migration rule:
 

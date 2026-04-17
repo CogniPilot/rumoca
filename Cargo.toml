@@ -21,6 +21,7 @@ members = [
     "crates/rumoca-eval-dae",
     "crates/rumoca-sim",
     "crates/rumoca-sim-report",
+    "crates/rumoca-viz-web",
     "crates/rumoca-phase-typecheck",
     # Session and tools
     "crates/rumoca-session",
@@ -63,6 +64,7 @@ rumoca-eval-dae = { path = "crates/rumoca-eval-dae", default-features = false }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
 rumoca-sim = { path = "crates/rumoca-sim" }
 rumoca-sim-report = { path = "crates/rumoca-sim-report" }
+rumoca-viz-web = { path = "crates/rumoca-viz-web" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-session = { path = "crates/rumoca-session" }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }

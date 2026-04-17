@@ -611,6 +611,55 @@ fn test_sim_facade_models_diffsol_as_optional_feature() {
         "rumoca-sim must not depend on rumoca-phase-codegen; \
 Author reminder: keep codegen/template rendering in session/runtime facade, not sim."
     );
+    assert!(
+        !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
+        "rumoca-sim must not depend on rumoca-viz-web; \
+Author reminder: keep visualization assets outside the runtime-contract crate."
+    );
+}
+
+#[test]
+fn test_sim_facade_owns_no_visualization_assets() {
+    let sim_lib = workspace_root().join("crates/rumoca-sim/src/lib.rs");
+    let sim_lib_content = fs::read_to_string(&sim_lib).expect("read rumoca-sim src/lib.rs");
+    assert!(
+        !sim_lib_content.contains("pub mod results_web;"),
+        "rumoca-sim must not expose a results_web module once visualization moves to rumoca-viz-web"
+    );
+
+    for removed_path in [
+        "crates/rumoca-sim/src/results_web.rs",
+        "crates/rumoca-sim/web/results_app.css",
+        "crates/rumoca-sim/web/results_app.js",
+        "crates/rumoca-sim/web/three.min.js",
+        "crates/rumoca-sim/web/visualization_shared.js",
+        "crates/rumoca-sim/src/with_diffsol/vendor/uplot.min.css",
+        "crates/rumoca-sim/src/with_diffsol/vendor/uplot.min.js",
+    ] {
+        assert!(
+            !workspace_root().join(removed_path).exists(),
+            "rumoca-sim must not retain visualization asset path {removed_path}"
+        );
+    }
+}
+
+#[test]
+fn test_viz_web_is_isolated_from_session_and_backends() {
+    let cargo_toml = workspace_root().join("crates/rumoca-viz-web/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-viz-web Cargo.toml");
+
+    for banned in [
+        "rumoca-session",
+        "rumoca-sim",
+        "rumoca-sim-report",
+        "diffsol",
+    ] {
+        assert!(
+            !section_contains_dependency(&content, "dependencies", banned),
+            "rumoca-viz-web must not depend on {banned}; \
+Author reminder: keep web visualization independent of session, backend, and report-contract ownership."
+        );
+    }
 }
 
 #[test]
@@ -618,7 +667,12 @@ fn test_rumoca_entry_uses_session_facade_for_ir() {
     let cargo_toml = workspace_root().join("crates/rumoca/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca Cargo.toml");
 
-    for required in ["rumoca-session", "rumoca-tool-fmt", "rumoca-tool-lint"] {
+    for required in [
+        "rumoca-session",
+        "rumoca-tool-fmt",
+        "rumoca-tool-lint",
+        "rumoca-viz-web",
+    ] {
         assert!(
             section_contains_dependency(&content, "dependencies", required),
             "rumoca must depend on {required}; \

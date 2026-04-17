@@ -1,0 +1,13 @@
+[package]
+name = "rumoca-viz-web"
+description = "Web visualization assets and HTML shell for Rumoca simulation reports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json = { workspace = true, features = ["unbounded_depth"] }
+
+[lints]
+workspace = true
