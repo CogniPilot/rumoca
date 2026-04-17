@@ -167,6 +167,18 @@ impl SimSolverMode {
     }
 }
 
+impl SimSolverMode {
+    pub fn parse_request(solver: Option<&str>) -> (Self, String) {
+        match solver {
+            Some(raw) if !raw.trim().is_empty() => {
+                let trimmed = raw.trim();
+                (Self::from_external_name(trimmed), trimmed.to_string())
+            }
+            _ => (Self::Auto, "auto".to_string()),
+        }
+    }
+}
+
 #[cfg(not(feature = "diffsol"))]
 #[derive(Debug, Clone)]
 pub struct SimOptions {
@@ -411,6 +423,30 @@ mod tests {
             .position(|name| name == "x")
             .expect("state x should be present in results");
         &result.data[x_idx]
+    }
+
+    #[test]
+    fn solver_mode_request_parsing_defaults_blank_input_to_auto() {
+        assert_eq!(
+            SimSolverMode::parse_request(None),
+            (SimSolverMode::Auto, "auto".to_string())
+        );
+        assert_eq!(
+            SimSolverMode::parse_request(Some("   ")),
+            (SimSolverMode::Auto, "auto".to_string())
+        );
+    }
+
+    #[test]
+    fn solver_mode_request_parsing_preserves_trimmed_label_and_maps_mode() {
+        assert_eq!(
+            SimSolverMode::parse_request(Some("  dopri5 ")),
+            (SimSolverMode::RkLike, "dopri5".to_string())
+        );
+        assert_eq!(
+            SimSolverMode::parse_request(Some("IDA")),
+            (SimSolverMode::Bdf, "IDA".to_string())
+        );
     }
 
     #[test]

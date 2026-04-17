@@ -6,9 +6,9 @@
 
 //! Python bindings for the Rumoca Modelica compiler.
 //!
-//! The top-level functions remain convenient one-shot wrappers, while
-//! [`ProjectSession`] provides a reusable session for workloads that want to
-//! retain loaded source roots and compile/query caches across calls.
+//! The top-level functions remain convenient one-shot wrappers, while the
+//! `ProjectSession` Python class provides a reusable session for workloads that
+//! want to retain loaded source roots and compile/query caches across calls.
 
 use ::rumoca::CompilationResult as HighLevelCompilationResult;
 use pyo3::prelude::*;
@@ -17,13 +17,12 @@ use rumoca_session::compile::{FailedPhase, PhaseResult, Session, SessionConfig, 
 use rumoca_session::parsing::{
     collect_compile_unit_source_files, collect_model_names, validate_source_syntax,
 };
-use rumoca_session::runtime::{
-    SimOptions, SimSolverMode, render_dae_template_with_json, simulate_dae,
-};
+use rumoca_session::runtime::{SimOptions, render_dae_template_with_json, simulate_dae};
 use rumoca_session::source_roots::{
     canonical_path_key, merge_source_root_paths, plan_source_root_loads,
     referenced_unloaded_source_root_paths, source_root_source_set_key,
 };
+use rumoca_sim::SimSolverMode as RuntimeSimSolverMode;
 use rumoca_sim::results_web::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
@@ -1094,19 +1093,6 @@ fn render_compiled_model(
     }
 }
 
-fn parse_solver_mode(solver: Option<&str>) -> (SimSolverMode, String) {
-    match solver {
-        Some(raw) if !raw.trim().is_empty() => {
-            let trimmed = raw.trim();
-            (
-                SimSolverMode::from_external_name(trimmed),
-                trimmed.to_string(),
-            )
-        }
-        _ => (SimSolverMode::Auto, "auto".to_string()),
-    }
-}
-
 fn seconds_since(started: Instant) -> f64 {
     started.elapsed().as_secs_f64()
 }
@@ -1124,7 +1110,7 @@ fn simulate_compiled_model(
     compile_seconds: f64,
     request: SimRequest<'_>,
 ) -> Result<String, PyRuntimeStringError> {
-    let (solver_mode, solver_label) = parse_solver_mode(request.solver);
+    let (solver_mode, solver_label) = RuntimeSimSolverMode::parse_request(request.solver);
     let opts = SimOptions {
         t_end: request.t_end,
         dt: request.dt,

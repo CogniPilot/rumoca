@@ -1802,6 +1802,28 @@ fn test_simulate_model_wrapper_returns_time_series_payload() {
 }
 
 #[test]
+fn test_build_simulation_options_uses_solver_request_for_runtime_mode() {
+    let (opts, solver_label) =
+        crate::simulation_api::build_simulation_options(0.2, 0.1, "  dopri5  ");
+    assert_eq!(opts.t_end, 0.2);
+    assert_eq!(opts.dt, Some(0.1));
+    assert_eq!(
+        opts.solver_mode,
+        rumoca_session::runtime::SimSolverMode::RkLike
+    );
+    assert_eq!(solver_label, "dopri5");
+
+    let (blank_opts, blank_label) =
+        crate::simulation_api::build_simulation_options(0.2, 0.0, "   ");
+    assert_eq!(blank_opts.dt, None);
+    assert_eq!(
+        blank_opts.solver_mode,
+        rumoca_session::runtime::SimSolverMode::Auto
+    );
+    assert_eq!(blank_label, "auto");
+}
+
+#[test]
 fn test_simulate_model_wrapper_surfaces_velocity_series_for_reinit_model() {
     let _guard = session_test_guard();
     clear_source_root_cache();

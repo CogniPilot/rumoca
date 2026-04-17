@@ -1,5 +1,6 @@
 use rumoca_session::Session;
 use rumoca_session::runtime::{SimOptions, simulate_dae};
+use rumoca_sim::SimSolverMode;
 use rumoca_sim::results_web::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
@@ -49,12 +50,7 @@ fn simulate_model_in_session(
     let requested_model = qualify_input_model_name(session, model_name);
     let result = compile_requested_model(session, &requested_model)?;
 
-    let dt_opt = if dt > 0.0 { Some(dt) } else { None };
-    let opts = SimOptions {
-        t_end,
-        dt: dt_opt,
-        ..SimOptions::default()
-    };
+    let (opts, solver_label) = build_simulation_options(t_end, dt, solver);
     let sim_started = wasm_timing_start();
     let sim = simulate_dae(&result.dae, &opts)
         .map_err(|e| JsValue::from_str(&format!("Simulation error: {}", e)))?;
@@ -63,11 +59,7 @@ fn simulate_model_in_session(
         ..SimulationRunMetrics::default()
     };
     let request = SimulationRequestSummary {
-        solver: if solver.trim().is_empty() {
-            "auto".to_string()
-        } else {
-            solver.trim().to_string()
-        },
+        solver: solver_label,
         t_start: opts.t_start,
         t_end: opts.t_end,
         dt: opts.dt,
@@ -80,4 +72,18 @@ fn simulate_model_in_session(
         "metrics": build_simulation_metrics_value(&sim, &metrics),
     });
     serde_json::to_string(&output).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
+}
+
+pub(crate) fn build_simulation_options(t_end: f64, dt: f64, solver: &str) -> (SimOptions, String) {
+    let (solver_mode, solver_label) = SimSolverMode::parse_request(Some(solver));
+    let dt_opt = if dt > 0.0 { Some(dt) } else { None };
+    (
+        SimOptions {
+            t_end,
+            dt: dt_opt,
+            solver_mode,
+            ..SimOptions::default()
+        },
+        solver_label,
+    )
 }
