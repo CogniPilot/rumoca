@@ -558,8 +558,9 @@ fn test_session_runtime_uses_sim_facade() {
         "rumoca-session must depend on rumoca-phase-solve for structural solve APIs"
     );
     assert!(
-        content.contains("rumoca-sim = { workspace = true, features = [\"diffsol\"] }"),
-        "rumoca-session must enable rumoca-sim `diffsol` feature for runtime simulation APIs"
+        !section_contains_dependency(&content, "dependencies", "diffsol"),
+        "rumoca-session must not depend directly on the concrete `diffsol` package; \
+Author reminder: keep backend-specific packages below the session facade."
     );
 
     let banned = "rumoca-eval-dae";
@@ -589,7 +590,7 @@ Author reminder: session should orchestrate and expose facades, not implement ev
 }
 
 #[test]
-fn test_sim_facade_models_diffsol_as_feature() {
+fn test_sim_facade_models_diffsol_as_optional_feature() {
     let cargo_toml = workspace_root().join("crates/rumoca-sim/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim Cargo.toml");
 
@@ -598,16 +599,12 @@ fn test_sim_facade_models_diffsol_as_feature() {
         "rumoca-sim must declare crate features"
     );
     assert!(
-        content.contains("default = [\"diffsol\"]"),
-        "rumoca-sim should default-enable the `diffsol` backend feature"
-    );
-    assert!(
         content.contains("diffsol = [\"dep:diffsol\"]"),
         "rumoca-sim must model diffsol backend as a crate feature"
     );
     assert!(
         content.contains("diffsol = { version = \"0.10\", optional = true }"),
-        "diffsol dependency must be optional behind the `diffsol` feature"
+        "diffsol dependency must stay optional behind the `diffsol` feature"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-phase-codegen"),

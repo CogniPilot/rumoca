@@ -159,6 +159,40 @@ Rationale:
 - This keeps persistence simple, source-root-scoped, and semantically uniform across workspace and
   imported roots.
 
+### 12. Runtime, Backend, Stepper, And Visualization Layering
+
+Runtime and simulation surfaces MUST not collapse back into one facade crate.
+
+Required dependency direction:
+
+```
+compiler/session -> runtime contracts -> solver backend -> stepper -> reporting -> visualization
+```
+
+Required boundaries:
+
+- `rumoca-session` owns compilation/session orchestration only.
+- Runtime contract types used across simulation consumers MUST live below `rumoca-session`.
+- Concrete solver backends MUST be explicit opt-in dependencies.
+- Interactive stepper APIs MUST be separate from backend-neutral runtime contracts.
+- Reporting payload contracts MUST be separate from visualization assets.
+- Visualization crates MUST NOT own solver/backend policy.
+
+Transitional rule:
+
+- During migration, CI MUST NOT require `rumoca-session` to enable a specific solver backend
+  feature transitively.
+- During migration, CI MUST NOT require the runtime-contract crate to default-enable a concrete
+  backend.
+
+Steady-state rule:
+
+- Once the split crates exist, CI MUST reject reverse dependencies across this chain.
+- `rumoca-session` MUST NOT directly depend on concrete solver packages or visualization asset
+  crates.
+- Backend selection inputs exposed by user-facing APIs MUST affect runtime behavior, not only
+  metadata or diagnostics.
+
 ## Dependency Tiers
 
 The 24 workspace crates are organized into six tiers. Dependencies flow strictly downward.

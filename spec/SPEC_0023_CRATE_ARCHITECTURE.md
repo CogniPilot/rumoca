@@ -243,6 +243,39 @@ Rationale:
 - Prevents “shortcut imports” that hide layer violations.
 - Reduces AI/new-contributor drift into convenience-based architecture erosion.
 
+## Runtime And Simulation Layering
+
+The compiler pipeline ends at the DAE contract. Runtime and simulation consumers must remain
+layered below that contract rather than being folded back into `rumoca-session`.
+
+Target direction:
+
+```
+rumoca-session / compiler entry points
+    -> runtime contracts
+    -> concrete solver backend
+    -> stepper APIs
+    -> report/payload contracts
+    -> visualization/assets
+```
+
+Recommended crate mapping:
+
+| Responsibility | Preferred Crate Role |
+|----------------|----------------------|
+| compile/session orchestration | `rumoca-session` |
+| backend-neutral runtime contracts | `rumoca-sim` |
+| concrete diffsol backend | `rumoca-sim-diffsol` |
+| interactive stepping | `rumoca-sim-stepper` |
+| report/payload shaping | `rumoca-sim-report` |
+| web/HTML/assets | `rumoca-results-web` |
+
+Migration rule:
+
+- Until the split is complete, do not add new APIs that further couple these responsibilities.
+- New CI checks should remove legacy assumptions first, then ratchet toward the target layering as
+  each split lands.
+
 ## Compliance Notes
 
 ### Array Preservation (SPEC_0019)
