@@ -75,7 +75,7 @@ fn build_no_state_timeline_setup(
     trace_setup_timing: bool,
 ) -> Result<NoStateTimelineSetup, SimError> {
     let dt = opts.dt.unwrap_or(opts.t_end / 500.0);
-    let coarse_times = build_output_times(opts.t_start, opts.t_end, dt);
+    let coarse_times = timeline::build_output_times(opts.t_start, opts.t_end, dt);
     let mut y = vec![0.0; n_total];
     problem::initialize_state_vector_with_params(dae, &mut y, &param_values);
 
@@ -1420,11 +1420,11 @@ mod schedule_scan_tests {
 
     #[test]
     fn build_output_times_handles_zero_step_singleton_interval() {
-        assert_eq!(build_output_times(1.0, 1.0, 0.0), vec![1.0]);
+        assert_eq!(timeline::build_output_times(1.0, 1.0, 0.0), vec![1.0]);
     }
 
     #[test]
     fn build_output_times_handles_zero_step_distinct_interval() {
-        assert_eq!(build_output_times(1.0, 2.0, 0.0), vec![1.0, 2.0]);
+        assert_eq!(timeline::build_output_times(1.0, 2.0, 0.0), vec![1.0, 2.0]);
     }
 }

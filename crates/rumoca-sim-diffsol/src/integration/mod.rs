@@ -559,7 +559,7 @@ pub(super) fn initialize_output_capture(
     y0: &[f64],
 ) -> (Vec<f64>, usize, OutputBuffers, usize) {
     let dt = opts.dt.unwrap_or(opts.t_end / 500.0);
-    let coarse_times = build_output_times(opts.t_start, opts.t_end, dt);
+    let coarse_times = timeline::build_output_times(opts.t_start, opts.t_end, dt);
     let event_times =
         rumoca_sim::timeline::collect_runtime_schedule_events(dae, opts.t_start, opts.t_end);
     // MLS §16.5.1 / Appendix B: stateful clocked and scheduled event updates

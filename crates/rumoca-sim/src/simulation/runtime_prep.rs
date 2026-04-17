@@ -115,7 +115,7 @@ fn combine_add_sub_coeffs(
     }
 }
 
-fn coeff_expr_for_derivative(
+pub fn derivative_coefficient_expr(
     expr: &dae::Expression,
     state_name: &dae::VarName,
 ) -> Result<Option<dae::Expression>, String> {
@@ -138,18 +138,18 @@ fn coeff_expr_for_derivative(
             op: OpUnary::Minus(_),
             rhs,
         } => {
-            let inner = coeff_expr_for_derivative(rhs, state_name)?;
+            let inner = derivative_coefficient_expr(rhs, state_name)?;
             Ok(inner.map(unary_minus_expr))
         }
         dae::Expression::Binary { op, lhs, rhs } => match op {
             OpBinary::Add(_) => {
-                let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
-                let rhs_coeff = coeff_expr_for_derivative(rhs, state_name)?;
+                let lhs_coeff = derivative_coefficient_expr(lhs, state_name)?;
+                let rhs_coeff = derivative_coefficient_expr(rhs, state_name)?;
                 Ok(combine_add_sub_coeffs(lhs_coeff, rhs_coeff, false))
             }
             OpBinary::Sub(_) => {
-                let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
-                let rhs_coeff = coeff_expr_for_derivative(rhs, state_name)?;
+                let lhs_coeff = derivative_coefficient_expr(lhs, state_name)?;
+                let rhs_coeff = derivative_coefficient_expr(rhs, state_name)?;
                 Ok(combine_add_sub_coeffs(lhs_coeff, rhs_coeff, true))
             }
             OpBinary::Mul(_) => {
@@ -159,14 +159,14 @@ fn coeff_expr_for_derivative(
                     return Err("nonlinear derivative term in multiplication".to_string());
                 }
                 if lhs_has_der {
-                    let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
+                    let lhs_coeff = derivative_coefficient_expr(lhs, state_name)?;
                     let Some(coeff) = lhs_coeff else {
                         return Err("unable to extract derivative coefficient from lhs".to_string());
                     };
                     return Ok(Some(mul_expr(coeff, rhs.as_ref().clone())));
                 }
                 if rhs_has_der {
-                    let rhs_coeff = coeff_expr_for_derivative(rhs, state_name)?;
+                    let rhs_coeff = derivative_coefficient_expr(rhs, state_name)?;
                     let Some(coeff) = rhs_coeff else {
                         return Err("unable to extract derivative coefficient from rhs".to_string());
                     };
@@ -182,7 +182,7 @@ fn coeff_expr_for_derivative(
                 if !expr_contains_der_of(lhs, state_name) {
                     return Ok(None);
                 }
-                let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
+                let lhs_coeff = derivative_coefficient_expr(lhs, state_name)?;
                 let Some(coeff) = lhs_coeff else {
                     return Err(
                         "unable to extract derivative coefficient from numerator".to_string()
@@ -321,7 +321,7 @@ fn build_compiled_mass_matrix_row(
         if !expr_contains_der_of(&eq.rhs, state_name) {
             continue;
         }
-        let coeff_expr = coeff_expr_for_derivative(&eq.rhs, state_name)
+        let coeff_expr = derivative_coefficient_expr(&eq.rhs, state_name)
             .map_err(|reason| state_non_derivable_error(eq, row, state_name, reason))?;
         let Some(coeff_expr) = coeff_expr else {
             return Err(state_non_derivable_error(

@@ -266,7 +266,8 @@ Recommended crate mapping:
 | compile/session orchestration | `rumoca-session` |
 | backend-neutral runtime contracts | `rumoca-sim` |
 | concrete diffsol backend | `rumoca-sim-diffsol` |
-| interactive stepping | `rumoca-sim-stepper` |
+| simple pure-Rust RK backend | `rumoca-sim-rk45` |
+| shared stepping/runtime loop surface | `rumoca-sim` |
 | report/payload shaping | `rumoca-sim-report` |
 | web/HTML/assets | `rumoca-viz-web` |
 

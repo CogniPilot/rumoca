@@ -307,6 +307,7 @@ fn test_sim_sources_use_ir_namespace_aliases() {
     let sim_dirs = [
         root.join("crates/rumoca-sim/src"),
         root.join("crates/rumoca-sim-diffsol/src"),
+        root.join("crates/rumoca-sim-rk45/src"),
     ];
 
     let mut offenders = Vec::new();
@@ -326,7 +327,7 @@ fn test_sim_sources_use_ir_namespace_aliases() {
 
 #[test]
 fn test_sim_diffsol_dag_boundary_no_flat_or_ast_dependency() {
-    for crate_name in ["rumoca-sim", "rumoca-sim-diffsol"] {
+    for crate_name in ["rumoca-sim", "rumoca-sim-diffsol", "rumoca-sim-rk45"] {
         let cargo_toml = workspace_root().join(format!("crates/{crate_name}/Cargo.toml"));
         let content = fs::read_to_string(&cargo_toml).expect("read sim Cargo.toml");
 
@@ -643,6 +644,25 @@ fn test_sim_diffsol_crate_owns_backend_dependency() {
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
         "rumoca-sim-diffsol must not depend on rumoca-viz-web"
+    );
+}
+
+#[test]
+fn test_sim_rk45_crate_owns_second_backend_without_diffsol_dependency() {
+    let cargo_toml = workspace_root().join("crates/rumoca-sim-rk45/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim-rk45 Cargo.toml");
+
+    assert!(
+        section_contains_dependency(&content, "dependencies", "rumoca-sim"),
+        "rumoca-sim-rk45 must depend on rumoca-sim for shared runtime contracts"
+    );
+    assert!(
+        !section_contains_dependency(&content, "dependencies", "diffsol"),
+        "rumoca-sim-rk45 must stay pure Rust and must not depend on diffsol"
+    );
+    assert!(
+        !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
+        "rumoca-sim-rk45 must not depend on rumoca-viz-web"
     );
 }
 

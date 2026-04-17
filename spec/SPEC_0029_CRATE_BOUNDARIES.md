@@ -195,7 +195,7 @@ Steady-state rule:
 
 ## Dependency Tiers
 
-The 24 workspace crates are organized into six tiers. Dependencies flow strictly downward.
+The workspace crates are organized into six tiers. Dependencies flow strictly downward.
 
 ```
 Tier 6 — Binary & Bindings (top-level entry points)
@@ -205,7 +205,11 @@ Tier 6 — Binary & Bindings (top-level entry points)
   rumoca-contracts          Specification contract tests
 
 Tier 5 — Integration (combine session + simulation/tools)
-  rumoca-sim                Simulation runtime + solver integration
+  rumoca-sim                Runtime contracts + shared simulation helpers
+  rumoca-sim-diffsol        Diffsol runtime backend
+  rumoca-sim-rk45           Explicit ODE RK45 backend
+  rumoca-sim-report         Simulation payload/report contracts
+  rumoca-viz-web            Web visualization assets
   rumoca-tool-lsp           Language server protocol
 
 Tier 4 — Orchestration (pipeline coordination)

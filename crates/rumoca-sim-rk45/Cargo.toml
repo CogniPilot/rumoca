@@ -1,0 +1,25 @@
+[package]
+name = "rumoca-sim-rk45"
+description = "Pure-Rust RK45 simulation backend for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-core = { workspace = true }
+rumoca-eval-dae = { workspace = true }
+rumoca-sim = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+rumoca-eval-dae = { workspace = true, features = ["wasm"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rumoca-eval-dae = { workspace = true, features = ["cranelift"] }
+
+[lints]
+workspace = true
