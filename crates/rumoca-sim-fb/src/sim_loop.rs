@@ -87,14 +87,21 @@ fn resolve_udp(cfg: &SimFbConfig) -> Option<&UdpConfig> {
 
 // ── Main loop ──────────────────────────────────────────────────────────────
 
-/// Immutable per-frame context: codecs, socket, mapper, and channels.
+/// Bundle of per-frame FB transport state. Present only when `[schema]` +
+/// `[receive]` + `[send]` are configured (autopilot coupling). Absent in
+/// standalone mode (e.g. rover demo).
+struct FbTransport {
+    socket: UdpSocket,
+    send_addr: String,
+    pack: PackCodec,
+    unpack: UnpackCodec,
+    recv_expected: usize,
+}
+
+/// Immutable per-frame context: FB transport (if any), mapper, and channels.
 struct FrameCtx<'a> {
     cfg: &'a SimFbConfig,
-    socket: &'a UdpSocket,
-    udp_send: &'a str,
-    recv_expected: usize,
-    pack_codec: &'a PackCodec,
-    unpack_codec: &'a UnpackCodec,
+    fb: Option<&'a FbTransport>,
     mapper: &'a SignalMapper,
     state_tx: &'a mpsc::Sender<String>,
     realtime: &'a Arc<AtomicBool>,
@@ -118,31 +125,19 @@ enum FrameControl {
     Break,
 }
 
-/// Run the lockstep simulation app. Blocks the calling thread.
+/// Run the lockstep simulation app. Blocks the calling thread. In standalone
+/// mode (no `[schema]`/`[receive]`/`[send]` in config) the UDP socket and
+/// FB codecs are not created and no autopilot coupling happens.
 pub fn run_sim_loop(
     cfg: &SimFbConfig,
-    schema_set: &SchemaSet,
+    schema_set: Option<&SchemaSet>,
     stepper: &mut SimStepper,
     model_source: &str,
     model_name: &str,
     ws_port: u16,
     debug: bool,
 ) -> Result<()> {
-    // ── Codecs ────────────────────────────────────────────────────────────
-    let pack_codec = PackCodec::compile(schema_set, &cfg.send).context("Build pack codec")?;
-    let unpack_codec =
-        UnpackCodec::compile(schema_set, &cfg.receive).context("Build unpack codec")?;
-    let recv_expected = unpack_codec.expected_size();
-
-    // ── UDP ───────────────────────────────────────────────────────────────
-    let udp_cfg = resolve_udp(cfg)
-        .context("No UDP config: expected [transport.udp] or legacy [udp] section")?;
-    let socket =
-        UdpSocket::bind(&udp_cfg.listen).with_context(|| format!("Bind UDP {}", udp_cfg.listen))?;
-    socket.set_read_timeout(Some(Duration::from_millis(100)))?;
-    eprintln!("  UDP listen: {}", udp_cfg.listen);
-    eprintln!("  UDP send:   {}", udp_cfg.send);
-    eprintln!("  Expecting {recv_expected}-byte receive packets");
+    let fb = setup_fb_transport(cfg, schema_set)?;
 
     // ── Input engine + signal mapper (config-driven) ──────────────────────
     let input_cfg = cfg
@@ -170,11 +165,7 @@ pub fn run_sim_loop(
     // ── Loop ──────────────────────────────────────────────────────────────
     let ctx = FrameCtx {
         cfg,
-        socket: &socket,
-        udp_send: &udp_cfg.send,
-        recv_expected,
-        pack_codec: &pack_codec,
-        unpack_codec: &unpack_codec,
+        fb: fb.as_ref(),
         mapper: &mapper,
         state_tx: &state_tx,
         realtime: &realtime,
@@ -194,6 +185,37 @@ pub fn run_sim_loop(
         ctx.run_one_frame(&mut state, stepper, &mut engine)?
     {}
     Ok(())
+}
+
+fn setup_fb_transport(
+    cfg: &SimFbConfig,
+    schema_set: Option<&SchemaSet>,
+) -> Result<Option<FbTransport>> {
+    if !cfg.has_fb() {
+        eprintln!("  Mode: standalone (no UDP/codec)");
+        return Ok(None);
+    }
+    let schema_set = schema_set.context("FB config present but schema_set not loaded")?;
+    let send_cfg = cfg.send.as_ref().unwrap(); // validated by has_fb
+    let recv_cfg = cfg.receive.as_ref().unwrap();
+    let pack = PackCodec::compile(schema_set, send_cfg).context("Build pack codec")?;
+    let unpack = UnpackCodec::compile(schema_set, recv_cfg).context("Build unpack codec")?;
+    let recv_expected = unpack.expected_size();
+    let udp_cfg = resolve_udp(cfg)
+        .context("FB config present but no [transport.udp] or [udp] section")?;
+    let socket =
+        UdpSocket::bind(&udp_cfg.listen).with_context(|| format!("Bind UDP {}", udp_cfg.listen))?;
+    socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+    eprintln!("  UDP listen: {}", udp_cfg.listen);
+    eprintln!("  UDP send:   {}", udp_cfg.send);
+    eprintln!("  Expecting {recv_expected}-byte receive packets");
+    Ok(Some(FbTransport {
+        socket,
+        send_addr: udp_cfg.send.clone(),
+        pack,
+        unpack,
+        recv_expected,
+    }))
 }
 
 impl FrameCtx<'_> {
@@ -217,25 +239,41 @@ impl FrameCtx<'_> {
         self.drain_udp(state, stepper, engine);
         step_substeps(stepper, self.dt);
 
-        // Build outgoing and viewer payloads.
+        // Build all outgoing payloads first while holding an immutable
+        // borrow on stepper (via the rt closure), then drop the borrow and
+        // apply stepper_inputs / send FB / push JSON.
         let wall_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as f64;
-        let stepper_time = stepper.time();
-        let stepper_get = |name: &str| stepper.get(name);
-        let rt = RuntimeContext {
-            frame_num: state.frame_num,
-            wall_ms,
-            input_connected: engine.is_connected(),
-            input_mode: engine.mode(),
-            stepper_time,
-            stepper_get: &stepper_get,
+        let (stepper_inputs, send_frame, json) = {
+            let stepper_time = stepper.time();
+            let stepper_get = |name: &str| stepper.get(name);
+            let rt = RuntimeContext {
+                frame_num: state.frame_num,
+                wall_ms,
+                input_connected: engine.is_connected(),
+                input_mode: engine.mode(),
+                stepper_time,
+                stepper_get: &stepper_get,
+            };
+            let stepper_inputs = self.mapper.build_stepper_inputs(engine, &rt);
+            let send_frame = self.fb.map(|_| self.mapper.build_send(engine, &rt));
+            let json = self.mapper.build_viewer_json(engine, &rt);
+            (stepper_inputs, send_frame, json)
         };
-        let send_frame = self.mapper.build_send(engine, &rt);
-        let buf = self.pack_codec.pack(&send_frame);
-        let _ = self.socket.send_to(&buf, self.udp_send);
-        let json = self.mapper.build_viewer_json(engine, &rt);
+
+        // Apply stepper_inputs (standalone mode: drive model inputs from locals).
+        for (name, val) in stepper_inputs {
+            let _ = stepper.set_input(&name, val);
+        }
+
+        // Send outgoing FB frame to autopilot (if coupled).
+        if let (Some(fb), Some(frame)) = (self.fb, send_frame) {
+            let buf = fb.pack.pack(&frame);
+            let _ = fb.socket.send_to(&buf, &fb.send_addr);
+        }
+
         let _ = self.state_tx.send(json);
 
         // Status line (~1 Hz) and realtime pacing.
@@ -296,15 +334,18 @@ impl FrameCtx<'_> {
         stepper: &mut SimStepper,
         engine: &mut InputEngine,
     ) {
-        self.socket.set_nonblocking(true).ok();
-        while let Ok((n, _)) = self.socket.recv_from(&mut state.recv_buf) {
+        let Some(fb) = self.fb else {
+            return;
+        };
+        fb.socket.set_nonblocking(true).ok();
+        while let Ok((n, _)) = fb.socket.recv_from(&mut state.recv_buf) {
             state.pkt_count += 1;
-            if n == self.recv_expected {
-                let values = self.unpack_codec.unpack(&state.recv_buf[..n]);
+            if n == fb.recv_expected {
+                let values = fb.unpack.unpack(&state.recv_buf[..n]);
                 apply_received(&values, stepper, engine);
             }
         }
-        self.socket.set_nonblocking(false).ok();
+        fb.socket.set_nonblocking(false).ok();
     }
 }
 

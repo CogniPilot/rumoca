@@ -41,6 +41,7 @@ pub struct SignalMapper {
     /// Order-preserving (matches config order for deterministic JSON output).
     send: Vec<(String, CompiledSpec)>,
     viewer: Vec<(String, CompiledSpec)>,
+    stepper_inputs: Vec<(String, CompiledSpec)>,
 }
 
 // ── Compiled source representation ─────────────────────────────────────────
@@ -79,7 +80,13 @@ impl SignalMapper {
     pub fn new(cfg: &SignalsConfig, locals: &HashMap<String, LocalDef>) -> Result<Self> {
         let send = compile_section(&cfg.send, locals, "signals.send")?;
         let viewer = compile_section(&cfg.viewer, locals, "signals.viewer")?;
-        Ok(Self { send, viewer })
+        let stepper_inputs =
+            compile_section(&cfg.stepper_inputs, locals, "signals.stepper_inputs")?;
+        Ok(Self {
+            send,
+            viewer,
+            stepper_inputs,
+        })
     }
 
     /// Build the outgoing `SignalFrame` (f64-valued) for the codec.
@@ -103,6 +110,20 @@ impl SignalMapper {
             obj.insert(key.clone(), eval(spec, engine, rt));
         }
         JsonValue::Object(obj).to_string()
+    }
+
+    /// Resolve `[signals.stepper_inputs]` into `(stepper_input_name, value)`
+    /// pairs. The sim loop calls `stepper.set_input` with each pair. Used in
+    /// standalone mode (no autopilot) to drive model inputs from locals.
+    pub fn build_stepper_inputs(
+        &self,
+        engine: &InputEngine,
+        rt: &RuntimeContext<'_>,
+    ) -> Vec<(String, f64)> {
+        self.stepper_inputs
+            .iter()
+            .map(|(key, spec)| (key.clone(), json_to_f64(&eval(spec, engine, rt))))
+            .collect()
     }
 }
 
@@ -476,6 +497,7 @@ mod tests {
         let sig = SignalsConfig {
             send,
             viewer: HashMap::new(),
+            stepper_inputs: HashMap::new(),
         };
         let err = SignalMapper::new(&sig, &HashMap::new()).unwrap_err();
         assert!(err.to_string().contains("not declared"), "got: {err}");
@@ -489,6 +511,7 @@ mod tests {
         let sig = SignalsConfig {
             send: HashMap::new(),
             viewer,
+            stepper_inputs: HashMap::new(),
         };
         let err = SignalMapper::new(&sig, &HashMap::new()).unwrap_err();
         assert!(err.to_string().contains("unknown runtime"), "got: {err}");
@@ -502,6 +525,7 @@ mod tests {
         let sig = SignalsConfig {
             send,
             viewer: HashMap::new(),
+            stepper_inputs: HashMap::new(),
         };
         let err = SignalMapper::new(&sig, &HashMap::new()).unwrap_err();
         assert!(err.to_string().contains("prefix"), "got: {err}");

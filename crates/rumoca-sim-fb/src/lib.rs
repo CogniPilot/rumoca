@@ -49,15 +49,21 @@ pub fn run(args: SimFbArgs) -> Result<()> {
         eprintln!("  Scene: default (quadrotor example)");
     }
 
-    // Load FlatBuffer schemas
-    let schema_set = {
-        let mut ss = SchemaSet::new();
-        for path_str in &args.config.schema.bfbs {
-            ss.load_bfbs(Path::new(path_str))
-                .with_context(|| format!("Load schema: {}", path_str))?;
-            eprintln!("  Schema: {}", path_str);
+    // Load FlatBuffer schemas (only when configured for autopilot coupling).
+    let schema_set = match args.config.schema.as_ref() {
+        Some(schema_cfg) => {
+            let mut ss = SchemaSet::new();
+            for path_str in &schema_cfg.bfbs {
+                ss.load_bfbs(Path::new(path_str))
+                    .with_context(|| format!("Load schema: {path_str}"))?;
+                eprintln!("  Schema: {path_str}");
+            }
+            Some(ss)
         }
-        ss
+        None => {
+            eprintln!("  Mode:   standalone (no autopilot coupling)");
+            None
+        }
     };
 
     // Compile Modelica model
@@ -99,7 +105,7 @@ pub fn run(args: SimFbArgs) -> Result<()> {
     // Run main sim loop (blocks)
     sim_loop::run_sim_loop(
         &args.config,
-        &schema_set,
+        schema_set.as_ref(),
         &mut stepper,
         &args.model_source,
         &args.model_name,

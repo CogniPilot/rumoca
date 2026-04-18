@@ -17,9 +17,16 @@ pub struct SimFbConfig {
     #[serde(default)]
     pub udp: Option<UdpConfig>,
 
-    pub schema: FlatbufferSchemaConfig,
-    pub receive: FlatbufferMessageConfig,
-    pub send: FlatbufferMessageConfig,
+    /// FlatBuffer schema files. Required only when coupling to an external
+    /// autopilot over UDP; standalone demos (rover etc.) omit this.
+    #[serde(default)]
+    pub schema: Option<FlatbufferSchemaConfig>,
+    /// Incoming FB message routing. Omit for standalone mode.
+    #[serde(default)]
+    pub receive: Option<FlatbufferMessageConfig>,
+    /// Outgoing FB message routing. Omit for standalone mode.
+    #[serde(default)]
+    pub send: Option<FlatbufferMessageConfig>,
 
     #[serde(default)]
     pub autopilot: Option<AutopilotConfig>,
@@ -259,6 +266,11 @@ pub struct SignalsConfig {
     pub send: HashMap<String, SignalSpec>,
     #[serde(default)]
     pub viewer: HashMap<String, SignalSpec>,
+    /// Signals applied directly to the stepper each frame. Used in
+    /// standalone mode (no autopilot) to drive model inputs from local
+    /// state (e.g. gamepad → stepper input).
+    #[serde(default)]
+    pub stepper_inputs: HashMap<String, SignalSpec>,
 }
 
 /// How a single signal value is produced.
@@ -311,7 +323,44 @@ impl SimFbConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)?;
         let config: SimFbConfig = toml::from_str(&text)?;
+        config.validate()?;
         Ok(config)
+    }
+
+    /// The three FB sections must all be present (autopilot coupling) or all
+    /// absent (standalone). Any mix is a user error.
+    fn validate(&self) -> anyhow::Result<()> {
+        let present = [
+            ("schema", self.schema.is_some()),
+            ("receive", self.receive.is_some()),
+            ("send", self.send.is_some()),
+        ];
+        let count = present.iter().filter(|(_, b)| *b).count();
+        if count != 0 && count != 3 {
+            let have = present
+                .iter()
+                .filter(|(_, b)| *b)
+                .map(|(n, _)| *n)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let missing = present
+                .iter()
+                .filter(|(_, b)| !*b)
+                .map(|(n, _)| *n)
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "FB config is partial: have [{have}], missing [{missing}]. \
+                 Provide all three ([schema], [receive], [send]) to enable \
+                 autopilot coupling, or omit all three for standalone mode."
+            );
+        }
+        Ok(())
+    }
+
+    /// True when configured for autopilot coupling (all FB sections present).
+    pub fn has_fb(&self) -> bool {
+        self.schema.is_some() && self.receive.is_some() && self.send.is_some()
     }
 }
 
@@ -401,12 +450,13 @@ mod tests {
         assert!(rst.reset_locals);
 
         // Existing FB sections parse via the `to`/`key` aliases.
-        assert_eq!(cfg.receive.route.len(), 6);
+        let recv = cfg.receive.as_ref().expect("[receive]");
+        assert_eq!(recv.route.len(), 6);
         assert_eq!(
-            cfg.receive.route["motors.m0"].name(),
+            recv.route["motors.m0"].name(),
             "stepper:omega_m1",
             "receive route name should be full ref string"
         );
-        assert_eq!(cfg.receive.route["motors.m0"].scale(), 1100.0);
+        assert_eq!(recv.route["motors.m0"].scale(), 1100.0);
     }
 }
