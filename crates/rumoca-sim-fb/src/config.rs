@@ -399,6 +399,41 @@ mod tests {
     }
 
     #[test]
+    fn parses_rover_toml_standalone_mode() {
+        let path = workspace_root()
+            .join("examples")
+            .join("rover_sil")
+            .join("rover.toml");
+        let cfg = SimFbConfig::load(&path).expect("rover.toml must parse");
+        assert!(!cfg.has_fb(), "rover config is standalone");
+        assert!(cfg.schema.is_none());
+        assert!(cfg.receive.is_none());
+        assert!(cfg.send.is_none());
+        assert!(cfg.autopilot.is_none());
+        let sig = cfg.signals.as_ref().expect("[signals]");
+        assert!(sig.send.is_empty(), "no send frame for standalone");
+        assert_eq!(sig.stepper_inputs.len(), 2, "forward_cmd + turn_cmd");
+        assert!(cfg.locals.contains_key("forward_cmd"));
+        assert!(cfg.locals.contains_key("turn_cmd"));
+    }
+
+    #[test]
+    fn rejects_partial_fb_config() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[schema]
+bfbs = []
+"#;
+        let err = toml::from_str::<SimFbConfig>(text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(err.to_string().contains("partial"), "got: {err}");
+    }
+
+    #[test]
     fn parses_quadrotor_toml() {
         let path = workspace_root()
             .join("examples")

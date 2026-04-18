@@ -1,0 +1,91 @@
+# =============================================================================
+# rover.toml — standalone lockstep sim for a differential-drive rover.
+#
+# Runs without any external autopilot: gamepad input drives the model
+# directly via [signals.stepper_inputs]. No FB / UDP / autopilot config.
+# =============================================================================
+
+[model]
+file = "Rover.mo"
+name = "Rover"
+
+[sim]
+dt = 0.01
+realtime = true
+
+[transport.websocket]
+port = 8081
+
+[transport.http]
+port  = 8080
+scene = "rover_scene.js"
+
+# Note: no [schema]/[receive]/[send]/[autopilot] — standalone mode.
+
+# ── Locals ────────────────────────────────────────────────────────────────
+
+[locals]
+forward_cmd = { type = "float", default = 0.0 }
+turn_cmd    = { type = "float", default = 0.0 }
+
+# ── Input engine ──────────────────────────────────────────────────────────
+
+[input]
+mode = "auto"
+
+[input.gamepad.axes.forward]
+source = "LeftStickY"
+write  = "forward_cmd"
+scale  = -1.0    # gamepad Y is negative when pushed up; forward = +1 after flip
+
+[input.gamepad.axes.turn]
+source = "LeftStickX"
+write  = "turn_cmd"
+
+[input.gamepad.buttons.reset]
+source = "Start"
+action = "signal"
+signal = "reset"
+
+[input.keyboard.decay]
+targets = ["forward_cmd", "turn_cmd"]
+factor  = 0.85
+ref_dt  = 0.016
+
+[input.keyboard.keys]
+"ArrowUp"    = { action = "set", target = "forward_cmd", value =  1.0 }
+"ArrowDown"  = { action = "set", target = "forward_cmd", value = -1.0 }
+"ArrowLeft"  = { action = "set", target = "turn_cmd",    value = -1.0 }
+"ArrowRight" = { action = "set", target = "turn_cmd",    value =  1.0 }
+"r"          = { action = "signal", signal = "reset" }
+"q"          = { action = "signal", signal = "quit"  }
+
+# ── Drive the stepper directly (standalone mode) ──────────────────────────
+
+[signals.stepper_inputs]
+forward_cmd = "local:forward_cmd"
+turn_cmd    = "local:turn_cmd"
+
+# ── Viewer state pushed to the browser ────────────────────────────────────
+
+[signals.viewer]
+t            = "stepper:time"
+frame        = "runtime:frame_num"
+wall_ms      = "runtime:wall_ms"
+x            = "stepper:x"
+y            = "stepper:y"
+theta        = "stepper:theta"
+v            = "stepper:v"
+omega        = "stepper:omega"
+wheel_left   = "stepper:wheel_left"
+wheel_right  = "stepper:wheel_right"
+forward_cmd  = "local:forward_cmd"
+turn_cmd     = "local:turn_cmd"
+input_mode   = "runtime:input_mode"
+
+# ── Reset: zero out locals; rebuild stepper so position/heading reset ─────
+
+[reset]
+on_signal       = "reset"
+reset_locals    = true
+rebuild_stepper = true
