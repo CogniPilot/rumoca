@@ -298,10 +298,10 @@ impl InputEngine {
         // 2. Dispatch key events: match against bindings, fire action.
         let keys = self.compiled.keyboard_keys.clone();
         for (code, mods) in events {
-            for key in &keys {
-                if key.code != *code || key.modifiers != *mods {
-                    continue;
-                }
+            for key in keys
+                .iter()
+                .filter(|k| k.code == *code && k.modifiers == *mods)
+            {
                 self.fire_key(key);
             }
         }
@@ -321,11 +321,12 @@ impl InputEngine {
         match &key.action {
             KeyAction::Set { target, value } => {
                 // Set: precondition (if any), no debounce.
-                if let Some(pre) = &key.precondition {
-                    let lhs = self.read_path(&pre.var).unwrap_or(0.0);
-                    if !pre.eval(lhs) {
-                        return;
-                    }
+                if key
+                    .precondition
+                    .as_ref()
+                    .is_some_and(|pre| !self.passes_precondition(pre))
+                {
+                    return;
                 }
                 self.write_local(target, *value);
             }
@@ -398,6 +399,11 @@ impl InputEngine {
 
     fn get_bool_at(&self, p: &Path) -> Option<bool> {
         self.locals.get(&p.name)?.as_bool_at(p.index)
+    }
+
+    fn passes_precondition(&self, pre: &Precondition) -> bool {
+        let lhs = self.read_path(&pre.var).unwrap_or(0.0);
+        pre.eval(lhs)
     }
 
     // ── Derive application ────────────────────────────────────────────────
@@ -580,44 +586,41 @@ pub(crate) fn initialize_locals(
                     .unwrap_or(0.0);
                 LocalValue::Float(f)
             }
-            "array" => {
-                let len = def
-                    .len
-                    .ok_or_else(|| anyhow!("local '{}': array requires `len`", name))?;
-                let element = def
-                    .element
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("local '{}': array requires `element`", name))?;
-                let default = def.default.as_ref();
-                match element {
-                    "int" => {
-                        let default_i = default
-                            .map(|v| {
-                                toml_to_i64(v)
-                                    .ok_or_else(|| anyhow!("local '{}': bad int default", name))
-                            })
-                            .transpose()?
-                            .unwrap_or(0);
-                        LocalValue::IntArray(vec![default_i as i32; len])
-                    }
-                    "float" => {
-                        let default_f = default
-                            .map(|v| {
-                                toml_to_f64(v)
-                                    .ok_or_else(|| anyhow!("local '{}': bad float default", name))
-                            })
-                            .transpose()?
-                            .unwrap_or(0.0);
-                        LocalValue::FloatArray(vec![default_f; len])
-                    }
-                    other => bail!("local '{}': unknown array element '{}'", name, other),
-                }
-            }
+            "array" => build_array_local(name, def)?,
             other => bail!("local '{}': unknown type '{}'", name, other),
         };
         out.insert(name.clone(), value);
     }
     Ok(out)
+}
+
+fn build_array_local(name: &str, def: &LocalDef) -> Result<LocalValue> {
+    let len = def
+        .len
+        .ok_or_else(|| anyhow!("local '{}': array requires `len`", name))?;
+    let element = def
+        .element
+        .as_deref()
+        .ok_or_else(|| anyhow!("local '{}': array requires `element`", name))?;
+    match element {
+        "int" => {
+            let default_i = match def.default.as_ref() {
+                Some(v) => toml_to_i64(v)
+                    .ok_or_else(|| anyhow!("local '{}': bad int default", name))?,
+                None => 0,
+            };
+            Ok(LocalValue::IntArray(vec![default_i as i32; len]))
+        }
+        "float" => {
+            let default_f = match def.default.as_ref() {
+                Some(v) => toml_to_f64(v)
+                    .ok_or_else(|| anyhow!("local '{}': bad float default", name))?,
+                None => 0.0,
+            };
+            Ok(LocalValue::FloatArray(vec![default_f; len]))
+        }
+        other => bail!("local '{}': unknown array element '{}'", name, other),
+    }
 }
 
 fn toml_to_f64(v: &toml::Value) -> Option<f64> {

@@ -311,13 +311,8 @@ fn fmt_path(p: &Path) -> String {
 fn json_to_f64(v: &JsonValue) -> f64 {
     match v {
         JsonValue::Number(n) => n.as_f64().unwrap_or(0.0),
-        JsonValue::Bool(b) => {
-            if *b {
-                1.0
-            } else {
-                0.0
-            }
-        }
+        JsonValue::Bool(true) => 1.0,
+        JsonValue::Bool(false) => 0.0,
         _ => 0.0,
     }
 }

@@ -87,8 +87,38 @@ fn resolve_udp(cfg: &SimFbConfig) -> Option<&UdpConfig> {
 
 // ── Main loop ──────────────────────────────────────────────────────────────
 
+/// Immutable per-frame context: codecs, socket, mapper, and channels.
+struct FrameCtx<'a> {
+    cfg: &'a SimFbConfig,
+    socket: &'a UdpSocket,
+    udp_send: &'a str,
+    recv_expected: usize,
+    pack_codec: &'a PackCodec,
+    unpack_codec: &'a UnpackCodec,
+    mapper: &'a SignalMapper,
+    state_tx: &'a mpsc::Sender<String>,
+    realtime: &'a Arc<AtomicBool>,
+    autopilot: &'a Arc<Mutex<Option<AutopilotProcess>>>,
+    model_source: &'a str,
+    model_name: &'a str,
+    debug: bool,
+    dt: f64,
+}
+
+/// Mutable per-frame state that carries across iterations.
+struct FrameState {
+    recv_buf: [u8; 512],
+    pkt_count: u64,
+    frame_num: u64,
+    last_poll: Instant,
+}
+
+enum FrameControl {
+    Continue,
+    Break,
+}
+
 /// Run the lockstep simulation app. Blocks the calling thread.
-#[allow(clippy::too_many_lines)]
 pub fn run_sim_loop(
     cfg: &SimFbConfig,
     schema_set: &SchemaSet,
@@ -98,8 +128,6 @@ pub fn run_sim_loop(
     ws_port: u16,
     debug: bool,
 ) -> Result<()> {
-    let dt = cfg.sim.dt;
-
     // ── Codecs ────────────────────────────────────────────────────────────
     let pack_codec = PackCodec::compile(schema_set, &cfg.send).context("Build pack codec")?;
     let unpack_codec =
@@ -129,16 +157,168 @@ pub fn run_sim_loop(
         InputEngine::new(input_cfg, &cfg.locals, &cfg.derive).context("Build input engine")?;
     let mapper = SignalMapper::new(signals_cfg, &cfg.locals).context("Compile signal mapper")?;
 
-    // ── Autopilot subprocess ──────────────────────────────────────────────
+    // ── Autopilot + SIGINT + WS thread ────────────────────────────────────
+    let autopilot = spawn_autopilot(cfg)?;
+    spawn_sigint_handler(Arc::clone(&autopilot));
+    let (state_tx, state_rx) = mpsc::channel::<String>();
+    let realtime = Arc::new(AtomicBool::new(cfg.sim.realtime));
+    let realtime_ws = Arc::clone(&realtime);
+    thread::spawn(move || run_ws_server(ws_port, state_rx, realtime_ws));
+
+    eprintln!("\nReady. Simulation running.");
+
+    // ── Loop ──────────────────────────────────────────────────────────────
+    let ctx = FrameCtx {
+        cfg,
+        socket: &socket,
+        udp_send: &udp_cfg.send,
+        recv_expected,
+        pack_codec: &pack_codec,
+        unpack_codec: &unpack_codec,
+        mapper: &mapper,
+        state_tx: &state_tx,
+        realtime: &realtime,
+        autopilot: &autopilot,
+        model_source,
+        model_name,
+        debug,
+        dt: cfg.sim.dt,
+    };
+    let mut state = FrameState {
+        recv_buf: [0u8; 512],
+        pkt_count: 0,
+        frame_num: 0,
+        last_poll: Instant::now(),
+    };
+    while let FrameControl::Continue =
+        ctx.run_one_frame(&mut state, stepper, &mut engine)?
+    {}
+    Ok(())
+}
+
+impl FrameCtx<'_> {
+    fn run_one_frame(
+        &self,
+        state: &mut FrameState,
+        stepper: &mut SimStepper,
+        engine: &mut InputEngine,
+    ) -> Result<FrameControl> {
+        let frame_start = Instant::now();
+
+        // Poll input and handle engine-emitted signals.
+        let poll_dt = state.last_poll.elapsed().as_secs_f64();
+        state.last_poll = Instant::now();
+        engine.poll(poll_dt);
+        if let FrameControl::Break = self.handle_signals(engine, stepper)? {
+            return Ok(FrameControl::Break);
+        }
+
+        // Drain UDP → stepper/locals, then step physics.
+        self.drain_udp(state, stepper, engine);
+        step_substeps(stepper, self.dt);
+
+        // Build outgoing and viewer payloads.
+        let wall_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as f64;
+        let stepper_time = stepper.time();
+        let stepper_get = |name: &str| stepper.get(name);
+        let rt = RuntimeContext {
+            frame_num: state.frame_num,
+            wall_ms,
+            input_connected: engine.is_connected(),
+            input_mode: engine.mode(),
+            stepper_time,
+            stepper_get: &stepper_get,
+        };
+        let send_frame = self.mapper.build_send(engine, &rt);
+        let buf = self.pack_codec.pack(&send_frame);
+        let _ = self.socket.send_to(&buf, self.udp_send);
+        let json = self.mapper.build_viewer_json(engine, &rt);
+        let _ = self.state_tx.send(json);
+
+        // Status line (~1 Hz) and realtime pacing.
+        let status_period = (1.0_f64 / self.dt).max(1.0) as u64;
+        if state.frame_num.is_multiple_of(status_period) {
+            eprint!(
+                "\r[sim] t={:.1}s frame={} pkts={}            ",
+                stepper.time(),
+                state.frame_num,
+                state.pkt_count
+            );
+        }
+        if self.realtime.load(Ordering::Relaxed) {
+            let elapsed = frame_start.elapsed();
+            let target = Duration::from_secs_f64(self.dt);
+            if elapsed < target {
+                thread::sleep(target - elapsed);
+            }
+        }
+        state.frame_num += 1;
+        Ok(FrameControl::Continue)
+    }
+
+    fn handle_signals(
+        &self,
+        engine: &mut InputEngine,
+        stepper: &mut SimStepper,
+    ) -> Result<FrameControl> {
+        if engine.take_signal("quit") {
+            eprintln!("\n[sim] quit requested");
+            return Ok(FrameControl::Break);
+        }
+        if let Some(reset_cfg) = self.cfg.reset.as_ref()
+            && engine.take_signal(&reset_cfg.on_signal)
+        {
+            handle_reset(
+                reset_cfg,
+                engine,
+                stepper,
+                self.model_source,
+                self.model_name,
+                self.autopilot,
+            )?;
+        }
+        if self.debug
+            && let Some(dbg) = self.cfg.debug_log.as_ref()
+            && engine.take_signal(&dbg.trigger_signal)
+        {
+            // TODO(phase 4b): ring-buffer-backed debug log dump.
+            eprintln!("[debug] log trigger — ring buffer not yet implemented");
+        }
+        Ok(FrameControl::Continue)
+    }
+
+    fn drain_udp(
+        &self,
+        state: &mut FrameState,
+        stepper: &mut SimStepper,
+        engine: &mut InputEngine,
+    ) {
+        self.socket.set_nonblocking(true).ok();
+        while let Ok((n, _)) = self.socket.recv_from(&mut state.recv_buf) {
+            state.pkt_count += 1;
+            if n == self.recv_expected {
+                let values = self.unpack_codec.unpack(&state.recv_buf[..n]);
+                apply_received(&values, stepper, engine);
+            }
+        }
+        self.socket.set_nonblocking(false).ok();
+    }
+}
+
+fn spawn_autopilot(cfg: &SimFbConfig) -> Result<Arc<Mutex<Option<AutopilotProcess>>>> {
     let autopilot: Arc<Mutex<Option<AutopilotProcess>>> = Arc::new(Mutex::new(None));
     if let Some(ap_cfg) = &cfg.autopilot {
         let mut ap = AutopilotProcess::new(&ap_cfg.command);
         ap.start()?;
         *autopilot.lock().unwrap() = Some(ap);
     }
+    Ok(autopilot)
+}
 
-    // ── SIGINT handler ────────────────────────────────────────────────────
-    let ap_cleanup = Arc::clone(&autopilot);
+fn spawn_sigint_handler(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
     let sigint = Arc::new(AtomicBool::new(false));
     if let Err(e) = signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&sigint)) {
         eprintln!("Warning: could not register SIGINT handler: {e}");
@@ -147,7 +327,7 @@ pub fn run_sim_loop(
         while !sigint.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_millis(100));
         }
-        if let Ok(mut ap) = ap_cleanup.lock()
+        if let Ok(mut ap) = autopilot.lock()
             && let Some(proc) = ap.as_mut()
         {
             proc.stop();
@@ -155,130 +335,6 @@ pub fn run_sim_loop(
         crossterm::terminal::disable_raw_mode().ok();
         std::process::exit(0);
     });
-
-    // ── WebSocket viewer thread ───────────────────────────────────────────
-    let (state_tx, state_rx) = mpsc::channel::<String>();
-    let realtime = Arc::new(AtomicBool::new(cfg.sim.realtime));
-    let realtime_ws = Arc::clone(&realtime);
-    thread::spawn(move || run_ws_server(ws_port, state_rx, realtime_ws));
-
-    eprintln!("\nReady. Simulation running.");
-
-    // ── Loop state ────────────────────────────────────────────────────────
-    let mut recv_buf = [0u8; 512];
-    let mut pkt_count = 0u64;
-    let mut frame_num = 0u64;
-    let mut last_poll = Instant::now();
-    let ap_handle = Arc::clone(&autopilot);
-
-    loop {
-        let frame_start = Instant::now();
-
-        // 0. Poll input engine with wall-clock dt.
-        let poll_dt = last_poll.elapsed().as_secs_f64();
-        last_poll = Instant::now();
-        engine.poll(poll_dt);
-
-        // 0a. Handle signals emitted by the engine.
-        if engine.take_signal("quit") {
-            eprintln!("\n[sim] quit requested");
-            break;
-        }
-        if let Some(reset_cfg) = cfg.reset.as_ref()
-            && engine.take_signal(&reset_cfg.on_signal)
-        {
-            handle_reset(
-                reset_cfg,
-                &mut engine,
-                stepper,
-                model_source,
-                model_name,
-                &ap_handle,
-            )?;
-        }
-        if debug
-            && let Some(dbg) = cfg.debug_log.as_ref()
-            && engine.take_signal(&dbg.trigger_signal)
-        {
-            // TODO(phase 4b): ring-buffer-backed debug log dump.
-            eprintln!("[debug] log trigger — ring buffer not yet implemented");
-        }
-
-        // 1. Drain UDP (non-blocking), unpack, route to stepper or locals.
-        socket.set_nonblocking(true).ok();
-        while let Ok((n, _)) = socket.recv_from(&mut recv_buf) {
-            pkt_count += 1;
-            if n == recv_expected {
-                let values = unpack_codec.unpack(&recv_buf[..n]);
-                apply_received(&values, stepper, &mut engine);
-            }
-        }
-        socket.set_nonblocking(false).ok();
-
-        // 2. Step physics in MAX_SUB_DT-sized chunks.
-        let target_clock = stepper.time() + dt;
-        let step_dt = target_clock - stepper.time();
-        if step_dt > 0.0 {
-            let n_steps = ((step_dt / MAX_SUB_DT).ceil() as usize).max(1);
-            let sub_dt = step_dt / n_steps as f64;
-            for i in 0..n_steps {
-                if let Err(e) = stepper.step(sub_dt) {
-                    eprintln!(
-                        "\r[sim] step {}/{} failed (sub_dt={sub_dt:.4}): {e}",
-                        i + 1,
-                        n_steps,
-                    );
-                }
-            }
-        }
-
-        // 3. Assemble runtime context once; used by both send + viewer.
-        let wall_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as f64;
-        let stepper_time = stepper.time();
-        let stepper_get = |name: &str| stepper.get(name);
-        let rt = RuntimeContext {
-            frame_num,
-            wall_ms,
-            input_connected: engine.is_connected(),
-            input_mode: engine.mode(),
-            stepper_time,
-            stepper_get: &stepper_get,
-        };
-
-        // 4. Send outgoing frame to autopilot.
-        let send_frame = mapper.build_send(&engine, &rt);
-        let buf = pack_codec.pack(&send_frame);
-        let _ = socket.send_to(&buf, &udp_cfg.send);
-
-        // 5. Push viewer state to WebSocket thread.
-        let json = mapper.build_viewer_json(&engine, &rt);
-        let _ = state_tx.send(json);
-
-        // 6. Throttled status line (about once per second at any dt).
-        let status_period = (1.0_f64 / dt).max(1.0) as u64;
-        if frame_num.is_multiple_of(status_period) {
-            eprint!(
-                "\r[sim] t={:.1}s frame={frame_num} pkts={pkt_count}            ",
-                stepper.time()
-            );
-        }
-
-        // 7. Realtime pacing (togglable from the browser).
-        if realtime.load(Ordering::Relaxed) {
-            let elapsed = frame_start.elapsed();
-            let target = Duration::from_secs_f64(dt);
-            if elapsed < target {
-                thread::sleep(target - elapsed);
-            }
-        }
-
-        frame_num += 1;
-    }
-
-    Ok(())
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -345,7 +401,29 @@ fn handle_reset(
     Ok(())
 }
 
+// ── Step helper ────────────────────────────────────────────────────────────
+
+fn step_substeps(stepper: &mut SimStepper, dt: f64) {
+    let target = stepper.time() + dt;
+    let step_dt = target - stepper.time();
+    if step_dt <= 0.0 {
+        return;
+    }
+    let n_steps = ((step_dt / MAX_SUB_DT).ceil() as usize).max(1);
+    let sub_dt = step_dt / n_steps as f64;
+    for i in 0..n_steps {
+        if let Err(e) = stepper.step(sub_dt) {
+            eprintln!(
+                "\r[sim] step {}/{n_steps} failed (sub_dt={sub_dt:.4}): {e}",
+                i + 1,
+            );
+        }
+    }
+}
+
 // ── WebSocket server ──────────────────────────────────────────────────────
+
+type WsStream = tungstenite::WebSocket<std::net::TcpStream>;
 
 fn run_ws_server(port: u16, state_rx: mpsc::Receiver<String>, realtime: Arc<AtomicBool>) {
     let listener = match TcpListener::bind(format!("0.0.0.0:{port}")) {
@@ -356,65 +434,82 @@ fn run_ws_server(port: u16, state_rx: mpsc::Receiver<String>, realtime: Arc<Atom
         }
     };
     eprintln!("  WebSocket: ws://0.0.0.0:{port}");
-
-    for stream in listener.incoming() {
-        let Ok(stream) = stream else { continue };
+    for stream in listener.incoming().flatten() {
         eprintln!("[WS] viewer connected");
-        let mut ws = match accept(stream) {
-            Ok(ws) => ws,
-            Err(e) => {
-                eprintln!("[WS] handshake error: {e}");
-                continue;
-            }
-        };
-        ws.get_ref().set_nonblocking(true).ok();
-        ws.get_ref()
-            .set_write_timeout(Some(Duration::from_millis(100)))
-            .ok();
-
-        let mut alive = true;
-        while alive {
-            loop {
-                match ws.read() {
-                    Ok(Message::Text(text)) => {
-                        if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&text)
-                            && let Some(rt) = cmd.get("realtime").and_then(|v| v.as_bool())
-                        {
-                            realtime.store(rt, Ordering::Relaxed);
-                            eprintln!("\r[WS] realtime: {rt}                    \r");
-                        }
-                    }
-                    Ok(Message::Close(_)) => {
-                        alive = false;
-                        break;
-                    }
-                    Err(tungstenite::Error::Io(ref e))
-                        if e.kind() == std::io::ErrorKind::WouldBlock =>
-                    {
-                        break;
-                    }
-                    Err(_) => {
-                        alive = false;
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            if !alive {
-                break;
-            }
-
-            let mut latest: Option<String> = None;
-            while let Ok(json) = state_rx.try_recv() {
-                latest = Some(json);
-            }
-            if let Some(json) = latest
-                && ws.send(Message::Text(json.into())).is_err()
-            {
-                break;
-            }
-            thread::sleep(Duration::from_millis(16)); // ~60fps
+        if let Some(ws) = accept_ws(stream) {
+            serve_ws_client(ws, &state_rx, &realtime);
         }
         eprintln!("[WS] viewer disconnected");
+    }
+}
+
+fn accept_ws(stream: std::net::TcpStream) -> Option<WsStream> {
+    let ws = match accept(stream) {
+        Ok(ws) => ws,
+        Err(e) => {
+            eprintln!("[WS] handshake error: {e}");
+            return None;
+        }
+    };
+    ws.get_ref().set_nonblocking(true).ok();
+    ws.get_ref()
+        .set_write_timeout(Some(Duration::from_millis(100)))
+        .ok();
+    Some(ws)
+}
+
+fn serve_ws_client(
+    mut ws: WsStream,
+    state_rx: &mpsc::Receiver<String>,
+    realtime: &Arc<AtomicBool>,
+) {
+    loop {
+        if !drain_ws_inbound(&mut ws, realtime) {
+            return;
+        }
+        if !push_latest_state(&mut ws, state_rx) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(16)); // ~60 fps
+    }
+}
+
+/// Drain pending client→server messages. Returns `false` if the connection closed.
+fn drain_ws_inbound(ws: &mut WsStream, realtime: &Arc<AtomicBool>) -> bool {
+    loop {
+        match ws.read() {
+            Ok(Message::Text(text)) => apply_ws_command(&text, realtime),
+            Ok(Message::Close(_)) => return false,
+            Err(tungstenite::Error::Io(ref e))
+                if e.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                return true;
+            }
+            Err(_) => return false,
+            _ => {}
+        }
+    }
+}
+
+fn apply_ws_command(text: &str, realtime: &Arc<AtomicBool>) {
+    let Ok(cmd) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    if let Some(rt) = cmd.get("realtime").and_then(|v| v.as_bool()) {
+        realtime.store(rt, Ordering::Relaxed);
+        eprintln!("\r[WS] realtime: {rt}                    \r");
+    }
+}
+
+/// Drain the state channel and push only the latest JSON. Returns `false` if
+/// the send failed.
+fn push_latest_state(ws: &mut WsStream, state_rx: &mpsc::Receiver<String>) -> bool {
+    let mut latest: Option<String> = None;
+    while let Ok(json) = state_rx.try_recv() {
+        latest = Some(json);
+    }
+    match latest {
+        Some(json) => ws.send(Message::Text(json.into())).is_ok(),
+        None => true,
     }
 }
