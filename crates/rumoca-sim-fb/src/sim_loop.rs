@@ -13,7 +13,7 @@
 //!
 //! No vehicle-specific code here — that all lives in `quadrotor.toml` now.
 
-use std::net::{TcpListener, UdpSocket};
+use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -24,9 +24,10 @@ use anyhow::{Context, Result};
 use rumoca_codec_flatbuffers::bfbs::SchemaSet;
 use rumoca_codec_flatbuffers::codec::{PackCodec, UnpackCodec};
 use rumoca_solver_diffsol::{SimStepper, StepperOptions};
+use rumoca_transport_udp::{UdpConfig, UdpTransport};
 use tungstenite::{Message, accept};
 
-use crate::config::{ResetConfig, SimFbConfig, UdpConfig};
+use crate::config::{ResetConfig, SimFbConfig};
 use crate::input_engine::InputEngine;
 use crate::signal_mapper::{RuntimeContext, SignalMapper};
 
@@ -91,8 +92,7 @@ fn resolve_udp(cfg: &SimFbConfig) -> Option<&UdpConfig> {
 /// `[receive]` + `[send]` are configured (autopilot coupling). Absent in
 /// standalone mode (e.g. rover demo).
 struct FbTransport {
-    socket: UdpSocket,
-    send_addr: String,
+    udp: UdpTransport,
     pack: PackCodec,
     unpack: UnpackCodec,
     recv_expected: usize,
@@ -203,15 +203,12 @@ fn setup_fb_transport(
     let recv_expected = unpack.expected_size();
     let udp_cfg = resolve_udp(cfg)
         .context("FB config present but no [transport.udp] or [udp] section")?;
-    let socket =
-        UdpSocket::bind(&udp_cfg.listen).with_context(|| format!("Bind UDP {}", udp_cfg.listen))?;
-    socket.set_read_timeout(Some(Duration::from_millis(100)))?;
     eprintln!("  UDP listen: {}", udp_cfg.listen);
     eprintln!("  UDP send:   {}", udp_cfg.send);
     eprintln!("  Expecting {recv_expected}-byte receive packets");
+    let udp = UdpTransport::bind(udp_cfg)?;
     Ok(Some(FbTransport {
-        socket,
-        send_addr: udp_cfg.send.clone(),
+        udp,
         pack,
         unpack,
         recv_expected,
@@ -270,8 +267,7 @@ impl FrameCtx<'_> {
 
         // Send outgoing FB frame to autopilot (if coupled).
         if let (Some(fb), Some(frame)) = (self.fb, send_frame) {
-            let buf = fb.pack.pack(&frame);
-            let _ = fb.socket.send_to(&buf, &fb.send_addr);
+            fb.udp.send(&fb.pack.pack(&frame));
         }
 
         let _ = self.state_tx.send(json);
@@ -337,15 +333,14 @@ impl FrameCtx<'_> {
         let Some(fb) = self.fb else {
             return;
         };
-        fb.socket.set_nonblocking(true).ok();
-        while let Ok((n, _)) = fb.socket.recv_from(&mut state.recv_buf) {
+        let expected = fb.recv_expected;
+        fb.udp.drain(&mut state.recv_buf, |datagram| {
             state.pkt_count += 1;
-            if n == fb.recv_expected {
-                let values = fb.unpack.unpack(&state.recv_buf[..n]);
+            if datagram.len() == expected {
+                let values = fb.unpack.unpack(datagram);
                 apply_received(&values, stepper, engine);
             }
-        }
-        fb.socket.set_nonblocking(false).ok();
+        });
     }
 }
 

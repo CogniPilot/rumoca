@@ -5,6 +5,7 @@ use std::path::Path;
 use rumoca_codec_flatbuffers::config::{
     MessageConfig as FlatbufferMessageConfig, SchemaConfig as FlatbufferSchemaConfig,
 };
+pub use rumoca_transport_udp::UdpConfig;
 
 // ── Top-level ──────────────────────────────────────────────────────────────
 
@@ -75,11 +76,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize)]
-pub struct UdpConfig {
-    pub listen: String,
-    pub send: String,
-}
+// `UdpConfig` is re-exported from `rumoca-transport-udp` (see top of file).
 
 // ── Model ──────────────────────────────────────────────────────────────────
 

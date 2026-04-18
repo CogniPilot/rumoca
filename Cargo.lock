@@ -3477,6 +3477,7 @@ dependencies = [
  "rumoca-codec-flatbuffers",
  "rumoca-session",
  "rumoca-solver-diffsol",
+ "rumoca-transport-udp",
  "serde",
  "serde_json",
  "signal-hook",
@@ -3619,6 +3620,14 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower-lsp",
+]
+
+[[package]]
+name = "rumoca-transport-udp"
+version = "0.8.12"
+dependencies = [
+ "anyhow",
+ "serde",
 ]
 
 [[package]]
