@@ -5,6 +5,7 @@
 //! example path, viewer, and controller process wiring.
 
 pub mod config;
+pub mod input_engine;
 pub mod server;
 pub mod sim_loop;
 
