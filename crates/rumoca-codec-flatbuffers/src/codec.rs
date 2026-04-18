@@ -259,7 +259,7 @@ fn compile_unpack_path(
             );
         }
         return Ok(UnpackOp {
-            var: route.var().to_string(),
+            var: route.name().to_string(),
             scale: route.scale(),
             vtable_slot,
             struct_byte_offset: 0,
@@ -329,7 +329,7 @@ fn compile_unpack_path(
     byte_offset += leaf_field.offset;
 
     Ok(UnpackOp {
-        var: route.var().to_string(),
+        var: route.name().to_string(),
         scale: route.scale(),
         vtable_slot,
         struct_byte_offset: byte_offset,
@@ -620,7 +620,7 @@ fn compile_pack_path(
             anyhow::bail!("field '{}' is a struct, need leaf path", field_path);
         }
         return Ok(PackOp {
-            var: route.var().to_string(),
+            var: route.name().to_string(),
             scale: route.scale(),
             buf_offset: field_abs,
             scalar_type: table_field.field_type.base_type,
@@ -672,7 +672,7 @@ fn compile_pack_path(
     byte_offset += leaf_field.offset as usize;
 
     Ok(PackOp {
-        var: route.var().to_string(),
+        var: route.name().to_string(),
         scale: route.scale(),
         buf_offset: field_abs + byte_offset,
         scalar_type: leaf_field.field_type.base_type,
@@ -809,14 +809,14 @@ mod tests {
         route.insert(
             "motors.m0".into(),
             crate::config::RouteEntry::Full {
-                var: "omega_m1".into(),
+                name: "omega_m1".into(),
                 scale: Some(1100.0),
             },
         );
         route.insert(
             "motors.m1".into(),
             crate::config::RouteEntry::Full {
-                var: "omega_m2".into(),
+                name: "omega_m2".into(),
                 scale: Some(1100.0),
             },
         );
@@ -1206,28 +1206,28 @@ mod integration_tests {
         recv_route.insert(
             "motors.m0".into(),
             crate::config::RouteEntry::Full {
-                var: "omega_m1".into(),
+                name: "omega_m1".into(),
                 scale: Some(1100.0),
             },
         );
         recv_route.insert(
             "motors.m1".into(),
             crate::config::RouteEntry::Full {
-                var: "omega_m2".into(),
+                name: "omega_m2".into(),
                 scale: Some(1100.0),
             },
         );
         recv_route.insert(
             "motors.m2".into(),
             crate::config::RouteEntry::Full {
-                var: "omega_m3".into(),
+                name: "omega_m3".into(),
                 scale: Some(1100.0),
             },
         );
         recv_route.insert(
             "motors.m3".into(),
             crate::config::RouteEntry::Full {
-                var: "omega_m4".into(),
+                name: "omega_m4".into(),
                 scale: Some(1100.0),
             },
         );

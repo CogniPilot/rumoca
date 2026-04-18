@@ -1,0 +1,252 @@
+# =============================================================================
+# quadrotor.toml — target config schema for the generic lockstep runtime.
+#
+# NOT YET LOADABLE — this file documents the schema that PR 2 of the
+# sim-fb generification work is building toward. Once the runtime lands,
+# this becomes the reference example that replaces the hardcoded
+# quadrotor adapter in crates/rumoca-sim-fb/src/sim_loop.rs.
+#
+# Pair with:
+#   - QuadrotorSIL.mo         (physics)
+#   - quadrotor_scene.js      (3D scene)
+#   - cerebri_topics.bfbs     (wire format)
+# =============================================================================
+
+# ── Model + simulation core ────────────────────────────────────────────────
+
+[model]
+file = "QuadrotorSIL.mo"
+name = "QuadrotorSIL"
+
+[sim]
+dt = 0.00125
+realtime = true
+
+[autopilot]
+command = "/home/micah/cognipilot/ws/cerebri/build/zephyr/zephyr.exe"
+
+# ── Transports ─────────────────────────────────────────────────────────────
+
+[transport.udp]
+listen = "0.0.0.0:4244"
+send   = "127.0.0.1:4242"
+
+[transport.websocket]
+port = 8081
+
+[transport.http]
+port  = 8080
+scene = "quadrotor_scene.js"
+
+# ── FlatBuffer codec layer ─────────────────────────────────────────────────
+
+[schema]
+bfbs = [
+  "/path/to/cerebri2_topics.bfbs",
+  "/path/to/cerebri2_sil.bfbs",
+]
+
+[receive]
+root_type = "cerebri2.topic.MotorOutput"
+
+[receive.route]
+"motors.m0" = { to = "stepper:omega_m1", scale = 1100.0 }
+"motors.m1" = { to = "stepper:omega_m2", scale = 1100.0 }
+"motors.m2" = { to = "stepper:omega_m3", scale = 1100.0 }
+"motors.m3" = { to = "stepper:omega_m4", scale = 1100.0 }
+"armed"     = { to = "local:armed" }
+"test_mode" = { to = "local:test_mode" }
+
+[send]
+root_type = "cerebri2.sil.SimInput"
+
+[send.route]
+"gyro.x"          = { key = "gyro_x" }
+"gyro.y"          = { key = "gyro_y" }
+"gyro.z"          = { key = "gyro_z" }
+"accel.x"         = { key = "accel_x" }
+"accel.y"         = { key = "accel_y" }
+"accel.z"         = { key = "accel_z" }
+"rc.ch0"          = { key = "rc_0"  }
+"rc.ch1"          = { key = "rc_1"  }
+"rc.ch2"          = { key = "rc_2"  }
+"rc.ch3"          = { key = "rc_3"  }
+"rc.ch4"          = { key = "rc_4"  }
+"rc.ch5"          = { key = "rc_5"  }
+"rc.ch6"          = { key = "rc_6"  }
+"rc.ch7"          = { key = "rc_7"  }
+"rc.ch8"          = { key = "rc_8"  }
+"rc.ch9"          = { key = "rc_9"  }
+"rc.ch10"         = { key = "rc_10" }
+"rc.ch11"         = { key = "rc_11" }
+"rc.ch12"         = { key = "rc_12" }
+"rc.ch13"         = { key = "rc_13" }
+"rc.ch14"         = { key = "rc_14" }
+"rc.ch15"         = { key = "rc_15" }
+"rc_link_quality" = { key = "rc_link_quality" }
+"rc_valid"        = { key = "rc_valid" }
+"imu_valid"       = { key = "imu_valid" }
+
+# ── Locals: named state that persists across frames ────────────────────────
+
+[locals]
+armed          = { type = "bool",  default = false }
+test_mode      = { type = "bool",  default = false }
+throttle       = { type = "float", default = 0.0 }
+roll_cmd       = { type = "float", default = 0.0 }
+pitch_cmd      = { type = "float", default = 0.0 }
+yaw_cmd        = { type = "float", default = 0.0 }
+throttle_input = { type = "float", default = 0.0 }
+rc             = { type = "array", element = "int", len = 16, default = 1500 }
+
+# ── Derive: compute one local from another each frame ──────────────────────
+
+[derive]
+"rc.0" = { from = "roll_cmd",  scale =  500, offset = 1500, clamp = [1000, 2000] }
+"rc.1" = { from = "pitch_cmd", scale = -500, offset = 1500, clamp = [1000, 2000] }
+"rc.2" = { from = "throttle",  scale = 1000, offset = 1000, clamp = [1000, 2000] }
+"rc.3" = { from = "yaw_cmd",   scale =  500, offset = 1500, clamp = [1000, 2000] }
+"rc.4" = { from = "armed", when_true = 2000, when_false = 1000 }
+
+# ── Input engine ───────────────────────────────────────────────────────────
+
+[input]
+mode = "auto"   # "gamepad" | "keyboard" | "auto"
+
+# Gamepad bindings
+[input.gamepad.axes]
+roll  = { source = "RightStickX", write = "roll_cmd" }
+pitch = { source = "RightStickY", write = "pitch_cmd" }
+yaw   = { source = "LeftStickX",  write = "yaw_cmd" }
+
+[input.gamepad.integrators.throttle]
+source   = "LeftStickY"
+write    = "throttle"
+deadband = 0.1
+rate     = 0.7
+clamp    = [0.0, 1.0]
+
+[input.gamepad.buttons.arm]
+source       = "Start"
+action       = "toggle"
+state        = "armed"
+debounce_ms  = 500
+precondition = "rc.2 <= 1050"
+
+[input.gamepad.buttons.reset]
+source = "South"
+action = "signal"
+signal = "reset"
+
+[input.gamepad.buttons.log]
+source = "North"
+action = "signal"
+signal = "log"
+
+# Keyboard bindings
+[input.keyboard.decay]
+targets = ["roll_cmd", "pitch_cmd", "yaw_cmd", "throttle_input"]
+factor  = 0.85
+ref_dt  = 0.016
+
+[input.keyboard.keys]
+"ArrowUp"    = { action = "set", target = "throttle_input", value =  1.0 }
+"ArrowDown"  = { action = "set", target = "throttle_input", value = -1.0 }
+"ArrowLeft"  = { action = "set", target = "yaw_cmd",        value = -0.6 }
+"ArrowRight" = { action = "set", target = "yaw_cmd",        value =  0.6 }
+"w"          = { action = "set", target = "pitch_cmd",      value = -0.6 }
+"s"          = { action = "set", target = "pitch_cmd",      value =  0.6 }
+"a"          = { action = "set", target = "roll_cmd",       value = -0.6 }
+"d"          = { action = "set", target = "roll_cmd",       value =  0.6 }
+"Space"      = { action = "toggle", state = "armed", debounce_ms = 500, precondition = "rc.2 <= 1050" }
+"r"          = { action = "signal", signal = "reset" }
+"l"          = { action = "signal", signal = "log"   }
+"q"          = { action = "signal", signal = "quit"  }
+
+[input.keyboard.integrators.throttle]
+source = "local:throttle_input"
+write  = "throttle"
+rate   = 0.7
+clamp  = [0.0, 1.0]
+
+# ── Signal assembly: what populates the outgoing SignalFrame ───────────────
+
+[signals.send]
+gyro_x          = "stepper:gyro_x"
+gyro_y          = "stepper:gyro_y"
+gyro_z          = "stepper:gyro_z"
+accel_x         = "stepper:accel_x"
+accel_y         = "stepper:accel_y"
+accel_z         = "stepper:accel_z"
+rc_0            = "local:rc.0"
+rc_1            = "local:rc.1"
+rc_2            = "local:rc.2"
+rc_3            = "local:rc.3"
+rc_4            = "local:rc.4"
+rc_5            = "local:rc.5"
+rc_6            = "local:rc.6"
+rc_7            = "local:rc.7"
+rc_8            = "local:rc.8"
+rc_9            = "local:rc.9"
+rc_10           = "local:rc.10"
+rc_11           = "local:rc.11"
+rc_12           = "local:rc.12"
+rc_13           = "local:rc.13"
+rc_14           = "local:rc.14"
+rc_15           = "local:rc.15"
+rc_link_quality = { from = "runtime:input_connected", when_true = 255, when_false = 0 }
+rc_valid        = { from = "runtime:input_connected", when_true = 1,   when_false = 0 }
+imu_valid       = { const = 1.0 }
+
+# ── Viewer JSON: what the browser receives over WebSocket ──────────────────
+
+[signals.viewer]
+t           = "stepper:time"
+frame       = "runtime:frame_num"
+wall_ms     = "runtime:wall_ms"
+px          = "stepper:px"
+py          = "stepper:py"
+pz          = "stepper:pz"
+vx          = "stepper:vx"
+vy          = "stepper:vy"
+vz          = "stepper:vz"
+q0          = { from = "stepper:q0", default = 1.0 }
+q1          = "stepper:q1"
+q2          = "stepper:q2"
+q3          = "stepper:q3"
+omega_m1    = "stepper:omega_m1"
+omega_m2    = "stepper:omega_m2"
+omega_m3    = "stepper:omega_m3"
+omega_m4    = "stepper:omega_m4"
+T           = "stepper:T"
+accel_x     = "stepper:accel_x"
+accel_y     = "stepper:accel_y"
+accel_z     = "stepper:accel_z"
+gyro_x      = "stepper:gyro_x"
+gyro_y      = "stepper:gyro_y"
+gyro_z      = "stepper:gyro_z"
+armed       = "local:armed"
+rc_throttle = "local:rc.2"
+input_mode  = "runtime:input_mode"
+
+# ── Debug frame log ────────────────────────────────────────────────────────
+
+[debug_log]
+ring_size      = 500
+trigger_signal = "log"
+capture = [
+  "runtime:frame_num", "stepper:time", "local:armed",
+  "local:rc.0", "local:rc.1", "local:rc.2", "local:rc.3", "local:rc.4",
+  "stepper:omega_m1", "stepper:omega_m2", "stepper:omega_m3", "stepper:omega_m4",
+  "stepper:px", "stepper:py", "stepper:pz",
+  "stepper:accel_x", "stepper:accel_y", "stepper:accel_z",
+  "stepper:gyro_x", "stepper:gyro_y", "stepper:gyro_z",
+]
+
+# ── Reset behavior ─────────────────────────────────────────────────────────
+
+[reset]
+on_signal         = "reset"
+reset_locals      = true
+rebuild_stepper   = true
+restart_autopilot = true
