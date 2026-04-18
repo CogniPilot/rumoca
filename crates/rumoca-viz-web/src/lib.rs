@@ -1,5 +1,9 @@
 //! Web visualization assets and HTML shell for Rumoca simulation reports.
 
+pub mod sim_viewer_server;
+
+pub use sim_viewer_server::start_viewer_server;
+
 use serde_json::{Value, json};
 
 const RESULTS_APP_JS: &str = include_str!("../web/results_app.js");

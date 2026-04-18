@@ -3478,12 +3478,12 @@ dependencies = [
  "rumoca-session",
  "rumoca-solver-diffsol",
  "rumoca-transport-udp",
+ "rumoca-transport-websocket",
+ "rumoca-viz-web",
  "serde",
  "serde_json",
  "signal-hook",
- "tiny_http",
  "toml",
- "tungstenite",
 ]
 
 [[package]]
@@ -3631,10 +3631,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-transport-websocket"
+version = "0.8.12"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tungstenite",
+]
+
+[[package]]
 name = "rumoca-viz-web"
 version = "0.8.12"
 dependencies = [
+ "anyhow",
  "serde_json",
+ "tiny_http",
 ]
 
 [[package]]

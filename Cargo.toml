@@ -22,6 +22,7 @@ members = [
     "crates/rumoca-codec",
     "crates/rumoca-codec-flatbuffers",
     "crates/rumoca-transport-udp",
+    "crates/rumoca-transport-websocket",
     "crates/rumoca-sim",
     "crates/rumoca-solver-diffsol",
     "crates/rumoca-solver-rk45",
@@ -69,6 +70,7 @@ rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
 rumoca-codec = { path = "crates/rumoca-codec" }
 rumoca-codec-flatbuffers = { path = "crates/rumoca-codec-flatbuffers" }
 rumoca-transport-udp = { path = "crates/rumoca-transport-udp" }
+rumoca-transport-websocket = { path = "crates/rumoca-transport-websocket" }
 rumoca-sim = { path = "crates/rumoca-sim" }
 rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
 rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }

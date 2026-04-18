@@ -1,8 +1,7 @@
 //! Lockstep simulation loop driven entirely by the TOML config.
 //!
-//! This module owns the transport plumbing (UDP + WebSocket + HTTP) and the
-//! per-frame orchestration:
-//!   1. poll input engine  (config-driven gamepad/keyboard)
+//! Per-frame orchestration (transports live in sibling crates):
+//!   1. poll input engine (config-driven gamepad/keyboard)
 //!   2. drain incoming UDP, apply unpacked values to stepper / locals
 //!   3. step physics
 //!   4. build outgoing `SignalFrame` via signal mapper
@@ -10,10 +9,7 @@
 //!   6. build viewer JSON via signal mapper
 //!   7. push to WebSocket
 //!   8. realtime pacing
-//!
-//! No vehicle-specific code here — that all lives in `quadrotor.toml` now.
 
-use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -25,7 +21,7 @@ use rumoca_codec_flatbuffers::bfbs::SchemaSet;
 use rumoca_codec_flatbuffers::codec::{PackCodec, UnpackCodec};
 use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 use rumoca_transport_udp::{UdpConfig, UdpTransport};
-use tungstenite::{Message, accept};
+use rumoca_transport_websocket::run_broadcast_server;
 
 use crate::config::{ResetConfig, SimFbConfig};
 use crate::input_engine::InputEngine;
@@ -158,7 +154,7 @@ pub fn run_sim_loop(
     let (state_tx, state_rx) = mpsc::channel::<String>();
     let realtime = Arc::new(AtomicBool::new(cfg.sim.realtime));
     let realtime_ws = Arc::clone(&realtime);
-    thread::spawn(move || run_ws_server(ws_port, state_rx, realtime_ws));
+    thread::spawn(move || run_broadcast_server(ws_port, state_rx, realtime_ws));
 
     eprintln!("\nReady. Simulation running.");
 
@@ -457,95 +453,5 @@ fn step_substeps(stepper: &mut SimStepper, dt: f64) {
     }
 }
 
-// ── WebSocket server ──────────────────────────────────────────────────────
-
-type WsStream = tungstenite::WebSocket<std::net::TcpStream>;
-
-fn run_ws_server(port: u16, state_rx: mpsc::Receiver<String>, realtime: Arc<AtomicBool>) {
-    let listener = match TcpListener::bind(format!("0.0.0.0:{port}")) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("Failed to bind WS port {port}: {e}");
-            return;
-        }
-    };
-    eprintln!("  WebSocket: ws://0.0.0.0:{port}");
-    for stream in listener.incoming().flatten() {
-        eprintln!("[WS] viewer connected");
-        if let Some(ws) = accept_ws(stream) {
-            serve_ws_client(ws, &state_rx, &realtime);
-        }
-        eprintln!("[WS] viewer disconnected");
-    }
-}
-
-fn accept_ws(stream: std::net::TcpStream) -> Option<WsStream> {
-    let ws = match accept(stream) {
-        Ok(ws) => ws,
-        Err(e) => {
-            eprintln!("[WS] handshake error: {e}");
-            return None;
-        }
-    };
-    ws.get_ref().set_nonblocking(true).ok();
-    ws.get_ref()
-        .set_write_timeout(Some(Duration::from_millis(100)))
-        .ok();
-    Some(ws)
-}
-
-fn serve_ws_client(
-    mut ws: WsStream,
-    state_rx: &mpsc::Receiver<String>,
-    realtime: &Arc<AtomicBool>,
-) {
-    loop {
-        if !drain_ws_inbound(&mut ws, realtime) {
-            return;
-        }
-        if !push_latest_state(&mut ws, state_rx) {
-            return;
-        }
-        thread::sleep(Duration::from_millis(16)); // ~60 fps
-    }
-}
-
-/// Drain pending client→server messages. Returns `false` if the connection closed.
-fn drain_ws_inbound(ws: &mut WsStream, realtime: &Arc<AtomicBool>) -> bool {
-    loop {
-        match ws.read() {
-            Ok(Message::Text(text)) => apply_ws_command(&text, realtime),
-            Ok(Message::Close(_)) => return false,
-            Err(tungstenite::Error::Io(ref e))
-                if e.kind() == std::io::ErrorKind::WouldBlock =>
-            {
-                return true;
-            }
-            Err(_) => return false,
-            _ => {}
-        }
-    }
-}
-
-fn apply_ws_command(text: &str, realtime: &Arc<AtomicBool>) {
-    let Ok(cmd) = serde_json::from_str::<serde_json::Value>(text) else {
-        return;
-    };
-    if let Some(rt) = cmd.get("realtime").and_then(|v| v.as_bool()) {
-        realtime.store(rt, Ordering::Relaxed);
-        eprintln!("\r[WS] realtime: {rt}                    \r");
-    }
-}
-
-/// Drain the state channel and push only the latest JSON. Returns `false` if
-/// the send failed.
-fn push_latest_state(ws: &mut WsStream, state_rx: &mpsc::Receiver<String>) -> bool {
-    let mut latest: Option<String> = None;
-    while let Ok(json) = state_rx.try_recv() {
-        latest = Some(json);
-    }
-    match latest {
-        Some(json) => ws.send(Message::Text(json.into())).is_ok(),
-        None => true,
-    }
-}
+// WebSocket server lives in rumoca-transport-websocket.
+// HTTP viewer server lives in rumoca-viz-web.

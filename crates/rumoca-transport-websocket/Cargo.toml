@@ -1,0 +1,15 @@
+[package]
+name = "rumoca-transport-websocket"
+description = "WebSocket broadcast transport for Rumoca viewers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tungstenite = "0.26"
+
+[lints]
+workspace = true
