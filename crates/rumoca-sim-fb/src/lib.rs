@@ -7,6 +7,7 @@
 pub mod config;
 pub mod input_engine;
 pub mod server;
+pub mod signal_mapper;
 pub mod sim_loop;
 
 use std::path::Path;
