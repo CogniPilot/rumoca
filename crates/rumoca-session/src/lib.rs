@@ -40,6 +40,7 @@
 //! ```
 
 mod codegen_api;
+pub mod config;
 mod experiment;
 mod instrumentation;
 #[cfg(test)]

@@ -24,6 +24,9 @@ rumoca-phase-dae = { workspace = true }
 rumoca-phase-solve = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-core = { workspace = true }
+rumoca-codec-flatbuffers = { workspace = true }
+rumoca-input = { workspace = true }
+rumoca-transport-udp = { workspace = true }
 anyhow = { workspace = true }
 indexmap = { workspace = true }
 rayon = { workspace = true }
