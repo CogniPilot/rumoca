@@ -1,15 +1,13 @@
 # =============================================================================
-# quadrotor.toml — target config schema for the generic lockstep runtime.
+# quadrotor.toml — canonical quadrotor SIL config.
 #
-# NOT YET LOADABLE — this file documents the schema that PR 2 of the
-# sim-fb generification work is building toward. Once the runtime lands,
-# this becomes the reference example that replaces the hardcoded
-# quadrotor adapter in crates/rumoca-sim-fb/src/sim_loop.rs.
+# Pair with (all in this directory):
+#   - QuadrotorSIL.mo      (physics)
+#   - quadrotor_scene.js   (Three.js scene)
 #
-# Pair with:
-#   - QuadrotorSIL.mo         (physics)
-#   - quadrotor_scene.js      (3D scene)
-#   - cerebri_topics.bfbs     (wire format)
+# Edit [autopilot].command and [schema].bfbs for your Cerebri install.
+#
+# Run:  rumoca sim run -c examples/quadrotor_sil/quadrotor.toml
 # =============================================================================
 
 # ── Model + simulation core ────────────────────────────────────────────────
@@ -42,8 +40,8 @@ scene = "quadrotor_scene.js"
 
 [schema]
 bfbs = [
-  "/path/to/cerebri2_topics.bfbs",
-  "/path/to/cerebri2_sil.bfbs",
+  "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
+  "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
 ]
 
 [receive]

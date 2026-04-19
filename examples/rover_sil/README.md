@@ -23,23 +23,25 @@ protocol. Gamepad (or keyboard) drives the model inputs directly.
 | Keyboard R | reset |
 | Keyboard Q | quit |
 
-## Running (once CLI Phase 5 lands)
+## Running
 
 ```
-rumoca sim-fb \
-  --config examples/rover_sil/rover.toml \
-  --model examples/rover_sil/Rover.mo \
-  --scene examples/rover_sil/rover_scene.js
+cargo run -p rumoca --features sim --release -- \
+  sim run -c examples/rover_sil/rover.toml
 ```
+
+The `[model].file` and `[transport.http].scene` values in the config are
+resolved relative to the TOML's directory, so no other flags are needed.
+`--model <path>` or `--scene <path>` override them on the CLI.
 
 Then open [http://localhost:8080](http://localhost:8080).
 
 ## Standalone mode vs autopilot coupling
 
 This example omits the `[schema]`, `[receive]`, and `[send]` sections
-entirely. The sim-fb runtime detects this and skips UDP socket binding and
+entirely. The sim runtime detects this and skips UDP socket binding and
 FB codec compilation — see
-[SimFbConfig::has_fb](../../crates/rumoca-sim-fb/src/config.rs).
+[SimulationConfig::has_fb](../../crates/rumoca-session/src/config.rs).
 
 Model inputs (`forward_cmd`, `turn_cmd`) are wired from local state via
 `[signals.stepper_inputs]`:

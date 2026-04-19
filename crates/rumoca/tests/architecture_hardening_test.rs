@@ -803,7 +803,7 @@ Author reminder: keep web visualization independent of session and backend owner
 }
 
 // The rumoca-sim-fb crate was dissolved — its app-level composition lives
-// in crates/rumoca/src/sim_fb/ now. The codec-crate-boundary guarantees
+// in crates/rumoca/src/sim/ now. The codec-crate-boundary guarantees
 // that used to live here are covered by test_viz_web_is_isolated_from_*
 // plus the per-solver boundary tests above.
 

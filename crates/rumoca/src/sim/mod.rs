@@ -1,8 +1,8 @@
-//! FlatBuffer lockstep simulation runtime (sim-fb).
+//! Lockstep simulation runtime driven by a `SimulationConfig` TOML.
 //!
-//! Previously a separate crate (`rumoca-sim-fb`); dissolved into the CLI
-//! per the naming-scheme proposal: composition lives here, axes (input,
-//! transport, codec, solver) live in their own crates.
+//! Axis crates (input, transport, codec, solver) are composed here into a
+//! running app. Optionally couples to an external autopilot over UDP with
+//! a configured codec; otherwise runs standalone.
 
 pub(crate) mod executor;
 
@@ -15,8 +15,8 @@ use rumoca_session::compile::Session;
 use rumoca_session::config::SimulationConfig;
 use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 
-/// Arguments for the `sim-fb` (eventually `sim run`) command.
-pub(crate) struct SimFbArgs {
+/// Arguments for the `rumoca sim run` command.
+pub(crate) struct SimArgs {
     /// Modelica source code content.
     pub model_source: String,
     /// Model name to simulate.
@@ -33,9 +33,9 @@ pub(crate) struct SimFbArgs {
     pub debug: bool,
 }
 
-/// Run the `sim-fb` lockstep app.
-pub(crate) fn run(args: SimFbArgs) -> Result<()> {
-    eprintln!("rumoca sim-fb");
+/// Run the lockstep simulation app.
+pub(crate) fn run(args: SimArgs) -> Result<()> {
+    eprintln!("rumoca sim");
     eprintln!("  Model: {}", args.model_name);
     eprintln!("  HTTP:  http://localhost:{}", args.http_port);
     eprintln!("  WS:   ws://localhost:{}", args.ws_port);

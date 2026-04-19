@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-sim-fb = [
+sim = [
     "dep:rumoca-codec",
     "dep:rumoca-codec-flatbuffers",
     "dep:rumoca-input",
@@ -34,7 +34,7 @@ rumoca-solver-diffsol = { workspace = true }
 rumoca-viz-web = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
-# sim-fb feature deps (formerly the rumoca-sim-fb crate, now inlined)
+# sim feature deps (formerly the rumoca-sim-fb crate, now inlined)
 rumoca-codec = { workspace = true, optional = true }
 rumoca-codec-flatbuffers = { workspace = true, optional = true }
 rumoca-input = { workspace = true, optional = true }

@@ -1,4 +1,4 @@
-// Rover scene for rumoca sim-fb viewer.
+// Rover scene for rumoca sim run viewer.
 //
 // Expects the following state keys (from rover.toml `[signals.viewer]`):
 //   x, y, theta         — planar pose, radians

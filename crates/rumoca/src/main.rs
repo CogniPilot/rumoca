@@ -23,14 +23,14 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod sim_report;
 
-#[cfg(feature = "sim-fb")]
-mod sim_fb;
+#[cfg(feature = "sim")]
+mod sim;
 
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
-#[cfg(feature = "sim-fb")]
+#[cfg(feature = "sim")]
 use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
@@ -87,7 +87,7 @@ enum Commands {
     /// Manage workspace-side Rumoca project sidecars
     Project(ProjectArgs),
     /// Run, validate, or scaffold a lockstep simulation config
-    #[cfg(feature = "sim-fb")]
+    #[cfg(feature = "sim")]
     Sim(SimCommandArgs),
 }
 
@@ -119,14 +119,14 @@ struct ProjectSyncArgs {
     moves: Vec<String>,
 }
 
-#[cfg(feature = "sim-fb")]
+#[cfg(feature = "sim")]
 #[derive(Args, Debug)]
 struct SimCommandArgs {
     #[command(subcommand)]
     command: SimSubcommand,
 }
 
-#[cfg(feature = "sim-fb")]
+#[cfg(feature = "sim")]
 #[derive(Subcommand, Debug)]
 enum SimSubcommand {
     /// Run a lockstep simulation from a TOML config
@@ -137,7 +137,7 @@ enum SimSubcommand {
     Init,
 }
 
-#[cfg(feature = "sim-fb")]
+#[cfg(feature = "sim")]
 #[derive(Args, Debug)]
 struct SimRunArgs {
     /// Path to the simulation config TOML
@@ -165,7 +165,7 @@ struct SimRunArgs {
     ws_port: u16,
 }
 
-#[cfg(feature = "sim-fb")]
+#[cfg(feature = "sim")]
 #[derive(Args, Debug)]
 struct SimCheckArgs {
     /// Path to the simulation config TOML
@@ -471,7 +471,7 @@ fn try_main() -> Result<()> {
             Ok(())
         }
         Commands::Project(args) => run_project(args),
-        #[cfg(feature = "sim-fb")]
+        #[cfg(feature = "sim")]
         Commands::Sim(args) => match args.command {
             SimSubcommand::Run(run_args) => run_sim_run(run_args),
             SimSubcommand::Check(check_args) => run_sim_check(check_args),
@@ -668,7 +668,7 @@ fn parse_move_hints(raw_moves: &[String]) -> Result<Vec<ProjectFileMoveHint>> {
     Ok(out)
 }
 
-#[cfg(feature = "sim-fb")]
+#[cfg(feature = "sim")]
 fn run_sim_run(args: SimRunArgs) -> Result<()> {
     let config = rumoca_session::config::SimulationConfig::load(Path::new(&args.config))
         .with_context(|| format!("Load sim config: {}", args.config))?;
@@ -731,7 +731,7 @@ fn run_sim_run(args: SimRunArgs) -> Result<()> {
         None => None,
     };
 
-    crate::sim_fb::run(crate::sim_fb::SimFbArgs {
+    crate::sim::run(crate::sim::SimArgs {
         model_source,
         model_name,
         config,
@@ -742,7 +742,7 @@ fn run_sim_run(args: SimRunArgs) -> Result<()> {
     })
 }
 
-#[cfg(feature = "sim-fb")]
+#[cfg(feature = "sim")]
 fn run_sim_check(args: SimCheckArgs) -> Result<()> {
     let _config = rumoca_session::config::SimulationConfig::load(Path::new(&args.config))
         .with_context(|| format!("Load sim config: {}", args.config))?;
@@ -750,9 +750,9 @@ fn run_sim_check(args: SimCheckArgs) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "sim-fb")]
+#[cfg(feature = "sim")]
 fn run_sim_init() -> Result<()> {
-    const TEMPLATE: &str = include_str!("sim_fb/template.toml");
+    const TEMPLATE: &str = include_str!("sim/template.toml");
     print!("{TEMPLATE}");
     Ok(())
 }
