@@ -15,7 +15,15 @@ path = "src/main.rs"
 
 [features]
 default = []
-sim-fb = ["dep:rumoca-sim-fb"]
+sim-fb = [
+    "dep:rumoca-codec",
+    "dep:rumoca-codec-flatbuffers",
+    "dep:rumoca-input",
+    "dep:rumoca-transport-udp",
+    "dep:rumoca-transport-websocket",
+    "dep:signal-hook",
+    "dep:crossterm",
+]
 tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-session/tracing"]
 
 [dependencies]
@@ -26,7 +34,14 @@ rumoca-solver-diffsol = { workspace = true }
 rumoca-viz-web = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
-rumoca-sim-fb = { workspace = true, optional = true }
+# sim-fb feature deps (formerly the rumoca-sim-fb crate, now inlined)
+rumoca-codec = { workspace = true, optional = true }
+rumoca-codec-flatbuffers = { workspace = true, optional = true }
+rumoca-input = { workspace = true, optional = true }
+rumoca-transport-udp = { workspace = true, optional = true }
+rumoca-transport-websocket = { workspace = true, optional = true }
+signal-hook = { version = "0.3", optional = true }
+crossterm = { version = "0.28", optional = true }
 
 # External dependencies
 anyhow = { workspace = true }

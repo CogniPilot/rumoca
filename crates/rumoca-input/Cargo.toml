@@ -15,8 +15,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 
-# Temporarily held here; migrate to -gamepad / -keyboard device crates
-# once the InputDevice trait migration lands.
+# Native-only: device polling. Not yet split into -gamepad / -keyboard
+# device crates (that's the next phase); until then, gate at build time
+# so wasm consumers get the config types only.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 crossterm = "0.28"
 gilrs = "0.11"
 

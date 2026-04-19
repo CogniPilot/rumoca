@@ -3115,8 +3115,11 @@ dependencies = [
  "mimalloc",
  "ntest",
  "rayon",
+ "rumoca-codec",
+ "rumoca-codec-flatbuffers",
  "rumoca-core",
  "rumoca-eval-dae",
+ "rumoca-input",
  "rumoca-ir-ast",
  "rumoca-ir-core",
  "rumoca-ir-dae",
@@ -3131,13 +3134,15 @@ dependencies = [
  "rumoca-phase-typecheck",
  "rumoca-session",
  "rumoca-sim",
- "rumoca-sim-fb",
  "rumoca-solver-diffsol",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
+ "rumoca-transport-udp",
+ "rumoca-transport-websocket",
  "rumoca-viz-web",
  "serde",
  "serde_json",
+ "signal-hook",
  "tar",
  "tempfile",
  "thiserror 2.0.17",
@@ -3441,7 +3446,9 @@ dependencies = [
  "indexmap",
  "miette",
  "rayon",
+ "rumoca-codec-flatbuffers",
  "rumoca-core",
+ "rumoca-input",
  "rumoca-ir-ast",
  "rumoca-ir-core",
  "rumoca-ir-dae",
@@ -3454,6 +3461,7 @@ dependencies = [
  "rumoca-phase-resolve",
  "rumoca-phase-solve",
  "rumoca-phase-typecheck",
+ "rumoca-transport-udp",
  "serde",
  "serde_json",
  "tempfile",
@@ -3478,26 +3486,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
-]
-
-[[package]]
-name = "rumoca-sim-fb"
-version = "0.8.12"
-dependencies = [
- "anyhow",
- "crossterm",
- "rumoca-codec",
- "rumoca-codec-flatbuffers",
- "rumoca-input",
- "rumoca-session",
- "rumoca-solver-diffsol",
- "rumoca-transport-udp",
- "rumoca-transport-websocket",
- "rumoca-viz-web",
- "serde",
- "serde_json",
- "signal-hook",
- "toml",
 ]
 
 [[package]]

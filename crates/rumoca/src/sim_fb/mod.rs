@@ -1,41 +1,40 @@
-//! FlatBuffer lockstep simulation app with 3D viewer.
+//! FlatBuffer lockstep simulation runtime (sim-fb).
 //!
-//! The reusable protocol types live in `rumoca-codec` and `rumoca-codec-flatbuffers`.
-//! This crate owns the current end-to-end app loop, including the quadrotor
-//! example path, viewer, and controller process wiring.
+//! Previously a separate crate (`rumoca-sim-fb`); dissolved into the CLI
+//! per the naming-scheme proposal: composition lives here, axes (input,
+//! transport, codec, solver) live in their own crates.
 
-pub mod config;
-pub mod sim_loop;
+pub(crate) mod executor;
 
 use std::path::Path;
 use std::thread;
 
 use anyhow::{Context, Result};
-use config::SimFbConfig;
 use rumoca_codec_flatbuffers::bfbs::SchemaSet;
 use rumoca_session::compile::Session;
+use rumoca_session::config::SimulationConfig;
 use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 
-/// Arguments for the sim-fb command.
-pub struct SimFbArgs {
+/// Arguments for the `sim-fb` (eventually `sim run`) command.
+pub(crate) struct SimFbArgs {
     /// Modelica source code content.
     pub model_source: String,
     /// Model name to simulate.
     pub model_name: String,
     /// Parsed lockstep app configuration.
-    pub config: SimFbConfig,
+    pub config: SimulationConfig,
     /// HTTP server port.
     pub http_port: u16,
     /// WebSocket viz port.
     pub ws_port: u16,
-    /// Scene script content (None = use default quadrotor scene).
+    /// Scene script content (None = minimal placeholder scene).
     pub scene_script: Option<String>,
     /// Enable debug features (overlays, log downloads).
     pub debug: bool,
 }
 
 /// Run the `sim-fb` lockstep app.
-pub fn run(args: SimFbArgs) -> Result<()> {
+pub(crate) fn run(args: SimFbArgs) -> Result<()> {
     eprintln!("rumoca sim-fb");
     eprintln!("  Model: {}", args.model_name);
     eprintln!("  HTTP:  http://localhost:{}", args.http_port);
@@ -103,7 +102,7 @@ pub fn run(args: SimFbArgs) -> Result<()> {
     eprintln!("  Open http://localhost:{} in a browser.", args.http_port);
 
     // Run main sim loop (blocks)
-    sim_loop::run_sim_loop(
+    executor::run_sim_loop(
         &args.config,
         schema_set.as_ref(),
         &mut stepper,

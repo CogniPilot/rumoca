@@ -23,7 +23,7 @@ use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 use rumoca_transport_udp::{UdpConfig, UdpTransport};
 use rumoca_transport_websocket::run_broadcast_server;
 
-use crate::config::{ResetConfig, SimFbConfig};
+use rumoca_session::config::{ResetConfig, SimulationConfig};
 use rumoca_input::{InputEngine, RuntimeContext, SignalMapper};
 
 const MAX_SUB_DT: f64 = 0.002;
@@ -74,7 +74,7 @@ impl Drop for AutopilotProcess {
 
 // ── UDP config resolution (bridge legacy [udp] + new [transport.udp]) ──────
 
-fn resolve_udp(cfg: &SimFbConfig) -> Option<&UdpConfig> {
+fn resolve_udp(cfg: &SimulationConfig) -> Option<&UdpConfig> {
     cfg.transport
         .as_ref()
         .and_then(|t| t.udp.as_ref())
@@ -95,7 +95,7 @@ struct FbTransport {
 
 /// Immutable per-frame context: FB transport (if any), mapper, and channels.
 struct FrameCtx<'a> {
-    cfg: &'a SimFbConfig,
+    cfg: &'a SimulationConfig,
     fb: Option<&'a FbTransport>,
     mapper: &'a SignalMapper,
     state_tx: &'a mpsc::Sender<String>,
@@ -123,8 +123,8 @@ enum FrameControl {
 /// Run the lockstep simulation app. Blocks the calling thread. In standalone
 /// mode (no `[schema]`/`[receive]`/`[send]` in config) the UDP socket and
 /// FB codecs are not created and no autopilot coupling happens.
-pub fn run_sim_loop(
-    cfg: &SimFbConfig,
+pub(crate) fn run_sim_loop(
+    cfg: &SimulationConfig,
     schema_set: Option<&SchemaSet>,
     stepper: &mut SimStepper,
     model_source: &str,
@@ -183,7 +183,7 @@ pub fn run_sim_loop(
 }
 
 fn setup_fb_transport(
-    cfg: &SimFbConfig,
+    cfg: &SimulationConfig,
     schema_set: Option<&SchemaSet>,
 ) -> Result<Option<FbTransport>> {
     if !cfg.has_fb() {
@@ -339,7 +339,7 @@ impl FrameCtx<'_> {
     }
 }
 
-fn spawn_autopilot(cfg: &SimFbConfig) -> Result<Arc<Mutex<Option<AutopilotProcess>>>> {
+fn spawn_autopilot(cfg: &SimulationConfig) -> Result<Arc<Mutex<Option<AutopilotProcess>>>> {
     let autopilot: Arc<Mutex<Option<AutopilotProcess>>> = Arc::new(Mutex::new(None));
     if let Some(ap_cfg) = &cfg.autopilot {
         let mut ap = AutopilotProcess::new(&ap_cfg.command);

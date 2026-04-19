@@ -38,8 +38,6 @@ members = [
     # Bindings
     "crates/rumoca-bind-wasm",
     "crates/rumoca-bind-python",
-    # SIL simulation
-    "crates/rumoca-sim-fb",
 ]
 
 [workspace.package]
@@ -84,7 +82,6 @@ rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }
 rumoca-bind-wasm = { path = "crates/rumoca-bind-wasm" }
 rumoca-bind-python = { path = "crates/rumoca-bind-python" }
-rumoca-sim-fb = { path = "crates/rumoca-sim-fb" }
 
 # External dependencies
 anyhow = "1.0"

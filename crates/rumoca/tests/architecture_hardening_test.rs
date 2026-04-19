@@ -802,40 +802,10 @@ Author reminder: keep web visualization independent of session and backend owner
     }
 }
 
-#[test]
-fn test_sim_fb_is_app_layer_over_codec_crates() {
-    let cargo_toml = workspace_root().join("crates/rumoca-sim-fb/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim-fb Cargo.toml");
-
-    for required in [
-        "rumoca-codec",
-        "rumoca-codec-flatbuffers",
-        "rumoca-session",
-        "rumoca-solver-diffsol",
-    ] {
-        assert!(
-            section_contains_dependency(&content, "dependencies", required),
-            "rumoca-sim-fb must depend on {required}; \
-Author reminder: protocol ownership stays in io crates while sim-fb remains an app/example surface."
-        );
-    }
-
-    assert!(
-        !section_contains_dependency(&content, "dependencies", "diffsol"),
-        "rumoca-sim-fb must not depend on the concrete diffsol package directly"
-    );
-
-    let sim_fb_lib = workspace_root().join("crates/rumoca-sim-fb/src/lib.rs");
-    let lib_content = fs::read_to_string(&sim_fb_lib).expect("read rumoca-sim-fb src/lib.rs");
-    assert!(
-        !lib_content.contains("pub mod bfbs;"),
-        "rumoca-sim-fb must not own a public bfbs module after protocol extraction"
-    );
-    assert!(
-        !lib_content.contains("pub mod codec;"),
-        "rumoca-sim-fb must not own a public codec module after protocol extraction"
-    );
-}
+// The rumoca-sim-fb crate was dissolved — its app-level composition lives
+// in crates/rumoca/src/sim_fb/ now. The codec-crate-boundary guarantees
+// that used to live here are covered by test_viz_web_is_isolated_from_*
+// plus the per-solver boundary tests above.
 
 #[test]
 fn test_rumoca_entry_uses_session_facade_for_ir() {

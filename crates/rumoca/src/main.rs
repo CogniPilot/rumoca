@@ -23,6 +23,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod sim_report;
 
+#[cfg(feature = "sim-fb")]
+mod sim_fb;
+
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
@@ -652,7 +655,7 @@ fn run_sim_fb(args: SimFbArgs) -> Result<()> {
             .to_string()
     });
 
-    let config = rumoca_sim_fb::config::SimFbConfig::load(Path::new(&args.config))
+    let config = rumoca_session::config::SimulationConfig::load(Path::new(&args.config))
         .with_context(|| format!("Load sim-fb config: {}", args.config))?;
 
     // Load scene script if provided
@@ -664,7 +667,7 @@ fn run_sim_fb(args: SimFbArgs) -> Result<()> {
         None => None,
     };
 
-    rumoca_sim_fb::run(rumoca_sim_fb::SimFbArgs {
+    crate::sim_fb::run(crate::sim_fb::SimFbArgs {
         model_source,
         model_name,
         config,
