@@ -4,9 +4,9 @@ use rumoca_sim::{
     build_simulation_metrics_value, build_simulation_payload,
 };
 #[cfg(feature = "sim-diffsol")]
-use rumoca_sim_diffsol::simulate_dae as simulate_dae_diffsol;
+use rumoca_solver_diffsol::simulate_dae as simulate_dae_diffsol;
 #[cfg(feature = "sim-rk45")]
-use rumoca_sim_rk45::simulate_dae as simulate_dae_rk45;
+use rumoca_solver_rk45::simulate_dae as simulate_dae_rk45;
 use wasm_bindgen::JsValue;
 
 use crate::{

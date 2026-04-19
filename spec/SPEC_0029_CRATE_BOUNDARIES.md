@@ -209,11 +209,11 @@ Tier 6 — Binary & Bindings (top-level entry points)
   rumoca-contracts          Specification contract tests
 
 Tier 5 — Integration (combine session + simulation/tools)
-  rumoca-io                 Transport-neutral lockstep I/O contracts
-  rumoca-io-fb              FlatBuffer schema/codec support for lockstep I/O
+  rumoca-codec                 Transport-neutral lockstep I/O contracts
+  rumoca-codec-flatbuffers              FlatBuffer schema/codec support for lockstep I/O
   rumoca-sim                Runtime contracts + shared simulation helpers
-  rumoca-sim-diffsol        Diffsol runtime backend
-  rumoca-sim-rk45           Explicit ODE RK45 backend
+  rumoca-solver-diffsol        Diffsol runtime backend
+  rumoca-solver-rk45           Explicit ODE RK45 backend
   rumoca-viz-web            Web visualization assets
   rumoca-tool-lsp           Language server protocol
 

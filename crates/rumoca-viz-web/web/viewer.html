@@ -17,9 +17,10 @@
   #hud .val { color: #e8c840; font-weight: bold; }
   #status {
     position: fixed; top: 10px; right: 10px; z-index: 10;
-    background: rgba(30,20,10,0.75); padding: 6px 12px; border-radius: 6px;
+    background: rgba(30,20,10,0.85); padding: 6px 12px; border-radius: 6px;
     font-size: 12px; backdrop-filter: blur(4px);
     border: 1px solid rgba(200,160,80,0.2);
+    font-family: monospace;
   }
   .connected { color: #4c4; }
   .disconnected { color: #c44; }
@@ -98,7 +99,10 @@ import * as THREE from "three";
 const WS_PORT = __WS_PORT__;
 const DEBUG = __DEBUG__;
 
-// ── Debug log (only visible in debug mode) ────────────────────────
+// ── Debug log ─────────────────────────────────────────────────────
+// The bottom-left panel is only shown in --debug mode; but dbg() events
+// always go to the browser console so a user diagnosing a black screen
+// can tell which pipeline stage stopped without re-running with --debug.
 const debugEl = document.getElementById("debug");
 if (!DEBUG) {
   debugEl.style.display = "none";
@@ -106,13 +110,31 @@ if (!DEBUG) {
 }
 const debugLines = [];
 function dbg(msg) {
-  if (!DEBUG) return;
   const ts = (performance.now() / 1000).toFixed(1);
+  console.log(`[viewer ${ts}s] ${msg}`);
+  if (!DEBUG) return;
   debugLines.push(`[${ts}s] ${msg}`);
   if (debugLines.length > 30) debugLines.shift();
   debugEl.textContent = debugLines.join("\n");
   debugEl.scrollTop = debugEl.scrollHeight;
 }
+
+// ── Always-visible pipeline status (top-right #status) ────────────
+// As each stage completes (Three.js, scene, WS, first msg, first frame)
+// we update this so a black-screen user can tell at a glance where it
+// stopped.
+const pipeline = { three: false, scene: false, ws: "pending", msgs: 0, frames: 0 };
+const statusEl = document.getElementById("ws-status");
+function renderPipeline() {
+  const ok = (b) => b ? '<span class="connected">✓</span>' : '<span class="disconnected">✗</span>';
+  statusEl.innerHTML =
+    `three ${ok(pipeline.three)} · scene ${ok(pipeline.scene)} · ` +
+    `ws ${pipeline.ws === "open" ? '<span class="connected">open</span>' : '<span class="disconnected">' + pipeline.ws + '</span>'} · ` +
+    `msgs ${pipeline.msgs} · frames ${pipeline.frames}`;
+}
+pipeline.three = true;  // if we got here, Three.js imported successfully
+renderPipeline();
+dbg("Three.js imported");
 
 // ── Three.js renderer ────────────────────────────────────────────
 const container = document.getElementById("container");
@@ -159,10 +181,14 @@ try {
     ctx.onInit({ THREE, scene, state: sceneState, camera, cam });
   }
   sceneOnFrame = ctx.onFrame || null;
+  pipeline.scene = true;
+  renderPipeline();
   dbg("Scene loaded");
 } catch (e) {
   dbg(`Scene error: ${e}`);
   console.error("Scene script error:", e);
+  pipeline.scene = false;
+  renderPipeline();
 }
 
 // ── State from server with extrapolation ──────────────────────────
@@ -170,7 +196,6 @@ let latestState = {};
 let stateReceivedAt = 0; // performance.now() when last state arrived
 
 // ── WebSocket (receive-only: state JSON from Rust sim) ────────────
-const statusEl = document.getElementById("ws-status");
 let msgCount = 0;
 let lastMsgTime = 0;
 let wsHz = 0;
@@ -187,12 +212,14 @@ window.toggleRealtime = function() {
 
 function connectWs() {
   dbg(`WS connecting to ws://${location.hostname}:${WS_PORT}`);
+  pipeline.ws = "connecting";
+  renderPipeline();
   const ws = new WebSocket(`ws://${location.hostname}:${WS_PORT}`);
   activeWs = ws;
   ws.onopen = () => {
-    statusEl.textContent = "Connected";
-    statusEl.className = "connected";
     dbg("WS connected");
+    pipeline.ws = "open";
+    renderPipeline();
   };
   let lastFrame = -1;
   let droppedFrames = 0;
@@ -201,6 +228,11 @@ function connectWs() {
       latestState = JSON.parse(evt.data);
       stateReceivedAt = performance.now();
       msgCount++;
+      pipeline.msgs = msgCount;
+      if (msgCount === 1) {
+        dbg(`first msg, keys=[${Object.keys(latestState).slice(0, 8).join(",")}...]`);
+      }
+      if (msgCount % 30 === 0) renderPipeline();
       const now = performance.now();
       if (lastMsgTime > 0) {
         const dt = now - lastMsgTime;
@@ -225,12 +257,17 @@ function connectWs() {
     } catch (_) {}
   };
   ws.onclose = () => {
-    statusEl.textContent = "Disconnected";
-    statusEl.className = "disconnected";
     dbg("WS disconnected, reconnecting in 2s");
+    pipeline.ws = "closed";
+    renderPipeline();
     setTimeout(connectWs, 2000);
   };
-  ws.onerror = () => { dbg("WS error"); ws.close(); };
+  ws.onerror = () => {
+    dbg("WS error");
+    pipeline.ws = "error";
+    renderPipeline();
+    ws.close();
+  };
 }
 connectWs();
 
@@ -335,6 +372,8 @@ function animate() {
   document.getElementById("ctrl-gamepad").style.display = inputMode === "gamepad" ? "" : "none";
 
   renderer.render(scene, camera);
+  pipeline.frames++;
+  if (pipeline.frames <= 3 || pipeline.frames % 60 === 0) renderPipeline();
 }
 requestAnimationFrame(animate);
 </script>

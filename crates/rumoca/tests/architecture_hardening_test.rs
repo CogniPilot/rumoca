@@ -333,8 +333,8 @@ fn test_sim_sources_use_ir_namespace_aliases() {
     let root = workspace_root();
     let sim_dirs = [
         root.join("crates/rumoca-sim/src"),
-        root.join("crates/rumoca-sim-diffsol/src"),
-        root.join("crates/rumoca-sim-rk45/src"),
+        root.join("crates/rumoca-solver-diffsol/src"),
+        root.join("crates/rumoca-solver-rk45/src"),
     ];
 
     let mut offenders = Vec::new();
@@ -353,8 +353,8 @@ fn test_sim_sources_use_ir_namespace_aliases() {
 }
 
 #[test]
-fn test_sim_diffsol_dag_boundary_no_flat_or_ast_dependency() {
-    for crate_name in ["rumoca-sim", "rumoca-sim-diffsol", "rumoca-sim-rk45"] {
+fn test_solver_diffsol_dag_boundary_no_flat_or_ast_dependency() {
+    for crate_name in ["rumoca-sim", "rumoca-solver-diffsol", "rumoca-solver-rk45"] {
         let cargo_toml = workspace_root().join(format!("crates/{crate_name}/Cargo.toml"));
         let content = fs::read_to_string(&cargo_toml).expect("read sim Cargo.toml");
 
@@ -477,7 +477,7 @@ Author reminder: bind-wasm should use rumoca-session/rumoca-tool-lsp facade APIs
         );
     }
 
-    for optional_dep in ["rumoca-sim-diffsol", "rumoca-sim-rk45"] {
+    for optional_dep in ["rumoca-solver-diffsol", "rumoca-solver-rk45"] {
         let line =
             section_dependency_line(&content, "dependencies", optional_dep).unwrap_or_else(|| {
                 panic!("rumoca-bind-wasm must declare dependency line for {optional_dep}")
@@ -613,8 +613,8 @@ fn test_session_is_compile_only() {
         "rumoca-session must depend on rumoca-phase-codegen for explicit codegen helpers"
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-sim-diffsol"),
-        "rumoca-session must not depend on rumoca-sim-diffsol; concrete runtime backends belong outside the compile/session facade"
+        !section_contains_dependency(&content, "dependencies", "rumoca-solver-diffsol"),
+        "rumoca-session must not depend on rumoca-solver-diffsol; concrete runtime backends belong outside the compile/session facade"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
@@ -674,80 +674,80 @@ Author reminder: keep visualization assets outside the runtime-contract crate."
 }
 
 #[test]
-fn test_sim_diffsol_crate_owns_backend_dependency() {
-    let cargo_toml = workspace_root().join("crates/rumoca-sim-diffsol/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim-diffsol Cargo.toml");
+fn test_solver_diffsol_crate_owns_backend_dependency() {
+    let cargo_toml = workspace_root().join("crates/rumoca-solver-diffsol/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-solver-diffsol Cargo.toml");
 
     assert!(
         section_contains_dependency(&content, "dependencies", "rumoca-sim"),
-        "rumoca-sim-diffsol must depend on rumoca-sim for runtime contracts and shared helpers"
+        "rumoca-solver-diffsol must depend on rumoca-sim for runtime contracts and shared helpers"
     );
     assert!(
         section_contains_dependency(&content, "dependencies", "diffsol"),
-        "rumoca-sim-diffsol must own the concrete diffsol dependency"
+        "rumoca-solver-diffsol must own the concrete diffsol dependency"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
-        "rumoca-sim-diffsol must not depend on rumoca-viz-web"
+        "rumoca-solver-diffsol must not depend on rumoca-viz-web"
     );
 }
 
 #[test]
-fn test_sim_rk45_crate_owns_second_backend_without_diffsol_dependency() {
-    let cargo_toml = workspace_root().join("crates/rumoca-sim-rk45/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim-rk45 Cargo.toml");
+fn test_solver_rk45_crate_owns_second_backend_without_diffsol_dependency() {
+    let cargo_toml = workspace_root().join("crates/rumoca-solver-rk45/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-solver-rk45 Cargo.toml");
 
     assert!(
         section_contains_dependency(&content, "dependencies", "rumoca-sim"),
-        "rumoca-sim-rk45 must depend on rumoca-sim for shared runtime contracts"
+        "rumoca-solver-rk45 must depend on rumoca-sim for shared runtime contracts"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "diffsol"),
-        "rumoca-sim-rk45 must stay pure Rust and must not depend on diffsol"
+        "rumoca-solver-rk45 must stay pure Rust and must not depend on diffsol"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
-        "rumoca-sim-rk45 must not depend on rumoca-viz-web"
+        "rumoca-solver-rk45 must not depend on rumoca-viz-web"
     );
 }
 
 #[test]
 fn test_io_contract_crate_is_runtime_and_visualization_free() {
-    let cargo_toml = workspace_root().join("crates/rumoca-io/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-io Cargo.toml");
+    let cargo_toml = workspace_root().join("crates/rumoca-codec/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-codec Cargo.toml");
 
     for banned in [
         "rumoca-session",
         "rumoca-sim",
-        "rumoca-sim-diffsol",
-        "rumoca-sim-rk45",
+        "rumoca-solver-diffsol",
+        "rumoca-solver-rk45",
         "rumoca-viz-web",
         "tiny_http",
         "tungstenite",
     ] {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca-io must not depend on {banned}; \
+            "rumoca-codec must not depend on {banned}; \
 Author reminder: keep the generic lockstep I/O contract transport-free and solver-free."
         );
     }
 }
 
 #[test]
-fn test_io_fb_crate_is_protocol_only() {
-    let cargo_toml = workspace_root().join("crates/rumoca-io-fb/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-io-fb Cargo.toml");
+fn test_codec_flatbuffers_crate_is_protocol_only() {
+    let cargo_toml = workspace_root().join("crates/rumoca-codec-flatbuffers/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-codec-flatbuffers Cargo.toml");
 
     assert!(
-        section_contains_dependency(&content, "dependencies", "rumoca-io"),
-        "rumoca-io-fb must depend on rumoca-io for the generic signal-frame contract"
+        section_contains_dependency(&content, "dependencies", "rumoca-codec"),
+        "rumoca-codec-flatbuffers must depend on rumoca-codec for the generic signal-frame contract"
     );
 
     for banned in [
         "rumoca-session",
         "rumoca-sim",
-        "rumoca-sim-diffsol",
-        "rumoca-sim-rk45",
+        "rumoca-solver-diffsol",
+        "rumoca-solver-rk45",
         "rumoca-viz-web",
         "tiny_http",
         "tungstenite",
@@ -757,7 +757,7 @@ fn test_io_fb_crate_is_protocol_only() {
     ] {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca-io-fb must not depend on {banned}; \
+            "rumoca-codec-flatbuffers must not depend on {banned}; \
 Author reminder: keep FlatBuffer IO support protocol-only."
         );
     }
@@ -802,40 +802,10 @@ Author reminder: keep web visualization independent of session and backend owner
     }
 }
 
-#[test]
-fn test_sim_fb_is_app_layer_over_io_protocol_crates() {
-    let cargo_toml = workspace_root().join("crates/rumoca-sim-fb/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim-fb Cargo.toml");
-
-    for required in [
-        "rumoca-io",
-        "rumoca-io-fb",
-        "rumoca-session",
-        "rumoca-sim-diffsol",
-    ] {
-        assert!(
-            section_contains_dependency(&content, "dependencies", required),
-            "rumoca-sim-fb must depend on {required}; \
-Author reminder: protocol ownership stays in io crates while sim-fb remains an app/example surface."
-        );
-    }
-
-    assert!(
-        !section_contains_dependency(&content, "dependencies", "diffsol"),
-        "rumoca-sim-fb must not depend on the concrete diffsol package directly"
-    );
-
-    let sim_fb_lib = workspace_root().join("crates/rumoca-sim-fb/src/lib.rs");
-    let lib_content = fs::read_to_string(&sim_fb_lib).expect("read rumoca-sim-fb src/lib.rs");
-    assert!(
-        !lib_content.contains("pub mod bfbs;"),
-        "rumoca-sim-fb must not own a public bfbs module after protocol extraction"
-    );
-    assert!(
-        !lib_content.contains("pub mod codec;"),
-        "rumoca-sim-fb must not own a public codec module after protocol extraction"
-    );
-}
+// The rumoca-sim-fb crate was dissolved — its app-level composition lives
+// in crates/rumoca/src/sim/ now. The codec-crate-boundary guarantees
+// that used to live here are covered by test_viz_web_is_isolated_from_*
+// plus the per-solver boundary tests above.
 
 #[test]
 fn test_rumoca_entry_uses_session_facade_for_ir() {
@@ -869,7 +839,7 @@ fn test_test_msl_uses_explicit_runtime_crates() {
     let cargo_toml = workspace_root().join("crates/rumoca-test-msl/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-test-msl Cargo.toml");
 
-    for required in ["rumoca-session", "rumoca-sim", "rumoca-sim-diffsol"] {
+    for required in ["rumoca-session", "rumoca-sim", "rumoca-solver-diffsol"] {
         assert!(
             section_contains_dependency(&content, "dependencies", required),
             "rumoca-test-msl must depend on {required}; \

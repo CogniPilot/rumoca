@@ -1,0 +1,13 @@
+[package]
+name = "rumoca-codec"
+description = "Transport-neutral lockstep I/O contracts for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+indexmap = { workspace = true }
+
+[lints]
+workspace = true

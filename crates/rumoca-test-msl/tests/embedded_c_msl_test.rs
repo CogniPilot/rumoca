@@ -22,7 +22,7 @@ use rumoca_session::codegen::{render_dae_template_with_name, templates};
 use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_session::parsing::parse_files_parallel_lenient;
 use rumoca_sim::{SimOptions, SimResult};
-use rumoca_sim_diffsol::simulate_dae;
+use rumoca_solver_diffsol::simulate_dae;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;

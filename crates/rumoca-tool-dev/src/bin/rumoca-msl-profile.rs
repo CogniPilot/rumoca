@@ -13,7 +13,7 @@ use rumoca_sim::{
     SimOptions, SimResult, SimSolverMode, compiled_layout_binding_debug,
     compiled_layout_related_bindings_debug,
 };
-use rumoca_sim_diffsol::simulate_dae;
+use rumoca_solver_diffsol::simulate_dae;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProfileMode {

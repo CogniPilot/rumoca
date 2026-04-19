@@ -1,6 +1,6 @@
 //! Quick diagnostic — step the autopilot model and print state.
 
-use rumoca_sim_diffsol::{SimStepper, StepperOptions};
+use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 
 const MODEL_SOURCE: &str = include_str!("../../../examples/QuadrotorAttitude.mo");
 

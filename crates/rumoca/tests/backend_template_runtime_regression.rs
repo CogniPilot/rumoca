@@ -13,7 +13,7 @@ use std::{fs, process::Command};
 use rumoca::{CompilationResult, Compiler};
 use rumoca_phase_codegen::templates;
 use rumoca_sim::{SimOptions, SimResult};
-use rumoca_sim_diffsol::simulate_dae;
+use rumoca_solver_diffsol::simulate_dae;
 use tempfile::Builder;
 
 // ============================================================================

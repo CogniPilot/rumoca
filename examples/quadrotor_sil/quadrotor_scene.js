@@ -1,4 +1,4 @@
-// Default quadrotor scene for rumoca sim-fb viewer.
+// Default quadrotor scene for rumoca sim run viewer.
 //
 // Scene script API:
 //   ctx.onInit(api)  — called once after Three.js is ready

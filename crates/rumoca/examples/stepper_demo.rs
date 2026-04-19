@@ -16,7 +16,7 @@ use crossterm::{
     execute,
     terminal::{self, ClearType},
 };
-use rumoca_sim_diffsol::{SimStepper, StepperOptions};
+use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 
 const MODEL_SOURCE: &str = r#"
 model MassSpringDamperControl
