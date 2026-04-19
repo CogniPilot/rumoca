@@ -15,12 +15,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 
-# Native-only: device polling. Not yet split into -gamepad / -keyboard
-# device crates (that's the next phase); until then, gate at build time
-# so wasm consumers get the config types only.
+# Native-only device crates. These own the gilrs / crossterm deps;
+# rumoca-input itself has none on wasm, so the engine + signal mapper
+# gate at build time.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-crossterm = "0.28"
-gilrs = "0.11"
+rumoca-input-gamepad = { workspace = true }
+rumoca-input-keyboard = { workspace = true }
 
 [lints]
 workspace = true

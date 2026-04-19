@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use anyhow::{Result, anyhow, bail};
-use crossterm::event::{KeyCode, KeyModifiers};
-use gilrs::{Axis, Button};
+use rumoca_input_keyboard::{KeyCode, KeyModifiers};
+use rumoca_input_gamepad::{Axis, Button};
 
 use crate::config::{
     DeriveSpec, GamepadAxis, GamepadButton, GamepadConfig, InputConfig, Integrator, KeyBinding,

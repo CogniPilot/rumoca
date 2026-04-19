@@ -3273,13 +3273,29 @@ name = "rumoca-input"
 version = "0.8.12"
 dependencies = [
  "anyhow",
- "crossterm",
- "gilrs",
  "indexmap",
  "rumoca-codec",
+ "rumoca-input-gamepad",
+ "rumoca-input-keyboard",
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "rumoca-input-gamepad"
+version = "0.8.12"
+dependencies = [
+ "anyhow",
+ "gilrs",
+]
+
+[[package]]
+name = "rumoca-input-keyboard"
+version = "0.8.12"
+dependencies = [
+ "anyhow",
+ "crossterm",
 ]
 
 [[package]]

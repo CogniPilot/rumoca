@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
-use gilrs::Gilrs;
+use rumoca_input_gamepad::Gilrs;
 
 use crate::config::{DeriveSpec, InputConfig, LocalDef};
 
@@ -64,8 +64,8 @@ pub enum InputMode {
 /// these makes the state machine testable without real hardware.
 #[derive(Debug, Clone, Default)]
 struct GamepadSnapshot {
-    axis_values: HashMap<gilrs::Axis, f64>,
-    button_pressed: HashMap<gilrs::Button, bool>,
+    axis_values: HashMap<rumoca_input_gamepad::Axis, f64>,
+    button_pressed: HashMap<rumoca_input_gamepad::Button, bool>,
 }
 
 // ── The engine ─────────────────────────────────────────────────────────────
@@ -193,7 +193,7 @@ impl InputEngine {
         let gilrs = self.gilrs.as_ref()?;
         let (_, gp) = gilrs.gamepads().next()?;
 
-        let mut axis_values: HashMap<gilrs::Axis, f64> = HashMap::new();
+        let mut axis_values: HashMap<rumoca_input_gamepad::Axis, f64> = HashMap::new();
         for a in &self.compiled.gamepad_axes {
             axis_values
                 .entry(a.source)
@@ -207,7 +207,7 @@ impl InputEngine {
             }
         }
 
-        let button_pressed: HashMap<gilrs::Button, bool> = self
+        let button_pressed: HashMap<rumoca_input_gamepad::Button, bool> = self
             .compiled
             .gamepad_buttons
             .iter()
@@ -267,23 +267,13 @@ impl InputEngine {
 
     /// Drain all pending keyboard events via crossterm. Release events are
     /// filtered out; Press and Repeat are treated the same.
-    fn drain_keyboard_events() -> Vec<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)> {
-        use crossterm::event::{Event, KeyEventKind, poll, read};
-        let mut out = Vec::new();
-        while poll(std::time::Duration::ZERO).unwrap_or(false) {
-            let Ok(evt) = read() else { continue };
-            let Event::Key(ke) = evt else { continue };
-            if ke.kind == KeyEventKind::Release {
-                continue;
-            }
-            out.push((ke.code, ke.modifiers));
-        }
-        out
+    fn drain_keyboard_events() -> Vec<(rumoca_input_keyboard::KeyCode, rumoca_input_keyboard::KeyModifiers)> {
+        rumoca_input_keyboard::drain_events()
     }
 
     fn process_keyboard(
         &mut self,
-        events: &[(crossterm::event::KeyCode, crossterm::event::KeyModifiers)],
+        events: &[(rumoca_input_keyboard::KeyCode, rumoca_input_keyboard::KeyModifiers)],
         dt: f64,
     ) {
         // 1. Decay configured targets (applied every frame regardless of events).
@@ -477,7 +467,7 @@ impl InputEngine {
 impl Drop for InputEngine {
     fn drop(&mut self) {
         if self.keyboard_raw_mode {
-            let _ = crossterm::terminal::disable_raw_mode();
+            rumoca_input_keyboard::disable_raw_mode();
         }
     }
 }
@@ -550,16 +540,11 @@ fn announce_gamepads(gilrs: &Gilrs) {
 }
 
 fn enable_keyboard_raw_mode() -> bool {
-    match crossterm::terminal::enable_raw_mode() {
-        Ok(()) => {
-            eprintln!("[input] Raw mode enabled");
-            true
-        }
-        Err(e) => {
-            eprintln!("[input] Raw mode failed: {} — keyboard may not work", e);
-            false
-        }
+    let ok = rumoca_input_keyboard::enable_raw_mode();
+    if ok {
+        eprintln!("[input] Raw mode enabled");
     }
+    ok
 }
 
 pub(crate) fn initialize_locals(
@@ -772,8 +757,8 @@ mod tests {
     // ── Gamepad polling (phase 2c) ────────────────────────────────────────
 
     fn snap(
-        axes: &[(gilrs::Axis, f64)],
-        buttons: &[(gilrs::Button, bool)],
+        axes: &[(rumoca_input_gamepad::Axis, f64)],
+        buttons: &[(rumoca_input_gamepad::Button, bool)],
     ) -> GamepadSnapshot {
         GamepadSnapshot {
             axis_values: axes.iter().copied().collect(),
@@ -786,7 +771,7 @@ mod tests {
         let cfg = load_quadrotor();
         let mut eng = build_for_test(&cfg);
         // Quadrotor config: RightStickX -> roll_cmd (scale=1.0, no invert).
-        let s = snap(&[(gilrs::Axis::RightStickX, 0.75)], &[]);
+        let s = snap(&[(rumoca_input_gamepad::Axis::RightStickX, 0.75)], &[]);
         eng.process_gamepad(&s, 0.01);
         assert_eq!(eng.get("roll_cmd"), Some(0.75));
     }
@@ -797,12 +782,12 @@ mod tests {
         let mut eng = build_for_test(&cfg);
         // LeftStickY integrator: deadband 0.1, rate 0.7, clamp [0, 1] -> throttle.
         // Below deadband: no change.
-        let below = snap(&[(gilrs::Axis::LeftStickY, 0.05)], &[]);
+        let below = snap(&[(rumoca_input_gamepad::Axis::LeftStickY, 0.05)], &[]);
         eng.process_gamepad(&below, 1.0);
         assert_eq!(eng.get("throttle"), Some(0.0));
 
         // Push stick full forward: 1.0 * 0.7 * dt=0.5 = 0.35 accumulated
-        let full = snap(&[(gilrs::Axis::LeftStickY, 1.0)], &[]);
+        let full = snap(&[(rumoca_input_gamepad::Axis::LeftStickY, 1.0)], &[]);
         eng.process_gamepad(&full, 0.5);
         assert!((eng.get("throttle").unwrap() - 0.35).abs() < 1e-9);
 
@@ -821,14 +806,14 @@ mod tests {
         assert_eq!(eng.get("rc.2"), Some(1000.0));
 
         // Press and release — should toggle armed exactly once.
-        eng.process_gamepad(&snap(&[], &[(gilrs::Button::Start, true)]), 0.01);
+        eng.process_gamepad(&snap(&[], &[(rumoca_input_gamepad::Button::Start, true)]), 0.01);
         assert_eq!(eng.get_bool("armed"), Some(true));
         // Hold: no retrigger.
-        eng.process_gamepad(&snap(&[], &[(gilrs::Button::Start, true)]), 0.01);
+        eng.process_gamepad(&snap(&[], &[(rumoca_input_gamepad::Button::Start, true)]), 0.01);
         assert_eq!(eng.get_bool("armed"), Some(true));
         // Release + press: WOULD toggle again, but debounce blocks (500ms not elapsed).
-        eng.process_gamepad(&snap(&[], &[(gilrs::Button::Start, false)]), 0.01);
-        eng.process_gamepad(&snap(&[], &[(gilrs::Button::Start, true)]), 0.01);
+        eng.process_gamepad(&snap(&[], &[(rumoca_input_gamepad::Button::Start, false)]), 0.01);
+        eng.process_gamepad(&snap(&[], &[(rumoca_input_gamepad::Button::Start, true)]), 0.01);
         assert_eq!(
             eng.get_bool("armed"),
             Some(true),
@@ -845,7 +830,7 @@ mod tests {
         eng.apply_derive();
         assert_eq!(eng.get("rc.2"), Some(1500.0));
 
-        eng.process_gamepad(&snap(&[], &[(gilrs::Button::Start, true)]), 0.01);
+        eng.process_gamepad(&snap(&[], &[(rumoca_input_gamepad::Button::Start, true)]), 0.01);
         assert_eq!(
             eng.get_bool("armed"),
             Some(false),
@@ -858,27 +843,27 @@ mod tests {
         let cfg = load_quadrotor();
         let mut eng = build_for_test(&cfg);
         // reset button: South -> signal "reset"
-        eng.process_gamepad(&snap(&[], &[(gilrs::Button::South, true)]), 0.01);
+        eng.process_gamepad(&snap(&[], &[(rumoca_input_gamepad::Button::South, true)]), 0.01);
         assert!(eng.take_signal("reset"));
         // Already consumed.
         assert!(!eng.take_signal("reset"));
         // Held button: no new emission.
-        eng.process_gamepad(&snap(&[], &[(gilrs::Button::South, true)]), 0.01);
+        eng.process_gamepad(&snap(&[], &[(rumoca_input_gamepad::Button::South, true)]), 0.01);
         assert!(!eng.take_signal("reset"));
     }
 
     // ── Keyboard polling (phase 2d) ───────────────────────────────────────
 
-    fn key(c: char) -> (crossterm::event::KeyCode, crossterm::event::KeyModifiers) {
+    fn key(c: char) -> (rumoca_input_keyboard::KeyCode, rumoca_input_keyboard::KeyModifiers) {
         (
-            crossterm::event::KeyCode::Char(c),
-            crossterm::event::KeyModifiers::NONE,
+            rumoca_input_keyboard::KeyCode::Char(c),
+            rumoca_input_keyboard::KeyModifiers::NONE,
         )
     }
     fn arrow(
-        code: crossterm::event::KeyCode,
-    ) -> (crossterm::event::KeyCode, crossterm::event::KeyModifiers) {
-        (code, crossterm::event::KeyModifiers::NONE)
+        code: rumoca_input_keyboard::KeyCode,
+    ) -> (rumoca_input_keyboard::KeyCode, rumoca_input_keyboard::KeyModifiers) {
+        (code, rumoca_input_keyboard::KeyModifiers::NONE)
     }
 
     #[test]
@@ -954,7 +939,7 @@ mod tests {
         let mut eng = build_for_test(&cfg);
         // Arrow Up sets throttle_input = 1.0 (with decay).
         // Keyboard integrator reads local:throttle_input, rate 0.7, clamp [0, 1] -> throttle.
-        eng.process_keyboard(&[arrow(crossterm::event::KeyCode::Up)], 0.5);
+        eng.process_keyboard(&[arrow(rumoca_input_keyboard::KeyCode::Up)], 0.5);
         // After this poll:
         //   decay runs first (throttle_input was 0, still 0)
         //   event fires: throttle_input = 1.0
