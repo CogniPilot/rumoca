@@ -81,11 +81,14 @@ flate2 = "1.0"
 indexmap = { version = "2.7", features = ["serde"] }
 miette = { version = "7.4", features = ["fancy"] }
 minijinja = { version = "2.5", features = ["debug", "preserve_order"] }
-parol = "4.2"
-parol_runtime = "4.2"
+# The generated parser, parol runtime, and scanner exchange concrete scnr2
+# types. Keep these exact so Cargo cannot resolve a newer parol stack that
+# pulls an incompatible scnr2 minor version.
+parol = "=4.2.2"
+parol_runtime = "=4.2.0"
 rayon = "1.10"
 rustc-hash = "2.0"
-scnr2 = "0.3.3"
+scnr2 = "=0.3.3"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 bincode = "1.3"
