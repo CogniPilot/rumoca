@@ -646,21 +646,37 @@ fn toml_to_i64(v: &toml::Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SimFbConfig;
+    use crate::config::{DeriveSpec, InputConfig, LocalDef, SignalsConfig};
+    use serde::Deserialize;
     use std::path::PathBuf;
 
-    fn load_quadrotor() -> SimFbConfig {
+    /// Minimal subset of the full TOML config needed to exercise the input
+    /// engine in tests — avoids depending on the orchestration-layer config.
+    #[derive(Deserialize, Default)]
+    struct InputSections {
+        #[serde(default)]
+        locals: HashMap<String, LocalDef>,
+        #[serde(default)]
+        derive: HashMap<String, DeriveSpec>,
+        input: Option<InputConfig>,
+        #[allow(dead_code)]
+        #[serde(default)]
+        signals: Option<SignalsConfig>,
+    }
+
+    fn load_quadrotor() -> InputSections {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.parent().unwrap().parent().unwrap();
         let path = root
             .join("examples")
             .join("quadrotor_sil")
             .join("quadrotor.toml");
-        SimFbConfig::load(&path).expect("parse")
+        let text = std::fs::read_to_string(&path).expect("read toml");
+        toml::from_str(&text).expect("parse input sections")
     }
 
     /// Build an engine bypassing device init (which needs gilrs/tty).
-    fn build_for_test(cfg: &SimFbConfig) -> InputEngine {
+    fn build_for_test(cfg: &InputSections) -> InputEngine {
         let input_cfg = cfg.input.as_ref().unwrap();
         let defaults = initialize_locals(&cfg.locals).expect("init locals");
         let compiled = compile::compile(input_cfg, &cfg.derive, &cfg.locals).expect("compile");

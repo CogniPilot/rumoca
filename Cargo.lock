@@ -3264,6 +3264,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-input"
+version = "0.8.12"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "gilrs",
+ "indexmap",
+ "rumoca-codec",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "rumoca-ir-ast"
 version = "0.8.12"
 dependencies = [
@@ -3472,9 +3486,9 @@ version = "0.8.12"
 dependencies = [
  "anyhow",
  "crossterm",
- "gilrs",
  "rumoca-codec",
  "rumoca-codec-flatbuffers",
+ "rumoca-input",
  "rumoca-session",
  "rumoca-solver-diffsol",
  "rumoca-transport-udp",

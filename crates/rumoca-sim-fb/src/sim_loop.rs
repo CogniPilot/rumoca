@@ -24,8 +24,7 @@ use rumoca_transport_udp::{UdpConfig, UdpTransport};
 use rumoca_transport_websocket::run_broadcast_server;
 
 use crate::config::{ResetConfig, SimFbConfig};
-use crate::input_engine::InputEngine;
-use crate::signal_mapper::{RuntimeContext, SignalMapper};
+use rumoca_input::{InputEngine, RuntimeContext, SignalMapper};
 
 const MAX_SUB_DT: f64 = 0.002;
 

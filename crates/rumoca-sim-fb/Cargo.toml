@@ -10,6 +10,7 @@ repository.workspace = true
 # Internal crates
 rumoca-codec = { workspace = true }
 rumoca-codec-flatbuffers = { workspace = true }
+rumoca-input = { workspace = true }
 rumoca-session = { workspace = true }
 rumoca-solver-diffsol = { workspace = true }
 rumoca-transport-udp = { workspace = true }
@@ -23,7 +24,6 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 signal-hook = "0.3"
 crossterm = "0.28"
-gilrs = "0.11"
 
 [lints]
 workspace = true

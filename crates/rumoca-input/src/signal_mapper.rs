@@ -20,7 +20,7 @@ use rumoca_codec::SignalFrame;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::config::{LocalDef, SignalSpec, SignalsConfig};
-use crate::input_engine::{InputEngine, InputMode, Path};
+use crate::engine::{InputEngine, InputMode, Path};
 
 // ── Public types ───────────────────────────────────────────────────────────
 
@@ -343,27 +343,39 @@ fn json_to_f64(v: &JsonValue) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SimFbConfig;
-    use crate::input_engine::InputEngine;
+    use crate::config::{DeriveSpec, InputConfig, LocalDef};
+    use crate::engine::InputEngine;
+    use serde::Deserialize;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    fn load_cfg() -> SimFbConfig {
+    /// Minimal subset of the full TOML config needed for signal-mapper tests.
+    #[derive(Deserialize)]
+    struct Bundle {
+        #[serde(default)]
+        locals: HashMap<String, LocalDef>,
+        #[serde(default)]
+        derive: HashMap<String, DeriveSpec>,
+        input: Option<InputConfig>,
+        signals: Option<SignalsConfig>,
+    }
+
+    fn load_cfg() -> Bundle {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.parent().unwrap().parent().unwrap();
-        SimFbConfig::load(
-            &root
-                .join("examples")
+        let text = std::fs::read_to_string(
+            root.join("examples")
                 .join("quadrotor_sil")
                 .join("quadrotor.toml"),
         )
-        .expect("parse")
+        .expect("read toml");
+        toml::from_str(&text).expect("parse")
     }
 
-    fn build_engine(cfg: &SimFbConfig) -> InputEngine {
+    fn build_engine(cfg: &Bundle) -> InputEngine {
         let defaults =
-            crate::input_engine::initialize_locals(&cfg.locals).expect("init locals");
-        let compiled = crate::input_engine::compile::compile(
+            crate::engine::initialize_locals(&cfg.locals).expect("init locals");
+        let compiled = crate::engine::compile::compile(
             cfg.input.as_ref().unwrap(),
             &cfg.derive,
             &cfg.locals,

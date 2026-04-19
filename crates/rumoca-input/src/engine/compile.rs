@@ -701,9 +701,17 @@ mod tests {
                 .join("examples")
                 .join("quadrotor_sil")
                 .join("quadrotor.toml");
-        let cfg = crate::config::SimFbConfig::load(&root).expect("parse");
-        let input = cfg.input.as_ref().expect("[input]");
-        let compiled = compile(input, &cfg.derive, &cfg.locals).expect("compile");
+        #[derive(serde::Deserialize)]
+        struct Subset {
+            #[serde(default)]
+            locals: HashMap<String, LocalDef>,
+            #[serde(default)]
+            derive: HashMap<String, DeriveSpec>,
+            input: crate::config::InputConfig,
+        }
+        let text = std::fs::read_to_string(&root).expect("read toml");
+        let cfg: Subset = toml::from_str(&text).expect("parse");
+        let compiled = compile(&cfg.input, &cfg.derive, &cfg.locals).expect("compile");
         // Quadrotor config expectations.
         assert_eq!(compiled.gamepad_axes.len(), 3);
         assert_eq!(compiled.gamepad_integrators.len(), 1);
