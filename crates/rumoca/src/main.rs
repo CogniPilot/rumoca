@@ -86,9 +86,9 @@ enum Commands {
     },
     /// Manage workspace-side Rumoca project sidecars
     Project(ProjectArgs),
-    /// Run the FlatBuffer lockstep simulation app with 3D viewer
+    /// Run, validate, or scaffold a lockstep simulation config
     #[cfg(feature = "sim-fb")]
-    SimFb(SimFbArgs),
+    Sim(SimCommandArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -121,24 +121,38 @@ struct ProjectSyncArgs {
 
 #[cfg(feature = "sim-fb")]
 #[derive(Args, Debug)]
-struct SimFbArgs {
-    /// Modelica file containing the plant model
-    #[arg(name = "MODELICA_FILE")]
-    model_file: String,
+struct SimCommandArgs {
+    #[command(subcommand)]
+    command: SimSubcommand,
+}
 
-    /// Model name to simulate (auto-inferred when omitted)
+#[cfg(feature = "sim-fb")]
+#[derive(Subcommand, Debug)]
+enum SimSubcommand {
+    /// Run a lockstep simulation from a TOML config
+    Run(SimRunArgs),
+    /// Validate a config file without running
+    Check(SimCheckArgs),
+    /// Print a fully-commented template config to stdout
+    Init,
+}
+
+#[cfg(feature = "sim-fb")]
+#[derive(Args, Debug)]
+struct SimRunArgs {
+    /// Path to the simulation config TOML
     #[arg(short, long)]
-    model: Option<String>,
-
-    /// Path to sim-fb config TOML (schema paths, UDP ports, field routing)
-    #[arg(long)]
     config: String,
 
-    /// Path to a scene script (.js) for 3D visualization (default: quadrotor)
+    /// Override [model].file from the config
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Override [transport.http].scene from the config (.js scene script)
     #[arg(long)]
     scene: Option<String>,
 
-    /// Enable debug overlays, L/Y log download, and P render log in browser
+    /// Enable debug overlays, log download, and P render log in browser
     #[arg(long)]
     debug: bool,
 
@@ -149,6 +163,14 @@ struct SimFbArgs {
     /// WebSocket proxy port
     #[arg(long, default_value = "8081")]
     ws_port: u16,
+}
+
+#[cfg(feature = "sim-fb")]
+#[derive(Args, Debug)]
+struct SimCheckArgs {
+    /// Path to the simulation config TOML
+    #[arg(short, long)]
+    config: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -450,7 +472,11 @@ fn try_main() -> Result<()> {
         }
         Commands::Project(args) => run_project(args),
         #[cfg(feature = "sim-fb")]
-        Commands::SimFb(args) => run_sim_fb(args),
+        Commands::Sim(args) => match args.command {
+            SimSubcommand::Run(run_args) => run_sim_run(run_args),
+            SimSubcommand::Check(check_args) => run_sim_check(check_args),
+            SimSubcommand::Init => run_sim_init(),
+        },
     }
 }
 
@@ -643,27 +669,65 @@ fn parse_move_hints(raw_moves: &[String]) -> Result<Vec<ProjectFileMoveHint>> {
 }
 
 #[cfg(feature = "sim-fb")]
-fn run_sim_fb(args: SimFbArgs) -> Result<()> {
-    let model_source = std::fs::read_to_string(&args.model_file)
-        .with_context(|| format!("Read model file: {}", args.model_file))?;
-
-    let model_name = args.model.unwrap_or_else(|| {
-        Path::new(&args.model_file)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Model")
-            .to_string()
-    });
-
+fn run_sim_run(args: SimRunArgs) -> Result<()> {
     let config = rumoca_session::config::SimulationConfig::load(Path::new(&args.config))
-        .with_context(|| format!("Load sim-fb config: {}", args.config))?;
+        .with_context(|| format!("Load sim config: {}", args.config))?;
 
-    // Load scene script if provided
-    let scene_script = match args.scene {
-        Some(path) => Some(
-            std::fs::read_to_string(&path)
-                .with_context(|| format!("Read scene script: {}", path))?,
-        ),
+    // Resolve model file: --model override > config [model].file.
+    let config_dir = Path::new(&args.config).parent().unwrap_or(Path::new("."));
+    let model_path_str = args
+        .model
+        .clone()
+        .or_else(|| config.model.as_ref().map(|m| m.file.clone()))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no model specified: provide --model <path> or a [model].file in the config"
+            )
+        })?;
+    let model_path = {
+        let p = Path::new(&model_path_str);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            config_dir.join(p)
+        }
+    };
+    let model_source = std::fs::read_to_string(&model_path)
+        .with_context(|| format!("Read model file: {}", model_path.display()))?;
+
+    let model_name = config
+        .model
+        .as_ref()
+        .map(|m| m.name.clone())
+        .or_else(|| {
+            model_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(String::from)
+        })
+        .unwrap_or_else(|| "Model".to_string());
+
+    // Resolve scene: --scene override > [transport.http].scene in the config.
+    let scene_ref = args.scene.clone().or_else(|| {
+        config
+            .transport
+            .as_ref()
+            .and_then(|t| t.http.as_ref())
+            .and_then(|h| h.scene.clone())
+    });
+    let scene_script = match scene_ref {
+        Some(rel) => {
+            let scene_path = Path::new(&rel);
+            let scene_full = if scene_path.is_absolute() {
+                scene_path.to_path_buf()
+            } else {
+                config_dir.join(scene_path)
+            };
+            Some(
+                std::fs::read_to_string(&scene_full)
+                    .with_context(|| format!("Read scene script: {}", scene_full.display()))?,
+            )
+        }
         None => None,
     };
 
@@ -676,6 +740,21 @@ fn run_sim_fb(args: SimFbArgs) -> Result<()> {
         scene_script,
         debug: args.debug,
     })
+}
+
+#[cfg(feature = "sim-fb")]
+fn run_sim_check(args: SimCheckArgs) -> Result<()> {
+    let _config = rumoca_session::config::SimulationConfig::load(Path::new(&args.config))
+        .with_context(|| format!("Load sim config: {}", args.config))?;
+    println!("{}: config OK", args.config);
+    Ok(())
+}
+
+#[cfg(feature = "sim-fb")]
+fn run_sim_init() -> Result<()> {
+    const TEMPLATE: &str = include_str!("sim_fb/template.toml");
+    print!("{TEMPLATE}");
+    Ok(())
 }
 
 fn run_compile(args: CompileArgs) -> Result<()> {
