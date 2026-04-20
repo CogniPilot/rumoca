@@ -57,6 +57,17 @@ pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
 pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 1;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
+pub(super) const FORCE_OMC_PARITY_REFRESH_ENV: &str = "RUMOCA_MSL_FORCE_OMC_PARITY_REFRESH";
+pub(super) const OMC_PARITY_WORKERS_ENV: &str = "RUMOCA_MSL_OMC_PARITY_WORKERS";
+pub(super) const OMC_SIM_REFERENCE_BATCH_TIMEOUT_ENV: &str =
+    "RUMOCA_MSL_OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECS";
+/// Default OMC worker cap for parity reference generation.
+///
+/// OMC is often accessed through a Docker-backed wrapper on macOS. Running one
+/// OMC process per local CPU can make otherwise quick Clocked examples hit the
+/// per-model timeout and collapse trace coverage. Keep this conservative by
+/// default; developers can still override it with `RUMOCA_MSL_OMC_PARITY_WORKERS`.
+pub(super) const OMC_PARITY_WORKERS_DEFAULT_MAX: usize = 2;
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
 pub(super) const MSL_QUALITY_CURRENT_FILE_REL: &str = "msl_quality_current.json";
 pub(super) const MSL_SIM_TARGETS_FILE_REL: &str = "msl_simulation_targets.json";
@@ -859,6 +870,7 @@ struct ParityStepContext {
     omc_version: String,
     workers: usize,
     omc_threads: usize,
+    sim_batch_timeout_seconds: u64,
 }
 
 fn run_simulation_parity_reference_command(
@@ -879,7 +891,7 @@ fn run_simulation_parity_reference_command(
         "--rumoca-sim-ok-only".to_string(),
         "--use-experiment-stop-time".to_string(),
         "--model-timeout-seconds".to_string(),
-        OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS.to_string(),
+        context.sim_batch_timeout_seconds.to_string(),
         "--workers".to_string(),
         context.workers.to_string(),
         "--omc-threads".to_string(),
@@ -905,7 +917,11 @@ fn ensure_simulation_parity_reference(
         "parity_simulation_reference",
         OMC_SIM_REFERENCE_STAGE_TIMEOUT_SECONDS,
     );
-    let sim_policy = current_simulation_parity_cache_policy();
+    let sim_policy = current_simulation_parity_cache_policy(
+        context.workers,
+        context.omc_threads,
+        context.sim_batch_timeout_seconds,
+    );
     let omc_simulation_reference = omc_simulation_reference_path();
     let sim_cache_key = simulation_parity_cache_key(
         sim_targets,
@@ -981,11 +997,13 @@ pub(super) fn ensure_required_msl_parity_references(summary: &MslSummary) -> io:
         omc_version,
         workers: omc_parity_workers(),
         omc_threads: omc_parity_threads(),
+        sim_batch_timeout_seconds: omc_sim_reference_batch_timeout_seconds(),
     };
     println!(
-        "MSL parity targets: simulation={} (workers={})",
+        "MSL parity targets: simulation={} (workers={}, sim_timeout={}s)",
         sim_targets.len(),
-        context.workers
+        context.workers,
+        context.sim_batch_timeout_seconds
     );
 
     // The OMC reference comes solely from the persistent-zmq simulation pass,

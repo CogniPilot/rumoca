@@ -59,8 +59,24 @@ pub(super) fn parity_target_set_cache_key(
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct SimulationParityCachePolicy {
     pub(super) batch_timeout_seconds: u64,
+    pub(super) workers: usize,
+    pub(super) omc_threads: usize,
     pub(super) use_experiment_stop_time: bool,
     pub(super) stop_time_override: Option<f64>,
+}
+
+fn positive_usize_env(env_key: &str) -> Option<usize> {
+    std::env::var(env_key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn positive_u64_env(env_key: &str) -> Option<u64> {
+    std::env::var(env_key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
 }
 
 pub(super) fn simulation_stop_time_override() -> Option<f64> {
@@ -68,10 +84,21 @@ pub(super) fn simulation_stop_time_override() -> Option<f64> {
     None
 }
 
-pub(super) fn current_simulation_parity_cache_policy() -> SimulationParityCachePolicy {
+pub(super) fn omc_sim_reference_batch_timeout_seconds() -> u64 {
+    positive_u64_env(OMC_SIM_REFERENCE_BATCH_TIMEOUT_ENV)
+        .unwrap_or(OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS)
+}
+
+pub(super) fn current_simulation_parity_cache_policy(
+    workers: usize,
+    omc_threads: usize,
+    batch_timeout_seconds: u64,
+) -> SimulationParityCachePolicy {
     let stop_time_override = simulation_stop_time_override();
     SimulationParityCachePolicy {
-        batch_timeout_seconds: OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS,
+        batch_timeout_seconds,
+        workers,
+        omc_threads,
         use_experiment_stop_time: stop_time_override.is_none(),
         stop_time_override,
     }
@@ -98,6 +125,10 @@ pub(super) fn simulation_parity_cache_key(
     hash = fnv1a64_update(hash, &[0xfc]);
     hash = fnv1a64_update(hash, policy.batch_timeout_seconds.to_string().as_bytes());
     hash = fnv1a64_update(hash, &[0xfb]);
+    hash = fnv1a64_update(hash, policy.workers.to_string().as_bytes());
+    hash = fnv1a64_update(hash, &[0xf9]);
+    hash = fnv1a64_update(hash, policy.omc_threads.to_string().as_bytes());
+    hash = fnv1a64_update(hash, &[0xf8]);
     hash = fnv1a64_update(hash, &[u8::from(policy.use_experiment_stop_time)]);
     hash = fnv1a64_update(hash, &[0xfa]);
     if let Some(stop_time_override) = policy.stop_time_override {
@@ -322,6 +353,22 @@ pub(super) fn simulation_parity_cache_matches(
     if batch_timeout_seconds != Some(policy.batch_timeout_seconds) {
         return Ok(false);
     }
+    let workers_used = payload
+        .get("timing")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|timing| timing.get("workers_used"))
+        .and_then(serde_json::Value::as_u64);
+    if workers_used != Some(policy.workers as u64) {
+        return Ok(false);
+    }
+    let omc_threads = payload
+        .get("timing")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|timing| timing.get("omc_threads"))
+        .and_then(serde_json::Value::as_u64);
+    if omc_threads != Some(policy.omc_threads as u64) {
+        return Ok(false);
+    }
     let use_experiment_stop_time = payload
         .get("use_experiment_stop_time")
         .and_then(serde_json::Value::as_bool);
@@ -372,7 +419,8 @@ where
 }
 
 pub(super) fn omc_parity_workers() -> usize {
-    msl_stage_parallelism()
+    positive_usize_env(OMC_PARITY_WORKERS_ENV)
+        .unwrap_or_else(|| msl_stage_parallelism().clamp(1, OMC_PARITY_WORKERS_DEFAULT_MAX))
 }
 
 pub(super) fn omc_parity_threads() -> usize {
@@ -380,5 +428,10 @@ pub(super) fn omc_parity_threads() -> usize {
 }
 
 pub(super) fn force_omc_parity_refresh_enabled() -> bool {
-    false
+    std::env::var(FORCE_OMC_PARITY_REFRESH_ENV).is_ok_and(|value| {
+        value == "1"
+            || value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("yes")
+            || value.eq_ignore_ascii_case("on")
+    })
 }
