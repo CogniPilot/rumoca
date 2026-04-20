@@ -74,6 +74,37 @@ pub struct SimConfig {
     pub realtime: bool,
     #[serde(default)]
     pub test: bool,
+    /// Outer-loop pacing mode.
+    ///
+    /// - `lockstep`: block on each inbound autopilot packet; one physics
+    ///   step per packet. Deterministic; the autopilot paces the sim.
+    ///   Default when autopilot coupling is configured.
+    /// - `free_run`: non-blocking drain every `dt`; wall-clock paced.
+    ///   The only option that makes sense for standalone mode.
+    ///   Default when no autopilot / FB sections are configured.
+    #[serde(default)]
+    pub mode: Option<SimMode>,
+}
+
+/// Outer-loop pacing mode. See [`SimConfig::mode`].
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SimMode {
+    Lockstep,
+    FreeRun,
+}
+
+impl SimMode {
+    /// Resolve the effective mode: explicit config takes priority,
+    /// otherwise defaults to lockstep iff autopilot coupling is present.
+    #[must_use]
+    pub fn resolve(explicit: Option<SimMode>, has_fb: bool) -> SimMode {
+        explicit.unwrap_or(if has_fb {
+            SimMode::Lockstep
+        } else {
+            SimMode::FreeRun
+        })
+    }
 }
 
 fn default_dt() -> f64 {

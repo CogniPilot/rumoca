@@ -23,7 +23,7 @@ use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 use rumoca_transport_udp::{UdpConfig, UdpTransport};
 use rumoca_transport_websocket::run_broadcast_server;
 
-use rumoca_session::config::{ResetConfig, SimulationConfig};
+use rumoca_session::config::{ResetConfig, SimMode, SimulationConfig};
 use rumoca_input::{InputEngine, RuntimeContext, SignalMapper};
 
 const MAX_SUB_DT: f64 = 0.002;
@@ -105,6 +105,7 @@ struct FrameCtx<'a> {
     model_name: &'a str,
     debug: bool,
     dt: f64,
+    mode: SimMode,
 }
 
 /// Mutable per-frame state that carries across iterations.
@@ -155,6 +156,14 @@ pub(crate) fn run_sim_loop(
     let realtime_ws = Arc::clone(&realtime);
     thread::spawn(move || run_broadcast_server(ws_port, state_rx, realtime_ws));
 
+    let mode = SimMode::resolve(cfg.sim.mode, cfg.has_fb());
+    eprintln!(
+        "  Pacing: {}",
+        match mode {
+            SimMode::Lockstep => "lockstep (autopilot-paced)",
+            SimMode::FreeRun => "free-run (wall-clock paced)",
+        }
+    );
     eprintln!("\nReady. Simulation running.");
 
     // ── Loop ──────────────────────────────────────────────────────────────
@@ -169,6 +178,7 @@ pub(crate) fn run_sim_loop(
         model_name,
         debug,
         dt: cfg.sim.dt,
+        mode,
     };
     let mut state = FrameState {
         recv_buf: [0u8; 512],
@@ -219,7 +229,7 @@ impl FrameCtx<'_> {
     ) -> Result<FrameControl> {
         let frame_start = Instant::now();
 
-        // Poll input and handle engine-emitted signals.
+        // Poll input + handle engine-emitted signals (shared).
         let poll_dt = state.last_poll.elapsed().as_secs_f64();
         state.last_poll = Instant::now();
         engine.poll(poll_dt);
@@ -227,13 +237,58 @@ impl FrameCtx<'_> {
             return Ok(FrameControl::Break);
         }
 
-        // Drain UDP → stepper/locals, then step physics.
-        self.drain_udp(state, stepper, engine);
+        // Mode-specific receive + step gate.
+        //   free_run: drain non-blocking, always step
+        //   lockstep: block for one packet; if timeout, skip step entirely
+        match self.mode {
+            SimMode::FreeRun => {
+                self.drain_udp(state, stepper, engine);
+            }
+            SimMode::Lockstep => {
+                if !self.wait_for_command(state, stepper, engine) {
+                    // No command arrived within socket timeout — try again,
+                    // physics stays paused (lockstep semantics).
+                    return Ok(FrameControl::Continue);
+                }
+            }
+        }
         step_substeps(stepper, self.dt);
 
-        // Build all outgoing payloads first while holding an immutable
-        // borrow on stepper (via the rt closure), then drop the borrow and
-        // apply stepper_inputs / send FB / push JSON.
+        self.emit_payloads(state, stepper, engine)?;
+
+        // Status line (~1 Hz) — in lockstep the period is approximate since
+        // frame rate depends on autopilot pacing.
+        let status_period = (1.0_f64 / self.dt).max(1.0) as u64;
+        if state.frame_num.is_multiple_of(status_period) {
+            eprint!(
+                "\r[sim] t={:.1}s frame={} pkts={}            ",
+                stepper.time(),
+                state.frame_num,
+                state.pkt_count
+            );
+        }
+
+        // Realtime pacing: free-run only. Lockstep is paced by the autopilot,
+        // so wall-clock sleep would starve physics of commands.
+        if matches!(self.mode, SimMode::FreeRun) && self.realtime.load(Ordering::Relaxed) {
+            let elapsed = frame_start.elapsed();
+            let target = Duration::from_secs_f64(self.dt);
+            if elapsed < target {
+                thread::sleep(target - elapsed);
+            }
+        }
+        state.frame_num += 1;
+        Ok(FrameControl::Continue)
+    }
+
+    /// Build payloads + apply stepper_inputs + send FB + push viewer JSON.
+    /// Shared by both free-run and lockstep paths.
+    fn emit_payloads(
+        &self,
+        state: &mut FrameState,
+        stepper: &mut SimStepper,
+        engine: &mut InputEngine,
+    ) -> Result<()> {
         let wall_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -254,38 +309,38 @@ impl FrameCtx<'_> {
             let json = self.mapper.build_viewer_json(engine, &rt);
             (stepper_inputs, send_frame, json)
         };
-
-        // Apply stepper_inputs (standalone mode: drive model inputs from locals).
         for (name, val) in stepper_inputs {
             let _ = stepper.set_input(&name, val);
         }
-
-        // Send outgoing FB frame to autopilot (if coupled).
         if let (Some(fb), Some(frame)) = (self.fb, send_frame) {
             fb.udp.send(&fb.pack.pack(&frame));
         }
-
         let _ = self.state_tx.send(json);
+        Ok(())
+    }
 
-        // Status line (~1 Hz) and realtime pacing.
-        let status_period = (1.0_f64 / self.dt).max(1.0) as u64;
-        if state.frame_num.is_multiple_of(status_period) {
-            eprint!(
-                "\r[sim] t={:.1}s frame={} pkts={}            ",
-                stepper.time(),
-                state.frame_num,
-                state.pkt_count
-            );
+    /// Lockstep receive: block for one packet, apply to stepper/locals.
+    /// Returns `true` if a packet was consumed, `false` on timeout.
+    fn wait_for_command(
+        &self,
+        state: &mut FrameState,
+        stepper: &mut SimStepper,
+        engine: &mut InputEngine,
+    ) -> bool {
+        let Some(fb) = self.fb else {
+            // No FB transport configured — caller shouldn't use lockstep
+            // mode in standalone; treat as "packet arrived" so we step.
+            return true;
+        };
+        let Some(n) = fb.udp.recv_blocking(&mut state.recv_buf) else {
+            return false;
+        };
+        state.pkt_count += 1;
+        if n == fb.recv_expected {
+            let values = fb.unpack.unpack(&state.recv_buf[..n]);
+            apply_received(&values, stepper, engine);
         }
-        if self.realtime.load(Ordering::Relaxed) {
-            let elapsed = frame_start.elapsed();
-            let target = Duration::from_secs_f64(self.dt);
-            if elapsed < target {
-                thread::sleep(target - elapsed);
-            }
-        }
-        state.frame_num += 1;
-        Ok(FrameControl::Continue)
+        true
     }
 
     fn handle_signals(

@@ -47,6 +47,13 @@ impl UdpTransport {
         self.socket.set_nonblocking(false).ok();
     }
 
+    /// Block until a datagram arrives or the socket's read timeout fires.
+    /// Returns the byte count, or `None` on timeout/error. Used by lockstep
+    /// loops where each physics step is gated on an inbound packet.
+    pub fn recv_blocking(&self, buf: &mut [u8]) -> Option<usize> {
+        self.socket.recv_from(buf).ok().map(|(n, _)| n)
+    }
+
     /// Send one datagram to the configured destination. Errors are swallowed
     /// — lockstep loops should not abort on transient UDP send failures.
     pub fn send(&self, data: &[u8]) {

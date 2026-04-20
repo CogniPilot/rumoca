@@ -21,7 +21,13 @@ name = "MyVehicle"
 # ── Simulation ────────────────────────────────────────────────────────────
 [sim]
 dt = 0.01           # simulation timestep in seconds
-realtime = true     # true = wall-clock paced; false = fast-as-possible
+realtime = true     # true = wall-clock paced (free-run only); false = fast-as-possible
+# mode = "lockstep" # Optional outer-loop pacing:
+                    #   "lockstep" — block on each autopilot packet, one step
+                    #                per packet. Deterministic; autopilot paces
+                    #                the sim. Default when autopilot-coupled.
+                    #   "free_run" — non-blocking drain, wall-clock paced.
+                    #                Default for standalone mode.
 
 # ── Transports ────────────────────────────────────────────────────────────
 # HTTP + WebSocket always needed for the viewer.
