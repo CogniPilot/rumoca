@@ -417,6 +417,19 @@ mod tests {
     }
 
     #[test]
+    fn test_lookup_with_scope_suffix_index_sees_keys_added_after_build() {
+        let mut ctx = TypeCheckEvalContext::new();
+        ctx.add_integer("seed.nX", 1_i64);
+        ctx.build_suffix_index();
+        ctx.add_integer("fresh.nXi", 0_i64);
+
+        assert_eq!(
+            lookup_with_scope("nXi", "", &ctx.integers, ctx.suffix_index.as_ref()),
+            Some(&0_i64)
+        );
+    }
+
+    #[test]
     fn test_infer_dims_component_ref_dotted_does_not_leaf_fallback() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_dimensions("sys.arr", vec![7]);

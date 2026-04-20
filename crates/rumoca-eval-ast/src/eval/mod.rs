@@ -270,6 +270,20 @@ impl SuffixIndex {
     fn key(&self, idx: usize) -> &str {
         self.keys[idx].as_str()
     }
+
+    fn insert_key(&mut self, key: String) {
+        if self.keys.iter().any(|existing| existing == &key) {
+            return;
+        }
+        let key_idx = self.keys.len();
+        index_key_suffixes(
+            &key,
+            key_idx,
+            &mut self.keys_by_suffix,
+            &mut self.keys_by_dotted_suffix,
+        );
+        self.keys.push(key);
+    }
 }
 
 fn index_key_suffixes(
@@ -372,15 +386,86 @@ impl TypeCheckEvalContext {
     }
 
     pub fn add_integer(&mut self, name: impl Into<String>, value: i64) {
-        self.integers.insert(name.into(), value);
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.integers.insert(name, value);
+    }
+
+    pub fn add_integer_if_absent(&mut self, name: impl Into<String>, value: i64) {
+        let name = name.into();
+        if !self.integers.contains_key(&name) {
+            self.add_integer(name, value);
+        }
     }
 
     pub fn add_real(&mut self, name: impl Into<String>, value: f64) {
-        self.reals.insert(name.into(), value);
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.reals.insert(name, value);
+    }
+
+    pub fn add_real_if_absent(&mut self, name: impl Into<String>, value: f64) {
+        let name = name.into();
+        if !self.reals.contains_key(&name) {
+            self.add_real(name, value);
+        }
+    }
+
+    pub fn add_boolean(&mut self, name: impl Into<String>, value: bool) {
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.booleans.insert(name, value);
+    }
+
+    pub fn add_boolean_if_absent(&mut self, name: impl Into<String>, value: bool) {
+        let name = name.into();
+        if !self.booleans.contains_key(&name) {
+            self.add_boolean(name, value);
+        }
+    }
+
+    pub fn add_enum(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.enums.insert(name, value.into());
     }
 
     pub fn add_dimensions(&mut self, name: impl Into<String>, dims: Vec<usize>) {
-        self.dimensions.insert(name.into(), dims);
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.dimensions.insert(name, dims);
+    }
+
+    pub fn add_enum_size(&mut self, name: impl Into<String>, size: usize) {
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.enum_sizes.insert(name, size);
+    }
+
+    pub fn add_enum_size_if_absent(&mut self, name: impl Into<String>, size: usize) {
+        let name = name.into();
+        if !self.enum_sizes.contains_key(&name) {
+            self.add_enum_size(name, size);
+        }
+    }
+
+    pub fn add_enum_ordinal(&mut self, name: impl Into<String>, ordinal: i64) {
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.enum_ordinals.insert(name, ordinal);
+    }
+
+    pub fn add_enum_ordinal_if_absent(&mut self, name: impl Into<String>, ordinal: i64) {
+        let name = name.into();
+        if !self.enum_ordinals.contains_key(&name) {
+            self.add_enum_ordinal(name, ordinal);
+        }
+    }
+
+    fn add_suffix_index_key(&mut self, name: &str) {
+        if let Some(index) = &mut self.suffix_index {
+            index.insert_key(name.to_string());
+        }
     }
 
     pub fn get_integer(&self, name: &str) -> Option<i64> {

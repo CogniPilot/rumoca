@@ -275,12 +275,12 @@ impl TypeChecker {
                 && let Some(value) =
                     rumoca_eval_ast::eval::eval_boolean_with_scope(binding, &self.eval_ctx, scope)
             {
-                self.eval_ctx.booleans.insert(name.clone(), value);
+                self.eval_ctx.add_boolean(&name, value);
             } else if let Some(ref start) = instance_data.start
                 && let Some(value) =
                     rumoca_eval_ast::eval::eval_boolean_with_scope(start, &self.eval_ctx, scope)
             {
-                self.eval_ctx.booleans.insert(name.clone(), value);
+                self.eval_ctx.add_boolean(&name, value);
             }
 
             // Try real (binding then start)
@@ -288,12 +288,12 @@ impl TypeChecker {
                 && let Some(value) =
                     rumoca_eval_ast::eval::eval_real_with_scope(binding, &self.eval_ctx, scope)
             {
-                self.eval_ctx.reals.insert(name.clone(), value);
+                self.eval_ctx.add_real(&name, value);
             } else if let Some(ref start) = instance_data.start
                 && let Some(value) =
                     rumoca_eval_ast::eval::eval_real_with_scope(start, &self.eval_ctx, scope)
             {
-                self.eval_ctx.reals.insert(name.clone(), value);
+                self.eval_ctx.add_real(&name, value);
             }
 
             // Try enumeration (binding then start)
@@ -301,11 +301,11 @@ impl TypeChecker {
             if let Some(ref binding) = instance_data.binding
                 && let Some(value) = rumoca_eval_ast::eval::extract_enum_value(binding)
             {
-                self.eval_ctx.enums.insert(name.clone(), value);
+                self.eval_ctx.add_enum(&name, value);
             } else if let Some(ref start) = instance_data.start
                 && let Some(value) = rumoca_eval_ast::eval::extract_enum_value(start)
             {
-                self.eval_ctx.enums.insert(name.clone(), value);
+                self.eval_ctx.add_enum(&name, value);
             }
 
             // Pre-populate dimensions from overlay if already known
@@ -321,6 +321,9 @@ impl TypeChecker {
         // When an enumeration type is used as a dimension (e.g., `Real x[Logic]`),
         // the size of that dimension is the number of enumeration literals.
         Self::collect_enum_sizes(tree, &mut self.eval_ctx);
+        // MLS §7.3: later constant extraction performs many suffix lookups on
+        // real libraries; seed the index before walking import/extends chains.
+        self.eval_ctx.build_suffix_index();
 
         // Collect integer/real constants from imported classes (MLS §13.2).
         // This handles patterns like `import generator = ...Xorshift128plus;`
@@ -994,10 +997,10 @@ impl TypeChecker {
             if size == 0 {
                 continue;
             }
-            ctx.enum_sizes.insert(name.clone(), size);
+            ctx.add_enum_size(name.clone(), size);
             // Also add short name (last segment after dot)
             let short = top_level_last_segment(name);
-            ctx.enum_sizes.entry(short.to_string()).or_insert(size);
+            ctx.add_enum_size_if_absent(short, size);
             // Populate enum ordinals (MLS §4.9.5: ordinal is 1-based position)
             Self::collect_enum_ordinals(tree, def_id, name, ctx);
         }
@@ -1043,12 +1046,10 @@ impl TypeChecker {
             let lit_name = &*literal.ident.text;
             // Full qualified: "TypeName.LiteralName"
             let full = format!("{}.{}", type_name, lit_name);
-            ctx.enum_ordinals.insert(full, ordinal);
+            ctx.add_enum_ordinal(full, ordinal);
             // Short form: just the literal name (for unqualified references)
             // Only insert if not already present (avoid conflicts)
-            ctx.enum_ordinals
-                .entry(lit_name.to_string())
-                .or_insert(ordinal);
+            ctx.add_enum_ordinal_if_absent(lit_name, ordinal);
         }
     }
 
@@ -1072,7 +1073,7 @@ impl TypeChecker {
         for (name, def_id) in pairs {
             let size = Self::enum_literal_count(tree, def_id);
             if size > 0 {
-                ctx.enum_sizes.entry(name.clone()).or_insert(size);
+                ctx.add_enum_size_if_absent(name.clone(), size);
                 // Also populate ordinals for import aliases
                 Self::collect_enum_ordinals(tree, def_id, &name, ctx);
             }
@@ -1418,15 +1419,15 @@ impl TypeChecker {
             };
 
             if let Some(val) = rumoca_eval_ast::eval::eval_integer_with_scope(value, ctx, alias) {
-                ctx.integers.insert(full_name.clone(), val);
+                ctx.add_integer(&full_name, val);
             }
             if let Some(val) = rumoca_eval_ast::eval::eval_boolean_with_scope(value, ctx, alias) {
-                ctx.booleans.insert(full_name.clone(), val);
+                ctx.add_boolean(&full_name, val);
             }
             if let Some(dims) =
                 rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(value, ctx, alias)
             {
-                ctx.dimensions.insert(full_name, dims);
+                ctx.add_dimensions(full_name, dims);
             }
         }
     }
@@ -1486,14 +1487,14 @@ impl TypeChecker {
         }
         // Use explicit shape if available and non-empty
         if !shape.is_empty() {
-            ctx.dimensions.insert(full_name.to_string(), shape.to_vec());
+            ctx.add_dimensions(full_name, shape.to_vec());
             return;
         }
         // Try to infer dimensions from the binding expression
         if let Some(dims) =
             rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(binding, ctx, scope)
         {
-            ctx.dimensions.insert(full_name.to_string(), dims);
+            ctx.add_dimensions(full_name, dims);
         }
     }
 
@@ -1509,18 +1510,18 @@ impl TypeChecker {
             "Integer" => {
                 if let Some(val) = rumoca_eval_ast::eval::eval_integer_with_scope(expr, ctx, scope)
                 {
-                    ctx.integers.entry(full_name.to_string()).or_insert(val);
+                    ctx.add_integer_if_absent(full_name, val);
                 }
             }
             "Real" => {
                 if let Some(val) = rumoca_eval_ast::eval::eval_real_with_scope(expr, ctx, scope) {
-                    ctx.reals.entry(full_name.to_string()).or_insert(val);
+                    ctx.add_real_if_absent(full_name, val);
                 }
             }
             "Boolean" => {
                 if let Some(val) = rumoca_eval_ast::eval::eval_boolean_with_scope(expr, ctx, scope)
                 {
-                    ctx.booleans.entry(full_name.to_string()).or_insert(val);
+                    ctx.add_boolean_if_absent(full_name, val);
                 }
             }
             _ => {}
