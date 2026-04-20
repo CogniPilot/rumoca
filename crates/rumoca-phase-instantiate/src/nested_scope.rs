@@ -218,8 +218,10 @@ pub(super) fn shift_modifications_down(ctx: &mut InstantiateContext, comp_name: 
 
 /// Remap a class-redeclare modifier target to the active enclosing override.
 ///
-/// MLS §7.3: `redeclare package Medium = Medium` inside component modifiers should
-/// forward to the enclosing class's active `Medium` redeclare, not the local default.
+/// MLS §7.3: `redeclare package Medium = Medium` and
+/// `redeclare package Medium = MediumAir` inside component modifiers should
+/// forward through active enclosing package aliases, not the local replaceable
+/// defaults declared on the component class.
 pub(super) fn remap_redeclare_class_modifier(
     tree: &ast::ClassTree,
     mod_expr: &ast::Expression,
@@ -237,11 +239,14 @@ pub(super) fn remap_redeclare_class_modifier(
     let Some(last) = target.parts.last() else {
         return mod_expr.clone();
     };
-    if last.ident.text.as_ref() != target_name {
-        return mod_expr.clone();
-    }
+    let rhs_name = last.ident.text.as_ref();
+    let override_name = if rhs_name == target_name {
+        target_name
+    } else {
+        rhs_name
+    };
 
-    let Some(&override_def_id) = type_overrides.get(target_name) else {
+    let Some(&override_def_id) = type_overrides.get(override_name) else {
         return mod_expr.clone();
     };
     if target.def_id == Some(override_def_id) {

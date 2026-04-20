@@ -58,6 +58,7 @@ end PartialMedium;
 
 package RealMedium
   extends PartialMedium;
+  constant String extraPropertiesNames[:] = fill("", 0);
 
   redeclare model extends BaseProperties
     Real R_s;
@@ -1114,6 +1115,100 @@ end P;
         dims,
         vec![1],
         "s.port.C_outflow should use MediumCO2.nC through the forwarding redeclare"
+    );
+}
+
+/// MLS §7.3: chained forwarding redeclares inside component instances must keep
+/// the active package override when a nested component instantiates
+/// `Medium.BaseProperties`.
+#[test]
+fn test_component_redeclare_chain_instantiates_concrete_baseproperties() {
+    let source = r#"
+package PartialMedium
+  replaceable partial model BaseProperties
+    Real p;
+    Real h;
+    Real d;
+  equation
+    d = p + h;
+  end BaseProperties;
+end PartialMedium;
+
+package RealMedium
+  extends PartialMedium;
+
+  redeclare replaceable model BaseProperties
+    Real p;
+    Real h;
+    Real d;
+    Real marker;
+  equation
+    d = p + h;
+    marker = d - p;
+  end BaseProperties;
+end RealMedium;
+
+model Volume
+  replaceable package Medium = PartialMedium;
+
+  model Balance
+    replaceable package Medium = PartialMedium;
+    Medium.BaseProperties medium;
+  equation
+    medium.p = 3;
+    medium.h = 2;
+  end Balance;
+
+  Balance dynBal(redeclare package Medium = Medium);
+end Volume;
+
+partial model MediumCarrier
+  replaceable package Medium = PartialMedium;
+end MediumCarrier;
+
+partial model PortCarrier
+  replaceable package Medium = PartialMedium;
+end PortCarrier;
+
+model FanBase
+  extends MediumCarrier;
+  extends PortCarrier;
+  Volume vol(redeclare package Medium = Medium);
+end FanBase;
+
+model Top
+  package MediumAir = RealMedium(extraPropertiesNames = {"CO2"});
+
+  model AirHandler
+    replaceable package MediumAir = PartialMedium;
+    FanBase fan(redeclare package Medium = MediumAir);
+  end AirHandler;
+
+  AirHandler ahu(redeclare package MediumAir = MediumAir);
+  Real y;
+equation
+  y = ahu.fan.vol.dynBal.medium.marker;
+end Top;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("Top").expect("compile failed");
+
+    let flat_var_names: Vec<_> = result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert!(
+        flat_var_names
+            .iter()
+            .any(|name| name == "ahu.fan.vol.dynBal.medium.marker"),
+        "nested Medium.BaseProperties should use RealMedium, vars={flat_var_names:?}"
     );
 }
 

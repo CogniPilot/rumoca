@@ -43,7 +43,34 @@ pub(super) fn build_type_override_map(
     // (e.g., extends Base(redeclare replaceable package Medium = ...)).
     collect_extends_redeclare_overrides(tree, class, mod_env, &mut overrides);
 
+    // 4. Active component/class modifiers are the most specific context while
+    // instantiating a component. MLS §7.2/§7.3 require a forwarding redeclare
+    // such as `redeclare package Medium = Medium` to see the enclosing active
+    // replacement instead of the replaceable declaration's static default.
+    collect_active_redeclare_overrides(tree, mod_env, &mut overrides);
+
     overrides
+}
+
+fn collect_active_redeclare_overrides(
+    tree: &ast::ClassTree,
+    mod_env: Option<&ast::ModificationEnvironment>,
+    overrides: &mut IndexMap<String, DefId>,
+) {
+    let Some(mod_env) = mod_env else {
+        return;
+    };
+    for (key, value) in &mod_env.active {
+        if key.parts.len() != 1 {
+            continue;
+        }
+        let Some(name) = key.first_name() else {
+            continue;
+        };
+        if let Some(def_id) = resolve_redeclare_value_def_id(tree, &value.value, Some(mod_env)) {
+            overrides.insert(name.to_string(), def_id);
+        }
+    }
 }
 
 /// Collect type overrides from the enclosing class's nested classes.
@@ -200,10 +227,14 @@ fn resolve_redeclare_value_def_id_with_depth(
     }
 
     match value {
-        ast::Expression::ClassModification { target, .. } => resolve_cref_def_id(tree, target)
-            .or_else(|| resolve_cref_via_mod_env(tree, target, mod_env, depth)),
-        ast::Expression::ComponentReference(cref) => resolve_cref_def_id(tree, cref)
-            .or_else(|| resolve_cref_via_mod_env(tree, cref, mod_env, depth)),
+        ast::Expression::ClassModification { target, .. } => {
+            resolve_cref_via_mod_env(tree, target, mod_env, depth)
+                .or_else(|| resolve_cref_def_id(tree, target))
+        }
+        ast::Expression::ComponentReference(cref) => {
+            resolve_cref_via_mod_env(tree, cref, mod_env, depth)
+                .or_else(|| resolve_cref_def_id(tree, cref))
+        }
         _ => None,
     }
 }
@@ -216,11 +247,24 @@ fn resolve_cref_via_mod_env(
 ) -> Option<DefId> {
     let mod_env = mod_env?;
     let qn = cref_to_qualified_name(cref)?;
-    let mod_value = mod_env.get(&qn)?;
-    if mod_value.value == ast::Expression::ComponentReference(cref.clone()) {
+    let mod_value = mod_env.get(&qn).or_else(|| {
+        cref.parts
+            .last()
+            .map(|part| ast::QualifiedName::from_ident(part.ident.text.as_ref()))
+            .and_then(|last_qn| mod_env.get(&last_qn))
+    })?;
+    if modifier_value_targets_cref(&mod_value.value, cref) {
         return None;
     }
     resolve_redeclare_value_def_id_with_depth(tree, &mod_value.value, Some(mod_env), depth + 1)
+}
+
+fn modifier_value_targets_cref(value: &ast::Expression, cref: &ast::ComponentReference) -> bool {
+    match value {
+        ast::Expression::ClassModification { target, .. }
+        | ast::Expression::ComponentReference(target) => target == cref,
+        _ => false,
+    }
 }
 
 fn cref_to_qualified_name(cref: &ast::ComponentReference) -> Option<ast::QualifiedName> {
