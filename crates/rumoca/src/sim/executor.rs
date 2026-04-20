@@ -11,7 +11,7 @@
 //!   8. realtime pacing
 
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -419,51 +419,46 @@ fn spawn_autopilot(cfg: &SimulationConfig) -> Result<Arc<Mutex<Option<AutopilotP
 /// Set up a robust shutdown path for SIGINT/SIGTERM:
 /// - 1st signal: clean shutdown (kill autopilot with timeout, disable raw
 ///   mode, exit 0)
-/// - 2nd signal within 5s: hard exit 130 (skip cleanup)
+/// - 2nd signal: hard exit 130 (skip cleanup)
 ///
-/// Prevents getting stuck if the autopilot hangs on its own SIGINT
-/// handler or crossterm raw mode is still engaged and swallowing the
-/// first press.
+/// Uses `signal_hook::iterator::Signals` — a blocking iterator that wakes
+/// exactly when a signal arrives. No polling, no race windows.
 fn spawn_sigint_handler(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
-    let sig = Arc::new(AtomicUsize::new(0));
-    // Count presses. signal_hook::flag::register_usize increments per hit.
-    let _ =
-        signal_hook::flag::register_usize(signal_hook::consts::SIGINT, Arc::clone(&sig), 1);
-    let _ =
-        signal_hook::flag::register_usize(signal_hook::consts::SIGTERM, Arc::clone(&sig), 1);
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    use signal_hook::iterator::Signals;
+
+    let mut signals = match Signals::new([SIGINT, SIGTERM]) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Warning: could not install signal handler: {e}");
+            return;
+        }
+    };
+    eprintln!("  Shutdown: Ctrl-C once for clean exit; twice to force quit.");
 
     thread::spawn(move || {
-        // Wait for the first press.
-        while sig.load(Ordering::Relaxed) == 0 {
-            thread::sleep(Duration::from_millis(50));
-        }
-        eprintln!("\n[sim] shutdown requested — press Ctrl-C again to force quit");
-
-        // Kick off cleanup in a second thread so this one can watch for
-        // a second press.
-        let ap = Arc::clone(&autopilot);
-        thread::spawn(move || {
-            if let Ok(mut ap_lock) = ap.lock()
-                && let Some(proc) = ap_lock.as_mut()
-            {
-                proc.stop();
-            }
-            crossterm::terminal::disable_raw_mode().ok();
-            std::process::exit(0);
-        });
-
-        // Watch for a second press within 5 seconds — hard-exit if it arrives.
-        let before_second = sig.load(Ordering::Relaxed);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if sig.load(Ordering::Relaxed) > before_second {
+        let mut presses: u32 = 0;
+        for _sig in signals.forever() {
+            presses += 1;
+            if presses == 1 {
+                eprintln!("\n[sim] shutdown requested — press Ctrl-C again to force quit");
+                spawn_cleanup_thread(Arc::clone(&autopilot));
+            } else {
                 eprintln!("[sim] force quit");
                 crossterm::terminal::disable_raw_mode().ok();
                 std::process::exit(130);
             }
-            thread::sleep(Duration::from_millis(50));
         }
-        // Cleanup thread should have exited by now; if it's stuck, force exit.
+    });
+}
+
+fn spawn_cleanup_thread(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
+    thread::spawn(move || {
+        if let Ok(mut ap) = autopilot.lock()
+            && let Some(proc) = ap.as_mut()
+        {
+            proc.stop();
+        }
         crossterm::terminal::disable_raw_mode().ok();
         std::process::exit(0);
     });
