@@ -1,5 +1,65 @@
 use super::*;
 
+/// MLS §4.6 + §4.7: record component type checks must classify the resolved
+/// component type class, not a later short-name lookup. Unit aliases such as
+/// `Temperature = Real(...)` remain specialized class `type` declarations and
+/// are legal record fields.
+#[test]
+fn test_record_component_type_alias_uses_resolved_type_def_id_for_er023() {
+    let source = r#"
+model Temperature
+end Temperature;
+
+package Modelica
+  package Units
+    package SI
+      type Temperature = Real(final quantity="ThermodynamicTemperature", final unit="K");
+      type Density = Real(final quantity="Density", final unit="kg/m3");
+    end SI;
+  end Units;
+
+  package Media
+    import Modelica.Units.SI;
+
+    package Interfaces
+      package Types
+        type Temperature = SI.Temperature(
+          min=1,
+          max=1.e4,
+          nominal=300,
+          start=288.15);
+        type Density = SI.Density(
+          min=0,
+          max=1.e5,
+          nominal=1,
+          start=1);
+
+        package IdealGas
+          record FluidConstants
+            Temperature criticalTemperature;
+            Density criticalDensity;
+          end FluidConstants;
+        end IdealGas;
+      end Types;
+    end Interfaces;
+  end Media;
+end Modelica;
+
+model UsesFluidConstants
+  Modelica.Media.Interfaces.Types.IdealGas.FluidConstants constants;
+end UsesFluidConstants;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("record type-alias fixture should parse");
+
+    session
+        .compile_model("UsesFluidConstants")
+        .expect("record fields using resolved type aliases must not raise ER023");
+}
+
 /// MLS §5.3 + §7.2: the right-hand side of a component modifier is resolved in
 /// the lexical scope where the modifier occurs, not against the modified field.
 #[test]

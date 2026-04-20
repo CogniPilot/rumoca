@@ -980,13 +980,26 @@ fn check_cross_class_restrictions(
 ) {
     for (name, comp) in &class.components {
         let type_name = comp.type_name.to_string();
-        let type_class = find_class_by_name(def, &type_name);
+        let resolved_type_class = component_type_class(comp, def);
+        let lookup_type_class = find_class_by_name(def, &type_name);
 
-        check_record_component_type_restriction(class, name, comp, &type_name, type_class, diags);
-        check_partial_class_instantiation_restriction(
-            class, name, comp, &type_name, type_class, diags,
+        check_record_component_type_restriction(
+            class,
+            name,
+            comp,
+            &type_name,
+            resolved_type_class,
+            diags,
         );
-        check_connector_variability_restriction(name, comp, type_class, diags);
+        check_partial_class_instantiation_restriction(
+            class,
+            name,
+            comp,
+            &type_name,
+            lookup_type_class,
+            diags,
+        );
+        check_connector_variability_restriction(name, comp, lookup_type_class, diags);
     }
 
     // CONN-017: Check connector balance when defining the connector itself
