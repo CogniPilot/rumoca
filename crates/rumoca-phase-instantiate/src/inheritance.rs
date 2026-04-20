@@ -415,28 +415,7 @@ fn validate_class_redeclaration(
     }
 
     if let Some(new_type_name) = new_type {
-        let constraint_type_raw = class
-            .constrainedby
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| {
-                class
-                    .def_id
-                    .and_then(|def_id| tree.def_map.get(&def_id).cloned())
-                    .unwrap_or_else(|| class.name.text.to_string())
-            });
-
-        let constraint_type = class
-            .constrainedby
-            .as_ref()
-            .and_then(|name| name.def_id)
-            .and_then(|def_id| tree.def_map.get(&def_id).cloned())
-            .or_else(|| {
-                class
-                    .def_id
-                    .and_then(|def_id| tree.def_map.get(&def_id).cloned())
-            })
-            .unwrap_or(constraint_type_raw.clone());
+        let constraint_type = class_redeclaration_constraint_type(tree, class);
 
         let resolved_new_type = resolve_type_in_context(tree, new_type_name, &constraint_type);
         if !is_type_subtype(tree, &resolved_new_type, &constraint_type) {
@@ -450,6 +429,27 @@ fn validate_class_redeclaration(
     }
 
     Ok(())
+}
+
+fn class_redeclaration_constraint_type(tree: &ast::ClassTree, class: &ast::ClassDef) -> String {
+    if let Some(constrainedby) = &class.constrainedby {
+        return constrainedby
+            .def_id
+            .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+            .unwrap_or_else(|| constrainedby.to_string());
+    }
+
+    if let Some(extend) = class.extends.first() {
+        return extend
+            .base_def_id
+            .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+            .unwrap_or_else(|| extend.base_name.to_string());
+    }
+
+    class
+        .def_id
+        .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+        .unwrap_or_else(|| class.name.text.to_string())
 }
 
 /// Try to resolve a type name using the context of another type's package.

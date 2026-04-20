@@ -1437,13 +1437,12 @@ fn cargo_target_cc_env_suffix(target: &str) -> String {
 mod tests {
     use super::{
         VscodeMslSmokeSummary, VscodeNpmDependencyMode, VscodeNpmInstallPlan, VscodePackageTarget,
-        VscodeSmokeEnvironment, VscodeSmokeLaunchMode,
-        cargo_target_cc_env_suffix, cargo_target_linker_env_suffix,
-        mirror_cached_vscode_smoke_install, prepare_install_check_workspace, replace_staged_binary,
-        resolve_install_check_document, resolve_install_check_profile_root,
-        resolve_vscode_npm_install_plan, select_vscode_smoke_launch_mode,
-        should_copy_vscode_smoke_root_entry, should_retry_vscode_npm_ci_after_clean,
-        stage_vscode_smoke_workspace,
+        VscodeSmokeEnvironment, VscodeSmokeLaunchMode, cargo_target_cc_env_suffix,
+        cargo_target_linker_env_suffix, mirror_cached_vscode_smoke_install,
+        prepare_install_check_workspace, replace_staged_binary, resolve_install_check_document,
+        resolve_install_check_profile_root, resolve_vscode_npm_install_plan,
+        select_vscode_smoke_launch_mode, should_copy_vscode_smoke_root_entry,
+        should_retry_vscode_npm_ci_after_clean, stage_vscode_smoke_workspace,
     };
     #[cfg(target_os = "linux")]
     use super::{VscodeSmokeOptions, should_install_vscode_smoke_prereqs};
