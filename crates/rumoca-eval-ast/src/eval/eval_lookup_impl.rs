@@ -5,23 +5,30 @@ use std::borrow::Cow;
 
 impl EvalLookup for TypeCheckEvalContext {
     fn lookup_integer(&self, name: &str, scope: &str) -> Option<i64> {
-        lookup_with_scope(name, scope, &self.integers)
+        lookup_with_scope(name, scope, &self.integers, self.suffix_index.as_ref())
             .copied()
-            .or_else(|| lookup_with_scope(name, scope, &self.enum_ordinals).copied())
+            .or_else(|| {
+                lookup_with_scope(name, scope, &self.enum_ordinals, self.suffix_index.as_ref())
+                    .copied()
+            })
     }
 
     fn lookup_real(&self, name: &str, scope: &str) -> Option<f64> {
-        lookup_with_scope(name, scope, &self.reals)
+        lookup_with_scope(name, scope, &self.reals, self.suffix_index.as_ref())
             .copied()
-            .or_else(|| lookup_with_scope(name, scope, &self.integers).map(|value| *value as f64))
+            .or_else(|| {
+                lookup_with_scope(name, scope, &self.integers, self.suffix_index.as_ref())
+                    .map(|value| *value as f64)
+            })
     }
 
     fn lookup_boolean(&self, name: &str, scope: &str) -> Option<bool> {
-        lookup_with_scope(name, scope, &self.booleans).copied()
+        lookup_with_scope(name, scope, &self.booleans, self.suffix_index.as_ref()).copied()
     }
 
     fn lookup_enum<'a>(&'a self, name: &str, scope: &str) -> Option<Cow<'a, str>> {
-        lookup_with_scope(name, scope, &self.enums).map(|value| Cow::Borrowed(value.as_str()))
+        lookup_with_scope(name, scope, &self.enums, self.suffix_index.as_ref())
+            .map(|value| Cow::Borrowed(value.as_str()))
     }
 }
 
@@ -34,10 +41,9 @@ mod tests {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_integer("sys.n", 4);
         ctx.add_real("sys.inner.r", 2.5);
-        ctx.booleans.insert("sys.flag".to_string(), true);
-        ctx.enums
-            .insert("sys.mode".to_string(), "Pkg.Mode.Fast".to_string());
-        ctx.enum_ordinals.insert("sys.phase".to_string(), 3);
+        ctx.add_boolean("sys.flag", true);
+        ctx.add_enum("sys.mode", "Pkg.Mode.Fast");
+        ctx.add_enum_ordinal("sys.phase", 3);
 
         assert_eq!(ctx.lookup_integer("n", "sys.inner"), Some(4));
         assert_eq!(ctx.lookup_integer("phase", "sys.inner"), Some(3));

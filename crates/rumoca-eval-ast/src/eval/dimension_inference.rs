@@ -43,8 +43,12 @@ pub fn infer_dimensions_from_binding_with_scope(
 
         Expression::ComponentReference(cr) => {
             let indexed_path = cr.to_string();
-            if let Some(dims) = lookup_structural_with_scope(&indexed_path, scope, &ctx.dimensions)
-            {
+            if let Some(dims) = lookup_structural_with_scope(
+                &indexed_path,
+                scope,
+                &ctx.dimensions,
+                ctx.suffix_index.as_ref(),
+            ) {
                 return Some(dims.clone());
             }
 
@@ -54,9 +58,12 @@ pub fn infer_dimensions_from_binding_with_scope(
                 .map(|p| p.ident.text.as_ref())
                 .collect::<Vec<_>>()
                 .join(".");
-            let Some(base_dims) =
-                lookup_structural_with_scope(&unindexed_path, scope, &ctx.dimensions)
-            else {
+            let Some(base_dims) = lookup_structural_with_scope(
+                &unindexed_path,
+                scope,
+                &ctx.dimensions,
+                ctx.suffix_index.as_ref(),
+            ) else {
                 return scalar_value_known_with_scope(&unindexed_path, ctx, scope).then(Vec::new);
             };
             let base_dims = base_dims.clone();
@@ -97,7 +104,13 @@ pub fn infer_dimensions_from_binding_with_scope(
         Expression::FieldAccess { base, field, .. } => {
             let base_path = extract_simple_component_path(base)?;
             let full_path = format!("{base_path}.{field}");
-            lookup_structural_with_scope(&full_path, scope, &ctx.dimensions).cloned()
+            lookup_structural_with_scope(
+                &full_path,
+                scope,
+                &ctx.dimensions,
+                ctx.suffix_index.as_ref(),
+            )
+            .cloned()
         }
 
         // ArrayComprehension: `{expr for i in range}` -> `[range_len, inner_dims...]`.
@@ -112,11 +125,11 @@ pub fn infer_dimensions_from_binding_with_scope(
 }
 
 fn scalar_value_known_with_scope(name: &str, ctx: &TypeCheckEvalContext, scope: &str) -> bool {
-    lookup_with_scope(name, scope, &ctx.integers).is_some()
-        || lookup_with_scope(name, scope, &ctx.reals).is_some()
-        || lookup_with_scope(name, scope, &ctx.booleans).is_some()
-        || lookup_with_scope(name, scope, &ctx.enums).is_some()
-        || lookup_with_scope(name, scope, &ctx.enum_ordinals).is_some()
+    lookup_with_scope(name, scope, &ctx.integers, ctx.suffix_index.as_ref()).is_some()
+        || lookup_with_scope(name, scope, &ctx.reals, ctx.suffix_index.as_ref()).is_some()
+        || lookup_with_scope(name, scope, &ctx.booleans, ctx.suffix_index.as_ref()).is_some()
+        || lookup_with_scope(name, scope, &ctx.enums, ctx.suffix_index.as_ref()).is_some()
+        || lookup_with_scope(name, scope, &ctx.enum_ordinals, ctx.suffix_index.as_ref()).is_some()
 }
 
 /// Apply component-reference subscripts to a base dimension vector.

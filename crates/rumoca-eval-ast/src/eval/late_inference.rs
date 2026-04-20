@@ -321,49 +321,55 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_with_scope_uses_structured_scope() {
+    fn test_lookup_with_scope_dotted_name_uses_full_suffix() {
         let mut map = FxHashMap::default();
         map.insert("sys.Medium.nX".to_string(), 4_i64);
-        assert_eq!(lookup_with_scope("Medium.nX", "sys", &map), Some(&4_i64));
+        assert_eq!(lookup_with_scope("Medium.nX", "", &map, None), Some(&4_i64));
     }
 
     #[test]
-    fn test_lookup_with_scope_dotted_name_does_not_leaf_fallback() {
+    fn test_lookup_with_scope_dotted_name_falls_back_to_leaf_when_full_suffix_missing() {
         let mut map = FxHashMap::default();
         map.insert("sys.nX".to_string(), 7_i64);
-        assert_eq!(lookup_with_scope("Medium.nX", "", &map), None);
+        assert_eq!(lookup_with_scope("Medium.nX", "", &map, None), Some(&7_i64));
     }
 
     #[test]
-    fn test_lookup_with_scope_dotted_name_requires_matching_scoped_name() {
+    fn test_lookup_with_scope_dotted_name_leaf_fallback_requires_unique_key() {
         let mut map = FxHashMap::default();
         map.insert("a.nX".to_string(), 7_i64);
         map.insert("b.nX".to_string(), 7_i64);
-        assert_eq!(lookup_with_scope("Medium.nX", "", &map), None);
+        assert_eq!(lookup_with_scope("Medium.nX", "", &map, None), None);
     }
 
     #[test]
-    fn test_lookup_with_scope_dotted_name_ignores_ambiguous_suffixes() {
+    fn test_lookup_with_scope_dotted_name_does_not_fallback_when_full_suffix_is_ambiguous() {
         let mut map = FxHashMap::default();
         map.insert("a.Medium.nX".to_string(), 1_i64);
         map.insert("b.Medium.nX".to_string(), 2_i64);
-        assert_eq!(lookup_with_scope("Medium.nX", "", &map), None);
+        assert_eq!(lookup_with_scope("Medium.nX", "", &map, None), None);
     }
 
     #[test]
-    fn test_lookup_with_scope_simple_name_does_not_suffix_fallback() {
+    fn test_lookup_with_scope_simple_name_still_uses_suffix_fallback() {
         let mut map = FxHashMap::default();
         map.insert("sys.nX".to_string(), 7_i64);
-        assert_eq!(lookup_with_scope("nX", "", &map), None);
+        assert_eq!(lookup_with_scope("nX", "", &map, None), Some(&7_i64));
     }
 
     #[test]
-    fn test_lookup_with_scope_resolves_indexed_name_with_scope() {
+    fn test_lookup_with_scope_treats_dot_inside_subscript_as_single_segment() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_integer("sys.arr[data.medium]", 7_i64);
+        ctx.build_suffix_index();
 
         assert_eq!(
-            lookup_with_scope("arr[data.medium]", "sys", &ctx.integers),
+            lookup_with_scope(
+                "arr[data.medium]",
+                "",
+                &ctx.integers,
+                ctx.suffix_index.as_ref()
+            ),
             Some(&7_i64)
         );
     }
@@ -372,32 +378,54 @@ mod tests {
     fn test_lookup_with_scope_does_not_index_fake_suffix_from_subscript_dot() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_integer("sys.arr[data.medium]", 7_i64);
+        ctx.build_suffix_index();
 
-        assert_eq!(lookup_with_scope("medium]", "", &ctx.integers), None);
+        assert_eq!(
+            lookup_with_scope("medium]", "", &ctx.integers, ctx.suffix_index.as_ref()),
+            None
+        );
     }
 
     #[test]
-    fn test_lookup_with_scope_does_not_scan_suffixes() {
+    fn test_lookup_with_scope_linear_suffix_match_ignores_subscript_dot_boundary() {
         let mut map = FxHashMap::default();
         map.insert("sys.arr[data.medium].x".to_string(), 7_i64);
         map.insert("other.scope.x".to_string(), 9_i64);
 
-        assert_eq!(lookup_with_scope("medium].x", "", &map), None);
+        assert_eq!(lookup_with_scope("medium].x", "", &map, None), None);
     }
 
     #[test]
-    fn test_lookup_with_scope_no_cross_map_suffix_fallback() {
+    fn test_lookup_with_scope_leaf_fallback_checks_uniqueness_per_target_map() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_integer("a.nX", 7_i64);
         ctx.add_real("b.nX", 3.0);
+        ctx.build_suffix_index();
 
-        assert_eq!(lookup_with_scope("Medium.nX", "", &ctx.integers), None);
+        assert_eq!(
+            lookup_with_scope("Medium.nX", "", &ctx.integers, ctx.suffix_index.as_ref()),
+            Some(&7_i64)
+        );
+    }
+
+    #[test]
+    fn test_lookup_with_scope_suffix_index_sees_keys_added_after_build() {
+        let mut ctx = TypeCheckEvalContext::new();
+        ctx.add_integer("seed.nX", 1_i64);
+        ctx.build_suffix_index();
+        ctx.add_integer("fresh.nXi", 0_i64);
+
+        assert_eq!(
+            lookup_with_scope("nXi", "", &ctx.integers, ctx.suffix_index.as_ref()),
+            Some(&0_i64)
+        );
     }
 
     #[test]
     fn test_infer_dims_component_ref_dotted_does_not_leaf_fallback() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_dimensions("sys.arr", vec![7]);
+        ctx.build_suffix_index();
 
         let expr = make_dotted_comp_ref("Medium.arr");
         assert_eq!(

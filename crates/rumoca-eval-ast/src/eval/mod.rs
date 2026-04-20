@@ -8,10 +8,11 @@
 use rumoca_core::{Causality, ClassType, OpBinary, OpUnary};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, IntegerBinaryOperator, PrimaryLabel, Span,
-    eval_integer_binary as eval_common_integer_binary, eval_integer_div_builtin,
+    eval_integer_binary as eval_common_integer_binary, eval_integer_div_builtin, has_top_level_dot,
+    top_level_last_segment,
 };
 use rumoca_ir_ast::{ClassDef, Expression, Statement, StatementBlock, Subscript, TerminalType};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -53,21 +54,194 @@ fn lookup_by_scope<'a, T>(name: &str, scope: &str, map: &'a FxHashMap<String, T>
 }
 
 /// General lookup for constant/scalar evaluation.
+///
+/// Unlike `lookup_structural_with_scope`, this permits guarded leaf fallback
+/// so package constants referenced through aliases still resolve.
 fn lookup_with_scope<'a, T: PartialEq>(
     name: &str,
     scope: &str,
     map: &'a FxHashMap<String, T>,
+    suffix_index: Option<&SuffixIndex>,
 ) -> Option<&'a T> {
-    lookup_by_scope(name, scope, map)
+    if let Some(val) = lookup_by_scope(name, scope, map) {
+        return Some(val);
+    }
+
+    // Suffix fallback for package constants (MLS §7.3).
+    // For bare names like "nX", look for any entry ending in ".nX".
+    // For dotted names like "Medium.nX", prefer full dotted suffix
+    // ".Medium.nX". If no full-dotted match exists, allow a guarded leaf
+    // fallback only when the leaf suffix resolves to exactly one key.
+    if has_top_level_dot(name) {
+        match lookup_by_suffix_state(name, map, suffix_index) {
+            SuffixLookup::Found(val) => return Some(val),
+            SuffixLookup::Ambiguous => return None,
+            SuffixLookup::Missing => {}
+        }
+        return lookup_by_suffix_unique_key(top_level_last_segment(name), map, suffix_index);
+    }
+
+    lookup_by_suffix(name, map, suffix_index)
 }
 
 /// Structural lookup used by shape inference and strict dimension resolution.
+///
+/// Dotted names intentionally avoid leaf fallback to prevent cross-scope
+/// accidental matches (for example `Medium.nX` resolving to unrelated `*.nX`).
 fn lookup_structural_with_scope<'a, T: PartialEq>(
     name: &str,
     scope: &str,
     map: &'a FxHashMap<String, T>,
+    suffix_index: Option<&SuffixIndex>,
 ) -> Option<&'a T> {
-    lookup_by_scope(name, scope, map)
+    if let Some(value) = lookup_by_scope(name, scope, map) {
+        return Some(value);
+    }
+
+    if has_top_level_dot(name) {
+        return match lookup_by_suffix_state(name, map, suffix_index) {
+            SuffixLookup::Found(value) => Some(value),
+            SuffixLookup::Missing | SuffixLookup::Ambiguous => None,
+        };
+    }
+
+    lookup_by_suffix(name, map, suffix_index)
+}
+
+fn find_unique_value<'a, T: PartialEq>(
+    candidates: &[usize],
+    map: &'a FxHashMap<String, T>,
+    suffix_index: &SuffixIndex,
+) -> SuffixLookup<'a, T> {
+    let mut found: Option<&T> = None;
+    for candidate_idx in candidates {
+        let key = suffix_index.key(*candidate_idx);
+        if let Some(val) = map.get(key) {
+            if found.is_some_and(|prev| prev != val) {
+                return SuffixLookup::Ambiguous;
+            }
+            found = Some(val);
+        }
+    }
+    found.map_or(SuffixLookup::Missing, SuffixLookup::Found)
+}
+
+enum SuffixLookup<'a, T> {
+    Found(&'a T),
+    Missing,
+    Ambiguous,
+}
+
+fn lookup_by_suffix_state<'a, T: PartialEq>(
+    name: &str,
+    map: &'a FxHashMap<String, T>,
+    suffix_index: Option<&SuffixIndex>,
+) -> SuffixLookup<'a, T> {
+    if has_top_level_dot(name) {
+        if let Some(index) = suffix_index {
+            let Some(candidates) = index.keys_by_dotted_suffix.get(name) else {
+                return SuffixLookup::Missing;
+            };
+            return find_unique_value(candidates, map, index);
+        }
+
+        let mut found: Option<&T> = None;
+        for (key, val) in map {
+            if !has_top_level_suffix_match(key, name) {
+                continue;
+            }
+            if found.is_some_and(|prev| prev != val) {
+                return SuffixLookup::Ambiguous;
+            }
+            found = Some(val);
+        }
+        return found.map_or(SuffixLookup::Missing, SuffixLookup::Found);
+    }
+
+    if let Some(index) = suffix_index {
+        let Some(candidates) = index.keys_by_suffix.get(name) else {
+            return SuffixLookup::Missing;
+        };
+        find_unique_value(candidates, map, index)
+    } else {
+        let mut found: Option<&T> = None;
+        for (key, val) in map {
+            if !has_top_level_suffix_match(key, name) {
+                continue;
+            }
+            if found.is_some_and(|prev| prev != val) {
+                return SuffixLookup::Ambiguous;
+            }
+            found = Some(val);
+        }
+        found.map_or(SuffixLookup::Missing, SuffixLookup::Found)
+    }
+}
+
+fn lookup_by_suffix<'a, T: PartialEq>(
+    name: &str,
+    map: &'a FxHashMap<String, T>,
+    suffix_index: Option<&SuffixIndex>,
+) -> Option<&'a T> {
+    match lookup_by_suffix_state(name, map, suffix_index) {
+        SuffixLookup::Found(val) => Some(val),
+        SuffixLookup::Missing | SuffixLookup::Ambiguous => None,
+    }
+}
+
+/// Dotted lookup leaf fallback that requires a unique target-map key.
+fn lookup_by_suffix_unique_key<'a, T>(
+    name: &str,
+    map: &'a FxHashMap<String, T>,
+    suffix_index: Option<&SuffixIndex>,
+) -> Option<&'a T> {
+    if let Some(index) = suffix_index {
+        let candidates = index.keys_by_suffix.get(name)?;
+        let mut matched_idx: Option<usize> = None;
+        for candidate_idx in candidates {
+            let key = index.key(*candidate_idx);
+            if !map.contains_key(key) {
+                continue;
+            }
+            if matched_idx.replace(*candidate_idx).is_some() {
+                return None;
+            }
+        }
+        return matched_idx.and_then(|idx| map.get(index.key(idx)));
+    }
+
+    let mut matched_key: Option<&str> = None;
+    for key in map.keys() {
+        if !has_top_level_suffix_match(key, name) {
+            continue;
+        }
+        if matched_key.replace(key.as_str()).is_some() {
+            return None;
+        }
+    }
+    matched_key.and_then(|key| map.get(key))
+}
+
+fn has_top_level_suffix_match(key: &str, suffix: &str) -> bool {
+    if key.len() <= suffix.len() || !key.ends_with(suffix) {
+        return false;
+    }
+
+    let boundary_idx = key.len() - suffix.len() - 1;
+    matches!(key.as_bytes().get(boundary_idx), Some(b'.')) && is_top_level_dot_at(key, boundary_idx)
+}
+
+fn is_top_level_dot_at(path: &str, dot_index: usize) -> bool {
+    let mut bracket_depth = 0usize;
+    for (idx, byte) in path.bytes().enumerate().take(dot_index + 1) {
+        match byte {
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'.' if idx == dot_index => return bracket_depth == 0,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn component_reference_path(cr: &rumoca_ir_ast::ComponentReference) -> Cow<'_, str> {
@@ -97,8 +271,72 @@ pub struct TypeCheckEvalContext {
     pub func_eval_depth: usize,
     pub enum_sizes: FxHashMap<String, usize>,
     pub enum_ordinals: FxHashMap<String, i64>,
+    suffix_index: Option<SuffixIndex>,
     warning_keys: RefCell<HashSet<(String, Span)>>,
     warnings: RefCell<Vec<CommonDiagnostic>>,
+}
+
+struct SuffixIndex {
+    keys: Vec<String>,
+    keys_by_suffix: FxHashMap<String, Vec<usize>>,
+    keys_by_dotted_suffix: FxHashMap<String, Vec<usize>>,
+}
+
+impl SuffixIndex {
+    fn key(&self, idx: usize) -> &str {
+        self.keys[idx].as_str()
+    }
+
+    fn insert_key(&mut self, key: String) {
+        if self.keys.iter().any(|existing| existing == &key) {
+            return;
+        }
+        let key_idx = self.keys.len();
+        index_key_suffixes(
+            &key,
+            key_idx,
+            &mut self.keys_by_suffix,
+            &mut self.keys_by_dotted_suffix,
+        );
+        self.keys.push(key);
+    }
+}
+
+fn index_key_suffixes(
+    key: &str,
+    key_idx: usize,
+    keys_by_suffix: &mut FxHashMap<String, Vec<usize>>,
+    keys_by_dotted_suffix: &mut FxHashMap<String, Vec<usize>>,
+) {
+    let mut bracket_depth = 0usize;
+    let mut top_level_dots: Vec<usize> = Vec::new();
+    for (idx, byte) in key.bytes().enumerate() {
+        match byte {
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'.' if bracket_depth == 0 => top_level_dots.push(idx),
+            _ => {}
+        }
+    }
+
+    let Some(&last_dot) = top_level_dots.last() else {
+        return;
+    };
+
+    keys_by_suffix
+        .entry(key[last_dot + 1..].to_string())
+        .or_default()
+        .push(key_idx);
+
+    for dot_idx in top_level_dots
+        .iter()
+        .take(top_level_dots.len().saturating_sub(1))
+    {
+        keys_by_dotted_suffix
+            .entry(key[*dot_idx + 1..].to_string())
+            .or_default()
+            .push(key_idx);
+    }
 }
 
 impl Default for TypeCheckEvalContext {
@@ -120,21 +358,96 @@ impl TypeCheckEvalContext {
             func_eval_depth: 0,
             enum_sizes: FxHashMap::default(),
             enum_ordinals: FxHashMap::default(),
+            suffix_index: None,
             warning_keys: RefCell::new(HashSet::default()),
             warnings: RefCell::new(Vec::new()),
         }
     }
 
+    pub fn build_suffix_index(&mut self) {
+        let mut keys_by_suffix: FxHashMap<String, Vec<usize>> = FxHashMap::default();
+        let mut keys_by_dotted_suffix: FxHashMap<String, Vec<usize>> = FxHashMap::default();
+        let mut seen: FxHashSet<String> = FxHashSet::default();
+        let mut keys: Vec<String> = Vec::new();
+
+        for key in self
+            .integers
+            .keys()
+            .chain(self.reals.keys())
+            .chain(self.booleans.keys())
+            .chain(self.enums.keys())
+            .chain(self.dimensions.keys())
+            .chain(self.functions.keys())
+            .chain(self.enum_ordinals.keys())
+            .chain(self.enum_sizes.keys())
+        {
+            let owned = key.clone();
+            if seen.insert(owned.clone()) {
+                keys.push(owned);
+            }
+        }
+
+        for (key_idx, key) in keys.iter().enumerate() {
+            index_key_suffixes(
+                key,
+                key_idx,
+                &mut keys_by_suffix,
+                &mut keys_by_dotted_suffix,
+            );
+        }
+
+        self.suffix_index = Some(SuffixIndex {
+            keys,
+            keys_by_suffix,
+            keys_by_dotted_suffix,
+        });
+    }
+
     pub fn add_integer(&mut self, name: impl Into<String>, value: i64) {
         let name = name.into();
+        self.add_suffix_index_key(name.as_str());
         self.integers.insert(name.clone(), value);
         self.scalar_spans.remove(&name);
     }
 
+    pub fn add_integer_if_absent(&mut self, name: impl Into<String>, value: i64) {
+        let name = name.into();
+        if !self.integers.contains_key(&name) {
+            self.add_integer(name, value);
+        }
+    }
+
     pub fn add_real(&mut self, name: impl Into<String>, value: f64) {
         let name = name.into();
+        self.add_suffix_index_key(name.as_str());
         self.reals.insert(name.clone(), value);
         self.scalar_spans.remove(&name);
+    }
+
+    pub fn add_real_if_absent(&mut self, name: impl Into<String>, value: f64) {
+        let name = name.into();
+        if !self.reals.contains_key(&name) {
+            self.add_real(name, value);
+        }
+    }
+
+    pub fn add_boolean(&mut self, name: impl Into<String>, value: bool) {
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.booleans.insert(name, value);
+    }
+
+    pub fn add_boolean_if_absent(&mut self, name: impl Into<String>, value: bool) {
+        let name = name.into();
+        if !self.booleans.contains_key(&name) {
+            self.add_boolean(name, value);
+        }
+    }
+
+    pub fn add_enum(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.enums.insert(name, value.into());
     }
 
     fn remember_scalar_span(&mut self, name: &str, span: Span) {
@@ -150,7 +463,41 @@ impl TypeCheckEvalContext {
     }
 
     pub fn add_dimensions(&mut self, name: impl Into<String>, dims: Vec<usize>) {
-        self.dimensions.insert(name.into(), dims);
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.dimensions.insert(name, dims);
+    }
+
+    pub fn add_enum_size(&mut self, name: impl Into<String>, size: usize) {
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.enum_sizes.insert(name, size);
+    }
+
+    pub fn add_enum_size_if_absent(&mut self, name: impl Into<String>, size: usize) {
+        let name = name.into();
+        if !self.enum_sizes.contains_key(&name) {
+            self.add_enum_size(name, size);
+        }
+    }
+
+    pub fn add_enum_ordinal(&mut self, name: impl Into<String>, ordinal: i64) {
+        let name = name.into();
+        self.add_suffix_index_key(name.as_str());
+        self.enum_ordinals.insert(name, ordinal);
+    }
+
+    pub fn add_enum_ordinal_if_absent(&mut self, name: impl Into<String>, ordinal: i64) {
+        let name = name.into();
+        if !self.enum_ordinals.contains_key(&name) {
+            self.add_enum_ordinal(name, ordinal);
+        }
+    }
+
+    fn add_suffix_index_key(&mut self, name: &str) {
+        if let Some(index) = &mut self.suffix_index {
+            index.insert_key(name.to_string());
+        }
     }
 
     pub fn get_integer(&self, name: &str) -> Option<i64> {
@@ -741,7 +1088,12 @@ fn lookup_dims_with_scope<'a>(
     ctx: &'a TypeCheckEvalContext,
     scope: &str,
 ) -> Option<&'a Vec<usize>> {
-    lookup_with_scope(array_name, scope, &ctx.dimensions)
+    lookup_with_scope(
+        array_name,
+        scope,
+        &ctx.dimensions,
+        ctx.suffix_index.as_ref(),
+    )
 }
 
 /// Flatten a matrix row element into integer values.
@@ -924,7 +1276,7 @@ fn lookup_boolean_with_scope(
     ctx: &TypeCheckEvalContext,
     scope: &str,
 ) -> Option<bool> {
-    lookup_with_scope(ref_path, scope, &ctx.booleans).copied()
+    lookup_with_scope(ref_path, scope, &ctx.booleans, ctx.suffix_index.as_ref()).copied()
 }
 
 /// Evaluate a numeric comparison (integer then real) with scope-aware lookup.
@@ -1080,7 +1432,7 @@ fn lookup_enum_with_scope<'a>(
     ctx: &'a TypeCheckEvalContext,
     scope: &str,
 ) -> Option<&'a str> {
-    lookup_with_scope(ref_path, scope, &ctx.enums).map(|s| s.as_str())
+    lookup_with_scope(ref_path, scope, &ctx.enums, ctx.suffix_index.as_ref()).map(|s| s.as_str())
 }
 
 /// Compare two enumeration values using suffix matching.
@@ -1201,7 +1553,7 @@ fn eval_enum_dimension_with_scope(
 ) -> Option<usize> {
     if let Expression::ComponentReference(cr) = expr {
         let ref_path = component_reference_path(cr);
-        lookup_with_scope(&ref_path, scope, &ctx.enum_sizes).copied()
+        lookup_with_scope(&ref_path, scope, &ctx.enum_sizes, ctx.suffix_index.as_ref()).copied()
     } else {
         None
     }
@@ -1236,9 +1588,17 @@ pub fn eval_integer_with_scope(
         Expression::ComponentReference(cr) if !cr.parts.is_empty() => {
             let ref_path = component_reference_path(cr);
 
-            lookup_with_scope(&ref_path, scope, &ctx.integers)
+            lookup_with_scope(&ref_path, scope, &ctx.integers, ctx.suffix_index.as_ref())
                 .copied()
-                .or_else(|| lookup_with_scope(&ref_path, scope, &ctx.enum_ordinals).copied())
+                .or_else(|| {
+                    lookup_with_scope(
+                        &ref_path,
+                        scope,
+                        &ctx.enum_ordinals,
+                        ctx.suffix_index.as_ref(),
+                    )
+                    .copied()
+                })
         }
         Expression::ComponentReference(_) => None,
 
