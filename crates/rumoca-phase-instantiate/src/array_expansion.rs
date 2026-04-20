@@ -575,18 +575,41 @@ fn substitute_array_comprehension_var(
 /// given 1-based index. For non-array values, returns None (no change needed).
 fn index_array_modification(expr: &ast::Expression, indices: &[i64]) -> Option<ast::Expression> {
     match expr {
-        ast::Expression::Array { elements, .. } => {
+        ast::Expression::Array {
+            elements,
+            is_matrix,
+        } => {
             let (&first_idx, remaining) = indices.split_first()?;
             let idx = first_idx.checked_sub(1)? as usize; // Convert 1-based to 0-based
             let selected = elements.get(idx)?;
             if remaining.is_empty() {
-                Some(selected.clone())
+                Some(normalize_distributed_matrix_row(selected, *is_matrix))
             } else {
                 index_array_modification(selected, remaining)
             }
         }
         ast::Expression::Parenthesized { inner } => index_array_modification(inner, indices),
         _ => None,
+    }
+}
+
+fn normalize_distributed_matrix_row(
+    selected: &ast::Expression,
+    parent_is_matrix: bool,
+) -> ast::Expression {
+    if !parent_is_matrix {
+        return selected.clone();
+    }
+
+    // MLS §7.2.5 + §10.4: selecting one element of a matrix-valued
+    // non-`each` modifier distributes the row value to the scalar component.
+    // The selected row is a 1-D array value, not a single-row matrix.
+    match selected {
+        ast::Expression::Array { elements, .. } => ast::Expression::Array {
+            elements: elements.clone(),
+            is_matrix: false,
+        },
+        _ => selected.clone(),
     }
 }
 
@@ -956,6 +979,54 @@ mod tests {
             panic!("nested comprehensions should project to a concrete element expression");
         };
         assert_eq!(token.text.as_ref(), "2");
+    }
+
+    #[test]
+    fn test_distribute_mods_for_element_projects_matrix_row_as_vector() {
+        let mut comp = ast::Component::default();
+        comp.modifications.insert(
+            "VolFloCur".to_string(),
+            ast::Expression::Array {
+                elements: vec![
+                    ast::Expression::Array {
+                        elements: vec![make_int_expr(1), make_int_expr(2), make_int_expr(3)],
+                        is_matrix: true,
+                    },
+                    ast::Expression::Array {
+                        elements: vec![make_int_expr(4), make_int_expr(5), make_int_expr(6)],
+                        is_matrix: true,
+                    },
+                ],
+                is_matrix: true,
+            },
+        );
+
+        let resolved_mods = pre_resolve_array_modifications(
+            &comp,
+            &rumoca_ir_ast::ModificationEnvironment::default(),
+            &IndexMap::new(),
+            &ast::ClassTree::default(),
+        );
+
+        let mut scalar_comp = comp.clone();
+        distribute_mods_for_element(&mut scalar_comp, &resolved_mods, &[2]);
+        let distributed = scalar_comp
+            .modifications
+            .get("VolFloCur")
+            .expect("missing distributed modifier");
+
+        let ast::Expression::Array {
+            elements,
+            is_matrix,
+        } = distributed
+        else {
+            panic!("distributed row should remain an array");
+        };
+        assert!(
+            !is_matrix,
+            "distributed matrix row should be a 1-D array, not a single-row matrix"
+        );
+        assert_eq!(elements.len(), 3);
     }
 
     #[test]

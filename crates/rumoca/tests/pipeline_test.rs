@@ -573,6 +573,106 @@ end RealRangeDims;
 }
 
 #[test]
+fn test_nested_modifier_colon_dimension_feeds_sibling_size() {
+    let source = r#"
+package ET004Fixture
+  model Curve
+    parameter Real V_flow[:];
+    parameter Real dp[size(V_flow, 1)];
+  end Curve;
+
+  model Performance
+    parameter Real q_flow[:] = {1.0, 2.0, 3.0};
+    Curve pressure(V_flow=q_flow, dp={10.0, 20.0, 30.0});
+  end Performance;
+
+  model Mover
+    parameter Real VolFloCur[:] = {1.0, 2.0, 3.0};
+    Performance per(q_flow=VolFloCur);
+    Real y;
+  equation
+    y = per.pressure.dp[1];
+  end Mover;
+end ET004Fixture;
+"#;
+
+    let result = compile_model(source, "ET004Fixture.Mover")
+        .expect("nested modifier colon dimensions should feed sibling size()");
+
+    let v_flow_dims = result
+        .parameters
+        .get(&DaeVarName::new("per.pressure.V_flow"))
+        .map(|v| v.dims.clone())
+        .expect("per.pressure.V_flow should exist in DAE parameters");
+    assert_eq!(
+        v_flow_dims,
+        vec![3],
+        "V_flow[:] should infer dimensions from the active modifier binding"
+    );
+
+    let dp_dims = result
+        .parameters
+        .get(&DaeVarName::new("per.pressure.dp"))
+        .map(|v| v.dims.clone())
+        .expect("per.pressure.dp should exist in DAE parameters");
+    assert_eq!(
+        dp_dims,
+        vec![3],
+        "dp[size(V_flow, 1)] should resolve through the sibling V_flow dimension"
+    );
+}
+
+#[test]
+fn test_array_component_modifier_colon_dimension_feeds_sibling_size() {
+    let source = r#"
+package ET004ArrayFixture
+  model Curve
+    parameter Real V_flow[:];
+    parameter Real dp[size(V_flow, 1)];
+  end Curve;
+
+  model Mover
+    parameter Real VolFloCur[:] = {1.0, 2.0, 3.0};
+    Curve pressure(V_flow=VolFloCur, dp={10.0, 20.0, 30.0});
+  end Mover;
+
+  model Plant
+    parameter Real curves[2, 3] = [1.0, 2.0, 3.0; 4.0, 5.0, 6.0];
+    Mover pum[2](VolFloCur=curves);
+    Real y;
+  equation
+    y = pum[2].pressure.dp[1];
+  end Plant;
+end ET004ArrayFixture;
+"#;
+
+    let result = compile_model(source, "ET004ArrayFixture.Plant")
+        .expect("array component modifiers should feed sibling size()");
+
+    let v_flow_dims = result
+        .parameters
+        .get(&DaeVarName::new("pum[2].pressure.V_flow"))
+        .map(|v| v.dims.clone())
+        .expect("pum[2].pressure.V_flow should exist in DAE parameters");
+    assert_eq!(
+        v_flow_dims,
+        vec![3],
+        "V_flow[:] should infer dimensions after array-component modifier distribution"
+    );
+
+    let dp_dims = result
+        .parameters
+        .get(&DaeVarName::new("pum[2].pressure.dp"))
+        .map(|v| v.dims.clone())
+        .expect("pum[2].pressure.dp should exist in DAE parameters");
+    assert_eq!(
+        dp_dims,
+        vec![3],
+        "dp[size(V_flow, 1)] should resolve for the distributed array element"
+    );
+}
+
+#[test]
 fn test_array_comprehension_function_call_equation_preserves_dependencies() {
     use std::collections::HashSet;
 
