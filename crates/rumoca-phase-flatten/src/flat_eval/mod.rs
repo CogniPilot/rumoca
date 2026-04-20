@@ -178,6 +178,16 @@ fn flatten_field_access_path(expr: &flat::Expression) -> Option<String> {
     }
 }
 
+fn size_argument_path(expr: &flat::Expression) -> Option<String> {
+    match expr {
+        flat::Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
+            Some(name.to_string())
+        }
+        flat::Expression::FieldAccess { .. } => flatten_field_access_path(expr),
+        _ => None,
+    }
+}
+
 fn eval_integer_if_expression(
     branches: &[(flat::Expression, flat::Expression)],
     else_branch: &flat::Expression,
@@ -1075,17 +1085,10 @@ fn eval_size_integer_with_context(
         return None;
     }
 
-    let array_name = match &args[0] {
-        flat::Expression::VarRef { name, subscripts } if subscripts.is_empty() => name.to_string(),
-        _ => {
-            #[cfg(feature = "tracing")]
-            warn!(
-                arg0_kind = std::any::type_name_of_val(&args[0]),
-                "size() first arg must be a simple VarRef"
-            );
-            return None;
-        }
-    };
+    // MLS §10.3.1: size(A, i) queries the dimensions of the array expression.
+    // During flattening, nested component references can arrive as FieldAccess
+    // chains as well as dotted VarRef names.
+    let array_name = size_argument_path(&args[0])?;
 
     #[cfg(feature = "tracing")]
     debug!(array = %array_name, var_context = ?ctx.var_context, "looking up array dimensions with scope resolution");

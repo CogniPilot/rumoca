@@ -673,6 +673,67 @@ end ET004ArrayFixture;
 }
 
 #[test]
+fn test_extends_forwarded_modifier_dotted_size_feeds_sibling_dimension() {
+    let source = r#"
+package ET004DottedFixture
+  model Curve
+    parameter Real V_flow[:];
+    parameter Real eta[size(V_flow, 1)];
+  end Curve;
+
+  model PerformanceBase
+    parameter Real flo[:];
+    Curve motorEfficiency(V_flow=flo, eta=fill(1.0, size(flo, 1)));
+  end PerformanceBase;
+
+  model Performance
+    extends PerformanceBase;
+  end Performance;
+
+  model MoverBase
+    parameter Real VolFloCur[:];
+    Performance per(flo=VolFloCur);
+    parameter Integer n = size(per.motorEfficiency.V_flow, 1);
+    parameter Real eff[n] = per.motorEfficiency.eta;
+  end MoverBase;
+
+  model Mover
+    extends MoverBase(VolFloCur={1.0, 2.0, 3.0});
+    Real y;
+  equation
+    y = eff[1];
+  end Mover;
+end ET004DottedFixture;
+"#;
+
+    let result = compile_model(source, "ET004DottedFixture.Mover").expect(
+        "extends-forwarded nested modifier dimensions should feed dotted size() in active scope",
+    );
+
+    let v_flow_dims = result
+        .parameters
+        .get(&DaeVarName::new("per.motorEfficiency.V_flow"))
+        .map(|v| v.dims.clone())
+        .expect("per.motorEfficiency.V_flow should exist in DAE parameters");
+    assert_eq!(
+        v_flow_dims,
+        vec![3],
+        "nested V_flow[:] should infer dimensions from the forwarded modifier"
+    );
+
+    let eff_dims = result
+        .parameters
+        .get(&DaeVarName::new("eff"))
+        .map(|v| v.dims.clone())
+        .expect("eff should exist in DAE parameters");
+    assert_eq!(
+        eff_dims,
+        vec![3],
+        "eff[size(per.motorEfficiency.V_flow, 1)] should resolve in MoverBase scope"
+    );
+}
+
+#[test]
 fn test_array_comprehension_function_call_equation_preserves_dependencies() {
     use std::collections::HashSet;
 

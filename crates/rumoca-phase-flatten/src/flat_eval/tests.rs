@@ -359,6 +359,31 @@ fn eval_integer_field_access_resolves_overqualified_suffix() {
 }
 
 #[test]
+fn eval_size_resolves_dotted_field_access_in_active_component_scope() {
+    let mut array_dims = FxHashMap::default();
+    array_dims.insert("mover.per.motorEfficiency.V_flow".to_string(), vec![3]);
+
+    let expr = flat::Expression::BuiltinCall {
+        function: flat::BuiltinFunction::Size,
+        args: vec![
+            field(field(var("per"), "motorEfficiency"), "V_flow"),
+            int(1),
+        ],
+    };
+    let ctx = ParamEvalContext {
+        known_ints: &FxHashMap::default(),
+        known_reals: &FxHashMap::default(),
+        known_bools: &FxHashMap::default(),
+        known_enums: &FxHashMap::default(),
+        array_dims: &array_dims,
+        functions: &FxHashMap::default(),
+        var_context: Some("mover.eff"),
+    };
+
+    assert_eq!(try_eval_integer_with_context(&expr, &ctx), Some(3));
+}
+
+#[test]
 fn eval_integer_if_returns_common_value_when_condition_unknown() {
     let mut known_ints = FxHashMap::default();
     known_ints.insert("left".to_string(), 2);
