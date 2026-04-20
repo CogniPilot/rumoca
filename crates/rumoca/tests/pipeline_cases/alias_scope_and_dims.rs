@@ -1212,6 +1212,182 @@ end Top;
     );
 }
 
+const INHERITED_VOLUME_MEDIUM_BASEPROPERTIES_SOURCE: &str = r#"
+package PartialMedium
+  replaceable partial model BaseProperties
+    Real p;
+    Real h;
+  end BaseProperties;
+end PartialMedium;
+
+package CondensingMedium
+  extends PartialMedium;
+end CondensingMedium;
+
+package RealMedium
+  extends PartialMedium;
+
+  redeclare replaceable model BaseProperties
+    Real p;
+    Real h;
+    Real marker;
+  equation
+    marker = p + h;
+  end BaseProperties;
+end RealMedium;
+
+package Interfaces
+  partial model LumpedVolumeDeclarations
+    replaceable package Medium = PartialMedium;
+  end LumpedVolumeDeclarations;
+
+  model ConservationEquation
+    extends LumpedVolumeDeclarations;
+    Medium.BaseProperties medium;
+  equation
+    medium.p = 1;
+    medium.h = 2;
+  end ConservationEquation;
+end Interfaces;
+
+partial model PartialMixingVolume
+  extends Interfaces.LumpedVolumeDeclarations;
+  Interfaces.ConservationEquation dynBal(redeclare final package Medium = Medium);
+end PartialMixingVolume;
+
+model MixingVolume
+  extends PartialMixingVolume;
+end MixingVolume;
+
+model MixingVolumeHeatPort
+  extends PartialMixingVolume;
+end MixingVolumeHeatPort;
+
+model MixingVolumeHeatMoisturePort
+  extends PartialMixingVolume;
+end MixingVolumeHeatMoisturePort;
+
+model FourPortHexBase
+  replaceable package Medium1 = PartialMedium;
+  replaceable package Medium2 = PartialMedium;
+  replaceable MixingVolumeHeatPort vol1 constrainedby
+    MixingVolumeHeatPort(redeclare final package Medium = Medium1);
+  replaceable MixingVolume vol2 constrainedby
+    MixingVolumeHeatPort(redeclare final package Medium = Medium2);
+end FourPortHexBase;
+
+model BaseHex
+  extends FourPortHexBase;
+end BaseHex;
+
+model UsesDefaultConstrainedbyVolume
+  extends FourPortHexBase(
+    redeclare package Medium1 = RealMedium,
+    redeclare package Medium2 = RealMedium);
+  Real y;
+equation
+  y = vol1.dynBal.medium.marker;
+end UsesDefaultConstrainedbyVolume;
+
+model LatentHex
+  extends BaseHex(
+    redeclare final MixingVolumeHeatPort vol1,
+    redeclare final MixingVolumeHeatMoisturePort vol2);
+end LatentHex;
+
+partial model PartialFourPort
+  replaceable package Medium1 = PartialMedium;
+  replaceable package Medium2 = PartialMedium;
+end PartialFourPort;
+
+model DryCoil
+  extends PartialFourPort;
+  replaceable model HexElement = BaseHex;
+  HexElement ele[1](
+    redeclare each package Medium1 = Medium1,
+    redeclare each package Medium2 = Medium2);
+end DryCoil;
+
+model WetCoil
+  extends DryCoil(
+    redeclare replaceable package Medium2 = CondensingMedium,
+    redeclare model HexElement = LatentHex);
+end WetCoil;
+
+model CoilWrapper
+  replaceable package MediumAir = PartialMedium;
+  replaceable package MediumWat = PartialMedium;
+  WetCoil cooCoi(
+    redeclare package Medium1 = MediumWat,
+    redeclare package Medium2 = MediumAir);
+end CoilWrapper;
+
+partial model WatCoil
+  replaceable package MediumAir = PartialMedium;
+  replaceable package MediumWat = PartialMedium;
+end WatCoil;
+
+model CoolingCoil
+  extends WatCoil;
+  CoilWrapper coi(
+    redeclare package MediumAir = MediumAir,
+    redeclare package MediumWat = MediumWat);
+end CoolingCoil;
+
+model Top
+  package MediumWater = RealMedium;
+  package MediumAir = RealMedium;
+  CoolingCoil cooCoi(
+    redeclare package MediumAir = MediumAir,
+    redeclare package MediumWat = MediumWater);
+  Real y;
+equation
+  y = cooCoi.coi.cooCoi.ele[1].vol1.dynBal.medium.marker;
+end Top;
+"#;
+
+/// MLS §7.3: inherited replaceable model arrays must keep active package
+/// redeclarations when nested volumes instantiate `Medium.BaseProperties`.
+#[test]
+fn test_inherited_replaceable_model_array_keeps_active_medium_for_baseproperties() {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", INHERITED_VOLUME_MEDIUM_BASEPROPERTIES_SOURCE)
+        .expect("parse failed");
+
+    let direct_result = session
+        .compile_model("UsesDefaultConstrainedbyVolume")
+        .expect("default constrainedby volume compile failed");
+
+    let direct_var_names: Vec<_> = direct_result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert!(
+        direct_var_names
+            .iter()
+            .any(|name| name == "vol1.dynBal.medium.marker"),
+        "default replaceable volume should use constrainedby RealMedium; vars={direct_var_names:?}"
+    );
+
+    let result = session.compile_model("Top").expect("compile failed");
+
+    let flat_var_names: Vec<_> = result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert!(
+        flat_var_names
+            .iter()
+            .any(|name| name == "cooCoi.coi.cooCoi.ele[1].vol1.dynBal.medium.marker"),
+        "array element Medium.BaseProperties should use active RealMedium; vars={flat_var_names:?}"
+    );
+}
+
 /// MLS §7.3: package aliases in sibling models must not leak into the active
 /// model's alias resolution. Compiling `Examples.A` should use `A.Medium`.
 #[test]

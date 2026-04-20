@@ -1028,8 +1028,15 @@ pub fn process_extends_with_cache(
         let base_inherited = process_extends_with_cache(tree, base_class, cache)?;
         merge_inherited(&mut inherited, base_inherited, extend, &tree.source_map)?;
 
-        // MLS §7.2: Apply extends modifications after recursive merge so
+        // MLS §7.2/§7.3: Apply extends modifications after recursive merge so
         // transitively inherited targets are available.
+        apply_transitive_component_redeclarations(
+            tree,
+            &mut inherited,
+            base_class,
+            extend,
+            location_to_span(&extend.location, &tree.source_map),
+        )?;
         apply_extends_modifications(&mut inherited, extend);
     }
 
@@ -1343,6 +1350,93 @@ fn collect_redeclarations(
     Ok(redeclare_types)
 }
 
+fn apply_redeclared_component_type(
+    tree: &ast::ClassTree,
+    comp: &mut ast::Component,
+    new_type_name: &str,
+) {
+    comp.type_name = rumoca_ir_ast::Name {
+        name: new_type_name
+            .split('.')
+            .map(|part| rumoca_ir_core::Token {
+                text: std::sync::Arc::from(part),
+                location: rumoca_ir_core::Location::default(),
+                token_number: 0,
+                token_type: 0,
+            })
+            .collect(),
+        def_id: None,
+    };
+    comp.type_def_id = tree.name_map.get(new_type_name).copied().or_else(|| {
+        let short_name = new_type_name.rsplit('.').next().unwrap_or(new_type_name);
+        tree.name_map.get(short_name).copied()
+    });
+
+    activate_constrainedby_defaults_for_redeclare(comp);
+}
+
+/// Apply component redeclarations that target transitively inherited members.
+///
+/// Direct members are handled in `merge_class_content`. Once recursive
+/// inheritance has been merged, the same extends clause can also redeclare a
+/// component declared by a grandparent class. Those inherited components need
+/// the same MLS §7.3 type replacement and constrainedby-default activation.
+fn apply_transitive_component_redeclarations(
+    tree: &ast::ClassTree,
+    target: &mut InheritedContent,
+    class: &ast::ClassDef,
+    extend: &ast::Extend,
+    extend_span: Span,
+) -> InstantiateResult<()> {
+    let mut validation_error: Option<Box<InstantiateError>> = None;
+
+    walk_extend_modifications(extend, |modification| {
+        let Some((target_name, _value_expr)) = redeclare_target_value(modification) else {
+            return;
+        };
+        if validation_error.is_some() || class.components.contains_key(target_name) {
+            return;
+        }
+
+        let Some(component) = target.components.get(target_name) else {
+            return;
+        };
+        let target_name_owned = target_name.to_string();
+        let new_type = extract_redeclare_type_qualified(&modification.expr, tree);
+        let span = match redeclare_target_span(tree, &target_name_owned, modification, extend_span)
+        {
+            Ok(span) => span,
+            Err(err) => {
+                validation_error = Some(err);
+                return;
+            }
+        };
+
+        if let Err(err) = validate_redeclaration(
+            tree,
+            component,
+            &target_name_owned,
+            new_type.as_deref(),
+            span,
+        ) {
+            validation_error = Some(err);
+            return;
+        }
+
+        if let Some(new_type_name) = new_type
+            && let Some(comp) = target.components.get_mut(target_name)
+        {
+            apply_redeclared_component_type(tree, comp, &new_type_name);
+        }
+    });
+
+    if let Some(err) = validation_error {
+        return Err(err);
+    }
+
+    Ok(())
+}
+
 /// MLS §7.3.2: Validates constrainedby type constraints.
 /// Full type replacement is deferred to later phases; here we validate structural constraints.
 ///
@@ -1421,29 +1515,7 @@ fn merge_class_content(
     // This updates the component's type so that instantiation uses the new type's fields
     for (comp_name, new_type_name) in &redeclare_types {
         if let Some(comp) = target.components.get_mut(comp_name) {
-            // Update the type_name to the new type
-            comp.type_name = rumoca_ir_ast::Name {
-                name: new_type_name
-                    .split('.')
-                    .map(|part| rumoca_ir_core::Token {
-                        text: std::sync::Arc::from(part),
-                        location: rumoca_ir_core::Location::default(),
-                        token_number: 0,
-                        token_type: 0,
-                    })
-                    .collect(),
-                def_id: None,
-            };
-            // Update type_def_id by looking up the new type in the tree
-            comp.type_def_id = tree.name_map.get(new_type_name).copied().or_else(|| {
-                // Try with shorter name (last segment) for unqualified lookups
-                let short_name = new_type_name.rsplit('.').next().unwrap_or(new_type_name);
-                tree.name_map.get(short_name).copied()
-            });
-
-            // MLS §7.3.2: Activate constraining-clause defaults for redeclared
-            // replaceable components.
-            activate_constrainedby_defaults_for_redeclare(comp);
+            apply_redeclared_component_type(tree, comp, new_type_name);
         }
     }
 
@@ -1537,6 +1609,16 @@ fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
     }
 }
 
+fn activate_constrainedby_defaults_for_replaceable_components(
+    components: &mut IndexMap<String, ast::Component>,
+) {
+    for comp in components.values_mut() {
+        if comp.is_replaceable {
+            activate_constrainedby_defaults_for_redeclare(comp);
+        }
+    }
+}
+
 /// Merge nested class modifications from extends clause into inherited components.
 ///
 /// MLS §7.2: When an extends clause has modifications like
@@ -1607,6 +1689,8 @@ pub fn get_effective_components_with_cache(
     for (name, comp) in &class.components {
         inherited.components.insert(name.clone(), comp.clone());
     }
+
+    activate_constrainedby_defaults_for_replaceable_components(&mut inherited.components);
 
     // MLS §7.1/§7.3: local class names (including inherited replaceable classes)
     // are valid type names for component declarations in the effective class scope.
