@@ -1,5 +1,45 @@
 use super::*;
 
+/// MLS §5.3 + §7.2: the right-hand side of a component modifier is resolved in
+/// the lexical scope where the modifier occurs, not against the modified field.
+#[test]
+fn test_same_name_component_modifier_binding_uses_enclosing_parameter() {
+    let source = r#"
+model TunedComponent
+  parameter Real p_start = p_start;
+  Real y;
+equation
+  y = p_start;
+end TunedComponent;
+
+model UsesOuterStart
+  parameter Real p_start = 3;
+  TunedComponent c(p_start = p_start);
+  Real y;
+equation
+  y = c.y;
+end UsesOuterStart;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("same-name modifier binding should resolve without ER007");
+
+    let result = session
+        .compile_model("UsesOuterStart")
+        .expect("compile should succeed");
+
+    let flat_code =
+        render_flat_template_with_name(&result.flat, templates::FLAT_MODELICA, "UsesOuterStart")
+            .expect("flat rendering should succeed");
+
+    assert!(
+        flat_code.contains("parameter Real c.p_start") && flat_code.contains("= p_start;"),
+        "component modifier should preserve enclosing parameter reference, got:\n{flat_code}"
+    );
+}
+
 /// MLS §7.3: extends-clause package redeclarations that forward through a local
 /// alias (`redeclare package Medium = Medium`) must resolve using the active
 /// modification environment when instantiated through a component modifier.

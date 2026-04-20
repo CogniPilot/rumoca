@@ -1296,6 +1296,12 @@ fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>
             // Skip if-branches to avoid false cycles from conditional mutual deps
             collect_component_refs(binding, &param_names, &mut refs, true);
         }
+        // MLS §5.6/§7.2: class declarations are checked before component
+        // modifiers are merged. A same-name default such as `p_start=p_start`
+        // can be a passthrough placeholder that is overridden at the use site,
+        // so resolve-time ER007 must not treat the local syntactic self edge as
+        // a proven cycle. Multi-parameter cycles remain checked below.
+        refs.remove(name);
         deps.insert(name.clone(), refs);
     }
 
