@@ -11,7 +11,7 @@
 //!   8. realtime pacing
 
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -57,12 +57,24 @@ impl AutopilotProcess {
     }
 
     fn stop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let pid = child.id();
-            eprintln!("[autopilot] killing pid {pid}");
-            let _ = child.kill();
-            let _ = child.wait();
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let pid = child.id();
+        eprintln!("[autopilot] killing pid {pid}");
+        let _ = child.kill();
+        // Best-effort wait; if the child won't die within 500ms (e.g., a
+        // ptrace'd debugger is eating SIGKILL), abandon the wait rather
+        // than blocking shutdown.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => thread::sleep(Duration::from_millis(20)),
+                Err(_) => return,
+            }
         }
+        eprintln!("[autopilot] pid {pid} did not exit within 500ms; abandoning");
     }
 }
 
@@ -404,20 +416,54 @@ fn spawn_autopilot(cfg: &SimulationConfig) -> Result<Arc<Mutex<Option<AutopilotP
     Ok(autopilot)
 }
 
+/// Set up a robust shutdown path for SIGINT/SIGTERM:
+/// - 1st signal: clean shutdown (kill autopilot with timeout, disable raw
+///   mode, exit 0)
+/// - 2nd signal within 5s: hard exit 130 (skip cleanup)
+///
+/// Prevents getting stuck if the autopilot hangs on its own SIGINT
+/// handler or crossterm raw mode is still engaged and swallowing the
+/// first press.
 fn spawn_sigint_handler(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
-    let sigint = Arc::new(AtomicBool::new(false));
-    if let Err(e) = signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&sigint)) {
-        eprintln!("Warning: could not register SIGINT handler: {e}");
-    }
+    let sig = Arc::new(AtomicUsize::new(0));
+    // Count presses. signal_hook::flag::register_usize increments per hit.
+    let _ =
+        signal_hook::flag::register_usize(signal_hook::consts::SIGINT, Arc::clone(&sig), 1);
+    let _ =
+        signal_hook::flag::register_usize(signal_hook::consts::SIGTERM, Arc::clone(&sig), 1);
+
     thread::spawn(move || {
-        while !sigint.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(100));
+        // Wait for the first press.
+        while sig.load(Ordering::Relaxed) == 0 {
+            thread::sleep(Duration::from_millis(50));
         }
-        if let Ok(mut ap) = autopilot.lock()
-            && let Some(proc) = ap.as_mut()
-        {
-            proc.stop();
+        eprintln!("\n[sim] shutdown requested — press Ctrl-C again to force quit");
+
+        // Kick off cleanup in a second thread so this one can watch for
+        // a second press.
+        let ap = Arc::clone(&autopilot);
+        thread::spawn(move || {
+            if let Ok(mut ap_lock) = ap.lock()
+                && let Some(proc) = ap_lock.as_mut()
+            {
+                proc.stop();
+            }
+            crossterm::terminal::disable_raw_mode().ok();
+            std::process::exit(0);
+        });
+
+        // Watch for a second press within 5 seconds — hard-exit if it arrives.
+        let before_second = sig.load(Ordering::Relaxed);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if sig.load(Ordering::Relaxed) > before_second {
+                eprintln!("[sim] force quit");
+                crossterm::terminal::disable_raw_mode().ok();
+                std::process::exit(130);
+            }
+            thread::sleep(Duration::from_millis(50));
         }
+        // Cleanup thread should have exited by now; if it's stuck, force exit.
         crossterm::terminal::disable_raw_mode().ok();
         std::process::exit(0);
     });
