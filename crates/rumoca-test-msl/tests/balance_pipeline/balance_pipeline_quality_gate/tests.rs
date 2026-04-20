@@ -742,6 +742,8 @@ fn simulation_parity_cache_key_changes_with_policy() {
         "OpenModelica 1.26.1",
         SimulationParityCachePolicy {
             batch_timeout_seconds: 600,
+            workers: 2,
+            omc_threads: 1,
             use_experiment_stop_time: true,
             stop_time_override: None,
         },
@@ -752,6 +754,8 @@ fn simulation_parity_cache_key_changes_with_policy() {
         "OpenModelica 1.26.1",
         SimulationParityCachePolicy {
             batch_timeout_seconds: 900,
+            workers: 2,
+            omc_threads: 1,
             use_experiment_stop_time: true,
             stop_time_override: None,
         },
@@ -762,6 +766,8 @@ fn simulation_parity_cache_key_changes_with_policy() {
         "OpenModelica 1.26.1",
         SimulationParityCachePolicy {
             batch_timeout_seconds: 600,
+            workers: 2,
+            omc_threads: 1,
             use_experiment_stop_time: false,
             stop_time_override: Some(30.0),
         },
@@ -782,7 +788,9 @@ fn simulation_parity_cache_matches_rejects_mismatched_policy() {
             "stop_time": 10.0,
             "use_experiment_stop_time": true,
             "timing": {
-                "batch_timeout_seconds": 600
+                "batch_timeout_seconds": 600,
+                "workers_used": 2,
+                "omc_threads": 1
             },
             "models": {
                 "A": { "status": "success" },
@@ -795,6 +803,8 @@ fn simulation_parity_cache_matches_rejects_mismatched_policy() {
 
     let matching = SimulationParityCachePolicy {
         batch_timeout_seconds: 600,
+        workers: 2,
+        omc_threads: 1,
         use_experiment_stop_time: true,
         stop_time_override: None,
     };
@@ -802,8 +812,14 @@ fn simulation_parity_cache_matches_rejects_mismatched_policy() {
         batch_timeout_seconds: 900,
         ..matching
     };
+    let mismatched_workers = SimulationParityCachePolicy {
+        workers: 3,
+        ..matching
+    };
     let mismatched_override = SimulationParityCachePolicy {
         batch_timeout_seconds: 600,
+        workers: 2,
+        omc_threads: 1,
         use_experiment_stop_time: false,
         stop_time_override: Some(30.0),
     };
@@ -828,6 +844,17 @@ fn simulation_parity_cache_matches_rejects_mismatched_policy() {
         )
         .expect("mismatched timeout should parse"),
         "batch-timeout drift should invalidate cache entry"
+    );
+    assert!(
+        !simulation_parity_cache_matches(
+            &path,
+            &["A".to_string(), "B".to_string()],
+            "4.1.0",
+            "OpenModelica 1.26.1",
+            mismatched_workers,
+        )
+        .expect("mismatched workers should parse"),
+        "OMC worker drift should invalidate cache entry"
     );
     assert!(
         !simulation_parity_cache_matches(

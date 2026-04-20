@@ -109,7 +109,7 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
     } else {
         let parity_start = Instant::now();
         let _parity_watchdog =
-            StageAbortWatchdog::new("parity_stage", "RUMOCA_MSL_STAGE_TIMEOUT_PARITY_SECS", 1800);
+            StageAbortWatchdog::new("parity_stage", "RUMOCA_MSL_STAGE_TIMEOUT_PARITY_SECS", 2400);
         println!("MSL parity stage: ensuring OMC references + trace comparison...");
         ensure_required_msl_parity_references(summary)
             .expect("Failed to ensure required OMC parity references");

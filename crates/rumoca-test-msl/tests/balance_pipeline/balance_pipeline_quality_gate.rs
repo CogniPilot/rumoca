@@ -9,6 +9,11 @@ mod tests;
 
 pub(super) const SIM_RATE_GATE_OVERRIDE_ENV: &str = "RUMOCA_ALLOW_SIM_RATE_REGRESSION";
 pub(super) const FORCE_OMC_PARITY_REFRESH_ENV: &str = "RUMOCA_MSL_FORCE_OMC_PARITY_REFRESH";
+pub(super) const OMC_PARITY_WORKERS_ENV: &str = "RUMOCA_MSL_OMC_PARITY_WORKERS";
+pub(super) const OMC_COMPILE_REFERENCE_MODEL_TIMEOUT_ENV: &str =
+    "RUMOCA_MSL_OMC_COMPILE_REFERENCE_MODEL_TIMEOUT_SECS";
+pub(super) const OMC_SIM_REFERENCE_BATCH_TIMEOUT_ENV: &str =
+    "RUMOCA_MSL_OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECS";
 pub(super) const SIM_RATE_GATE_EPSILON: f64 = 1.0e-12;
 /// Allowed simulation-rate drop (absolute ratio, i.e. 0.02 = 2.0 percentage points).
 // Temporary relaxation while broader discrete-signal evaluation is being integrated.
@@ -42,8 +47,17 @@ pub(super) const TRACE_SEVERE_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP: f64 = 1.5;
 pub(super) const TRACE_MODELS_COMPARED_ALLOWED_DROP: usize = 2;
 /// Allowed relative drop in runtime speedup median (omc/rumoca) before failing.
 pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.20;
+/// Default OMC worker cap for parity reference generation.
+///
+/// OMC is often accessed through a Docker-backed wrapper on macOS. Running one
+/// OMC process per local CPU can make otherwise quick Clocked examples hit the
+/// per-model timeout and collapse trace coverage. Keep this conservative by
+/// default; developers can still override it with `RUMOCA_MSL_OMC_PARITY_WORKERS`.
+pub(super) const OMC_PARITY_WORKERS_DEFAULT_MAX: usize = 2;
+/// OMC process timeout budget for compile reference generation.
+pub(super) const OMC_COMPILE_REFERENCE_MODEL_TIMEOUT_SECONDS: u64 = 60;
 /// OMC process timeout budget for simulation reference generation.
-pub(super) const OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS: u64 = 30;
+pub(super) const OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS: u64 = 60;
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
@@ -644,8 +658,24 @@ fn parity_target_set_cache_key(
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SimulationParityCachePolicy {
     batch_timeout_seconds: u64,
+    workers: usize,
+    omc_threads: usize,
     use_experiment_stop_time: bool,
     stop_time_override: Option<f64>,
+}
+
+fn positive_usize_env(env_key: &str) -> Option<usize> {
+    std::env::var(env_key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn positive_u64_env(env_key: &str) -> Option<u64> {
+    std::env::var(env_key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
 }
 
 fn simulation_stop_time_override() -> Option<f64> {
@@ -655,10 +685,24 @@ fn simulation_stop_time_override() -> Option<f64> {
         .filter(|value| value.is_finite() && *value > 0.0)
 }
 
-fn current_simulation_parity_cache_policy() -> SimulationParityCachePolicy {
+fn omc_compile_reference_model_timeout_seconds() -> u64 {
+    positive_u64_env(OMC_COMPILE_REFERENCE_MODEL_TIMEOUT_ENV)
+        .unwrap_or(OMC_COMPILE_REFERENCE_MODEL_TIMEOUT_SECONDS)
+}
+
+fn omc_sim_reference_batch_timeout_seconds() -> u64 {
+    positive_u64_env(OMC_SIM_REFERENCE_BATCH_TIMEOUT_ENV)
+        .unwrap_or(OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS)
+}
+
+fn current_simulation_parity_cache_policy(
+    context: &ParityStepContext,
+) -> SimulationParityCachePolicy {
     let stop_time_override = simulation_stop_time_override();
     SimulationParityCachePolicy {
-        batch_timeout_seconds: OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS,
+        batch_timeout_seconds: context.sim_batch_timeout_seconds,
+        workers: context.workers,
+        omc_threads: context.omc_threads,
         use_experiment_stop_time: stop_time_override.is_none(),
         stop_time_override,
     }
@@ -685,6 +729,10 @@ fn simulation_parity_cache_key(
     hash = fnv1a64_update(hash, &[0xfc]);
     hash = fnv1a64_update(hash, policy.batch_timeout_seconds.to_string().as_bytes());
     hash = fnv1a64_update(hash, &[0xfb]);
+    hash = fnv1a64_update(hash, policy.workers.to_string().as_bytes());
+    hash = fnv1a64_update(hash, &[0xf9]);
+    hash = fnv1a64_update(hash, policy.omc_threads.to_string().as_bytes());
+    hash = fnv1a64_update(hash, &[0xf8]);
     hash = fnv1a64_update(hash, &[u8::from(policy.use_experiment_stop_time)]);
     hash = fnv1a64_update(hash, &[0xfa]);
     if let Some(stop_time_override) = policy.stop_time_override {
@@ -930,6 +978,22 @@ fn simulation_parity_cache_matches(
     if batch_timeout_seconds != Some(policy.batch_timeout_seconds) {
         return Ok(false);
     }
+    let workers_used = payload
+        .get("timing")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|timing| timing.get("workers_used"))
+        .and_then(serde_json::Value::as_u64);
+    if workers_used != Some(policy.workers as u64) {
+        return Ok(false);
+    }
+    let omc_threads = payload
+        .get("timing")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|timing| timing.get("omc_threads"))
+        .and_then(serde_json::Value::as_u64);
+    if omc_threads != Some(policy.omc_threads as u64) {
+        return Ok(false);
+    }
     let use_experiment_stop_time = payload
         .get("use_experiment_stop_time")
         .and_then(serde_json::Value::as_bool);
@@ -981,7 +1045,8 @@ where
 }
 
 pub(super) fn omc_parity_workers() -> usize {
-    msl_stage_parallelism()
+    positive_usize_env(OMC_PARITY_WORKERS_ENV)
+        .unwrap_or_else(|| msl_stage_parallelism().clamp(1, OMC_PARITY_WORKERS_DEFAULT_MAX))
 }
 
 pub(super) fn omc_parity_threads() -> usize {
@@ -1027,6 +1092,8 @@ struct ParityStepContext {
     omc_version: String,
     workers: usize,
     omc_threads: usize,
+    compile_model_timeout_seconds: u64,
+    sim_batch_timeout_seconds: u64,
 }
 
 fn ensure_compile_parity_reference(
@@ -1039,7 +1106,7 @@ fn ensure_compile_parity_reference(
     let _compile_ref_watchdog = StageAbortWatchdog::new(
         "parity_compile_reference",
         "RUMOCA_MSL_STAGE_TIMEOUT_PARITY_COMPILE_REF_SECS",
-        1200,
+        1800,
     );
     let omc_reference = omc_reference_path();
     let compile_cache_key =
@@ -1086,6 +1153,8 @@ fn ensure_compile_parity_reference(
                 context.workers.to_string(),
                 "--omc-threads".to_string(),
                 context.omc_threads.to_string(),
+                "--model-timeout-seconds".to_string(),
+                context.compile_model_timeout_seconds.to_string(),
             ],
         )?;
     } else {
@@ -1107,7 +1176,7 @@ fn run_simulation_parity_reference_command(
         sim_targets_arg,
         "--use-experiment-stop-time".to_string(),
         "--batch-timeout-seconds".to_string(),
-        OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS.to_string(),
+        context.sim_batch_timeout_seconds.to_string(),
         "--workers".to_string(),
         context.workers.to_string(),
         "--omc-threads".to_string(),
@@ -1131,7 +1200,7 @@ fn ensure_simulation_parity_reference(
         "RUMOCA_MSL_STAGE_TIMEOUT_PARITY_SIM_REF_SECS",
         1800,
     );
-    let sim_policy = current_simulation_parity_cache_policy();
+    let sim_policy = current_simulation_parity_cache_policy(context);
     let omc_simulation_reference = omc_simulation_reference_path();
     let sim_cache_key = simulation_parity_cache_key(
         sim_targets,
@@ -1214,12 +1283,16 @@ pub(super) fn ensure_required_msl_parity_references(summary: &MslSummary) -> io:
         omc_version,
         workers: omc_parity_workers(),
         omc_threads: omc_parity_threads(),
+        compile_model_timeout_seconds: omc_compile_reference_model_timeout_seconds(),
+        sim_batch_timeout_seconds: omc_sim_reference_batch_timeout_seconds(),
     };
     println!(
-        "MSL parity targets: compile={} simulation={} (workers={})",
+        "MSL parity targets: compile={} simulation={} (workers={}, compile_timeout={}s, sim_timeout={}s)",
         compile_targets.len(),
         sim_targets.len(),
-        context.workers
+        context.workers,
+        context.compile_model_timeout_seconds,
+        context.sim_batch_timeout_seconds
     );
 
     let compile_ref_start = Instant::now();
