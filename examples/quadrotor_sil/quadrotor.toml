@@ -17,7 +17,12 @@ file = "QuadrotorSIL.mo"
 name = "QuadrotorSIL"
 
 [sim]
-dt = 0.00125
+# Each lockstep cycle advances this much sim time per zephyr packet.
+# Set to roughly the packet inter-arrival wall time so the sim runs
+# realtime. Physics accuracy is preserved via step_substeps — it breaks
+# each dt into MAX_SUB_DT (~2 ms) substeps internally, so 0.02 s here
+# still gives ~0.002 s solver steps.
+dt = 0.02
 realtime = true
 
 [autopilot]
