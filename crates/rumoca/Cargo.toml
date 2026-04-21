@@ -23,6 +23,7 @@ sim = [
     "dep:rumoca-transport-websocket",
     "dep:signal-hook",
     "dep:crossterm",
+    "dep:libc",
 ]
 tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-session/tracing"]
 
@@ -42,6 +43,9 @@ rumoca-transport-udp = { workspace = true, optional = true }
 rumoca-transport-websocket = { workspace = true, optional = true }
 signal-hook = { version = "0.3", optional = true }
 crossterm = { version = "0.28", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2", optional = true }
 
 # External dependencies
 anyhow = { workspace = true }

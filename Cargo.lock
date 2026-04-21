@@ -3111,6 +3111,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "flate2",
+ "libc",
  "miette",
  "mimalloc",
  "ntest",

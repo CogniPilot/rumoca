@@ -58,6 +58,12 @@ impl AutopilotProcess {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
         }
+        // On Linux: tell the kernel to send SIGKILL to this child if rumoca
+        // ever dies — covers SIGKILL, panic, OOM, anything that skips Drop.
+        // Without this, process_group(0) actually makes orphaning worse: the
+        // child outlives us in its own pgrp with no one to clean it up.
+        #[cfg(target_os = "linux")]
+        install_pdeathsig(&mut cmd);
         let child = cmd
             .spawn()
             .with_context(|| format!("Failed to start autopilot: {}", self.command))?;
@@ -91,6 +97,23 @@ impl AutopilotProcess {
 impl Drop for AutopilotProcess {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// Set `PR_SET_PDEATHSIG = SIGKILL` on the child via `pre_exec`, so the
+/// kernel reaps the child if the parent dies for any reason (SIGKILL,
+/// panic, OOM) — not just clean shutdown paths that run Drop.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+fn install_pdeathsig(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
 }
 
@@ -222,6 +245,15 @@ pub(crate) fn run_sim_loop(
     while let FrameControl::Continue =
         ctx.run_one_frame(&mut state, stepper, &mut engine)?
     {}
+
+    // Explicit stop: the signal-handler thread still holds an Arc clone of
+    // `autopilot`, so Drop would not fire on normal exit and zephyr would
+    // orphan. Kill the child here, deterministically.
+    if let Ok(mut ap) = autopilot.lock()
+        && let Some(proc) = ap.as_mut()
+    {
+        proc.stop();
+    }
     Ok(())
 }
 
