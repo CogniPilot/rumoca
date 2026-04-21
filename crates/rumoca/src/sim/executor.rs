@@ -168,13 +168,13 @@ impl TraceLogger {
 }
 
 fn open_trace_logger(cfg: &SimulationConfig) -> Result<Option<TraceLogger>> {
-    let Ok(path) = std::env::var("RUMOCA_TRACE_LOG") else {
-        return Ok(None);
-    };
     let Some(dbg) = cfg.debug_log.as_ref() else {
-        eprintln!("RUMOCA_TRACE_LOG set but config has no [debug_log] section — skipping");
         return Ok(None);
     };
+    // Default: drop `rumoca_trace.csv` in the cwd so you always have a log
+    // to share with no setup. Override with RUMOCA_TRACE_LOG=/path/other.csv.
+    let path = std::env::var("RUMOCA_TRACE_LOG")
+        .unwrap_or_else(|_| "rumoca_trace.csv".to_string());
     let logger = TraceLogger::open(PathBuf::from(path), dbg.capture.clone())?;
     Ok(Some(logger))
 }

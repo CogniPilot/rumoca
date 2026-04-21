@@ -122,10 +122,16 @@ equation
   der(vx) = R13 * a_bz;
   der(vy) = R23 * a_bz;
   der(vz) = R33 * a_bz + g + F_ground / mass;
-  // Compute world-frame total acceleration (NED)
-  a_wx = der(vx);
-  a_wy = der(vy);
-  a_wz = der(vz);
+  // World-frame total acceleration (NED). Expanded inline rather than
+  // aliased from der(vx/y/z) because the BLT output-elimination pass
+  // substitutes these via the runtime env reconstructor, which does not
+  // resolve der() references — it only sees state variable values. So
+  // `a_wx = der(vx)` would leave accel_x stuck at its init value when
+  // the output is eliminated. Writing the RHS directly keeps the
+  // eliminated substitution expression composed of env-resolvable terms.
+  a_wx = R13 * a_bz;
+  a_wy = R23 * a_bz;
+  a_wz = R33 * a_bz + g + F_ground / mass;
 
   // --- Quaternion kinematics (with Baumgarte stabilization) ---
   // The correction term -lambda*(|q|^2-1)*q drives the quaternion
