@@ -23,6 +23,13 @@
 {%- set n_p = var_size(dae.p) | trim | int -%}
 {%- set n_z = var_size(dae.z) | trim | int -%}
 {%- set n_m = var_size(dae.m) | trim | int -%}
+{%- set ns_obs = namespace(total=0) -%}
+{%- for observable in dae.__rumoca_observables | default([]) -%}
+{%- if observable.causality | default("local") == "output" -%}
+{%- set ns_obs.total = ns_obs.total + 1 -%}
+{%- endif -%}
+{%- endfor -%}
+{%- set n_obs = ns_obs.total -%}
 {#-
   Value reference layout (contiguous blocks):
     0          .. n_x-1        : states (x)
@@ -42,7 +49,8 @@
 {%- set vr_p     = vr_w + n_w -%}
 {%- set vr_z     = vr_p + n_p -%}
 {%- set vr_m     = vr_z + n_z -%}
-{%- set n_total  = vr_m + n_m -%}
+{%- set vr_obs   = vr_m + n_m -%}
+{%- set n_total  = vr_obs + n_obs -%}
 {#- Macro: XML-escape a string -#}
 {%- macro xml_escape(s) -%}
 {{ s | replace("&", "&amp;") | replace("<", "&lt;") | replace(">", "&gt;") | replace('"', "&quot;") }}
@@ -194,10 +202,18 @@
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endif %}
 {% endfor %}
+{#- Restored native observables / outputs that disappeared during structural preparation. -#}
+{% set ns_vr = namespace(offset=vr_obs) %}
+{% for observable in dae.__rumoca_observables | default([]) %}
+{% if observable.causality | default("local") == "output" %}
+{{ scalar_var(observable.name, ns_vr.offset, observable.causality | default("local"), "continuous", observable, "calculated") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endif %}
+{% endfor %}
   </ModelVariables>
 
   <ModelStructure>
-{% if n_w > 0 %}
+{% if n_w > 0 or n_obs > 0 %}
     <Outputs>
 {% set ns_idx = namespace(val=1) %}
 {#- Skip states, derivatives, algebraics to find output indices -#}
@@ -211,6 +227,12 @@
 {% endfor %}
 {% else %}
       <Unknown index="{{ out_start_idx + ns_idx.val - 1 }}"/>
+{% set ns_idx.val = ns_idx.val + 1 %}
+{% endif %}
+{% endfor %}
+{% for observable in dae.__rumoca_observables | default([]) %}
+{% if observable.causality | default("local") == "output" %}
+      <Unknown index="{{ 1 + vr_obs + ns_idx.val - 1 }}"/>
 {% set ns_idx.val = ns_idx.val + 1 %}
 {% endif %}
 {% endfor %}

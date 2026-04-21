@@ -195,6 +195,25 @@ pub fn render_template_with_dae_json(
     Ok(result)
 }
 
+/// Render a template using a pre-built `dae` JSON context object and model name.
+pub fn render_template_with_dae_json_and_name(
+    dae_json: &serde_json::Value,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    let mut env = create_environment();
+    env.add_template("inline", template)?;
+
+    let dae_value = Value::from_serialize(dae_json);
+    let tmpl = env.get_template("inline")?;
+    let result = tmpl.render(minijinja::context! {
+        dae => dae_value,
+        model_name => model_name,
+    })?;
+
+    Ok(result)
+}
+
 /// Render a DAE using a template string, with an additional model name in context.
 ///
 /// The template receives both `dae` and `model_name` as context variables.

@@ -25,6 +25,15 @@ pub fn render_dae_template_with_json(dae_json: &Value, template: &str) -> Result
         .map_err(|error| error.to_string())
 }
 
+pub fn render_dae_template_with_json_and_name(
+    dae_json: &Value,
+    template: &str,
+    model_name: &str,
+) -> Result<String, String> {
+    rumoca_phase_codegen::render_template_with_dae_json_and_name(dae_json, template, model_name)
+        .map_err(|error| error.to_string())
+}
+
 pub fn render_dae_template_with_name(
     dae_model: &dae::Dae,
     template: &str,

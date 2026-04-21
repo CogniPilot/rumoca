@@ -22,6 +22,13 @@
 {%- set nvar_p = dae.p | length -%}
 {%- set nvar_z = dae.z | length -%}
 {%- set nvar_m = dae.m | length -%}
+{%- set ns_obs = namespace(total=0) -%}
+{%- for observable in dae.__rumoca_observables | default([]) -%}
+{%- if observable.causality | default("local") == "output" -%}
+{%- set ns_obs.total = ns_obs.total + 1 -%}
+{%- endif -%}
+{%- endfor -%}
+{%- set nvar_obs = ns_obs.total -%}
 {#-
   FMI 3.0 Native Array VR layout (one VR per variable):
     0              .. nvar_x-1          : states (x)
@@ -32,7 +39,8 @@
     +nvar_w        .. +nvar_p-1         : parameters (p)
     +nvar_p        .. +nvar_z-1         : discrete reals (z)
     +nvar_z        .. +nvar_m-1         : discrete valued (m)
-    +nvar_m        .. +n_clocks-1       : clocks
+    +nvar_m        .. +nvar_obs-1       : restored native observables
+    +nvar_obs      .. +n_clocks-1       : clocks
 -#}
 {%- set vr_x     = 0 -%}
 {%- set vr_xdot  = nvar_x -%}
@@ -42,8 +50,9 @@
 {%- set vr_p     = vr_w + nvar_w -%}
 {%- set vr_z     = vr_p + nvar_p -%}
 {%- set vr_m     = vr_z + nvar_z -%}
+{%- set vr_obs   = vr_m + nvar_m -%}
 {%- set n_clocks = dae.clock_schedules | default([]) | length -%}
-{%- set vr_clk   = vr_m + nvar_m -%}
+{%- set vr_clk   = vr_obs + nvar_obs -%}
 {%- set n_total  = vr_clk + n_clocks -%}
 {#- Macro: XML-escape a string -#}
 {%- macro xml_escape(s) -%}
@@ -155,6 +164,14 @@
 {{ emit_var(name, ns_vr.offset, "local", "discrete", var, "exact") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
+{#- Restored native observables / outputs that disappeared during structural preparation. -#}
+{% set ns_vr = namespace(offset=vr_obs) %}
+{% for observable in dae.__rumoca_observables | default([]) %}
+{% if observable.causality | default("local") == "output" %}
+{{ emit_var(observable.name, ns_vr.offset, observable.causality | default("local"), "continuous", observable, "calculated") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endif %}
+{% endfor %}
 {#- Clocks (FMI 3.0 §2.4.8 — periodic clocks from sample() calls) -#}
 {% for sched in dae.clock_schedules | default([]) %}
     <Clock name="clock_{{ loop.index }}" valueReference="{{ vr_clk + loop.index0 }}" causality="local" variability="discrete" intervalVariability="fixed" intervalDecimal="{{ sched.period_seconds }}"{% if sched.phase_seconds != 0.0 %} shiftDecimal="{{ sched.phase_seconds }}"{% endif %}/>
@@ -168,11 +185,18 @@
 
   <ModelStructure>
 {#- In FMI 3.0 with native arrays: one entry per variable -#}
-{% if nvar_w > 0 %}
+{% if nvar_w > 0 or nvar_obs > 0 %}
 {% set ns_vr = namespace(offset=vr_w) %}
 {% for name, var in dae.w | items %}
     <Output valueReference="{{ ns_vr.offset }}"/>
 {% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{% set ns_obs_vr = namespace(offset=vr_obs) %}
+{% for observable in dae.__rumoca_observables | default([]) %}
+{% if observable.causality | default("local") == "output" %}
+    <Output valueReference="{{ ns_obs_vr.offset }}"/>
+{% set ns_obs_vr.offset = ns_obs_vr.offset + 1 %}
+{% endif %}
 {% endfor %}
 {% endif %}
 {% set ns_vr = namespace(offset=vr_xdot) %}

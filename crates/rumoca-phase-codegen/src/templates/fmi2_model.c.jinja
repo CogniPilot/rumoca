@@ -171,6 +171,17 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
     {% if mutable %}double{% else %}const double{% endif %}* {{ name | sanitize }} = &{{ array }}[{{ arr_base_offset }}];
+    const int {{ name | sanitize }}__len = {{ sz }};
+{% if var.dims | length == 2 %}
+{% for i in range(var.dims[0]) %}
+{% for j in range(var.dims[1]) %}
+    {% if mutable %}double{% else %}const double{% endif %} {{ name | sanitize }}_{{ i + 1 }}_{{ j + 1 }} = {{ name | sanitize }}_{{ i * var.dims[1] + j + 1 }};
+{% if pre_array %}
+    const double pre_{{ name | sanitize }}_{{ i + 1 }}_{{ j + 1 }} = pre_{{ name | sanitize }}_{{ i * var.dims[1] + j + 1 }};
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% endif %}
 {% else %}
     {% if mutable %}double{% else %}const double{% endif %} {{ name | sanitize }} = {{ array }}[{{ ns_idx.offset }}];
 {% if pre_array %}
@@ -208,6 +219,7 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 #define N_CONSTANTS      {{ var_size(dae.constants) | trim }}
 #define N_DISCRETE_REAL  {{ var_size(dae.z) | trim }}
 #define N_DISCRETE_VAL   {{ var_size(dae.m) | trim }}
+#define N_NATIVE_OBSERVABLES {% set ns_obs = namespace(total=0) %}{% for observable in dae.__rumoca_observables | default([]) %}{% if observable.causality | default("local") == "output" %}{% set ns_obs.total = ns_obs.total + 1 %}{% endif %}{% endfor %}{{ ns_obs.total }}
 #define N_EVENT_INDICATORS {{ (dae.relation | default([]) | length) + (dae.synthetic_root_conditions | default([]) | length) }}
 #define N_REALS          (N_STATES + N_DERIVATIVES + N_ALGEBRAICS + N_INPUTS + N_OUTPUTS + N_PARAMETERS + N_DISCRETE_REAL)
 
@@ -220,6 +232,7 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 #define VR_P      (VR_W + N_OUTPUTS)
 #define VR_Z      (VR_P + N_PARAMETERS)
 #define VR_M      (VR_Z + N_DISCRETE_REAL)
+#define VR_OBS    (VR_M + N_DISCRETE_VAL)
 
 /* =========================================================================
  * FMI 2.0 type definitions (subset needed for Model Exchange)
@@ -289,6 +302,7 @@ static void compute_derivatives(ModelInstance* m);
 static void compute_outputs(ModelInstance* m);
 static void compute_discrete_updates(ModelInstance* m);
 static void compute_event_indicators(ModelInstance* m);
+static fmi2Status get_native_observable_by_vr(const ModelInstance* m, fmi2ValueReference vr, fmi2Real* value);
 
 {#- Macro: check if a function has any Complex-typed parameters -#}
 {% macro has_complex_params(func) -%}
@@ -582,7 +596,7 @@ static void compute_derivatives(ModelInstance* m) {
     const double time = m->time;
     (void)t; (void)time;
 
-{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.x, "m->x", der_prefix=true, pre_array="m->x") }}
 {{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
 {{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
 {{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
@@ -621,7 +635,7 @@ static void compute_outputs(ModelInstance* m) {
     const double time = m->time;
     (void)t; (void)time;
 
-{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.x, "m->x", der_prefix=true, pre_array="m->x") }}
 {{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
 {{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
 {{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
@@ -662,7 +676,7 @@ static void compute_discrete_updates(ModelInstance* m) {
     (void)t; (void)time;
 
 {#- Unpack all variables needed for discrete equations (pre_ = current value for continuous vars) -#}
-{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.x, "m->x", der_prefix=true, pre_array="m->x") }}
 {{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
 {{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
 {{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
@@ -694,7 +708,7 @@ static void compute_event_indicators(ModelInstance* m) {
     const double time = m->time;
     (void)t; (void)time;
 
-{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.x, "m->x", der_prefix=true, pre_array="m->x") }}
 {{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
 {{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
 {{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
@@ -715,6 +729,55 @@ static void compute_event_indicators(ModelInstance* m) {
 {% else %}
     (void)m;
 {% endif %}
+}
+
+/* =========================================================================
+ * Restored native observables
+ * ========================================================================= */
+static fmi2Status get_native_observable_by_vr(const ModelInstance* m, fmi2ValueReference vr, fmi2Real* value) {
+#if N_NATIVE_OBSERVABLES > 0
+    if (vr < VR_OBS || vr >= VR_OBS + N_NATIVE_OBSERVABLES) {
+        return fmi2Error;
+    }
+
+    const double t = m->time;
+    const double time = m->time;
+    (void)t; (void)time;
+
+{{ unpack_vars(dae.x, "m->x", der_prefix=true, pre_array="m->x") }}
+{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
+{{ unpack_vars(dae.p, "m->p") }}
+{{ unpack_vars(dae.constants, "m->constants") }}
+{{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
+{{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
+{% for observable in dae.__rumoca_observables | default([]) %}
+#define {{ observable.name | sanitize }} ({{ render_expr(observable.expr, cfg) }})
+{% endfor %}
+
+    switch (vr) {
+{% set ns_obs = namespace(offset=0) %}
+{% for observable in dae.__rumoca_observables | default([]) %}
+{% if observable.causality | default("local") == "output" %}
+        case VR_OBS + {{ ns_obs.offset }}:
+            *value = {{ observable.name | sanitize }};
+            return fmi2OK;
+{% set ns_obs.offset = ns_obs.offset + 1 %}
+{% endif %}
+{% endfor %}
+        default:
+{% for observable in dae.__rumoca_observables | default([]) %}
+#undef {{ observable.name | sanitize }}
+{% endfor %}
+            return fmi2Error;
+    }
+#else
+    (void)m;
+    (void)vr;
+    (void)value;
+    return fmi2Error;
+#endif
 }
 
 /* =========================================================================
@@ -771,6 +834,8 @@ static fmi2Status get_real_by_vr(const ModelInstance* m, fmi2ValueReference vr, 
         *value = m->z[vr - VR_Z];
     } else if (vr >= VR_M && vr < VR_M + N_DISCRETE_VAL) {
         *value = m->m[vr - VR_M];
+    } else if (vr >= VR_OBS && vr < VR_OBS + N_NATIVE_OBSERVABLES) {
+        return get_native_observable_by_vr(m, vr, value);
     } else {
         return fmi2Error;
     }

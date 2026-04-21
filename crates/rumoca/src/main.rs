@@ -760,8 +760,9 @@ fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
     let sources_dir = out_dir.join("sources");
     fs::create_dir_all(&sources_dir)?;
 
-    // Render and write modelDescription.xml (uses raw DAE for full variable info)
-    let xml = result.render_template_str_with_name(xml_template, &model_identifier)?;
+    // Render and write modelDescription.xml from the same prepared DAE used by the
+    // native backend so value references stay aligned with fmi2Get/SetReal.
+    let xml = result.render_template_str_prepared_with_name(xml_template, &model_identifier, true)?;
     let xml_path = out_dir.join("modelDescription.xml");
     fs::write(&xml_path, &xml)?;
     eprintln!("  wrote {}", xml_path.display());

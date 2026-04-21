@@ -183,8 +183,10 @@ pub(crate) fn get_binop_string(op: &Value, cfg: &ExprConfig) -> RenderResult {
 }
 
 fn render_unary(unary: &Value, cfg: &ExprConfig) -> RenderResult {
-    let rhs = get_field(unary, "rhs")
-        .and_then(|v| render_expression(&v, cfg))
+    let rhs_value = get_field(unary, "rhs")
+        .or_else(|_| get_field(unary, "arg"))
+        .map_err(|_| render_err("Unary expression missing 'rhs' field"))?;
+    let rhs = render_expression(&rhs_value, cfg)
         .map_err(|_| render_err("Unary expression missing 'rhs' field"))?;
     let op =
         get_field(unary, "op").map_err(|_| render_err("Unary expression missing 'op' field"))?;
@@ -197,6 +199,16 @@ fn render_unary(unary: &Value, cfg: &ExprConfig) -> RenderResult {
 }
 
 pub(crate) fn get_unop_string(op: &Value, cfg: &ExprConfig) -> RenderResult {
+    if let Some(op_str) = op.as_str() {
+        return match op_str {
+            "-" => Ok("-".to_string()),
+            "+" => Ok("+".to_string()),
+            "not" => Ok(cfg.not_op.clone()),
+            _ => Err(render_err(format!(
+                "unhandled unary operator string variant: {op_str}"
+            ))),
+        };
+    }
     if get_field(op, "Minus").is_ok() || get_field(op, "DotMinus").is_ok() {
         return Ok("-".to_string());
     }
@@ -228,13 +240,38 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         super::escape_reserved_keyword(&raw_name)
     };
 
-    let subscripts = render_subscripts(var_ref, cfg)?;
-    if subscripts.is_empty() {
-        Ok(name)
-    } else if cfg.subscript_underscore {
+    let Some(subs) = get_field(var_ref, "subscripts").ok() else {
+        return Ok(name);
+    };
+    let Some(len) = subs.len() else {
+        return Ok(name);
+    };
+    if len == 0 {
+        return Ok(name);
+    }
+
+    let all_static = (0..len).all(|i| {
+        subs.get_item(&Value::from(i))
+            .ok()
+            .and_then(|sub| get_field(&sub, "Index").ok())
+            .and_then(|idx| idx.as_i64())
+            .is_some()
+    });
+
+    if cfg.subscript_underscore && all_static {
+        let subscripts = render_subscripts(var_ref, cfg)?;
         // Underscore style: x[1] → x_1 (1-based, matches C template unpack_vars naming)
         Ok(format!("{}_{}", name, subscripts))
+    } else if cfg.subscript_underscore {
+        if len > 1 {
+            return Err(render_err(format!(
+                "dynamic multi-dimensional array access is not supported for C aliases: {var_ref}"
+            )));
+        }
+        let subscripts = render_pointer_subscripts(&subs, cfg)?;
+        Ok(format!("{}[{}]", name, subscripts))
     } else {
+        let subscripts = render_subscripts(var_ref, cfg)?;
         Ok(format!("{}[{}]", name, subscripts))
     }
 }
@@ -258,6 +295,41 @@ fn render_subscripts(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
     }
 
     Ok(sub_strs.join(", "))
+}
+
+fn render_pointer_subscripts(subs: &Value, cfg: &ExprConfig) -> RenderResult {
+    let Some(len) = subs.len() else {
+        return Ok(String::new());
+    };
+    let mut sub_strs = Vec::new();
+    let index_cfg = ExprConfig {
+        one_based_index: false,
+        subscript_underscore: false,
+        ..cfg.clone()
+    };
+    for i in 0..len {
+        if let Ok(sub) = subs.get_item(&Value::from(i)) {
+            sub_strs.push(render_pointer_subscript(&sub, &index_cfg)?);
+        }
+    }
+    Ok(sub_strs.join(", "))
+}
+
+fn render_pointer_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
+    if let Ok(idx) = get_field(sub, "Index") {
+        let val = idx
+            .as_i64()
+            .ok_or_else(|| render_err("subscript Index is not an integer"))?;
+        return Ok(format!("{}", val - 1));
+    }
+    if get_field(sub, "Colon").is_ok() {
+        return Err(render_err("slice subscripts are not supported in C array aliases"));
+    }
+    if let Ok(expr) = get_field(sub, "Expr") {
+        let rendered = render_expression(&expr, cfg)?;
+        return Ok(format!("(({}) - 1)", rendered));
+    }
+    Err(render_err(format!("unhandled Subscript variant: {sub}")))
 }
 
 pub(crate) fn render_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
@@ -380,6 +452,20 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
             // Otherwise it's a C array literal — not valid for __rumoca_sum
             // since it needs (arr, n). For now, return 0 for empty results.
             return Ok(format!("({unrolled})"));
+        }
+    }
+
+    if func_name == "Sum"
+        && cfg.sum_fn != "sum1"
+        && let args_val = get_field(builtin, "args")?
+        && args_val.len() == Some(1)
+        && let Ok(first_arg) = args_val.get_item(&Value::from(0))
+        && let Ok(var_ref) = get_field(&first_arg, "VarRef")
+    {
+        let subs = get_field(&var_ref, "subscripts")?;
+        if subs.len() == Some(0) {
+            let arr_name = render_var_ref(&var_ref, cfg)?;
+            return Ok(format!("{}({}, {}__len)", cfg.sum_fn, arr_name, arr_name));
         }
     }
 

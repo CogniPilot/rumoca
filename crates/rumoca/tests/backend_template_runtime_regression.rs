@@ -311,6 +311,16 @@ equation
 end Oscillator;
 "#;
 
+const ARRAY_ACCESS_SOURCE: &str = r#"
+model ArrayAccess
+  parameter Real nominal_air_flow[6] = {1, 2, 3, 4, 5, 6};
+  parameter Real floor_internal_gain[2, 2] = [1, 2; 3, 4];
+  Real x(start = 0);
+equation
+  der(x) = -x + sum(nominal_air_flow) + nominal_air_flow[5 + 1] + floor_internal_gain[1, 1];
+end ArrayAccess;
+"#;
+
 // ============================================================================
 // CasADi driver — outputs CSV: time,state1,state2,...
 // ============================================================================
@@ -483,6 +493,24 @@ fn fmi2_oscillator() {
     fmi2_trace_test(OSCILLATOR_SOURCE, "Oscillator");
 }
 
+#[test]
+fn fmi2_array_access_component_compiles() {
+    let dae = prepare_dae(ARRAY_ACCESS_SOURCE, "ArrayAccess");
+    let model_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI2_MODEL, "ArrayAccess")
+            .expect("render FMI2 model");
+    let driver_c = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI2_TEST_DRIVER,
+        "ArrayAccess",
+    )
+    .expect("render FMI2 test driver");
+    compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", &driver_c)],
+        &["--t-end", "0.01", "--dt", "0.001"],
+    );
+}
+
 // ============================================================================
 // FMI 3.0 runtime tests
 // ============================================================================
@@ -531,6 +559,24 @@ fn fmi3_param_decay() {
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_oscillator() {
     fmi3_trace_test(OSCILLATOR_SOURCE, "Oscillator");
+}
+
+#[test]
+fn fmi3_array_access_component_compiles() {
+    let dae = prepare_dae(ARRAY_ACCESS_SOURCE, "ArrayAccess");
+    let model_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ArrayAccess")
+            .expect("render FMI3 model");
+    let driver_c = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_TEST_DRIVER,
+        "ArrayAccess",
+    )
+    .expect("render FMI3 test driver");
+    compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", &driver_c)],
+        &["--t-end", "0.01", "--dt", "0.001"],
+    );
 }
 
 // ============================================================================
