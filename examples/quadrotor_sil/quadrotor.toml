@@ -52,7 +52,7 @@ root_type = "cerebri2.topic.MotorOutput"
 "motors.m1" = { to = "stepper:omega_m2", scale = 1100.0 }
 "motors.m2" = { to = "stepper:omega_m3", scale = 1100.0 }
 "motors.m3" = { to = "stepper:omega_m4", scale = 1100.0 }
-"armed"     = { to = "local:armed" }
+"armed"     = { to = "local:armed_actual" }  # reflected state — do NOT overwrite user request
 "test_mode" = { to = "local:test_mode" }
 
 [send]
@@ -88,7 +88,15 @@ root_type = "cerebri2.sil.SimInput"
 # ── Locals: named state that persists across frames ────────────────────────
 
 [locals]
+# NOTE: `armed` is the USER REQUEST (toggled by Space / gamepad Start);
+# `armed_actual` is what the autopilot reflects back in MotorOutput. They
+# must be kept separate — if receive routed MotorOutput.armed back into
+# `local:armed`, it would clobber the user request every frame and
+# produce a one-frame oscillation that prevents arming from ever
+# latching (user asks arm=true → derive sets rc.4=2000 → receive
+# overwrites armed=false → next frame derive reverts rc.4=1000).
 armed          = { type = "bool",  default = false }
+armed_actual   = { type = "bool",  default = false }
 test_mode      = { type = "bool",  default = false }
 throttle       = { type = "float", default = 0.0 }
 roll_cmd       = { type = "float", default = 0.0 }
@@ -223,7 +231,8 @@ accel_z     = "stepper:accel_z"
 gyro_x      = "stepper:gyro_x"
 gyro_y      = "stepper:gyro_y"
 gyro_z      = "stepper:gyro_z"
-armed       = "local:armed"
+armed       = "local:armed_actual"
+armed_req   = "local:armed"
 rc_throttle = "local:rc.2"
 input_mode  = "runtime:input_mode"
 

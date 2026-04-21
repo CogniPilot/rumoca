@@ -47,9 +47,14 @@ impl AutopilotProcess {
         self.stop();
         eprintln!("[autopilot] starting: {}", self.command);
         let mut cmd = Command::new(&self.command);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        cmd.stdin(Stdio::null());
+        // `RUMOCA_AUTOPILOT_LOG=1` lets the child's stdout/stderr through
+        // to this terminal — handy for debugging Cerebri boot issues.
+        if std::env::var("RUMOCA_AUTOPILOT_LOG").is_ok() {
+            cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        } else {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
         // Put the child in its own process group so a terminal Ctrl-C
         // (which targets the tty's foreground pgrp) can't route into zephyr
         // — only rumoca receives SIGINT.
