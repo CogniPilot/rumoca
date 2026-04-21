@@ -241,11 +241,17 @@ input_mode  = "runtime:input_mode"
 [debug_log]
 ring_size      = 500
 trigger_signal = "log"
+# Streaming CSV log: set RUMOCA_TRACE_LOG=/path/to/trace.csv to write every
+# frame to disk (one row per completed sim frame).
 capture = [
-  "runtime:frame_num", "stepper:time", "local:armed",
+  "runtime:frame_num", "runtime:wall_ms", "stepper:time",
+  "local:armed", "local:armed_actual",
   "local:rc.0", "local:rc.1", "local:rc.2", "local:rc.3", "local:rc.4",
   "stepper:omega_m1", "stepper:omega_m2", "stepper:omega_m3", "stepper:omega_m4",
   "stepper:px", "stepper:py", "stepper:pz",
+  "stepper:vx", "stepper:vy", "stepper:vz",
+  "stepper:q0", "stepper:q1", "stepper:q2", "stepper:q3",
+  "stepper:T",
   "stepper:accel_x", "stepper:accel_y", "stepper:accel_z",
   "stepper:gyro_x", "stepper:gyro_y", "stepper:gyro_z",
 ]

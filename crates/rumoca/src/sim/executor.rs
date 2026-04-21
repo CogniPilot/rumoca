@@ -10,6 +10,9 @@
 //!   7. push to WebSocket
 //!   8. realtime pacing
 
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -122,6 +125,93 @@ fn install_pdeathsig(cmd: &mut Command) {
     }
 }
 
+// ── Trace log (streaming CSV of captured fields, one row per frame) ───────
+//
+// Activated by `RUMOCA_TRACE_LOG=/path/to/trace.csv` when the config has a
+// `[debug_log]` section. Fields come from `debug_log.capture`, evaluated
+// each frame. Writes through a BufWriter and flushes on Drop. Designed
+// for offline plotting — load into a notebook with pandas.read_csv.
+
+struct TraceLogger {
+    writer: BufWriter<File>,
+    fields: Vec<String>,
+    path: PathBuf,
+}
+
+impl TraceLogger {
+    fn open(path: PathBuf, fields: Vec<String>) -> Result<Self> {
+        let file = File::create(&path)
+            .with_context(|| format!("Open trace log {}", path.display()))?;
+        let mut writer = BufWriter::new(file);
+        let header = fields.join(",");
+        writeln!(writer, "{header}")?;
+        eprintln!("  Trace log: {} ({} columns)", path.display(), fields.len());
+        Ok(Self {
+            writer,
+            fields,
+            path,
+        })
+    }
+
+    fn record(&mut self, engine: &InputEngine, rt: &RuntimeContext<'_>) {
+        let mut first = true;
+        for name in &self.fields {
+            if !first {
+                let _ = self.writer.write_all(b",");
+            }
+            first = false;
+            let v = resolve_trace_field(name, engine, rt);
+            let _ = write!(self.writer, "{v}");
+        }
+        let _ = self.writer.write_all(b"\n");
+    }
+}
+
+fn open_trace_logger(cfg: &SimulationConfig) -> Result<Option<TraceLogger>> {
+    let Ok(path) = std::env::var("RUMOCA_TRACE_LOG") else {
+        return Ok(None);
+    };
+    let Some(dbg) = cfg.debug_log.as_ref() else {
+        eprintln!("RUMOCA_TRACE_LOG set but config has no [debug_log] section — skipping");
+        return Ok(None);
+    };
+    let logger = TraceLogger::open(PathBuf::from(path), dbg.capture.clone())?;
+    Ok(Some(logger))
+}
+
+impl Drop for TraceLogger {
+    fn drop(&mut self) {
+        let _ = self.writer.flush();
+        eprintln!("[trace] flushed to {}", self.path.display());
+    }
+}
+
+/// Resolve a `debug_log.capture` field to an f64 using the same prefix
+/// scheme as signal mapper: `stepper:`, `local:` (supports `.idx`),
+/// `runtime:frame_num|wall_ms|input_connected|stepper_time`. Missing
+/// values log as `nan` rather than failing the row.
+fn resolve_trace_field(name: &str, engine: &InputEngine, rt: &RuntimeContext<'_>) -> f64 {
+    if let Some(rest) = name.strip_prefix("stepper:") {
+        if rest == "time" {
+            return rt.stepper_time;
+        }
+        return (rt.stepper_get)(rest).unwrap_or(f64::NAN);
+    }
+    if let Some(rest) = name.strip_prefix("local:") {
+        return engine.get(rest).unwrap_or(f64::NAN);
+    }
+    if let Some(rest) = name.strip_prefix("runtime:") {
+        return match rest {
+            "frame_num" => rt.frame_num as f64,
+            "wall_ms" => rt.wall_ms,
+            "input_connected" => f64::from(u8::from(rt.input_connected)),
+            "stepper_time" => rt.stepper_time,
+            _ => f64::NAN,
+        };
+    }
+    f64::NAN
+}
+
 // ── UDP config resolution (bridge legacy [udp] + new [transport.udp]) ──────
 
 fn resolve_udp(cfg: &SimulationConfig) -> Option<&UdpConfig> {
@@ -165,6 +255,7 @@ struct FrameState {
     pkt_count: u64,
     frame_num: u64,
     last_poll: Instant,
+    trace: Option<TraceLogger>,
 }
 
 enum FrameControl {
@@ -241,11 +332,13 @@ pub(crate) fn run_sim_loop(
         dt: cfg.sim.dt,
         mode,
     };
+    let trace = open_trace_logger(cfg)?;
     let mut state = FrameState {
         recv_buf: [0u8; 512],
         pkt_count: 0,
         frame_num: 0,
         last_poll: Instant::now(),
+        trace,
     };
     while let FrameControl::Continue =
         ctx.run_one_frame(&mut state, stepper, &mut engine)?
@@ -377,6 +470,9 @@ impl FrameCtx<'_> {
             let stepper_inputs = self.mapper.build_stepper_inputs(engine, &rt);
             let send_frame = self.fb.map(|_| self.mapper.build_send(engine, &rt));
             let json = self.mapper.build_viewer_json(engine, &rt);
+            if let Some(trace) = state.trace.as_mut() {
+                trace.record(engine, &rt);
+            }
             (stepper_inputs, send_frame, json)
         };
         for (name, val) in stepper_inputs {
