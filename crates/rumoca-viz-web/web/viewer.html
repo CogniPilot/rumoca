@@ -75,12 +75,19 @@
   </div>
 </div>
 <div id="status"><span class="disconnected" id="ws-status">Connecting...</span></div>
-<div style="position:fixed; top:10px; left:50%; transform:translateX(-50%); z-index:10;">
+<div style="position:fixed; top:10px; left:50%; transform:translateX(-50%); z-index:10; display:flex; gap:8px;">
   <button id="rt-btn" onclick="toggleRealtime()" style="
     background:rgba(30,20,10,0.85); color:#e8c840; border:1px solid rgba(200,160,80,0.4);
     padding:6px 16px; border-radius:6px; font-family:monospace; font-size:13px;
     cursor:pointer; backdrop-filter:blur(4px);">
     Realtime: ON
+  </button>
+  <button id="quit-btn" onclick="requestQuit()" style="
+    background:rgba(60,20,10,0.85); color:#e86040; border:1px solid rgba(200,100,80,0.5);
+    padding:6px 16px; border-radius:6px; font-family:monospace; font-size:13px;
+    cursor:pointer; backdrop-filter:blur(4px);"
+    title="Stop the simulation (useful when Ctrl-C is captured by the IDE terminal)">
+    Shutdown Sim
   </button>
 </div>
 <div id="debug"></div>
@@ -207,6 +214,18 @@ window.toggleRealtime = function() {
   document.getElementById("rt-btn").textContent = `Realtime: ${realtimeOn ? "ON" : "OFF"}`;
   if (activeWs && activeWs.readyState === WebSocket.OPEN) {
     activeWs.send(JSON.stringify({ realtime: realtimeOn }));
+  }
+};
+
+window.requestQuit = function() {
+  if (!confirm("Stop the simulation?")) return;
+  if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+    activeWs.send(JSON.stringify({ quit: true }));
+    dbg("Quit requested via viewer");
+    document.getElementById("quit-btn").textContent = "Shutting down...";
+    document.getElementById("quit-btn").disabled = true;
+  } else {
+    alert("WebSocket not connected — can't send quit command.");
   }
 };
 

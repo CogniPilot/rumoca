@@ -46,9 +46,19 @@ impl AutopilotProcess {
     fn start(&mut self) -> Result<()> {
         self.stop();
         eprintln!("[autopilot] starting: {}", self.command);
-        let child = Command::new(&self.command)
+        let mut cmd = Command::new(&self.command);
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        // Put the child in its own process group so a terminal Ctrl-C
+        // (which targets the tty's foreground pgrp) can't route into zephyr
+        // — only rumoca receives SIGINT.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let child = cmd
             .spawn()
             .with_context(|| format!("Failed to start autopilot: {}", self.command))?;
         eprintln!("[autopilot] pid {}", child.id());
@@ -112,6 +122,7 @@ struct FrameCtx<'a> {
     mapper: &'a SignalMapper,
     state_tx: &'a mpsc::Sender<String>,
     realtime: &'a Arc<AtomicBool>,
+    quit: &'a Arc<AtomicBool>,
     autopilot: &'a Arc<Mutex<Option<AutopilotProcess>>>,
     model_source: &'a str,
     model_name: &'a str,
@@ -145,6 +156,14 @@ pub(crate) fn run_sim_loop(
     ws_port: u16,
     debug: bool,
 ) -> Result<()> {
+    // ── Signal handler FIRST, before any other thread or child spawns. ───
+    // signal_hook masks the target signals on threads spawned after it, so
+    // installing it ahead of the input engine / WS thread / autopilot child
+    // ensures SIGINT/SIGTERM funnel to our dedicated signal thread — not a
+    // gilrs worker, not zephyr's pgrp.
+    let autopilot: Arc<Mutex<Option<AutopilotProcess>>> = Arc::new(Mutex::new(None));
+    spawn_sigint_handler(Arc::clone(&autopilot));
+
     let fb = setup_fb_transport(cfg, schema_set)?;
 
     // ── Input engine + signal mapper (config-driven) ──────────────────────
@@ -160,13 +179,14 @@ pub(crate) fn run_sim_loop(
         InputEngine::new(input_cfg, &cfg.locals, &cfg.derive).context("Build input engine")?;
     let mapper = SignalMapper::new(signals_cfg, &cfg.locals).context("Compile signal mapper")?;
 
-    // ── Autopilot + SIGINT + WS thread ────────────────────────────────────
-    let autopilot = spawn_autopilot(cfg)?;
-    spawn_sigint_handler(Arc::clone(&autopilot));
+    // ── Autopilot + WS thread ─────────────────────────────────────────────
+    start_autopilot_into(cfg, &autopilot)?;
     let (state_tx, state_rx) = mpsc::channel::<String>();
     let realtime = Arc::new(AtomicBool::new(cfg.sim.realtime));
+    let quit = Arc::new(AtomicBool::new(false));
     let realtime_ws = Arc::clone(&realtime);
-    thread::spawn(move || run_broadcast_server(ws_port, state_rx, realtime_ws));
+    let quit_ws = Arc::clone(&quit);
+    thread::spawn(move || run_broadcast_server(ws_port, state_rx, realtime_ws, quit_ws));
 
     let mode = SimMode::resolve(cfg.sim.mode, cfg.has_fb());
     eprintln!(
@@ -185,6 +205,7 @@ pub(crate) fn run_sim_loop(
         mapper: &mapper,
         state_tx: &state_tx,
         realtime: &realtime,
+        quit: &quit,
         autopilot: &autopilot,
         model_source,
         model_name,
@@ -364,6 +385,10 @@ impl FrameCtx<'_> {
             eprintln!("\n[sim] quit requested");
             return Ok(FrameControl::Break);
         }
+        if self.quit.load(Ordering::Relaxed) {
+            eprintln!("\n[sim] quit requested by viewer");
+            return Ok(FrameControl::Break);
+        }
         if let Some(reset_cfg) = self.cfg.reset.as_ref()
             && engine.take_signal(&reset_cfg.on_signal)
         {
@@ -406,14 +431,16 @@ impl FrameCtx<'_> {
     }
 }
 
-fn spawn_autopilot(cfg: &SimulationConfig) -> Result<Arc<Mutex<Option<AutopilotProcess>>>> {
-    let autopilot: Arc<Mutex<Option<AutopilotProcess>>> = Arc::new(Mutex::new(None));
+fn start_autopilot_into(
+    cfg: &SimulationConfig,
+    autopilot: &Arc<Mutex<Option<AutopilotProcess>>>,
+) -> Result<()> {
     if let Some(ap_cfg) = &cfg.autopilot {
         let mut ap = AutopilotProcess::new(&ap_cfg.command);
         ap.start()?;
         *autopilot.lock().unwrap() = Some(ap);
     }
-    Ok(autopilot)
+    Ok(())
 }
 
 /// Set up a robust shutdown path for SIGINT/SIGTERM:
@@ -438,10 +465,11 @@ fn spawn_sigint_handler(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
 
     thread::spawn(move || {
         let mut presses: u32 = 0;
-        for _sig in signals.forever() {
+        for sig in signals.forever() {
             presses += 1;
+            eprintln!("\r[sim] signal {sig} received (press {presses})                    \r");
             if presses == 1 {
-                eprintln!("\n[sim] shutdown requested — press Ctrl-C again to force quit");
+                eprintln!("[sim] shutdown requested — press Ctrl-C again to force quit");
                 spawn_cleanup_thread(Arc::clone(&autopilot));
             } else {
                 eprintln!("[sim] force quit");

@@ -285,7 +285,19 @@ impl InputEngine {
             }
         }
 
-        // 2. Dispatch key events: match against bindings, fire action.
+        // 2a. Ctrl+C → emit "quit" signal. Raw mode disables the tty's ISIG
+        //     translation, so the OS never delivers SIGINT — we have to
+        //     recognize the keystroke ourselves or the user is stuck.
+        for (code, mods) in events {
+            if *code == rumoca_input_keyboard::KeyCode::Char('c')
+                && mods.contains(rumoca_input_keyboard::KeyModifiers::CONTROL)
+            {
+                eprintln!("\r[input] Ctrl+C → quit                    \r");
+                self.pending_signals.insert("quit".to_string());
+            }
+        }
+
+        // 2b. Dispatch key events: match against bindings, fire action.
         let keys = self.compiled.keyboard_keys.clone();
         for (code, mods) in events {
             for key in keys

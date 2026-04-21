@@ -25,12 +25,16 @@ type WsStream = WebSocket<TcpStream>;
 
 /// Run a broadcast WS server on `port`. Consumes `state_rx` — forwards each
 /// message to the currently-connected client (keeping only the latest if the
-/// loop produces faster than the browser consumes). Observes `realtime`:
-/// browser commands of the form `{"realtime": true|false}` flip the flag.
+/// loop produces faster than the browser consumes).
+///
+/// Accepts client→server JSON commands:
+/// - `{"realtime": true|false}` — flips the shared `realtime` flag
+/// - `{"quit": true}` — sets `quit` so the sim loop breaks cleanly
 pub fn run_broadcast_server(
     port: u16,
     state_rx: mpsc::Receiver<String>,
     realtime: Arc<AtomicBool>,
+    quit: Arc<AtomicBool>,
 ) {
     let listener = match TcpListener::bind(format!("0.0.0.0:{port}")) {
         Ok(l) => l,
@@ -43,9 +47,12 @@ pub fn run_broadcast_server(
     for stream in listener.incoming().flatten() {
         eprintln!("[WS] viewer connected");
         if let Some(ws) = accept_ws(stream) {
-            serve_client(ws, &state_rx, &realtime);
+            serve_client(ws, &state_rx, &realtime, &quit);
         }
         eprintln!("[WS] viewer disconnected");
+        if quit.load(Ordering::Relaxed) {
+            return;
+        }
     }
 }
 
@@ -68,9 +75,13 @@ fn serve_client(
     mut ws: WsStream,
     state_rx: &mpsc::Receiver<String>,
     realtime: &Arc<AtomicBool>,
+    quit: &Arc<AtomicBool>,
 ) {
     loop {
-        if !drain_inbound(&mut ws, realtime) {
+        if !drain_inbound(&mut ws, realtime, quit) {
+            return;
+        }
+        if quit.load(Ordering::Relaxed) {
             return;
         }
         if !push_latest(&mut ws, state_rx) {
@@ -81,10 +92,10 @@ fn serve_client(
 }
 
 /// Drain pending client→server messages. Returns `false` if the connection closed.
-fn drain_inbound(ws: &mut WsStream, realtime: &Arc<AtomicBool>) -> bool {
+fn drain_inbound(ws: &mut WsStream, realtime: &Arc<AtomicBool>, quit: &Arc<AtomicBool>) -> bool {
     loop {
         match ws.read() {
-            Ok(Message::Text(text)) => apply_command(&text, realtime),
+            Ok(Message::Text(text)) => apply_command(&text, realtime, quit),
             Ok(Message::Close(_)) => return false,
             Err(tungstenite::Error::Io(ref e)) if e.kind() == ErrorKind::WouldBlock => {
                 return true;
@@ -95,13 +106,17 @@ fn drain_inbound(ws: &mut WsStream, realtime: &Arc<AtomicBool>) -> bool {
     }
 }
 
-fn apply_command(text: &str, realtime: &Arc<AtomicBool>) {
+fn apply_command(text: &str, realtime: &Arc<AtomicBool>, quit: &Arc<AtomicBool>) {
     let Ok(cmd) = serde_json::from_str::<serde_json::Value>(text) else {
         return;
     };
     if let Some(rt) = cmd.get("realtime").and_then(|v| v.as_bool()) {
         realtime.store(rt, Ordering::Relaxed);
         eprintln!("\r[WS] realtime: {rt}                    \r");
+    }
+    if cmd.get("quit").and_then(|v| v.as_bool()) == Some(true) {
+        quit.store(true, Ordering::Relaxed);
+        eprintln!("\r[WS] quit requested by viewer                    \r");
     }
 }
 
