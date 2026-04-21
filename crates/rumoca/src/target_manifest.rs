@@ -243,10 +243,11 @@ impl TemplateRenderContexts {
                 .any(|file| file.ir == Some(TargetTemplateIr::Solve));
 
         let dae = if needs_dae {
-            let template_dae = result.scalarized_template_dae();
-            let template_json = dae_to_template_json(&template_dae)
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            Some(template_json)
+            Some(
+                result
+                    .template_json_with_native_observables()
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            )
         } else {
             None
         };
@@ -287,10 +288,18 @@ fn solve_template_json(result: &CompilationResult) -> Result<Value> {
         serde_json::to_value(&solve_model.visible_value_rows)
             .context("Serialize Solve visible value rows for target template rendering")?,
     );
+    {
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("DAE template JSON root must be an object"))?;
+        object.insert("solve".to_string(), solve_value);
+    }
+    result
+        .augment_template_json_with_native_observables(&mut value)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let object = value
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("DAE template JSON root must be an object"))?;
-    object.insert("solve".to_string(), solve_value);
     object.insert(
         "__ir_kind".to_string(),
         serde_json::Value::String("solve".to_string()),

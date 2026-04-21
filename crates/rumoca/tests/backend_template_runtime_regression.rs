@@ -381,6 +381,16 @@ equation
 end Oscillator;
 "#;
 
+const ARRAY_ACCESS_SOURCE: &str = r#"
+model ArrayAccess
+  parameter Real nominal_air_flow[6] = {1, 2, 3, 4, 5, 6};
+  parameter Real floor_internal_gain[2, 2] = [1, 2; 3, 4];
+  Real x(start = 0);
+equation
+  der(x) = -x + sum(nominal_air_flow) + nominal_air_flow[5 + 1] + floor_internal_gain[1, 1];
+end ArrayAccess;
+"#;
+
 const MATRIX_DER_PRODUCT_SOURCE: &str = r#"
 model MatrixDerProduct
   Real R[3,3](start={{1,0,0},{0,1,0},{0,0,1}}, fixed=true);
@@ -654,6 +664,18 @@ fn fmi2_event_reinit_runtime() {
     assert_event_reinit_trace(&csv, "FMI2");
 }
 
+#[test]
+fn fmi2_array_access_component_compiles() {
+    let compiled = compile_model(ARRAY_ACCESS_SOURCE, "ArrayAccess");
+    let model_c = render_fmi_solve_template(&compiled, "fmi2", "model.c.jinja", "ArrayAccess");
+    let driver_c =
+        render_fmi_solve_template(&compiled, "fmi2", "test_driver.c.jinja", "ArrayAccess");
+    compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", &driver_c)],
+        &["--t-end", "0.01", "--dt", "0.001"],
+    );
+}
+
 // ============================================================================
 // FMI 3.0 runtime tests
 // ============================================================================
@@ -711,6 +733,18 @@ fn fmi3_event_reinit_runtime() {
     let compiled = compile_model(EVENT_REINIT_SOURCE, "EventReinit");
     let csv = fmi3_trace_from_compiled(&compiled, "EventReinit", 1.0);
     assert_event_reinit_trace(&csv, "FMI3");
+}
+
+#[test]
+fn fmi3_array_access_component_compiles() {
+    let compiled = compile_model(ARRAY_ACCESS_SOURCE, "ArrayAccess");
+    let model_c = render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", "ArrayAccess");
+    let driver_c =
+        render_fmi_solve_template(&compiled, "fmi3", "test_driver.c.jinja", "ArrayAccess");
+    compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", &driver_c)],
+        &["--t-end", "0.01", "--dt", "0.001"],
+    );
 }
 
 #[test]

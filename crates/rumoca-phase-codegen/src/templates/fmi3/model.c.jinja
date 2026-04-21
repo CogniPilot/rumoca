@@ -384,6 +384,7 @@ static double __rumoca_solve_external_call_default(const char* function, int out
 #define N_CONSTANTS      {{ var_size(dae.constants) | trim }}
 #define N_DISCRETE_REAL  {{ var_size(dae.z) | trim }}
 #define N_DISCRETE_VAL   {{ var_size(dae.m) | trim }}
+#define N_NATIVE_OBSERVABLES {{ dae.__rumoca_observables | default([]) | length }}
 #define N_EVENT_INDICATORS {{ solve_root_rows | length }}
 #define N_PERIODIC_CLOCKS {{ dae.clock_schedules | default([]) | length }}
 #define N_TRIGGERED_CLOCKS {{ dae.triggered_clock_conditions | default([]) | length }}
@@ -402,6 +403,7 @@ static double __rumoca_solve_external_call_default(const char* function, int out
 #define NVAR_P  {{ dae.p | length }}
 #define NVAR_Z  {{ dae.z | length }}
 #define NVAR_M  {{ dae.m | length }}
+#define NVAR_OBS {% set ns_obs = namespace(total=0) %}{% for observable in dae.__rumoca_observables | default([]) %}{% if observable.causality | default("local") == "output" %}{% set ns_obs.total = ns_obs.total + 1 %}{% endif %}{% endfor %}{{ ns_obs.total }}
 
 /* Value reference offsets (per-variable VRs, FMI 3.0 native arrays) */
 #define VR_X      0
@@ -412,7 +414,8 @@ static double __rumoca_solve_external_call_default(const char* function, int out
 #define VR_P      (VR_W + NVAR_W)
 #define VR_Z      (VR_P + NVAR_P)
 #define VR_M      (VR_Z + NVAR_Z)
-#define VR_CLK    (VR_M + NVAR_M)
+#define VR_OBS    (VR_M + NVAR_M)
+#define VR_CLK    (VR_OBS + NVAR_OBS)
 
 {#- Macro: generate flat offset and element count lookup tables for a partition -#}
 {% macro vr_lookup_table(vars, prefix) %}
@@ -614,6 +617,7 @@ static void compute_outputs(ModelInstance* m);
 static void compute_initial_updates(ModelInstance* m);
 static void compute_discrete_updates(ModelInstance* m);
 static void compute_event_indicators(ModelInstance* m);
+static fmi3Status get_native_observable_by_vr(const ModelInstance* m, fmi3ValueReference vr, fmi3Float64* values, int* count);
 
 static double event_right_limit_time(double event_time) {
     double scale = 1.0 + fabs(event_time);
@@ -1201,6 +1205,59 @@ typedef void (*fmi3LogMessageCallback)(
     fmi3String category,
     fmi3String message);
 
+/* =========================================================================
+ * Restored native observables
+ * ========================================================================= */
+static fmi3Status get_native_observable_by_vr(const ModelInstance* m, fmi3ValueReference vr, fmi3Float64* values, int* count) {
+#if NVAR_OBS > 0
+    if (vr < VR_OBS || vr >= VR_OBS + NVAR_OBS) {
+        *count = 0;
+        return fmi3Error;
+    }
+
+    const double t = m->time;
+    const double time = m->time;
+    (void)t; (void)time;
+
+{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
+{{ unpack_vars(dae.p, "m->p") }}
+{{ unpack_vars(dae.constants, "m->constants") }}
+{{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
+{{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
+{% for observable in dae.__rumoca_observables | default([]) %}
+#define {{ observable.name | sanitize }} ({{ render_expr(observable.expr, cfg) }})
+{% endfor %}
+
+    switch (vr) {
+{% set ns_obs = namespace(offset=0) %}
+{% for observable in dae.__rumoca_observables | default([]) %}
+{% if observable.causality | default("local") == "output" %}
+        case VR_OBS + {{ ns_obs.offset }}:
+            values[0] = {{ observable.name | sanitize }};
+            *count = 1;
+            return fmi3OK;
+{% set ns_obs.offset = ns_obs.offset + 1 %}
+{% endif %}
+{% endfor %}
+        default:
+            *count = 0;
+{% for observable in dae.__rumoca_observables | default([]) %}
+#undef {{ observable.name | sanitize }}
+{% endfor %}
+            return fmi3Error;
+    }
+#else
+    (void)m;
+    (void)vr;
+    (void)values;
+    *count = 0;
+    return fmi3Error;
+#endif
+}
+
 /* Helper: get float64 values by value reference (native array: copies count elements) */
 static fmi3Status get_float64_by_vr(const ModelInstance* m, fmi3ValueReference vr, fmi3Float64* values, int* count) {
 #if NVAR_X > 0
@@ -1265,6 +1322,9 @@ static fmi3Status get_float64_by_vr(const ModelInstance* m, fmi3ValueReference v
         return fmi3OK;
     }
 #endif
+    if (vr >= VR_OBS && vr < VR_OBS + NVAR_OBS) {
+        return get_native_observable_by_vr(m, vr, values, count);
+    }
     *count = 0;
     return fmi3Error;
 }
@@ -1335,6 +1395,7 @@ static int vr_scalar_count(fmi3ValueReference vr) {
 #if NVAR_M > 0
     if (vr >= VR_M && vr < VR_M + NVAR_M) return m_var_count[vr - VR_M];
 #endif
+    if (vr >= VR_OBS && vr < VR_OBS + NVAR_OBS) return 1;
     return 0;
 }
 

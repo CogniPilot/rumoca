@@ -245,31 +245,26 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         return render_expression(&relation, cfg);
     }
 
+    let Some(subs) = get_field(var_ref, "subscripts").ok() else {
+        return render_unsubscripted_var_ref(&raw_name, cfg);
+    };
+    let len = subs
+        .len()
+        .ok_or_else(|| render_err("VarRef subscripts field is not a sequence"))?;
+    if len == 0 {
+        return render_unsubscripted_var_ref(&raw_name, cfg);
+    }
+
+    let all_static = (0..len).all(|i| {
+        subs.get_item(&Value::from(i))
+            .ok()
+            .and_then(|sub| get_field(&sub, "Index").ok())
+            .and_then(|idx| subscript_index_value(&idx).ok())
+            .is_some()
+    });
+
     let subscripts = render_subscripts(var_ref, cfg)?;
-    if subscripts.is_empty() {
-        if let Some((_, value)) = cfg
-            .substitutions
-            .iter()
-            .rev()
-            .find(|(name, _)| name == &raw_name)
-        {
-            return Ok(value.clone());
-        }
-        if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &raw_name) {
-            return Ok(symbol);
-        }
-        if let Some(source_name) = one_based_serialized_component_name(&raw_name)
-            && let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_name)
-        {
-            return Ok(symbol);
-        }
-        if cfg.symbols.is_none()
-            && let Some(source_name) = zero_component_name_to_one_based(&raw_name)
-        {
-            return super::emitted_symbol(&source_name, cfg);
-        }
-        super::emitted_symbol(&raw_name, cfg)
-    } else if cfg.subscript_underscore {
+    if cfg.subscript_underscore && all_static {
         // Underscore style: x[1] -> x_1, x[1,2] -> x_1_2.
         let compact_subscripts = subscripts.replace(' ', "");
         let source_ref = format!("{raw_name}[{compact_subscripts}]");
@@ -278,10 +273,44 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         }
         let name = super::emitted_symbol(&raw_name, cfg)?;
         Ok(format!("{}_{}", name, compact_subscripts.replace(',', "_")))
+    } else if cfg.subscript_underscore {
+        if len > 1 {
+            return Err(render_err(format!(
+                "dynamic multi-dimensional array access is not supported for C aliases: {var_ref}"
+            )));
+        }
+        let name = super::emitted_symbol(&raw_name, cfg)?;
+        let pointer_subscripts = render_pointer_subscripts(&subs, cfg)?;
+        Ok(format!("{}[{}]", name, pointer_subscripts))
     } else {
         let name = super::emitted_symbol(&raw_name, cfg)?;
         Ok(format!("{}[{}]", name, subscripts))
     }
+}
+
+fn render_unsubscripted_var_ref(raw_name: &str, cfg: &ExprConfig) -> RenderResult {
+    if let Some((_, value)) = cfg
+        .substitutions
+        .iter()
+        .rev()
+        .find(|(name, _)| name == &raw_name)
+    {
+        return Ok(value.clone());
+    }
+    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &raw_name) {
+        return Ok(symbol);
+    }
+    if let Some(source_name) = one_based_serialized_component_name(&raw_name)
+        && let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_name)
+    {
+        return Ok(symbol);
+    }
+    if cfg.symbols.is_none()
+        && let Some(source_name) = zero_component_name_to_one_based(&raw_name)
+    {
+        return super::emitted_symbol(&source_name, cfg);
+    }
+    super::emitted_symbol(&raw_name, cfg)
 }
 
 fn one_based_serialized_component_name(name: &str) -> Option<String> {
@@ -499,6 +528,45 @@ fn render_subscripts(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
     }
 
     Ok(sub_strs.join(", "))
+}
+
+fn render_pointer_subscripts(subs: &Value, cfg: &ExprConfig) -> RenderResult {
+    let len = subs
+        .len()
+        .ok_or_else(|| render_err("VarRef subscripts field is not a sequence"))?;
+    let index_cfg = ExprConfig {
+        one_based_index: false,
+        subscript_underscore: false,
+        ..cfg.clone()
+    };
+    let mut sub_strs = render_vec_with_capacity(len, "VarRef pointer subscript count")?;
+    for i in 0..len {
+        let sub = subs
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("VarRef subscript {i} is inaccessible: {err}")))?;
+        if sub.is_undefined() || sub.is_none() {
+            return Err(render_err(format!("VarRef subscript {i} is missing")));
+        }
+        sub_strs.push(render_pointer_subscript(&sub, &index_cfg)?);
+    }
+    Ok(sub_strs.join(", "))
+}
+
+fn render_pointer_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
+    if let Ok(idx) = get_field(sub, "Index") {
+        return Ok(format!("{}", subscript_index_value(&idx)? - 1));
+    }
+    if get_field(sub, "Colon").is_ok() {
+        return Err(render_err(
+            "slice subscripts are not supported in C array aliases",
+        ));
+    }
+    if let Ok(expr) = get_field(sub, "Expr") {
+        let expr = get_field(&expr, "expr").unwrap_or(expr);
+        let rendered = render_expression(&expr, cfg)?;
+        return Ok(format!("(({}) - 1)", rendered));
+    }
+    Err(render_err(format!("unhandled Subscript variant: {sub}")))
 }
 
 pub(crate) fn render_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
