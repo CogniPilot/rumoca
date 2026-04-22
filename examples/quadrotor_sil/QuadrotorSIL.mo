@@ -39,11 +39,21 @@ model QuadrotorSIL
   // --- Quaternion normalization feedback gain ---
   parameter Real qnorm_gain = 1.0 "Quaternion renormalization gain";
 
-  // --- Motor inputs [rad/s] (start at zero on the ground) ---
-  input Real omega_m1(start = 0) "Motor 1 (FR, CW)";
-  input Real omega_m2(start = 0) "Motor 2 (RR, CCW)";
-  input Real omega_m3(start = 0) "Motor 3 (RL, CW)";
-  input Real omega_m4(start = 0) "Motor 4 (FL, CCW)";
+  // --- Motor first-order response (matches cyecca rdd2 p_defaults) ---
+  parameter Real tau_up   = 0.0125 "Motor spin-up time constant [s]";
+  parameter Real tau_down = 0.025  "Motor spin-down time constant [s]";
+
+  // --- Motor command inputs [rad/s] ---
+  // Autopilot writes omega_cmd_i; actual omega_mi is an integrated state
+  // lagged toward omega_cmd_i with asymmetric time constants (spin-up is
+  // faster than spin-down for real drone ESCs). Cerebri's PID gains assume
+  // this kind of plant; applying commands instantaneously inflates closed-
+  // loop bandwidth past the gain margin and produces the ~10 Hz limit
+  // cycle we were seeing.
+  input Real omega_cmd_1(start = 0) "Motor 1 command (FR) [rad/s]";
+  input Real omega_cmd_2(start = 0) "Motor 2 command (RR) [rad/s]";
+  input Real omega_cmd_3(start = 0) "Motor 3 command (RL) [rad/s]";
+  input Real omega_cmd_4(start = 0) "Motor 4 command (FL) [rad/s]";
 
   // --- States ---
   Real px(start = 0) "Position North [m]";
@@ -59,6 +69,11 @@ model QuadrotorSIL
   Real omega_x(start = 0) "Body roll rate [rad/s]";
   Real omega_y(start = 0) "Body pitch rate [rad/s]";
   Real omega_z(start = 0) "Body yaw rate [rad/s]";
+  // Motor speeds with first-order lag toward commands (see tau_up/tau_down)
+  Real omega_m1(start = 0) "Motor 1 actual speed [rad/s]";
+  Real omega_m2(start = 0) "Motor 2 actual speed [rad/s]";
+  Real omega_m3(start = 0) "Motor 3 actual speed [rad/s]";
+  Real omega_m4(start = 0) "Motor 4 actual speed [rad/s]";
 
   // --- Outputs (sensor readings, computed from state) ---
   // These are algebraic but trivially eliminable
@@ -88,7 +103,18 @@ protected
   Real a_wx; Real a_wy; Real a_wz;
 
 equation
-  // Motor thrusts
+  // --- Motor first-order dynamics ---
+  // Asymmetric rise/fall: `if cmd > actual` selects tau_up (spin up faster).
+  der(omega_m1) = (omega_cmd_1 - omega_m1) /
+                  (if omega_cmd_1 > omega_m1 then tau_up else tau_down);
+  der(omega_m2) = (omega_cmd_2 - omega_m2) /
+                  (if omega_cmd_2 > omega_m2 then tau_up else tau_down);
+  der(omega_m3) = (omega_cmd_3 - omega_m3) /
+                  (if omega_cmd_3 > omega_m3 then tau_up else tau_down);
+  der(omega_m4) = (omega_cmd_4 - omega_m4) /
+                  (if omega_cmd_4 > omega_m4 then tau_up else tau_down);
+
+  // Motor thrusts (use actual speeds, not commands)
   F1 = Ct * omega_m1 * omega_m1;
   F2 = Ct * omega_m2 * omega_m2;
   F3 = Ct * omega_m3 * omega_m3;

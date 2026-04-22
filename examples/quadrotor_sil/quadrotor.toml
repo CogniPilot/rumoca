@@ -22,8 +22,9 @@ name = "QuadrotorSIL"
 # realtime. Physics accuracy is preserved via step_substeps — it breaks
 # each dt into MAX_SUB_DT (~2 ms) substeps internally, so 0.02 s here
 # still gives ~0.002 s solver steps.
-dt = 0.02
+dt = 0.00125
 realtime = true
+mode = "free_run"
 
 [autopilot]
 command = "/home/micah/cognipilot/ws/cerebri/build/zephyr/zephyr.exe"
@@ -53,10 +54,14 @@ bfbs = [
 root_type = "cerebri2.topic.MotorOutput"
 
 [receive.route]
-"motors.m0" = { to = "stepper:omega_m1", scale = 1100.0 }
-"motors.m1" = { to = "stepper:omega_m2", scale = 1100.0 }
-"motors.m2" = { to = "stepper:omega_m3", scale = 1100.0 }
-"motors.m3" = { to = "stepper:omega_m4", scale = 1100.0 }
+# Scale = sqrt(F_max/Ct) = sqrt(20/8.54858e-6) ≈ 1529 rad/s — matches
+# cerebri rdd2_sim's F_max = 20 N per motor so the PID sees the control
+# authority it was tuned for. Targets are omega_cmd_* (commanded speeds);
+# the model's motor dynamics lag the actual omega_m* states behind these.
+"motors.m0" = { to = "stepper:omega_cmd_1", scale = 1529.0 }
+"motors.m1" = { to = "stepper:omega_cmd_2", scale = 1529.0 }
+"motors.m2" = { to = "stepper:omega_cmd_3", scale = 1529.0 }
+"motors.m3" = { to = "stepper:omega_cmd_4", scale = 1529.0 }
 "armed"     = { to = "local:armed_actual" }  # reflected state — do NOT overwrite user request
 "test_mode" = { to = "local:test_mode" }
 
