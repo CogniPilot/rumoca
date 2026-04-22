@@ -40,8 +40,12 @@ model QuadrotorSIL
   parameter Real qnorm_gain = 1.0 "Quaternion renormalization gain";
 
   // --- Motor first-order response (matches cyecca rdd2 p_defaults) ---
-  parameter Real tau_up   = 0.0125 "Motor spin-up time constant [s]";
-  parameter Real tau_down = 0.025  "Motor spin-down time constant [s]";
+  // Averaged tau avoids an if-else in the derivative that tripped the
+  // stiff solver's event detection. cyecca uses tau_up=0.0125 and
+  // tau_down=0.025 asymmetrically; averaging gives ~0.019 s which is
+  // close enough for the PID's closed-loop phase purposes and keeps the
+  // RHS smooth.
+  parameter Real tau_motor = 0.02 "Motor first-order time constant [s]";
 
   // --- Motor command inputs [rad/s] ---
   // Autopilot writes omega_cmd_i; actual omega_mi is an integrated state
@@ -103,16 +107,11 @@ protected
   Real a_wx; Real a_wy; Real a_wz;
 
 equation
-  // --- Motor first-order dynamics ---
-  // Asymmetric rise/fall: `if cmd > actual` selects tau_up (spin up faster).
-  der(omega_m1) = (omega_cmd_1 - omega_m1) /
-                  (if omega_cmd_1 > omega_m1 then tau_up else tau_down);
-  der(omega_m2) = (omega_cmd_2 - omega_m2) /
-                  (if omega_cmd_2 > omega_m2 then tau_up else tau_down);
-  der(omega_m3) = (omega_cmd_3 - omega_m3) /
-                  (if omega_cmd_3 > omega_m3 then tau_up else tau_down);
-  der(omega_m4) = (omega_cmd_4 - omega_m4) /
-                  (if omega_cmd_4 > omega_m4 then tau_up else tau_down);
+  // --- Motor first-order dynamics (symmetric smooth lag) ---
+  der(omega_m1) = (omega_cmd_1 - omega_m1) / tau_motor;
+  der(omega_m2) = (omega_cmd_2 - omega_m2) / tau_motor;
+  der(omega_m3) = (omega_cmd_3 - omega_m3) / tau_motor;
+  der(omega_m4) = (omega_cmd_4 - omega_m4) / tau_motor;
 
   // Motor thrusts (use actual speeds, not commands)
   F1 = Ct * omega_m1 * omega_m1;
