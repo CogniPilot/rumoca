@@ -1178,6 +1178,63 @@ fn prepare_dae_core(
     run_post_structure_elimination_phase(&mut dae, trace, disable_trivial_elim, &mut elim);
     budget.check()?;
 
+    // Final orphan-state cleanup. `normalize_runtime_aliases` and the
+    // post-structure trivial-elim pass above can both *remove
+    // equations* that earlier demote phases (phase1h2, phase1h3,
+    // phase1h5 inside `run_prepare_structure_passes`) depended on to
+    // keep a state live.
+    //
+    // Concrete repro: `Modelica.Mechanics.Rotational.Components.Damper`
+    // declares both `phi_rel` and `w_rel` as preferred states
+    // (`stateSelect=prefer`), with `w_rel = der(phi_rel)` and
+    // `a_rel = der(w_rel)`. `a_rel` is unused at the leaf model, so
+    // post-structure elimination drops `a_rel = der(w_rel)`. That
+    // leaves `w_rel` in `dae.states` with zero equations containing
+    // `der(w_rel)` → reorder fails with
+    // `MissingStateEquation("damper.w_rel")` and every
+    // `Modelica.Mechanics.Rotational.*` example fails to compile.
+    //
+    // The cheap fix: re-run the same two demotion helpers that
+    // `phase1h2`/`phase1h3` already use, but AFTER the post-structure
+    // elimination, so anything whose derivative-row was just removed
+    // gets demoted to algebraic before reorder sees it.
+    let mut n_final_no_der = 0usize;
+    run_logged_phase(
+        trace,
+        "demote_states_without_derivative_refs(phase1j-final)",
+        || {
+            run_timeout_step(budget, || {
+                n_final_no_der = demote_states_without_derivative_refs(&mut dae);
+            })
+        },
+    )?;
+    if n_final_no_der > 0 {
+        eprintln!(
+            "[prepare_dae] final pass: demoted {} states whose derivative rows \
+             were removed by post-structure elimination",
+            n_final_no_der
+        );
+    }
+
+    let mut n_final_unassignable = 0usize;
+    run_logged_phase(
+        trace,
+        "demote_states_without_assignable_derivative_rows(phase1k-final)",
+        || {
+            run_timeout_step(budget, || {
+                n_final_unassignable =
+                    demote_states_without_assignable_derivative_rows(&mut dae);
+            })
+        },
+    )?;
+    if n_final_unassignable > 0 {
+        eprintln!(
+            "[prepare_dae] final pass: re-demoted {} states without assignable \
+             derivative rows after post-structure elimination",
+            n_final_unassignable
+        );
+    }
+
     debug_print_prepare_counts(&dae);
     let has_dummy = dae.states.values().map(|v| v.size()).sum::<usize>() == 0;
     if has_dummy {
