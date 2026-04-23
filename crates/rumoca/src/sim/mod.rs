@@ -4,6 +4,7 @@
 //! running app. Optionally couples to an external autopilot over UDP with
 //! a configured codec; otherwise runs standalone.
 
+pub(crate) mod compose;
 pub(crate) mod executor;
 
 use std::path::Path;

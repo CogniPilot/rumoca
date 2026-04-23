@@ -669,43 +669,72 @@ fn parse_move_hints(raw_moves: &[String]) -> Result<Vec<ProjectFileMoveHint>> {
 }
 
 #[cfg(feature = "sim")]
+fn resolve_path(base: &Path, rel: &str) -> std::path::PathBuf {
+    let p = Path::new(rel);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    }
+}
+
+#[cfg(feature = "sim")]
 fn run_sim_run(args: SimRunArgs) -> Result<()> {
     let config = rumoca_session::config::SimulationConfig::load(Path::new(&args.config))
         .with_context(|| format!("Load sim config: {}", args.config))?;
 
-    // Resolve model file: --model override > config [model].file.
     let config_dir = Path::new(&args.config).parent().unwrap_or(Path::new("."));
-    let model_path_str = args
+
+    // Resolve physics file: --model override > config [physics].file.
+    let physics_path_str = args
         .model
         .clone()
-        .or_else(|| config.model.as_ref().map(|m| m.file.clone()))
+        .or_else(|| config.physics.as_ref().map(|m| m.file.clone()))
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no model specified: provide --model <path> or a [model].file in the config"
+                "no physics model specified: provide --model <path> or a [physics].file in the config"
             )
         })?;
-    let model_path = {
-        let p = Path::new(&model_path_str);
-        if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            config_dir.join(p)
-        }
-    };
-    let model_source = std::fs::read_to_string(&model_path)
-        .with_context(|| format!("Read model file: {}", model_path.display()))?;
-
-    let model_name = config
-        .model
+    let physics_path = resolve_path(config_dir, &physics_path_str);
+    let physics_source = std::fs::read_to_string(&physics_path)
+        .with_context(|| format!("Read physics model file: {}", physics_path.display()))?;
+    let physics_name = config
+        .physics
         .as_ref()
         .map(|m| m.name.clone())
         .or_else(|| {
-            model_path
+            physics_path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .map(String::from)
         })
         .unwrap_or_else(|| "Model".to_string());
+
+    // If a [controller] section is present, synthesize a composition
+    // wrapper from physics + controller + routes.
+    let (model_source, model_name) = match config.controller.as_ref() {
+        Some(ctrl) => {
+            let ctrl_path = resolve_path(config_dir, &ctrl.file);
+            let ctrl_source = std::fs::read_to_string(&ctrl_path)
+                .with_context(|| format!("Read controller model file: {}", ctrl_path.display()))?;
+            let combined = sim::compose::synthesize(
+                &physics_source,
+                &physics_name,
+                &ctrl_source,
+                &ctrl.name,
+                &ctrl.actuate,
+                &ctrl.sense,
+            )
+            .context("Synthesize composed wrapper")?;
+            eprintln!(
+                "  Composed: {}({}) + {}({})",
+                physics_name, physics_path.display(),
+                ctrl.name, ctrl_path.display()
+            );
+            (combined, sim::compose::WRAPPER_MODEL_NAME.to_string())
+        }
+        None => (physics_source, physics_name.clone()),
+    };
 
     // Resolve scene: --scene override > [transport.http].scene in the config.
     let scene_ref = args.scene.clone().or_else(|| {

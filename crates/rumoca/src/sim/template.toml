@@ -12,11 +12,29 @@
 #   examples/rover_sil/rover.toml          (standalone)
 # =============================================================================
 
-# ── Model ─────────────────────────────────────────────────────────────────
-# Modelica model file (relative to this TOML) + top-level class name.
-[model]
+# ── Physics ───────────────────────────────────────────────────────────────
+# Required. Modelica plant model file (relative to this TOML) + top-level
+# class name.
+[physics]
 file = "MyVehicle.mo"
 name = "MyVehicle"
+
+# ── Controller (optional) ─────────────────────────────────────────────────
+# Pick ONE of: [controller] (in-process Modelica controller), [autopilot]
+# (external subprocess via FlatBuffer UDP), or neither (standalone — the
+# input engine drives stepper inputs directly).
+#
+# [controller]
+# file = "MyController.mo"
+# name = "MyController"
+#
+# # Controller outputs → physics inputs.
+# [controller.actuate]
+# motor_cmd_0 = "omega_cmd_1"
+#
+# # Physics outputs → controller inputs (feedback).
+# [controller.sense]
+# gyro_x = "gyro_x"
 
 # ── Simulation ────────────────────────────────────────────────────────────
 [sim]

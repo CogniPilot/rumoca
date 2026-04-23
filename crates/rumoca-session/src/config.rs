@@ -41,8 +41,16 @@ pub struct SimulationConfig {
     #[serde(default)]
     pub autopilot: Option<AutopilotConfig>,
 
+    /// Plant / physics model. Required.
     #[serde(default)]
-    pub model: Option<ModelConfig>,
+    pub physics: Option<ModelConfig>,
+    /// Optional in-process Modelica controller. When present, rumoca
+    /// synthesizes a composition wrapper at load time: physics and
+    /// controller instantiated together and wired via `controller.actuate`
+    /// and `controller.sense`. Mutually exclusive with `autopilot` at the
+    /// config-semantics level: both technically load, but pick one.
+    #[serde(default)]
+    pub controller: Option<ControllerConfig>,
     #[serde(default)]
     pub transport: Option<TransportConfig>,
     #[serde(default)]
@@ -120,6 +128,28 @@ fn default_true() -> bool {
 pub struct ModelConfig {
     pub file: String,
     pub name: String,
+}
+
+/// In-process Modelica controller paired with the physics model.
+///
+/// At load time rumoca generates a wrapper model that instantiates
+/// `physics` and `controller`, forwards top-level inputs (controller
+/// inputs NOT in `sense`) through to the controller, wires `actuate`
+/// (controller output → physics input) and `sense` (physics output →
+/// controller input), and exposes physics variables via hierarchical
+/// `physics.<name>` stepper paths.
+#[derive(Debug, Deserialize)]
+pub struct ControllerConfig {
+    pub file: String,
+    pub name: String,
+    /// Controller output -> physics input. Keys are controller-side,
+    /// values are physics-side (left arrow, from caller's perspective).
+    #[serde(default)]
+    pub actuate: HashMap<String, String>,
+    /// Physics output -> controller input. Keys are physics-side, values
+    /// are controller-side.
+    #[serde(default)]
+    pub sense: HashMap<String, String>,
 }
 
 // ── Transports ─────────────────────────────────────────────────────────────
