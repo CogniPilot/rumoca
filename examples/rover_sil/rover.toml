@@ -5,9 +5,11 @@
 # directly via [signals.stepper_inputs]. No FB / UDP / autopilot config.
 # =============================================================================
 
-[model]
+[physics]
 file = "Rover.mo"
 name = "Rover"
+# No [controller] section — standalone mode, input engine drives the
+# stepper directly via [signals.stepper_inputs] below.
 
 [sim]
 dt = 0.01

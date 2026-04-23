@@ -1,30 +1,38 @@
 # =============================================================================
-# quadrotor.toml — canonical quadrotor SIL config.
+# quadrotor_cerebri.toml — quadrotor SIL coupled with the external Cerebri
+# autopilot over UDP + FlatBuffer.
+#
+# Rumoca loads the physics plant alone. Cerebri runs as a subprocess; they
+# exchange sensor/motor messages over UDP using the cerebri2 FlatBuffer
+# schemas. Rumoca encodes RC channels (1000-2000 µs) from gamepad/keyboard
+# locals and ships them to Cerebri in SimInput; Cerebri ships MotorOutput
+# back which routes to the model's omega_cmd_* inputs.
+#
+# For the in-process Modelica controller variant, see quadrotor_acro.toml.
 #
 # Pair with (all in this directory):
-#   - QuadrotorSIL.mo      (physics)
-#   - quadrotor_scene.js   (Three.js scene)
+#   - QuadrotorSIL.mo    (physics plant)
+#   - quadrotor_scene.js (Three.js scene)
 #
-# Edit [autopilot].command and [schema].bfbs for your Cerebri install.
+# Required setup on this machine: the Cerebri build artifacts must exist
+# at [autopilot].command and [schema].bfbs. Edit those two settings to
+# match your install.
 #
-# Run:  rumoca sim run -c examples/quadrotor_sil/quadrotor.toml
+# Run: rumoca sim run -c examples/quadrotor_sil/quadrotor_cerebri.toml
 # =============================================================================
 
-# ── Model + simulation core ────────────────────────────────────────────────
+# ── Physics + sim core ─────────────────────────────────────────────────────
 
-[model]
+[physics]
 file = "QuadrotorSIL.mo"
 name = "QuadrotorSIL"
 
 [sim]
-# Each lockstep cycle advances this much sim time per zephyr packet.
-# Set to roughly the packet inter-arrival wall time so the sim runs
-# realtime. Physics accuracy is preserved via step_substeps — it breaks
-# each dt into MAX_SUB_DT (~2 ms) substeps internally, so 0.02 s here
-# still gives ~0.002 s solver steps.
-dt = 0.00125
+dt = 0.002
 realtime = true
 mode = "free_run"
+
+# ── External autopilot ─────────────────────────────────────────────────────
 
 [autopilot]
 command = "/home/micah/cognipilot/ws/cerebri/build/zephyr/zephyr.exe"
@@ -54,15 +62,16 @@ bfbs = [
 root_type = "cerebri2.topic.MotorOutput"
 
 [receive.route]
-# Scale = sqrt(F_max/Ct) = sqrt(20/8.54858e-6) ≈ 1529 rad/s — matches
-# cerebri rdd2_sim's F_max = 20 N per motor so the PID sees the control
-# authority it was tuned for. Targets are omega_cmd_* (commanded speeds);
-# the model's motor dynamics lag the actual omega_m* states behind these.
+# Scale = sqrt(F_max/Ct) = sqrt(20/8.54858e-6) ≈ 1529 rad/s matches cerebri
+# rdd2_sim's F_max = 20 N assumption so the PID sees the expected authority.
 "motors.m0" = { to = "stepper:omega_cmd_1", scale = 1529.0 }
 "motors.m1" = { to = "stepper:omega_cmd_2", scale = 1529.0 }
 "motors.m2" = { to = "stepper:omega_cmd_3", scale = 1529.0 }
 "motors.m3" = { to = "stepper:omega_cmd_4", scale = 1529.0 }
-"armed"     = { to = "local:armed_actual" }  # reflected state — do NOT overwrite user request
+# armed_actual is the reflected state from cerebri; kept separate from the
+# user's `armed` request local so receive doesn't clobber the user toggle
+# every frame (one-frame oscillation that prevented arming from latching).
+"armed"     = { to = "local:armed_actual" }
 "test_mode" = { to = "local:test_mode" }
 
 [send]
@@ -95,16 +104,11 @@ root_type = "cerebri2.sil.SimInput"
 "rc_valid"        = { key = "rc_valid" }
 "imu_valid"       = { key = "imu_valid" }
 
-# ── Locals: named state that persists across frames ────────────────────────
+# ── Locals ─────────────────────────────────────────────────────────────────
 
 [locals]
-# NOTE: `armed` is the USER REQUEST (toggled by Space / gamepad Start);
-# `armed_actual` is what the autopilot reflects back in MotorOutput. They
-# must be kept separate — if receive routed MotorOutput.armed back into
-# `local:armed`, it would clobber the user request every frame and
-# produce a one-frame oscillation that prevents arming from ever
-# latching (user asks arm=true → derive sets rc.4=2000 → receive
-# overwrites armed=false → next frame derive reverts rc.4=1000).
+# `armed` is the USER REQUEST (toggled by Space / gamepad Start);
+# `armed_actual` is what cerebri reflects back in MotorOutput.
 armed          = { type = "bool",  default = false }
 armed_actual   = { type = "bool",  default = false }
 test_mode      = { type = "bool",  default = false }
@@ -115,7 +119,7 @@ yaw_cmd        = { type = "float", default = 0.0 }
 throttle_input = { type = "float", default = 0.0 }
 rc             = { type = "array", element = "int", len = 16, default = 1500 }
 
-# ── Derive: compute one local from another each frame ──────────────────────
+# ── Derive: encode sticks → RC channels each frame ─────────────────────────
 
 [derive]
 "rc.0" = { from = "roll_cmd",  scale =  500, offset = 1500, clamp = [1000, 2000] }
@@ -127,9 +131,8 @@ rc             = { type = "array", element = "int", len = 16, default = 1500 }
 # ── Input engine ───────────────────────────────────────────────────────────
 
 [input]
-mode = "auto"   # "gamepad" | "keyboard" | "auto"
+mode = "auto"
 
-# Gamepad bindings
 [input.gamepad.axes]
 roll  = { source = "RightStickX", write = "roll_cmd" }
 pitch = { source = "RightStickY", write = "pitch_cmd" }
@@ -159,7 +162,6 @@ source = "North"
 action = "signal"
 signal = "log"
 
-# Keyboard bindings
 [input.keyboard.decay]
 targets = ["roll_cmd", "pitch_cmd", "yaw_cmd", "throttle_input"]
 factor  = 0.85
@@ -185,7 +187,7 @@ write  = "throttle"
 rate   = 0.7
 clamp  = [0.0, 1.0]
 
-# ── Signal assembly: what populates the outgoing SignalFrame ───────────────
+# ── Signal assembly: outgoing SignalFrame populated from these ─────────────
 
 [signals.send]
 gyro_x          = "stepper:gyro_x"
@@ -234,7 +236,6 @@ omega_m1    = "stepper:omega_m1"
 omega_m2    = "stepper:omega_m2"
 omega_m3    = "stepper:omega_m3"
 omega_m4    = "stepper:omega_m4"
-T           = "stepper:T"
 accel_x     = "stepper:accel_x"
 accel_y     = "stepper:accel_y"
 accel_z     = "stepper:accel_z"
@@ -246,13 +247,11 @@ armed_req   = "local:armed"
 rc_throttle = "local:rc.2"
 input_mode  = "runtime:input_mode"
 
-# ── Debug frame log ────────────────────────────────────────────────────────
+# ── Debug trace log ────────────────────────────────────────────────────────
 
 [debug_log]
 ring_size      = 500
 trigger_signal = "log"
-# Streaming CSV log: set RUMOCA_TRACE_LOG=/path/to/trace.csv to write every
-# frame to disk (one row per completed sim frame).
 capture = [
   "runtime:frame_num", "runtime:wall_ms", "stepper:time",
   "local:armed", "local:armed_actual",
@@ -261,7 +260,6 @@ capture = [
   "stepper:px", "stepper:py", "stepper:pz",
   "stepper:vx", "stepper:vy", "stepper:vz",
   "stepper:q0", "stepper:q1", "stepper:q2", "stepper:q3",
-  "stepper:T",
   "stepper:accel_x", "stepper:accel_y", "stepper:accel_z",
   "stepper:gyro_x", "stepper:gyro_y", "stepper:gyro_z",
 ]
