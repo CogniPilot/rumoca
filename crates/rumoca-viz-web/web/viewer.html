@@ -102,6 +102,7 @@
 
 <script type="module">
 import * as THREE from "three";
+import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/loaders/GLTFLoader.js";
 
 const WS_PORT = __WS_PORT__;
 const DEBUG = __DEBUG__;
@@ -185,7 +186,7 @@ try {
   const ctx = {};
   new Function("ctx", scriptText)(ctx);
   if (ctx.onInit) {
-    ctx.onInit({ THREE, scene, state: sceneState, camera, cam });
+    await ctx.onInit({ THREE, GLTFLoader, scene, state: sceneState, camera, cam });
   }
   sceneOnFrame = ctx.onFrame || null;
   pipeline.scene = true;

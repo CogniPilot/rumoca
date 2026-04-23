@@ -1,45 +1,74 @@
-// Simple differential-drive rover plant model.
+// Kinematic bicycle model of an Ackermann-steered rover.
+//
+// States (5):
+//   x, y    — world position [m]
+//   theta   — heading [rad] (0 = +X axis; CCW positive)
+//   v       — longitudinal speed along body frame [m/s]
+//   delta   — steering angle of front wheels [rad] (0 = straight)
 //
 // Inputs:
-//   forward_cmd:  normalized forward command [-1..1]
-//   turn_cmd:     normalized turn command    [-1..1]  (+ = turn right)
+//   throttle : [-1..1]  throttle → target speed
+//   steering    : [-1..1]  steering → target steering angle
 //
-// States:
-//   x, y:    world-frame position [m]
-//   theta:   heading [rad]   (0 = +X axis; CCW positive)
+// Both commands pass through first-order lags so the vehicle doesn't
+// teleport its state on sudden stick moves, and so the front-wheel
+// visualization has smooth angular motion to track.
 //
-// The model owns the differential-drive mixing so the config file can stay
-// a clean 1:1 map from gamepad locals to model inputs.
+// Kinematics at the rear axle (standard bicycle model):
+//   der(x)     = v * cos(theta)
+//   der(y)     = v * sin(theta)
+//   der(theta) = v * tan(delta) / wheelbase
+//
+// The rover cannot sideslip — it follows the tangent of the front wheels
+// by construction, so there's no "skidding" failure mode of the old
+// differential-drive form.
 
-class Rover
+model Rover
 
-  parameter Real wheel_radius = 0.1 "Wheel radius [m]";
-  parameter Real track = 0.3 "Distance between left/right wheels [m]";
-  parameter Real max_wheel = 20 "Max wheel angular velocity [rad/s]";
+  // --- Geometry ---
+  // Sized to match the GLB jeep used by rover_scene.js at its viewer scale.
+  parameter Real wheelbase     = 0.62  "Axle-to-axle distance [m]";
+  parameter Real track         = 0.40  "Distance between left/right wheels [m]";
+  parameter Real wheel_radius  = 0.09  "Wheel radius [m]";
 
-  input Real forward_cmd(start = 0) "Normalized forward command [-1..1]";
-  input Real turn_cmd(start = 0) "Normalized turn command [-1..1]";
+  // --- Command mapping ---
+  parameter Real v_max      = 4.0   "Top forward speed [m/s] at full stick";
+  parameter Real delta_max  = 0.6   "Max steering angle [rad] (~34°)";
 
-  Real x(start = 0) "World X [m]";
-  Real y(start = 0) "World Y [m]";
+  // --- First-order response time constants ---
+  parameter Real tau_speed  = 0.25 "Speed tracking time constant [s]";
+  parameter Real tau_steer  = 0.10 "Steering tracking time constant [s]";
+
+  // --- Inputs ---
+  input Real throttle(start = 0) "Throttle stick [-1..1]";
+  input Real steering(start = 0)    "Steering stick [-1..1]";
+
+  // --- States ---
+  Real x(start = 0)     "World X [m]";
+  Real y(start = 0)     "World Y [m]";
   Real theta(start = 0) "Heading [rad]";
+  Real v(start = 0)     "Longitudinal speed [m/s]";
+  Real delta(start = 0) "Steering angle [rad]";
 
-  Real wheel_left  "Left wheel angular velocity [rad/s]";
-  Real wheel_right "Right wheel angular velocity [rad/s]";
-  Real v "Linear velocity [m/s]";
-  Real omega "Yaw rate [rad/s]";
+  // --- Exposed scene-visualization helpers ---
+  // The JS scene reads these to spin wheels and yaw the front pair.
+  output Real wheel_rpm       "Rear-wheel angular speed [rad/s]";
+  output Real front_wheel_yaw "Steering angle [rad] (same as delta)";
+  output Real yaw_rate        "d(theta)/dt [rad/s]";
 
 equation
-  // Differential-drive mixing.
-  wheel_left  = (forward_cmd - turn_cmd) * max_wheel;
-  wheel_right = (forward_cmd + turn_cmd) * max_wheel;
+  // First-order commands: state tracks setpoint with tau_*.
+  der(v)     = (throttle * v_max - v)            / tau_speed;
+  der(delta) = (steering    * delta_max - delta)    / tau_steer;
 
-  // Forward kinematics.
-  v     = (wheel_left + wheel_right) * wheel_radius / 2;
-  omega = (wheel_right - wheel_left) * wheel_radius / track;
-
+  // Kinematic bicycle.
   der(x)     = v * cos(theta);
   der(y)     = v * sin(theta);
-  der(theta) = omega;
+  der(theta) = v * tan(delta) / wheelbase;
+
+  // Derived outputs for the viewer.
+  wheel_rpm       = v / wheel_radius;
+  front_wheel_yaw = delta;
+  yaw_rate        = v * tan(delta) / wheelbase;
 
 end Rover;
