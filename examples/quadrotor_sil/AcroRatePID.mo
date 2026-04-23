@@ -15,16 +15,24 @@ model AcroRatePID
   parameter Real rate_rp_max = 6.0  "Full-stick roll/pitch rate [rad/s]";
   parameter Real rate_y_max  = 3.5  "Full-stick yaw rate [rad/s]";
 
-  // --- Rate PID gains (initial guess; tune after first runs) ---
-  parameter Real Kp_rate_rp = 0.15;
-  parameter Real Ki_rate_rp = 0.05;
-  parameter Real Kd_rate_rp = 0.002;
-  parameter Real Kp_rate_y  = 0.20;
-  parameter Real Ki_rate_y  = 0.05;
+  // --- Rate PID gains ---
+  // Gains are in rad/s of motor-omega differential per rad/s of rate error
+  // (since roll_out/pitch_out/yaw_out feed directly into the motor omega
+  // mix). A rough ballpark: for this 2 kg plant with Ct=8.55e-6 and
+  // arm=0.25 m, a motor-omega differential of ~100 rad/s produces ~0.3 Nm
+  // of body torque, i.e. ~14 rad/s² angular accel. To hit full-stick rate
+  // (6 rad/s) in ~50 ms we need ~120 rad/s² peak, i.e. roll_out ~150 at
+  // error 6 → Kp ≈ 25.
+  parameter Real Kp_rate_rp = 25.0;
+  parameter Real Ki_rate_rp = 5.0;
+  parameter Real Kd_rate_rp = 0.0;
+  parameter Real Kp_rate_y  = 30.0;
+  parameter Real Ki_rate_y  = 5.0;
   parameter Real Kd_rate_y  = 0.0;
 
-  // Integral clamps (anti-windup).
-  parameter Real i_lim_rp = 50;
+  // Integral clamps (anti-windup). Scaled with the bigger Kp so the i-term
+  // can still push the same motor-omega range (~200 rad/s).
+  parameter Real i_lim_rp = 40;
   parameter Real i_lim_y  = 30;
 
   // --- Throttle scaling ---

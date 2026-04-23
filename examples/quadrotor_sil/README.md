@@ -68,7 +68,7 @@ polled for hotkeys.
 ```
 input engine          rumoca sim                          Browser
   │                       │                                  │
-  │── sticks → stepper ─► │── step composed DAE (dt=2ms)
+  │── sticks → stepper ─► │── step composed DAE (dt=5ms)
   │   inputs              │   (QuadrotorSIL + AcroRatePID)
   │                       │                                  │
   │                       │── viewer JSON ─────── WS ──────► │

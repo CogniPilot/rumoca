@@ -43,7 +43,7 @@ gyro_y = "gyro_y"
 gyro_z = "gyro_z"
 
 [sim]
-dt = 0.002
+dt = 0.005
 realtime = true
 mode = "free_run"
 
