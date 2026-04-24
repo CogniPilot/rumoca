@@ -2087,7 +2087,8 @@ pub(super) fn var_name_to_symbol(name: &str, cfg: &ExprConfig) -> RenderResult {
         return Ok(symbol);
     }
     if let Some((base, subscripts)) = rumoca_core::split_trailing_subscript_suffix(name) {
-        let suffix = subscripts.replace(',', "_").replace(' ', "");
+        let sanitized_suffix = super::sanitize_name(&format!("[{subscripts}]"));
+        let suffix = sanitized_suffix.trim_matches('_');
         let base_symbol = super::emitted_symbol(base, cfg)?;
         return Ok(format!("{base_symbol}_{suffix}"));
     }
@@ -2120,6 +2121,7 @@ mod tests {
             var_name_to_symbol("arr[index.with.dot].x[4]", &cfg).unwrap(),
             "arr_index_with_dot_x_4"
         );
+        assert_eq!(var_name_to_symbol("x[5 + 1]", &cfg).unwrap(), "x_6");
         assert_eq!(var_name_to_symbol("x[3", &cfg).unwrap(), "x_3");
     }
 }

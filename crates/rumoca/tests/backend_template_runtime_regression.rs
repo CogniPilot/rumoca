@@ -418,6 +418,25 @@ fn native_simulates_matrix_derivative_product() {
     );
 }
 
+const INDEXED_COMPONENT_FIELD_SOURCE: &str = r#"
+package IndexedComponentFieldProbe
+  model Zone
+    Real T(start = 290);
+  equation
+    der(T) = -0.01 * (T - 290);
+  end Zone;
+
+  model Main
+    Zone zone[3];
+    Real y[2];
+  equation
+    for i in 1:2 loop
+      y[i] = zone[i + 1].T;
+    end for;
+  end Main;
+end IndexedComponentFieldProbe;
+"#;
+
 // ============================================================================
 // CasADi driver — outputs CSV: time,state1,state2,...
 // ============================================================================
@@ -670,6 +689,18 @@ fn fmi2_array_access_component_compiles() {
     let model_c = render_fmi_solve_template(&compiled, "fmi2", "model.c.jinja", "ArrayAccess");
     let driver_c =
         render_fmi_solve_template(&compiled, "fmi2", "test_driver.c.jinja", "ArrayAccess");
+    compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", &driver_c)],
+        &["--t-end", "0.01", "--dt", "0.001"],
+    );
+}
+
+#[test]
+fn fmi2_indexed_component_field_compiles() {
+    let model = "IndexedComponentFieldProbe.Main";
+    let compiled = compile_model(INDEXED_COMPONENT_FIELD_SOURCE, model);
+    let model_c = render_fmi_solve_template(&compiled, "fmi2", "model.c.jinja", model);
+    let driver_c = render_fmi_solve_template(&compiled, "fmi2", "test_driver.c.jinja", model);
     compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],
         &["--t-end", "0.01", "--dt", "0.001"],
