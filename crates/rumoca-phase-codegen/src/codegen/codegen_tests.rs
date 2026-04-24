@@ -1316,14 +1316,17 @@ fn test_fmi_templates_apply_explicit_state_initial_equations() {
             })
             .nth(1)
             .expect("template should define exit initialization");
+        let initial_update_call = if target == "fmi2" {
+            "apply_initial_equations(m);"
+        } else {
+            "compute_initial_updates(m);"
+        };
         assert!(
-            exit_initialization.contains("compute_initial_updates(m);"),
+            exit_initialization.contains(initial_update_call),
             "{target} should apply explicit state initial equations before initial derivatives:\n{exit_initialization}"
         );
         assert!(
-            exit_initialization
-                .find("compute_initial_updates(m);")
-                .unwrap()
+            exit_initialization.find(initial_update_call).unwrap()
                 < exit_initialization.find("compute_derivatives(m);").unwrap(),
             "{target} should apply explicit state initial equations before initial derivatives:\n{exit_initialization}"
         );

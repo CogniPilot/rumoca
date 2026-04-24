@@ -366,7 +366,9 @@ pub(super) fn pre_resolve_array_modifications(
         // form so per-element indexing can preserve owner scope (`R[1]`).
         // Eager resolution here can over-collapse to outer-source expressions
         // like `RRef.d`, losing the declaring component context.
-        if matches!(expr, ast::Expression::ComponentReference(_)) {
+        if matches!(expr, ast::Expression::ComponentReference(_))
+            || has_explicit_subscripted_component_ref(expr)
+        {
             continue;
         }
         let val = resolve_mod_to_array(expr, mod_env, effective_components, tree);
@@ -831,6 +833,18 @@ fn make_real_lit(value: f64, span: rumoca_core::Span) -> ast::Expression {
     }
 }
 
+fn has_explicit_subscripted_component_ref(expr: &ast::Expression) -> bool {
+    match expr {
+        ast::Expression::ComponentReference(cref) => {
+            cref.parts.iter().any(|part| part.subs.is_some())
+        }
+        ast::Expression::Parenthesized { inner, .. } => {
+            has_explicit_subscripted_component_ref(inner)
+        }
+        _ => false,
+    }
+}
+
 /// Evaluate an array comprehension `{expr for j in start:end}` to a concrete array.
 ///
 /// MLS §11.1.2.1: For simple comprehensions like `{j for j in 1:m}`,
@@ -1073,9 +1087,14 @@ pub(super) fn index_binding_for_element(
             });
         };
         let mut new_ref = cref.clone();
+        let subs = new_ref.parts[pos]
+            .subs
+            .as_ref()
+            .and_then(|existing| project_existing_subscripts_for_element(existing, indices))
+            .unwrap_or_else(make_subscripts);
         new_ref.parts[pos] = ast::ComponentRefPart {
             ident: new_ref.parts[pos].ident.clone(),
-            subs: Some(make_subscripts()),
+            subs: Some(subs),
         };
         return Ok(ast::Expression::ComponentReference(new_ref));
     }
@@ -1090,6 +1109,62 @@ pub(super) fn index_binding_for_element(
         subscripts: make_subscripts(),
         span: binding.span(),
     })
+}
+
+fn project_existing_subscripts_for_element(
+    existing: &[ast::Subscript],
+    indices: &[i64],
+) -> Option<Vec<ast::Subscript>> {
+    if existing.len() != indices.len() {
+        return None;
+    }
+
+    existing
+        .iter()
+        .zip(indices.iter().copied())
+        .map(|(sub, index)| project_existing_subscript_for_element(sub, index))
+        .collect()
+}
+
+fn project_existing_subscript_for_element(
+    sub: &ast::Subscript,
+    index: i64,
+) -> Option<ast::Subscript> {
+    match sub {
+        ast::Subscript::Expression(ast::Expression::Range { start, step, .. }) => {
+            let start = integer_literal_value(start)?;
+            let step = match step.as_deref() {
+                Some(expr) => integer_literal_value(expr)?,
+                None => 1,
+            };
+            let selected = start + (index - 1) * step;
+            Some(ast::Subscript::Expression(make_int_expr(selected)))
+        }
+        ast::Subscript::Expression(ast::Expression::Array { elements, .. }) => {
+            let idx = index.checked_sub(1)? as usize;
+            Some(ast::Subscript::Expression(elements.get(idx)?.clone()))
+        }
+        ast::Subscript::Expression(expr) => Some(ast::Subscript::Expression(expr.clone())),
+        ast::Subscript::Empty | ast::Subscript::Range { .. } => None,
+    }
+}
+
+fn integer_literal_value(expr: &ast::Expression) -> Option<i64> {
+    let ast::Expression::Terminal { token, .. } = expr else {
+        return None;
+    };
+    token.text.as_ref().parse().ok()
+}
+
+fn make_int_expr(value: i64) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::UnsignedInteger,
+        token: rumoca_core::Token {
+            text: value.to_string().into(),
+            ..rumoca_core::Token::default()
+        },
+        span: rumoca_core::Span::DUMMY,
+    }
 }
 
 fn index_non_component_reference_binding(
@@ -1568,6 +1643,42 @@ mod tests {
             cref.parts[1].subs.is_none(),
             "field part must remain unindexed"
         );
+    }
+
+    #[test]
+    fn test_index_binding_for_element_projects_explicit_range_slice() {
+        let mut parent_components = IndexMap::default();
+        parent_components.insert(
+            "root".to_string(),
+            ast::Component {
+                name: "root".to_string(),
+                shape: vec![20],
+                ..ast::Component::empty_with_span(test_span())
+            },
+        );
+        let mut binding = make_comp_ref_expr(&["root"]);
+        if let ast::Expression::ComponentReference(cref) = &mut binding {
+            cref.parts[0].subs = Some(vec![ast::Subscript::Expression(make_range_expr(11, 15))]);
+        }
+
+        let indexed = index_binding_for_element(
+            &ast::ClassTree::default(),
+            &parent_components,
+            &binding,
+            &[2],
+        )
+        .expect("range slice binding should project to an element subscript");
+
+        let ast::Expression::ComponentReference(cref) = indexed else {
+            panic!("expected projected component reference");
+        };
+        let Some(subs) = &cref.parts[0].subs else {
+            panic!("projected array part should retain a scalar subscript");
+        };
+        let ast::Subscript::Expression(ast::Expression::Terminal { token, .. }) = &subs[0] else {
+            panic!("range projection should produce an integer subscript");
+        };
+        assert_eq!(token.text.as_ref(), "12");
     }
 
     #[test]

@@ -1476,6 +1476,11 @@ fn add_rhs_template_helpers(env: &mut Environment<'static>) {
 
     // Check if an expression is a string literal for scalar templates.
     env.add_function("is_string_literal", render_c::is_string_literal_function);
+    env.add_function("expr_has_var_ref", render_c::expr_has_var_ref_function);
+    env.add_function(
+        "initial_rhs_for_var",
+        render_c::initial_rhs_for_var_function,
+    );
 
     // Check if a function has record-typed parameters
     env.add_function("has_complex_params", render_c::has_complex_params_function);

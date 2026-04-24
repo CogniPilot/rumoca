@@ -542,10 +542,11 @@ static void __rumoca_solve_set_p(ModelInstance* m, int index, double value) {
  * Forward declarations
  * ========================================================================= */
 static void initialize_defaults(ModelInstance* m);
+static void apply_parameter_bindings(ModelInstance* m);
+static void apply_initial_equations(ModelInstance* m);
 static void compute_algebraics(ModelInstance* m);
 static void compute_derivatives(ModelInstance* m);
 static void compute_outputs(ModelInstance* m);
-static void compute_initial_updates(ModelInstance* m);
 static void compute_discrete_updates(ModelInstance* m);
 static void compute_event_indicators(ModelInstance* m);
 static fmi2Status get_native_observable_by_vr(const ModelInstance* m, fmi2ValueReference vr, fmi2Real* value);
@@ -821,45 +822,70 @@ static void initialize_defaults(ModelInstance* m) {
 }
 
 /* =========================================================================
- * Apply explicit initial equations after parameters have their start values.
+ * FMI initialization binding propagation
  * ========================================================================= */
-static void compute_initial_updates(ModelInstance* m) {
-{% if dae.initial_equations | default([]) | length > 0 %}
+static void apply_parameter_bindings(ModelInstance* m) {
+{% if dae.p | length > 0 %}
     const double t = m->time;
     const double time = m->time;
     (void)t; (void)time;
 
-{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
-{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
-{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
-{{ unpack_vars(dae.u, "m->u") }}
+{{ unpack_vars(dae.constants, "m->constants") }}
+{{ unpack_vars(dae.p, "m->p", mutable=true) }}
+{% set ns_idx = namespace(offset=0) %}
+{% for name, var in dae.p | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% if var.start and is_string_literal(var.start) != "yes" and expr_has_var_ref(var.start) == "yes" %}
+    {{ name | sanitize }}_{{ i + 1 }} = {{ render_expr_at_index(var.start, i + 1, cfg) }};
+    m->p[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* binding {{ name }}[{{ i + 1 }}] */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endfor %}
+{% else %}
+{% if var.start and is_string_literal(var.start) != "yes" and expr_has_var_ref(var.start) == "yes" %}
+    {{ name | sanitize }} = {{ render_expr(var.start, cfg) }};
+    m->p[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* binding {{ name }} */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endif %}
+{% endfor %}
+    m->dirty_values = 1;
+{% else %}
+    (void)m;
+{% endif %}
+}
+
+static void apply_initial_equations(ModelInstance* m) {
+{% if dae.initial_equations | default([]) | length > 0 and dae.x | length > 0 %}
+    const double t = m->time;
+    const double time = m->time;
+    (void)t; (void)time;
+
+{{ unpack_vars(dae.x, "m->x", der_prefix=true, pre_array="m->x") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->constants") }}
 {{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
 {{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
-
-{% set ns_init = namespace(offset=0) %}
+{% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.x | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{% set scalar_name = source_ref(name, var.dims, i + 1) %}
-{% set scalar_symbol = symbol(symbols, scalar_name) %}
-{% for eq in dae.initial_equations | default([]) %}
-{% if eq.lhs is defined and eq.rhs is defined and render_expr(eq.lhs, cfg) == scalar_symbol %}
-    m->x[{{ ns_init.offset }}] = {{ render_expr(eq.rhs, cfg) }};  /* initial equation: {{ scalar_name }} */
+{% set rhs = initial_rhs_for_var(dae, name ~ "[" ~ (i + 1) ~ "]", cfg) %}
+{% if rhs %}
+    m->x[{{ ns_idx.offset }}] = {{ rhs }};  /* initial equation: {{ name }}[{{ i + 1 }}] */
 {% endif %}
-{% endfor %}
-{% set ns_init.offset = ns_init.offset + 1 %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-{% set scalar_symbol = symbol(symbols, name) %}
-{% for eq in dae.initial_equations | default([]) %}
-{% if eq.lhs is defined and eq.rhs is defined and render_expr(eq.lhs, cfg) == scalar_symbol %}
-    m->x[{{ ns_init.offset }}] = {{ render_expr(eq.rhs, cfg) }};  /* initial equation: {{ name }} */
+{% set rhs = initial_rhs_for_var(dae, name, cfg) %}
+{% if rhs %}
+    m->x[{{ ns_idx.offset }}] = {{ rhs }};  /* initial equation: {{ name }} */
 {% endif %}
-{% endfor %}
-{% set ns_init.offset = ns_init.offset + 1 %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
     m->dirty_values = 1;
@@ -1251,8 +1277,10 @@ FMI2_EXPORT fmi2Status fmi2EnterInitializationMode(fmi2Component c) {
 FMI2_EXPORT fmi2Status fmi2ExitInitializationMode(fmi2Component c) {
     ModelInstance* m = (ModelInstance*)c;
 
+    apply_parameter_bindings(m);
+    apply_initial_equations(m);
+
     /* Compute initial derivatives and outputs */
-    compute_initial_updates(m);
     compute_derivatives(m);
     compute_event_indicators(m);
     memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
@@ -1296,6 +1324,7 @@ FMI2_EXPORT fmi2Status fmi2SetReal(
         fmi2Status s = set_real_by_vr(m, vr[i], value[i]);
         if (s != fmi2OK) return s;
     }
+    apply_parameter_bindings(m);
     m->dirty_values = 1;
     return fmi2OK;
 }

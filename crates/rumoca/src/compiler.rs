@@ -2042,6 +2042,143 @@ mod tests {
     }
 
     #[test]
+    fn test_render_fmi2_model_propagates_tunable_parameter_bindings_on_initialization() {
+        let source = r#"
+            model Child
+              parameter Real p = 1;
+              Real x(start = p, fixed = true);
+            initial equation
+              x = p;
+            equation
+              der(x) = 0;
+            end Child;
+
+            model BindingProbe
+              parameter Real root = 5;
+              Child child(p = root);
+            end BindingProbe;
+        "#;
+
+        let result = Compiler::new()
+            .model("BindingProbe")
+            .compile_str(source, "binding_probe.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_prepared_with_name(
+                rumoca_phase_codegen::templates::FMI2_MODEL,
+                "BindingProbe",
+                true,
+            )
+            .expect("prepared FMI2 C render should succeed");
+
+        assert!(
+            rendered.contains("child_p = root;\n    m->p[1] = child_p;  /* binding child.p */"),
+            "FMI2 C must re-evaluate modifier-derived child.p from root after setReal; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("m->x[0] = child_p;  /* initial child.x */"),
+            "FMI2 C must apply direct initial equation x = p after parameter bindings; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("apply_parameter_bindings(m);\n    apply_initial_equations(m);"),
+            "fmi2ExitInitializationMode must apply parameter bindings before initial equations; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("apply_parameter_bindings(m);\n    return fmi2OK;"),
+            "fmi2SetReal must re-apply dependent parameter bindings after batched writes; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_fmi2_model_description_omits_symbolic_starts() {
+        let source = r#"
+            model Child
+              parameter Real p = 1;
+              Real x(start = p, fixed = true);
+            initial equation
+              x = p;
+            equation
+              der(x) = 0;
+            end Child;
+
+            model BindingProbe
+              parameter Real root = 5;
+              Child child(p = root);
+            end BindingProbe;
+        "#;
+
+        let result = Compiler::new()
+            .model("BindingProbe")
+            .compile_str(source, "binding_probe.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_prepared_with_name(
+                rumoca_phase_codegen::templates::FMI2_MODEL_DESCRIPTION,
+                "BindingProbe",
+                true,
+            )
+            .expect("prepared FMI2 modelDescription render should succeed");
+
+        assert!(
+            rendered.contains(r#"name="root" valueReference="2" causality="parameter" variability="fixed" initial="exact">
+      <Real start="5.0"/>"#),
+            "numeric parameter starts should still be emitted; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"name="child.p" valueReference="3" causality="parameter" variability="fixed" initial="exact">
+      <Real/>"#),
+            "symbolic parameter starts must be omitted from FMI2 XML instead of writing non-numeric expressions; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"name="child.x" valueReference="0" causality="local" variability="continuous" initial="exact">
+      <Real/>"#),
+            "symbolic state starts must be omitted from FMI2 XML instead of writing non-numeric expressions; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_fmi2_model_preserves_array_slice_modifier_bindings() {
+        let source = r#"
+            model Child
+              parameter Real p = 1;
+              Real x(start = p, fixed = true);
+            initial equation
+              x = p;
+            equation
+              der(x) = 0;
+            end Child;
+
+            model ArrayModifierProbe
+              parameter Real root[5] = {11, 12, 13, 14, 15};
+              Child child[5](p = root[1:5]);
+            end ArrayModifierProbe;
+        "#;
+
+        let result = Compiler::new()
+            .model("ArrayModifierProbe")
+            .compile_str(source, "array_modifier_probe.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_prepared_with_name(
+                rumoca_phase_codegen::templates::FMI2_MODEL,
+                "ArrayModifierProbe",
+                true,
+            )
+            .expect("prepared FMI2 C render should succeed");
+
+        assert!(
+            rendered.contains(
+                "child_1_p = root_1;\n    m->p[5] = child_1_p;  /* binding child[1].p */"
+            ),
+            "array component modifier bindings must preserve element-wise source dependencies; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("m->x[0] = child_1_p;  /* initial child[1].x */"),
+            "initial equations must use the dependent array modifier parameter; got:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn test_strict_reachable_requested_success_ignores_unreachable_failures() {
         let source = r#"
             package P
