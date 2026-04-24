@@ -728,7 +728,13 @@ fn fmi3_native_array_runtime() {
     // Test FMI3 C compile + run with array variables (per-variable VR layout).
     // Uses a standalone driver since the reference simulator doesn't handle
     // array state variables directly.
-    let dae = model_dae(ARRAY_DECAY_SOURCE, "ArrayDecay");
+    //
+    // The runtime C template emits one xdot entry per scalar state, so the
+    // DAE must be scalarized (vector `der(x) = -x` → one equation per
+    // element) before rendering. The XML template handles native arrays
+    // directly and does not need this prep.
+    let mut dae = model_dae(ARRAY_DECAY_SOURCE, "ArrayDecay");
+    rumoca_sim::equation_scalarize::scalarize_equations(&mut dae);
 
     let model_c =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ArrayDecay")
