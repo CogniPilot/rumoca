@@ -96,6 +96,7 @@ pub struct ExtractedAttributes {
     pub min: Option<ast::Expression>,
     pub max: Option<ast::Expression>,
     pub nominal: Option<ast::Expression>,
+    pub source_scopes: IndexMap<String, ast::QualifiedName>,
     pub quantity: Option<String>,
     pub unit: Option<String>,
     pub display_unit: Option<String>,
@@ -1210,6 +1211,7 @@ fn build_instance_data(
         binding: args.binding,
         binding_source: args.binding_source,
         binding_source_scope: args.binding_source_scope,
+        attribute_source_scopes: args.attrs.source_scopes,
         binding_from_modification: args.binding_from_modification,
         is_primitive: args.is_primitive,
         is_discrete_type: args.is_discrete_type,
@@ -1710,14 +1712,25 @@ fn extract_attributes(
     mod_env: &ast::ModificationEnvironment,
     comp_name: &str,
 ) -> ExtractedAttributes {
+    let mut source_scopes = IndexMap::new();
+    let mut attr_from_mod_env = |attr_name: &str| {
+        let path = ast::QualifiedName::from_ident(comp_name).child(attr_name);
+        let value = mod_env.get(&path)?;
+        if let Some(scope) = value.source_scope.clone() {
+            source_scopes.insert(attr_name.to_string(), scope);
+        }
+        Some(value.value.clone())
+    };
+
     // First, check the modification environment for outer modifications
     // These have precedence over local modifications per MLS §7.2.4
     let mut attrs = ExtractedAttributes {
-        start: mod_env.get_attr(comp_name, "start").cloned(),
+        start: attr_from_mod_env("start"),
         fixed: mod_env.get_attr(comp_name, "fixed").and_then(expr_to_bool),
-        min: mod_env.get_attr(comp_name, "min").cloned(),
-        max: mod_env.get_attr(comp_name, "max").cloned(),
-        nominal: mod_env.get_attr(comp_name, "nominal").cloned(),
+        min: attr_from_mod_env("min"),
+        max: attr_from_mod_env("max"),
+        nominal: attr_from_mod_env("nominal"),
+        source_scopes,
         quantity: mod_env
             .get_attr(comp_name, "quantity")
             .and_then(expr_to_string),

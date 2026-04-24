@@ -128,9 +128,11 @@ impl Resolver {
                 comp.type_name.def_id = Some(type_def_id);
                 comp.type_def_id = Some(type_def_id);
                 self.stats.types_fully_resolved += 1;
-            } else if let Some(type_def_id) =
-                self.resolve_type_name_with_inheritance(&comp.type_name, class_scope)
-            {
+            } else if let Some(type_def_id) = self.resolve_type_name_with_inheritance(
+                &comp.type_name,
+                class_scope,
+                qualified_name,
+            ) {
                 // Full resolution via inherited members succeeded.
                 comp.type_name.def_id = Some(type_def_id);
                 comp.type_def_id = Some(type_def_id);
@@ -338,12 +340,16 @@ impl Resolver {
         &self,
         name: &rumoca_ir_ast::Name,
         scope: ScopeId,
+        qualified_name: &str,
     ) -> Option<rumoca_core::DefId> {
         let first_part = name.name.first()?.text.as_ref();
         let mut current_def_id = self
             .scope_tree
             .lookup(scope, first_part)
-            .or_else(|| self.resolve_function_first_part(first_part, scope))?;
+            .or_else(|| self.resolve_function_first_part(first_part, scope))
+            // MLS §7.3: inherited class/type elements are visible as members of
+            // the extending class, including simple type names in nested records.
+            .or_else(|| self.find_inherited_type(qualified_name, first_part))?;
         let mut current_qualified = self.def_names.get(&current_def_id)?.clone();
 
         for part in name.name.iter().skip(1) {
