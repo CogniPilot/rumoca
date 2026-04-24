@@ -323,7 +323,9 @@ fn render_pointer_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(format!("{}", val - 1));
     }
     if get_field(sub, "Colon").is_ok() {
-        return Err(render_err("slice subscripts are not supported in C array aliases"));
+        return Err(render_err(
+            "slice subscripts are not supported in C array aliases",
+        ));
     }
     if let Ok(expr) = get_field(sub, "Expr") {
         let rendered = render_expression(&expr, cfg)?;

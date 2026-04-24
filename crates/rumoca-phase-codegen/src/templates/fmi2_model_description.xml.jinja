@@ -58,7 +58,7 @@
 {#- Macro: emit a <ScalarVariable> element -#}
 {%- macro scalar_var(name, vr, causality, variability, var, initial) -%}
     <ScalarVariable name="{{ xml_escape(name) }}" valueReference="{{ vr }}" causality="{{ causality }}" variability="{{ variability }}"{% if var.description %} description="{{ xml_escape(var.description) }}"{% endif %}{% if initial %} initial="{{ initial }}"{% endif %}>
-      <Real{% if var.start is not none %} start="{{ render_expr(var.start, cfg) }}"{% endif %}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{% if var.nominal is not none %} nominal="{{ render_expr(var.nominal, cfg) }}"{% endif %}{% if var.min is not none %} min="{{ render_expr(var.min, cfg) }}"{% endif %}{% if var.max is not none %} max="{{ render_expr(var.max, cfg) }}"{% endif %}/>
+      <Real{% if var.start is not none and expr_has_var_ref(var.start) != "yes" %} start="{{ render_expr(var.start, cfg) }}"{% endif %}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{% if var.nominal is not none %} nominal="{{ render_expr(var.nominal, cfg) }}"{% endif %}{% if var.min is not none %} min="{{ render_expr(var.min, cfg) }}"{% endif %}{% if var.max is not none %} max="{{ render_expr(var.max, cfg) }}"{% endif %}/>
     </ScalarVariable>
 {%- endmacro -%}
 {#- Macro: emit ScalarVariable for a derivative -#}

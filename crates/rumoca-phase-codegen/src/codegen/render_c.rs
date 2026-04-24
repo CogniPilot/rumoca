@@ -103,6 +103,17 @@ pub(super) fn is_string_literal_function(expr: Value) -> String {
     String::new()
 }
 
+/// Check if an expression contains any variable reference.
+///
+/// Returns "yes" when a runtime start/binding expression depends on another
+/// variable and must be re-evaluated after FMI parameter changes.
+pub(super) fn expr_has_var_ref_function(expr: Value) -> String {
+    if expr_has_var_ref(&expr) {
+        return "yes".to_string();
+    }
+    String::new()
+}
+
 /// Check if a function has Complex-typed parameters.
 ///
 /// Returns "yes" if any input parameter has type_name == "Complex".
@@ -117,6 +128,86 @@ pub(super) fn has_complex_params_function(func: Value) -> String {
         return "yes".to_string();
     }
     String::new()
+}
+
+/// Find an explicit RHS for an initialization equation targeting `var_name`.
+pub(super) fn initial_rhs_for_var_function(
+    dae: Value,
+    var_name: Value,
+    config: Value,
+) -> RenderResult {
+    let cfg = ExprConfig::from_value(&config);
+    let name = var_name
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| var_name.to_string().trim_matches('"').to_string());
+    let Ok(initial_equations) = get_field(&dae, "initial_equations") else {
+        return Ok(String::new());
+    };
+    let Some(len) = initial_equations.len() else {
+        return Ok(String::new());
+    };
+    for i in 0..len {
+        let Ok(eq) = initial_equations.get_item(&Value::from(i)) else {
+            continue;
+        };
+        if let Some(rhs) = find_algebraic_rhs(&eq, &name, &cfg) {
+            return Ok(rhs);
+        }
+    }
+    Ok(String::new())
+}
+
+fn expr_has_var_ref(expr: &Value) -> bool {
+    if get_field(expr, "VarRef").is_ok() {
+        return true;
+    }
+    if let Ok(binary) = get_field(expr, "Binary") {
+        return get_field(&binary, "lhs").is_ok_and(|lhs| expr_has_var_ref(&lhs))
+            || get_field(&binary, "rhs").is_ok_and(|rhs| expr_has_var_ref(&rhs));
+    }
+    if let Ok(unary) = get_field(expr, "Unary") {
+        return get_field(&unary, "rhs").is_ok_and(|rhs| expr_has_var_ref(&rhs));
+    }
+    if let Ok(call) = get_field(expr, "BuiltinCall").or_else(|_| get_field(expr, "FunctionCall"))
+        && let Ok(args) = get_field(&call, "args")
+    {
+        return list_any(&args, |arg| expr_has_var_ref(&arg));
+    }
+    if let Ok(if_expr) = get_field(expr, "If") {
+        let branch_refs = get_field(&if_expr, "branches")
+            .map(|branches| list_any(&branches, |branch| expr_has_var_ref(&branch)))
+            .unwrap_or(false);
+        let else_refs = get_field(&if_expr, "else_branch")
+            .map(|else_branch| expr_has_var_ref(&else_branch))
+            .unwrap_or(false);
+        return branch_refs || else_refs;
+    }
+    if let Ok(array) = get_field(expr, "Array").or_else(|_| get_field(expr, "Tuple"))
+        && let Ok(elements) = get_field(&array, "elements")
+    {
+        return list_any(&elements, |element| expr_has_var_ref(&element));
+    }
+    if let Ok(range) = get_field(expr, "Range") {
+        return get_field(&range, "start").is_ok_and(|start| expr_has_var_ref(&start))
+            || get_field(&range, "step").is_ok_and(|step| expr_has_var_ref(&step))
+            || get_field(&range, "end").is_ok_and(|end| expr_has_var_ref(&end));
+    }
+    if let Ok(index) = get_field(expr, "Index") {
+        let base_refs = get_field(&index, "base")
+            .map(|base| expr_has_var_ref(&base))
+            .unwrap_or(false);
+        let sub_refs = get_field(&index, "subscripts")
+            .map(|subs| list_any(&subs, |sub| expr_has_var_ref(&sub)))
+            .unwrap_or(false);
+        return base_refs || sub_refs;
+    }
+    if let Ok(field_access) = get_field(expr, "FieldAccess") {
+        return get_field(&field_access, "base")
+            .map(|base| expr_has_var_ref(&base))
+            .unwrap_or(false);
+    }
+    false
 }
 
 /// Extract the explicit RHS from a residual ODE equation.

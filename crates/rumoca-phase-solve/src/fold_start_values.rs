@@ -57,6 +57,12 @@ pub fn fold_start_values_to_literals(dae: &mut Dae) {
         }
     }
 
+    let tunable_parameters: std::collections::HashSet<String> = dae
+        .parameters
+        .iter()
+        .filter_map(|(name, var)| var.is_tunable.then(|| name.as_str().to_string()))
+        .collect();
+
     // Phase 2: rewrite start expressions to literals where we found values.
     // Also clear self-referencing defaults (start = VarRef(self_name)).
     let rewrite = |var: &mut Variable| {
@@ -67,6 +73,9 @@ pub fn fold_start_values_to_literals(dae: &mut Dae) {
                 && name.as_str() == var.name.as_str()
             {
                 var.start = None;
+                return;
+            }
+            if expr_references_any_parameter(start, &tunable_parameters) {
                 return;
             }
             if let Some(&val) = values.get(var.name.as_str()) {
@@ -98,6 +107,73 @@ pub fn fold_start_values_to_literals(dae: &mut Dae) {
     }
     for var in dae.outputs.values_mut() {
         rewrite(var);
+    }
+}
+
+fn expr_references_any_parameter(
+    expr: &Expression,
+    parameters: &std::collections::HashSet<String>,
+) -> bool {
+    match expr {
+        Expression::VarRef { name, .. } => parameters.contains(name.as_str()),
+        Expression::Unary { rhs, .. } => expr_references_any_parameter(rhs, parameters),
+        Expression::Binary { lhs, rhs, .. } => {
+            expr_references_any_parameter(lhs, parameters)
+                || expr_references_any_parameter(rhs, parameters)
+        }
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => args
+            .iter()
+            .any(|arg| expr_references_any_parameter(arg, parameters)),
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expr_references_any_parameter(cond, parameters)
+                    || expr_references_any_parameter(value, parameters)
+            }) || expr_references_any_parameter(else_branch, parameters)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => elements
+            .iter()
+            .any(|element| expr_references_any_parameter(element, parameters)),
+        Expression::Range { start, step, end } => {
+            expr_references_any_parameter(start, parameters)
+                || step
+                    .as_deref()
+                    .is_some_and(|step| expr_references_any_parameter(step, parameters))
+                || expr_references_any_parameter(end, parameters)
+        }
+        Expression::Index { base, subscripts } => {
+            expr_references_any_parameter(base, parameters)
+                || subscripts
+                    .iter()
+                    .any(|subscript| subscript_references_any_parameter(subscript, parameters))
+        }
+        Expression::FieldAccess { base, .. } => expr_references_any_parameter(base, parameters),
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expr_references_any_parameter(expr, parameters)
+                || indices
+                    .iter()
+                    .any(|index| expr_references_any_parameter(&index.range, parameters))
+                || filter
+                    .as_deref()
+                    .is_some_and(|filter| expr_references_any_parameter(filter, parameters))
+        }
+        _ => false,
+    }
+}
+
+fn subscript_references_any_parameter(
+    subscript: &rumoca_ir_dae::Subscript,
+    parameters: &std::collections::HashSet<String>,
+) -> bool {
+    match subscript {
+        rumoca_ir_dae::Subscript::Expr(expr) => expr_references_any_parameter(expr, parameters),
+        rumoca_ir_dae::Subscript::Index(_) | rumoca_ir_dae::Subscript::Colon => false,
     }
 }
 
