@@ -302,6 +302,22 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "scalarize_phantom", || {
         dae_lowering::scalarize_phantom_vector_equations(dae);
     });
+
+    // Fold symbolic start-value expressions to literal constants where
+    // possible. Safe as an always-on pass: start values are init-time
+    // metadata, not user-observable at runtime.
+    run_todae_phase(todae_subphase_timing, "fold_start_values", || {
+        rumoca_phase_structural::fold_start_values_to_literals(dae);
+    });
+
+    // Reorder algebraics so any algebraic used in another's defining
+    // equation appears first. Pure reorder, no information loss; lets
+    // forward-evaluation backends (embedded C, Julia MTK) emit
+    // straight-line code without extra topo-sort inside the template.
+    run_todae_phase(todae_subphase_timing, "sort_algebraics_by_deps", || {
+        rumoca_phase_structural::sort_algebraics_by_equation_deps(dae);
+    });
+
     run_todae_phase(todae_subphase_timing, "runtime_precompute", || {
         populate_runtime_precompute(dae)
     })?;

@@ -63,13 +63,13 @@ use prepared_sim::validate_parameter_override;
 pub use prepared_sim::{
     build_simulation, run_prepared_simulation, simulate, simulate as simulate_dae,
 };
-use rumoca_sim::equation_scalarize::build_output_names;
+use rumoca_phase_structural::scalarize::build_output_names;
 #[cfg(test)]
-use rumoca_sim::equation_scalarize::{
+use rumoca_phase_structural::scalarize::{
     build_complex_field_map, build_var_dims_map, index_into_expr,
 };
 #[cfg(test)]
-use rumoca_sim::projection_maps::{
+use rumoca_phase_structural::projection_maps::{
     build_component_index_projection_map, build_function_output_projection_map,
 };
 pub use stepper::{SimStepper, StepperOptions, StepperState};
@@ -1108,7 +1108,7 @@ pub(crate) fn build_stepper(
         SolverLoopContext, StartupSyncInput, apply_initial_sections_and_sync_startup_state,
         build_compiled_discrete_event_context,
     };
-    use rumoca_sim::equation_scalarize::build_output_names;
+    use rumoca_phase_structural::scalarize::build_output_names;
     use rumoca_sim::runtime::layout::SimulationContext;
 
     eval::clear_pre_values();

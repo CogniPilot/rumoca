@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::{comp_ref, real, sub, var_ref};
 use rumoca_ir_dae as dae;
-use rumoca_sim::equation_scalarize::scalarize_equations;
+use rumoca_phase_structural::scalarize::scalarize_equations;
 type BuiltinFunction = dae::BuiltinFunction;
 type ExternalFunction = dae::ExternalFunction;
 type Function = dae::Function;

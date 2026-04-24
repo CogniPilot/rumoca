@@ -492,7 +492,13 @@ fn run_single_model(
         }
     };
 
-    let dae = &result.dae;
+    // Scalarize before rendering: the embedded-C template emits one xdot
+    // entry per scalar state, so vector equations like `der(x) = -x` for
+    // `x: Real[n]` must be expanded. Idempotent w.r.t. the simulator which
+    // scalarizes internally.
+    let mut dae = result.dae.clone();
+    rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
+    let dae = &dae;
 
     if dae.states.is_empty() {
         return ModelOutcome::NoStates;

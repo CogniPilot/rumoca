@@ -893,6 +893,17 @@ pub fn get_class_info(qualified_name: &str) -> Result<String, JsValue> {
 /// Render a Jinja template with DAE data.
 #[wasm_bindgen]
 pub fn render_template(dae_json: &str, template: &str) -> Result<String, JsValue> {
+    // Round-trip through `Dae` so we can scalarize vector equations — the
+    // runtime-C templates (FMI2/FMI3/embedded-C) emit one xdot entry per
+    // scalar state, and compile() hands us a native-array DAE. For scalar
+    // models scalarize is a no-op. If the JSON carries user-added metadata
+    // that doesn't round-trip, fall back to the raw JSON path so those
+    // augmentations survive.
+    if let Ok(mut dae) = serde_json::from_str::<rumoca_ir_dae::Dae>(dae_json) {
+        rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
+        return rumoca_session::codegen::render_dae_template(&dae, template)
+            .map_err(|e| JsValue::from_str(&format!("Template error: {}", e)));
+    }
     let dae_value: serde_json::Value = serde_json::from_str(dae_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid DAE JSON: {}", e)))?;
     render_dae_template_with_json(&dae_value, template)

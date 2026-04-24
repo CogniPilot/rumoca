@@ -524,7 +524,10 @@ fn compile_to_dae(
     model: &ModelDef,
     source_root: &CompiledSourceRoot,
 ) -> Result<(rumoca_ir_dae::Dae, f64), String> {
-    match &model.source {
+    // Scalarize up front so every backend below (CasADi/FMI2/FMI3/embedded-C/
+    // SymPy/ONNX/JAX/Julia) sees one equation per scalar state. The simulator
+    // scalarizes again internally — idempotent.
+    let (mut dae, t_end) = match &model.source {
         ModelSource::Msl => {
             let report = source_root.compile_model_strict_reachable_with_recovery(&model.name);
             let result: CompilationResult = match report.requested_result {
@@ -541,13 +544,15 @@ fn compile_to_dae(
                 .filter(|t| t.is_finite() && *t > t_start)
                 .unwrap_or(t_start + 1.0)
                 .min(10.0);
-            Ok((result.dae, t_end))
+            (result.dae, t_end)
         }
         ModelSource::Inline(source) => {
             let compiled = compile_inline_model(source, &model.name)?;
-            Ok((compiled.dae, 1.0))
+            (compiled.dae, 1.0)
         }
-    }
+    };
+    rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
+    Ok((dae, t_end))
 }
 
 // =============================================================================

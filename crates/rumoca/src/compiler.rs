@@ -64,6 +64,17 @@ pub struct CompilationResult {
     pub resolved: ResolvedTree,
 }
 
+/// Return a scalarized clone of `dae` — vector equations like
+/// `der(x) = -x` for `x: Real[3]` are expanded to one equation per element.
+///
+/// For scalar-only models this is a no-op on the resulting DAE, so it is
+/// safe to apply unconditionally before template rendering.
+fn scalarized_dae(dae: &Dae) -> Dae {
+    let mut dae = dae.clone();
+    rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
+    dae
+}
+
 impl CompilationResult {
     fn is_prunable_child(child: &Value) -> bool {
         match child {
@@ -247,8 +258,14 @@ impl CompilationResult {
     /// Render the DAE using a template string.
     pub fn render_template_str(&self, template: &str) -> Result<String, CompilerError> {
         // Use the codegen module's render function which sets up the context properly
-        // with the DAE as `dae` and includes custom filters/functions
-        render_dae_template(&self.dae, template).map_err(CompilerError::TemplateError)
+        // with the DAE as `dae` and includes custom filters/functions.
+        //
+        // Scalarize first: backend templates (FMI2/3 runtime C, embedded C, etc.)
+        // emit one output row per scalar state, so vector equations like
+        // `der(x) = -x` for `x: Real[3]` must be expanded to three scalar
+        // equations. For scalar models this is a no-op.
+        let dae = scalarized_dae(&self.dae);
+        render_dae_template(&dae, template).map_err(CompilerError::TemplateError)
     }
 
     /// Render the DAE using a template string with an explicit model name.
@@ -259,7 +276,8 @@ impl CompilationResult {
         template: &str,
         model_name: &str,
     ) -> Result<String, CompilerError> {
-        render_dae_template_with_name(&self.dae, template, model_name)
+        let dae = scalarized_dae(&self.dae);
+        render_dae_template_with_name(&dae, template, model_name)
             .map_err(CompilerError::TemplateError)
     }
 

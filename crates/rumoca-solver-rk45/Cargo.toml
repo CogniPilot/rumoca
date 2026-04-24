@@ -11,6 +11,7 @@ rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-core = { workspace = true }
 rumoca-eval-dae = { workspace = true }
+rumoca-phase-structural = { workspace = true }
 rumoca-sim = { workspace = true }
 thiserror = { workspace = true }
 

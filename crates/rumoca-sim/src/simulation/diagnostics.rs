@@ -2,7 +2,7 @@ use rumoca_eval_dae::runtime::VarEnv;
 use rumoca_eval_dae::runtime::sim_float::SimFloat;
 use rumoca_ir_dae as dae;
 
-use crate::equation_scalarize::build_output_names;
+use rumoca_phase_structural::scalarize::build_output_names;
 use crate::simulation::dae_prepare::{expr_contains_der_of, expr_refers_to_var};
 use crate::simulation::pipeline::MassMatrix;
 

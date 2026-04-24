@@ -320,7 +320,7 @@ fn build_compiled_var_start_context(
     }
 
     let scalarization_timer = trace_timing.then(wall_clock_now);
-    let scalarization = rumoca_sim::equation_scalarize::build_expression_scalarization_context(dae);
+    let scalarization = rumoca_phase_structural::scalarize::build_expression_scalarization_context(dae);
     if let Some(scalarization_timer) = scalarization_timer {
         eprintln!(
             "[sim-trace] default-params build_start_scalarization_context vars={} {:.3}s",
@@ -337,7 +337,7 @@ fn build_compiled_var_start_context(
         let Some(start) = var.start.as_ref() else {
             continue;
         };
-        expressions.extend(rumoca_sim::equation_scalarize::scalarize_expression_rows(
+        expressions.extend(rumoca_phase_structural::scalarize::scalarize_expression_rows(
             start,
             var.size(),
             &scalarization,
