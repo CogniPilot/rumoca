@@ -360,6 +360,7 @@ const C_KEYWORDS: &[&str] = &[
 /// `sanitize` Jinja filter so that equation-side references agree with
 /// the variable declarations emitted by the templates.
 pub(crate) fn sanitize_name(name: &str) -> String {
+    let name = normalize_static_component_subscripts(name);
     let mut result = String::with_capacity(name.len());
     for ch in name.chars() {
         if ch.is_alphanumeric() || ch == '_' {
@@ -390,7 +391,7 @@ pub(crate) fn escape_reserved_keyword(name: &str) -> String {
 /// Replaces dots and other non-identifier characters with underscores,
 /// and appends `_` to reserved keywords (Python + C).
 fn sanitize_filter(value: Value) -> String {
-    let s = value.to_string();
+    let s = normalize_static_component_subscripts(&value.to_string());
     let mut result = String::with_capacity(s.len());
     for ch in s.chars() {
         if ch.is_alphanumeric() || ch == '_' {
@@ -406,6 +407,118 @@ fn sanitize_filter(value: Value) -> String {
         result.push('_');
     }
     result
+}
+
+fn normalize_static_component_subscripts(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut rest = name;
+    while let Some(open_idx) = rest.find('[') {
+        out.push_str(&rest[..open_idx + 1]);
+        let after_open = &rest[open_idx + 1..];
+        let Some(close_idx) = after_open.find(']') else {
+            out.push_str(after_open);
+            return out;
+        };
+        let inner = &after_open[..close_idx];
+        if let Some(normalized) = normalize_static_subscript_list(inner) {
+            out.push_str(&normalized);
+        } else {
+            out.push_str(inner);
+        }
+        out.push(']');
+        rest = &after_open[close_idx + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn normalize_static_subscript_list(inner: &str) -> Option<String> {
+    let mut normalized = Vec::new();
+    for part in inner.split(',') {
+        normalized.push(eval_integer_sum(part.trim())?.to_string());
+    }
+    Some(normalized.join(","))
+}
+
+fn eval_integer_sum(expr: &str) -> Option<i64> {
+    let mut chars = expr.chars().peekable();
+    let mut total = 0i64;
+    let mut sign = 1i64;
+
+    loop {
+        while matches!(chars.peek(), Some(ch) if ch.is_whitespace()) {
+            chars.next();
+        }
+        while matches!(chars.peek(), Some('(')) {
+            chars.next();
+            while matches!(chars.peek(), Some(ch) if ch.is_whitespace()) {
+                chars.next();
+            }
+        }
+        match chars.peek().copied() {
+            Some('+') => {
+                sign = 1;
+                chars.next();
+                continue;
+            }
+            Some('-') => {
+                sign = -1;
+                chars.next();
+                continue;
+            }
+            _ => {}
+        }
+
+        while matches!(chars.peek(), Some(ch) if ch.is_whitespace()) {
+            chars.next();
+        }
+        while matches!(chars.peek(), Some('(')) {
+            chars.next();
+            while matches!(chars.peek(), Some(ch) if ch.is_whitespace()) {
+                chars.next();
+            }
+        }
+
+        let mut value = 0i64;
+        let mut digits = 0usize;
+        while let Some(ch) = chars.peek().copied() {
+            if let Some(digit) = ch.to_digit(10) {
+                value = value.checked_mul(10)?.checked_add(digit as i64)?;
+                digits += 1;
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if digits == 0 {
+            return None;
+        }
+        total = total.checked_add(sign.checked_mul(value)?)?;
+
+        while matches!(chars.peek(), Some(ch) if ch.is_whitespace()) {
+            chars.next();
+        }
+        while matches!(chars.peek(), Some(')')) {
+            chars.next();
+            while matches!(chars.peek(), Some(ch) if ch.is_whitespace()) {
+                chars.next();
+            }
+        }
+        match chars.peek().copied() {
+            Some('+') => {
+                sign = 1;
+                chars.next();
+            }
+            Some('-') => {
+                sign = -1;
+                chars.next();
+            }
+            Some(_) => return None,
+            None => break,
+        }
+    }
+
+    Some(total)
 }
 
 /// Filter to extract the last dot-separated segment of a name.

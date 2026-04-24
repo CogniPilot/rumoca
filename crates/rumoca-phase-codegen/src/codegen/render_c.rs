@@ -1085,15 +1085,7 @@ fn list_any(list: &Value, mut predicate: impl FnMut(Value) -> bool) -> bool {
 /// used by templates when `subscript_underscore = true`.
 /// Examples: `x` -> `x`, `x[1]` -> `x_1`, `a.b[1,2]` -> `a_b_1_2`.
 fn var_name_to_c_alias(name: &str) -> String {
-    let mut out = String::with_capacity(name.len() + 4);
-    for ch in name.chars() {
-        match ch {
-            '.' | '[' | ',' => out.push('_'),
-            ']' | ' ' => {}
-            _ => out.push(ch),
-        }
-    }
-    out
+    super::sanitize_name(name)
 }
 
 fn synthesize_discrete_statespace_rhs(var_name: &str, dae: &Value) -> Option<String> {

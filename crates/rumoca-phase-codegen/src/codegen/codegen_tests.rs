@@ -60,6 +60,14 @@ fn test_sanitize_filter() {
 }
 
 #[test]
+fn test_sanitize_filter_folds_static_component_subscript_arithmetic() {
+    let dae = dae::Dae::new();
+    let template = "{{ 'zone[(1 + 1)].T' | sanitize }} {{ 'floor3Zones[2 - 1 + 3].T' | sanitize }}";
+    let result = render_template(&dae, template).unwrap();
+    assert_eq!(result, "zone_2_T floor3Zones_4_T");
+}
+
+#[test]
 fn test_access_dae_fields() {
     let dae = dae::Dae::new();
     let template = r#"

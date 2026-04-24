@@ -321,6 +321,25 @@ equation
 end ArrayAccess;
 "#;
 
+const INDEXED_COMPONENT_FIELD_SOURCE: &str = r#"
+package IndexedComponentFieldProbe
+  model Zone
+    Real T(start = 290);
+  equation
+    der(T) = -0.01 * (T - 290);
+  end Zone;
+
+  model Main
+    Zone zone[3];
+    Real y[2];
+  equation
+    for i in 1:2 loop
+      y[i] = zone[i + 1].T;
+    end for;
+  end Main;
+end IndexedComponentFieldProbe;
+"#;
+
 // ============================================================================
 // CasADi driver — outputs CSV: time,state1,state2,...
 // ============================================================================
@@ -505,6 +524,22 @@ fn fmi2_array_access_component_compiles() {
         "ArrayAccess",
     )
     .expect("render FMI2 test driver");
+    compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", &driver_c)],
+        &["--t-end", "0.01", "--dt", "0.001"],
+    );
+}
+
+#[test]
+fn fmi2_indexed_component_field_compiles() {
+    let model = "IndexedComponentFieldProbe.Main";
+    let dae = prepare_dae(INDEXED_COMPONENT_FIELD_SOURCE, model);
+    let model_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI2_MODEL, model)
+            .expect("render FMI2 model");
+    let driver_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI2_TEST_DRIVER, model)
+            .expect("render FMI2 test driver");
     compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],
         &["--t-end", "0.01", "--dt", "0.001"],
