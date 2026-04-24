@@ -1,0 +1,11 @@
+version: 1
+name: embedded-c
+description: Embedded C header and implementation
+requirements:
+  continuous_states: false
+  residual_equations: false
+files:
+  - path: "{{ model_name }}.h"
+    template: embedded_c/model.h.jinja
+  - path: "{{ model_name }}.c"
+    template: embedded_c/model.c.jinja

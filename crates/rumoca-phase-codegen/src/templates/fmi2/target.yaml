@@ -1,0 +1,14 @@
+version: 1
+name: fmi2
+description: FMI 2.0 Model Exchange source tree
+build: fmu
+files:
+  - path: modelDescription.xml
+    template: fmi2/modelDescription.xml.jinja
+  - path: sources/{{ model_name }}.c
+    template: fmi2/model.c.jinja
+  - path: sources/CMakeLists.txt
+    template: fmu/CMakeLists.txt.jinja
+  - path: build.sh
+    template: fmu/build.sh.jinja
+    mode: "0755"

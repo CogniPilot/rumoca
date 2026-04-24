@@ -1,0 +1,32 @@
+[package]
+name = "rumoca-solver-diffsol"
+description = "Diffsol-backed simulation runtime for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-core = { workspace = true }
+rumoca-eval-dae = { workspace = true }
+rumoca-phase-structural = { workspace = true }
+rumoca-phase-solve-lower = { workspace = true }
+rumoca-sim = { workspace = true }
+diffsol = { version = "0.10" }
+levenberg-marquardt = "0.15"
+nalgebra = "0.34"
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+instant = { version = "0.1", features = ["wasm-bindgen"] }
+rumoca-eval-dae = { workspace = true, features = ["wasm"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rumoca-eval-dae = { workspace = true, features = ["cranelift"] }
+
+[lints]
+workspace = true

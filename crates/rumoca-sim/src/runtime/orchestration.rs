@@ -1,28 +1,9 @@
 use super::schedule::RuntimeStopSchedule;
+#[cfg(test)]
+use crate::BackendState;
 use crate::runtime::hotpath_stats;
+use crate::{SimulationBackend, StepUntilOutcome};
 use rumoca_ir_dae as dae;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BackendState {
-    pub t: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StepUntilOutcome {
-    InternalStep,
-    RootFound { t_root: f64 },
-    StopReached,
-    Finished,
-}
-
-pub trait SimulationBackend {
-    type Error;
-
-    fn init(&mut self) -> Result<(), Self::Error>;
-    fn step_until(&mut self, stop_time: f64) -> Result<StepUntilOutcome, Self::Error>;
-    fn read_state(&self) -> BackendState;
-    fn apply_event_updates(&mut self, event_time: f64) -> Result<(), Self::Error>;
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LoopStats {

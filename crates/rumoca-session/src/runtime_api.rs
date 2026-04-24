@@ -1,7 +1,7 @@
 use rumoca_ir_dae as dae;
 use serde_json::Value;
 
-pub use rumoca_phase_solve as solve;
+pub use rumoca_phase_structural as structural;
 pub use rumoca_sim::{
     AVAILABLE_BACKENDS, PreparedSimulation, SimBackend, SimError, SimOptions, SimResult,
     SimSolverMode, SimStepper, SimVariableMeta, StepperOptions, StepperState, available_backends,

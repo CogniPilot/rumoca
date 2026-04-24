@@ -281,7 +281,6 @@ pub(super) fn dae_model_outcome_from_flat(
 
     // MLS §5.6 / SPEC_0004: ToDae stays downstream of flatten and should
     // consume the cached flat artifact rather than rebuilding earlier phases.
-    rumoca_sim::clear_runtime_pre_values();
     match to_dae_with_options(&artifact.flat, todae_options_for_tree(tree)) {
         Ok(dae) => (
             DaeModelOutcome::Success(Box::new(DaeModelArtifactData {

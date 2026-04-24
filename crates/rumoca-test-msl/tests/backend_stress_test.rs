@@ -18,11 +18,11 @@
 //! - `RUMOCA_STRESS_LIMIT=N` — cap number of models tested
 
 use flate2::read::GzDecoder;
+use rumoca_session::codegen::{render_dae_template_with_name, templates};
 use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_session::parsing::parse_files_parallel_lenient;
-use rumoca_session::runtime::{
-    SimOptions, SimResult, prepare_dae_for_template_codegen, simulate_dae,
-};
+use rumoca_sim::{SimOptions, SimResult};
+use rumoca_solver_diffsol::simulate_dae;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
@@ -541,15 +541,11 @@ fn compile_to_dae(
                 .filter(|t| t.is_finite() && *t > t_start)
                 .unwrap_or(t_start + 1.0)
                 .min(10.0);
-            let dae = prepare_dae_for_template_codegen(&result.dae, true)
-                .map_err(|e| format!("prepare: {e}"))?;
-            Ok((dae, t_end))
+            Ok((result.dae, t_end))
         }
         ModelSource::Inline(source) => {
             let compiled = compile_inline_model(source, &model.name)?;
-            let dae = prepare_dae_for_template_codegen(&compiled.dae, true)
-                .map_err(|e| format!("prepare: {e}"))?;
-            Ok((dae, 1.0))
+            Ok((compiled.dae, 1.0))
         }
     }
 }
@@ -714,7 +710,7 @@ fn casadi_simulate(
     template: &str,
     t_end: f64,
 ) -> Result<String, String> {
-    let code = rumoca_phase_codegen::render_template_with_name(dae, template, model_name)
+    let code = render_dae_template_with_name(dae, template, model_name)
         .map_err(|e| format!("render: {e}"))?;
     let dt = t_end / 100.0;
     run_python_script(
@@ -744,18 +740,10 @@ fn embedded_c_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    let header = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::EMBEDDED_C_H,
-        model_name,
-    )
-    .map_err(|e| format!("render header: {e}"))?;
-    let impl_c = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::EMBEDDED_C_IMPL,
-        model_name,
-    )
-    .map_err(|e| format!("render impl: {e}"))?;
+    let header = render_dae_template_with_name(dae, templates::EMBEDDED_C_H, model_name)
+        .map_err(|e| format!("render header: {e}"))?;
+    let impl_c = render_dae_template_with_name(dae, templates::EMBEDDED_C_IMPL, model_name)
+        .map_err(|e| format!("render impl: {e}"))?;
 
     let mut state_names: Vec<&str> = dae.states.keys().map(|k| k.as_str()).collect();
     state_names.sort();
@@ -824,19 +812,11 @@ fn fmi2_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    let model_c = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::FMI2_MODEL,
-        model_name,
-    )
-    .map_err(|e| format!("render model: {e}"))?;
+    let model_c = render_dae_template_with_name(dae, templates::FMI2_MODEL, model_name)
+        .map_err(|e| format!("render model: {e}"))?;
 
-    let driver_c = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::FMI2_TEST_DRIVER,
-        model_name,
-    )
-    .map_err(|e| format!("render driver: {e}"))?;
+    let driver_c = render_dae_template_with_name(dae, templates::FMI2_TEST_DRIVER, model_name)
+        .map_err(|e| format!("render driver: {e}"))?;
 
     compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],
@@ -852,19 +832,11 @@ fn fmi3_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    let model_c = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::FMI3_MODEL,
-        model_name,
-    )
-    .map_err(|e| format!("render model: {e}"))?;
+    let model_c = render_dae_template_with_name(dae, templates::FMI3_MODEL, model_name)
+        .map_err(|e| format!("render model: {e}"))?;
 
-    let driver_c = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::FMI3_TEST_DRIVER,
-        model_name,
-    )
-    .map_err(|e| format!("render driver: {e}"))?;
+    let driver_c = render_dae_template_with_name(dae, templates::FMI3_TEST_DRIVER, model_name)
+        .map_err(|e| format!("render driver: {e}"))?;
 
     compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],
@@ -920,12 +892,8 @@ print(json.dumps({"state_names": state_names, "derivs_at_t0": deriv_vals}))
 "#;
 
 fn sympy_simulate(dae: &rumoca_ir_dae::Dae, model_name: &str) -> Result<String, String> {
-    let code = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::SYMPY,
-        model_name,
-    )
-    .map_err(|e| format!("render: {e}"))?;
+    let code = render_dae_template_with_name(dae, templates::SYMPY, model_name)
+        .map_err(|e| format!("render: {e}"))?;
     run_python_script(&code, SYMPY_EVAL_DRIVER, &[])
 }
 
@@ -942,12 +910,8 @@ print(mod.simulate())
 "#;
 
 fn onnx_simulate(dae: &rumoca_ir_dae::Dae, model_name: &str) -> Result<String, String> {
-    let code = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::ONNX,
-        model_name,
-    )
-    .map_err(|e| format!("render: {e}"))?;
+    let code = render_dae_template_with_name(dae, templates::ONNX, model_name)
+        .map_err(|e| format!("render: {e}"))?;
     run_python_script(&code, ONNX_CSV_DRIVER, &[])
 }
 
@@ -964,12 +928,8 @@ print(mod.simulate_csv())
 "#;
 
 fn jax_simulate(dae: &rumoca_ir_dae::Dae, model_name: &str) -> Result<String, String> {
-    let code = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::JAX,
-        model_name,
-    )
-    .map_err(|e| format!("render: {e}"))?;
+    let code = render_dae_template_with_name(dae, templates::JAX, model_name)
+        .map_err(|e| format!("render: {e}"))?;
     run_python_script(&code, JAX_CSV_DRIVER, &[])
 }
 
@@ -1013,12 +973,8 @@ fn julia_mtk_simulate(
     model_name: &str,
     t_end: f64,
 ) -> Result<String, String> {
-    let code = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::JULIA_MTK,
-        model_name,
-    )
-    .map_err(|e| format!("render: {e}"))?;
+    let code = render_dae_template_with_name(dae, templates::JULIA_MTK, model_name)
+        .map_err(|e| format!("render: {e}"))?;
     let dt = t_end / 100.0;
     run_julia_script(
         &code,
@@ -1204,24 +1160,14 @@ fn run_single_model(
 
     match backend {
         BackendKind::CasadiMx => {
-            match casadi_simulate(
-                &dae,
-                &model.name,
-                rumoca_phase_codegen::templates::CASADI_MX,
-                t_end,
-            ) {
+            match casadi_simulate(&dae, &model.name, templates::CASADI_MX, t_end) {
                 Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
                 Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
                 Err(e) => ModelOutcome::BackendFail(e),
             }
         }
         BackendKind::CasadiSx => {
-            match casadi_simulate(
-                &dae,
-                &model.name,
-                rumoca_phase_codegen::templates::CASADI_SX,
-                t_end,
-            ) {
+            match casadi_simulate(&dae, &model.name, templates::CASADI_SX, t_end) {
                 Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
                 Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
                 Err(e) => ModelOutcome::BackendFail(e),

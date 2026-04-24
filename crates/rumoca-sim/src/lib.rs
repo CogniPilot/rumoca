@@ -1,10 +1,5 @@
-//! Unified simulation crate for Rumoca.
-//!
-//! This crate contains:
-//! - solver-agnostic simulation/runtime infrastructure
-//! - optional solver backend implementations (currently `diffsol`)
+//! Backend-neutral simulation contracts and runtime helpers for Rumoca.
 
-use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use std::collections::HashSet;
 
@@ -14,13 +9,18 @@ pub mod function_validation;
 mod ic_solve;
 pub mod projection_maps;
 pub mod reconstruct;
-pub mod results_web;
+pub mod report_payload;
 pub mod runtime;
 pub mod sim_trace_compare;
 pub mod simulation;
+pub mod solver;
 pub mod sparsity;
 pub mod timeline;
 
+pub use report_payload::{
+    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
+    build_simulation_payload,
+};
 pub use runtime::compiled_discrete::{
     CompiledDiscreteEventContext, build_compiled_discrete_event_context,
     settle_runtime_event_updates_with_compiled_discrete,
@@ -34,9 +34,7 @@ pub use runtime::no_state::{
     NoStateSampleContext, NoStateSampleError, collect_algebraic_samples,
     collect_reconstruction_discrete_context_names, finalize_algebraic_outputs,
 };
-pub use runtime::orchestration::{
-    BackendState, LoopStats, SimulationBackend, StepUntilOutcome, run_with_runtime_schedule,
-};
+pub use runtime::orchestration::{LoopStats, run_with_runtime_schedule};
 pub use runtime::report::{
     RuntimeProgressSnapshot, RuntimeTraceContext, runtime_progress_snapshot, trace_runtime_done,
     trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
@@ -53,275 +51,216 @@ pub use runtime::timeout::{
     run_timeout_step_result,
 };
 pub use simulation::runtime_prep::{compute_mass_matrix, pin_orphaned_variables};
+pub use solver::{
+    BackendState, SimBackend, SimOptions, SimResult, SimSolverMode, SimVariableMeta,
+    SimulationBackend, StepUntilOutcome,
+};
 
-#[cfg(feature = "diffsol")]
-pub mod with_diffsol;
-
-#[cfg(feature = "diffsol")]
-pub use with_diffsol::stepper::{SimStepper, StepperOptions, StepperState};
-#[cfg(feature = "diffsol")]
-pub use with_diffsol::{SimError, SimOptions, SimResult, SimSolverMode, SimVariableMeta, simulate};
-#[cfg(feature = "diffsol")]
-pub use with_diffsol::{eliminate, problem};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PreparedSimulationBackend {
-    Diffsol,
+struct VariableSource<'a> {
+    var: &'a dae::Variable,
+    role: &'static str,
+    is_state: bool,
 }
 
-/// Opaque simulator build artifact for separating simulator setup from run.
-///
-/// The prepared value is backend-specific and intentionally opaque so the
-/// public API can expose a stable build/run boundary without leaking solver
-/// internals across crate boundaries (SPEC_0029).
-pub struct PreparedSimulation {
-    backend: PreparedSimulationBackend,
-    parameter_overrides: IndexMap<String, Vec<f64>>,
-    #[cfg(feature = "diffsol")]
-    diffsol: with_diffsol::PreparedSimulation,
+fn lookup_variable_exact<'a>(dae_model: &'a dae::Dae, name: &str) -> Option<VariableSource<'a>> {
+    let key = dae::VarName::new(name);
+    if let Some(var) = dae_model.states.get(&key) {
+        return Some(VariableSource {
+            var,
+            role: "state",
+            is_state: true,
+        });
+    }
+    if let Some(var) = dae_model.algebraics.get(&key) {
+        return Some(VariableSource {
+            var,
+            role: "algebraic",
+            is_state: false,
+        });
+    }
+    if let Some(var) = dae_model.outputs.get(&key) {
+        return Some(VariableSource {
+            var,
+            role: "output",
+            is_state: false,
+        });
+    }
+    if let Some(var) = dae_model.inputs.get(&key) {
+        return Some(VariableSource {
+            var,
+            role: "input",
+            is_state: false,
+        });
+    }
+    if let Some(var) = dae_model.parameters.get(&key) {
+        return Some(VariableSource {
+            var,
+            role: "parameter",
+            is_state: false,
+        });
+    }
+    if let Some(var) = dae_model.constants.get(&key) {
+        return Some(VariableSource {
+            var,
+            role: "constant",
+            is_state: false,
+        });
+    }
+    if let Some(var) = dae_model.discrete_reals.get(&key) {
+        return Some(VariableSource {
+            var,
+            role: "discrete-real",
+            is_state: false,
+        });
+    }
+    if let Some(var) = dae_model.discrete_valued.get(&key) {
+        return Some(VariableSource {
+            var,
+            role: "discrete-valued",
+            is_state: false,
+        });
+    }
+    if let Some(var) = dae_model.derivative_aliases.get(&key) {
+        return Some(VariableSource {
+            var,
+            role: "derivative-alias",
+            is_state: false,
+        });
+    }
+    None
 }
 
-impl PreparedSimulation {
-    pub fn backend(&self) -> SimBackend {
-        match self.backend {
-            PreparedSimulationBackend::Diffsol => SimBackend::Diffsol,
+fn trim_trailing_scalar_indices(name: &str) -> &str {
+    let mut trimmed = name;
+    loop {
+        if !trimmed.ends_with(']') {
+            break;
         }
+        let Some(open_idx) = trimmed.rfind('[') else {
+            break;
+        };
+        let index_text = &trimmed[(open_idx + 1)..(trimmed.len() - 1)];
+        if index_text.is_empty() || !index_text.chars().all(|c| c.is_ascii_digit()) {
+            break;
+        }
+        trimmed = &trimmed[..open_idx];
+    }
+    trimmed
+}
+
+fn lookup_variable_source<'a>(dae_model: &'a dae::Dae, name: &str) -> Option<VariableSource<'a>> {
+    lookup_variable_exact(dae_model, name).or_else(|| {
+        let base = trim_trailing_scalar_indices(name);
+        if base != name {
+            lookup_variable_exact(dae_model, base)
+        } else {
+            None
+        }
+    })
+}
+
+fn truncate_meta_expr(expr: &dae::Expression) -> String {
+    let rendered = format!("{expr:?}");
+    if rendered.len() <= 160 {
+        rendered
+    } else {
+        format!("{}...", &rendered[..160])
+    }
+}
+
+fn classify_role(role: &str, is_state: bool) -> (Option<String>, Option<String>, Option<String>) {
+    if is_state {
+        return (
+            Some("Real".to_string()),
+            Some("continuous".to_string()),
+            Some("continuous-time".to_string()),
+        );
     }
 
-    pub fn set_parameter_value(&mut self, name: &str, value: f64) -> Result<(), SimError> {
-        self.set_parameter_values(name, &[value])
+    match role {
+        "algebraic" | "output" | "input" | "derivative-alias" => (
+            Some("Real".to_string()),
+            Some("continuous".to_string()),
+            Some("continuous-time".to_string()),
+        ),
+        "parameter" => (
+            Some("Real".to_string()),
+            Some("parameter".to_string()),
+            Some("static".to_string()),
+        ),
+        "constant" => (
+            Some("Real".to_string()),
+            Some("constant".to_string()),
+            Some("static".to_string()),
+        ),
+        "discrete-real" => (
+            Some("Real".to_string()),
+            Some("discrete".to_string()),
+            Some("event-discrete".to_string()),
+        ),
+        "discrete-valued" => (
+            Some("Boolean/Integer/Enum".to_string()),
+            Some("discrete".to_string()),
+            Some("event-discrete".to_string()),
+        ),
+        _ => (None, None, None),
     }
+}
 
-    pub fn set_parameter_values(&mut self, name: &str, values: &[f64]) -> Result<(), SimError> {
-        match self.backend {
-            PreparedSimulationBackend::Diffsol => {
-                #[cfg(feature = "diffsol")]
-                {
-                    with_diffsol::validate_parameter_override(&self.diffsol, name, values)?;
-                    self.parameter_overrides
-                        .insert(name.to_string(), values.to_vec());
-                    Ok(())
+pub fn build_variable_meta(
+    dae_model: &dae::Dae,
+    names: &[String],
+    n_states: usize,
+) -> Vec<SimVariableMeta> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| {
+            if let Some(source) = lookup_variable_source(dae_model, name) {
+                let (value_type, variability, time_domain) =
+                    classify_role(source.role, source.is_state);
+                SimVariableMeta {
+                    name: name.clone(),
+                    role: source.role.to_string(),
+                    is_state: source.is_state,
+                    value_type,
+                    variability,
+                    time_domain,
+                    unit: source.var.unit.clone(),
+                    start: source.var.start.as_ref().map(truncate_meta_expr),
+                    min: source.var.min.as_ref().map(truncate_meta_expr),
+                    max: source.var.max.as_ref().map(truncate_meta_expr),
+                    nominal: source.var.nominal.as_ref().map(truncate_meta_expr),
+                    fixed: source.var.fixed,
+                    description: source.var.description.clone(),
                 }
-                #[cfg(not(feature = "diffsol"))]
-                {
-                    Err(SimError)
+            } else {
+                let inferred_is_state = idx < n_states;
+                let inferred_role = if inferred_is_state {
+                    "state"
+                } else {
+                    "unknown"
+                };
+                let (value_type, variability, time_domain) =
+                    classify_role(inferred_role, inferred_is_state);
+                SimVariableMeta {
+                    name: name.clone(),
+                    role: inferred_role.to_string(),
+                    is_state: inferred_is_state,
+                    value_type,
+                    variability,
+                    time_domain,
+                    unit: None,
+                    start: None,
+                    min: None,
+                    max: None,
+                    nominal: None,
+                    fixed: None,
+                    description: None,
                 }
             }
-        }
-    }
-
-    pub fn clear_parameter_overrides(&mut self) {
-        self.parameter_overrides.clear();
-    }
-
-    pub fn run(&self) -> Result<SimResult, SimError> {
-        match self.backend {
-            PreparedSimulationBackend::Diffsol => {
-                #[cfg(feature = "diffsol")]
-                {
-                    with_diffsol::run_prepared_simulation(&self.diffsol, &self.parameter_overrides)
-                }
-                #[cfg(not(feature = "diffsol"))]
-                {
-                    Err(SimError)
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(feature = "diffsol"))]
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("diffsol backend not enabled in rumoca-sim (enable feature `diffsol`)")]
-pub struct SimError;
-
-#[cfg(not(feature = "diffsol"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SimSolverMode {
-    Auto,
-    Bdf,
-    RkLike,
-}
-
-#[cfg(not(feature = "diffsol"))]
-impl SimSolverMode {
-    pub fn from_external_name(name: &str) -> Self {
-        let lower = name.trim().to_ascii_lowercase();
-        if lower.is_empty() {
-            return Self::Bdf;
-        }
-        if lower == "auto" {
-            return Self::Auto;
-        }
-
-        let normalized = lower.replace(['-', '_', ' '], "");
-        let rk_like = normalized.contains("rungekutta")
-            || normalized.starts_with("rk")
-            || normalized.contains("dopri")
-            || normalized.contains("esdirk")
-            || normalized.contains("trbdf2")
-            || normalized.contains("euler")
-            || normalized.contains("midpoint");
-
-        if rk_like { Self::RkLike } else { Self::Bdf }
-    }
-}
-
-#[cfg(not(feature = "diffsol"))]
-#[derive(Debug, Clone)]
-pub struct SimOptions {
-    pub t_start: f64,
-    pub t_end: f64,
-    pub rtol: f64,
-    pub atol: f64,
-    pub dt: Option<f64>,
-    pub scalarize: bool,
-    pub max_wall_seconds: Option<f64>,
-    pub solver_mode: SimSolverMode,
-}
-
-#[cfg(not(feature = "diffsol"))]
-impl Default for SimOptions {
-    fn default() -> Self {
-        Self {
-            t_start: 0.0,
-            t_end: 1.0,
-            rtol: 1e-6,
-            atol: 1e-6,
-            dt: None,
-            scalarize: true,
-            max_wall_seconds: None,
-            solver_mode: SimSolverMode::Auto,
-        }
-    }
-}
-
-#[cfg(not(feature = "diffsol"))]
-#[derive(Debug, Clone)]
-pub struct SimVariableMeta {
-    pub name: String,
-    pub role: String,
-    pub is_state: bool,
-    pub value_type: Option<String>,
-    pub variability: Option<String>,
-    pub time_domain: Option<String>,
-    pub unit: Option<String>,
-    pub start: Option<String>,
-    pub min: Option<String>,
-    pub max: Option<String>,
-    pub nominal: Option<String>,
-    pub fixed: Option<bool>,
-    pub description: Option<String>,
-}
-
-#[cfg(not(feature = "diffsol"))]
-#[derive(Debug, Clone)]
-pub struct SimResult {
-    pub times: Vec<f64>,
-    pub names: Vec<String>,
-    pub data: Vec<Vec<f64>>,
-    pub n_states: usize,
-    pub variable_meta: Vec<SimVariableMeta>,
-}
-
-#[cfg(not(feature = "diffsol"))]
-pub fn simulate(_: &dae::Dae, _: &SimOptions) -> Result<SimResult, SimError> {
-    Err(SimError)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SimBackend {
-    Diffsol,
-}
-
-#[cfg(feature = "diffsol")]
-pub const AVAILABLE_BACKENDS: &[SimBackend] = &[SimBackend::Diffsol];
-
-#[cfg(not(feature = "diffsol"))]
-pub const AVAILABLE_BACKENDS: &[SimBackend] = &[];
-
-pub fn available_backends() -> &'static [SimBackend] {
-    AVAILABLE_BACKENDS
-}
-
-pub fn build_simulation(
-    dae_model: &dae::Dae,
-    opts: &SimOptions,
-) -> Result<PreparedSimulation, SimError> {
-    build_simulation_with_backend(dae_model, opts, SimBackend::Diffsol)
-}
-
-pub fn build_simulation_with_backend(
-    dae_model: &dae::Dae,
-    opts: &SimOptions,
-    backend: SimBackend,
-) -> Result<PreparedSimulation, SimError> {
-    match backend {
-        SimBackend::Diffsol => {
-            #[cfg(feature = "diffsol")]
-            {
-                Ok(PreparedSimulation {
-                    backend: PreparedSimulationBackend::Diffsol,
-                    parameter_overrides: IndexMap::new(),
-                    diffsol: with_diffsol::build_simulation(dae_model, opts)?,
-                })
-            }
-            #[cfg(not(feature = "diffsol"))]
-            {
-                let _ = (dae_model, opts);
-                Err(SimError)
-            }
-        }
-    }
-}
-
-pub fn run_prepared_simulation(prepared: &PreparedSimulation) -> Result<SimResult, SimError> {
-    prepared.run()
-}
-
-pub fn simulate_dae(dae_model: &dae::Dae, opts: &SimOptions) -> Result<SimResult, SimError> {
-    let prepared = build_simulation(dae_model, opts)?;
-    run_prepared_simulation(&prepared)
-}
-
-pub fn simulate_dae_with_backend(
-    dae_model: &dae::Dae,
-    opts: &SimOptions,
-    backend: SimBackend,
-) -> Result<SimResult, SimError> {
-    let prepared = build_simulation_with_backend(dae_model, opts, backend)?;
-    run_prepared_simulation(&prepared)
-}
-
-pub fn prepare_dae_for_template_codegen(
-    dae_model: &dae::Dae,
-    scalarize: bool,
-) -> Result<dae::Dae, String> {
-    prepare_dae_for_template_codegen_with_backend(dae_model, scalarize, SimBackend::Diffsol)
-}
-
-pub fn prepare_dae_for_template_codegen_with_backend(
-    dae_model: &dae::Dae,
-    scalarize: bool,
-    backend: SimBackend,
-) -> Result<dae::Dae, String> {
-    match backend {
-        SimBackend::Diffsol => {
-            #[cfg(feature = "diffsol")]
-            {
-                with_diffsol::prepare_dae_for_template_codegen(dae_model, scalarize)
-                    .map_err(|error| error.to_string())
-            }
-            #[cfg(not(feature = "diffsol"))]
-            {
-                let _ = (dae_model, scalarize);
-                Err(
-                    "diffsol backend not enabled in rumoca-sim (enable feature `diffsol`)"
-                        .to_string(),
-                )
-            }
-        }
-    }
+        })
+        .collect()
 }
 
 pub fn dae_balance(dae_model: &dae::Dae) -> i64 {
@@ -345,7 +284,7 @@ pub fn runtime_defined_continuous_unknown_names(dae_model: &dae::Dae) -> HashSet
 }
 
 pub fn compiled_layout_binding_debug(dae_model: &dae::Dae, name: &str) -> Option<String> {
-    let layout = rumoca_eval_dae::compiled::layout::VarLayout::from_dae(dae_model);
+    let layout = rumoca_phase_solve_lower::build_var_layout(dae_model);
     layout.binding(name).map(|slot| format!("{slot:?}"))
 }
 
@@ -353,7 +292,7 @@ pub fn compiled_layout_related_bindings_debug(
     dae_model: &dae::Dae,
     prefix: &str,
 ) -> Vec<(String, String)> {
-    let layout = rumoca_eval_dae::compiled::layout::VarLayout::from_dae(dae_model);
+    let layout = rumoca_phase_solve_lower::build_var_layout(dae_model);
     layout
         .bindings()
         .iter()
@@ -368,110 +307,24 @@ pub fn clear_runtime_pre_values() {
     rumoca_eval_dae::runtime::clear_pre_values();
 }
 
-#[cfg(all(test, feature = "diffsol"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::with_diffsol::test_support::{real, sub, var_ref};
-    use rumoca_core::Span;
-
-    fn build_parameterized_hold_model(default_gain: f64) -> dae::Dae {
-        let mut dae = dae::Dae::new();
-
-        let mut gain = dae::Variable::new(dae::VarName::new("gain"));
-        gain.start = Some(real(default_gain));
-        gain.fixed = Some(true);
-        dae.parameters.insert(dae::VarName::new("gain"), gain);
-
-        let mut x = dae::Variable::new(dae::VarName::new("x"));
-        x.start = Some(var_ref("gain"));
-        x.fixed = Some(true);
-        dae.states.insert(dae::VarName::new("x"), x);
-
-        dae.f_x.push(dae::Equation {
-            lhs: None,
-            rhs: sub(
-                dae::Expression::BuiltinCall {
-                    function: dae::BuiltinFunction::Der,
-                    args: vec![var_ref("x")],
-                },
-                real(0.0),
-            ),
-            span: Span::DUMMY,
-            origin: "der_x_zero".to_string(),
-            scalar_count: 1,
-        });
-
-        dae
-    }
-
-    fn x_series(result: &SimResult) -> &[f64] {
-        let x_idx = result
-            .names
-            .iter()
-            .position(|name| name == "x")
-            .expect("state x should be present in results");
-        &result.data[x_idx]
-    }
+    use rumoca_ir_dae::Variable;
 
     #[test]
-    fn prepared_simulation_matches_direct_simulation_for_default_parameters() {
-        let dae = build_parameterized_hold_model(2.0);
-        let opts = SimOptions {
-            t_end: 0.2,
-            dt: Some(0.1),
-            max_wall_seconds: Some(2.0),
-            ..SimOptions::default()
-        };
+    fn build_variable_meta_resolves_scalarized_names_back_to_array_variable() {
+        let mut dae_model = dae::Dae::default();
+        let mut state = Variable::new(dae::VarName::new("x"));
+        state.dims = vec![2];
+        state.unit = Some("m".to_string());
+        dae_model.states.insert(dae::VarName::new("x"), state);
 
-        let direct = simulate_dae(&dae, &opts).expect("direct simulate should succeed");
-        let prepared = build_simulation(&dae, &opts).expect("build should succeed");
-        let prepared_result = prepared.run().expect("prepared run should succeed");
+        let meta = build_variable_meta(&dae_model, &["x[1]".to_string(), "x[2]".to_string()], 2);
 
-        assert_eq!(direct.times, prepared_result.times);
-        assert_eq!(x_series(&direct), x_series(&prepared_result));
-    }
-
-    #[test]
-    fn prepared_simulation_reuses_build_for_parameter_overrides() {
-        let dae = build_parameterized_hold_model(2.0);
-        let opts = SimOptions {
-            t_end: 0.2,
-            dt: Some(0.1),
-            max_wall_seconds: Some(2.0),
-            ..SimOptions::default()
-        };
-
-        let mut prepared = build_simulation(&dae, &opts).expect("build should succeed");
-
-        let baseline = prepared.run().expect("baseline run should succeed");
-        assert!(
-            x_series(&baseline)
-                .iter()
-                .all(|value| (*value - 2.0).abs() < 1.0e-9),
-            "expected default parameter to initialize x=2, got {:?}",
-            x_series(&baseline)
-        );
-
-        prepared
-            .set_parameter_value("gain", 5.0)
-            .expect("scalar override should validate");
-        let overridden = prepared.run().expect("override run should succeed");
-        assert!(
-            x_series(&overridden)
-                .iter()
-                .all(|value| (*value - 5.0).abs() < 1.0e-9),
-            "expected override to reinitialize x=5 without rebuild, got {:?}",
-            x_series(&overridden)
-        );
-
-        prepared.clear_parameter_overrides();
-        let reset = prepared.run().expect("reset run should succeed");
-        assert!(
-            x_series(&reset)
-                .iter()
-                .all(|value| (*value - 2.0).abs() < 1.0e-9),
-            "expected cleared overrides to restore x=2, got {:?}",
-            x_series(&reset)
-        );
+        assert_eq!(meta.len(), 2);
+        assert!(meta.iter().all(|entry| entry.is_state));
+        assert!(meta.iter().all(|entry| entry.role == "state"));
+        assert!(meta.iter().all(|entry| entry.unit.as_deref() == Some("m")));
     }
 }

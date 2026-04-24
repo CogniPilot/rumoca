@@ -976,7 +976,7 @@ function loadVisualizationShared(): VisualizationSharedModule {
     }
     const candidates = [
         path.resolve(__dirname, '..', 'media', 'vendor', 'visualization_shared.js'),
-        path.resolve(__dirname, '..', '..', '..', 'crates', 'rumoca-sim', 'web', 'visualization_shared.js'),
+        path.resolve(__dirname, '..', '..', '..', 'crates', 'rumoca-viz-web', 'web', 'visualization_shared.js'),
     ];
     for (const candidate of candidates) {
         if (!fs.existsSync(candidate)) {

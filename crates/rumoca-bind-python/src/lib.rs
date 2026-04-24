@@ -6,28 +6,28 @@
 
 //! Python bindings for the Rumoca Modelica compiler.
 //!
-//! The top-level functions remain convenient one-shot wrappers, while
-//! [`ProjectSession`] provides a reusable session for workloads that want to
-//! retain loaded source roots and compile/query caches across calls.
+//! The top-level functions remain convenient one-shot wrappers, while the
+//! `ProjectSession` Python class provides a reusable session for workloads that
+//! want to retain loaded source roots and compile/query caches across calls.
 
 use ::rumoca::CompilationResult as HighLevelCompilationResult;
 use pyo3::prelude::*;
 use pyo3::{PyErr, exceptions::PyRuntimeError};
+use rumoca_session::codegen::render_dae_template_with_json;
 use rumoca_session::compile::{FailedPhase, PhaseResult, Session, SessionConfig, SourceRootKind};
 use rumoca_session::parsing::{
     collect_compile_unit_source_files, collect_model_names, validate_source_syntax,
-};
-use rumoca_session::runtime::{
-    SimOptions, SimSolverMode, render_dae_template_with_json, simulate_dae,
 };
 use rumoca_session::source_roots::{
     canonical_path_key, merge_source_root_paths, plan_source_root_loads,
     referenced_unloaded_source_root_paths, source_root_source_set_key,
 };
-use rumoca_sim::results_web::{
+use rumoca_sim::{SimOptions, SimSolverMode as RuntimeSimSolverMode};
+use rumoca_sim::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
 };
+use rumoca_solver_diffsol::simulate_dae;
 use rumoca_tool_fmt::FormatOptions;
 use rumoca_tool_lint::{LintLevel, LintOptions, lint as lint_source};
 use serde_json::{Value, json};
@@ -241,15 +241,13 @@ impl ProjectSession {
             .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
     }
 
-    #[pyo3(signature = (source, template, model_name=None, filename=None, prepared=false, scalarize=true))]
+    #[pyo3(signature = (source, template, model_name=None, filename=None))]
     fn render_model(
         &mut self,
         source: &str,
         template: &str,
         model_name: Option<&str>,
         filename: Option<&str>,
-        prepared: bool,
-        scalarize: bool,
     ) -> Result<String, PyRuntimeStringError> {
         self.sync_source_root_paths()?;
         let filename = filename.unwrap_or("input.mo");
@@ -260,17 +258,15 @@ impl ProjectSession {
             filename,
             &self.effective_source_root_paths,
         )?;
-        render_compiled_model(&result, &actual_model_name, template, prepared, scalarize)
+        render_compiled_model(&result, &actual_model_name, template)
     }
 
-    #[pyo3(signature = (path, template, model_name=None, prepared=false, scalarize=true))]
+    #[pyo3(signature = (path, template, model_name=None))]
     fn render_model_file(
         &mut self,
         path: &str,
         template: &str,
         model_name: Option<&str>,
-        prepared: bool,
-        scalarize: bool,
     ) -> Result<String, PyRuntimeStringError> {
         self.sync_source_root_paths()?;
         let (result, actual_model_name) = compile_file_in_session(
@@ -279,38 +275,34 @@ impl ProjectSession {
             model_name,
             &self.effective_source_root_paths,
         )?;
-        render_compiled_model(&result, &actual_model_name, template, prepared, scalarize)
+        render_compiled_model(&result, &actual_model_name, template)
     }
 
-    #[pyo3(signature = (source, template_id, model_name=None, filename=None, prepared=true, scalarize=true))]
+    #[pyo3(signature = (source, template_id, model_name=None, filename=None))]
     fn render_builtin_model(
         &mut self,
         source: &str,
         template_id: &str,
         model_name: Option<&str>,
         filename: Option<&str>,
-        prepared: bool,
-        scalarize: bool,
     ) -> Result<String, PyRuntimeStringError> {
         let template = builtin_template_source(template_id).ok_or_else(|| {
             PyRuntimeStringError(format!("Unknown built-in template id: {template_id}"))
         })?;
-        self.render_model(source, template, model_name, filename, prepared, scalarize)
+        self.render_model(source, template, model_name, filename)
     }
 
-    #[pyo3(signature = (path, template_id, model_name=None, prepared=true, scalarize=true))]
+    #[pyo3(signature = (path, template_id, model_name=None))]
     fn render_builtin_file(
         &mut self,
         path: &str,
         template_id: &str,
         model_name: Option<&str>,
-        prepared: bool,
-        scalarize: bool,
     ) -> Result<String, PyRuntimeStringError> {
         let template = builtin_template_source(template_id).ok_or_else(|| {
             PyRuntimeStringError(format!("Unknown built-in template id: {template_id}"))
         })?;
-        self.render_model_file(path, template, model_name, prepared, scalarize)
+        self.render_model_file(path, template, model_name)
     }
 
     #[pyo3(signature = (source, model_name=None, filename=None, t_end=1.0, dt=None, solver=None))]
@@ -537,71 +529,56 @@ fn compile_file_to_json(
 
 /// Compile and render a template against one source string.
 #[pyfunction]
-#[pyo3(signature = (source, template, model_name=None, filename=None, source_roots=None, prepared=false, scalarize=true))]
+#[pyo3(signature = (source, template, model_name=None, filename=None, source_roots=None))]
 fn render_model(
     source: &str,
     template: &str,
     model_name: Option<&str>,
     filename: Option<&str>,
     source_roots: Option<Vec<String>>,
-    prepared: bool,
-    scalarize: bool,
 ) -> Result<String, PyRuntimeStringError> {
     let mut session = ProjectSession::new(source_roots);
-    session.render_model(source, template, model_name, filename, prepared, scalarize)
+    session.render_model(source, template, model_name, filename)
 }
 
 /// Compile and render a template against one model file.
 #[pyfunction]
-#[pyo3(signature = (path, template, model_name=None, source_roots=None, prepared=false, scalarize=true))]
+#[pyo3(signature = (path, template, model_name=None, source_roots=None))]
 fn render_model_file(
     path: &str,
     template: &str,
     model_name: Option<&str>,
     source_roots: Option<Vec<String>>,
-    prepared: bool,
-    scalarize: bool,
 ) -> Result<String, PyRuntimeStringError> {
     let mut session = ProjectSession::new(source_roots);
-    session.render_model_file(path, template, model_name, prepared, scalarize)
+    session.render_model_file(path, template, model_name)
 }
 
 /// Compile and render one built-in template against inline source.
 #[pyfunction]
-#[pyo3(signature = (source, template_id, model_name=None, filename=None, source_roots=None, prepared=true, scalarize=true))]
+#[pyo3(signature = (source, template_id, model_name=None, filename=None, source_roots=None))]
 fn render_builtin_model(
     source: &str,
     template_id: &str,
     model_name: Option<&str>,
     filename: Option<&str>,
     source_roots: Option<Vec<String>>,
-    prepared: bool,
-    scalarize: bool,
 ) -> Result<String, PyRuntimeStringError> {
     let mut session = ProjectSession::new(source_roots);
-    session.render_builtin_model(
-        source,
-        template_id,
-        model_name,
-        filename,
-        prepared,
-        scalarize,
-    )
+    session.render_builtin_model(source, template_id, model_name, filename)
 }
 
 /// Compile and render one built-in template against a model file.
 #[pyfunction]
-#[pyo3(signature = (path, template_id, model_name=None, source_roots=None, prepared=true, scalarize=true))]
+#[pyo3(signature = (path, template_id, model_name=None, source_roots=None))]
 fn render_builtin_file(
     path: &str,
     template_id: &str,
     model_name: Option<&str>,
     source_roots: Option<Vec<String>>,
-    prepared: bool,
-    scalarize: bool,
 ) -> Result<String, PyRuntimeStringError> {
     let mut session = ProjectSession::new(source_roots);
-    session.render_builtin_file(path, template_id, model_name, prepared, scalarize)
+    session.render_builtin_file(path, template_id, model_name)
 }
 
 /// Compile and simulate inline Modelica source.
@@ -641,123 +618,123 @@ fn builtin_templates_json() -> Value {
                 "id": "sympy.py.jinja",
                 "label": "SymPy (Python)",
                 "language": "python",
-                "source": rumoca_session::runtime::templates::SYMPY,
+                "source": rumoca_session::codegen::templates::SYMPY,
             },
             {
                 "id": "jax.py.jinja",
                 "label": "JAX / Diffrax (Python)",
                 "language": "python",
-                "source": rumoca_session::runtime::templates::JAX,
+                "source": rumoca_session::codegen::templates::JAX,
             },
             {
                 "id": "onnx.py.jinja",
                 "label": "ONNX (Python)",
                 "language": "python",
-                "source": rumoca_session::runtime::templates::ONNX,
+                "source": rumoca_session::codegen::templates::ONNX,
             },
             {
                 "id": "julia_mtk.jl.jinja",
                 "label": "Julia MTK",
                 "language": "julia",
-                "source": rumoca_session::runtime::templates::JULIA_MTK,
+                "source": rumoca_session::codegen::templates::JULIA_MTK,
             },
             {
                 "id": "casadi_sx.py.jinja",
                 "label": "CasADi SX (Python)",
                 "language": "python",
-                "source": rumoca_session::runtime::templates::CASADI_SX,
+                "source": rumoca_session::codegen::templates::CASADI_SX,
             },
             {
                 "id": "casadi_mx.py.jinja",
                 "label": "CasADi MX (Python)",
                 "language": "python",
-                "source": rumoca_session::runtime::templates::CASADI_MX,
+                "source": rumoca_session::codegen::templates::CASADI_MX,
             },
     {
-                "id": "embedded_c.h.jinja",
+                "id": "embedded_c/model.h.jinja",
                 "label": "Embedded C Header",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::EMBEDDED_C_H,
+                "source": rumoca_session::codegen::templates::EMBEDDED_C_H,
             },
             {
-                "id": "embedded_c_impl.c.jinja",
+                "id": "embedded_c/model.c.jinja",
                 "label": "Embedded C Implementation",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::EMBEDDED_C_IMPL,
+                "source": rumoca_session::codegen::templates::EMBEDDED_C_IMPL,
             },
             {
                 "id": "dae_modelica.mo.jinja",
                 "label": "DAE Modelica",
                 "language": "modelica",
-                "source": rumoca_session::runtime::templates::DAE_MODELICA,
+                "source": rumoca_session::codegen::templates::DAE_MODELICA,
             },
             {
                 "id": "flat_modelica.mo.jinja",
                 "label": "Flat Modelica",
                 "language": "modelica",
-                "source": rumoca_session::runtime::templates::FLAT_MODELICA,
+                "source": rumoca_session::codegen::templates::FLAT_MODELICA,
             },
             {
-                "id": "fmi2_model_description.xml.jinja",
+                "id": "fmi2/modelDescription.xml.jinja",
                 "label": "FMI 2.0 modelDescription.xml",
                 "language": "xml",
-                "source": rumoca_session::runtime::templates::FMI2_MODEL_DESCRIPTION,
+                "source": rumoca_session::codegen::templates::FMI2_MODEL_DESCRIPTION,
             },
             {
-                "id": "fmi2_model.c.jinja",
+                "id": "fmi2/model.c.jinja",
                 "label": "FMI 2.0 model.c",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::FMI2_MODEL,
+                "source": rumoca_session::codegen::templates::FMI2_MODEL,
             },
             {
-                "id": "fmi2_test_driver.c.jinja",
+                "id": "fmi2/test_driver.c.jinja",
                 "label": "FMI 2.0 test driver",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::FMI2_TEST_DRIVER,
+                "source": rumoca_session::codegen::templates::FMI2_TEST_DRIVER,
             },
             {
-                "id": "fmi3_model_description.xml.jinja",
+                "id": "fmi3/modelDescription.xml.jinja",
                 "label": "FMI 3.0 modelDescription.xml",
                 "language": "xml",
-                "source": rumoca_session::runtime::templates::FMI3_MODEL_DESCRIPTION,
+                "source": rumoca_session::codegen::templates::FMI3_MODEL_DESCRIPTION,
             },
             {
-                "id": "fmi3_model.c.jinja",
+                "id": "fmi3/model.c.jinja",
                 "label": "FMI 3.0 model.c",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::FMI3_MODEL,
+                "source": rumoca_session::codegen::templates::FMI3_MODEL,
             },
             {
-                "id": "fmi3_test_driver.c.jinja",
+                "id": "fmi3/test_driver.c.jinja",
                 "label": "FMI 3.0 test driver",
                 "language": "c",
-                "source": rumoca_session::runtime::templates::FMI3_TEST_DRIVER,
+                "source": rumoca_session::codegen::templates::FMI3_TEST_DRIVER,
             },
         ])
 }
 
 fn builtin_template_source(template_id: &str) -> Option<&'static str> {
     match template_id {
-        "sympy.py.jinja" => Some(rumoca_session::runtime::templates::SYMPY),
-        "jax.py.jinja" => Some(rumoca_session::runtime::templates::JAX),
-        "onnx.py.jinja" => Some(rumoca_session::runtime::templates::ONNX),
-        "julia_mtk.jl.jinja" => Some(rumoca_session::runtime::templates::JULIA_MTK),
-        "casadi_sx.py.jinja" => Some(rumoca_session::runtime::templates::CASADI_SX),
-        "casadi_mx.py.jinja" => Some(rumoca_session::runtime::templates::CASADI_MX),
-        "embedded_c.h.jinja" => Some(rumoca_session::runtime::templates::EMBEDDED_C_H),
-        "embedded_c_impl.c.jinja" => Some(rumoca_session::runtime::templates::EMBEDDED_C_IMPL),
-        "dae_modelica.mo.jinja" => Some(rumoca_session::runtime::templates::DAE_MODELICA),
-        "flat_modelica.mo.jinja" => Some(rumoca_session::runtime::templates::FLAT_MODELICA),
-        "fmi2_model_description.xml.jinja" => {
-            Some(rumoca_session::runtime::templates::FMI2_MODEL_DESCRIPTION)
+        "sympy.py.jinja" => Some(rumoca_session::codegen::templates::SYMPY),
+        "jax.py.jinja" => Some(rumoca_session::codegen::templates::JAX),
+        "onnx.py.jinja" => Some(rumoca_session::codegen::templates::ONNX),
+        "julia_mtk.jl.jinja" => Some(rumoca_session::codegen::templates::JULIA_MTK),
+        "casadi_sx.py.jinja" => Some(rumoca_session::codegen::templates::CASADI_SX),
+        "casadi_mx.py.jinja" => Some(rumoca_session::codegen::templates::CASADI_MX),
+        "embedded_c/model.h.jinja" => Some(rumoca_session::codegen::templates::EMBEDDED_C_H),
+        "embedded_c/model.c.jinja" => Some(rumoca_session::codegen::templates::EMBEDDED_C_IMPL),
+        "dae_modelica.mo.jinja" => Some(rumoca_session::codegen::templates::DAE_MODELICA),
+        "flat_modelica.mo.jinja" => Some(rumoca_session::codegen::templates::FLAT_MODELICA),
+        "fmi2/modelDescription.xml.jinja" => {
+            Some(rumoca_session::codegen::templates::FMI2_MODEL_DESCRIPTION)
         }
-        "fmi2_model.c.jinja" => Some(rumoca_session::runtime::templates::FMI2_MODEL),
-        "fmi2_test_driver.c.jinja" => Some(rumoca_session::runtime::templates::FMI2_TEST_DRIVER),
-        "fmi3_model_description.xml.jinja" => {
-            Some(rumoca_session::runtime::templates::FMI3_MODEL_DESCRIPTION)
+        "fmi2/model.c.jinja" => Some(rumoca_session::codegen::templates::FMI2_MODEL),
+        "fmi2/test_driver.c.jinja" => Some(rumoca_session::codegen::templates::FMI2_TEST_DRIVER),
+        "fmi3/modelDescription.xml.jinja" => {
+            Some(rumoca_session::codegen::templates::FMI3_MODEL_DESCRIPTION)
         }
-        "fmi3_model.c.jinja" => Some(rumoca_session::runtime::templates::FMI3_MODEL),
-        "fmi3_test_driver.c.jinja" => Some(rumoca_session::runtime::templates::FMI3_TEST_DRIVER),
+        "fmi3/model.c.jinja" => Some(rumoca_session::codegen::templates::FMI3_MODEL),
+        "fmi3/test_driver.c.jinja" => Some(rumoca_session::codegen::templates::FMI3_TEST_DRIVER),
         _ => None,
     }
 }
@@ -1080,31 +1057,10 @@ fn render_compiled_model(
     result: &HighLevelCompilationResult,
     model_name: &str,
     template: &str,
-    prepared: bool,
-    scalarize: bool,
 ) -> Result<String, PyRuntimeStringError> {
-    if prepared {
-        result
-            .render_template_str_prepared_with_name(template, model_name, scalarize)
-            .map_err(|e| PyRuntimeStringError(format!("Template error: {e}")))
-    } else {
-        result
-            .render_template_str_with_name(template, model_name)
-            .map_err(|e| PyRuntimeStringError(format!("Template error: {e}")))
-    }
-}
-
-fn parse_solver_mode(solver: Option<&str>) -> (SimSolverMode, String) {
-    match solver {
-        Some(raw) if !raw.trim().is_empty() => {
-            let trimmed = raw.trim();
-            (
-                SimSolverMode::from_external_name(trimmed),
-                trimmed.to_string(),
-            )
-        }
-        _ => (SimSolverMode::Auto, "auto".to_string()),
-    }
+    result
+        .render_template_str_with_name(template, model_name)
+        .map_err(|e| PyRuntimeStringError(format!("Template error: {e}")))
 }
 
 fn seconds_since(started: Instant) -> f64 {
@@ -1124,7 +1080,7 @@ fn simulate_compiled_model(
     compile_seconds: f64,
     request: SimRequest<'_>,
 ) -> Result<String, PyRuntimeStringError> {
-    let (solver_mode, solver_label) = parse_solver_mode(request.solver);
+    let (solver_mode, solver_label) = RuntimeSimSolverMode::parse_request(request.solver);
     let opts = SimOptions {
         t_end: request.t_end,
         dt: request.dt,
@@ -1399,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_builtin_file_uses_prepared_template() {
+    fn test_render_builtin_file_uses_native_dae_template() {
         let fixture = fixture_path("UsesLib.mo");
         let source_root = fixture_path("Lib");
         let rendered = render_builtin_file(
@@ -1407,8 +1363,6 @@ mod tests {
             "dae_modelica.mo.jinja",
             None,
             Some(vec![source_root.to_string_lossy().to_string()]),
-            true,
-            true,
         )
         .expect("render built-in template");
         assert!(rendered.contains("class UsesLib"));

@@ -1,0 +1,19 @@
+[package]
+name = "rumoca-input"
+description = "Input engine + signal mapping for Rumoca lockstep simulations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-codec = { workspace = true }
+
+anyhow = { workspace = true }
+indexmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+[lints]
+workspace = true

@@ -6,6 +6,7 @@ members = [
     "crates/rumoca-core",
     "crates/rumoca-contracts",
     "crates/rumoca-ir-dae",
+    "crates/rumoca-ir-solve",
     "crates/rumoca-ir-core",
     "crates/rumoca-eval-ast",
     "crates/rumoca-eval-flat",
@@ -17,9 +18,20 @@ members = [
     "crates/rumoca-phase-parse",
     "crates/rumoca-phase-resolve",
     "crates/rumoca-phase-dae",
-    "crates/rumoca-phase-solve",
+    "crates/rumoca-phase-structural",
+    "crates/rumoca-phase-solve-lower",
     "crates/rumoca-eval-dae",
+    "crates/rumoca-codec",
+    "crates/rumoca-codec-flatbuffers",
+    "crates/rumoca-transport-udp",
+    "crates/rumoca-transport-websocket",
+    "crates/rumoca-input",
+    "crates/rumoca-input-gamepad",
+    "crates/rumoca-input-keyboard",
     "crates/rumoca-sim",
+    "crates/rumoca-solver-diffsol",
+    "crates/rumoca-solver-rk45",
+    "crates/rumoca-viz-web",
     "crates/rumoca-phase-typecheck",
     # Session and tools
     "crates/rumoca-session",
@@ -30,8 +42,6 @@ members = [
     # Bindings
     "crates/rumoca-bind-wasm",
     "crates/rumoca-bind-python",
-    # SIL simulation
-    "crates/rumoca-sim-fb",
 ]
 
 [workspace.package]
@@ -47,6 +57,7 @@ rumoca = { path = "crates/rumoca" }
 rumoca-core = { path = "crates/rumoca-core" }
 rumoca-contracts = { path = "crates/rumoca-contracts" }
 rumoca-ir-dae = { path = "crates/rumoca-ir-dae" }
+rumoca-ir-solve = { path = "crates/rumoca-ir-solve" }
 rumoca-ir-core = { path = "crates/rumoca-ir-core" }
 rumoca-eval-ast = { path = "crates/rumoca-eval-ast" }
 rumoca-eval-flat = { path = "crates/rumoca-eval-flat" }
@@ -57,10 +68,21 @@ rumoca-phase-instantiate = { path = "crates/rumoca-phase-instantiate" }
 rumoca-phase-parse = { path = "crates/rumoca-phase-parse" }
 rumoca-phase-resolve = { path = "crates/rumoca-phase-resolve" }
 rumoca-phase-dae = { path = "crates/rumoca-phase-dae" }
-rumoca-phase-solve = { path = "crates/rumoca-phase-solve" }
+rumoca-phase-structural = { path = "crates/rumoca-phase-structural" }
+rumoca-phase-solve-lower = { path = "crates/rumoca-phase-solve-lower" }
 rumoca-eval-dae = { path = "crates/rumoca-eval-dae", default-features = false }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
+rumoca-codec = { path = "crates/rumoca-codec" }
+rumoca-codec-flatbuffers = { path = "crates/rumoca-codec-flatbuffers" }
+rumoca-transport-udp = { path = "crates/rumoca-transport-udp" }
+rumoca-transport-websocket = { path = "crates/rumoca-transport-websocket" }
+rumoca-input = { path = "crates/rumoca-input" }
+rumoca-input-gamepad = { path = "crates/rumoca-input-gamepad" }
+rumoca-input-keyboard = { path = "crates/rumoca-input-keyboard" }
 rumoca-sim = { path = "crates/rumoca-sim" }
+rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
+rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
+rumoca-viz-web = { path = "crates/rumoca-viz-web" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-session = { path = "crates/rumoca-session" }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
@@ -68,7 +90,6 @@ rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }
 rumoca-bind-wasm = { path = "crates/rumoca-bind-wasm" }
 rumoca-bind-python = { path = "crates/rumoca-bind-python" }
-rumoca-sim-fb = { path = "crates/rumoca-sim-fb" }
 
 # External dependencies
 anyhow = "1.0"
@@ -88,6 +109,7 @@ rustc-hash = "2.0"
 scnr2 = "0.3.3"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_yaml = "0.9"
 bincode = "1.3"
 futures-util = "0.3"
 tar = "0.4"

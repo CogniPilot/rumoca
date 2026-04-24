@@ -31,6 +31,8 @@ msl
 *.swo
 
 *.html
+# Viz-web ships the viewer shell as a bundled asset; unignore it specifically.
+!crates/rumoca-viz-web/web/*.html
 .rumoca
 examples/.rumoca/results
 

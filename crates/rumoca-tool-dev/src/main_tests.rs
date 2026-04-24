@@ -536,13 +536,20 @@ fn rum_cli_launcher_runs_repo_via_cargo_run() {
     #[cfg(not(windows))]
     assert_eq!(launcher_path, bin_dir.join("rum"));
 
-    assert!(contents.contains("cargo run -q -p rumoca-tool-dev --bin rum --"));
-    assert!(contents.contains(&root.display().to_string()));
-
     #[cfg(windows)]
-    assert!(contents.contains("%*"));
+    {
+        assert!(contents.contains("cargo run -q -p rumoca-tool-dev --bin rum --"));
+        assert!(contents.contains("%*"));
+    }
     #[cfg(not(windows))]
-    assert!(contents.contains("\"$@\""));
+    {
+        assert!(contents.contains("cargo build -p rumoca-tool-dev --bin rum"));
+        assert!(contents.contains("tail -n +1 -f"));
+        assert!(contents.contains("exec \"$rum_bin\" \"$@\""));
+        assert!(!contents.contains("cargo run"));
+        assert!(contents.contains("\"$@\""));
+    }
+    assert!(contents.contains(&root.display().to_string()));
 }
 
 #[test]

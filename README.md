@@ -99,7 +99,7 @@ Rumoca focuses on five things:
 - Full compiler pipeline: parse -> resolve -> typecheck -> instantiate -> flatten -> DAE
 - Multi-file session API for CLI, LSP, WASM, and tests (`rumoca-session`)
 - DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim`)
-- Structural preparation and IC planning for robust initialization (`rumoca-phase-solve`, `rumoca-sim`)
+- Structural preparation and IC planning for robust initialization (`rumoca-phase-structural`, `rumoca-sim`)
 - Explicit template rendering support for custom code generation
 - MLS contract test framework (`rumoca-contracts`)
 - Spec-driven quality gates (including SPEC_0021 and SPEC_0025)
@@ -159,7 +159,7 @@ cargo run -p rumoca-tool-lsp --bin rumoca-lsp
 Assuming you have a template such as `examples/templates/standalone_html.jinja`:
 
 ```bash
-cargo run -p rumoca -- compile path/to/model.mo --model MyModel --template-file examples/templates/standalone_html.jinja --template-prepared > MyModel_standalone.html
+cargo run -p rumoca -- compile path/to/model.mo --model MyModel --template-file examples/templates/standalone_html.jinja > MyModel_standalone.html
 ```
 
 MSL Electrical resistor example (downloads MSL 4.1.0, compiles `Modelica.Electrical.Analog.Examples.Resistor` via a tiny wrapper model, and writes standalone HTML):
@@ -172,7 +172,7 @@ curl -L -o /tmp/ModelicaStandardLibrary-4.1.0.zip https://github.com/modelica/Mo
 printf 'model MslResistorExample\n  import Complex;\n  import ModelicaServices;\n  extends Modelica.Electrical.Analog.Examples.Resistor;\nend MslResistorExample;\n' > /tmp/MslResistorExample.mo
 
 # convert into standalone html
-cargo run -p rumoca -- compile /tmp/MslResistorExample.mo --model MslResistorExample --source-root /tmp/ModelicaStandardLibrary-4.1.0/Modelica --source-root /tmp/ModelicaStandardLibrary-4.1.0/ModelicaServices --source-root /tmp/ModelicaStandardLibrary-4.1.0/Complex.mo --template-file examples/templates/standalone_html.jinja --template-prepared > MslResistorExample_standalone.html
+cargo run -p rumoca -- compile /tmp/MslResistorExample.mo --model MslResistorExample --source-root /tmp/ModelicaStandardLibrary-4.1.0/Modelica --source-root /tmp/ModelicaStandardLibrary-4.1.0/ModelicaServices --source-root /tmp/ModelicaStandardLibrary-4.1.0/Complex.mo --template-file examples/templates/standalone_html.jinja > MslResistorExample_standalone.html
 ```
 
 ### Installation
@@ -248,10 +248,11 @@ rum repo msl promote-quality-baseline
 rum help verify
 ```
 
-`rum verify quick` mirrors the main CI verification suite but skips the slow
-180-model MSL parity gate. `rum verify full` includes that parity job.
-Both commands assume the local coverage/editor prerequisites are installed
-(`cargo-llvm-cov`, Node/npm, and wasm Rust tooling), matching GitHub CI.
+`rum verify quick` runs the fast local gates: lint, workspace tests, and binary
+builds. `rum verify full` mirrors the main CI verification suite, including
+coverage, docs, editor/WASM gates, and the slow 180-model MSL parity gate. The
+full suite assumes the local coverage/editor prerequisites are installed
+(`cargo-llvm-cov`, Node/npm, and wasm Rust tooling).
 `rum verify template-runtimes` runs ignored example-template runtime checks
 that depend on optional backend environments such as Python with SymPy.
 
@@ -265,7 +266,7 @@ that depend on optional backend environments such as Python with SymPy.
 | Instantiate | `rumoca-phase-instantiate` | Extends/modifier application, model instantiation              |
 | Flatten     | `rumoca-phase-flatten`     | Hierarchy flattening, connection expansion, residual equations |
 | ToDAE       | `rumoca-phase-dae`         | Variable classification and DAE construction                   |
-| Structural  | `rumoca-phase-solve`       | BLT, incidence/matching, IC plan generation                    |
+| Structural  | `rumoca-phase-structural`  | BLT, incidence/matching, IC plan generation                    |
 | Simulate    | `rumoca-sim`               | IC solving + runtime integration                               |
 | Codegen     | `rumoca-phase-codegen`     | Template-driven target generation                              |
 

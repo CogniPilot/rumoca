@@ -273,14 +273,14 @@ pub fn index_into_expr(
     .project(expr)
 }
 
-pub(crate) struct ExpressionScalarizationContext {
+pub struct ExpressionScalarizationContext {
     var_dims: HashMap<String, Vec<i64>>,
     complex_fields: HashMap<String, [Option<String>; 2]>,
     component_index_map: HashMap<String, HashMap<usize, String>>,
     function_output_index_map: HashMap<String, HashMap<usize, String>>,
 }
 
-pub(crate) fn build_expression_scalarization_context(dae: &Dae) -> ExpressionScalarizationContext {
+pub fn build_expression_scalarization_context(dae: &Dae) -> ExpressionScalarizationContext {
     ExpressionScalarizationContext {
         var_dims: build_var_dims_map(dae),
         complex_fields: build_complex_field_map(dae),
@@ -289,7 +289,7 @@ pub(crate) fn build_expression_scalarization_context(dae: &Dae) -> ExpressionSca
     }
 }
 
-pub(crate) fn scalarize_expression_rows(
+pub fn scalarize_expression_rows(
     expr: &Expression,
     output_len: usize,
     ctx: &ExpressionScalarizationContext,

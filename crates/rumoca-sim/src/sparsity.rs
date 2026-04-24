@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_dae as dae;
-use rumoca_phase_solve::build_solver_sparsity_triplets;
+use rumoca_phase_structural::build_solver_sparsity_triplets;
 
 /// Greedy column coloring for a Jacobian sparsity pattern.
 ///

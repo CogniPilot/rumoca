@@ -88,7 +88,7 @@ fn store_varref_explicit_clock_value(key: &ClockVarRefCacheKey, value: bool) {
     });
 }
 
-pub(crate) fn reset_runtime_clock_caches() {
+pub fn reset_runtime_clock_caches() {
     EXPLICIT_CLOCK_CACHE.with(|cache| cache.borrow_mut().clear());
     EXPLICIT_CLOCK_VARREF_CACHE.with(|cache| cache.borrow_mut().clear());
     CLOCK_ALIAS_SOURCE_CACHE.with(|cache| cache.borrow_mut().clear());
@@ -885,7 +885,7 @@ fn equation_may_have_clock_activity(eq: &dae::Equation) -> bool {
     expression_may_have_clock_activity(&eq.rhs)
 }
 
-pub(crate) fn dae_may_have_discrete_clock_activity(dae: &dae::Dae) -> bool {
+pub fn dae_may_have_discrete_clock_activity(dae: &dae::Dae) -> bool {
     let dae_ptr = dae as *const dae::Dae as usize;
     if let Some(cached) =
         DISCRETE_CLOCK_ACTIVITY_CACHE.with(|cache| cache.borrow().get(&dae_ptr).copied())

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rumoca_eval_dae::runtime::{self as eval, eval_expr};
 use rumoca_ir_dae as dae;
 
-use rumoca_phase_solve::eliminate;
+use rumoca_phase_structural::eliminate;
 
 /// Build the static part of the reconstruction environment.
 fn build_reconstruction_env_template(
@@ -157,7 +157,7 @@ pub fn apply_eliminated_substitutions_to_env(
     let _ = apply_eliminated_substitutions_to_env_changed(elim, env);
 }
 
-pub(crate) fn apply_eliminated_substitutions_to_env_changed(
+pub fn apply_eliminated_substitutions_to_env_changed(
     elim: &eliminate::EliminationResult,
     env: &mut eval::VarEnv<f64>,
 ) -> bool {

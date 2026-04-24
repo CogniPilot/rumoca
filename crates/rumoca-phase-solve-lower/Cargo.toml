@@ -1,0 +1,16 @@
+[package]
+name = "rumoca-phase-solve-lower"
+description = "Lower DAE data into Rumoca solver-facing IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+indexmap = { workspace = true }
+rumoca-ir-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+
+[lints]
+workspace = true

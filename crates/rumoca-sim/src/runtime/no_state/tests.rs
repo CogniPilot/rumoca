@@ -386,7 +386,7 @@ fn change_latch_expr(name: &str) -> dae::Expression {
 
 fn eliminated_substitution(var_name: &str, rhs_name: &str) -> EliminationResult {
     EliminationResult {
-        substitutions: vec![rumoca_phase_solve::Substitution {
+        substitutions: vec![rumoca_phase_structural::Substitution {
             var_name: dae::VarName::new(var_name),
             expr: var_ref(rhs_name),
             env_keys: vec![var_name.to_string()],

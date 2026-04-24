@@ -2,14 +2,14 @@
 
 mod emit;
 
-use crate::compiled::VarLayout;
-use crate::compiled::ad::lower_residual_ad;
-use crate::compiled::lower::{
-    LowerError, lower_discrete_rhs, lower_expression_rows_from_expressions_with_runtime_metadata,
-    lower_initial_expression_rows_from_expressions_with_runtime_metadata, lower_initial_residual,
-    lower_residual, lower_root_conditions,
-};
 use rumoca_ir_dae as dae;
+use rumoca_ir_solve::{RowBlock, VarLayout};
+use rumoca_phase_solve_lower::{
+    LowerError, build_var_layout, lower_discrete_rhs,
+    lower_expression_rows_from_expressions_with_runtime_metadata,
+    lower_initial_expression_rows_from_expressions_with_runtime_metadata, lower_initial_residual,
+    lower_residual, lower_residual_ad, lower_root_conditions,
+};
 
 #[derive(Debug)]
 pub enum WasmCompileError {
@@ -47,7 +47,7 @@ struct CompiledKernelWasm {
 
 impl CompiledKernelWasm {
     fn from_rows(
-        rows: Vec<Vec<crate::compiled::linear_op::LinearOp>>,
+        rows: Vec<Vec<rumoca_ir_solve::LinearOp>>,
         required_y_len: usize,
         required_p_len: usize,
     ) -> Result<Self, WasmCompileError> {
@@ -228,10 +228,35 @@ impl CompiledExpressionRowsWasm {
     }
 }
 
+pub fn compile_residual_row_block_wasm(
+    rows: &RowBlock,
+    layout: &VarLayout,
+) -> Result<CompiledResidualWasm, WasmCompileError> {
+    let kernel =
+        CompiledKernelWasm::from_rows(rows.rows.clone(), layout.y_scalars(), layout.p_scalars())?;
+    Ok(CompiledResidualWasm { kernel })
+}
+
+pub fn compile_jacobian_row_block_wasm(
+    rows: &RowBlock,
+    layout: &VarLayout,
+) -> Result<CompiledJacobianVWasm, WasmCompileError> {
+    let kernel =
+        CompiledKernelWasm::from_rows(rows.rows.clone(), layout.y_scalars(), layout.p_scalars())?;
+    Ok(CompiledJacobianVWasm { kernel })
+}
+
+pub fn compile_expression_row_block_wasm(
+    rows: &RowBlock,
+    layout: &VarLayout,
+) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
+    compile_expression_rows_wasm(layout.y_scalars(), layout.p_scalars(), rows.rows.clone())
+}
+
 fn compile_expression_rows_wasm(
     required_y_len: usize,
     required_p_len: usize,
-    rows: Vec<Vec<crate::compiled::linear_op::LinearOp>>,
+    rows: Vec<Vec<rumoca_ir_solve::LinearOp>>,
 ) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
     let kernel = CompiledKernelWasm::from_rows(rows, required_y_len, required_p_len)?;
     Ok(CompiledExpressionRowsWasm { kernel })
@@ -240,34 +265,31 @@ fn compile_expression_rows_wasm(
 pub fn compile_residual_wasm(
     dae_model: &dae::Dae,
 ) -> Result<CompiledResidualWasm, WasmCompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_residual(dae_model, &layout)?;
-    let kernel = CompiledKernelWasm::from_rows(rows, layout.y_scalars(), layout.p_scalars())?;
-    Ok(CompiledResidualWasm { kernel })
+    compile_residual_row_block_wasm(&RowBlock::new(rows), &layout)
 }
 
 pub fn compile_jacobian_v_wasm(
     dae_model: &dae::Dae,
 ) -> Result<CompiledJacobianVWasm, WasmCompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_residual_ad(dae_model, &layout)?;
-    let kernel = CompiledKernelWasm::from_rows(rows, layout.y_scalars(), layout.p_scalars())?;
-    Ok(CompiledJacobianVWasm { kernel })
+    compile_jacobian_row_block_wasm(&RowBlock::new(rows), &layout)
 }
 
 pub fn compile_initial_jacobian_v_wasm(
     dae_model: &dae::Dae,
 ) -> Result<CompiledJacobianVWasm, WasmCompileError> {
-    let layout = VarLayout::from_dae(dae_model);
-    let rows = crate::compiled::lower_initial_residual_ad(dae_model, &layout)?;
-    let kernel = CompiledKernelWasm::from_rows(rows, layout.y_scalars(), layout.p_scalars())?;
-    Ok(CompiledJacobianVWasm { kernel })
+    let layout = build_var_layout(dae_model);
+    let rows = rumoca_phase_solve_lower::lower_initial_residual_ad(dae_model, &layout)?;
+    compile_jacobian_row_block_wasm(&RowBlock::new(rows), &layout)
 }
 
 pub fn compile_root_conditions_wasm(
     dae_model: &dae::Dae,
 ) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_root_conditions(dae_model, &layout)?;
     compile_expression_rows_wasm(layout.y_scalars(), layout.p_scalars(), rows)
 }
@@ -276,7 +298,7 @@ pub fn compile_expressions_wasm(
     dae_model: &dae::Dae,
     expressions: &[dae::Expression],
 ) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_expression_rows_from_expressions_with_runtime_metadata(
         expressions,
         &layout,
@@ -290,7 +312,7 @@ pub fn compile_initial_expressions_wasm(
     dae_model: &dae::Dae,
     expressions: &[dae::Expression],
 ) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_initial_expression_rows_from_expressions_with_runtime_metadata(
         expressions,
         &layout,
@@ -303,7 +325,7 @@ pub fn compile_initial_expressions_wasm(
 pub fn compile_discrete_rhs_wasm(
     dae_model: &dae::Dae,
 ) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_discrete_rhs(dae_model, &layout)?;
     compile_expression_rows_wasm(layout.y_scalars(), layout.p_scalars(), rows)
 }
@@ -311,7 +333,7 @@ pub fn compile_discrete_rhs_wasm(
 pub fn compile_initial_residual_wasm(
     dae_model: &dae::Dae,
 ) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_initial_residual(dae_model, &layout)?;
     compile_expression_rows_wasm(layout.y_scalars(), layout.p_scalars(), rows)
 }

@@ -14,13 +14,14 @@
 
 use rumoca::Compiler;
 use rumoca_phase_codegen::templates;
-use rumoca_session::analysis::{ModelDeviationMetric, SimTrace, compare_model_traces};
+use rumoca_sim::sim_trace_compare::{ModelDeviationMetric, SimTrace, compare_model_traces};
 use std::f64::consts::TAU;
 
 /// High-agreement threshold for max channel bounded-normalized L1 error.
 /// Matches `HIGH_AGREEMENT_THRESHOLD` from `sim_trace_compare`.
 const HIGH_AGREEMENT_THRESHOLD: f64 = 0.05;
-use rumoca_session::runtime::{SimOptions, SimResult, simulate_dae};
+use rumoca_sim::{SimOptions, SimResult};
+use rumoca_solver_diffsol::simulate_dae;
 use std::collections::HashMap;
 use std::fs;
 use std::process::Command;
@@ -797,7 +798,7 @@ fn prepare_summary_model_data(
     let sim = match simulate_dae(&dae, &opts) {
         Ok(s) => s,
         Err(e) => {
-            failures.push(format!("{}: rumoca sim error: {e}", model.name));
+            failures.push(format!("{}: rumoca simulation error: {e}", model.name));
             return None;
         }
     };

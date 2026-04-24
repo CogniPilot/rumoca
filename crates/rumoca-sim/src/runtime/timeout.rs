@@ -6,15 +6,15 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-pub(crate) type WallClockInstant = Instant;
+pub type WallClockInstant = Instant;
 
 #[inline]
-pub(crate) fn wall_clock_now() -> WallClockInstant {
+pub fn wall_clock_now() -> WallClockInstant {
     Instant::now()
 }
 
 #[inline]
-pub(crate) fn wall_clock_elapsed_seconds(started_at: WallClockInstant) -> f64 {
+pub fn wall_clock_elapsed_seconds(started_at: WallClockInstant) -> f64 {
     started_at.elapsed().as_secs_f64()
 }
 
@@ -63,7 +63,7 @@ impl TimeoutBudget {
     }
 
     #[inline]
-    pub(crate) fn deadline(&self) -> Option<WallClockInstant> {
+    pub fn deadline(&self) -> Option<WallClockInstant> {
         self.deadline
     }
 }

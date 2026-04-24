@@ -1,0 +1,15 @@
+[package]
+name = "rumoca-input-gamepad"
+description = "Gilrs-backed gamepad device for rumoca-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-input = { workspace = true }
+anyhow = { workspace = true }
+gilrs = "0.11"
+
+[lints]
+workspace = true

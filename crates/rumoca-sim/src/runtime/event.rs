@@ -29,12 +29,7 @@ pub fn event_restart_time(t_start: f64, t_end: f64, t_event: f64) -> f64 {
     }
 }
 
-pub(crate) fn build_runtime_state_env(
-    dae_model: &dae::Dae,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-) -> VarEnv<f64> {
+pub fn build_runtime_state_env(dae_model: &dae::Dae, y: &[f64], p: &[f64], t: f64) -> VarEnv<f64> {
     let mut env = build_runtime_parameter_tail_env(dae_model, p, t);
     let mut idx = 0usize;
     for (name, var) in dae_model
@@ -117,7 +112,7 @@ where
     changed
 }
 
-pub(crate) fn settle_runtime_event_updates_with_base_env<PD, PA, AD, SS>(
+pub fn settle_runtime_event_updates_with_base_env<PD, PA, AD, SS>(
     input: EventSettleInput<'_>,
     mut env: VarEnv<f64>,
     mut propagate_runtime_direct_assignments: PD,
@@ -226,7 +221,7 @@ where
     )
 }
 
-pub(crate) fn settle_runtime_event_updates_frozen_pre<PD, PA, AD, SS>(
+pub fn settle_runtime_event_updates_frozen_pre<PD, PA, AD, SS>(
     input: EventSettleInput<'_>,
     propagate_runtime_direct_assignments: PD,
     propagate_runtime_alias_components: PA,
@@ -296,9 +291,7 @@ pub fn settle_runtime_event_updates_default(input: EventSettleInput<'_>) -> VarE
     )
 }
 
-pub(crate) fn settle_runtime_event_updates_default_frozen_pre(
-    input: EventSettleInput<'_>,
-) -> VarEnv<f64> {
+pub fn settle_runtime_event_updates_default_frozen_pre(input: EventSettleInput<'_>) -> VarEnv<f64> {
     let mut guard_env: Option<VarEnv<f64>> = None;
     settle_runtime_event_updates_frozen_pre(
         input,

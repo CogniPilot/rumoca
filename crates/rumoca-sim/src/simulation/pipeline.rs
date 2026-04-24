@@ -6,8 +6,8 @@ pub type MassMatrix = Vec<Vec<f64>>;
 pub struct PreparedSimulation {
     pub dae: dae::Dae,
     pub has_dummy_state: bool,
-    pub elimination: rumoca_phase_solve::eliminate::EliminationResult,
-    pub ic_blocks: Vec<rumoca_phase_solve::IcBlock>,
+    pub elimination: rumoca_phase_structural::eliminate::EliminationResult,
+    pub ic_blocks: Vec<rumoca_phase_structural::IcBlock>,
     pub mass_matrix: MassMatrix,
 }
 

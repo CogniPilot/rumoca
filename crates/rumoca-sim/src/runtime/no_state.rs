@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use rumoca_eval_dae::runtime as eval;
 use rumoca_ir_core::OpBinary;
 use rumoca_ir_dae as dae;
-use rumoca_phase_solve::EliminationResult;
+use rumoca_phase_structural::EliminationResult;
 
 use crate::runtime::event::build_runtime_state_env;
 use crate::{reconstruct, timeline};
@@ -15,9 +15,8 @@ pub struct NoStateSampleContext<'a> {
     pub param_values: &'a [f64],
     pub all_names: &'a [String],
     pub clock_event_times: &'a [f64],
-    pub(crate) direct_assignment_ctx:
-        &'a crate::runtime::assignment::RuntimeDirectAssignmentContext,
-    pub(crate) alias_ctx: &'a crate::runtime::alias::RuntimeAliasPropagationContext,
+    pub direct_assignment_ctx: &'a crate::runtime::assignment::RuntimeDirectAssignmentContext,
+    pub alias_ctx: &'a crate::runtime::alias::RuntimeAliasPropagationContext,
     pub needs_eliminated_env: bool,
     pub dynamic_time_event_names: &'a [String],
     pub solver_name_to_idx: &'a HashMap<String, usize>,
@@ -517,7 +516,7 @@ fn collect_dynamic_time_event_names_from_expr(
     }
 }
 
-pub(crate) fn collect_dynamic_time_event_names(dae_model: &dae::Dae) -> Vec<String> {
+pub fn collect_dynamic_time_event_names(dae_model: &dae::Dae) -> Vec<String> {
     let mut names = indexmap::IndexSet::new();
     for expr in dae_model
         .f_z
@@ -785,10 +784,7 @@ fn expr_uses_event_dependent_discrete(expr: &dae::Expression) -> bool {
     expr_uses_event_dependent_discrete_with_noevent(expr, false)
 }
 
-pub(crate) fn expr_reads_event_updated_discrete_var(
-    dae_model: &dae::Dae,
-    expr: &dae::Expression,
-) -> bool {
+pub fn expr_reads_event_updated_discrete_var(dae_model: &dae::Dae, expr: &dae::Expression) -> bool {
     match expr {
         // MLS Appendix B B.1b/B.1c with MLS §8.4 discrete persistence:
         // if a projected algebraic/output equation reads an event-updated
@@ -980,7 +976,7 @@ fn expr_uses_lowered_pre_next_event_alias(expr: &dae::Expression) -> bool {
     }
 }
 
-pub(crate) fn no_state_projection_needs_event_refresh(dae_model: &dae::Dae) -> bool {
+pub fn no_state_projection_needs_event_refresh(dae_model: &dae::Dae) -> bool {
     dae_model.f_x.iter().any(|eq| {
         expr_uses_event_dependent_discrete(&eq.rhs)
             || expr_reads_event_updated_discrete_var(dae_model, &eq.rhs)
@@ -992,16 +988,14 @@ pub(crate) fn no_state_projection_needs_event_refresh(dae_model: &dae::Dae) -> b
         .any(expr_uses_event_dependent_discrete)
 }
 
-pub(crate) fn no_state_projection_uses_lowered_pre_next_event_aliases(
-    dae_model: &dae::Dae,
-) -> bool {
+pub fn no_state_projection_uses_lowered_pre_next_event_aliases(dae_model: &dae::Dae) -> bool {
     dae_model
         .f_x
         .iter()
         .any(|eq| expr_uses_lowered_pre_next_event_alias(&eq.rhs))
 }
 
-pub(crate) fn no_state_requires_live_pre_values(dae_model: &dae::Dae) -> bool {
+pub fn no_state_requires_live_pre_values(dae_model: &dae::Dae) -> bool {
     !dae_model.clock_schedules.is_empty()
         || dae_model
             .f_x
@@ -1091,7 +1085,7 @@ fn expr_uses_frozen_event_pre_values(expr: &dae::Expression) -> bool {
     }
 }
 
-pub(crate) fn no_state_requires_frozen_event_pre_values(dae_model: &dae::Dae) -> bool {
+pub fn no_state_requires_frozen_event_pre_values(dae_model: &dae::Dae) -> bool {
     // MLS §8.6 / Appendix B: ordinary event iteration advances pre(v) between
     // settle passes. MLS §16.5.1/§16.4 is narrower: clocked previous/hold
     // semantics stay anchored to the event-entry left limit for the full tick
@@ -1437,7 +1431,7 @@ fn build_settled_runtime_env_with_pre_mode(
     env
 }
 
-pub(crate) fn build_initial_settled_runtime_env(
+pub fn build_initial_settled_runtime_env(
     ctx: &NoStateSampleContext<'_>,
     y: &mut [f64],
     t: f64,
@@ -1948,7 +1942,7 @@ pub use output::{
     collect_algebraic_samples, collect_reconstruction_discrete_context_names,
     finalize_algebraic_outputs,
 };
-pub(crate) use output::{
+pub use output::{
     collect_algebraic_samples_with_schedule_and_env_refresh,
     sampled_names_need_eliminated_env_with_runtime_closure,
 };

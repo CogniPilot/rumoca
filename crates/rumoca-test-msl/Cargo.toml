@@ -19,6 +19,8 @@ mimalloc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 rumoca-session = { workspace = true }
+rumoca-sim = { workspace = true }
+rumoca-solver-diffsol = { workspace = true }
 
 [dev-dependencies]
 walkdir = "2.5"
@@ -40,9 +42,8 @@ rumoca-phase-flatten = { workspace = true }
 rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
-rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
-rumoca-phase-solve = { workspace = true }
+rumoca-phase-structural = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
 rumoca-session = { workspace = true }
 

@@ -88,22 +88,32 @@ pub mod templates {
     pub const FLAT_MODELICA: &str = include_str!("templates/flat_modelica.mo.jinja");
     /// FMI 2.0 Model Exchange — modelDescription.xml template.
     pub const FMI2_MODEL_DESCRIPTION: &str =
-        include_str!("templates/fmi2_model_description.xml.jinja");
+        include_str!("templates/fmi2/modelDescription.xml.jinja");
     /// FMI 2.0 Model Exchange — C source implementing the FMI2 API.
-    pub const FMI2_MODEL: &str = include_str!("templates/fmi2_model.c.jinja");
+    pub const FMI2_MODEL: &str = include_str!("templates/fmi2/model.c.jinja");
+    /// FMI 2.0 multi-file compile target manifest.
+    pub const FMI2_TARGET_MANIFEST: &str = include_str!("templates/fmi2/target.yaml");
     /// FMI 2.0 test driver — standalone main() that simulates via FMI2 ME and outputs CSV.
-    pub const FMI2_TEST_DRIVER: &str = include_str!("templates/fmi2_test_driver.c.jinja");
+    pub const FMI2_TEST_DRIVER: &str = include_str!("templates/fmi2/test_driver.c.jinja");
     /// FMI 3.0 Model Exchange — modelDescription.xml template.
     pub const FMI3_MODEL_DESCRIPTION: &str =
-        include_str!("templates/fmi3_model_description.xml.jinja");
+        include_str!("templates/fmi3/modelDescription.xml.jinja");
     /// FMI 3.0 Model Exchange — C source implementing the FMI3 API.
-    pub const FMI3_MODEL: &str = include_str!("templates/fmi3_model.c.jinja");
+    pub const FMI3_MODEL: &str = include_str!("templates/fmi3/model.c.jinja");
+    /// FMI 3.0 multi-file compile target manifest.
+    pub const FMI3_TARGET_MANIFEST: &str = include_str!("templates/fmi3/target.yaml");
     /// FMI 3.0 test driver — standalone main() that simulates via FMI3 ME and outputs CSV.
-    pub const FMI3_TEST_DRIVER: &str = include_str!("templates/fmi3_test_driver.c.jinja");
+    pub const FMI3_TEST_DRIVER: &str = include_str!("templates/fmi3/test_driver.c.jinja");
+    /// Shared FMU CMake helper template.
+    pub const FMU_CMAKE_LISTS: &str = include_str!("templates/fmu/CMakeLists.txt.jinja");
+    /// Shared FMU shell build helper template.
+    pub const FMU_BUILD_SCRIPT: &str = include_str!("templates/fmu/build.sh.jinja");
     /// Embedded C header template — struct definition with named fields, dimension macros, prototypes.
-    pub const EMBEDDED_C_H: &str = include_str!("templates/embedded_c.h.jinja");
+    pub const EMBEDDED_C_H: &str = include_str!("templates/embedded_c/model.h.jinja");
     /// Embedded C implementation template — function bodies using named struct fields.
-    pub const EMBEDDED_C_IMPL: &str = include_str!("templates/embedded_c_impl.c.jinja");
+    pub const EMBEDDED_C_IMPL: &str = include_str!("templates/embedded_c/model.c.jinja");
+    /// Embedded C multi-file compile target manifest.
+    pub const EMBEDDED_C_TARGET_MANIFEST: &str = include_str!("templates/embedded_c/target.yaml");
     /// SymPy template (Python) — symbolic DAE model with residual form and explicit solve.
     pub const SYMPY: &str = include_str!("templates/sympy.py.jinja");
 }

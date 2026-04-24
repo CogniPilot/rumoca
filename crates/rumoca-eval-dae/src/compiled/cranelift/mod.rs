@@ -2,16 +2,16 @@
 
 mod emit;
 
-use crate::compiled::VarLayout;
-use crate::compiled::ad::lower_residual_ad;
-use crate::compiled::lower::{
-    LowerError, lower_discrete_rhs, lower_expression_rows_from_expressions_with_runtime_metadata,
-    lower_initial_expression_rows_from_expressions_with_runtime_metadata, lower_initial_residual,
-    lower_residual, lower_root_conditions,
-};
 #[cfg(feature = "wasm")]
 use crate::compiled::wasm;
 use rumoca_ir_dae as dae;
+use rumoca_ir_solve::{LinearOp, RowBlock};
+use rumoca_phase_solve_lower::{
+    LowerError, build_var_layout, lower_discrete_rhs,
+    lower_expression_rows_from_expressions_with_runtime_metadata,
+    lower_initial_expression_rows_from_expressions_with_runtime_metadata, lower_initial_residual,
+    lower_residual, lower_residual_ad, lower_root_conditions,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -118,18 +118,34 @@ impl CompiledExpressionRows {
     }
 }
 
+pub fn compile_residual_row_block(rows: &RowBlock) -> Result<CompiledResidual, CompileError> {
+    let jit = emit::compile_residual_rows(&rows.rows)?;
+    Ok(CompiledResidual {
+        backend: ResidualBackend::Cranelift(Box::new(jit)),
+    })
+}
+
+pub fn compile_jacobian_row_block(rows: &RowBlock) -> Result<CompiledJacobianV, CompileError> {
+    let jit = emit::compile_jacobian_rows(&rows.rows)?;
+    Ok(CompiledJacobianV { jit })
+}
+
+pub fn compile_expression_row_block(
+    rows: &RowBlock,
+) -> Result<CompiledExpressionRows, CompileError> {
+    let jit = emit::compile_residual_rows(&rows.rows)?;
+    Ok(CompiledExpressionRows { jit })
+}
+
 pub fn compile_residual(
     dae_model: &dae::Dae,
     backend: Backend,
 ) -> Result<CompiledResidual, CompileError> {
     match backend {
         Backend::Cranelift => {
-            let layout = VarLayout::from_dae(dae_model);
+            let layout = build_var_layout(dae_model);
             let rows = lower_residual(dae_model, &layout)?;
-            let jit = emit::compile_residual_rows(&rows)?;
-            Ok(CompiledResidual {
-                backend: ResidualBackend::Cranelift(Box::new(jit)),
-            })
+            compile_residual_row_block(&RowBlock::new(rows))
         }
         #[cfg(feature = "wasm")]
         Backend::Wasm => {
@@ -148,10 +164,9 @@ pub fn compile_jacobian_v(
 ) -> Result<CompiledJacobianV, CompileError> {
     match backend {
         Backend::Cranelift => {
-            let layout = VarLayout::from_dae(dae_model);
+            let layout = build_var_layout(dae_model);
             let rows = lower_residual_ad(dae_model, &layout)?;
-            let jit = emit::compile_jacobian_rows(&rows)?;
-            Ok(CompiledJacobianV { jit })
+            compile_jacobian_row_block(&RowBlock::new(rows))
         }
         #[cfg(feature = "wasm")]
         Backend::Wasm => Err(CompileError::Input(
@@ -166,10 +181,9 @@ pub fn compile_initial_jacobian_v(
 ) -> Result<CompiledJacobianV, CompileError> {
     match backend {
         Backend::Cranelift => {
-            let layout = VarLayout::from_dae(dae_model);
-            let rows = crate::compiled::lower_initial_residual_ad(dae_model, &layout)?;
-            let jit = emit::compile_jacobian_rows(&rows)?;
-            Ok(CompiledJacobianV { jit })
+            let layout = build_var_layout(dae_model);
+            let rows = rumoca_phase_solve_lower::lower_initial_residual_ad(dae_model, &layout)?;
+            compile_jacobian_row_block(&RowBlock::new(rows))
         }
         #[cfg(feature = "wasm")]
         Backend::Wasm => Err(CompileError::Input(
@@ -179,17 +193,14 @@ pub fn compile_initial_jacobian_v(
 }
 
 fn compile_expression_rows(
-    rows: Vec<Vec<crate::compiled::linear_op::LinearOp>>,
+    rows: Vec<Vec<LinearOp>>,
     backend: Backend,
     kernel_name: &str,
 ) -> Result<CompiledExpressionRows, CompileError> {
     #[cfg(not(feature = "wasm"))]
     let _ = kernel_name;
     match backend {
-        Backend::Cranelift => {
-            let jit = emit::compile_residual_rows(&rows)?;
-            Ok(CompiledExpressionRows { jit })
-        }
+        Backend::Cranelift => compile_expression_row_block(&RowBlock::new(rows)),
         #[cfg(feature = "wasm")]
         Backend::Wasm => Err(CompileError::Input(format!(
             "WASM backend does not yet implement {kernel_name} compilation"
@@ -201,7 +212,7 @@ pub fn compile_root_conditions(
     dae_model: &dae::Dae,
     backend: Backend,
 ) -> Result<CompiledExpressionRows, CompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_root_conditions(dae_model, &layout)?;
     compile_expression_rows(rows, backend, "root-condition kernel")
 }
@@ -211,7 +222,7 @@ pub fn compile_expressions(
     expressions: &[dae::Expression],
     backend: Backend,
 ) -> Result<CompiledExpressionRows, CompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_expression_rows_from_expressions_with_runtime_metadata(
         expressions,
         &layout,
@@ -226,7 +237,7 @@ pub fn compile_initial_expressions(
     expressions: &[dae::Expression],
     backend: Backend,
 ) -> Result<CompiledExpressionRows, CompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_initial_expression_rows_from_expressions_with_runtime_metadata(
         expressions,
         &layout,
@@ -240,7 +251,7 @@ pub fn compile_discrete_rhs(
     dae_model: &dae::Dae,
     backend: Backend,
 ) -> Result<CompiledExpressionRows, CompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_discrete_rhs(dae_model, &layout)?;
     compile_expression_rows(rows, backend, "discrete RHS kernel")
 }
@@ -249,7 +260,7 @@ pub fn compile_initial_residual(
     dae_model: &dae::Dae,
     backend: Backend,
 ) -> Result<CompiledExpressionRows, CompileError> {
-    let layout = VarLayout::from_dae(dae_model);
+    let layout = build_var_layout(dae_model);
     let rows = lower_initial_residual(dae_model, &layout)?;
     compile_expression_rows(rows, backend, "initial residual kernel")
 }

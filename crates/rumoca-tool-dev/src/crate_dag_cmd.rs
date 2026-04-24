@@ -143,7 +143,7 @@ impl CrateKind {
             Self::Sim
         } else if name.starts_with("rumoca-tool-") {
             Self::Tool
-        } else if name.starts_with("rumoca-bind-") {
+        } else if name.starts_with("rumoca-bind-") || name.starts_with("rumoca-wasm-") {
             Self::Binding
         } else if name == "rumoca-contracts" {
             Self::Contracts
@@ -776,6 +776,7 @@ mod tests {
             CrateKind::from_name("rumoca-bind-python"),
             CrateKind::Binding
         );
+        assert_eq!(CrateKind::from_name("rumoca-bind-wasm"), CrateKind::Binding);
         assert_eq!(
             CrateKind::from_name("rumoca-contracts"),
             CrateKind::Contracts

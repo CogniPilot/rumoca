@@ -2,6 +2,28 @@ use std::collections::HashSet;
 
 use rumoca_ir_dae as dae;
 
+pub fn build_output_times(t_start: f64, t_end: f64, dt: f64) -> Vec<f64> {
+    if !dt.is_finite() || dt <= 0.0 {
+        if sample_time_match_with_tol(t_start, t_end) {
+            return vec![t_start];
+        }
+        return vec![t_start, t_end];
+    }
+
+    let mut times = Vec::new();
+    let mut t = t_start;
+    while t <= t_end {
+        times.push(t);
+        t += dt;
+    }
+    if let Some(&last) = times.last()
+        && !sample_time_match_with_tol(last, t_end)
+    {
+        times.push(t_end);
+    }
+    times
+}
+
 pub fn sample_time_match_with_tol(a: f64, b: f64) -> bool {
     let tol = 1e-12 * (1.0 + a.abs().max(b.abs()));
     (a - b).abs() <= tol
@@ -234,5 +256,11 @@ mod tests {
         let t_right = event_right_limit_time(t_event);
         assert!(t_right > t_event);
         assert!(t_right - t_event < 1.0e-12);
+    }
+
+    #[test]
+    fn build_output_times_handles_zero_span_and_invalid_dt() {
+        assert_eq!(build_output_times(1.0, 1.0, 0.0), vec![1.0]);
+        assert_eq!(build_output_times(1.0, 2.0, 0.0), vec![1.0, 2.0]);
     }
 }

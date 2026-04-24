@@ -761,13 +761,13 @@ pub fn propagate_runtime_alias_components_from_env(
     propagate_runtime_alias_components_from_env_with_context(&ctx, y, n_x, env)
 }
 
-pub(crate) struct RuntimeAliasPropagationContext {
+pub struct RuntimeAliasPropagationContext {
     solver_maps: crate::runtime::layout::SolverNameIndexMaps,
     runtime_anchors: HashSet<String>,
     adjacency: HashMap<String, Vec<String>>,
 }
 
-pub(crate) fn build_runtime_alias_propagation_context(
+pub fn build_runtime_alias_propagation_context(
     dae_model: &dae::Dae,
     y_len: usize,
     n_x: usize,
@@ -779,7 +779,7 @@ pub(crate) fn build_runtime_alias_propagation_context(
     }
 }
 
-pub(crate) fn propagate_runtime_alias_components_from_env_with_context(
+pub fn propagate_runtime_alias_components_from_env_with_context(
     ctx: &RuntimeAliasPropagationContext,
     y: &mut [f64],
     n_x: usize,
@@ -851,7 +851,7 @@ fn insert_alias_dependency_name_and_base(names: &mut HashSet<String>, name: &str
     changed
 }
 
-pub(crate) fn extend_runtime_alias_dependency_closure(
+pub fn extend_runtime_alias_dependency_closure(
     ctx: &RuntimeAliasPropagationContext,
     names: &mut HashSet<String>,
 ) -> bool {

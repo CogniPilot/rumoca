@@ -170,7 +170,7 @@ fn ball_example_renders_standalone_html_template() {
     );
 
     let rendered = result
-        .render_template_prepared(template_path.to_string_lossy().as_ref(), true)
+        .render_template(template_path.to_string_lossy().as_ref())
         .expect("Ball example should render the standalone HTML template");
 
     assert!(
@@ -204,11 +204,11 @@ end Simple;
 
     assert_eq!(result.dae.states.len(), 1, "one array state 'x'");
 
-    let opts = rumoca_session::runtime::SimOptions {
+    let opts = rumoca_sim::SimOptions {
         t_end: 1.0,
         ..Default::default()
     };
-    let sim = rumoca_session::runtime::simulate_dae(&result.dae, &opts)
+    let sim = rumoca_solver_diffsol::simulate_dae(&result.dae, &opts)
         .expect("vector derivative model should simulate without mass-matrix error");
 
     // After t=1, x[1] ≈ 1.0 and x[2] ≈ 2.0 (integrating constants from zero)

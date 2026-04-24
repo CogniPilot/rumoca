@@ -16,10 +16,12 @@
 //! - `RUMOCA_CASADI_MSL_LIMIT=N` — cap number of models tested
 
 use flate2::read::GzDecoder;
-use rumoca_session::analysis::{ModelDeviationMetric, SimTrace, compare_model_traces};
+use rumoca_session::codegen::{render_dae_template_with_name, templates};
 use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_session::parsing::parse_files_parallel_lenient;
-use rumoca_session::runtime::{SimOptions, SimResult, simulate_dae};
+use rumoca_sim::sim_trace_compare::{ModelDeviationMetric, SimTrace, compare_model_traces};
+use rumoca_sim::{SimOptions, SimResult};
+use rumoca_solver_diffsol::simulate_dae;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
@@ -207,12 +209,8 @@ fn casadi_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<SimTrace, String> {
-    let code = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::CASADI_MX,
-        model_name,
-    )
-    .map_err(|e| format!("render: {e}"))?;
+    let code = render_dae_template_with_name(dae, templates::CASADI_MX, model_name)
+        .map_err(|e| format!("render: {e}"))?;
 
     let dir = tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let model_path = dir.path().join("model.py");

@@ -1,4 +1,7 @@
 use super::*;
+use rumoca_session::codegen::{
+    render_dae_template_with_name, render_flat_template_with_name, templates,
+};
 
 // =============================================================================
 // Render + simulation orchestration helpers
@@ -21,22 +24,14 @@ pub(super) fn maybe_render_model_outputs(
     }
 
     write_rendered_artifact(
-        rumoca_phase_codegen::render_template_with_name(
-            &result.dae,
-            rumoca_phase_codegen::templates::DAE_MODELICA,
-            name,
-        ),
+        render_dae_template_with_name(&result.dae, templates::DAE_MODELICA, name),
         ctx.dae_dir.join(format!("{name}.mo")),
         ctx.dae_rendered,
         ctx.render_errors,
     );
 
     write_rendered_artifact(
-        rumoca_phase_codegen::render_flat_template_with_name(
-            &result.flat,
-            rumoca_phase_codegen::templates::FLAT_MODELICA,
-            name,
-        ),
+        render_flat_template_with_name(&result.flat, templates::FLAT_MODELICA, name),
         ctx.flat_dir.join(format!("{name}.mo")),
         ctx.flat_rendered,
         ctx.render_errors,

@@ -5,7 +5,7 @@
 use rumoca_ir_dae::{self as dae, Dae, VarName as DaeVarName};
 use rumoca_ir_flat as flat;
 use rumoca_phase_codegen::{render_flat_template_with_name, render_template, templates};
-use rumoca_phase_solve::{BltBlock, analyze_structure, sort_dae};
+use rumoca_phase_structural::{BltBlock, analyze_structure, sort_dae};
 use rumoca_session::compile::PhaseResult;
 use rumoca_session::{Session, SessionConfig};
 

@@ -16,7 +16,7 @@ use rumoca_eval_dae::runtime::dual::Dual;
 use rumoca_eval_dae::runtime::sim_float::SimFloat;
 use rumoca_eval_dae::runtime::{VarEnv, build_env, eval_array_values, eval_expr, lift_env};
 use rumoca_ir_dae as dae;
-use rumoca_phase_solve::{CausalStep, IcBlock};
+use rumoca_phase_structural::{CausalStep, IcBlock};
 
 type Dae = dae::Dae;
 type Expression = dae::Expression;
@@ -1031,7 +1031,7 @@ mod tests {
             mul(var_ref("R_actual"), var_ref("i")),
         )));
 
-        let plan = rumoca_phase_solve::build_ic_plan(&dae, 0).unwrap();
+        let plan = rumoca_phase_structural::build_ic_plan(&dae, 0).unwrap();
         assert_eq!(plan.len(), 2);
 
         let ok = solve_initial_blt(&mut dae, 0, &plan, 1e-10);
@@ -1070,7 +1070,7 @@ mod tests {
         dae.f_x
             .push(eq_from(sub(mul(var_ref("x"), var_ref("x")), lit(4.0))));
 
-        let plan = rumoca_phase_solve::build_ic_plan(&dae, 0).unwrap();
+        let plan = rumoca_phase_structural::build_ic_plan(&dae, 0).unwrap();
         assert_eq!(plan.len(), 1);
         assert!(matches!(&plan[0], IcBlock::ScalarNewton { .. }));
 

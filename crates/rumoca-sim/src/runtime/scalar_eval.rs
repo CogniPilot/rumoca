@@ -803,14 +803,11 @@ fn eval_scalar_expr_fast_mode(
     }
 }
 
-pub(crate) fn eval_scalar_expr_fast(expr: &dae::Expression, env: &VarEnv<f64>) -> Option<f64> {
+pub fn eval_scalar_expr_fast(expr: &dae::Expression, env: &VarEnv<f64>) -> Option<f64> {
     eval_scalar_expr_fast_mode(expr, env, ScalarEvalMode::Current)
 }
 
-pub(crate) fn eval_scalar_bool_expr_fast(
-    expr: &dae::Expression,
-    env: &VarEnv<f64>,
-) -> Option<bool> {
+pub fn eval_scalar_bool_expr_fast(expr: &dae::Expression, env: &VarEnv<f64>) -> Option<bool> {
     match expr {
         // MLS §8.3.5 / SPEC_0022 EQN-029: when-equation conditions may be
         // represented as Boolean vectors. The lowered runtime uses Array/Tuple
