@@ -6,19 +6,14 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[features]
-default = ["diffsol"]
-diffsol = ["dep:diffsol"]
-
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-core = { workspace = true }
 rumoca-eval-dae = { workspace = true }
-rumoca-phase-solve = { workspace = true }
-diffsol = { version = "0.10", optional = true }
-levenberg-marquardt = "0.15"
-nalgebra = "0.34"
+rumoca-phase-structural = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-phase-solve-lower = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
@@ -31,6 +26,10 @@ rumoca-eval-dae = { workspace = true, features = ["wasm"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rumoca-eval-dae = { workspace = true, features = ["cranelift"] }
+
+[dev-dependencies]
+levenberg-marquardt = "0.15"
+nalgebra = "0.34"
 
 [lints]
 workspace = true

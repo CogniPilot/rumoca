@@ -152,6 +152,13 @@ pub(crate) fn load_project_sources_in_session(
     sync_project_source_roots(session, parsed_roots, cache_root.as_deref())
 }
 
+pub fn load_project_sources_for_simulation(
+    session: &mut Session,
+    project_sources_json: &str,
+) -> Result<(), JsValue> {
+    load_project_sources_in_session(session, project_sources_json).map(|_| ())
+}
+
 #[cfg(test)]
 pub(crate) fn sync_project_sources_with_cache_root_for_tests(
     project_sources_json: &str,

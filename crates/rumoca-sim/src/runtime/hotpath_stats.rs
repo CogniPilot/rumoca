@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct HotpathStatsSnapshot {
+pub struct HotpathStatsSnapshot {
     pub solver_steps: u64,
     pub root_hits: u64,
     pub no_state_eval_points: u64,
@@ -43,7 +43,7 @@ fn bump(counter: &AtomicU64) {
     }
 }
 
-pub(crate) fn reset() {
+pub fn reset() {
     if !enabled() {
         return;
     }
@@ -64,7 +64,7 @@ pub(crate) fn reset() {
     }
 }
 
-pub(crate) fn snapshot() -> Option<HotpathStatsSnapshot> {
+pub fn snapshot() -> Option<HotpathStatsSnapshot> {
     if !enabled() {
         return None;
     }

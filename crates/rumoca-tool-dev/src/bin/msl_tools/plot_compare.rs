@@ -4,16 +4,17 @@ use crate::common::{
 };
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
-use rumoca_session::analysis::{
-    ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces, load_trace_json,
-};
 use rumoca_session::compile::{
     CompilationResult as SessionCompilationResult, Session, SessionConfig,
 };
 use rumoca_session::parsing::parse_files_parallel_lenient;
-use rumoca_session::runtime::{
-    SimOptions, SimResult, SimSolverMode, runtime_defined_unknown_names, simulate_dae,
+use rumoca_sim::runtime_defined_unknown_names;
+use rumoca_sim::sim_trace_compare::{
+    ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces, load_trace_json,
 };
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
+use rumoca_solver_diffsol::simulate_dae;
+use rumoca_viz_web::{UPLOT_CSS, UPLOT_JS};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,11 +23,6 @@ use std::time::Duration;
 const GRID_DEDUP_EPS: f64 = 1.0e-12;
 const SIM_TIMEOUT_SECONDS: f64 = 10.0;
 const OMC_SIM_TIMEOUT_SECONDS: u64 = 10;
-const UPLOT_JS: &str =
-    include_str!("../../../../../crates/rumoca-sim/src/with_diffsol/vendor/uplot.min.js");
-const UPLOT_CSS: &str =
-    include_str!("../../../../../crates/rumoca-sim/src/with_diffsol/vendor/uplot.min.css");
-
 #[derive(Debug, Clone, ClapArgs)]
 pub(crate) struct Args {
     /// Fully qualified model name

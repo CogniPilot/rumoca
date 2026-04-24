@@ -114,7 +114,7 @@
       "dead_likely_candidates": 28,
       "needs_targeted_test_candidates": 22
     },
-    "rumoca-phase-solve": {
+    "rumoca-phase-structural": {
       "zero_count_functions_total": 52,
       "candidates_total": 41,
       "dead_likely_candidates": 18,
@@ -137,12 +137,6 @@
       "candidates_total": 750,
       "dead_likely_candidates": 236,
       "needs_targeted_test_candidates": 138
-    },
-    "rumoca-sim-fb": {
-      "zero_count_functions_total": 76,
-      "candidates_total": 76,
-      "dead_likely_candidates": 24,
-      "needs_targeted_test_candidates": 24
     },
     "rumoca-test-msl": {
       "zero_count_functions_total": 354,

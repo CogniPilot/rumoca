@@ -107,7 +107,7 @@ pub(crate) fn rum_cli_launcher_contents(root: &Path) -> String {
     #[cfg(not(windows))]
     {
         format!(
-            "#!/bin/sh\nset -eu\ncd {}\nexec cargo run -q -p rumoca-tool-dev --bin rum -- \"$@\"\n",
+            "#!/bin/sh\nset -eu\ncd {}\ntarget_dir=${{CARGO_TARGET_DIR:-target}}\ncase \"$target_dir\" in\n  /*) rum_bin=\"$target_dir/debug/rum\" ;;\n  *) rum_bin=\"$PWD/$target_dir/debug/rum\" ;;\nesac\nbuild_log=$(mktemp \"${{TMPDIR:-/tmp}}/rum-build.XXXXXX\")\nshow_flag=\"$build_log.show\"\ncleanup() {{ rm -f \"$build_log\" \"$show_flag\"; }}\ntrap cleanup EXIT INT TERM\ncargo build -p rumoca-tool-dev --bin rum >\"$build_log\" 2>&1 &\nbuild_pid=$!\n(\n  sleep 0.5\n  if kill -0 \"$build_pid\" 2>/dev/null; then\n    touch \"$show_flag\"\n    tail -n +1 -f \"$build_log\" >&2 &\n    tail_pid=$!\n    while kill -0 \"$build_pid\" 2>/dev/null; do\n      sleep 0.1\n    done\n    kill \"$tail_pid\" 2>/dev/null || true\n  fi\n) &\nnotice_pid=$!\nif ! wait \"$build_pid\"; then\n  kill \"$notice_pid\" 2>/dev/null || true\n  if [ ! -f \"$show_flag\" ]; then\n    cat \"$build_log\" >&2\n  fi\n  exit 1\nfi\nkill \"$notice_pid\" 2>/dev/null || true\nexec \"$rum_bin\" \"$@\"\n",
             shell_single_quote(&root),
         )
     }
@@ -506,7 +506,7 @@ pub(crate) fn cmd_install_rum_cli(args: RepoCliInstallArgs) -> Result<()> {
         &launcher_path,
     );
     println!(
-        "The launcher runs `cargo run -q -p rumoca-tool-dev --bin rum -- ...` from {}.",
+        "The launcher quietly builds `rum` when needed, then runs it from {}.",
         rum_cli_install_package_dir(&root).display()
     );
     let shell = current_shell_kind();

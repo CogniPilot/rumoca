@@ -15,16 +15,28 @@ path = "src/main.rs"
 
 [features]
 default = []
-sim-fb = ["dep:rumoca-sim-fb"]
 tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-session/tracing"]
 
 [dependencies]
 # Internal crates - rumoca-session wraps all compilation phases
 rumoca-session = { workspace = true }
 rumoca-sim = { workspace = true }
+rumoca-solver-diffsol = { workspace = true }
+rumoca-viz-web = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
-rumoca-sim-fb = { workspace = true, optional = true }
+# Lockstep runtime deps
+rumoca-codec = { workspace = true }
+rumoca-codec-flatbuffers = { workspace = true }
+rumoca-input = { workspace = true }
+rumoca-input-gamepad = { workspace = true }
+rumoca-input-keyboard = { workspace = true }
+rumoca-transport-udp = { workspace = true }
+rumoca-transport-websocket = { workspace = true }
+signal-hook = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 # External dependencies
 anyhow = { workspace = true }
@@ -33,6 +45,8 @@ clap = { workspace = true }
 miette = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
+serde_yaml = { workspace = true }
+toml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
@@ -81,7 +95,7 @@ rumoca-phase-parse = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
-rumoca-phase-solve = { workspace = true }
+rumoca-phase-structural = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
 rumoca-eval-dae = { workspace = true }
 

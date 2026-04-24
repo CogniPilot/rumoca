@@ -19,14 +19,15 @@ fn collect_reconstruction_discrete_context_names_collects_discrete_refs() {
         dae::Variable::new(dae::VarName::new("d")),
     );
     let mut elim = EliminationResult::default();
-    elim.substitutions.push(rumoca_phase_solve::Substitution {
-        var_name: dae::VarName::new("y"),
-        expr: dae::Expression::VarRef {
-            name: dae::VarName::new("d"),
-            subscripts: vec![],
-        },
-        env_keys: vec![],
-    });
+    elim.substitutions
+        .push(rumoca_phase_structural::Substitution {
+            var_name: dae::VarName::new("y"),
+            expr: dae::Expression::VarRef {
+                name: dae::VarName::new("d"),
+                subscripts: vec![],
+            },
+            env_keys: vec![],
+        });
     let extras = collect_reconstruction_discrete_context_names(&dae_model, &elim, &[]);
     assert_eq!(extras, vec!["d".to_string()]);
 }
@@ -34,11 +35,12 @@ fn collect_reconstruction_discrete_context_names_collects_discrete_refs() {
 #[test]
 fn sampled_names_need_eliminated_env_only_for_substitution_targets() {
     let mut elim = EliminationResult::default();
-    elim.substitutions.push(rumoca_phase_solve::Substitution {
-        var_name: dae::VarName::new("tmp"),
-        expr: dae::Expression::Literal(dae::Literal::Real(1.0)),
-        env_keys: vec!["tmp".to_string()],
-    });
+    elim.substitutions
+        .push(rumoca_phase_structural::Substitution {
+            var_name: dae::VarName::new("tmp"),
+            expr: dae::Expression::Literal(dae::Literal::Real(1.0)),
+            env_keys: vec!["tmp".to_string()],
+        });
 
     assert!(!sampled_names_need_eliminated_env(
         &["y".to_string()],
@@ -92,11 +94,12 @@ fn sampled_names_need_eliminated_env_tracks_direct_and_alias_dependency_closure(
     ));
 
     let mut elim = EliminationResult::default();
-    elim.substitutions.push(rumoca_phase_solve::Substitution {
-        var_name: dae::VarName::new("source"),
-        expr: dae::Expression::Literal(dae::Literal::Real(1.0)),
-        env_keys: vec!["source".to_string()],
-    });
+    elim.substitutions
+        .push(rumoca_phase_structural::Substitution {
+            var_name: dae::VarName::new("source"),
+            expr: dae::Expression::Literal(dae::Literal::Real(1.0)),
+            env_keys: vec!["source".to_string()],
+        });
 
     let direct_assignment_ctx =
         crate::runtime::assignment::build_runtime_direct_assignment_context(&dae_model, 0, 0);

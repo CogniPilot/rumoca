@@ -34,7 +34,7 @@ use array_helpers::{
     eval_field_access_array_values, eval_unary_builtin_array_values, infer_dims_from_values,
 };
 use builtin_table::{eval_builtin_product, eval_builtin_sum};
-#[cfg(any(feature = "cranelift", test))]
+#[cfg(feature = "cranelift")]
 pub(crate) use builtin_table::{
     eval_table_bound_value, eval_table_lookup_slope_value, eval_table_lookup_value,
     eval_time_table_next_event_value,

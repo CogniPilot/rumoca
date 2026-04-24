@@ -1,0 +1,15 @@
+[package]
+name = "rumoca-input-keyboard"
+description = "Crossterm-backed keyboard device for rumoca-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-input = { workspace = true }
+anyhow = { workspace = true }
+crossterm = "0.28"
+
+[lints]
+workspace = true

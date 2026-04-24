@@ -8,7 +8,7 @@ use crate::{compile_requested_model, qualify_input_model_name, with_singleton_se
 /// driven from JavaScript via `requestAnimationFrame`.
 #[wasm_bindgen]
 pub struct WasmStepper {
-    stepper: rumoca_sim::SimStepper,
+    stepper: rumoca_solver_diffsol::SimStepper,
     /// Kept for `reset()` — recreates the stepper from scratch.
     dae: rumoca_session::compile::Dae,
 }
@@ -27,12 +27,12 @@ impl WasmStepper {
             Ok(result.dae)
         })?;
 
-        let opts = rumoca_sim::StepperOptions {
+        let opts = rumoca_solver_diffsol::StepperOptions {
             rtol: 1e-3,
             atol: 1e-3,
-            ..rumoca_sim::StepperOptions::default()
+            ..rumoca_solver_diffsol::StepperOptions::default()
         };
-        let stepper = rumoca_sim::SimStepper::new(&dae, opts)
+        let stepper = rumoca_solver_diffsol::SimStepper::new(&dae, opts)
             .map_err(|e| JsValue::from_str(&format!("Stepper creation error: {e}")))?;
 
         Ok(WasmStepper { stepper, dae })
@@ -84,12 +84,12 @@ impl WasmStepper {
 
     /// Reset the simulation to initial conditions.
     pub fn reset(&mut self) -> Result<(), JsValue> {
-        let opts = rumoca_sim::StepperOptions {
+        let opts = rumoca_solver_diffsol::StepperOptions {
             rtol: 1e-3,
             atol: 1e-3,
-            ..rumoca_sim::StepperOptions::default()
+            ..rumoca_solver_diffsol::StepperOptions::default()
         };
-        self.stepper = rumoca_sim::SimStepper::new(&self.dae, opts)
+        self.stepper = rumoca_solver_diffsol::SimStepper::new(&self.dae, opts)
             .map_err(|e| JsValue::from_str(&format!("Reset failed: {e}")))?;
         Ok(())
     }

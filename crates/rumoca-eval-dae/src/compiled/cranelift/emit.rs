@@ -1,5 +1,4 @@
 use super::CompileError;
-use crate::compiled::linear_op::{BinaryOp, CompareOp, LinearOp, UnaryOp};
 use crate::runtime::eval::{
     eval_table_bound_value, eval_table_lookup_slope_value, eval_table_lookup_value,
     eval_time_table_next_event_value,
@@ -11,6 +10,7 @@ use cranelift_codegen::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
+use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, UnaryOp};
 use std::cell::RefCell;
 use std::collections::HashMap;
 

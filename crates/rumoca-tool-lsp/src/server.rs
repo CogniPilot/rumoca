@@ -22,9 +22,6 @@ use rumoca_session::project::{
     resync_model_sidecars_with_move_hints, write_model_simulation_preset,
     write_plot_views_for_model,
 };
-use rumoca_session::runtime::{
-    SimOptions, SimResult, SimSolverMode, dae_balance, dae_balance_detail, simulate_dae,
-};
 use rumoca_session::source_roots::{
     PackageLayoutError, SourceRootCacheStatus, SourceRootCacheTiming, canonical_path_key,
     classify_configured_source_root_kind, merge_source_root_paths, parse_source_root_with_cache,
@@ -32,6 +29,12 @@ use rumoca_session::source_roots::{
     render_source_root_indexing_finished_message, render_source_root_indexing_started_message,
     render_source_root_status_message, source_root_paths_changed, source_root_source_set_key,
 };
+use rumoca_sim::{SimOptions, SimSolverMode};
+use rumoca_sim::{
+    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
+    build_simulation_payload, dae_balance, dae_balance_detail,
+};
+use rumoca_solver_diffsol::simulate_dae;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
@@ -401,26 +404,11 @@ impl ModelicaLanguageServer {
         opts
     }
 
-    fn simulation_success_value(payload: Value, metrics: SimulationMetrics) -> Value {
+    fn simulation_success_value(payload: Value, metrics: Value) -> Value {
         json!({
             "ok": true,
             "payload": payload,
-            "metrics": {
-                "compileSeconds": metrics.compile_elapsed,
-                "simulateSeconds": metrics.sim_elapsed,
-                "points": metrics.point_count,
-                "variables": metrics.variable_count,
-                "compilePhaseSeconds": {
-                    "prepareContext": metrics.prepare_context_seconds,
-                    "buildSnapshot": metrics.build_snapshot_seconds,
-                    "strictCompile": metrics.strict_compile_seconds,
-                    "strictResolve": metrics.strict_resolve_seconds,
-                    "instantiate": metrics.instantiate_seconds,
-                    "typecheck": metrics.typecheck_seconds,
-                    "flatten": metrics.flatten_seconds,
-                    "todae": metrics.todae_seconds,
-                },
-            }
+            "metrics": metrics,
         })
     }
 
@@ -448,8 +436,6 @@ impl ModelicaLanguageServer {
         SimulationMetrics {
             compile_elapsed,
             sim_elapsed: 0.0,
-            point_count: 0,
-            variable_count: 0,
             prepare_context_seconds: compiled.timings.prepare_context_seconds,
             build_snapshot_seconds: compiled.timings.build_snapshot_seconds,
             strict_compile_seconds: compiled.timings.strict_compile_seconds,
@@ -473,73 +459,33 @@ impl ModelicaLanguageServer {
         None
     }
 
-    fn build_simulation_payload(
-        sim: &SimResult,
+    fn simulation_request_summary(
         settings: &SimulationRequestSettings,
         opts: &SimOptions,
-        metrics: SimulationMetrics,
-    ) -> Value {
-        let t_start_actual = sim.times.first().copied().unwrap_or(opts.t_start);
-        let t_end_actual = sim.times.last().copied().unwrap_or(opts.t_start);
-        let mut all_data = Vec::with_capacity(1 + sim.data.len());
-        all_data.push(sim.times.clone());
-        all_data.extend(sim.data.clone());
+    ) -> SimulationRequestSummary {
+        SimulationRequestSummary {
+            solver: settings.solver.clone(),
+            t_start: opts.t_start,
+            t_end: settings.t_end,
+            dt: settings.dt,
+            rtol: opts.rtol,
+            atol: opts.atol,
+        }
+    }
 
-        let sim_details = json!({
-            "actual": {
-                "t_start": t_start_actual,
-                "t_end": t_end_actual,
-                "points": sim.times.len(),
-                "variables": sim.names.len(),
-            },
-            "requested": {
-                "solver": settings.solver,
-                "t_start": opts.t_start,
-                "t_end": settings.t_end,
-                "dt": settings.dt,
-                "rtol": opts.rtol,
-                "atol": opts.atol,
-            },
-            "timing": {
-                "compile_seconds": metrics.compile_elapsed,
-                "simulate_seconds": metrics.sim_elapsed,
-                "compile_phase_seconds": {
-                    "prepare_context": metrics.prepare_context_seconds,
-                    "build_snapshot": metrics.build_snapshot_seconds,
-                    "strict_compile": metrics.strict_compile_seconds,
-                    "strict_resolve": metrics.strict_resolve_seconds,
-                    "instantiate": metrics.instantiate_seconds,
-                    "typecheck": metrics.typecheck_seconds,
-                    "flatten": metrics.flatten_seconds,
-                    "todae": metrics.todae_seconds,
-                }
-            }
-        });
-
-        json!({
-            "version": 1,
-            "names": sim.names,
-            "allData": all_data,
-            "nStates": sim.n_states,
-            "variableMeta": sim.variable_meta.iter().map(|meta| {
-                json!({
-                    "name": meta.name,
-                    "role": meta.role,
-                    "is_state": meta.is_state,
-                    "value_type": meta.value_type,
-                    "variability": meta.variability,
-                    "time_domain": meta.time_domain,
-                    "unit": meta.unit,
-                    "start": meta.start,
-                    "min": meta.min,
-                    "max": meta.max,
-                    "nominal": meta.nominal,
-                    "fixed": meta.fixed,
-                    "description": meta.description,
-                })
-            }).collect::<Vec<_>>(),
-            "simDetails": sim_details,
-        })
+    fn simulation_report_metrics(metrics: SimulationMetrics) -> SimulationRunMetrics {
+        SimulationRunMetrics {
+            compile_seconds: Some(metrics.compile_elapsed),
+            simulate_seconds: Some(metrics.sim_elapsed),
+            prepare_context_seconds: Some(metrics.prepare_context_seconds),
+            build_snapshot_seconds: Some(metrics.build_snapshot_seconds),
+            strict_compile_seconds: Some(metrics.strict_compile_seconds),
+            strict_resolve_seconds: Some(metrics.strict_resolve_seconds),
+            instantiate_seconds: Some(metrics.instantiate_seconds),
+            typecheck_seconds: Some(metrics.typecheck_seconds),
+            flatten_seconds: Some(metrics.flatten_seconds),
+            todae_seconds: Some(metrics.todae_seconds),
+        }
     }
 
     async fn execute_simulate_model(
@@ -644,10 +590,11 @@ impl ModelicaLanguageServer {
             stats_delta,
         );
         metrics.sim_elapsed = sim_elapsed;
-        metrics.point_count = sim.times.len();
-        metrics.variable_count = sim.names.len();
-        let payload = Self::build_simulation_payload(&sim, &settings, &opts, metrics);
-        Some(Self::simulation_success_value(payload, metrics))
+        let report_request = Self::simulation_request_summary(&settings, &opts);
+        let report_metrics = Self::simulation_report_metrics(metrics);
+        let payload = build_simulation_payload(&sim, &report_request, &report_metrics);
+        let metrics_value = build_simulation_metrics_value(&sim, &report_metrics);
+        Some(Self::simulation_success_value(payload, metrics_value))
     }
 
     async fn ensure_completion_source_roots(

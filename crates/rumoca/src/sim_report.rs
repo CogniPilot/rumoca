@@ -3,11 +3,13 @@ use std::io;
 use std::path::Path;
 
 use rumoca_session::project::{PlotViewConfig, load_plot_views_for_model};
-use rumoca_session::runtime::SimResult;
-use rumoca_sim::results_web::{
-    ResultsHtmlDocument, SimulationRequestSummary, SimulationRunMetrics,
-    build_results_html_document, build_simulation_metrics_value, build_simulation_payload,
-    default_visualization_views_value,
+use rumoca_sim::SimResult;
+use rumoca_sim::{
+    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
+    build_simulation_payload,
+};
+use rumoca_viz_web::{
+    ResultsHtmlDocument, build_results_html_document, default_visualization_views_value,
 };
 use serde_json::{Value, json};
 
@@ -100,7 +102,7 @@ fn hydrate_plot_view(workspace_root: &Path, view: PlotViewConfig) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_session::runtime::SimVariableMeta;
+    use rumoca_sim::SimVariableMeta;
 
     #[test]
     fn builds_shared_report_document() {

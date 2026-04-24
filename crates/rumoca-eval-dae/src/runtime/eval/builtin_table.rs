@@ -1,5 +1,5 @@
 use super::*;
-#[cfg(any(feature = "cranelift", test))]
+#[cfg(feature = "cranelift")]
 use crate::runtime::dual::Dual;
 
 pub(super) fn eval_builtin_sum<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> T {
@@ -64,7 +64,7 @@ pub(crate) fn eval_table_bound_value(table_id: f64, max: bool) -> f64 {
         .unwrap_or(0.0)
 }
 
-#[cfg(any(feature = "cranelift", test))]
+#[cfg(feature = "cranelift")]
 pub(crate) fn eval_table_lookup_value(table_id: f64, col_arg: f64, x: f64) -> f64 {
     let Some(spec) = lookup_external_table(table_id) else {
         return 0.0;
@@ -73,7 +73,7 @@ pub(crate) fn eval_table_lookup_value(table_id: f64, col_arg: f64, x: f64) -> f6
     eval_table_1d_lookup(&spec, col_idx, x)
 }
 
-#[cfg(any(feature = "cranelift", test))]
+#[cfg(feature = "cranelift")]
 pub(crate) fn eval_table_lookup_slope_value(table_id: f64, col_arg: f64, x: f64) -> f64 {
     let Some(spec) = lookup_external_table(table_id) else {
         return 0.0;

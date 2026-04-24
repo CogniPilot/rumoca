@@ -22,12 +22,14 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod sim_report;
+mod target_manifest;
+
+mod sim;
 
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
-#[cfg(feature = "sim-fb")]
 use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
@@ -43,7 +45,8 @@ use rumoca_session::{
         write_last_simulation_result_for_model, write_simulation_run,
     },
 };
-use rumoca_sim::results_web::{SimulationRequestSummary, SimulationRunMetrics};
+use rumoca_sim::{SimOptions, SimSolverMode};
+use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, PartialLintOptions};
 use walkdir::WalkDir;
 
@@ -67,10 +70,6 @@ enum Commands {
     Simulate(SimulateArgs),
     /// Compile and print balance/summary information
     Check(CheckArgs),
-    /// Export an FMU (Functional Mock-up Unit)
-    ExportFmu(ExportFmuArgs),
-    /// Export embedded C (.h and .c files)
-    ExportEmbeddedC(ExportEmbeddedCArgs),
     /// Format Modelica files
     Fmt(FmtArgs),
     /// Lint Modelica files
@@ -83,9 +82,8 @@ enum Commands {
     },
     /// Manage workspace-side Rumoca project sidecars
     Project(ProjectArgs),
-    /// Run FlatBuffer-based SIL simulation with 3D viewer
-    #[cfg(feature = "sim-fb")]
-    SimFb(SimFbArgs),
+    /// Run, validate, or scaffold a lockstep simulation config
+    Lockstep(LockstepCommandArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -116,26 +114,37 @@ struct ProjectSyncArgs {
     moves: Vec<String>,
 }
 
-#[cfg(feature = "sim-fb")]
 #[derive(Args, Debug)]
-struct SimFbArgs {
-    /// Modelica file containing the plant model
-    #[arg(name = "MODELICA_FILE")]
-    model_file: String,
+struct LockstepCommandArgs {
+    #[command(subcommand)]
+    command: LockstepSubcommand,
+}
 
-    /// Model name to simulate (auto-inferred when omitted)
+#[derive(Subcommand, Debug)]
+enum LockstepSubcommand {
+    /// Run a lockstep simulation from a TOML config
+    Run(LockstepRunArgs),
+    /// Validate a config file without running
+    Check(LockstepCheckArgs),
+    /// Print a fully-commented template config to stdout
+    Init,
+}
+
+#[derive(Args, Debug)]
+struct LockstepRunArgs {
+    /// Path to the simulation config TOML
     #[arg(short, long)]
-    model: Option<String>,
-
-    /// Path to SIL config TOML (schema paths, UDP ports, field routing)
-    #[arg(long)]
     config: String,
 
-    /// Path to a scene script (.js) for 3D visualization (default: quadrotor)
+    /// Override [model].file from the config
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Override [transport.http].scene from the config (.js scene script)
     #[arg(long)]
     scene: Option<String>,
 
-    /// Enable debug overlays, L/Y log download, and P render log in browser
+    /// Enable debug overlays, log download, and P render log in browser
     #[arg(long)]
     debug: bool,
 
@@ -146,6 +155,13 @@ struct SimFbArgs {
     /// WebSocket proxy port
     #[arg(long, default_value = "8081")]
     ws_port: u16,
+}
+
+#[derive(Args, Debug)]
+struct LockstepCheckArgs {
+    /// Path to the simulation config TOML
+    #[arg(short, long)]
+    config: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -178,20 +194,28 @@ struct CompileArgs {
     input: ModelInputArgs,
 
     /// Export to JSON (native, recommended)
-    #[arg(long, conflicts_with_all = ["template_file", "backend"])]
+    #[arg(long, conflicts_with_all = ["template_file", "backend", "target"])]
     json: bool,
 
     /// Built-in backend for code generation
-    #[arg(short, long, value_enum, conflicts_with = "template_file")]
+    #[arg(short, long, value_enum, conflicts_with_all = ["template_file", "target"])]
     backend: Option<Backend>,
 
     /// Template file for custom export (advanced)
-    #[arg(short, long)]
+    #[arg(short, long, conflicts_with = "target")]
     template_file: Option<String>,
 
-    /// Render templates from a structurally prepared DAE instead of raw compile output
-    #[arg(long, requires = "template_file")]
-    template_prepared: bool,
+    /// Multi-file compile target: fmi2, fmi3, embedded-c, or a directory containing target.yaml
+    #[arg(long, value_name = "TARGET")]
+    target: Option<String>,
+
+    /// Output file or directory for generated artifacts
+    #[arg(short, long, requires = "target")]
+    output: Option<PathBuf>,
+
+    /// Build/package target artifacts when supported
+    #[arg(long, requires = "target")]
+    build: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -221,7 +245,7 @@ enum Backend {
 
 impl Backend {
     fn template(self) -> &'static str {
-        use rumoca_session::runtime::templates;
+        use rumoca_session::codegen::templates;
         match self {
             Backend::CasadiSx => templates::CASADI_SX,
             Backend::CasadiMx => templates::CASADI_MX,
@@ -266,12 +290,12 @@ enum SimulateSolverMode {
     RkLike,
 }
 
-impl From<SimulateSolverMode> for rumoca_session::runtime::SimSolverMode {
+impl From<SimulateSolverMode> for SimSolverMode {
     fn from(value: SimulateSolverMode) -> Self {
         match value {
-            SimulateSolverMode::Auto => rumoca_session::runtime::SimSolverMode::Auto,
-            SimulateSolverMode::Bdf => rumoca_session::runtime::SimSolverMode::Bdf,
-            SimulateSolverMode::RkLike => rumoca_session::runtime::SimSolverMode::RkLike,
+            SimulateSolverMode::Auto => SimSolverMode::Auto,
+            SimulateSolverMode::Bdf => SimSolverMode::Bdf,
+            SimulateSolverMode::RkLike => SimSolverMode::RkLike,
         }
     }
 }
@@ -290,42 +314,6 @@ impl SimulateSolverMode {
 struct CheckArgs {
     #[command(flatten)]
     input: ModelInputArgs,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum FmiVersionArg {
-    #[value(name = "2")]
-    Fmi2,
-    #[value(name = "3")]
-    Fmi3,
-}
-
-#[derive(Args, Debug)]
-struct ExportFmuArgs {
-    #[command(flatten)]
-    input: ModelInputArgs,
-
-    /// Output directory for generated FMU sources (default: <MODEL>.fmu/)
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// FMI version to target (2 or 3, default: 2)
-    #[arg(long, value_enum, default_value = "2")]
-    fmi_version: FmiVersionArg,
-
-    /// Skip compiling and packaging the .fmu archive (only generate sources)
-    #[arg(long, default_value_t = false)]
-    no_build: bool,
-}
-
-#[derive(Args, Debug)]
-struct ExportEmbeddedCArgs {
-    #[command(flatten)]
-    input: ModelInputArgs,
-
-    /// Output directory for generated .h and .c files (default: <MODEL>/)
-    #[arg(short, long)]
-    output: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -441,8 +429,6 @@ fn try_main() -> Result<()> {
         Commands::Compile(args) => run_compile(args),
         Commands::Simulate(args) => run_simulate(args),
         Commands::Check(args) => run_check(args),
-        Commands::ExportFmu(args) => run_export_fmu(args),
-        Commands::ExportEmbeddedC(args) => run_export_embedded_c(args),
         Commands::Fmt(args) => run_fmt(args),
         Commands::Lint(args) => run_lint(args),
         Commands::Completions { shell } => {
@@ -450,8 +436,11 @@ fn try_main() -> Result<()> {
             Ok(())
         }
         Commands::Project(args) => run_project(args),
-        #[cfg(feature = "sim-fb")]
-        Commands::SimFb(args) => run_sim_fb(args),
+        Commands::Lockstep(args) => match args.command {
+            LockstepSubcommand::Run(run_args) => run_lockstep_run(run_args),
+            LockstepSubcommand::Check(check_args) => run_lockstep_check(check_args),
+            LockstepSubcommand::Init => run_lockstep_init(),
+        },
     }
 }
 
@@ -643,32 +632,99 @@ fn parse_move_hints(raw_moves: &[String]) -> Result<Vec<ProjectFileMoveHint>> {
     Ok(out)
 }
 
-#[cfg(feature = "sim-fb")]
-fn run_sim_fb(args: SimFbArgs) -> Result<()> {
-    let model_source = std::fs::read_to_string(&args.model_file)
-        .with_context(|| format!("Read model file: {}", args.model_file))?;
+fn resolve_path(base: &Path, rel: &str) -> std::path::PathBuf {
+    let p = Path::new(rel);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    }
+}
 
-    let model_name = args.model.unwrap_or_else(|| {
-        Path::new(&args.model_file)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Model")
-            .to_string()
+fn run_lockstep_run(args: LockstepRunArgs) -> Result<()> {
+    let config = crate::sim::config::SimulationConfig::load(Path::new(&args.config))
+        .with_context(|| format!("Load lockstep config: {}", args.config))?;
+
+    let config_dir = Path::new(&args.config).parent().unwrap_or(Path::new("."));
+
+    // Resolve physics file: --model override > config [physics].file.
+    let physics_path_str = args
+        .model
+        .clone()
+        .or_else(|| config.physics.as_ref().map(|m| m.file.clone()))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no physics model specified: provide --model <path> or a [physics].file in the config"
+            )
+        })?;
+    let physics_path = resolve_path(config_dir, &physics_path_str);
+    let physics_source = std::fs::read_to_string(&physics_path)
+        .with_context(|| format!("Read physics model file: {}", physics_path.display()))?;
+    let physics_name = config
+        .physics
+        .as_ref()
+        .map(|m| m.name.clone())
+        .or_else(|| {
+            physics_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(String::from)
+        })
+        .unwrap_or_else(|| "Model".to_string());
+
+    // If a [controller] section is present, synthesize a composition
+    // wrapper from physics + controller + routes.
+    let (model_source, model_name) = match config.controller.as_ref() {
+        Some(ctrl) => {
+            let ctrl_path = resolve_path(config_dir, &ctrl.file);
+            let ctrl_source = std::fs::read_to_string(&ctrl_path)
+                .with_context(|| format!("Read controller model file: {}", ctrl_path.display()))?;
+            let combined = sim::compose::synthesize(
+                &physics_source,
+                &physics_name,
+                &ctrl_source,
+                &ctrl.name,
+                &ctrl.actuate,
+                &ctrl.sense,
+            )
+            .context("Synthesize composed wrapper")?;
+            eprintln!(
+                "  Composed: {}({}) + {}({})",
+                physics_name,
+                physics_path.display(),
+                ctrl.name,
+                ctrl_path.display()
+            );
+            (combined, sim::compose::WRAPPER_MODEL_NAME.to_string())
+        }
+        None => (physics_source, physics_name.clone()),
+    };
+
+    // Resolve scene: --scene override > [transport.http].scene in the config.
+    let scene_ref = args.scene.clone().or_else(|| {
+        config
+            .transport
+            .as_ref()
+            .and_then(|t| t.http.as_ref())
+            .and_then(|h| h.scene.clone())
     });
-
-    let config = rumoca_sim_fb::config::SilConfig::load(Path::new(&args.config))
-        .with_context(|| format!("Load SIL config: {}", args.config))?;
-
-    // Load scene script if provided
-    let scene_script = match args.scene {
-        Some(path) => Some(
-            std::fs::read_to_string(&path)
-                .with_context(|| format!("Read scene script: {}", path))?,
-        ),
+    let scene_script = match scene_ref {
+        Some(rel) => {
+            let scene_path = Path::new(&rel);
+            let scene_full = if scene_path.is_absolute() {
+                scene_path.to_path_buf()
+            } else {
+                config_dir.join(scene_path)
+            };
+            Some(
+                std::fs::read_to_string(&scene_full)
+                    .with_context(|| format!("Read scene script: {}", scene_full.display()))?,
+            )
+        }
         None => None,
     };
 
-    rumoca_sim_fb::run(rumoca_sim_fb::SimFbArgs {
+    crate::sim::run(crate::sim::SimArgs {
         model_source,
         model_name,
         config,
@@ -679,6 +735,19 @@ fn run_sim_fb(args: SimFbArgs) -> Result<()> {
     })
 }
 
+fn run_lockstep_check(args: LockstepCheckArgs) -> Result<()> {
+    let _config = crate::sim::config::SimulationConfig::load(Path::new(&args.config))
+        .with_context(|| format!("Load lockstep config: {}", args.config))?;
+    println!("{}: config OK", args.config);
+    Ok(())
+}
+
+fn run_lockstep_init() -> Result<()> {
+    const TEMPLATE: &str = include_str!("sim/template.toml");
+    print!("{TEMPLATE}");
+    Ok(())
+}
+
 fn run_compile(args: CompileArgs) -> Result<()> {
     init_debug_tracing(args.input.debug);
     let (result, model) = compile_with_inferred_model(&args.input)?;
@@ -686,22 +755,31 @@ fn run_compile(args: CompileArgs) -> Result<()> {
         println!("{}", result.to_json()?);
         return Ok(());
     }
+    if let Some(target) = args.target {
+        run_compile_target(&result, &model, target, args.output, args.build)?;
+        return Ok(());
+    }
     if let Some(backend) = args.backend {
-        let rendered =
-            result.render_template_str_prepared_with_name(backend.template(), &model, true)?;
+        let rendered = result.render_template_str_with_name(backend.template(), &model)?;
         print!("{rendered}");
         return Ok(());
     }
     if let Some(template_file) = args.template_file {
-        if args.template_prepared {
-            print!("{}", result.render_template_prepared(&template_file, true)?);
-        } else {
-            print!("{}", result.render_template(&template_file)?);
-        }
+        print!("{}", result.render_template(&template_file)?);
         return Ok(());
     }
     print_summary(&model, &result);
     Ok(())
+}
+
+fn run_compile_target(
+    result: &CompilationResult,
+    model: &str,
+    target: String,
+    output: Option<PathBuf>,
+    build: bool,
+) -> Result<()> {
+    target_manifest::compile_target(result, model, &target, output, build)
 }
 
 fn run_simulate(args: SimulateArgs) -> Result<()> {
@@ -726,205 +804,8 @@ fn run_check(args: CheckArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
-    use rumoca_session::runtime::{fmi2_templates, fmi3_templates};
-    use std::fs;
-
-    init_debug_tracing(args.input.debug);
-    let (result, model) = compile_with_inferred_model(&args.input)?;
-
-    // Sanitize model identifier (replace dots with underscores for C compatibility)
-    let model_identifier = model.replace('.', "_");
-
-    // Select templates based on FMI version
-    let (xml_template, c_template, fmi_label) = match args.fmi_version {
-        FmiVersionArg::Fmi2 => (
-            fmi2_templates::FMI2_MODEL_DESCRIPTION,
-            fmi2_templates::FMI2_MODEL,
-            "FMI 2.0",
-        ),
-        FmiVersionArg::Fmi3 => (
-            fmi3_templates::FMI3_MODEL_DESCRIPTION,
-            fmi3_templates::FMI3_MODEL,
-            "FMI 3.0",
-        ),
-    };
-
-    eprintln!("Exporting {} FMU for {}", fmi_label, model_identifier);
-
-    let out_dir = args
-        .output
-        .unwrap_or_else(|| PathBuf::from(format!("{}.fmu", model_identifier)));
-
-    // Create FMU directory structure
-    let sources_dir = out_dir.join("sources");
-    fs::create_dir_all(&sources_dir)?;
-
-    // Render and write modelDescription.xml (uses raw DAE for full variable info)
-    let xml = result.render_template_str_with_name(xml_template, &model_identifier)?;
-    let xml_path = out_dir.join("modelDescription.xml");
-    fs::write(&xml_path, &xml)?;
-    eprintln!("  wrote {}", xml_path.display());
-
-    // Render and write C source (uses prepared DAE for correct equation structure
-    // and parameter initialization ordering)
-    let c_code =
-        result.render_template_str_prepared_with_name(c_template, &model_identifier, true)?;
-    let c_path = sources_dir.join(format!("{}.c", model_identifier));
-    fs::write(&c_path, &c_code)?;
-    eprintln!("  wrote {}", c_path.display());
-
-    // Write CMakeLists.txt and build script
-    write_fmu_cmake(&sources_dir, &model_identifier)?;
-    write_fmu_build_script(&out_dir, &model_identifier)?;
-
-    if args.no_build {
-        eprintln!(
-            "\nFMU sources exported to: {}\nRun ./build.sh to compile and package the .fmu",
-            out_dir.display()
-        );
-    } else {
-        build_fmu(&out_dir, &model_identifier)?;
-    }
-
-    Ok(())
-}
-
-fn run_export_embedded_c(args: ExportEmbeddedCArgs) -> Result<()> {
-    use rumoca_session::runtime::embedded_c_templates;
-    use std::fs;
-
-    init_debug_tracing(args.input.debug);
-    let (result, model) = compile_with_inferred_model(&args.input)?;
-
-    let model_identifier = model.replace('.', "_");
-
-    // Validate eFMI constraint: reject continuous derivatives
-    // eFMI embedded C only supports discrete states with pre() causality, not continuous ODE dynamics
-    if !result.dae.states.is_empty() {
-        anyhow::bail!(
-            "Embedded C code generation does not support continuous states (der(x)) \
-             per eFMI semantics. Model '{}' has {} continuous state(s). \
-             Use discrete states with 'when sample()' and 'pre()' references instead.",
-            model_identifier,
-            result.dae.states.len()
-        );
-    }
-
-    eprintln!("Exporting embedded C for {}", model_identifier);
-
-    let out_dir = args
-        .output
-        .unwrap_or_else(|| PathBuf::from(&model_identifier));
-    fs::create_dir_all(&out_dir)?;
-
-    // Render header (.h)
-    let h_code = result.render_template_str_prepared_with_name(
-        embedded_c_templates::EMBEDDED_C_H,
-        &model_identifier,
-        true,
-    )?;
-    let h_path = out_dir.join(format!("{}.h", model_identifier));
-    fs::write(&h_path, &h_code)?;
-    eprintln!("  wrote {}", h_path.display());
-
-    // Render implementation (.c)
-    let c_code = result.render_template_str_prepared_with_name(
-        embedded_c_templates::EMBEDDED_C_IMPL,
-        &model_identifier,
-        true,
-    )?;
-    let c_path = out_dir.join(format!("{}.c", model_identifier));
-    fs::write(&c_path, &c_code)?;
-    eprintln!("  wrote {}", c_path.display());
-
-    eprintln!(
-        "\nEmbedded C sources exported to: {}\nCompile: cc -O2 -Wall -c {}/{}.c",
-        out_dir.display(),
-        out_dir.display(),
-        model_identifier,
-    );
-
-    Ok(())
-}
-
-/// Write a CMakeLists.txt for building the FMU shared library.
-fn write_fmu_cmake(sources_dir: &Path, model_identifier: &str) -> Result<()> {
-    let cmake_path = sources_dir.join("CMakeLists.txt");
-    let cmake_content = format!(
-        r#"cmake_minimum_required(VERSION 3.10)
-project({ident} C)
-
-set(CMAKE_C_STANDARD 99)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-add_library({ident} SHARED {ident}.c)
-target_compile_options({ident} PRIVATE -Wall -Wextra -pedantic)
-
-if(WIN32)
-  set(FMU_PLATFORM "win64")
-elseif(APPLE)
-  set(FMU_PLATFORM "darwin64")
-elseif(UNIX)
-  set(FMU_PLATFORM "linux64")
-else()
-  message(FATAL_ERROR "Unsupported platform for FMI2 packaging")
-endif()
-
-# Install into FMU binaries directory
-install(TARGETS {ident}
-    RUNTIME DESTINATION ${{CMAKE_INSTALL_PREFIX}}/binaries/${{FMU_PLATFORM}}
-    LIBRARY DESTINATION ${{CMAKE_INSTALL_PREFIX}}/binaries/${{FMU_PLATFORM}})
-"#,
-        ident = model_identifier
-    );
-    std::fs::write(&cmake_path, &cmake_content)?;
-    eprintln!("  wrote {}", cmake_path.display());
-    Ok(())
-}
-
-/// Write a POSIX shell script that compiles and packages the FMU.
-fn write_fmu_build_script(out_dir: &Path, model_identifier: &str) -> Result<()> {
-    use std::io::Write;
-
-    let build_script_path = out_dir.join("build.sh");
-    let mut f = std::fs::File::create(&build_script_path)?;
-    write!(
-        f,
-        r#"#!/bin/sh
-# Build script for {ident} FMU
-set -e
-cd "$(dirname "$0")"
-
-# Detect platform for FMU binaries directory
-case "$(uname -s)" in
-  Linux*)   PLATFORM=linux64; LIB_EXT=so ;;
-  Darwin*)  PLATFORM=darwin64; LIB_EXT=dylib ;;
-  MINGW*|MSYS*|CYGWIN*) PLATFORM=win64; LIB_EXT=dll ;;
-  *) echo "Unknown platform"; exit 1 ;;
-esac
-
-# Compile shared library
-mkdir -p binaries/$PLATFORM
-cc -shared -fPIC -O2 -o binaries/$PLATFORM/{ident}.$LIB_EXT sources/{ident}.c -lm
-
-# Package as .fmu (ZIP archive)
-zip -r {ident}.fmu modelDescription.xml binaries/ sources/
-echo "Created {ident}.fmu"
-"#,
-        ident = model_identifier
-    )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&build_script_path, std::fs::Permissions::from_mode(0o755))?;
-    }
-    eprintln!("  wrote {}", build_script_path.display());
-    Ok(())
-}
-
 /// Compile the generated C source into a shared library and package as .fmu.
-fn build_fmu(out_dir: &Path, model_identifier: &str) -> Result<()> {
+pub(crate) fn build_fmu(out_dir: &Path, model_identifier: &str) -> Result<()> {
     use std::process::Command;
 
     // Detect platform
@@ -1445,7 +1326,7 @@ fn run_simulation(
     output: Option<&str>,
     workspace_root: Option<&Path>,
 ) -> Result<()> {
-    use rumoca_session::runtime::{SimOptions, simulate_dae};
+    use rumoca_solver_diffsol::simulate_dae;
 
     let opts = SimOptions {
         t_end,
@@ -1523,17 +1404,40 @@ fn discover_workspace_root_for_model_file(model_file: &str) -> Option<PathBuf> {
     None
 }
 
+struct CompletionSpec {
+    top: &'static str,
+    compile_opts: &'static str,
+    simulate_opts: &'static str,
+    check_opts: &'static str,
+    completion_opts: &'static str,
+    lockstep_subcommands: &'static str,
+}
+
+fn completion_spec() -> CompletionSpec {
+    CompletionSpec {
+        top: "compile simulate check fmt lint completions project lockstep --help -h --version -V",
+        compile_opts: "--model --source-root --json --backend --template-file --target --output --build --verbose --debug",
+        simulate_opts: "--model --source-root --t-end --dt --solver --output --verbose --debug",
+        check_opts: "--model --source-root --verbose --debug",
+        completion_opts: "bash zsh fish powershell",
+        lockstep_subcommands: "run check init",
+    }
+}
+
 fn completion_script(shell: CompletionShell) -> String {
-    let top = "compile simulate check export-fmu completions --help -h --version -V";
-    let compile_opts =
-        "--model --source-root --json --template-file --template-prepared --verbose --debug";
-    let simulate_opts = "--model --source-root --t-end --dt --solver --output --verbose --debug";
-    let check_opts = "--model --source-root --verbose --debug";
-    let export_fmu_opts = "--model --source-root --output --no-build --verbose --debug";
-    let completion_opts = "bash zsh fish powershell";
+    let spec = completion_spec();
     match shell {
-        CompletionShell::Bash => format!(
-            r#"_rumoca_completions() {{
+        CompletionShell::Bash => bash_completion(&spec),
+        CompletionShell::Zsh => zsh_completion(&spec),
+        CompletionShell::Fish => fish_completion(),
+        CompletionShell::PowerShell => powershell_completion(&spec),
+    }
+}
+
+fn bash_completion(spec: &CompletionSpec) -> String {
+    let lockstep_case = format!("    lockstep) opts=\"{}\" ;;\n", spec.lockstep_subcommands);
+    format!(
+        r#"_rumoca_completions() {{
   local cur cmd opts
   cur="${{COMP_WORDS[COMP_CWORD]}}"
   cmd="${{COMP_WORDS[1]}}"
@@ -1545,17 +1449,29 @@ fn completion_script(shell: CompletionShell) -> String {
     compile) opts="{compile_opts}" ;;
     simulate) opts="{simulate_opts}" ;;
     check) opts="{check_opts}" ;;
-    export-fmu) opts="{export_fmu_opts}" ;;
     completions) opts="{completion_opts}" ;;
+{lockstep_case}\
     *) opts="{top}" ;;
   esac
   COMPREPLY=($(compgen -W "$opts" -- "$cur"))
 }}
 complete -F _rumoca_completions rumoca
-"#
-        ),
-        CompletionShell::Zsh => format!(
-            r#"#compdef rumoca
+"#,
+        top = spec.top,
+        compile_opts = spec.compile_opts,
+        simulate_opts = spec.simulate_opts,
+        check_opts = spec.check_opts,
+        completion_opts = spec.completion_opts,
+    )
+}
+
+fn zsh_completion(spec: &CompletionSpec) -> String {
+    let lockstep_case = format!(
+        "        lockstep) _values 'subcommands' {} ;;\n",
+        spec.lockstep_subcommands
+    );
+    format!(
+        r#"#compdef rumoca
 _rumoca() {{
   local -a top
   top=({top})
@@ -1569,31 +1485,47 @@ _rumoca() {{
         compile) _values 'options' {compile_opts} ;;
         simulate) _values 'options' {simulate_opts} ;;
         check) _values 'options' {check_opts} ;;
-        export-fmu) _values 'options' {export_fmu_opts} ;;
         completions) _values 'shell' {completion_opts} ;;
+{lockstep_case}\
       esac
       ;;
   esac
 }}
 compdef _rumoca rumoca
-"#
-        ),
-        CompletionShell::Fish => [
-            "complete -c rumoca -n '__fish_use_subcommand' -a 'compile' -d 'Compile a Modelica file'",
-            "complete -c rumoca -n '__fish_use_subcommand' -a 'simulate' -d 'Simulate a Modelica file'",
-            "complete -c rumoca -n '__fish_use_subcommand' -a 'check' -d 'Compile and print summary'",
-            "complete -c rumoca -n '__fish_use_subcommand' -a 'export-fmu' -d 'Export FMI 2.0 FMU'",
-            "complete -c rumoca -n '__fish_use_subcommand' -a 'completions' -d 'Print completion script'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --source-root --json --template-file --template-prepared --verbose --debug'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from simulate' -a '--model --source-root --t-end --output --verbose --debug'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from check' -a '--model --source-root --verbose --debug'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from export-fmu' -a '--model --source-root --output --verbose --debug'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'",
-        ]
-        .join("\n")
-            + "\n",
-        CompletionShell::PowerShell => format!(
-            r#"Register-ArgumentCompleter -CommandName rumoca -ScriptBlock {{
+"#,
+        top = spec.top,
+        compile_opts = spec.compile_opts,
+        simulate_opts = spec.simulate_opts,
+        check_opts = spec.check_opts,
+        completion_opts = spec.completion_opts,
+    )
+}
+
+fn fish_completion() -> String {
+    let mut lines = vec![
+        "complete -c rumoca -n '__fish_use_subcommand' -a 'compile' -d 'Compile a Modelica file'",
+        "complete -c rumoca -n '__fish_use_subcommand' -a 'simulate' -d 'Simulate a Modelica file'",
+        "complete -c rumoca -n '__fish_use_subcommand' -a 'check' -d 'Compile and print summary'",
+        "complete -c rumoca -n '__fish_use_subcommand' -a 'completions' -d 'Print completion script'",
+        "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --source-root --json --backend --template-file --target --output --build --verbose --debug'",
+        "complete -c rumoca -n '__fish_seen_subcommand_from simulate' -a '--model --source-root --t-end --output --verbose --debug'",
+        "complete -c rumoca -n '__fish_seen_subcommand_from check' -a '--model --source-root --verbose --debug'",
+        "complete -c rumoca -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'",
+    ];
+    lines.extend([
+        "complete -c rumoca -n '__fish_use_subcommand' -a 'lockstep' -d 'Run lockstep simulation workflows'",
+        "complete -c rumoca -n '__fish_seen_subcommand_from lockstep' -a 'run check init'",
+    ]);
+    lines.join("\n") + "\n"
+}
+
+fn powershell_completion(spec: &CompletionSpec) -> String {
+    let lockstep_case = format!(
+        "      \"lockstep\" {{ $candidates = @({}) }}\n",
+        to_ps_tokens(spec.lockstep_subcommands)
+    );
+    format!(
+        r#"Register-ArgumentCompleter -CommandName rumoca -ScriptBlock {{
   param($wordToComplete, $commandAst, $cursorPosition)
   $words = $commandAst.CommandElements | ForEach-Object {{ $_.ToString() }}
   $candidates = @({top_tokens})
@@ -1602,8 +1534,8 @@ compdef _rumoca rumoca
       "compile" {{ $candidates = @({compile_tokens}) }}
       "simulate" {{ $candidates = @({simulate_tokens}) }}
       "check" {{ $candidates = @({check_tokens}) }}
-      "export-fmu" {{ $candidates = @({export_fmu_tokens}) }}
       "completions" {{ $candidates = @({completion_tokens}) }}
+{lockstep_case}\
     }}
   }}
   $candidates | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
@@ -1611,14 +1543,12 @@ compdef _rumoca rumoca
   }}
 }}
 "#,
-            top_tokens = to_ps_tokens(top),
-            compile_tokens = to_ps_tokens(compile_opts),
-            simulate_tokens = to_ps_tokens(simulate_opts),
-            check_tokens = to_ps_tokens(check_opts),
-            export_fmu_tokens = to_ps_tokens(export_fmu_opts),
-            completion_tokens = to_ps_tokens(completion_opts),
-        ),
-    }
+        top_tokens = to_ps_tokens(spec.top),
+        compile_tokens = to_ps_tokens(spec.compile_opts),
+        simulate_tokens = to_ps_tokens(spec.simulate_opts),
+        check_tokens = to_ps_tokens(spec.check_opts),
+        completion_tokens = to_ps_tokens(spec.completion_opts),
+    )
 }
 
 fn to_ps_tokens(words: &str) -> String {
@@ -1635,6 +1565,78 @@ mod tests {
     use rumoca_session::compile::core::PrimaryLabel;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn cli_parses_lockstep_run_command() {
+        let cli = Cli::try_parse_from([
+            "rumoca",
+            "lockstep",
+            "run",
+            "--config",
+            "examples/quadrotor_sil/quadrotor_cerebri.toml",
+        ])
+        .expect("parse lockstep run");
+        match cli.command {
+            Commands::Lockstep(args) => match args.command {
+                LockstepSubcommand::Run(args) => {
+                    assert_eq!(args.config, "examples/quadrotor_sil/quadrotor_cerebri.toml");
+                }
+                other => panic!("expected lockstep run, got {other:?}"),
+            },
+            other => panic!("expected lockstep command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_old_sim_command_name() {
+        let err = Cli::try_parse_from(["rumoca", "sim", "init"]).expect_err("sim was renamed");
+        assert!(
+            err.to_string().contains("unrecognized subcommand 'sim'"),
+            "old command should not parse: {err}"
+        );
+    }
+
+    #[test]
+    fn completions_include_lockstep() {
+        let fish = completion_script(CompletionShell::Fish);
+        assert!(fish.contains("-a 'lockstep'"));
+        assert!(fish.contains("__fish_seen_subcommand_from lockstep"));
+    }
+
+    #[test]
+    fn cli_parses_compile_target() {
+        let cli = Cli::try_parse_from([
+            "rumoca",
+            "compile",
+            "model.mo",
+            "--model",
+            "M",
+            "--target",
+            "embedded-c",
+            "--output",
+            "out",
+        ])
+        .expect("parse compile target");
+        match cli.command {
+            Commands::Compile(args) => {
+                assert_eq!(args.input.model.as_deref(), Some("M"));
+                assert_eq!(args.target.as_deref(), Some("embedded-c"));
+                assert_eq!(args.output, Some(PathBuf::from("out")));
+            }
+            other => panic!("expected compile command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_old_export_commands() {
+        for command in ["export-fmu", "export-embedded-c"] {
+            let err = Cli::try_parse_from(["rumoca", command]).expect_err("export command removed");
+            assert!(
+                err.to_string().contains("unrecognized subcommand"),
+                "old command should not parse: {err}"
+            );
+        }
+    }
 
     #[test]
     fn infer_model_from_single_top_level_class() {

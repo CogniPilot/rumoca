@@ -10,6 +10,7 @@
 //! ```
 
 use flate2::read::GzDecoder;
+use rumoca_session::codegen::{render_dae_template_with_name, templates};
 use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_session::parsing::parse_files_parallel_lenient;
 use std::fs;
@@ -124,12 +125,11 @@ fn try_fmi_c_compile(
     model_template: &str,
     driver_template: &str,
 ) -> Result<(), String> {
-    let model_c = rumoca_phase_codegen::render_template_with_name(dae, model_template, model_name)
+    let model_c = render_dae_template_with_name(dae, model_template, model_name)
         .map_err(|e| format!("render model: {e}"))?;
 
-    let driver_c =
-        rumoca_phase_codegen::render_template_with_name(dae, driver_template, model_name)
-            .map_err(|e| format!("render driver: {e}"))?;
+    let driver_c = render_dae_template_with_name(dae, driver_template, model_name)
+        .map_err(|e| format!("render driver: {e}"))?;
 
     let dir = tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let model_path = dir.path().join("model.c");
@@ -302,8 +302,6 @@ fn discover_fmu_targets() {
              cargo test --release --package rumoca-test-msl --test fmu_target_discovery -- --ignored --nocapture\n"
         );
     }
-
-    use rumoca_phase_codegen::templates;
 
     let msl_dir = ensure_msl_downloaded().expect("Failed to download MSL");
     let mo_files = find_mo_files(&msl_dir);

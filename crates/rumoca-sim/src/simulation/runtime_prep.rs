@@ -115,7 +115,7 @@ fn combine_add_sub_coeffs(
     }
 }
 
-fn coeff_expr_for_derivative(
+pub fn derivative_coefficient_expr(
     expr: &dae::Expression,
     state_name: &dae::VarName,
 ) -> Result<Option<dae::Expression>, String> {
@@ -138,18 +138,18 @@ fn coeff_expr_for_derivative(
             op: OpUnary::Minus(_),
             rhs,
         } => {
-            let inner = coeff_expr_for_derivative(rhs, state_name)?;
+            let inner = derivative_coefficient_expr(rhs, state_name)?;
             Ok(inner.map(unary_minus_expr))
         }
         dae::Expression::Binary { op, lhs, rhs } => match op {
             OpBinary::Add(_) => {
-                let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
-                let rhs_coeff = coeff_expr_for_derivative(rhs, state_name)?;
+                let lhs_coeff = derivative_coefficient_expr(lhs, state_name)?;
+                let rhs_coeff = derivative_coefficient_expr(rhs, state_name)?;
                 Ok(combine_add_sub_coeffs(lhs_coeff, rhs_coeff, false))
             }
             OpBinary::Sub(_) => {
-                let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
-                let rhs_coeff = coeff_expr_for_derivative(rhs, state_name)?;
+                let lhs_coeff = derivative_coefficient_expr(lhs, state_name)?;
+                let rhs_coeff = derivative_coefficient_expr(rhs, state_name)?;
                 Ok(combine_add_sub_coeffs(lhs_coeff, rhs_coeff, true))
             }
             OpBinary::Mul(_) => {
@@ -159,14 +159,14 @@ fn coeff_expr_for_derivative(
                     return Err("nonlinear derivative term in multiplication".to_string());
                 }
                 if lhs_has_der {
-                    let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
+                    let lhs_coeff = derivative_coefficient_expr(lhs, state_name)?;
                     let Some(coeff) = lhs_coeff else {
                         return Err("unable to extract derivative coefficient from lhs".to_string());
                     };
                     return Ok(Some(mul_expr(coeff, rhs.as_ref().clone())));
                 }
                 if rhs_has_der {
-                    let rhs_coeff = coeff_expr_for_derivative(rhs, state_name)?;
+                    let rhs_coeff = derivative_coefficient_expr(rhs, state_name)?;
                     let Some(coeff) = rhs_coeff else {
                         return Err("unable to extract derivative coefficient from rhs".to_string());
                     };
@@ -182,7 +182,7 @@ fn coeff_expr_for_derivative(
                 if !expr_contains_der_of(lhs, state_name) {
                     return Ok(None);
                 }
-                let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
+                let lhs_coeff = derivative_coefficient_expr(lhs, state_name)?;
                 let Some(coeff) = lhs_coeff else {
                     return Err(
                         "unable to extract derivative coefficient from numerator".to_string()
@@ -321,7 +321,7 @@ fn build_compiled_mass_matrix_row(
         if !expr_contains_der_of(&eq.rhs, state_name) {
             continue;
         }
-        let coeff_expr = coeff_expr_for_derivative(&eq.rhs, state_name)
+        let coeff_expr = derivative_coefficient_expr(&eq.rhs, state_name)
             .map_err(|reason| state_non_derivable_error(eq, row, state_name, reason))?;
         let Some(coeff_expr) = coeff_expr else {
             return Err(state_non_derivable_error(
@@ -570,7 +570,7 @@ fn add_substitution_link_name(set: &mut HashSet<String>, name: &str) {
 }
 
 fn collect_substitution_linked_names(
-    elim: &rumoca_phase_solve::eliminate::EliminationResult,
+    elim: &rumoca_phase_structural::eliminate::EliminationResult,
 ) -> HashSet<String> {
     let mut linked = HashSet::new();
     for sub in &elim.substitutions {
@@ -783,7 +783,7 @@ fn maybe_collect_structural_relaxation_preferences(
     if n_z_vars <= n_z_slots {
         return;
     }
-    let Some(hint) = rumoca_phase_solve::build_ic_relaxation_hint(dae_model, n_x) else {
+    let Some(hint) = rumoca_phase_structural::build_ic_relaxation_hint(dae_model, n_x) else {
         return;
     };
 
@@ -823,9 +823,9 @@ fn extend_preferred_pin_scalars_from_singular_ic(
     n_x: usize,
     preferred_pin_scalars: &mut HashSet<String>,
 ) {
-    if let Err(rumoca_phase_solve::StructuralError::Singular {
+    if let Err(rumoca_phase_structural::StructuralError::Singular {
         unmatched_unknowns, ..
-    }) = rumoca_phase_solve::build_ic_plan(dae_model, n_x)
+    }) = rumoca_phase_structural::build_ic_plan(dae_model, n_x)
     {
         preferred_pin_scalars.extend(unmatched_unknowns);
     }
@@ -944,7 +944,7 @@ fn append_pin_equations(
 
 pub fn pin_orphaned_variables(
     dae_model: &mut dae::Dae,
-    elim: &rumoca_phase_solve::eliminate::EliminationResult,
+    elim: &rumoca_phase_structural::eliminate::EliminationResult,
 ) {
     let n_x: usize = dae_model.states.values().map(|v| v.size()).sum();
     let n_z_slots = dae_model.f_x.len().saturating_sub(n_x);
@@ -1040,8 +1040,8 @@ pub fn pin_orphaned_variables(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_phase_solve::StructuralError;
-    use rumoca_phase_solve::eliminate::{EliminationResult, Substitution};
+    use rumoca_phase_structural::StructuralError;
+    use rumoca_phase_structural::eliminate::{EliminationResult, Substitution};
 
     fn residual(rhs: dae::Expression, origin: &str) -> dae::Equation {
         dae::Equation {
@@ -1107,7 +1107,7 @@ mod tests {
             "constant slack",
         ));
 
-        match rumoca_phase_solve::build_ic_plan(&dae_model, 0) {
+        match rumoca_phase_structural::build_ic_plan(&dae_model, 0) {
             Err(StructuralError::Singular {
                 unmatched_unknowns, ..
             }) => {

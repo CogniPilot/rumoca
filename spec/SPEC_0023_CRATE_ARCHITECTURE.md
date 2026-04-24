@@ -243,6 +243,53 @@ Rationale:
 - Prevents “shortcut imports” that hide layer violations.
 - Reduces AI/new-contributor drift into convenience-based architecture erosion.
 
+## Runtime And Simulation Layering
+
+The compiler pipeline ends at the DAE contract. Runtime and simulation consumers must remain
+layered below that contract rather than being folded back into `rumoca-session`.
+
+Target direction:
+
+```
+rumoca-session / compiler entry points
+    -> runtime contracts
+    -> concrete solver backend
+    -> stepper APIs
+    -> report/payload contracts
+    -> visualization/assets
+```
+
+Recommended crate mapping:
+
+| Responsibility | Preferred Crate Role |
+|----------------|----------------------|
+| compile/session orchestration | `rumoca-session` |
+| transport-neutral lockstep I/O contracts | `rumoca-codec` |
+| FlatBuffer schema/codec support for lockstep I/O | `rumoca-codec-flatbuffers` |
+| DAE structural analysis | `rumoca-phase-structural` |
+| solver-facing prepared IR, vector layout, row operations | `rumoca-ir-solve` |
+| DAE-to-solve layout and row lowering | `rumoca-phase-solve-lower` |
+| backend-neutral solver contracts and shared runtime helpers | `rumoca-sim` |
+| concrete diffsol backend | `rumoca-solver-diffsol` |
+| simple pure-Rust RK backend | `rumoca-solver-rk45` |
+| shared stepping/runtime loop surface | `rumoca-sim` |
+| report/payload shaping | `rumoca-sim` |
+| web/HTML/assets | `rumoca-viz-web` |
+
+Current app note:
+
+- `rumoca lockstep` is the current lockstep app/example surface in the main CLI.
+- It may keep the quadrotor/controller/viewer loop, but reusable protocol ownership belongs in
+  `rumoca-codec` and `rumoca-codec-flatbuffers`, not in the CLI entry point.
+
+Migration rule:
+
+- Do not add new APIs that further couple these responsibilities.
+- New CI checks should reject legacy assumptions and ratchet toward the target layering.
+- CLI/bindings/export adapters and shared regression harnesses should render templates through
+  `rumoca-session::codegen`; direct `rumoca-phase-codegen` dependencies are reserved for
+  phase-local codegen tests.
+
 ## Compliance Notes
 
 ### Array Preservation (SPEC_0019)

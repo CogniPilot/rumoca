@@ -932,7 +932,7 @@ pub fn apply_runtime_values_to_indices(
     (changed, updates)
 }
 
-pub(crate) struct RuntimeDirectAssignmentContext {
+pub struct RuntimeDirectAssignmentContext {
     solver_maps: crate::runtime::layout::SolverNameIndexMaps,
     target_assignment_stats: HashMap<String, DirectAssignmentTargetStats>,
     target_dependencies: HashMap<String, Vec<String>>,
@@ -940,7 +940,7 @@ pub(crate) struct RuntimeDirectAssignmentContext {
     ordered_runtime_target_dependencies: HashMap<String, Vec<String>>,
 }
 
-pub(crate) fn build_runtime_direct_assignment_context(
+pub fn build_runtime_direct_assignment_context(
     dae: &dae::Dae,
     y_len: usize,
     n_x: usize,
@@ -1064,7 +1064,7 @@ fn insert_dependency_name_and_base(names: &mut HashSet<String>, name: &str) -> b
     changed
 }
 
-pub(crate) fn extend_runtime_direct_assignment_dependency_closure(
+pub fn extend_runtime_direct_assignment_dependency_closure(
     ctx: &RuntimeDirectAssignmentContext,
     names: &mut HashSet<String>,
 ) -> bool {
@@ -1108,7 +1108,7 @@ pub(crate) fn ordered_discrete_assignment_targets(dae: &dae::Dae) -> Vec<String>
     ordered_assignment_targets_from_roots(&deps, roots)
 }
 
-pub(crate) fn propagate_runtime_direct_assignments_from_env_with_context(
+pub fn propagate_runtime_direct_assignments_from_env_with_context(
     ctx: &RuntimeDirectAssignmentContext,
     dae: &dae::Dae,
     y: &mut [f64],

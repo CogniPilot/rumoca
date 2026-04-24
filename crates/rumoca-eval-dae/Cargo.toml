@@ -20,6 +20,8 @@ wasm = ["dep:wasm-encoder"]
 [dependencies]
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-core = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-phase-solve-lower = { workspace = true }
 indexmap = { workspace = true }
 cranelift-codegen = { version = "0.125", optional = true }
 cranelift-frontend = { version = "0.125", optional = true }

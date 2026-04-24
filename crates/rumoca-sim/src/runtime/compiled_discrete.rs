@@ -360,7 +360,7 @@ pub fn settle_runtime_event_updates_with_compiled_discrete(
     )
 }
 
-pub(crate) fn settle_runtime_event_updates_frozen_pre_with_compiled_discrete(
+pub fn settle_runtime_event_updates_frozen_pre_with_compiled_discrete(
     dae_model: &dae::Dae,
     y: &mut [f64],
     p: &[f64],

@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_session::runtime::{render_dae_template_with_name, templates as runtime_templates};
+use rumoca_session::codegen::{render_dae_template_with_name, templates as runtime_templates};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,13 +50,13 @@ fn builtin_template_descriptors() -> Vec<BuiltinTemplateDescriptor> {
             source: runtime_templates::CASADI_MX,
         },
         BuiltinTemplateDescriptor {
-            id: "embedded_c.h.jinja",
+            id: "embedded_c/model.h.jinja",
             label: "Embedded C Header",
             language: "c",
             source: runtime_templates::EMBEDDED_C_H,
         },
         BuiltinTemplateDescriptor {
-            id: "embedded_c_impl.c.jinja",
+            id: "embedded_c/model.c.jinja",
             label: "Embedded C Implementation",
             language: "c",
             source: runtime_templates::EMBEDDED_C_IMPL,
@@ -74,37 +74,37 @@ fn builtin_template_descriptors() -> Vec<BuiltinTemplateDescriptor> {
             source: runtime_templates::FLAT_MODELICA,
         },
         BuiltinTemplateDescriptor {
-            id: "fmi2_model_description.xml.jinja",
+            id: "fmi2/modelDescription.xml.jinja",
             label: "FMI 2.0 modelDescription.xml",
             language: "xml",
             source: runtime_templates::FMI2_MODEL_DESCRIPTION,
         },
         BuiltinTemplateDescriptor {
-            id: "fmi2_model.c.jinja",
+            id: "fmi2/model.c.jinja",
             label: "FMI 2.0 model.c",
             language: "c",
             source: runtime_templates::FMI2_MODEL,
         },
         BuiltinTemplateDescriptor {
-            id: "fmi2_test_driver.c.jinja",
+            id: "fmi2/test_driver.c.jinja",
             label: "FMI 2.0 test driver",
             language: "c",
             source: runtime_templates::FMI2_TEST_DRIVER,
         },
         BuiltinTemplateDescriptor {
-            id: "fmi3_model_description.xml.jinja",
+            id: "fmi3/modelDescription.xml.jinja",
             label: "FMI 3.0 modelDescription.xml",
             language: "xml",
             source: runtime_templates::FMI3_MODEL_DESCRIPTION,
         },
         BuiltinTemplateDescriptor {
-            id: "fmi3_model.c.jinja",
+            id: "fmi3/model.c.jinja",
             label: "FMI 3.0 model.c",
             language: "c",
             source: runtime_templates::FMI3_MODEL,
         },
         BuiltinTemplateDescriptor {
-            id: "fmi3_test_driver.c.jinja",
+            id: "fmi3/test_driver.c.jinja",
             label: "FMI 3.0 test driver",
             language: "c",
             source: runtime_templates::FMI3_TEST_DRIVER,

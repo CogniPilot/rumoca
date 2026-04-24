@@ -21,7 +21,7 @@
 //! ## Public API Surface
 //!
 //! `Session` and `SessionConfig` are intentionally available at the crate root.
-//! All other APIs are namespaced (`compile`, `parsing`, `runtime`, `analysis`,
+//! All other APIs are namespaced (`compile`, `parsing`, `codegen`,
 //! `source_roots`, `project`) to prevent root facade growth.
 //!
 //! # Example
@@ -39,6 +39,7 @@
 //! let result = session.compile_model("MyPackage.MyModel")?;
 //! ```
 
+mod codegen_api;
 mod experiment;
 mod instrumentation;
 #[cfg(test)]
@@ -48,19 +49,10 @@ mod package_layout;
 mod parse;
 mod parsed_artifact_cache;
 mod project_config;
-mod runtime_api;
 mod session;
 mod source_root_cache;
 mod source_root_discovery;
 mod traversal_adapter;
-
-/// Analysis helpers.
-pub mod analysis {
-    pub use rumoca_sim::sim_trace_compare::{
-        ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces,
-        count_agreement_bands_default, load_trace_json,
-    };
-}
 
 /// Source-root discovery and cache helpers.
 pub mod source_roots {
@@ -119,9 +111,9 @@ pub mod project {
     };
 }
 
-/// Runtime and codegen helpers operating on compiled DAE.
-pub mod runtime {
-    pub use crate::runtime_api::*;
+/// Code generation helpers operating on compiled DAE.
+pub mod codegen {
+    pub use crate::codegen_api::*;
 }
 
 /// Compilation session API and result structures.

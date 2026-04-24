@@ -1714,7 +1714,7 @@ pub(crate) fn format_strict_failure_summary(
 impl CompilationResult {
     /// Check if the model is balanced (equal equations and unknowns).
     pub fn is_balanced(&self) -> bool {
-        rumoca_sim::dae_is_balanced(&self.dae)
+        rumoca_phase_dae::dae_is_balanced(&self.dae)
     }
 }
 

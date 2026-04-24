@@ -1,6 +1,6 @@
 //! WASM emitter for residual linear-op rows.
 
-use crate::compiled::linear_op::{BinaryOp, CompareOp, LinearOp, Reg, UnaryOp};
+use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, Reg, UnaryOp};
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::BlockType;
 use wasm_encoder::CodeSection;

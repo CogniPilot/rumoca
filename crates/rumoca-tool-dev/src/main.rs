@@ -1584,6 +1584,7 @@ pub(crate) fn run_wasm_test_suite(root: &Path) -> Result<()> {
         .arg("test")
         .arg("-p")
         .arg("rumoca-bind-wasm")
+        .arg("--all-features")
         .arg("--verbose")
         .current_dir(root);
     run_status(wasm_tests)?;
@@ -1750,8 +1751,16 @@ enum WasmBuildProfile {
     Release,
 }
 
+fn wasm_opt_enabled() -> bool {
+    matches!(
+        std::env::var("RUMOCA_WASM_OPT").as_deref(),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
+}
+
 fn build_wasm(root: &Path, profile: WasmBuildProfile) -> Result<()> {
     let wasm_threads = std::env::var("RUMOCA_WASM_THREADS").unwrap_or_else(|_| "1".to_string());
+    let mut wasm_features = vec!["full-web"];
     let wasm_license = root.join("crates/rumoca-bind-wasm/LICENSE");
     let staged_license = !wasm_license.exists();
     if staged_license {
@@ -1779,16 +1788,12 @@ fn build_wasm(root: &Path, profile: WasmBuildProfile) -> Result<()> {
         .arg("--out-dir")
         .arg("../../pkg")
         .current_dir(root);
-    match profile {
-        WasmBuildProfile::Dev => {
-            build.arg("--dev");
-        }
-        WasmBuildProfile::Release => {
-            build.arg("--release");
-        }
-    }
+    build.arg(match profile {
+        WasmBuildProfile::Dev => "--dev",
+        WasmBuildProfile::Release => "--release",
+    });
     if wasm_threads != "0" {
-        build.arg("--").arg("--features").arg("wasm-rayon");
+        wasm_features.push("wasm-rayon");
         const THREAD_FLAGS: &str = "-C target-feature=+atomics,+bulk-memory,+mutable-globals";
         let mut existing_rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
         if !existing_rustflags.contains("target-feature=+atomics") {
@@ -1799,9 +1804,13 @@ fn build_wasm(root: &Path, profile: WasmBuildProfile) -> Result<()> {
         }
         build.env("RUSTFLAGS", existing_rustflags);
     }
-    if profile == WasmBuildProfile::Dev {
+    if !wasm_opt_enabled() {
         build.arg("--no-opt");
     }
+    build
+        .arg("--")
+        .arg("--features")
+        .arg(wasm_features.join(","));
     let build_result = run_status(build);
     if staged_license {
         let _ = fs::remove_file(&wasm_license);

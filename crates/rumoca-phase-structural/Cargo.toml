@@ -1,0 +1,18 @@
+[package]
+name = "rumoca-phase-structural"
+description = "Structural analysis phase for the Rumoca compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-eval-dae = { workspace = true }
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-core = { workspace = true }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

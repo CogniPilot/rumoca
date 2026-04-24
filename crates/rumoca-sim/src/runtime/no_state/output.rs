@@ -314,7 +314,7 @@ where
     Ok(())
 }
 
-pub(crate) fn collect_algebraic_samples_with_schedule_and_env_refresh<
+pub fn collect_algebraic_samples_with_schedule_and_env_refresh<
     E,
     FCheck,
     FProjectOrSeed,
@@ -545,7 +545,7 @@ fn collect_runtime_dependency_closure(
     names
 }
 
-pub(crate) fn sampled_names_need_eliminated_env_with_runtime_closure(
+pub fn sampled_names_need_eliminated_env_with_runtime_closure(
     all_names: &[String],
     elim: &EliminationResult,
     direct_assignment_ctx: &crate::runtime::assignment::RuntimeDirectAssignmentContext,

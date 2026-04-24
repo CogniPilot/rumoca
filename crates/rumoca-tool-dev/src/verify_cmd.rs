@@ -87,12 +87,12 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     VerifyStep {
         label: "coverage run",
         args: &["coverage", "run"],
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "coverage report",
         args: &["coverage", "report"],
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "coverage gate",
@@ -102,22 +102,22 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
             "--allowed-workspace-line-coverage-drop",
             "6.0",
         ],
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "docs",
         args: &["verify", "docs"],
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "VS Code gate",
         args: &["vscode", "test"],
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "WASM gate",
         args: &["wasm", "test"],
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "full-MSL LSP/editor gate",
@@ -1121,13 +1121,29 @@ mod tests {
     }
 
     #[test]
-    fn quick_suite_skips_msl_parity() {
+    fn quick_suite_only_runs_fast_local_gates() {
         let steps = step_argvs(VerifySuite::Quick);
+        assert_eq!(
+            steps,
+            vec![
+                vec!["verify", "lint"],
+                vec!["verify", "workspace"],
+                vec!["verify", "binaries"],
+            ]
+        );
+        assert!(!steps.contains(&vec!["coverage", "run"]));
+        assert!(!steps.contains(&vec!["coverage", "report"]));
+        assert!(!steps.contains(&vec![
+            "coverage",
+            "gate",
+            "--allowed-workspace-line-coverage-drop",
+            "6.0"
+        ]));
+        assert!(!steps.contains(&vec!["verify", "docs"]));
+        assert!(!steps.contains(&vec!["vscode", "test"]));
+        assert!(!steps.contains(&vec!["wasm", "test"]));
         assert!(!steps.contains(&vec!["verify", "msl-parity"]));
         assert!(!steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
-        assert!(steps.contains(&vec!["coverage", "run"]));
-        assert!(steps.contains(&vec!["vscode", "test"]));
-        assert!(steps.contains(&vec!["wasm", "test"]));
     }
 
     #[test]
