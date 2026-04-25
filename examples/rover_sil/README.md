@@ -63,7 +63,7 @@ This example omits the `[controller]`, `[autopilot]`, `[schema]`,
 `[receive]`, and `[send]` sections entirely. The sim runtime detects
 this and skips wrapper synthesis, UDP socket binding, and FB codec
 compilation — see
-[SimulationConfig::has_fb](../../crates/rumoca-session/src/config.rs).
+[SimulationConfig::has_fb](../../crates/rumoca-compile/src/config.rs).
 
 Model inputs (`throttle`, `steering`) are wired straight from local
 state via `[signals.stepper_inputs]`:

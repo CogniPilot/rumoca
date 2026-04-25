@@ -6,23 +6,23 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use rumoca_session::compile::{
+use rumoca_compile::compile::{
     CompilePhaseTimingSnapshot, Document, ParsedSourceRootLoad, PhaseResult, Session,
     SessionCacheStatsSnapshot, SessionChange, SessionConfig, SessionSnapshot, SourceRootKind,
     compile_phase_timing_stats, session_cache_stats,
 };
-use rumoca_session::parsing::{
+use rumoca_compile::parsing::{
     ast, collect_compile_unit_source_files, collect_model_names, merge_stored_definitions,
     parse_source_to_ast,
 };
-use rumoca_session::project::{
+use rumoca_compile::project::{
     EffectiveSimulationConfig, EffectiveSimulationPreset, PlotViewConfig, ProjectConfig,
     ProjectFileMoveHint, SimulationModelOverride, clear_model_simulation_preset,
     load_plot_views_for_model, load_simulation_snapshot_for_model,
     resync_model_sidecars_with_move_hints, write_model_simulation_preset,
     write_plot_views_for_model,
 };
-use rumoca_session::source_roots::{
+use rumoca_compile::source_roots::{
     PackageLayoutError, SourceRootCacheStatus, SourceRootCacheTiming, canonical_path_key,
     classify_configured_source_root_kind, merge_source_root_paths, parse_source_root_with_cache,
     plan_source_root_loads, render_source_root_indexing_failed_message,
@@ -84,7 +84,7 @@ pub struct ModelicaLanguageServer {
     navigation_timing_path: Arc<RwLock<Option<PathBuf>>>,
     startup_timing_path: Arc<RwLock<Option<PathBuf>>>,
     simulation_compile_cache:
-        Arc<RwLock<HashMap<SimulationCompileKey, rumoca_session::compile::DaeCompilationResult>>>,
+        Arc<RwLock<HashMap<SimulationCompileKey, rumoca_compile::compile::DaeCompilationResult>>>,
     simulation_prewarm_state:
         Arc<RwLock<HashMap<SimulationPrewarmKey, Arc<SimulationPrewarmState>>>>,
     selected_simulation_models: Arc<RwLock<HashMap<String, String>>>,
@@ -385,7 +385,7 @@ impl ModelicaLanguageServer {
 
     fn simulation_options_from_settings(
         settings: &SimulationRequestSettings,
-        compiled: &rumoca_session::compile::DaeCompilationResult,
+        compiled: &rumoca_compile::compile::DaeCompilationResult,
     ) -> SimOptions {
         let mut opts = SimOptions {
             t_end: settings.t_end,
@@ -1341,7 +1341,7 @@ impl LanguageServer for ModelicaLanguageServer {
         let source = doc_snapshot.content.clone();
         let source_root_paths = self.source_root_paths.read().await.clone();
         let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
-        if rumoca_session::source_roots::source_requires_unloaded_source_roots(
+        if rumoca_compile::source_roots::source_requires_unloaded_source_roots(
             &source,
             &source_root_paths,
             &loaded_source_roots,
@@ -1374,7 +1374,7 @@ impl LanguageServer for ModelicaLanguageServer {
         let source_root_paths = self.source_root_paths.read().await.clone();
         let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
         if self.analysis_request_is_stale(request_token).await
-            || rumoca_session::source_roots::source_requires_unloaded_source_roots(
+            || rumoca_compile::source_roots::source_requires_unloaded_source_roots(
                 &doc_snapshot.content,
                 &source_root_paths,
                 &loaded_source_roots,
@@ -1399,7 +1399,7 @@ impl LanguageServer for ModelicaLanguageServer {
                 &doc_snapshot.content,
                 &uri_path,
                 Some(&mut session),
-                rumoca_session::compile::SemanticDiagnosticsMode::Save,
+                rumoca_compile::compile::SemanticDiagnosticsMode::Save,
             );
             drop(session);
             diagnostics.extend(self.stored_source_root_load_diagnostics(&uri_path).await);

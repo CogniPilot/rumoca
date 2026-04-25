@@ -1,7 +1,7 @@
 //! LSP request handlers.
 //!
 //! These handlers use `lsp_types` directly and compile to WASM.
-//! They accept parsed AST from `rumoca-session` and return LSP responses.
+//! They accept parsed AST from `rumoca-compile` and return LSP responses.
 
 mod diagnostics;
 mod document_symbols;

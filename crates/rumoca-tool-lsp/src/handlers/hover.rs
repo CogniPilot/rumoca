@@ -1,9 +1,9 @@
 //! Enhanced hover handler for Modelica files.
 
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
-use rumoca_session::compile::core as rumoca_core;
-use rumoca_session::parsing::ast;
-use rumoca_session::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::compile::core as rumoca_core;
+use rumoca_compile::parsing::ast;
+use rumoca_compile::parsing::ir_core as rumoca_ir_core;
 
 use crate::helpers::{
     find_class_at_position, find_component_at_position, find_enclosing_class,
@@ -367,7 +367,7 @@ end Ball;
 end Modelica;
 "#;
 
-        let mut session = rumoca_session::Session::default();
+        let mut session = rumoca_compile::Session::default();
         session.update_document("ball.mo", source);
         let parse_error = session.update_document("broken.mo", broken);
         assert!(parse_error.is_some(), "broken document should stay invalid");
@@ -412,7 +412,7 @@ equation
   a.y = 1;
 end M;
 "#;
-        let ast = rumoca_session::parsing::parse_source_to_ast(source, "input.mo")
+        let ast = rumoca_compile::parsing::parse_source_to_ast(source, "input.mo")
             .expect("parse should succeed");
         let import_line = source.lines().nth(9).expect("import line");
         let char_pos = import_line.find("Alias").expect("Alias token") as u32 + 1;

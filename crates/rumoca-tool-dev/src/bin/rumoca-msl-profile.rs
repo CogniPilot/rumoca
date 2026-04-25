@@ -3,12 +3,12 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
-use rumoca_session::compile::{
+use rumoca_compile::compile::{
     CompilationResult, Dae, PhaseResult, Session, SessionConfig, SourceRootKind,
     StrictCompileReport, VarName, Variable, compile_phase_timing_stats,
     reset_compile_phase_timing_stats,
 };
-use rumoca_session::source_roots::parse_source_root_with_cache;
+use rumoca_compile::source_roots::parse_source_root_with_cache;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
 use rumoca_sim::{compiled_layout_binding_debug, compiled_layout_related_bindings_debug};
 use rumoca_solver_diffsol::simulate_dae;

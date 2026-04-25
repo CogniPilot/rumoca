@@ -940,7 +940,7 @@ pub(crate) fn build_compiled_direct_seed_context(
     options: DirectAssignmentSeedOptions,
     base_to_indices: &HashMap<String, Vec<usize>>,
 ) -> Result<Option<CompiledDirectSeedContext>, crate::SimError> {
-    let scalarization = rumoca_sim::equation_scalarize::build_expression_scalarization_context(dae);
+    let scalarization = rumoca_phase_structural::scalarize::build_expression_scalarization_context(dae);
     let SolverNameIndexMaps { name_to_idx, .. } = build_solver_name_index_maps(dae, y_len);
     let n_x = count_states(dae);
     let target_dependencies =
@@ -974,7 +974,7 @@ pub(crate) fn build_compiled_direct_seed_context(
         }
         let target_size = direct_seed_target_size(dae, target.as_str(), base_to_indices);
         let range_start = expressions.len();
-        expressions.extend(rumoca_sim::equation_scalarize::scalarize_expression_rows(
+        expressions.extend(rumoca_phase_structural::scalarize::scalarize_expression_rows(
             &normalized_solution,
             target_size,
             &scalarization,

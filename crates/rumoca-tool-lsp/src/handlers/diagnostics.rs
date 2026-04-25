@@ -1,16 +1,16 @@
 //! Diagnostics handler for Modelica files.
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
-use rumoca_session::Session;
-use rumoca_session::compile::SemanticDiagnosticsMode;
+use rumoca_compile::Session;
+use rumoca_compile::compile::SemanticDiagnosticsMode;
 #[cfg(test)]
-use rumoca_session::compile::SourceRootKind;
-use rumoca_session::compile::core as rumoca_core;
-use rumoca_session::compile::core::{
+use rumoca_compile::compile::SourceRootKind;
+use rumoca_compile::compile::core as rumoca_core;
+use rumoca_compile::compile::core::{
     Diagnostic as CommonDiagnostic, DiagnosticSeverity as CommonSeverity, SourceMap,
 };
-use rumoca_session::parsing::ast;
-use rumoca_session::parsing::{ParseError, parse_source_to_ast_with_errors};
+use rumoca_compile::parsing::ast;
+use rumoca_compile::parsing::{ParseError, parse_source_to_ast_with_errors};
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, lint};
 use serde_json::json;
 use std::collections::HashSet;
@@ -790,7 +790,7 @@ fn lint_to_diagnostic(msg: &LintMessage) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_session::compile::core::{PrimaryLabel, Span};
+    use rumoca_compile::compile::core::{PrimaryLabel, Span};
 
     #[test]
     fn parse_diagnostics_include_precise_range_and_compact_message() {

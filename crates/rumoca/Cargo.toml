@@ -15,11 +15,12 @@ path = "src/main.rs"
 
 [features]
 default = []
-tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-session/tracing"]
+tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 
 [dependencies]
-# Internal crates - rumoca-session wraps all compilation phases
-rumoca-session = { workspace = true }
+# Internal crates - rumoca-compile wraps all compilation phases
+rumoca-compile = { workspace = true }
+rumoca-phase-structural = { workspace = true }
 rumoca-sim = { workspace = true }
 rumoca-solver-diffsol = { workspace = true }
 rumoca-viz-web = { workspace = true }
@@ -95,7 +96,6 @@ rumoca-phase-parse = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
-rumoca-phase-structural = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
 rumoca-eval-dae = { workspace = true }
 

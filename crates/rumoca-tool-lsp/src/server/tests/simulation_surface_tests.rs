@@ -293,7 +293,7 @@ fn compile_model_for_simulation_reuses_warm_save_diagnostics_for_single_document
             );
             let diagnostics = session.semantic_diagnostics_query(
                 "Decay",
-                rumoca_session::compile::SemanticDiagnosticsMode::Save,
+                rumoca_compile::compile::SemanticDiagnosticsMode::Save,
             );
             assert!(
                 diagnostics.diagnostics.is_empty(),

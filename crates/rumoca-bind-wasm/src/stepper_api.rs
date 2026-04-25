@@ -10,7 +10,7 @@ use crate::{compile_requested_model, qualify_input_model_name, with_singleton_se
 pub struct WasmStepper {
     stepper: rumoca_solver_diffsol::SimStepper,
     /// Kept for `reset()` — recreates the stepper from scratch.
-    dae: rumoca_session::compile::Dae,
+    dae: rumoca_compile::compile::Dae,
 }
 
 #[wasm_bindgen]

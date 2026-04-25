@@ -54,7 +54,7 @@ axis, each axis lives in one crate family.
 | `rumoca-solver-diffsol`, `-rk45` | Numerical backend |
 | `rumoca-input`, `-gamepad`, `-keyboard` | Input device |
 | `rumoca-viz-web` | HTTP viewer + assets |
-| `rumoca-session::config` | Shared TOML facade |
+| `rumoca-compile::config` | Shared TOML facade |
 | `rumoca` (CLI) | Top-level composition |
 
 ### The commits
@@ -74,7 +74,7 @@ Twenty commits on branch `pr_arch_fix` (first to last):
 | `fb2f6fa` | Extract `rumoca-transport-udp` |
 | `0958464` | Extract `rumoca-transport-websocket`; move HTTP viewer to `rumoca-viz-web` |
 | `8450fa6` | Extract `rumoca-input` (engine + signal mapper + config types) |
-| `60cb434` | Move `SimulationConfig` to `rumoca-session::config` |
+| `60cb434` | Move `SimulationConfig` to `rumoca-compile::config` |
 | `51b6332` | Dissolve `rumoca-sim-fb`: move executor into the CLI |
 | `43e697f2` | CLI: `sim-fb` → `sim {run,check,init}` |
 | `fb38ffc` | Extract `rumoca-input-gamepad` + `rumoca-input-keyboard` |
@@ -209,7 +209,7 @@ external process, no wire format.
 
 The runtime auto-detects which mode from the config. See
 `SimulationConfig::has_fb()` and `validate()` in
-[rumoca-session/src/config.rs](../crates/rumoca-session/src/config.rs).
+[rumoca-compile/src/config.rs](../crates/rumoca-compile/src/config.rs).
 
 ### Two pacing modes
 

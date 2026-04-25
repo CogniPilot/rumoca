@@ -1,5 +1,5 @@
-use rumoca_session::parsing::ast;
-use rumoca_session::parsing::ast::{
+use rumoca_compile::parsing::ast;
+use rumoca_compile::parsing::ast::{
     ComponentReferenceContext, ExpressionContext, FunctionCallContext, NameContext,
     SubscriptContext,
 };

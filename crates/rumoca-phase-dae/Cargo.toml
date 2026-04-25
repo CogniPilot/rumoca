@@ -12,6 +12,7 @@ rumoca-core = { path = "../rumoca-core" }
 rumoca-ir-flat = { path = "../rumoca-ir-flat" }
 rumoca-ir-dae = { path = "../rumoca-ir-dae" }
 rumoca-ir-core = { path = "../rumoca-ir-core" }
+rumoca-phase-structural = { path = "../rumoca-phase-structural" }
 indexmap = "2.2"
 rustc-hash = { workspace = true }
 thiserror = "2.0"

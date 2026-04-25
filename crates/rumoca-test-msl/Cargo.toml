@@ -18,7 +18,7 @@ clap = { workspace = true }
 mimalloc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
-rumoca-session = { workspace = true }
+rumoca-compile = { workspace = true }
 rumoca-sim = { workspace = true }
 rumoca-solver-diffsol = { workspace = true }
 
@@ -45,7 +45,7 @@ rumoca-phase-resolve = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
-rumoca-session = { workspace = true }
+rumoca-compile = { workspace = true }
 
 [lints]
 workspace = true

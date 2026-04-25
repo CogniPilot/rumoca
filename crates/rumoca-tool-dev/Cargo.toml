@@ -24,7 +24,7 @@ bincode = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 mimalloc = { workspace = true }
-rumoca-session = { workspace = true }
+rumoca-compile = { workspace = true }
 rumoca-sim = { workspace = true }
 rumoca-solver-diffsol = { workspace = true }
 rumoca-viz-web = { workspace = true }

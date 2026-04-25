@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use crate::completion_metrics::extract_namespace_completion_prefix;
-use rumoca_session::compile::{
+use rumoca_compile::compile::{
     PhaseResult, SessionCacheStatsSnapshot, SessionSnapshot, StrictCompileReport,
     session_cache_stats,
 };
@@ -424,7 +424,7 @@ fn strict_compile_failure_title(report: &StrictCompileReport) -> String {
     }
 }
 
-fn balanced_code_lens_title(result: &rumoca_session::compile::CompilationResult) -> String {
+fn balanced_code_lens_title(result: &rumoca_compile::compile::CompilationResult) -> String {
     let detail = dae_balance_detail(&result.dae);
     let unknowns = detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns;
     let balance = dae_balance(&result.dae);

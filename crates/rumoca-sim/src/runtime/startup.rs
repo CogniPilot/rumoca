@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::equation_scalarize::{
+use rumoca_phase_structural::scalarize::{
     build_expression_scalarization_context, scalarize_expression_rows,
 };
 use rumoca_eval_dae::runtime::{

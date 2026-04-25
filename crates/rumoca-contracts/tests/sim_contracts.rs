@@ -6,7 +6,7 @@ use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_resolve_failure_with_code,
     expect_success, is_standalone_simulatable, unbound_fixed_parameter_names,
 };
-use rumoca_session::compile::FailedPhase;
+use rumoca_compile::compile::FailedPhase;
 
 // =============================================================================
 // SIM-002: Initialization fixed

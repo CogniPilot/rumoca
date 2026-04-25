@@ -1,6 +1,6 @@
 [package]
-name = "rumoca-session"
-description = "Multi-file compilation session management for Rumoca"
+name = "rumoca-compile"
+description = "Multi-file Modelica compilation pipeline for Rumoca"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

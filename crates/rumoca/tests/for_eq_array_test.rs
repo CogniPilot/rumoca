@@ -1,6 +1,6 @@
 //! Test for for-equation parameter lookup in array components.
 
-use rumoca_session::compile::{CompiledSourceRoot, PhaseResult};
+use rumoca_compile::compile::{CompiledSourceRoot, PhaseResult};
 
 /// Test with MSL-style imports and SISO.
 #[test]

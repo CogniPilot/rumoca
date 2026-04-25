@@ -3,11 +3,11 @@
 //! Provides convenience functions for compiling Modelica models
 //! and asserting success/failure/balance conditions.
 
-use rumoca_session::compile::{CompilationResult, FailedPhase, PhaseResult};
-use rumoca_session::parsing::{
+use rumoca_compile::compile::{CompilationResult, FailedPhase, PhaseResult};
+use rumoca_compile::parsing::{
     ParseError, parse_source_to_ast as parse_to_ast, parse_source_to_ast_with_errors,
 };
-use rumoca_session::{Session, SessionConfig};
+use rumoca_compile::{Session, SessionConfig};
 use rumoca_sim::dae_balance;
 
 /// Compile a model from source, expecting success.

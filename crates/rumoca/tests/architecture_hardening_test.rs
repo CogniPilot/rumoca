@@ -448,7 +448,7 @@ fn test_bind_wasm_keeps_simulation_optional() {
     let wasm_toml = workspace_root().join("crates/rumoca-bind-wasm/Cargo.toml");
     let content = fs::read_to_string(&wasm_toml).expect("read bind-wasm Cargo.toml");
 
-    for required in ["rumoca-session", "rumoca-tool-lsp", "rumoca-tool-lint"] {
+    for required in ["rumoca-compile", "rumoca-tool-lsp", "rumoca-tool-lint"] {
         assert!(
             section_contains_dependency(&content, "dependencies", required),
             "rumoca-bind-wasm must depend on {required}"
@@ -494,7 +494,7 @@ fn test_tool_lsp_uses_session_parsing_facade() {
     let cargo_toml = workspace_root().join("crates/rumoca-tool-lsp/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read tool-lsp Cargo.toml");
 
-    for required in ["rumoca-session", "rumoca-tool-fmt", "rumoca-tool-lint"] {
+    for required in ["rumoca-compile", "rumoca-tool-fmt", "rumoca-tool-lint"] {
         assert!(
             section_contains_dependency(&content, "dependencies", required),
             "rumoca-tool-lsp must depend on {required}; \
@@ -511,7 +511,7 @@ Author reminder: route formatting/lint through tool crates, compile context thro
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
             "rumoca-tool-lsp must not depend directly on {banned}; \
-Author reminder: use rumoca-session facade APIs instead."
+Author reminder: use rumoca-compile facade APIs instead."
         );
     }
 }
@@ -522,15 +522,15 @@ fn test_tool_fmt_uses_session_facade() {
     let content = fs::read_to_string(&cargo_toml).expect("read tool-fmt Cargo.toml");
 
     assert!(
-        section_contains_dependency(&content, "dependencies", "rumoca-session"),
-        "rumoca-tool-fmt must depend on rumoca-session"
+        section_contains_dependency(&content, "dependencies", "rumoca-compile"),
+        "rumoca-tool-fmt must depend on rumoca-compile"
     );
 
     let banned = "rumoca-phase-parse";
     assert!(
         !section_contains_dependency(&content, "dependencies", banned),
         "rumoca-tool-fmt must not depend directly on {banned}; \
-Author reminder: use rumoca-session parsing/session APIs."
+Author reminder: use rumoca-compile parsing/session APIs."
     );
 }
 
@@ -540,22 +540,22 @@ fn test_tool_lint_uses_session_facade() {
     let content = fs::read_to_string(&cargo_toml).expect("read tool-lint Cargo.toml");
 
     assert!(
-        section_contains_dependency(&content, "dependencies", "rumoca-session"),
-        "rumoca-tool-lint must depend on rumoca-session"
+        section_contains_dependency(&content, "dependencies", "rumoca-compile"),
+        "rumoca-tool-lint must depend on rumoca-compile"
     );
 
     let banned = "rumoca-phase-parse";
     assert!(
         !section_contains_dependency(&content, "dependencies", banned),
         "rumoca-tool-lint must not depend directly on {banned}; \
-Author reminder: use rumoca-session parsing/session APIs."
+Author reminder: use rumoca-compile parsing/session APIs."
     );
 }
 
 #[test]
 fn test_session_has_no_fmt_or_lint_surface() {
-    let session_lib = workspace_root().join("crates/rumoca-session/src/lib.rs");
-    let content = fs::read_to_string(&session_lib).expect("read rumoca-session lib.rs");
+    let session_lib = workspace_root().join("crates/rumoca-compile/src/lib.rs");
+    let content = fs::read_to_string(&session_lib).expect("read rumoca-compile lib.rs");
 
     for banned in [
         "FormatOptions",
@@ -567,7 +567,7 @@ fn test_session_has_no_fmt_or_lint_surface() {
     ] {
         assert!(
             !content.contains(banned),
-            "rumoca-session must not expose {banned}; \
+            "rumoca-compile must not expose {banned}; \
 Author reminder: fmt/lint APIs live in rumoca-tool-fmt and rumoca-tool-lint."
         );
     }
@@ -590,15 +590,15 @@ fn test_tool_dev_uses_session_facade() {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
             "rumoca-tool-dev must not depend directly on {banned}; \
-Author reminder: use rumoca-session facade APIs instead."
+Author reminder: use rumoca-compile facade APIs instead."
         );
     }
 }
 
 #[test]
 fn test_session_is_compile_only() {
-    let cargo_toml = workspace_root().join("crates/rumoca-session/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-session Cargo.toml");
+    let cargo_toml = workspace_root().join("crates/rumoca-compile/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-compile Cargo.toml");
 
     for banned in [
         "rumoca-sim",
@@ -611,43 +611,43 @@ fn test_session_is_compile_only() {
     ] {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca-session must not depend on {banned}; runtime/app contracts belong outside the compile/session facade"
+            "rumoca-compile must not depend on {banned}; runtime/app contracts belong outside the compile/session facade"
         );
     }
     assert!(
         section_contains_dependency(&content, "dependencies", "rumoca-phase-structural"),
-        "rumoca-session must depend on rumoca-phase-structural for structural solve APIs"
+        "rumoca-compile must depend on rumoca-phase-structural for structural solve APIs"
     );
     assert!(
         section_contains_dependency(&content, "dependencies", "rumoca-phase-codegen"),
-        "rumoca-session must depend on rumoca-phase-codegen for explicit codegen helpers"
+        "rumoca-compile must depend on rumoca-phase-codegen for explicit codegen helpers"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-solver-diffsol"),
-        "rumoca-session must not depend on rumoca-solver-diffsol; concrete runtime backends belong outside the compile/session facade"
+        "rumoca-compile must not depend on rumoca-solver-diffsol; concrete runtime backends belong outside the compile/session facade"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-viz-web"),
-        "rumoca-session must not depend on rumoca-viz-web; visualization belongs outside the compile/session facade"
+        "rumoca-compile must not depend on rumoca-viz-web; visualization belongs outside the compile/session facade"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "diffsol"),
-        "rumoca-session must not depend directly on the concrete `diffsol` package; \
+        "rumoca-compile must not depend directly on the concrete `diffsol` package; \
 Author reminder: keep backend-specific packages below the session facade."
     );
 
     let banned = "rumoca-eval-dae";
     assert!(
         !section_contains_dependency(&content, "dependencies", banned),
-        "rumoca-session must not depend directly on {banned} in [dependencies]; \
-Author reminder: keep evaluation/runtime internals out of rumoca-session."
+        "rumoca-compile must not depend directly on {banned} in [dependencies]; \
+Author reminder: keep evaluation/runtime internals out of rumoca-compile."
     );
 }
 
 #[test]
 fn test_session_has_no_direct_eval_dependencies() {
-    let cargo_toml = workspace_root().join("crates/rumoca-session/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-session Cargo.toml");
+    let cargo_toml = workspace_root().join("crates/rumoca-compile/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-compile Cargo.toml");
     let deps = section_dependency_names(&content, "dependencies");
 
     let direct_eval_deps: Vec<_> = deps
@@ -657,7 +657,7 @@ fn test_session_has_no_direct_eval_dependencies() {
 
     assert!(
         direct_eval_deps.is_empty(),
-        "rumoca-session must not directly depend on eval crates ({direct_eval_deps:?}); \
+        "rumoca-compile must not directly depend on eval crates ({direct_eval_deps:?}); \
 Author reminder: session should orchestrate and expose facades, not implement evaluation internals."
     );
 }
@@ -759,7 +759,7 @@ fn test_io_contract_crate_is_runtime_and_visualization_free() {
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-codec Cargo.toml");
 
     for banned in [
-        "rumoca-session",
+        "rumoca-compile",
         "rumoca-sim",
         "rumoca-solver-diffsol",
         "rumoca-solver-rk45",
@@ -787,7 +787,7 @@ fn test_codec_flatbuffers_crate_is_protocol_only() {
     );
 
     for banned in [
-        "rumoca-session",
+        "rumoca-compile",
         "rumoca-sim",
         "rumoca-solver-diffsol",
         "rumoca-solver-rk45",
@@ -863,7 +863,7 @@ fn test_viz_web_is_isolated_from_session_and_backends() {
     let cargo_toml = workspace_root().join("crates/rumoca-viz-web/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-viz-web Cargo.toml");
 
-    for banned in ["rumoca-session", "rumoca-sim", "diffsol"] {
+    for banned in ["rumoca-compile", "rumoca-sim", "diffsol"] {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
             "rumoca-viz-web must not depend on {banned}; \
@@ -883,7 +883,7 @@ fn test_rumoca_entry_uses_session_facade_for_ir() {
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca Cargo.toml");
 
     for required in [
-        "rumoca-session",
+        "rumoca-compile",
         "rumoca-tool-fmt",
         "rumoca-tool-lint",
         "rumoca-viz-web",
@@ -899,7 +899,7 @@ Author reminder: rumoca CLI delegates fmt/lint via tool crates and compile/runti
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
             "rumoca must not depend directly on {banned} in [dependencies]; \
-Author reminder: use rumoca-session facade types/APIs instead."
+Author reminder: use rumoca-compile facade types/APIs instead."
         );
     }
 }
@@ -909,7 +909,7 @@ fn test_test_msl_uses_explicit_runtime_crates() {
     let cargo_toml = workspace_root().join("crates/rumoca-test-msl/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-test-msl Cargo.toml");
 
-    for required in ["rumoca-session", "rumoca-sim", "rumoca-solver-diffsol"] {
+    for required in ["rumoca-compile", "rumoca-sim", "rumoca-solver-diffsol"] {
         assert!(
             section_contains_dependency(&content, "dependencies", required),
             "rumoca-test-msl must depend on {required}; \
@@ -921,23 +921,23 @@ Author reminder: compile/session and runtime ownership should be explicit."
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
             "rumoca-test-msl must not depend directly on {banned} in [dependencies]; \
-Author reminder: use rumoca-session::compile plus explicit runtime crates."
+Author reminder: use rumoca-compile::compile plus explicit runtime crates."
         );
     }
     assert!(
         !section_contains_dependency(&content, "dev-dependencies", "rumoca"),
         "rumoca-test-msl must not depend directly on rumoca in [dev-dependencies]; \
-Author reminder: use rumoca-session facade APIs."
+Author reminder: use rumoca-compile facade APIs."
     );
     assert!(
         !section_contains_dependency(&content, "dev-dependencies", "rumoca-core"),
         "rumoca-test-msl must not depend directly on rumoca-core in [dev-dependencies]; \
-Author reminder: use rumoca-session::compile::core facade APIs."
+Author reminder: use rumoca-compile::compile::core facade APIs."
     );
     assert!(
         !section_contains_dependency(&content, "dev-dependencies", "rumoca-phase-codegen"),
         "rumoca-test-msl must not depend directly on rumoca-phase-codegen in [dev-dependencies]; \
-Author reminder: adapter/regression harnesses should render templates through rumoca_session::codegen."
+Author reminder: adapter/regression harnesses should render templates through rumoca_compile::codegen."
     );
 }
 
@@ -962,7 +962,7 @@ fn test_test_msl_uses_session_codegen_facade_for_template_harnesses() {
 
     assert!(
         offenders.is_empty(),
-        "rumoca-test-msl must render templates through rumoca_session::codegen, not rumoca_phase_codegen ({offenders:?}); \
+        "rumoca-test-msl must render templates through rumoca_compile::codegen, not rumoca_phase_codegen ({offenders:?}); \
 Author reminder: phase-codegen direct access belongs in phase-local tests, not adapter/regression harnesses."
     );
 }
@@ -982,13 +982,13 @@ fn test_no_session_runtime_facade_imports_remain() {
         let content = fs::read_to_string(&file).expect("read source file");
         let has_runtime_import = content.lines().any(|line| {
             let trimmed = line.trim_start();
-            trimmed.starts_with("use rumoca_session::runtime")
-                || trimmed.contains(" rumoca_session::runtime::")
+            trimmed.starts_with("use rumoca_compile::runtime")
+                || trimmed.contains(" rumoca_compile::runtime::")
         });
         assert!(
             !has_runtime_import,
-            "source file {} must not import rumoca_session::runtime; \
-Author reminder: use rumoca_session::codegen for template helpers and explicit sim crates for runtime APIs.",
+            "source file {} must not import rumoca_compile::runtime; \
+Author reminder: use rumoca_compile::codegen for template helpers and explicit sim crates for runtime APIs.",
             file.display()
         );
     }
@@ -1003,7 +1003,7 @@ fn test_contracts_use_session_facade() {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
             "rumoca-contracts must not depend directly on {banned} in [dependencies]; \
-Author reminder: use rumoca-session facade APIs instead."
+Author reminder: use rumoca-compile facade APIs instead."
         );
     }
 }
@@ -1103,16 +1103,16 @@ fn test_solve_ir_owns_backend_neutral_row_ops() {
 
 #[test]
 fn test_session_root_facade_exports_are_minimal() {
-    let session_lib = workspace_root().join("crates/rumoca-session/src/lib.rs");
-    let content = fs::read_to_string(&session_lib).expect("read rumoca-session lib.rs");
+    let session_lib = workspace_root().join("crates/rumoca-compile/src/lib.rs");
+    let content = fs::read_to_string(&session_lib).expect("read rumoca-compile lib.rs");
     let root_pub_uses = collect_root_pub_use_statements(&content);
 
     let expected = vec!["pub use compile::{Session, SessionConfig};".to_string()];
 
     assert_eq!(
         root_pub_uses, expected,
-        "unexpected rumoca-session root exports. \
-Author reminder: SPEC_0029_CRATE_BOUNDARIES.md §9 requires `rumoca-session` \
+        "unexpected rumoca-compile root exports. \
+Author reminder: SPEC_0029_CRATE_BOUNDARIES.md §9 requires `rumoca-compile` \
 root exports to stay minimal (`Session`, `SessionConfig`) and to keep other APIs namespaced."
     );
 }

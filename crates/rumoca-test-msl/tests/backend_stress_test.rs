@@ -18,9 +18,9 @@
 //! - `RUMOCA_STRESS_LIMIT=N` — cap number of models tested
 
 use flate2::read::GzDecoder;
-use rumoca_session::codegen::{render_dae_template_with_name, templates};
-use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
-use rumoca_session::parsing::parse_files_parallel_lenient;
+use rumoca_compile::codegen::{render_dae_template_with_name, templates};
+use rumoca_compile::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
+use rumoca_compile::parsing::parse_files_parallel_lenient;
 use rumoca_sim::{SimOptions, SimResult};
 use rumoca_solver_diffsol::simulate_dae;
 use std::collections::HashMap;
@@ -43,7 +43,7 @@ const MSL_URL: &str =
 
 fn get_msl_cache_dir() -> PathBuf {
     let cache_dir =
-        rumoca_session::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
+        rumoca_compile::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
     fs::create_dir_all(&cache_dir).expect("Failed to create MSL cache directory");
     cache_dir
 }
@@ -353,7 +353,7 @@ fn python_has_jax() -> bool {
 // =============================================================================
 
 fn compile_inline_model(source: &str, model_name: &str) -> Result<CompilationResult, String> {
-    let parsed = rumoca_session::parsing::parse_source_to_ast(source, &format!("{model_name}.mo"))
+    let parsed = rumoca_compile::parsing::parse_source_to_ast(source, &format!("{model_name}.mo"))
         .map_err(|e| format!("parse: {e}"))?;
     let source_root =
         CompiledSourceRoot::from_parsed_batch_tolerant(vec![(format!("{model_name}.mo"), parsed)])
@@ -524,7 +524,10 @@ fn compile_to_dae(
     model: &ModelDef,
     source_root: &CompiledSourceRoot,
 ) -> Result<(rumoca_ir_dae::Dae, f64), String> {
-    match &model.source {
+    // Scalarize up front so every backend below (CasADi/FMI2/FMI3/embedded-C/
+    // SymPy/ONNX/JAX/Julia) sees one equation per scalar state. The simulator
+    // scalarizes again internally — idempotent.
+    let (mut dae, t_end) = match &model.source {
         ModelSource::Msl => {
             let report = source_root.compile_model_strict_reachable_with_recovery(&model.name);
             let result: CompilationResult = match report.requested_result {
@@ -541,13 +544,15 @@ fn compile_to_dae(
                 .filter(|t| t.is_finite() && *t > t_start)
                 .unwrap_or(t_start + 1.0)
                 .min(10.0);
-            Ok((result.dae, t_end))
+            (result.dae, t_end)
         }
         ModelSource::Inline(source) => {
             let compiled = compile_inline_model(source, &model.name)?;
-            Ok((compiled.dae, 1.0))
+            (compiled.dae, 1.0)
         }
-    }
+    };
+    rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
+    Ok((dae, t_end))
 }
 
 // =============================================================================

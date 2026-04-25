@@ -1,7 +1,7 @@
 use rumoca_eval_dae::runtime as eval;
 use rumoca_eval_dae::runtime::{VarEnv, eval_array_values, eval_expr};
 use rumoca_ir_dae as dae;
-use rumoca_sim::equation_scalarize::{build_output_names, scalarize_equations};
+use rumoca_phase_structural::scalarize::{build_output_names, scalarize_equations};
 use rumoca_sim::simulation::dae_prepare::{expr_contains_der_of, normalize_ode_equation_signs};
 use rumoca_sim::simulation::runtime_prep::derivative_coefficient_expr;
 use rumoca_sim::timeline;

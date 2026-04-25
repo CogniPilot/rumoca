@@ -7,7 +7,7 @@ use crate::{
 };
 use rumoca_ir_dae as dae;
 use rumoca_phase_structural::eliminate::try_solve_for_unknown;
-use rumoca_sim::equation_scalarize::scalarize_equations;
+use rumoca_phase_structural::scalarize::scalarize_equations;
 use rumoca_sim::simulation::dae_prepare::{
     demote_alias_states_without_der, demote_coupled_derivative_states,
     demote_direct_assigned_states, demote_exact_alias_component_states,

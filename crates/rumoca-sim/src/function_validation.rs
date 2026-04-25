@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::projection_maps::output_is_complex_record;
+use rumoca_phase_structural::projection_maps::output_is_complex_record;
 use rumoca_eval_dae::runtime as eval;
 use rumoca_ir_dae as dae;
 

@@ -33,8 +33,8 @@ members = [
     "crates/rumoca-solver-rk45",
     "crates/rumoca-viz-web",
     "crates/rumoca-phase-typecheck",
-    # Session and tools
-    "crates/rumoca-session",
+    # Compile pipeline and tools
+    "crates/rumoca-compile",
     "crates/rumoca-tool-lint",
     "crates/rumoca-tool-fmt",
     "crates/rumoca-tool-lsp",
@@ -84,7 +84,7 @@ rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
 rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
 rumoca-viz-web = { path = "crates/rumoca-viz-web" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
-rumoca-session = { path = "crates/rumoca-session" }
+rumoca-compile = { path = "crates/rumoca-compile" }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
 rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }
@@ -178,7 +178,7 @@ opt-level = 3
 # Speed up parser-heavy runtime in normal debug builds.
 [profile.dev.package.rumoca-phase-parse]
 opt-level = 3
-[profile.dev.package.rumoca-session]
+[profile.dev.package.rumoca-compile]
 opt-level = 2
 [profile.dev.package.parol_runtime]
 opt-level = 3

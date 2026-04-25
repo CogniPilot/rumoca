@@ -28,7 +28,7 @@ use coverage_analysis::{
 };
 use coverage_gate::CoverageGateArgs;
 use crate_dag_cmd::CrateDagArgs;
-use rumoca_session::compile::core::workspace_root_from_manifest_dir;
+use rumoca_compile::compile::core::workspace_root_from_manifest_dir;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::ffi::OsStr;

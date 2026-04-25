@@ -246,12 +246,12 @@ Rationale:
 ## Runtime And Simulation Layering
 
 The compiler pipeline ends at the DAE contract. Runtime and simulation consumers must remain
-layered below that contract rather than being folded back into `rumoca-session`.
+layered below that contract rather than being folded back into `rumoca-compile`.
 
 Target direction:
 
 ```
-rumoca-session / compiler entry points
+rumoca-compile / compiler entry points
     -> runtime contracts
     -> concrete solver backend
     -> stepper APIs
@@ -263,7 +263,7 @@ Recommended crate mapping:
 
 | Responsibility | Preferred Crate Role |
 |----------------|----------------------|
-| compile/session orchestration | `rumoca-session` |
+| compile/session orchestration | `rumoca-compile` |
 | transport-neutral lockstep I/O contracts | `rumoca-codec` |
 | FlatBuffer schema/codec support for lockstep I/O | `rumoca-codec-flatbuffers` |
 | DAE structural analysis | `rumoca-phase-structural` |
@@ -287,7 +287,7 @@ Migration rule:
 - Do not add new APIs that further couple these responsibilities.
 - New CI checks should reject legacy assumptions and ratchet toward the target layering.
 - CLI/bindings/export adapters and shared regression harnesses should render templates through
-  `rumoca-session::codegen`; direct `rumoca-phase-codegen` dependencies are reserved for
+  `rumoca-compile::codegen`; direct `rumoca-phase-codegen` dependencies are reserved for
   phase-local codegen tests.
 
 ## Compliance Notes

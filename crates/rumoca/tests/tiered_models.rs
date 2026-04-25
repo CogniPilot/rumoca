@@ -20,7 +20,7 @@
 //! | 9 | Advanced | Algorithms, external functions |
 
 use rumoca_ir_dae::{self as dae, Dae};
-use rumoca_session::{Session, SessionConfig};
+use rumoca_compile::{Session, SessionConfig};
 
 /// Check if a Expression contains an If expression anywhere in its tree.
 fn contains_if_expr(expr: &dae::Expression) -> bool {

@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_session::compile::{reset_session_cache_stats, session_cache_stats};
+use rumoca_compile::compile::{reset_session_cache_stats, session_cache_stats};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::source_root_api::sync_project_sources_with_cache_root_for_tests;
@@ -611,7 +611,7 @@ fn test_parse_source_root_file_and_merge_parsed_source_roots_support_compilation
 
     let ast_json = parse_source_root_file(MINI_MODELICA_LIBRARY, "Modelica/package.mo")
         .expect("parse_source_root_file should serialize an AST");
-    let parsed: rumoca_session::parsing::ast::StoredDefinition =
+    let parsed: rumoca_compile::parsing::ast::StoredDefinition =
         serde_json::from_str(&ast_json).expect("parse_source_root_file should return AST JSON");
     assert!(
         parsed.classes.contains_key("Modelica"),

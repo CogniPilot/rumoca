@@ -37,7 +37,7 @@ use miette::{
     GraphicalTheme, LabeledSpan, MietteDiagnostic, MietteHandlerOpts, NamedSource, Report, Severity,
 };
 use rumoca::{CompilationResult, Compiler, CompilerError};
-use rumoca_session::{
+use rumoca_compile::{
     compile::core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap},
     compile::{Session, SessionConfig},
     project::{
@@ -245,7 +245,7 @@ enum Backend {
 
 impl Backend {
     fn template(self) -> &'static str {
-        use rumoca_session::codegen::templates;
+        use rumoca_compile::codegen::templates;
         match self {
             Backend::CasadiSx => templates::CASADI_SX,
             Backend::CasadiMx => templates::CASADI_MX,
@@ -474,8 +474,8 @@ fn build_cli_error_report(error: &anyhow::Error) -> Report {
 }
 
 fn print_compile_failures(
-    failures: &[rumoca_session::compile::ModelFailureDiagnostic],
-    source_map: Option<&rumoca_session::compile::core::SourceMap>,
+    failures: &[rumoca_compile::compile::ModelFailureDiagnostic],
+    source_map: Option<&rumoca_compile::compile::core::SourceMap>,
 ) -> bool {
     let Some(source_map) = source_map else {
         return false;
@@ -529,8 +529,8 @@ fn build_source_diagnostic_report(diagnostic: &CommonDiagnostic, source_map: &So
 }
 
 fn build_compile_failure_report(
-    failure: &rumoca_session::compile::ModelFailureDiagnostic,
-    source_map: &rumoca_session::compile::core::SourceMap,
+    failure: &rumoca_compile::compile::ModelFailureDiagnostic,
+    source_map: &rumoca_compile::compile::core::SourceMap,
 ) -> Report {
     let label = failure
         .primary_label
@@ -1156,7 +1156,7 @@ fn infer_model_name(model_file: &str) -> Result<String> {
         })
         .collect::<Vec<_>>();
 
-    let mut candidates = rumoca_session::parsing::collect_model_names(&definition);
+    let mut candidates = rumoca_compile::parsing::collect_model_names(&definition);
     candidates.sort();
     candidates.dedup();
     if candidates.is_empty() {
@@ -1562,7 +1562,7 @@ fn to_ps_tokens(words: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_session::compile::core::PrimaryLabel;
+    use rumoca_compile::compile::core::PrimaryLabel;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -1739,7 +1739,7 @@ mod tests {
     fn source_diagnostic_report_preserves_spans() {
         let mut source_map = SourceMap::new();
         let source_id = source_map.add("Pkg/A.mo", "model A end A;");
-        let span = rumoca_session::compile::core::Span::from_offsets(source_id, 6, 7);
+        let span = rumoca_compile::compile::core::Span::from_offsets(source_id, 6, 7);
         let diagnostic = CommonDiagnostic::error(
             "PKG-007",
             "duplicate class name",

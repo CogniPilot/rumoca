@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use rumoca_session::compile::{Session, SessionConfig, SourceRootKind};
+use rumoca_compile::compile::{Session, SessionConfig, SourceRootKind};
 
 fn default_msl_archive_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -3,11 +3,9 @@
 use rumoca_ir_dae as dae;
 use std::collections::HashSet;
 
-pub mod equation_scalarize;
 pub mod function_validation;
 #[cfg(test)]
 mod ic_solve;
-pub mod projection_maps;
 pub mod reconstruct;
 pub mod report_payload;
 pub mod runtime;

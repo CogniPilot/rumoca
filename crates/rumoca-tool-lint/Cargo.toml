@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rumoca-session = { workspace = true }
+rumoca-compile = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }

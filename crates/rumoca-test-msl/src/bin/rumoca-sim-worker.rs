@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::Parser;
-use rumoca_session::compile::Dae;
+use rumoca_compile::compile::Dae;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
 use rumoca_solver_diffsol::{SimError, build_simulation, run_prepared_simulation};
 
@@ -447,7 +447,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{Args, effective_output_dt, parse_dae_binary, sample_grid_dt};
-    use rumoca_session::compile::{Dae, Session, SessionConfig};
+    use rumoca_compile::compile::{Dae, Session, SessionConfig};
     use serde_json::json;
     use std::path::PathBuf;
 

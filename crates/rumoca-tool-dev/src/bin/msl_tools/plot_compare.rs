@@ -4,10 +4,10 @@ use crate::common::{
 };
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
-use rumoca_session::compile::{
+use rumoca_compile::compile::{
     CompilationResult as SessionCompilationResult, Session, SessionConfig,
 };
-use rumoca_session::parsing::parse_files_parallel_lenient;
+use rumoca_compile::parsing::parse_files_parallel_lenient;
 use rumoca_sim::runtime_defined_unknown_names;
 use rumoca_sim::sim_trace_compare::{
     ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces, load_trace_json,

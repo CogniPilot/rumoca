@@ -674,7 +674,7 @@ pub(super) fn build_init_jacobian_colored(
 }
 
 fn collect_init_value_expressions(dae: &Dae) -> Vec<dae::Expression> {
-    let scalarization = rumoca_sim::equation_scalarize::build_expression_scalarization_context(dae);
+    let scalarization = rumoca_phase_structural::scalarize::build_expression_scalarization_context(dae);
     dae.states
         .values()
         .chain(dae.algebraics.values())
@@ -686,7 +686,7 @@ fn collect_init_value_expressions(dae: &Dae) -> Vec<dae::Expression> {
                 .or(var.nominal.as_ref())
                 .cloned()
                 .unwrap_or(dae::Expression::Literal(dae::Literal::Real(0.0)));
-            rumoca_sim::equation_scalarize::scalarize_expression_rows(
+            rumoca_phase_structural::scalarize::scalarize_expression_rows(
                 &expr,
                 var.size(),
                 &scalarization,

@@ -165,7 +165,7 @@ pub(crate) fn source_root_cache_compiler_version() -> String {
     if let Some(explicit) = std::env::var_os("RUMOCA_LIBRARY_CACHE_COMPILER_FINGERPRINT") {
         let explicit = explicit.to_string_lossy().trim().to_string();
         if !explicit.is_empty() {
-            return format!("rumoca-session/{}/{}", env!("CARGO_PKG_VERSION"), explicit);
+            return format!("rumoca-compile/{}/{}", env!("CARGO_PKG_VERSION"), explicit);
         }
     }
 
@@ -173,7 +173,7 @@ pub(crate) fn source_root_cache_compiler_version() -> String {
         .get_or_init(|| {
             if env_flag_is_truthy("RUMOCA_LIBRARY_CACHE_STRICT_EXE_FINGERPRINT") {
                 return format!(
-                    "rumoca-session/{}/exe:{}",
+                    "rumoca-compile/{}/exe:{}",
                     env!("CARGO_PKG_VERSION"),
                     cache_exe_fingerprint()
                 );
@@ -181,14 +181,14 @@ pub(crate) fn source_root_cache_compiler_version() -> String {
 
             if let Some(source_fingerprint) = compiler_source_fingerprint() {
                 return format!(
-                    "rumoca-session/{}/src:{}",
+                    "rumoca-compile/{}/src:{}",
                     env!("CARGO_PKG_VERSION"),
                     source_fingerprint
                 );
             }
 
             format!(
-                "rumoca-session/{}/exe:{}",
+                "rumoca-compile/{}/exe:{}",
                 env!("CARGO_PKG_VERSION"),
                 cache_exe_fingerprint()
             )

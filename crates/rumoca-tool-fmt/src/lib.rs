@@ -33,7 +33,7 @@ pub fn format_or_original_with_name(
 
 /// Check if source code is valid Modelica syntax.
 pub fn check_syntax(source: &str) -> Result<(), String> {
-    rumoca_session::parsing::validate_source_syntax(source, "<check>").map_err(|e| e.to_string())
+    rumoca_compile::parsing::validate_source_syntax(source, "<check>").map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

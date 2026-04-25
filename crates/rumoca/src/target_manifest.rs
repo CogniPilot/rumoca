@@ -63,7 +63,7 @@ enum TargetBundle {
 
 impl TargetBundle {
     fn load(target: &str) -> Result<Self> {
-        use rumoca_session::codegen::templates;
+        use rumoca_compile::codegen::templates;
 
         match target {
             "fmi2" => Ok(Self::Builtin {
@@ -184,7 +184,7 @@ fn compile_manifest_target(
 }
 
 fn builtin_target_template_source(template: &str) -> Option<&'static str> {
-    use rumoca_session::codegen::templates;
+    use rumoca_compile::codegen::templates;
 
     match template {
         "fmi2/modelDescription.xml.jinja" => Some(templates::FMI2_MODEL_DESCRIPTION),

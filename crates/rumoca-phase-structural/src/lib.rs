@@ -15,6 +15,8 @@ mod fold_start_values;
 pub mod ic_plan;
 pub mod incidence;
 mod matching;
+pub mod projection_maps;
+pub mod scalarize;
 mod tarjan;
 pub mod tearing;
 mod types;

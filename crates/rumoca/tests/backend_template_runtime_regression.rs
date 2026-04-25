@@ -728,18 +728,18 @@ fn fmi3_native_array_runtime() {
     // Test FMI3 C compile + run with array variables (per-variable VR layout).
     // Uses a standalone driver since the reference simulator doesn't handle
     // array state variables directly.
-    let dae = model_dae(ARRAY_DECAY_SOURCE, "ArrayDecay");
-
-    let model_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ArrayDecay")
-            .expect("render FMI3 model");
-
-    let driver_c = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI3_TEST_DRIVER,
-        "ArrayDecay",
-    )
-    .expect("render FMI3 test driver");
+    //
+    // Routes through `Compiler::render_template_str_with_name` so the
+    // runtime C template sees the scalarized DAE it expects (one xdot
+    // entry per scalar state). The XML companion test deliberately uses
+    // the raw codegen API since it needs the unexpanded native-array view.
+    let compiled = compile_model(ARRAY_DECAY_SOURCE, "ArrayDecay");
+    let model_c = compiled
+        .render_template_str_with_name(templates::FMI3_MODEL, "ArrayDecay")
+        .expect("render FMI3 model");
+    let driver_c = compiled
+        .render_template_str_with_name(templates::FMI3_TEST_DRIVER, "ArrayDecay")
+        .expect("render FMI3 test driver");
 
     let csv = compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],
