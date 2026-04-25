@@ -746,6 +746,71 @@ fn dae_template_json_rejects_source_ref_scalar_count_overflow() {
 }
 
 #[test]
+fn test_array_scalar_name_preserves_modelica_multidimensional_subscripts() {
+    assert_eq!(
+        render_array_scalar_name("floor_internal_gain", &[3, 5], 1).unwrap(),
+        "floor_internal_gain[1,1]"
+    );
+    assert_eq!(
+        render_array_scalar_name("floor_internal_gain", &[3, 5], 5).unwrap(),
+        "floor_internal_gain[1,5]"
+    );
+    assert_eq!(
+        render_array_scalar_name("floor_internal_gain", &[3, 5], 6).unwrap(),
+        "floor_internal_gain[2,1]"
+    );
+    assert_eq!(
+        render_array_scalar_name("floor_internal_gain", &[3, 5], 15).unwrap(),
+        "floor_internal_gain[3,5]"
+    );
+}
+
+#[test]
+fn test_array_scalar_name_connects_multidimensional_dae_residuals() {
+    let rhs = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Add,
+        lhs: Box::new(rumoca_core::Expression::VarRef {
+            name: "dynamic_gain".into(),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        rhs: Box::new(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(3.0),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let dae_json = serde_json::json!({
+        "f_x": [
+            {
+                "lhs": "floor_internal_gain[1,2]",
+                "rhs": serde_json::to_value(rhs).unwrap()
+            }
+        ]
+    });
+    let template = r#"
+{% set cfg = {"prefix": "", "power": "pow", "float_literals": false, "subscript_underscore": true} %}
+{% set scalar_name = array_scalar_name("floor_internal_gain", [3, 5], 2) %}
+{{ scalar_name }}
+{{ alg_rhs_for_var(scalar_name, dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("floor_internal_gain[1,2]"),
+        "codegen should query the DAE with Modelica multi-dimensional scalar names:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("(dynamic_gain + 3.0)"),
+        "expected multidimensional array residual RHS to connect, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("WARNING: no equation found for floor_internal_gain[1,2]"),
+        "codegen should not fall back to warning stubs for multidimensional residuals:\n{rendered}"
+    );
+}
+
+#[test]
 fn test_render_expr_function() {
     let dae = dae::Dae::new();
     // Test the render_expr function is available

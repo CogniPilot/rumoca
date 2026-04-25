@@ -874,9 +874,10 @@ static void apply_initial_equations(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{% set rhs = initial_rhs_for_var(dae, name ~ "[" ~ (i + 1) ~ "]", cfg) %}
+{% set scalar_name = source_ref(name, var.dims, i + 1) %}
+{% set rhs = initial_rhs_for_var(dae, scalar_name, cfg) %}
 {% if rhs %}
-    m->x[{{ ns_idx.offset }}] = {{ rhs }};  /* initial equation: {{ name }}[{{ i + 1 }}] */
+    m->x[{{ ns_idx.offset }}] = {{ rhs }};  /* initial equation: {{ scalar_name }} */
 {% endif %}
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
