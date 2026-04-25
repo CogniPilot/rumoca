@@ -683,21 +683,28 @@ fn compile_pack_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::path::PathBuf;
+
+    fn cerebri_bfbs_paths() -> Option<(PathBuf, PathBuf)> {
+        let dir = std::env::var_os("RUMOCA_CEREBRI_BFBS_DIR")?;
+        let dir = PathBuf::from(dir);
+        Some((
+            dir.join("cerebri2_topics.bfbs"),
+            dir.join("cerebri2_sil.bfbs"),
+        ))
+    }
 
     fn load_test_schema() -> Option<SchemaSet> {
         let mut ss = SchemaSet::new();
-        let topics = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
-        );
-        let sil = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
-        );
+        let Some((topics, sil)) = cerebri_bfbs_paths() else {
+            eprintln!("skipping: set RUMOCA_CEREBRI_BFBS_DIR to a directory with bfbs files");
+            return None;
+        };
         if !topics.exists() || !sil.exists() {
             return None;
         }
-        ss.load_bfbs(topics).unwrap();
-        ss.load_bfbs(sil).unwrap();
+        ss.load_bfbs(&topics).unwrap();
+        ss.load_bfbs(&sil).unwrap();
         Some(ss)
     }
 
@@ -1108,8 +1115,17 @@ mod integration_tests {
     use super::*;
     use crate::bfbs;
     use std::net::UdpSocket;
-    use std::path::Path;
+    use std::path::PathBuf;
     use std::time::Duration;
+
+    fn cerebri_bfbs_paths() -> Option<(PathBuf, PathBuf)> {
+        let dir = std::env::var_os("RUMOCA_CEREBRI_BFBS_DIR")?;
+        let dir = PathBuf::from(dir);
+        Some((
+            dir.join("cerebri2_topics.bfbs"),
+            dir.join("cerebri2_sil.bfbs"),
+        ))
+    }
 
     /// Simulate the full cerebri ↔ rumoca loop locally.
     /// Sends a fake MotorOutput, verifies the sim can unpack it,
@@ -1118,18 +1134,16 @@ mod integration_tests {
     #[allow(clippy::too_many_lines)]
     fn full_loop_simulation() {
         let mut ss = bfbs::SchemaSet::new();
-        let topics = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
-        );
-        let sil = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
-        );
+        let Some((topics, sil)) = cerebri_bfbs_paths() else {
+            eprintln!("skipping: set RUMOCA_CEREBRI_BFBS_DIR to a directory with bfbs files");
+            return;
+        };
         if !topics.exists() || !sil.exists() {
             eprintln!("skipping: bfbs files not found");
             return;
         }
-        ss.load_bfbs(topics).unwrap();
-        ss.load_bfbs(sil).unwrap();
+        ss.load_bfbs(&topics).unwrap();
+        ss.load_bfbs(&sil).unwrap();
 
         // Build a MotorOutput packet the way cerebri does (48 bytes)
         // Using the pack codec to build a valid MotorOutput

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${RUMOCA_INSTALL_REPO:-cognipilot/rumoca}"
+REPO="${RUMOCA_INSTALL_REPO:-climamind/rumoca}"
 BIN_DIR="${RUMOCA_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 VERSION="${RUMOCA_INSTALL_VERSION:-latest}"
 WITH_LSP="${RUMOCA_INSTALL_WITH_LSP:-0}"

@@ -1,6 +1,6 @@
 # Rumoca Modelica
 
-A VS Code extension providing language support for [Modelica](https://modelica.org/) using the [rumoca](https://github.com/cognipilot/rumoca) compiler.
+A VS Code extension providing language support for [Modelica](https://modelica.org/) using the [rumoca](https://github.com/climamind/rumoca) compiler.
 
 ## Features
 
@@ -33,7 +33,7 @@ version mismatches.
 
 **From VSIX file:**
 
-1. Download the `.vsix` file for your platform from [GitHub Releases](https://github.com/cognipilot/rumoca/releases)
+1. Download the `.vsix` file for your platform from [GitHub Releases](https://github.com/climamind/rumoca/releases)
 2. In VS Code, open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`)
 3. Run "Extensions: Install from VSIX..."
 4. Select the downloaded `.vsix` file
@@ -68,10 +68,10 @@ If you need to install `rumoca-lsp` manually:
 
 ```bash
 # From GitHub Releases installer
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install/install.sh | bash -s -- --with-lsp
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/climamind/rumoca/main/install/install.sh | bash -s -- --with-lsp
 
 # Or from source
-git clone https://github.com/cognipilot/rumoca.git
+git clone https://github.com/climamind/rumoca.git
 cd rumoca
 cargo install --path crates/rumoca-tool-lsp
 ```
