@@ -177,7 +177,7 @@ jobs:
     name: Template Runtime Tests
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/cognipilot/rumoca-dev:main
+      image: ghcr.io/climamind/rumoca-dev:main
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

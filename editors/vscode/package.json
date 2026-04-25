@@ -6,11 +6,11 @@
   "publisher": "JamesGoppert",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cognipilot/rumoca"
+    "url": "https://github.com/climamind/rumoca"
   },
-  "homepage": "https://github.com/cognipilot/rumoca#readme",
+  "homepage": "https://github.com/climamind/rumoca#readme",
   "bugs": {
-    "url": "https://github.com/cognipilot/rumoca/issues"
+    "url": "https://github.com/climamind/rumoca/issues"
   },
   "license": "Apache-2.0",
   "icon": "icons/rumoca.png",
@@ -295,5 +295,4 @@
     }
   }
 }
-
 

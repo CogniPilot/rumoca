@@ -442,17 +442,24 @@ pub fn parse_bfbs(buf: &[u8]) -> anyhow::Result<Schema> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn cerebri_bfbs_path(file_name: &str) -> Option<PathBuf> {
+        let dir = std::env::var_os("RUMOCA_CEREBRI_BFBS_DIR")?;
+        Some(PathBuf::from(dir).join(file_name))
+    }
 
     #[test]
     fn parse_cerebri2_topics() {
-        let path = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
-        );
+        let Some(path) = cerebri_bfbs_path("cerebri2_topics.bfbs") else {
+            eprintln!("skipping: set RUMOCA_CEREBRI_BFBS_DIR to a directory with bfbs files");
+            return;
+        };
         if !path.exists() {
             eprintln!("skipping test: bfbs not found");
             return;
         }
-        let data = std::fs::read(path).unwrap();
+        let data = std::fs::read(&path).unwrap();
         let schema = parse_bfbs(&data).unwrap();
 
         eprintln!("Objects:");
@@ -487,14 +494,15 @@ mod tests {
 
     #[test]
     fn parse_cerebri2_sil() {
-        let path = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
-        );
+        let Some(path) = cerebri_bfbs_path("cerebri2_sil.bfbs") else {
+            eprintln!("skipping: set RUMOCA_CEREBRI_BFBS_DIR to a directory with bfbs files");
+            return;
+        };
         if !path.exists() {
             eprintln!("skipping test: bfbs not found");
             return;
         }
-        let data = std::fs::read(path).unwrap();
+        let data = std::fs::read(&path).unwrap();
         let schema = parse_bfbs(&data).unwrap();
 
         eprintln!("file_ident: {:?}", schema.file_ident);

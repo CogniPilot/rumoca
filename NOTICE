@@ -1,0 +1,23 @@
+Rumoca
+Copyright 2025-2026 CogniPilot Foundation
+Copyright 2026 ClimaMind contributors
+
+This product includes software developed by the Rumoca contributors.
+
+Rumoca is distributed under the Apache License, Version 2.0. A copy of the
+license is included in LICENSE.
+
+ClimaMind maintains this repository as a public Rumoca line with attribution to
+the original CogniPilot project. Downstream distributions should preserve this
+NOTICE file and any third-party notices required by bundled dependencies.
+
+Dependency notes:
+
+- Rust dependencies are resolved through Cargo.lock and are primarily
+  permissively licensed. Run `cargo metadata --format-version 1` before a
+  release to refresh the dependency license inventory.
+- The npm workspaces under `editors/` are distributed only with their package
+  lockfiles and package metadata. Run `npm install` in the relevant workspace
+  before packaging editor artifacts and retain required npm notices.
+- Modelica Standard Library data is used by tests and CI staging. Do not commit
+  downloaded MSL trees or generated `target/msl` artifacts to this repository.

@@ -1,6 +1,7 @@
 {
   "name": "rumoca-wasm-smoke",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "devDependencies": {
     "playwright-core": "^1.55.0"

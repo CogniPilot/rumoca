@@ -302,12 +302,14 @@ fn main() -> anyhow::Result<()> {
 
     // Load quadrotor viewer JS at runtime
     let quadrotor_js = {
+        let env_path = std::env::var("RUMOCA_QUADROTOR_VIEWER_JS").ok();
         let paths = [
-            ".rumoca/viewer3d/QuadrotorAttitude/timeseries_2.js",
-            "/home/micah/rust_autopilot/.rumoca/viewer3d/AutopilotSim/timeseries_2.js",
+            env_path.as_deref(),
+            Some(".rumoca/viewer3d/QuadrotorAttitude/timeseries_2.js"),
         ];
         paths
             .iter()
+            .flatten()
             .find_map(|p| std::fs::read_to_string(p).ok())
             .unwrap_or_else(|| {
                 eprintln!("Warning: No quadrotor viewer JS found");

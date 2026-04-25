@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Version = $env:RUMOCA_INSTALL_VERSION,
-    [string]$Repo = $(if ($env:RUMOCA_INSTALL_REPO) { $env:RUMOCA_INSTALL_REPO } else { "cognipilot/rumoca" }),
+    [string]$Repo = $(if ($env:RUMOCA_INSTALL_REPO) { $env:RUMOCA_INSTALL_REPO } else { "climamind/rumoca" }),
     [string]$BinDir = $(if ($env:RUMOCA_INSTALL_BIN_DIR) { $env:RUMOCA_INSTALL_BIN_DIR } else { Join-Path $HOME ".rumoca\bin" }),
     [switch]$WithLsp
 )

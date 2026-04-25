@@ -60,7 +60,8 @@ pub fn fold_start_values_to_literals(dae: &mut Dae) {
     let tunable_parameters: std::collections::HashSet<String> = dae
         .parameters
         .iter()
-        .filter_map(|(name, var)| var.is_tunable.then(|| name.as_str().to_string()))
+        .filter(|&(_name, var)| var.is_tunable)
+        .map(|(name, _var)| name.as_str().to_string())
         .collect();
 
     // Phase 2: rewrite start expressions to literals where we found values.

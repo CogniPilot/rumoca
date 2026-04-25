@@ -38,5 +38,5 @@ The compiler transforms these equations into a form suitable for numerical simul
 
 ## Getting Help
 
-- GitHub Issues: [github.com/jgoppert/rumoca/issues](https://github.com/jgoppert/rumoca/issues)
-- Source Code: [github.com/jgoppert/rumoca](https://github.com/jgoppert/rumoca)
+- GitHub Issues: [github.com/climamind/rumoca/issues](https://github.com/climamind/rumoca/issues)
+- Source Code: [github.com/climamind/rumoca](https://github.com/climamind/rumoca)

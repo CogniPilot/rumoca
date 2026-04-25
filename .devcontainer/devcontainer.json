@@ -1,6 +1,6 @@
 {
   "name": "rumoca-dev",
-  "image": "ghcr.io/cognipilot/rumoca-dev:main",
+  "image": "ghcr.io/climamind/rumoca-dev:main",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
   "workspaceFolder": "/workspace",
   "overrideCommand": true,

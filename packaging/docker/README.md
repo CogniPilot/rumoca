@@ -125,14 +125,14 @@ Rules:
 
 The committed devcontainer configuration uses the prebuilt GitHub Packages image:
 
-- `ghcr.io/cognipilot/rumoca-dev:main`
+- `ghcr.io/climamind/rumoca-dev:main`
 
 That image is refreshed by the nightly `Docker Publish` workflow for all three
 packaged targets:
 
-- `ghcr.io/cognipilot/rumoca-core:main`
-- `ghcr.io/cognipilot/rumoca-ci:main`
-- `ghcr.io/cognipilot/rumoca-dev:main`
+- `ghcr.io/climamind/rumoca-core:main`
+- `ghcr.io/climamind/rumoca-ci:main`
+- `ghcr.io/climamind/rumoca-dev:main`
 
 Open the repository in VS Code and choose "Reopen in Container" to use the canonical contributor image. The devcontainer mounts the repository at `/workspace` and uses:
 

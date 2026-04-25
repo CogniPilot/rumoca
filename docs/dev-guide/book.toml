@@ -9,5 +9,5 @@ src = "src"
 build-dir = "book"
 
 [output.html]
-git-repository-url = "https://github.com/jgoppert/rumoca"
-edit-url-template = "https://github.com/jgoppert/rumoca/edit/main/docs/dev-guide/{path}"
+git-repository-url = "https://github.com/climamind/rumoca"
+edit-url-template = "https://github.com/climamind/rumoca/edit/main/docs/dev-guide/{path}"
