@@ -2,7 +2,7 @@
 
 A VS Code extension providing language support for [Modelica](https://modelica.org/) using the [rumoca](https://github.com/climamind/rumoca) compiler.
 
-📖 **Documentation:** [Rumoca User Guide](https://cognipilot.github.io/rumoca/user-guide/) · [Rumoca Dev Guide](https://cognipilot.github.io/rumoca/dev-guide/) · [Web Playground](https://cognipilot.github.io/rumoca/) — also available from the command palette: **Rumoca: Open Rumoca User Guide**.
+📖 **Documentation:** [Rumoca User Guide](https://climamind.github.io/rumoca/user-guide/) · [Rumoca Dev Guide](https://climamind.github.io/rumoca/dev-guide/) · [Web Playground](https://climamind.github.io/rumoca/) — also available from the command palette: **Rumoca: Open Rumoca User Guide**.
 
 ## Features
 
@@ -70,7 +70,7 @@ If you need to install `rumoca-lsp` manually:
 
 ```bash
 # From GitHub Releases installer
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/infra/install/install.sh | bash -s -- --with-lsp
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/climamind/rumoca/main/infra/install/install.sh | bash -s -- --with-lsp
 
 # Or from source
 git clone https://github.com/climamind/rumoca.git

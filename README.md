@@ -238,19 +238,19 @@ This keeps the compiler’s multi-crate architecture intact (similar to rustc’
 #### Binary installer (GitHub Releases)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/infra/install/install.sh | bash
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/climamind/rumoca/main/infra/install/install.sh | bash
 ```
 
 Install a specific version (and optionally `rumoca-lsp`):
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/infra/install/install.sh | bash -s -- --version v0.8.0 --with-lsp
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/climamind/rumoca/main/infra/install/install.sh | bash -s -- --version v0.8.0 --with-lsp
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/cognipilot/rumoca/main/infra/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/climamind/rumoca/main/infra/install/install.ps1 | iex
 ```
 
 The installer defaults to:

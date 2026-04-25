@@ -8,8 +8,8 @@ src = "src"
 build-dir = "book"
 
 [output.html]
-git-repository-url = "https://github.com/CogniPilot/rumoca"
-edit-url-template = "https://github.com/CogniPilot/rumoca/edit/main/docs/dev-guide/{path}"
+git-repository-url = "https://github.com/climamind/rumoca"
+edit-url-template = "https://github.com/climamind/rumoca/edit/main/docs/dev-guide/{path}"
 default-theme = "rust"
 preferred-dark-theme = "ayu"
 # Live Modelica example runner, shared with the user guide (single source).

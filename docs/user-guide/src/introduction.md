@@ -362,5 +362,5 @@ today.
 - **Code Generation** covers built-in and custom targets.
 
 Developers who want to understand or modify the compiler itself should read
-the companion [Rumoca Dev Guide](https://cognipilot.github.io/rumoca/dev-guide/)
+the companion [Rumoca Dev Guide](https://climamind.github.io/rumoca/dev-guide/)
 book.
