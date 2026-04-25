@@ -605,8 +605,9 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
-    m->w[{{ ns_out.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+{% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(scalar_name, dae.f_x, cfg) }};
+    m->w[{{ ns_out.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ scalar_name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -622,8 +623,9 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
-    m->y[{{ ns_alg.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+{% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(scalar_name, dae.f_x, cfg) }};
+    m->y[{{ ns_alg.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ scalar_name }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -664,7 +666,8 @@ static void compute_derivatives(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->xdot[{{ ns_xdot.offset }}] = {{ ode_rhs_for_state(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};  /* der({{ name }}[{{ i + 1 }}]) */
+{% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    m->xdot[{{ ns_xdot.offset }}] = {{ ode_rhs_for_state(scalar_name, dae.f_x, cfg) }};  /* der({{ scalar_name }}) */
 {% set ns_xdot.offset = ns_xdot.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -703,7 +706,8 @@ static void compute_outputs(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};  /* {{ name }}[{{ i + 1 }}] */
+{% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(scalar_name, dae.f_x, cfg) }};  /* {{ scalar_name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}

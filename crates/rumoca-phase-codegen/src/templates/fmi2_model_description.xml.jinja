@@ -93,7 +93,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "continuous", var, "exact") }}
+{{ scalar_var(array_scalar_name(name, var.dims, i + 1), ns_vr.offset, "local", "continuous", var, "exact") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -108,7 +108,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ deriv_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, ns_state_vr.offset) }}
+{{ deriv_var(array_scalar_name(name, var.dims, i + 1), ns_vr.offset, ns_state_vr.offset) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% set ns_state_vr.offset = ns_state_vr.offset + 1 %}
 {% endfor %}
@@ -124,7 +124,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "continuous", var, "calculated") }}
+{{ scalar_var(array_scalar_name(name, var.dims, i + 1), ns_vr.offset, "local", "continuous", var, "calculated") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -138,7 +138,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "input", "continuous", var, none) }}
+{{ scalar_var(array_scalar_name(name, var.dims, i + 1), ns_vr.offset, "input", "continuous", var, none) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -152,7 +152,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "output", "continuous", var, "calculated") }}
+{{ scalar_var(array_scalar_name(name, var.dims, i + 1), ns_vr.offset, "output", "continuous", var, "calculated") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -166,7 +166,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "parameter", "fixed", var, "exact") }}
+{{ scalar_var(array_scalar_name(name, var.dims, i + 1), ns_vr.offset, "parameter", "fixed", var, "exact") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -180,7 +180,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "discrete", var, "exact") }}
+{{ scalar_var(array_scalar_name(name, var.dims, i + 1), ns_vr.offset, "local", "discrete", var, "exact") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -194,7 +194,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "discrete", var, "exact") }}
+{{ scalar_var(array_scalar_name(name, var.dims, i + 1), ns_vr.offset, "local", "discrete", var, "exact") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}

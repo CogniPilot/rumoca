@@ -302,6 +302,10 @@ fn create_environment() -> Environment<'static> {
     // Custom function for flat equation rendering (Model residual equations)
     env.add_function("render_flat_equation", render_flat_equation_function);
 
+    // Render the symbolic scalar name for an array element.  DAE residuals keep
+    // Modelica multi-dimensional subscripts while codegen iterates linear slots.
+    env.add_function("array_scalar_name", array_scalar_name_function);
+
     // Custom function for detecting self-referential (builtin alias) functions
     env.add_function("is_self_call", is_self_call_function);
     env.add_function("fail", fail_function);
@@ -548,6 +552,77 @@ fn product_filter(value: Value) -> Value {
         }
     }
     Value::from(result)
+}
+
+fn array_scalar_name_function(base_name: Value, dims: Value, linear_index: Value) -> RenderResult {
+    let name = base_name
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| base_name.to_string().trim_matches('"').to_string());
+    let dims = dims_from_value(dims)?;
+    let Some(linear_index) = linear_index.as_usize() else {
+        return Err(render_err(format!(
+            "array scalar index for {name} must be a positive integer"
+        )));
+    };
+    render_array_scalar_name(&name, &dims, linear_index)
+}
+
+fn dims_from_value(dims: Value) -> Result<Vec<usize>, minijinja::Error> {
+    let Some(len) = dims.len() else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let item = dims.get_item(&Value::from(i))?;
+        let Some(dim) = item.as_usize() else {
+            return Err(render_err(format!(
+                "array dimension at index {i} is not an integer"
+            )));
+        };
+        if dim == 0 {
+            return Err(render_err(format!("array dimension at index {i} is zero")));
+        }
+        out.push(dim);
+    }
+    Ok(out)
+}
+
+fn render_array_scalar_name(name: &str, dims: &[usize], linear_index: usize) -> RenderResult {
+    if dims.is_empty() {
+        return Ok(name.to_string());
+    }
+    if linear_index == 0 {
+        return Err(render_err(format!(
+            "array scalar index for {name} is one-based and cannot be zero"
+        )));
+    }
+    let total = dims
+        .iter()
+        .try_fold(1usize, |acc, dim| acc.checked_mul(*dim));
+    let Some(total) = total else {
+        return Err(render_err(format!(
+            "array dimensions for {name} overflow usize"
+        )));
+    };
+    if linear_index > total {
+        return Err(render_err(format!(
+            "array scalar index {linear_index} for {name} exceeds scalar size {total}"
+        )));
+    }
+
+    let mut remainder = linear_index - 1;
+    let mut subscripts = vec![0usize; dims.len()];
+    for (slot, dim) in subscripts.iter_mut().rev().zip(dims.iter().rev()) {
+        *slot = (remainder % *dim) + 1;
+        remainder /= *dim;
+    }
+    let rendered = subscripts
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!("{name}[{rendered}]"))
 }
 
 /// Fail template rendering with an explicit message.

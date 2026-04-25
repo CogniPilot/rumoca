@@ -139,7 +139,8 @@ static void {{ model_name }}_algebraics({{ model_name }}_t *m, real_t t) {
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
+{%- set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(scalar_name, dae.f_x, cfg) }};
     m->{{ name | sanitize }}[{{ i }}] = {{ name | sanitize }}_{{ i + 1 }};
 {%- endfor -%}
 {%- else %}
@@ -151,7 +152,8 @@ static void {{ model_name }}_algebraics({{ model_name }}_t *m, real_t t) {
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
+{%- set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(scalar_name, dae.f_x, cfg) }};
     m->{{ name | sanitize }}[{{ i }}] = {{ name | sanitize }}_{{ i + 1 }};
 {%- endfor -%}
 {%- else %}
@@ -361,7 +363,8 @@ void {{ model_name }}_step({{ model_name }}_t *m, real_t t, real_t dt) {
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    real_t next_{{ name | sanitize }}_{{ i + 1 }} = {{ discrete_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_z, dae.f_m, dae, cfg) }};
+{%- set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    real_t next_{{ name | sanitize }}_{{ i + 1 }} = {{ discrete_rhs_for_var(scalar_name, dae.f_z, dae.f_m, dae, cfg) }};
 {%- endfor -%}
 {%- else %}
     real_t next_{{ name | sanitize }} = {{ discrete_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};
@@ -371,7 +374,8 @@ void {{ model_name }}_step({{ model_name }}_t *m, real_t t, real_t dt) {
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    real_t next_{{ name | sanitize }}_{{ i + 1 }} = {{ discrete_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_z, dae.f_m, dae, cfg) }};
+{%- set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    real_t next_{{ name | sanitize }}_{{ i + 1 }} = {{ discrete_rhs_for_var(scalar_name, dae.f_z, dae.f_m, dae, cfg) }};
 {%- endfor -%}
 {%- else %}
     real_t next_{{ name | sanitize }} = {{ discrete_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};
@@ -381,7 +385,8 @@ void {{ model_name }}_step({{ model_name }}_t *m, real_t t, real_t dt) {
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    real_t next_{{ name | sanitize }}_{{ i + 1 }} = {{ discrete_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_z, dae.f_m, dae, cfg) }};
+{%- set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    real_t next_{{ name | sanitize }}_{{ i + 1 }} = {{ discrete_rhs_for_var(scalar_name, dae.f_z, dae.f_m, dae, cfg) }};
 {%- endfor -%}
 {%- else %}
     real_t next_{{ name | sanitize }} = {{ discrete_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};
