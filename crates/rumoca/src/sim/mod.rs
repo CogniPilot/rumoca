@@ -14,7 +14,7 @@ use std::thread;
 use crate::sim::config::SimulationConfig;
 use anyhow::{Context, Result};
 use rumoca_codec_flatbuffers::bfbs::SchemaSet;
-use rumoca_session::compile::Session;
+use rumoca_compile::compile::Session;
 use rumoca_solver_diffsol::{SimStepper, StepperOptions};
 
 /// Arguments for the `rumoca lockstep run` command.

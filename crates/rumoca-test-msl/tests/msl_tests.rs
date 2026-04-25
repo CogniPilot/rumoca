@@ -8,7 +8,7 @@
 
 use rayon::prelude::*;
 use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timing_stats};
-use rumoca_session::{
+use rumoca_compile::{
     compile::core::msl_cache_dir_from_manifest,
     compile::{
         CompiledSourceRoot, Dae, FailedPhase, PhaseResult, StrictCompileReport,

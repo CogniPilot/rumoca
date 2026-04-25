@@ -11,7 +11,7 @@ build = "build.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rumoca-session = { workspace = true }
+rumoca-compile = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-sim = { workspace = true, optional = true }

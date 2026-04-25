@@ -1,7 +1,7 @@
 //! Diagnostic tests for understanding balance issues in MSL models.
 
 use rumoca_ir_dae::{Dae, VarName};
-use rumoca_session::compile::{CompiledSourceRoot, FailedPhase, PhaseResult};
+use rumoca_compile::compile::{CompiledSourceRoot, FailedPhase, PhaseResult};
 
 /// Test a simple logical Not model to understand balance
 #[test]

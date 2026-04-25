@@ -1,4 +1,4 @@
-use rumoca_session::Session;
+use rumoca_compile::Session;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
 use rumoca_sim::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
@@ -78,7 +78,7 @@ fn simulate_model_in_session(
 }
 
 fn run_simulation(
-    dae: &rumoca_session::compile::Dae,
+    dae: &rumoca_compile::compile::Dae,
     opts: &SimOptions,
 ) -> Result<SimResult, JsValue> {
     match opts.solver_mode {
@@ -90,7 +90,7 @@ fn run_simulation(
 
 #[cfg(feature = "sim-diffsol")]
 fn simulate_with_default_backend(
-    dae: &rumoca_session::compile::Dae,
+    dae: &rumoca_compile::compile::Dae,
     opts: &SimOptions,
 ) -> Result<SimResult, JsValue> {
     simulate_with_diffsol(dae, opts)
@@ -98,7 +98,7 @@ fn simulate_with_default_backend(
 
 #[cfg(all(not(feature = "sim-diffsol"), feature = "sim-rk45"))]
 fn simulate_with_default_backend(
-    dae: &rumoca_session::compile::Dae,
+    dae: &rumoca_compile::compile::Dae,
     opts: &SimOptions,
 ) -> Result<SimResult, JsValue> {
     simulate_with_rk45(dae, opts)
@@ -106,7 +106,7 @@ fn simulate_with_default_backend(
 
 #[cfg(feature = "sim-diffsol")]
 fn simulate_with_diffsol(
-    dae: &rumoca_session::compile::Dae,
+    dae: &rumoca_compile::compile::Dae,
     opts: &SimOptions,
 ) -> Result<SimResult, JsValue> {
     simulate_dae_diffsol(dae, opts)
@@ -115,7 +115,7 @@ fn simulate_with_diffsol(
 
 #[cfg(not(feature = "sim-diffsol"))]
 fn simulate_with_diffsol(
-    _dae: &rumoca_session::compile::Dae,
+    _dae: &rumoca_compile::compile::Dae,
     _opts: &SimOptions,
 ) -> Result<SimResult, JsValue> {
     Err(JsValue::from_str(
@@ -125,7 +125,7 @@ fn simulate_with_diffsol(
 
 #[cfg(feature = "sim-rk45")]
 fn simulate_with_rk45(
-    dae: &rumoca_session::compile::Dae,
+    dae: &rumoca_compile::compile::Dae,
     opts: &SimOptions,
 ) -> Result<SimResult, JsValue> {
     simulate_dae_rk45(dae, opts)
@@ -134,7 +134,7 @@ fn simulate_with_rk45(
 
 #[cfg(not(feature = "sim-rk45"))]
 fn simulate_with_rk45(
-    _dae: &rumoca_session::compile::Dae,
+    _dae: &rumoca_compile::compile::Dae,
     _opts: &SimOptions,
 ) -> Result<SimResult, JsValue> {
     Err(JsValue::from_str(

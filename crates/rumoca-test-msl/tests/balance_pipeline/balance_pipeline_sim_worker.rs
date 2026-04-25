@@ -902,7 +902,7 @@ pub(super) fn output_samples_for_model(n_state_scalars: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_session::compile::{Session, SessionConfig};
+    use rumoca_compile::compile::{Session, SessionConfig};
 
     #[test]
     fn slow_sim_prep_log_threshold_parses_positive_numbers_only() {

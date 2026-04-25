@@ -74,12 +74,12 @@ pub(super) struct SimulationCompileTimings {
 
 #[derive(Debug)]
 pub(super) struct SimulationCompileResult {
-    pub(super) compiled: Box<rumoca_session::compile::DaeCompilationResult>,
+    pub(super) compiled: Box<rumoca_compile::compile::DaeCompilationResult>,
     pub(super) timings: SimulationCompileTimings,
 }
 
 impl std::ops::Deref for SimulationCompileResult {
-    type Target = rumoca_session::compile::DaeCompilationResult;
+    type Target = rumoca_compile::compile::DaeCompilationResult;
 
     fn deref(&self) -> &Self::Target {
         &self.compiled
@@ -490,7 +490,7 @@ impl ModelicaLanguageServer {
     ) -> Session {
         let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
         let requires_loaded_source_roots =
-            rumoca_session::source_roots::sources_require_loaded_source_roots(
+            rumoca_compile::source_roots::sources_require_loaded_source_roots(
                 local_compile_unit_sources
                     .iter()
                     .map(|(_, source)| source.as_str()),

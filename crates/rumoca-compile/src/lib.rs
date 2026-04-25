@@ -16,7 +16,7 @@
 //! ## Pipeline Invariants
 //!
 //! The orchestrator phase ordering and failure contracts are documented in:
-//! `crates/rumoca-session/PIPELINE_INVARIANTS.md`
+//! `crates/rumoca-compile/PIPELINE_INVARIANTS.md`
 //!
 //! ## Public API Surface
 //!
@@ -27,7 +27,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use rumoca_session::{Session, SessionConfig};
+//! use rumoca_compile::{Session, SessionConfig};
 //!
 //! // Create a session
 //! let mut session = Session::new(SessionConfig::default());

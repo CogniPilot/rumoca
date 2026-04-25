@@ -1,7 +1,7 @@
 use super::*;
 
 fn assert_no_model_query_builds(
-    delta: rumoca_session::compile::SessionCacheStatsSnapshot,
+    delta: rumoca_compile::compile::SessionCacheStatsSnapshot,
     context: &str,
 ) {
     for (stage, builds) in [
@@ -110,7 +110,7 @@ fn assert_stale_save_diagnostics_timing(entry: &LoggedDiagnosticsTimingSummary) 
 }
 
 fn assert_no_stale_save_diagnostics_stats(
-    before: rumoca_session::compile::SessionCacheStatsSnapshot,
+    before: rumoca_compile::compile::SessionCacheStatsSnapshot,
 ) {
     let delta = session_cache_stats().delta_since(before);
     assert_eq!(

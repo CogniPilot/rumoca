@@ -3118,6 +3118,7 @@ dependencies = [
  "rayon",
  "rumoca-codec",
  "rumoca-codec-flatbuffers",
+ "rumoca-compile",
  "rumoca-core",
  "rumoca-eval-dae",
  "rumoca-input",
@@ -3135,7 +3136,6 @@ dependencies = [
  "rumoca-phase-resolve",
  "rumoca-phase-structural",
  "rumoca-phase-typecheck",
- "rumoca-session",
  "rumoca-sim",
  "rumoca-solver-diffsol",
  "rumoca-tool-fmt",
@@ -3166,7 +3166,7 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "rumoca",
- "rumoca-session",
+ "rumoca-compile",
  "rumoca-sim",
  "rumoca-solver-diffsol",
  "rumoca-tool-fmt",
@@ -3183,9 +3183,9 @@ dependencies = [
  "getrandom 0.3.4",
  "js-sys",
  "lsp-types",
+ "rumoca-compile",
  "rumoca-ir-dae",
  "rumoca-phase-structural",
- "rumoca-session",
  "rumoca-sim",
  "rumoca-solver-diffsol",
  "rumoca-solver-rk45",
@@ -3216,11 +3216,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-compile"
+version = "0.8.12"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "blake3",
+ "indexmap",
+ "miette",
+ "rayon",
+ "rumoca-core",
+ "rumoca-ir-ast",
+ "rumoca-ir-core",
+ "rumoca-ir-dae",
+ "rumoca-ir-flat",
+ "rumoca-phase-codegen",
+ "rumoca-phase-dae",
+ "rumoca-phase-flatten",
+ "rumoca-phase-instantiate",
+ "rumoca-phase-parse",
+ "rumoca-phase-resolve",
+ "rumoca-phase-structural",
+ "rumoca-phase-typecheck",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
+ "toml",
+]
+
+[[package]]
 name = "rumoca-contracts"
 version = "0.8.12"
 dependencies = [
  "indexmap",
- "rumoca-session",
+ "rumoca-compile",
  "rumoca-sim",
  "serde",
  "serde_json",
@@ -3481,36 +3511,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-session"
-version = "0.8.12"
-dependencies = [
- "anyhow",
- "bincode",
- "blake3",
- "indexmap",
- "miette",
- "rayon",
- "rumoca-core",
- "rumoca-ir-ast",
- "rumoca-ir-core",
- "rumoca-ir-dae",
- "rumoca-ir-flat",
- "rumoca-phase-codegen",
- "rumoca-phase-dae",
- "rumoca-phase-flatten",
- "rumoca-phase-instantiate",
- "rumoca-phase-parse",
- "rumoca-phase-resolve",
- "rumoca-phase-structural",
- "rumoca-phase-typecheck",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.17",
- "toml",
-]
-
-[[package]]
 name = "rumoca-sim"
 version = "0.8.12"
 dependencies = [
@@ -3577,6 +3577,7 @@ dependencies = [
  "mimalloc",
  "ntest",
  "rayon",
+ "rumoca-compile",
  "rumoca-eval-dae",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
@@ -3588,7 +3589,6 @@ dependencies = [
  "rumoca-phase-resolve",
  "rumoca-phase-structural",
  "rumoca-phase-typecheck",
- "rumoca-session",
  "rumoca-sim",
  "rumoca-solver-diffsol",
  "serde",
@@ -3613,7 +3613,7 @@ dependencies = [
  "lsp-types",
  "mimalloc",
  "rayon",
- "rumoca-session",
+ "rumoca-compile",
  "rumoca-sim",
  "rumoca-solver-diffsol",
  "rumoca-viz-web",
@@ -3632,7 +3632,7 @@ dependencies = [
 name = "rumoca-tool-fmt"
 version = "0.8.12"
 dependencies = [
- "rumoca-session",
+ "rumoca-compile",
  "serde",
  "tempfile",
  "thiserror 2.0.17",
@@ -3643,7 +3643,7 @@ dependencies = [
 name = "rumoca-tool-lint"
 version = "0.8.12"
 dependencies = [
- "rumoca-session",
+ "rumoca-compile",
  "serde",
  "tempfile",
  "thiserror 2.0.17",
@@ -3658,7 +3658,7 @@ dependencies = [
  "clap",
  "futures-util",
  "lsp-types",
- "rumoca-session",
+ "rumoca-compile",
  "rumoca-sim",
  "rumoca-solver-diffsol",
  "rumoca-tool-fmt",

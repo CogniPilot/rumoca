@@ -1,11 +1,11 @@
-# rumoca-session Pipeline Invariants and Failure Contracts
+# rumoca-compile Pipeline Invariants and Failure Contracts
 
 This document defines the runtime and API invariants used by the session orchestrator.
 It is the implementation companion for the active specs (not a replacement for them).
 
 ## Phase Ordering Invariant
 
-`rumoca-session` compiles a model in this fixed order:
+`rumoca-compile` compiles a model in this fixed order:
 
 1. `Resolve`
 2. `Instantiate`

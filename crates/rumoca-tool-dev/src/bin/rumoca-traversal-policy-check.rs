@@ -13,7 +13,7 @@ const COVERED_FILES: &[&str] = &[
     "crates/rumoca-phase-resolve/src/semantic_checks.rs",
     "crates/rumoca-phase-resolve/src/semantic_checks_expr.rs",
     "crates/rumoca-phase-typecheck/src/typechecker/late_methods.rs",
-    "crates/rumoca-session/src/session/dependency_fingerprint.rs",
+    "crates/rumoca-compile/src/session/dependency_fingerprint.rs",
     "crates/rumoca-tool-lsp/src/handlers/semantic_tokens.rs",
     "crates/rumoca-tool-lsp/src/handlers/inlay_hints.rs",
     "crates/rumoca-phase-dae/src/scalar_inference/parts.rs",

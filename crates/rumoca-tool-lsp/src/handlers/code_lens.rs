@@ -1,7 +1,7 @@
 //! Code lens handler for Modelica files.
 
 use lsp_types::{CodeLens, Url};
-use rumoca_session::parsing::ast;
+use rumoca_compile::parsing::ast;
 use serde_json::json;
 
 use super::workspace_symbols::collect_model_names;

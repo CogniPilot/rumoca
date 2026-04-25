@@ -6,9 +6,9 @@ use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_parse_err_with_code,
     expect_resolve_failure_with_code, expect_success,
 };
-use rumoca_session::compile::FailedPhase;
+use rumoca_compile::compile::FailedPhase;
 
-fn flat_var_is_protected(result: &rumoca_session::compile::CompilationResult, name: &str) -> bool {
+fn flat_var_is_protected(result: &rumoca_compile::compile::CompilationResult, name: &str) -> bool {
     result
         .flat
         .variables
@@ -18,7 +18,7 @@ fn flat_var_is_protected(result: &rumoca_session::compile::CompilationResult, na
         .unwrap_or(false)
 }
 
-fn flat_var_exists(result: &rumoca_session::compile::CompilationResult, name: &str) -> bool {
+fn flat_var_exists(result: &rumoca_compile::compile::CompilationResult, name: &str) -> bool {
     result
         .flat
         .variables
@@ -27,7 +27,7 @@ fn flat_var_exists(result: &rumoca_session::compile::CompilationResult, name: &s
 }
 
 fn flat_var_dims(
-    result: &rumoca_session::compile::CompilationResult,
+    result: &rumoca_compile::compile::CompilationResult,
     name: &str,
 ) -> Option<Vec<i64>> {
     result

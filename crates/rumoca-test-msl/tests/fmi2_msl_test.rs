@@ -19,9 +19,9 @@
 //! - `RUMOCA_FMI2_MSL_TOLERANCE=0.20` — max allowed trace deviation (default 0.20)
 
 use flate2::read::GzDecoder;
-use rumoca_session::codegen::{render_dae_template_with_name, templates};
-use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
-use rumoca_session::parsing::parse_files_parallel_lenient;
+use rumoca_compile::codegen::{render_dae_template_with_name, templates};
+use rumoca_compile::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
+use rumoca_compile::parsing::parse_files_parallel_lenient;
 use rumoca_sim::{SimOptions, SimResult};
 use rumoca_solver_diffsol::simulate_dae;
 use std::collections::HashMap;
@@ -53,7 +53,7 @@ const MSL_URL: &str =
 
 fn get_msl_cache_dir() -> PathBuf {
     let cache_dir =
-        rumoca_session::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
+        rumoca_compile::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
     fs::create_dir_all(&cache_dir).expect("Failed to create MSL cache directory");
     cache_dir
 }

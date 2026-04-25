@@ -1,6 +1,6 @@
 //! WebAssembly bindings for Rumoca.
 //!
-//! Thin layer over `rumoca-session` and `rumoca-tool-lsp`. All heavy logic
+//! Thin layer over `rumoca-compile` and `rumoca-tool-lsp`. All heavy logic
 //! lives in those crates; this module only provides WASM entry points.
 
 mod class_browser_helpers;
@@ -25,14 +25,14 @@ use wasm_bindgen_futures::JsFuture;
 #[cfg(all(target_arch = "wasm32", feature = "wasm-rayon"))]
 use wasm_bindgen_rayon::init_thread_pool;
 
-use rumoca_session::Session;
-use rumoca_session::codegen::render_dae_template_with_json;
-use rumoca_session::codegen::templates as runtime_templates;
-use rumoca_session::compile::{
+use rumoca_compile::Session;
+use rumoca_compile::codegen::render_dae_template_with_json;
+use rumoca_compile::codegen::templates as runtime_templates;
+use rumoca_compile::compile::{
     CompilationMode, CompilationResult, FailedPhase, PhaseResult, session_cache_stats,
 };
-use rumoca_session::parsing::ir_core as rumoca_ir_core;
-use rumoca_session::parsing::{
+use rumoca_compile::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::parsing::{
     Causality, ClassDef, Expression, OpBinary, StoredDefinition, Variability, collect_model_names,
     parse_source_to_ast, validate_source_syntax,
 };
@@ -901,7 +901,7 @@ pub fn render_template(dae_json: &str, template: &str) -> Result<String, JsValue
     // augmentations survive.
     if let Ok(mut dae) = serde_json::from_str::<rumoca_ir_dae::Dae>(dae_json) {
         rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
-        return rumoca_session::codegen::render_dae_template(&dae, template)
+        return rumoca_compile::codegen::render_dae_template(&dae, template)
             .map_err(|e| JsValue::from_str(&format!("Template error: {}", e)));
     }
     let dae_value: serde_json::Value = serde_json::from_str(dae_json)
@@ -1035,7 +1035,7 @@ fn resolved_tree_for_navigation(
     session: &mut Session,
     ast: Option<&StoredDefinition>,
     line: u32,
-) -> Option<rumoca_session::parsing::ast::ResolvedTree> {
+) -> Option<rumoca_compile::parsing::ast::ResolvedTree> {
     ast.and_then(|parsed| {
         rumoca_tool_lsp::helpers::find_enclosing_class_qualified_name(parsed, line)
     })
@@ -1048,7 +1048,7 @@ fn resolved_tree_for_navigation(
     .or_else(|| session.resolved_cached())
 }
 
-fn local_component_hover(info: &rumoca_session::compile::LocalComponentInfo) -> lsp_types::Hover {
+fn local_component_hover(info: &rumoca_compile::compile::LocalComponentInfo) -> lsp_types::Hover {
     let mut parts = Vec::new();
     if let Some(keyword_prefix) = &info.keyword_prefix {
         parts.push(keyword_prefix.clone());
@@ -1074,7 +1074,7 @@ fn local_component_hover(info: &rumoca_session::compile::LocalComponentInfo) -> 
 }
 
 fn class_target_hover(
-    info: &rumoca_session::compile::NavigationClassTargetInfo,
+    info: &rumoca_compile::compile::NavigationClassTargetInfo,
 ) -> lsp_types::Hover {
     let mut value = format!(
         "```modelica\n{} {}\n```",
@@ -1123,7 +1123,7 @@ fn url_from_session_document_uri(document_uri: &str) -> Option<Url> {
 
 fn class_target_definition(
     session: &Session,
-    info: &rumoca_session::compile::NavigationClassTargetInfo,
+    info: &rumoca_compile::compile::NavigationClassTargetInfo,
     fallback_uri: &Url,
 ) -> lsp_types::GotoDefinitionResponse {
     let target_uri = resolve_session_target_uri(session, &info.target_uri, fallback_uri);
@@ -1136,7 +1136,7 @@ fn class_target_definition(
 fn parsed_source_root_class_definition(
     session: &Session,
     ast: &StoredDefinition,
-    tree: &rumoca_session::parsing::ast::ClassTree,
+    tree: &rumoca_compile::parsing::ast::ClassTree,
     source: &str,
     position: Position,
     fallback_uri: &Url,
@@ -1153,7 +1153,7 @@ fn parsed_source_root_class_definition(
 }
 
 fn local_component_definition(
-    info: &rumoca_session::compile::LocalComponentInfo,
+    info: &rumoca_compile::compile::LocalComponentInfo,
     uri: &Url,
 ) -> lsp_types::GotoDefinitionResponse {
     lsp_types::GotoDefinitionResponse::Scalar(lsp_types::Location {
@@ -1164,9 +1164,9 @@ fn local_component_definition(
 
 fn imported_def_id_in_definition(
     ast: &StoredDefinition,
-    tree: &rumoca_session::parsing::ast::ClassTree,
+    tree: &rumoca_compile::parsing::ast::ClassTree,
     name: &str,
-) -> Option<rumoca_session::compile::core::DefId> {
+) -> Option<rumoca_compile::compile::core::DefId> {
     ast.classes
         .values()
         .find_map(|class| imported_def_id_in_class(class, tree, name))
@@ -1174,9 +1174,9 @@ fn imported_def_id_in_definition(
 
 fn imported_def_id_in_class(
     class: &ClassDef,
-    tree: &rumoca_session::parsing::ast::ClassTree,
+    tree: &rumoca_compile::parsing::ast::ClassTree,
     name: &str,
-) -> Option<rumoca_session::compile::core::DefId> {
+) -> Option<rumoca_compile::compile::core::DefId> {
     for import in &class.imports {
         if let Some(def_id) = rumoca_tool_lsp::helpers::imported_def_id(import, tree, name) {
             return Some(def_id);
@@ -1190,8 +1190,8 @@ fn imported_def_id_in_class(
 
 fn goto_response_for_def_id(
     session: &Session,
-    tree: &rumoca_session::parsing::ast::ClassTree,
-    def_id: rumoca_session::compile::core::DefId,
+    tree: &rumoca_compile::parsing::ast::ClassTree,
+    def_id: rumoca_compile::compile::core::DefId,
     fallback_uri: &Url,
 ) -> Option<lsp_types::GotoDefinitionResponse> {
     let class = tree.get_class_by_def_id(def_id)?;
@@ -1291,17 +1291,17 @@ fn url_from_file_path(path: impl AsRef<Path>) -> Option<Url> {
     Url::parse(&format!("file://{normalized}")).ok()
 }
 
-fn class_type_keyword(class_type: &rumoca_session::parsing::ast::ClassType) -> &'static str {
+fn class_type_keyword(class_type: &rumoca_compile::parsing::ast::ClassType) -> &'static str {
     match class_type {
-        rumoca_session::parsing::ast::ClassType::Model => "model",
-        rumoca_session::parsing::ast::ClassType::Block => "block",
-        rumoca_session::parsing::ast::ClassType::Connector => "connector",
-        rumoca_session::parsing::ast::ClassType::Record => "record",
-        rumoca_session::parsing::ast::ClassType::Type => "type",
-        rumoca_session::parsing::ast::ClassType::Package => "package",
-        rumoca_session::parsing::ast::ClassType::Function => "function",
-        rumoca_session::parsing::ast::ClassType::Class => "class",
-        rumoca_session::parsing::ast::ClassType::Operator => "operator",
+        rumoca_compile::parsing::ast::ClassType::Model => "model",
+        rumoca_compile::parsing::ast::ClassType::Block => "block",
+        rumoca_compile::parsing::ast::ClassType::Connector => "connector",
+        rumoca_compile::parsing::ast::ClassType::Record => "record",
+        rumoca_compile::parsing::ast::ClassType::Type => "type",
+        rumoca_compile::parsing::ast::ClassType::Package => "package",
+        rumoca_compile::parsing::ast::ClassType::Function => "function",
+        rumoca_compile::parsing::ast::ClassType::Class => "class",
+        rumoca_compile::parsing::ast::ClassType::Operator => "operator",
     }
 }
 

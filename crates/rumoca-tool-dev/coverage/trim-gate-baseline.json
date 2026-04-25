@@ -126,7 +126,7 @@
       "dead_likely_candidates": 21,
       "needs_targeted_test_candidates": 15
     },
-    "rumoca-session": {
+    "rumoca-compile": {
       "zero_count_functions_total": 307,
       "candidates_total": 208,
       "dead_likely_candidates": 36,

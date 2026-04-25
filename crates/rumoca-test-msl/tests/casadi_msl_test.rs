@@ -16,9 +16,9 @@
 //! - `RUMOCA_CASADI_MSL_LIMIT=N` — cap number of models tested
 
 use flate2::read::GzDecoder;
-use rumoca_session::codegen::{render_dae_template_with_name, templates};
-use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
-use rumoca_session::parsing::parse_files_parallel_lenient;
+use rumoca_compile::codegen::{render_dae_template_with_name, templates};
+use rumoca_compile::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
+use rumoca_compile::parsing::parse_files_parallel_lenient;
 use rumoca_sim::sim_trace_compare::{ModelDeviationMetric, SimTrace, compare_model_traces};
 use rumoca_sim::{SimOptions, SimResult};
 use rumoca_solver_diffsol::simulate_dae;
@@ -41,7 +41,7 @@ const MSL_URL: &str =
 
 fn get_msl_cache_dir() -> PathBuf {
     let cache_dir =
-        rumoca_session::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
+        rumoca_compile::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
     fs::create_dir_all(&cache_dir).expect("Failed to create MSL cache directory");
     cache_dir
 }

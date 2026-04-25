@@ -128,20 +128,20 @@ fn effective_compile_chunk_batch_size(run_simulation: bool, compile_count: usize
 }
 
 fn delta_compile_timing_stat(
-    before: rumoca_session::compile::CompilePhaseTimingStat,
-    after: rumoca_session::compile::CompilePhaseTimingStat,
-) -> rumoca_session::compile::CompilePhaseTimingStat {
-    rumoca_session::compile::CompilePhaseTimingStat {
+    before: rumoca_compile::compile::CompilePhaseTimingStat,
+    after: rumoca_compile::compile::CompilePhaseTimingStat,
+) -> rumoca_compile::compile::CompilePhaseTimingStat {
+    rumoca_compile::compile::CompilePhaseTimingStat {
         calls: after.calls.saturating_sub(before.calls),
         total_nanos: after.total_nanos.saturating_sub(before.total_nanos),
     }
 }
 
 fn delta_compile_phase_timing_snapshot(
-    before: rumoca_session::compile::CompilePhaseTimingSnapshot,
-    after: rumoca_session::compile::CompilePhaseTimingSnapshot,
-) -> rumoca_session::compile::CompilePhaseTimingSnapshot {
-    rumoca_session::compile::CompilePhaseTimingSnapshot {
+    before: rumoca_compile::compile::CompilePhaseTimingSnapshot,
+    after: rumoca_compile::compile::CompilePhaseTimingSnapshot,
+) -> rumoca_compile::compile::CompilePhaseTimingSnapshot {
+    rumoca_compile::compile::CompilePhaseTimingSnapshot {
         instantiate: delta_compile_timing_stat(before.instantiate, after.instantiate),
         typecheck: delta_compile_timing_stat(before.typecheck, after.typecheck),
         flatten: delta_compile_timing_stat(before.flatten, after.flatten),
@@ -172,7 +172,7 @@ fn delta_flatten_phase_timing_snapshot(
 fn log_slow_model_compile(
     model_name: &str,
     elapsed_secs: f64,
-    compile_delta: rumoca_session::compile::CompilePhaseTimingSnapshot,
+    compile_delta: rumoca_compile::compile::CompilePhaseTimingSnapshot,
     flatten_delta: rumoca_phase_flatten::FlattenPhaseTimingSnapshot,
 ) {
     eprintln!(
@@ -422,7 +422,7 @@ fn finalize_simulation_into_model_result(
 
 fn prepare_successful_streaming_entry(
     model_name: String,
-    result: rumoca_session::compile::CompilationResult,
+    result: rumoca_compile::compile::CompilationResult,
     compile_seconds: f64,
     remaining_budget_secs: Option<f64>,
     ctx: &RenderSimContext<'_>,
@@ -1093,7 +1093,7 @@ mod tests {
     use super::*;
     use rumoca_ir_dae as dae;
     use rumoca_ir_flat as flat;
-    use rumoca_session::compile::{CompilationResult, CompilationSummary};
+    use rumoca_compile::compile::{CompilationResult, CompilationSummary};
     use std::sync::Mutex;
 
     struct FakeFocusedCompiler {

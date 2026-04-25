@@ -1,14 +1,14 @@
 //! Enhanced completion handler for Modelica files.
 
 use lsp_types::{CompletionItem, CompletionItemKind, Position};
-use rumoca_session::Session;
-use rumoca_session::compile::ClassLocalCompletionKind;
+use rumoca_compile::Session;
+use rumoca_compile::compile::ClassLocalCompletionKind;
 #[cfg(feature = "server")]
-use rumoca_session::compile::SessionSnapshot;
-use rumoca_session::compile::core as rumoca_core;
-use rumoca_session::parsing::ast;
-use rumoca_session::parsing::ast::Visitor;
-use rumoca_session::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::compile::SessionSnapshot;
+use rumoca_compile::compile::core as rumoca_core;
+use rumoca_compile::parsing::ast;
+use rumoca_compile::parsing::ast::Visitor;
+use rumoca_compile::parsing::ir_core as rumoca_ir_core;
 use std::collections::{BTreeMap, HashSet};
 use std::ops::ControlFlow;
 
@@ -158,7 +158,7 @@ impl CompletionQuerySession<'_> {
         &mut self,
         uri: &str,
         qualified_name: &str,
-    ) -> Vec<rumoca_session::compile::ClassLocalCompletionItem> {
+    ) -> Vec<rumoca_compile::compile::ClassLocalCompletionItem> {
         match self {
             Self::Host(session) => session.class_local_completion_items_query(uri, qualified_name),
             #[cfg(feature = "server")]

@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 
 use wasm_bindgen::prelude::*;
 
-use rumoca_session::Session;
-use rumoca_session::compile::SourceRootKind;
-use rumoca_session::parsing::{StoredDefinition, parse_source_to_ast};
+use rumoca_compile::Session;
+use rumoca_compile::compile::SourceRootKind;
+use rumoca_compile::parsing::{StoredDefinition, parse_source_to_ast};
 #[cfg(not(target_arch = "wasm32"))]
-use rumoca_session::source_roots::resolve_source_root_cache_dir;
+use rumoca_compile::source_roots::resolve_source_root_cache_dir;
 
 use super::{
     BUNDLED_SOURCE_ROOT_CACHE_BYTES, BUNDLED_SOURCE_ROOT_MANIFEST_JSON, BundledSourceRootManifest,

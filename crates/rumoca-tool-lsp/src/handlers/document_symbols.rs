@@ -1,10 +1,10 @@
 //! Document symbols handler for Modelica files (file outline).
 //!
-//! Consumes query-ready symbol data produced by `rumoca-session`.
+//! Consumes query-ready symbol data produced by `rumoca-compile`.
 
 use lsp_types::{DocumentSymbol, DocumentSymbolResponse, SymbolKind};
-use rumoca_session::compile::{DocumentSymbol as QueryDocumentSymbol, DocumentSymbolKind};
-use rumoca_session::parsing::ast;
+use rumoca_compile::compile::{DocumentSymbol as QueryDocumentSymbol, DocumentSymbolKind};
+use rumoca_compile::parsing::ast;
 
 use crate::helpers::location_to_range;
 

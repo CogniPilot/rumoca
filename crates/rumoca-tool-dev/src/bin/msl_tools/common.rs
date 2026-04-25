@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use rumoca_session::compile::core::{
+use rumoca_compile::compile::core::{
     msl_cache_dir_from_manifest, workspace_root_from_manifest_dir,
 };
 use serde::Serialize;

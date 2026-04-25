@@ -761,7 +761,7 @@ fn handle_reset(
         eprintln!("[reset] autopilot restart failed: {e}");
     }
     if reset_cfg.rebuild_stepper {
-        let mut session = rumoca_session::compile::Session::default();
+        let mut session = rumoca_compile::compile::Session::default();
         session
             .add_document(&format!("{model_name}.mo"), model_source)
             .map_err(|e| anyhow::anyhow!("reset: parse failed: {e}"))?;

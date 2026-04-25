@@ -1,6 +1,6 @@
 //! Regression tests for interface-flow balance accounting.
 
-use rumoca_session::{Session, SessionConfig};
+use rumoca_compile::{Session, SessionConfig};
 
 #[test]
 fn test_interface_flow_does_not_double_count_closed_boundary() {

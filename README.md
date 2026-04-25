@@ -97,7 +97,7 @@ Rumoca focuses on five things:
 ## Core Features
 
 - Full compiler pipeline: parse -> resolve -> typecheck -> instantiate -> flatten -> DAE
-- Multi-file session API for CLI, LSP, WASM, and tests (`rumoca-session`)
+- Multi-file session API for CLI, LSP, WASM, and tests (`rumoca-compile`)
 - DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim`)
 - Structural preparation and IC planning for robust initialization (`rumoca-phase-structural`, `rumoca-sim`)
 - Explicit template rendering support for custom code generation

@@ -1,6 +1,6 @@
 use super::*;
 pub(super) use crate::completion_metrics::{CompletionProgressSummary, CompletionTimingSummary};
-use rumoca_session::compile::{SessionCacheStatsSnapshot, SourceRootStatusSnapshot};
+use rumoca_compile::compile::{SessionCacheStatsSnapshot, SourceRootStatusSnapshot};
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

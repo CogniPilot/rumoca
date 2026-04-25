@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 rumoca = { workspace = true }
 rumoca-sim = { workspace = true }
 rumoca-solver-diffsol = { workspace = true }
-rumoca-session = { workspace = true }
+rumoca-compile = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 pyo3 = { version = "0.22", features = ["extension-module"] }

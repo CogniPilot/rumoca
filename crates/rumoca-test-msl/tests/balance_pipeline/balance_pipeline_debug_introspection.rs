@@ -253,7 +253,7 @@ pub(super) fn print_compiled_debug_with_limit(
 
 pub(super) fn maybe_dump_model_introspection(
     name: &str,
-    result: &rumoca_session::compile::CompilationResult,
+    result: &rumoca_compile::compile::CompilationResult,
     ctx: &RenderSimContext<'_>,
 ) {
     if !msl_introspect_enabled() || !should_introspect_model(name) {

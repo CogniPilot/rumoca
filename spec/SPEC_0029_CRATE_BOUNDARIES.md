@@ -74,7 +74,7 @@ Re-export guardrails:
 - Low-level compiler crates (`rumoca-ir-*`, `rumoca-phase-*`, `rumoca-eval-*`) MUST NOT
   re-export types from other Rumoca crates to tunnel around dependency boundaries.
 - Do not add wildcard forwarding such as `pub use some_lower_layer_crate::*;` in low-level crates.
-- Facade crates (for example `rumoca-session`) MAY re-export selected types intentionally to
+- Facade crates (for example `rumoca-compile`) MAY re-export selected types intentionally to
   provide ergonomic top-level APIs, but those exports must stay curated and namespaced.
 
 CI enforcement:
@@ -87,11 +87,11 @@ CI enforcement:
 
 ### 9. Session Facade Root API
 
-`rumoca-session` is the orchestration facade crate for top-level entry points.
+`rumoca-compile` is the orchestration facade crate for top-level entry points.
 Its root API MUST stay minimal:
 
 - Allowed root exports: `Session`, `SessionConfig`.
-- Compile result and helper types remain under explicit namespaces such as `rumoca_session::compile::*`.
+- Compile result and helper types remain under explicit namespaces such as `rumoca_compile::compile::*`.
 - Non-compile helper surfaces remain under explicit namespaces (`analysis`, `parsing`, `runtime`, `source_roots`, `project`).
 
 CI enforcement:
@@ -101,14 +101,14 @@ CI enforcement:
 
 ### 10. Session-Owned Source-Root And Class-Graph State
 
-`rumoca-session` owns IDE/runtime semantic state above the phase crates.
+`rumoca-compile` owns IDE/runtime semantic state above the phase crates.
 
 Required boundaries:
 
 - Source-root membership, source-root status, and source-root cache hydration MUST live in
-  `rumoca-session`.
+  `rumoca-compile`.
 - The incremental class graph and all derived namespace/package-membership views MUST live in
-  `rumoca-session`.
+  `rumoca-compile`.
 - Workspace roots and imported roots are semantically identical source roots.
   Differences in cache retention or warm-restore policy are implementation details only.
 - Clients MUST NOT implement their own semantic invalidation policy, cache ownership, subtree
@@ -120,7 +120,7 @@ Allowed client responsibilities:
   delivery.
 - `vscode` may own editor UI and user interaction only, through `rumoca-tool-lsp`.
 - `rumoca-bind-wasm` and the `rumoca` CLI may adapt input/output and transport data to
-  `rumoca-session`, but not re-implement source-root/class-graph policy.
+  `rumoca-compile`, but not re-implement source-root/class-graph policy.
 
 Rationale:
 
@@ -131,7 +131,7 @@ Rationale:
 
 ### 11. Session Persistence Boundary
 
-`rumoca-session` MAY persist warm-restore state, but the persisted boundary MUST stop at
+`rumoca-compile` MAY persist warm-restore state, but the persisted boundary MUST stop at
 source-root-scoped AST/index state plus resolved aggregate inputs.
 
 Persisted state MAY include:
@@ -171,7 +171,7 @@ compiler/session -> DAE structural phase -> solve IR lowering -> runtime contrac
 
 Required boundaries:
 
-- `rumoca-session` owns compilation/session orchestration only.
+- `rumoca-compile` owns compilation/session orchestration only.
 - DAE structural analysis MUST live in `rumoca-phase-structural`.
 - Solver-facing prepared data MUST live in `rumoca-ir-solve`, including solver vector layout
   and backend-neutral row operations consumed by compiled/interpreted evaluators.
@@ -191,7 +191,7 @@ Required boundaries:
 
 Transitional rule:
 
-- During migration, CI MUST NOT require `rumoca-session` to enable a specific solver backend
+- During migration, CI MUST NOT require `rumoca-compile` to enable a specific solver backend
   feature transitively.
 - During migration, CI MUST NOT require the runtime-contract crate to default-enable a concrete
   backend.
@@ -199,7 +199,7 @@ Transitional rule:
 Steady-state rule:
 
 - Once the split crates exist, CI MUST reject reverse dependencies across this chain.
-- `rumoca-session` MUST NOT directly depend on concrete solver packages or visualization asset
+- `rumoca-compile` MUST NOT directly depend on concrete solver packages or visualization asset
   crates.
 - Backend selection inputs exposed by user-facing APIs MUST affect runtime behavior, not only
   metadata or diagnostics.
@@ -228,7 +228,7 @@ Tier 5 — Integration (combine session + simulation/tools)
   rumoca-tool-lsp           Language server protocol
 
 Tier 4 — Orchestration (pipeline coordination)
-  rumoca-session            Compilation pipeline orchestrator
+  rumoca-compile            Compilation pipeline orchestrator
   rumoca-tool-fmt           Code formatter
   rumoca-tool-lint          Linter
 
@@ -298,7 +298,7 @@ When an AI agent is asked to modify `rumoca-phase-flatten`, it reads `crates/rum
 
 ### Compile Errors Catch Architectural Violations
 
-If an AI agent adds `use rumoca_session::Session` inside a phase crate, the code won't compile. The violation is caught at build time, not during code review. This is critical because AI-generated code may be plausible-looking but architecturally wrong.
+If an AI agent adds `use rumoca_compile::Session` inside a phase crate, the code won't compile. The violation is caught at build time, not during code review. This is critical because AI-generated code may be plausible-looking but architecturally wrong.
 
 ### Flat Functions Stay Within Context Windows
 
@@ -315,7 +315,7 @@ The IR crates use serde serialization, so code generation templates work from da
 ### Session Owns Compile-Side Codegen Access
 
 Bindings, CLI export paths, and shared regression harnesses should call template render helpers
-through `rumoca-session::codegen`. Direct `rumoca-phase-codegen` dependencies are reserved for
+through `rumoca-compile::codegen`. Direct `rumoca-phase-codegen` dependencies are reserved for
 phase-local codegen tests, which keeps adapter surfaces on the compile/session side of the DAG.
 
 ## How This Helps New Developers

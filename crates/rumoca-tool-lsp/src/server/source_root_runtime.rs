@@ -4,7 +4,7 @@ impl ModelicaLanguageServer {
     async fn parse_source_root_on_indexing_lane(
         &self,
         source_root_path: &str,
-    ) -> anyhow::Result<rumoca_session::source_roots::ParsedSourceRoot> {
+    ) -> anyhow::Result<rumoca_compile::source_roots::ParsedSourceRoot> {
         let _indexing_guard = self.work_lanes.indexing.lock().await;
         let source_root_path = source_root_path.to_string();
         tokio::task::spawn_blocking(move || {

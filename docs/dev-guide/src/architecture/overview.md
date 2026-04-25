@@ -13,7 +13,7 @@ Rumoca is organized as a collection of Rust crates that share a common core comp
 
                               ┌──────────────────────────┐
                               │     CORE COMPILER        │
-                              │    (rumoca-session)      │
+                              │    (rumoca-compile)      │
                               │  - Parsing (AST)         │
                               │  - Compilation phases    │
                               │  - DAE generation        │
@@ -34,7 +34,7 @@ Rumoca is organized as a collection of Rust crates that share a common core comp
 │   ├─ completion.rs      │  │  - simulate()           │
 │   ├─ hover.rs           │  │                         │
 │   ├─ diagnostics.rs     │  │  Thin wrapper over      │
-│   ├─ goto_definition.rs │  │  rumoca-session         │
+│   ├─ goto_definition.rs │  │  rumoca-compile         │
 │   └─ ... (15+ handlers) │  │                         │
 └───────────┬─────────────┘  └───────────┬─────────────┘
             │                            │
@@ -85,7 +85,7 @@ This separation allows the same LSP logic to power both VSCode and the web playg
 
 ### Session Architecture
 
-The `Session` type (in `rumoca-session`) holds compilation state:
+The `Session` type (in `rumoca-compile`) holds compilation state:
 
 ```text
 ┌─────────────────────────────────────────┐
@@ -115,35 +115,35 @@ In WASM, a global `Mutex<Option<Session>>` is used (single-threaded).
            │
            ▼
   ┌─────────────────┐
-  │  Instantiation  │  rumoca-session/compile
+  │  Instantiation  │  rumoca-compile/compile
   │  (class lookup, │
   │   modification) │
   └────────┬────────┘
            │
            ▼
   ┌─────────────────┐
-  │  Type Checking  │  rumoca-session/compile
+  │  Type Checking  │  rumoca-compile/compile
   │  (expressions,  │
   │   equations)    │
   └────────┬────────┘
            │
            ▼
   ┌─────────────────┐
-  │   Flattening    │  rumoca-session/compile
+  │   Flattening    │  rumoca-compile/compile
   │  (expand hier-  │
   │   archy, inline)│
   └────────┬────────┘
            │
            ▼
   ┌─────────────────┐
-  │  DAE Lowering   │  rumoca-session/compile
+  │  DAE Lowering   │  rumoca-compile/compile
   │  (equations to  │
   │   DAE form)     │
   └────────┬────────┘
            │
            ▼
   ┌─────────────────┐
-  │   Simulation    │  rumoca-session/runtime
+  │   Simulation    │  rumoca-compile/runtime
   │   or Codegen    │  rumoca-eval-dae
   └─────────────────┘
 ```
@@ -155,7 +155,7 @@ Each phase is described in detail in the [Compiler Internals](../compiler/parsin
 ```text
 rumoca/
 ├── crates/
-│   ├── rumoca-session/      # Core compiler + runtime
+│   ├── rumoca-compile/      # Core compiler + runtime
 │   ├── rumoca-parser/       # Pest grammar + AST
 │   ├── rumoca-tool-lsp/     # LSP handlers + server
 │   ├── rumoca-tool-fmt/     # Code formatter
