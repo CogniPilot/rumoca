@@ -154,8 +154,7 @@ impl BuiltinCallVisitor<'_> {
 
             let cref_text = cref.to_string();
             let token = target.token.clone();
-            let is_array =
-                !target.component.shape.is_empty() || !target.component.shape_expr.is_empty();
+            let is_array = component_reference_targets_array(target.component, target.part);
             let is_expandable = target.type_class.is_some_and(|type_class| {
                 type_class.class_type == ClassType::Connector && type_class.expandable
             });
@@ -218,6 +217,22 @@ impl BuiltinCallVisitor<'_> {
 
 pub(super) fn builtin_name(comp: &ComponentReference) -> Option<&str> {
     (comp.parts.len() == 1).then(|| comp.parts[0].ident.text.as_ref())
+}
+
+fn component_reference_targets_array(
+    component: &ast::Component,
+    part: &ast::ComponentRefPart,
+) -> bool {
+    let dimension_count = component.shape.len().max(component.shape_expr.len());
+    if dimension_count == 0 {
+        return false;
+    }
+    let indexed_dimension_count = part.subs.as_ref().map_or(0, |subs| {
+        subs.iter()
+            .take_while(|sub| matches!(sub, Subscript::Expression(_)))
+            .count()
+    });
+    indexed_dimension_count < dimension_count
 }
 
 fn is_parameter_expression(expr: &Expression, class: &ClassDef) -> bool {

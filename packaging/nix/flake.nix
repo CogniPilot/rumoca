@@ -38,6 +38,8 @@
           buildInputs = with pkgs; [
             clang
             llvmPackages.bintools
+            systemd.dev
+            systemd
             rustup
             python3
             nodejs_22

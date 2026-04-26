@@ -771,6 +771,107 @@ end Test;
     }
 
     #[test]
+    fn test_simple_inherited_type_name_resolves_before_global_short_name_fallback() {
+        let source = r#"
+package Other
+  model Temperature
+  end Temperature;
+end Other;
+
+package Base
+  type Temperature = Real;
+end Base;
+
+package Derived
+  extends Base;
+
+  record State
+    Temperature T;
+  end State;
+end Derived;
+"#;
+        let tree = resolve_test_source(source).expect("resolution should succeed");
+        let state = tree
+            .definitions
+            .classes
+            .get("Derived")
+            .and_then(|derived| derived.classes.get("State"))
+            .expect("Derived.State should exist");
+        let temp = state
+            .components
+            .get("T")
+            .expect("State.T should exist")
+            .type_def_id
+            .and_then(|def_id| tree.def_map.get(&def_id));
+
+        assert_eq!(
+            temp.map(String::as_str),
+            Some("Base.Temperature"),
+            "record field type must resolve through the enclosing package's inherited members, \
+             not by global short-name fallback"
+        );
+    }
+
+    #[test]
+    fn test_partial_member_under_replaceable_package_is_not_rejected_in_resolve() {
+        let source = r#"
+package PartialMedium
+  replaceable partial model BaseProperties
+    Real p;
+  end BaseProperties;
+end PartialMedium;
+
+model UsesReplaceableMedium
+  replaceable package Medium = PartialMedium;
+  Medium.BaseProperties medium;
+end UsesReplaceableMedium;
+"#;
+        resolve_test_source(source)
+            .expect("resolve must defer replaceable package member partiality");
+    }
+
+    #[test]
+    fn test_cardinality_allows_indexed_connector_array_element() {
+        let source = r#"
+connector Port
+  Real p;
+end Port;
+
+model UsesIndexedCardinality
+  Port ports[2];
+equation
+  if cardinality(ports[1]) == 0 then
+    ports[1].p = 0;
+  end if;
+end UsesIndexedCardinality;
+"#;
+        resolve_test_source(source).expect("indexed connector array element is scalar");
+    }
+
+    #[test]
+    fn test_cardinality_rejects_unindexed_connector_array() {
+        let source = r#"
+connector Port
+  Real p;
+end Port;
+
+model UsesArrayCardinality
+  Port ports[2];
+equation
+  if cardinality(ports) == 0 then
+    ports[1].p = 0;
+  end if;
+end UsesArrayCardinality;
+"#;
+        let diags = resolve_test_source(source).expect_err("connector array target must fail");
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("ER057")
+                && d.message.contains("connector array 'ports'")),
+            "expected cardinality connector-array diagnostic, got: {diags:?}"
+        );
+    }
+
+    #[test]
     fn test_unresolved_component_reference_is_error() {
         let source = r#"
 model Test
