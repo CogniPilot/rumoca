@@ -647,6 +647,52 @@ end TestAlias;
         );
     }
 
+    /// Regression from `Modelica.Electrical.Batteries.Examples.BatteryDischargeCharge`:
+    /// redeclared record parameter + outer rebinding (`battery2(cellData=cellData2)`)
+    /// must not qualify the alias target as `battery2.cellData.cellData2`.
+    #[test]
+    fn t10k_05b_redeclare_record_rebinding_scope() {
+        let source = r#"
+package ParameterRecords
+  record CellData
+    parameter Integer nRC = 1;
+  end CellData;
+
+  package TransientData
+    record CellData
+      extends ParameterRecords.CellData(nRC = 2);
+    end CellData;
+  end TransientData;
+end ParameterRecords;
+
+partial model BaseCellStack
+  replaceable parameter ParameterRecords.CellData cellData;
+end BaseCellStack;
+
+model CellRCStack
+  extends BaseCellStack(
+    redeclare ParameterRecords.TransientData.CellData cellData);
+  Real x[cellData.nRC];
+equation
+  for k in 1:cellData.nRC loop
+    x[k] = k;
+  end for;
+end CellRCStack;
+
+model Top
+  parameter ParameterRecords.TransientData.CellData cellData2(nRC = 2);
+  CellRCStack battery2(cellData = cellData2);
+end Top;
+"#;
+
+        let r = assert_compiles(source, "Top");
+        assert_eq!(
+            r.balance, 0,
+            "redeclare record rebinding should compile without unresolved refs; balance={}",
+            r.balance
+        );
+    }
+
     /// MLS §8.4 + §10.1: Aggregate connector field equations over arrays
     /// (e.g. `pin_n.v = plug_n.pin.v`) must contribute one scalar equation per phase.
     ///

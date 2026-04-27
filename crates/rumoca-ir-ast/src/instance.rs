@@ -424,6 +424,9 @@ pub struct InstanceData {
     /// Used during flattening to qualify symbolic modifier references according
     /// to MLS §7.2.4 without path-depth heuristics.
     pub binding_source_scope: Option<QualifiedName>,
+    /// Lexical scopes where attribute modifiers were written, keyed by attribute
+    /// name (`start`, `min`, `max`, `nominal`).
+    pub attribute_source_scopes: IndexMap<String, QualifiedName>,
     /// True if binding came from a modification rather than declaration.
     pub binding_from_modification: bool,
     /// True if this is a primitive type (Real, Integer, Boolean, String).

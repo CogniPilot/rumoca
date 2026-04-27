@@ -33,8 +33,98 @@ fn write_equations(out: &mut String, equations: &[crate::Equation], inner_indent
 /// Convert an extend modification to Modelica string representation.
 fn extend_modification_to_string(m: &ExtendModification) -> String {
     let each_prefix = if m.each { "each " } else { "" };
+    if m.redeclare
+        && let Some(redeclare_expr) = redeclare_assignment_to_string(&m.expr)
+    {
+        return format!("redeclare {}{}", each_prefix, redeclare_expr);
+    }
     let redeclare_prefix = if m.redeclare { "redeclare " } else { "" };
     format!("{}{}{}", redeclare_prefix, each_prefix, m.expr)
+}
+
+fn expression_list_to_string(exprs: &[Expression]) -> String {
+    exprs
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn class_mod_target_with_mods(expr: &Expression) -> Option<(String, Option<String>)> {
+    match expr {
+        Expression::ComponentReference(comp) => Some((comp.to_string(), None)),
+        Expression::ClassModification {
+            target,
+            modifications,
+        } => {
+            let target_name = target.to_string();
+            if modifications.is_empty() {
+                Some((target_name, None))
+            } else {
+                Some((target_name, Some(expression_list_to_string(modifications))))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn starts_with_uppercase_ident(name: &str) -> bool {
+    name.chars().next().is_some_and(char::is_uppercase)
+}
+
+fn redeclare_assignment_to_string(expr: &Expression) -> Option<String> {
+    let (instance_name, lhs_mods, rhs_expr, was_modification_expr) = match expr {
+        Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Assign(_),
+            lhs,
+            rhs,
+        } => {
+            let (instance_name, lhs_mods) = class_mod_target_with_mods(lhs)?;
+            (instance_name, lhs_mods, rhs.as_ref(), false)
+        }
+        Expression::Modification { target, value } => {
+            (target.to_string(), None, value.as_ref(), true)
+        }
+        _ => return None,
+    };
+
+    match rhs_expr {
+        Expression::FunctionCall { comp, args } => {
+            let type_name = comp.to_string();
+            let rhs_mods = if args.is_empty() {
+                lhs_mods.map(|mods| format!("({mods})")).unwrap_or_default()
+            } else {
+                format!("({})", expression_list_to_string(args))
+            };
+            Some(format!("{type_name} {instance_name}{rhs_mods}"))
+        }
+        Expression::ComponentReference(comp) => {
+            let type_name = comp.to_string();
+            let suffix = lhs_mods.map(|mods| format!("({mods})")).unwrap_or_default();
+            Some(format!("{type_name} {instance_name}{suffix}"))
+        }
+        Expression::ClassModification {
+            target,
+            modifications,
+        } => {
+            let type_name = target.to_string();
+            if was_modification_expr
+                && modifications.is_empty()
+                && starts_with_uppercase_ident(&instance_name)
+            {
+                // Preserve short class/package redeclare assignment form in round-trippable output:
+                // `redeclare package Medium = Modelica.Media.Water.StandardWater`
+                return Some(format!("package {instance_name} = {type_name}"));
+            }
+            let rhs_mods = if modifications.is_empty() {
+                lhs_mods.map(|mods| format!("({mods})")).unwrap_or_default()
+            } else {
+                format!("({})", expression_list_to_string(modifications))
+            };
+            Some(format!("{type_name} {instance_name}{rhs_mods}"))
+        }
+        _ => None,
+    }
 }
 
 /// Format a component modification with optional `each` prefix.
