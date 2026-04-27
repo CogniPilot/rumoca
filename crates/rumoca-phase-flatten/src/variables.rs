@@ -52,10 +52,51 @@ fn grandparent_prefix(qn: &ast::QualifiedName) -> ast::QualifiedName {
 /// Preferred source is `binding_source_scope` captured during instantiation.
 /// Falls back to historical `grandparent` derivation when no source scope is present.
 fn modification_binding_prefix(instance: &ast::InstanceData) -> ast::QualifiedName {
-    instance
-        .binding_source_scope
-        .clone()
-        .unwrap_or_else(|| grandparent_prefix(&instance.qualified_name))
+    let fallback = grandparent_prefix(&instance.qualified_name);
+    scoped_prefix_or_fallback(
+        instance.binding_source_scope.as_ref(),
+        instance,
+        fallback,
+        parent_prefix(&instance.qualified_name),
+    )
+}
+
+fn scoped_prefix_or_fallback(
+    scope: Option<&ast::QualifiedName>,
+    instance: &ast::InstanceData,
+    fallback: ast::QualifiedName,
+    self_scope_fallback: ast::QualifiedName,
+) -> ast::QualifiedName {
+    match scope.cloned() {
+        Some(scope) => {
+            let scope_flat = scope.to_flat_string();
+            let source_flat = instance.qualified_name.to_flat_string();
+            // Defensive normalization for malformed scope metadata:
+            // if the captured scope points at (or inside) the bound component itself,
+            // qualifying a sibling reference like `cellData2` would incorrectly become
+            // `battery2.cellData.cellData2`. In that case, fall back to the lexical
+            // grandparent scope.
+            if scope_flat == source_flat || scope_flat.starts_with(&(source_flat + ".")) {
+                self_scope_fallback
+            } else {
+                scope
+            }
+        }
+        None => fallback,
+    }
+}
+
+fn attribute_prefix(
+    instance: &ast::InstanceData,
+    attr_name: &str,
+    fallback: ast::QualifiedName,
+) -> ast::QualifiedName {
+    scoped_prefix_or_fallback(
+        instance.attribute_source_scopes.get(attr_name),
+        instance,
+        fallback.clone(),
+        fallback,
+    )
 }
 
 /// Public wrapper for modification_binding_prefix.
@@ -140,10 +181,21 @@ pub(crate) fn create_flat_variable(
     // Convert attributes with qualification
     // Attribute expressions (start, min, max, nominal) reference sibling variables
     // and need qualification with the parent prefix.
-    let start = instance.start.as_ref().map(&qualify_and_convert);
-    let min = instance.min.as_ref().map(&qualify_and_convert);
-    let max = instance.max.as_ref().map(&qualify_and_convert);
-    let nominal = instance.nominal.as_ref().map(&qualify_and_convert);
+    let qualify_attr = |attr_name: &str, expr: &ast::Expression| {
+        let attr_prefix = attribute_prefix(instance, attr_name, prefix.clone());
+        let qualified = qualify_expression_with_imports(expr, &attr_prefix, opts, imports);
+        ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
+    };
+    let start = instance
+        .start
+        .as_ref()
+        .map(|expr| qualify_attr("start", expr));
+    let min = instance.min.as_ref().map(|expr| qualify_attr("min", expr));
+    let max = instance.max.as_ref().map(|expr| qualify_attr("max", expr));
+    let nominal = instance
+        .nominal
+        .as_ref()
+        .map(|expr| qualify_attr("nominal", expr));
 
     // Binding expressions need careful handling:
     // - Declaration bindings (e.g., `parameter Integer m = integer(n/2)`) reference
@@ -245,6 +297,59 @@ mod tests {
                 assert!(subscripts.is_empty());
             }
             _ => panic!("expected binding to become a qualified VarRef"),
+        }
+    }
+
+    #[test]
+    fn test_create_flat_variable_sanitizes_self_scoped_modifier_binding_prefix() {
+        let instance = ast::InstanceData {
+            qualified_name: ast::QualifiedName::from_dotted("battery2.cellData"),
+            binding_source: Some(comp_ref(&["cellData2"])),
+            binding_from_modification: true,
+            // Malformed scope metadata: points at the source component itself.
+            // We should fall back to grandparent scope ("battery2"), yielding
+            // "battery2.cellData2" instead of "battery2.cellData.cellData2".
+            binding_source_scope: Some(ast::QualifiedName::from_dotted("battery2.cellData")),
+            is_primitive: true,
+            ..ast::InstanceData::default()
+        };
+        let tree = ast::ClassTree::default();
+        let imports = ImportMap::default();
+        let flat = create_flat_variable(&instance, &tree, &imports).expect("flat variable");
+        let binding = flat.binding.expect("binding");
+        match binding {
+            flat::Expression::VarRef { name, subscripts } => {
+                assert_eq!(name.as_str(), "battery2.cellData2");
+                assert!(subscripts.is_empty());
+            }
+            _ => panic!("expected binding to become a qualified VarRef"),
+        }
+    }
+
+    #[test]
+    fn test_create_flat_variable_uses_modifier_source_scope_for_attribute() {
+        let mut attribute_source_scopes = indexmap::IndexMap::new();
+        attribute_source_scopes.insert(
+            "max".to_string(),
+            ast::QualifiedName::from_dotted("leftBoundary1"),
+        );
+        let instance = ast::InstanceData {
+            qualified_name: ast::QualifiedName::from_dotted("leftBoundary1.ports.m_flow"),
+            max: Some(comp_ref(&["flowDirection"])),
+            attribute_source_scopes,
+            is_primitive: true,
+            ..ast::InstanceData::default()
+        };
+        let tree = ast::ClassTree::default();
+        let imports = ImportMap::default();
+        let flat = create_flat_variable(&instance, &tree, &imports).expect("flat variable");
+        let max = flat.max.expect("max");
+        match max {
+            flat::Expression::VarRef { name, subscripts } => {
+                assert_eq!(name.as_str(), "leftBoundary1.flowDirection");
+                assert!(subscripts.is_empty());
+            }
+            _ => panic!("expected max to become a qualified VarRef"),
         }
     }
 }

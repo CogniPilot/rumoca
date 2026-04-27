@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::source_root_api::sync_project_sources_with_cache_root_for_tests;
 
 mod lsp_diagnostics_tests;
+mod source_modelica_roundtrip_tests;
 mod source_root_api_tests;
 mod wasm_cache_tests;
 

@@ -931,6 +931,7 @@ struct ResolvedComponentTarget<'a> {
     component: &'a ast::Component,
     type_class: Option<&'a ClassDef>,
     token: &'a Token,
+    part: &'a ast::ComponentRefPart,
 }
 
 fn component_type_class<'a>(
@@ -955,6 +956,7 @@ fn resolve_component_reference_target<'a>(
     let mut component = class.components.get(first.ident.text.as_ref())?;
     let mut type_class = component_type_class(component, def);
     let mut token = &first.ident;
+    let mut target_part = first;
 
     for part in cref.parts.iter().skip(1) {
         let current_type_class = type_class?;
@@ -963,12 +965,14 @@ fn resolve_component_reference_target<'a>(
             .get(part.ident.text.as_ref())?;
         type_class = component_type_class(component, def);
         token = &part.ident;
+        target_part = part;
     }
 
     Some(ResolvedComponentTarget {
         component,
         type_class,
         token,
+        part: target_part,
     })
 }
 
@@ -980,7 +984,7 @@ fn check_cross_class_restrictions(
 ) {
     for (name, comp) in &class.components {
         let type_name = comp.type_name.to_string();
-        let type_class = find_class_by_name(def, &type_name);
+        let type_class = component_type_class(comp, def);
 
         check_record_component_type_restriction(class, name, comp, &type_name, type_class, diags);
         check_partial_class_instantiation_restriction(
@@ -1059,7 +1063,7 @@ fn check_partial_class_instantiation_restriction(
     if matches!(tc.class_type, ClassType::Package | ClassType::Function) {
         return;
     }
-    if !tc.partial {
+    if !tc.partial || type_name_has_replaceable_root(class, comp) {
         return;
     }
 
@@ -1077,6 +1081,17 @@ fn check_partial_class_instantiation_restriction(
             format!("instantiation of partial class '{}'", type_name),
         ),
     ));
+}
+
+fn type_name_has_replaceable_root(class: &ClassDef, comp: &ast::Component) -> bool {
+    let Some(root) = comp.type_name.name.first().map(|token| token.text.as_ref()) else {
+        return false;
+    };
+    comp.type_name.name.len() > 1
+        && class
+            .classes
+            .get(root)
+            .is_some_and(|root_class| root_class.is_replaceable)
 }
 
 fn check_connector_variability_restriction(
