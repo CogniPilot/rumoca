@@ -593,7 +593,7 @@ pub(super) fn summarize_success_result(
     name: String,
     result: &rumoca_compile::compile::CompilationResult,
 ) -> MslModelResult {
-    let detail = rumoca_eval_dae::analysis::balance_detail(&result.dae);
+    let detail = rumoca_analysis_dae::balance_detail(&result.dae);
     // Start from the exact DAE-balance basis (continuous unknowns/equations).
     let scalar_unknowns =
         (detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns) as i64;

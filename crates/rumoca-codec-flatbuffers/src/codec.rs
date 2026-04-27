@@ -3,7 +3,7 @@
 #[cfg(test)]
 use std::collections::HashMap;
 
-use rumoca_codec::SignalFrame;
+use rumoca_signal_frame::SignalFrame;
 
 use crate::bfbs::{BaseType, Field, Object, SchemaSet};
 use crate::config::{MessageConfig, RouteEntry};

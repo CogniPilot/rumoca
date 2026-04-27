@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Result, anyhow, bail};
-use rumoca_codec::SignalFrame;
+use rumoca_signal_frame::SignalFrame;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::config::{LocalDef, SignalSpec, SignalsConfig};

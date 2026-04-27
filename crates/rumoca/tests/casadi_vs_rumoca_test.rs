@@ -20,8 +20,8 @@ use std::f64::consts::TAU;
 /// High-agreement threshold for max channel bounded-normalized L1 error.
 /// Matches `HIGH_AGREEMENT_THRESHOLD` from `sim_trace_compare`.
 const HIGH_AGREEMENT_THRESHOLD: f64 = 0.05;
+use rumoca_sim::simulate_dae;
 use rumoca_sim::{SimOptions, SimResult};
-use rumoca_solver_diffsol::simulate_dae;
 use std::collections::HashMap;
 use std::fs;
 use std::process::Command;

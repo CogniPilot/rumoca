@@ -1091,9 +1091,9 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_compile::compile::{CompilationResult, CompilationSummary};
     use rumoca_ir_dae as dae;
     use rumoca_ir_flat as flat;
-    use rumoca_compile::compile::{CompilationResult, CompilationSummary};
     use std::sync::Mutex;
 
     struct FakeFocusedCompiler {

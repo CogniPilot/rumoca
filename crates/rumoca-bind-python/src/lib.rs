@@ -22,12 +22,12 @@ use rumoca_compile::source_roots::{
     canonical_path_key, merge_source_root_paths, plan_source_root_loads,
     referenced_unloaded_source_root_paths, source_root_source_set_key,
 };
+use rumoca_sim::simulate_dae;
 use rumoca_sim::{SimOptions, SimSolverMode as RuntimeSimSolverMode};
 use rumoca_sim::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
 };
-use rumoca_solver_diffsol::simulate_dae;
 use rumoca_tool_fmt::FormatOptions;
 use rumoca_tool_lint::{LintLevel, LintOptions, lint as lint_source};
 use serde_json::{Value, json};

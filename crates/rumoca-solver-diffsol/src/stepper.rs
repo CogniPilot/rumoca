@@ -8,13 +8,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use rumoca_eval_dae::runtime::VarEnv;
-use rumoca_ir_dae as dae;
-use rumoca_phase_structural::eliminate::EliminationResult;
+use rumoca_sim_core::ir_dae as dae;
+use rumoca_sim_core::phase_solve_lower::VarEnv;
+use rumoca_sim_core::phase_structural::eliminate::EliminationResult;
 
 use super::{Dae, SimError};
-use rumoca_sim::TimeoutBudget;
-use rumoca_sim::runtime::layout::SimulationContext;
+use rumoca_sim_core::TimeoutBudget;
+use rumoca_sim_core::runtime::layout::SimulationContext;
 
 /// Options for creating a [`SimStepper`].
 #[derive(Debug, Clone)]
@@ -151,7 +151,7 @@ impl SimStepper {
         for ((name, _var), &val) in self.dae.parameters.iter().zip(self.param_values.iter()) {
             env.vars.entry(name.as_str().to_string()).or_insert(val);
         }
-        rumoca_sim::reconstruct::apply_eliminated_substitutions_to_env(&self.elim, &mut env);
+        rumoca_sim_core::reconstruct::apply_eliminated_substitutions_to_env(&self.elim, &mut env);
         env
     }
 

@@ -2,10 +2,10 @@
 //!
 //! Tests for the 12 package contracts defined in SPEC_0022.
 
+use rumoca_compile::source_roots::parse_source_root_with_cache_in;
 use rumoca_contracts::test_support::{
     expect_parse_err_with_code, expect_parse_ok, expect_resolve_failure_with_code, expect_success,
 };
-use rumoca_compile::source_roots::parse_source_root_with_cache_in;
 use std::fs;
 use std::path::Path;
 

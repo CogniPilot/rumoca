@@ -1,5 +1,7 @@
 use super::*;
-use rumoca_sim::runtime::timeout::{WallClockInstant, wall_clock_elapsed_seconds, wall_clock_now};
+use rumoca_sim_core::runtime::timeout::{
+    WallClockInstant, wall_clock_elapsed_seconds, wall_clock_now,
+};
 
 fn trace_projection_failed_at_time(t: f64) {
     if sim_trace_enabled() {
@@ -9,7 +11,7 @@ fn trace_projection_failed_at_time(t: f64) {
 
 struct NoStateProjectionCaches {
     jacobian: Option<nalgebra::DMatrix<f64>>,
-    seed_env: Option<rumoca_eval_dae::runtime::VarEnv<f64>>,
+    seed_env: Option<rumoca_sim_core::phase_solve_lower::VarEnv<f64>>,
     y_scratch: Vec<f64>,
     newton_scratch: problem::RuntimeProjectionScratch,
 }
@@ -24,8 +26,9 @@ struct AlgebraicResultSetup {
     all_names: Vec<String>,
     visible_name_set: HashSet<String>,
     solver_name_to_idx: HashMap<String, usize>,
-    runtime_direct_assignment_ctx: rumoca_sim::runtime::assignment::RuntimeDirectAssignmentContext,
-    runtime_alias_ctx: rumoca_sim::runtime::alias::RuntimeAliasPropagationContext,
+    runtime_direct_assignment_ctx:
+        rumoca_sim_core::runtime::assignment::RuntimeDirectAssignmentContext,
+    runtime_alias_ctx: rumoca_sim_core::runtime::alias::RuntimeAliasPropagationContext,
     needs_eliminated_env: bool,
     dynamic_time_event_names: Vec<String>,
     direct_seed_ctx: problem::RuntimeDirectSeedContext,
@@ -47,8 +50,9 @@ struct NoStateRuntimeSetup {
     all_names: Vec<String>,
     visible_name_set: HashSet<String>,
     solver_name_to_idx: HashMap<String, usize>,
-    runtime_direct_assignment_ctx: rumoca_sim::runtime::assignment::RuntimeDirectAssignmentContext,
-    runtime_alias_ctx: rumoca_sim::runtime::alias::RuntimeAliasPropagationContext,
+    runtime_direct_assignment_ctx:
+        rumoca_sim_core::runtime::assignment::RuntimeDirectAssignmentContext,
+    runtime_alias_ctx: rumoca_sim_core::runtime::alias::RuntimeAliasPropagationContext,
     needs_eliminated_env: bool,
     dynamic_time_event_names: Vec<String>,
     direct_seed_ctx: problem::RuntimeDirectSeedContext,
@@ -116,7 +120,9 @@ fn build_no_state_runtime_setup(
 ) -> Result<NoStateRuntimeSetup, SimError> {
     let stage_started = wall_clock_now();
     let runtime_direct_assignment_ctx =
-        rumoca_sim::runtime::assignment::build_runtime_direct_assignment_context(dae, y_len, n_x);
+        rumoca_sim_core::runtime::assignment::build_runtime_direct_assignment_context(
+            dae, y_len, n_x,
+        );
     trace_no_state_setup_stage(
         trace_setup_timing,
         "build_runtime_direct_assignment_ctx",
@@ -124,16 +130,16 @@ fn build_no_state_runtime_setup(
     );
     let stage_started = wall_clock_now();
     let runtime_alias_ctx =
-        rumoca_sim::runtime::alias::build_runtime_alias_propagation_context(dae, y_len, n_x);
+        rumoca_sim_core::runtime::alias::build_runtime_alias_propagation_context(dae, y_len, n_x);
     trace_no_state_setup_stage(trace_setup_timing, "build_runtime_alias_ctx", stage_started);
 
     let visible_names = build_visible_result_names(dae);
     let mut all_names = visible_names.clone();
-    all_names.extend(rumoca_sim::collect_reconstruction_discrete_context_names(
-        dae, elim, &all_names,
-    ));
+    all_names.extend(
+        rumoca_sim_core::collect_reconstruction_discrete_context_names(dae, elim, &all_names),
+    );
     let needs_eliminated_env =
-        rumoca_sim::runtime::no_state::sampled_names_need_eliminated_env_with_runtime_closure(
+        rumoca_sim_core::runtime::no_state::sampled_names_need_eliminated_env_with_runtime_closure(
             &all_names,
             elim,
             &runtime_direct_assignment_ctx,
@@ -141,7 +147,7 @@ fn build_no_state_runtime_setup(
         );
     let stage_started = wall_clock_now();
     let dynamic_time_event_names =
-        rumoca_sim::runtime::no_state::collect_dynamic_time_event_names(dae);
+        rumoca_sim_core::runtime::no_state::collect_dynamic_time_event_names(dae);
     trace_no_state_setup_stage(
         trace_setup_timing,
         "collect_dynamic_time_event_names",
@@ -152,7 +158,7 @@ fn build_no_state_runtime_setup(
         .filter(|name| *name != DUMMY_STATE_NAME)
         .cloned()
         .collect();
-    let solver_names = rumoca_sim::runtime::layout::solver_vector_names(dae, y_len);
+    let solver_names = rumoca_sim_core::runtime::layout::solver_vector_names(dae, y_len);
     let solver_name_to_idx: HashMap<String, usize> = solver_names
         .iter()
         .enumerate()
@@ -169,8 +175,8 @@ fn build_no_state_runtime_setup(
         stage_started,
     );
     let projection_needs_event_refresh = requires_projection
-        && (rumoca_sim::runtime::no_state::no_state_projection_needs_event_refresh(dae)
-            || rumoca_sim::runtime::no_state::no_state_projection_uses_lowered_pre_next_event_aliases(
+        && (rumoca_sim_core::runtime::no_state::no_state_projection_needs_event_refresh(dae)
+            || rumoca_sim_core::runtime::no_state::no_state_projection_uses_lowered_pre_next_event_aliases(
                 dae,
             ));
     let projection_runtime_ctx = requires_projection
@@ -221,7 +227,7 @@ fn expr_periodic_schedule(
             function: BuiltinFunction::Sample,
             args,
         } if args.len() >= 2 => {
-            let timing = if rumoca_sim::runtime::clock::sample_clock_arg_is_explicit_clock(
+            let timing = if rumoca_sim_core::runtime::clock::sample_clock_arg_is_explicit_clock(
                 dae, &args[1], env,
             ) {
                 eval::infer_clock_timing_seconds(&args[1], env)
@@ -749,8 +755,8 @@ fn project_no_state_sample(
 }
 
 fn copy_discrete_runtime_tail_binding(
-    dst: &mut rumoca_eval_dae::runtime::VarEnv<f64>,
-    src: &rumoca_eval_dae::runtime::VarEnv<f64>,
+    dst: &mut rumoca_sim_core::phase_solve_lower::VarEnv<f64>,
+    src: &rumoca_sim_core::phase_solve_lower::VarEnv<f64>,
     name: &str,
 ) {
     if let Some(value) = src.vars.get(name) {
@@ -767,19 +773,19 @@ fn copy_discrete_runtime_tail_binding(
 }
 
 fn bootstrap_initial_runtime_direct_seed_env(
-    sample_ctx: &rumoca_sim::NoStateSampleContext<'_>,
+    sample_ctx: &rumoca_sim_core::NoStateSampleContext<'_>,
     dae: &Dae,
     y: &[f64],
     p: &[f64],
     t: f64,
-) -> rumoca_eval_dae::runtime::VarEnv<f64> {
+) -> rumoca_sim_core::phase_solve_lower::VarEnv<f64> {
     let mut startup_y = y.to_vec();
-    let settled = rumoca_sim::runtime::no_state::build_initial_settled_runtime_env(
+    let settled = rumoca_sim_core::runtime::no_state::build_initial_settled_runtime_env(
         sample_ctx,
         startup_y.as_mut_slice(),
         t,
     );
-    let mut env = rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(dae, p, t);
+    let mut env = rumoca_sim_core::phase_solve_lower::build_runtime_parameter_tail_env(dae, p, t);
     // MLS §8.6 / Appendix B: the first ordinary runtime projection after the
     // initial event must observe the settled current discrete values from the
     // initialization section, not the raw runtime-tail starts or stale pre(v).
@@ -811,7 +817,7 @@ fn collect_no_state_sample_data(
     };
 
     let mut output_times = setup.times.clone();
-    let (_, output_times, data) = rumoca_sim::runtime::no_state::collect_algebraic_samples_with_schedule_and_env_refresh(
+    let (_, output_times, data) = rumoca_sim_core::runtime::no_state::collect_algebraic_samples_with_schedule_and_env_refresh(
         &sample_ctx,
         &mut output_times,
         &setup.eval_times,
@@ -829,8 +835,8 @@ fn collect_no_state_sample_data(
         |y_values, t, env| refresh_no_state_projected_env(&projection_run, y_values, t, env),
     )
     .map_err(|err| match err {
-        rumoca_sim::NoStateSampleError::Callback(sim_err) => sim_err,
-        rumoca_sim::NoStateSampleError::SampleScheduleMismatch { captured, expected } => {
+        rumoca_sim_core::NoStateSampleError::Callback(sim_err) => sim_err,
+        rumoca_sim_core::NoStateSampleError::SampleScheduleMismatch { captured, expected } => {
             SimError::SolverError(format!(
                 "no-state sample schedule mismatch: captured {captured}/{expected} output samples"
             ))
@@ -845,8 +851,8 @@ fn build_no_state_sample_context<'a>(
     elim: &'a eliminate::EliminationResult,
     opts: &'a SimOptions,
     setup: &'a AlgebraicResultSetup,
-) -> rumoca_sim::NoStateSampleContext<'a> {
-    rumoca_sim::NoStateSampleContext {
+) -> rumoca_sim_core::NoStateSampleContext<'a> {
+    rumoca_sim_core::NoStateSampleContext {
         dae,
         elim,
         param_values: &setup.param_values,
@@ -861,9 +867,8 @@ fn build_no_state_sample_context<'a>(
         t_start: opts.t_start,
         requires_projection: setup.requires_projection,
         projection_needs_event_refresh: setup.projection_needs_event_refresh,
-        requires_live_pre_values: rumoca_sim::runtime::no_state::no_state_requires_live_pre_values(
-            dae,
-        ),
+        requires_live_pre_values:
+            rumoca_sim_core::runtime::no_state::no_state_requires_live_pre_values(dae),
     }
 }
 
@@ -883,7 +888,7 @@ fn seed_no_state_runtime_direct_assignments(
 }
 
 struct NoStateProjectionRun<'a> {
-    sample_ctx: &'a rumoca_sim::NoStateSampleContext<'a>,
+    sample_ctx: &'a rumoca_sim_core::NoStateSampleContext<'a>,
     opts: &'a SimOptions,
     budget: &'a TimeoutBudget,
     setup: &'a AlgebraicResultSetup,
@@ -930,11 +935,11 @@ fn refresh_no_state_projected_env(
     run: &NoStateProjectionRun<'_>,
     y_values: &mut [f64],
     t: f64,
-    env: &mut rumoca_eval_dae::runtime::VarEnv<f64>,
+    env: &mut rumoca_sim_core::phase_solve_lower::VarEnv<f64>,
 ) -> Result<(), SimError> {
     let mut env_slot = Some(std::mem::replace(
         env,
-        rumoca_eval_dae::runtime::VarEnv::new(),
+        rumoca_sim_core::phase_solve_lower::VarEnv::new(),
     ));
     let _ = problem::seed_runtime_direct_assignment_values_with_context_and_env(
         &run.setup.direct_seed_ctx,
@@ -945,7 +950,7 @@ fn refresh_no_state_projected_env(
         Some(&mut env_slot),
     );
     let mut refreshed_env = env_slot.expect("projected no-state seed env must be restored");
-    rumoca_eval_dae::runtime::refresh_env_solver_and_parameter_values(
+    rumoca_sim_core::phase_solve_lower::refresh_env_solver_and_parameter_values(
         &mut refreshed_env,
         run.sample_ctx.dae,
         y_values,
@@ -953,29 +958,29 @@ fn refresh_no_state_projected_env(
         t,
     );
     refreshed_env.is_initial = env.is_initial;
-    if rumoca_sim::runtime::discrete::apply_discrete_partition_updates(
+    if rumoca_sim_core::runtime::discrete::apply_discrete_partition_updates(
         run.sample_ctx.dae,
         &mut refreshed_env,
     ) {
-        rumoca_sim::runtime::assignment::propagate_runtime_direct_assignments_from_env_with_context(
+        rumoca_sim_core::runtime::assignment::propagate_runtime_direct_assignments_from_env_with_context(
             &run.setup.runtime_direct_assignment_ctx,
             run.sample_ctx.dae,
             y_values,
             run.setup.n_x,
             &mut refreshed_env,
         );
-        rumoca_sim::runtime::alias::propagate_runtime_alias_components_from_env_with_context(
+        rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env_with_context(
             &run.setup.runtime_alias_ctx,
             y_values,
             run.setup.n_x,
             &mut refreshed_env,
         );
-        rumoca_sim::runtime::layout::sync_solver_values_from_env(
+        rumoca_sim_core::runtime::layout::sync_solver_values_from_env(
             run.sample_ctx.dae,
             y_values,
             &refreshed_env,
         );
-        rumoca_sim::runtime::alias::propagate_runtime_alias_components_from_env_with_context(
+        rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env_with_context(
             &run.setup.runtime_alias_ctx,
             y_values,
             run.setup.n_x,
@@ -1062,7 +1067,7 @@ fn build_prepared_dynamic_simulation(
     opts: &SimOptions,
     elim: eliminate::EliminationResult,
     mass_matrix: MassMatrix,
-    ic_blocks: Vec<rumoca_phase_structural::IcBlock>,
+    ic_blocks: Vec<rumoca_sim_core::phase_structural::IcBlock>,
 ) -> Result<PreparedSimulation, SimError> {
     Ok(PreparedSimulation {
         dae,
@@ -1085,7 +1090,7 @@ fn run_prepared_algebraic_simulation(
 ) -> Result<SimResult, SimError> {
     let setup = prepare_algebraic_result_setup(dae, opts, elim, budget, parameter_overrides)?;
     let (output_times, data) = collect_no_state_sample_data(dae, opts, elim, budget, &setup)?;
-    let (recon_names, recon_data, final_n_states) = rumoca_sim::finalize_algebraic_outputs(
+    let (recon_names, recon_data, final_n_states) = rumoca_sim_core::finalize_algebraic_outputs(
         setup.all_names.clone(),
         data,
         setup.n_x,
@@ -1095,7 +1100,7 @@ fn run_prepared_algebraic_simulation(
         filter_visible_output_series(&recon_names, &recon_data, &setup.visible_name_set);
 
     if !elim.substitutions.is_empty() {
-        let (extra_names, extra_data) = rumoca_sim::reconstruct::reconstruct_eliminated(
+        let (extra_names, extra_data) = rumoca_sim_core::reconstruct::reconstruct_eliminated(
             elim,
             dae,
             &setup.param_values,
@@ -1245,7 +1250,7 @@ fn finalize_dynamic_result(
         discrete_data,
     );
     if !elim.substitutions.is_empty() {
-        let (extra_names, extra_data) = rumoca_sim::reconstruct::reconstruct_eliminated(
+        let (extra_names, extra_data) = rumoca_sim_core::reconstruct::reconstruct_eliminated(
             elim,
             dae,
             param_values,
@@ -1267,7 +1272,7 @@ fn finalize_dynamic_result(
 
 pub fn build_simulation(dae: &Dae, opts: &SimOptions) -> Result<PreparedSimulation, SimError> {
     eval::clear_pre_values();
-    rumoca_sim::runtime::clock::reset_runtime_clock_caches();
+    rumoca_sim_core::runtime::clock::reset_runtime_clock_caches();
     let budget = TimeoutBudget::new(opts.max_wall_seconds);
     (|| {
         validate_simulation_function_support(dae)?;
@@ -1315,8 +1320,8 @@ pub(crate) fn validate_parameter_override(
 
 pub fn run_prepared_simulation(prepared: &PreparedSimulation) -> Result<SimResult, SimError> {
     eval::clear_pre_values();
-    rumoca_sim::runtime::hotpath_stats::reset();
-    rumoca_sim::runtime::clock::reset_runtime_clock_caches();
+    rumoca_sim_core::runtime::hotpath_stats::reset();
+    rumoca_sim_core::runtime::clock::reset_runtime_clock_caches();
     let budget = TimeoutBudget::new(prepared.opts.max_wall_seconds);
     let sim_start = trace_timer_start_if(sim_trace_enabled());
     let result = match &prepared.state {
@@ -1397,7 +1402,7 @@ mod schedule_scan_tests {
                 function: BuiltinFunction::Sample,
                 args: vec![real_lit(0.0), real_lit(0.5)],
             },
-            rumoca_core::Span::DUMMY,
+            rumoca_sim_core::core::Span::DUMMY,
             "tick = sample(0, 0.5)",
         ));
         dae.f_x.push(dae::Equation::explicit(
@@ -1409,7 +1414,7 @@ mod schedule_scan_tests {
                     Subscript::Expr(Box::new(int_lit(2))),
                 ],
             },
-            rumoca_core::Span::DUMMY,
+            rumoca_sim_core::core::Span::DUMMY,
             "lookup = table[1, 2]",
         ));
 

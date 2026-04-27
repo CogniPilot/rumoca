@@ -177,8 +177,8 @@ Required boundaries:
   and backend-neutral row operations consumed by compiled/interpreted evaluators.
 - Lowering from DAE to solver-facing layout and row operations MUST live in
   `rumoca-phase-solve-lower`.
-- Backend-neutral solver interface types MUST live in `rumoca-sim`.
-- Shared runtime helper implementation MAY live in `rumoca-sim`, but concrete backend
+- Backend-neutral solver interface types MUST live in `rumoca-sim-core`.
+- Shared runtime helper implementation MAY live in `rumoca-sim-core`, but concrete backend
   implementations MUST NOT.
 - Concrete solver backends MUST be explicit opt-in dependencies.
 - Interactive stepper APIs MUST be separate from backend-neutral runtime contracts.
@@ -221,7 +221,7 @@ Tier 5 — Integration (combine session + simulation/tools)
   rumoca-input              Abstract input config, state machine, and signal mapping
   rumoca-input-gamepad      Gilrs-backed gamepad adapter for rumoca-input
   rumoca-input-keyboard     Crossterm-backed keyboard adapter for rumoca-input
-  rumoca-sim                Backend-neutral solver contracts and shared runtime helpers
+  rumoca-sim-core                Backend-neutral solver contracts and shared runtime helpers
   rumoca-solver-diffsol        Diffsol runtime backend
   rumoca-solver-rk45           Explicit ODE RK45 backend
   rumoca-viz-web            Web visualization assets

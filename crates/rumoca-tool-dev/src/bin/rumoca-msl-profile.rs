@@ -9,9 +9,9 @@ use rumoca_compile::compile::{
     reset_compile_phase_timing_stats,
 };
 use rumoca_compile::source_roots::parse_source_root_with_cache;
+use rumoca_sim::simulate_dae;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
 use rumoca_sim::{compiled_layout_binding_debug, compiled_layout_related_bindings_debug};
-use rumoca_solver_diffsol::simulate_dae;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProfileMode {

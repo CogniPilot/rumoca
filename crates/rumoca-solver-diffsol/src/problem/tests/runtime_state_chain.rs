@@ -18,7 +18,7 @@ fn test_project_runtime_unfixes_state_dependency_chain() {
 
     // 0 = der(x) - v
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Der,
             args: vec![var("x")],
@@ -27,7 +27,7 @@ fn test_project_runtime_unfixes_state_dependency_chain() {
     )));
     // 0 = der(v) - z
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Der,
             args: vec![var("v")],
@@ -36,12 +36,12 @@ fn test_project_runtime_unfixes_state_dependency_chain() {
     )));
     // 0 = x - time  (directly assigned state)
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("x"),
         var("time"),
     )));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let projected = project_algebraics_with_fixed_states_at_time(
         &dae,
         &[0.0, 0.0, 0.0],

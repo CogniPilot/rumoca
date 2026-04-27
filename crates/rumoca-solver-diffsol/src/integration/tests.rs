@@ -1,10 +1,10 @@
 use super::*;
 use crate::test_support::{binop, eq_from, lit, var};
-use rumoca_ir_dae as ir_dae;
+use rumoca_sim_core::ir_dae;
 
 fn time_lt_expr(rhs: f64) -> ir_dae::Expression {
     ir_dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Lt(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Lt(Default::default()),
         lhs: Box::new(ir_dae::Expression::VarRef {
             name: ir_dae::VarName::new("time"),
             subscripts: Vec::new(),
@@ -34,7 +34,7 @@ fn runtime_event_uses_frozen_pre_values_skips_state_root_relations() {
         .insert(VarName::new("x"), Variable::new(VarName::new("x")));
     dae.synthetic_root_conditions
         .push(ir_dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Lt(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::Lt(Default::default()),
             lhs: Box::new(ir_dae::Expression::VarRef {
                 name: ir_dae::VarName::new("x"),
                 subscripts: Vec::new(),
@@ -71,7 +71,7 @@ fn build_diagnostics_test_dae() -> ir_dae::Dae {
     );
 
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         ir_dae::Expression::BuiltinCall {
             function: ir_dae::BuiltinFunction::Der,
             args: vec![var("x1")],
@@ -79,7 +79,7 @@ fn build_diagnostics_test_dae() -> ir_dae::Dae {
         var("z1"),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         ir_dae::Expression::BuiltinCall {
             function: ir_dae::BuiltinFunction::Der,
             args: vec![var("x2")],
@@ -87,16 +87,16 @@ fn build_diagnostics_test_dae() -> ir_dae::Dae {
         var("z2"),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z1"),
         binop(
-            rumoca_ir_core::OpBinary::Mul(Default::default()),
+            rumoca_sim_core::ir_core::OpBinary::Mul(Default::default()),
             var("x1"),
             var("x1"),
         ),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z2"),
         ir_dae::Expression::BuiltinCall {
             function: ir_dae::BuiltinFunction::Sin,
@@ -213,7 +213,7 @@ fn residuals_need_function_eval_diagnostics_detects_function_calls() {
     dae.algebraics
         .insert(VarName::new("x"), Variable::new(VarName::new("x")));
     dae.f_x.push(eq_from(Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(Expression::FunctionCall {
             name: VarName::new("userFn"),
@@ -369,12 +369,12 @@ fn stateful_runtime_capture_reconstructs_eliminated_sample_input_before_tick() {
                 },
             ],
         },
-        rumoca_core::Span::DUMMY,
+        rumoca_sim_core::core::Span::DUMMY,
         "sample1.y = sample(sample1.u, Clock(0.1))",
     ));
 
     let elim = eliminate::EliminationResult {
-        substitutions: vec![rumoca_phase_structural::Substitution {
+        substitutions: vec![rumoca_sim_core::phase_structural::Substitution {
             var_name: ir_dae::VarName::new("sample1.u"),
             expr: var("load.w"),
             env_keys: vec!["sample1.u".to_string()],
@@ -413,12 +413,12 @@ fn runtime_discrete_capture_context_marks_direct_sample_dependency() {
                 },
             ],
         },
-        rumoca_core::Span::DUMMY,
+        rumoca_sim_core::core::Span::DUMMY,
         "sample1.y = sample(sample1.u, Clock(0.1))",
     ));
 
     let elim = eliminate::EliminationResult {
-        substitutions: vec![rumoca_phase_structural::Substitution {
+        substitutions: vec![rumoca_sim_core::phase_structural::Substitution {
             var_name: ir_dae::VarName::new("sample1.u"),
             expr: var("load.w"),
             env_keys: vec!["sample1.u".to_string()],

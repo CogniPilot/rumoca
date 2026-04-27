@@ -139,7 +139,7 @@ impl CrateKind {
             Self::Eval
         } else if name == "rumoca-compile" {
             Self::Session
-        } else if name == "rumoca-sim" || name.starts_with("rumoca-sim-") {
+        } else if name == "rumoca-sim-core" || name.starts_with("rumoca-sim-") {
             Self::Sim
         } else if name.starts_with("rumoca-tool-") {
             Self::Tool
@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(CrateKind::from_name("rumoca-phase-parse"), CrateKind::Phase);
         assert_eq!(CrateKind::from_name("rumoca-eval-ast"), CrateKind::Eval);
         assert_eq!(CrateKind::from_name("rumoca-compile"), CrateKind::Session);
-        assert_eq!(CrateKind::from_name("rumoca-sim"), CrateKind::Sim);
+        assert_eq!(CrateKind::from_name("rumoca-sim-core"), CrateKind::Sim);
         assert_eq!(CrateKind::from_name("rumoca-tool-dev"), CrateKind::Tool);
         assert_eq!(
             CrateKind::from_name("rumoca-bind-python"),

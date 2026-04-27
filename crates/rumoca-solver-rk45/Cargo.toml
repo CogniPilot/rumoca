@@ -7,20 +7,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rumoca-core = { workspace = true }
-rumoca-ir-dae = { workspace = true }
-rumoca-ir-core = { workspace = true }
-rumoca-eval-dae = { workspace = true }
-rumoca-phase-structural = { workspace = true }
-rumoca-sim = { workspace = true }
+# Sim-core is the single front door: IR types, structural analysis,
+# Span/timer helpers, and the runtime expression evaluator (eval_dae)
+# are all reached through its re-export modules.
+rumoca-sim-core = { workspace = true }
 thiserror = { workspace = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.3", features = ["wasm_js"] }
-rumoca-eval-dae = { workspace = true, features = ["wasm"] }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rumoca-eval-dae = { workspace = true, features = ["cranelift"] }
 
 [lints]
 workspace = true

@@ -41,7 +41,7 @@ fn test_project_runtime_seeds_direct_assignments_before_newton() {
         var("w"),
     )));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let projected = project_algebraics_with_fixed_states_at_time(
         &dae,
         &[0.0, 1.0, 1.0], // stale pre-event algebraic seed
@@ -95,7 +95,7 @@ fn test_runtime_projection_leaves_alias_connected_unknowns_free() {
         var("node.v"),
     )));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let projected = project_algebraics_with_fixed_states_at_time(
         &dae,
         &[0.0, 0.0, 0.0],
@@ -174,7 +174,7 @@ fn test_runtime_projection_handles_hidden_step_source_intermediate_target() {
         var("node.v"),
     )));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let projected = project_algebraics_with_fixed_states_at_time(
         &dae,
         &[0.0, 0.0, 0.0, 0.0, 0.0], // stale pre-event seed
@@ -232,7 +232,7 @@ fn test_runtime_projection_ignores_fixed_differential_rows() {
         var("node.v"),
     )));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let projected = project_algebraics_with_fixed_states_at_time(
         &dae,
         &[0.0, 0.0, 0.0],
@@ -377,7 +377,7 @@ fn test_discrete_alias_chain_does_not_back_propagate_unanchored_zero() {
         var("source"),
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut env = build_env(&dae, &[], &[], 0.0);
     env.set("source", 0.0);
     env.set("a", 0.0);
@@ -513,10 +513,10 @@ fn test_discrete_partition_direct_array_assignment_updates_all_elements() {
         var("u"),
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut env = build_env(&dae, &[], &[], 0.0);
-    rumoca_eval_dae::runtime::set_array_entries(&mut env, "y", &[2], &[0.0, 0.0]);
-    rumoca_eval_dae::runtime::set_array_entries(&mut env, "u", &[2], &[1.0, 2.0]);
+    rumoca_sim_core::phase_solve_lower::set_array_entries(&mut env, "y", &[2], &[0.0, 0.0]);
+    rumoca_sim_core::phase_solve_lower::set_array_entries(&mut env, "u", &[2], &[1.0, 2.0]);
 
     let changed = apply_discrete_partition_updates(&dae, &mut env);
     assert!(changed, "expected array direct assignment to update y");
@@ -576,14 +576,14 @@ fn test_discrete_tuple_function_assignment_updates_scalar_and_array_targets() {
         },
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut env = build_env(&dae, &[], &[], 0.0);
     env.set("noise", 0.0);
     env.set("seedState", 0.0);
     env.set("seedState[1]", 0.0);
     env.set("seedState[2]", 0.0);
     env.set("seedState[3]", 0.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env);
 
     let changed = apply_discrete_partition_updates(&dae, &mut env);
     assert!(
@@ -727,14 +727,14 @@ fn test_discrete_partition_clocked_sample_alias_chain_latches_left_limit() {
         binop(OpBinary::Gt(Default::default()), var("time"), lit(0.5)),
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut env_prev = build_env(&dae, &[0.5], &[], 0.5);
     env_prev.set("u", 0.5);
     env_prev.set("c", 0.0);
     env_prev.set("clk", 0.0);
     env_prev.set("sampled", 0.0);
     env_prev.set("offset", 0.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_prev);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_prev);
 
     let mut env = build_env(&dae, &[0.6], &[], 0.6);
     env.set("u", 0.6);
@@ -790,13 +790,13 @@ fn test_guarded_when_no_arg_clock_uses_implicit_clock_activity() {
         },
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
 
     let mut env_t0 = build_env(&dae, &[], &[0.02], 0.0);
     env_t0.set("period", 0.02);
     env_t0.set("clk", 0.0);
     env_t0.set("x", 0.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_t0);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_t0);
     let changed_t0 = apply_discrete_partition_updates(&dae, &mut env_t0);
     assert!(changed_t0, "expected tick updates at t=0");
     assert_eq!(env_t0.vars.get("clk").copied().unwrap_or(-1.0), 1.0);
@@ -806,7 +806,7 @@ fn test_guarded_when_no_arg_clock_uses_implicit_clock_activity() {
         "guarded Clock() branch should fire on implicit clock tick"
     );
 
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_t0);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_t0);
     let mut env_t01 = build_env(&dae, &[], &[0.02], 0.01);
     env_t01.set("period", 0.02);
     env_t01.set("clk", 1.0);
@@ -869,26 +869,26 @@ fn test_guarded_when_array_pre_holds_elementwise_between_ticks() {
         },
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
 
     let mut env_t0 = build_env(&dae, &[], &[0.02], 0.0);
     env_t0.set("period", 0.02);
     env_t0.set("clk", 0.0);
-    rumoca_eval_dae::runtime::set_array_entries(&mut env_t0, "x", &[2], &[0.0, 0.0]);
-    rumoca_eval_dae::runtime::set_array_entries(&mut env_t0, "u", &[2], &[1.0, 2.0]);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_t0);
+    rumoca_sim_core::phase_solve_lower::set_array_entries(&mut env_t0, "x", &[2], &[0.0, 0.0]);
+    rumoca_sim_core::phase_solve_lower::set_array_entries(&mut env_t0, "u", &[2], &[1.0, 2.0]);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_t0);
     let changed_t0 = apply_discrete_partition_updates(&dae, &mut env_t0);
     assert!(changed_t0, "expected tick updates at t=0");
     assert_eq!(env_t0.vars.get("clk").copied().unwrap_or(-1.0), 1.0);
     assert!((env_t0.vars.get("x[1]").copied().unwrap_or(-1.0) - 1.0).abs() < 1.0e-12);
     assert!((env_t0.vars.get("x[2]").copied().unwrap_or(-1.0) - 2.0).abs() < 1.0e-12);
 
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_t0);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_t0);
     let mut env_t01 = build_env(&dae, &[], &[0.02], 0.01);
     env_t01.set("period", 0.02);
     env_t01.set("clk", 1.0);
-    rumoca_eval_dae::runtime::set_array_entries(&mut env_t01, "x", &[2], &[1.0, 2.0]);
-    rumoca_eval_dae::runtime::set_array_entries(&mut env_t01, "u", &[2], &[99.0, 77.0]);
+    rumoca_sim_core::phase_solve_lower::set_array_entries(&mut env_t01, "x", &[2], &[1.0, 2.0]);
+    rumoca_sim_core::phase_solve_lower::set_array_entries(&mut env_t01, "u", &[2], &[99.0, 77.0]);
     let changed_t01 = apply_discrete_partition_updates(&dae, &mut env_t01);
     assert!(changed_t01, "clock output should fall low between ticks");
     assert_eq!(env_t01.vars.get("clk").copied().unwrap_or(-1.0), 0.0);
@@ -951,12 +951,12 @@ fn test_discrete_partition_previous_updates_only_on_clock_ticks() {
         },
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut env_prev = build_env(&dae, &[], &[0.1], 0.0);
     env_prev.set("period", 0.1);
     env_prev.set("clk", 1.0);
     env_prev.set("counter", 1.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_prev);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_prev);
 
     let mut env_non_tick = build_env(&dae, &[], &[0.1], 0.002);
     env_non_tick.set("period", 0.1);
@@ -974,7 +974,7 @@ fn test_discrete_partition_previous_updates_only_on_clock_ticks() {
         "previous(counter) assignment must hold between clock ticks"
     );
 
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_non_tick);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_non_tick);
     let mut env_tick = build_env(&dae, &[], &[0.1], 0.2);
     env_tick.set("period", 0.1);
     env_tick.set("clk", 0.0);
@@ -1020,7 +1020,7 @@ fn test_subsample_counter_clock_ticks_with_factor_over_resolution_period() {
         },
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut env_t0 = build_env(&dae, &[], &[20.0, 1000.0], 0.0);
     env_t0.set("factor", 20.0);
     env_t0.set("resolutionFactor", 1000.0);
@@ -1029,7 +1029,7 @@ fn test_subsample_counter_clock_ticks_with_factor_over_resolution_period() {
     assert!(changed_t0, "clock should tick at t=0");
     assert_eq!(env_t0.vars.get("clk").copied().unwrap_or(-1.0), 1.0);
 
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_t0);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_t0);
     let mut env_t01 = build_env(&dae, &[], &[20.0, 1000.0], 0.01);
     env_t01.set("factor", 20.0);
     env_t01.set("resolutionFactor", 1000.0);
@@ -1038,7 +1038,7 @@ fn test_subsample_counter_clock_ticks_with_factor_over_resolution_period() {
     assert!(changed_t01, "clock should fall low between ticks");
     assert_eq!(env_t01.vars.get("clk").copied().unwrap_or(-1.0), 0.0);
 
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_t01);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_t01);
     let mut env_t02 = build_env(&dae, &[], &[20.0, 1000.0], 0.02);
     env_t02.set("factor", 20.0);
     env_t02.set("resolutionFactor", 1000.0);
@@ -1087,14 +1087,14 @@ fn test_shift_sample_value_form_inherits_source_clock_activity() {
         },
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut env_prev = build_env(&dae, &[], &[0.1, 2.0], 0.0);
     env_prev.set("period", 0.1);
     env_prev.set("u", 2.0);
     env_prev.set("clk", 1.0);
     env_prev.set("sampled", 2.0);
     env_prev.set("shifted", 2.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_prev);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_prev);
 
     let mut env_non_tick = build_env(&dae, &[], &[0.1, 9.0], 0.05);
     env_non_tick.set("period", 0.1);
@@ -1117,7 +1117,7 @@ fn test_shift_sample_value_form_inherits_source_clock_activity() {
         2.0
     );
 
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_non_tick);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_non_tick);
     let mut env_tick = build_env(&dae, &[], &[0.1, 7.0], 0.1);
     env_tick.set("period", 0.1);
     env_tick.set("u", 7.0);
@@ -1175,13 +1175,13 @@ fn test_implicit_sample_time_uses_tick_instant_not_previous_sample_time() {
         },
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut env_prev = build_env(&dae, &[], &[0.1], 0.1);
     env_prev.set("period", 0.1);
     env_prev.set("clk", 1.0);
     env_prev.set("sim_time", 0.1);
     env_prev.set("step_y", 0.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_prev);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_prev);
 
     let mut env_tick = build_env(&dae, &[], &[0.1], 0.2);
     env_tick.set("period", 0.1);
@@ -1359,7 +1359,7 @@ fn build_tick_based_counter_dae() -> Dae {
 }
 
 fn seed_tick_based_counter_pre_values(dae: &Dae) {
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut env_prev = build_env(dae, &[], &[0.1, 10.0, 2.0, 4.0], 0.2);
     env_prev.set("period", 0.1);
     env_prev.set("periodTicks", 10.0);
@@ -1369,7 +1369,7 @@ fn seed_tick_based_counter_pre_values(dae: &Dae) {
     env_prev.set("startOutput", 0.0);
     env_prev.set("clk", 0.0);
     env_prev.set("y", 0.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env_prev);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env_prev);
 }
 
 fn tick_based_counter_runtime_env(dae: &Dae) -> VarEnv<f64> {
@@ -1434,10 +1434,10 @@ fn test_discrete_if_residual_direct_shape_updates_active_branch_target() {
         )),
     }));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut env = build_env(&dae, &[], &[], 0.0);
     env.set("counter", 0.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&env);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&env);
 
     let changed = apply_discrete_partition_updates(&dae, &mut env);
     assert!(
@@ -1495,13 +1495,13 @@ fn test_runtime_projection_settles_discrete_branch_before_runtime_newton() {
         binop(OpBinary::Lt(Default::default()), var("s"), lit(0.0)),
     )));
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
     let mut pre_env = build_env(&dae, &[0.0, -9.0, -9.0], &[], 0.0);
     pre_env.set("off", 0.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&pre_env);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&pre_env);
 
     let mut runtime_seed_env = Some(pre_env);
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let projected = project_algebraics_with_fixed_states_at_time_with_context(
         &dae,
         &[0.0, -9.0, -9.0],
@@ -1526,7 +1526,7 @@ fn test_runtime_projection_settles_discrete_branch_before_runtime_newton() {
     // equations against the updated discrete fixed point, not a stale pre(off).
     assert!((projected[1] + 9.0).abs() < 1.0e-12);
     assert!((projected[2] + 9.0).abs() < 1.0e-12);
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
 }
 
 #[test]

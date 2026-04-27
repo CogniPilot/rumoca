@@ -2,10 +2,10 @@
 //!
 //! Tests for the 13 lexical contracts defined in SPEC_0022.
 
-use rumoca_contracts::test_support::{expect_parse_err_with_code, expect_parse_ok};
-use rumoca_contracts::{ContractCategory, TestRunner, create_registry};
 use rumoca_compile::parsing::parse_source_to_ast as parse_to_ast;
 use rumoca_compile::{Session, SessionConfig};
+use rumoca_contracts::test_support::{expect_parse_err_with_code, expect_parse_ok};
+use rumoca_contracts::{ContractCategory, TestRunner, create_registry};
 
 /// Helper to check whether a source is rejected by parse or compile.
 ///

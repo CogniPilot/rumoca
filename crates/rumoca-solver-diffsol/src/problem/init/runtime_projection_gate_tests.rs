@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::{binop, lit, var};
-use rumoca_core::Span;
-use rumoca_ir_dae::Literal;
+use rumoca_sim_core::core::Span;
+use rumoca_sim_core::ir_dae::Literal;
 
 #[test]
 fn runtime_projection_needs_settled_discrete_env_skips_ignored_rows() {

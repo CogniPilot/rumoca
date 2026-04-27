@@ -15,8 +15,8 @@ use std::{fs, process::Command};
 
 use rumoca::{CompilationResult, Compiler};
 use rumoca_phase_codegen::templates;
+use rumoca_sim::simulate_dae;
 use rumoca_sim::{SimOptions, SimResult};
-use rumoca_solver_diffsol::simulate_dae;
 use tempfile::Builder;
 
 // ============================================================================
@@ -502,6 +502,14 @@ fn fmi3_trace_test(source: &str, model_name: &str) {
         model_name,
     )
     .expect("render FMI3 test driver");
+
+    std::fs::write("/tmp/arraydecay_model.c", &model_c).ok();
+    std::fs::write("/tmp/arraydecay_driver.c", &driver_c).ok();
+    std::fs::write(
+        "/tmp/arraydecay_dae.json",
+        serde_json::to_string_pretty(&dae).unwrap_or_default(),
+    )
+    .ok();
 
     let csv = compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],

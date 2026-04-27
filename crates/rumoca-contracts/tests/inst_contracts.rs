@@ -2,11 +2,11 @@
 //!
 //! Tests for the 53 instantiation contracts defined in SPEC_0022.
 
+use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_parse_err_with_code,
     expect_resolve_failure_with_code, expect_success,
 };
-use rumoca_compile::compile::FailedPhase;
 
 fn flat_var_is_protected(result: &rumoca_compile::compile::CompilationResult, name: &str) -> bool {
     result

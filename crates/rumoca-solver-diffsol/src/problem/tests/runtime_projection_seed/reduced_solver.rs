@@ -18,7 +18,7 @@ pub(crate) fn add_trapezoid_parameter_starts(dae: &mut Dae) {
 
     let mut nperiod = Variable::new(VarName::new("vIn.signalSource.nperiod"));
     nperiod.start = Some(Expression::Unary {
-        op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+        op: rumoca_sim_core::ir_core::OpUnary::Minus(Default::default()),
         rhs: Box::new(Expression::Literal(dae::Literal::Integer(1))),
     });
     dae.parameters
@@ -37,9 +37,9 @@ pub(crate) fn add_trapezoid_parameter_starts(dae: &mut Dae) {
 
 fn trapezoid_inactive_expr() -> Expression {
     Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Or(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Or(Default::default()),
         lhs: Box::new(Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Or(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::Or(Default::default()),
             lhs: Box::new(binop(
                 OpBinary::Lt(Default::default()),
                 var("time"),
@@ -52,7 +52,7 @@ fn trapezoid_inactive_expr() -> Expression {
             )),
         }),
         rhs: Box::new(Expression::Binary {
-            op: rumoca_ir_core::OpBinary::And(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::And(Default::default()),
             lhs: Box::new(binop(
                 OpBinary::Gt(Default::default()),
                 var("vIn.signalSource.nperiod"),

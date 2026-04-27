@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rumoca-eval-dae = { workspace = true }
+rumoca-analysis-dae = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-core = { workspace = true }

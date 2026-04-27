@@ -33,6 +33,7 @@ mod definition_analysis;
 mod discrete_partition;
 mod equation_conversion;
 mod errors;
+mod fold_start_values;
 mod initial;
 mod name_resolution;
 mod overconstrained_interface;
@@ -307,7 +308,7 @@ fn finalize_lowered_dae(
     // possible. Safe as an always-on pass: start values are init-time
     // metadata, not user-observable at runtime.
     run_todae_phase(todae_subphase_timing, "fold_start_values", || {
-        rumoca_phase_structural::fold_start_values_to_literals(dae);
+        fold_start_values::fold_start_values_to_literals(dae);
     });
 
     // Reorder algebraics so any algebraic used in another's defining
@@ -315,7 +316,7 @@ fn finalize_lowered_dae(
     // forward-evaluation backends (embedded C, Julia MTK) emit
     // straight-line code without extra topo-sort inside the template.
     run_todae_phase(todae_subphase_timing, "sort_algebraics_by_deps", || {
-        rumoca_phase_structural::sort_algebraics_by_equation_deps(dae);
+        fold_start_values::sort_algebraics_by_equation_deps(dae);
     });
 
     run_todae_phase(todae_subphase_timing, "runtime_precompute", || {
@@ -350,10 +351,7 @@ fn finalize_lowered_dae(
         validate_dae_references(dae, &known_flat_var_names)
     })?;
 
-    if options.error_on_unbalanced
-        && !dae.is_partial
-        && rumoca_eval_dae::analysis::balance(dae) != 0
-    {
+    if options.error_on_unbalanced && !dae.is_partial && rumoca_analysis_dae::balance(dae) != 0 {
         let (equations, unknowns) = balance_counting::compute_balance_counts(dae);
         return Err(ToDaeError::unbalanced(equations, unknowns));
     }

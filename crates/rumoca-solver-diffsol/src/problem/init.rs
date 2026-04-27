@@ -23,7 +23,7 @@ fn build_init_jacobian(
     runtime_seed_env: Option<&VarEnv<f64>>,
     ignored_rows: &[bool],
     homotopy_lambda: f64,
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
 ) -> Result<nalgebra::DMatrix<f64>, crate::SimError> {
     if homotopy_lambda < 1.0 - f64::EPSILON
         || (ctx.use_initial && ctx.compiled_initial.is_none())
@@ -65,7 +65,7 @@ fn build_runtime_initial_jacobian_dense(
     fixed_cols: &[bool],
     runtime_seed_env: Option<&VarEnv<f64>>,
     homotopy_lambda: f64,
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
 ) -> Result<nalgebra::DMatrix<f64>, crate::SimError> {
     let n_total = ctx.y.len();
     let eval_mode = IcEvalMode {
@@ -113,7 +113,7 @@ struct NewtonInitConfig<'a> {
     compiled_runtime: Option<&'a CompiledRuntimeNewtonContext>,
     runtime_seed_env: Option<VarEnv<f64>>,
     t_eval: f64,
-    timeout: &'a rumoca_sim::TimeoutBudget,
+    timeout: &'a rumoca_sim_core::TimeoutBudget,
 }
 
 type CachedNewtonJacobian = Option<nalgebra::DMatrix<f64>>;
@@ -130,7 +130,7 @@ fn overwrite_runtime_fd_jacobian_cols(
     runtime_fd_jac_cols: &[bool],
     runtime_seed_env: Option<&VarEnv<f64>>,
     ignored_rows: &[bool],
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
 ) -> Result<(), crate::SimError> {
     if ctx.use_initial || !runtime_fd_jac_cols.iter().any(|&flag| flag) {
         return Ok(());
@@ -931,16 +931,16 @@ fn build_initial_eval_env_preserving_pre_values(
     // same initial-section fixed point as `initial()`/`pre(...)` startup
     // seeding, without leaving diagnostic-only mutations in the global pre
     // cache.
-    let pre_snapshot = rumoca_eval_dae::runtime::snapshot_pre_values();
+    let pre_snapshot = rumoca_sim_core::phase_solve_lower::snapshot_pre_values();
     let mut startup_y = y.to_vec();
-    let env = rumoca_sim::runtime::startup::build_initial_section_env_strict(
+    let env = rumoca_sim_core::runtime::startup::build_initial_section_env_strict(
         dae,
         startup_y.as_mut_slice(),
         p,
         t_eval,
     )
     .map_err(crate::SimError::SolverError);
-    rumoca_eval_dae::runtime::restore_pre_values(pre_snapshot);
+    rumoca_sim_core::phase_solve_lower::restore_pre_values(pre_snapshot);
     env
 }
 
@@ -953,21 +953,23 @@ fn build_runtime_eval_env_preserving_pre_values(
     ignored_rows: Option<&[bool]>,
     runtime_seed_env: Option<&VarEnv<f64>>,
 ) -> Result<VarEnv<f64>, crate::SimError> {
-    let pre_snapshot = rumoca_eval_dae::runtime::snapshot_pre_values();
+    let pre_snapshot = rumoca_sim_core::phase_solve_lower::snapshot_pre_values();
     let mut y_work = y.to_vec();
-    let mut env = runtime_seed_env
-        .cloned()
-        .unwrap_or_else(|| rumoca_sim::runtime::event::build_runtime_state_env(dae, y, p, t_eval));
-    rumoca_eval_dae::runtime::refresh_env_solver_and_parameter_values(&mut env, dae, y, p, t_eval);
+    let mut env = runtime_seed_env.cloned().unwrap_or_else(|| {
+        rumoca_sim_core::runtime::event::build_runtime_state_env(dae, y, p, t_eval)
+    });
+    rumoca_sim_core::phase_solve_lower::refresh_env_solver_and_parameter_values(
+        &mut env, dae, y, p, t_eval,
+    );
     if !runtime_projection_needs_settled_discrete_env(dae, ignored_rows) {
         return Ok(env);
     }
 
     let use_frozen_pre =
-        rumoca_sim::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
+        rumoca_sim_core::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
     let mut guard_env: Option<VarEnv<f64>> = None;
-    let settled = rumoca_sim::runtime::event::settle_runtime_event_updates_with_base_env(
-        rumoca_sim::EventSettleInput {
+    let settled = rumoca_sim_core::runtime::event::settle_runtime_event_updates_with_base_env(
+        rumoca_sim_core::EventSettleInput {
             dae,
             y: &mut y_work,
             p,
@@ -976,21 +978,21 @@ fn build_runtime_eval_env_preserving_pre_values(
             is_initial: false,
         },
         env,
-        rumoca_sim::runtime::assignment::propagate_runtime_direct_assignments_from_env,
-        rumoca_sim::runtime::alias::propagate_runtime_alias_components_from_env,
+        rumoca_sim_core::runtime::assignment::propagate_runtime_direct_assignments_from_env,
+        rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env,
         |dae, env| {
             let guard_env = guard_env.get_or_insert_with(|| env.clone());
-            rumoca_sim::runtime::discrete::apply_discrete_partition_updates_with_guard_env_and_scalar_override(
+            rumoca_sim_core::runtime::discrete::apply_discrete_partition_updates_with_guard_env_and_scalar_override(
                 dae,
                 env,
                 guard_env,
                 |_eq, _target, _solution, _env, _implicit_clock_active| None,
             )
         },
-        rumoca_sim::runtime::layout::sync_solver_values_from_env,
+        rumoca_sim_core::runtime::layout::sync_solver_values_from_env,
         !use_frozen_pre,
     );
-    rumoca_eval_dae::runtime::restore_pre_values(pre_snapshot);
+    rumoca_sim_core::phase_solve_lower::restore_pre_values(pre_snapshot);
     Ok(settled)
 }
 
@@ -1001,7 +1003,7 @@ fn runtime_projection_needs_settled_discrete_env(dae: &Dae, ignored_rows: Option
                 .and_then(|rows| rows.get(idx))
                 .copied()
                 .unwrap_or(false)
-                && rumoca_sim::runtime::no_state::expr_reads_event_updated_discrete_var(
+                && rumoca_sim_core::runtime::no_state::expr_reads_event_updated_discrete_var(
                     dae, &eq.rhs,
                 )
         })
@@ -1036,7 +1038,7 @@ fn build_ic_eval_env(
     env.is_initial = mode.is_initial_phase;
     if mode.is_initial_phase {
         env.set(
-            rumoca_eval_dae::runtime::INIT_HOMOTOPY_LAMBDA_KEY,
+            rumoca_sim_core::phase_solve_lower::INIT_HOMOTOPY_LAMBDA_KEY,
             mode.homotopy_lambda,
         );
     }
@@ -1203,7 +1205,7 @@ fn eval_runtime_ic_residual(
     let eval_env = build_ic_eval_env(dae, y, p, mode)
         .unwrap_or_else(|err| panic!("runtime eval env required for residual evaluation: {err}"));
     for (slot, eq) in out.iter_mut().zip(dae.f_x.iter()) {
-        *slot = rumoca_eval_dae::runtime::eval_expr::<f64>(&eq.rhs, &eval_env);
+        *slot = rumoca_sim_core::phase_solve_lower::eval_expr::<f64>(&eq.rhs, &eval_env);
     }
 }
 
@@ -1317,7 +1319,7 @@ fn build_runtime_newton_context_if_needed(
 struct IcResidualContext<'a> {
     eval_mode: IcEvalMode<'a>,
     ignored_rows: &'a [bool],
-    timeout: &'a rumoca_sim::TimeoutBudget,
+    timeout: &'a rumoca_sim_core::TimeoutBudget,
 }
 
 fn ensure_perturbed_residual_is_finite(
@@ -1396,7 +1398,7 @@ struct IcNewtonContext<'a> {
     p: &'a [f64],
     newton_config: &'a NewtonInitConfig<'a>,
     tol: f64,
-    timeout: &'a rumoca_sim::TimeoutBudget,
+    timeout: &'a rumoca_sim_core::TimeoutBudget,
     n_x: usize,
     fixed: &'a [bool],
     seeded_updates: usize,
@@ -1404,18 +1406,20 @@ struct IcNewtonContext<'a> {
     initial_free_norm: f64,
 }
 
-fn write_var_start(var: &mut rumoca_ir_dae::Variable, y: &[f64], idx: &mut usize) {
+fn write_var_start(var: &mut rumoca_sim_core::ir_dae::Variable, y: &[f64], idx: &mut usize) {
     let sz = var.size();
     if sz <= 1 {
         if *idx < y.len() {
-            var.start = Some(Expression::Literal(rumoca_ir_dae::Literal::Real(y[*idx])));
+            var.start = Some(Expression::Literal(rumoca_sim_core::ir_dae::Literal::Real(
+                y[*idx],
+            )));
         }
         *idx += 1;
     } else {
         let elements: Vec<Expression> = (0..sz)
             .map(|i| {
                 let val = y.get(*idx + i).copied().unwrap_or(0.0);
-                Expression::Literal(rumoca_ir_dae::Literal::Real(val))
+                Expression::Literal(rumoca_sim_core::ir_dae::Literal::Real(val))
             })
             .collect();
         var.start = Some(Expression::Array {
@@ -1449,8 +1453,8 @@ fn write_solved_ics(dae: &mut Dae, y: &[f64], n_x: usize, fixed: &[bool]) {
 
 fn write_discrete_start_from_env(
     env: &VarEnv<f64>,
-    name: &rumoca_ir_dae::VarName,
-    var: &mut rumoca_ir_dae::Variable,
+    name: &rumoca_sim_core::ir_dae::VarName,
+    var: &mut rumoca_sim_core::ir_dae::Variable,
 ) -> bool {
     let key = name.as_str();
     let sz = var.size();
@@ -1458,7 +1462,9 @@ fn write_discrete_start_from_env(
         let Some(value) = env.vars.get(key).copied() else {
             return false;
         };
-        var.start = Some(Expression::Literal(rumoca_ir_dae::Literal::Real(value)));
+        var.start = Some(Expression::Literal(rumoca_sim_core::ir_dae::Literal::Real(
+            value,
+        )));
         return true;
     }
 
@@ -1471,7 +1477,9 @@ fn write_discrete_start_from_env(
             .copied()
             .or_else(|| env.vars.get(key).copied())
             .unwrap_or(0.0);
-        values.push(Expression::Literal(rumoca_ir_dae::Literal::Real(value)));
+        values.push(Expression::Literal(rumoca_sim_core::ir_dae::Literal::Real(
+            value,
+        )));
     }
     var.start = Some(Expression::Array {
         elements: values,

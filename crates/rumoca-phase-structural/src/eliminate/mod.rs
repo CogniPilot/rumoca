@@ -878,7 +878,7 @@ fn eliminate_via_blt(
 }
 
 fn runtime_protected_unknown_names(dae: &Dae) -> HashSet<String> {
-    let mut protected = rumoca_eval_dae::analysis::runtime_defined_continuous_unknown_names(dae);
+    let mut protected = rumoca_analysis_dae::runtime_defined_continuous_unknown_names(dae);
     protected.extend(branch_local_analog_protected_unknown_names(dae));
     protected.extend(clocked_value_source_protected_unknown_names(dae));
     protected

@@ -6,13 +6,13 @@ pub(crate) type SharedInputOverrides =
 #[derive(Clone)]
 pub(crate) struct CompiledEvalContext {
     dae: Dae,
-    sim_context: rumoca_sim::runtime::layout::SimulationContext,
+    sim_context: rumoca_sim_core::runtime::layout::SimulationContext,
     pub(crate) input_overrides: Option<SharedInputOverrides>,
     param_scratch: std::rc::Rc<std::cell::RefCell<Vec<f64>>>,
 }
 
 pub(crate) fn build_compiled_eval_context(dae: &Dae, n_total: usize) -> CompiledEvalContext {
-    let sim_context = rumoca_sim::runtime::layout::SimulationContext::from_dae(dae, n_total);
+    let sim_context = rumoca_sim_core::runtime::layout::SimulationContext::from_dae(dae, n_total);
     CompiledEvalContext {
         dae: dae.clone(),
         sim_context,
@@ -31,11 +31,11 @@ fn expr_exact_var_ref_key(expr: &dae::Expression) -> Option<String> {
     let dae::Expression::VarRef { name, subscripts } = expr else {
         return None;
     };
-    rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)
+    rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
 }
 
 fn dae_has_compiled_binding(dae: &Dae, name: &str) -> bool {
-    rumoca_phase_solve_lower::build_var_layout(dae)
+    rumoca_sim_core::phase_solve_lower::build_var_layout(dae)
         .binding(name)
         .is_some()
 }
@@ -43,7 +43,7 @@ fn dae_has_compiled_binding(dae: &Dae, name: &str) -> bool {
 fn expr_contains_exact_var_ref(expr: &dae::Expression, target: &str) -> bool {
     match expr {
         dae::Expression::VarRef { name, subscripts } => {
-            rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)
+            rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
                 .is_some_and(|key| key == target)
         }
         dae::Expression::Binary { lhs, rhs, .. } => {
@@ -169,7 +169,7 @@ fn hidden_direct_assignment_target_matches(
     subscripts: &[dae::Subscript],
     target: &str,
 ) -> bool {
-    rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)
+    rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
         .is_some_and(|key| key == target)
 }
 
@@ -232,7 +232,7 @@ fn rewrite_hidden_direct_assignment_comprehension_indices(
 }
 
 fn rewrite_hidden_direct_assignment_binary(
-    op: &rumoca_ir_core::OpBinary,
+    op: &rumoca_sim_core::ir_core::OpBinary,
     lhs: &dae::Expression,
     rhs: &dae::Expression,
     target: &str,
@@ -254,7 +254,7 @@ fn rewrite_hidden_direct_assignment_binary(
 }
 
 fn rewrite_hidden_direct_assignment_unary(
-    op: &rumoca_ir_core::OpUnary,
+    op: &rumoca_sim_core::ir_core::OpUnary,
     rhs: &dae::Expression,
     target: &str,
     replacement: &dae::Expression,
@@ -492,23 +492,27 @@ fn collect_target_stats_from_equations<'a>(
     dae: &Dae,
     equations: impl IntoIterator<Item = &'a Equation>,
     skip_alias_pairs: bool,
-) -> std::collections::HashMap<String, rumoca_sim::runtime::assignment::DirectAssignmentTargetStats>
-{
+) -> std::collections::HashMap<
+    String,
+    rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats,
+> {
     let mut stats: std::collections::HashMap<
         String,
-        rumoca_sim::runtime::assignment::DirectAssignmentTargetStats,
+        rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats,
     > = std::collections::HashMap::new();
     for eq in equations {
         if eq.origin == "orphaned_variable_pin" {
             continue;
         }
         let Some((target, solution)) =
-            rumoca_sim::runtime::assignment::direct_assignment_from_equation(eq)
+            rumoca_sim_core::runtime::assignment::direct_assignment_from_equation(eq)
         else {
             continue;
         };
         let is_alias_solution =
-            rumoca_sim::runtime::assignment::assignment_solution_is_alias_varref(dae, solution);
+            rumoca_sim_core::runtime::assignment::assignment_solution_is_alias_varref(
+                dae, solution,
+            );
         if skip_alias_pairs && is_alias_solution {
             continue;
         }
@@ -526,7 +530,7 @@ fn build_direct_assignment_substitutions(
     include_known_assignments: bool,
 ) -> Vec<HiddenDirectAssignmentSubstitution> {
     let equations = if include_known_assignments {
-        rumoca_sim::runtime::alias::runtime_assignment_equations(dae, 0).collect::<Vec<_>>()
+        rumoca_sim_core::runtime::alias::runtime_assignment_equations(dae, 0).collect::<Vec<_>>()
     } else {
         dae.f_x.iter().collect::<Vec<_>>()
     };
@@ -538,12 +542,12 @@ fn build_direct_assignment_substitutions(
             continue;
         }
         let Some((target, solution)) =
-            rumoca_sim::runtime::assignment::direct_assignment_from_equation(eq)
+            rumoca_sim_core::runtime::assignment::direct_assignment_from_equation(eq)
         else {
             continue;
         };
         if !include_known_assignments
-            && rumoca_sim::runtime::assignment::is_known_assignment_name(dae, target.as_str())
+            && rumoca_sim_core::runtime::assignment::is_known_assignment_name(dae, target.as_str())
         {
             continue;
         }
@@ -645,12 +649,12 @@ fn compile_expression_rows_with_mode(
     dae: &Dae,
     expressions: &[dae::Expression],
     use_initial: bool,
-) -> Result<rumoca_eval_dae::compiled::CompiledExpressionRows, String> {
-    let backend = rumoca_eval_dae::compiled::Backend::Cranelift;
+) -> Result<rumoca_sim_core::phase_solve_lower::CompiledExpressionRows, String> {
+    let backend = rumoca_sim_core::phase_solve_lower::Backend::Cranelift;
     if use_initial {
-        rumoca_eval_dae::compiled::compile_initial_expressions(dae, expressions, backend)
+        rumoca_sim_core::phase_solve_lower::compile_initial_expressions(dae, expressions, backend)
     } else {
-        rumoca_eval_dae::compiled::compile_expressions(dae, expressions, backend)
+        rumoca_sim_core::phase_solve_lower::compile_expressions(dae, expressions, backend)
     }
     .map_err(|err| err.to_string())
 }
@@ -662,7 +666,7 @@ fn annotate_expression_context_compile_error(
     use_initial: bool,
     err: String,
 ) -> SimError {
-    let layout = rumoca_phase_solve_lower::build_var_layout(dae);
+    let layout = rumoca_sim_core::phase_solve_lower::build_var_layout(dae);
     for (idx, expr) in expressions.iter().enumerate() {
         if let Err(row_err) =
             compile_expression_rows_with_mode(dae, std::slice::from_ref(expr), use_initial)
@@ -681,14 +685,14 @@ fn annotate_expression_context_compile_error(
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct CompiledRuntimeExpressionContext {
     compiled_eval_ctx: CompiledEvalContext,
-    compiled_rows: rumoca_eval_dae::compiled::CompiledExpressionRows,
+    compiled_rows: rumoca_sim_core::phase_solve_lower::CompiledExpressionRows,
     row_count: usize,
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) struct CompiledRuntimeExpressionContext {
     compiled_eval_ctx: CompiledEvalContext,
-    compiled_rows: rumoca_eval_dae::compiled::CompiledExpressionRowsWasm,
+    compiled_rows: rumoca_sim_core::phase_solve_lower::CompiledExpressionRowsWasm,
     row_count: usize,
 }
 
@@ -696,44 +700,44 @@ pub(crate) struct CompiledRuntimeExpressionContext {
 pub(crate) struct CompiledRuntimeNewtonContext {
     compiled_eval_ctx_rhs: CompiledEvalContext,
     compiled_eval_ctx_jac: CompiledEvalContext,
-    compiled_residual: rumoca_eval_dae::compiled::CompiledResidual,
-    compiled_jacobian: rumoca_eval_dae::compiled::CompiledJacobianV,
+    compiled_residual: rumoca_sim_core::phase_solve_lower::CompiledResidual,
+    compiled_jacobian: rumoca_sim_core::phase_solve_lower::CompiledJacobianV,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct CompiledInitialNewtonContext {
     compiled_eval_ctx_rhs: CompiledEvalContext,
     compiled_eval_ctx_jac: CompiledEvalContext,
-    compiled_residual: rumoca_eval_dae::compiled::CompiledExpressionRows,
-    compiled_jacobian: rumoca_eval_dae::compiled::CompiledJacobianV,
+    compiled_residual: rumoca_sim_core::phase_solve_lower::CompiledExpressionRows,
+    compiled_jacobian: rumoca_sim_core::phase_solve_lower::CompiledJacobianV,
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) struct CompiledRuntimeNewtonContext {
     compiled_eval_ctx_rhs: CompiledEvalContext,
     compiled_eval_ctx_jac: CompiledEvalContext,
-    compiled_residual: rumoca_eval_dae::compiled::CompiledResidualWasm,
-    compiled_jacobian: rumoca_eval_dae::compiled::CompiledJacobianVWasm,
+    compiled_residual: rumoca_sim_core::phase_solve_lower::CompiledResidualWasm,
+    compiled_jacobian: rumoca_sim_core::phase_solve_lower::CompiledJacobianVWasm,
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) struct CompiledInitialNewtonContext {
     compiled_eval_ctx_rhs: CompiledEvalContext,
     compiled_eval_ctx_jac: CompiledEvalContext,
-    compiled_residual: rumoca_eval_dae::compiled::CompiledExpressionRowsWasm,
-    compiled_jacobian: rumoca_eval_dae::compiled::CompiledJacobianVWasm,
+    compiled_residual: rumoca_sim_core::phase_solve_lower::CompiledExpressionRowsWasm,
+    compiled_jacobian: rumoca_sim_core::phase_solve_lower::CompiledJacobianVWasm,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct CompiledSyntheticRootContext {
     compiled_eval_ctx_root: CompiledEvalContext,
-    compiled_root_conditions: rumoca_eval_dae::compiled::CompiledExpressionRows,
+    compiled_root_conditions: rumoca_sim_core::phase_solve_lower::CompiledExpressionRows,
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) struct CompiledSyntheticRootContext {
     compiled_eval_ctx_root: CompiledEvalContext,
-    compiled_root_conditions: rumoca_eval_dae::compiled::CompiledExpressionRowsWasm,
+    compiled_root_conditions: rumoca_sim_core::phase_solve_lower::CompiledExpressionRowsWasm,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -745,14 +749,14 @@ pub(crate) fn build_compiled_runtime_newton_context(
     let compiled_eval_ctx = build_compiled_eval_context(&compiled_dae, n_total);
     let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
-    let compiled_residual = rumoca_eval_dae::compiled::compile_residual(
+    let compiled_residual = rumoca_sim_core::phase_solve_lower::compile_residual(
         &compiled_dae,
-        rumoca_eval_dae::compiled::Backend::Cranelift,
+        rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
     )
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
-    let compiled_jacobian = rumoca_eval_dae::compiled::compile_jacobian_v(
+    let compiled_jacobian = rumoca_sim_core::phase_solve_lower::compile_jacobian_v(
         &compiled_dae,
-        rumoca_eval_dae::compiled::Backend::Cranelift,
+        rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
     )
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     Ok(CompiledRuntimeNewtonContext {
@@ -772,14 +776,14 @@ pub(crate) fn build_compiled_initial_newton_context(
     let compiled_eval_ctx = build_compiled_eval_context(&compiled_dae, n_total);
     let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
-    let compiled_residual = rumoca_eval_dae::compiled::compile_initial_residual(
+    let compiled_residual = rumoca_sim_core::phase_solve_lower::compile_initial_residual(
         &compiled_dae,
-        rumoca_eval_dae::compiled::Backend::Cranelift,
+        rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
     )
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
-    let compiled_jacobian = rumoca_eval_dae::compiled::compile_initial_jacobian_v(
+    let compiled_jacobian = rumoca_sim_core::phase_solve_lower::compile_initial_jacobian_v(
         &compiled_dae,
-        rumoca_eval_dae::compiled::Backend::Cranelift,
+        rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
     )
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     Ok(CompiledInitialNewtonContext {
@@ -796,9 +800,9 @@ pub(crate) fn build_compiled_synthetic_root_context(
     n_total: usize,
 ) -> Result<CompiledSyntheticRootContext, SimError> {
     let compiled_eval_ctx_root = build_compiled_eval_context(dae, n_total);
-    let compiled_root_conditions = rumoca_eval_dae::compiled::compile_root_conditions(
+    let compiled_root_conditions = rumoca_sim_core::phase_solve_lower::compile_root_conditions(
         dae,
-        rumoca_eval_dae::compiled::Backend::Cranelift,
+        rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
     )
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     Ok(CompiledSyntheticRootContext {
@@ -824,16 +828,16 @@ pub(crate) fn build_compiled_runtime_expression_context(
     let compiled_rows = if use_initial {
         // MLS §8.6: initial() is true while evaluating initialization-mode
         // direct-seed/startup expressions.
-        rumoca_eval_dae::compiled::compile_initial_expressions(
+        rumoca_sim_core::phase_solve_lower::compile_initial_expressions(
             &compiled_dae,
             &rewritten_expressions,
-            rumoca_eval_dae::compiled::Backend::Cranelift,
+            rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
         )
     } else {
-        rumoca_eval_dae::compiled::compile_expressions(
+        rumoca_sim_core::phase_solve_lower::compile_expressions(
             &compiled_dae,
             &rewritten_expressions,
-            rumoca_eval_dae::compiled::Backend::Cranelift,
+            rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
         )
     }
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
@@ -855,16 +859,16 @@ pub(super) fn build_compiled_runtime_expression_context_for_start_rows(
         rewrite_expression_context_for_direct_assignments(dae, expressions, true);
     let compiled_eval_ctx = build_compiled_eval_context(&compiled_dae, n_total);
     let compiled_rows = if use_initial {
-        rumoca_eval_dae::compiled::compile_initial_expressions(
+        rumoca_sim_core::phase_solve_lower::compile_initial_expressions(
             &compiled_dae,
             &rewritten_expressions,
-            rumoca_eval_dae::compiled::Backend::Cranelift,
+            rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
         )
     } else {
-        rumoca_eval_dae::compiled::compile_expressions(
+        rumoca_sim_core::phase_solve_lower::compile_expressions(
             &compiled_dae,
             &rewritten_expressions,
-            rumoca_eval_dae::compiled::Backend::Cranelift,
+            rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
         )
     }
     .map_err(|err| {
@@ -897,12 +901,15 @@ pub(crate) fn build_compiled_runtime_expression_context(
     };
     let compiled_eval_ctx = build_compiled_eval_context(&compiled_dae, n_total);
     let compiled_rows = if use_initial {
-        rumoca_eval_dae::compiled::compile_initial_expressions_wasm(
+        rumoca_sim_core::phase_solve_lower::compile_initial_expressions_wasm(
             &compiled_dae,
             &rewritten_expressions,
         )
     } else {
-        rumoca_eval_dae::compiled::compile_expressions_wasm(&compiled_dae, &rewritten_expressions)
+        rumoca_sim_core::phase_solve_lower::compile_expressions_wasm(
+            &compiled_dae,
+            &rewritten_expressions,
+        )
     }
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     Ok(CompiledRuntimeExpressionContext {
@@ -923,12 +930,15 @@ pub(super) fn build_compiled_runtime_expression_context_for_start_rows(
         rewrite_expression_context_for_direct_assignments(dae, expressions, true);
     let compiled_eval_ctx = build_compiled_eval_context(&compiled_dae, n_total);
     let compiled_rows = if use_initial {
-        rumoca_eval_dae::compiled::compile_initial_expressions_wasm(
+        rumoca_sim_core::phase_solve_lower::compile_initial_expressions_wasm(
             &compiled_dae,
             &rewritten_expressions,
         )
     } else {
-        rumoca_eval_dae::compiled::compile_expressions_wasm(&compiled_dae, &rewritten_expressions)
+        rumoca_sim_core::phase_solve_lower::compile_expressions_wasm(
+            &compiled_dae,
+            &rewritten_expressions,
+        )
     }
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     Ok(CompiledRuntimeExpressionContext {
@@ -947,10 +957,12 @@ pub(crate) fn build_compiled_runtime_newton_context(
     let compiled_eval_ctx = build_compiled_eval_context(&compiled_dae, n_total);
     let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
-    let compiled_residual = rumoca_eval_dae::compiled::compile_residual_wasm(&compiled_dae)
-        .map_err(|err| SimError::CompiledEval(err.to_string()))?;
-    let compiled_jacobian = rumoca_eval_dae::compiled::compile_jacobian_v_wasm(&compiled_dae)
-        .map_err(|err| SimError::CompiledEval(err.to_string()))?;
+    let compiled_residual =
+        rumoca_sim_core::phase_solve_lower::compile_residual_wasm(&compiled_dae)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))?;
+    let compiled_jacobian =
+        rumoca_sim_core::phase_solve_lower::compile_jacobian_v_wasm(&compiled_dae)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     Ok(CompiledRuntimeNewtonContext {
         compiled_eval_ctx_rhs,
         compiled_eval_ctx_jac,
@@ -968,10 +980,11 @@ pub(crate) fn build_compiled_initial_newton_context(
     let compiled_eval_ctx = build_compiled_eval_context(&compiled_dae, n_total);
     let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
-    let compiled_residual = rumoca_eval_dae::compiled::compile_initial_residual_wasm(&compiled_dae)
-        .map_err(|err| SimError::CompiledEval(err.to_string()))?;
+    let compiled_residual =
+        rumoca_sim_core::phase_solve_lower::compile_initial_residual_wasm(&compiled_dae)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     let compiled_jacobian =
-        rumoca_eval_dae::compiled::compile_initial_jacobian_v_wasm(&compiled_dae)
+        rumoca_sim_core::phase_solve_lower::compile_initial_jacobian_v_wasm(&compiled_dae)
             .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     Ok(CompiledInitialNewtonContext {
         compiled_eval_ctx_rhs,
@@ -987,8 +1000,9 @@ pub(crate) fn build_compiled_synthetic_root_context(
     n_total: usize,
 ) -> Result<CompiledSyntheticRootContext, SimError> {
     let compiled_eval_ctx_root = build_compiled_eval_context(dae, n_total);
-    let compiled_root_conditions = rumoca_eval_dae::compiled::compile_root_conditions_wasm(dae)
-        .map_err(|err| SimError::CompiledEval(err.to_string()))?;
+    let compiled_root_conditions =
+        rumoca_sim_core::phase_solve_lower::compile_root_conditions_wasm(dae)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     Ok(CompiledSyntheticRootContext {
         compiled_eval_ctx_root,
         compiled_root_conditions,
@@ -997,7 +1011,7 @@ pub(crate) fn build_compiled_synthetic_root_context(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn call_compiled_residual(
-    compiled_residual: &rumoca_eval_dae::compiled::CompiledResidual,
+    compiled_residual: &rumoca_sim_core::phase_solve_lower::CompiledResidual,
     ctx: &CompiledEvalContext,
     y: &[f64],
     p: &[f64],
@@ -1013,7 +1027,7 @@ pub(crate) fn call_compiled_residual(
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn call_compiled_residual(
-    compiled_residual: &rumoca_eval_dae::compiled::CompiledResidualWasm,
+    compiled_residual: &rumoca_sim_core::phase_solve_lower::CompiledResidualWasm,
     ctx: &CompiledEvalContext,
     y: &[f64],
     p: &[f64],
@@ -1029,7 +1043,7 @@ pub(crate) fn call_compiled_residual(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn call_compiled_jacobian(
-    compiled_jacobian: &rumoca_eval_dae::compiled::CompiledJacobianV,
+    compiled_jacobian: &rumoca_sim_core::phase_solve_lower::CompiledJacobianV,
     ctx: &CompiledEvalContext,
     y: &[f64],
     p: &[f64],
@@ -1046,7 +1060,7 @@ pub(crate) fn call_compiled_jacobian(
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn call_compiled_jacobian(
-    compiled_jacobian: &rumoca_eval_dae::compiled::CompiledJacobianVWasm,
+    compiled_jacobian: &rumoca_sim_core::phase_solve_lower::CompiledJacobianVWasm,
     ctx: &CompiledEvalContext,
     y: &[f64],
     p: &[f64],
@@ -1063,7 +1077,7 @@ pub(crate) fn call_compiled_jacobian(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn call_compiled_expression_rows(
-    compiled_rows: &rumoca_eval_dae::compiled::CompiledExpressionRows,
+    compiled_rows: &rumoca_sim_core::phase_solve_lower::CompiledExpressionRows,
     ctx: &CompiledEvalContext,
     y: &[f64],
     p: &[f64],
@@ -1079,7 +1093,7 @@ pub(crate) fn call_compiled_expression_rows(
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn call_compiled_expression_rows(
-    compiled_rows: &rumoca_eval_dae::compiled::CompiledExpressionRowsWasm,
+    compiled_rows: &rumoca_sim_core::phase_solve_lower::CompiledExpressionRowsWasm,
     ctx: &CompiledEvalContext,
     y: &[f64],
     p: &[f64],
@@ -1230,7 +1244,8 @@ fn with_compiled_eval_param_slice<R>(
     }
     // The compiled parameter vector only carries parameters plus the runtime
     // tail (inputs/discretes), so the lean tail env is sufficient here.
-    let mut env = rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(&ctx.dae, p, t);
+    let mut env =
+        rumoca_sim_core::phase_solve_lower::build_runtime_parameter_tail_env(&ctx.dae, p, t);
     if let Some(overrides) = &ctx.input_overrides {
         for (name, value) in overrides.borrow().iter() {
             env.set(name, *value);

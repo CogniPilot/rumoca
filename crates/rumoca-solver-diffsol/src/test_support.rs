@@ -1,5 +1,5 @@
-use rumoca_core::Span;
-use rumoca_ir_dae as dae;
+use rumoca_sim_core::core::Span;
+use rumoca_sim_core::ir_dae as dae;
 
 pub(crate) fn var_ref(name: &str) -> dae::Expression {
     dae::Expression::VarRef {
@@ -21,7 +21,7 @@ pub(crate) fn lit(v: f64) -> dae::Expression {
 }
 
 pub(crate) fn binop(
-    op: rumoca_ir_core::OpBinary,
+    op: rumoca_sim_core::ir_core::OpBinary,
     lhs: dae::Expression,
     rhs: dae::Expression,
 ) -> dae::Expression {
@@ -33,7 +33,11 @@ pub(crate) fn binop(
 }
 
 pub(crate) fn sub(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
-    binop(rumoca_ir_core::OpBinary::Sub(Default::default()), lhs, rhs)
+    binop(
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
+        lhs,
+        rhs,
+    )
 }
 
 pub(crate) fn eq_from(rhs: dae::Expression) -> dae::Equation {

@@ -1,14 +1,16 @@
-use rumoca_eval_dae::runtime as eval;
-use rumoca_eval_dae::runtime::{VarEnv, eval_array_values, eval_expr};
-use rumoca_ir_dae as dae;
-use rumoca_phase_structural::scalarize::{build_output_names, scalarize_equations};
-use rumoca_sim::simulation::dae_prepare::{expr_contains_der_of, normalize_ode_equation_signs};
-use rumoca_sim::simulation::runtime_prep::derivative_coefficient_expr;
-use rumoca_sim::timeline;
-use rumoca_sim::{
+use rumoca_sim_core::ir_dae as dae;
+use rumoca_sim_core::phase_solve_lower as eval;
+use rumoca_sim_core::phase_solve_lower::{VarEnv, eval_array_values, eval_expr};
+use rumoca_sim_core::phase_structural::scalarize::{build_output_names, scalarize_equations};
+use rumoca_sim_core::simulation::dae_prepare::{
+    expr_contains_der_of, normalize_ode_equation_signs,
+};
+use rumoca_sim_core::simulation::runtime_prep::derivative_coefficient_expr;
+use rumoca_sim_core::timeline;
+use rumoca_sim_core::{
     BackendState, SimOptions, SimResult, SimSolverMode, SimulationBackend, StepUntilOutcome,
 };
-use rumoca_sim::{TimeoutBudget, TimeoutExceeded, build_variable_meta};
+use rumoca_sim_core::{TimeoutBudget, TimeoutExceeded, build_variable_meta};
 
 type Dae = dae::Dae;
 type Expression = dae::Expression;
@@ -632,9 +634,9 @@ fn eval_scalar_start_value(var: &Variable, env: &VarEnv<f64>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_core::Span;
-    use rumoca_ir_core::OpBinary;
-    use rumoca_sim::run_with_runtime_schedule;
+    use rumoca_sim_core::core::Span;
+    use rumoca_sim_core::ir_core::OpBinary;
+    use rumoca_sim_core::run_with_runtime_schedule;
 
     fn var(name: &str) -> Expression {
         Expression::VarRef {

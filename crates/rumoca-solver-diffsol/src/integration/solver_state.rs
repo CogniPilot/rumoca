@@ -8,7 +8,7 @@ use crate::{
     SimError, SimOptions, SolverStartupProfile, interp_err, map_solver_panic, problem,
     sim_trace_enabled,
 };
-use rumoca_sim::TimeoutBudget;
+use rumoca_sim_core::TimeoutBudget;
 pub(crate) fn solver_state_to_vec<'a, Eqn, S>(solver: &S) -> Vec<f64>
 where
     Eqn: OdeEquations<T = f64> + 'a,

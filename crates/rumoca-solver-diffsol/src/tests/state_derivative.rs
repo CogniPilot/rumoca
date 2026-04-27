@@ -211,7 +211,7 @@ fn test_compute_mass_matrix_keeps_coupled_derivative_offdiagonals() {
     });
 
     let budget = TimeoutBudget::new(None);
-    let mass = rumoca_sim::compute_mass_matrix(&dae, 2, &[], &budget).expect("mass matrix");
+    let mass = rumoca_sim_core::compute_mass_matrix(&dae, 2, &[], &budget).expect("mass matrix");
     assert_eq!(mass.len(), 2);
     assert_eq!(mass[0].len(), 2);
     assert_eq!(mass[1].len(), 2);
@@ -239,10 +239,10 @@ fn test_compute_mass_matrix_errors_when_state_row_has_no_derivative_term() {
     });
 
     let budget = TimeoutBudget::new(None);
-    let err = rumoca_sim::compute_mass_matrix(&dae, 1, &[], &budget)
+    let err = rumoca_sim_core::compute_mass_matrix(&dae, 1, &[], &budget)
         .expect_err("mass matrix derivation should fail when a state row has no derivative term");
     match err {
-        rumoca_sim::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
+        rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
             row,
             state_name,
             origin,
@@ -297,10 +297,10 @@ fn test_compute_mass_matrix_errors_when_derivative_coefficients_collapse_to_zero
     });
 
     let budget = TimeoutBudget::new(None);
-    let err = rumoca_sim::compute_mass_matrix(&dae, 1, &[], &budget)
+    let err = rumoca_sim_core::compute_mass_matrix(&dae, 1, &[], &budget)
         .expect_err("zero-derivative coefficient row should be rejected");
     match err {
-        rumoca_sim::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
+        rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
             row,
             state_name,
             origin,
@@ -345,11 +345,11 @@ fn test_compute_mass_matrix_errors_on_unsupported_derivative_expression_shape() 
     });
 
     let budget = TimeoutBudget::new(None);
-    let err = rumoca_sim::compute_mass_matrix(&dae, 1, &[], &budget).expect_err(
+    let err = rumoca_sim_core::compute_mass_matrix(&dae, 1, &[], &budget).expect_err(
         "unsupported derivative-dependent expression shape should fail mass-matrix derivation",
     );
     match err {
-        rumoca_sim::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
+        rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
             row,
             state_name,
             origin,
@@ -676,7 +676,7 @@ fn test_compute_mass_matrix_handles_indexed_der_after_scalarization() {
     });
 
     let budget = TimeoutBudget::new(None);
-    let mass = rumoca_sim::compute_mass_matrix(&dae, 2, &[], &budget)
+    let mass = rumoca_sim_core::compute_mass_matrix(&dae, 2, &[], &budget)
         .expect("mass matrix should succeed for indexed der() forms");
     assert_eq!(mass.len(), 2);
     // Identity mass matrix: each row has coefficient 1.0 on the diagonal
@@ -734,7 +734,7 @@ fn test_compute_mass_matrix_uses_runtime_tail_start_values_in_compiled_coefficie
     });
 
     let budget = TimeoutBudget::new(None);
-    let mass = rumoca_sim::compute_mass_matrix(&dae, 1, &[3.0], &budget).expect("mass matrix");
+    let mass = rumoca_sim_core::compute_mass_matrix(&dae, 1, &[3.0], &budget).expect("mass matrix");
     assert_eq!(mass.len(), 1);
     assert_eq!(mass[0].len(), 1);
     assert!((mass[0][0] - 6.0).abs() < 1e-12);

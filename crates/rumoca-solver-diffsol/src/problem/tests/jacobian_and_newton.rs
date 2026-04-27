@@ -63,17 +63,17 @@ fn test_solve_initial_algebraic_accepts_consistent_singular_initial_point() {
         dae::Variable::new(dae::VarName::new("b")),
     );
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("a"),
         lit(0.0),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("a"),
         lit(0.0),
     )));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let ok = solve_initial_algebraic(&mut dae, 0, 1e-9, &timeout)
         .expect("IC solve should not error on consistent singular point");
     assert!(
@@ -100,14 +100,14 @@ fn test_solve_initial_algebraic_writes_seeded_solution_on_singular_jacobian() {
 
     // Direct assignment gives a meaningful IC seed for aux.
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("aux"),
         var("p"),
     )));
     // Constant residual row keeps Newton singular and non-convergent.
     dae.f_x.push(eq_from(lit(1.0)));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let ok = solve_initial_algebraic(&mut dae, 0, 1e-9, &timeout)
         .expect("IC solve should gracefully handle singular Jacobian");
     assert!(!ok, "singular system should report non-converged IC solve");
@@ -137,16 +137,16 @@ fn test_solve_initial_algebraic_uses_homotopy_continuation_for_singular_actual_r
     );
 
     let actual = binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         binop(
-            rumoca_ir_core::OpBinary::Mul(Default::default()),
+            rumoca_sim_core::ir_core::OpBinary::Mul(Default::default()),
             var("y"),
             var("y"),
         ),
         lit(1.0),
     );
     let simplified = binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("y"),
         lit(1.0),
     );
@@ -155,7 +155,7 @@ fn test_solve_initial_algebraic_uses_homotopy_continuation_for_singular_actual_r
         args: vec![actual, simplified],
     }));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let ok = solve_initial_algebraic(&mut dae, 0, 1e-9, &timeout)
         .expect("homotopy continuation should solve singular initial root");
     assert!(ok, "IC solve should converge through the homotopy path");
@@ -180,22 +180,22 @@ fn test_solve_initial_algebraic_errors_when_residual_stays_non_finite_after_pert
         dae::Variable::new(dae::VarName::new("z")),
     );
     let denom = binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z"),
         var("z"),
     );
     let inv = binop(
-        rumoca_ir_core::OpBinary::Div(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Div(Default::default()),
         lit(1.0),
         denom,
     );
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z"),
         inv,
     )));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let err = solve_initial_algebraic(&mut dae, 0, 1e-9, &timeout)
         .expect_err("non-finite IC residual should fail fast");
     match err {
@@ -222,7 +222,7 @@ fn test_project_runtime_keeps_direct_assigned_state_free() {
     );
 
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Der,
             args: vec![var("x")],
@@ -230,12 +230,12 @@ fn test_project_runtime_keeps_direct_assigned_state_free() {
         var("z"),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("x"),
         var("time"),
     )));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let projected =
         project_algebraics_with_fixed_states_at_time(&dae, &[0.0, 0.0], 1, 2.0, 1e-9, &timeout)
             .expect("runtime projection should not error")
@@ -266,20 +266,20 @@ fn test_runtime_projection_masks_track_rows_independently_from_solver_columns() 
     );
 
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z"),
         var("src"),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("a"),
         lit(1.0),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("b"),
         binop(
-            rumoca_ir_core::OpBinary::Add(Default::default()),
+            rumoca_sim_core::ir_core::OpBinary::Add(Default::default()),
             var("a"),
             lit(1.0),
         ),
@@ -302,7 +302,7 @@ fn test_runtime_projection_masks_fix_solver_clock_aliases_of_discrete_targets() 
         dae::Variable::new(dae::VarName::new("periodicClock.c")),
     );
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("periodicClock.c"),
         var("sample2.clock"),
     )));
@@ -320,7 +320,7 @@ fn test_runtime_direct_seed_reused_env_refreshes_time_dependent_bindings() {
         dae::Variable::new(dae::VarName::new("z")),
     );
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z"),
         var("time"),
     )));
@@ -364,15 +364,15 @@ fn test_runtime_direct_seed_reused_env_solver_chain_tracks_y_without_solver_env_
         dae::Variable::new(dae::VarName::new("b")),
     );
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("a"),
         var("time"),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("b"),
         binop(
-            rumoca_ir_core::OpBinary::Add(Default::default()),
+            rumoca_sim_core::ir_core::OpBinary::Add(Default::default()),
             var("a"),
             lit(1.0),
         ),
@@ -419,7 +419,7 @@ fn test_runtime_direct_seed_orients_raw_indexed_solver_connection_to_runtime_tar
         dae::Variable::new(dae::VarName::new("u")),
     );
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("src[1]"),
         var("u"),
     )));
@@ -453,12 +453,12 @@ fn test_runtime_direct_seed_skips_plain_alias_candidate_when_target_has_unique_d
         dae::Variable::new(dae::VarName::new("y")),
     );
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("y"),
         var("time"),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("y"),
         var("w"),
     )));
@@ -488,7 +488,7 @@ fn test_runtime_direct_seed_skips_projection_fixed_solver_targets() {
     );
     dae.f_x.push(eq_from(lit(0.0)));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("node"),
         var("x"),
     )));
@@ -520,14 +520,14 @@ fn test_runtime_projection_in_place_reuses_scratch_for_time_dependent_residual()
         dae::Variable::new(dae::VarName::new("z")),
     );
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z"),
         var("time"),
     )));
 
     let compiled_runtime =
         build_compiled_runtime_newton_context(&dae, 1).expect("compile runtime Newton");
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let fixed_cols = vec![false];
     let ignored_rows = vec![false];
     let mut y = vec![0.0];
@@ -596,14 +596,14 @@ fn test_runtime_projection_cached_step_reuses_prefilled_rhs() {
         dae::Variable::new(dae::VarName::new("z")),
     );
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z"),
         var("time"),
     )));
 
     let compiled_runtime =
         build_compiled_runtime_newton_context(&dae, 1).expect("compile runtime Newton");
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let fixed_cols = vec![false];
     let ignored_rows = vec![false];
     let mut y = vec![0.0];
@@ -669,7 +669,7 @@ fn test_project_runtime_converges_on_rank_deficient_consistent_system() {
 
     // State row (fixed during runtime projection).
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Der,
             args: vec![var("x")],
@@ -678,17 +678,17 @@ fn test_project_runtime_converges_on_rank_deficient_consistent_system() {
     )));
     // Rank-deficient algebraic rows: both constrain only `a`.
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("a"),
         lit(1.0),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("a"),
         lit(1.0),
     )));
 
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let projected = project_algebraics_with_fixed_states_at_time(
         &dae,
         &[0.0, 0.0, 0.0],
@@ -740,7 +740,7 @@ fn build_coloring_test_dae() -> dae::Dae {
 
     // ODE rows first
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Der,
             args: vec![var("x1")],
@@ -748,7 +748,7 @@ fn build_coloring_test_dae() -> dae::Dae {
         var("z1"),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Der,
             args: vec![var("x2")],
@@ -758,16 +758,16 @@ fn build_coloring_test_dae() -> dae::Dae {
 
     // Algebraic rows
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z1"),
         binop(
-            rumoca_ir_core::OpBinary::Mul(Default::default()),
+            rumoca_sim_core::ir_core::OpBinary::Mul(Default::default()),
             var("x1"),
             var("x1"),
         ),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z2"),
         dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Sin,
@@ -817,9 +817,9 @@ fn build_initial_mode_newton_test_dae() -> dae::Dae {
                 args: vec![],
             },
             binop(
-                rumoca_ir_core::OpBinary::Sub(Default::default()),
+                rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
                 binop(
-                    rumoca_ir_core::OpBinary::Mul(Default::default()),
+                    rumoca_sim_core::ir_core::OpBinary::Mul(Default::default()),
                     var("x"),
                     var("x"),
                 ),
@@ -827,9 +827,9 @@ fn build_initial_mode_newton_test_dae() -> dae::Dae {
             ),
         )],
         else_branch: Box::new(binop(
-            rumoca_ir_core::OpBinary::Sub(Default::default()),
+            rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
             binop(
-                rumoca_ir_core::OpBinary::Mul(Default::default()),
+                rumoca_sim_core::ir_core::OpBinary::Mul(Default::default()),
                 lit(3.0),
                 var("x"),
             ),
@@ -870,7 +870,7 @@ fn test_compiled_runtime_newton_context_residual_uses_runtime_tail_start_chain()
 
     let mut u = dae::Variable::new(dae::VarName::new("u"));
     u.start = Some(binop(
-        rumoca_ir_core::OpBinary::Add(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Add(Default::default()),
         var("p"),
         lit(1.0),
     ));
@@ -878,14 +878,14 @@ fn test_compiled_runtime_newton_context_residual_uses_runtime_tail_start_chain()
 
     let mut d = dae::Variable::new(dae::VarName::new("d"));
     d.start = Some(binop(
-        rumoca_ir_core::OpBinary::Mul(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Mul(Default::default()),
         var("u"),
         lit(3.0),
     ));
     dae.discrete_reals.insert(dae::VarName::new("d"), d);
 
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("x"),
         var("d"),
     )));
@@ -927,7 +927,7 @@ fn test_build_init_jacobian_colored_matches_dense() {
     let y = vec![0.25, -0.4, 0.6, -0.7];
     let p = default_params(&dae);
     let fixed = vec![false, false];
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let compiled =
         build_compiled_runtime_newton_context(&dae, y.len()).expect("compile runtime Newton");
     let ctx = init_jac_ctx(
@@ -958,7 +958,7 @@ fn test_build_init_jacobian_colored_skips_fixed_state_columns() {
     let y = vec![0.25, -0.4, 0.6, -0.7];
     let p = default_params(&dae);
     let fixed = vec![true, false];
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let compiled =
         build_compiled_runtime_newton_context(&dae, y.len()).expect("compile runtime Newton");
     let ctx = init_jac_ctx(
@@ -998,7 +998,7 @@ fn build_time_switch_jacobian_dae() -> dae::Dae {
     );
 
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Der,
             args: vec![var("x")],
@@ -1006,19 +1006,19 @@ fn build_time_switch_jacobian_dae() -> dae::Dae {
         var("z"),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z"),
         dae::Expression::If {
             branches: vec![(
                 binop(
-                    rumoca_ir_core::OpBinary::Lt(Default::default()),
+                    rumoca_sim_core::ir_core::OpBinary::Lt(Default::default()),
                     var("time"),
                     lit(1.0),
                 ),
                 var("x"),
             )],
             else_branch: Box::new(binop(
-                rumoca_ir_core::OpBinary::Mul(Default::default()),
+                rumoca_sim_core::ir_core::OpBinary::Mul(Default::default()),
                 lit(2.0),
                 var("x"),
             )),
@@ -1034,7 +1034,7 @@ fn test_build_init_jacobian_respects_time_dependent_if_branches() {
     let y = vec![0.25, 0.5];
     let p = default_params(&dae);
     let fixed = vec![false];
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let compiled =
         build_compiled_runtime_newton_context(&dae, y.len()).expect("compile runtime Newton");
     let ctx_before = init_jac_ctx(
@@ -1091,7 +1091,7 @@ fn test_eval_jacobian_vector_seeds_size1_array_aliases() {
     dae.outputs.insert(dae::VarName::new("y"), y_arr);
 
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Der,
             args: vec![var("x")],
@@ -1099,7 +1099,7 @@ fn test_eval_jacobian_vector_seeds_size1_array_aliases() {
         lit(0.0),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         dae::Expression::VarRef {
             name: dae::VarName::new("y[1]"),
             subscripts: vec![],
@@ -1158,7 +1158,7 @@ fn test_build_init_jacobian_initial_mode_uses_compiled_initial_context() {
     let y = vec![2.0];
     let p = default_params(&dae);
     let fixed = vec![false];
-    let timeout = rumoca_sim::TimeoutBudget::new(None);
+    let timeout = rumoca_sim_core::TimeoutBudget::new(None);
     let compiled =
         build_compiled_initial_newton_context(&dae, y.len()).expect("compile initial Newton");
     let ctx = init_jac_ctx(

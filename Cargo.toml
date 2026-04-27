@@ -20,14 +20,17 @@ members = [
     "crates/rumoca-phase-dae",
     "crates/rumoca-phase-structural",
     "crates/rumoca-phase-solve-lower",
-    "crates/rumoca-eval-dae",
+    "crates/rumoca-analysis-dae",
+    "crates/rumoca-signal-frame",
     "crates/rumoca-codec",
     "crates/rumoca-codec-flatbuffers",
     "crates/rumoca-transport-udp",
     "crates/rumoca-transport-websocket",
+    "crates/rumoca-input-types",
     "crates/rumoca-input",
     "crates/rumoca-input-gamepad",
     "crates/rumoca-input-keyboard",
+    "crates/rumoca-sim-core",
     "crates/rumoca-sim",
     "crates/rumoca-solver-diffsol",
     "crates/rumoca-solver-rk45",
@@ -69,17 +72,20 @@ rumoca-phase-parse = { path = "crates/rumoca-phase-parse" }
 rumoca-phase-resolve = { path = "crates/rumoca-phase-resolve" }
 rumoca-phase-dae = { path = "crates/rumoca-phase-dae" }
 rumoca-phase-structural = { path = "crates/rumoca-phase-structural" }
-rumoca-phase-solve-lower = { path = "crates/rumoca-phase-solve-lower" }
-rumoca-eval-dae = { path = "crates/rumoca-eval-dae", default-features = false }
+rumoca-phase-solve-lower = { path = "crates/rumoca-phase-solve-lower", default-features = false }
+rumoca-analysis-dae = { path = "crates/rumoca-analysis-dae" }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
+rumoca-signal-frame = { path = "crates/rumoca-signal-frame" }
 rumoca-codec = { path = "crates/rumoca-codec" }
 rumoca-codec-flatbuffers = { path = "crates/rumoca-codec-flatbuffers" }
 rumoca-transport-udp = { path = "crates/rumoca-transport-udp" }
 rumoca-transport-websocket = { path = "crates/rumoca-transport-websocket" }
+rumoca-input-types = { path = "crates/rumoca-input-types" }
 rumoca-input = { path = "crates/rumoca-input" }
 rumoca-input-gamepad = { path = "crates/rumoca-input-gamepad" }
 rumoca-input-keyboard = { path = "crates/rumoca-input-keyboard" }
-rumoca-sim = { path = "crates/rumoca-sim" }
+rumoca-sim-core = { path = "crates/rumoca-sim-core" }
+rumoca-sim = { path = "crates/rumoca-sim", default-features = false }
 rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
 rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
 rumoca-viz-web = { path = "crates/rumoca-viz-web" }

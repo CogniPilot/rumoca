@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::{real, sub, var_ref};
-use rumoca_ir_dae as dae;
+use rumoca_sim_core::ir_dae as dae;
 
 fn build_stateful_clocked_sample_dae() -> Dae {
     let mut dae = Dae::new();
@@ -341,7 +341,7 @@ fn test_stateful_runtime_capture_preserves_direct_time_threshold_history() {
                 Expression::BuiltinCall {
                     function: dae::BuiltinFunction::Edge,
                     args: vec![Expression::Binary {
-                        op: rumoca_ir_core::OpBinary::Ge(Default::default()),
+                        op: rumoca_sim_core::ir_core::OpBinary::Ge(Default::default()),
                         lhs: Box::new(var_ref("time")),
                         rhs: Box::new(real(0.05)),
                     }],

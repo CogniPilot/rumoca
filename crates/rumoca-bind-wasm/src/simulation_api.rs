@@ -1,13 +1,13 @@
 use rumoca_compile::Session;
+#[cfg(feature = "sim-rk45")]
+use rumoca_sim::rk45::simulate_dae as simulate_dae_rk45;
+#[cfg(feature = "sim-diffsol")]
+use rumoca_sim::simulate_dae as simulate_dae_diffsol;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
 use rumoca_sim::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
 };
-#[cfg(feature = "sim-diffsol")]
-use rumoca_solver_diffsol::simulate_dae as simulate_dae_diffsol;
-#[cfg(feature = "sim-rk45")]
-use rumoca_solver_rk45::simulate_dae as simulate_dae_rk45;
 use wasm_bindgen::JsValue;
 
 use crate::{

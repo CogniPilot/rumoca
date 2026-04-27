@@ -1,10 +1,10 @@
 use super::*;
 
-use rumoca_eval_dae::runtime::eval_expr;
+use rumoca_sim_core::phase_solve_lower::eval_expr;
 
 /// Evaluate the substitutions and set eliminated variable values in an env.
 pub(super) fn apply_substitutions_to_env(
-    subs: &[rumoca_phase_structural::eliminate::Substitution],
+    subs: &[rumoca_sim_core::phase_structural::eliminate::Substitution],
     env: &mut VarEnv<f64>,
 ) {
     for sub in subs {
@@ -130,7 +130,7 @@ fn test_blt_elimination_numerical_equivalence_linear() {
         }
 
         // Verify substitution values are correct by evaluating them
-        let env = rumoca_eval_dae::runtime::build_env(&reduced, &y_red, &p_red, 0.0);
+        let env = rumoca_sim_core::phase_solve_lower::build_env(&reduced, &y_red, &p_red, 0.0);
         let mut env_with_subs = env.clone();
         apply_substitutions_to_env(&elim.substitutions, &mut env_with_subs);
 

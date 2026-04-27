@@ -40,7 +40,7 @@ pub(crate) fn try_integrate_esdirk34(
     } = prepare_integration_loop(&mut solver, input, startup_profile)?;
     let (output, stats, final_t) = {
         let mut backend = DiffsolBackend::new(solver, output, ctx, None, solver_names)?;
-        let stats = match rumoca_sim::run_with_runtime_schedule(
+        let stats = match rumoca_sim_core::run_with_runtime_schedule(
             &mut backend,
             input.dae,
             input.opts.t_start,
@@ -49,7 +49,7 @@ pub(crate) fn try_integrate_esdirk34(
         ) {
             Ok(stats) => stats,
             Err(err) => {
-                let final_t = rumoca_sim::SimulationBackend::read_state(&backend).t;
+                let final_t = rumoca_sim_core::SimulationBackend::read_state(&backend).t;
                 if trace_enabled {
                     eprintln!(
                         "[sim-trace] ESDIRK34 step-fail eps={} profile={:?} elapsed={:.3}s t={} err={}",
@@ -63,7 +63,7 @@ pub(crate) fn try_integrate_esdirk34(
                 return Err(err);
             }
         };
-        let final_t = rumoca_sim::SimulationBackend::read_state(&backend).t;
+        let final_t = rumoca_sim_core::SimulationBackend::read_state(&backend).t;
         let (_solver, output, _steps, _roots) = backend.into_parts();
         (output, stats, final_t)
     };

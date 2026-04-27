@@ -14,7 +14,6 @@ required-features = ["server"]
 [dependencies]
 rumoca-compile = { workspace = true }
 rumoca-sim = { workspace = true }
-rumoca-solver-diffsol = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 lsp-types = { workspace = true }

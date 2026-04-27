@@ -21,10 +21,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-mod sim_report;
 mod target_manifest;
-
-mod sim;
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -642,7 +639,7 @@ fn resolve_path(base: &Path, rel: &str) -> std::path::PathBuf {
 }
 
 fn run_lockstep_run(args: LockstepRunArgs) -> Result<()> {
-    let config = crate::sim::config::SimulationConfig::load(Path::new(&args.config))
+    let config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(&args.config))
         .with_context(|| format!("Load lockstep config: {}", args.config))?;
 
     let config_dir = Path::new(&args.config).parent().unwrap_or(Path::new("."));
@@ -679,7 +676,7 @@ fn run_lockstep_run(args: LockstepRunArgs) -> Result<()> {
             let ctrl_path = resolve_path(config_dir, &ctrl.file);
             let ctrl_source = std::fs::read_to_string(&ctrl_path)
                 .with_context(|| format!("Read controller model file: {}", ctrl_path.display()))?;
-            let combined = sim::compose::synthesize(
+            let combined = rumoca_sim::runner::compose::synthesize(
                 &physics_source,
                 &physics_name,
                 &ctrl_source,
@@ -695,7 +692,10 @@ fn run_lockstep_run(args: LockstepRunArgs) -> Result<()> {
                 ctrl.name,
                 ctrl_path.display()
             );
-            (combined, sim::compose::WRAPPER_MODEL_NAME.to_string())
+            (
+                combined,
+                rumoca_sim::runner::compose::WRAPPER_MODEL_NAME.to_string(),
+            )
         }
         None => (physics_source, physics_name.clone()),
     };
@@ -724,7 +724,7 @@ fn run_lockstep_run(args: LockstepRunArgs) -> Result<()> {
         None => None,
     };
 
-    crate::sim::run(crate::sim::SimArgs {
+    rumoca_sim::runner::run(rumoca_sim::runner::SimArgs {
         model_source,
         model_name,
         config,
@@ -736,15 +736,14 @@ fn run_lockstep_run(args: LockstepRunArgs) -> Result<()> {
 }
 
 fn run_lockstep_check(args: LockstepCheckArgs) -> Result<()> {
-    let _config = crate::sim::config::SimulationConfig::load(Path::new(&args.config))
+    let _config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(&args.config))
         .with_context(|| format!("Load lockstep config: {}", args.config))?;
     println!("{}: config OK", args.config);
     Ok(())
 }
 
 fn run_lockstep_init() -> Result<()> {
-    const TEMPLATE: &str = include_str!("sim/template.toml");
-    print!("{TEMPLATE}");
+    print!("{}", rumoca_sim::runner::CONFIG_TEMPLATE);
     Ok(())
 }
 
@@ -1326,7 +1325,7 @@ fn run_simulation(
     output: Option<&str>,
     workspace_root: Option<&Path>,
 ) -> Result<()> {
-    use rumoca_solver_diffsol::simulate_dae;
+    use rumoca_sim::simulate_dae;
 
     let opts = SimOptions {
         t_end,
@@ -1356,7 +1355,7 @@ fn run_simulation(
         atol: opts.atol,
     };
     let metrics = SimulationRunMetrics::default();
-    let report = sim_report::write_html_report(
+    let report = rumoca_sim::runner::report::write_html_report(
         &sim,
         model,
         &out_path,

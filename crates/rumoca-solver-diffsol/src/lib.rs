@@ -1,12 +1,13 @@
 pub(crate) mod eliminate {
-    use rumoca_ir_dae::Dae;
+    use rumoca_sim_core::ir_dae::Dae;
 
-    pub(crate) type EliminationResult = rumoca_phase_structural::eliminate::EliminationResult;
+    pub(crate) type EliminationResult =
+        rumoca_sim_core::phase_structural::eliminate::EliminationResult;
 
     pub(crate) fn eliminate_trivial(
         dae: &mut Dae,
-    ) -> rumoca_phase_structural::eliminate::EliminationResult {
-        rumoca_phase_structural::eliminate::eliminate_trivial(dae)
+    ) -> rumoca_sim_core::phase_structural::eliminate::EliminationResult {
+        rumoca_sim_core::phase_structural::eliminate::eliminate_trivial(dae)
     }
 }
 pub(crate) mod integration;
@@ -21,7 +22,7 @@ use diffsol::{
     FaerSparseLU, OdeEquations, OdeSolverMethod, OdeSolverProblem, OdeSolverStopReason, VectorHost,
 };
 use indexmap::IndexMap;
-use rumoca_ir_dae as dae;
+use rumoca_sim_core::ir_dae as dae;
 
 pub(crate) type Dae = dae::Dae;
 type BuiltinFunction = dae::BuiltinFunction;
@@ -31,22 +32,22 @@ type Subscript = dae::Subscript;
 pub(crate) type VarName = dae::VarName;
 type Variable = dae::Variable;
 
-use rumoca_core::Span;
-use rumoca_ir_core::OpBinary;
-pub use rumoca_sim::{SimBackend, SimOptions, SimResult, SimSolverMode, SimVariableMeta};
-use rumoca_sim::{
+use rumoca_sim_core::core::Span;
+use rumoca_sim_core::ir_core::OpBinary;
+pub use rumoca_sim_core::{SimBackend, SimOptions, SimResult, SimSolverMode, SimVariableMeta};
+use rumoca_sim_core::{
     SolverDeadlineGuard, TimeoutBudget, TimeoutExceeded, build_variable_meta,
     is_solver_timeout_panic, timeline,
 };
 
-pub(crate) use rumoca_core::{
+pub(crate) use rumoca_sim_core::core::{
     maybe_elapsed_seconds as trace_timer_elapsed_seconds,
     maybe_start_timer_if as trace_timer_start_if,
 };
-use rumoca_eval_dae::runtime::{self as eval};
-pub(crate) use rumoca_sim::simulation::dae_prepare::REGULARIZATION_LEVELS;
+use rumoca_sim_core::phase_solve_lower::{self as eval};
+pub(crate) use rumoca_sim_core::simulation::dae_prepare::REGULARIZATION_LEVELS;
 #[cfg(test)]
-pub(crate) use rumoca_sim::simulation::dae_prepare::{
+pub(crate) use rumoca_sim_core::simulation::dae_prepare::{
     demote_alias_states_without_der, demote_coupled_derivative_states,
     demote_direct_assigned_states, demote_orphan_states_without_equation_refs,
     demote_states_without_assignable_derivative_rows, demote_states_without_derivative_refs,
@@ -63,19 +64,19 @@ use prepared_sim::validate_parameter_override;
 pub use prepared_sim::{
     build_simulation, run_prepared_simulation, simulate, simulate as simulate_dae,
 };
-use rumoca_phase_structural::scalarize::build_output_names;
 #[cfg(test)]
-use rumoca_phase_structural::scalarize::{
-    build_complex_field_map, build_var_dims_map, index_into_expr,
-};
-#[cfg(test)]
-use rumoca_phase_structural::projection_maps::{
+use rumoca_sim_core::phase_structural::projection_maps::{
     build_component_index_projection_map, build_function_output_projection_map,
+};
+use rumoca_sim_core::phase_structural::scalarize::build_output_names;
+#[cfg(test)]
+use rumoca_sim_core::phase_structural::scalarize::{
+    build_complex_field_map, build_var_dims_map, index_into_expr,
 };
 pub use stepper::{SimStepper, StepperOptions, StepperState};
 
 fn validate_simulation_function_support(dae: &Dae) -> Result<(), SimError> {
-    rumoca_sim::function_validation::validate_simulation_function_support(dae).map_err(|err| {
+    rumoca_sim_core::function_validation::validate_simulation_function_support(dae).map_err(|err| {
         SimError::UnsupportedFunction {
             name: err.name,
             reason: err.reason,
@@ -100,7 +101,7 @@ struct PreparedAlgebraicSimulation {}
 
 struct PreparedDynamicSimulation {
     mass_matrix: MassMatrix,
-    ic_blocks: Vec<rumoca_phase_structural::IcBlock>,
+    ic_blocks: Vec<rumoca_sim_core::phase_structural::IcBlock>,
 }
 
 impl PreparedSimulation {
@@ -181,13 +182,13 @@ impl From<TimeoutExceeded> for SimError {
     }
 }
 
-impl From<rumoca_sim::simulation::runtime_prep::MassMatrixBuildError> for SimError {
-    fn from(value: rumoca_sim::simulation::runtime_prep::MassMatrixBuildError) -> Self {
+impl From<rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError> for SimError {
+    fn from(value: rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError) -> Self {
         match value {
-            rumoca_sim::simulation::runtime_prep::MassMatrixBuildError::Timeout { seconds } => {
-                Self::Timeout { seconds }
-            }
-            rumoca_sim::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
+            rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError::Timeout {
+                seconds,
+            } => Self::Timeout { seconds },
+            rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
                 row,
                 state_name,
                 origin,
@@ -301,14 +302,14 @@ pub(crate) fn run_timeout_step<F>(budget: &TimeoutBudget, step: F) -> Result<(),
 where
     F: FnOnce(),
 {
-    rumoca_sim::run_timeout_step::<SimError, _>(budget, step)
+    rumoca_sim_core::run_timeout_step::<SimError, _>(budget, step)
 }
 
 pub(crate) fn run_timeout_step_result<F>(budget: &TimeoutBudget, step: F) -> Result<(), SimError>
 where
     F: FnOnce() -> Result<(), SimError>,
 {
-    rumoca_sim::run_timeout_step_result::<SimError, _>(budget, step)
+    rumoca_sim_core::run_timeout_step_result::<SimError, _>(budget, step)
 }
 
 fn collect_discrete_channel_names(dae: &Dae) -> Vec<String> {
@@ -416,7 +417,8 @@ fn evaluate_runtime_discrete_channels(
     let discrete_names: Vec<String> = collect_discrete_channel_names(dae)
         .into_iter()
         .filter(|name| {
-            let base = rumoca_ir_dae::component_base_name(name).unwrap_or_else(|| name.to_string());
+            let base = rumoca_sim_core::ir_dae::component_base_name(name)
+                .unwrap_or_else(|| name.to_string());
             recomputable_targets.contains(&base)
         })
         .collect();
@@ -435,7 +437,7 @@ fn evaluate_runtime_discrete_channels(
         .map(|_| Vec::with_capacity(times.len()))
         .collect();
     let use_frozen_pre =
-        rumoca_sim::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
+        rumoca_sim_core::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
     eval::clear_pre_values();
 
     for (sample_idx, &t_eval) in times.iter().enumerate() {
@@ -445,7 +447,7 @@ fn evaluate_runtime_discrete_channels(
                 y[col_idx] = value;
             }
         }
-        let settle_input = rumoca_sim::EventSettleInput {
+        let settle_input = rumoca_sim_core::EventSettleInput {
             dae,
             y: &mut y,
             p: param_values,
@@ -454,11 +456,11 @@ fn evaluate_runtime_discrete_channels(
             is_initial: false,
         };
         let env = if use_frozen_pre {
-            rumoca_sim::runtime::event::settle_runtime_event_updates_default_frozen_pre(
+            rumoca_sim_core::runtime::event::settle_runtime_event_updates_default_frozen_pre(
                 settle_input,
             )
         } else {
-            rumoca_sim::runtime::event::settle_runtime_event_updates_default(settle_input)
+            rumoca_sim_core::runtime::event::settle_runtime_event_updates_default(settle_input)
         };
         for (channel_idx, name) in discrete_names.iter().enumerate() {
             let value = env
@@ -510,7 +512,7 @@ fn refresh_runtime_observed_solver_channels(
     let mut projection_seed_env = None;
     let mut projection_scratch = problem::RuntimeProjectionScratch::default();
     let use_frozen_pre =
-        rumoca_sim::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
+        rumoca_sim_core::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
 
     eval::clear_pre_values();
     for (sample_idx, &t_eval) in times.iter().enumerate() {
@@ -555,7 +557,7 @@ fn refresh_runtime_observed_solver_channels(
         // instants. Refresh the runtime env before emitting traces so observed
         // algebraic/output channels satisfy their defining equations instead
         // of stale solver interpolation slots.
-        let settle_input = rumoca_sim::EventSettleInput {
+        let settle_input = rumoca_sim_core::EventSettleInput {
             dae,
             y: &mut y,
             p: param_values,
@@ -564,11 +566,11 @@ fn refresh_runtime_observed_solver_channels(
             is_initial: false,
         };
         let env = if use_frozen_pre {
-            rumoca_sim::runtime::event::settle_runtime_event_updates_default_frozen_pre(
+            rumoca_sim_core::runtime::event::settle_runtime_event_updates_default_frozen_pre(
                 settle_input,
             )
         } else {
-            rumoca_sim::runtime::event::settle_runtime_event_updates_default(settle_input)
+            rumoca_sim_core::runtime::event::settle_runtime_event_updates_default(settle_input)
         };
 
         for (col_idx, name) in solver_names.iter().enumerate().take(solver_len) {
@@ -850,7 +852,7 @@ pub(crate) fn inject_dummy_state(dae: &mut Dae) {
     dae.states.insert(var_name, var);
 
     let der_expr = Expression::BuiltinCall {
-        function: rumoca_ir_dae::BuiltinFunction::Der,
+        function: rumoca_sim_core::ir_dae::BuiltinFunction::Der,
         args: vec![Expression::VarRef {
             name: VarName::new(DUMMY_STATE_NAME),
             subscripts: vec![],
@@ -866,7 +868,7 @@ pub(crate) fn inject_dummy_state(dae: &mut Dae) {
     dae.f_x.push(eq);
 }
 
-pub(crate) type MassMatrix = rumoca_sim::simulation::pipeline::MassMatrix;
+pub(crate) type MassMatrix = rumoca_sim_core::simulation::pipeline::MassMatrix;
 
 pub(crate) fn debug_print_after_expand(dae: &Dae) {
     if std::env::var("RUMOCA_DEBUG").is_err() {
@@ -929,15 +931,15 @@ pub(crate) fn debug_print_mass_matrix(dae: &Dae, mass_matrix: &MassMatrix) {
 }
 
 fn sim_introspect_enabled() -> bool {
-    rumoca_sim::simulation::diagnostics::sim_introspect_enabled()
+    rumoca_sim_core::simulation::diagnostics::sim_introspect_enabled()
 }
 
 pub(crate) fn sim_trace_enabled() -> bool {
-    rumoca_sim::simulation::diagnostics::sim_trace_enabled()
+    rumoca_sim_core::simulation::diagnostics::sim_trace_enabled()
 }
 
 fn dump_hotpath_stats_if_enabled() {
-    let Some(stats) = rumoca_sim::runtime::hotpath_stats::snapshot() else {
+    let Some(stats) = rumoca_sim_core::runtime::hotpath_stats::snapshot() else {
         return;
     };
     let per_step = |count: u64| {
@@ -991,7 +993,7 @@ fn dump_hotpath_stats_if_enabled() {
 }
 
 fn truncate_debug(s: &str, max_chars: usize) -> String {
-    rumoca_sim::simulation::diagnostics::truncate_debug(s, max_chars)
+    rumoca_sim_core::simulation::diagnostics::truncate_debug(s, max_chars)
 }
 
 fn validate_no_initial_division_by_zero(
@@ -1002,7 +1004,7 @@ fn validate_no_initial_division_by_zero(
     let mut y0 = vec![0.0; dae.f_x.len()];
     problem::initialize_state_vector_with_params(dae, &mut y0, param_values);
     let pre_snapshot = eval::snapshot_pre_values();
-    let env = rumoca_sim::runtime::startup::build_initial_section_env_strict(
+    let env = rumoca_sim_core::runtime::startup::build_initial_section_env_strict(
         dae,
         y0.as_mut_slice(),
         param_values,
@@ -1016,17 +1018,17 @@ fn validate_no_initial_division_by_zero(
             function: dae::BuiltinFunction::Initial,
             args,
         } if args.is_empty() => Some(1.0),
-        _ => rumoca_sim::runtime::scalar_eval::eval_scalar_expr_fast(expr, env),
+        _ => rumoca_sim_core::runtime::scalar_eval::eval_scalar_expr_fast(expr, env),
     };
     let eval_initial_bool = |expr: &dae::Expression, env: &eval::VarEnv<f64>| match expr {
         dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Initial,
             args,
         } if args.is_empty() => Some(true),
-        _ => rumoca_sim::runtime::scalar_eval::eval_scalar_bool_expr_fast(expr, env),
+        _ => rumoca_sim_core::runtime::scalar_eval::eval_scalar_bool_expr_fast(expr, env),
     };
     if let Some(site) =
-        rumoca_sim::simulation::diagnostics::find_initial_division_by_zero_site_with_callbacks(
+        rumoca_sim_core::simulation::diagnostics::find_initial_division_by_zero_site_with_callbacks(
             dae,
             &env,
             eval_initial_scalar,
@@ -1050,14 +1052,14 @@ fn validate_no_initial_division_by_zero(
 }
 
 pub(crate) fn dump_missing_state_equation_diagnostics(dae: &Dae, missing_state: &str) {
-    rumoca_sim::simulation::diagnostics::dump_missing_state_equation_diagnostics(
+    rumoca_sim_core::simulation::diagnostics::dump_missing_state_equation_diagnostics(
         dae,
         missing_state,
     );
 }
 
 fn dump_transformed_dae_for_diffsol(dae: &Dae, mass_matrix: &MassMatrix) {
-    rumoca_sim::simulation::diagnostics::dump_transformed_dae_for_solver(dae, mass_matrix);
+    rumoca_sim_core::simulation::diagnostics::dump_transformed_dae_for_solver(dae, mass_matrix);
 }
 
 fn dump_initial_vector_for_diffsol(dae: &Dae, param_values: &[f64]) {
@@ -1066,7 +1068,7 @@ fn dump_initial_vector_for_diffsol(dae: &Dae, param_values: &[f64]) {
     problem::initialize_state_vector_with_params(dae, &mut y0, param_values);
     let mut names = build_output_names(dae);
     names.truncate(n_total);
-    rumoca_sim::simulation::diagnostics::dump_initial_vector_for_solver(&names, &y0);
+    rumoca_sim_core::simulation::diagnostics::dump_initial_vector_for_solver(&names, &y0);
 }
 
 fn dump_initial_residual_summary_for_diffsol(
@@ -1084,12 +1086,12 @@ fn dump_initial_residual_summary_for_diffsol(
     let mut rhs = vec![0.0; n_total];
     let compiled_runtime = problem::build_compiled_runtime_newton_context(dae, n_total)?;
     problem::eval_compiled_runtime_residual(&compiled_runtime, &y0, param_values, 0.0, &mut rhs);
-    rumoca_sim::simulation::diagnostics::dump_initial_residual_summary(dae, &rhs, n_x);
+    rumoca_sim_core::simulation::diagnostics::dump_initial_residual_summary(dae, &rhs, n_x);
     Ok(())
 }
 
 pub(crate) fn dump_parameter_vector_for_diffsol(dae: &Dae, params: &[f64]) {
-    rumoca_sim::simulation::diagnostics::dump_parameter_vector(dae, params);
+    rumoca_sim_core::simulation::diagnostics::dump_parameter_vector(dae, params);
 }
 
 /// Build a [`stepper::SimStepper`] from a DAE and options.
@@ -1108,11 +1110,11 @@ pub(crate) fn build_stepper(
         SolverLoopContext, StartupSyncInput, apply_initial_sections_and_sync_startup_state,
         build_compiled_discrete_event_context,
     };
-    use rumoca_phase_structural::scalarize::build_output_names;
-    use rumoca_sim::runtime::layout::SimulationContext;
+    use rumoca_sim_core::phase_structural::scalarize::build_output_names;
+    use rumoca_sim_core::runtime::layout::SimulationContext;
 
     eval::clear_pre_values();
-    rumoca_sim::runtime::clock::reset_runtime_clock_caches();
+    rumoca_sim_core::runtime::clock::reset_runtime_clock_caches();
     let budget = TimeoutBudget::new(Some(30.0));
 
     validate_simulation_function_support(dae)?;
@@ -1321,7 +1323,7 @@ pub(crate) fn build_stepper(
         _phantom: std::marker::PhantomData<&'a Eqn>,
     }
 
-    impl<'b, 'a, Eqn, S> rumoca_sim::SimulationBackend for BackendAdapter<'b, 'a, Eqn, S>
+    impl<'b, 'a, Eqn, S> rumoca_sim_core::SimulationBackend for BackendAdapter<'b, 'a, Eqn, S>
     where
         Eqn: diffsol::OdeEquations<T = f64> + 'a,
         Eqn::V: diffsol::VectorHost<T = f64>,
@@ -1333,9 +1335,12 @@ pub(crate) fn build_stepper(
             Ok(())
         }
 
-        fn step_until(&mut self, stop_time: f64) -> Result<rumoca_sim::StepUntilOutcome, SimError> {
+        fn step_until(
+            &mut self,
+            stop_time: f64,
+        ) -> Result<rumoca_sim_core::StepUntilOutcome, SimError> {
             if integration::stop_time_reached_with_tol(self.solver.state().t, self.ctx.opts.t_end) {
-                return Ok(rumoca_sim::StepUntilOutcome::Finished);
+                return Ok(rumoca_sim_core::StepUntilOutcome::Finished);
             }
             self.ctx.budget.check()?;
             integration::set_solver_stop_time::<Eqn, S>(
@@ -1354,24 +1359,26 @@ pub(crate) fn build_stepper(
             )? {
                 integration::StepAdvance::Advanced(reason) => match reason {
                     diffsol::OdeSolverStopReason::RootFound(t_root) => {
-                        Ok(rumoca_sim::StepUntilOutcome::RootFound { t_root })
+                        Ok(rumoca_sim_core::StepUntilOutcome::RootFound { t_root })
                     }
                     diffsol::OdeSolverStopReason::TstopReached => {
-                        Ok(rumoca_sim::StepUntilOutcome::StopReached)
+                        Ok(rumoca_sim_core::StepUntilOutcome::StopReached)
                     }
                     diffsol::OdeSolverStopReason::InternalTimestep => {
-                        Ok(rumoca_sim::StepUntilOutcome::InternalStep)
+                        Ok(rumoca_sim_core::StepUntilOutcome::InternalStep)
                     }
                 },
                 integration::StepAdvance::Recovered => {
-                    Ok(rumoca_sim::StepUntilOutcome::StopReached)
+                    Ok(rumoca_sim_core::StepUntilOutcome::StopReached)
                 }
-                integration::StepAdvance::Finished => Ok(rumoca_sim::StepUntilOutcome::Finished),
+                integration::StepAdvance::Finished => {
+                    Ok(rumoca_sim_core::StepUntilOutcome::Finished)
+                }
             }
         }
 
-        fn read_state(&self) -> rumoca_sim::BackendState {
-            rumoca_sim::BackendState {
+        fn read_state(&self) -> rumoca_sim_core::BackendState {
+            rumoca_sim_core::BackendState {
                 t: self.solver.state().t,
             }
         }

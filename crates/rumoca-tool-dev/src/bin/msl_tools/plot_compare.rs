@@ -12,9 +12,9 @@ use rumoca_sim::runtime_defined_unknown_names;
 use rumoca_sim::sim_trace_compare::{
     ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces, load_trace_json,
 };
+use rumoca_sim::simulate_dae;
+use rumoca_sim::viz_web::{UPLOT_CSS, UPLOT_JS};
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
-use rumoca_solver_diffsol::simulate_dae;
-use rumoca_viz_web::{UPLOT_CSS, UPLOT_JS};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;

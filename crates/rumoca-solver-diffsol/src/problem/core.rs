@@ -297,9 +297,9 @@ struct ProblemCompiledKernels {
     compiled_eval_ctx_rhs: CompiledEvalContext,
     compiled_eval_ctx_jac: CompiledEvalContext,
     compiled_eval_ctx_root: CompiledEvalContext,
-    compiled_residual: rumoca_eval_dae::compiled::CompiledResidual,
-    compiled_jacobian: rumoca_eval_dae::compiled::CompiledJacobianV,
-    compiled_root_conditions: rumoca_eval_dae::compiled::CompiledExpressionRows,
+    compiled_residual: rumoca_sim_core::phase_solve_lower::CompiledResidual,
+    compiled_jacobian: rumoca_sim_core::phase_solve_lower::CompiledJacobianV,
+    compiled_root_conditions: rumoca_sim_core::phase_solve_lower::CompiledExpressionRows,
     n_roots: usize,
 }
 
@@ -308,9 +308,9 @@ struct ProblemCompiledKernels {
     compiled_eval_ctx_rhs: CompiledEvalContext,
     compiled_eval_ctx_jac: CompiledEvalContext,
     compiled_eval_ctx_root: CompiledEvalContext,
-    compiled_residual: rumoca_eval_dae::compiled::CompiledResidualWasm,
-    compiled_jacobian: rumoca_eval_dae::compiled::CompiledJacobianVWasm,
-    compiled_root_conditions: rumoca_eval_dae::compiled::CompiledExpressionRowsWasm,
+    compiled_residual: rumoca_sim_core::phase_solve_lower::CompiledResidualWasm,
+    compiled_jacobian: rumoca_sim_core::phase_solve_lower::CompiledJacobianVWasm,
+    compiled_root_conditions: rumoca_sim_core::phase_solve_lower::CompiledExpressionRowsWasm,
     n_roots: usize,
 }
 
@@ -321,21 +321,21 @@ fn compile_problem_kernels(dae: &Dae, n_total: usize) -> Result<ProblemCompiledK
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
     let compiled_eval_ctx_root = compiled_eval_ctx.clone();
 
-    let compiled_residual = rumoca_eval_dae::compiled::compile_residual(
+    let compiled_residual = rumoca_sim_core::phase_solve_lower::compile_residual(
         dae,
-        rumoca_eval_dae::compiled::Backend::Cranelift,
+        rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
     )
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
-    let compiled_jacobian = rumoca_eval_dae::compiled::compile_jacobian_v(
+    let compiled_jacobian = rumoca_sim_core::phase_solve_lower::compile_jacobian_v(
         dae,
-        rumoca_eval_dae::compiled::Backend::Cranelift,
+        rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
     )
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
 
     log_precomputed_synthetic_root_conditions(&dae.synthetic_root_conditions);
-    let compiled_root_conditions = rumoca_eval_dae::compiled::compile_root_conditions(
+    let compiled_root_conditions = rumoca_sim_core::phase_solve_lower::compile_root_conditions(
         dae,
-        rumoca_eval_dae::compiled::Backend::Cranelift,
+        rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
     )
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     let n_roots = compiled_root_conditions.rows().max(1);
@@ -358,14 +358,15 @@ fn compile_problem_kernels(dae: &Dae, n_total: usize) -> Result<ProblemCompiledK
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
     let compiled_eval_ctx_root = compiled_eval_ctx.clone();
 
-    let compiled_residual = rumoca_eval_dae::compiled::compile_residual_wasm(dae)
+    let compiled_residual = rumoca_sim_core::phase_solve_lower::compile_residual_wasm(dae)
         .map_err(|err| SimError::CompiledEval(err.to_string()))?;
-    let compiled_jacobian = rumoca_eval_dae::compiled::compile_jacobian_v_wasm(dae)
+    let compiled_jacobian = rumoca_sim_core::phase_solve_lower::compile_jacobian_v_wasm(dae)
         .map_err(|err| SimError::CompiledEval(err.to_string()))?;
 
     log_precomputed_synthetic_root_conditions(&dae.synthetic_root_conditions);
-    let compiled_root_conditions = rumoca_eval_dae::compiled::compile_root_conditions_wasm(dae)
-        .map_err(|err| SimError::CompiledEval(err.to_string()))?;
+    let compiled_root_conditions =
+        rumoca_sim_core::phase_solve_lower::compile_root_conditions_wasm(dae)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     let n_roots = compiled_root_conditions.rows().max(1);
 
     Ok(ProblemCompiledKernels {
@@ -408,7 +409,7 @@ fn apply_mass_matrix_update(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn eval_root_callback(
-    compiled_root_conditions: &rumoca_eval_dae::compiled::CompiledExpressionRows,
+    compiled_root_conditions: &rumoca_sim_core::phase_solve_lower::CompiledExpressionRows,
     compiled_eval_ctx_root: &CompiledEvalContext,
     y: &[f64],
     p: &[f64],
@@ -433,7 +434,7 @@ fn eval_root_callback(
 
 #[cfg(target_arch = "wasm32")]
 fn eval_root_callback(
-    compiled_root_conditions: &rumoca_eval_dae::compiled::CompiledExpressionRowsWasm,
+    compiled_root_conditions: &rumoca_sim_core::phase_solve_lower::CompiledExpressionRowsWasm,
     compiled_eval_ctx_root: &CompiledEvalContext,
     y: &[f64],
     p: &[f64],
@@ -495,7 +496,7 @@ pub(super) fn find_fixed_state_indices(dae: &Dae) -> Vec<bool> {
 }
 
 pub(super) fn solver_vector_names(dae: &Dae, n_total: usize) -> Vec<String> {
-    rumoca_sim::runtime::layout::solver_vector_names(dae, n_total)
+    rumoca_sim_core::runtime::layout::solver_vector_names(dae, n_total)
 }
 
 pub(super) fn log_init_linear_system_diagnostics(
@@ -581,7 +582,7 @@ pub(super) fn log_init_linear_system_diagnostics(
 pub(super) fn build_init_jacobian_dense(
     ctx: &InitJacobianEvalContext<'_>,
     fixed_cols: &[bool],
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
 ) -> Result<nalgebra::DMatrix<f64>, crate::SimError> {
     let n_total = ctx.y.len();
     let mut jac = nalgebra::DMatrix::<f64>::zeros(n_total, n_total);
@@ -607,7 +608,7 @@ pub(super) fn build_init_jacobian_dense(
 pub(super) fn build_init_jacobian_colored(
     ctx: &InitJacobianEvalContext<'_>,
     fixed_cols: &[bool],
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
 ) -> Result<Option<nalgebra::DMatrix<f64>>, crate::SimError> {
     let n_total = ctx.y.len();
     let active_cols = active_init_columns(n_total, ctx.n_x, fixed_cols);
@@ -674,7 +675,8 @@ pub(super) fn build_init_jacobian_colored(
 }
 
 fn collect_init_value_expressions(dae: &Dae) -> Vec<dae::Expression> {
-    let scalarization = rumoca_phase_structural::scalarize::build_expression_scalarization_context(dae);
+    let scalarization =
+        rumoca_sim_core::phase_structural::scalarize::build_expression_scalarization_context(dae);
     dae.states
         .values()
         .chain(dae.algebraics.values())
@@ -686,7 +688,7 @@ fn collect_init_value_expressions(dae: &Dae) -> Vec<dae::Expression> {
                 .or(var.nominal.as_ref())
                 .cloned()
                 .unwrap_or(dae::Expression::Literal(dae::Literal::Real(0.0)));
-            rumoca_phase_structural::scalarize::scalarize_expression_rows(
+            rumoca_sim_core::phase_structural::scalarize::scalarize_expression_rows(
                 &expr,
                 var.size(),
                 &scalarization,
@@ -715,9 +717,11 @@ fn reference_init_value_values(dae: &Dae, env: &VarEnv<f64>) -> Vec<f64> {
                 .unwrap_or(dae::Expression::Literal(dae::Literal::Real(0.0)));
             let size = var.size();
             if size <= 1 {
-                return vec![rumoca_eval_dae::runtime::eval_expr::<f64>(&expr, env)];
+                return vec![rumoca_sim_core::phase_solve_lower::eval_expr::<f64>(
+                    &expr, env,
+                )];
             }
-            let raw = rumoca_eval_dae::runtime::eval_array_values::<f64>(&expr, env);
+            let raw = rumoca_sim_core::phase_solve_lower::eval_array_values::<f64>(&expr, env);
             super::expand_values_to_size(raw, size)
         })
         .collect()
@@ -730,7 +734,7 @@ pub(crate) fn initialize_state_vector(dae: &Dae, y: &mut [f64]) {
 }
 
 pub(crate) fn initialize_state_vector_with_params(dae: &Dae, y: &mut [f64], p: &[f64]) {
-    let env = rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(dae, p, 0.0);
+    let env = rumoca_sim_core::phase_solve_lower::build_runtime_parameter_tail_env(dae, p, 0.0);
     let expressions = collect_init_value_expressions(dae);
     if expressions.is_empty() {
         return;
@@ -874,7 +878,7 @@ pub(super) fn active_init_columns(n_total: usize, _n_x: usize, fixed_cols: &[boo
 pub(super) fn detect_init_jacobian_sparsity(
     ctx: &InitJacobianEvalContext<'_>,
     active_cols: &[usize],
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
 ) -> Result<Vec<Vec<usize>>, crate::SimError> {
     let n_total = ctx.y.len();
     let mut v = vec![0.0; n_total];

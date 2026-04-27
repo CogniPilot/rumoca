@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rumoca-input = { workspace = true }
+rumoca-input-types = { workspace = true }
 anyhow = { workspace = true }
 crossterm = "0.28"
 

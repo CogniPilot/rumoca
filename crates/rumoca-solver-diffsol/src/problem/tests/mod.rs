@@ -10,8 +10,8 @@ use super::core::{
 };
 use super::*;
 use crate::test_support::{binop, eq_from, lit, var};
-use rumoca_core::Span;
-use rumoca_ir_dae as dae;
+use rumoca_sim_core::core::Span;
+use rumoca_sim_core::ir_dae as dae;
 mod blt_linear;
 mod core;
 mod jacobian;
@@ -405,14 +405,14 @@ fn test_default_params_rewrite_hidden_direct_assignment_bindings() {
 
     let mut p = dae::Variable::new(dae::VarName::new("p"));
     p.start = Some(binop(
-        rumoca_ir_core::OpBinary::Add(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Add(Default::default()),
         var("hidden"),
         lit(1.0),
     ));
     dae.parameters.insert(dae::VarName::new("p"), p);
 
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("hidden"),
         var("u"),
     )));
@@ -566,7 +566,7 @@ fn test_default_params_support_named_function_arguments_on_compiled_path() {
             def_id: None,
         },
         value: binop(
-            rumoca_ir_core::OpBinary::Sub(Default::default()),
+            rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
             var("a"),
             var("b"),
         ),
@@ -592,7 +592,7 @@ fn test_default_params_with_budget_rejects_non_finite_values() {
     p.start = Some(lit(f64::NAN));
     dae.parameters.insert(dae::VarName::new("p"), p);
 
-    let budget = rumoca_sim::TimeoutBudget::new(None);
+    let budget = rumoca_sim_core::TimeoutBudget::new(None);
     let err = default_params_with_budget(&dae, &budget)
         .expect_err("non-finite parameter evaluation should fail in budgeted path");
     assert!(
@@ -611,7 +611,7 @@ fn test_default_params_with_budget_falls_back_for_unsupported_start_rows() {
     });
     dae.parameters.insert(dae::VarName::new("p"), p);
 
-    let budget = rumoca_sim::TimeoutBudget::new(None);
+    let budget = rumoca_sim_core::TimeoutBudget::new(None);
     let params = default_params_with_budget(&dae, &budget)
         .expect("unsupported compiled start rows should fall back to reference evaluation");
     assert_eq!(params, vec![0.0]);
@@ -646,7 +646,7 @@ fn test_default_params_with_budget_resolves_self_contained_array_parameter_start
     dae.parameters
         .insert(dae::VarName::new("selected"), selected);
 
-    let budget = rumoca_sim::TimeoutBudget::new(None);
+    let budget = rumoca_sim_core::TimeoutBudget::new(None);
     let params = default_params_with_budget(&dae, &budget)
         .expect("self-contained array parameter starts should still seed dependent parameters");
     assert_eq!(params, vec![10.0, 20.0, 30.0, 2.0, 20.0]);
@@ -659,7 +659,7 @@ fn test_default_params_with_budget_allows_infinite_parameter_defaults() {
     p.start = Some(lit(f64::NEG_INFINITY));
     dae.parameters.insert(dae::VarName::new("p"), p);
 
-    let budget = rumoca_sim::TimeoutBudget::new(None);
+    let budget = rumoca_sim_core::TimeoutBudget::new(None);
     let params = default_params_with_budget(&dae, &budget)
         .expect("infinite parameter defaults are valid Modelica sentinels");
     assert_eq!(params.len(), 1);
@@ -673,14 +673,14 @@ fn test_default_params_with_budget_allows_transient_forward_ref_nan_in_pass1() {
     let mut p0 = dae::Variable::new(dae::VarName::new("p0"));
     // Before forward refs are populated, this is 0/0 -> NaN in pass 1.
     p0.start = Some(binop(
-        rumoca_ir_core::OpBinary::Div(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Div(Default::default()),
         binop(
-            rumoca_ir_core::OpBinary::Mul(Default::default()),
+            rumoca_sim_core::ir_core::OpBinary::Mul(Default::default()),
             var("p1"),
             var("p2"),
         ),
         binop(
-            rumoca_ir_core::OpBinary::Sub(Default::default()),
+            rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
             var("p1"),
             var("p2"),
         ),
@@ -695,7 +695,7 @@ fn test_default_params_with_budget_allows_transient_forward_ref_nan_in_pass1() {
     p2.start = Some(lit(2.0));
     dae.parameters.insert(dae::VarName::new("p2"), p2);
 
-    let budget = rumoca_sim::TimeoutBudget::new(None);
+    let budget = rumoca_sim_core::TimeoutBudget::new(None);
     let params = default_params_with_budget(&dae, &budget)
         .expect("pass-2 forward-reference re-evaluation should resolve transient NaN");
     assert_eq!(params.len(), 3);
@@ -711,9 +711,9 @@ fn test_default_params_with_budget_resolves_multi_level_forward_refs_to_avoid_na
     // Lsigma = (1 - ratio) * L
     let mut l_sigma = dae::Variable::new(dae::VarName::new("Lsigma"));
     l_sigma.start = Some(binop(
-        rumoca_ir_core::OpBinary::Mul(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Mul(Default::default()),
         binop(
-            rumoca_ir_core::OpBinary::Sub(Default::default()),
+            rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
             lit(1.0),
             var("ratio"),
         ),
@@ -724,7 +724,7 @@ fn test_default_params_with_budget_resolves_multi_level_forward_refs_to_avoid_na
     // L = 1 / f
     let mut l = dae::Variable::new(dae::VarName::new("L"));
     l.start = Some(binop(
-        rumoca_ir_core::OpBinary::Div(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Div(Default::default()),
         lit(1.0),
         var("f"),
     ));
@@ -744,7 +744,7 @@ fn test_default_params_with_budget_resolves_multi_level_forward_refs_to_avoid_na
     ratio.start = Some(lit(1.0));
     dae.parameters.insert(dae::VarName::new("ratio"), ratio);
 
-    let budget = rumoca_sim::TimeoutBudget::new(None);
+    let budget = rumoca_sim_core::TimeoutBudget::new(None);
     let params = default_params_with_budget(&dae, &budget)
         .expect("multi-level forward references should converge to finite values");
     assert!(
@@ -792,7 +792,7 @@ fn test_default_params_constant_array_index_uses_selected_entry() {
     dae.parameters
         .insert(dae::VarName::new("resolutionFactor"), resolution_factor);
 
-    let budget = rumoca_sim::TimeoutBudget::new(None);
+    let budget = rumoca_sim_core::TimeoutBudget::new(None);
     let params = default_params_with_budget(&dae, &budget)
         .expect("constant array indexing should resolve in parameter starts");
 
@@ -871,7 +871,8 @@ fn test_default_params_preserve_matrix_start_row_order_in_parameter_env() {
         vec![0.0, 0.0, 1.0, 2.1, 2.0, 4.2, 3.0, 6.3, 4.0, 4.2, 6.0, 2.1]
     );
 
-    let env = rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(&dae, &params, 0.0);
+    let env =
+        rumoca_sim_core::phase_solve_lower::build_runtime_parameter_tail_env(&dae, &params, 0.0);
     assert_eq!(env.get("timeTable.table[1,1]"), 0.0);
     assert_eq!(env.get("timeTable.table[1,2]"), 0.0);
     assert_eq!(env.get("timeTable.table[2,1]"), 1.0);
@@ -928,7 +929,8 @@ fn test_default_params_preserve_matrix_start_row_order_with_matrix_rows() {
         ]
     );
 
-    let env = rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(&dae, &params, 0.0);
+    let env =
+        rumoca_sim_core::phase_solve_lower::build_runtime_parameter_tail_env(&dae, &params, 0.0);
     assert_eq!(env.get("timeTable.table[1,1]"), 0.0);
     assert_eq!(env.get("timeTable.table[1,2]"), 0.0);
     assert_eq!(env.get("timeTable.table[2,1]"), 1.0);
@@ -1226,12 +1228,12 @@ fn test_initialize_state_vector_rewrites_known_direct_assignment_chain() {
     dae.states.insert(dae::VarName::new("x"), x);
 
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("a"),
         var("u"),
     )));
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("y"),
         var("a"),
     )));
@@ -1261,7 +1263,7 @@ fn test_initialize_state_vector_rewrites_missing_live_alias_binding() {
     dae.f_x.push(dae::Equation {
         lhs: Some(dae::VarName::new("manualSeed1_y")),
         rhs: var("manualSeed1.y"),
-        span: rumoca_core::Span::DUMMY,
+        span: rumoca_sim_core::core::Span::DUMMY,
         origin: String::new(),
         scalar_count: 1,
     });
@@ -1434,7 +1436,7 @@ fn test_expr_refers_to_var_indexed_component_requires_exact_index() {
 #[test]
 fn test_extract_direct_assignment_with_indexed_target() {
     let rhs = dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(dae::Expression::VarRef {
             name: dae::VarName::new("aux"),
             subscripts: vec![dae::Subscript::Index(1)],

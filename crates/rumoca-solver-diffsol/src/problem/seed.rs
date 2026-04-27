@@ -1,18 +1,18 @@
 use super::*;
 
 pub(crate) fn extract_direct_assignment(rhs: &Expression) -> Option<(String, &Expression)> {
-    rumoca_sim::runtime::assignment::extract_direct_assignment(rhs)
+    rumoca_sim_core::runtime::assignment::extract_direct_assignment(rhs)
 }
 
 pub(crate) fn direct_assignment_from_equation(eq: &Equation) -> Option<(String, &Expression)> {
-    rumoca_sim::runtime::assignment::direct_assignment_from_equation(eq)
+    rumoca_sim_core::runtime::assignment::direct_assignment_from_equation(eq)
 }
 
 pub(crate) fn direct_seed_var_ref_key(expr: &Expression) -> Option<String> {
     let Expression::VarRef { name, subscripts } = expr else {
         return None;
     };
-    rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)
+    rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
 }
 
 pub(crate) fn direct_seed_is_zero_literal(expr: &Expression) -> bool {
@@ -28,7 +28,7 @@ pub(crate) fn direct_seed_target_key(expr: &Expression) -> Option<String> {
         return Some(key);
     }
     let Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(_),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(_),
         lhs,
         rhs,
     } = expr
@@ -75,7 +75,7 @@ pub(crate) fn direct_seed_assignment_from_equation<'a>(
     name_to_idx: &HashMap<String, usize>,
 ) -> Option<(String, &'a Expression)> {
     let Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(_),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(_),
         lhs,
         rhs,
     } = &eq.rhs
@@ -104,12 +104,18 @@ pub(crate) fn direct_seed_assignment_from_equation<'a>(
 
     match (lhs_key, rhs_key, lhs_solver, rhs_solver) {
         (Some(_lhs_name), Some(rhs_name), true, false)
-            if rumoca_sim::runtime::assignment::is_runtime_unknown_name(dae, rhs_name.as_str()) =>
+            if rumoca_sim_core::runtime::assignment::is_runtime_unknown_name(
+                dae,
+                rhs_name.as_str(),
+            ) =>
         {
             Some((rhs_name, lhs.as_ref()))
         }
         (Some(lhs_name), Some(_rhs_name), false, true)
-            if rumoca_sim::runtime::assignment::is_runtime_unknown_name(dae, lhs_name.as_str()) =>
+            if rumoca_sim_core::runtime::assignment::is_runtime_unknown_name(
+                dae,
+                lhs_name.as_str(),
+            ) =>
         {
             Some((lhs_name, rhs.as_ref()))
         }
@@ -127,11 +133,12 @@ pub(crate) fn direct_seed_solution_is_env_only_alias_varref(
     let Expression::VarRef { name, subscripts } = solution else {
         return false;
     };
-    let Some(source_key) = rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)
+    let Some(source_key) =
+        rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
     else {
         return false;
     };
-    rumoca_sim::runtime::assignment::is_runtime_unknown_name(dae, source_key.as_str())
+    rumoca_sim_core::runtime::assignment::is_runtime_unknown_name(dae, source_key.as_str())
         && solver_idx_for_target(source_key.as_str(), name_to_idx).is_none()
 }
 
@@ -139,7 +146,7 @@ pub(crate) fn direct_seed_solution_is_redundant_alias_varref(
     dae: &Dae,
     solution: &Expression,
     name_to_idx: &HashMap<String, usize>,
-    target_stats: rumoca_sim::runtime::assignment::DirectAssignmentTargetStats,
+    target_stats: rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats,
 ) -> bool {
     if direct_seed_solution_is_env_only_alias_varref(dae, solution, name_to_idx) {
         return true;
@@ -151,7 +158,7 @@ pub(crate) fn direct_seed_solution_is_redundant_alias_varref(
     // oscillate between the physical equation and a stale solver alias value.
     target_stats.total > 1
         && target_stats.non_alias == 1
-        && rumoca_sim::runtime::assignment::assignment_solution_is_alias_varref(dae, solution)
+        && rumoca_sim_core::runtime::assignment::assignment_solution_is_alias_varref(dae, solution)
 }
 
 #[cfg(test)]
@@ -161,7 +168,7 @@ pub(crate) fn apply_initial_section_assignments(
     p: &[f64],
     t_eval: f64,
 ) -> usize {
-    rumoca_sim::apply_initial_section_assignments(dae, y, p, t_eval)
+    rumoca_sim_core::apply_initial_section_assignments(dae, y, p, t_eval)
 }
 
 pub(crate) fn apply_initial_section_assignments_strict(
@@ -170,7 +177,7 @@ pub(crate) fn apply_initial_section_assignments_strict(
     p: &[f64],
     t_eval: f64,
 ) -> Result<usize, crate::SimError> {
-    rumoca_sim::runtime::startup::apply_initial_section_assignments_strict(dae, y, p, t_eval)
+    rumoca_sim_core::runtime::startup::apply_initial_section_assignments_strict(dae, y, p, t_eval)
         .map_err(crate::SimError::CompiledEval)
 }
 
@@ -178,7 +185,7 @@ pub(crate) fn solver_idx_for_target(
     target: &str,
     name_to_idx: &HashMap<String, usize>,
 ) -> Option<usize> {
-    rumoca_sim::runtime::layout::solver_idx_for_target(target, name_to_idx)
+    rumoca_sim_core::runtime::layout::solver_idx_for_target(target, name_to_idx)
 }
 
 pub(crate) fn log_ic_direct_seed(name: &str, value: f64) {
@@ -189,7 +196,7 @@ pub(crate) fn log_ic_direct_seed(name: &str, value: f64) {
 
 #[cfg(test)]
 pub(crate) fn apply_discrete_partition_updates(dae: &Dae, env: &mut VarEnv<f64>) -> bool {
-    rumoca_sim::runtime::discrete::apply_discrete_partition_updates(dae, env)
+    rumoca_sim_core::runtime::discrete::apply_discrete_partition_updates(dae, env)
 }
 
 pub(crate) fn apply_seeded_values_to_indices(
@@ -200,7 +207,7 @@ pub(crate) fn apply_seeded_values_to_indices(
     values: &[f64],
     n_x: usize,
 ) -> (bool, usize) {
-    rumoca_sim::runtime::assignment::apply_seeded_values_to_indices(
+    rumoca_sim_core::runtime::assignment::apply_seeded_values_to_indices(
         y,
         env,
         names,
@@ -220,19 +227,19 @@ pub(crate) fn apply_runtime_values_to_indices(
     values: &[f64],
     n_x: usize,
 ) -> (bool, usize) {
-    rumoca_sim::runtime::assignment::apply_runtime_values_to_indices(
+    rumoca_sim_core::runtime::assignment::apply_runtime_values_to_indices(
         y, env, names, indices, values, n_x,
     )
 }
 
 #[cfg(test)]
 pub(crate) fn build_runtime_alias_adjacency(dae: &Dae, n_x: usize) -> HashMap<String, Vec<String>> {
-    rumoca_sim::runtime::alias::build_runtime_alias_adjacency_with_known_assignments(dae, n_x)
+    rumoca_sim_core::runtime::alias::build_runtime_alias_adjacency_with_known_assignments(dae, n_x)
 }
 
 #[cfg(test)]
 pub(crate) fn collect_runtime_alias_anchor_names(dae: &Dae, n_x: usize) -> HashSet<String> {
-    rumoca_sim::runtime::alias::collect_runtime_alias_anchor_names(dae, n_x)
+    rumoca_sim_core::runtime::alias::collect_runtime_alias_anchor_names(dae, n_x)
 }
 
 #[cfg(test)]
@@ -242,7 +249,7 @@ pub(crate) fn propagate_runtime_alias_components_from_env(
     n_x: usize,
     env: &mut VarEnv<f64>,
 ) -> usize {
-    rumoca_sim::runtime::alias::propagate_runtime_alias_components_from_env(dae, y, n_x, env)
+    rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env(dae, y, n_x, env)
 }
 
 pub(crate) fn seed_direct_assignment_initial_values(
@@ -319,7 +326,7 @@ pub(crate) struct RuntimeDirectSeedCandidateBuildContext<'a> {
     base_to_indices: &'a HashMap<String, Vec<usize>>,
     target_dependencies: &'a HashMap<String, Vec<String>>,
     target_assignment_stats:
-        &'a HashMap<String, rumoca_sim::runtime::assignment::DirectAssignmentTargetStats>,
+        &'a HashMap<String, rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats>,
 }
 
 pub(crate) fn collect_runtime_direct_seed_target_dependencies(
@@ -336,7 +343,8 @@ pub(crate) fn collect_runtime_direct_seed_target_dependencies(
         else {
             continue;
         };
-        if rumoca_sim::runtime::assignment::assignment_solution_is_alias_varref(dae, solution) {
+        if rumoca_sim_core::runtime::assignment::assignment_solution_is_alias_varref(dae, solution)
+        {
             continue;
         }
         let mut refs = std::collections::HashSet::new();
@@ -348,7 +356,7 @@ pub(crate) fn collect_runtime_direct_seed_target_dependencies(
             if source == target_name.as_str() {
                 continue;
             }
-            if rumoca_sim::runtime::assignment::is_known_assignment_name(dae, source) {
+            if rumoca_sim_core::runtime::assignment::is_known_assignment_name(dae, source) {
                 target_deps.insert(source.to_string());
             }
         }
@@ -366,9 +374,11 @@ pub(crate) fn collect_runtime_direct_seed_target_stats(
     dae: &Dae,
     n_x: usize,
     name_to_idx: &HashMap<String, usize>,
-) -> HashMap<String, rumoca_sim::runtime::assignment::DirectAssignmentTargetStats> {
-    let mut stats: HashMap<String, rumoca_sim::runtime::assignment::DirectAssignmentTargetStats> =
-        HashMap::new();
+) -> HashMap<String, rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats> {
+    let mut stats: HashMap<
+        String,
+        rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats,
+    > = HashMap::new();
     for eq in dae.f_x.iter().skip(n_x) {
         if eq.origin == "orphaned_variable_pin" {
             continue;
@@ -380,7 +390,7 @@ pub(crate) fn collect_runtime_direct_seed_target_stats(
         let normalized_solution = normalize_direct_seed_solver_solution(solution, name_to_idx);
         let entry = stats.entry(target).or_default();
         entry.total += 1;
-        if !rumoca_sim::runtime::assignment::assignment_solution_is_alias_varref(
+        if !rumoca_sim_core::runtime::assignment::assignment_solution_is_alias_varref(
             dae,
             &normalized_solution,
         ) {
@@ -555,7 +565,7 @@ pub(crate) fn seed_direct_assignment_initial_values_with_runtime_context(
             refresh_direct_seed_env(env, run.dae, run.y, run.p, run.options, run.seed_env);
         } else {
             refresh_runtime_direct_seed_env(env, run.dae, run.p, run.options, run.seed_env);
-            rumoca_sim::runtime::alias::propagate_runtime_alias_components_from_env(
+            rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env(
                 run.dae,
                 run.y,
                 runtime_ctx.n_x,
@@ -716,10 +726,10 @@ pub(crate) struct DirectAssignmentSeedOptions {
     pub(super) bootstrap_initial_section: bool,
 }
 
-pub(crate) type SolverNameIndexMaps = rumoca_sim::runtime::layout::SolverNameIndexMaps;
+pub(crate) type SolverNameIndexMaps = rumoca_sim_core::runtime::layout::SolverNameIndexMaps;
 
 pub(crate) fn build_solver_name_index_maps(dae: &Dae, y_len: usize) -> SolverNameIndexMaps {
-    rumoca_sim::runtime::layout::build_solver_name_index_maps(dae, y_len)
+    rumoca_sim_core::runtime::layout::build_solver_name_index_maps(dae, y_len)
 }
 
 pub(crate) fn apply_seed_env_overrides(env: &mut VarEnv<f64>, seed_env: Option<&VarEnv<f64>>) {
@@ -754,15 +764,19 @@ pub(crate) fn merge_initial_section_discrete_values(
 ) {
     let n_x = dae.states.values().map(|var| var.size()).sum::<usize>();
     let direct_assignment_ctx =
-        rumoca_sim::runtime::assignment::build_runtime_direct_assignment_context(dae, y.len(), n_x);
+        rumoca_sim_core::runtime::assignment::build_runtime_direct_assignment_context(
+            dae,
+            y.len(),
+            n_x,
+        );
     let alias_ctx =
-        rumoca_sim::runtime::alias::build_runtime_alias_propagation_context(dae, y.len(), n_x);
+        rumoca_sim_core::runtime::alias::build_runtime_alias_propagation_context(dae, y.len(), n_x);
     let solver_name_to_idx = build_solver_name_index_maps(dae, y.len()).name_to_idx;
     let all_names: Vec<String> = Vec::new();
     let clock_event_times: Vec<f64> = Vec::new();
     let dynamic_time_event_names: Vec<String> = Vec::new();
-    let elim = rumoca_phase_structural::EliminationResult::default();
-    let sample_ctx = rumoca_sim::NoStateSampleContext {
+    let elim = rumoca_sim_core::phase_structural::EliminationResult::default();
+    let sample_ctx = rumoca_sim_core::NoStateSampleContext {
         dae,
         elim: &elim,
         param_values: p,
@@ -777,12 +791,11 @@ pub(crate) fn merge_initial_section_discrete_values(
         t_start: t_eval,
         requires_projection: false,
         projection_needs_event_refresh: false,
-        requires_live_pre_values: rumoca_sim::runtime::no_state::no_state_requires_live_pre_values(
-            dae,
-        ),
+        requires_live_pre_values:
+            rumoca_sim_core::runtime::no_state::no_state_requires_live_pre_values(dae),
     };
     let mut startup_y = y.to_vec();
-    let initial_env = rumoca_sim::runtime::no_state::build_initial_settled_runtime_env(
+    let initial_env = rumoca_sim_core::runtime::no_state::build_initial_settled_runtime_env(
         &sample_ctx,
         &mut startup_y,
         t_eval,
@@ -799,8 +812,11 @@ pub(crate) fn build_runtime_direct_seed_base_env(
     options: DirectAssignmentSeedOptions,
     seed_env: Option<&VarEnv<f64>>,
 ) -> VarEnv<f64> {
-    let mut env =
-        rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(dae, p, options.t_eval);
+    let mut env = rumoca_sim_core::phase_solve_lower::build_runtime_parameter_tail_env(
+        dae,
+        p,
+        options.t_eval,
+    );
     if options.bootstrap_initial_section {
         // MLS §8.6 / Appendix B: initial direct-assignment seeding must observe
         // the initialization section's current discrete values before the first
@@ -821,14 +837,14 @@ pub(crate) fn build_direct_seed_base_env(
 ) -> VarEnv<f64> {
     let mut env = if options.bootstrap_initial_section {
         let mut startup_y = y.to_vec();
-        rumoca_sim::runtime::startup::build_initial_section_env(
+        rumoca_sim_core::runtime::startup::build_initial_section_env(
             dae,
             &mut startup_y,
             p,
             options.t_eval,
         )
     } else {
-        rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(dae, p, options.t_eval)
+        rumoca_sim_core::phase_solve_lower::build_runtime_parameter_tail_env(dae, p, options.t_eval)
     };
     if !options.bootstrap_initial_section {
         let mut idx = 0usize;
@@ -838,10 +854,16 @@ pub(crate) fn build_direct_seed_base_env(
             .chain(dae.algebraics.iter())
             .chain(dae.outputs.iter())
         {
-            rumoca_eval_dae::runtime::map_var_to_env(&mut env, name.as_str(), var, y, &mut idx);
+            rumoca_sim_core::phase_solve_lower::map_var_to_env(
+                &mut env,
+                name.as_str(),
+                var,
+                y,
+                &mut idx,
+            );
         }
     } else {
-        rumoca_eval_dae::runtime::refresh_env_solver_and_parameter_values(
+        rumoca_sim_core::phase_solve_lower::refresh_env_solver_and_parameter_values(
             &mut env,
             dae,
             y,
@@ -864,7 +886,7 @@ pub(crate) fn refresh_runtime_direct_seed_env(
     env.set("time", options.t_eval);
     let mut pidx = 0usize;
     for (name, var) in &dae.parameters {
-        rumoca_eval_dae::runtime::map_var_to_env(env, name.as_str(), var, p, &mut pidx);
+        rumoca_sim_core::phase_solve_lower::map_var_to_env(env, name.as_str(), var, p, &mut pidx);
     }
     env.is_initial = options.use_initial;
     apply_seed_env_overrides(env, seed_env);
@@ -878,7 +900,7 @@ pub(crate) fn refresh_direct_seed_env(
     options: DirectAssignmentSeedOptions,
     seed_env: Option<&VarEnv<f64>>,
 ) {
-    rumoca_eval_dae::runtime::refresh_env_solver_and_parameter_values(
+    rumoca_sim_core::phase_solve_lower::refresh_env_solver_and_parameter_values(
         env,
         dae,
         y,
@@ -940,7 +962,8 @@ pub(crate) fn build_compiled_direct_seed_context(
     options: DirectAssignmentSeedOptions,
     base_to_indices: &HashMap<String, Vec<usize>>,
 ) -> Result<Option<CompiledDirectSeedContext>, crate::SimError> {
-    let scalarization = rumoca_phase_structural::scalarize::build_expression_scalarization_context(dae);
+    let scalarization =
+        rumoca_sim_core::phase_structural::scalarize::build_expression_scalarization_context(dae);
     let SolverNameIndexMaps { name_to_idx, .. } = build_solver_name_index_maps(dae, y_len);
     let n_x = count_states(dae);
     let target_dependencies =
@@ -974,11 +997,13 @@ pub(crate) fn build_compiled_direct_seed_context(
         }
         let target_size = direct_seed_target_size(dae, target.as_str(), base_to_indices);
         let range_start = expressions.len();
-        expressions.extend(rumoca_phase_structural::scalarize::scalarize_expression_rows(
-            &normalized_solution,
-            target_size,
-            &scalarization,
-        ));
+        expressions.extend(
+            rumoca_sim_core::phase_structural::scalarize::scalarize_expression_rows(
+                &normalized_solution,
+                target_size,
+                &scalarization,
+            ),
+        );
         rows_by_eq.insert(equation_key(eq), range_start..expressions.len());
     }
 
@@ -1000,7 +1025,7 @@ pub(crate) fn direct_seed_target_size(
     target: &str,
     base_to_indices: &HashMap<String, Vec<usize>>,
 ) -> usize {
-    rumoca_sim::runtime::assignment::variable_size_for_assignment_name(dae, target)
+    rumoca_sim_core::runtime::assignment::variable_size_for_assignment_name(dae, target)
         .or_else(|| {
             (!target.contains('['))
                 .then(|| base_to_indices.get(target).map(Vec::len))
@@ -1013,7 +1038,11 @@ pub(crate) fn direct_seed_solution_is_runtime_clock_signal(
     dae: &Dae,
     solution: &Expression,
 ) -> bool {
-    rumoca_sim::runtime::clock::sample_clock_arg_is_explicit_clock(dae, solution, &VarEnv::new())
+    rumoca_sim_core::runtime::clock::sample_clock_arg_is_explicit_clock(
+        dae,
+        solution,
+        &VarEnv::new(),
+    )
 }
 
 pub(crate) fn direct_seed_solution_requires_runtime_eval(expr: &Expression) -> bool {
@@ -1307,7 +1336,7 @@ pub(crate) fn apply_seed_values_to_env_only_with_dims(
     values: &[f64],
 ) -> bool {
     let mut staged = VarEnv::new();
-    rumoca_eval_dae::runtime::set_array_entries(&mut staged, target, dims, values);
+    rumoca_sim_core::phase_solve_lower::set_array_entries(&mut staged, target, dims, values);
     let mut changed = false;
     for (name, value) in staged.vars {
         if env
@@ -1341,7 +1370,7 @@ pub(crate) struct DirectSeedPassContext<'a> {
     name_to_idx: &'a HashMap<String, usize>,
     base_to_indices: &'a HashMap<String, Vec<usize>>,
     target_assignment_stats:
-        &'a HashMap<String, rumoca_sim::runtime::assignment::DirectAssignmentTargetStats>,
+        &'a HashMap<String, rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats>,
 }
 
 pub(crate) fn compiled_direct_seed_values<'a>(
@@ -1400,7 +1429,7 @@ pub(crate) fn apply_seed_direct_assignment_equation(
     }
     let trace_target = should_trace_direct_seed_target(target.as_str());
     let source_known = if trace_target || !ctx.options.allow_unsolved_solver_sources {
-        rumoca_sim::runtime::assignment::direct_assignment_source_is_known(
+        rumoca_sim_core::runtime::assignment::direct_assignment_source_is_known(
             ctx.dae,
             &normalized_solution,
             ctx.n_x,
@@ -1447,7 +1476,7 @@ pub(crate) fn apply_seed_direct_assignment_equation(
         .and_then(|values| values.first().copied())
         .map(clamp_finite)
         .unwrap_or_else(|| {
-            clamp_finite(rumoca_eval_dae::runtime::eval_expr::<f64>(
+            clamp_finite(rumoca_sim_core::phase_solve_lower::eval_expr::<f64>(
                 &normalized_solution,
                 env,
             ))
@@ -1771,7 +1800,9 @@ pub(crate) fn seed_direct_assignment_initial_values_with_overrides(
         base_to_indices,
     } = build_solver_name_index_maps(dae, y.len());
     let target_assignment_stats =
-        rumoca_sim::runtime::assignment::collect_direct_assignment_target_stats(dae, n_x, false);
+        rumoca_sim_core::runtime::assignment::collect_direct_assignment_target_stats(
+            dae, n_x, false,
+        );
     let pass_ctx = DirectSeedPassContext {
         dae,
         n_x,
@@ -1821,7 +1852,7 @@ pub(crate) fn seed_direct_assignment_initial_values_with_overrides(
             break;
         }
 
-        rumoca_eval_dae::runtime::refresh_env_solver_and_parameter_values(
+        rumoca_sim_core::phase_solve_lower::refresh_env_solver_and_parameter_values(
             &mut env,
             dae,
             y,
@@ -1842,7 +1873,7 @@ pub(crate) struct RuntimeDirectPropagationContext<'a> {
     name_to_idx: &'a HashMap<String, usize>,
     base_to_indices: &'a HashMap<String, Vec<usize>>,
     target_assignment_stats:
-        &'a HashMap<String, rumoca_sim::runtime::assignment::DirectAssignmentTargetStats>,
+        &'a HashMap<String, rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats>,
 }
 
 #[cfg(test)]
@@ -1935,7 +1966,9 @@ pub(crate) fn propagate_runtime_direct_assignments_from_env(
         base_to_indices,
     } = build_solver_name_index_maps(dae, y.len());
     let target_assignment_stats =
-        rumoca_sim::runtime::assignment::collect_direct_assignment_target_stats(dae, n_x, false);
+        rumoca_sim_core::runtime::assignment::collect_direct_assignment_target_stats(
+            dae, n_x, false,
+        );
     let pass_ctx = RuntimeDirectPropagationContext {
         dae,
         n_x,

@@ -15,7 +15,7 @@ pub(crate) struct RuntimeProjectionStep<'a> {
     pub(crate) n_x: usize,
     pub(crate) t_eval: f64,
     pub(crate) tol: f64,
-    pub(crate) timeout: &'a rumoca_sim::TimeoutBudget,
+    pub(crate) timeout: &'a rumoca_sim_core::TimeoutBudget,
 }
 
 pub(crate) struct PreparedRuntimeProjectionInfo<'a> {
@@ -361,7 +361,7 @@ pub(crate) fn project_algebraics_with_fixed_states_at_time_with_context(
     ctx: RuntimeProjectionContext<'_>,
     t_eval: f64,
     tol: f64,
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
 ) -> Result<Option<Vec<f64>>, crate::SimError> {
     project_algebraics_with_fixed_states_at_time_with_context_and_cache(
         dae,
@@ -383,7 +383,7 @@ pub(crate) fn project_algebraics_with_fixed_states_at_time(
     n_x: usize,
     t_eval: f64,
     tol: f64,
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
 ) -> Result<Option<Vec<f64>>, crate::SimError> {
     let n_eq = dae.f_x.len();
     if n_eq == 0 || n_x >= n_eq || y_seed.len() < n_eq {

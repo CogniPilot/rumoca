@@ -3,7 +3,7 @@ use diffsol::{
     FaerSparseMat, MatrixCommon, OdeBuilder, OdeEquationsImplicit, OdeSolverProblem, Vector,
     VectorHost,
 };
-use rumoca_ir_dae as dae;
+use rumoca_sim_core::ir_dae as dae;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
@@ -12,23 +12,23 @@ type Dae = dae::Dae;
 type Equation = dae::Equation;
 type Expression = dae::Expression;
 #[cfg(test)]
-type OpBinary = rumoca_ir_core::OpBinary;
+type OpBinary = rumoca_sim_core::ir_core::OpBinary;
 type VarName = dae::VarName;
 #[cfg(test)]
 type Variable = dae::Variable;
 
 #[cfg(test)]
-use rumoca_eval_dae::runtime::dual::Dual;
+use rumoca_sim_core::phase_solve_lower::dual::Dual;
 #[cfg(test)]
-use rumoca_eval_dae::runtime::eval_expr;
-use rumoca_eval_dae::runtime::sim_float::SimFloat;
-use rumoca_eval_dae::runtime::{VarEnv, set_array_entries};
+use rumoca_sim_core::phase_solve_lower::eval_expr;
+use rumoca_sim_core::phase_solve_lower::sim_float::SimFloat;
+use rumoca_sim_core::phase_solve_lower::{VarEnv, set_array_entries};
 #[cfg(test)]
-use rumoca_eval_dae::runtime::{build_env, lift_env, map_var_to_env};
-use rumoca_sim::runtime::assignment::evaluate_direct_assignment_values;
-use rumoca_sim::runtime::timeout::{wall_clock_elapsed_seconds, wall_clock_now};
-use rumoca_sim::sparsity::SparsityValidation;
-use rumoca_sim::sparsity::{
+use rumoca_sim_core::phase_solve_lower::{build_env, lift_env, map_var_to_env};
+use rumoca_sim_core::runtime::assignment::evaluate_direct_assignment_values;
+use rumoca_sim_core::runtime::timeout::{wall_clock_elapsed_seconds, wall_clock_now};
+use rumoca_sim_core::sparsity::SparsityValidation;
+use rumoca_sim_core::sparsity::{
     greedy_column_coloring, structural_column_sparsity, validate_solver_sparsity,
 };
 type M = FaerSparseMat<f64>;
@@ -320,7 +320,8 @@ fn build_compiled_var_start_context(
     }
 
     let scalarization_timer = trace_timing.then(wall_clock_now);
-    let scalarization = rumoca_phase_structural::scalarize::build_expression_scalarization_context(dae);
+    let scalarization =
+        rumoca_sim_core::phase_structural::scalarize::build_expression_scalarization_context(dae);
     if let Some(scalarization_timer) = scalarization_timer {
         eprintln!(
             "[sim-trace] default-params build_start_scalarization_context vars={} {:.3}s",
@@ -337,11 +338,13 @@ fn build_compiled_var_start_context(
         let Some(start) = var.start.as_ref() else {
             continue;
         };
-        expressions.extend(rumoca_phase_structural::scalarize::scalarize_expression_rows(
-            start,
-            var.size(),
-            &scalarization,
-        ));
+        expressions.extend(
+            rumoca_sim_core::phase_structural::scalarize::scalarize_expression_rows(
+                start,
+                var.size(),
+                &scalarization,
+            ),
+        );
         let name_key = name;
         rows_by_name.insert(name_key.clone(), row_start..expressions.len());
     }
@@ -442,16 +445,18 @@ fn reference_var_start_values(var: &dae::Variable, env: &VarEnv<f64>) -> Vec<f64
         .cloned()
         .unwrap_or(dae::Expression::Literal(dae::Literal::Real(0.0)));
     if !var.dims.is_empty() {
-        let raw = rumoca_eval_dae::runtime::eval_array_values::<f64>(&expr, env);
+        let raw = rumoca_sim_core::phase_solve_lower::eval_array_values::<f64>(&expr, env);
         if size == 0 {
             return raw;
         }
         return expand_values_to_size(raw, size);
     }
     if size <= 1 {
-        return vec![rumoca_eval_dae::runtime::eval_expr::<f64>(&expr, env)];
+        return vec![rumoca_sim_core::phase_solve_lower::eval_expr::<f64>(
+            &expr, env,
+        )];
     }
-    let raw = rumoca_eval_dae::runtime::eval_array_values::<f64>(&expr, env);
+    let raw = rumoca_sim_core::phase_solve_lower::eval_array_values::<f64>(&expr, env);
     expand_values_to_size(raw, size)
 }
 
@@ -935,7 +940,7 @@ fn should_skip_missing_direct_assignment_target(
     dae: &dae::Dae,
     target: &str,
     solution: &dae::Expression,
-    stats: &HashMap<String, rumoca_sim::runtime::assignment::DirectAssignmentTargetStats>,
+    stats: &HashMap<String, rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats>,
     env: &VarEnv<impl SimFloat>,
 ) -> bool {
     if env.vars.contains_key(target) {
@@ -948,7 +953,7 @@ fn should_skip_missing_direct_assignment_target(
     }
     target_stats.total > 1
         && target_stats.non_alias == 1
-        && rumoca_sim::runtime::assignment::assignment_solution_is_alias_varref(dae, solution)
+        && rumoca_sim_core::runtime::assignment::assignment_solution_is_alias_varref(dae, solution)
 }
 
 #[cfg(test)]
@@ -961,8 +966,9 @@ pub(crate) fn populate_missing_direct_assignment_targets_in_env<T: SimFloat>(
         return;
     }
 
-    let stats =
-        rumoca_sim::runtime::assignment::collect_direct_assignment_target_stats(dae, n_x, false);
+    let stats = rumoca_sim_core::runtime::assignment::collect_direct_assignment_target_stats(
+        dae, n_x, false,
+    );
     let max_passes = dae.f_x.len().max(4);
     for _ in 0..max_passes {
         let mut changed = false;
@@ -971,7 +977,7 @@ pub(crate) fn populate_missing_direct_assignment_targets_in_env<T: SimFloat>(
                 continue;
             }
             let Some((target, solution)) =
-                rumoca_sim::runtime::assignment::direct_assignment_from_equation(eq)
+                rumoca_sim_core::runtime::assignment::direct_assignment_from_equation(eq)
             else {
                 continue;
             };
@@ -1117,7 +1123,7 @@ fn reevaluate_parameters_once(
 }
 
 fn init_default_param_env(dae: &dae::Dae) -> VarEnv<f64> {
-    rumoca_eval_dae::runtime::build_runtime_parameter_tail_env(dae, &[], 0.0)
+    rumoca_sim_core::phase_solve_lower::build_runtime_parameter_tail_env(dae, &[], 0.0)
 }
 
 fn apply_constant_start_pass(
@@ -1352,7 +1358,7 @@ pub(crate) fn default_params(dae: &dae::Dae) -> Vec<f64> {
 
 pub(crate) fn default_params_with_budget(
     dae: &dae::Dae,
-    budget: &rumoca_sim::TimeoutBudget,
+    budget: &rumoca_sim_core::TimeoutBudget,
 ) -> Result<Vec<f64>, crate::SimError> {
     default_params_with_checker(dae, || budget.check().map_err(crate::SimError::from), true)
 }

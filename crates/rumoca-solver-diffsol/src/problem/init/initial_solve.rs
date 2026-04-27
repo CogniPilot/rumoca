@@ -17,7 +17,7 @@ const INITIAL_HOMOTOPY_PRECONDITION_LAMBDAS: [f64; 5] = [0.0, 0.25, 0.5, 0.75, 1
 pub(crate) fn prepare_initial_algebraic(
     dae: &Dae,
     n_x: usize,
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
     param_values: &[f64],
 ) -> Result<PreparedInitialAlgebraic, crate::SimError> {
     let n_eq = dae.f_x.len();
@@ -112,7 +112,7 @@ pub(crate) struct InitialHomotopyRun<'a> {
     use_initial: bool,
     fixed: &'a [bool],
     tol: f64,
-    timeout: &'a rumoca_sim::TimeoutBudget,
+    timeout: &'a rumoca_sim_core::TimeoutBudget,
 }
 
 pub(crate) fn run_initial_homotopy_preconditioning(
@@ -301,7 +301,7 @@ pub(crate) fn solve_initial_algebraic(
     dae: &mut Dae,
     n_x: usize,
     tol: f64,
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
 ) -> Result<bool, crate::SimError> {
     let p = default_params(dae);
     solve_initial_algebraic_with_params(dae, n_x, tol, timeout, &p)
@@ -311,7 +311,7 @@ pub(crate) fn solve_initial_algebraic_with_params(
     dae: &mut Dae,
     n_x: usize,
     tol: f64,
-    timeout: &rumoca_sim::TimeoutBudget,
+    timeout: &rumoca_sim_core::TimeoutBudget,
     param_values: &[f64],
 ) -> Result<bool, crate::SimError> {
     let n_eq = dae.f_x.len();
@@ -387,7 +387,7 @@ pub(crate) fn solve_initial_algebraic_with_params(
 fn build_initial_newton_config<'a>(
     n_x: usize,
     use_initial: bool,
-    timeout: &'a rumoca_sim::TimeoutBudget,
+    timeout: &'a rumoca_sim_core::TimeoutBudget,
     fixed: &'a [bool],
     compiled_initial: Option<&'a CompiledInitialNewtonContext>,
     compiled_runtime: Option<&'a CompiledRuntimeNewtonContext>,

@@ -12,11 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rumoca-compile = { workspace = true }
-rumoca-ir-dae = { workspace = true }
-rumoca-phase-structural = { workspace = true }
 rumoca-sim = { workspace = true, optional = true }
-rumoca-solver-diffsol = { workspace = true, optional = true }
-rumoca-solver-rk45 = { workspace = true, optional = true }
 rumoca-tool-lint = { workspace = true }
 rumoca-tool-lsp = { workspace = true }
 bincode = { workspace = true }
@@ -34,8 +30,8 @@ wasm-bindgen-rayon = { version = "1.2", optional = true }
 [features]
 default = ["console_error_panic_hook"]
 full-web = ["sim-diffsol", "stepper-diffsol"]
-sim-diffsol = ["dep:rumoca-sim", "dep:rumoca-solver-diffsol"]
-sim-rk45 = ["dep:rumoca-sim", "dep:rumoca-solver-rk45"]
+sim-diffsol = ["dep:rumoca-sim", "rumoca-sim/solver-diffsol"]
+sim-rk45 = ["dep:rumoca-sim", "rumoca-sim/solver-rk45"]
 stepper-diffsol = ["sim-diffsol"]
 wasm-rayon = ["dep:wasm-bindgen-rayon"]
 

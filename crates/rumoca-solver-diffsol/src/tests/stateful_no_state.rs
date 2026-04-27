@@ -583,7 +583,7 @@ fn test_simulate_fails_fast_for_unsupported_external_function_call() {
         scalar_count: 1,
     });
 
-    let mut external_stub = rumoca_ir_dae::Function::new("f", Span::DUMMY);
+    let mut external_stub = rumoca_sim_core::ir_dae::Function::new("f", Span::DUMMY);
     external_stub.external = Some(ExternalFunction {
         language: "C".to_string(),
         function_name: Some("f".to_string()),
@@ -630,11 +630,11 @@ fn test_simulate_rejects_member_style_function_call_without_exact_definition() {
         scalar_count: 1,
     });
 
-    let mut fn_def = rumoca_ir_dae::Function::new(
+    let mut fn_def = rumoca_sim_core::ir_dae::Function::new(
         "Modelica.Mechanics.MultiBody.World.gravityAcceleration",
         Span::DUMMY,
     );
-    fn_def.body.push(rumoca_ir_dae::Statement::Return);
+    fn_def.body.push(rumoca_sim_core::ir_dae::Statement::Return);
     dae.functions.insert(fn_def.name.clone(), fn_def);
 
     let result = simulate(
@@ -730,21 +730,25 @@ fn test_simulate_allows_constructor_field_projection_with_signature() {
         scalar_count: 1,
     });
 
-    let mut record_ctor = rumoca_ir_dae::Function::new("My.Record", Span::DUMMY);
-    record_ctor.inputs.push(rumoca_ir_dae::FunctionParam {
-        name: "R".to_string(),
-        type_name: "Real".to_string(),
-        dims: Vec::new(),
-        default: None,
-        description: None,
-    });
-    record_ctor.inputs.push(rumoca_ir_dae::FunctionParam {
-        name: "C".to_string(),
-        type_name: "Real".to_string(),
-        dims: Vec::new(),
-        default: None,
-        description: None,
-    });
+    let mut record_ctor = rumoca_sim_core::ir_dae::Function::new("My.Record", Span::DUMMY);
+    record_ctor
+        .inputs
+        .push(rumoca_sim_core::ir_dae::FunctionParam {
+            name: "R".to_string(),
+            type_name: "Real".to_string(),
+            dims: Vec::new(),
+            default: None,
+            description: None,
+        });
+    record_ctor
+        .inputs
+        .push(rumoca_sim_core::ir_dae::FunctionParam {
+            name: "C".to_string(),
+            type_name: "Real".to_string(),
+            dims: Vec::new(),
+            default: None,
+            description: None,
+        });
     dae.functions.insert(record_ctor.name.clone(), record_ctor);
 
     let result = simulate(
@@ -901,42 +905,42 @@ fn test_validate_simulation_support_allows_function_parameter_call_aliases() {
         scalar_count: 1,
     });
 
-    let mut fun_impl = rumoca_ir_dae::Function::new("fun_impl", Span::DUMMY);
+    let mut fun_impl = rumoca_sim_core::ir_dae::Function::new("fun_impl", Span::DUMMY);
     fun_impl
         .inputs
-        .push(rumoca_ir_dae::FunctionParam::new("u", "Real"));
+        .push(rumoca_sim_core::ir_dae::FunctionParam::new("u", "Real"));
     fun_impl
         .inputs
-        .push(rumoca_ir_dae::FunctionParam::new("a", "Real"));
-    fun_impl
-        .outputs
-        .push(
-            rumoca_ir_dae::FunctionParam::new("y", "Real").with_default(Expression::Binary {
-                op: OpBinary::Add(Default::default()),
-                lhs: Box::new(var_ref("u")),
-                rhs: Box::new(var_ref("a")),
-            }),
-        );
+        .push(rumoca_sim_core::ir_dae::FunctionParam::new("a", "Real"));
+    fun_impl.outputs.push(
+        rumoca_sim_core::ir_dae::FunctionParam::new("y", "Real").with_default(Expression::Binary {
+            op: OpBinary::Add(Default::default()),
+            lhs: Box::new(var_ref("u")),
+            rhs: Box::new(var_ref("a")),
+        }),
+    );
     fun_impl.body.push(Statement::Empty);
     dae.functions.insert(fun_impl.name.clone(), fun_impl);
 
-    let mut wrapper = rumoca_ir_dae::Function::new("wrapper", Span::DUMMY);
-    wrapper.inputs.push(rumoca_ir_dae::FunctionParam::new(
-        "f",
-        "Pkg.Interfaces.PartialFunction",
-    ));
+    let mut wrapper = rumoca_sim_core::ir_dae::Function::new("wrapper", Span::DUMMY);
     wrapper
         .inputs
-        .push(rumoca_ir_dae::FunctionParam::new("x", "Real"));
+        .push(rumoca_sim_core::ir_dae::FunctionParam::new(
+            "f",
+            "Pkg.Interfaces.PartialFunction",
+        ));
     wrapper
-        .outputs
-        .push(rumoca_ir_dae::FunctionParam::new("y", "Real").with_default(
+        .inputs
+        .push(rumoca_sim_core::ir_dae::FunctionParam::new("x", "Real"));
+    wrapper.outputs.push(
+        rumoca_sim_core::ir_dae::FunctionParam::new("y", "Real").with_default(
             Expression::FunctionCall {
                 name: VarName::new("wrapper.f"),
                 args: vec![var_ref("x")],
                 is_constructor: false,
             },
-        ));
+        ),
+    );
     wrapper.body.push(Statement::Empty);
     dae.functions.insert(wrapper.name.clone(), wrapper);
 
@@ -970,7 +974,7 @@ fn test_simulate_rejects_reachable_nested_unsupported_external_function() {
         scalar_count: 1,
     });
 
-    let mut bad = rumoca_ir_dae::Function::new("bad_external", Span::DUMMY);
+    let mut bad = rumoca_sim_core::ir_dae::Function::new("bad_external", Span::DUMMY);
     bad.external = Some(ExternalFunction {
         language: "C".to_string(),
         function_name: Some("bad_external".to_string()),
@@ -979,12 +983,14 @@ fn test_simulate_rejects_reachable_nested_unsupported_external_function() {
     });
     dae.functions.insert(VarName::new("bad_external"), bad);
 
-    let mut wrapper = rumoca_ir_dae::Function::new("wrapper", Span::DUMMY);
-    wrapper.body.push(rumoca_ir_dae::Statement::FunctionCall {
-        comp: comp_ref("bad_external"),
-        args: vec![],
-        outputs: vec![],
-    });
+    let mut wrapper = rumoca_sim_core::ir_dae::Function::new("wrapper", Span::DUMMY);
+    wrapper
+        .body
+        .push(rumoca_sim_core::ir_dae::Statement::FunctionCall {
+            comp: comp_ref("bad_external"),
+            args: vec![],
+            outputs: vec![],
+        });
     dae.functions.insert(VarName::new("wrapper"), wrapper);
 
     let result = simulate(
@@ -1023,7 +1029,7 @@ fn test_validate_simulation_support_ignores_unreachable_nested_unsupported_funct
         scalar_count: 1,
     });
 
-    let mut bad = rumoca_ir_dae::Function::new("bad_external", Span::DUMMY);
+    let mut bad = rumoca_sim_core::ir_dae::Function::new("bad_external", Span::DUMMY);
     bad.external = Some(ExternalFunction {
         language: "C".to_string(),
         function_name: Some("bad_external".to_string()),
@@ -1032,12 +1038,14 @@ fn test_validate_simulation_support_ignores_unreachable_nested_unsupported_funct
     });
     dae.functions.insert(VarName::new("bad_external"), bad);
 
-    let mut wrapper = rumoca_ir_dae::Function::new("wrapper", Span::DUMMY);
-    wrapper.body.push(rumoca_ir_dae::Statement::FunctionCall {
-        comp: comp_ref("bad_external"),
-        args: vec![],
-        outputs: vec![],
-    });
+    let mut wrapper = rumoca_sim_core::ir_dae::Function::new("wrapper", Span::DUMMY);
+    wrapper
+        .body
+        .push(rumoca_sim_core::ir_dae::Statement::FunctionCall {
+            comp: comp_ref("bad_external"),
+            args: vec![],
+            outputs: vec![],
+        });
     dae.functions.insert(VarName::new("wrapper"), wrapper);
 
     let result = validate_simulation_function_support(&dae);

@@ -1,13 +1,15 @@
 [package]
 name = "rumoca-codec"
-description = "Transport-neutral lockstep I/O contracts for Rumoca"
+description = "Codec facade for Rumoca: traits, factory, and re-exported SignalFrame; backed by pluggable impls (flatbuffers, ...)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-indexmap = { workspace = true }
+rumoca-signal-frame = { workspace = true }
+rumoca-codec-flatbuffers = { workspace = true }
+anyhow = { workspace = true }
 
 [lints]
 workspace = true

@@ -300,12 +300,12 @@ def create_model():
 
     _x0_parts = []
     _x0_parts.append(_flat_start(
-        1,
+        1.0,
         1,
         'x'
     ))
     _x0_parts.append(_flat_start(
-        0,
+        0.0,
         1,
         'v'
     ))

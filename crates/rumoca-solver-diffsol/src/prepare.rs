@@ -5,10 +5,10 @@ use crate::{
     run_timeout_step, run_timeout_step_result, sim_trace_enabled, trace_timer_elapsed_seconds,
     trace_timer_start_if,
 };
-use rumoca_ir_dae as dae;
-use rumoca_phase_structural::eliminate::try_solve_for_unknown;
-use rumoca_phase_structural::scalarize::scalarize_equations;
-use rumoca_sim::simulation::dae_prepare::{
+use rumoca_sim_core::ir_dae as dae;
+use rumoca_sim_core::phase_structural::eliminate::try_solve_for_unknown;
+use rumoca_sim_core::phase_structural::scalarize::scalarize_equations;
+use rumoca_sim_core::simulation::dae_prepare::{
     demote_alias_states_without_der, demote_coupled_derivative_states,
     demote_direct_assigned_states, demote_exact_alias_component_states,
     demote_orphan_states_without_equation_refs, demote_states_without_assignable_derivative_rows,
@@ -17,9 +17,9 @@ use rumoca_sim::simulation::dae_prepare::{
     normalize_ode_equation_signs, promote_der_algebraics_to_states,
     substitute_standalone_state_derivatives_in_non_ode_rows,
 };
-use rumoca_sim::simulation::introspection::trace_flow_array_alias_watch;
-use rumoca_sim::simulation::pipeline::{PreparedSimulation, run_logged_phase};
-use rumoca_sim::{compute_mass_matrix, pin_orphaned_variables};
+use rumoca_sim_core::simulation::introspection::trace_flow_array_alias_watch;
+use rumoca_sim_core::simulation::pipeline::{PreparedSimulation, run_logged_phase};
+use rumoca_sim_core::{compute_mass_matrix, pin_orphaned_variables};
 
 #[derive(Clone)]
 struct RuntimeAliasSubstitution {
@@ -402,7 +402,7 @@ fn extract_runtime_assignment_target_name(expr: &dae::Expression) -> Option<VarN
     let dae::Expression::Binary { op, lhs, rhs } = expr else {
         return None;
     };
-    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_sim_core::ir_core::OpBinary::Sub(_)) {
         return None;
     }
     if let dae::Expression::VarRef { name, subscripts } = lhs.as_ref()
@@ -546,14 +546,16 @@ fn apply_runtime_alias_substitutions_to_elimination(
 
 fn runtime_alias_reconstruction_substitutions(
     substitutions: &[RuntimeAliasSubstitution],
-) -> Vec<rumoca_phase_structural::eliminate::Substitution> {
+) -> Vec<rumoca_sim_core::phase_structural::eliminate::Substitution> {
     substitutions
         .iter()
-        .map(|sub| rumoca_phase_structural::eliminate::Substitution {
-            var_name: sub.var_name.clone(),
-            expr: sub.expr.clone(),
-            env_keys: vec![sub.var_name.as_str().to_string()],
-        })
+        .map(
+            |sub| rumoca_sim_core::phase_structural::eliminate::Substitution {
+                var_name: sub.var_name.clone(),
+                expr: sub.expr.clone(),
+                env_keys: vec![sub.var_name.as_str().to_string()],
+            },
+        )
         .collect()
 }
 
@@ -791,9 +793,9 @@ pub(super) fn build_ic_plan_or_empty(
     dae: &Dae,
     n_x: usize,
     budget: &TimeoutBudget,
-) -> Result<Vec<rumoca_phase_structural::IcBlock>, SimError> {
+) -> Result<Vec<rumoca_sim_core::phase_structural::IcBlock>, SimError> {
     budget.check()?;
-    if let Some(hint) = rumoca_phase_structural::build_ic_relaxation_hint(dae, n_x)
+    if let Some(hint) = rumoca_sim_core::phase_structural::build_ic_relaxation_hint(dae, n_x)
         && relaxed_ic_hint_has_disjoint_drop_row(dae, &hint)
     {
         if sim_trace_enabled() {
@@ -804,7 +806,7 @@ pub(super) fn build_ic_plan_or_empty(
         budget.check()?;
         return Ok(Vec::new());
     }
-    let ic_blocks = match rumoca_phase_structural::build_ic_plan(dae, n_x) {
+    let ic_blocks = match rumoca_sim_core::phase_structural::build_ic_plan(dae, n_x) {
         Ok(blocks) => blocks,
         Err(err) => {
             if sim_trace_enabled() {
@@ -822,7 +824,7 @@ pub(super) fn build_ic_plan_or_empty(
 
 pub(super) fn relaxed_ic_hint_has_disjoint_drop_row(
     dae: &Dae,
-    hint: &rumoca_phase_structural::IcRelaxationHint,
+    hint: &rumoca_sim_core::phase_structural::IcRelaxationHint,
 ) -> bool {
     if hint.dropped_eq_global.is_empty() || hint.dropped_unknown_names.is_empty() {
         return false;
@@ -836,9 +838,9 @@ pub(super) fn relaxed_ic_hint_has_disjoint_drop_row(
         let Some(eq) = dae.f_x.get(eq_idx) else {
             return true;
         };
-        !dropped_unknowns
-            .iter()
-            .any(|name| rumoca_phase_structural::eliminate::expr_contains_var(&eq.rhs, name))
+        !dropped_unknowns.iter().any(|name| {
+            rumoca_sim_core::phase_structural::eliminate::expr_contains_var(&eq.rhs, name)
+        })
     })
 }
 
@@ -971,7 +973,7 @@ pub(super) fn build_ic_plan_with_trace(
     n_x: usize,
     budget: &TimeoutBudget,
     trace: bool,
-) -> Result<Vec<rumoca_phase_structural::IcBlock>, SimError> {
+) -> Result<Vec<rumoca_sim_core::phase_structural::IcBlock>, SimError> {
     if trace {
         eprintln!("[sim-trace] prepare step start: build_ic_plan");
     }
@@ -1252,8 +1254,8 @@ pub(super) fn prepare_dae(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_core::Span;
-    use rumoca_sim::SimOptions;
+    use rumoca_sim_core::SimOptions;
+    use rumoca_sim_core::core::Span;
 
     fn var(name: &str) -> dae::Expression {
         dae::Expression::VarRef {
@@ -1268,7 +1270,7 @@ mod tests {
 
     fn sub(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
         dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         }
@@ -1276,7 +1278,7 @@ mod tests {
 
     fn add(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
         dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::Add(Default::default()),
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         }
@@ -1284,7 +1286,7 @@ mod tests {
 
     fn lt(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
         dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Lt(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::Lt(Default::default()),
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         }
@@ -1339,12 +1341,12 @@ mod tests {
                 branches: vec![(
                     lt(var("d"), int(0)),
                     dae::Expression::Unary {
-                        op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+                        op: rumoca_sim_core::ir_core::OpUnary::Minus(Default::default()),
                         rhs: Box::new(int(1)),
                     },
                 )],
                 else_branch: Box::new(dae::Expression::Unary {
-                    op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+                    op: rumoca_sim_core::ir_core::OpUnary::Minus(Default::default()),
                     rhs: Box::new(int(2)),
                 }),
             },
@@ -1575,7 +1577,7 @@ mod tests {
         let rewritten = substitute_standalone_state_derivatives_in_non_ode_rows(&mut dae);
         assert_eq!(rewritten, 1, "expected one non-ODE row to be rewritten");
         assert!(
-            !rumoca_sim::simulation::dae_prepare::expr_contains_der_of(
+            !rumoca_sim_core::simulation::dae_prepare::expr_contains_der_of(
                 &dae.f_x[1].rhs,
                 &VarName::new("x")
             ),
@@ -1629,12 +1631,12 @@ mod tests {
             "duplicate exact-alias state should be demoted before trivial elimination"
         );
         assert!(
-            dae.f_x.iter().all(
-                |eq| !rumoca_sim::simulation::dae_prepare::expr_contains_der_of(
+            dae.f_x.iter().all(|eq| {
+                !rumoca_sim_core::simulation::dae_prepare::expr_contains_der_of(
                     &eq.rhs,
-                    &VarName::new("y")
+                    &VarName::new("y"),
                 )
-            ),
+            }),
             "later prepare passes must not keep der(demoted_state) alive after exact alias demotion"
         );
     }
@@ -1718,12 +1720,12 @@ mod tests {
                 branches: vec![(
                     lt(var("d"), int(0)),
                     dae::Expression::Unary {
-                        op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+                        op: rumoca_sim_core::ir_core::OpUnary::Minus(Default::default()),
                         rhs: Box::new(int(1)),
                     },
                 )],
                 else_branch: Box::new(dae::Expression::Unary {
-                    op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+                    op: rumoca_sim_core::ir_core::OpUnary::Minus(Default::default()),
                     rhs: Box::new(int(2)),
                 }),
             },

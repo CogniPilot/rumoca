@@ -98,8 +98,8 @@ Rumoca focuses on five things:
 
 - Full compiler pipeline: parse -> resolve -> typecheck -> instantiate -> flatten -> DAE
 - Multi-file session API for CLI, LSP, WASM, and tests (`rumoca-compile`)
-- DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim`)
-- Structural preparation and IC planning for robust initialization (`rumoca-phase-structural`, `rumoca-sim`)
+- DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim-core`)
+- Structural preparation and IC planning for robust initialization (`rumoca-phase-structural`, `rumoca-sim-core`)
 - Explicit template rendering support for custom code generation
 - MLS contract test framework (`rumoca-contracts`)
 - Spec-driven quality gates (including SPEC_0021 and SPEC_0025)
@@ -267,7 +267,7 @@ that depend on optional backend environments such as Python with SymPy.
 | Flatten     | `rumoca-phase-flatten`     | Hierarchy flattening, connection expansion, residual equations |
 | ToDAE       | `rumoca-phase-dae`         | Variable classification and DAE construction                   |
 | Structural  | `rumoca-phase-structural`  | BLT, incidence/matching, IC plan generation                    |
-| Simulate    | `rumoca-sim`               | IC solving + runtime integration                               |
+| Simulate    | `rumoca-sim-core`               | IC solving + runtime integration                               |
 | Codegen     | `rumoca-phase-codegen`     | Template-driven target generation                              |
 
 ## Code Generation Targets

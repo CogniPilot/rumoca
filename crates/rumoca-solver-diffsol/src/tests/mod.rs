@@ -1,13 +1,13 @@
 use super::*;
 use crate::test_support::{comp_ref, real, sub, var_ref};
-use rumoca_ir_dae as dae;
-use rumoca_phase_structural::scalarize::scalarize_equations;
+use rumoca_sim_core::ir_dae as dae;
+use rumoca_sim_core::phase_structural::scalarize::scalarize_equations;
 type BuiltinFunction = dae::BuiltinFunction;
 type ExternalFunction = dae::ExternalFunction;
 type Function = dae::Function;
 type FunctionParam = dae::FunctionParam;
 type Literal = dae::Literal;
-type OpBinary = rumoca_ir_core::OpBinary;
+type OpBinary = rumoca_sim_core::ir_core::OpBinary;
 type Statement = dae::Statement;
 type VarName = dae::VarName;
 type Variable = dae::Variable;
@@ -486,7 +486,7 @@ fn test_refresh_runtime_observed_solver_channels_skips_fixed_alias_target_seedin
         scalar_count: 1,
     });
 
-    let solver_names = rumoca_sim::runtime::layout::solver_vector_names(&dae, dae.f_x.len());
+    let solver_names = rumoca_sim_core::runtime::layout::solver_vector_names(&dae, dae.f_x.len());
     assert_eq!(
         solver_names,
         vec!["x".to_string(), "a".to_string(), "b".to_string()]
@@ -548,7 +548,7 @@ fn test_refresh_runtime_observed_solver_channels_preserves_state_values_between_
                     rhs: Box::new(real(0.0)),
                 },
                 Expression::Unary {
-                    op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+                    op: rumoca_sim_core::ir_core::OpUnary::Minus(Default::default()),
                     rhs: Box::new(Expression::BuiltinCall {
                         function: BuiltinFunction::Pre,
                         args: vec![var_ref("v")],
@@ -565,9 +565,9 @@ fn test_refresh_runtime_observed_solver_channels_preserves_state_values_between_
         scalar_count: 1,
     });
 
-    rumoca_eval_dae::runtime::clear_pre_values();
-    let mut pre_env = rumoca_eval_dae::runtime::build_env(&dae, &[1.0, 0.0], &[], 0.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&pre_env);
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
+    let mut pre_env = rumoca_sim_core::phase_solve_lower::build_env(&dae, &[1.0, 0.0], &[], 0.0);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&pre_env);
     // Keep the seed env live so later tests do not inherit stale values.
     pre_env.vars.clear();
 
@@ -756,7 +756,7 @@ fn test_overwrite_solver_state_recomputes_dy_from_updated_event_state() {
     });
 
     let budget = TimeoutBudget::new(None);
-    let mass = rumoca_sim::compute_mass_matrix(&dae, 1, &[], &budget).expect("mass matrix");
+    let mass = rumoca_sim_core::compute_mass_matrix(&dae, 1, &[], &budget).expect("mass matrix");
     let mut problem =
         problem::build_problem(&dae, 1e-6, 1e-6, 1e-6, &mass).expect("build diffsol problem");
     configure_solver_problem_with_profile(
@@ -818,7 +818,7 @@ fn test_relaxed_ic_hint_has_disjoint_drop_row_detects_disjoint_pairing() {
         origin: "eq1".to_string(),
         scalar_count: 1,
     });
-    let hint = rumoca_phase_structural::IcRelaxationHint {
+    let hint = rumoca_sim_core::phase_structural::IcRelaxationHint {
         dropped_eq_global: vec![1],
         dropped_unknown_names: vec!["x".to_string()],
     };
@@ -835,7 +835,7 @@ fn test_relaxed_ic_hint_has_disjoint_drop_row_accepts_touching_pairing() {
         origin: "eq0".to_string(),
         scalar_count: 1,
     });
-    let hint = rumoca_phase_structural::IcRelaxationHint {
+    let hint = rumoca_sim_core::phase_structural::IcRelaxationHint {
         dropped_eq_global: vec![0],
         dropped_unknown_names: vec!["x".to_string()],
     };

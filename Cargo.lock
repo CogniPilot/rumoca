@@ -3111,19 +3111,13 @@ dependencies = [
  "crossterm",
  "dirs",
  "flate2",
- "libc",
  "miette",
  "mimalloc",
  "ntest",
  "rayon",
- "rumoca-codec",
- "rumoca-codec-flatbuffers",
+ "rumoca-analysis-dae",
  "rumoca-compile",
  "rumoca-core",
- "rumoca-eval-dae",
- "rumoca-input",
- "rumoca-input-gamepad",
- "rumoca-input-keyboard",
  "rumoca-ir-ast",
  "rumoca-ir-core",
  "rumoca-ir-dae",
@@ -3134,19 +3128,13 @@ dependencies = [
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
- "rumoca-phase-structural",
  "rumoca-phase-typecheck",
  "rumoca-sim",
- "rumoca-solver-diffsol",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
- "rumoca-transport-udp",
- "rumoca-transport-websocket",
- "rumoca-viz-web",
  "serde",
  "serde_json",
  "serde_yaml",
- "signal-hook",
  "tar",
  "tempfile",
  "thiserror 2.0.17",
@@ -3160,6 +3148,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-analysis-dae"
+version = "0.8.12"
+dependencies = [
+ "rumoca-core",
+ "rumoca-ir-core",
+ "rumoca-ir-dae",
+]
+
+[[package]]
 name = "rumoca-bind-python"
 version = "0.8.12"
 dependencies = [
@@ -3168,7 +3165,6 @@ dependencies = [
  "rumoca",
  "rumoca-compile",
  "rumoca-sim",
- "rumoca-solver-diffsol",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde_json",
@@ -3184,11 +3180,7 @@ dependencies = [
  "js-sys",
  "lsp-types",
  "rumoca-compile",
- "rumoca-ir-dae",
- "rumoca-phase-structural",
  "rumoca-sim",
- "rumoca-solver-diffsol",
- "rumoca-solver-rk45",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
  "serde",
@@ -3203,7 +3195,9 @@ dependencies = [
 name = "rumoca-codec"
 version = "0.8.12"
 dependencies = [
- "indexmap",
+ "anyhow",
+ "rumoca-codec-flatbuffers",
+ "rumoca-signal-frame",
 ]
 
 [[package]]
@@ -3211,7 +3205,7 @@ name = "rumoca-codec-flatbuffers"
 version = "0.8.12"
 dependencies = [
  "anyhow",
- "rumoca-codec",
+ "rumoca-signal-frame",
  "serde",
 ]
 
@@ -3277,26 +3271,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-eval-dae"
-version = "0.8.12"
-dependencies = [
- "cranelift-codegen",
- "cranelift-frontend",
- "cranelift-jit",
- "cranelift-module",
- "indexmap",
- "js-sys",
- "rumoca-core",
- "rumoca-ir-core",
- "rumoca-ir-dae",
- "rumoca-ir-solve",
- "rumoca-phase-solve-lower",
- "wasm-bindgen",
- "wasm-encoder",
- "wasmparser",
-]
-
-[[package]]
 name = "rumoca-eval-flat"
 version = "0.8.12"
 dependencies = [
@@ -3313,7 +3287,10 @@ version = "0.8.12"
 dependencies = [
  "anyhow",
  "indexmap",
- "rumoca-codec",
+ "rumoca-input-gamepad",
+ "rumoca-input-keyboard",
+ "rumoca-input-types",
+ "rumoca-signal-frame",
  "serde",
  "serde_json",
  "toml",
@@ -3325,7 +3302,7 @@ version = "0.8.12"
 dependencies = [
  "anyhow",
  "gilrs",
- "rumoca-input",
+ "rumoca-input-types",
 ]
 
 [[package]]
@@ -3334,7 +3311,14 @@ version = "0.8.12"
 dependencies = [
  "anyhow",
  "crossterm",
- "rumoca-input",
+ "rumoca-input-types",
+]
+
+[[package]]
+name = "rumoca-input-types"
+version = "0.8.12"
+dependencies = [
+ "anyhow",
 ]
 
 [[package]]
@@ -3405,12 +3389,11 @@ version = "0.8.12"
 dependencies = [
  "indexmap",
  "miette",
+ "rumoca-analysis-dae",
  "rumoca-core",
- "rumoca-eval-dae",
  "rumoca-ir-core",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
- "rumoca-phase-structural",
  "rustc-hash",
  "thiserror 2.0.17",
 ]
@@ -3477,10 +3460,19 @@ dependencies = [
 name = "rumoca-phase-solve-lower"
 version = "0.8.12"
 dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-jit",
+ "cranelift-module",
  "indexmap",
+ "js-sys",
+ "rumoca-core",
  "rumoca-ir-core",
  "rumoca-ir-dae",
  "rumoca-ir-solve",
+ "wasm-bindgen",
+ "wasm-encoder",
+ "wasmparser",
 ]
 
 [[package]]
@@ -3488,8 +3480,8 @@ name = "rumoca-phase-structural"
 version = "0.8.12"
 dependencies = [
  "indexmap",
+ "rumoca-analysis-dae",
  "rumoca-core",
- "rumoca-eval-dae",
  "rumoca-ir-core",
  "rumoca-ir-dae",
  "thiserror 2.0.17",
@@ -3511,7 +3503,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-signal-frame"
+version = "0.8.12"
+dependencies = [
+ "indexmap",
+]
+
+[[package]]
 name = "rumoca-sim"
+version = "0.8.12"
+dependencies = [
+ "anyhow",
+ "libc",
+ "rumoca-codec",
+ "rumoca-compile",
+ "rumoca-input",
+ "rumoca-sim-core",
+ "rumoca-solver-diffsol",
+ "rumoca-solver-rk45",
+ "rumoca-transport-udp",
+ "rumoca-transport-websocket",
+ "rumoca-viz-web",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "toml",
+]
+
+[[package]]
+name = "rumoca-sim-core"
 version = "0.8.12"
 dependencies = [
  "getrandom 0.3.4",
@@ -3519,8 +3539,8 @@ dependencies = [
  "instant",
  "levenberg-marquardt",
  "nalgebra",
+ "rumoca-analysis-dae",
  "rumoca-core",
- "rumoca-eval-dae",
  "rumoca-ir-core",
  "rumoca-ir-dae",
  "rumoca-ir-solve",
@@ -3536,18 +3556,10 @@ name = "rumoca-solver-diffsol"
 version = "0.8.12"
 dependencies = [
  "diffsol",
- "getrandom 0.3.4",
  "indexmap",
- "instant",
  "levenberg-marquardt",
  "nalgebra",
- "rumoca-core",
- "rumoca-eval-dae",
- "rumoca-ir-core",
- "rumoca-ir-dae",
- "rumoca-phase-solve-lower",
- "rumoca-phase-structural",
- "rumoca-sim",
+ "rumoca-sim-core",
  "thiserror 2.0.17",
 ]
 
@@ -3555,13 +3567,7 @@ dependencies = [
 name = "rumoca-solver-rk45"
 version = "0.8.12"
 dependencies = [
- "getrandom 0.3.4",
- "rumoca-core",
- "rumoca-eval-dae",
- "rumoca-ir-core",
- "rumoca-ir-dae",
- "rumoca-phase-structural",
- "rumoca-sim",
+ "rumoca-sim-core",
  "thiserror 2.0.17",
 ]
 
@@ -3577,8 +3583,8 @@ dependencies = [
  "mimalloc",
  "ntest",
  "rayon",
+ "rumoca-analysis-dae",
  "rumoca-compile",
- "rumoca-eval-dae",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
@@ -3590,7 +3596,6 @@ dependencies = [
  "rumoca-phase-structural",
  "rumoca-phase-typecheck",
  "rumoca-sim",
- "rumoca-solver-diffsol",
  "serde",
  "serde_json",
  "tar",
@@ -3615,8 +3620,6 @@ dependencies = [
  "rayon",
  "rumoca-compile",
  "rumoca-sim",
- "rumoca-solver-diffsol",
- "rumoca-viz-web",
  "serde",
  "serde_json",
  "syn 2.0.114",
@@ -3660,7 +3663,6 @@ dependencies = [
  "lsp-types",
  "rumoca-compile",
  "rumoca-sim",
- "rumoca-solver-diffsol",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",

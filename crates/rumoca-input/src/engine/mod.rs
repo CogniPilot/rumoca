@@ -12,7 +12,9 @@ use std::time::Instant;
 use anyhow::{Result, anyhow, bail};
 
 use crate::config::{DeriveSpec, InputConfig, LocalDef};
+#[allow(unused_imports)]
 use crate::device::{GamepadAxis, GamepadButton, KeyCode, KeyModifiers};
+pub use rumoca_input_types::{GamepadSnapshot, InputMode, KeyboardEvent};
 
 pub use compile::{
     ButtonAction, CompiledDecay, CompiledDerive, CompiledGamepadAxis, CompiledGamepadButton,
@@ -49,44 +51,6 @@ impl LocalValue {
             (Self::FloatArray(v), Some(i)) => v.get(i).copied().map(|x| x != 0.0),
             _ => None,
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputMode {
-    Gamepad,
-    Keyboard,
-}
-
-/// A snapshot of gamepad state at one poll. Constructed by concrete device
-/// adapters and consumed by the pure input state machine.
-#[derive(Debug, Clone, Default)]
-pub struct GamepadSnapshot {
-    pub axis_values: HashMap<GamepadAxis, f64>,
-    pub button_pressed: HashMap<GamepadButton, bool>,
-}
-
-impl GamepadSnapshot {
-    pub fn new(
-        axis_values: HashMap<GamepadAxis, f64>,
-        button_pressed: HashMap<GamepadButton, bool>,
-    ) -> Self {
-        Self {
-            axis_values,
-            button_pressed,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KeyboardEvent {
-    pub code: KeyCode,
-    pub modifiers: KeyModifiers,
-}
-
-impl KeyboardEvent {
-    pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
-        Self { code, modifiers }
     }
 }
 

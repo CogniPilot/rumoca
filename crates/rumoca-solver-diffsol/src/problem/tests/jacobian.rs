@@ -253,7 +253,7 @@ fn test_jacobian_ad_vs_fd_three_vars() {
 
     // eq1: 0 = -x + z^2  (ODE row for y)
     let neg_x = Expression::Unary {
-        op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+        op: rumoca_sim_core::ir_core::OpUnary::Minus(Default::default()),
         rhs: Box::new(var("x")),
     };
     let z2 = binop(OpBinary::Exp(Default::default()), var("z"), lit(2.0));
@@ -315,7 +315,7 @@ fn test_jacobian_ad_vs_fd_conditional() {
 
     // eq0: 0 = if x > 0 then -x else x
     let neg_x = Expression::Unary {
-        op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+        op: rumoca_sim_core::ir_core::OpUnary::Minus(Default::default()),
         rhs: Box::new(var("x")),
     };
     let cond = Expression::Binary {

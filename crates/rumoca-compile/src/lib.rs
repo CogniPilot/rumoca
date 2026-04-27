@@ -116,6 +116,11 @@ pub mod codegen {
     pub use crate::codegen_api::*;
 }
 
+/// Structural-analysis primitives (BLT sorting, scalarization).
+pub mod phase_structural {
+    pub use rumoca_phase_structural::*;
+}
+
 /// Compilation session API and result structures.
 pub mod compile {
     pub use rumoca_core as core;

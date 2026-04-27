@@ -1,13 +1,38 @@
-//! Lower DAE data into solver-facing IR.
+//! Lower DAE data into solver-facing IR, plus the runtime that consumes it.
+//!
+//! Three concerns under one roof:
+//!
+//! - **Lowering passes** (`layout`, `lower`, `ad`): take a `dae::Dae` and produce
+//!   `ir-solve` row IR — variable layout, residual rows, Jacobian-vector rows,
+//!   discrete RHS, root conditions.
+//! - **Tree-walk interpreter** (`eval`, `dual`, `sim_float`, `statement`): always
+//!   available; evaluates `dae::Expression` trees directly during simulation,
+//!   with `Dual<f64>`-based AD and pre-value snapshots.
+//! - **JIT compilers** (`cranelift`, `wasm`, feature-gated): translate the row IR
+//!   into machine code (cranelift) or wasm bytecode. JIT-emitted code calls
+//!   back into the interpreter for table lookups and special functions.
 
 use std::collections::HashMap;
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
+// Lowering passes (DAE → ir-solve rows).
 pub mod ad;
 pub mod layout;
 pub mod lower;
+
+// Runtime evaluator (interpreter + AD).
+pub mod dual;
+pub mod eval;
+pub mod sim_float;
+pub mod statement;
+
+// JIT backends (feature-gated).
+#[cfg(feature = "cranelift")]
+pub mod cranelift;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 pub use ad::{lower_initial_residual_ad, lower_residual_ad};
 pub use layout::build_var_layout;
@@ -18,6 +43,38 @@ pub use lower::{
     lower_initial_expression_rows_from_expressions,
     lower_initial_expression_rows_from_expressions_with_runtime_metadata, lower_initial_residual,
     lower_residual, lower_root_conditions,
+};
+
+pub use eval::{
+    IMPLICIT_CLOCK_ACTIVE_ENV_KEY, INIT_HOMOTOPY_LAMBDA_KEY, MODELICA_COMPLEX_CONSTANTS,
+    MODELICA_CONSTANTS, VarEnv, build_env, build_runtime_parameter_tail_env, clear_pre_values,
+    collect_user_functions, collect_var_dims, collect_var_starts,
+    eval_array_values_dae as eval_array_values,
+    eval_condition_as_root_dae as eval_condition_as_root, eval_const_expr_dae as eval_const_expr,
+    eval_expr_dae as eval_expr, eval_function_call_pub_dae as eval_function_call_pub,
+    eval_projected_function_output_pub_dae as eval_projected_function_output_pub, get_pre_value,
+    infer_clock_timing_seconds_dae as infer_clock_timing_seconds, is_runtime_special_function_name,
+    is_runtime_special_function_short_name, lift_env, map_var_to_env,
+    refresh_env_solver_and_parameter_values,
+    resolve_function_call_outputs_pub_dae as resolve_function_call_outputs_pub, restore_pre_values,
+    seed_pre_values_from_env, set_array_entries, set_pre_value, snapshot_pre_values,
+};
+
+#[cfg(feature = "cranelift")]
+pub use cranelift::{
+    Backend, CompileError, CompiledExpressionRows, CompiledJacobianV, CompiledResidual,
+    compile_discrete_rhs, compile_expression_row_block, compile_expressions,
+    compile_initial_expressions, compile_initial_jacobian_v, compile_initial_residual,
+    compile_jacobian_row_block, compile_jacobian_v, compile_residual, compile_residual_row_block,
+    compile_root_conditions,
+};
+#[cfg(feature = "wasm")]
+pub use wasm::{
+    CompiledExpressionRowsWasm, CompiledJacobianVWasm, CompiledResidualWasm, WasmCompileError,
+    compile_discrete_rhs_wasm, compile_expression_row_block_wasm, compile_expressions_wasm,
+    compile_initial_expressions_wasm, compile_initial_jacobian_v_wasm,
+    compile_initial_residual_wasm, compile_jacobian_row_block_wasm, compile_jacobian_v_wasm,
+    compile_residual_row_block_wasm, compile_residual_wasm, compile_root_conditions_wasm,
 };
 
 pub fn lower_solve_layout(dae_model: &dae::Dae, solver_len: usize) -> solve::SolveLayout {

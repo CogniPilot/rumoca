@@ -269,11 +269,11 @@ Recommended crate mapping:
 | DAE structural analysis | `rumoca-phase-structural` |
 | solver-facing prepared IR, vector layout, row operations | `rumoca-ir-solve` |
 | DAE-to-solve layout and row lowering | `rumoca-phase-solve-lower` |
-| backend-neutral solver contracts and shared runtime helpers | `rumoca-sim` |
+| backend-neutral solver contracts and shared runtime helpers | `rumoca-sim-core` |
 | concrete diffsol backend | `rumoca-solver-diffsol` |
 | simple pure-Rust RK backend | `rumoca-solver-rk45` |
-| shared stepping/runtime loop surface | `rumoca-sim` |
-| report/payload shaping | `rumoca-sim` |
+| shared stepping/runtime loop surface | `rumoca-sim-core` |
+| report/payload shaping | `rumoca-sim-core` |
 | web/HTML/assets | `rumoca-viz-web` |
 
 Current app note:
@@ -308,7 +308,7 @@ Migration rule:
 - Solver-facing DAE must carry MLS Appendix B canonical equation buckets (`f_x`, `f_z`, `f_m`, `f_c`, `relation`) plus runtime metadata (`synthetic_root_conditions`, `scheduled_time_events`, `clock_constructor_exprs`, `clock_schedules`).
 - Solver-facing DAE must not include model-level `when_clauses`, `algorithms`, or `initial_algorithms`.
 - Solver-facing equation partitions consumed by continuous solvers (`f_x`, `initial_equations`) must not contain unlowered synchronous operators (`sample/hold/Clock/subSample/superSample/shiftSample/backSample/noClock/firstTick/previous`); ToDae rejects these with `ED014`.
-- Backend adapters (e.g. `rumoca-sim`) must consume this pre-lowered DAE contract and must not perform fallback semantic lowering of model algorithms/when clauses.
+- Backend adapters (e.g. `rumoca-sim-core`) must consume this pre-lowered DAE contract and must not perform fallback semantic lowering of model algorithms/when clauses.
 
 ### Balance Checking (MLS §4.8)
 - `Dae.effective_equation_count()` - counts array elements

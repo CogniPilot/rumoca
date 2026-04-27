@@ -15,7 +15,9 @@ pub(crate) fn build_runtime_projection_masks(
 ) -> RuntimeProjectionMasks {
     let (mut fixed_cols, mut ignored_rows) = initialize_runtime_projection_masks(n_x, n_eq);
     let target_assignment_stats =
-        rumoca_sim::runtime::assignment::collect_direct_assignment_target_stats(dae, n_x, false);
+        rumoca_sim_core::runtime::assignment::collect_direct_assignment_target_stats(
+            dae, n_x, false,
+        );
     let names = solver_vector_names(dae, n_eq);
     let name_to_idx: std::collections::HashMap<String, usize> = names
         .iter()
@@ -98,7 +100,7 @@ pub(crate) fn apply_runtime_projection_assignment_masks(
     name_to_idx: &std::collections::HashMap<String, usize>,
     target_assignment_stats: &std::collections::HashMap<
         String,
-        rumoca_sim::runtime::assignment::DirectAssignmentTargetStats,
+        rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats,
     >,
     fixed_cols: &mut [bool],
     ignored_rows: &mut [bool],
@@ -111,7 +113,9 @@ pub(crate) fn apply_runtime_projection_assignment_masks(
             continue;
         };
         let is_alias_solution =
-            rumoca_sim::runtime::assignment::assignment_solution_is_alias_varref(dae, solution);
+            rumoca_sim_core::runtime::assignment::assignment_solution_is_alias_varref(
+                dae, solution,
+            );
         if !runtime_projection_target_can_be_seeded(
             target.as_str(),
             is_alias_solution,
@@ -510,7 +514,7 @@ pub(crate) fn collect_runtime_projection_var_ref(
     fixed_cols: &[bool],
     out: &mut std::collections::BTreeSet<usize>,
 ) {
-    if let Some(key) = rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)
+    if let Some(key) = rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
         && let Some(idx) = solver_idx_for_target(key.as_str(), name_to_idx)
         && idx >= n_x
         && idx < fixed_cols.len()
@@ -566,7 +570,7 @@ pub(crate) fn runtime_projection_target_can_be_seeded(
     is_alias_solution: bool,
     stats: &std::collections::HashMap<
         String,
-        rumoca_sim::runtime::assignment::DirectAssignmentTargetStats,
+        rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats,
     >,
 ) -> bool {
     let target_stats = stats.get(target).copied().unwrap_or_default();
@@ -583,7 +587,7 @@ pub(crate) fn runtime_projection_target_is_exogenous(
     n_eq: usize,
     name_to_idx: &std::collections::HashMap<String, usize>,
 ) -> bool {
-    rumoca_sim::runtime::assignment::direct_assignment_source_is_known(
+    rumoca_sim_core::runtime::assignment::direct_assignment_source_is_known(
         dae,
         solution,
         n_x,
@@ -605,7 +609,7 @@ pub(crate) fn runtime_projection_alias_source_solver_idx(
     let Expression::VarRef { name, subscripts } = solution else {
         return None;
     };
-    let source = rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)?;
+    let source = rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)?;
     solver_idx_for_target(source.as_str(), name_to_idx)
 }
 
@@ -808,7 +812,7 @@ pub(crate) fn runtime_projection_zero_literal_target_idx(
         lhs.as_str().to_string()
     } else {
         let Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(_),
+            op: rumoca_sim_core::ir_core::OpBinary::Sub(_),
             lhs,
             rhs,
         } = &eq.rhs
@@ -838,7 +842,7 @@ pub(crate) fn runtime_projection_exact_alias_pair(
     }
 
     let Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(_),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(_),
         lhs,
         rhs,
     } = &eq.rhs
@@ -855,8 +859,8 @@ pub(crate) fn runtime_projection_exact_alias_names(
     lhs: String,
     rhs: String,
 ) -> Option<(String, String)> {
-    if rumoca_sim::runtime::assignment::is_known_assignment_name(dae, lhs.as_str())
-        && rumoca_sim::runtime::assignment::is_known_assignment_name(dae, rhs.as_str())
+    if rumoca_sim_core::runtime::assignment::is_known_assignment_name(dae, lhs.as_str())
+        && rumoca_sim_core::runtime::assignment::is_known_assignment_name(dae, rhs.as_str())
     {
         return Some((lhs, rhs));
     }
@@ -866,24 +870,24 @@ pub(crate) fn runtime_projection_exact_alias_names(
 pub(crate) fn runtime_projection_exact_alias_name(expr: &Expression) -> Option<String> {
     match expr {
         Expression::VarRef { name, subscripts } => {
-            rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)
+            rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
         }
         Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(_),
+            op: rumoca_sim_core::ir_core::OpBinary::Sub(_),
             lhs,
             rhs,
         } if runtime_projection_is_zero_literal(rhs.as_ref()) => {
             runtime_projection_exact_alias_name(lhs)
         }
         Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(_),
+            op: rumoca_sim_core::ir_core::OpBinary::Add(_),
             lhs,
             rhs,
         } if runtime_projection_is_zero_literal(lhs.as_ref()) => {
             runtime_projection_exact_alias_name(rhs)
         }
         Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(_),
+            op: rumoca_sim_core::ir_core::OpBinary::Add(_),
             lhs,
             rhs,
         } if runtime_projection_is_zero_literal(rhs.as_ref()) => {
@@ -900,24 +904,24 @@ pub(crate) fn runtime_projection_effective_alias_name(
 ) -> Option<String> {
     match expr {
         Expression::VarRef { name, subscripts } => {
-            rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)
+            rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
         }
         Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(_),
+            op: rumoca_sim_core::ir_core::OpBinary::Sub(_),
             lhs,
             rhs,
         } if runtime_projection_is_zero_reducer(rhs.as_ref(), name_to_idx, zero_fixed_cols) => {
             runtime_projection_effective_alias_name(lhs, name_to_idx, zero_fixed_cols)
         }
         Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(_),
+            op: rumoca_sim_core::ir_core::OpBinary::Add(_),
             lhs,
             rhs,
         } if runtime_projection_is_zero_reducer(lhs.as_ref(), name_to_idx, zero_fixed_cols) => {
             runtime_projection_effective_alias_name(rhs, name_to_idx, zero_fixed_cols)
         }
         Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(_),
+            op: rumoca_sim_core::ir_core::OpBinary::Add(_),
             lhs,
             rhs,
         } if runtime_projection_is_zero_reducer(rhs.as_ref(), name_to_idx, zero_fixed_cols) => {
@@ -946,7 +950,8 @@ pub(crate) fn runtime_projection_var_ref_is_zero_fixed(
     let Expression::VarRef { name, subscripts } = expr else {
         return false;
     };
-    let Some(key) = rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts) else {
+    let Some(key) = rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
+    else {
         return false;
     };
     let Some(idx) = solver_idx_for_target(key.as_str(), name_to_idx) else {
@@ -971,8 +976,8 @@ pub(crate) fn runtime_projection_exact_continuous_alias_row(
     name_to_idx: &std::collections::HashMap<String, usize>,
     fixed_cols: &[bool],
 ) -> Option<(usize, usize, usize)> {
-    if rumoca_sim::runtime::assignment::is_discrete_name(dae, lhs)
-        || rumoca_sim::runtime::assignment::is_discrete_name(dae, rhs)
+    if rumoca_sim_core::runtime::assignment::is_discrete_name(dae, lhs)
+        || rumoca_sim_core::runtime::assignment::is_discrete_name(dae, rhs)
     {
         return None;
     }
@@ -1151,13 +1156,13 @@ pub(crate) fn no_state_runtime_direct_assignment<'a>(
     }
 
     let Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(_),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(_),
         lhs,
         rhs,
     } = &eq.rhs
     else {
         return eq.lhs.as_ref().and_then(|lhs| {
-            let lhs_size = rumoca_sim::runtime::assignment::variable_size_for_assignment_name(
+            let lhs_size = rumoca_sim_core::runtime::assignment::variable_size_for_assignment_name(
                 dae,
                 lhs.as_str(),
             )?;
@@ -1167,13 +1172,13 @@ pub(crate) fn no_state_runtime_direct_assignment<'a>(
 
     let lhs_key = match lhs.as_ref() {
         Expression::VarRef { name, subscripts } => {
-            rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)
+            rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
         }
         _ => None,
     };
     let rhs_key = match rhs.as_ref() {
         Expression::VarRef { name, subscripts } => {
-            rumoca_sim::runtime::assignment::canonical_var_ref_key(name, subscripts)
+            rumoca_sim_core::runtime::assignment::canonical_var_ref_key(name, subscripts)
         }
         _ => None,
     };
@@ -1182,7 +1187,7 @@ pub(crate) fn no_state_runtime_direct_assignment<'a>(
         let rhs_solver = solver_idx_for_target(rhs_key.as_str(), name_to_idx).is_some();
         match (lhs_solver, rhs_solver) {
             (true, false)
-                if rumoca_sim::runtime::assignment::is_runtime_unknown_name(
+                if rumoca_sim_core::runtime::assignment::is_runtime_unknown_name(
                     dae,
                     rhs_key.as_str(),
                 ) =>
@@ -1190,7 +1195,7 @@ pub(crate) fn no_state_runtime_direct_assignment<'a>(
                 return Some((rhs_key.clone(), lhs.as_ref()));
             }
             (false, true)
-                if rumoca_sim::runtime::assignment::is_runtime_unknown_name(
+                if rumoca_sim_core::runtime::assignment::is_runtime_unknown_name(
                     dae,
                     lhs_key.as_str(),
                 ) =>
@@ -1202,7 +1207,7 @@ pub(crate) fn no_state_runtime_direct_assignment<'a>(
     }
 
     if let Some((target, solution)) = extract_direct_assignment(&eq.rhs) {
-        let target_size = rumoca_sim::runtime::assignment::variable_size_for_assignment_name(
+        let target_size = rumoca_sim_core::runtime::assignment::variable_size_for_assignment_name(
             dae,
             target.as_str(),
         )?;
@@ -1213,8 +1218,10 @@ pub(crate) fn no_state_runtime_direct_assignment<'a>(
     }
 
     eq.lhs.as_ref().and_then(|lhs| {
-        let lhs_size =
-            rumoca_sim::runtime::assignment::variable_size_for_assignment_name(dae, lhs.as_str())?;
+        let lhs_size = rumoca_sim_core::runtime::assignment::variable_size_for_assignment_name(
+            dae,
+            lhs.as_str(),
+        )?;
         (lhs_size <= 1).then(|| (lhs.as_str().to_string(), &eq.rhs))
     })
 }
@@ -1418,7 +1425,7 @@ pub(crate) fn solver_target_has_runtime_alias_anchor(
             continue;
         }
         let mut visited = std::collections::HashSet::from([root.clone()]);
-        if rumoca_sim::runtime::alias::collect_alias_component(
+        if rumoca_sim_core::runtime::alias::collect_alias_component(
             root.as_str(),
             adjacency,
             &mut visited,
@@ -1535,10 +1542,15 @@ pub(crate) fn no_state_runtime_projection_required(dae: &Dae, n_x: usize) -> boo
         .map(|(idx, name)| (name.clone(), idx))
         .collect();
     let target_assignment_stats =
-        rumoca_sim::runtime::assignment::collect_direct_assignment_target_stats(dae, n_x, false);
+        rumoca_sim_core::runtime::assignment::collect_direct_assignment_target_stats(
+            dae, n_x, false,
+        );
     let alias_adjacency =
-        rumoca_sim::runtime::alias::build_runtime_alias_adjacency_with_known_assignments(dae, n_x);
-    let runtime_anchors = rumoca_sim::runtime::alias::collect_runtime_alias_anchor_names(dae, n_x);
+        rumoca_sim_core::runtime::alias::build_runtime_alias_adjacency_with_known_assignments(
+            dae, n_x,
+        );
+    let runtime_anchors =
+        rumoca_sim_core::runtime::alias::collect_runtime_alias_anchor_names(dae, n_x);
     let Some(info) = collect_no_state_runtime_assignment_info(
         dae,
         n_x,
@@ -1587,7 +1599,7 @@ pub(crate) fn collect_no_state_runtime_assignment_info<'a>(
     name_to_idx: &std::collections::HashMap<String, usize>,
     target_assignment_stats: &std::collections::HashMap<
         String,
-        rumoca_sim::runtime::assignment::DirectAssignmentTargetStats,
+        rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats,
     >,
 ) -> Option<NoStateRuntimeAssignmentInfo<'a>> {
     let mut assigned_solver_targets = std::collections::HashSet::new();
@@ -1604,7 +1616,9 @@ pub(crate) fn collect_no_state_runtime_assignment_info<'a>(
             .unwrap_or_default();
         if target_stats.total > 1
             && target_stats.non_alias == 1
-            && rumoca_sim::runtime::assignment::assignment_solution_is_alias_varref(dae, solution)
+            && rumoca_sim_core::runtime::assignment::assignment_solution_is_alias_varref(
+                dae, solution,
+            )
         {
             continue;
         }
@@ -1640,14 +1654,14 @@ pub(crate) fn no_state_assignment_is_projection_safe(
     target: &str,
     target_assignment_stats: &std::collections::HashMap<
         String,
-        rumoca_sim::runtime::assignment::DirectAssignmentTargetStats,
+        rumoca_sim_core::runtime::assignment::DirectAssignmentTargetStats,
     >,
 ) -> bool {
     if !no_state_solution_is_fast_refresh_safe(solution) {
         return false;
     }
     let is_alias_solution =
-        rumoca_sim::runtime::assignment::assignment_solution_is_alias_varref(dae, solution);
+        rumoca_sim_core::runtime::assignment::assignment_solution_is_alias_varref(dae, solution);
     let target_stats = target_assignment_stats
         .get(target)
         .copied()

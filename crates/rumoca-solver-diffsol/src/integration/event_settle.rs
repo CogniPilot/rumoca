@@ -2,9 +2,9 @@ use diffsol::{OdeEquations, OdeSolverMethod, VectorHost};
 
 use super::{SolverStateOverwriteInput, overwrite_solver_state};
 use crate::{Dae, SimError, SimOptions, SolverStartupProfile, eval, problem, sim_trace_enabled};
-use rumoca_sim::TimeoutBudget;
+use rumoca_sim_core::TimeoutBudget;
 
-pub(crate) use rumoca_sim::CompiledDiscreteEventContext;
+pub(crate) use rumoca_sim_core::CompiledDiscreteEventContext;
 
 pub(crate) struct StartupSyncInput<'a> {
     pub(crate) dae: &'a Dae,
@@ -183,7 +183,7 @@ where
             },
         )?;
     }
-    rumoca_sim::runtime::startup::refresh_pre_values_from_state_with_initial_assignments_strict(
+    rumoca_sim_core::runtime::startup::refresh_pre_values_from_state_with_initial_assignments_strict(
         input.dae,
         solver.state().y.as_slice(),
         input.param_values,
@@ -197,7 +197,7 @@ pub(crate) fn build_compiled_discrete_event_context(
     dae: &Dae,
     solver_len: usize,
 ) -> Result<Option<CompiledDiscreteEventContext>, SimError> {
-    rumoca_sim::build_compiled_discrete_event_context(dae, solver_len)
+    rumoca_sim_core::build_compiled_discrete_event_context(dae, solver_len)
         .map_err(SimError::CompiledEval)
 }
 
@@ -209,7 +209,7 @@ pub(crate) fn settle_runtime_event_updates(
     t_eval: f64,
     compiled_discrete: Option<&CompiledDiscreteEventContext>,
 ) -> eval::VarEnv<f64> {
-    let env = rumoca_sim::settle_runtime_event_updates_with_compiled_discrete(
+    let env = rumoca_sim_core::settle_runtime_event_updates_with_compiled_discrete(
         dae,
         y,
         p,
@@ -229,7 +229,7 @@ pub(crate) fn settle_runtime_event_updates_frozen_pre(
     t_eval: f64,
     compiled_discrete: Option<&CompiledDiscreteEventContext>,
 ) -> eval::VarEnv<f64> {
-    let env = rumoca_sim::runtime::compiled_discrete::settle_runtime_event_updates_frozen_pre_with_compiled_discrete(
+    let env = rumoca_sim_core::runtime::compiled_discrete::settle_runtime_event_updates_frozen_pre_with_compiled_discrete(
         dae,
         y,
         p,
@@ -268,7 +268,7 @@ fn log_event_settle_targets_if_requested(env: &eval::VarEnv<f64>, t_eval: f64) {
     eprintln!(
         "[sim-introspect] event-settle snapshot t={} implicit_clock_active={}",
         t_eval,
-        env.get(rumoca_eval_dae::runtime::IMPLICIT_CLOCK_ACTIVE_ENV_KEY)
+        env.get(rumoca_sim_core::phase_solve_lower::IMPLICIT_CLOCK_ACTIVE_ENV_KEY)
     );
     for (name, value) in env
         .clock_intervals

@@ -71,7 +71,7 @@ pub struct CompilationResult {
 /// safe to apply unconditionally before template rendering.
 fn scalarized_dae(dae: &Dae) -> Dae {
     let mut dae = dae.clone();
-    rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
+    rumoca_compile::phase_structural::scalarize::scalarize_equations(&mut dae);
     dae
 }
 

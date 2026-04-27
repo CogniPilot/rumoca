@@ -20,7 +20,7 @@ fn build_negative_period_count_trapezoid_dae() -> dae::Dae {
 
 #[test]
 fn test_apply_initial_section_assignments_propagates_aliases_into_pre_equations() {
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
 
     let mut dae = dae::Dae::new();
     dae.discrete_valued.insert(
@@ -40,12 +40,12 @@ fn test_apply_initial_section_assignments_propagates_aliases_into_pre_equations(
         dae::Variable::new(dae::VarName::new("z")),
     );
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("z"),
         lit(0.0),
     )));
     dae.f_m.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("active"),
         var("localActive"),
     )));
@@ -64,7 +64,7 @@ fn test_apply_initial_section_assignments_propagates_aliases_into_pre_equations(
         args: vec![var("localActive")],
     };
     dae.initial_equations.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         pre_new_active,
         pre_local_active,
     )));
@@ -74,9 +74,9 @@ fn test_apply_initial_section_assignments_propagates_aliases_into_pre_equations(
     initialize_state_vector(&dae, &mut y);
     apply_initial_section_assignments(&dae, &mut y, &p, 0.0);
 
-    let pre_local = rumoca_eval_dae::runtime::get_pre_value("localActive")
+    let pre_local = rumoca_sim_core::phase_solve_lower::get_pre_value("localActive")
         .expect("pre(localActive) should be seeded from initial alias closure");
-    let pre_new = rumoca_eval_dae::runtime::get_pre_value("newActive")
+    let pre_new = rumoca_sim_core::phase_solve_lower::get_pre_value("newActive")
         .expect("pre(newActive) should follow explicit initial pre equation");
     assert!(
         (pre_local - 1.0).abs() < 1e-12,
@@ -100,7 +100,7 @@ fn test_persist_initial_section_discrete_starts_propagates_aliases() {
         dae::Variable::new(dae::VarName::new("localActive")),
     );
     dae.f_m.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("active"),
         var("localActive"),
     )));
@@ -146,7 +146,7 @@ fn test_seed_direct_assignment_handles_size1_indexed_lhs() {
     p_var.start = Some(lit(1.25));
     dae.parameters.insert(dae::VarName::new("p"), p_var);
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(dae::Expression::VarRef {
             name: dae::VarName::new("aux"),
             subscripts: vec![dae::Subscript::Index(1)],
@@ -172,7 +172,7 @@ fn test_seed_direct_assignment_updates_all_array_slots_from_base_target() {
     dae.algebraics.insert(dae::VarName::new("aw"), aw);
 
     let rhs = dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("aw")),
         rhs: Box::new(dae::Expression::Array {
             elements: vec![lit(1.0), lit(2.0), lit(3.0)],
@@ -271,7 +271,7 @@ fn test_seed_direct_assignment_initial_values_bootstrap_initial_section_discrete
 
 #[test]
 fn test_seed_direct_assignment_initial_values_falls_back_for_change_builtin() {
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
 
     let mut dae = dae::Dae::new();
     dae.algebraics.insert(
@@ -297,9 +297,9 @@ fn test_seed_direct_assignment_initial_values_falls_back_for_change_builtin() {
         },
     )));
 
-    let mut pre_env = rumoca_eval_dae::runtime::VarEnv::<f64>::new();
+    let mut pre_env = rumoca_sim_core::phase_solve_lower::VarEnv::<f64>::new();
     pre_env.set("flag", 0.0);
-    rumoca_eval_dae::runtime::seed_pre_values_from_env(&pre_env);
+    rumoca_sim_core::phase_solve_lower::seed_pre_values_from_env(&pre_env);
 
     let mut y = vec![0.0; 1];
     let updates = seed_direct_assignment_initial_values(&dae, &mut y, &[1.0], 0, false, 0.0);
@@ -310,7 +310,7 @@ fn test_seed_direct_assignment_initial_values_falls_back_for_change_builtin() {
     );
     assert!((y[0] - 7.0).abs() < 1.0e-12);
 
-    rumoca_eval_dae::runtime::clear_pre_values();
+    rumoca_sim_core::phase_solve_lower::clear_pre_values();
 }
 
 #[test]
@@ -327,22 +327,22 @@ fn test_seed_direct_assignment_ignores_orphaned_variable_pin_equations() {
     dae.f_x.push(dae::Equation {
         lhs: None,
         rhs: dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
             lhs: Box::new(var("x")),
             rhs: Box::new(var("p")),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: rumoca_sim_core::core::Span::DUMMY,
         origin: "equation from model".to_string(),
         scalar_count: 1,
     });
     dae.f_x.push(dae::Equation {
         lhs: None,
         rhs: dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
             lhs: Box::new(var("x")),
             rhs: Box::new(lit(0.0)),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: rumoca_sim_core::core::Span::DUMMY,
         origin: "orphaned_variable_pin".to_string(),
         scalar_count: 1,
     });
@@ -372,15 +372,15 @@ fn test_runtime_projection_not_required_for_unique_acyclic_direct_assignments() 
         dae::Variable::new(dae::VarName::new("y")),
     );
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(lit(1.0)),
     }));
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("y")),
         rhs: Box::new(dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::Add(Default::default()),
             lhs: Box::new(var("x")),
             rhs: Box::new(lit(2.0)),
         }),
@@ -404,15 +404,15 @@ fn test_seed_runtime_direct_assignments_resolves_acyclic_unknown_chain() {
         dae::Variable::new(dae::VarName::new("y")),
     );
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(lit(1.0)),
     }));
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("y")),
         rhs: Box::new(dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::Add(Default::default()),
             lhs: Box::new(var("x")),
             rhs: Box::new(lit(2.0)),
         }),
@@ -600,12 +600,12 @@ fn test_runtime_projection_required_for_duplicate_direct_assignment_targets() {
         dae::Variable::new(dae::VarName::new("y")),
     );
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(lit(1.0)),
     }));
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(var("y")),
     }));
@@ -628,12 +628,12 @@ fn test_runtime_projection_required_for_direct_assignment_cycles() {
         dae::Variable::new(dae::VarName::new("y")),
     );
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(var("y")),
     }));
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("y")),
         rhs: Box::new(var("x")),
     }));
@@ -652,7 +652,7 @@ fn test_runtime_projection_required_for_runtime_discrete_builtins() {
         dae::Variable::new(dae::VarName::new("x")),
     );
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Pre,
@@ -683,17 +683,17 @@ fn test_no_state_runtime_projection_not_required_for_hidden_direct_assignment_ch
     );
 
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(lit(1.0)),
     }));
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("y")),
         rhs: Box::new(var("x")),
     }));
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("hiddenClock.c")),
         rhs: Box::new(var("y")),
     }));
@@ -725,12 +725,12 @@ fn test_no_state_runtime_projection_not_required_for_alias_resolved_solver_targe
     );
 
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("y")),
         rhs: Box::new(lit(1.0)),
     }));
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("periodicClock.c")),
         rhs: Box::new(var("sampleClock")),
     }));
@@ -766,17 +766,17 @@ fn test_no_state_runtime_projection_not_required_for_shift_sample_style_alias_gr
     );
 
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("sine.y")),
         rhs: Box::new(lit(1.0)),
     }));
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("sine.y")),
         rhs: Box::new(var("sample1.u")),
     }));
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("periodicClock.c")),
         rhs: Box::new(var("sample1.clock")),
     }));
@@ -951,7 +951,7 @@ fn test_no_state_runtime_projection_not_required_for_pure_table_value_helper_ass
     dae.f_x.push(dae::Equation::explicit(
         dae::VarName::new("y"),
         dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(Default::default()),
+            op: rumoca_sim_core::ir_core::OpBinary::Add(Default::default()),
             lhs: Box::new(lit(0.25)),
             rhs: Box::new(dae::Expression::FunctionCall {
                 name: dae::VarName::new("Modelica.Blocks.Tables.Internal.getTimeTableValueNoDer2"),
@@ -990,7 +990,7 @@ fn test_no_state_runtime_projection_required_for_visible_non_solver_output_witho
     );
 
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(lit(1.0)),
     }));
@@ -1015,7 +1015,7 @@ fn test_no_state_runtime_projection_not_required_for_visible_non_solver_output_w
     );
 
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(lit(1.0)),
     }));
@@ -1046,7 +1046,7 @@ fn test_no_state_runtime_projection_required_for_visible_non_solver_discrete_wit
     );
 
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(lit(1.0)),
     }));
@@ -1071,7 +1071,7 @@ fn test_no_state_runtime_projection_not_required_for_visible_non_solver_discrete
     );
 
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(lit(1.0)),
     }));
@@ -1105,7 +1105,7 @@ fn test_no_state_runtime_projection_not_required_for_solver_backed_runtime_discr
     );
 
     dae.f_x.push(eq_from(dae::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         lhs: Box::new(var("x")),
         rhs: Box::new(lit(1.0)),
     }));
@@ -1141,7 +1141,7 @@ fn test_no_state_runtime_projection_not_required_for_raw_indexed_solver_runtime_
     );
 
     dae.f_x.push(eq_from(binop(
-        rumoca_ir_core::OpBinary::Sub(Default::default()),
+        rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
         var("src[1]"),
         var("u"),
     )));

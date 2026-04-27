@@ -899,8 +899,8 @@ pub fn render_template(dae_json: &str, template: &str) -> Result<String, JsValue
     // models scalarize is a no-op. If the JSON carries user-added metadata
     // that doesn't round-trip, fall back to the raw JSON path so those
     // augmentations survive.
-    if let Ok(mut dae) = serde_json::from_str::<rumoca_ir_dae::Dae>(dae_json) {
-        rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
+    if let Ok(mut dae) = serde_json::from_str::<rumoca_compile::compile::Dae>(dae_json) {
+        rumoca_compile::phase_structural::scalarize::scalarize_equations(&mut dae);
         return rumoca_compile::codegen::render_dae_template(&dae, template)
             .map_err(|e| JsValue::from_str(&format!("Template error: {}", e)));
     }

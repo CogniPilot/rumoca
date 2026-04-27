@@ -14,7 +14,7 @@ pub(super) struct RuntimeDynamicStopHints {
 impl RuntimeDynamicStopHints {
     pub(super) fn from_dae(dae: &Dae) -> Option<Self> {
         let dynamic_time_event_names =
-            rumoca_sim::runtime::no_state::collect_dynamic_time_event_names(dae);
+            rumoca_sim_core::runtime::no_state::collect_dynamic_time_event_names(dae);
         let direct_time_event_exprs: Vec<Expression> = dae
             .f_z
             .iter()
@@ -46,8 +46,8 @@ pub(super) enum RuntimeSampleMode {
 }
 
 pub(super) struct RuntimeDiscreteCaptureContext {
-    direct_assignment_ctx: rumoca_sim::runtime::assignment::RuntimeDirectAssignmentContext,
-    alias_ctx: rumoca_sim::runtime::alias::RuntimeAliasPropagationContext,
+    direct_assignment_ctx: rumoca_sim_core::runtime::assignment::RuntimeDirectAssignmentContext,
+    alias_ctx: rumoca_sim_core::runtime::alias::RuntimeAliasPropagationContext,
     pub(super) needs_eliminated_env: bool,
 }
 
@@ -75,9 +75,11 @@ pub(super) struct RuntimeDynamicStopInput<'a> {
 }
 
 pub(super) fn runtime_event_matches_schedule(dae: &Dae, opts: &SimOptions, t_event: f64) -> bool {
-    rumoca_sim::timeline::collect_runtime_schedule_events(dae, opts.t_start, opts.t_end)
+    rumoca_sim_core::timeline::collect_runtime_schedule_events(dae, opts.t_start, opts.t_end)
         .into_iter()
-        .any(|scheduled_t| rumoca_sim::timeline::sample_time_match_with_tol(scheduled_t, t_event))
+        .any(|scheduled_t| {
+            rumoca_sim_core::timeline::sample_time_match_with_tol(scheduled_t, t_event)
+        })
 }
 
 pub(super) fn runtime_event_uses_frozen_pre_values(
@@ -95,7 +97,8 @@ pub(super) fn runtime_event_uses_frozen_pre_values(
     }
 
     let mut y_eval = y_event.to_vec();
-    let env = rumoca_sim::runtime::event::build_runtime_env(dae, y_eval.as_mut_slice(), p, t_event);
+    let env =
+        rumoca_sim_core::runtime::event::build_runtime_env(dae, y_eval.as_mut_slice(), p, t_event);
     let mut thresholds = Vec::new();
     for expr in &dae.synthetic_root_conditions {
         collect_direct_time_event_thresholds_from_expr(expr, &env, &mut thresholds);
@@ -107,7 +110,7 @@ pub(super) fn runtime_event_uses_frozen_pre_values(
     // re-iterating it like an ordinary relation event.
     thresholds
         .into_iter()
-        .any(|threshold| rumoca_sim::timeline::sample_time_match_with_tol(threshold, t_event))
+        .any(|threshold| rumoca_sim_core::timeline::sample_time_match_with_tol(threshold, t_event))
 }
 
 pub(super) fn runtime_capture_target_names(dae: &Dae, _solver_names: &[String]) -> Vec<String> {
@@ -130,7 +133,7 @@ pub(super) fn collect_runtime_capture_dependency_seed_names(
             .as_ref()
             .map(|lhs| lhs.as_str().to_string())
             .or_else(|| {
-                rumoca_sim::runtime::assignment::direct_assignment_from_equation(eq)
+                rumoca_sim_core::runtime::assignment::direct_assignment_from_equation(eq)
                     .map(|(target, _)| target)
             });
         let Some(target) = target else {
@@ -158,19 +161,21 @@ pub(super) fn build_runtime_discrete_capture_context(
     observed_names: &[String],
 ) -> RuntimeDiscreteCaptureContext {
     let direct_assignment_ctx =
-        rumoca_sim::runtime::assignment::build_runtime_direct_assignment_context(dae, y_len, n_x);
+        rumoca_sim_core::runtime::assignment::build_runtime_direct_assignment_context(
+            dae, y_len, n_x,
+        );
     let alias_ctx =
-        rumoca_sim::runtime::alias::build_runtime_alias_propagation_context(dae, y_len, n_x);
+        rumoca_sim_core::runtime::alias::build_runtime_alias_propagation_context(dae, y_len, n_x);
     let mut all_names = collect_runtime_capture_dependency_seed_names(dae, observed_names);
     all_names.extend(
-        rumoca_sim::runtime::no_state::collect_reconstruction_discrete_context_names(
+        rumoca_sim_core::runtime::no_state::collect_reconstruction_discrete_context_names(
             dae,
             elim,
             observed_names,
         ),
     );
     let needs_eliminated_env =
-        rumoca_sim::runtime::no_state::sampled_names_need_eliminated_env_with_runtime_closure(
+        rumoca_sim_core::runtime::no_state::sampled_names_need_eliminated_env_with_runtime_closure(
             &all_names,
             elim,
             &direct_assignment_ctx,
@@ -193,8 +198,12 @@ pub(super) fn expr_is_time_var(expr: &Expression) -> bool {
 }
 
 pub(super) fn eval_time_event_threshold(expr: &Expression, env: &eval::VarEnv<f64>) -> Option<f64> {
-    rumoca_sim::runtime::scalar_eval::eval_scalar_expr_fast(expr, env)
-        .or_else(|| Some(rumoca_eval_dae::runtime::eval_expr::<f64>(expr, env)))
+    rumoca_sim_core::runtime::scalar_eval::eval_scalar_expr_fast(expr, env)
+        .or_else(|| {
+            Some(rumoca_sim_core::phase_solve_lower::eval_expr::<f64>(
+                expr, env,
+            ))
+        })
         .filter(|value| value.is_finite())
 }
 
@@ -202,10 +211,10 @@ pub(super) fn expr_has_direct_time_event_threshold(expr: &Expression) -> bool {
     match expr {
         Expression::Binary {
             op:
-                rumoca_ir_core::OpBinary::Ge(_)
-                | rumoca_ir_core::OpBinary::Gt(_)
-                | rumoca_ir_core::OpBinary::Le(_)
-                | rumoca_ir_core::OpBinary::Lt(_),
+                rumoca_sim_core::ir_core::OpBinary::Ge(_)
+                | rumoca_sim_core::ir_core::OpBinary::Gt(_)
+                | rumoca_sim_core::ir_core::OpBinary::Le(_)
+                | rumoca_sim_core::ir_core::OpBinary::Lt(_),
             lhs,
             rhs,
         } => {
@@ -350,10 +359,10 @@ pub(super) fn collect_direct_time_event_thresholds_from_expr(
     match expr {
         Expression::Binary {
             op:
-                rumoca_ir_core::OpBinary::Ge(_)
-                | rumoca_ir_core::OpBinary::Gt(_)
-                | rumoca_ir_core::OpBinary::Le(_)
-                | rumoca_ir_core::OpBinary::Lt(_),
+                rumoca_sim_core::ir_core::OpBinary::Ge(_)
+                | rumoca_sim_core::ir_core::OpBinary::Gt(_)
+                | rumoca_sim_core::ir_core::OpBinary::Le(_)
+                | rumoca_sim_core::ir_core::OpBinary::Lt(_),
             lhs,
             rhs,
         } => {
@@ -482,9 +491,9 @@ pub(super) fn next_dynamic_runtime_stop_time(
         };
         if !event_t.is_finite()
             || event_t <= current_t
-            || rumoca_sim::timeline::sample_time_match_with_tol(event_t, current_t)
+            || rumoca_sim_core::timeline::sample_time_match_with_tol(event_t, current_t)
             || event_t >= stop_time
-            || rumoca_sim::timeline::sample_time_match_with_tol(event_t, stop_time)
+            || rumoca_sim_core::timeline::sample_time_match_with_tol(event_t, stop_time)
         {
             continue;
         }
@@ -498,9 +507,9 @@ pub(super) fn next_dynamic_runtime_stop_time(
     for event_t in thresholds {
         if !event_t.is_finite()
             || event_t <= current_t
-            || rumoca_sim::timeline::sample_time_match_with_tol(event_t, current_t)
+            || rumoca_sim_core::timeline::sample_time_match_with_tol(event_t, current_t)
             || event_t >= stop_time
-            || rumoca_sim::timeline::sample_time_match_with_tol(event_t, stop_time)
+            || rumoca_sim_core::timeline::sample_time_match_with_tol(event_t, stop_time)
         {
             continue;
         }
@@ -515,7 +524,7 @@ pub(super) fn sample_clock_arg_is_explicit_clock(
     clock_expr: &Expression,
     env: &eval::VarEnv<f64>,
 ) -> bool {
-    rumoca_sim::runtime::clock::sample_clock_arg_is_explicit_clock(dae, clock_expr, env)
+    rumoca_sim_core::runtime::clock::sample_clock_arg_is_explicit_clock(dae, clock_expr, env)
 }
 
 pub(super) fn expr_uses_implicit_sample_clock(
@@ -601,12 +610,12 @@ pub(super) fn settle_runtime_discrete_capture_env(
 ) -> eval::VarEnv<f64> {
     let settle_ctx = RuntimeDiscreteCaptureContext {
         direct_assignment_ctx:
-            rumoca_sim::runtime::assignment::build_runtime_direct_assignment_context(
+            rumoca_sim_core::runtime::assignment::build_runtime_direct_assignment_context(
                 dae,
                 y.len(),
                 n_x,
             ),
-        alias_ctx: rumoca_sim::runtime::alias::build_runtime_alias_propagation_context(
+        alias_ctx: rumoca_sim_core::runtime::alias::build_runtime_alias_propagation_context(
             dae,
             y.len(),
             n_x,
@@ -625,8 +634,8 @@ pub(super) fn settle_runtime_discrete_capture_env_with_context(
     t_eval: f64,
     settle_ctx: &RuntimeDiscreteCaptureContext,
 ) -> eval::VarEnv<f64> {
-    rumoca_sim::runtime::event::settle_runtime_event_updates_frozen_pre(
-        rumoca_sim::EventSettleInput {
+    rumoca_sim_core::runtime::event::settle_runtime_event_updates_frozen_pre(
+        rumoca_sim_core::EventSettleInput {
             dae,
             y,
             p,
@@ -635,7 +644,7 @@ pub(super) fn settle_runtime_discrete_capture_env_with_context(
             is_initial: false,
         },
         |dae, y, n_x, env| {
-            rumoca_sim::runtime::assignment::propagate_runtime_direct_assignments_from_env_with_context(
+            rumoca_sim_core::runtime::assignment::propagate_runtime_direct_assignments_from_env_with_context(
                 &settle_ctx.direct_assignment_ctx,
                 dae,
                 y,
@@ -644,7 +653,7 @@ pub(super) fn settle_runtime_discrete_capture_env_with_context(
             )
         },
         |_dae, y, n_x, env| {
-            rumoca_sim::runtime::alias::propagate_runtime_alias_components_from_env_with_context(
+            rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env_with_context(
                 &settle_ctx.alias_ctx,
                 y,
                 n_x,
@@ -658,12 +667,13 @@ pub(super) fn settle_runtime_discrete_capture_env_with_context(
                 // event-entry values of their continuous sources. If prepare
                 // eliminated a source alias such as `sample1.u`, reconstruct it
                 // into the runtime env before running the sampled equations.
-                changed |= rumoca_sim::reconstruct::apply_eliminated_substitutions_to_env_changed(
-                    elim, env,
-                );
+                changed |=
+                    rumoca_sim_core::reconstruct::apply_eliminated_substitutions_to_env_changed(
+                        elim, env,
+                    );
             }
             changed |=
-                rumoca_sim::runtime::discrete::apply_discrete_partition_updates_with_scalar_override(
+                rumoca_sim_core::runtime::discrete::apply_discrete_partition_updates_with_scalar_override(
                     dae,
                     env,
                     |_eq, target, solution, env, implicit_clock_active| {
@@ -676,15 +686,16 @@ pub(super) fn settle_runtime_discrete_capture_env_with_context(
                     },
                 );
             if settle_ctx.needs_eliminated_env {
-                changed |= rumoca_sim::reconstruct::apply_eliminated_substitutions_to_env_changed(
-                    elim, env,
-                );
+                changed |=
+                    rumoca_sim_core::reconstruct::apply_eliminated_substitutions_to_env_changed(
+                        elim, env,
+                    );
             }
             changed
         },
-        rumoca_sim::runtime::layout::sync_solver_values_from_env,
+        rumoca_sim_core::runtime::layout::sync_solver_values_from_env,
     )
 }
 
-pub(super) type BdfTraceCtx = rumoca_sim::RuntimeTraceContext;
-pub(super) type BdfProgressSnapshot = rumoca_sim::RuntimeProgressSnapshot;
+pub(super) type BdfTraceCtx = rumoca_sim_core::RuntimeTraceContext;
+pub(super) type BdfProgressSnapshot = rumoca_sim_core::RuntimeProgressSnapshot;

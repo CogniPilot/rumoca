@@ -1,11 +1,11 @@
 use super::*;
-pub(crate) use rumoca_sim::panic_on_expired_solver_deadline;
+pub(crate) use rumoca_sim_core::panic_on_expired_solver_deadline;
 
 pub(crate) fn run_timeout_result<T, F>(budget: &TimeoutBudget, step: F) -> Result<T, SimError>
 where
     F: FnOnce() -> Result<T, SimError>,
 {
-    rumoca_sim::run_timeout_result::<T, SimError, _>(budget, step)
+    rumoca_sim_core::run_timeout_result::<T, SimError, _>(budget, step)
 }
 
 fn is_step_size_error(msg: &str) -> bool {
@@ -73,7 +73,7 @@ fn solve_ic_with_newton(
 
 pub(crate) fn solve_initial_conditions(
     dae: &mut Dae,
-    ic_blocks: &[rumoca_phase_structural::IcBlock],
+    ic_blocks: &[rumoca_sim_core::phase_structural::IcBlock],
     n_x: usize,
     param_values: &[f64],
     atol: f64,
@@ -240,7 +240,7 @@ fn alt_implicit_levels(ctx: &IntegrationCtx<'_>) -> &'static [f64] {
 fn dae_prefers_alt_implicit(dae: &Dae) -> bool {
     !dae.clock_schedules.is_empty()
         || !dae.triggered_clock_conditions.is_empty()
-        || rumoca_sim::runtime::clock::dae_may_have_discrete_clock_activity(dae)
+        || rumoca_sim_core::runtime::clock::dae_may_have_discrete_clock_activity(dae)
 }
 
 fn has_non_finite_output(buf: &OutputBuffers) -> bool {
@@ -771,7 +771,7 @@ mod tests {
                     subscripts: Vec::new(),
                 }],
             },
-            span: rumoca_core::Span::DUMMY,
+            span: rumoca_sim_core::core::Span::DUMMY,
             origin: "z = sample(u)".to_string(),
             scalar_count: 1,
         });
@@ -959,19 +959,19 @@ mod tests {
         dae.f_x.push(dae::Equation {
             lhs: None,
             rhs: dae::Expression::Binary {
-                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                op: rumoca_sim_core::ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(dae::Expression::VarRef {
                     name: dae::VarName::new("z"),
                     subscripts: Vec::new(),
                 }),
                 rhs: Box::new(dae::Expression::Literal(dae::Literal::Real(1.0))),
             },
-            span: rumoca_core::Span::DUMMY,
+            span: rumoca_sim_core::core::Span::DUMMY,
             origin: "test".to_string(),
             scalar_count: 1,
         });
 
-        let legacy_plan = vec![rumoca_phase_structural::IcBlock::ScalarDirect {
+        let legacy_plan = vec![rumoca_sim_core::phase_structural::IcBlock::ScalarDirect {
             var_idx: 99,
             var_name: "missing".to_string(),
             solution_expr: dae::Expression::Literal(dae::Literal::Real(0.0)),

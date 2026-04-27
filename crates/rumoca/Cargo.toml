@@ -18,26 +18,14 @@ default = []
 tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 
 [dependencies]
-# Internal crates - rumoca-compile wraps all compilation phases
+# Internal crates: CLI consumes the high-level facades only.
+# rumoca-compile wraps all compilation phases.
+# rumoca-sim wraps simulation primitives, solvers, and the lockstep runner
+# (transports, codecs, input devices, viz-web, signal-hook).
 rumoca-compile = { workspace = true }
-rumoca-phase-structural = { workspace = true }
-rumoca-sim = { workspace = true }
-rumoca-solver-diffsol = { workspace = true }
-rumoca-viz-web = { workspace = true }
+rumoca-sim = { workspace = true, features = ["runner"] }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
-# Lockstep runtime deps
-rumoca-codec = { workspace = true }
-rumoca-codec-flatbuffers = { workspace = true }
-rumoca-input = { workspace = true }
-rumoca-input-gamepad = { workspace = true }
-rumoca-input-keyboard = { workspace = true }
-rumoca-transport-udp = { workspace = true }
-rumoca-transport-websocket = { workspace = true }
-signal-hook = "0.3"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
 
 # External dependencies
 anyhow = { workspace = true }
@@ -97,7 +85,7 @@ rumoca-phase-resolve = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
-rumoca-eval-dae = { workspace = true }
+rumoca-analysis-dae = { workspace = true }
 
 [lints]
 workspace = true

@@ -105,7 +105,7 @@ fn test_blt_elimination_numerical_equivalence_chain() {
         );
 
         // Verify substitution chain gives correct values
-        let env = rumoca_eval_dae::runtime::build_env(&reduced, &y_red, &p_red, 0.0);
+        let env = rumoca_sim_core::phase_solve_lower::build_env(&reduced, &y_red, &p_red, 0.0);
         let mut env_subs = env.clone();
         apply_substitutions_to_env(&elim.substitutions, &mut env_subs);
 

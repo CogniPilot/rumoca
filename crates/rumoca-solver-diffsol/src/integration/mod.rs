@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_core::OptionalTimer;
+use rumoca_sim_core::core::OptionalTimer;
 
 fn trace_step_failure_diagnostics(
     dae: &Dae,
@@ -93,15 +93,15 @@ pub(super) fn bdf_snapshot(
     output_idx: usize,
     output_len: usize,
 ) -> BdfProgressSnapshot {
-    rumoca_sim::runtime_progress_snapshot(steps, root_hits, t, output_idx, output_len)
+    rumoca_sim_core::runtime_progress_snapshot(steps, root_hits, t, output_idx, output_len)
 }
 
 pub(super) fn trace_bdf_start(ctx: BdfTraceCtx, h0: f64, max_wall_seconds: Option<f64>) {
-    rumoca_sim::trace_runtime_start(ctx, h0, max_wall_seconds);
+    rumoca_sim_core::trace_runtime_start(ctx, h0, max_wall_seconds);
 }
 
 pub(super) fn trace_bdf_timeout(ctx: BdfTraceCtx, snap: BdfProgressSnapshot) {
-    rumoca_sim::trace_runtime_timeout(ctx, snap);
+    rumoca_sim_core::trace_runtime_timeout(ctx, snap);
 }
 
 pub(super) fn trace_bdf_step_fail(
@@ -109,7 +109,7 @@ pub(super) fn trace_bdf_step_fail(
     snap: BdfProgressSnapshot,
     err: impl std::fmt::Display,
 ) {
-    rumoca_sim::trace_runtime_step_fail(ctx, snap, err);
+    rumoca_sim_core::trace_runtime_step_fail(ctx, snap, err);
 }
 
 pub(super) fn trace_bdf_progress(
@@ -118,23 +118,23 @@ pub(super) fn trace_bdf_progress(
     t_limit: f64,
     last_log: &mut OptionalTimer,
 ) {
-    rumoca_sim::trace_runtime_progress(ctx, snap, t_limit, last_log);
+    rumoca_sim_core::trace_runtime_progress(ctx, snap, t_limit, last_log);
 }
 
 pub(super) fn trace_bdf_done(ctx: BdfTraceCtx, steps: usize, root_hits: usize, final_t: f64) {
-    rumoca_sim::trace_runtime_done(ctx, steps, root_hits, final_t);
+    rumoca_sim_core::trace_runtime_done(ctx, steps, root_hits, final_t);
 }
 
 pub(super) fn stop_time_reached_with_tol(t: f64, t_end: f64) -> bool {
-    rumoca_sim::stop_time_reached_with_tol(t, t_end)
+    rumoca_sim_core::stop_time_reached_with_tol(t, t_end)
 }
 
 pub(super) fn time_match_with_tol(a: f64, b: f64) -> bool {
-    rumoca_sim::time_match_with_tol(a, b)
+    rumoca_sim_core::time_match_with_tol(a, b)
 }
 
 pub(super) fn time_advanced_with_tol(previous_t: f64, current_t: f64) -> bool {
-    rumoca_sim::time_advanced_with_tol(previous_t, current_t)
+    rumoca_sim_core::time_advanced_with_tol(previous_t, current_t)
 }
 
 fn maybe_trace_unrecoverable_step(
@@ -561,10 +561,10 @@ pub(super) fn initialize_output_capture(
     let dt = opts.dt.unwrap_or(opts.t_end / 500.0);
     let coarse_times = timeline::build_output_times(opts.t_start, opts.t_end, dt);
     let event_times =
-        rumoca_sim::timeline::collect_runtime_schedule_events(dae, opts.t_start, opts.t_end);
+        rumoca_sim_core::timeline::collect_runtime_schedule_events(dae, opts.t_start, opts.t_end);
     // MLS §16.5.1 / Appendix B: stateful clocked and scheduled event updates
     // are observable at event instants, not only on the coarse output grid.
-    let t_out_list = rumoca_sim::timeline::merge_output_times_with_event_observations(
+    let t_out_list = rumoca_sim_core::timeline::merge_output_times_with_event_observations(
         &coarse_times,
         &event_times,
         opts.t_end,
@@ -576,7 +576,7 @@ pub(super) fn initialize_output_capture(
 }
 
 pub(super) fn refresh_pre_values_from_state(dae: &Dae, y: &[f64], p: &[f64], t: f64) {
-    rumoca_sim::refresh_pre_values_from_state(dae, y, p, t);
+    rumoca_sim_core::refresh_pre_values_from_state(dae, y, p, t);
 }
 
 pub(super) fn check_budget_or_trace_timeout(
@@ -759,7 +759,7 @@ pub(super) fn integration_direction(opts: &SimOptions) -> f64 {
 }
 
 pub(crate) fn event_restart_time(opts: &SimOptions, t_event: f64) -> f64 {
-    rumoca_sim::event_restart_time(opts.t_start, opts.t_end, t_event)
+    rumoca_sim_core::event_restart_time(opts.t_start, opts.t_end, t_event)
 }
 
 const SYNTHETIC_ROOT_RESTART_RECHECK_LIMIT: usize = 32;
@@ -1100,7 +1100,7 @@ where
         ctx.param_values.as_slice(),
         restart_t,
     );
-    let _ = rumoca_sim::runtime::alias::propagate_runtime_alias_components_from_env(
+    let _ = rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env(
         ctx.dae,
         y_at_event.as_mut_slice(),
         ctx.n_x,
@@ -1203,7 +1203,7 @@ fn build_event_capture_env(
         ctx.param_values.as_slice(),
         t_event,
     );
-    let _ = rumoca_sim::runtime::alias::propagate_runtime_alias_components_from_env(
+    let _ = rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env(
         ctx.dae,
         event_capture_state.as_mut_slice(),
         ctx.n_x,
@@ -1367,7 +1367,7 @@ where
         let env = match mode {
             RuntimeSampleMode::Initialization => {
                 // Keep startup channels consistent with initialized solver state.
-                rumoca_sim::runtime::startup::build_initial_section_env_strict(
+                rumoca_sim_core::runtime::startup::build_initial_section_env_strict(
                     self.ctx.dae,
                     y.as_mut_slice(),
                     self.ctx.param_values.as_slice(),
@@ -1377,7 +1377,7 @@ where
             }
             RuntimeSampleMode::Regular => {
                 if runtime_event_matches_schedule(self.ctx.dae, self.ctx.opts, t_sample) {
-                    let mut env = rumoca_sim::runtime::event::build_runtime_env(
+                    let mut env = rumoca_sim_core::runtime::event::build_runtime_env(
                         self.ctx.dae,
                         y.as_mut_slice(),
                         self.ctx.param_values.as_slice(),
@@ -1432,7 +1432,7 @@ where
     }
 }
 
-impl<'a, Eqn, S> rumoca_sim::SimulationBackend for DiffsolBackend<'a, Eqn, S>
+impl<'a, Eqn, S> rumoca_sim_core::SimulationBackend for DiffsolBackend<'a, Eqn, S>
 where
     Eqn: OdeEquations<T = f64> + 'a,
     Eqn::V: VectorHost<T = f64>,
@@ -1444,9 +1444,12 @@ where
         Ok(())
     }
 
-    fn step_until(&mut self, stop_time: f64) -> Result<rumoca_sim::StepUntilOutcome, Self::Error> {
+    fn step_until(
+        &mut self,
+        stop_time: f64,
+    ) -> Result<rumoca_sim_core::StepUntilOutcome, Self::Error> {
         if stop_time_reached_with_tol(self.solver.state().t, self.ctx.opts.t_end) {
-            return Ok(rumoca_sim::StepUntilOutcome::Finished);
+            return Ok(rumoca_sim_core::StepUntilOutcome::Finished);
         }
         if let Some(trace_ctx) = self.bdf_trace {
             check_budget_or_trace_timeout(
@@ -1519,7 +1522,7 @@ where
             )? {
                 StepAdvance::Advanced(reason) => break reason,
                 StepAdvance::Recovered => continue,
-                StepAdvance::Finished => return Ok(rumoca_sim::StepUntilOutcome::Finished),
+                StepAdvance::Finished => return Ok(rumoca_sim_core::StepUntilOutcome::Finished),
             }
         };
 
@@ -1527,17 +1530,19 @@ where
         self.record_output_for_step(&reason)?;
 
         match reason {
-            OdeSolverStopReason::InternalTimestep => Ok(rumoca_sim::StepUntilOutcome::InternalStep),
+            OdeSolverStopReason::InternalTimestep => {
+                Ok(rumoca_sim_core::StepUntilOutcome::InternalStep)
+            }
             OdeSolverStopReason::RootFound(t_root) => {
                 self.root_hits += 1;
-                Ok(rumoca_sim::StepUntilOutcome::RootFound { t_root })
+                Ok(rumoca_sim_core::StepUntilOutcome::RootFound { t_root })
             }
-            OdeSolverStopReason::TstopReached => Ok(rumoca_sim::StepUntilOutcome::StopReached),
+            OdeSolverStopReason::TstopReached => Ok(rumoca_sim_core::StepUntilOutcome::StopReached),
         }
     }
 
-    fn read_state(&self) -> rumoca_sim::BackendState {
-        rumoca_sim::BackendState {
+    fn read_state(&self) -> rumoca_sim_core::BackendState {
+        rumoca_sim_core::BackendState {
             t: self.solver.state().t,
         }
     }
@@ -1637,14 +1642,14 @@ pub(super) fn try_integrate(
     let output = {
         let mut backend =
             DiffsolBackend::new(solver, output, ctx, Some(trace_ctx), solver_names.clone())?;
-        let stats = rumoca_sim::run_with_runtime_schedule(
+        let stats = rumoca_sim_core::run_with_runtime_schedule(
             &mut backend,
             input.dae,
             input.opts.t_start,
             input.opts.t_end,
             || input.budget.check().map_err(SimError::from),
         )?;
-        let final_t = rumoca_sim::SimulationBackend::read_state(&backend).t;
+        let final_t = rumoca_sim_core::SimulationBackend::read_state(&backend).t;
         trace_bdf_done(trace_ctx, stats.steps, stats.root_hits, final_t);
         let (_solver, output, _steps, _roots) = backend.into_parts();
         output
@@ -1685,7 +1690,7 @@ pub(super) fn try_integrate_tr_bdf2(
     } = prepare_integration_loop(&mut solver, input, startup_profile)?;
     let (output, stats, final_t) = {
         let mut backend = DiffsolBackend::new(solver, output, ctx, None, solver_names.clone())?;
-        let stats = match rumoca_sim::run_with_runtime_schedule(
+        let stats = match rumoca_sim_core::run_with_runtime_schedule(
             &mut backend,
             input.dae,
             input.opts.t_start,
@@ -1694,7 +1699,7 @@ pub(super) fn try_integrate_tr_bdf2(
         ) {
             Ok(stats) => stats,
             Err(err) => {
-                let final_t = rumoca_sim::SimulationBackend::read_state(&backend).t;
+                let final_t = rumoca_sim_core::SimulationBackend::read_state(&backend).t;
                 if trace_enabled {
                     eprintln!(
                         "[sim-trace] TR-BDF2 step-fail eps={} profile={:?} elapsed={:.3}s t={} err={}",
@@ -1708,7 +1713,7 @@ pub(super) fn try_integrate_tr_bdf2(
                 return Err(err);
             }
         };
-        let final_t = rumoca_sim::SimulationBackend::read_state(&backend).t;
+        let final_t = rumoca_sim_core::SimulationBackend::read_state(&backend).t;
         let (_solver, output, _steps, _roots) = backend.into_parts();
         (output, stats, final_t)
     };

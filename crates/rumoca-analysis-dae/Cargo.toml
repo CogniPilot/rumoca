@@ -1,0 +1,18 @@
+[package]
+name = "rumoca-analysis-dae"
+description = "DAE-IR structural analysis (balance, runtime-defined names, etc.)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-core = { workspace = true }
+
+[dev-dependencies]
+rumoca-core = { workspace = true }
+
+[lints]
+workspace = true
