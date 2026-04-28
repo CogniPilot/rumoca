@@ -134,15 +134,6 @@ fn lhs_var_name(expr: &Value) -> Option<&str> {
     expr.as_str().or_else(|| expr_var_name(expr))
 }
 
-fn minus_expr(rhs: Value) -> Value {
-    let mut unary = Map::new();
-    unary.insert("op".to_string(), serde_json::json!({"Minus": null}));
-    unary.insert("rhs".to_string(), rhs);
-    let mut wrap = Map::new();
-    wrap.insert("Unary".to_string(), Value::Object(unary));
-    Value::Object(wrap)
-}
-
 fn extract_residual_assignment_expr(expr: &Value, target: &str) -> Option<Value> {
     let obj = expr.as_object()?;
     let bin = obj.get("Binary")?.as_object()?;
@@ -157,7 +148,7 @@ fn extract_residual_assignment_expr(expr: &Value, target: &str) -> Option<Value>
         return Some(rhs.clone());
     }
     if expr_var_name(rhs).is_some_and(|name| name == target) {
-        return Some(minus_expr(lhs.clone()));
+        return Some(lhs.clone());
     }
     None
 }
@@ -1396,6 +1387,11 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn builtin_fmi2_template(path: &str) -> &'static str {
+        rumoca_phase_codegen::templates::builtin_template_source("fmi2", path)
+            .expect("FMI2 template should be registered")
+    }
+
     #[test]
     fn test_simple_model() {
         let source = r#"
@@ -2042,6 +2038,62 @@ mod tests {
     }
 
     #[test]
+    fn test_residual_observable_assignment_preserves_rhs_target_sign() {
+        let residual = serde_json::json!({
+            "Binary": {
+                "op": {"Sub": {}},
+                "lhs": {"VarRef": {"name": "x"}},
+                "rhs": {"VarRef": {"name": "y"}}
+            }
+        });
+
+        let restored = extract_residual_assignment_expr(&residual, "y")
+            .expect("residual x - y = 0 should restore y as x");
+
+        assert_eq!(
+            restored,
+            serde_json::json!({"VarRef": {"name": "x"}}),
+            "residual x - y = 0 assigns y = x, not y = -x"
+        );
+    }
+
+    #[test]
+    fn test_render_fmi2_model_restores_output_observable_signs() {
+        let source = r#"
+            model OutputAlias
+              Real x(start = 2, fixed = true);
+              output Real y;
+              output Real negY;
+            equation
+              der(x) = -x;
+              y = x;
+              negY = -y;
+            end OutputAlias;
+        "#;
+
+        let result = Compiler::new()
+            .model("OutputAlias")
+            .compile_str(source, "output_alias.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_prepared_with_name(
+                builtin_fmi2_template("model.c.jinja"),
+                "OutputAlias",
+                true,
+            )
+            .expect("prepared named FMI2 model render should succeed");
+
+        assert!(
+            rendered.contains("y = x;"),
+            "expected output alias y to preserve positive x sign; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("negY = (-y);"),
+            "expected negY to remain the negative alias; got:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn test_render_fmi2_model_propagates_tunable_parameter_bindings_on_initialization() {
         let source = r#"
             model Child
@@ -2065,7 +2117,7 @@ mod tests {
             .expect("compilation should succeed");
         let rendered = result
             .render_template_str_prepared_with_name(
-                rumoca_phase_codegen::templates::FMI2_MODEL,
+                builtin_fmi2_template("model.c.jinja"),
                 "BindingProbe",
                 true,
             )
@@ -2113,7 +2165,7 @@ mod tests {
             .expect("compilation should succeed");
         let rendered = result
             .render_template_str_prepared_with_name(
-                rumoca_phase_codegen::templates::FMI2_MODEL_DESCRIPTION,
+                builtin_fmi2_template("modelDescription.xml.jinja"),
                 "BindingProbe",
                 true,
             )
@@ -2160,7 +2212,7 @@ mod tests {
             .expect("compilation should succeed");
         let rendered = result
             .render_template_str_prepared_with_name(
-                rumoca_phase_codegen::templates::FMI2_MODEL,
+                builtin_fmi2_template("model.c.jinja"),
                 "ArrayModifierProbe",
                 true,
             )
