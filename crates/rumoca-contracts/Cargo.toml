@@ -16,7 +16,7 @@ toml = { workspace = true }
 
 # Compile + sim facades provide parsing/compile contract APIs
 rumoca-compile = { workspace = true }
-rumoca-sim = { workspace = true }
+rumoca-sim = { workspace = true, features = ["solver-diffsol"] }
 
 [lints]
 workspace = true

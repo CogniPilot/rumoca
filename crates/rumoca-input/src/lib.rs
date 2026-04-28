@@ -15,11 +15,14 @@
 
 pub mod config;
 pub mod device;
+
+#[cfg(feature = "devices")]
 pub mod devices;
 
 pub mod engine;
 pub mod signal_mapper;
 
+#[cfg(feature = "devices")]
 pub use devices::Devices;
 
 pub use device::{

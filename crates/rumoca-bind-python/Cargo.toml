@@ -16,7 +16,7 @@ doc = false
 
 [dependencies]
 rumoca = { workspace = true }
-rumoca-sim = { workspace = true }
+rumoca-sim = { workspace = true, features = ["solver-diffsol"] }
 rumoca-compile = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }

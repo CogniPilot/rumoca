@@ -6,10 +6,20 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# Pulls in the gilrs-backed gamepad device adapter. Native-only; brings
+# in libudev on Linux which can't cross-compile cleanly to musl etc.
+gamepad = ["dep:rumoca-input-gamepad"]
+# Pulls in the crossterm-backed keyboard device adapter.
+keyboard = ["dep:rumoca-input-keyboard"]
+# Convenience: enable both adapters and the `Devices` factory.
+devices = ["gamepad", "keyboard"]
+
 [dependencies]
 rumoca-input-types = { workspace = true }
-rumoca-input-gamepad = { workspace = true }
-rumoca-input-keyboard = { workspace = true }
+rumoca-input-gamepad = { workspace = true, optional = true }
+rumoca-input-keyboard = { workspace = true, optional = true }
 rumoca-signal-frame = { workspace = true }
 
 anyhow = { workspace = true }

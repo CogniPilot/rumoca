@@ -16,6 +16,7 @@ runner = [
     "viz",
     "dep:rumoca-codec",
     "dep:rumoca-input",
+    "rumoca-input/devices",
     "dep:rumoca-transport-udp",
     "dep:rumoca-transport-websocket",
     "dep:rumoca-compile",

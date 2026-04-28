@@ -582,7 +582,12 @@ fn start_autopilot_into(
 /// - 2nd signal: hard exit 130 (skip cleanup)
 ///
 /// Uses `signal_hook::iterator::Signals` — a blocking iterator that wakes
-/// exactly when a signal arrives. No polling, no race windows.
+/// exactly when a signal arrives. No polling, no race windows. Unix-only;
+/// on Windows the std runtime's default Ctrl-C handler is used.
+#[cfg(not(unix))]
+fn spawn_sigint_handler(_autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {}
+
+#[cfg(unix)]
 fn spawn_sigint_handler(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use signal_hook::iterator::Signals;
