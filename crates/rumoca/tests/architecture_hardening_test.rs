@@ -803,10 +803,15 @@ Author reminder: keep FlatBuffer IO support protocol-only."
 
 #[test]
 fn test_input_crate_is_device_adapter_free() {
-    let content = fs::read_to_string(workspace_root().join("crates/rumoca-input/Cargo.toml"))
-        .expect("read rumoca-input Cargo.toml");
+    // The abstract input contract now lives in rumoca-input-types (vocabulary
+    // and snapshot/event shapes); rumoca-input is the higher-level engine
+    // that aggregates concrete device crates. Adapters depend on the
+    // contract, never on the engine.
+    let content = fs::read_to_string(workspace_root().join("crates/rumoca-input-types/Cargo.toml"))
+        .expect("read rumoca-input-types Cargo.toml");
 
     for banned in [
+        "rumoca-input",
         "rumoca-input-gamepad",
         "rumoca-input-keyboard",
         "gilrs",
@@ -814,8 +819,8 @@ fn test_input_crate_is_device_adapter_free() {
     ] {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca-input must not depend on {banned}; \
-Author reminder: the abstract input engine consumes snapshots/events from concrete device crates."
+            "rumoca-input-types must not depend on {banned}; \
+Author reminder: the abstract input contract carries vocabulary only — concrete device crates and engines depend on it, not the other way around."
         );
     }
 
@@ -824,8 +829,8 @@ Author reminder: the abstract input engine consumes snapshots/events from concre
             fs::read_to_string(workspace_root().join(format!("crates/{adapter}/Cargo.toml")))
                 .unwrap_or_else(|error| panic!("read {adapter} Cargo.toml: {error}"));
         assert!(
-            section_contains_dependency(&adapter_toml, "dependencies", "rumoca-input"),
-            "{adapter} must depend on rumoca-input, not the other way around"
+            section_contains_dependency(&adapter_toml, "dependencies", "rumoca-input-types"),
+            "{adapter} must depend on rumoca-input-types, not the other way around"
         );
     }
 }
