@@ -7,7 +7,6 @@
 pub mod compose;
 pub mod config;
 pub mod executor;
-pub mod report;
 
 /// Template TOML printed by `rumoca lockstep init`.
 pub const CONFIG_TEMPLATE: &str = include_str!("template.toml");

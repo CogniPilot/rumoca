@@ -17,6 +17,9 @@ pub mod rk45 {
 #[cfg(feature = "runner")]
 pub mod runner;
 
+#[cfg(feature = "report")]
+pub mod report;
+
 #[cfg(all(feature = "viz", not(target_arch = "wasm32")))]
 pub mod viz_web {
     pub use rumoca_viz_web::*;

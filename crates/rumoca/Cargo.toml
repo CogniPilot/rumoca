@@ -15,15 +15,19 @@ path = "src/main.rs"
 
 [features]
 default = []
+# Pulls in sim's runner module: transports, codecs, input devices,
+# signal-hook, viz-web. Cross-compiled binary builds (musl, macOS, Windows)
+# leave this off so gilrs/libudev-sys aren't pulled in.
+lockstep = ["rumoca-sim/runner"]
 tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 
 [dependencies]
 # Internal crates: CLI consumes the high-level facades only.
 # rumoca-compile wraps all compilation phases.
-# rumoca-sim wraps simulation primitives, solvers, and the lockstep runner
-# (transports, codecs, input devices, viz-web, signal-hook).
+# rumoca-sim wraps simulation primitives, solvers, and (under the
+# `lockstep` feature here) the lockstep runner.
 rumoca-compile = { workspace = true }
-rumoca-sim = { workspace = true, features = ["runner"] }
+rumoca-sim = { workspace = true, features = ["solver-diffsol", "report"] }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 

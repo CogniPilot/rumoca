@@ -27,6 +27,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[cfg(feature = "lockstep")]
 use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
@@ -434,9 +435,19 @@ fn try_main() -> Result<()> {
         }
         Commands::Project(args) => run_project(args),
         Commands::Lockstep(args) => match args.command {
+            #[cfg(feature = "lockstep")]
             LockstepSubcommand::Run(run_args) => run_lockstep_run(run_args),
+            #[cfg(feature = "lockstep")]
             LockstepSubcommand::Check(check_args) => run_lockstep_check(check_args),
+            #[cfg(feature = "lockstep")]
             LockstepSubcommand::Init => run_lockstep_init(),
+            #[cfg(not(feature = "lockstep"))]
+            _ => {
+                bail!(
+                    "this rumoca binary was built without lockstep support; \
+                     rebuild with --features=lockstep"
+                )
+            }
         },
     }
 }
@@ -629,6 +640,7 @@ fn parse_move_hints(raw_moves: &[String]) -> Result<Vec<ProjectFileMoveHint>> {
     Ok(out)
 }
 
+#[cfg(feature = "lockstep")]
 fn resolve_path(base: &Path, rel: &str) -> std::path::PathBuf {
     let p = Path::new(rel);
     if p.is_absolute() {
@@ -638,6 +650,7 @@ fn resolve_path(base: &Path, rel: &str) -> std::path::PathBuf {
     }
 }
 
+#[cfg(feature = "lockstep")]
 fn run_lockstep_run(args: LockstepRunArgs) -> Result<()> {
     let config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(&args.config))
         .with_context(|| format!("Load lockstep config: {}", args.config))?;
@@ -735,6 +748,7 @@ fn run_lockstep_run(args: LockstepRunArgs) -> Result<()> {
     })
 }
 
+#[cfg(feature = "lockstep")]
 fn run_lockstep_check(args: LockstepCheckArgs) -> Result<()> {
     let _config = rumoca_sim::runner::config::SimulationConfig::load(Path::new(&args.config))
         .with_context(|| format!("Load lockstep config: {}", args.config))?;
@@ -742,6 +756,7 @@ fn run_lockstep_check(args: LockstepCheckArgs) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "lockstep")]
 fn run_lockstep_init() -> Result<()> {
     print!("{}", rumoca_sim::runner::CONFIG_TEMPLATE);
     Ok(())
@@ -1355,7 +1370,7 @@ fn run_simulation(
         atol: opts.atol,
     };
     let metrics = SimulationRunMetrics::default();
-    let report = rumoca_sim::runner::report::write_html_report(
+    let report = rumoca_sim::report::write_html_report(
         &sim,
         model,
         &out_path,

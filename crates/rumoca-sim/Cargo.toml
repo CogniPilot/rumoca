@@ -11,9 +11,14 @@ default = ["solver-diffsol"]
 solver-diffsol = ["dep:rumoca-solver-diffsol"]
 solver-rk45 = ["dep:rumoca-solver-rk45"]
 viz = ["dep:rumoca-viz-web"]
+# HTML simulation report renderer. Pure-Rust deps (viz-web + compile);
+# cross-compiles cleanly. Independent of `runner` so non-lockstep
+# CLIs can still emit HTML reports from `simulate`.
+report = ["viz", "dep:rumoca-compile"]
 runner = [
     "solver-diffsol",
     "viz",
+    "report",
     "dep:rumoca-codec",
     "dep:rumoca-input",
     "rumoca-input/devices",
