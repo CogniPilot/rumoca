@@ -96,12 +96,7 @@ fn extract_residual_assignment_expr(expr: &Value, target: &str) -> Option<Value>
         return Some(rhs.clone());
     }
     if expr_var_name(rhs).is_some_and(|n| n == target) {
-        let mut unary = Map::new();
-        unary.insert("op".to_string(), Value::String("-".to_string()));
-        unary.insert("arg".to_string(), lhs.clone());
-        let mut wrap = Map::new();
-        wrap.insert("Unary".to_string(), Value::Object(unary));
-        return Some(Value::Object(wrap));
+        return Some(lhs.clone());
     }
     None
 }
@@ -1543,6 +1538,62 @@ mod tests {
         assert!(
             rendered.contains(r#"name="negY""#),
             "expected restored output alias `negY` in FMI2 modelDescription; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_residual_observable_assignment_preserves_rhs_target_sign() {
+        let residual = serde_json::json!({
+            "Binary": {
+                "op": {"Sub": {}},
+                "lhs": {"VarRef": {"name": "x"}},
+                "rhs": {"VarRef": {"name": "y"}}
+            }
+        });
+
+        let restored = extract_residual_assignment_expr(&residual, "y")
+            .expect("residual x - y = 0 should restore y as x");
+
+        assert_eq!(
+            restored,
+            serde_json::json!({"VarRef": {"name": "x"}}),
+            "residual x - y = 0 assigns y = x, not y = -x"
+        );
+    }
+
+    #[test]
+    fn test_render_fmi2_model_restores_output_observable_signs() {
+        let source = r#"
+            model OutputAlias
+              Real x(start = 2, fixed = true);
+              output Real y;
+              output Real negY;
+            equation
+              der(x) = -x;
+              y = x;
+              negY = -y;
+            end OutputAlias;
+        "#;
+
+        let result = Compiler::new()
+            .model("OutputAlias")
+            .compile_str(source, "output_alias.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_prepared_with_name(
+                rumoca_phase_codegen::templates::FMI2_MODEL,
+                "OutputAlias",
+                true,
+            )
+            .expect("prepared named FMI2 model render should succeed");
+
+        assert!(
+            rendered.contains("#define y (x)"),
+            "expected output alias y to preserve positive x sign; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("#define negY ((-x))"),
+            "expected negY to remain the negative alias; got:\n{rendered}"
         );
     }
 
