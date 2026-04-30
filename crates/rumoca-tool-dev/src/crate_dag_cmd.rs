@@ -137,13 +137,13 @@ impl CrateKind {
             Self::Phase
         } else if name.starts_with("rumoca-eval-") {
             Self::Eval
-        } else if name == "rumoca-session" {
+        } else if name == "rumoca-compile" {
             Self::Session
-        } else if name == "rumoca-sim" || name.starts_with("rumoca-sim-") {
+        } else if name == "rumoca-sim-core" || name.starts_with("rumoca-sim-") {
             Self::Sim
         } else if name.starts_with("rumoca-tool-") {
             Self::Tool
-        } else if name.starts_with("rumoca-bind-") {
+        } else if name.starts_with("rumoca-bind-") || name.starts_with("rumoca-wasm-") {
             Self::Binding
         } else if name == "rumoca-contracts" {
             Self::Contracts
@@ -769,13 +769,14 @@ mod tests {
         assert_eq!(CrateKind::from_name("rumoca-ir-ast"), CrateKind::Ir);
         assert_eq!(CrateKind::from_name("rumoca-phase-parse"), CrateKind::Phase);
         assert_eq!(CrateKind::from_name("rumoca-eval-ast"), CrateKind::Eval);
-        assert_eq!(CrateKind::from_name("rumoca-session"), CrateKind::Session);
-        assert_eq!(CrateKind::from_name("rumoca-sim"), CrateKind::Sim);
+        assert_eq!(CrateKind::from_name("rumoca-compile"), CrateKind::Session);
+        assert_eq!(CrateKind::from_name("rumoca-sim-core"), CrateKind::Sim);
         assert_eq!(CrateKind::from_name("rumoca-tool-dev"), CrateKind::Tool);
         assert_eq!(
             CrateKind::from_name("rumoca-bind-python"),
             CrateKind::Binding
         );
+        assert_eq!(CrateKind::from_name("rumoca-bind-wasm"), CrateKind::Binding);
         assert_eq!(
             CrateKind::from_name("rumoca-contracts"),
             CrateKind::Contracts

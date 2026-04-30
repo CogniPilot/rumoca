@@ -1,0 +1,15 @@
+[package]
+name = "rumoca-codec"
+description = "Codec facade for Rumoca: traits, factory, and re-exported SignalFrame; backed by pluggable impls (flatbuffers, ...)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-signal-frame = { workspace = true }
+rumoca-codec-flatbuffers = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 //! Test for for-equation parameter lookup in array components.
 
-use rumoca_session::compile::{CompiledSourceRoot, PhaseResult};
+use rumoca_compile::compile::{CompiledSourceRoot, PhaseResult};
 
 /// Test with MSL-style imports and SISO.
 #[test]
@@ -86,7 +86,7 @@ end TestPkg;
     match source_root.compile_model_phases("TestPkg.Dimmer") {
         PhaseResult::Success(result) => {
             println!("Success!");
-            let balance = rumoca_eval_dae::analysis::balance(&result.dae);
+            let balance = rumoca_analysis_dae::balance(&result.dae);
             println!("Balance: {}", balance);
 
             // List all variables

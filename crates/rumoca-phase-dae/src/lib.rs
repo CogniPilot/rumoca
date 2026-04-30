@@ -33,6 +33,7 @@ mod definition_analysis;
 mod discrete_partition;
 mod equation_conversion;
 mod errors;
+mod fold_start_values;
 mod initial;
 mod name_resolution;
 mod overconstrained_interface;
@@ -78,6 +79,12 @@ use variable_analysis::{
     find_when_only_vars, is_internal_input, is_when_only_var, validate_flat_function_calls,
 };
 use when_conversion::convert_when_clause;
+
+/// Check whether a compiled DAE is structurally balanced.
+pub fn dae_is_balanced(dae: &dae::Dae) -> bool {
+    let (equations, unknowns) = balance_counting::compute_balance_counts(dae);
+    equations == unknowns
+}
 
 pub use dae_lowering::{
     insert_array_size_args_dae, lower_record_function_params_dae,
@@ -296,6 +303,22 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "scalarize_phantom", || {
         dae_lowering::scalarize_phantom_vector_equations(dae);
     });
+
+    // Fold symbolic start-value expressions to literal constants where
+    // possible. Safe as an always-on pass: start values are init-time
+    // metadata, not user-observable at runtime.
+    run_todae_phase(todae_subphase_timing, "fold_start_values", || {
+        fold_start_values::fold_start_values_to_literals(dae);
+    });
+
+    // Reorder algebraics so any algebraic used in another's defining
+    // equation appears first. Pure reorder, no information loss; lets
+    // forward-evaluation backends (embedded C, Julia MTK) emit
+    // straight-line code without extra topo-sort inside the template.
+    run_todae_phase(todae_subphase_timing, "sort_algebraics_by_deps", || {
+        fold_start_values::sort_algebraics_by_equation_deps(dae);
+    });
+
     run_todae_phase(todae_subphase_timing, "runtime_precompute", || {
         populate_runtime_precompute(dae)
     })?;
@@ -328,10 +351,7 @@ fn finalize_lowered_dae(
         validate_dae_references(dae, &known_flat_var_names)
     })?;
 
-    if options.error_on_unbalanced
-        && !dae.is_partial
-        && rumoca_eval_dae::analysis::balance(dae) != 0
-    {
+    if options.error_on_unbalanced && !dae.is_partial && rumoca_analysis_dae::balance(dae) != 0 {
         let (equations, unknowns) = balance_counting::compute_balance_counts(dae);
         return Err(ToDaeError::unbalanced(equations, unknowns));
     }

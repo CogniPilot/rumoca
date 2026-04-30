@@ -1,4 +1,4 @@
-use rumoca_session::parsing::{
+use rumoca_compile::parsing::{
     ClassType, ComponentReference, Expression, OpBinary, TerminalType, Token,
 };
 

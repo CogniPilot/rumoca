@@ -16,12 +16,12 @@ impl ModelicaLanguageServer {
         };
         let mut loaded_any = false;
         let referenced_source_root_paths =
-            rumoca_session::source_roots::referenced_unloaded_source_root_paths(
+            rumoca_compile::source_roots::referenced_unloaded_source_root_paths(
                 text,
                 source_root_paths,
                 &already_loaded,
             );
-        let load_plan = rumoca_session::source_roots::plan_source_root_loads(
+        let load_plan = rumoca_compile::source_roots::plan_source_root_loads(
             &referenced_source_root_paths,
             &already_loaded,
         );
@@ -85,7 +85,7 @@ impl ModelicaLanguageServer {
         uri: Url,
         text: &str,
         trigger: DiagnosticsTrigger,
-        stats_before: rumoca_session::compile::SessionCacheStatsSnapshot,
+        stats_before: rumoca_compile::compile::SessionCacheStatsSnapshot,
     ) {
         let request_token = self.begin_analysis_request().await;
         self.publish_diagnostics_with_token(uri, text, trigger, stats_before, request_token)
@@ -97,7 +97,7 @@ impl ModelicaLanguageServer {
         uri: Url,
         text: &str,
         trigger: DiagnosticsTrigger,
-        stats_before: rumoca_session::compile::SessionCacheStatsSnapshot,
+        stats_before: rumoca_compile::compile::SessionCacheStatsSnapshot,
         mut request_token: AnalysisRequestToken,
     ) {
         let request_started = Instant::now();
@@ -151,7 +151,7 @@ impl ModelicaLanguageServer {
                 text,
                 &file_name,
                 Some(&mut session),
-                rumoca_session::compile::SemanticDiagnosticsMode::Save,
+                rumoca_compile::compile::SemanticDiagnosticsMode::Save,
             );
             drop(session);
             let diagnostics_compute_ms = diagnostics_started.elapsed().as_millis() as u64;

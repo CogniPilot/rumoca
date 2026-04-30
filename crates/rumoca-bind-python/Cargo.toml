@@ -9,11 +9,15 @@ repository.workspace = true
 [lib]
 name = "rumoca"
 crate-type = ["cdylib"]
+# Skip rustdoc to avoid a workspace-doc filename collision with the
+# top-level `rumoca` crate; the cdylib is a thin pyo3 glue layer with
+# no Rust-facing API worth documenting.
+doc = false
 
 [dependencies]
 rumoca = { workspace = true }
-rumoca-sim = { workspace = true }
-rumoca-session = { workspace = true }
+rumoca-sim = { workspace = true, features = ["solver-diffsol"] }
+rumoca-compile = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 pyo3 = { version = "0.22", features = ["extension-module"] }

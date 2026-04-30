@@ -18,7 +18,8 @@ clap = { workspace = true }
 mimalloc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
-rumoca-session = { workspace = true }
+rumoca-compile = { workspace = true }
+rumoca-sim = { workspace = true, features = ["solver-diffsol"] }
 
 [dev-dependencies]
 walkdir = "2.5"
@@ -32,7 +33,7 @@ flate2 = { workspace = true }
 tar = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-rumoca-eval-dae = { workspace = true }
+rumoca-analysis-dae = { workspace = true }
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-flat = { workspace = true }
@@ -40,11 +41,10 @@ rumoca-phase-flatten = { workspace = true }
 rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
-rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
-rumoca-phase-solve = { workspace = true }
+rumoca-phase-structural = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
-rumoca-session = { workspace = true }
+rumoca-compile = { workspace = true }
 
 [lints]
 workspace = true

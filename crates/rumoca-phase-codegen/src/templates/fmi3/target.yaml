@@ -1,0 +1,14 @@
+version: 1
+name: fmi3
+description: FMI 3.0 Model Exchange source tree
+build: fmu
+files:
+  - path: modelDescription.xml
+    template: fmi3/modelDescription.xml.jinja
+  - path: sources/{{ model_name }}.c
+    template: fmi3/model.c.jinja
+  - path: sources/CMakeLists.txt
+    template: fmu/CMakeLists.txt.jinja
+  - path: build.sh
+    template: fmu/build.sh.jinja
+    mode: "0755"

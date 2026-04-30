@@ -1,0 +1,91 @@
+# =============================================================================
+# rover.toml — standalone Ackermann-steered rover in the desert scene.
+#
+# Gamepad: left stick Y → throttle, right stick X → steering.
+# Keyboard: arrows map the same.
+# No autopilot, no FB, no UDP.
+# =============================================================================
+
+[physics]
+file = "Rover.mo"
+name = "Rover"
+# Standalone — input engine drives the stepper directly via
+# [signals.stepper_inputs] below; no [controller] or [autopilot].
+
+[sim]
+dt = 0.01
+realtime = true
+
+[transport.websocket]
+port = 8081
+
+[transport.http]
+port  = 8080
+scene = "rover_scene.js"
+
+# ── Locals ────────────────────────────────────────────────────────────────
+
+[locals]
+throttle = { type = "float", default = 0.0 }
+steering = { type = "float", default = 0.0 }
+
+# ── Input engine ──────────────────────────────────────────────────────────
+
+[input]
+mode = "auto"
+
+# Left stick Y → throttle (forward/reverse). Raw gamepad Y is negative
+# when pushed up; keep that sign so stick-up = reverse-throttle, which
+# matches how the rover appears to drive in the current viewer.
+[input.gamepad.axes.throttle]
+source = "LeftStickY"
+write  = "throttle"
+
+# Right stick X → steering angle. Stick-right = right turn in the viewer.
+[input.gamepad.axes.steering]
+source = "RightStickX"
+write  = "steering"
+
+[input.keyboard.decay]
+targets = ["throttle", "steering"]
+factor  = 0.85
+ref_dt  = 0.016
+
+[input.keyboard.keys]
+"ArrowUp"    = { action = "set", target = "throttle", value = -1.0 }
+"ArrowDown"  = { action = "set", target = "throttle", value =  1.0 }
+"ArrowLeft"  = { action = "set", target = "steering", value = -1.0 }
+"ArrowRight" = { action = "set", target = "steering", value =  1.0 }
+"r"          = { action = "signal", signal = "reset" }
+"q"          = { action = "signal", signal = "quit"  }
+
+# ── Drive the stepper directly (standalone mode) ──────────────────────────
+
+[signals.stepper_inputs]
+throttle = "local:throttle"
+steering = "local:steering"
+
+# ── Viewer state pushed to the browser ────────────────────────────────────
+
+[signals.viewer]
+t                = "stepper:time"
+frame            = "runtime:frame_num"
+wall_ms          = "runtime:wall_ms"
+x                = "stepper:x"
+y                = "stepper:y"
+theta            = "stepper:theta"
+v                = "stepper:v"
+delta            = "stepper:delta"
+wheel_rpm        = "stepper:wheel_rpm"
+front_wheel_yaw  = "stepper:front_wheel_yaw"
+yaw_rate         = "stepper:yaw_rate"
+throttle         = "local:throttle"
+steering         = "local:steering"
+input_mode       = "runtime:input_mode"
+
+# ── Reset: zero out locals; rebuild stepper so position/heading reset ─────
+
+[reset]
+on_signal       = "reset"
+reset_locals    = true
+rebuild_stepper = true

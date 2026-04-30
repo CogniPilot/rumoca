@@ -1,9 +1,9 @@
 //! Utility functions for LSP handlers.
 
 use lsp_types::{Position, Range};
-use rumoca_session::compile::core::DefId;
-use rumoca_session::parsing::ast;
-use rumoca_session::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::compile::core::DefId;
+use rumoca_compile::parsing::ast;
+use rumoca_compile::parsing::ir_core as rumoca_ir_core;
 
 /// Convert a rumoca_ir_core::Token to an LSP Range (0-indexed).
 pub fn token_to_range(token: &rumoca_ir_core::Token) -> Range {

@@ -1,4 +1,7 @@
 use super::*;
+use rumoca_compile::codegen::{
+    render_dae_template_with_name, render_flat_template_with_name, templates,
+};
 
 // =============================================================================
 // Render + simulation orchestration helpers
@@ -6,7 +9,7 @@ use super::*;
 
 pub(super) fn maybe_render_model_outputs(
     name: &str,
-    result: &rumoca_session::compile::CompilationResult,
+    result: &rumoca_compile::compile::CompilationResult,
     ctx: &RenderSimContext<'_>,
 ) {
     if !msl_render_enabled() {
@@ -21,22 +24,14 @@ pub(super) fn maybe_render_model_outputs(
     }
 
     write_rendered_artifact(
-        rumoca_phase_codegen::render_template_with_name(
-            &result.dae,
-            rumoca_phase_codegen::templates::DAE_MODELICA,
-            name,
-        ),
+        render_dae_template_with_name(&result.dae, templates::DAE_MODELICA, name),
         ctx.dae_dir.join(format!("{name}.mo")),
         ctx.dae_rendered,
         ctx.render_errors,
     );
 
     write_rendered_artifact(
-        rumoca_phase_codegen::render_flat_template_with_name(
-            &result.flat,
-            rumoca_phase_codegen::templates::FLAT_MODELICA,
-            name,
-        ),
+        render_flat_template_with_name(&result.flat, templates::FLAT_MODELICA, name),
         ctx.flat_dir.join(format!("{name}.mo")),
         ctx.flat_rendered,
         ctx.render_errors,
@@ -61,7 +56,7 @@ pub(super) fn simulation_stop_time_override() -> Option<f64> {
 }
 
 pub(super) fn simulation_settings_from_result(
-    result: &rumoca_session::compile::CompilationResult,
+    result: &rumoca_compile::compile::CompilationResult,
 ) -> SimExecutionSettings {
     let mut t_start = result
         .experiment_start_time
@@ -103,7 +98,7 @@ pub(super) fn simulation_settings_from_result(
 
 pub(super) fn maybe_run_simulation(
     name: &str,
-    result: &rumoca_session::compile::CompilationResult,
+    result: &rumoca_compile::compile::CompilationResult,
     ctx: &RenderSimContext<'_>,
     remaining_budget_secs: Option<f64>,
 ) -> Option<MslSimModelResult> {

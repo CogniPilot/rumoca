@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_session::compile::reset_session_cache_stats;
+use rumoca_compile::compile::reset_session_cache_stats;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -10,7 +10,7 @@ struct LoggedCompletionTimingSummary {
     request_was_stale: bool,
     #[serde(default)]
     semantic_layer: String,
-    session_cache_delta: rumoca_session::compile::SessionCacheStatsSnapshot,
+    session_cache_delta: rumoca_compile::compile::SessionCacheStatsSnapshot,
 }
 
 async fn assert_two_completions_contain_label<F>(

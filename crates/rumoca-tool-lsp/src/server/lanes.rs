@@ -1,4 +1,4 @@
-use rumoca_session::compile::{DaeCompilationResult, Session};
+use rumoca_compile::compile::{DaeCompilationResult, Session};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Default)]

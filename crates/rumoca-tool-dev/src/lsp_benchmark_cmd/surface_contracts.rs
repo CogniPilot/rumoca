@@ -178,7 +178,7 @@ pub(super) const WASM_SURFACE_SPECS: &[SurfaceCoverageSpec] = &[
         source_path: "crates/rumoca-bind-wasm/src/lib.rs",
         source_pattern: "pub fn render_template(",
         proof_path: "crates/rumoca-bind-wasm/src/tests.rs",
-        proof_pattern: "fn test_render_template_preserves_prepared_observables_from_json_context()",
+        proof_pattern: "fn test_render_template_uses_native_dae_json_context()",
         proof_label: "bind-wasm:render_template",
     },
     SurfaceCoverageSpec {

@@ -25,7 +25,7 @@ pub(super) fn class_target_definition(
 }
 
 pub(super) fn class_target_hover(
-    info: &rumoca_session::compile::NavigationClassTargetInfo,
+    info: &rumoca_compile::compile::NavigationClassTargetInfo,
 ) -> Hover {
     let mut value = format!(
         "```modelica\n{} {}\n```",
@@ -50,7 +50,7 @@ pub(super) fn class_target_hover(
     }
 }
 
-pub(super) fn local_component_hover(info: &rumoca_session::compile::LocalComponentInfo) -> Hover {
+pub(super) fn local_component_hover(info: &rumoca_compile::compile::LocalComponentInfo) -> Hover {
     let mut parts = Vec::new();
     if let Some(keyword_prefix) = &info.keyword_prefix {
         parts.push(keyword_prefix.clone());

@@ -55,13 +55,22 @@
   <span class="label">RC:</span> <span class="val" id="v-rc">0, 0, 0, 0</span>
 </div>
 <div id="controls">
-  <b>Controls</b><br>
-  <span class="key">W / S</span> <span class="action">Pitch fwd/back</span><br>
-  <span class="key">A / D</span> <span class="action">Roll left/right</span><br>
-  <span class="key">Up / Down</span> <span class="action">Throttle</span><br>
-  <span class="key">Left / Right</span> <span class="action">Yaw</span><br>
-  <span class="key">Space</span> <span class="action">Zero sticks</span><br>
-  <span class="key">R</span> <span class="action">Reset simulation</span>
+  <b>Input: <span id="v-input-mode">keyboard</span></b><br>
+  <div id="ctrl-keyboard">
+    <span class="key">W / S</span> <span class="action">Pitch fwd/back</span><br>
+    <span class="key">A / D</span> <span class="action">Roll left/right</span><br>
+    <span class="key">Up / Down</span> <span class="action">Throttle</span><br>
+    <span class="key">Left / Right</span> <span class="action">Yaw</span><br>
+    <span class="key">Space</span> <span class="action">Zero sticks</span><br>
+    <span class="key">R</span> <span class="action">Reset simulation</span>
+  </div>
+  <div id="ctrl-gamepad" style="display:none">
+    <span class="key">Right stick</span> <span class="action">Roll / Pitch</span><br>
+    <span class="key">Left stick X</span> <span class="action">Yaw</span><br>
+    <span class="key">Left stick Y</span> <span class="action">Throttle ramp</span><br>
+    <span class="key">A / Cross</span> <span class="action">Zero sticks</span><br>
+    <span class="key">B / Circle</span> <span class="action">Reset simulation</span>
+  </div>
 </div>
 <div id="status"><span class="loading" id="sim-status">Loading WASM...</span></div>
 
@@ -86,7 +95,7 @@ class RigidBodyQuat
   // Ground contact (spring-damper, C2-smooth softplus)
   parameter Real ground_k = 500 "Ground stiffness [N/m]";
   parameter Real ground_c = 50 "Ground damping [N*s/m]";
-  parameter Real ground_eps = 0.01 "Ground contact smoothing [m]";
+  parameter Real ground_eps = 0.1 "Ground contact smoothing [m]";
 
   Real px(start = 0) "Position North [m]";
   Real py(start = 0) "Position East [m]";
@@ -167,6 +176,8 @@ const rc = { throttle: 0, pitch: 0, roll: 0, yaw: 0 };
 const stickRate = 0.01;
 const keys = {};
 let resetRequested = false;
+let gamepadIndex = null;
+let inputMode = "keyboard";
 
 document.addEventListener("keydown", (e) => {
   keys[e.code] = true;
@@ -175,7 +186,53 @@ document.addEventListener("keydown", (e) => {
 });
 document.addEventListener("keyup", (e) => { keys[e.code] = false; e.preventDefault(); });
 
+// ── Gamepad support ────────────────────────────────────────────────
+window.addEventListener("gamepadconnected", (e) => {
+  gamepadIndex = e.gamepad.index;
+  inputMode = "gamepad";
+  console.log(`Gamepad connected: ${e.gamepad.id}`);
+});
+window.addEventListener("gamepaddisconnected", (e) => {
+  if (e.gamepad.index === gamepadIndex) {
+    gamepadIndex = null;
+    inputMode = "keyboard";
+  }
+});
+
+function applyDeadzone(val, dz) {
+  if (Math.abs(val) < dz) return 0;
+  return (val - Math.sign(val) * dz) / (1 - dz);
+}
+
+function updateGamepad() {
+  if (gamepadIndex === null) return false;
+  const gamepads = navigator.getGamepads();
+  const gp = gamepads[gamepadIndex];
+  if (!gp) return false;
+
+  const DZ = 0.12;
+  // Right stick: roll (X) and pitch (Y)
+  rc.roll  =  applyDeadzone(gp.axes[2] ?? 0, DZ);
+  rc.pitch = -applyDeadzone(gp.axes[3] ?? 0, DZ);
+  // Left stick: yaw (X), throttle ramp (Y)
+  rc.yaw = applyDeadzone(gp.axes[0] ?? 0, DZ);
+  const throttleAxis = -applyDeadzone(gp.axes[1] ?? 0, DZ);
+  rc.throttle = Math.max(0, Math.min(1, rc.throttle + throttleAxis * 0.02));
+
+  // Buttons: A/Cross = zero sticks, B/Circle = reset
+  if (gp.buttons[0]?.pressed) { rc.throttle = 0; rc.pitch = 0; rc.roll = 0; rc.yaw = 0; }
+  if (gp.buttons[1]?.pressed) { resetRequested = true; }
+
+  return true;
+}
+
 function updateSticks() {
+  if (updateGamepad()) {
+    inputMode = "gamepad";
+    return;
+  }
+  // Keyboard input — only switch mode if a key is actually pressed
+  if (Object.values(keys).some(v => v)) inputMode = "keyboard";
   if (keys["Space"]) { rc.throttle = 0; rc.pitch = 0; rc.roll = 0; rc.yaw = 0; }
   if (keys["ArrowUp"])    rc.throttle = Math.min(1, rc.throttle + stickRate);
   if (keys["ArrowDown"])  rc.throttle = Math.max(0, rc.throttle - stickRate);
@@ -552,6 +609,10 @@ try {
 }
 
 // ── Animation loop ─────────────────────────────────────────────────
+// ── Frame log (ring buffer for crash diagnosis) ────────────────────
+const LOG_SIZE = 500;
+const frameLog = [];
+let frameNum = 0;
 let lastTime = null;
 
 function animate(timestamp) {
@@ -572,6 +633,8 @@ function animate(timestamp) {
     try { stepper.reset(); } catch (e) { console.error("Reset error:", e); }
     trailCount = 0;
     trailGeo.setDrawRange(0, 0);
+    frameLog.length = 0;
+    frameNum = 0;
     return;
   }
 
@@ -582,6 +645,21 @@ function animate(timestamp) {
   const pitchCmd = rc.pitch * MAX_ANGLE;
   const yawCmd = rc.yaw * MAX_YAW_RATE;
 
+  // Log pre-step state
+  const logEntry = {
+    frame: frameNum++,
+    dt,
+    inputs: { thrust, roll: rollCmd, pitch: pitchCmd, yaw: yawCmd },
+    pre: {
+      t: stepper.time(),
+      px: stepper.get("px"), py: stepper.get("py"), pz: stepper.get("pz"),
+      vx: stepper.get("vx"), vy: stepper.get("vy"), vz: stepper.get("vz"),
+      q0: stepper.get("q0"), q1: stepper.get("q1"), q2: stepper.get("q2"), q3: stepper.get("q3"),
+      omega_x: stepper.get("omega_x"), omega_y: stepper.get("omega_y"), omega_z: stepper.get("omega_z"),
+      T: stepper.get("T"), F_ground: stepper.get("F_ground"),
+    },
+  };
+
   try {
     stepper.set_input("cmd_thrust", thrust);
     stepper.set_input("cmd_roll", rollCmd);
@@ -589,26 +667,59 @@ function animate(timestamp) {
     stepper.set_input("cmd_yaw", yawCmd);
     stepper.step(dt);
   } catch (e) {
-    const state = stepper.state_json();
-    const msg = `Step error at t=${stepper.time().toFixed(4)}s dt=${dt.toFixed(4)}s\n` +
-      `inputs: thrust=${thrust.toFixed(2)} roll=${rollCmd.toFixed(3)} pitch=${pitchCmd.toFixed(3)} yaw=${yawCmd.toFixed(3)}\n` +
-      `error: ${e}\n` +
-      `state: ${state}`;
-    console.error(msg);
-    document.getElementById("sim-status").textContent = "Error (see log)";
+    // Build log from ring buffer (before touching stepper again)
+    const lines = [`CRASH at frame ${logEntry.frame}, sim t=${logEntry.pre.t.toFixed(6)}, dt=${dt.toFixed(6)}`];
+    lines.push(`error: ${e}`);
+    lines.push(`stack: ${e.stack || "n/a"}`);
+    lines.push(``);
+    lines.push(`=== LAST ${frameLog.length} FRAMES ===`);
+    for (const f of frameLog) {
+      const p = f.pre;
+      lines.push(
+        `#${f.frame} dt=${f.dt.toFixed(5)} t=${p.t.toFixed(4)} ` +
+        `thrust=${f.inputs.thrust.toFixed(2)} pz=${p.pz?.toFixed(4)} vz=${p.vz?.toFixed(4)} ` +
+        `F_g=${p.F_ground?.toFixed(2)} T=${p.T?.toFixed(2)} ` +
+        `q=[${p.q0?.toFixed(4)},${p.q1?.toFixed(4)},${p.q2?.toFixed(4)},${p.q3?.toFixed(4)}] ` +
+        `omega=[${p.omega_x?.toFixed(4)},${p.omega_y?.toFixed(4)},${p.omega_z?.toFixed(4)}]`
+      );
+    }
+    lines.push(``);
+    lines.push(`--- CRASH FRAME ---`);
+    lines.push(JSON.stringify(logEntry, null, 2));
+
+    // Try to get final state (may fail if WASM panicked)
+    try { lines.push(`\nFull state: ${stepper.state_json()}`); } catch (_) {}
+
+    const msg = lines.join("\n");
+
+    // Auto-download as file
+    const blob = new Blob([msg], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `crash_log_t${logEntry.pre.t.toFixed(1)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    // Also show on overlay
+    document.getElementById("sim-status").textContent = "Error (log saved)";
     document.getElementById("sim-status").className = "error";
-    // Show error overlay
     const overlay = document.getElementById("loading-overlay");
     overlay.style.display = "flex";
     overlay.style.whiteSpace = "pre-wrap";
-    overlay.style.fontSize = "12px";
-    overlay.style.padding = "40px";
+    overlay.style.fontSize = "11px";
+    overlay.style.padding = "20px";
     overlay.style.alignItems = "flex-start";
     overlay.style.overflowY = "auto";
     overlay.textContent = msg;
-    stepper = null; // stop loop
+    stepper = null;
     return;
   }
+
+  // Log post-step and store in ring buffer
+  logEntry.post = { t: stepper.time() };
+  if (frameLog.length >= LOG_SIZE) frameLog.shift();
+  frameLog.push(logEntry);
 
   // Read state
   const t  = stepper.time();
@@ -684,6 +795,9 @@ function animate(timestamp) {
   document.getElementById("v-pitch").textContent = (pt * 180/Math.PI).toFixed(1);
   document.getElementById("v-rc").textContent =
     `T:${rc.throttle.toFixed(2)} P:${rc.pitch.toFixed(2)} R:${rc.roll.toFixed(2)} Y:${rc.yaw.toFixed(2)}`;
+  document.getElementById("v-input-mode").textContent = inputMode;
+  document.getElementById("ctrl-keyboard").style.display = inputMode === "keyboard" ? "" : "none";
+  document.getElementById("ctrl-gamepad").style.display = inputMode === "gamepad" ? "" : "none";
 
   renderer.render(scene, camera);
 }

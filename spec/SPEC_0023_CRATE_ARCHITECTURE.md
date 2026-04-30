@@ -243,6 +243,53 @@ Rationale:
 - Prevents “shortcut imports” that hide layer violations.
 - Reduces AI/new-contributor drift into convenience-based architecture erosion.
 
+## Runtime And Simulation Layering
+
+The compiler pipeline ends at the DAE contract. Runtime and simulation consumers must remain
+layered below that contract rather than being folded back into `rumoca-compile`.
+
+Target direction:
+
+```
+rumoca-compile / compiler entry points
+    -> runtime contracts
+    -> concrete solver backend
+    -> stepper APIs
+    -> report/payload contracts
+    -> visualization/assets
+```
+
+Recommended crate mapping:
+
+| Responsibility | Preferred Crate Role |
+|----------------|----------------------|
+| compile/session orchestration | `rumoca-compile` |
+| transport-neutral lockstep I/O contracts | `rumoca-codec` |
+| FlatBuffer schema/codec support for lockstep I/O | `rumoca-codec-flatbuffers` |
+| DAE structural analysis | `rumoca-phase-structural` |
+| solver-facing prepared IR, vector layout, row operations | `rumoca-ir-solve` |
+| DAE-to-solve layout and row lowering | `rumoca-phase-solve-lower` |
+| backend-neutral solver contracts and shared runtime helpers | `rumoca-sim-core` |
+| concrete diffsol backend | `rumoca-solver-diffsol` |
+| simple pure-Rust RK backend | `rumoca-solver-rk45` |
+| shared stepping/runtime loop surface | `rumoca-sim-core` |
+| report/payload shaping | `rumoca-sim-core` |
+| web/HTML/assets | `rumoca-viz-web` |
+
+Current app note:
+
+- `rumoca lockstep` is the current lockstep app/example surface in the main CLI.
+- It may keep the quadrotor/controller/viewer loop, but reusable protocol ownership belongs in
+  `rumoca-codec` and `rumoca-codec-flatbuffers`, not in the CLI entry point.
+
+Migration rule:
+
+- Do not add new APIs that further couple these responsibilities.
+- New CI checks should reject legacy assumptions and ratchet toward the target layering.
+- CLI/bindings/export adapters and shared regression harnesses should render templates through
+  `rumoca-compile::codegen`; direct `rumoca-phase-codegen` dependencies are reserved for
+  phase-local codegen tests.
+
 ## Compliance Notes
 
 ### Array Preservation (SPEC_0019)
@@ -261,7 +308,7 @@ Rationale:
 - Solver-facing DAE must carry MLS Appendix B canonical equation buckets (`f_x`, `f_z`, `f_m`, `f_c`, `relation`) plus runtime metadata (`synthetic_root_conditions`, `scheduled_time_events`, `clock_constructor_exprs`, `clock_schedules`).
 - Solver-facing DAE must not include model-level `when_clauses`, `algorithms`, or `initial_algorithms`.
 - Solver-facing equation partitions consumed by continuous solvers (`f_x`, `initial_equations`) must not contain unlowered synchronous operators (`sample/hold/Clock/subSample/superSample/shiftSample/backSample/noClock/firstTick/previous`); ToDae rejects these with `ED014`.
-- Backend adapters (e.g. `rumoca-sim`) must consume this pre-lowered DAE contract and must not perform fallback semantic lowering of model algorithms/when clauses.
+- Backend adapters (e.g. `rumoca-sim-core`) must consume this pre-lowered DAE contract and must not perform fallback semantic lowering of model algorithms/when clauses.
 
 ### Balance Checking (MLS §4.8)
 - `Dae.effective_equation_count()` - counts array elements

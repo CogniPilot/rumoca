@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use lsp_types::{GotoDefinitionResponse, Location, Position, Range, Url};
-use rumoca_session::compile::core::DefId;
-use rumoca_session::parsing::ast;
-use rumoca_session::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::compile::core::DefId;
+use rumoca_compile::parsing::ast;
+use rumoca_compile::parsing::ir_core as rumoca_ir_core;
 
 use crate::helpers::{
     get_qualified_class_name_at_position, get_word_at_position, imported_def_id,
@@ -318,7 +318,7 @@ end Modelica;
         let ball_uri_path = ball_path.to_string_lossy().to_string();
         let modelica_uri_path = modelica_path.to_string_lossy().to_string();
 
-        let mut session = rumoca_session::Session::default();
+        let mut session = rumoca_compile::Session::default();
         session.update_document(&ball_uri_path, source);
         session.update_document(&modelica_uri_path, source_root);
         let resolved = session.resolved().expect("resolved");
@@ -376,7 +376,7 @@ end Modelica;
         let ball_uri_path = ball_path.to_string_lossy().to_string();
         let modelica_uri_path = modelica_path.to_string_lossy().to_string();
 
-        let mut session = rumoca_session::Session::default();
+        let mut session = rumoca_compile::Session::default();
         session.update_document(&ball_uri_path, source);
         let parse_error = session.update_document("broken.mo", broken);
         assert!(parse_error.is_some(), "broken document should stay invalid");

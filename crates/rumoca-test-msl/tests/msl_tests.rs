@@ -7,8 +7,7 @@
 //! `cargo test --release --package rumoca-test-msl --test msl_tests test_msl_all -- --ignored --nocapture`
 
 use rayon::prelude::*;
-use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timing_stats};
-use rumoca_session::{
+use rumoca_compile::{
     compile::core::msl_cache_dir_from_manifest,
     compile::{
         CompiledSourceRoot, Dae, FailedPhase, PhaseResult, StrictCompileReport,
@@ -16,6 +15,7 @@ use rumoca_session::{
     },
     parsing::parse_files_parallel_lenient,
 };
+use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timing_stats};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};

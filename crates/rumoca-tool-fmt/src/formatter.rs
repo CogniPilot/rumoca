@@ -3,7 +3,7 @@
 use crate::format_errors::FormatError;
 use crate::format_options::{FormatOptions, FormatProfile};
 
-use rumoca_session::parsing::validate_source_syntax;
+use rumoca_compile::parsing::validate_source_syntax;
 
 /// Format Modelica source code.
 pub fn format(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
