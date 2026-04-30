@@ -1,0 +1,13 @@
+[package]
+name = "rumoca-signal-frame"
+description = "Transport-neutral named-signal frame shape shared by codec impls and runtime adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+indexmap = { workspace = true }
+
+[lints]
+workspace = true

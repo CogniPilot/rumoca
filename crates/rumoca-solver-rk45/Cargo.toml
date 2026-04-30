@@ -1,0 +1,17 @@
+[package]
+name = "rumoca-solver-rk45"
+description = "Pure-Rust RK45 simulation backend for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Sim-core is the single front door: IR types, structural analysis,
+# Span/timer helpers, and the runtime expression evaluator (eval_dae)
+# are all reached through its re-export modules.
+rumoca-sim-core = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

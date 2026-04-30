@@ -34,7 +34,7 @@ use crate::lint_rules::{
     NamingConventionRule,
 };
 
-use rumoca_session::parsing::validate_source_syntax;
+use rumoca_compile::parsing::validate_source_syntax;
 
 /// Lint Modelica source code.
 ///

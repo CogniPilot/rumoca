@@ -6,31 +6,34 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use rumoca_session::compile::{
+use rumoca_compile::compile::{
     CompilePhaseTimingSnapshot, Document, ParsedSourceRootLoad, PhaseResult, Session,
     SessionCacheStatsSnapshot, SessionChange, SessionConfig, SessionSnapshot, SourceRootKind,
     compile_phase_timing_stats, session_cache_stats,
 };
-use rumoca_session::parsing::{
+use rumoca_compile::parsing::{
     ast, collect_compile_unit_source_files, collect_model_names, merge_stored_definitions,
     parse_source_to_ast,
 };
-use rumoca_session::project::{
+use rumoca_compile::project::{
     EffectiveSimulationConfig, EffectiveSimulationPreset, PlotViewConfig, ProjectConfig,
     ProjectFileMoveHint, SimulationModelOverride, clear_model_simulation_preset,
     load_plot_views_for_model, load_simulation_snapshot_for_model,
     resync_model_sidecars_with_move_hints, write_model_simulation_preset,
     write_plot_views_for_model,
 };
-use rumoca_session::runtime::{
-    SimOptions, SimResult, SimSolverMode, dae_balance, dae_balance_detail, simulate_dae,
-};
-use rumoca_session::source_roots::{
+use rumoca_compile::source_roots::{
     PackageLayoutError, SourceRootCacheStatus, SourceRootCacheTiming, canonical_path_key,
     classify_configured_source_root_kind, merge_source_root_paths, parse_source_root_with_cache,
     plan_source_root_loads, render_source_root_indexing_failed_message,
     render_source_root_indexing_finished_message, render_source_root_indexing_started_message,
     render_source_root_status_message, source_root_paths_changed, source_root_source_set_key,
+};
+use rumoca_sim::simulate_dae;
+use rumoca_sim::{SimOptions, SimSolverMode};
+use rumoca_sim::{
+    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
+    build_simulation_payload, dae_balance, dae_balance_detail,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -81,7 +84,7 @@ pub struct ModelicaLanguageServer {
     navigation_timing_path: Arc<RwLock<Option<PathBuf>>>,
     startup_timing_path: Arc<RwLock<Option<PathBuf>>>,
     simulation_compile_cache:
-        Arc<RwLock<HashMap<SimulationCompileKey, rumoca_session::compile::DaeCompilationResult>>>,
+        Arc<RwLock<HashMap<SimulationCompileKey, rumoca_compile::compile::DaeCompilationResult>>>,
     simulation_prewarm_state:
         Arc<RwLock<HashMap<SimulationPrewarmKey, Arc<SimulationPrewarmState>>>>,
     selected_simulation_models: Arc<RwLock<HashMap<String, String>>>,
@@ -382,7 +385,7 @@ impl ModelicaLanguageServer {
 
     fn simulation_options_from_settings(
         settings: &SimulationRequestSettings,
-        compiled: &rumoca_session::compile::DaeCompilationResult,
+        compiled: &rumoca_compile::compile::DaeCompilationResult,
     ) -> SimOptions {
         let mut opts = SimOptions {
             t_end: settings.t_end,
@@ -401,26 +404,11 @@ impl ModelicaLanguageServer {
         opts
     }
 
-    fn simulation_success_value(payload: Value, metrics: SimulationMetrics) -> Value {
+    fn simulation_success_value(payload: Value, metrics: Value) -> Value {
         json!({
             "ok": true,
             "payload": payload,
-            "metrics": {
-                "compileSeconds": metrics.compile_elapsed,
-                "simulateSeconds": metrics.sim_elapsed,
-                "points": metrics.point_count,
-                "variables": metrics.variable_count,
-                "compilePhaseSeconds": {
-                    "prepareContext": metrics.prepare_context_seconds,
-                    "buildSnapshot": metrics.build_snapshot_seconds,
-                    "strictCompile": metrics.strict_compile_seconds,
-                    "strictResolve": metrics.strict_resolve_seconds,
-                    "instantiate": metrics.instantiate_seconds,
-                    "typecheck": metrics.typecheck_seconds,
-                    "flatten": metrics.flatten_seconds,
-                    "todae": metrics.todae_seconds,
-                },
-            }
+            "metrics": metrics,
         })
     }
 
@@ -448,8 +436,6 @@ impl ModelicaLanguageServer {
         SimulationMetrics {
             compile_elapsed,
             sim_elapsed: 0.0,
-            point_count: 0,
-            variable_count: 0,
             prepare_context_seconds: compiled.timings.prepare_context_seconds,
             build_snapshot_seconds: compiled.timings.build_snapshot_seconds,
             strict_compile_seconds: compiled.timings.strict_compile_seconds,
@@ -473,73 +459,33 @@ impl ModelicaLanguageServer {
         None
     }
 
-    fn build_simulation_payload(
-        sim: &SimResult,
+    fn simulation_request_summary(
         settings: &SimulationRequestSettings,
         opts: &SimOptions,
-        metrics: SimulationMetrics,
-    ) -> Value {
-        let t_start_actual = sim.times.first().copied().unwrap_or(opts.t_start);
-        let t_end_actual = sim.times.last().copied().unwrap_or(opts.t_start);
-        let mut all_data = Vec::with_capacity(1 + sim.data.len());
-        all_data.push(sim.times.clone());
-        all_data.extend(sim.data.clone());
+    ) -> SimulationRequestSummary {
+        SimulationRequestSummary {
+            solver: settings.solver.clone(),
+            t_start: opts.t_start,
+            t_end: settings.t_end,
+            dt: settings.dt,
+            rtol: opts.rtol,
+            atol: opts.atol,
+        }
+    }
 
-        let sim_details = json!({
-            "actual": {
-                "t_start": t_start_actual,
-                "t_end": t_end_actual,
-                "points": sim.times.len(),
-                "variables": sim.names.len(),
-            },
-            "requested": {
-                "solver": settings.solver,
-                "t_start": opts.t_start,
-                "t_end": settings.t_end,
-                "dt": settings.dt,
-                "rtol": opts.rtol,
-                "atol": opts.atol,
-            },
-            "timing": {
-                "compile_seconds": metrics.compile_elapsed,
-                "simulate_seconds": metrics.sim_elapsed,
-                "compile_phase_seconds": {
-                    "prepare_context": metrics.prepare_context_seconds,
-                    "build_snapshot": metrics.build_snapshot_seconds,
-                    "strict_compile": metrics.strict_compile_seconds,
-                    "strict_resolve": metrics.strict_resolve_seconds,
-                    "instantiate": metrics.instantiate_seconds,
-                    "typecheck": metrics.typecheck_seconds,
-                    "flatten": metrics.flatten_seconds,
-                    "todae": metrics.todae_seconds,
-                }
-            }
-        });
-
-        json!({
-            "version": 1,
-            "names": sim.names,
-            "allData": all_data,
-            "nStates": sim.n_states,
-            "variableMeta": sim.variable_meta.iter().map(|meta| {
-                json!({
-                    "name": meta.name,
-                    "role": meta.role,
-                    "is_state": meta.is_state,
-                    "value_type": meta.value_type,
-                    "variability": meta.variability,
-                    "time_domain": meta.time_domain,
-                    "unit": meta.unit,
-                    "start": meta.start,
-                    "min": meta.min,
-                    "max": meta.max,
-                    "nominal": meta.nominal,
-                    "fixed": meta.fixed,
-                    "description": meta.description,
-                })
-            }).collect::<Vec<_>>(),
-            "simDetails": sim_details,
-        })
+    fn simulation_report_metrics(metrics: SimulationMetrics) -> SimulationRunMetrics {
+        SimulationRunMetrics {
+            compile_seconds: Some(metrics.compile_elapsed),
+            simulate_seconds: Some(metrics.sim_elapsed),
+            prepare_context_seconds: Some(metrics.prepare_context_seconds),
+            build_snapshot_seconds: Some(metrics.build_snapshot_seconds),
+            strict_compile_seconds: Some(metrics.strict_compile_seconds),
+            strict_resolve_seconds: Some(metrics.strict_resolve_seconds),
+            instantiate_seconds: Some(metrics.instantiate_seconds),
+            typecheck_seconds: Some(metrics.typecheck_seconds),
+            flatten_seconds: Some(metrics.flatten_seconds),
+            todae_seconds: Some(metrics.todae_seconds),
+        }
     }
 
     async fn execute_simulate_model(
@@ -644,10 +590,11 @@ impl ModelicaLanguageServer {
             stats_delta,
         );
         metrics.sim_elapsed = sim_elapsed;
-        metrics.point_count = sim.times.len();
-        metrics.variable_count = sim.names.len();
-        let payload = Self::build_simulation_payload(&sim, &settings, &opts, metrics);
-        Some(Self::simulation_success_value(payload, metrics))
+        let report_request = Self::simulation_request_summary(&settings, &opts);
+        let report_metrics = Self::simulation_report_metrics(metrics);
+        let payload = build_simulation_payload(&sim, &report_request, &report_metrics);
+        let metrics_value = build_simulation_metrics_value(&sim, &report_metrics);
+        Some(Self::simulation_success_value(payload, metrics_value))
     }
 
     async fn ensure_completion_source_roots(
@@ -1394,7 +1341,7 @@ impl LanguageServer for ModelicaLanguageServer {
         let source = doc_snapshot.content.clone();
         let source_root_paths = self.source_root_paths.read().await.clone();
         let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
-        if rumoca_session::source_roots::source_requires_unloaded_source_roots(
+        if rumoca_compile::source_roots::source_requires_unloaded_source_roots(
             &source,
             &source_root_paths,
             &loaded_source_roots,
@@ -1427,7 +1374,7 @@ impl LanguageServer for ModelicaLanguageServer {
         let source_root_paths = self.source_root_paths.read().await.clone();
         let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
         if self.analysis_request_is_stale(request_token).await
-            || rumoca_session::source_roots::source_requires_unloaded_source_roots(
+            || rumoca_compile::source_roots::source_requires_unloaded_source_roots(
                 &doc_snapshot.content,
                 &source_root_paths,
                 &loaded_source_roots,
@@ -1452,7 +1399,7 @@ impl LanguageServer for ModelicaLanguageServer {
                 &doc_snapshot.content,
                 &uri_path,
                 Some(&mut session),
-                rumoca_session::compile::SemanticDiagnosticsMode::Save,
+                rumoca_compile::compile::SemanticDiagnosticsMode::Save,
             );
             drop(session);
             diagnostics.extend(self.stored_source_root_load_diagnostics(&uri_path).await);

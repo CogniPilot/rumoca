@@ -1,0 +1,22 @@
+cmake_minimum_required(VERSION 3.10)
+project({{ model_name }} C)
+
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+add_library({{ model_name }} SHARED {{ model_name }}.c)
+target_compile_options({{ model_name }} PRIVATE -Wall -Wextra -pedantic)
+
+if(WIN32)
+  set(FMU_PLATFORM "win64")
+elseif(APPLE)
+  set(FMU_PLATFORM "darwin64")
+elseif(UNIX)
+  set(FMU_PLATFORM "linux64")
+else()
+  message(FATAL_ERROR "Unsupported platform for FMU packaging")
+endif()
+
+install(TARGETS {{ model_name }}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/binaries/${FMU_PLATFORM}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/binaries/${FMU_PLATFORM})

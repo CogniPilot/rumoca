@@ -1167,7 +1167,7 @@ algorithm
 end AlgArrayOutput;
 "#;
         let r = assert_compiles(source, "AlgArrayOutput");
-        let detail = rumoca_eval_dae::analysis::balance_detail(&r.dae);
+        let detail = rumoca_analysis_dae::balance_detail(&r.dae);
         assert_eq!(
             detail.algorithm_outputs, 0,
             "Lowered model algorithms should not contribute algorithm_outputs directly"
@@ -1457,7 +1457,7 @@ mod tier_10h4_subscripted_record_scalar_count {
             dae.f_x.iter().map(|eq| eq.scalar_count).collect::<Vec<_>>()
         );
         assert_eq!(
-            rumoca_eval_dae::analysis::balance(&dae),
+            rumoca_analysis_dae::balance(&dae),
             0,
             "balance should be 0 (4 scalars = 4 unknowns)"
         );
@@ -1643,11 +1643,7 @@ mod tier_10h5_connected_toplevel_input {
 
         // Balance: 4 equations, 4 unknowns (2 algebraics + 2 outputs)
         assert_eq!(dae.f_x.len(), 4);
-        assert_eq!(
-            rumoca_eval_dae::analysis::balance(&dae),
-            0,
-            "balance should be 0"
-        );
+        assert_eq!(rumoca_analysis_dae::balance(&dae), 0, "balance should be 0");
     }
 }
 

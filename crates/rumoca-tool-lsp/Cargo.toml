@@ -12,7 +12,8 @@ path = "src/main.rs"
 required-features = ["server"]
 
 [dependencies]
-rumoca-session = { workspace = true }
+rumoca-compile = { workspace = true }
+rumoca-sim = { workspace = true, features = ["solver-diffsol"] }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 lsp-types = { workspace = true }

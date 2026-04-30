@@ -22,15 +22,15 @@ const assets = [
     dst: path.join(outDir, 'three.min.js'),
   },
   {
-    src: path.join(repoRoot, 'crates', 'rumoca-sim', 'web', 'visualization_shared.js'),
+    src: path.join(repoRoot, 'crates', 'rumoca-viz-web', 'web', 'visualization_shared.js'),
     dst: path.join(outDir, 'visualization_shared.js'),
   },
   {
-    src: path.join(repoRoot, 'crates', 'rumoca-sim', 'web', 'results_app.js'),
+    src: path.join(repoRoot, 'crates', 'rumoca-viz-web', 'web', 'results_app.js'),
     dst: path.join(outDir, 'results_app.js'),
   },
   {
-    src: path.join(repoRoot, 'crates', 'rumoca-sim', 'web', 'results_app.css'),
+    src: path.join(repoRoot, 'crates', 'rumoca-viz-web', 'web', 'results_app.css'),
     dst: path.join(outDir, 'results_app.css'),
   },
 ];

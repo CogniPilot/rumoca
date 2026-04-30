@@ -21,6 +21,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use rumoca_sim::viz_web::THREE_JS;
 use rumoca_sim::{SimStepper, StepperOptions};
 use tungstenite::{Message, accept};
 
@@ -29,8 +30,6 @@ const WS_PORT: u16 = 8081;
 const MAX_SUB_DT: f64 = 0.002;
 
 const MODEL_SOURCE: &str = include_str!("../../../examples/quadrotor_sil/QuadrotorSIL.mo");
-const THREE_JS: &str = include_str!("../../rumoca-sim/web/three.min.js");
-
 // Physical constants matching the Modelica model
 const MASS: f64 = 2.0;
 const G: f64 = 9.80665;

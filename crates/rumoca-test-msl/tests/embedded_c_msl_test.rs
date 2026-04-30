@@ -18,12 +18,11 @@
 //! - `RUMOCA_EMBEDDED_MSL_TOLERANCE=0.20` — max allowed trace deviation (default 0.20)
 
 use flate2::read::GzDecoder;
-use rumoca_phase_codegen::templates::{EMBEDDED_C_H, EMBEDDED_C_IMPL};
-use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
-use rumoca_session::parsing::parse_files_parallel_lenient;
-use rumoca_session::runtime::{
-    SimOptions, SimResult, prepare_dae_for_template_codegen, simulate_dae,
-};
+use rumoca_compile::codegen::{render_dae_template_with_name, templates};
+use rumoca_compile::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
+use rumoca_compile::parsing::parse_files_parallel_lenient;
+use rumoca_sim::simulate_dae;
+use rumoca_sim::{SimOptions, SimResult};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
@@ -53,7 +52,7 @@ const MSL_URL: &str =
 
 fn get_msl_cache_dir() -> PathBuf {
     let cache_dir =
-        rumoca_session::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
+        rumoca_compile::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
     fs::create_dir_all(&cache_dir).expect("Failed to create MSL cache directory");
     cache_dir
 }
@@ -264,10 +263,10 @@ fn embedded_simulate(
 ) -> Result<String, String> {
     let safe_name = model_name.replace('.', "_");
 
-    // Use structurally prepared DAE for correct equation ordering
-    let header = rumoca_phase_codegen::render_template_with_name(dae, EMBEDDED_C_H, model_name)
+    // Render embedded C directly from the compiler-owned DAE
+    let header = render_dae_template_with_name(dae, templates::EMBEDDED_C_H, model_name)
         .map_err(|e| format!("render embedded C header: {e}"))?;
-    let impl_c = rumoca_phase_codegen::render_template_with_name(dae, EMBEDDED_C_IMPL, model_name)
+    let impl_c = render_dae_template_with_name(dae, templates::EMBEDDED_C_IMPL, model_name)
         .map_err(|e| format!("render embedded C impl: {e}"))?;
 
     let (model_h, harness_main) = make_test_harness(&header, &impl_c, dae, model_name, t_end, dt);
@@ -493,7 +492,13 @@ fn run_single_model(
         }
     };
 
-    let dae = &result.dae;
+    // Scalarize before rendering: the embedded-C template emits one xdot
+    // entry per scalar state, so vector equations like `der(x) = -x` for
+    // `x: Real[n]` must be expanded. Idempotent w.r.t. the simulator which
+    // scalarizes internally.
+    let mut dae = result.dae.clone();
+    rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
+    let dae = &dae;
 
     if dae.states.is_empty() {
         return ModelOutcome::NoStates;
@@ -520,14 +525,8 @@ fn run_single_model(
         Err(e) => return ModelOutcome::RumocaSimFail(format!("{e}")),
     };
 
-    // 3. Structurally prepare DAE for embedded C (correct BLT equation ordering)
-    let prepared_dae = match prepare_dae_for_template_codegen(dae, true) {
-        Ok(d) => d,
-        Err(e) => return ModelOutcome::EmbeddedRenderFail(format!("prepare: {e}")),
-    };
-
-    // 4. Run embedded C pipeline
-    let csv = match embedded_simulate(&prepared_dae, model_name, t_end, dt) {
+    // 3. Run embedded C pipeline against the compiler-owned DAE.
+    let csv = match embedded_simulate(dae, model_name, t_end, dt) {
         Ok(csv) => csv,
         Err(e) => {
             if e.contains("render") {
@@ -538,7 +537,7 @@ fn run_single_model(
     };
     let emb_traces = parse_csv_traces(&csv);
 
-    // 5. Compare state variable traces
+    // 4. Compare state variable traces
     let mut worst_deviation = 0.0f64;
     let mut worst_var = String::new();
     for name in dae.states.keys() {
