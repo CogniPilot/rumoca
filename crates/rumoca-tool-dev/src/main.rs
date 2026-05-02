@@ -463,7 +463,6 @@ fn cmd_wasm(args: WasmArgs) -> Result<()> {
                     WasmVariant::FullWeb,
                     default_wasm_rayon_enabled(),
                     false,
-                    true,
                     false,
                 )?;
             }
@@ -1600,15 +1599,7 @@ fn cmd_build_wasm(args: WasmBuildArgs) -> Result<()> {
     } else {
         WasmBuildProfile::Release
     };
-    build_wasm(
-        &root,
-        profile,
-        args.variant,
-        args.rayon,
-        args.pack,
-        false,
-        false,
-    )
+    build_wasm(&root, profile, args.variant, args.rayon, args.pack, false)
 }
 
 pub(crate) fn run_wasm_test_suite(root: &Path) -> Result<()> {
@@ -1664,33 +1655,36 @@ pub(crate) fn run_wasm_editor_smoke_check(root: &Path) -> Result<()> {
         "triggerQuickFixAtCursor",
     )?;
 
+    let rayon = default_wasm_rayon_enabled();
     ensure_wasm_deps(root)?;
     build_wasm(
         root,
         WasmBuildProfile::Release,
         WasmVariant::FullWeb,
-        default_wasm_rayon_enabled(),
+        rayon,
         false,
-        true,
         false,
     )?;
-    run_wasm_simulation_smoke(root)?;
-    run_wasm_source_root_smoke(root)?;
+    let pkg_subdir = wasm_build_subdir_name(WasmBuildProfile::Release, WasmVariant::FullWeb, rayon);
+    run_wasm_simulation_smoke(root, &pkg_subdir)?;
+    run_wasm_source_root_smoke(root, &pkg_subdir)?;
     Ok(())
 }
 
-fn run_wasm_simulation_smoke(root: &Path) -> Result<()> {
+fn run_wasm_simulation_smoke(root: &Path, pkg_subdir: &str) -> Result<()> {
     let mut wasm_smoke = Command::new("node");
     wasm_smoke
         .arg("editors/wasm/tests/simulate_smoke.mjs")
+        .env("RUMOCA_WASM_PKG_SUBDIR", pkg_subdir)
         .current_dir(root);
     run_status(wasm_smoke)
 }
 
-fn run_wasm_source_root_smoke(root: &Path) -> Result<()> {
+fn run_wasm_source_root_smoke(root: &Path, pkg_subdir: &str) -> Result<()> {
     let mut wasm_smoke = Command::new("node");
     wasm_smoke
         .arg("editors/wasm/tests/source_root_smoke.mjs")
+        .env("RUMOCA_WASM_PKG_SUBDIR", pkg_subdir)
         .current_dir(root);
     run_status(wasm_smoke)
 }
@@ -1812,13 +1806,25 @@ fn wasm_variant_arg(variant: WasmVariant) -> &'static str {
     }
 }
 
+fn wasm_build_subdir_name(profile: WasmBuildProfile, variant: WasmVariant, rayon: bool) -> String {
+    let profile_name = match profile {
+        WasmBuildProfile::Dev => "dev",
+        WasmBuildProfile::Release => "release",
+    };
+    let variant_name = wasm_variant_arg(variant);
+    if rayon {
+        format!("{profile_name}-{variant_name}-rayon")
+    } else {
+        format!("{profile_name}-{variant_name}")
+    }
+}
+
 fn build_wasm(
     root: &Path,
     profile: WasmBuildProfile,
     variant: WasmVariant,
     rayon: bool,
     pack: bool,
-    editor_aliases: bool,
     patch_package_json: bool,
 ) -> Result<()> {
     let mut command = Command::new("node");
@@ -1837,9 +1843,6 @@ fn build_wasm(
     }
     if pack {
         command.arg("--pack");
-    }
-    if editor_aliases {
-        command.arg("--editor-aliases");
     }
     if !patch_package_json {
         command.arg("--no-patch");

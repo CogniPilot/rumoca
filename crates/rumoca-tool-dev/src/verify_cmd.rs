@@ -381,7 +381,7 @@ pub(crate) fn run_wasm_browser_msl_smoke_report(
     let browser = detect_browser_binary()?;
     let result_path = output_dir.join("wasm-browser-result.json");
     let smoke_url = format!(
-        "http://127.0.0.1:{port}/editors/wasm/index.html?rumoca_smoke=1&smoke_model=Resistor&smoke_source_url=/target/editor-msl-smoke/Resistor.mo&smoke_package_archive_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
+        "http://127.0.0.1:{port}/editors/wasm/index.html?rumoca_smoke=1&smoke_pkg_subdir=release-full-web&smoke_model=Resistor&smoke_source_url=/target/editor-msl-smoke/Resistor.mo&smoke_package_archive_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
     );
     let mut smoke = Command::new("node");
     smoke

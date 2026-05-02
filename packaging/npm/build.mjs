@@ -20,7 +20,6 @@ const parseArgs = (argv) => {
     rayon: false,
     patch: true,
     pack: false,
-    editorAliases: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -30,7 +29,6 @@ const parseArgs = (argv) => {
     else if (arg === "--rayon") args.rayon = true;
     else if (arg === "--no-patch") args.patch = false;
     else if (arg === "--pack") args.pack = true;
-    else if (arg === "--editor-aliases") args.editorAliases = true;
     else if (arg === "--help") {
       console.log(`Usage: node packaging/npm/build.mjs [options]
 
@@ -41,7 +39,6 @@ Options:
   --rayon                                  Enable wasm-rayon
   --no-patch                               Skip package.json patching
   --pack                                   Run npm pack on pkg/
-  --editor-aliases                         Create rumoca.js / rumoca_bg.wasm aliases
 `);
       process.exit(0);
     } else {
@@ -122,17 +119,6 @@ const copyEditorWorkers = async (pkgDir) => {
   );
 };
 
-const writeEditorAliases = async (pkgDir) => {
-  const jsFrom = path.join(pkgDir, "rumoca_bind_wasm.js");
-  const wasmFrom = path.join(pkgDir, "rumoca_bind_wasm_bg.wasm");
-  const jsTo = path.join(pkgDir, "rumoca.js");
-  const wasmTo = path.join(pkgDir, "rumoca_bg.wasm");
-  await fs.copyFile(jsFrom, jsTo);
-  await fs.copyFile(wasmFrom, wasmTo);
-  const jsText = await fs.readFile(jsTo, "utf8");
-  await fs.writeFile(jsTo, jsText.replaceAll("rumoca_bind_wasm_bg.wasm", "rumoca_bg.wasm"), "utf8");
-};
-
 const utcTimestamp = () => {
   const iso = new Date().toISOString(); // 2026-04-30T20:10:55.123Z
   return iso.replaceAll(":", "").replaceAll("-", "").replace(".", "").replace("T", "-").replace("Z", "Z");
@@ -203,13 +189,6 @@ const main = async () => {
       "utf8",
     );
 
-    if (args.editorAliases) {
-      await writeEditorAliases(pkgDir);
-      // Keep editor smoke/test workflows stable: mirror alias artifacts to pkg/.
-      for (const file of ["rumoca.js", "rumoca_bg.wasm", "rumoca_worker.js", "parse_worker.js"]) {
-        await fs.copyFile(path.join(pkgDir, file), path.join(pkgRoot, file));
-      }
-    }
     if (args.patch) {
       await patchWasmPackageJson(pkgDir, args.variant);
     }
