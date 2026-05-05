@@ -12,10 +12,10 @@ use rumoca_sim_core::simulation::dae_prepare::{
     demote_alias_states_without_der, demote_coupled_derivative_states,
     demote_direct_assigned_states, demote_exact_alias_component_states,
     demote_orphan_states_without_equation_refs, demote_states_without_assignable_derivative_rows,
-    demote_states_without_derivative_refs, eliminate_derivative_aliases,
-    expand_compound_derivatives, index_reduce_missing_state_derivatives,
-    normalize_ode_equation_signs, promote_der_algebraics_to_states,
-    substitute_standalone_state_derivatives_in_non_ode_rows,
+    demote_states_without_derivative_refs, demote_states_without_retained_derivative_rows,
+    eliminate_derivative_aliases, expand_compound_derivatives,
+    index_reduce_missing_state_derivatives, normalize_ode_equation_signs,
+    promote_der_algebraics_to_states, substitute_standalone_state_derivatives_in_non_ode_rows,
 };
 use rumoca_sim_core::simulation::introspection::trace_flow_array_alias_watch;
 use rumoca_sim_core::simulation::pipeline::{PreparedSimulation, run_logged_phase};
@@ -1103,6 +1103,50 @@ fn normalize_runtime_aliases_and_update_elim(
     }
 }
 
+fn log_final_orphan_state_cleanup(n_no_derivative_refs: usize, n_unassignable_rows: usize) {
+    if n_no_derivative_refs > 0 {
+        eprintln!(
+            "[prepare_dae] final pass: demoted {} states whose derivative rows were removed",
+            n_no_derivative_refs
+        );
+    }
+    if n_unassignable_rows > 0 {
+        eprintln!(
+            "[prepare_dae] final pass: demoted {} states without assignable derivative rows",
+            n_unassignable_rows
+        );
+    }
+}
+
+fn run_late_orphan_state_cleanup_if_needed(
+    dae: &mut Dae,
+    budget: &TimeoutBudget,
+    trace: bool,
+    late_continuous_rows_before: usize,
+) -> Result<(), SimError> {
+    if dae.f_x.len() >= late_continuous_rows_before {
+        return Ok(());
+    }
+
+    let mut n_no_derivative_refs = 0usize;
+    let mut n_unassignable_rows = 0usize;
+    // MLS Appendix B / SPEC_0003: retained states require derivative rows.
+    // Runtime alias normalization and post-structure elimination can remove
+    // derivative-alias rows after the earlier demotion pass has already run.
+    run_logged_phase(
+        trace,
+        "demote_states_without_retained_derivative_rows",
+        || {
+            run_timeout_step(budget, || {
+                (n_no_derivative_refs, n_unassignable_rows) =
+                    demote_states_without_retained_derivative_rows(dae);
+            })
+        },
+    )?;
+    log_final_orphan_state_cleanup(n_no_derivative_refs, n_unassignable_rows);
+    Ok(())
+}
+
 /// Core DAE preparation pipeline shared by both simulation and template codegen.
 ///
 /// Runs all structural passes (elimination, scalarization, equation reordering,
@@ -1168,6 +1212,7 @@ fn prepare_dae_core(
     run_prepare_structure_passes(&mut dae, budget)?;
     trace_flow_array_alias_watch("after_structure_passes", &dae, trace);
 
+    let late_continuous_rows_before = dae.f_x.len();
     if normalize_aliases {
         run_logged_phase(trace, "normalize_runtime_aliases", || {
             run_timeout_step(budget, || {
@@ -1179,6 +1224,8 @@ fn prepare_dae_core(
     budget.check()?;
     run_post_structure_elimination_phase(&mut dae, trace, disable_trivial_elim, &mut elim);
     budget.check()?;
+
+    run_late_orphan_state_cleanup_if_needed(&mut dae, budget, trace, late_continuous_rows_before)?;
 
     debug_print_prepare_counts(&dae);
     let has_dummy = dae.states.values().map(|v| v.size()).sum::<usize>() == 0;
@@ -1307,6 +1354,51 @@ mod tests {
             function: dae::BuiltinFunction::Der,
             args: vec![var(name)],
         }
+    }
+
+    #[test]
+    fn test_prepare_demotes_state_when_runtime_alias_normalization_removes_derivative_row() {
+        let mut dae = Dae::new();
+        dae.states.insert(
+            VarName::new("damper.phi_rel"),
+            dae::Variable::new(VarName::new("damper.phi_rel")),
+        );
+        dae.states.insert(
+            VarName::new("damper.w_rel"),
+            dae::Variable::new(VarName::new("damper.w_rel")),
+        );
+        dae.algebraics.insert(
+            VarName::new("damper.a_rel"),
+            dae::Variable::new(VarName::new("damper.a_rel")),
+        );
+
+        // MLS Appendix B: damper.w_rel is a valid state only while the DAE has
+        // a retained equation containing der(damper.w_rel). Runtime alias
+        // normalization removes the unused acceleration alias row, matching
+        // Modelica.Mechanics.Rotational.Components.Damper from PR #151.
+        dae.f_x
+            .push(eq(sub(var("damper.w_rel"), der("damper.phi_rel"))));
+        dae.f_x
+            .push(eq(sub(var("damper.a_rel"), der("damper.w_rel"))));
+
+        let budget = TimeoutBudget::new(None);
+        let (prepared, _, _) =
+            prepare_dae_core(&dae, false, &budget, true).expect("prepare should not fail");
+
+        assert!(
+            prepared
+                .states
+                .contains_key(&VarName::new("damper.phi_rel"))
+        );
+        assert!(
+            !prepared.states.contains_key(&VarName::new("damper.w_rel")),
+            "state with no retained derivative row must be demoted before reorder"
+        );
+        assert!(
+            prepared
+                .algebraics
+                .contains_key(&VarName::new("damper.w_rel"))
+        );
     }
 
     #[test]
