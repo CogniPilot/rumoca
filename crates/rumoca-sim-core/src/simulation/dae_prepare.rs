@@ -22,9 +22,9 @@ mod state_row_reduction;
 pub use state_row_reduction::{
     REGULARIZATION_LEVELS, demote_orphan_states_without_equation_refs,
     demote_states_without_assignable_derivative_rows, demote_states_without_derivative_refs,
-    der_sign_in_expr, index_reduce_missing_state_derivatives,
-    index_reduce_missing_state_derivatives_once, normalize_ode_equation_signs,
-    substitute_standalone_state_derivatives_in_non_ode_rows,
+    demote_states_without_retained_derivative_rows, der_sign_in_expr,
+    index_reduce_missing_state_derivatives, index_reduce_missing_state_derivatives_once,
+    normalize_ode_equation_signs, substitute_standalone_state_derivatives_in_non_ode_rows,
 };
 
 fn scalar_subscript_string(sub: &dae::Subscript) -> Option<String> {
