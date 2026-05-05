@@ -149,6 +149,17 @@ pub fn demote_states_without_assignable_derivative_rows(dae: &mut Dae) -> usize 
     total_demoted
 }
 
+/// Final state cleanup after late prepare passes that can remove continuous rows.
+///
+/// MLS Appendix B / SPEC_0003: retained states require retained derivative
+/// rows. This combines the existing no-derivative and no-assignable-row
+/// demotions without adding logging, timeout, or backend policy.
+pub fn demote_states_without_retained_derivative_rows(dae: &mut Dae) -> (usize, usize) {
+    let n_no_derivative_refs = demote_states_without_derivative_refs(dae);
+    let n_unassignable_derivative_rows = demote_states_without_assignable_derivative_rows(dae);
+    (n_no_derivative_refs, n_unassignable_derivative_rows)
+}
+
 /// Phase-1 structural index reduction.
 ///
 /// For each state without a `der(state)` equation, find a non-ODE constraint
