@@ -192,7 +192,7 @@ async function runRealMslSliceSmoke() {
 
 async function run() {
   ensureNodeSelfForWasmBindgenRayon();
-  const wasmModule = await import(`../../../pkg/${wasmPkgSubdir}/rumoca.js`);
+  const wasmModule = await import(`../../../pkg/${wasmPkgSubdir}/rumoca_bind_wasm.js`);
   initWasm = wasmModule.default;
   clear_source_root_cache = wasmModule.clear_source_root_cache;
   compile = wasmModule.compile;
@@ -205,7 +205,7 @@ async function run() {
   load_source_roots = wasmModule.load_source_roots;
 
   const wasmBytes = await readFile(
-    new URL(`../../../pkg/${wasmPkgSubdir}/rumoca_bg.wasm`, import.meta.url),
+    new URL(`../../../pkg/${wasmPkgSubdir}/rumoca_bind_wasm_bg.wasm`, import.meta.url),
   );
   await initWasm({ module_or_path: wasmBytes });
   runLoadSourceRootsSmoke();

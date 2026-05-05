@@ -366,6 +366,12 @@ fn run_wasm_browser_msl_smoke(root: &Path, msl_root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn default_wasm_full_web_pkg_subdir() -> &'static str {
+    // Browser smoke prebuild in start_wasm_smoke_server() sets
+    // RUMOCA_WASM_THREADS=0, which produces the non-rayon package.
+    "release-full-web"
+}
+
 pub(crate) fn run_wasm_browser_msl_smoke_report(
     root: &Path,
     msl_root: &Path,
@@ -380,8 +386,9 @@ pub(crate) fn run_wasm_browser_msl_smoke_report(
     ensure_wasm_browser_smoke_npm_dependencies(&wasm_dir)?;
     let browser = detect_browser_binary()?;
     let result_path = output_dir.join("wasm-browser-result.json");
+    let pkg_subdir = default_wasm_full_web_pkg_subdir();
     let smoke_url = format!(
-        "http://127.0.0.1:{port}/editors/wasm/index.html?rumoca_smoke=1&smoke_pkg_subdir=release-full-web&smoke_model=Resistor&smoke_source_url=/target/editor-msl-smoke/Resistor.mo&smoke_package_archive_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
+        "http://127.0.0.1:{port}/editors/wasm/index.html?rumoca_smoke=1&smoke_pkg_subdir={pkg_subdir}&smoke_model=Resistor&smoke_source_url=/target/editor-msl-smoke/Resistor.mo&smoke_package_archive_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
     );
     let mut smoke = Command::new("node");
     smoke

@@ -134,11 +134,11 @@ function runRootCrossingSmoke() {
 
 async function run() {
   ensureNodeSelfForWasmBindgenRayon();
-  const wasmModule = await import(`../../../pkg/${wasmPkgSubdir}/rumoca.js`);
+  const wasmModule = await import(`../../../pkg/${wasmPkgSubdir}/rumoca_bind_wasm.js`);
   const init = wasmModule.default;
   simulate_model_fn = wasmModule.simulate_model;
   const wasmBytes = await readFile(
-    new URL(`../../../pkg/${wasmPkgSubdir}/rumoca_bg.wasm`, import.meta.url),
+    new URL(`../../../pkg/${wasmPkgSubdir}/rumoca_bind_wasm_bg.wasm`, import.meta.url),
   );
   await init({ module_or_path: wasmBytes });
   runLinearSmoke();
