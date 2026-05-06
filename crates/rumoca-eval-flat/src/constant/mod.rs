@@ -697,7 +697,10 @@ fn classify_array_shape<'a>(value: &'a Value, span: Span) -> Result<ArrayShape<'
     let mut n_cols: Option<usize> = None;
     for row in elements {
         let Value::Array(row_elems) = row else {
-            unreachable!("guarded above");
+            return Err(EvalError::function_error(
+                "mixed-rank arrays are not valid matrix operands".to_string(),
+                span,
+            ));
         };
         if row_elems.iter().any(|item| matches!(item, Value::Array(_))) {
             return Err(EvalError::function_error(

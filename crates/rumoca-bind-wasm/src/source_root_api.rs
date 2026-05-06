@@ -249,6 +249,27 @@ pub fn compile_with_source_roots(
 }
 
 #[wasm_bindgen]
+pub fn compile_check_with_source_roots(
+    source: &str,
+    model_name: &str,
+    source_roots_json: &str,
+) -> Result<String, JsValue> {
+    super::with_singleton_session(|session| {
+        load_source_root_sources_in_session(session, source_roots_json)?;
+        session.update_document("input.mo", source);
+        let requested_model = super::qualify_input_model_name(session, model_name);
+        session
+            .check_model_strict_requested_only(&requested_model)
+            .map_err(|message| JsValue::from_str(&message))?;
+        Ok(serde_json::json!({
+            "status": "compiled",
+            "model_name": requested_model,
+        })
+        .to_string())
+    })
+}
+
+#[wasm_bindgen]
 pub fn compile_with_project_sources(
     source: &str,
     model_name: &str,
