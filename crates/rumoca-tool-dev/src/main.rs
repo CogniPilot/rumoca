@@ -20,7 +20,7 @@ mod wasm_tooling;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use anyhow::{Context, Result, bail, ensure};
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use completion_cmd::CompletionsArgs;
 use coverage_analysis::{
     CallsiteIndex, build_workspace_callsite_index, count_callsites_same_file,
@@ -166,6 +166,23 @@ struct WasmBuildArgs {
     /// Build with wasm-pack --dev for faster local iteration
     #[arg(long)]
     dev: bool,
+    /// Feature preset for the wasm package
+    #[arg(long, value_enum, default_value_t = WasmVariant::FullWeb)]
+    variant: WasmVariant,
+    /// Enable wasm-rayon
+    #[arg(long)]
+    rayon: bool,
+    /// Also create an npm tarball in addition to building
+    #[arg(long)]
+    pack: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum WasmVariant {
+    Core,
+    SimDiffsol,
+    SimRk45,
+    FullWeb,
 }
 
 #[derive(Debug, Subcommand, Clone)]
@@ -440,7 +457,14 @@ fn cmd_wasm(args: WasmArgs) -> Result<()> {
             let root = repo_root();
             if !args.skip_build {
                 ensure_wasm_deps(&root)?;
-                build_wasm(&root, WasmBuildProfile::Release)?;
+                build_wasm(
+                    &root,
+                    WasmBuildProfile::Release,
+                    WasmVariant::FullWeb,
+                    default_wasm_rayon_enabled(),
+                    false,
+                    false,
+                )?;
             }
             serve_wasm(&root, args.port)
         }
@@ -1575,7 +1599,7 @@ fn cmd_build_wasm(args: WasmBuildArgs) -> Result<()> {
     } else {
         WasmBuildProfile::Release
     };
-    build_wasm(&root, profile)
+    build_wasm(&root, profile, args.variant, args.rayon, args.pack, false)
 }
 
 pub(crate) fn run_wasm_test_suite(root: &Path) -> Result<()> {
@@ -1631,25 +1655,36 @@ pub(crate) fn run_wasm_editor_smoke_check(root: &Path) -> Result<()> {
         "triggerQuickFixAtCursor",
     )?;
 
+    let rayon = default_wasm_rayon_enabled();
     ensure_wasm_deps(root)?;
-    build_wasm(root, WasmBuildProfile::Release)?;
-    run_wasm_simulation_smoke(root)?;
-    run_wasm_source_root_smoke(root)?;
+    build_wasm(
+        root,
+        WasmBuildProfile::Release,
+        WasmVariant::FullWeb,
+        rayon,
+        false,
+        false,
+    )?;
+    let pkg_subdir = wasm_build_subdir_name(WasmBuildProfile::Release, WasmVariant::FullWeb, rayon);
+    run_wasm_simulation_smoke(root, &pkg_subdir)?;
+    run_wasm_source_root_smoke(root, &pkg_subdir)?;
     Ok(())
 }
 
-fn run_wasm_simulation_smoke(root: &Path) -> Result<()> {
+fn run_wasm_simulation_smoke(root: &Path, pkg_subdir: &str) -> Result<()> {
     let mut wasm_smoke = Command::new("node");
     wasm_smoke
         .arg("editors/wasm/tests/simulate_smoke.mjs")
+        .env("RUMOCA_WASM_PKG_SUBDIR", pkg_subdir)
         .current_dir(root);
     run_status(wasm_smoke)
 }
 
-fn run_wasm_source_root_smoke(root: &Path) -> Result<()> {
+fn run_wasm_source_root_smoke(root: &Path, pkg_subdir: &str) -> Result<()> {
     let mut wasm_smoke = Command::new("node");
     wasm_smoke
         .arg("editors/wasm/tests/source_root_smoke.mjs")
+        .env("RUMOCA_WASM_PKG_SUBDIR", pkg_subdir)
         .current_dir(root);
     run_status(wasm_smoke)
 }
@@ -1758,107 +1793,65 @@ fn wasm_opt_enabled() -> bool {
     )
 }
 
-fn build_wasm(root: &Path, profile: WasmBuildProfile) -> Result<()> {
-    let wasm_threads = std::env::var("RUMOCA_WASM_THREADS").unwrap_or_else(|_| "1".to_string());
-    let mut wasm_features = vec!["full-web"];
-    let wasm_license = root.join("crates/rumoca-bind-wasm/LICENSE");
-    let staged_license = !wasm_license.exists();
-    if staged_license {
-        let root_license = root.join("LICENSE");
-        ensure!(
-            root_license.is_file(),
-            "missing root LICENSE file at {}",
-            root_license.display()
-        );
-        fs::copy(&root_license, &wasm_license).with_context(|| {
-            format!(
-                "failed to stage {} into {} for wasm-pack",
-                root_license.display(),
-                wasm_license.display()
-            )
-        })?;
+fn default_wasm_rayon_enabled() -> bool {
+    std::env::var("RUMOCA_WASM_THREADS").unwrap_or_else(|_| "1".to_string()) != "0"
+}
+
+fn wasm_variant_arg(variant: WasmVariant) -> &'static str {
+    match variant {
+        WasmVariant::Core => "core",
+        WasmVariant::SimDiffsol => "sim-diffsol",
+        WasmVariant::SimRk45 => "sim-rk45",
+        WasmVariant::FullWeb => "full-web",
     }
-    println!("Building WASM module (rumoca-bind-wasm)...");
-    let mut build = Command::new("wasm-pack");
-    build
-        .arg("build")
-        .arg("crates/rumoca-bind-wasm")
-        .arg("--target")
-        .arg("web")
-        .arg("--out-dir")
-        .arg("../../pkg")
+}
+
+fn wasm_build_subdir_name(profile: WasmBuildProfile, variant: WasmVariant, rayon: bool) -> String {
+    let profile_name = match profile {
+        WasmBuildProfile::Dev => "dev",
+        WasmBuildProfile::Release => "release",
+    };
+    let variant_name = wasm_variant_arg(variant);
+    if rayon {
+        format!("{profile_name}-{variant_name}-rayon")
+    } else {
+        format!("{profile_name}-{variant_name}")
+    }
+}
+
+fn build_wasm(
+    root: &Path,
+    profile: WasmBuildProfile,
+    variant: WasmVariant,
+    rayon: bool,
+    pack: bool,
+    patch_package_json: bool,
+) -> Result<()> {
+    let mut command = Command::new("node");
+    command
+        .arg("packaging/npm/build.mjs")
+        .arg("--profile")
+        .arg(match profile {
+            WasmBuildProfile::Dev => "dev",
+            WasmBuildProfile::Release => "release",
+        })
+        .arg("--variant")
+        .arg(wasm_variant_arg(variant))
         .current_dir(root);
-    build.arg(match profile {
-        WasmBuildProfile::Dev => "--dev",
-        WasmBuildProfile::Release => "--release",
-    });
-    if wasm_threads != "0" {
-        wasm_features.push("wasm-rayon");
-        const THREAD_FLAGS: &str = "-C target-feature=+atomics,+bulk-memory,+mutable-globals";
-        let mut existing_rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
-        if !existing_rustflags.contains("target-feature=+atomics") {
-            if !existing_rustflags.trim().is_empty() {
-                existing_rustflags.push(' ');
-            }
-            existing_rustflags.push_str(THREAD_FLAGS);
-        }
-        build.env("RUSTFLAGS", existing_rustflags);
+    if rayon {
+        command.arg("--rayon");
+    }
+    if pack {
+        command.arg("--pack");
+    }
+    if !patch_package_json {
+        command.arg("--no-patch");
     }
     if !wasm_opt_enabled() {
-        build.arg("--no-opt");
+        command.env("RUMOCA_WASM_OPT", "0");
     }
-    build
-        .arg("--")
-        .arg("--features")
-        .arg(wasm_features.join(","));
-    let build_result = run_status(build);
-    if staged_license {
-        let _ = fs::remove_file(&wasm_license);
-    }
-    build_result?;
-
-    let pkg_dir = root.join("pkg");
-    let js_from = pkg_dir.join("rumoca_bind_wasm.js");
-    let wasm_from = pkg_dir.join("rumoca_bind_wasm_bg.wasm");
-    let js_to = pkg_dir.join("rumoca.js");
-    let wasm_to = pkg_dir.join("rumoca_bg.wasm");
-    ensure!(
-        js_from.is_file() && wasm_from.is_file(),
-        "unexpected wasm-pack output; expected {} and {}",
-        js_from.display(),
-        wasm_from.display()
-    );
-    fs::rename(&js_from, &js_to).with_context(|| {
-        format!(
-            "failed to rename {} to {}",
-            js_from.display(),
-            js_to.display()
-        )
-    })?;
-    fs::rename(&wasm_from, &wasm_to).with_context(|| {
-        format!(
-            "failed to rename {} to {}",
-            wasm_from.display(),
-            wasm_to.display()
-        )
-    })?;
-
-    let mut js_text = fs::read_to_string(&js_to)
-        .with_context(|| format!("failed to read {}", js_to.display()))?;
-    js_text = js_text.replace("rumoca_bind_wasm_bg.wasm", "rumoca_bg.wasm");
-    fs::write(&js_to, js_text).with_context(|| format!("failed to write {}", js_to.display()))?;
-
-    fs::copy(
-        root.join("editors/wasm/rumoca_worker.js"),
-        pkg_dir.join("rumoca_worker.js"),
-    )
-    .context("failed to copy rumoca_worker.js")?;
-    fs::copy(
-        root.join("editors/wasm/parse_worker.js"),
-        pkg_dir.join("parse_worker.js"),
-    )
-    .context("failed to copy parse_worker.js")?;
-    println!("WASM build complete: {}", pkg_dir.display());
+    run_status(command)?;
+    println!("WASM build complete: {}", root.join("pkg").display());
     Ok(())
 }
 

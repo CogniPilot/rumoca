@@ -24,6 +24,7 @@ end BallWasmSmoke;
 `;
 
 let simulate_model_fn = null;
+const wasmPkgSubdir = process.env.RUMOCA_WASM_PKG_SUBDIR || "release-full-web";
 
 const ROOT_CROSS_SOURCE = `
 model RootCrossWasmSmoke
@@ -133,10 +134,12 @@ function runRootCrossingSmoke() {
 
 async function run() {
   ensureNodeSelfForWasmBindgenRayon();
-  const wasmModule = await import("../../../pkg/rumoca.js");
+  const wasmModule = await import(`../../../pkg/${wasmPkgSubdir}/rumoca_bind_wasm.js`);
   const init = wasmModule.default;
   simulate_model_fn = wasmModule.simulate_model;
-  const wasmBytes = await readFile(new URL("../../../pkg/rumoca_bg.wasm", import.meta.url));
+  const wasmBytes = await readFile(
+    new URL(`../../../pkg/${wasmPkgSubdir}/rumoca_bind_wasm_bg.wasm`, import.meta.url),
+  );
   await init({ module_or_path: wasmBytes });
   runLinearSmoke();
   runBouncingBallSmoke();

@@ -244,8 +244,20 @@ rum verify template-runtimes
 rum verify msl-parity
 rum vscode test
 rum wasm test
+rum wasm build --variant core
+rum wasm build --dev --variant sim-diffsol
+rum wasm build --variant full-web --rayon --pack
 rum repo msl promote-quality-baseline
 rum help verify
+```
+
+For npm-package workflows, use:
+
+```bash
+cd packaging/npm
+npm run build
+npm run build:release:core
+npm run build:release:sim-diffsol:pack
 ```
 
 `rum verify quick` runs the fast local gates: lint, workspace tests, and binary

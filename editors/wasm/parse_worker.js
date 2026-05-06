@@ -1,7 +1,7 @@
 // Lightweight Web Worker for parallel source-root parsing
 // Multiple instances of this worker can run concurrently to parse files in parallel
 
-import init, { parse_source_root_file } from './rumoca.js';
+import init, { parse_source_root_file } from './rumoca_bind_wasm.js';
 
 let initialized = false;
 
