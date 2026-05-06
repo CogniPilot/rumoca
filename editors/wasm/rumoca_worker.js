@@ -46,7 +46,7 @@ function canUseSharedWasmThreads() {
 
 async function loadWasmModule() {
     if (wasmModuleLoaded) return;
-    const mod = await import(withCacheBust('./rumoca.js'));
+    const mod = await import(withCacheBust('./rumoca_bind_wasm.js'));
     init = mod.default;
     wasm_init = mod.wasm_init;
     get_version = mod.get_version;
@@ -111,7 +111,7 @@ async function initialize() {
     try {
         console.log('[Worker] Loading WASM module...');
         await loadWasmModule();
-        await init({ module_or_path: withCacheBust('./rumoca_bg.wasm') });
+        await init({ module_or_path: withCacheBust('./rumoca_bind_wasm_bg.wasm') });
 
         const requestedThreads = navigator.hardwareConcurrency || 4;
         const numThreads = canUseSharedWasmThreads() ? requestedThreads : 0;
