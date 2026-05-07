@@ -4,7 +4,7 @@
 ACCEPTED
 
 ## Summary
-Model instantiation (applying modifications, building instance tree) and flattening (generating qualified names, expanding connections) are separate compiler phases.
+Model instantiation (applying modifications, building instance tree) and flattening (generating globally unique resolved instance paths, expanding connections) are separate compiler phases.
 
 ## Motivation
 Separating instantiation from flattening follows MLS §5.6 which defines them as
@@ -61,14 +61,16 @@ pub enum InstNodeKind {
 
 **Input:** InstTree
 
-**Output:** Flat model with qualified names
+**Output:** Flat model with globally unique resolved instance paths
 
 **Responsibilities:**
-1. Traverse instance tree, collecting variables with qualified names
+1. Traverse instance tree, collecting variables with resolved instance paths
 2. Expand connections into equations (flow balance, stream inStream)
 3. Expand for-loops into individual equations
 4. Scalarize arrays (if configured)
-5. Generate qualified names: `body.position.x`
+5. Generate globally unique resolved instance paths such as
+   `body.position.x`. Downstream exporters may allocate shorter
+   target-language symbols without changing flat/DAE variable identity.
 
 ```rust
 pub struct Flat {
@@ -81,7 +83,7 @@ pub struct Flat {
 }
 
 pub struct Variable {
-    pub name: String,  // Qualified: "body.pos.x"
+    pub name: String,  // Resolved path: "body.pos.x"
     // ... attributes
 }
 ```

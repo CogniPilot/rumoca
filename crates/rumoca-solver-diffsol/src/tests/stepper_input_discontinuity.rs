@@ -237,3 +237,123 @@ fn test_stepper_repeated_same_input_value() {
     // u=10 for 2.0 s → x ≈ 20
     assert!((x - 20.0).abs() < 1.0, "expected x≈20, got {x}");
 }
+
+#[test]
+fn test_stepper_input_alias_drives_state_derivative() {
+    use crate::stepper::{SimStepper, StepperOptions};
+
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.inputs
+        .insert(VarName::new("u"), Variable::new(VarName::new("u")));
+    dae.algebraics.insert(
+        VarName::new("plant.u"),
+        Variable::new(VarName::new("plant.u")),
+    );
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(var_ref("plant.u"), var_ref("u")),
+        span: Span::DUMMY,
+        origin: "input_alias".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("x")],
+            },
+            var_ref("plant.u"),
+        ),
+        span: Span::DUMMY,
+        origin: "ode_x_uses_alias".to_string(),
+        scalar_count: 1,
+    });
+
+    let opts = StepperOptions {
+        max_wall_seconds_per_step: Some(5.0),
+        ..StepperOptions::default()
+    };
+    let mut stepper = SimStepper::new(&dae, opts).expect("stepper creation should succeed");
+    stepper.set_input("u", 10.0).unwrap();
+    for i in 0..100 {
+        stepper
+            .step(0.01)
+            .unwrap_or_else(|e| panic!("step {i} failed: {e}"));
+    }
+
+    let x = stepper.get("x").expect("should read x");
+    assert!((x - 10.0).abs() < 0.5, "expected x≈10, got {x}");
+}
+
+#[test]
+fn test_stepper_indexed_input_alias_drives_component_state_derivative() {
+    use crate::stepper::{SimStepper, StepperOptions};
+
+    fn indexed_var_ref(name: &str, index: i64) -> Expression {
+        Expression::VarRef {
+            name: VarName::new(name),
+            subscripts: vec![dae::Subscript::Index(index)],
+        }
+    }
+
+    let mut dae = Dae::new();
+    dae.states.insert(
+        VarName::new("motor[1].omega"),
+        Variable::new(VarName::new("motor[1].omega")),
+    );
+    let mut omega_cmd = Variable::new(VarName::new("omega_cmd"));
+    omega_cmd.dims = vec![4];
+    dae.inputs.insert(VarName::new("omega_cmd"), omega_cmd);
+    dae.algebraics.insert(
+        VarName::new("motor[1].omega_cmd"),
+        Variable::new(VarName::new("motor[1].omega_cmd")),
+    );
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            var_ref("motor[1].omega_cmd"),
+            indexed_var_ref("omega_cmd", 1),
+        ),
+        span: Span::DUMMY,
+        origin: "indexed_input_alias".to_string(),
+        scalar_count: 1,
+    });
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("motor[1].omega")],
+            },
+            var_ref("motor[1].omega_cmd"),
+        ),
+        span: Span::DUMMY,
+        origin: "motor_ode_uses_alias".to_string(),
+        scalar_count: 1,
+    });
+
+    let opts = StepperOptions {
+        max_wall_seconds_per_step: Some(5.0),
+        ..StepperOptions::default()
+    };
+    let mut stepper = SimStepper::new(&dae, opts).expect("stepper creation should succeed");
+    stepper.set_input("omega_cmd[1]", 10.0).unwrap();
+    for i in 0..100 {
+        stepper
+            .step(0.01)
+            .unwrap_or_else(|e| panic!("step {i} failed: {e}"));
+    }
+
+    let omega = stepper
+        .get("motor[1].omega")
+        .expect("should read motor omega");
+    assert!(
+        (omega - 10.0).abs() < 0.5,
+        "expected motor omega≈10, got {omega}"
+    );
+}

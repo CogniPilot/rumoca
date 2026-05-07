@@ -451,12 +451,34 @@ pub(crate) fn infer_record_subscript_size_from_prefix_chain(
 /// to an internal input variable. Array connection equations produce per-element
 /// names like `sum.u[1]` while the flat variable map stores the base `sum.u`.
 pub(crate) fn resolve_internal_input(name: &VarName, flat: &Model) -> Option<VarName> {
+    resolve_internal_inputs(name, flat).into_iter().next()
+}
+
+pub(crate) fn resolve_internal_inputs(name: &VarName, flat: &Model) -> Vec<VarName> {
     if is_internal_input(name, flat) {
-        return Some(name.clone());
+        return vec![name.clone()];
     }
-    subscript_fallback_chain(name)
+    if let Some(candidate) = subscript_fallback_chain(name)
         .into_iter()
         .find(|candidate| is_internal_input(candidate, flat))
+    {
+        return vec![candidate];
+    }
+
+    let Some(base) = flat::component_base_name(name.as_str()) else {
+        return Vec::new();
+    };
+    let mut matches = flat
+        .variables
+        .keys()
+        .filter(|candidate| {
+            is_internal_input(candidate, flat)
+                && flat::component_base_name(candidate.as_str()).as_deref() == Some(base.as_str())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    matches.sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
+    matches
 }
 
 fn resolve_var_in_flat(name: &VarName, flat: &Model) -> Option<VarName> {
@@ -542,7 +564,7 @@ pub(crate) fn find_connected_inputs(flat: &Model) -> HashSet<VarName> {
         eq.residual.collect_var_refs(&mut vars);
         result.extend(
             vars.iter()
-                .filter_map(|name| resolve_internal_input(name, flat)),
+                .flat_map(|name| resolve_internal_inputs(name, flat)),
         );
     }
     result
@@ -589,6 +611,13 @@ fn check_rhs_intra_component_alias(
     {
         return None;
     }
+    // Input-to-input aliases mean the RHS input is locally defined by the
+    // same alias set. This covers parent components assigning a child input
+    // from another internal input, e.g. `motor.omega_cmd = omega_cmd`.
+    if resolve_internal_input(lhs_name, flat).is_some() {
+        return Some(resolved);
+    }
+
     // LHS must NOT be connected (distinguishes record aliases from connector aliases).
     // Use full fallback-chain matching so multi-layer indexed aliases (e.g.
     // `conn[1].field[2]`) still resolve to their connected base path.
@@ -648,20 +677,62 @@ pub(crate) fn find_equation_defined_inputs(flat: &Model) -> HashSet<VarName> {
         if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
             continue;
         }
-        // Check LHS for internal input VarRef (always valid)
-        if let Expression::VarRef { name, .. } = lhs.as_ref()
-            && let Some(resolved) = resolve_internal_input(name, flat)
-        {
-            result.insert(resolved);
+        let mut lhs_internal_inputs = HashSet::default();
+        let lhs_is_internal_input_alias =
+            collect_alias_internal_inputs(lhs, flat, &mut lhs_internal_inputs)
+                && !lhs_internal_inputs.is_empty();
+        collect_lhs_internal_inputs(lhs, flat, &mut result);
+        if lhs_is_internal_input_alias {
+            collect_alias_internal_inputs(rhs, flat, &mut result);
         }
         // Check RHS for internal input VarRef in intra-component alias equations.
         // Skip inputs with bindings (already promoted via binding check, and
         // adding them to connected_inputs would suppress their binding equation).
-        if let Some(resolved) = check_rhs_intra_component_alias(lhs, rhs, &eq.origin, flat) {
+        else if let Some(resolved) = check_rhs_intra_component_alias(lhs, rhs, &eq.origin, flat) {
             result.insert(resolved);
         }
     }
     result
+}
+
+fn collect_alias_internal_inputs(
+    expr: &Expression,
+    flat: &Model,
+    result: &mut HashSet<VarName>,
+) -> bool {
+    match expr {
+        Expression::VarRef { name, .. } => {
+            for resolved in resolve_internal_inputs(name, flat) {
+                result.insert(resolved);
+            }
+            true
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => elements
+            .iter()
+            .all(|element| collect_alias_internal_inputs(element, flat, result)),
+        Expression::Index { base, .. } | Expression::FieldAccess { base, .. } => {
+            collect_alias_internal_inputs(base, flat, result)
+        }
+        _ => false,
+    }
+}
+
+fn collect_lhs_internal_inputs(expr: &Expression, flat: &Model, result: &mut HashSet<VarName>) {
+    match expr {
+        Expression::VarRef { name, .. } => {
+            for resolved in resolve_internal_inputs(name, flat) {
+                result.insert(resolved);
+            }
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+            for element in elements {
+                collect_lhs_internal_inputs(element, flat, result);
+            }
+        }
+        Expression::Index { base, .. } => collect_lhs_internal_inputs(base, flat, result),
+        Expression::FieldAccess { base, .. } => collect_lhs_internal_inputs(base, flat, result),
+        _ => {}
+    }
 }
 
 fn is_runtime_intrinsic_function_short_name(short_name: &str) -> bool {

@@ -243,6 +243,7 @@ struct FrameCtx<'a> {
     autopilot: &'a Arc<Mutex<Option<AutopilotProcess>>>,
     model_source: &'a str,
     model_name: &'a str,
+    source_roots: &'a [PathBuf],
     debug: bool,
     dt: f64,
     mode: SimMode,
@@ -270,6 +271,7 @@ pub fn run_sim_loop(
     stepper: &mut SimStepper,
     model_source: &str,
     model_name: &str,
+    source_roots: &[PathBuf],
     ws_port: u16,
     debug: bool,
 ) -> Result<()> {
@@ -279,7 +281,8 @@ pub fn run_sim_loop(
     // ensures SIGINT/SIGTERM funnel to our dedicated signal thread — not a
     // gilrs worker, not zephyr's pgrp.
     let autopilot: Arc<Mutex<Option<AutopilotProcess>>> = Arc::new(Mutex::new(None));
-    spawn_sigint_handler(Arc::clone(&autopilot));
+    let quit = Arc::new(AtomicBool::new(false));
+    spawn_sigint_handler(Arc::clone(&autopilot), Arc::clone(&quit));
 
     let fb = setup_fb_transport(cfg)?;
 
@@ -303,7 +306,6 @@ pub fn run_sim_loop(
     start_autopilot_into(cfg, &autopilot)?;
     let (state_tx, state_rx) = mpsc::channel::<String>();
     let realtime = Arc::new(AtomicBool::new(cfg.sim.realtime));
-    let quit = Arc::new(AtomicBool::new(false));
     let realtime_ws = Arc::clone(&realtime);
     let quit_ws = Arc::clone(&quit);
     thread::spawn(move || run_broadcast_server(ws_port, state_rx, realtime_ws, quit_ws));
@@ -329,6 +331,7 @@ pub fn run_sim_loop(
         autopilot: &autopilot,
         model_source,
         model_name,
+        source_roots,
         debug,
         dt: cfg.sim.dt,
         mode,
@@ -414,6 +417,7 @@ impl FrameCtx<'_> {
                 }
             }
         }
+        self.apply_stepper_inputs(state, stepper, engine, input_runtime);
         step_substeps(stepper, self.dt);
 
         self.emit_payloads(state, stepper, engine, input_runtime)?;
@@ -443,7 +447,34 @@ impl FrameCtx<'_> {
         Ok(FrameControl::Continue)
     }
 
-    /// Build payloads + apply stepper_inputs + send FB + push viewer JSON.
+    /// Apply configured local/runtime signal routes into model inputs before stepping.
+    fn apply_stepper_inputs(
+        &self,
+        state: &FrameState,
+        stepper: &mut SimStepper,
+        engine: &mut InputEngine,
+        input_runtime: &Devices,
+    ) {
+        let wall_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as f64;
+        let stepper_time = stepper.time();
+        let stepper_get = |name: &str| stepper.get(name);
+        let rt = RuntimeContext {
+            frame_num: state.frame_num,
+            wall_ms,
+            input_connected: input_runtime.is_connected(),
+            input_mode: input_runtime.mode(),
+            stepper_time,
+            stepper_get: &stepper_get,
+        };
+        for (name, val) in self.mapper.build_stepper_inputs(engine, &rt) {
+            let _ = stepper.set_input(&name, val);
+        }
+    }
+
+    /// Build payloads + send FB + push viewer JSON.
     /// Shared by both free-run and lockstep paths.
     fn emit_payloads(
         &self,
@@ -456,7 +487,7 @@ impl FrameCtx<'_> {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as f64;
-        let (stepper_inputs, send_frame, json) = {
+        let (send_frame, json) = {
             let stepper_time = stepper.time();
             let stepper_get = |name: &str| stepper.get(name);
             let rt = RuntimeContext {
@@ -467,17 +498,13 @@ impl FrameCtx<'_> {
                 stepper_time,
                 stepper_get: &stepper_get,
             };
-            let stepper_inputs = self.mapper.build_stepper_inputs(engine, &rt);
             let send_frame = self.fb.map(|_| self.mapper.build_send(engine, &rt));
             let json = self.mapper.build_viewer_json(engine, &rt);
             if let Some(trace) = state.trace.as_mut() {
                 trace.record(engine, &rt);
             }
-            (stepper_inputs, send_frame, json)
+            (send_frame, json)
         };
-        for (name, val) in stepper_inputs {
-            let _ = stepper.set_input(&name, val);
-        }
         if let (Some(fb), Some(frame)) = (self.fb, send_frame) {
             fb.udp.send(&fb.pack.pack(&frame));
         }
@@ -531,6 +558,8 @@ impl FrameCtx<'_> {
                 stepper,
                 self.model_source,
                 self.model_name,
+                self.source_roots,
+                self.dt,
                 self.autopilot,
             )?;
         }
@@ -578,17 +607,17 @@ fn start_autopilot_into(
 
 /// Set up a robust shutdown path for SIGINT/SIGTERM:
 /// - 1st signal: clean shutdown (kill autopilot with timeout, disable raw
-///   mode, exit 0)
+///   mode, ask the main loop to exit)
 /// - 2nd signal: hard exit 130 (skip cleanup)
 ///
 /// Uses `signal_hook::iterator::Signals` — a blocking iterator that wakes
 /// exactly when a signal arrives. No polling, no race windows. Unix-only;
 /// on Windows the std runtime's default Ctrl-C handler is used.
 #[cfg(not(unix))]
-fn spawn_sigint_handler(_autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {}
+fn spawn_sigint_handler(_autopilot: Arc<Mutex<Option<AutopilotProcess>>>, _quit: Arc<AtomicBool>) {}
 
 #[cfg(unix)]
-fn spawn_sigint_handler(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
+fn spawn_sigint_handler(autopilot: Arc<Mutex<Option<AutopilotProcess>>>, quit: Arc<AtomicBool>) {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use signal_hook::iterator::Signals;
 
@@ -608,6 +637,7 @@ fn spawn_sigint_handler(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
             eprintln!("\r[sim] signal {sig} received (press {presses})                    \r");
             if presses == 1 {
                 eprintln!("[sim] shutdown requested — press Ctrl-C again to force quit");
+                quit.store(true, Ordering::Relaxed);
                 spawn_cleanup_thread(Arc::clone(&autopilot));
             } else {
                 eprintln!("[sim] force quit");
@@ -626,7 +656,6 @@ fn spawn_cleanup_thread(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
             proc.stop();
         }
         rumoca_input::devices::disable_terminal_raw_mode();
-        std::process::exit(0);
     });
 }
 
@@ -658,6 +687,8 @@ fn handle_reset(
     stepper: &mut SimStepper,
     model_source: &str,
     model_name: &str,
+    source_roots: &[PathBuf],
+    dt: f64,
     ap_handle: &Arc<Mutex<Option<AutopilotProcess>>>,
 ) -> Result<()> {
     eprintln!("\n[reset] triggered");
@@ -673,17 +704,21 @@ fn handle_reset(
     }
     if reset_cfg.rebuild_stepper {
         let mut session = rumoca_compile::compile::Session::default();
+        super::load_source_roots_into_session(&mut session, source_roots)?;
         session
             .add_document(&format!("{model_name}.mo"), model_source)
             .map_err(|e| anyhow::anyhow!("reset: parse failed: {e}"))?;
-        let result = session
-            .compile_model(model_name)
-            .context("reset: compilation failed")?;
+        let result = super::compile_model_with_diagnostics(
+            &mut session,
+            model_name,
+            "reset: compilation failed",
+        )?;
         let new_stepper = SimStepper::new(
             &result.dae,
             StepperOptions {
                 rtol: 1e-3,
                 atol: 1e-3,
+                nominal_dt: Some(dt),
                 ..Default::default()
             },
         )

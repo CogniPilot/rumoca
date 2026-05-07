@@ -137,6 +137,7 @@ pub(super) fn flatten_options_for_tree() -> FlattenOptions {
     // when the source tree contains many external source-root classes.
     FlattenOptions {
         strict_connection_validation: true,
+        simplify_variable_names: false,
     }
 }
 

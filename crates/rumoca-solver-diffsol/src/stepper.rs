@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use rumoca_sim_core::ir_dae as dae;
-use rumoca_sim_core::phase_solve_lower::VarEnv;
+use rumoca_sim_core::phase_solve_lower::{VarEnv, map_var_to_env};
 use rumoca_sim_core::phase_structural::eliminate::EliminationResult;
 
 use super::{Dae, SimError};
@@ -22,6 +22,7 @@ pub struct StepperOptions {
     pub rtol: f64,
     pub atol: f64,
     pub scalarize: bool,
+    pub nominal_dt: Option<f64>,
     pub max_wall_seconds_per_step: Option<f64>,
 }
 
@@ -31,6 +32,7 @@ impl Default for StepperOptions {
             rtol: 1e-6,
             atol: 1e-6,
             scalarize: true,
+            nominal_dt: None,
             max_wall_seconds_per_step: None,
         }
     }
@@ -148,9 +150,26 @@ impl SimStepper {
         for (name, &val) in self.input_overrides.borrow().iter() {
             env.vars.insert(name.clone(), val);
         }
-        for ((name, _var), &val) in self.dae.parameters.iter().zip(self.param_values.iter()) {
-            env.vars.entry(name.as_str().to_string()).or_insert(val);
-        }
+        add_parameter_values_to_env(&self.dae, &self.param_values, &mut env);
+        let mut propagated_y = y.clone();
+        rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env(
+            &self.dae,
+            &mut propagated_y,
+            self.n_x,
+            &mut env,
+        );
+        rumoca_sim_core::runtime::assignment::propagate_runtime_direct_assignments_from_env(
+            &self.dae,
+            &mut propagated_y,
+            self.n_x,
+            &mut env,
+        );
+        rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env(
+            &self.dae,
+            &mut propagated_y,
+            self.n_x,
+            &mut env,
+        );
         rumoca_sim_core::reconstruct::apply_eliminated_substitutions_to_env(&self.elim, &mut env);
         env
     }
@@ -159,21 +178,7 @@ impl SimStepper {
     ///
     /// Works for states, algebraics, outputs, inputs, and eliminated variables.
     pub fn get(&self, name: &str) -> Option<f64> {
-        let y = self.inner.solver_state_y();
-        if let Some(idx) = self.sim_context.solver_idx_for_target(name) {
-            return y.get(idx).copied();
-        }
-        if let Some(&val) = self.input_overrides.borrow().get(name) {
-            return Some(val);
-        }
-        if !self.elim.substitutions.is_empty() {
-            let env = self.build_env();
-            let val = env.vars.get(name).copied();
-            if val.is_some() {
-                return val;
-            }
-        }
-        None
+        self.build_env().vars.get(name).copied()
     }
 
     /// Get a snapshot of all current variable values.
@@ -194,5 +199,41 @@ impl SimStepper {
     /// List all solver variable names (states, algebraics, outputs).
     pub fn variable_names(&self) -> &[String] {
         &self.solver_names
+    }
+}
+
+fn add_parameter_values_to_env(dae: &Dae, param_values: &[f64], env: &mut VarEnv<f64>) {
+    let mut param_env = VarEnv::default();
+    let mut pidx = 0;
+    for (name, var) in &dae.parameters {
+        map_var_to_env(&mut param_env, name.as_str(), var, param_values, &mut pidx);
+    }
+    for (name, value) in param_env.vars {
+        env.vars.entry(name).or_insert(value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_array_parameters_from_flattened_parameter_vector() {
+        let mut dae = Dae::default();
+        let mut gains = dae::Variable::new(dae::VarName::new("gains"));
+        gains.dims = vec![3];
+        dae.parameters.insert(dae::VarName::new("gains"), gains);
+        dae.parameters.insert(
+            dae::VarName::new("scalar"),
+            dae::Variable::new(dae::VarName::new("scalar")),
+        );
+
+        let mut env = VarEnv::default();
+        add_parameter_values_to_env(&dae, &[10.0, 20.0, 30.0, 40.0], &mut env);
+
+        assert_eq!(env.vars.get("gains[1]"), Some(&10.0));
+        assert_eq!(env.vars.get("gains[2]"), Some(&20.0));
+        assert_eq!(env.vars.get("gains[3]"), Some(&30.0));
+        assert_eq!(env.vars.get("scalar"), Some(&40.0));
     }
 }

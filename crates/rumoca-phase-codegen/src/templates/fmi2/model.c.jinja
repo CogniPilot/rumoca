@@ -13,7 +13,20 @@
 #include <stdio.h>
 
 {# Configuration for render_expr - C style #}
-{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d"} %}
+{% set c_symbol_policy = {
+    "separator": "_",
+    "generated_prefixes": ["pre_", "der_"],
+    "reserved": [
+        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+        "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return",
+        "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+        "unsigned", "void", "volatile", "while", "inline", "restrict",
+        "m", "t", "time", "i", "n", "arr", "s", "sz", "ModelInstance", "Complex",
+        "__rumoca_sum_d", "__rumoca_solve_linear_component", "pre", "der", "edge", "change", "initial", "terminal"
+    ]
+} %}
+{% set symbols = target_symbols(dae.symbol_refs, c_symbol_policy) %}
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d", "symbols": symbols} %}
 
 /* pre(x) macro: maps pre(varname) to the pre_varname local alias */
 #define pre(x) pre_##x
@@ -44,6 +57,67 @@ static inline double __rumoca_sum_d(const double* arr, int n) {
     double s = 0.0;
     for (int i = 0; i < n; i++) s += arr[i];
     return s;
+}
+
+#define RUMOCA_MAX_LINEAR_SOLVE 8
+static double __rumoca_solve_linear_component(const double* A_in, const double* b_in, int n, int component) {
+    if (n <= 0 || n > RUMOCA_MAX_LINEAR_SOLVE || component < 0 || component >= n) {
+        return NAN;
+    }
+
+    double A[RUMOCA_MAX_LINEAR_SOLVE][RUMOCA_MAX_LINEAR_SOLVE] = {0};
+    double b[RUMOCA_MAX_LINEAR_SOLVE] = {0};
+    for (int row = 0; row < n; row++) {
+        b[row] = b_in[row];
+        for (int col = 0; col < n; col++) {
+            A[row][col] = A_in[row * n + col];
+        }
+    }
+
+    for (int col = 0; col < n; col++) {
+        int pivot = col;
+        double pivot_abs = fabs(A[col][col]);
+        for (int row = col + 1; row < n; row++) {
+            double candidate = fabs(A[row][col]);
+            if (candidate > pivot_abs) {
+                pivot = row;
+                pivot_abs = candidate;
+            }
+        }
+        if (pivot_abs < 1.0e-12) {
+            return NAN;
+        }
+        if (pivot != col) {
+            for (int j = col; j < n; j++) {
+                double tmp = A[col][j];
+                A[col][j] = A[pivot][j];
+                A[pivot][j] = tmp;
+            }
+            double tmp_b = b[col];
+            b[col] = b[pivot];
+            b[pivot] = tmp_b;
+        }
+
+        double inv_pivot = 1.0 / A[col][col];
+        for (int row = col + 1; row < n; row++) {
+            double factor = A[row][col] * inv_pivot;
+            A[row][col] = 0.0;
+            for (int j = col + 1; j < n; j++) {
+                A[row][j] -= factor * A[col][j];
+            }
+            b[row] -= factor * b[col];
+        }
+    }
+
+    double x[RUMOCA_MAX_LINEAR_SOLVE] = {0};
+    for (int row = n - 1; row >= 0; row--) {
+        double sum = b[row];
+        for (int col = row + 1; col < n; col++) {
+            sum -= A[row][col] * x[col];
+        }
+        x[row] = sum / A[row][row];
+    }
+    return x[component];
 }
 
 /* Modelica builtin stubs for array operations (scalar fallbacks) */
@@ -126,12 +200,12 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
  * Enumeration literal constants
  * ========================================================================= */
 {% for name, ordinal in dae.enum_literal_ordinals | items %}
-#define {{ name | sanitize }} {{ ordinal }}
+#define {{ symbol(symbols, name) }} {{ ordinal }}
 {% endfor %}
 
 /* Enumeration type constructors — identity macros for enum type casts */
 {% for type_name in dae.enum_type_names | default([]) %}
-#define {{ type_name | sanitize }}(x) (x)
+#define {{ symbol(symbols, type_name) }}(x) (x)
 {% endfor %}
 
 {#- Macro: compute total scalar size of a variable map -#}
@@ -158,42 +232,42 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
     (base[subscript] style) can access them via pointer.
 -#}
 {% macro unpack_vars(vars, array, mutable=false, pre_array="", der_prefix=false) -%}
-{% set ns_idx = namespace(offset=0) %}
-{% for name, var in vars | items %}
-{% if var.dims %}
-{% set sz = var.dims | product %}
-{% set arr_base_offset = ns_idx.offset %}
-{% for i in range(sz) %}
-    {% if mutable %}double{% else %}const double{% endif %} {{ name | sanitize }}_{{ i + 1 }} = {{ array }}[{{ ns_idx.offset }}];
-{% if pre_array %}
-    const double pre_{{ name | sanitize }}_{{ i + 1 }} = {{ pre_array }}[{{ ns_idx.offset }}];
-{% endif %}
-{% set ns_idx.offset = ns_idx.offset + 1 %}
-{% endfor %}
-    {% if mutable %}double{% else %}const double{% endif %}* {{ name | sanitize }} = &{{ array }}[{{ arr_base_offset }}];
-{% else %}
-    {% if mutable %}double{% else %}const double{% endif %} {{ name | sanitize }} = {{ array }}[{{ ns_idx.offset }}];
-{% if pre_array %}
-    const double pre_{{ name | sanitize }} = {{ pre_array }}[{{ ns_idx.offset }}];
-{% endif %}
-{% set ns_idx.offset = ns_idx.offset + 1 %}
-{% endif %}
-{% endfor %}
-{% if der_prefix %}
-{% set ns_idx = namespace(offset=0) %}
-{% for name, var in vars | items %}
-{% if var.dims %}
-{% set sz = var.dims | product %}
-{% for i in range(sz) %}
-    const double der_{{ name | sanitize }}_{{ i + 1 }} = m->xdot[{{ ns_idx.offset }}];
-{% set ns_idx.offset = ns_idx.offset + 1 %}
-{% endfor %}
-{% else %}
-    const double der_{{ name | sanitize }} = m->xdot[{{ ns_idx.offset }}];
-{% set ns_idx.offset = ns_idx.offset + 1 %}
-{% endif %}
-{% endfor %}
-{% endif %}
+{%- set ns_idx = namespace(offset=0) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- set arr_base_offset = ns_idx.offset %}
+    {% if mutable %}double{% else %}const double{% endif %}* {{ symbol(symbols, name) }} = &{{ array }}[{{ arr_base_offset }}];
+{%- for i in range(sz) %}
+    {% if mutable %}double{% else %}const double{% endif %} {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ array }}[{{ ns_idx.offset }}];
+{%- if pre_array %}
+    const double pre_{{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ pre_array }}[{{ ns_idx.offset }}];
+{%- endif -%}
+{%- set ns_idx.offset = ns_idx.offset + 1 -%}
+{%- endfor -%}
+{%- else %}
+    {% if mutable %}double{% else %}const double{% endif %} {{ symbol(symbols, name) }} = {{ array }}[{{ ns_idx.offset }}];
+{%- if pre_array %}
+    const double pre_{{ symbol(symbols, name) }} = {{ pre_array }}[{{ ns_idx.offset }}];
+{%- endif -%}
+{%- set ns_idx.offset = ns_idx.offset + 1 -%}
+{%- endif -%}
+{%- endfor -%}
+{%- if der_prefix -%}
+{%- set ns_idx = namespace(offset=0) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    const double der_{{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = m->xdot[{{ ns_idx.offset }}];
+{%- set ns_idx.offset = ns_idx.offset + 1 -%}
+{%- endfor -%}
+{%- else %}
+    const double der_{{ symbol(symbols, name) }} = m->xdot[{{ ns_idx.offset }}];
+{%- set ns_idx.offset = ns_idx.offset + 1 -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endif %}
 {%- endmacro %}
 
 /* =========================================================================
@@ -300,7 +374,7 @@ static void compute_event_indicators(ModelInstance* m);
  * ========================================================================= */
 {% for func_name, func in dae.functions | items %}
 {% if func.outputs | length == 1 %}
-static double {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims %}const double* {{ p.name | sanitize }}, int {{ p.name | sanitize }}_size{% else %}double {{ p.name | sanitize }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %});
+static double {{ symbol(symbols, func_name) }}({% for p in func.inputs %}{% if p.dims %}const double* {{ symbol(symbols, p.name) }}, int {{ symbol(symbols, p.name) }}_size{% else %}double {{ symbol(symbols, p.name) }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %});
 {% endif %}
 {% endfor %}
 
@@ -309,43 +383,43 @@ static double {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims 
  * ========================================================================= */
 {% for func_name, func in dae.functions | items %}
 {% if func.outputs | length == 1 %}
-static double {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims %}const double* {{ p.name | sanitize }}, int {{ p.name | sanitize }}_size{% else %}double {{ p.name | sanitize }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %}) {
+static double {{ symbol(symbols, func_name) }}({% for p in func.inputs %}{% if p.dims %}const double* {{ symbol(symbols, p.name) }}, int {{ symbol(symbols, p.name) }}_size{% else %}double {{ symbol(symbols, p.name) }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %}) {
 {% if is_self_call(func_name, func) %}
     /* Builtin wrapper — delegate to C standard library */
-    return {{ func_name | last_segment }}({% for p in func.inputs %}{{ p.name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %});
+    return {{ func_name | last_segment }}({% for p in func.inputs %}{{ symbol(symbols, p.name) }}{{ ", " if not loop.last else "" }}{% endfor %});
 {% elif has_complex_params(func) | trim == "yes" %}
     /* Complex-typed parameters — stub (proper Complex lowering not yet implemented) */
     (void)0;
-{% for p in func.inputs %}    (void){{ p.name | sanitize }};
+{% for p in func.inputs %}    (void){{ symbol(symbols, p.name) }};
 {% endfor %}
     return 0.0;
 {% elif func.external %}
     /* External {{ func.external.language }} function */
 {% if func.external.output_name %}
-    return {{ func.external.function_name | default(func_name | sanitize) }}({% for arg in func.external.arg_names %}{{ arg | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %});
+    return {{ func.external.function_name | default(symbol(symbols, func_name)) }}({% for arg in func.external.arg_names %}{{ symbol(symbols, arg) }}{{ ", " if not loop.last else "" }}{% endfor %});
 {% else %}
-    {{ func.external.function_name | default(func_name | sanitize) }}({% for arg in func.external.arg_names %}{{ arg | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %});
-    return {{ func.outputs[0].name | sanitize }};
+    {{ func.external.function_name | default(symbol(symbols, func_name)) }}({% for arg in func.external.arg_names %}{{ symbol(symbols, arg) }}{{ ", " if not loop.last else "" }}{% endfor %});
+    return {{ symbol(symbols, func.outputs[0].name) }};
 {% endif %}
 {% else %}
 {% for p in func.locals %}
 {% if p.dims %}
 {% set local_sz = p.dims | product %}
-    double {{ p.name | sanitize }}[{{ local_sz }}];
-    int {{ p.name | sanitize }}_size = {{ local_sz }};
-    (void){{ p.name | sanitize }}_size;
+    double {{ symbol(symbols, p.name) }}[{{ local_sz }}];
+    int {{ symbol(symbols, p.name) }}_size = {{ local_sz }};
+    (void){{ symbol(symbols, p.name) }}_size;
 {% else %}
-    double {{ p.name | sanitize }}{% if p.default %} = {{ render_expr(p.default, cfg) }}{% endif %};
+    double {{ symbol(symbols, p.name) }}{% if p.default %} = {{ render_expr(p.default, cfg) }}{% endif %};
 {% endif %}
 {% endfor %}
 {% if func.outputs | length > 0 %}
-    double {{ func.outputs[0].name | sanitize }} = 0.0;
+    double {{ symbol(symbols, func.outputs[0].name) }} = 0.0;
 {% endif %}
 {% if func.body | length > 0 %}
 {{ render_statements(func.body, cfg, "    ") }}
 {% endif %}
 {% if func.outputs | length > 0 %}
-    return {{ func.outputs[0].name | sanitize }};
+    return {{ symbol(symbols, func.outputs[0].name) }};
 {% endif %}
 {% endif %}
 }
@@ -364,7 +438,7 @@ static void initialize_defaults(ModelInstance* m) {
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.constants | items %}
-    double {{ name | sanitize }} = 0.0;
+    double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% set ns_idx = namespace(offset=0) %}
@@ -372,11 +446,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    double {{ name | sanitize }}_{{ i + 1 }} = 0.0;
+    double {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    double {{ name | sanitize }} = 0.0;
+    double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -385,7 +459,7 @@ static void initialize_defaults(ModelInstance* m) {
 {% for name, var in dae.p | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
-    double* {{ name | sanitize }} = &m->p[{{ ns_idx.offset }}];
+    double* {{ symbol(symbols, name) }} = &m->p[{{ ns_idx.offset }}];
 {% set ns_idx.offset = ns_idx.offset + sz %}
 {% else %}
 {% set ns_idx.offset = ns_idx.offset + 1 %}
@@ -396,11 +470,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    double {{ name | sanitize }}_{{ i + 1 }} = 0.0;
+    double {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    double {{ name | sanitize }} = 0.0;
+    double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -409,11 +483,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    double {{ name | sanitize }}_{{ i + 1 }} = 0.0;
+    double {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    double {{ name | sanitize }} = 0.0;
+    double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -422,11 +496,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    double {{ name | sanitize }}_{{ i + 1 }} = 0.0;
+    double {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    double {{ name | sanitize }} = 0.0;
+    double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -436,8 +510,8 @@ static void initialize_defaults(ModelInstance* m) {
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.constants | items %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
-    m->constants[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    m->constants[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 
@@ -446,13 +520,13 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
-    m->p[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    m->p[{{ ns_idx.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
-    m->p[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    m->p[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -462,7 +536,7 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};  /* {{ name }}[{{ i + 1 }}] */
+    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -476,13 +550,13 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
-    m->u[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    m->u[{{ ns_idx.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
-    m->u[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    m->u[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -492,13 +566,13 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
-    m->z[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    m->z[{{ ns_idx.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
-    m->z[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    m->z[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -538,13 +612,13 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
-    m->w[{{ ns_out.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};
+    m->w[{{ ns_out.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
-    m->w[{{ ns_out.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+    m->w[{{ ns_out.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -555,13 +629,13 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
-    m->y[{{ ns_alg.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};
+    m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
-    m->y[{{ ns_alg.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+    m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -597,7 +671,7 @@ static void compute_derivatives(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->xdot[{{ ns_xdot.offset }}] = {{ ode_rhs_for_state(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};  /* der({{ name }}[{{ i + 1 }}]) */
+    m->xdot[{{ ns_xdot.offset }}] = {{ ode_rhs_for_state(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};  /* der({{ source_ref(name, var.dims, i + 1) }}) */
 {% set ns_xdot.offset = ns_xdot.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -608,6 +682,9 @@ static void compute_derivatives(ModelInstance* m) {
 
     /* Re-compute algebraics after derivatives (resolves derivative aliases) */
     compute_algebraics(m);
+
+    /* Outputs may depend on algebraics, including array-valued function projections. */
+    compute_outputs(m);
 
     m->dirty_values = 0;
 }
@@ -639,7 +716,7 @@ static void compute_outputs(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};  /* {{ name }}[{{ i + 1 }}] */
+    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -705,11 +782,11 @@ static void compute_event_indicators(ModelInstance* m) {
 
 {% set ei_idx = namespace(offset=0) %}
 {% for rel in dae.relation | default([]) %}
-    m->event_indicators[{{ ei_idx.offset }}] = {{ render_expr(rel, cfg) }};
+    m->event_indicators[{{ ei_idx.offset }}] = {{ render_event_indicator(rel, cfg) }};
 {% set ei_idx.offset = ei_idx.offset + 1 %}
 {% endfor %}
 {% for cond in dae.synthetic_root_conditions | default([]) %}
-    m->event_indicators[{{ ei_idx.offset }}] = {{ render_expr(cond, cfg) }};
+    m->event_indicators[{{ ei_idx.offset }}] = {{ render_event_indicator(cond, cfg) }};
 {% set ei_idx.offset = ei_idx.offset + 1 %}
 {% endfor %}
 {% else %}

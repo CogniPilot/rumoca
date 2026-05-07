@@ -1148,19 +1148,29 @@ pub(crate) fn build_stepper(
         Some(input_overrides.clone()),
     )?;
 
+    let nominal_dt = opts.nominal_dt.filter(|dt| dt.is_finite() && *dt > 0.0);
+    // The interactive stepper is advanced by repeated short stop-time updates.
+    // Give the backend a long finite horizon so it does not treat the first
+    // handful of frames as the terminal integration span.
+    let initial_horizon = 3600.0;
+
     let sim_opts = SimOptions {
         t_start: 0.0,
-        t_end: 1.0, // Initial horizon; overridden per-step
+        t_end: initial_horizon, // Initial horizon; overridden per-step
         rtol: opts.rtol,
         atol: opts.atol,
-        dt: None,
+        dt: nominal_dt,
         scalarize: opts.scalarize,
         max_wall_seconds: opts.max_wall_seconds_per_step,
         solver_mode: SimSolverMode::Bdf,
     };
 
+    // The interactive stepper is driven by externally paced increments. Keep
+    // the normal startup profile so the first viewer frame advances promptly.
     let startup_profile = SolverStartupProfile::Default;
     configure_solver_problem_with_profile(&mut problem_obj, &sim_opts, startup_profile);
+    let startup_h0_cap = nominal_dt.unwrap_or(1.0e-3) / 25.0;
+    problem_obj.h0 = problem_obj.h0.min(startup_h0_cap.max(1.0e-10));
 
     // Leak the problem to obtain a 'static reference. The solver borrows from
     // the problem, but the stepper needs to own the solver for an unbounded
@@ -1231,53 +1241,125 @@ pub(crate) fn build_stepper(
         S: diffsol::OdeSolverMethod<'a, Eqn>,
     {
         fn step(&mut self, dt: f64, _dae: &Dae, budget: &TimeoutBudget) -> Result<(), SimError> {
-            use diffsol::OdeSolverStopReason;
-
             if dt <= 0.0 {
                 return Ok(());
             }
 
-            let t_end = self.solver.state().t + dt;
+            let t_start = self.solver.state().t;
+            let y_start = integration::solver_state_to_vec::<Eqn, S>(&self.solver);
+            let t_end = t_start + dt;
 
             // Guard: if t_end is not ahead of the solver's current time
             // (due to floating point accumulation), skip this step.
-            if t_end <= self.solver.state().t {
+            if t_end <= t_start {
                 return Ok(());
             }
 
-            self.solver.set_stop_time(t_end).map_err(|e| {
-                SimError::SolverError(format!("Failed to set stop time at t_end={t_end}: {e}"))
-            })?;
+            let result = (|| -> Result<(), SimError> {
+                integration::set_solver_stop_time::<Eqn, S>(
+                    &mut self.solver,
+                    t_end,
+                    budget,
+                    "stepper step",
+                )
+                .map_err(|e| {
+                    SimError::SolverError(format!("Failed to set stop time at t_end={t_end}: {e}"))
+                })?;
 
-            loop {
-                budget.check()?;
-                match self.solver.step() {
-                    Ok(OdeSolverStopReason::TstopReached) => break,
-                    Ok(OdeSolverStopReason::InternalTimestep) => {
-                        if self.solver.state().t >= t_end {
+                loop {
+                    budget.check()?;
+                    match integration::step_with_stop_recovery::<Eqn, S>(
+                        &mut self.solver,
+                        t_end,
+                        &self.ctx,
+                        |msg, t, y| {
+                            integration::trace_step_failure_diagnostics(
+                                self.ctx.dae,
+                                &self.ctx.compiled_runtime,
+                                y,
+                                t,
+                                self.ctx.param_values.as_slice(),
+                            );
+                            if sim_trace_enabled() {
+                                eprintln!(
+                                    "[sim-trace] stepper unrecoverable step failure: t={t} target={t_end} msg={msg}"
+                                );
+                            }
+                        },
+                    )? {
+                        integration::StepAdvance::Advanced(
+                            diffsol::OdeSolverStopReason::TstopReached,
+                        ) => {
+                            if self.solver.state().t > t_end {
+                                integration::recover_to_active_stop::<Eqn, S>(
+                                    &mut self.solver,
+                                    t_end,
+                                    &self.ctx,
+                                )?;
+                            }
                             break;
                         }
-                        continue;
-                    }
-                    Ok(OdeSolverStopReason::RootFound(t_root)) => {
-                        // SPEC_0003 / SPEC_0022 SIM-001/SIM-008:
-                        // settle event updates on the right limit before
-                        // continuous integration resumes after a root hit.
-                        let _ = integration::apply_event_updates_at_time::<Eqn, S>(
-                            &mut self.solver,
-                            t_root,
-                            &self.ctx,
-                        )?;
-                        if integration::stop_time_reached_with_tol(self.solver.state().t, t_end) {
+                        integration::StepAdvance::Recovered
+                        | integration::StepAdvance::Finished => {
                             break;
                         }
-                        let _ = self.solver.set_stop_time(t_end);
-                        continue;
-                    }
-                    Err(e) => {
-                        return Err(SimError::SolverError(format!("Step failed: {e}")));
+                        integration::StepAdvance::Advanced(
+                            diffsol::OdeSolverStopReason::InternalTimestep,
+                        ) => {
+                            if self.solver.state().t >= t_end {
+                                integration::recover_to_active_stop::<Eqn, S>(
+                                    &mut self.solver,
+                                    t_end,
+                                    &self.ctx,
+                                )?;
+                                break;
+                            }
+                            continue;
+                        }
+                        integration::StepAdvance::Advanced(
+                            diffsol::OdeSolverStopReason::RootFound(t_root),
+                        ) => {
+                            // SPEC_0003 / SPEC_0022 SIM-001/SIM-008:
+                            // settle event updates on the right limit before
+                            // continuous integration resumes after a root hit.
+                            let _ = integration::apply_event_updates_at_time_with_restart_cap::<
+                                Eqn,
+                                S,
+                            >(
+                                &mut self.solver, t_root, &self.ctx, Some(t_end)
+                            )?;
+                            if integration::stop_time_reached_with_tol(self.solver.state().t, t_end)
+                            {
+                                break;
+                            }
+                            integration::set_solver_stop_time::<Eqn, S>(
+                                &mut self.solver,
+                                t_end,
+                                budget,
+                                "stepper step after root",
+                            )?;
+                            continue;
+                        }
                     }
                 }
+                Ok(())
+            })();
+
+            if let Err(err) = result {
+                let _ = integration::overwrite_solver_state::<Eqn, S>(
+                    &mut self.solver,
+                    integration::SolverStateOverwriteInput {
+                        dae: self.ctx.dae,
+                        opts: self.ctx.opts,
+                        startup_profile: self.ctx.startup_profile,
+                        compiled_runtime: &self.ctx.compiled_runtime,
+                        param_values: self.ctx.param_values.as_slice(),
+                        n_x: self.ctx.n_x,
+                        t: t_start,
+                        y: y_start.as_slice(),
+                    },
+                );
+                return Err(err);
             }
             Ok(())
         }

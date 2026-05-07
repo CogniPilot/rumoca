@@ -202,6 +202,22 @@ fn test_substitute_var_simple() {
 }
 
 #[test]
+fn test_substitute_var_projects_embedded_array_alias_component() {
+    let expr = var_ref("attitude.omega[2]");
+    let result = substitute_var(&expr, &VarName::new("attitude.omega"), &var_ref("omega"));
+
+    assert!(
+        matches!(
+            result,
+            Expression::VarRef { name, subscripts }
+                if name.as_str() == "omega"
+                    && matches!(subscripts.as_slice(), [dae::Subscript::Index(2)])
+        ),
+        "scalarized alias component should project replacement array"
+    );
+}
+
+#[test]
 fn test_substitute_var_keeps_complex_base_when_substituting_field_unknown() {
     let expr = Expression::FieldAccess {
         base: Box::new(var_ref("transferFunction.aSum")),
@@ -995,6 +1011,63 @@ fn test_eliminate_trivial_keeps_array_alias_equations() {
     assert_eq!(dae.f_x.len(), 1);
     assert!(dae.algebraics.contains_key(&VarName::new("arr")));
     assert!(dae.algebraics.contains_key(&VarName::new("plug.pin.i")));
+}
+
+#[test]
+fn test_eliminate_trivial_keeps_output_array_alias_equations_in_blt() {
+    let mut dae = Dae::new();
+
+    let mut source = dae::Variable::new(VarName::new("source"));
+    source.dims = vec![3];
+    dae.algebraics.insert(VarName::new("source"), source);
+
+    let mut out = dae::Variable::new(VarName::new("out"));
+    out.dims = vec![3];
+    dae.outputs.insert(VarName::new("out"), out);
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("out")),
+            rhs: Box::new(var_ref("source")),
+        },
+        span: Span::DUMMY,
+        origin: "output_array_alias".to_string(),
+        scalar_count: 3,
+    });
+
+    let result = eliminate_trivial(&mut dae);
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(dae.f_x.len(), 1);
+    assert!(dae.algebraics.contains_key(&VarName::new("source")));
+    assert!(dae.outputs.contains_key(&VarName::new("out")));
+}
+
+#[test]
+fn test_eliminate_trivial_keeps_indexed_output_assignment() {
+    let mut dae = Dae::new();
+
+    let mut out = dae::Variable::new(VarName::new("out"));
+    out.dims = vec![3];
+    dae.outputs.insert(VarName::new("out"), out);
+
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref_idx("out", 2)),
+            rhs: Box::new(lit(1.0)),
+        },
+        span: Span::DUMMY,
+        origin: "indexed_output_assignment".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae);
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(dae.f_x.len(), 1);
+    assert!(dae.outputs.contains_key(&VarName::new("out")));
 }
 
 #[test]

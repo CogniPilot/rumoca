@@ -12,7 +12,7 @@ use crate::path_utils::{
     get_top_level_prefix, normalized_top_level_names, path_is_in_top_level_set,
     subscript_fallback_chain,
 };
-use crate::{flat_to_dae_expression, flat_to_dae_var_name};
+use crate::{flat_to_dae_expression, flat_to_dae_var_name, remap_flat_for_equations};
 
 pub(super) fn is_input_input_connection(eq: &flat::Equation, dae: &dae::Dae) -> bool {
     // Only check connection equations
@@ -826,7 +826,9 @@ pub(super) fn classify_equations(
         debug_eq_filter,
     };
 
-    for eq in &flat.equations {
+    let mut flat_to_fx_index: HashMap<usize, usize> = HashMap::new();
+
+    for (flat_idx, eq) in flat.equations.iter().enumerate() {
         if skip_equation_pre_classification(eq, &filter_ctx, dae, &mut seen_residuals, &mut stats) {
             continue;
         }
@@ -846,6 +848,7 @@ pub(super) fn classify_equations(
         if debug_eq_filter {
             stats.record_kept(&eq.origin);
         }
+        let fx_index_before = dae.f_x.len();
         let dae_eq = dae::Equation::residual_array(
             flat_to_dae_expression(&eq.residual),
             eq.span,
@@ -853,7 +856,12 @@ pub(super) fn classify_equations(
             scalar_count,
         );
         route_classified_equation(dae, eq, dae_eq);
+        if dae.f_x.len() == fx_index_before + 1 {
+            flat_to_fx_index.insert(flat_idx, fx_index_before);
+        }
     }
+
+    dae.for_equations = remap_flat_for_equations(&flat.for_equations, &flat_to_fx_index);
 
     if debug_eq_filter {
         stats.log();

@@ -125,6 +125,12 @@ pub mod phase_structural {
 pub mod compile {
     pub use rumoca_core as core;
     pub use rumoca_ir_ast::ResolvedTree;
+    pub use rumoca_ir_ast::{
+        Causality as AstCausality, Component as AstComponent,
+        ComponentRefPart as AstComponentRefPart, ComponentReference as AstComponentReference,
+        Expression as AstExpression, ForIndex as AstForIndex, Subscript as AstSubscript,
+        Token as AstToken, Variability as AstVariability,
+    };
     pub use rumoca_ir_dae::{Dae, VarName, Variable};
     pub use rumoca_ir_flat::Model as FlatModel;
 

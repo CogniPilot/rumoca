@@ -1,6 +1,7 @@
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
+use std::collections::HashMap;
 
 pub(crate) fn flat_to_dae_var_name(name: &flat::VarName) -> dae::VarName {
     dae::VarName::new(name.as_str())
@@ -257,6 +258,57 @@ pub(crate) fn flat_to_dae_component_reference(
             .collect(),
         def_id: comp.def_id,
     }
+}
+
+pub(crate) fn remap_flat_for_equations(
+    for_equations: &[flat::ForEquation],
+    flat_to_dae_index: &HashMap<usize, usize>,
+) -> Vec<dae::ForEquation> {
+    for_equations
+        .iter()
+        .filter_map(|for_eq| remap_flat_for_equation(for_eq, flat_to_dae_index))
+        .collect()
+}
+
+fn remap_flat_for_equation(
+    for_eq: &flat::ForEquation,
+    flat_to_dae_index: &HashMap<usize, usize>,
+) -> Option<dae::ForEquation> {
+    let mut flat_idx = for_eq.first_equation_index;
+    let mut first_dae_index = None;
+    let mut expected_next_dae_index = None;
+    let mut iterations = Vec::with_capacity(for_eq.iterations.len());
+
+    for iteration in &for_eq.iterations {
+        let mut dae_equation_count = 0;
+        for source_idx in flat_idx..flat_idx + iteration.equation_count {
+            let dae_idx = *flat_to_dae_index.get(&source_idx)?;
+            if let Some(expected) = expected_next_dae_index
+                && dae_idx != expected
+            {
+                return None;
+            }
+            first_dae_index.get_or_insert(dae_idx);
+            expected_next_dae_index = Some(dae_idx + 1);
+            dae_equation_count += 1;
+        }
+        if dae_equation_count == 0 {
+            return None;
+        }
+        iterations.push(dae::ForEquationIteration {
+            index_values: iteration.index_values.clone(),
+            equation_count: dae_equation_count,
+        });
+        flat_idx += iteration.equation_count;
+    }
+
+    Some(dae::ForEquation {
+        index_names: for_eq.index_names.clone(),
+        first_equation_index: first_dae_index.unwrap_or(0),
+        iterations,
+        span: for_eq.span,
+        origin: for_eq.origin.to_string(),
+    })
 }
 
 pub(crate) fn flat_to_dae_for_index(index: &flat::ForIndex) -> dae::ForIndex {

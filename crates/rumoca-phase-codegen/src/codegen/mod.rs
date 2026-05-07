@@ -12,13 +12,14 @@ use minijinja::{Environment, UndefinedBehavior, Value};
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 mod render_c;
 mod render_expr;
 mod render_stmt;
 
-use render_expr::render_expression;
+use render_expr::{get_field, render_expression};
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 
 /// Result type for internal render functions.
@@ -32,13 +33,32 @@ pub enum CodegenInput<'a> {
     Ast(&'a ast::ClassTree),
 }
 
+pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
+    let mut value = serde_json::to_value(dae).expect("DAE should serialize");
+    let object = value
+        .as_object_mut()
+        .expect("DAE should serialize to a JSON object");
+    let enum_type_names = enum_type_names_from_ordinals(dae);
+    let symbol_refs = source_refs_from_dae(dae, &enum_type_names);
+    object.insert(
+        "enum_type_names".to_string(),
+        serde_json::to_value(enum_type_names).expect("enum_type_names should serialize"),
+    );
+    object.insert(
+        "symbol_refs".to_string(),
+        serde_json::to_value(symbol_refs).expect("symbol_refs should serialize"),
+    );
+
+    value
+}
+
 /// Extract unique enum type names from enum literal ordinals.
-/// E.g., from `Modelica.Blocks.Types.Smoothness.LinearSegments` → `Modelica.Blocks.Types.Smoothness`.
-fn enum_type_names_from_ordinals(ordinals: &dae::Dae) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
+/// E.g., from `Modelica.Blocks.Types.Smoothness.LinearSegments` to
+/// `Modelica.Blocks.Types.Smoothness`.
+fn enum_type_names_from_ordinals(dae: &dae::Dae) -> Vec<String> {
+    let mut seen = HashSet::new();
     let mut result = Vec::new();
-    for name in ordinals.enum_literal_ordinals.keys() {
-        // Strip the last `.Component` to get the type path
+    for name in dae.enum_literal_ordinals.keys() {
         if let Some(dot_pos) = name.rfind('.') {
             let type_name = &name[..dot_pos];
             if seen.insert(type_name.to_string()) {
@@ -49,18 +69,431 @@ fn enum_type_names_from_ordinals(ordinals: &dae::Dae) -> Vec<String> {
     result
 }
 
-pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
-    let mut value = serde_json::to_value(dae).expect("DAE should serialize");
-    let object = value
-        .as_object_mut()
-        .expect("DAE should serialize to a JSON object");
-    object.insert(
-        "enum_type_names".to_string(),
-        serde_json::to_value(enum_type_names_from_ordinals(dae))
-            .expect("enum_type_names should serialize"),
-    );
+fn source_refs_from_dae(dae: &dae::Dae, enum_type_names: &[String]) -> Vec<String> {
+    let mut refs = HashSet::new();
 
-    value
+    for vars in [
+        &dae.states,
+        &dae.algebraics,
+        &dae.inputs,
+        &dae.outputs,
+        &dae.parameters,
+        &dae.constants,
+        &dae.discrete_reals,
+        &dae.discrete_valued,
+    ] {
+        for (name, var) in vars {
+            add_source_refs_for_var(name.as_str(), &var.dims, &mut refs);
+        }
+    }
+
+    for (func_name, func) in &dae.functions {
+        refs.insert(func_name.as_str().to_string());
+        add_function_output_projection_refs(func_name.as_str(), func, &mut refs);
+    }
+    for func in dae.functions.values() {
+        for var in func
+            .inputs
+            .iter()
+            .chain(func.outputs.iter())
+            .chain(func.locals.iter())
+        {
+            add_source_refs_for_var(var.name.as_str(), &var.dims, &mut refs);
+        }
+    }
+    for name in dae.enum_literal_ordinals.keys() {
+        refs.insert(name.clone());
+    }
+    for name in enum_type_names {
+        refs.insert(name.clone());
+    }
+
+    let mut refs = refs.into_iter().collect::<Vec<_>>();
+    refs.sort_by(|a, b| {
+        symbol_ref_priority(a)
+            .cmp(&symbol_ref_priority(b))
+            .then_with(|| a.cmp(b))
+    });
+    refs
+}
+
+fn add_function_output_projection_refs(
+    func_name: &str,
+    func: &dae::Function,
+    refs: &mut HashSet<String>,
+) {
+    for output in &func.outputs {
+        let dims: Vec<usize> = output
+            .dims
+            .iter()
+            .filter_map(|dim| (*dim > 0).then_some(*dim as usize))
+            .collect();
+        let count = if dims.is_empty() {
+            1
+        } else {
+            dims.iter().product::<usize>()
+        };
+        for element_idx in 1..=count {
+            let selector = if count == 1 {
+                output.name.as_str().to_string()
+            } else {
+                format!("{}[{}]", output.name.as_str(), element_idx)
+            };
+            refs.insert(format!("{func_name}.{selector}"));
+        }
+    }
+}
+
+fn add_source_refs_for_var(name: &str, dims: &[i64], refs: &mut HashSet<String>) {
+    refs.insert(name.to_string());
+
+    let dims: Vec<usize> = dims
+        .iter()
+        .filter_map(|dim| (*dim > 0).then_some(*dim as usize))
+        .collect();
+    if dims.is_empty() {
+        return;
+    }
+
+    let total = dims.iter().product::<usize>();
+    for flat_index in 1..=total {
+        refs.insert(format!(
+            "{}[{}]",
+            name,
+            source_subscript_suffix(&dims, flat_index)
+        ));
+    }
+}
+
+fn symbol_ref_priority(reference: &str) -> (usize, usize) {
+    let (base, _) = split_modelica_subscript(reference);
+    let depth = split_modelica_path(base).len();
+    let indexed = usize::from(reference.contains('['));
+    (depth, indexed)
+}
+
+#[derive(Clone)]
+struct SymbolPolicy {
+    reserved: HashSet<String>,
+    generated_prefixes: Vec<String>,
+    separator: String,
+}
+
+impl SymbolPolicy {
+    fn language_neutral() -> Self {
+        Self {
+            reserved: HashSet::new(),
+            generated_prefixes: Vec::new(),
+            separator: "_".to_string(),
+        }
+    }
+
+    fn from_value(value: &Value) -> Self {
+        let mut policy = Self::language_neutral();
+
+        if let Some(separator) = get_str_attr(value, "separator")
+            && !separator.is_empty()
+        {
+            policy.separator = separator;
+        }
+        if let Ok(reserved) = value.get_attr("reserved") {
+            for item in value_list_strings(&reserved) {
+                policy.reserved.insert(item);
+            }
+        }
+        if let Ok(prefixes) = value.get_attr("generated_prefixes") {
+            policy.generated_prefixes = value_list_strings(&prefixes);
+        }
+
+        policy
+    }
+}
+
+struct SymbolAllocator {
+    used: HashSet<String>,
+    policy: SymbolPolicy,
+}
+
+impl SymbolAllocator {
+    fn new(policy: SymbolPolicy) -> Self {
+        let used = policy.reserved.clone();
+        Self { used, policy }
+    }
+
+    fn allocate(
+        &mut self,
+        candidates: &[String],
+        candidate_counts: &HashMap<String, usize>,
+    ) -> String {
+        for candidate in candidates {
+            if candidate_counts.get(candidate).copied().unwrap_or(0) <= 1 && self.try_use(candidate)
+            {
+                return candidate.clone();
+            }
+        }
+
+        for candidate in candidates {
+            if self.try_use(candidate) {
+                return candidate.clone();
+            }
+        }
+
+        let base = candidates
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "value".to_string());
+        for idx in 2.. {
+            let candidate = format!("{base}_{idx}");
+            if self.try_use(&candidate) {
+                return candidate;
+            }
+        }
+        unreachable!("unbounded suffix allocation must eventually find a name")
+    }
+
+    fn try_use(&mut self, candidate: &str) -> bool {
+        if candidate.is_empty()
+            || self.used.contains(candidate)
+            || self.policy.reserved.contains(candidate)
+        {
+            return false;
+        }
+        if self
+            .policy
+            .generated_prefixes
+            .iter()
+            .any(|prefix| self.used.contains(&format!("{prefix}{candidate}")))
+        {
+            return false;
+        }
+
+        self.used.insert(candidate.to_string());
+        for prefix in &self.policy.generated_prefixes {
+            self.used.insert(format!("{prefix}{candidate}"));
+        }
+        true
+    }
+}
+
+fn allocate_symbols_function(symbol_refs: Value, policy: Value) -> Value {
+    let policy = SymbolPolicy::from_value(&policy);
+    let references = value_list_strings(&symbol_refs);
+    let symbols = allocate_symbols_for_refs(references, policy);
+    Value::from_serialize(symbols)
+}
+
+fn target_symbols_function(symbol_refs: Value, policy: Value) -> Value {
+    let policy = SymbolPolicy::from_value(&policy);
+    let references = value_list_strings(&symbol_refs);
+    let mut requests = references
+        .into_iter()
+        .map(|reference| {
+            let candidates = symbol_candidates(&reference, &policy);
+            (reference, candidates)
+        })
+        .collect::<Vec<_>>();
+
+    requests.sort_by(|(a_ref, a_candidates), (b_ref, b_candidates)| {
+        symbol_ref_priority(a_ref)
+            .cmp(&symbol_ref_priority(b_ref))
+            .then_with(|| {
+                a_candidates
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("")
+                    .cmp(b_candidates.first().map(String::as_str).unwrap_or(""))
+            })
+            .then_with(|| a_ref.cmp(b_ref))
+    });
+
+    let mut candidate_counts = HashMap::<String, usize>::new();
+    for (_, candidates) in &requests {
+        let mut seen = HashSet::new();
+        for candidate in candidates {
+            if seen.insert(candidate) {
+                *candidate_counts.entry(candidate.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut allocator = SymbolAllocator::new(policy);
+    let mut out = HashMap::new();
+    for (reference, candidates) in requests {
+        let symbol = allocator.allocate(&candidates, &candidate_counts);
+        out.insert(reference, symbol);
+    }
+    Value::from_serialize(out)
+}
+
+fn allocate_symbols_for_refs(
+    mut references: Vec<String>,
+    policy: SymbolPolicy,
+) -> HashMap<String, String> {
+    references.sort_by(|a, b| {
+        symbol_ref_priority(a)
+            .cmp(&symbol_ref_priority(b))
+            .then_with(|| a.cmp(b))
+    });
+    references.dedup();
+
+    let requests = references
+        .into_iter()
+        .map(|reference| {
+            let candidates = symbol_candidates(&reference, &policy);
+            (reference, candidates)
+        })
+        .collect::<Vec<_>>();
+
+    let mut candidate_counts = HashMap::<String, usize>::new();
+    for (_, candidates) in &requests {
+        let mut seen = HashSet::new();
+        for candidate in candidates {
+            if seen.insert(candidate) {
+                *candidate_counts.entry(candidate.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut allocator = SymbolAllocator::new(policy);
+    let mut out = HashMap::new();
+    for (reference, candidates) in requests {
+        let symbol = allocator.allocate(&candidates, &candidate_counts);
+        out.insert(reference, symbol);
+    }
+    out
+}
+
+fn symbol_candidates(modelica_ref: &str, policy: &SymbolPolicy) -> Vec<String> {
+    let (base_ref, subscript) = split_modelica_subscript(modelica_ref);
+    let suffix = subscript.map(|s| scalarized_subscript_suffix(s, &policy.separator));
+    let segments = split_modelica_path(base_ref);
+    let mut candidates = Vec::new();
+    for start in (0..segments.len()).rev() {
+        let base = segments[start..]
+            .iter()
+            .map(|segment| readable_identifier_segment(segment))
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>()
+            .join(&policy.separator);
+        if base.is_empty() {
+            continue;
+        }
+        candidates.push(with_optional_suffix(
+            &base,
+            suffix.as_deref(),
+            &policy.separator,
+        ));
+    }
+
+    if candidates.is_empty() {
+        candidates.push(with_optional_suffix(
+            "value",
+            suffix.as_deref(),
+            &policy.separator,
+        ));
+    }
+    candidates.dedup();
+    candidates
+}
+
+fn split_modelica_subscript(reference: &str) -> (&str, Option<&str>) {
+    if let Some((base, subscript_part)) = reference.rsplit_once('[')
+        && let Some(subscript) = subscript_part.strip_suffix(']')
+    {
+        return (base, Some(subscript));
+    }
+    (reference, None)
+}
+
+fn split_modelica_path(name: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in name.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            '.' if depth == 0 => {
+                segments.push(&name[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    segments.push(&name[start..]);
+    segments
+}
+
+fn readable_identifier_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    let mut last_was_underscore = false;
+    for ch in segment.chars() {
+        let valid = ch.is_ascii_alphanumeric() || ch == '_';
+        if valid {
+            if out.is_empty() && ch.is_ascii_digit() {
+                out.push('_');
+            }
+            out.push(ch);
+            last_was_underscore = ch == '_';
+        } else if !last_was_underscore {
+            out.push('_');
+            last_was_underscore = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "value".to_string()
+    } else {
+        out
+    }
+}
+
+fn scalarized_subscript_suffix(subscript: &str, separator: &str) -> String {
+    subscript
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn with_optional_suffix(base: &str, suffix: Option<&str>, separator: &str) -> String {
+    match suffix {
+        Some(suffix) if !suffix.is_empty() => format!("{base}{separator}{suffix}"),
+        _ => base.to_string(),
+    }
+}
+
+fn symbol_function(symbols: Value, name: Value) -> String {
+    let name = value_to_string(&name);
+    lookup_symbol_value(Some(&symbols), &name).unwrap_or_else(|| {
+        symbol_candidates(&name, &SymbolPolicy::from_value(&Value::UNDEFINED))
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "value".to_string())
+    })
+}
+
+pub(crate) fn lookup_symbol_value(symbols: Option<&Value>, name: &str) -> Option<String> {
+    let symbols = symbols?;
+    symbols
+        .get_item(&Value::from(name))
+        .ok()
+        .filter(|value| !value.is_undefined() && !value.is_none())
+        .map(|value| value_to_string(&value))
+        .filter(|value| !value.is_empty())
+}
+
+pub(crate) fn emitted_symbol_or_fallback(reference: &str, cfg: &ExprConfig) -> String {
+    lookup_symbol_value(cfg.symbols.as_ref(), reference).unwrap_or_else(|| {
+        if cfg.sanitize_dots || cfg.subscript_underscore {
+            sanitize_name(reference)
+        } else {
+            escape_reserved_keyword(reference)
+        }
+    })
 }
 
 fn dae_template_value(dae: &dae::Dae) -> Value {
@@ -272,8 +705,16 @@ fn create_environment() -> Environment<'static> {
     env.add_filter("product", product_filter);
     env.add_filter("last_segment", last_segment_filter);
 
+    // Helpers for target-local emitted symbols. Flattening supplies globally
+    // unique Modelica names; templates provide target keyword/generated-alias policy.
+    env.add_function("allocate_symbols", allocate_symbols_function);
+    env.add_function("target_symbols", target_symbols_function);
+    env.add_function("symbol", symbol_function);
+    env.add_function("source_ref", source_ref_function);
+
     // Custom functions for expression rendering
     env.add_function("render_expr", render_expr_function);
+    env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_equation", render_equation_function);
 
     // Custom functions for statement rendering (MLS §12: function bodies)
@@ -309,7 +750,7 @@ fn create_environment() -> Environment<'static> {
         render_c::render_expr_at_index_function,
     );
 
-    // Check if an expression is a string literal (for C codegen)
+    // Check if an expression is a string literal for scalar templates.
     env.add_function("is_string_literal", render_c::is_string_literal_function);
 
     // Check if a function has Complex-typed parameters
@@ -318,28 +759,11 @@ fn create_environment() -> Environment<'static> {
     env
 }
 
-/// Python keywords that cannot be used as identifiers.
-const PYTHON_KEYWORDS: &[&str] = &[
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
-    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
-    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
-    "with", "yield",
-];
-
-/// C/C++ reserved words that cannot be used as identifiers in generated C code.
-const C_KEYWORDS: &[&str] = &[
-    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
-    "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return", "short",
-    "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void",
-    "volatile", "while", "inline", "restrict",
-];
-
-/// Sanitize a name for use as a target-language identifier.
+/// Sanitize a name for use as a simple emitted identifier.
 ///
-/// Replaces all non-alphanumeric/underscore characters with `_`, then
-/// appends `_` if the result is a reserved keyword.  This matches the
-/// `sanitize` Jinja filter so that equation-side references agree with
-/// the variable declarations emitted by the templates.
+/// Replaces all non-alphanumeric/underscore characters with `_`. Target
+/// reserved words are handled by `allocate_symbols` with a template-supplied
+/// policy, not by this lossy fallback.
 pub(crate) fn sanitize_name(name: &str) -> String {
     let mut result = String::with_capacity(name.len());
     for ch in name.chars() {
@@ -353,23 +777,17 @@ pub(crate) fn sanitize_name(name: &str) -> String {
             result.push('_');
         }
     }
-    escape_reserved_keyword(&result)
+    result
 }
 
-/// Escape a name if it collides with a reserved keyword (Python or C).
-/// Appends `_` to the name if it matches.
+/// Legacy fallback kept for renderers that opt out of symbol allocation.
 pub(crate) fn escape_reserved_keyword(name: &str) -> String {
-    if PYTHON_KEYWORDS.contains(&name) || C_KEYWORDS.contains(&name) {
-        format!("{name}_")
-    } else {
-        name.to_string()
-    }
+    name.to_string()
 }
 
-/// Filter to sanitize variable names for target language identifiers.
+/// Filter to sanitize variable names for simple emitted identifiers.
 ///
-/// Replaces dots and other non-identifier characters with underscores,
-/// and appends `_` to reserved keywords (Python + C).
+/// Replaces dots and other non-identifier characters with underscores.
 fn sanitize_filter(value: Value) -> String {
     let s = value.to_string();
     let mut result = String::with_capacity(s.len());
@@ -381,10 +799,6 @@ fn sanitize_filter(value: Value) -> String {
         } else {
             result.push('_');
         }
-    }
-    // Escape reserved keywords by appending underscore
-    if PYTHON_KEYWORDS.contains(&result.as_str()) || C_KEYWORDS.contains(&result.as_str()) {
-        result.push('_');
     }
     result
 }
@@ -411,6 +825,85 @@ fn product_filter(value: Value) -> Value {
         }
     }
     Value::from(result)
+}
+
+fn value_to_string(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string().trim_matches('"').to_string())
+}
+
+fn dims_from_value(value: &Value) -> Vec<usize> {
+    let Some(len) = value.len() else {
+        return Vec::new();
+    };
+    let mut dims = Vec::with_capacity(len);
+    for i in 0..len {
+        if let Ok(item) = value.get_item(&Value::from(i))
+            && let Some(dim) = item.as_i64()
+            && dim > 0
+        {
+            dims.push(dim as usize);
+        }
+    }
+    dims
+}
+
+fn value_list_strings(value: &Value) -> Vec<String> {
+    let Some(len) = value.len() else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        if let Ok(item) = value.get_item(&Value::from(i)) {
+            out.push(value_to_string(&item));
+        }
+    }
+    out
+}
+
+fn subscripts_for_flat_index(dims: &[usize], flat_index: usize) -> Vec<usize> {
+    if dims.is_empty() {
+        return Vec::new();
+    }
+
+    let mut remaining = flat_index.saturating_sub(1);
+    let mut subscripts = vec![1; dims.len()];
+    for dim_idx in (0..dims.len()).rev() {
+        let dim = dims[dim_idx].max(1);
+        subscripts[dim_idx] = (remaining % dim) + 1;
+        remaining /= dim;
+    }
+    subscripts
+}
+
+fn source_subscript_suffix(dims: &[usize], flat_index: usize) -> String {
+    let subscripts = subscripts_for_flat_index(dims, flat_index);
+    if subscripts.is_empty() {
+        flat_index.max(1).to_string()
+    } else {
+        subscripts
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+/// Return the source-reference key for a scalarized array element.
+///
+/// Examples:
+/// - `source_ref("x", [4], 3)` -> `x[3]`
+/// - `source_ref("leg.f", [4,3], 4)` -> `leg.f[2,1]`
+fn source_ref_function(name: Value, dims: Value, flat_index: Value) -> String {
+    let name = value_to_string(&name);
+    let dims = dims_from_value(&dims);
+    if dims.is_empty() {
+        return name;
+    }
+    let index = flat_index.as_usize().unwrap_or(1).max(1);
+    format!("{}[{}]", name, source_subscript_suffix(&dims, index))
 }
 
 /// Fail template rendering with an explicit message.
@@ -494,6 +987,44 @@ fn render_expr_function(expr: Value, config: Value) -> RenderResult {
     render_expression(&expr, &cfg)
 }
 
+/// Render a relation as a numeric root function for FMI event indicators.
+///
+/// DAE `relation` entries are boolean expressions such as `a < b`, but FMI
+/// event indicators are real-valued zero-crossing functions. For relational
+/// binary operators, emit the residual `a - b`; for non-relational expressions
+/// fall back to the generic renderer.
+fn render_event_indicator_function(expr: Value, config: Value) -> RenderResult {
+    let cfg = ExprConfig::from_value(&config);
+    render_event_indicator(&expr, &cfg)
+}
+
+fn render_event_indicator(expr: &Value, cfg: &ExprConfig) -> RenderResult {
+    let binary = get_field(expr, "Binary").unwrap_or_else(|_| expr.clone());
+    let Ok(op) = get_field(&binary, "op") else {
+        return render_expression(expr, cfg);
+    };
+    if !is_relation_operator(&op) {
+        return render_expression(expr, cfg);
+    }
+
+    let lhs = get_field(&binary, "lhs")
+        .and_then(|v| render_expression(&v, cfg))
+        .map_err(|_| render_err("Relation expression missing 'lhs' field"))?;
+    let rhs = get_field(&binary, "rhs")
+        .and_then(|v| render_expression(&v, cfg))
+        .map_err(|_| render_err("Relation expression missing 'rhs' field"))?;
+    Ok(format!("(({lhs}) - ({rhs}))"))
+}
+
+fn is_relation_operator(op: &Value) -> bool {
+    get_field(op, "Lt").is_ok()
+        || get_field(op, "Le").is_ok()
+        || get_field(op, "Gt").is_ok()
+        || get_field(op, "Ge").is_ok()
+        || get_field(op, "Eq").is_ok()
+        || get_field(op, "Neq").is_ok()
+}
+
 /// Render an equation in `lhs = rhs` form.
 ///
 /// For explicit equations (lhs is set), renders `lhs = rhs`.
@@ -549,9 +1080,8 @@ fn render_statement_function(stmt: Value, config: Value, indent: Value) -> Rende
 /// ```
 fn render_statements_function(stmts: Value, config: Value, indent: Value) -> RenderResult {
     let mut cfg = ExprConfig::from_value(&config);
-    // Function bodies use local C arrays / Python lists, so array subscripts
-    // must always use bracket notation (y[i]) — never the underscore style
-    // (y_i) which is reserved for top-level DAE named-scalar unpacking.
+    // Function bodies use local arrays/lists, so array subscripts must always
+    // use bracket notation (y[i]) rather than top-level scalar aliases (y_i).
     cfg.subscript_underscore = false;
     let indent_str = indent.as_str().unwrap_or("    ");
     render_statements(&stmts, &cfg, indent_str)
@@ -594,11 +1124,13 @@ pub(crate) struct ExprConfig {
     pub(crate) python_range: bool,
     /// Override function name for `sum()` calls on non-literal arrays.
     /// Default is `"sum1"` (CasADi convention, rendered as `prefix + sum1`).
-    /// C backends set this to their helper name (e.g., `"__rumoca_sum"`).
+    /// Templates can set this to a runtime helper name.
     pub(crate) sum_fn: String,
     /// When true, render all numeric literals as float constants with `f` suffix.
-    /// E.g., `8` → `8.0f`, `3.14` → `3.14f`. Used by embedded C backend.
+    /// E.g., `8` → `8.0f`, `3.14` → `3.14f`.
     pub(crate) float_literals: bool,
+    /// Optional source-reference to emitted-symbol map provided by a template.
+    pub(crate) symbols: Option<Value>,
 }
 
 #[derive(Clone, Copy)]
@@ -634,6 +1166,7 @@ impl Default for ExprConfig {
             python_range: false,
             sum_fn: "sum1".to_string(),
             float_literals: false,
+            symbols: None,
         }
     }
 }
@@ -738,6 +1271,12 @@ impl ExprConfig {
             && !val.is_none()
         {
             cfg.float_literals = val.is_true();
+        }
+        if let Ok(val) = v.get_attr("symbols")
+            && !val.is_undefined()
+            && !val.is_none()
+        {
+            cfg.symbols = Some(val);
         }
 
         cfg

@@ -106,7 +106,7 @@ pub fn build_ic_plan(dae: &Dae, n_x: usize) -> Result<Vec<IcBlock>, StructuralEr
     }
 
     // Build variable name → solver y-vector index mapping
-    let (var_name_to_idx, _var_idx_to_name) = build_var_index_maps(dae);
+    let (var_name_to_idx, _var_idx_to_name) = build_var_index_maps(dae, n_eq);
 
     // Build incidence for algebraic equations only (indices n_x..n_eq),
     // with only algebraic+output variables as unknowns (states are known).
@@ -200,7 +200,7 @@ pub fn build_ic_relaxation_hint(dae: &Dae, n_x: usize) -> Option<IcRelaxationHin
         return None;
     }
 
-    let (var_name_to_idx, _) = build_var_index_maps(dae);
+    let (var_name_to_idx, _) = build_var_index_maps(dae, n_eq);
     let (incidence, alg_eq_offset, _alg_var_indices, alg_var_names) =
         build_algebraic_incidence(dae, n_x, &var_name_to_idx);
     let (match_eq, match_var) =
@@ -1054,7 +1054,10 @@ fn trace_ic_plan_singularity(
 }
 
 /// Map variable names to solver y-vector indices and back.
-fn build_var_index_maps(dae: &Dae) -> (std::collections::HashMap<String, usize>, Vec<String>) {
+fn build_var_index_maps(
+    dae: &Dae,
+    solver_len: usize,
+) -> (std::collections::HashMap<String, usize>, Vec<String>) {
     let mut name_to_idx = std::collections::HashMap::new();
     let mut idx_to_name = Vec::new();
     let mut idx = 0;
@@ -1064,21 +1067,77 @@ fn build_var_index_maps(dae: &Dae) -> (std::collections::HashMap<String, usize>,
         .chain(dae.algebraics.iter())
         .chain(dae.outputs.iter())
     {
+        if idx >= solver_len {
+            break;
+        }
         let sz = var.size();
         if sz <= 1 {
             name_to_idx.insert(name.as_str().to_string(), idx);
             idx_to_name.push(name.as_str().to_string());
             idx += 1;
         } else {
-            for i in 0..sz {
+            let visible_size = sz.min(solver_len - idx);
+            if visible_size > 0 {
+                name_to_idx.entry(name.as_str().to_string()).or_insert(idx);
+            }
+            for i in 0..visible_size {
                 let key = format!("{}[{}]", name.as_str(), i + 1);
                 name_to_idx.insert(key.clone(), idx);
+                if let Some(subs) = flat_index_to_subscripts(i, &var.dims)
+                    && subs.len() > 1
+                {
+                    name_to_idx
+                        .entry(format_subscript_key(name.as_str(), &subs))
+                        .or_insert(idx);
+                }
                 idx_to_name.push(key);
                 idx += 1;
+            }
+            if visible_size < sz {
+                break;
             }
         }
     }
     (name_to_idx, idx_to_name)
+}
+
+fn flat_index_to_subscripts(flat_index: usize, dims: &[i64]) -> Option<Vec<usize>> {
+    if dims.is_empty() {
+        return None;
+    }
+    let mut dims_usize = Vec::with_capacity(dims.len());
+    for &d in dims {
+        let dim = usize::try_from(d).ok()?;
+        if dim == 0 {
+            return None;
+        }
+        dims_usize.push(dim);
+    }
+
+    let mut remainder = flat_index;
+    let mut subs_rev = Vec::with_capacity(dims_usize.len());
+    for dim in dims_usize.iter().rev().copied() {
+        subs_rev.push((remainder % dim) + 1);
+        remainder /= dim;
+    }
+    if remainder != 0 {
+        return None;
+    }
+    subs_rev.reverse();
+    Some(subs_rev)
+}
+
+fn format_subscript_key(name: &str, subs: &[usize]) -> String {
+    let mut key = String::from(name);
+    key.push('[');
+    for (idx, sub) in subs.iter().enumerate() {
+        if idx > 0 {
+            key.push(',');
+        }
+        key.push_str(&sub.to_string());
+    }
+    key.push(']');
+    key
 }
 
 /// Build incidence matrix for the algebraic subsystem only.
@@ -1096,6 +1155,7 @@ fn build_algebraic_incidence(
     let mut alg_var_names: Vec<String> = Vec::new();
     let mut alg_var_indices: Vec<usize> = Vec::new();
     let mut unknown_names: Vec<UnknownId> = Vec::new();
+    let mut resolver_entries: Vec<(String, usize)> = Vec::new();
     for (name, var) in dae.algebraics.iter().chain(dae.outputs.iter()) {
         let sz = var.size();
         let keys: Vec<(String, UnknownId)> = if sz <= 1 {
@@ -1109,19 +1169,24 @@ fn build_algebraic_incidence(
                 })
                 .collect()
         };
-        for (key, uid) in keys {
-            let global_idx = var_name_to_idx.get(&key).copied().unwrap_or(0);
+        for (scalar_idx, (key, uid)) in keys.into_iter().enumerate() {
+            let Some(global_idx) = var_name_to_idx.get(&key).copied() else {
+                continue;
+            };
+            let local_idx = alg_var_names.len();
             alg_var_indices.push(global_idx);
+            resolver_entries.push((key.clone(), local_idx));
+            if sz > 1
+                && let Some(subs) = flat_index_to_subscripts(scalar_idx, &var.dims)
+                && subs.len() > 1
+            {
+                resolver_entries.push((format_subscript_key(name.as_str(), &subs), local_idx));
+            }
             alg_var_names.push(key);
             unknown_names.push(uid);
         }
     }
-    let local_resolver = ScalarUnknownResolver::from_entries(
-        alg_var_names
-            .iter()
-            .enumerate()
-            .map(|(local_idx, name)| (name.clone(), local_idx)),
-    );
+    let local_resolver = ScalarUnknownResolver::from_entries(resolver_entries);
 
     // Build incidence for algebraic equations (n_x..n_eq)
     let alg_eq_offset = n_x;
@@ -1325,6 +1390,13 @@ mod tests {
         }
     }
 
+    fn var_ref_idx(name: &str, indices: &[i64]) -> dae::Expression {
+        dae::Expression::VarRef {
+            name: VarName::new(name),
+            subscripts: indices.iter().copied().map(dae::Subscript::Index).collect(),
+        }
+    }
+
     fn lit(v: f64) -> dae::Expression {
         dae::Expression::Literal(dae::Literal::Real(v))
     }
@@ -1504,7 +1576,39 @@ mod tests {
     }
 
     #[test]
-    fn test_build_ic_plan_flags_rectangular_algebraic_subsystem() {
+    fn test_ic_incidence_maps_matrix_subscripts_to_flat_slots() {
+        let mut dae = Dae::new();
+
+        let mut m = dae::Variable::new(VarName::new("M"));
+        m.dims = vec![3, 4];
+        dae.algebraics.insert(VarName::new("M"), m);
+
+        dae.f_x
+            .push(eq_from(sub(var_ref_idx("M", &[1, 2]), lit(1.0))));
+        dae.f_x
+            .push(eq_from(sub(var_ref_idx("M", &[2, 2]), lit(2.0))));
+        dae.f_x
+            .push(eq_from(sub(var_ref_idx("M", &[3, 2]), lit(3.0))));
+
+        let (var_name_to_idx, _) = build_var_index_maps(&dae, 12);
+        let (incidence, _, _, alg_var_names) = build_algebraic_incidence(&dae, 0, &var_name_to_idx);
+        let local_idx = |name: &str| {
+            alg_var_names
+                .iter()
+                .position(|candidate| candidate == name)
+                .unwrap_or_else(|| panic!("missing algebraic slot {name}"))
+        };
+
+        assert_eq!(incidence.eq_unknowns[0], HashSet::from([local_idx("M[2]")]));
+        assert_eq!(incidence.eq_unknowns[1], HashSet::from([local_idx("M[6]")]));
+        assert_eq!(
+            incidence.eq_unknowns[2],
+            HashSet::from([local_idx("M[10]")])
+        );
+    }
+
+    #[test]
+    fn test_build_ic_plan_ignores_non_solver_backed_tail_unknowns() {
         let mut dae = Dae::new();
         dae.algebraics
             .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
@@ -1512,26 +1616,30 @@ mod tests {
             .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
         dae.f_x.push(eq_from(sub(var_ref("y"), lit(1.0))));
 
-        let err =
-            build_ic_plan(&dae, 0).expect_err("rectangular algebraic subsystem must be singular");
-        match err {
-            StructuralError::Singular {
-                n_equations,
-                n_unknowns,
-                n_matched,
-                unmatched_unknowns,
-                ..
-            } => {
-                assert_eq!(n_equations, 1);
-                assert_eq!(n_unknowns, 2);
-                assert_eq!(n_matched, 1);
-                assert!(
-                    unmatched_unknowns.iter().any(|name| name == "z"),
-                    "expected unmatched unknown list to include z, got: {unmatched_unknowns:?}"
-                );
+        let plan = build_ic_plan(&dae, 0)
+            .expect("tail variables without solver slots should not make IC singular");
+        let mut referenced = std::collections::BTreeSet::new();
+        for block in &plan {
+            match block {
+                IcBlock::ScalarDirect { var_name, .. } | IcBlock::ScalarNewton { var_name, .. } => {
+                    referenced.insert(var_name.clone());
+                }
+                IcBlock::TornBlock {
+                    tear_var_names,
+                    causal_sequence,
+                    ..
+                } => {
+                    referenced.extend(tear_var_names.iter().cloned());
+                    referenced.extend(causal_sequence.iter().map(|step| step.var_name.clone()));
+                }
+                IcBlock::CoupledLM { var_names, .. } => {
+                    referenced.extend(var_names.iter().cloned());
+                }
             }
-            other => panic!("expected singular error, got {other:?}"),
         }
+
+        assert!(referenced.contains("y"));
+        assert!(!referenced.contains("z"));
     }
 
     #[test]

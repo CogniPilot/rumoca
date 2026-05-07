@@ -223,12 +223,13 @@ pub fn build_compiled_discrete_event_context(
             continue;
         }
         let exprs = vec![eq.rhs.clone()];
-        let compiled = compile_scalar_expression_rows(dae_model, &exprs).map_err(|err| {
-            format!(
-                "failed to compile discrete RHS for target='{}' origin='{}': {err}",
-                target, eq.origin
-            )
-        })?;
+        let compiled =
+            compile_scalar_expression_rows(dae_model, solver_len, &exprs).map_err(|err| {
+                format!(
+                    "failed to compile discrete RHS for target='{}' origin='{}': {err}",
+                    target, eq.origin
+                )
+            })?;
         compiled_scalar_rhs_by_eq.insert(equation_key(eq), compiled);
     }
 
@@ -245,12 +246,14 @@ pub fn build_compiled_discrete_event_context(
 #[cfg(not(target_arch = "wasm32"))]
 fn compile_scalar_expression_rows(
     dae_model: &dae::Dae,
+    solver_len: usize,
     exprs: &[dae::Expression],
 ) -> Result<CompiledExpressionRows, String> {
-    rumoca_phase_solve_lower::compile_expressions(
+    rumoca_phase_solve_lower::compile_expressions_with_solver_len(
         dae_model,
         exprs,
         rumoca_phase_solve_lower::Backend::Cranelift,
+        solver_len,
     )
     .map_err(|err| err.to_string())
 }
@@ -258,6 +261,7 @@ fn compile_scalar_expression_rows(
 #[cfg(target_arch = "wasm32")]
 fn compile_scalar_expression_rows(
     dae_model: &dae::Dae,
+    _solver_len: usize,
     exprs: &[dae::Expression],
 ) -> Result<CompiledExpressionRows, String> {
     rumoca_phase_solve_lower::compile_expressions_wasm(dae_model, exprs)

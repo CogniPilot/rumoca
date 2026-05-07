@@ -1,0 +1,80 @@
+# =============================================================================
+# quadrotor_standby.toml — quadrotor SIL plant viewer with hover motor command.
+#
+# This is the lightweight standalone web-viewer config used by FastDyn when
+# ArduCopter/QEMU owns the actual flight-control loop. It keeps Rumoca's
+# browser scene available without starting the in-process acro controller.
+# =============================================================================
+
+source_roots = ["../modelica_libraries"]
+
+[physics]
+file = "QuadrotorSIL.mo"
+name = "QuadrotorSIL"
+
+[sim]
+dt = 0.001
+realtime = true
+mode = "free_run"
+
+[transport.websocket]
+port = 8081
+
+[transport.http]
+port = 8080
+scene = "quadrotor_scene.js"
+
+[input]
+mode = "auto"
+
+[locals]
+# sqrt(m*g/(4*Ct)) for QuadrotorSIL's 2 kg vehicle and Ct = 8.54858e-6.
+hover_omega = { type = "float", default = 757.0961711952829 }
+
+[signals.stepper_inputs]
+"omega_cmd[1]" = "local:hover_omega"
+"omega_cmd[2]" = "local:hover_omega"
+"omega_cmd[3]" = "local:hover_omega"
+"omega_cmd[4]" = "local:hover_omega"
+
+[signals.viewer]
+t           = "stepper:time"
+frame       = "runtime:frame_num"
+wall_ms     = "runtime:wall_ms"
+px          = "stepper:position[1]"
+py          = "stepper:position[2]"
+pz          = "stepper:position[3]"
+vx          = "stepper:velocity[1]"
+vy          = "stepper:velocity[2]"
+vz          = "stepper:velocity[3]"
+q0          = { from = "stepper:quat[1]", default = 1.0 }
+q1          = "stepper:quat[2]"
+q2          = "stepper:quat[3]"
+q3          = "stepper:quat[4]"
+omega_m1    = "stepper:omega_m[1]"
+omega_m2    = "stepper:omega_m[2]"
+omega_m3    = "stepper:omega_m[3]"
+omega_m4    = "stepper:omega_m[4]"
+accel_x     = "stepper:accel[1]"
+accel_y     = "stepper:accel[2]"
+accel_z     = "stepper:accel[3]"
+gyro_x      = "stepper:gyro[1]"
+gyro_y      = "stepper:gyro[2]"
+gyro_z      = "stepper:gyro[3]"
+
+[debug_log]
+ring_size = 500
+trigger_signal = "log"
+capture = [
+  "runtime:frame_num", "runtime:wall_ms", "stepper:time",
+  "stepper:omega_cmd[1]", "stepper:omega_cmd[2]", "stepper:omega_cmd[3]", "stepper:omega_cmd[4]",
+  "stepper:motor[1].omega", "stepper:motor[1].omega_error", "stepper:motor[1].lag_blend",
+  "stepper:motor[1].tau_inv_mid", "stepper:motor[1].tau_inv_delta", "stepper:motor[1].tau_inv",
+  "stepper:F_m[1]", "stepper:T",
+  "stepper:omega_m[1]", "stepper:omega_m[2]", "stepper:omega_m[3]", "stepper:omega_m[4]",
+  "stepper:position[1]", "stepper:position[2]", "stepper:position[3]",
+  "stepper:velocity[1]", "stepper:velocity[2]", "stepper:velocity[3]",
+  "stepper:q[1]", "stepper:q[2]", "stepper:q[3]", "stepper:q[4]",
+  "stepper:accel[1]", "stepper:accel[2]", "stepper:accel[3]",
+  "stepper:gyro[1]", "stepper:gyro[2]", "stepper:gyro[3]",
+]

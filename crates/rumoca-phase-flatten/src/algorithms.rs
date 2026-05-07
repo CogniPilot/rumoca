@@ -22,7 +22,7 @@ use crate::qualify::{self, ImportMap, QualifyOptions};
 
 /// Qualify all variable references in an algorithm section.
 ///
-/// Per ALG-001: All variable references become globally qualified names.
+/// Per ALG-001: All variable references become globally unique flat names.
 /// For example, `x := y + 1` in component `comp` becomes `comp.x := comp.y + 1`.
 pub(crate) fn qualify_algorithm(
     statements: &[ast::Statement],

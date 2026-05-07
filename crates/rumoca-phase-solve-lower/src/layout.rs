@@ -37,10 +37,14 @@ enum SlotStorage {
 }
 
 pub fn build_var_layout(dae_model: &dae::Dae) -> VarLayout {
+    build_var_layout_with_solver_len(dae_model, usize::MAX)
+}
+
+pub fn build_var_layout_with_solver_len(dae_model: &dae::Dae, solver_len: usize) -> VarLayout {
     let mut bindings = IndexMap::new();
     bindings.insert("time".to_string(), ScalarSlot::Time);
 
-    let y_scalars = map_y_bindings(dae_model, &mut bindings);
+    let y_scalars = map_y_bindings(dae_model, &mut bindings, solver_len);
     let p_scalars = map_p_bindings(dae_model, &mut bindings);
     map_enum_literal_bindings(dae_model, &mut bindings);
     map_constant_bindings(dae_model, &mut bindings);
@@ -48,7 +52,11 @@ pub fn build_var_layout(dae_model: &dae::Dae) -> VarLayout {
     VarLayout::from_parts(bindings, y_scalars, p_scalars)
 }
 
-fn map_y_bindings(dae_model: &dae::Dae, bindings: &mut IndexMap<String, ScalarSlot>) -> usize {
+fn map_y_bindings(
+    dae_model: &dae::Dae,
+    bindings: &mut IndexMap<String, ScalarSlot>,
+    solver_len: usize,
+) -> usize {
     let mut offset = 0usize;
     for (name, var) in dae_model
         .states
@@ -56,7 +64,21 @@ fn map_y_bindings(dae_model: &dae::Dae, bindings: &mut IndexMap<String, ScalarSl
         .chain(dae_model.algebraics.iter())
         .chain(dae_model.outputs.iter())
     {
-        offset += insert_var_bindings(bindings, name.as_str(), var, SlotStorage::Y, offset);
+        if offset >= solver_len {
+            break;
+        }
+        let visible_size = var.size().min(solver_len - offset);
+        offset += insert_var_bindings_limited(
+            bindings,
+            name.as_str(),
+            var,
+            SlotStorage::Y,
+            offset,
+            visible_size,
+        );
+        if visible_size < var.size() {
+            break;
+        }
     }
     offset
 }
@@ -113,6 +135,37 @@ fn insert_var_bindings(
 
     insert_array_slot_bindings(bindings, name, &var.dims, size, storage, start_index);
     size
+}
+
+fn insert_var_bindings_limited(
+    bindings: &mut IndexMap<String, ScalarSlot>,
+    name: &str,
+    var: &dae::Variable,
+    storage: SlotStorage,
+    start_index: usize,
+    visible_size: usize,
+) -> usize {
+    let size = var.size();
+    if size == 0 || visible_size == 0 {
+        return 0;
+    }
+
+    if size <= 1 && var.dims.is_empty() {
+        let slot = scalar_slot(storage, start_index);
+        bindings.insert(name.to_string(), slot);
+        insert_projected_field_alias(bindings, name, slot);
+        return 1;
+    }
+
+    insert_array_slot_bindings(
+        bindings,
+        name,
+        &var.dims,
+        visible_size,
+        storage,
+        start_index,
+    );
+    visible_size
 }
 
 fn insert_constant_bindings(

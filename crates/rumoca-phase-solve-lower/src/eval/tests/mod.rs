@@ -489,6 +489,95 @@ fn test_eval_index_on_flattened_env_array_with_dims() {
 }
 
 #[test]
+fn test_eval_index_on_transposed_env_matrix_with_dims() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([("R".to_string(), vec![3, 3])]));
+    set_array_entries(
+        &mut env,
+        "R",
+        &[3, 3],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+    );
+
+    let expr = dae::Expression::Index {
+        base: Box::new(dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Transpose,
+            args: vec![var("R")],
+        }),
+        subscripts: vec![dae::Subscript::Index(2), dae::Subscript::Index(3)],
+    };
+    let value = eval_expr::<f64>(&expr, &env);
+    assert!((value - 8.0).abs() < 1e-12);
+}
+
+#[test]
+fn test_eval_array_values_transposed_matrix_vector_product() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([
+        ("R".to_string(), vec![3, 3]),
+        ("v".to_string(), vec![3]),
+    ]));
+    set_array_entries(
+        &mut env,
+        "R",
+        &[3, 3],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+    );
+    set_array_entries(&mut env, "v", &[3], &[10.0, 20.0, 30.0]);
+
+    let expr = dae::Expression::Binary {
+        op: OpBinary::Mul(Default::default()),
+        lhs: Box::new(dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Transpose,
+            args: vec![var("R")],
+        }),
+        rhs: Box::new(var("v")),
+    };
+    let values = eval_array_values::<f64>(&expr, &env);
+    assert_eq!(values, vec![300.0, 360.0, 420.0]);
+    assert!((eval_expr::<f64>(&expr, &env) - 300.0).abs() < 1e-12);
+}
+
+#[test]
+fn test_eval_array_values_matrix_matrix_product() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([
+        ("A".to_string(), vec![2, 3]),
+        ("B".to_string(), vec![3, 2]),
+    ]));
+    set_array_entries(&mut env, "A", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    set_array_entries(&mut env, "B", &[3, 2], &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+
+    let expr = dae::Expression::Binary {
+        op: OpBinary::Mul(Default::default()),
+        lhs: Box::new(var("A")),
+        rhs: Box::new(var("B")),
+    };
+    let values = eval_array_values::<f64>(&expr, &env);
+    assert_eq!(values, vec![58.0, 64.0, 139.0, 154.0]);
+    assert!((eval_expr::<f64>(&expr, &env) - 58.0).abs() < 1e-12);
+}
+
+#[test]
+fn test_eval_array_values_cross_product() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([
+        ("a".to_string(), vec![3]),
+        ("b".to_string(), vec![3]),
+    ]));
+    set_array_entries(&mut env, "a", &[3], &[1.0, 2.0, 3.0]);
+    set_array_entries(&mut env, "b", &[3], &[4.0, 5.0, 6.0]);
+
+    let expr = dae::Expression::BuiltinCall {
+        function: dae::BuiltinFunction::Cross,
+        args: vec![var("a"), var("b")],
+    };
+    let values = eval_array_values::<f64>(&expr, &env);
+    assert_eq!(values, vec![-3.0, 6.0, -3.0]);
+    assert!((eval_expr::<f64>(&expr, &env) + 3.0).abs() < 1e-12);
+}
+
+#[test]
 fn test_eval_array_values_expands_range() {
     let env = VarEnv::<f64>::new();
     let ascending = dae::Expression::Range {

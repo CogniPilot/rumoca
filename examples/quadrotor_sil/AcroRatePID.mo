@@ -70,9 +70,9 @@ model AcroRatePID
   // Unclamped integral states. We write them as simple integrators and
   // apply the clamp at the readout — avoids if-else inside der(), which
   // trips the stiff solver (same issue that bit the motor model).
-  Real i_x(start = 0);
-  Real i_y(start = 0);
-  Real i_z(start = 0);
+  Real i_x(start = 0, fixed = true);
+  Real i_y(start = 0, fixed = true);
+  Real i_z(start = 0, fixed = true);
   Real i_x_clamped;
   Real i_y_clamped;
   Real i_z_clamped;

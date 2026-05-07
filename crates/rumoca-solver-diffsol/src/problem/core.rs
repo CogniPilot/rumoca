@@ -315,29 +315,64 @@ struct ProblemCompiledKernels {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn annotate_residual_compile_error(dae: &Dae, n_total: usize, err: String) -> SimError {
+    let layout = rumoca_sim_core::phase_solve_lower::build_var_layout_with_solver_len(dae, n_total);
+    for (idx, eq) in dae.f_x.iter().enumerate() {
+        if let Err(row_err) =
+            rumoca_sim_core::phase_solve_lower::compile_expressions_with_solver_len(
+                dae,
+                std::slice::from_ref(&eq.rhs),
+                rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
+                n_total,
+            )
+        {
+            let mut refs = std::collections::HashSet::new();
+            eq.rhs.collect_var_refs(&mut refs);
+            let mut refs = refs.into_iter().collect::<Vec<_>>();
+            refs.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+            let bindings = refs
+                .into_iter()
+                .map(|name| format!("{name}={:?}", layout.binding(name.as_str())))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return SimError::CompiledEval(format!(
+                "{err}; residual row {idx} failed: {row_err}; origin='{}'; refs=[{}]; rhs={:?}",
+                eq.origin, bindings, eq.rhs
+            ));
+        }
+    }
+    SimError::CompiledEval(err)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn compile_problem_kernels(dae: &Dae, n_total: usize) -> Result<ProblemCompiledKernels, SimError> {
-    let compiled_eval_ctx = build_compiled_eval_context(dae, n_total);
+    let compiled_dae = build_compiled_problem_dae(dae, n_total);
+    let compiled_eval_ctx = build_compiled_eval_context(&compiled_dae, n_total);
     let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
     let compiled_eval_ctx_root = compiled_eval_ctx.clone();
 
-    let compiled_residual = rumoca_sim_core::phase_solve_lower::compile_residual(
-        dae,
+    let compiled_residual = rumoca_sim_core::phase_solve_lower::compile_residual_with_solver_len(
+        &compiled_dae,
         rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
+        n_total,
     )
-    .map_err(|err| SimError::CompiledEval(err.to_string()))?;
-    let compiled_jacobian = rumoca_sim_core::phase_solve_lower::compile_jacobian_v(
-        dae,
+    .map_err(|err| annotate_residual_compile_error(&compiled_dae, n_total, err.to_string()))?;
+    let compiled_jacobian = rumoca_sim_core::phase_solve_lower::compile_jacobian_v_with_solver_len(
+        &compiled_dae,
         rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
+        n_total,
     )
     .map_err(|err| SimError::CompiledEval(err.to_string()))?;
 
     log_precomputed_synthetic_root_conditions(&dae.synthetic_root_conditions);
-    let compiled_root_conditions = rumoca_sim_core::phase_solve_lower::compile_root_conditions(
-        dae,
-        rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
-    )
-    .map_err(|err| SimError::CompiledEval(err.to_string()))?;
+    let compiled_root_conditions =
+        rumoca_sim_core::phase_solve_lower::compile_root_conditions_with_solver_len(
+            &compiled_dae,
+            rumoca_sim_core::phase_solve_lower::Backend::Cranelift,
+            n_total,
+        )
+        .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     let n_roots = compiled_root_conditions.rows().max(1);
 
     Ok(ProblemCompiledKernels {
@@ -353,19 +388,22 @@ fn compile_problem_kernels(dae: &Dae, n_total: usize) -> Result<ProblemCompiledK
 
 #[cfg(target_arch = "wasm32")]
 fn compile_problem_kernels(dae: &Dae, n_total: usize) -> Result<ProblemCompiledKernels, SimError> {
-    let compiled_eval_ctx = build_compiled_eval_context(dae, n_total);
+    let compiled_dae = build_compiled_problem_dae(dae, n_total);
+    let compiled_eval_ctx = build_compiled_eval_context(&compiled_dae, n_total);
     let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
     let compiled_eval_ctx_root = compiled_eval_ctx.clone();
 
-    let compiled_residual = rumoca_sim_core::phase_solve_lower::compile_residual_wasm(dae)
-        .map_err(|err| SimError::CompiledEval(err.to_string()))?;
-    let compiled_jacobian = rumoca_sim_core::phase_solve_lower::compile_jacobian_v_wasm(dae)
-        .map_err(|err| SimError::CompiledEval(err.to_string()))?;
+    let compiled_residual =
+        rumoca_sim_core::phase_solve_lower::compile_residual_wasm(&compiled_dae)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))?;
+    let compiled_jacobian =
+        rumoca_sim_core::phase_solve_lower::compile_jacobian_v_wasm(&compiled_dae)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))?;
 
     log_precomputed_synthetic_root_conditions(&dae.synthetic_root_conditions);
     let compiled_root_conditions =
-        rumoca_sim_core::phase_solve_lower::compile_root_conditions_wasm(dae)
+        rumoca_sim_core::phase_solve_lower::compile_root_conditions_wasm(&compiled_dae)
             .map_err(|err| SimError::CompiledEval(err.to_string()))?;
     let n_roots = compiled_root_conditions.rows().max(1);
 

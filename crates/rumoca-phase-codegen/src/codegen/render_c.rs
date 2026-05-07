@@ -7,6 +7,7 @@
 use super::{ExprConfig, RenderResult};
 use minijinja::Value;
 use render_expr::{get_field, render_expression};
+use std::collections::BTreeMap;
 
 use super::render_expr;
 
@@ -181,6 +182,12 @@ pub(super) fn ode_rhs_for_state_function(
         }
     }
 
+    if let Some(rhs_expr) =
+        find_linear_derivative_system_rhs_in_equations(&equations, &name_str, &cfg)
+    {
+        return Ok(rhs_expr);
+    }
+
     // No matching equation found — emit warning so it's visible in generated code
     // Use Python-style comment when power is "**" (Python backends)
     if cfg.power == "**" {
@@ -214,6 +221,15 @@ pub(super) fn alg_rhs_for_var_function(
 ) -> RenderResult {
     let cfg = ExprConfig::from_value(&config);
     let name_str = var_name.to_string().trim_matches('"').to_string();
+
+    let Ok(iter) = equations.try_iter() else {
+        return Ok("0.0".to_string());
+    };
+    for eq in iter {
+        if let Some(rhs_expr) = find_algebraic_rhs_direct(&eq, &name_str, &cfg) {
+            return Ok(rhs_expr);
+        }
+    }
 
     let Ok(iter) = equations.try_iter() else {
         return Ok("0.0".to_string());
@@ -253,7 +269,7 @@ pub(super) fn alg_rhs_for_var_or_self_function(
     let name_str = var_name.to_string().trim_matches('"').to_string();
 
     let Ok(iter) = equations.try_iter() else {
-        return Ok(var_name_to_c_alias(&name_str));
+        return Ok(var_name_to_symbol(&name_str, &cfg));
     };
     for eq in iter {
         if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name_str, &cfg) {
@@ -261,7 +277,7 @@ pub(super) fn alg_rhs_for_var_or_self_function(
         }
     }
 
-    Ok(var_name_to_c_alias(&name_str))
+    Ok(var_name_to_symbol(&name_str, &cfg))
 }
 
 /// Extract RHS for embedded discrete updates.
@@ -298,11 +314,11 @@ pub(super) fn discrete_rhs_for_var_function(
         }
     }
 
-    if let Some(synthesized) = synthesize_discrete_statespace_rhs(&name, &dae) {
+    if let Some(synthesized) = synthesize_discrete_statespace_rhs(&name, &dae, &cfg) {
         return Ok(synthesized);
     }
 
-    Ok(var_name_to_c_alias(&name))
+    Ok(var_name_to_symbol(&name, &cfg))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -382,6 +398,385 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
         return Some(format!("({lhs_expr}) / ({coeff})"));
     }
 
+    // Case 5: 0 = A * der(x_vec) - b_vec, with the equation preserved as a
+    // vector residual. Emit a small dense linear solve for the requested
+    // component instead of silently dropping the derivative.
+    let scalar_count = eq
+        .get_attr("scalar_count")
+        .ok()
+        .and_then(|v| v.as_usize())
+        .unwrap_or(1);
+    if let Some(rhs_expr) =
+        find_linear_derivative_system_rhs(&lhs, &rhs_val, state_name, scalar_count, cfg)
+    {
+        return Some(rhs_expr);
+    }
+
+    None
+}
+
+fn find_linear_derivative_system_rhs(
+    lhs: &Value,
+    rhs: &Value,
+    state_name: &str,
+    scalar_count: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let (state_base, component) = parse_indexed_ref(state_name)?;
+    let n = scalar_count.max(component);
+    if component == 0 || component > n {
+        return None;
+    }
+
+    if let Some(product) = extract_matrix_derivative_product(lhs, &state_base)
+        && !contains_der(rhs)
+    {
+        return render_linear_solve_component(&product, rhs, n, component, cfg);
+    }
+
+    if let Some(product) = extract_matrix_derivative_product(rhs, &state_base)
+        && !contains_der(lhs)
+    {
+        return render_linear_solve_component(&product, lhs, n, component, cfg);
+    }
+
+    None
+}
+
+fn find_linear_derivative_system_rhs_in_equations(
+    equations: &Value,
+    state_name: &str,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let (state_base, component) = parse_indexed_ref(state_name)?;
+    let mut rows = Vec::new();
+    let mut n = component;
+
+    let iter = equations.try_iter().ok()?;
+    for eq in iter {
+        if let Some((coefficients, rhs)) = extract_linear_derivative_row(&eq, &state_base, cfg) {
+            if let Some(max_col) = coefficients.keys().next_back().copied() {
+                n = n.max(max_col);
+            }
+            rows.push((coefficients, rhs));
+        }
+    }
+
+    if rows.len() < n || component == 0 || component > n {
+        return None;
+    }
+
+    let mut matrix_entries = Vec::with_capacity(n * n);
+    let mut rhs_entries = Vec::with_capacity(n);
+    for (coefficients, rhs) in rows.iter().take(n) {
+        for col in 1..=n {
+            matrix_entries.push(
+                coefficients
+                    .get(&col)
+                    .cloned()
+                    .unwrap_or_else(|| "0.0".to_string()),
+            );
+        }
+        rhs_entries.push(rhs.clone());
+    }
+
+    Some(format!(
+        "__rumoca_solve_linear_component((double[]){{{}}}, (double[]){{{}}}, {}, {})",
+        matrix_entries.join(", "),
+        rhs_entries.join(", "),
+        n,
+        component - 1
+    ))
+}
+
+fn extract_linear_derivative_row(
+    eq: &Value,
+    state_base: &str,
+    cfg: &ExprConfig,
+) -> Option<(BTreeMap<usize, String>, String)> {
+    let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
+    let (lhs, rhs_val) = decompose_subtraction(&rhs)?;
+
+    if contains_der_of_base(&lhs, state_base) && !contains_der(&rhs_val) {
+        let coefficients = extract_linear_derivative_coefficients(&lhs, state_base, cfg)?;
+        let rhs_rendered = render_expression(&rhs_val, cfg).ok()?;
+        return Some((coefficients, rhs_rendered));
+    }
+
+    if contains_der_of_base(&rhs_val, state_base) && !contains_der(&lhs) {
+        let coefficients = extract_linear_derivative_coefficients(&rhs_val, state_base, cfg)?;
+        let lhs_rendered = render_expression(&lhs, cfg).ok()?;
+        return Some((coefficients, lhs_rendered));
+    }
+
+    None
+}
+
+fn extract_linear_derivative_coefficients(
+    expr: &Value,
+    state_base: &str,
+    cfg: &ExprConfig,
+) -> Option<BTreeMap<usize, String>> {
+    let mut terms = Vec::new();
+    flatten_value_add_terms(expr, true, &mut terms);
+
+    let mut coefficients: BTreeMap<usize, String> = BTreeMap::new();
+    for (positive, term) in terms {
+        if !contains_der_of_base(&term, state_base) {
+            return None;
+        }
+        let (component, coefficient) = extract_derivative_term_coefficient(&term, state_base, cfg)?;
+        let signed = if positive {
+            coefficient
+        } else {
+            format!("(-({coefficient}))")
+        };
+        coefficients
+            .entry(component)
+            .and_modify(|existing| *existing = format!("({existing} + {signed})"))
+            .or_insert(signed);
+    }
+
+    if coefficients.is_empty() {
+        None
+    } else {
+        Some(coefficients)
+    }
+}
+
+fn extract_derivative_term_coefficient(
+    expr: &Value,
+    state_base: &str,
+    cfg: &ExprConfig,
+) -> Option<(usize, String)> {
+    if let Some(component) = der_index_of_base(expr, state_base) {
+        return Some((component, "1.0".to_string()));
+    }
+
+    let binary = get_field(expr, "Binary").ok()?;
+    if !is_mul_op(&binary) {
+        return None;
+    }
+    let lhs = get_field(&binary, "lhs").ok()?;
+    let rhs = get_field(&binary, "rhs").ok()?;
+
+    if let Some(component) = der_index_of_base(&rhs, state_base)
+        && !contains_der(&lhs)
+    {
+        return Some((component, render_expression(&lhs, cfg).ok()?));
+    }
+    if let Some(component) = der_index_of_base(&lhs, state_base)
+        && !contains_der(&rhs)
+    {
+        return Some((component, render_expression(&rhs, cfg).ok()?));
+    }
+
+    None
+}
+
+fn decompose_subtraction(expr: &Value) -> Option<(Value, Value)> {
+    let (binary, swapped) = if let Ok(b) = get_field(expr, "Binary") {
+        (b, false)
+    } else if let Ok(unary) = get_field(expr, "Unary") {
+        let op = get_field(&unary, "op")
+            .ok()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        if op.contains("Minus") || op.contains("Neg") {
+            let inner = get_field(&unary, "rhs").ok()?;
+            let b = get_field(&inner, "Binary").ok()?;
+            (b, true)
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+
+    if !is_sub_op(&binary) {
+        return None;
+    }
+
+    if swapped {
+        Some((
+            get_field(&binary, "rhs").ok()?,
+            get_field(&binary, "lhs").ok()?,
+        ))
+    } else {
+        Some((
+            get_field(&binary, "lhs").ok()?,
+            get_field(&binary, "rhs").ok()?,
+        ))
+    }
+}
+
+struct MatrixDerivativeProduct {
+    matrix: Value,
+    transpose: bool,
+}
+
+fn extract_matrix_derivative_product(
+    expr: &Value,
+    state_base: &str,
+) -> Option<MatrixDerivativeProduct> {
+    let binary = get_field(expr, "Binary").ok()?;
+    if !is_mul_op(&binary) {
+        return None;
+    }
+    let lhs = get_field(&binary, "lhs").ok()?;
+    let rhs = get_field(&binary, "rhs").ok()?;
+
+    if is_der_of_whole(&rhs, state_base) {
+        return Some(MatrixDerivativeProduct {
+            matrix: lhs,
+            transpose: false,
+        });
+    }
+    if is_der_of_whole(&lhs, state_base) {
+        return Some(MatrixDerivativeProduct {
+            matrix: rhs,
+            transpose: true,
+        });
+    }
+
+    None
+}
+
+fn render_linear_solve_component(
+    product: &MatrixDerivativeProduct,
+    rhs: &Value,
+    n: usize,
+    component: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    if n == 0 {
+        return None;
+    }
+
+    let mut matrix_entries = Vec::with_capacity(n * n);
+    for row in 1..=n {
+        for col in 1..=n {
+            let (source_row, source_col) = if product.transpose {
+                (col, row)
+            } else {
+                (row, col)
+            };
+            matrix_entries.push(render_matrix_expr_at_indices(
+                &product.matrix,
+                source_row,
+                source_col,
+                n,
+                cfg,
+            )?);
+        }
+    }
+
+    let mut rhs_entries = Vec::with_capacity(n);
+    for idx in 1..=n {
+        rhs_entries.push(render_array_expr_at_index_or_scalar(rhs, idx, cfg)?);
+    }
+
+    Some(format!(
+        "__rumoca_solve_linear_component((double[]){{{}}}, (double[]){{{}}}, {}, {})",
+        matrix_entries.join(", "),
+        rhs_entries.join(", "),
+        n,
+        component - 1
+    ))
+}
+
+fn render_matrix_expr_at_indices(
+    expr: &Value,
+    row: usize,
+    col: usize,
+    columns: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    if let Ok(var_ref) = get_field(expr, "VarRef") {
+        return render_var_ref_with_indices(&var_ref, &[row, col], cfg);
+    }
+
+    if get_field(expr, "Array").is_ok() {
+        return render_array_expr_at_index(expr, (row - 1) * columns + col, cfg);
+    }
+
+    if let Ok(binary) = get_field(expr, "Binary") {
+        let lhs = get_field(&binary, "lhs").ok()?;
+        let rhs = get_field(&binary, "rhs").ok()?;
+        let lhs_render = render_matrix_expr_at_indices_or_scalar(&lhs, row, col, columns, cfg)?;
+        let rhs_render = render_matrix_expr_at_indices_or_scalar(&rhs, row, col, columns, cfg)?;
+        let op = get_field(&binary, "op").ok()?;
+        let op_str = render_expr::get_binop_string(&op, cfg).ok()?;
+        return Some(format!("({lhs_render} {op_str} {rhs_render})"));
+    }
+
+    if let Ok(unary) = get_field(expr, "Unary") {
+        let rhs = get_field(&unary, "rhs").ok()?;
+        let rhs_render = render_matrix_expr_at_indices_or_scalar(&rhs, row, col, columns, cfg)?;
+        let op = get_field(&unary, "op").ok()?;
+        let op_str = render_expr::get_unop_string(&op, cfg).ok()?;
+        return Some(format!("({op_str}{rhs_render})"));
+    }
+
+    None
+}
+
+fn render_matrix_expr_at_indices_or_scalar(
+    expr: &Value,
+    row: usize,
+    col: usize,
+    columns: usize,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    render_matrix_expr_at_indices(expr, row, col, columns, cfg)
+        .or_else(|| render_expression(expr, cfg).ok())
+}
+
+fn render_var_ref_with_indices(
+    var_ref: &Value,
+    indices: &[usize],
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let subscripts = get_field(var_ref, "subscripts").ok()?;
+    if subscripts.len().unwrap_or(0) != 0 {
+        return None;
+    }
+
+    let raw_name = var_ref_base_name(var_ref);
+    if raw_name.is_empty() {
+        return None;
+    }
+
+    let index_text = indices
+        .iter()
+        .map(|idx| idx.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let indexed_ref = format!("{raw_name}[{index_text}]");
+    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &indexed_ref) {
+        return Some(symbol);
+    }
+
+    let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+    if cfg.subscript_underscore {
+        return Some(format!(
+            "{}_{}",
+            name,
+            indices
+                .iter()
+                .map(|idx| idx.to_string())
+                .collect::<Vec<_>>()
+                .join("_")
+        ));
+    }
+    if cfg.one_based_index {
+        return Some(format!("{name}[{index_text}]"));
+    }
+
+    if indices.len() == 1 {
+        return Some(format!("{}[{}]", name, indices[0] - 1));
+    }
+
     None
 }
 
@@ -415,6 +810,88 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
     }
 
     None
+}
+
+/// Extract only direct defining equations for `var_name`.
+///
+/// This pass intentionally ignores equations where the target appears on the
+/// RHS of another variable's equation. For example, in
+/// `omega_error = omega_cmd - omega`, `omega_cmd` is algebraically solvable, but
+/// if a later connection equation directly defines `omega_cmd`, that direct
+/// equation is the correct explicit assignment for generated C.
+fn find_algebraic_rhs_direct(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+    if let Some(result) = find_algebraic_rhs_assignment_direct(eq, var_name, cfg) {
+        return Some(result);
+    }
+
+    let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
+    find_algebraic_rhs_subtraction_direct(&rhs, var_name, cfg)
+}
+
+fn find_algebraic_rhs_assignment_direct(
+    eq: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let lhs = eq.get_attr("lhs").ok()?;
+    let rhs = eq.get_attr("rhs").ok()?;
+    render_direct_rhs_for_lhs(&lhs, &rhs, var_name, cfg)
+}
+
+fn find_algebraic_rhs_subtraction_direct(
+    rhs: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let binary = get_field(rhs, "Binary").ok()?;
+    if !is_sub_op(&binary) {
+        return None;
+    }
+    let lhs_side = get_field(&binary, "lhs").ok()?;
+    let rhs_side = get_field(&binary, "rhs").ok()?;
+    if contains_der(&rhs_side) {
+        return None;
+    }
+    render_direct_rhs_for_lhs(&lhs_side, &rhs_side, var_name, cfg)
+}
+
+fn render_direct_rhs_for_lhs(
+    lhs: &Value,
+    rhs: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    if is_var_ref_of(lhs, var_name) {
+        return render_expression(rhs, cfg).ok();
+    }
+    if let Some(index) = array_lhs_element_index(lhs, var_name) {
+        return render_array_expr_at_index_or_scalar(rhs, index, cfg);
+    }
+    if let Some(index) = whole_array_lhs_index(lhs, var_name) {
+        return render_array_expr_at_index_or_scalar(rhs, index, cfg);
+    }
+    None
+}
+
+fn array_lhs_element_index(lhs: &Value, var_name: &str) -> Option<usize> {
+    if get_field(lhs, "Array").is_err() {
+        return None;
+    }
+    let mut elements = Vec::new();
+    collect_array_elements_flat(lhs, &mut elements);
+    elements
+        .iter()
+        .position(|elem| is_var_ref_of(elem, var_name))
+        .map(|idx| idx + 1)
+}
+
+fn whole_array_lhs_index(lhs: &Value, var_name: &str) -> Option<usize> {
+    let (base_name, index) = parse_indexed_ref(var_name)?;
+    if is_var_ref_of(lhs, &base_name) {
+        Some(index)
+    } else {
+        None
+    }
 }
 
 /// Try assignment form: `lhs = rhs` where lhs is the target variable.
@@ -771,21 +1248,23 @@ fn render_indexed_var_ref(var_ref: &Value, index: usize, cfg: &ExprConfig) -> Op
         .ok()
         .map(|n| {
             get_field(&n, "0")
-                .map(|v| v.to_string())
-                .unwrap_or_else(|_| n.to_string())
+                .map(|v| super::value_to_string(&v))
+                .unwrap_or_else(|_| super::value_to_string(&n))
         })
         .unwrap_or_default();
-    let name = if cfg.sanitize_dots {
-        super::sanitize_name(&raw_name)
-    } else {
-        super::escape_reserved_keyword(&raw_name)
-    };
 
     if cfg.subscript_underscore {
+        let indexed_ref = format!("{raw_name}[{index}]");
+        if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &indexed_ref) {
+            return Some(symbol);
+        }
+        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
         Some(format!("{name}_{index}"))
     } else if cfg.one_based_index {
+        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
         Some(format!("{name}[{index}]"))
     } else {
+        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
         Some(format!("{}[{}]", name, index - 1))
     }
 }
@@ -889,26 +1368,45 @@ fn flatten_value_add_terms(expr: &Value, positive: bool, terms: &mut Vec<(bool, 
 /// (`der(x[1])` matches `"x[1]"`) forms.
 fn is_der_of(expr: &Value, state_name: &str) -> bool {
     let state_name = state_name.trim_matches('"');
+    der_ref_name(expr).is_some_and(|name| name == state_name)
+}
+
+fn der_index_of_base(expr: &Value, state_base: &str) -> Option<usize> {
+    let name = der_ref_name(expr)?;
+    let (base, index) = parse_indexed_ref(&name)?;
+    if base == state_base {
+        Some(index)
+    } else {
+        None
+    }
+}
+
+fn der_ref_name(expr: &Value) -> Option<String> {
     let Ok(builtin) = get_field(expr, "BuiltinCall") else {
-        return false;
+        return None;
     };
     let Ok(func) = get_field(&builtin, "function") else {
-        return false;
+        return None;
     };
     let func_str = func.to_string();
     if func_str != "Der" && func_str != "\"Der\"" {
-        return false;
+        return None;
     }
     let Ok(args) = get_field(&builtin, "args") else {
-        return false;
+        return None;
     };
     let Ok(first_arg) = args.get_item(&Value::from(0)) else {
-        return false;
+        return None;
     };
     let Ok(var_ref) = get_field(&first_arg, "VarRef") else {
-        return false;
+        return None;
     };
-    var_ref_full_name(&var_ref) == state_name
+    Some(var_ref_full_name(&var_ref))
+}
+
+fn is_der_of_whole(expr: &Value, state_base: &str) -> bool {
+    let state_base = state_base.trim_matches('"');
+    der_ref_name(expr).is_some_and(|name| name == state_base)
 }
 
 /// Check if an expression is `VarRef { name, subscripts }` matching the given variable name.
@@ -1025,19 +1523,65 @@ fn contains_der(expr: &Value) -> bool {
     false
 }
 
+fn contains_der_of_base(expr: &Value, state_base: &str) -> bool {
+    if der_index_of_base(expr, state_base).is_some() || is_der_of_whole(expr, state_base) {
+        return true;
+    }
+    if let Ok(builtin) = get_field(expr, "BuiltinCall") {
+        if let Ok(args) = get_field(&builtin, "args") {
+            return any_arg_matches_with_state_base(&args, state_base, contains_der_of_base);
+        }
+        return false;
+    }
+    if let Ok(binary) = get_field(expr, "Binary") {
+        if let Ok(lhs) = get_field(&binary, "lhs")
+            && contains_der_of_base(&lhs, state_base)
+        {
+            return true;
+        }
+        if let Ok(rhs) = get_field(&binary, "rhs")
+            && contains_der_of_base(&rhs, state_base)
+        {
+            return true;
+        }
+        return false;
+    }
+    if let Ok(unary) = get_field(expr, "Unary")
+        && let Ok(inner) = get_field(&unary, "rhs")
+    {
+        return contains_der_of_base(&inner, state_base);
+    }
+    false
+}
+
+fn any_arg_matches_with_state_base(
+    args: &Value,
+    state_base: &str,
+    predicate: fn(&Value, &str) -> bool,
+) -> bool {
+    let Some(len) = args.len() else {
+        return false;
+    };
+    for i in 0..len {
+        if let Ok(arg) = args.get_item(&Value::from(i))
+            && predicate(&arg, state_base)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Reconstruct the full name of a VarRef including 1-based subscripts.
 ///
 /// `VarRef { name: "x", subscripts: [] }` → `"x"`
 /// `VarRef { name: "x", subscripts: [Index(1)] }` → `"x[1]"`
 /// `VarRef { name: "x", subscripts: [Index(1), Index(2)] }` → `"x[1,2]"`
 fn var_ref_full_name(var_ref: &Value) -> String {
-    let Ok(name) = get_field(var_ref, "name") else {
+    let base_name = var_ref_base_name(var_ref);
+    if base_name.is_empty() {
         return String::new();
-    };
-    let base_name = get_field(&name, "0")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| name.to_string());
-    let base_name = base_name.trim_matches('"').to_string();
+    }
 
     // Check for subscripts
     let Ok(subs) = get_field(var_ref, "subscripts") else {
@@ -1066,6 +1610,28 @@ fn var_ref_full_name(var_ref: &Value) -> String {
     format!("{}[{}]", base_name, sub_parts.join(","))
 }
 
+fn var_ref_base_name(var_ref: &Value) -> String {
+    let Ok(name) = get_field(var_ref, "name") else {
+        return String::new();
+    };
+    let base_name = get_field(&name, "0")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| name.to_string());
+    base_name.trim_matches('"').to_string()
+}
+
+fn parse_indexed_ref(name: &str) -> Option<(String, usize)> {
+    let trimmed = name.trim_matches('"');
+    let (base, subscript_part) = trimmed.rsplit_once('[')?;
+    let subscripts = subscript_part.strip_suffix(']')?;
+    let mut parts = subscripts.split(',');
+    let first = parts.next()?.trim().parse::<usize>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((base.to_string(), first))
+}
+
 fn list_any(list: &Value, mut predicate: impl FnMut(Value) -> bool) -> bool {
     let Some(len) = list.len() else {
         return false;
@@ -1081,30 +1647,35 @@ fn list_any(list: &Value, mut predicate: impl FnMut(Value) -> bool) -> bool {
     false
 }
 
-/// Convert a Modelica variable reference name into the local C alias format
-/// used by templates when `subscript_underscore = true`.
-/// Examples: `x` -> `x`, `x[1]` -> `x_1`, `a.b[1,2]` -> `a_b_1_2`.
-fn var_name_to_c_alias(name: &str) -> String {
-    let mut out = String::with_capacity(name.len() + 4);
-    for ch in name.chars() {
-        match ch {
-            '.' | '[' | ',' => out.push('_'),
-            ']' | ' ' => {}
-            _ => out.push(ch),
-        }
+/// Convert a source reference into the emitted symbol configured by the template.
+fn var_name_to_symbol(name: &str, cfg: &ExprConfig) -> String {
+    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), name) {
+        return symbol;
     }
-    out
+    if let Some((base, subscript_part)) = name.rsplit_once('[')
+        && let Some(subscripts) = subscript_part.strip_suffix(']')
+    {
+        let suffix = subscripts.replace(',', "_").replace(' ', "");
+        let base_symbol = super::emitted_symbol_or_fallback(base, cfg);
+        return format!("{base_symbol}_{suffix}");
+    }
+
+    super::emitted_symbol_or_fallback(name, cfg)
 }
 
-fn synthesize_discrete_statespace_rhs(var_name: &str, dae: &Value) -> Option<String> {
+fn synthesize_discrete_statespace_rhs(
+    var_name: &str,
+    dae: &Value,
+    cfg: &ExprConfig,
+) -> Option<String> {
     if let Some(prefix) = var_name.strip_suffix(".e") {
         let setpoint = format!("{prefix}.setpoint");
         let measurement = format!("{prefix}.measurement");
         if has_var_in_dae_map(dae, "y", &setpoint) && has_var_in_dae_map(dae, "y", &measurement) {
             return Some(format!(
                 "({}) - ({})",
-                var_name_to_c_alias(&setpoint),
-                var_name_to_c_alias(&measurement)
+                var_name_to_symbol(&setpoint, cfg),
+                var_name_to_symbol(&measurement, cfg)
             ));
         }
         return None;
@@ -1115,7 +1686,7 @@ fn synthesize_discrete_statespace_rhs(var_name: &str, dae: &Value) -> Option<Str
         let e_name = format!("{prefix}.e");
         let c_name = format!("{prefix}.C_d");
         let d_name = format!("{prefix}.D_d");
-        let e_expr = current_error_expr(prefix, dae);
+        let e_expr = current_error_expr(prefix, dae, cfg);
         let n = get_first_dim_for_var_in_dae(dae, &x_name)?;
         if !has_var_in_dae_map(dae, "z", &x_name)
             || !has_var_in_dae_map(dae, "z", &e_name)
@@ -1129,11 +1700,15 @@ fn synthesize_discrete_statespace_rhs(var_name: &str, dae: &Value) -> Option<Str
         for j in 1..=n {
             terms.push(format!(
                 "({} * pre_{})",
-                indexed_alias(&c_name, j),
-                indexed_alias(&x_name, j)
+                indexed_alias(&c_name, j, cfg),
+                indexed_alias(&x_name, j, cfg)
             ));
         }
-        terms.push(format!("({} * {})", var_name_to_c_alias(&d_name), e_expr));
+        terms.push(format!(
+            "({} * {})",
+            var_name_to_symbol(&d_name, cfg),
+            e_expr
+        ));
         return Some(terms.join(" + "));
     }
 
@@ -1142,7 +1717,7 @@ fn synthesize_discrete_statespace_rhs(var_name: &str, dae: &Value) -> Option<Str
         let e_name = format!("{prefix}.e");
         let a_name = format!("{prefix}.A_d");
         let b_name = format!("{prefix}.B_d");
-        let e_expr = current_error_expr(prefix, dae);
+        let e_expr = current_error_expr(prefix, dae, cfg);
         let n = get_first_dim_for_var_in_dae(dae, &x_name)?;
         if i < 1 || i > n {
             return None;
@@ -1160,11 +1735,11 @@ fn synthesize_discrete_statespace_rhs(var_name: &str, dae: &Value) -> Option<Str
             let flat_idx = (i - 1) * n + j;
             terms.push(format!(
                 "({} * pre_{})",
-                indexed_alias(&a_name, flat_idx),
-                indexed_alias(&x_name, j)
+                indexed_alias(&a_name, flat_idx, cfg),
+                indexed_alias(&x_name, j, cfg)
             ));
         }
-        terms.push(format!("({} * {})", indexed_alias(&b_name, i), e_expr));
+        terms.push(format!("({} * {})", indexed_alias(&b_name, i, cfg), e_expr));
         return Some(terms.join(" + "));
     }
 
@@ -1180,8 +1755,8 @@ fn parse_indexed_suffix<'a>(name: &'a str, suffix: &str) -> Option<(&'a str, usi
     Some((prefix, idx))
 }
 
-fn indexed_alias(base_name: &str, idx: usize) -> String {
-    format!("{}_{}", var_name_to_c_alias(base_name), idx)
+fn indexed_alias(base_name: &str, idx: usize, cfg: &ExprConfig) -> String {
+    var_name_to_symbol(&format!("{base_name}[{idx}]"), cfg)
 }
 
 fn has_var_in_dae_map(dae: &Value, map_name: &str, var_name: &str) -> bool {
@@ -1217,15 +1792,15 @@ fn get_first_dim_for_var_in_dae(dae: &Value, var_name: &str) -> Option<usize> {
     None
 }
 
-fn current_error_expr(prefix: &str, dae: &Value) -> String {
+fn current_error_expr(prefix: &str, dae: &Value, cfg: &ExprConfig) -> String {
     let setpoint = format!("{prefix}.setpoint");
     let measurement = format!("{prefix}.measurement");
     if has_var_in_dae_map(dae, "y", &setpoint) && has_var_in_dae_map(dae, "y", &measurement) {
         return format!(
             "({} - {})",
-            var_name_to_c_alias(&setpoint),
-            var_name_to_c_alias(&measurement)
+            var_name_to_symbol(&setpoint, cfg),
+            var_name_to_symbol(&measurement, cfg)
         );
     }
-    var_name_to_c_alias(&format!("{prefix}.e"))
+    var_name_to_symbol(&format!("{prefix}.e"), cfg)
 }

@@ -134,16 +134,17 @@ pub use visitor::{
 };
 
 // =============================================================================
-// Expression: Flattened expression with globally qualified names
+// Expression: Flattened expression with globally unique names
 // =============================================================================
 
-/// A flattened expression with globally qualified variable names.
+/// A flattened expression with globally unique variable names.
 ///
 /// This is the expression type used after flattening, where all variable
-/// references use globally unique names (e.g., "body.position.x").
+/// references use globally unique flat identifiers. Implementations may shorten
+/// fully qualified instance paths when the shorter name remains unambiguous.
 ///
 /// Key differences from AST Expression:
-/// - Variable references use VarName (globally qualified)
+/// - Variable references use VarName (globally unique)
 /// - Builtin functions (der, pre, sin, cos, etc.) are distinguished from user functions
 /// - Literals are concrete values
 /// - Parentheses are eliminated (precedence is in tree structure)
@@ -443,7 +444,7 @@ impl Model {
 /// Flat variable with globally unique name.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Variable {
-    /// Globally unique name (e.g., "body.position.x").
+    /// Globally unique flat name.
     pub name: VarName,
     /// Reference to the type in the TypeTable.
     pub type_id: TypeId,

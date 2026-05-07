@@ -7,7 +7,7 @@
 //!
 //! Flattening is responsible for:
 //! - Converting hierarchical instance tree to flat variables
-//! - Generating globally unique variable names (e.g., "body.position.x")
+//! - Generating globally unique variable names from resolved instance paths
 //! - Expanding connection equations per MLS §9
 //! - Converting equations to residual form (0 = residual)
 //! - Preserving algorithm sections per SPEC_0020
@@ -41,6 +41,7 @@ mod errors;
 mod flat_eval;
 mod function_lowering;
 mod functions;
+mod name_simplify;
 mod outer_refs;
 mod path_utils;
 mod pipeline;
@@ -93,12 +94,19 @@ use postprocess::*;
 pub struct FlattenOptions {
     /// Whether to enforce connection type/dimension validation.
     pub strict_connection_validation: bool,
+    /// Whether to shorten flat variable names after flattening.
+    ///
+    /// MLS §5.6 requires globally unique names but does not require shortening.
+    /// The default keeps source-like instance paths for diagnostics, simulation
+    /// results, and stable public compiler output.
+    pub simplify_variable_names: bool,
 }
 
 impl Default for FlattenOptions {
     fn default() -> Self {
         Self {
             strict_connection_validation: true,
+            simplify_variable_names: false,
         }
     }
 }

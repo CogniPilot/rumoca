@@ -801,10 +801,6 @@ fn expr_has_phantom_refs(
                 if phantom_map.contains_key(n) {
                     return true;
                 }
-                // Declared array variable without subscripts?
-                if array_dims.contains_key(n) {
-                    return true;
-                }
             }
             false
         }
@@ -838,7 +834,10 @@ fn expr_has_phantom_refs(
 /// Scalarize an expression at index `k` (0-based).
 ///
 /// - Phantom VarRefs are replaced by the k-th indexed variant from `phantom_map`.
-/// - Declared array VarRefs (with no subscripts) get subscript `[k+1]` (1-based).
+/// - Declared array VarRefs (with no subscripts) get subscript `[k+1]` (1-based)
+///   only while expanding an equation that already contains a phantom reference.
+///   MLS §10.6: ordinary declared-array equations must remain array equations so
+///   later matrix-aware scalarization can preserve linear algebra semantics.
 /// - All other expressions are recursively processed.
 fn scalarize_expr_at(
     expr: &dae::Expression,
@@ -1047,6 +1046,21 @@ mod tests {
         }
     }
 
+    fn mul(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+        dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Mul(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    fn der(expr: dae::Expression) -> dae::Expression {
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Der,
+            args: vec![expr],
+        }
+    }
+
     /// Collect all VarRef names from an expression (for assertions).
     fn all_var_names(expr: &dae::Expression) -> Vec<String> {
         let mut names = Vec::new();
@@ -1077,6 +1091,30 @@ mod tests {
             }
             dae::Expression::Unary { rhs, .. } => {
                 collect_var_names_rec(rhs, names);
+            }
+            dae::Expression::BuiltinCall { args, .. }
+            | dae::Expression::FunctionCall { args, .. } => {
+                for arg in args {
+                    collect_var_names_rec(arg, names);
+                }
+            }
+            dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
+                for element in elements {
+                    collect_var_names_rec(element, names);
+                }
+            }
+            dae::Expression::If {
+                branches,
+                else_branch,
+            } => {
+                for (condition, value) in branches {
+                    collect_var_names_rec(condition, names);
+                    collect_var_names_rec(value, names);
+                }
+                collect_var_names_rec(else_branch, names);
+            }
+            dae::Expression::Index { base, .. } | dae::Expression::FieldAccess { base, .. } => {
+                collect_var_names_rec(base, names);
             }
             _ => {}
         }
@@ -1219,5 +1257,40 @@ mod tests {
         // The pass should leave the equation unchanged (vector ops are fine for backends).
         assert_eq!(dae.f_x.len(), 1);
         assert_eq!(dae.f_x[0].scalar_count, 3);
+    }
+
+    #[test]
+    fn test_scalarize_preserves_declared_matrix_vector_equations() {
+        let mut dae = Dae::new();
+
+        let mut j = dae::Variable::new(dae::VarName::new("J"));
+        j.dims = vec![3, 3];
+        dae.parameters.insert(dae::VarName::new("J"), j);
+
+        let mut omega = dae::Variable::new(dae::VarName::new("omega"));
+        omega.dims = vec![3];
+        dae.states.insert(dae::VarName::new("omega"), omega);
+
+        let mut m_body = dae::Variable::new(dae::VarName::new("M_body"));
+        m_body.dims = vec![3];
+        dae.algebraics.insert(dae::VarName::new("M_body"), m_body);
+
+        let eq = dae::Equation::residual_array(
+            sub(mul(var_ref("J"), der(var_ref("omega"))), var_ref("M_body")),
+            Span::DUMMY,
+            "matrix vector equation",
+            3,
+        );
+        dae.f_x.push(eq);
+
+        scalarize_phantom_vector_equations(&mut dae);
+
+        assert_eq!(dae.f_x.len(), 1);
+        assert_eq!(dae.f_x[0].scalar_count, 3);
+        assert_eq!(
+            all_var_names(&dae.f_x[0].rhs),
+            vec!["J", "omega", "M_body"],
+            "declared matrix/vector equation should remain symbolic for structural scalarization"
+        );
     }
 }

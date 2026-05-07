@@ -5,7 +5,7 @@ mod emit;
 #[cfg(feature = "wasm")]
 use crate::wasm;
 use crate::{
-    LowerError, build_var_layout, lower_discrete_rhs,
+    LowerError, build_var_layout, build_var_layout_with_solver_len, lower_discrete_rhs,
     lower_expression_rows_from_expressions_with_runtime_metadata,
     lower_initial_expression_rows_from_expressions_with_runtime_metadata, lower_initial_residual,
     lower_residual, lower_residual_ad, lower_root_conditions,
@@ -141,9 +141,17 @@ pub fn compile_residual(
     dae_model: &dae::Dae,
     backend: Backend,
 ) -> Result<CompiledResidual, CompileError> {
+    compile_residual_with_solver_len(dae_model, backend, usize::MAX)
+}
+
+pub fn compile_residual_with_solver_len(
+    dae_model: &dae::Dae,
+    backend: Backend,
+    solver_len: usize,
+) -> Result<CompiledResidual, CompileError> {
     match backend {
         Backend::Cranelift => {
-            let layout = build_var_layout(dae_model);
+            let layout = build_var_layout_with_solver_len(dae_model, solver_len);
             let rows = lower_residual(dae_model, &layout)?;
             compile_residual_row_block(&RowBlock::new(rows))
         }
@@ -162,9 +170,17 @@ pub fn compile_jacobian_v(
     dae_model: &dae::Dae,
     backend: Backend,
 ) -> Result<CompiledJacobianV, CompileError> {
+    compile_jacobian_v_with_solver_len(dae_model, backend, usize::MAX)
+}
+
+pub fn compile_jacobian_v_with_solver_len(
+    dae_model: &dae::Dae,
+    backend: Backend,
+    solver_len: usize,
+) -> Result<CompiledJacobianV, CompileError> {
     match backend {
         Backend::Cranelift => {
-            let layout = build_var_layout(dae_model);
+            let layout = build_var_layout_with_solver_len(dae_model, solver_len);
             let rows = lower_residual_ad(dae_model, &layout)?;
             compile_jacobian_row_block(&RowBlock::new(rows))
         }
@@ -179,9 +195,17 @@ pub fn compile_initial_jacobian_v(
     dae_model: &dae::Dae,
     backend: Backend,
 ) -> Result<CompiledJacobianV, CompileError> {
+    compile_initial_jacobian_v_with_solver_len(dae_model, backend, usize::MAX)
+}
+
+pub fn compile_initial_jacobian_v_with_solver_len(
+    dae_model: &dae::Dae,
+    backend: Backend,
+    solver_len: usize,
+) -> Result<CompiledJacobianV, CompileError> {
     match backend {
         Backend::Cranelift => {
-            let layout = build_var_layout(dae_model);
+            let layout = build_var_layout_with_solver_len(dae_model, solver_len);
             let rows = crate::lower_initial_residual_ad(dae_model, &layout)?;
             compile_jacobian_row_block(&RowBlock::new(rows))
         }
@@ -212,7 +236,15 @@ pub fn compile_root_conditions(
     dae_model: &dae::Dae,
     backend: Backend,
 ) -> Result<CompiledExpressionRows, CompileError> {
-    let layout = build_var_layout(dae_model);
+    compile_root_conditions_with_solver_len(dae_model, backend, usize::MAX)
+}
+
+pub fn compile_root_conditions_with_solver_len(
+    dae_model: &dae::Dae,
+    backend: Backend,
+    solver_len: usize,
+) -> Result<CompiledExpressionRows, CompileError> {
+    let layout = build_var_layout_with_solver_len(dae_model, solver_len);
     let rows = lower_root_conditions(dae_model, &layout)?;
     compile_expression_rows(rows, backend, "root-condition kernel")
 }
@@ -222,7 +254,16 @@ pub fn compile_expressions(
     expressions: &[dae::Expression],
     backend: Backend,
 ) -> Result<CompiledExpressionRows, CompileError> {
-    let layout = build_var_layout(dae_model);
+    compile_expressions_with_solver_len(dae_model, expressions, backend, usize::MAX)
+}
+
+pub fn compile_expressions_with_solver_len(
+    dae_model: &dae::Dae,
+    expressions: &[dae::Expression],
+    backend: Backend,
+    solver_len: usize,
+) -> Result<CompiledExpressionRows, CompileError> {
+    let layout = build_var_layout_with_solver_len(dae_model, solver_len);
     let rows = lower_expression_rows_from_expressions_with_runtime_metadata(
         expressions,
         &layout,
@@ -237,7 +278,16 @@ pub fn compile_initial_expressions(
     expressions: &[dae::Expression],
     backend: Backend,
 ) -> Result<CompiledExpressionRows, CompileError> {
-    let layout = build_var_layout(dae_model);
+    compile_initial_expressions_with_solver_len(dae_model, expressions, backend, usize::MAX)
+}
+
+pub fn compile_initial_expressions_with_solver_len(
+    dae_model: &dae::Dae,
+    expressions: &[dae::Expression],
+    backend: Backend,
+    solver_len: usize,
+) -> Result<CompiledExpressionRows, CompileError> {
+    let layout = build_var_layout_with_solver_len(dae_model, solver_len);
     let rows = lower_initial_expression_rows_from_expressions_with_runtime_metadata(
         expressions,
         &layout,
@@ -260,7 +310,15 @@ pub fn compile_initial_residual(
     dae_model: &dae::Dae,
     backend: Backend,
 ) -> Result<CompiledExpressionRows, CompileError> {
-    let layout = build_var_layout(dae_model);
+    compile_initial_residual_with_solver_len(dae_model, backend, usize::MAX)
+}
+
+pub fn compile_initial_residual_with_solver_len(
+    dae_model: &dae::Dae,
+    backend: Backend,
+    solver_len: usize,
+) -> Result<CompiledExpressionRows, CompileError> {
+    let layout = build_var_layout_with_solver_len(dae_model, solver_len);
     let rows = lower_initial_residual(dae_model, &layout)?;
     compile_expression_rows(rows, backend, "initial residual kernel")
 }

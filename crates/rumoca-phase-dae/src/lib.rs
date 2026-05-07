@@ -55,7 +55,7 @@ use algorithm_lowering::{
 use condition_lowering::populate_canonical_conditions;
 pub(crate) use convert::{
     dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression, flat_to_dae_function_map,
-    flat_to_dae_var_name,
+    flat_to_dae_var_name, remap_flat_for_equations,
 };
 use dae_lowering::sort_parameters_by_start_dependency;
 use indexmap::{IndexMap, IndexSet};
@@ -355,6 +355,7 @@ fn finalize_lowered_dae(
         let (equations, unknowns) = balance_counting::compute_balance_counts(dae);
         return Err(ToDaeError::unbalanced(equations, unknowns));
     }
+
     Ok(())
 }
 
