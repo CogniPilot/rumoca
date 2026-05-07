@@ -192,69 +192,39 @@ struct CompileArgs {
     input: ModelInputArgs,
 
     /// Export to JSON (native, recommended)
-    #[arg(long, conflicts_with_all = ["template_file", "backend", "target"])]
+    #[arg(long, conflicts_with_all = ["template_file", "target"])]
     json: bool,
-
-    /// Built-in backend for code generation
-    #[arg(short, long, value_enum, conflicts_with_all = ["template_file", "target"])]
-    backend: Option<Backend>,
 
     /// Template file for custom export (advanced)
     #[arg(short, long, conflicts_with = "target")]
     template_file: Option<String>,
 
-    /// Multi-file compile target: fmi2, fmi3, embedded-c, or a directory containing target.yaml
-    #[arg(long, value_name = "TARGET")]
-    target: Option<String>,
-
     /// Output file or directory for generated artifacts
     #[arg(short, long, requires = "target")]
     output: Option<PathBuf>,
+
+    /// Output target: casadi-sx, casadi-mx, sympy, onnx, dae-modelica,
+    /// flat-modelica, julia-mtk, fmi2, fmi3, embedded-c, or a directory
+    /// containing target.yaml
+    #[arg(long, value_name = "TARGET")]
+    target: Option<String>,
 
     /// Build/package target artifacts when supported
     #[arg(long, requires = "target")]
     build: bool,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Backend {
-    /// CasADi SX — scalar symbolic expressions (Python)
-    #[value(name = "casadi-sx")]
-    CasadiSx,
-    /// CasADi MX — matrix symbolic with vector variables (Python)
-    #[value(name = "casadi-mx")]
-    CasadiMx,
-    /// SymPy symbolic model (Python)
-    Sympy,
-    /// FMI 2.0 Model Exchange C source
-    Fmi2,
-    /// ONNX computational graph (Python)
-    Onnx,
-    /// DAE Modelica (classified variables and split equations)
-    #[value(name = "dae-modelica")]
-    DaeModelica,
-    /// Flat Modelica
-    #[value(name = "flat-modelica")]
-    FlatModelica,
-    /// Julia ModelingToolkit (Julia)
-    #[value(name = "julia-mtk")]
-    JuliaMtk,
-}
-
-impl Backend {
-    fn template(self) -> &'static str {
-        use rumoca_compile::codegen::templates;
-        match self {
-            Backend::CasadiSx => templates::CASADI_SX,
-            Backend::CasadiMx => templates::CASADI_MX,
-
-            Backend::Sympy => templates::SYMPY,
-            Backend::Onnx => templates::ONNX,
-            Backend::Fmi2 => templates::FMI2_MODEL,
-            Backend::DaeModelica => templates::DAE_MODELICA,
-            Backend::FlatModelica => templates::FLAT_MODELICA,
-            Backend::JuliaMtk => templates::JULIA_MTK,
-        }
+fn template_target_source(target: &str) -> Option<&'static str> {
+    use rumoca_compile::codegen::templates;
+    match target {
+        "casadi-sx" => Some(templates::CASADI_SX),
+        "casadi-mx" => Some(templates::CASADI_MX),
+        "sympy" => Some(templates::SYMPY),
+        "onnx" => Some(templates::ONNX),
+        "dae-modelica" => Some(templates::DAE_MODELICA),
+        "flat-modelica" => Some(templates::FLAT_MODELICA),
+        "julia-mtk" => Some(templates::JULIA_MTK),
+        _ => None,
     }
 }
 
@@ -478,7 +448,12 @@ fn build_cli_error_report(error: &anyhow::Error) -> Report {
     if let Some(compiler_error) = error.downcast_ref::<CompilerError>() {
         return Report::new(compiler_error.clone());
     }
-    Report::msg(error.to_string())
+    let mut message = error.to_string();
+    for cause in error.chain().skip(1) {
+        message.push_str("\n\nCaused by:\n  ");
+        message.push_str(&cause.to_string());
+    }
+    Report::msg(message)
 }
 
 fn print_compile_failures(
@@ -713,6 +688,12 @@ fn run_lockstep_run(args: LockstepRunArgs) -> Result<()> {
         None => (physics_source, physics_name.clone()),
     };
 
+    let source_roots = config
+        .source_roots
+        .iter()
+        .map(|source_root| resolve_path(config_dir, source_root))
+        .collect::<Vec<_>>();
+
     // Resolve scene: --scene override > [transport.http].scene in the config.
     let scene_ref = args.scene.clone().or_else(|| {
         config
@@ -744,6 +725,7 @@ fn run_lockstep_run(args: LockstepRunArgs) -> Result<()> {
         http_port: args.http_port,
         ws_port: args.ws_port,
         scene_script,
+        source_roots,
         debug: args.debug,
     })
 }
@@ -773,11 +755,6 @@ fn run_compile(args: CompileArgs) -> Result<()> {
         run_compile_target(&result, &model, target, args.output, args.build)?;
         return Ok(());
     }
-    if let Some(backend) = args.backend {
-        let rendered = result.render_template_str_with_name(backend.template(), &model)?;
-        print!("{rendered}");
-        return Ok(());
-    }
     if let Some(template_file) = args.template_file {
         print!("{}", result.render_template(&template_file)?);
         return Ok(());
@@ -793,7 +770,32 @@ fn run_compile_target(
     output: Option<PathBuf>,
     build: bool,
 ) -> Result<()> {
+    if let Some(template) = template_target_source(&target) {
+        return render_template_target(result, model, &target, template, output, build);
+    }
     target_manifest::compile_target(result, model, &target, output, build)
+}
+
+fn render_template_target(
+    result: &CompilationResult,
+    model: &str,
+    target: &str,
+    template: &'static str,
+    output: Option<PathBuf>,
+    build: bool,
+) -> Result<()> {
+    if build {
+        bail!("--build is not supported for single-file target '{target}'");
+    }
+
+    let rendered = result.render_template_str_with_name(template, model)?;
+    if let Some(path) = output {
+        std::fs::write(&path, rendered)?;
+        println!("{}", path.display());
+    } else {
+        print!("{rendered}");
+    }
+    Ok(())
 }
 
 fn run_simulate(args: SimulateArgs) -> Result<()> {
@@ -1430,7 +1432,7 @@ struct CompletionSpec {
 fn completion_spec() -> CompletionSpec {
     CompletionSpec {
         top: "compile simulate check fmt lint completions project lockstep --help -h --version -V",
-        compile_opts: "--model --source-root --json --backend --template-file --target --output --build --verbose --debug",
+        compile_opts: "--model --source-root --json --template-file --target --output --build --verbose --debug",
         simulate_opts: "--model --source-root --t-end --dt --solver --output --verbose --debug",
         check_opts: "--model --source-root --verbose --debug",
         completion_opts: "bash zsh fish powershell",
@@ -1521,7 +1523,7 @@ fn fish_completion() -> String {
         "complete -c rumoca -n '__fish_use_subcommand' -a 'simulate' -d 'Simulate a Modelica file'",
         "complete -c rumoca -n '__fish_use_subcommand' -a 'check' -d 'Compile and print summary'",
         "complete -c rumoca -n '__fish_use_subcommand' -a 'completions' -d 'Print completion script'",
-        "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --source-root --json --backend --template-file --target --output --build --verbose --debug'",
+        "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --source-root --json --template-file --target --output --build --verbose --debug'",
         "complete -c rumoca -n '__fish_seen_subcommand_from simulate' -a '--model --source-root --t-end --output --verbose --debug'",
         "complete -c rumoca -n '__fish_seen_subcommand_from check' -a '--model --source-root --verbose --debug'",
         "complete -c rumoca -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'",
@@ -1576,6 +1578,7 @@ fn to_ps_tokens(words: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
     use rumoca_compile::compile::core::PrimaryLabel;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -1618,7 +1621,30 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_compile_target() {
+    fn compile_help_unifies_outputs_under_target() {
+        let mut command = Cli::command();
+        let compile = command
+            .find_subcommand_mut("compile")
+            .expect("compile subcommand");
+        let help = compile.render_long_help().to_string();
+
+        assert!(!help.contains("--backend"));
+        assert!(help.contains("Output target: casadi-sx, casadi-mx, sympy, onnx"));
+        assert!(help.contains("fmi2, fmi3, embedded-c"));
+        assert!(
+            help.find("--output <OUTPUT>") < help.find("--target <TARGET>"),
+            "--output should be listed before --target"
+        );
+    }
+
+    #[test]
+    fn template_targets_exclude_manifest_targets() {
+        assert!(template_target_source("casadi-sx").is_some());
+        assert!(template_target_source("fmi2").is_none());
+    }
+
+    #[test]
+    fn cli_parses_compile_manifest_target() {
         let cli = Cli::try_parse_from([
             "rumoca",
             "compile",
@@ -1639,6 +1665,33 @@ mod tests {
             }
             other => panic!("expected compile command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cli_parses_compile_template_target() {
+        let cli = Cli::try_parse_from([
+            "rumoca", "compile", "model.mo", "--model", "M", "--target", "sympy", "--output",
+            "model.py",
+        ])
+        .expect("parse compile template target");
+        match cli.command {
+            Commands::Compile(args) => {
+                assert_eq!(args.input.model.as_deref(), Some("M"));
+                assert_eq!(args.target.as_deref(), Some("sympy"));
+                assert_eq!(args.output, Some(PathBuf::from("model.py")));
+            }
+            other => panic!("expected compile command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_compile_backend_option() {
+        let err = Cli::try_parse_from(["rumoca", "compile", "model.mo", "--backend", "sympy"])
+            .expect_err("backend option was unified into target");
+        assert!(
+            err.to_string().contains("unexpected argument '--backend'"),
+            "old backend option should not parse: {err}"
+        );
     }
 
     #[test]

@@ -220,7 +220,7 @@ rumoca-ir-typed (type information, variability)
 rumoca-ir-inst (instance tree, merged modifications)
     |
     v
-rumoca-ir-flat (flat equations, qualified names)
+rumoca-ir-flat (flat equations, resolved instance paths)
     |
     v
 rumoca-dae (DAE representation, stable API)

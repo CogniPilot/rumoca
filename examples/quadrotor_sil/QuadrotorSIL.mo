@@ -1,188 +1,170 @@
-// 6-DOF quadrotor SIL plant model (NED frame, FRD body).
+// 6-DOF quadrotor SIL plant model.
 //
 // Inputs:  4 motor angular velocities [rad/s]
-// States:  position, velocity, quaternion, angular velocity (13 total)
+// States:  rigid body pose/velocity plus motor speeds
 //
-// All intermediate computations are inlined into the derivative
-// equations to avoid algebraic variables (pure ODE, no DAE).
+// Internal frame matches the cyecca model: local world Z is Up and body axes
+// are Forward-Left-Up. The FastDyn FMU wrapper exposes NED/FRD values.
 //
-// Motor layout (X-config, matching cerebri MixQuadX):
-//   1: front-right  CW   2: rear-right  CCW
-//   3: rear-left    CW   4: front-left  CCW
+// Motor layout (ArduPilot Quad-X output order):
+//   1: front-right  CCW   2: rear-left   CCW
+//   3: front-left   CW    4: rear-right  CW
 
 model QuadrotorSIL
+  extends RigidBody.RigidBody6DOF(
+    mass = 2.0,
+    g = 9.8,
+    ixx = 0.02166666666666667,
+    iyy = 0.02166666666666667,
+    izz = 0.04000000000000001,
+    p_start = {0, 0, ground_z - leg_z + initial_ground_clearance},
+    qnorm_gain = 1.0
+  );
 
-  // --- Physical parameters ---
-  parameter Real mass = 2.0 "Total mass [kg]";
-  parameter Real g = 9.8 "Gravity [m/s^2]";
-  parameter Real Ixx = 0.02166666666666667 "Roll moment of inertia [kg*m^2]";
-  parameter Real Iyy = 0.02166666666666667 "Pitch moment of inertia [kg*m^2]";
-  parameter Real Izz = 0.04000000000000001 "Yaw moment of inertia [kg*m^2]";
+  // Aerodynamic and actuator parameters
   parameter Real Ct = 8.54858e-6 "Thrust coefficient [N/(rad/s)^2]";
-  parameter Real Cm = 0.016 "Torque coefficient [N*m/(rad/s)^2]";
+  parameter Real Cm = 0.016 "Rotor torque/thrust ratio [m]";
   parameter Real arm_length = 0.25 "Arm length [m]";
-  parameter Real d = arm_length * 0.7071067811865476 "Effective moment arm [m]"; // X config, matches cyecca
-    // Additional aerodynamic parameters from cyecca (not used in original equations, but included for completeness)
-    parameter Real CD0 = 0 "Zero-lift drag coefficient";
-    parameter Real S = 0.1 "Reference area [m^2]";
-    parameter Real rho = 1.225 "Air density [kg/m^3]";
-    parameter Real Jxz = 0.0 "Product of inertia [kg*m^2]";
-  parameter Real mag_world_n = 0.21 "Mag field North [Gauss]";
-  parameter Real mag_world_e = 0.0 "Mag field East [Gauss]";
-  parameter Real mag_world_d = 0.45 "Mag field Down [Gauss]";
+  parameter Real d = arm_length * 0.7071067811865476 "Effective moment arm [m]";
+  parameter Real Cl_p = -0.2 "Rolling moment coefficient per roll rate";
+  parameter Real Cm_q = -0.2 "Pitching moment coefficient per pitch rate";
+  parameter Real Cn_r = -0.1 "Yawing moment coefficient per yaw rate";
+  parameter Real S = 0.1 "Reference area [m^2]";
+  parameter Real CdA[3] = {0.06, 0.08, 0.12} "Body-axis drag area [m^2]";
+  parameter Real linear_drag[3] = {0.12, 0.12, 0.18} "Low-speed body-axis drag [N/(m/s)]";
+  parameter Real rho = 1.225 "Air density [kg/m^3]";
+  parameter Real mag_world_ned[3] = {0.21, 0.0, 0.45} "Mag field NED [Gauss]";
+  parameter Real R_FRD_FLU[3, 3] = [
+    1, 0, 0;
+    0, -1, 0;
+    0, 0, -1
+  ] "Body FLU to body FRD transform";
+  parameter Real R_NWU_NED[3, 3] = [
+    1, 0, 0;
+    0, -1, 0;
+    0, 0, -1
+  ] "World NED to internal N/W/U transform";
 
-  // --- Ground contact (spring-damper) ---
-  parameter Real ground_k = 1000 "Ground stiffness [N/m]";
-  parameter Real ground_c = 100 "Ground damping [N*s/m]";
-  parameter Real ground_eps = 0.02 "Ground contact smoothing [m]";
+  // Ground contact (spring-damper)
+  parameter Real ground_k = 3000 "Ground stiffness per contact point [N/m]";
+  parameter Real ground_c = 150 "Ground normal damping per contact point [N*s/m]";
+  parameter Real ground_tangent_c = 25 "Ground tangential damping per contact point [N*s/m]";
+  parameter Real ground_z = 0.0 "World Z coordinate of the ground collision plane [m]";
+  parameter Real initial_ground_clearance = 0.02 "Initial landing-leg clearance above the ground plane [m]";
+  parameter Real leg_x = 0.17 "Landing contact X offset from CG [m]";
+  parameter Real leg_y = 0.17 "Landing contact Y offset from CG [m]";
+  parameter Real leg_z = -0.10 "Landing contact Z offset from CG [m]";
 
-  // --- Quaternion normalization feedback gain ---
-  parameter Real qnorm_gain = 1.0 "Quaternion renormalization gain";
+  // Motor first-order response
+  parameter Real tau_up = 0.0125 "Motor spin-up time constant [s]";
+  parameter Real tau_down = 0.025 "Motor spin-down time constant [s]";
+  parameter Real motor_tau_eps = 1.0 "Smooth transition width for asymmetric motor lag [rad/s]";
+  parameter Real motor_moment_map[3, 4] = [
+    -d,   d,   d,  -d;
+    -d,   d,  -d,   d;
+   -Cm, -Cm,  Cm,  Cm
+  ] "Motor thrust to body moment map";
+  parameter Real rate_damping[3] = {
+    4 * S * arm_length * Cl_p,
+    4 * S * arm_length * Cm_q,
+    4 * S * arm_length * Cn_r
+  } "Body rate damping coefficients";
 
-  // --- Motor first-order response (matches cyecca rdd2 p_defaults) ---
-  // Averaged tau avoids an if-else in the derivative that tripped the
-  // stiff solver's event detection. cyecca uses tau_up=0.0125 and
-  // tau_down=0.025 asymmetrically; averaging gives ~0.019 s which is
-  // close enough for the PID's closed-loop phase purposes and keeps the
-  // RHS smooth.
-  parameter Real tau_motor = 0.02 "Motor first-order time constant [s]";
+  model Motor
+    parameter Real Ct = 8.54858e-6 "Thrust coefficient [N/(rad/s)^2]";
+    parameter Real tau_up = 0.0125 "Motor spin-up time constant [s]";
+    parameter Real tau_down = 0.025 "Motor spin-down time constant [s]";
+    parameter Real tau_inv_mid = 0.5 * (1.0 / tau_up + 1.0 / tau_down) "Mean inverse motor lag [1/s]";
+    parameter Real tau_inv_delta = 0.5 * (1.0 / tau_up - 1.0 / tau_down) "Signed inverse motor lag half-range [1/s]";
+    parameter Real tau_eps = 1.0 "Smooth transition width for asymmetric lag [rad/s]";
 
-  // --- Motor command inputs [rad/s] ---
-  // Autopilot writes omega_cmd_i; actual omega_mi is an integrated state
-  // lagged toward omega_cmd_i with asymmetric time constants (spin-up is
-  // faster than spin-down for real drone ESCs). Cerebri's PID gains assume
-  // this kind of plant; applying commands instantaneously inflates closed-
-  // loop bandwidth past the gain margin and produces the ~10 Hz limit
-  // cycle we were seeing.
-  input Real omega_cmd_1(start = 0) "Motor 1 command (FR) [rad/s]";
-  input Real omega_cmd_2(start = 0) "Motor 2 command (RR) [rad/s]";
-  input Real omega_cmd_3(start = 0) "Motor 3 command (RL) [rad/s]";
-  input Real omega_cmd_4(start = 0) "Motor 4 command (FL) [rad/s]";
+    input Real omega_cmd(start = 0) "Commanded speed [rad/s]";
+    output Real omega(start = 0, fixed = true) "Actual speed [rad/s]";
+    output Real thrust "Motor thrust [N]";
 
-  // --- States ---
-  Real px(start = 0) "Position North [m]";
-  Real py(start = 0) "Position East [m]";
-  Real pz(start = 0) "Position Down [m] (start on ground)";
-  Real vx(start = 0) "Velocity North [m/s]";
-  Real vy(start = 0) "Velocity East [m/s]";
-  Real vz(start = 0) "Velocity Down [m/s]";
-  Real q0(start = 1) "Quaternion w";
-  Real q1(start = 0) "Quaternion x";
-  Real q2(start = 0) "Quaternion y";
-  Real q3(start = 0) "Quaternion z";
-  Real omega_x(start = 0) "Body roll rate [rad/s]";
-  Real omega_y(start = 0) "Body pitch rate [rad/s]";
-  Real omega_z(start = 0) "Body yaw rate [rad/s]";
-  // Motor speeds with first-order lag toward commands (see tau_up/tau_down)
-  Real omega_m1(start = 0) "Motor 1 actual speed [rad/s]";
-  Real omega_m2(start = 0) "Motor 2 actual speed [rad/s]";
-  Real omega_m3(start = 0) "Motor 3 actual speed [rad/s]";
-  Real omega_m4(start = 0) "Motor 4 actual speed [rad/s]";
+  protected
+    Real omega_error "Motor speed tracking error [rad/s]";
+    Real lag_blend "Smooth lag blend";
+    Real tau_inv "Smooth inverse lag [1/s]";
 
-  // --- Outputs (sensor readings, computed from state) ---
-  // These are algebraic but trivially eliminable
-  output Real accel_x "Body accelerometer X [m/s^2] (specific force)";
-  output Real accel_y "Body accelerometer Y [m/s^2] (specific force)";
-  output Real accel_z "Body accelerometer Z [m/s^2] (specific force)";
-  output Real gyro_x "Body gyroscope X [rad/s]";
-  output Real gyro_y "Body gyroscope Y [rad/s]";
-  output Real gyro_z "Body gyroscope Z [rad/s]";
-  output Real mag_x "Body magnetometer X [Gauss]";
-  output Real mag_y "Body magnetometer Y [Gauss]";
-  output Real mag_z "Body magnetometer Z [Gauss]";
+  equation
+    omega_error = omega_cmd - omega;
+    lag_blend = omega_error / sqrt(omega_error * omega_error + tau_eps * tau_eps);
+    tau_inv = tau_inv_mid + tau_inv_delta * lag_blend;
+    der(omega) = tau_inv * omega_error;
+    thrust = Ct * omega * omega;
+  end Motor;
 
-  // DCM elements for visualization
-  Real R11; Real R12; Real R13;
-  Real R21; Real R22; Real R23;
-  Real R31; Real R32; Real R33;
+  input Real omega_cmd[4](start = {0, 0, 0, 0}) "Motor commands [rad/s]";
+
+  output Real position[3](start = p_start) "World position [m]";
+  output Real velocity[3](start = v_b_start) "World velocity [m/s]";
+  output Real quat[4](start = q_start) "Quaternion w,x,y,z";
+  output Real omega_m[4](start = {0, 0, 0, 0}) "Motor actual speeds [rad/s]";
+  output Real accel[3](start = {0, 0, 0}) "Body FRD accelerometer [m/s^2] (specific force)";
+  output Real gyro[3](start = {0, 0, 0}) "Body FRD gyroscope [rad/s]";
+  output Real mag[3](start = {0.21, 0, -0.45}) "Body FRD magnetometer [Gauss]";
 
 protected
-  // Motor thrusts and totals (used in equations only)
-  Real F1; Real F2; Real F3; Real F4;
-  Real T; Real Mx; Real My; Real Mz;
-  Real a_bz "Body Z acceleration (thrust/mass)";
-  // Ground contact: force in NED Down direction (negative = pushes up)
-  Real F_ground "Ground normal force [N] (in NED Down, negative=up)";
-  // World-frame total acceleration (NED)
-  Real a_wx; Real a_wy; Real a_wz;
+  Motor motor[4](each Ct = Ct, each tau_up = tau_up, each tau_down = tau_down, each tau_eps = motor_tau_eps);
+  Real F_m[4] "Motor thrusts [N]";
+  Real T "Total motor thrust [N]";
+  Real M_rotor[3] "Rotor moment in body FLU [N*m]";
+  Real M_rate[3] "Rate damping moment in body FLU [N*m]";
+  Real V "Airspeed magnitude [m/s]";
+  Real drag_b[3] "Body drag force [N]";
+  Real mag_world_w[3] "Mag field in internal N/W/U world axes [Gauss]";
+  Real mag_b_flu[3] "Mag field in body FLU axes [Gauss]";
+  Real leg_h_w[4] "Landing contact world Z positions [m]";
+  parameter Real leg_r_b[3, 4] = [
+    leg_x, -leg_x, leg_x, -leg_x;
+    -leg_y, leg_y, leg_y, -leg_y;
+    leg_z, leg_z, leg_z, leg_z
+  ] "Landing contact offsets in body FLU [m]";
+  Real leg_v_b[3, 4] "Landing contact velocities in body [m/s]";
+  Real leg_f_w[3, 4] "Landing contact forces in world [N]";
+  Real leg_f_b[3, 4] "Landing contact forces in body [N]";
+  Real leg_m_b[3, 4] "Landing contact moments in body [N*m]";
+  Real F_ground_b[3] "Total ground force in body FLU [N]";
+  Real M_ground_b[3] "Total ground moment in body FLU [N*m]";
 
 equation
-  // --- Motor first-order dynamics (symmetric smooth lag) ---
-  der(omega_m1) = (omega_cmd_1 - omega_m1) / tau_motor;
-  der(omega_m2) = (omega_cmd_2 - omega_m2) / tau_motor;
-  der(omega_m3) = (omega_cmd_3 - omega_m3) / tau_motor;
-  der(omega_m4) = (omega_cmd_4 - omega_m4) / tau_motor;
+  motor.omega_cmd = omega_cmd;
+  omega_m = motor.omega;
+  F_m = motor.thrust;
+  T = F_m[1] + F_m[2] + F_m[3] + F_m[4];
 
-  // Motor thrusts (use actual speeds, not commands)
-  F1 = Ct * omega_m1 * omega_m1;
-  F2 = Ct * omega_m2 * omega_m2;
-  F3 = Ct * omega_m3 * omega_m3;
-  F4 = Ct * omega_m4 * omega_m4;
-  T = F1 + F2 + F3 + F4;
-  Mx = d * (-F1 - F2 + F3 + F4);
-  My = d * ( F1 - F2 - F3 + F4);
-  Mz = Cm * (F1 - F2 + F3 - F4);
-  a_bz = -T / mass;
+  V = sqrt(v_b[1] * v_b[1] + v_b[2] * v_b[2] + v_b[3] * v_b[3] + 1e-12);
+  drag_b = -0.5 * rho * V * (CdA .* v_b) - linear_drag .* v_b;
 
-  // DCM from quaternion (body-to-world)
-  R11 = 1 - 2*(q2*q2 + q3*q3);
-  R12 = 2*(q1*q2 - q0*q3);
-  R13 = 2*(q1*q3 + q0*q2);
-  R21 = 2*(q1*q2 + q0*q3);
-  R22 = 1 - 2*(q1*q1 + q3*q3);
-  R23 = 2*(q2*q3 - q0*q1);
-  R31 = 2*(q1*q3 - q0*q2);
-  R32 = 2*(q2*q3 + q0*q1);
-  R33 = 1 - 2*(q1*q1 + q2*q2);
+  M_rotor = motor_moment_map * F_m;
+  M_rate = rate_damping .* omega;
 
-  // --- Ground contact (NED: pz > 0 means below ground) ---
-  F_ground = -ground_k * (pz + sqrt(pz*pz + ground_eps*ground_eps)) / 2
-             - ground_c * vz * (1 + pz / sqrt(pz*pz + ground_eps*ground_eps)) / 2;
+  for i in 1:4 loop
+    leg_v_b[:, i] = v_b + cross(omega, leg_r_b[:, i]);
+    leg_h_w[i] = p[3] + R[3, :] * leg_r_b[:, i];
+    leg_f_w[1, i] = if leg_h_w[i] < ground_z then -ground_tangent_c * (R[1, :] * leg_v_b[:, i]) else 0;
+    leg_f_w[2, i] = if leg_h_w[i] < ground_z then -ground_tangent_c * (R[2, :] * leg_v_b[:, i]) else 0;
+    leg_f_w[3, i] = if leg_h_w[i] < ground_z then max(0, ground_k * (ground_z - leg_h_w[i]) - ground_c * (R[3, :] * leg_v_b[:, i])) else 0;
+    leg_m_b[:, i] = cross(leg_r_b[:, i], leg_f_b[:, i]);
+  end for;
 
-  // --- Translational dynamics (NED: gravity along +z) ---
-  der(px) = vx;
-  der(py) = vy;
-  der(pz) = vz;
-  // a_world = R * [0, 0, a_bz] + [0, 0, g + F_ground/mass]
-  der(vx) = R13 * a_bz;
-  der(vy) = R23 * a_bz;
-  der(vz) = R33 * a_bz + g + F_ground / mass;
-  // World-frame total acceleration (NED). Expanded inline rather than
-  // aliased from der(vx/y/z) because the BLT output-elimination pass
-  // substitutes these via the runtime env reconstructor, which does not
-  // resolve der() references — it only sees state variable values. So
-  // `a_wx = der(vx)` would leave accel_x stuck at its init value when
-  // the output is eliminated. Writing the RHS directly keeps the
-  // eliminated substitution expression composed of env-resolvable terms.
-  a_wx = R13 * a_bz;
-  a_wy = R23 * a_bz;
-  a_wz = R33 * a_bz + g + F_ground / mass;
+  leg_f_b = transpose(R) * leg_f_w;
 
-  // --- Quaternion kinematics (with Baumgarte stabilization) ---
-  // The correction term -lambda*(|q|^2-1)*q drives the quaternion
-  // back toward unit norm, preventing drift that crashes the solver.
-  der(q0) = 0.5 * (-q1*omega_x - q2*omega_y - q3*omega_z) - qnorm_gain * (q0*q0+q1*q1+q2*q2+q3*q3-1)*q0;
-  der(q1) = 0.5 * ( q0*omega_x - q3*omega_y + q2*omega_z) - qnorm_gain * (q0*q0+q1*q1+q2*q2+q3*q3-1)*q1;
-  der(q2) = 0.5 * ( q3*omega_x + q0*omega_y - q1*omega_z) - qnorm_gain * (q0*q0+q1*q1+q2*q2+q3*q3-1)*q2;
-  der(q3) = 0.5 * (-q2*omega_x + q1*omega_y + q0*omega_z) - qnorm_gain * (q0*q0+q1*q1+q2*q2+q3*q3-1)*q3;
+  F_ground_b = leg_f_b * {1, 1, 1, 1};
+  M_ground_b = leg_m_b * {1, 1, 1, 1};
 
-  // --- Angular dynamics (Euler's equations) ---
-  der(omega_x) = (Mx + (Iyy - Izz) * omega_y * omega_z) / Ixx;
-  der(omega_y) = (My + (Izz - Ixx) * omega_x * omega_z) / Iyy;
-  der(omega_z) = (Mz + (Ixx - Iyy) * omega_x * omega_y) / Izz;
+  M_b = M_rotor + M_rate + M_ground_b;
+  F_b = F_ground_b + drag_b + {0, 0, T};
 
-  // --- Sensor outputs ---
-  gyro_x = omega_x;
-  gyro_y = omega_y;
-  gyro_z = omega_z;
-  // Accelerometer: specific force in body frame = R^T * (a_world - [0,0,g])
-  // In NED, gravity is [0, 0, g] (positive Down)
-  accel_x = R11 * a_wx + R21 * a_wy + R31 * (a_wz - g);
-  accel_y = R12 * a_wx + R22 * a_wy + R32 * (a_wz - g);
-  accel_z = R13 * a_wx + R23 * a_wy + R33 * (a_wz - g);
-  // mag_body = R^T * mag_world
-  mag_x = R11 * mag_world_n + R21 * mag_world_e + R31 * mag_world_d;
-  mag_y = R12 * mag_world_n + R22 * mag_world_e + R32 * mag_world_d;
-  mag_z = R13 * mag_world_n + R23 * mag_world_e + R33 * mag_world_d;
+  accel = R_FRD_FLU * a_b;
+  gyro = R_FRD_FLU * omega;
+  mag_world_w = R_NWU_NED * mag_world_ned;
+  mag_b_flu = transpose(R) * mag_world_w;
+  mag = R_FRD_FLU * mag_b_flu;
+
+  position = p;
+  velocity = v_w;
+  quat = q;
 
 end QuadrotorSIL;

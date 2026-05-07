@@ -94,33 +94,40 @@ fn startup_target_size(
     target: &str,
     base_to_indices: &HashMap<String, Vec<usize>>,
 ) -> usize {
-    crate::runtime::assignment::variable_size_for_assignment_name(dae_model, target)
-        .or_else(|| {
-            (!target.contains('['))
-                .then(|| base_to_indices.get(target).map(Vec::len))
-                .flatten()
-        })
-        .unwrap_or(1)
+    startup_target_shape(dae_model, target, base_to_indices).size
+}
+
+fn startup_target_shape(
+    dae_model: &dae::Dae,
+    target: &str,
+    base_to_indices: &HashMap<String, Vec<usize>>,
+) -> crate::runtime::assignment::AssignmentTargetShape {
+    if let Some(shape) = crate::runtime::assignment::assignment_target_shape(dae_model, target) {
+        return shape;
+    }
+
+    if let Some(indices) = base_to_indices
+        .get(target)
+        .filter(|indices| indices.len() > 1)
+    {
+        return crate::runtime::assignment::AssignmentTargetShape {
+            size: indices.len(),
+            dims: vec![indices.len() as i64],
+            is_exact_variable: false,
+            is_aggregate: true,
+        };
+    }
+
+    crate::runtime::assignment::AssignmentTargetShape {
+        size: 1,
+        dims: Vec::new(),
+        is_exact_variable: false,
+        is_aggregate: false,
+    }
 }
 
 fn assignment_target_dims(dae_model: &dae::Dae, target: &str, width: usize) -> Vec<i64> {
-    let lookup = |name: &str| {
-        dae_model
-            .states
-            .get(&dae::VarName::new(name))
-            .or_else(|| dae_model.algebraics.get(&dae::VarName::new(name)))
-            .or_else(|| dae_model.outputs.get(&dae::VarName::new(name)))
-            .or_else(|| dae_model.inputs.get(&dae::VarName::new(name)))
-            .or_else(|| dae_model.parameters.get(&dae::VarName::new(name)))
-            .or_else(|| dae_model.constants.get(&dae::VarName::new(name)))
-            .or_else(|| dae_model.discrete_reals.get(&dae::VarName::new(name)))
-            .or_else(|| dae_model.discrete_valued.get(&dae::VarName::new(name)))
-            .or_else(|| dae_model.derivative_aliases.get(&dae::VarName::new(name)))
-            .map(|var| var.dims.clone())
-    };
-
-    lookup(target)
-        .or_else(|| dae::component_base_name(target).and_then(|base| lookup(&base)))
+    crate::runtime::assignment::variable_dims_for_assignment_name(dae_model, target)
         .unwrap_or_else(|| vec![width as i64])
 }
 
@@ -365,10 +372,16 @@ fn apply_initial_pre_assignments_from_env(
             continue;
         };
 
-        let target_size = startup_target_size(dae_model, &target, ctx.base_to_indices);
-        if !target.contains('[') && target_size > 1 {
-            let values =
-                eval_initial_solution_values(eq, target.as_str(), solution, env, target_size, ctx)?;
+        let target_shape = startup_target_shape(dae_model, &target, ctx.base_to_indices);
+        if target_shape.is_aggregate {
+            let values = eval_initial_solution_values(
+                eq,
+                target.as_str(),
+                solution,
+                env,
+                target_shape.size,
+                ctx,
+            )?;
             changed |= apply_array_values_to_pre_store(dae_model, target.as_str(), &values);
             continue;
         }
@@ -441,14 +454,14 @@ fn build_initial_section_env_with_updates_inner(
                 continue;
             };
 
-            let target_size = startup_target_size(dae_model, &target, &base_to_indices);
-            if !target.contains('[') && target_size > 1 {
+            let target_shape = startup_target_shape(dae_model, &target, &base_to_indices);
+            if target_shape.is_aggregate {
                 let values = eval_initial_solution_values(
                     eq,
                     target.as_str(),
                     solution,
                     &env,
-                    target_size,
+                    target_shape.size,
                     &mut eval_ctx,
                 )?;
                 let (vector_changed, vector_updates) = apply_startup_array_values(

@@ -15,6 +15,14 @@ type OpUnary = rumoca_ir_core::OpUnary;
 type Subscript = dae::Subscript;
 type VarName = dae::VarName;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpressionShape {
+    Scalar,
+    Vector(usize),
+    Matrix(usize, usize),
+    Other,
+}
+
 /// Build output variable names in solver-vector order (states, algebraics, outputs).
 ///
 /// Array variables are expanded to `name[1]`, `name[2]`, etc.
@@ -31,7 +39,7 @@ pub fn build_output_names(dae: &Dae) -> Vec<String> {
             names.push(name.as_str().to_string());
         } else {
             for i in 1..=sz {
-                names.push(format!("{}[{}]", name.as_str(), i));
+                names.push(format_scalar_ref(name.as_str(), &var.dims, i));
             }
         }
     }
@@ -100,6 +108,20 @@ pub struct IndexProjectionContext<'a> {
 }
 
 impl<'a> IndexProjectionContext<'a> {
+    fn with_index(&self, i: usize) -> IndexProjectionContext<'a> {
+        IndexProjectionContext {
+            i,
+            var_dims: self.var_dims,
+            complex_fields: self.complex_fields,
+            component_index_map: self.component_index_map,
+            function_output_index_map: self.function_output_index_map,
+        }
+    }
+
+    fn project_at(&self, expr: &Expression, i: usize) -> Expression {
+        self.with_index(i).project(expr)
+    }
+
     fn map_exprs(&self, exprs: &[Expression]) -> Vec<Expression> {
         exprs.iter().map(|expr| self.project(expr)).collect()
     }
@@ -110,18 +132,11 @@ impl<'a> IndexProjectionContext<'a> {
         subscripts: &[Subscript],
         fallback: &Expression,
     ) -> Expression {
-        if !subscripts.is_empty() {
-            return fallback.clone();
+        if let Some(dims) = self.var_dims.get(name.as_str()) {
+            return project_dimmed_var_ref(name, dims, subscripts, self.i, fallback);
         }
 
-        if let Some(dims) = self.var_dims.get(name.as_str()) {
-            let scalar_count = output_scalar_count(dims);
-            if scalar_count > 1 && self.i <= scalar_count {
-                return Expression::VarRef {
-                    name: name.clone(),
-                    subscripts: vec![Subscript::Index(self.i as i64)],
-                };
-            }
+        if !subscripts.is_empty() {
             return fallback.clone();
         }
 
@@ -151,6 +166,329 @@ impl<'a> IndexProjectionContext<'a> {
         fallback.clone()
     }
 
+    fn expression_shape(&self, expr: &Expression) -> ExpressionShape {
+        match expr {
+            Expression::Literal(_) => ExpressionShape::Scalar,
+            Expression::VarRef { name, subscripts } => self.var_ref_shape(name, subscripts),
+            Expression::Array {
+                elements,
+                is_matrix,
+            } => array_literal_shape(elements, *is_matrix),
+            Expression::Unary { rhs, .. } => self.expression_shape(rhs),
+            Expression::Binary { op, lhs, rhs } => {
+                let lhs_shape = self.expression_shape(lhs);
+                let rhs_shape = self.expression_shape(rhs);
+                if matches!(op, OpBinary::Mul(_)) {
+                    combine_matrix_mul_shapes(lhs_shape, rhs_shape)
+                } else if matches!(op, OpBinary::MulElem(_)) {
+                    combine_elementwise_shapes(lhs_shape, rhs_shape)
+                } else if matches!(
+                    op,
+                    OpBinary::Add(_)
+                        | OpBinary::AddElem(_)
+                        | OpBinary::Sub(_)
+                        | OpBinary::SubElem(_)
+                ) {
+                    combine_additive_shapes(lhs_shape, rhs_shape)
+                } else if matches!(op, OpBinary::Div(_) | OpBinary::DivElem(_)) {
+                    combine_division_shapes(lhs_shape, rhs_shape)
+                } else {
+                    ExpressionShape::Scalar
+                }
+            }
+            Expression::If { else_branch, .. } => self.expression_shape(else_branch),
+            Expression::BuiltinCall { function, args } => self.builtin_shape(*function, args),
+            Expression::FunctionCall {
+                args,
+                is_constructor,
+                ..
+            } if *is_constructor => {
+                if args.len() > 1 {
+                    ExpressionShape::Vector(args.len())
+                } else {
+                    ExpressionShape::Scalar
+                }
+            }
+            Expression::Index { base, subscripts } => {
+                if let Some(dims) = self.expression_dims(base) {
+                    shape_from_dims(&apply_subscripts_to_dims(&dims, subscripts))
+                } else {
+                    ExpressionShape::Other
+                }
+            }
+            _ => ExpressionShape::Other,
+        }
+    }
+
+    fn expression_dims(&self, expr: &Expression) -> Option<Vec<i64>> {
+        match self.expression_shape(expr) {
+            ExpressionShape::Scalar => Some(Vec::new()),
+            ExpressionShape::Vector(n) => Some(vec![n as i64]),
+            ExpressionShape::Matrix(r, c) => Some(vec![r as i64, c as i64]),
+            ExpressionShape::Other => None,
+        }
+    }
+
+    fn var_ref_shape(&self, name: &VarName, subscripts: &[Subscript]) -> ExpressionShape {
+        if let Some(dims) = self.var_dims.get(name.as_str()) {
+            return shape_from_dims(&apply_subscripts_to_dims(dims, subscripts));
+        }
+        if self.complex_fields.contains_key(name.as_str()) {
+            return ExpressionShape::Vector(2);
+        }
+        if let Some(by_index) = self.component_index_map.get(name.as_str()) {
+            return ExpressionShape::Vector(by_index.len());
+        }
+        ExpressionShape::Scalar
+    }
+
+    fn builtin_shape(
+        &self,
+        function: dae::BuiltinFunction,
+        args: &[Expression],
+    ) -> ExpressionShape {
+        match function {
+            dae::BuiltinFunction::Der
+            | dae::BuiltinFunction::Pre
+            | dae::BuiltinFunction::NoEvent => args
+                .first()
+                .map(|arg| self.expression_shape(arg))
+                .unwrap_or(ExpressionShape::Scalar),
+            dae::BuiltinFunction::Transpose => {
+                match args.first().map(|arg| self.expression_shape(arg)) {
+                    Some(ExpressionShape::Matrix(r, c)) => ExpressionShape::Matrix(c, r),
+                    Some(ExpressionShape::Vector(n)) => ExpressionShape::Vector(n),
+                    Some(shape) => shape,
+                    None => ExpressionShape::Other,
+                }
+            }
+            dae::BuiltinFunction::Cross => ExpressionShape::Vector(3),
+            dae::BuiltinFunction::Skew => ExpressionShape::Matrix(3, 3),
+            dae::BuiltinFunction::Identity => args
+                .first()
+                .and_then(integer_literal_value)
+                .and_then(|n| (n > 0).then_some(ExpressionShape::Matrix(n as usize, n as usize)))
+                .unwrap_or(ExpressionShape::Other),
+            dae::BuiltinFunction::Diagonal => {
+                match args.first().map(|arg| self.expression_shape(arg)) {
+                    Some(ExpressionShape::Vector(n)) => ExpressionShape::Matrix(n, n),
+                    _ => ExpressionShape::Other,
+                }
+            }
+            dae::BuiltinFunction::Vector => args
+                .first()
+                .map(|arg| match self.expression_shape(arg) {
+                    ExpressionShape::Scalar => ExpressionShape::Vector(1),
+                    ExpressionShape::Vector(n) => ExpressionShape::Vector(n),
+                    ExpressionShape::Matrix(r, c) => ExpressionShape::Vector(r * c),
+                    ExpressionShape::Other => ExpressionShape::Other,
+                })
+                .unwrap_or(ExpressionShape::Other),
+            dae::BuiltinFunction::Matrix => args
+                .first()
+                .map(|arg| match self.expression_shape(arg) {
+                    ExpressionShape::Scalar => ExpressionShape::Matrix(1, 1),
+                    ExpressionShape::Vector(n) => ExpressionShape::Matrix(n, 1),
+                    shape => shape,
+                })
+                .unwrap_or(ExpressionShape::Other),
+            dae::BuiltinFunction::Scalar
+            | dae::BuiltinFunction::Sum
+            | dae::BuiltinFunction::Product
+            | dae::BuiltinFunction::Size
+            | dae::BuiltinFunction::Ndims => ExpressionShape::Scalar,
+            _ => ExpressionShape::Scalar,
+        }
+    }
+
+    fn project_matrix_mul(&self, lhs: &Expression, rhs: &Expression) -> Option<Expression> {
+        let lhs_shape = self.expression_shape(lhs);
+        let rhs_shape = self.expression_shape(rhs);
+        match (lhs_shape, rhs_shape) {
+            (ExpressionShape::Vector(n), ExpressionShape::Vector(m)) if n == m => {
+                Some(sum_terms((1..=n).map(|k| {
+                    mul_expr(self.project_at(lhs, k), self.project_at(rhs, k))
+                })))
+            }
+            (ExpressionShape::Matrix(rows, cols), ExpressionShape::Vector(n)) if cols == n => {
+                if self.i < 1 || self.i > rows {
+                    return None;
+                }
+                let row = self.i;
+                Some(sum_terms((1..=cols).map(|k| {
+                    mul_expr(
+                        self.project_at(lhs, matrix_linear_index(row, k, cols)),
+                        self.project_at(rhs, k),
+                    )
+                })))
+            }
+            (ExpressionShape::Vector(n), ExpressionShape::Matrix(rows, cols)) if n == rows => {
+                if self.i < 1 || self.i > cols {
+                    return None;
+                }
+                let col = self.i;
+                Some(sum_terms((1..=n).map(|k| {
+                    mul_expr(
+                        self.project_at(lhs, k),
+                        self.project_at(rhs, matrix_linear_index(k, col, cols)),
+                    )
+                })))
+            }
+            (
+                ExpressionShape::Matrix(lhs_rows, lhs_cols),
+                ExpressionShape::Matrix(rhs_rows, rhs_cols),
+            ) if lhs_cols == rhs_rows => {
+                let result_count = lhs_rows * rhs_cols;
+                if self.i < 1 || self.i > result_count {
+                    return None;
+                }
+                let (row, col) = row_major_subscripts_2d(self.i, rhs_cols);
+                Some(sum_terms((1..=lhs_cols).map(|k| {
+                    mul_expr(
+                        self.project_at(lhs, matrix_linear_index(row, k, lhs_cols)),
+                        self.project_at(rhs, matrix_linear_index(k, col, rhs_cols)),
+                    )
+                })))
+            }
+            _ => None,
+        }
+    }
+
+    fn project_transpose(&self, args: &[Expression]) -> Option<Expression> {
+        let arg = args.first()?;
+        match self.expression_shape(arg) {
+            ExpressionShape::Matrix(rows, cols) => {
+                let result_count = rows * cols;
+                if self.i < 1 || self.i > result_count {
+                    return None;
+                }
+                let (row, col) = row_major_subscripts_2d(self.i, rows);
+                Some(self.project_at(arg, matrix_linear_index(col, row, cols)))
+            }
+            ExpressionShape::Vector(n) if self.i >= 1 && self.i <= n => {
+                Some(self.project_at(arg, self.i))
+            }
+            ExpressionShape::Scalar if self.i == 1 => Some(self.project_at(arg, 1)),
+            _ => None,
+        }
+    }
+
+    fn project_cross(&self, args: &[Expression]) -> Option<Expression> {
+        let lhs = args.first()?;
+        let rhs = args.get(1)?;
+        if self.expression_shape(lhs) != ExpressionShape::Vector(3)
+            || self.expression_shape(rhs) != ExpressionShape::Vector(3)
+        {
+            return None;
+        }
+
+        let component = match self.i {
+            1 => sub_expr(
+                mul_expr(self.project_at(lhs, 2), self.project_at(rhs, 3)),
+                mul_expr(self.project_at(lhs, 3), self.project_at(rhs, 2)),
+            ),
+            2 => sub_expr(
+                mul_expr(self.project_at(lhs, 3), self.project_at(rhs, 1)),
+                mul_expr(self.project_at(lhs, 1), self.project_at(rhs, 3)),
+            ),
+            3 => sub_expr(
+                mul_expr(self.project_at(lhs, 1), self.project_at(rhs, 2)),
+                mul_expr(self.project_at(lhs, 2), self.project_at(rhs, 1)),
+            ),
+            _ => return None,
+        };
+        Some(component)
+    }
+
+    fn lower_scalar_linear_algebra(&self, expr: &Expression) -> Expression {
+        match expr {
+            Expression::Binary { op, lhs, rhs } => {
+                let lowered_lhs = self.lower_scalar_linear_algebra(lhs);
+                let lowered_rhs = self.lower_scalar_linear_algebra(rhs);
+                if matches!(op, OpBinary::Mul(_))
+                    && self.expression_shape(expr) == ExpressionShape::Scalar
+                    && let Some(projected) = self
+                        .with_index(1)
+                        .project_matrix_mul(&lowered_lhs, &lowered_rhs)
+                {
+                    return projected;
+                }
+                Expression::Binary {
+                    op: op.clone(),
+                    lhs: Box::new(lowered_lhs),
+                    rhs: Box::new(lowered_rhs),
+                }
+            }
+            Expression::Unary { op, rhs } => Expression::Unary {
+                op: op.clone(),
+                rhs: Box::new(self.lower_scalar_linear_algebra(rhs)),
+            },
+            Expression::BuiltinCall { function, args } => Expression::BuiltinCall {
+                function: *function,
+                args: args
+                    .iter()
+                    .map(|arg| self.lower_scalar_linear_algebra(arg))
+                    .collect(),
+            },
+            Expression::If {
+                branches,
+                else_branch,
+            } => Expression::If {
+                branches: branches
+                    .iter()
+                    .map(|(condition, value)| {
+                        (condition.clone(), self.lower_scalar_linear_algebra(value))
+                    })
+                    .collect(),
+                else_branch: Box::new(self.lower_scalar_linear_algebra(else_branch)),
+            },
+            Expression::FunctionCall {
+                name,
+                args,
+                is_constructor,
+            } => Expression::FunctionCall {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.lower_scalar_linear_algebra(arg))
+                    .collect(),
+                is_constructor: *is_constructor,
+            },
+            Expression::Array {
+                elements,
+                is_matrix,
+            } => Expression::Array {
+                elements: elements
+                    .iter()
+                    .map(|element| self.lower_scalar_linear_algebra(element))
+                    .collect(),
+                is_matrix: *is_matrix,
+            },
+            Expression::Tuple { elements } => Expression::Tuple {
+                elements: elements
+                    .iter()
+                    .map(|element| self.lower_scalar_linear_algebra(element))
+                    .collect(),
+            },
+            Expression::Index { base, subscripts } => Expression::Index {
+                base: Box::new(self.lower_scalar_linear_algebra(base)),
+                subscripts: subscripts.clone(),
+            },
+            Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+            } => Expression::ArrayComprehension {
+                expr: Box::new(self.lower_scalar_linear_algebra(expr)),
+                indices: indices.clone(),
+                filter: filter
+                    .as_ref()
+                    .map(|value| Box::new(self.lower_scalar_linear_algebra(value))),
+            },
+            _ => expr.clone(),
+        }
+    }
+
     fn project(&self, expr: &Expression) -> Expression {
         match expr {
             Expression::Array {
@@ -159,19 +497,38 @@ impl<'a> IndexProjectionContext<'a> {
             } => project_array_literal_scalar(elements, *is_matrix, self.i)
                 .unwrap_or_else(|| expr.clone()),
             Expression::VarRef { name, subscripts } => self.project_var_ref(name, subscripts, expr),
-            Expression::Binary { op, lhs, rhs } => Expression::Binary {
-                op: op.clone(),
-                lhs: Box::new(self.project(lhs)),
-                rhs: Box::new(self.project(rhs)),
-            },
+            Expression::Binary { op, lhs, rhs } => {
+                if matches!(op, OpBinary::Mul(_))
+                    && let Some(projected) = self.project_matrix_mul(lhs, rhs)
+                {
+                    return projected;
+                }
+                Expression::Binary {
+                    op: op.clone(),
+                    lhs: Box::new(self.project(lhs)),
+                    rhs: Box::new(self.project(rhs)),
+                }
+            }
             Expression::Unary { op, rhs } => Expression::Unary {
                 op: op.clone(),
                 rhs: Box::new(self.project(rhs)),
             },
-            Expression::BuiltinCall { function, args } => Expression::BuiltinCall {
-                function: *function,
-                args: self.map_exprs(args),
-            },
+            Expression::BuiltinCall { function, args } => {
+                if matches!(function, dae::BuiltinFunction::Transpose)
+                    && let Some(projected) = self.project_transpose(args)
+                {
+                    return projected;
+                }
+                if matches!(function, dae::BuiltinFunction::Cross)
+                    && let Some(projected) = self.project_cross(args)
+                {
+                    return projected;
+                }
+                Expression::BuiltinCall {
+                    function: *function,
+                    args: self.map_exprs(args),
+                }
+            }
             Expression::If {
                 branches,
                 else_branch,
@@ -195,7 +552,7 @@ impl<'a> IndexProjectionContext<'a> {
                 {
                     return Expression::FunctionCall {
                         name: VarName::new(format!("{}.{}", name.as_str(), projected_output)),
-                        args: self.map_exprs(args),
+                        args: args.clone(),
                         is_constructor: false,
                     };
                 }
@@ -212,6 +569,255 @@ impl<'a> IndexProjectionContext<'a> {
             _ => expr.clone(),
         }
     }
+}
+
+fn project_dimmed_var_ref(
+    name: &VarName,
+    dims: &[i64],
+    subscripts: &[Subscript],
+    i: usize,
+    fallback: &Expression,
+) -> Expression {
+    if !subscripts.is_empty() {
+        return project_subscripted_dims(dims, subscripts, i)
+            .map(|projected_subscripts| Expression::VarRef {
+                name: name.clone(),
+                subscripts: projected_subscripts,
+            })
+            .unwrap_or_else(|| fallback.clone());
+    }
+
+    let scalar_count = output_scalar_count(dims);
+    if scalar_count > 1 && i <= scalar_count {
+        return Expression::VarRef {
+            name: name.clone(),
+            subscripts: linear_subscripts_for_dims(dims, i),
+        };
+    }
+
+    fallback.clone()
+}
+
+fn shape_from_dims(dims: &[i64]) -> ExpressionShape {
+    match dims {
+        [] => ExpressionShape::Scalar,
+        [n] => ExpressionShape::Vector((*n).max(0) as usize),
+        [rows, cols] => ExpressionShape::Matrix((*rows).max(0) as usize, (*cols).max(0) as usize),
+        _ => ExpressionShape::Other,
+    }
+}
+
+fn apply_subscripts_to_dims(dims: &[i64], subscripts: &[Subscript]) -> Vec<i64> {
+    let mut remaining = Vec::new();
+    let mut dim_idx = 0usize;
+    for subscript in subscripts {
+        if dim_idx >= dims.len() {
+            break;
+        }
+        match subscript {
+            Subscript::Index(_) | Subscript::Expr(_) => dim_idx += 1,
+            Subscript::Colon => {
+                remaining.push(dims[dim_idx]);
+                dim_idx += 1;
+            }
+        }
+    }
+    remaining.extend_from_slice(&dims[dim_idx..]);
+    remaining
+}
+
+fn integer_literal_value(expr: &Expression) -> Option<i64> {
+    match expr {
+        Expression::Literal(Literal::Integer(value)) => Some(*value),
+        Expression::Literal(Literal::Real(value)) if value.is_finite() && value.fract() == 0.0 => {
+            Some(*value as i64)
+        }
+        _ => None,
+    }
+}
+
+fn array_literal_shape(elements: &[Expression], is_matrix: bool) -> ExpressionShape {
+    if !is_matrix {
+        return ExpressionShape::Vector(elements.len());
+    }
+    if elements.is_empty() {
+        return ExpressionShape::Matrix(0, 0);
+    }
+    if let Expression::Array {
+        elements: first_row,
+        ..
+    } = &elements[0]
+    {
+        ExpressionShape::Matrix(elements.len(), first_row.len())
+    } else {
+        ExpressionShape::Matrix(1, elements.len())
+    }
+}
+
+fn combine_additive_shapes(lhs: ExpressionShape, rhs: ExpressionShape) -> ExpressionShape {
+    match (lhs, rhs) {
+        (ExpressionShape::Scalar, ExpressionShape::Scalar) => ExpressionShape::Scalar,
+        (ExpressionShape::Vector(n), ExpressionShape::Scalar)
+        | (ExpressionShape::Scalar, ExpressionShape::Vector(n)) => ExpressionShape::Vector(n),
+        (ExpressionShape::Matrix(r, c), ExpressionShape::Scalar)
+        | (ExpressionShape::Scalar, ExpressionShape::Matrix(r, c)) => ExpressionShape::Matrix(r, c),
+        (ExpressionShape::Vector(a), ExpressionShape::Vector(b)) if a == b => {
+            ExpressionShape::Vector(a)
+        }
+        (ExpressionShape::Matrix(a_r, a_c), ExpressionShape::Matrix(b_r, b_c))
+            if a_r == b_r && a_c == b_c =>
+        {
+            ExpressionShape::Matrix(a_r, a_c)
+        }
+        _ => ExpressionShape::Other,
+    }
+}
+
+fn combine_matrix_mul_shapes(lhs: ExpressionShape, rhs: ExpressionShape) -> ExpressionShape {
+    match (lhs, rhs) {
+        (ExpressionShape::Scalar, ExpressionShape::Scalar) => ExpressionShape::Scalar,
+        (ExpressionShape::Vector(n), ExpressionShape::Scalar)
+        | (ExpressionShape::Scalar, ExpressionShape::Vector(n)) => ExpressionShape::Vector(n),
+        (ExpressionShape::Matrix(r, c), ExpressionShape::Scalar)
+        | (ExpressionShape::Scalar, ExpressionShape::Matrix(r, c)) => ExpressionShape::Matrix(r, c),
+        (ExpressionShape::Vector(a), ExpressionShape::Vector(b)) if a == b => {
+            ExpressionShape::Scalar
+        }
+        (ExpressionShape::Matrix(r, c), ExpressionShape::Vector(n)) if c == n => {
+            ExpressionShape::Vector(r)
+        }
+        (ExpressionShape::Vector(n), ExpressionShape::Matrix(r, c)) if n == r => {
+            ExpressionShape::Vector(c)
+        }
+        (ExpressionShape::Matrix(a_r, a_c), ExpressionShape::Matrix(b_r, b_c)) if a_c == b_r => {
+            ExpressionShape::Matrix(a_r, b_c)
+        }
+        _ => ExpressionShape::Other,
+    }
+}
+
+fn combine_elementwise_shapes(lhs: ExpressionShape, rhs: ExpressionShape) -> ExpressionShape {
+    combine_additive_shapes(lhs, rhs)
+}
+
+fn combine_division_shapes(lhs: ExpressionShape, rhs: ExpressionShape) -> ExpressionShape {
+    match (lhs, rhs) {
+        (shape, ExpressionShape::Scalar) => shape,
+        _ => ExpressionShape::Other,
+    }
+}
+
+fn row_major_subscripts_2d(linear_index: usize, cols: usize) -> (usize, usize) {
+    let zero_based = linear_index.saturating_sub(1);
+    (zero_based / cols + 1, zero_based % cols + 1)
+}
+
+fn matrix_linear_index(row: usize, col: usize, cols: usize) -> usize {
+    (row - 1) * cols + col
+}
+
+fn linear_subscripts_for_dims(dims: &[i64], linear_index: usize) -> Vec<Subscript> {
+    if dims.is_empty() {
+        return Vec::new();
+    }
+    let mut remainder = linear_index.saturating_sub(1);
+    let mut indices = vec![1usize; dims.len()];
+    for dim_idx in (0..dims.len()).rev() {
+        let dim = dims[dim_idx].max(1) as usize;
+        indices[dim_idx] = remainder % dim + 1;
+        remainder /= dim;
+    }
+    indices
+        .into_iter()
+        .map(|idx| Subscript::Index(idx as i64))
+        .collect()
+}
+
+fn project_subscripted_dims(
+    dims: &[i64],
+    subscripts: &[Subscript],
+    linear_index: usize,
+) -> Option<Vec<Subscript>> {
+    if linear_index == 0 {
+        return None;
+    }
+    // MLS §10.6: array equations are equivalent to scalar equations over each
+    // selected element. Preserve written fixed subscripts and replace only
+    // projected slice/trailing dimensions with scalar indices.
+    let projected_dims = apply_subscripts_to_dims(dims, subscripts);
+    let scalar_count = output_scalar_count(&projected_dims);
+    if scalar_count <= 1 || linear_index > scalar_count {
+        return None;
+    }
+
+    let projection = linear_subscripts_for_dims(&projected_dims, linear_index);
+    let mut projection_iter = projection.into_iter();
+    let mut projected_subscripts = Vec::new();
+    let mut dim_idx = 0usize;
+
+    for subscript in subscripts {
+        if dim_idx >= dims.len() {
+            projected_subscripts.push(subscript.clone());
+            continue;
+        }
+        match subscript {
+            Subscript::Index(_) | Subscript::Expr(_) => {
+                projected_subscripts.push(subscript.clone());
+                dim_idx += 1;
+            }
+            Subscript::Colon => {
+                projected_subscripts.push(projection_iter.next()?);
+                dim_idx += 1;
+            }
+        }
+    }
+
+    while dim_idx < dims.len() {
+        projected_subscripts.push(projection_iter.next()?);
+        dim_idx += 1;
+    }
+
+    Some(projected_subscripts)
+}
+
+fn format_scalar_ref(name: &str, dims: &[i64], linear_index: usize) -> String {
+    if dims.is_empty() || output_scalar_count(dims) <= 1 {
+        return name.to_string();
+    }
+    let indices = linear_subscripts_for_dims(dims, linear_index)
+        .into_iter()
+        .filter_map(|subscript| scalarization_subscript_text(&subscript))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{name}[{indices}]")
+}
+
+fn binary_expr(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
+    Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    }
+}
+
+fn add_expr(lhs: Expression, rhs: Expression) -> Expression {
+    binary_expr(OpBinary::Add(Default::default()), lhs, rhs)
+}
+
+fn sub_expr(lhs: Expression, rhs: Expression) -> Expression {
+    binary_expr(OpBinary::Sub(Default::default()), lhs, rhs)
+}
+
+fn mul_expr(lhs: Expression, rhs: Expression) -> Expression {
+    binary_expr(OpBinary::Mul(Default::default()), lhs, rhs)
+}
+
+fn sum_terms(terms: impl IntoIterator<Item = Expression>) -> Expression {
+    let mut iter = terms.into_iter();
+    let Some(first) = iter.next() else {
+        return Expression::Literal(Literal::Real(0.0));
+    };
+    iter.fold(first, add_expr)
 }
 
 fn project_array_literal_scalar(
@@ -464,15 +1070,22 @@ pub struct ScalarProjectionContext<'a> {
 }
 
 impl ScalarProjectionContext<'_> {
+    fn index_context(&self, scalar_idx: usize) -> IndexProjectionContext<'_> {
+        IndexProjectionContext {
+            i: scalar_idx,
+            var_dims: self.var_dims,
+            complex_fields: self.complex_fields,
+            component_index_map: self.component_index_map,
+            function_output_index_map: self.function_output_index_map,
+        }
+    }
+
     fn project_index(&self, expr: &Expression, scalar_idx: usize) -> Expression {
-        index_into_expr(
-            expr,
-            scalar_idx,
-            self.var_dims,
-            self.complex_fields,
-            self.component_index_map,
-            self.function_output_index_map,
-        )
+        self.index_context(scalar_idx).project(expr)
+    }
+
+    fn lower_scalar_linear_algebra(&self, expr: &Expression) -> Expression {
+        self.index_context(1).lower_scalar_linear_algebra(expr)
     }
 }
 
@@ -844,6 +1457,15 @@ pub fn scalarized_equation_lhs(
         .map(|lhs| VarName::new(format!("{}[{scalar_idx}]", lhs.as_str())))
 }
 
+fn lower_scalar_linear_algebra_exprs(
+    exprs: &mut [Expression],
+    projection: &ScalarProjectionContext<'_>,
+) {
+    for expr in exprs {
+        *expr = projection.lower_scalar_linear_algebra(expr);
+    }
+}
+
 /// Expand array equations (scalar_count > 1) into individual scalar equations.
 ///
 /// After this pass every element of `dae.f_x` has `scalar_count == 1`,
@@ -873,7 +1495,9 @@ pub fn scalarize_equations(dae: &mut Dae) {
             .unwrap_or_default();
         let scalar_count = eq.scalar_count.max(lhs_targets.len()).max(1);
         if scalar_count <= 1 {
-            expanded.push(eq.clone());
+            let mut lowered = eq.clone();
+            lowered.rhs = projection.lower_scalar_linear_algebra(&lowered.rhs);
+            expanded.push(lowered);
         } else {
             for i in 1..=scalar_count {
                 let target = lhs_targets.get(i - 1).map(String::as_str);
@@ -894,84 +1518,12 @@ pub fn scalarize_equations(dae: &mut Dae) {
         }
     }
     dae.f_x = expanded;
+
+    lower_scalar_linear_algebra_exprs(&mut dae.relation, &projection);
+    lower_scalar_linear_algebra_exprs(&mut dae.synthetic_root_conditions, &projection);
+    lower_scalar_linear_algebra_exprs(&mut dae.triggered_clock_conditions, &projection);
+    lower_scalar_linear_algebra_exprs(&mut dae.clock_constructor_exprs, &projection);
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_output_names_orders_states_algebraics_outputs_and_expands_arrays() {
-        let mut dae_model = dae::Dae::default();
-
-        let mut x = dae::Variable::new(dae::VarName::new("x"));
-        x.dims = vec![2];
-        dae_model.states.insert(dae::VarName::new("x"), x);
-        dae_model.states.insert(
-            dae::VarName::new("v"),
-            dae::Variable::new(dae::VarName::new("v")),
-        );
-
-        dae_model.algebraics.insert(
-            dae::VarName::new("z"),
-            dae::Variable::new(dae::VarName::new("z")),
-        );
-
-        let mut y = dae::Variable::new(dae::VarName::new("y"));
-        y.dims = vec![2];
-        dae_model.outputs.insert(dae::VarName::new("y"), y);
-
-        let names = build_output_names(&dae_model);
-        assert_eq!(
-            names,
-            vec![
-                "x[1]".to_string(),
-                "x[2]".to_string(),
-                "v".to_string(),
-                "z".to_string(),
-                "y[1]".to_string(),
-                "y[2]".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn scalarize_expression_rows_flattens_matrix_literals_row_major() {
-        let ctx = ExpressionScalarizationContext {
-            var_dims: HashMap::new(),
-            complex_fields: HashMap::new(),
-            component_index_map: HashMap::new(),
-            function_output_index_map: HashMap::new(),
-        };
-        let expr = Expression::Array {
-            elements: vec![
-                Expression::Array {
-                    elements: vec![
-                        Expression::Literal(Literal::Integer(1)),
-                        Expression::Literal(Literal::Integer(2)),
-                    ],
-                    is_matrix: true,
-                },
-                Expression::Array {
-                    elements: vec![
-                        Expression::Literal(Literal::Integer(3)),
-                        Expression::Literal(Literal::Integer(4)),
-                    ],
-                    is_matrix: true,
-                },
-            ],
-            is_matrix: true,
-        };
-
-        let rows = scalarize_expression_rows(&expr, 4, &ctx);
-        assert_eq!(
-            rows,
-            vec![
-                Expression::Literal(Literal::Integer(1)),
-                Expression::Literal(Literal::Integer(2)),
-                Expression::Literal(Literal::Integer(3)),
-                Expression::Literal(Literal::Integer(4)),
-            ]
-        );
-    }
-}
+mod tests;

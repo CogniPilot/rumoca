@@ -1075,16 +1075,7 @@ pub(crate) fn dependency_to_unfix(
 }
 
 pub(crate) fn variable_size_for_target(dae: &Dae, target: &str) -> Option<usize> {
-    let lookup = |name: &str| {
-        dae.states
-            .get(&VarName::new(name))
-            .or_else(|| dae.algebraics.get(&VarName::new(name)))
-            .or_else(|| dae.outputs.get(&VarName::new(name)))
-            .or_else(|| dae.discrete_reals.get(&VarName::new(name)))
-            .or_else(|| dae.discrete_valued.get(&VarName::new(name)))
-            .map(|var| var.size())
-    };
-    lookup(target).or_else(|| component_base_name(target).and_then(|base| lookup(&base)))
+    rumoca_sim_core::runtime::assignment::variable_size_for_assignment_name(dae, target)
 }
 
 pub(crate) fn runtime_direct_assignment<'a>(
@@ -1096,8 +1087,9 @@ pub(crate) fn runtime_direct_assignment<'a>(
     }
 
     if let Some((target, solution)) = extract_direct_assignment(&eq.rhs) {
-        let target_size = variable_size_for_target(dae, target.as_str())?;
-        if !target.contains('[') && target_size > 1 {
+        if rumoca_sim_core::runtime::assignment::assignment_target_shape(dae, target.as_str())?
+            .is_aggregate
+        {
             return None;
         }
         return Some((target, solution));
@@ -1207,11 +1199,9 @@ pub(crate) fn no_state_runtime_direct_assignment<'a>(
     }
 
     if let Some((target, solution)) = extract_direct_assignment(&eq.rhs) {
-        let target_size = rumoca_sim_core::runtime::assignment::variable_size_for_assignment_name(
-            dae,
-            target.as_str(),
-        )?;
-        if !target.contains('[') && target_size > 1 {
+        if rumoca_sim_core::runtime::assignment::assignment_target_shape(dae, target.as_str())?
+            .is_aggregate
+        {
             return None;
         }
         return Some((target, solution));
@@ -1411,13 +1401,16 @@ pub(crate) fn decrement_named_indegree_and_enqueue(
 }
 
 pub(crate) fn solver_target_has_runtime_alias_anchor(
+    dae: &Dae,
     target: &str,
     adjacency: &std::collections::HashMap<String, Vec<String>>,
     runtime_anchors: &std::collections::HashSet<String>,
     assigned_targets: &std::collections::HashSet<String>,
 ) -> bool {
     let mut component_roots = vec![target.to_string()];
-    if !target.contains('[') {
+    if rumoca_sim_core::runtime::assignment::assignment_target_shape(dae, target)
+        .is_some_and(|shape| shape.is_aggregate)
+    {
         component_roots.push(format!("{target}[1]"));
     }
     for root in component_roots {
@@ -1697,6 +1690,7 @@ pub(crate) fn solver_targets_need_projection(
             continue;
         }
         if !solver_target_has_runtime_alias_anchor(
+            dae,
             name,
             support.alias_adjacency,
             support.runtime_anchors,
@@ -1727,6 +1721,7 @@ pub(crate) fn visible_non_solver_targets_need_projection(
         if support.assigned_targets.contains(name)
             || support.runtime_anchors.contains(name)
             || solver_target_has_runtime_alias_anchor(
+                dae,
                 name,
                 support.alias_adjacency,
                 support.runtime_anchors,

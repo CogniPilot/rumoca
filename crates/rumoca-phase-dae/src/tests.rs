@@ -1549,6 +1549,199 @@ fn test_connected_input_alias_with_multilayer_subscripts_promotes_internal_input
 }
 
 #[test]
+fn test_equation_defined_indexed_array_input_promotes_internal_input() {
+    let mut flat = Model::new();
+    flat.add_variable(
+        VarName::new("plant.omega_cmd"),
+        flat::Variable {
+            name: VarName::new("plant.omega_cmd"),
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
+            is_primitive: true,
+            dims: vec![4],
+            ..Default::default()
+        },
+    );
+
+    add_component_equation(
+        &mut flat,
+        "plant.omega_cmd[1]",
+        make_var_ref("motor_cmd[1]"),
+    );
+
+    let defined_inputs = find_equation_defined_inputs(&flat);
+    assert!(
+        defined_inputs.contains(&VarName::new("plant.omega_cmd")),
+        "internal array input assigned by an indexed equation should be promoted"
+    );
+}
+
+#[test]
+fn test_equation_defined_array_lhs_promotes_internal_input_elements() {
+    let mut flat = Model::new();
+    for name in ["plant.motor[1].omega_cmd", "plant.motor[2].omega_cmd"] {
+        flat.add_variable(
+            VarName::new(name),
+            flat::Variable {
+                name: VarName::new(name),
+                causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+                variability: rumoca_ir_core::Variability::Empty,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: flat::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
+            lhs: Box::new(flat::Expression::Array {
+                elements: vec![
+                    make_var_ref("plant.motor[1].omega_cmd"),
+                    make_var_ref("plant.motor[2].omega_cmd"),
+                ],
+                is_matrix: false,
+            }),
+            rhs: Box::new(make_var_ref("plant.omega_cmd")),
+        },
+        span: Span::DUMMY,
+        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "plant.motor".to_string(),
+        },
+        scalar_count: 2,
+    });
+
+    let defined_inputs = find_equation_defined_inputs(&flat);
+    for name in ["plant.motor[1].omega_cmd", "plant.motor[2].omega_cmd"] {
+        assert!(
+            defined_inputs.contains(&VarName::new(name)),
+            "array LHS input {name} should be promoted"
+        );
+    }
+}
+
+#[test]
+fn test_rhs_input_alias_with_lhs_internal_input_promotes_rhs_input() {
+    let mut flat = Model::new();
+    for name in ["plant.omega_cmd", "plant.motor[1].omega_cmd"] {
+        flat.add_variable(
+            VarName::new(name),
+            flat::Variable {
+                name: VarName::new(name),
+                causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+                variability: rumoca_ir_core::Variability::Empty,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    add_component_equation(
+        &mut flat,
+        "plant.omega_cmd",
+        make_var_ref("plant.motor[1].omega_cmd"),
+    );
+
+    let defined_inputs = find_equation_defined_inputs(&flat);
+    assert!(
+        defined_inputs.contains(&VarName::new("plant.motor[1].omega_cmd")),
+        "RHS child input should be promoted when aliased to another internal input"
+    );
+}
+
+#[test]
+fn test_rhs_array_alias_with_lhs_internal_input_promotes_rhs_inputs() {
+    let mut flat = Model::new();
+    for (name, dims) in [
+        ("plant.omega_cmd", vec![2]),
+        ("plant.motor[1].omega_cmd", vec![]),
+        ("plant.motor[2].omega_cmd", vec![]),
+    ] {
+        flat.add_variable(
+            VarName::new(name),
+            flat::Variable {
+                name: VarName::new(name),
+                causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+                variability: rumoca_ir_core::Variability::Empty,
+                is_primitive: true,
+                dims,
+                ..Default::default()
+            },
+        );
+    }
+
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: flat::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
+            lhs: Box::new(make_var_ref("plant.omega_cmd")),
+            rhs: Box::new(flat::Expression::Array {
+                elements: vec![
+                    make_var_ref("plant.motor[1].omega_cmd"),
+                    make_var_ref("plant.motor[2].omega_cmd"),
+                ],
+                is_matrix: false,
+            }),
+        },
+        span: Span::DUMMY,
+        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "plant".to_string(),
+        },
+        scalar_count: 2,
+    });
+
+    let defined_inputs = find_equation_defined_inputs(&flat);
+    for name in [
+        "plant.omega_cmd",
+        "plant.motor[1].omega_cmd",
+        "plant.motor[2].omega_cmd",
+    ] {
+        assert!(
+            defined_inputs.contains(&VarName::new(name)),
+            "internal input {name} should be promoted through vector alias"
+        );
+    }
+}
+
+#[test]
+fn test_component_array_projection_lhs_promotes_indexed_internal_inputs() {
+    let mut flat = Model::new();
+    for (name, dims) in [
+        ("plant.omega_cmd", vec![2]),
+        ("plant.motor[1].omega_cmd", vec![]),
+        ("plant.motor[2].omega_cmd", vec![]),
+    ] {
+        flat.add_variable(
+            VarName::new(name),
+            flat::Variable {
+                name: VarName::new(name),
+                causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+                variability: rumoca_ir_core::Variability::Empty,
+                is_primitive: true,
+                dims,
+                ..Default::default()
+            },
+        );
+    }
+
+    add_component_equation(
+        &mut flat,
+        "plant.motor.omega_cmd",
+        make_var_ref("plant.omega_cmd"),
+    );
+
+    let defined_inputs = find_equation_defined_inputs(&flat);
+    for name in [
+        "plant.omega_cmd",
+        "plant.motor[1].omega_cmd",
+        "plant.motor[2].omega_cmd",
+    ] {
+        assert!(
+            defined_inputs.contains(&VarName::new(name)),
+            "component-array projection should promote internal input {name}"
+        );
+    }
+}
+
+#[test]
 fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote_input() {
     let mut flat = Model::new();
     flat.add_variable(
@@ -1595,245 +1788,6 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
 }
 
 #[test]
-fn test_get_output_in_input_output_connection_subscripted_output() {
-    let mut dae = Dae::new();
-    dae.inputs.insert(
-        dae::VarName::new("gain.u"),
-        Variable::new(dae::VarName::new("gain.u")),
-    );
-    dae.outputs.insert(
-        dae::VarName::new("table.y"),
-        Variable::new(dae::VarName::new("table.y")),
-    );
-
-    let eq = rumoca_ir_flat::Equation {
-        residual: flat::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
-            lhs: Box::new(flat::Expression::VarRef {
-                name: VarName::new("table.y[1]"),
-                subscripts: vec![],
-            }),
-            rhs: Box::new(flat::Expression::VarRef {
-                name: VarName::new("gain.u"),
-                subscripts: vec![],
-            }),
-        },
-        span: Span::DUMMY,
-        origin: rumoca_ir_flat::EquationOrigin::Connection {
-            lhs: "table.y[1]".to_string(),
-            rhs: "gain.u".to_string(),
-        },
-        scalar_count: 1,
-    };
-
-    let out = get_output_in_input_output_connection(&eq, &dae)
-        .expect("subscripted output/input connection should resolve output side");
-    assert_eq!(out, VarName::new("table.y[1]"));
-}
-
-#[test]
-fn test_classify_equations_skips_subscripted_output_input_connection_when_output_has_component_equation()
- {
-    let mut flat = Model::new();
-    flat.add_variable(
-        VarName::new("table.y"),
-        flat::Variable {
-            name: VarName::new("table.y"),
-            causality: rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
-            variability: rumoca_ir_core::Variability::Empty,
-            is_primitive: true,
-            ..Default::default()
-        },
-    );
-    flat.add_variable(
-        VarName::new("gain.u"),
-        flat::Variable {
-            name: VarName::new("gain.u"),
-            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
-            variability: rumoca_ir_core::Variability::Empty,
-            is_primitive: true,
-            ..Default::default()
-        },
-    );
-
-    // Component equation for one output element.
-    flat.add_equation(rumoca_ir_flat::Equation {
-        residual: flat::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
-            lhs: Box::new(flat::Expression::VarRef {
-                name: VarName::new("table.y[1]"),
-                subscripts: vec![],
-            }),
-            rhs: Box::new(flat::Expression::Literal(Literal::Real(1.0))),
-        },
-        span: Span::DUMMY,
-        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
-            component: "table".to_string(),
-        },
-        scalar_count: 1,
-    });
-
-    // Input-output alias should be skipped because output already has a component equation.
-    add_connection_equation(&mut flat, "table.y[1]", "gain.u");
-
-    let mut dae = Dae::new();
-    dae.outputs.insert(
-        dae::VarName::new("table.y"),
-        Variable::new(dae::VarName::new("table.y")),
-    );
-    dae.inputs.insert(
-        dae::VarName::new("gain.u"),
-        Variable::new(dae::VarName::new("gain.u")),
-    );
-
-    let prefix_counts = build_prefix_counts(&flat);
-    classify_equations(&mut dae, &flat, &prefix_counts);
-
-    assert_eq!(
-        dae.f_x.len(),
-        1,
-        "connection equation should be skipped for output element defined by component equation"
-    );
-    assert!(dae.f_x[0].origin.contains("equation from table"));
-}
-
-#[test]
-fn test_classify_equations_skips_output_known_connection_when_output_has_component_equation() {
-    let mut flat = Model::new();
-    flat.add_variable(
-        VarName::new("gain.y"),
-        flat::Variable {
-            name: VarName::new("gain.y"),
-            causality: rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
-            variability: rumoca_ir_core::Variability::Empty,
-            is_primitive: true,
-            ..Default::default()
-        },
-    );
-    flat.add_variable(
-        VarName::new("gain.u"),
-        flat::Variable {
-            name: VarName::new("gain.u"),
-            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
-            variability: rumoca_ir_core::Variability::Empty,
-            is_primitive: true,
-            ..Default::default()
-        },
-    );
-    flat.add_variable(
-        VarName::new("outBus.x"),
-        flat::Variable {
-            name: VarName::new("outBus.x"),
-            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_core::Token::default()),
-            is_primitive: true,
-            ..Default::default()
-        },
-    );
-
-    // Output has an explicit component equation.
-    flat.add_equation(rumoca_ir_flat::Equation {
-        residual: flat::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
-            lhs: Box::new(flat::Expression::VarRef {
-                name: VarName::new("gain.y"),
-                subscripts: vec![],
-            }),
-            rhs: Box::new(flat::Expression::VarRef {
-                name: VarName::new("gain.u"),
-                subscripts: vec![],
-            }),
-        },
-        span: Span::DUMMY,
-        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
-            component: "gain".to_string(),
-        },
-        scalar_count: 1,
-    });
-
-    // Redundant alias to non-unknown bus member should be skipped.
-    add_connection_equation(&mut flat, "gain.y", "outBus.x");
-
-    let mut dae = Dae::new();
-    dae.outputs.insert(
-        dae::VarName::new("gain.y"),
-        Variable::new(dae::VarName::new("gain.y")),
-    );
-    dae.inputs.insert(
-        dae::VarName::new("gain.u"),
-        Variable::new(dae::VarName::new("gain.u")),
-    );
-    dae.parameters.insert(
-        dae::VarName::new("outBus.x"),
-        Variable::new(dae::VarName::new("outBus.x")),
-    );
-
-    let prefix_counts = build_prefix_counts(&flat);
-    classify_equations(&mut dae, &flat, &prefix_counts);
-
-    assert_eq!(
-        dae.f_x.len(),
-        1,
-        "output->known connection should be skipped when output has defining component equation"
-    );
-    assert!(dae.f_x[0].origin.contains("equation from gain"));
-}
-
-#[test]
-fn test_classify_equations_skips_unconnected_flow_for_top_level_overconstrained_connector() {
-    let mut flat = Model::new();
-    flat.top_level_connectors.insert("port".to_string());
-
-    flat.add_variable(
-        VarName::new("port.reference.gamma"),
-        flat::Variable {
-            name: VarName::new("port.reference.gamma"),
-            variability: rumoca_ir_core::Variability::Empty,
-            is_primitive: true,
-            is_overconstrained: true,
-            oc_record_path: Some("port.reference".to_string()),
-            oc_eq_constraint_size: Some(0),
-            ..Default::default()
-        },
-    );
-    flat.add_variable(
-        VarName::new("port.Phi.re"),
-        flat::Variable {
-            name: VarName::new("port.Phi.re"),
-            flow: true,
-            is_primitive: true,
-            ..Default::default()
-        },
-    );
-
-    flat.add_equation(rumoca_ir_flat::Equation {
-        residual: flat::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
-            lhs: Box::new(make_var_ref("port.Phi.re")),
-            rhs: Box::new(flat::Expression::Literal(Literal::Real(0.0))),
-        },
-        span: Span::DUMMY,
-        origin: rumoca_ir_flat::EquationOrigin::UnconnectedFlow {
-            variable: "port.Phi.re".to_string(),
-        },
-        scalar_count: 1,
-    });
-
-    let mut dae = Dae::new();
-    dae.algebraics.insert(
-        dae::VarName::new("port.Phi.re"),
-        Variable::new(dae::VarName::new("port.Phi.re")),
-    );
-
-    let prefix_counts = build_prefix_counts(&flat);
-    classify_equations(&mut dae, &flat, &prefix_counts);
-
-    assert!(
-        dae.f_x.is_empty(),
-        "top-level OC connector unconnected flow closure should not be counted in local structural equations"
-    );
-}
-
-#[test]
 fn test_model_description_propagation() {
     let mut flat = flat::Model::new();
     flat.model_description = Some("Test model description".to_string());
@@ -1854,6 +1808,7 @@ fn test_model_description_propagation() {
 }
 
 mod tests_embedded_range;
+mod tests_equation_classification;
 mod tests_flow_sum;
 mod tests_regressions;
 mod tests_scalar_shape;

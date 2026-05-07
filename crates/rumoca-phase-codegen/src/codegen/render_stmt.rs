@@ -77,13 +77,9 @@ pub(crate) fn render_flat_equation(eq: &Value, cfg: &ExprConfig) -> RenderResult
 fn render_explicit_lhs(lhs: &Value, cfg: &ExprConfig) -> String {
     // VarName serializes as a string or {"0": "name"}
     let raw = get_field(lhs, "0")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| lhs.to_string());
-    if cfg.sanitize_dots {
-        raw.replace('.', "_")
-    } else {
-        raw
-    }
+        .map(|v| super::value_to_string(&v))
+        .unwrap_or_else(|_| super::value_to_string(lhs));
+    super::emitted_symbol_or_fallback(&raw, cfg)
 }
 
 /// Check if a Binary expression's op is Sub or SubElem.
@@ -168,7 +164,7 @@ pub(crate) fn render_statement(stmt: &Value, cfg: &ExprConfig, indent: &str) -> 
 fn render_assignment(assign: &Value, cfg: &ExprConfig, indent: &str) -> RenderResult {
     let comp_val = get_field(assign, "comp")
         .map_err(|_| render_err(format!("Assignment missing 'comp' field: {assign}")))?;
-    let comp = render_component_ref(&comp_val);
+    let comp = render_component_ref(&comp_val, cfg);
     if comp.trim().is_empty() {
         return Err(render_err(format!(
             "Assignment target resolved to empty component reference: {assign}"
@@ -458,7 +454,7 @@ fn render_while_statement(while_stmt: &Value, cfg: &ExprConfig, indent: &str) ->
         .get_attr("cond")
         .and_then(|c| render_ast_expression(&c, cfg))
         .unwrap_or_else(|_| "true".to_string());
-    let stmts = while_stmt.get_attr("statements").ok();
+    let stmts = statement_block_statements(while_stmt);
 
     match cfg.if_style {
         IfStyle::Ternary => {
@@ -545,7 +541,7 @@ fn render_if_branch(
         .get_attr("cond")
         .and_then(|c| render_ast_expression(&c, cfg))
         .unwrap_or_else(|_| "true".to_string());
-    let stmts = block.get_attr("statements").ok();
+    let stmts = statement_block_statements(block);
 
     match cfg.if_style {
         IfStyle::Ternary => {
@@ -579,6 +575,13 @@ fn render_if_branch(
     }
 
     Ok(result)
+}
+
+fn statement_block_statements(block: &Value) -> Option<Value> {
+    block
+        .get_attr("stmts")
+        .ok()
+        .or_else(|| block.get_attr("statements").ok())
 }
 
 /// Render the else block of an if statement.
@@ -622,7 +625,7 @@ fn render_function_call_statement(
 ) -> RenderResult {
     let comp = func_call
         .get_attr("comp")
-        .map(|c| render_component_ref(&c))
+        .map(|c| render_component_ref(&c, cfg))
         .unwrap_or_default();
 
     let args = render_args(func_call, cfg).unwrap_or_default();
@@ -681,7 +684,7 @@ fn format_func_call_with_outputs(
 fn render_reinit_statement(reinit: &Value, cfg: &ExprConfig, indent: &str) -> RenderResult {
     let var = reinit
         .get_attr("variable")
-        .map(|v| render_component_ref(&v))
+        .map(|v| render_component_ref(&v, cfg))
         .unwrap_or_default();
     let value = reinit
         .get_attr("value")
@@ -711,9 +714,9 @@ fn render_assert_statement(assert: &Value, cfg: &ExprConfig, indent: &str) -> Re
 // ── Component reference rendering ────────────────────────────────────
 
 /// Render an AST ComponentReference to a string.
-fn render_component_ref(comp: &Value) -> String {
+fn render_component_ref(comp: &Value, cfg: &ExprConfig) -> String {
     if let Some(s) = comp.as_str() {
-        return super::sanitize_name(s);
+        return super::emitted_symbol_or_fallback(s, cfg);
     }
 
     let Some(parts_val) = get_field(comp, "parts").ok() else {
@@ -728,8 +731,9 @@ fn render_component_ref(comp: &Value) -> String {
         .map(|part| render_component_ref_part(&part))
         .collect();
 
-    let joined = part_strs.join("_");
-    super::sanitize_name(&joined)
+    let joined = part_strs.join(".");
+    let joined = joined.replace(' ', "");
+    super::emitted_symbol_or_fallback(&joined, cfg)
 }
 
 /// Render a single component reference part (identifier + optional subscripts).
@@ -777,7 +781,7 @@ fn render_part_subscripts(part: &Value) -> String {
         .map(|s| render_ast_subscript(&s))
         .collect();
 
-    sub_strs.join(", ")
+    sub_strs.join(",")
 }
 
 /// Render an AST subscript.
@@ -824,7 +828,7 @@ pub(crate) fn render_ast_expression(expr: &Value, cfg: &ExprConfig) -> RenderRes
         return Ok(render_ast_terminal(&terminal, cfg));
     }
     if let Ok(comp_ref) = get_field(expr, "ComponentReference") {
-        return Ok(render_component_ref(&comp_ref));
+        return Ok(render_component_ref(&comp_ref, cfg));
     }
     if let Ok(if_expr) = get_field(expr, "If") {
         return render_ast_if_expr(&if_expr, cfg);
@@ -972,7 +976,7 @@ fn render_ast_if_expr(if_expr: &Value, cfg: &ExprConfig) -> RenderResult {
 fn render_ast_func_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
     let name = func_call
         .get_attr("name")
-        .map(|n| render_component_ref(&n))
+        .map(|n| render_component_ref(&n, cfg))
         .unwrap_or_default();
     let args = func_call
         .get_attr("args")

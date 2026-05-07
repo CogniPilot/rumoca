@@ -3,8 +3,9 @@
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 
-use crate::flat_to_dae_expression;
+use crate::{flat_to_dae_expression, remap_flat_for_equations};
 
 /// Determine scalar count for one initial equation.
 ///
@@ -33,7 +34,9 @@ pub(crate) fn convert_initial_equations<F>(
 ) where
     F: Fn(&flat::Expression, &flat::Model, &FxHashMap<String, usize>) -> usize,
 {
-    for eq in &flat.initial_equations {
+    let mut flat_to_dae_index: HashMap<usize, usize> = HashMap::new();
+
+    for (flat_idx, eq) in flat.initial_equations.iter().enumerate() {
         let inferred_scalar_count = infer_scalar_count(&eq.residual, flat, prefix_counts);
         let Some(scalar_count) =
             initial_equation_scalar_count(eq.scalar_count, inferred_scalar_count)
@@ -46,8 +49,12 @@ pub(crate) fn convert_initial_equations<F>(
             eq.origin.to_string(),
             scalar_count,
         );
+        flat_to_dae_index.insert(flat_idx, dae.initial_equations.len());
         dae.initial_equations.push(dae_eq);
     }
+
+    dae.initial_for_equations =
+        remap_flat_for_equations(&flat.initial_for_equations, &flat_to_dae_index);
 }
 
 #[cfg(test)]

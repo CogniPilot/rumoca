@@ -1110,7 +1110,7 @@ fn infer_clock_timing_from_reverse_alias_sources(
     visiting: &mut HashSet<String>,
 ) -> Option<(f64, f64)> {
     sources.iter().find_map(|(target, source_exprs)| {
-        if target.contains('[') {
+        if !source_target_is_exact_component(target) {
             return None;
         }
         let alias_hit = source_exprs.iter().any(|expr| {
@@ -1134,6 +1134,10 @@ fn infer_clock_timing_from_reverse_alias_sources(
             visiting,
         )
     })
+}
+
+fn source_target_is_exact_component(target: &str) -> bool {
+    dae::component_base_name(target).is_some_and(|base| base == target)
 }
 
 fn infer_clock_timing_from_if_expr(

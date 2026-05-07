@@ -15,6 +15,9 @@
 # ── Physics ───────────────────────────────────────────────────────────────
 # Required. Modelica plant model file (relative to this TOML) + top-level
 # class name.
+# Optional package roots, also relative to this TOML.
+# source_roots = ["../modelica_libraries"]
+
 [physics]
 file = "MyVehicle.mo"
 name = "MyVehicle"

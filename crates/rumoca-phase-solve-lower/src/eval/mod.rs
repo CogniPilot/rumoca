@@ -751,6 +751,19 @@ fn collect_array_values<T: SimFloat>(expr: &dae::Expression, env: &VarEnv<T>, ou
             indices,
             filter,
         } => collect_array_comprehension_values(expr, indices, filter.as_deref(), env, out),
+        dae::Expression::Binary { .. } => {
+            out.extend(eval_array_like_values::<T>(expr, env));
+        }
+        dae::Expression::BuiltinCall {
+            function:
+                dae::BuiltinFunction::Cat
+                | dae::BuiltinFunction::Cross
+                | dae::BuiltinFunction::Linspace
+                | dae::BuiltinFunction::Transpose,
+            ..
+        } => {
+            out.extend(eval_array_like_values::<T>(expr, env));
+        }
         dae::Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
             if let Some(values) = array_values_from_env_name_generic(name.as_str(), env) {
                 out.extend(values);
@@ -926,6 +939,215 @@ fn reshape_flat_matrix(flat_values: &[f64], rows: usize, cols: usize) -> Vec<Vec
     matrix
 }
 
+fn reshape_flat_matrix_generic<T: SimFloat>(
+    flat_values: &[T],
+    rows: usize,
+    cols: usize,
+) -> Vec<Vec<T>> {
+    let mut matrix = Vec::with_capacity(rows);
+    for r in 0..rows {
+        let start = r.saturating_mul(cols).min(flat_values.len());
+        let end = start.saturating_add(cols).min(flat_values.len());
+        let mut row = flat_values[start..end].to_vec();
+        row.resize(cols, T::zero());
+        matrix.push(row);
+    }
+    matrix
+}
+
+fn transpose_matrix<T: SimFloat>(matrix: Vec<Vec<T>>) -> Vec<Vec<T>> {
+    let rows = matrix.len();
+    let cols = matrix.iter().map(Vec::len).max().unwrap_or(0);
+    if rows == 0 || cols == 0 {
+        return Vec::new();
+    }
+
+    let mut out = vec![vec![T::zero(); rows]; cols];
+    for (r, row) in matrix.iter().enumerate() {
+        for (c, out_col) in out.iter_mut().enumerate().take(cols) {
+            if let Some(value) = row.get(c) {
+                out_col[r] = *value;
+            }
+        }
+    }
+    out
+}
+
+fn flatten_matrix<T: SimFloat>(matrix: &[Vec<T>]) -> Vec<T> {
+    matrix.iter().flat_map(|row| row.iter().copied()).collect()
+}
+
+fn eval_matrix_values<T: SimFloat>(expr: &dae::Expression, env: &VarEnv<T>) -> Option<Vec<Vec<T>>> {
+    match expr {
+        dae::Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
+            let flat_values = array_values_from_env_name_generic(name.as_str(), env)?;
+            if flat_values.is_empty() {
+                return Some(Vec::new());
+            }
+            let raw_dims = env.dims.get(name.as_str()).cloned().unwrap_or_default();
+            let inferred = infer_dims_from_values(&raw_dims, flat_values.len());
+            if inferred.len() >= 2 {
+                return Some(reshape_flat_matrix_generic(
+                    &flat_values,
+                    inferred[0].max(1),
+                    inferred[1].max(1),
+                ));
+            }
+            None
+        }
+        dae::Expression::Array { elements, .. }
+            if elements
+                .iter()
+                .all(|element| matches!(element, dae::Expression::Array { .. })) =>
+        {
+            Some(
+                elements
+                    .iter()
+                    .map(|row| eval_array_values::<T>(row, env))
+                    .collect(),
+            )
+        }
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Transpose,
+            args,
+        } if args.len() == 1 => eval_matrix_values(&args[0], env).map(transpose_matrix),
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Matrix,
+            args,
+        } if args.len() == 1 => eval_matrix_values(&args[0], env),
+        _ => None,
+    }
+}
+
+fn eval_matrix_index<T: SimFloat>(
+    expr: &dae::Expression,
+    indices: &[usize],
+    env: &VarEnv<T>,
+) -> Option<T> {
+    if indices.len() != 2 {
+        return None;
+    }
+    let matrix = eval_matrix_values(expr, env)?;
+    let row = indices[0].checked_sub(1)?;
+    let col = indices[1].checked_sub(1)?;
+    matrix.get(row)?.get(col).copied()
+}
+
+fn eval_transpose_values<T: SimFloat>(args: &[dae::Expression], env: &VarEnv<T>) -> Option<Vec<T>> {
+    let arg = args.first()?;
+    let matrix = eval_matrix_values(arg, env)?;
+    Some(flatten_matrix(&transpose_matrix(matrix)))
+}
+
+fn eval_cross_values<T: SimFloat>(args: &[dae::Expression], env: &VarEnv<T>) -> Option<Vec<T>> {
+    if args.len() != 2 {
+        return None;
+    }
+    let lhs = eval_array_like_values(&args[0], env);
+    let rhs = eval_array_like_values(&args[1], env);
+    if lhs.len() != 3 || rhs.len() != 3 {
+        return None;
+    }
+    Some(vec![
+        lhs[1] * rhs[2] - lhs[2] * rhs[1],
+        lhs[2] * rhs[0] - lhs[0] * rhs[2],
+        lhs[0] * rhs[1] - lhs[1] * rhs[0],
+    ])
+}
+
+fn eval_matrix_vector_product<T: SimFloat>(
+    lhs: &dae::Expression,
+    rhs: &dae::Expression,
+    env: &VarEnv<T>,
+) -> Option<Vec<T>> {
+    let matrix = eval_matrix_values(lhs, env)?;
+    let vector = eval_array_like_values(rhs, env);
+    let cols = matrix.iter().map(Vec::len).max().unwrap_or(0);
+    if matrix.is_empty() || cols == 0 || vector.len() != cols {
+        return None;
+    }
+
+    Some(
+        matrix
+            .iter()
+            .map(|row| {
+                (0..cols).fold(T::zero(), |acc, col| {
+                    acc + row.get(col).copied().unwrap_or_else(T::zero) * vector[col]
+                })
+            })
+            .collect(),
+    )
+}
+
+fn eval_vector_matrix_product<T: SimFloat>(
+    lhs: &dae::Expression,
+    rhs: &dae::Expression,
+    env: &VarEnv<T>,
+) -> Option<Vec<T>> {
+    let vector = eval_array_like_values(lhs, env);
+    let matrix = eval_matrix_values(rhs, env)?;
+    let rows = matrix.len();
+    let cols = matrix.iter().map(Vec::len).max().unwrap_or(0);
+    if rows == 0 || cols == 0 || vector.len() != rows {
+        return None;
+    }
+
+    Some(
+        (0..cols)
+            .map(|col| {
+                (0..rows).fold(T::zero(), |acc, row| {
+                    acc + vector[row] * matrix[row].get(col).copied().unwrap_or_else(T::zero)
+                })
+            })
+            .collect(),
+    )
+}
+
+fn eval_matrix_matrix_product<T: SimFloat>(
+    lhs: &dae::Expression,
+    rhs: &dae::Expression,
+    env: &VarEnv<T>,
+) -> Option<Vec<T>> {
+    let lhs_matrix = eval_matrix_values(lhs, env)?;
+    let rhs_matrix = eval_matrix_values(rhs, env)?;
+    let rows = lhs_matrix.len();
+    let inner = lhs_matrix.iter().map(Vec::len).max().unwrap_or(0);
+    let rhs_rows = rhs_matrix.len();
+    let cols = rhs_matrix.iter().map(Vec::len).max().unwrap_or(0);
+    if rows == 0 || inner == 0 || rhs_rows != inner || cols == 0 {
+        return None;
+    }
+
+    let product: Vec<Vec<T>> = (0..rows)
+        .map(|row| {
+            (0..cols)
+                .map(|col| {
+                    (0..inner).fold(T::zero(), |acc, k| {
+                        let l = lhs_matrix[row].get(k).copied().unwrap_or_else(T::zero);
+                        let r = rhs_matrix[k].get(col).copied().unwrap_or_else(T::zero);
+                        acc + l * r
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    Some(flatten_matrix(&product))
+}
+
+fn eval_binary_array_values<T: SimFloat>(
+    op: &OpBinary,
+    lhs: &dae::Expression,
+    rhs: &dae::Expression,
+    env: &VarEnv<T>,
+) -> Option<Vec<T>> {
+    match op {
+        OpBinary::Mul(_) => eval_matrix_matrix_product(lhs, rhs, env)
+            .or_else(|| eval_matrix_vector_product(lhs, rhs, env))
+            .or_else(|| eval_vector_matrix_product(lhs, rhs, env)),
+        _ => None,
+    }
+}
+
 fn eval_array_like_values<T: SimFloat>(expr: &dae::Expression, env: &VarEnv<T>) -> Vec<T> {
     match expr {
         dae::Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
@@ -951,6 +1173,16 @@ fn eval_array_like_values<T: SimFloat>(expr: &dae::Expression, env: &VarEnv<T>) 
             function: dae::BuiltinFunction::Linspace,
             args,
         } => eval_linspace_values(args, env),
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Transpose,
+            args,
+        } => eval_transpose_values(args, env).unwrap_or_else(|| vec![eval_expr::<T>(expr, env)]),
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Cross,
+            args,
+        } => eval_cross_values(args, env).unwrap_or_else(|| vec![eval_expr::<T>(expr, env)]),
+        dae::Expression::Binary { op, lhs, rhs } => eval_binary_array_values(op, lhs, rhs, env)
+            .unwrap_or_else(|| vec![eval_expr::<T>(expr, env)]),
         dae::Expression::BuiltinCall { function, args } if args.len() == 1 => {
             let values = eval_array_like_values::<T>(&args[0], env);
             if values.len() > 1

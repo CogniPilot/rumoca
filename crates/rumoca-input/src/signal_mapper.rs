@@ -402,12 +402,12 @@ mod tests {
         engine.apply_derive_for_test(); // initialize rc.0..rc.4
 
         let stepper_vars: HashMap<String, f64> = [
-            ("gyro_x", 0.1),
-            ("gyro_y", 0.2),
-            ("gyro_z", 0.3),
-            ("accel_x", 1.0),
-            ("accel_y", 2.0),
-            ("accel_z", -9.81),
+            ("gyro[1]", 0.1),
+            ("gyro[2]", 0.2),
+            ("gyro[3]", 0.3),
+            ("accel[1]", 1.0),
+            ("accel[2]", 2.0),
+            ("accel[3]", -9.81),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -453,8 +453,8 @@ mod tests {
         engine.apply_derive_for_test();
 
         let mut stepper_vars: HashMap<String, f64> = HashMap::new();
-        stepper_vars.insert("q0".into(), 0.987);
-        stepper_vars.insert("px".into(), 1.5);
+        stepper_vars.insert("quat[1]".into(), 0.987);
+        stepper_vars.insert("position[1]".into(), 1.5);
         let get = stepper_get_fn(&stepper_vars);
         let rt = make_rt(1.25, &get);
 

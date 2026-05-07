@@ -130,7 +130,9 @@ fn lookup_known_assignment_variable<'a>(
 }
 
 fn array_alias_linear_size(dae_model: &dae::Dae, lhs: &str, rhs: &str) -> Option<usize> {
-    if lhs.contains('[') || rhs.contains('[') {
+    let lhs_shape = crate::runtime::assignment::assignment_target_shape(dae_model, lhs)?;
+    let rhs_shape = crate::runtime::assignment::assignment_target_shape(dae_model, rhs)?;
+    if !lhs_shape.is_exact_variable || !rhs_shape.is_exact_variable {
         return None;
     }
 
@@ -149,12 +151,21 @@ fn array_alias_linear_size(dae_model: &dae::Dae, lhs: &str, rhs: &str) -> Option
 fn expand_array_anchor_names(dae_model: &dae::Dae, anchors: &mut HashSet<String>) {
     let existing: Vec<String> = anchors.iter().cloned().collect();
     for name in existing {
-        if name.contains('[') {
+        let Some(name_shape) =
+            crate::runtime::assignment::assignment_target_shape(dae_model, name.as_str())
+        else {
+            continue;
+        };
+        if !name_shape.is_exact_variable {
             continue;
         }
         let has_explicit_indexed_anchor = anchors.iter().any(|candidate| {
             candidate != &name
-                && candidate.contains('[')
+                && crate::runtime::assignment::assignment_target_shape(
+                    dae_model,
+                    candidate.as_str(),
+                )
+                .is_some_and(|shape| !shape.is_exact_variable)
                 && dae::component_base_name(candidate.as_str()).is_some_and(|base| base == name)
         });
         if has_explicit_indexed_anchor {
@@ -189,6 +200,23 @@ fn insert_alias_edge(adjacency: &mut HashMap<String, Vec<String>>, lhs: String, 
     adjacency.entry(rhs).or_default().push(lhs);
 }
 
+fn insert_scalar_index_base_edge(
+    dae_model: &dae::Dae,
+    adjacency: &mut HashMap<String, Vec<String>>,
+    name: &str,
+) {
+    let Some(base) = dae::component_base_name(name).filter(|base| base != name) else {
+        return;
+    };
+    let Some(base_shape) = crate::runtime::assignment::assignment_target_shape(dae_model, &base)
+    else {
+        return;
+    };
+    if base_shape.is_exact_variable && !base_shape.is_aggregate {
+        insert_alias_edge(adjacency, name.to_string(), base);
+    }
+}
+
 fn insert_runtime_alias_edges(
     dae_model: &dae::Dae,
     adjacency: &mut HashMap<String, Vec<String>>,
@@ -211,6 +239,8 @@ fn insert_runtime_alias_edges(
         return;
     }
 
+    insert_scalar_index_base_edge(dae_model, adjacency, target);
+    insert_scalar_index_base_edge(dae_model, adjacency, source);
     insert_alias_edge(adjacency, target.to_string(), source.to_string());
 }
 
@@ -220,7 +250,9 @@ fn collect_explicit_array_alias_values(
     source: &str,
     dst: &str,
 ) -> Option<(Vec<i64>, Vec<f64>)> {
-    if source.contains('[') || dst.contains('[') {
+    let source_shape = crate::runtime::assignment::assignment_target_shape(dae_model, source)?;
+    let dst_shape = crate::runtime::assignment::assignment_target_shape(dae_model, dst)?;
+    if !source_shape.is_exact_variable || !dst_shape.is_exact_variable {
         return None;
     }
 
@@ -794,10 +826,9 @@ pub fn propagate_runtime_alias_components_from_env_with_context(
     let runtime_anchors = &ctx.runtime_anchors;
     let is_runtime_anchor = |name: &str| {
         runtime_anchors.contains(name)
-            || (!name.contains('[')
-                && crate::runtime::layout::solver_idx_for_target(name, name_to_idx)
-                    .and_then(|idx| names.get(idx))
-                    .is_some_and(|solver_name| runtime_anchors.contains(solver_name)))
+            || crate::runtime::layout::solver_idx_for_target(name, name_to_idx)
+                .and_then(|idx| names.get(idx))
+                .is_some_and(|solver_name| runtime_anchors.contains(solver_name))
     };
 
     let mut visited: HashSet<String> = HashSet::new();

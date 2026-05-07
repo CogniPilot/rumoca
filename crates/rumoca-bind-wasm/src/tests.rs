@@ -1847,3 +1847,57 @@ fn test_simulate_model_wrapper_surfaces_velocity_series_for_reinit_model() {
 
     clear_source_root_cache();
 }
+
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_simulate_model_wrapper_advances_after_relation_root_crossing() {
+    let _guard = session_test_guard();
+    clear_source_root_cache();
+
+    let source = r#"
+    model RootCrossWasmSmoke
+      Real x(start = 0.0);
+      Real s(start = 0.0);
+      Real y;
+    equation
+      der(x) = 1.0;
+      der(s) = if x < 0.53 then 0.0 else 1.0;
+      y = if x < 0.53 then 0.0 else 1.0;
+    end RootCrossWasmSmoke;
+    "#;
+
+    let json = simulate_model(source, "RootCrossWasmSmoke", 1.0, 0.05, "auto")
+        .expect("simulate_model wrapper should advance after relation root crossing");
+    let simulation: serde_json::Value =
+        serde_json::from_str(&json).expect("simulation payload should be valid JSON");
+    let payload = simulation
+        .get("payload")
+        .expect("simulation output should include nested payload");
+    let names = payload["names"]
+        .as_array()
+        .expect("simulation payload should include names");
+    let all_data = payload["allData"]
+        .as_array()
+        .expect("simulation payload should include allData columns");
+    let name_index = |name: &str| {
+        names
+            .iter()
+            .position(|value| value.as_str() == Some(name))
+            .expect("expected named simulation series")
+    };
+    let values = |name: &str| -> Vec<f64> {
+        all_data[name_index(name) + 1]
+            .as_array()
+            .expect("series should be present")
+            .iter()
+            .map(|value| value.as_f64().expect("samples must be numeric"))
+            .collect()
+    };
+    let y = values("y");
+    let s = values("s");
+
+    assert!(y.iter().copied().fold(0.0, f64::max) >= 0.9);
+    assert!(s.last().copied().unwrap_or(0.0) >= 0.3);
+
+    clear_source_root_cache();
+}

@@ -335,6 +335,31 @@ pub fn dims_total_size(dims: &[i64]) -> Option<usize> {
     Some(total)
 }
 
+struct DiscreteArrayTargetShape {
+    dims: Vec<i64>,
+    size: usize,
+}
+
+fn discrete_array_target_shape(
+    dae: &dae::Dae,
+    env: &VarEnv<f64>,
+    target: &str,
+) -> Option<DiscreteArrayTargetShape> {
+    if let Some(shape) = crate::runtime::assignment::assignment_target_shape(dae, target)
+        && shape.is_aggregate
+        && let Some(size) = dims_total_size(&shape.dims)
+    {
+        return Some(DiscreteArrayTargetShape {
+            dims: shape.dims,
+            size,
+        });
+    }
+
+    let dims = env.dims.get(target)?.clone();
+    let size = dims_total_size(&dims)?;
+    (size > 1).then_some(DiscreteArrayTargetShape { dims, size })
+}
+
 fn eval_discrete_condition_bool(
     dae: &dae::Dae,
     condition: &dae::Expression,
@@ -631,25 +656,21 @@ fn apply_scalar_discrete_partition_equation_with_override(
         );
     }
 
-    if !target.contains('[')
-        && let Some(dims) = env.dims.get(target).cloned()
-        && let Some(size) = dims_total_size(&dims)
-        && size > 1
-    {
+    if let Some(shape) = discrete_array_target_shape(dae, env, target) {
         let mut values = evaluate_discrete_assignment_array_values(
             dae,
             target,
             solution,
             env,
-            size,
+            shape.size,
             implicit_clock_active,
         );
         if let dae::Expression::VarRef { name, subscripts } = solution
             && subscripts.is_empty()
         {
-            let mut indexed_values = Vec::with_capacity(size);
+            let mut indexed_values = Vec::with_capacity(shape.size);
             let mut has_indexed_value = false;
-            for index in 1..=size {
+            for index in 1..=shape.size {
                 let (value, sourced_from_indexed) =
                     indexed_source_value_or_default(env, name.as_str(), index, values[index - 1]);
                 has_indexed_value |= sourced_from_indexed;
@@ -667,7 +688,7 @@ fn apply_scalar_discrete_partition_equation_with_override(
         if let Some(first) = values.first().copied() {
             changed_any |= set_target_value(env, target, first);
         }
-        rumoca_phase_solve_lower::set_array_entries(env, target, &dims, &values);
+        rumoca_phase_solve_lower::set_array_entries(env, target, &shape.dims, &values);
         return changed_any;
     }
 

@@ -553,11 +553,10 @@ jobs:
 
       - name: Prepare GitHub Pages content
         run: |
-          mkdir -p gh-pages/pkg
-          if [ -d pkg/release-full-web ]; then
-            PKG_SUBDIR="release-full-web"
-          elif [ -d pkg/release-full-web-rayon ]; then
+          if [ -d pkg/release-full-web-rayon ]; then
             PKG_SUBDIR="release-full-web-rayon"
+          elif [ -d pkg/release-full-web ]; then
+            PKG_SUBDIR="release-full-web"
           else
             echo "Missing expected WASM package subdir under pkg/"
             find pkg -maxdepth 2 -type f || true
@@ -565,19 +564,23 @@ jobs:
           fi
           echo "Using pkg subdir: $PKG_SUBDIR"
 
-          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm.js" gh-pages/pkg/
-          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_bg.wasm" gh-pages/pkg/
-          cp "pkg/$PKG_SUBDIR/rumoca_worker.js" gh-pages/pkg/
-          cp "pkg/$PKG_SUBDIR/parse_worker.js" gh-pages/pkg/
-          cp "pkg/$PKG_SUBDIR/package.json" gh-pages/pkg/
-          cp -r "pkg/$PKG_SUBDIR/snippets" gh-pages/pkg/ 2>/dev/null || true
+          mkdir -p "gh-pages/pkg/$PKG_SUBDIR"
+          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/rumoca_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/parse_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/package.json" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/rumoca_package_meta.json" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
+          cp -r "pkg/$PKG_SUBDIR/snippets" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
 
           cp editors/wasm/rumoca.png gh-pages/
           cp editors/wasm/coi-serviceworker.js gh-pages/
           cp -r editors/wasm/src gh-pages/
           cp -r editors/wasm/vendor gh-pages/
 
-          sed 's|\.\./\.\./pkg/|./pkg/|g' \
+          sed \
+              -e "s|window.rumocaWasmPkgBase = '../../pkg';|window.rumocaWasmPkgBase = './pkg';|g" \
+              -e "s|window.rumocaWasmPkgSubdir = 'release-full-web-rayon';|window.rumocaWasmPkgSubdir = '$PKG_SUBDIR';|g" \
               editors/wasm/index.html > gh-pages/index.html
 
           echo "=== GitHub Pages content ==="

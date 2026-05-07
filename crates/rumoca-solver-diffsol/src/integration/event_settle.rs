@@ -153,21 +153,26 @@ where
         input.param_values,
         input.opts.t_start,
     )?;
-    let projected = maybe_project_scheduled_event_state(
-        input.dae,
-        startup_y.as_slice(),
-        input.n_x,
-        input.opts.t_start,
-        input.opts.atol,
-        input.budget,
-    )?;
-    let projection_changed = projected
-        .iter()
-        .zip(startup_y.iter())
-        .any(|(lhs, rhs)| (lhs - rhs).abs() > 1.0e-12);
-    if projection_changed {
-        startup_y = projected;
-    }
+    let projection_changed = if startup_updates > 0 {
+        let projected = maybe_project_scheduled_event_state(
+            input.dae,
+            startup_y.as_slice(),
+            input.n_x,
+            input.opts.t_start,
+            input.opts.atol,
+            input.budget,
+        )?;
+        let changed = projected
+            .iter()
+            .zip(startup_y.iter())
+            .any(|(lhs, rhs)| (lhs - rhs).abs() > 1.0e-12);
+        if changed {
+            startup_y = projected;
+        }
+        changed
+    } else {
+        false
+    };
     if startup_updates > 0 || projection_changed {
         overwrite_solver_state::<Eqn, S>(
             solver,

@@ -1,7 +1,7 @@
 use super::*;
 use rumoca_sim_core::core::OptionalTimer;
 
-fn trace_step_failure_diagnostics(
+pub(super) fn trace_step_failure_diagnostics(
     dae: &Dae,
     compiled_runtime: &problem::CompiledRuntimeNewtonContext,
     y: &[f64],
@@ -810,6 +810,9 @@ fn next_restart_time_if_synthetic_roots_still_armed(
     if !armed {
         return None;
     }
+    if synthetic_root_conditions_reference_continuous_unknowns(dae) {
+        return None;
+    }
     // Synthetic roots are evaluated with a numeric clearance band, so when the
     // same surface is still armed after projection we need to move by at least
     // that clearance width instead of reusing the generic event epsilon. This
@@ -817,6 +820,36 @@ fn next_restart_time_if_synthetic_roots_still_armed(
     let next_restart_t =
         event_restart_time(opts, restart_t).max((restart_t + clearance).min(opts.t_end));
     (!time_match_with_tol(next_restart_t, restart_t)).then_some(next_restart_t)
+}
+
+fn synthetic_root_conditions_reference_continuous_unknowns(dae: &Dae) -> bool {
+    dae.synthetic_root_conditions
+        .iter()
+        .any(|expr| expr_references_continuous_unknown(dae, expr))
+}
+
+fn expr_references_continuous_unknown(dae: &Dae, expr: &Expression) -> bool {
+    let mut refs = std::collections::HashSet::new();
+    expr.collect_var_refs(&mut refs);
+    refs.iter()
+        .filter(|name| name.as_str() != "time")
+        .any(|name| dae_name_is_continuous_unknown(dae, name))
+}
+
+fn dae_name_is_continuous_unknown(dae: &Dae, name: &VarName) -> bool {
+    if dae.states.contains_key(name)
+        || dae.algebraics.contains_key(name)
+        || dae.outputs.contains_key(name)
+    {
+        return true;
+    }
+    let Some(base) = dae::component_base_name(name.as_str()) else {
+        return false;
+    };
+    let base = VarName::new(base);
+    dae.states.contains_key(&base)
+        || dae.algebraics.contains_key(&base)
+        || dae.outputs.contains_key(&base)
 }
 
 fn profile_startup_step_hint(opts: &SimOptions, profile: SolverStartupProfile) -> Option<f64> {
@@ -917,14 +950,18 @@ where
     let stop_t = active_stop;
     let current_t = solver.state().t;
     let y_current = solver_state_to_vec::<Eqn, S>(solver);
-    let y_at_stop = sample_state_at_stop(current_t, stop_t, &y_current, |t_sample| {
-        solver_interpolate_to_vec::<Eqn, S>(
-            solver,
-            t_sample,
-            ctx.budget,
-            "interpolate(active stop recovery)",
-        )
-    })?;
+    let y_at_stop = if near_active_stop_for_recovery(current_t, stop_t) {
+        y_current
+    } else {
+        sample_state_at_stop(current_t, stop_t, &y_current, |t_sample| {
+            solver_interpolate_to_vec::<Eqn, S>(
+                solver,
+                t_sample,
+                ctx.budget,
+                "interpolate(active stop recovery)",
+            )
+        })?
+    };
     let projected = maybe_project_scheduled_event_state(
         ctx.dae,
         &y_at_stop,
@@ -1033,6 +1070,20 @@ where
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'a, Eqn>,
 {
+    apply_event_updates_at_time_with_restart_cap::<Eqn, S>(solver, t_event, ctx, None)
+}
+
+pub(super) fn apply_event_updates_at_time_with_restart_cap<'a, Eqn, S>(
+    solver: &mut S,
+    t_event: f64,
+    ctx: &SolverLoopContext,
+    restart_cap: Option<f64>,
+) -> Result<EventObservationResult, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
     let mut y_at_event = sample_event_state::<Eqn, S>(solver, t_event, ctx)?;
     refresh_pre_values_from_state(
         ctx.dae,
@@ -1040,7 +1091,17 @@ where
         ctx.param_values.as_slice(),
         t_event,
     );
-    let mut restart_t = event_restart_time(ctx.opts, t_event);
+    let mut restart_t = capped_restart_time(event_restart_time(ctx.opts, t_event), restart_cap);
+    if !runtime_event_has_discrete_updates(ctx.dae) {
+        return apply_continuous_event_projection::<Eqn, S>(
+            solver,
+            ctx,
+            y_at_event,
+            t_event,
+            restart_t,
+            restart_cap,
+        );
+    }
     let use_frozen_pre = runtime_event_uses_frozen_pre_values(
         ctx.dae,
         ctx.opts,
@@ -1056,23 +1117,11 @@ where
     // SPEC_0022 SIM-001/SIM-008 (MLS App B): event updates must settle before
     // continuous integration resumes, so keep nudging the right-limit restart
     // if a synthetic root is still numerically on the zero surface.
-    for _ in 0..SYNTHETIC_ROOT_RESTART_RECHECK_LIMIT {
-        let Some(next_restart_t) = next_restart_time_if_synthetic_roots_still_armed(
-            &ctx.compiled_synthetic_root,
-            ctx.dae,
-            projected.as_slice(),
-            ctx.param_values.as_slice(),
-            ctx.opts,
-            restart_t,
-            ctx.opts.atol,
-        ) else {
+    loop {
+        let next_restart_t =
+            advance_synthetic_root_restart_time(ctx, projected.as_slice(), restart_t, restart_cap);
+        if time_match_with_tol(next_restart_t, restart_t) {
             break;
-        };
-        if sim_trace_enabled() {
-            eprintln!(
-                "[sim-trace] event restart synthetic-root clearance: t={} -> {}",
-                restart_t, next_restart_t
-            );
         }
         restart_t = next_restart_t;
         projected = project_event_state_with_seed_env(ctx, &y_at_event, restart_t, &event_env)?;
@@ -1111,6 +1160,113 @@ where
         state: event_observation_state,
         runtime_env: event_capture_env,
     })
+}
+
+fn apply_continuous_event_projection<'a, Eqn, S>(
+    solver: &mut S,
+    ctx: &SolverLoopContext,
+    y_at_event: Vec<f64>,
+    t_event: f64,
+    mut restart_t: f64,
+    restart_cap: Option<f64>,
+) -> Result<EventObservationResult, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    restart_t =
+        advance_synthetic_root_restart_time(ctx, y_at_event.as_slice(), restart_t, restart_cap);
+    let event_env = rumoca_sim_core::runtime::event::build_runtime_state_env(
+        ctx.dae,
+        y_at_event.as_slice(),
+        ctx.param_values.as_slice(),
+        t_event,
+    );
+    let event_observation_state =
+        project_event_state_with_seed_env(ctx, &y_at_event, t_event, &event_env)?;
+    let mut projected = project_event_state_with_seed_env(ctx, &y_at_event, restart_t, &event_env)?;
+    // SPEC_0022 SIM-001/SIM-008 (MLS App B): even continuous-only event
+    // projections can move solver variables that synthetic roots observe, so
+    // advance from the projected right-limit state before resuming.
+    loop {
+        let next_restart_t =
+            advance_synthetic_root_restart_time(ctx, projected.as_slice(), restart_t, restart_cap);
+        if time_match_with_tol(next_restart_t, restart_t) {
+            break;
+        }
+        restart_t = next_restart_t;
+        projected = project_event_state_with_seed_env(ctx, &y_at_event, restart_t, &event_env)?;
+    }
+    overwrite_solver_state::<Eqn, S>(
+        solver,
+        SolverStateOverwriteInput {
+            dae: ctx.dae,
+            opts: ctx.opts,
+            startup_profile: ctx.startup_profile,
+            compiled_runtime: &ctx.compiled_runtime,
+            param_values: ctx.param_values.as_slice(),
+            n_x: ctx.n_x,
+            t: restart_t,
+            y: projected.as_slice(),
+        },
+    )?;
+    refresh_pre_values_from_state(
+        ctx.dae,
+        solver.state().y.as_slice(),
+        ctx.param_values.as_slice(),
+        restart_t,
+    );
+    let event_capture_env =
+        build_event_capture_env(ctx, &event_observation_state, t_event, &event_env);
+    Ok(EventObservationResult {
+        state: event_observation_state,
+        runtime_env: event_capture_env,
+    })
+}
+
+fn runtime_event_has_discrete_updates(dae: &Dae) -> bool {
+    !(dae.f_z.is_empty() && dae.f_m.is_empty())
+}
+
+fn advance_synthetic_root_restart_time(
+    ctx: &SolverLoopContext,
+    y: &[f64],
+    mut restart_t: f64,
+    restart_cap: Option<f64>,
+) -> f64 {
+    for _ in 0..SYNTHETIC_ROOT_RESTART_RECHECK_LIMIT {
+        let Some(next_restart_t) = next_restart_time_if_synthetic_roots_still_armed(
+            &ctx.compiled_synthetic_root,
+            ctx.dae,
+            y,
+            ctx.param_values.as_slice(),
+            ctx.opts,
+            restart_t,
+            ctx.opts.atol,
+        ) else {
+            break;
+        };
+        let next_restart_t = capped_restart_time(next_restart_t, restart_cap);
+        if time_match_with_tol(next_restart_t, restart_t) {
+            break;
+        }
+        if sim_trace_enabled() {
+            eprintln!(
+                "[sim-trace] event restart synthetic-root clearance: t={} -> {}",
+                restart_t, next_restart_t
+            );
+        }
+        restart_t = next_restart_t;
+    }
+    restart_t
+}
+
+fn capped_restart_time(restart_t: f64, restart_cap: Option<f64>) -> f64 {
+    match restart_cap {
+        Some(cap) if cap.is_finite() => restart_t.min(cap),
+        _ => restart_t,
+    }
 }
 
 fn sample_event_state<'a, Eqn, S>(

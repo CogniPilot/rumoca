@@ -15,6 +15,8 @@ _native.cpython*
 .vscode/
 dev/
 pkg/
+gh-pages/
+*.fmu
 # Staged temporarily by `rum wasm build` so wasm-pack can include crate-local license metadata.
 crates/rumoca-bind-wasm/LICENSE
 perf.data*
@@ -35,6 +37,7 @@ msl
 !crates/rumoca-viz-web/web/*.html
 .rumoca
 examples/.rumoca/results
+rumoca_trace*.csv
 
 # Working notes (not for commit)
 crates/rumoca/tests/CASADI_UPSTREAM_*.md

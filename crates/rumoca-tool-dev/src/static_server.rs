@@ -5,7 +5,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 
-pub(crate) fn serve(root: &Path, explicit_port: Option<u16>) -> Result<()> {
+pub(crate) fn serve(
+    root: &Path,
+    explicit_port: Option<u16>,
+    editor_pkg_subdir: Option<&str>,
+) -> Result<()> {
     let port = explicit_port
         .or_else(|| std::env::var("PORT").ok().and_then(|raw| raw.parse().ok()))
         .unwrap_or(8080);
@@ -14,12 +18,15 @@ pub(crate) fn serve(root: &Path, explicit_port: Option<u16>) -> Result<()> {
 
     println!("Serving on http://localhost:{port}");
     println!("Editor URL: http://localhost:{port}/editors/wasm/index.html");
+    if let Some(pkg_subdir) = editor_pkg_subdir {
+        println!("WASM package subdir: {pkg_subdir}");
+    }
     println!("Press Ctrl+C to stop.");
 
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                if let Err(error) = handle_http_request(root, &mut stream) {
+                if let Err(error) = handle_http_request(root, editor_pkg_subdir, &mut stream) {
                     eprintln!("serve error: {error:#}");
                 }
             }
@@ -29,7 +36,11 @@ pub(crate) fn serve(root: &Path, explicit_port: Option<u16>) -> Result<()> {
     Ok(())
 }
 
-fn handle_http_request(root: &Path, stream: &mut TcpStream) -> Result<()> {
+fn handle_http_request(
+    root: &Path,
+    editor_pkg_subdir: Option<&str>,
+    stream: &mut TcpStream,
+) -> Result<()> {
     let mut reader = BufReader::new(
         stream
             .try_clone()
@@ -76,6 +87,10 @@ fn handle_http_request(root: &Path, stream: &mut TcpStream) -> Result<()> {
 
     match resolve_static_path(root, url) {
         Some(path) if path.is_file() => {
+            if is_wasm_editor_index(root, &path) {
+                let body = wasm_editor_index_body(&path, editor_pkg_subdir)?;
+                return write_http_response(stream, 200, "OK", "text/html", body.as_bytes());
+            }
             let body =
                 fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
             write_http_response(stream, 200, "OK", mime_for_path(&path), &body)
@@ -101,6 +116,22 @@ fn write_http_response(
     stream.write_all(body).context("failed writing HTTP body")?;
     stream.flush().context("failed flushing HTTP response")?;
     Ok(())
+}
+
+fn is_wasm_editor_index(root: &Path, path: &Path) -> bool {
+    path == root.join("editors/wasm/index.html")
+}
+
+fn wasm_editor_index_body(path: &Path, editor_pkg_subdir: Option<&str>) -> Result<String> {
+    let mut body =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if let Some(pkg_subdir) = editor_pkg_subdir {
+        body = body.replace(
+            "window.rumocaWasmPkgSubdir = 'release-full-web-rayon';",
+            &format!("window.rumocaWasmPkgSubdir = '{pkg_subdir}';"),
+        );
+    }
+    Ok(body)
 }
 
 fn resolve_static_path(root: &Path, url: &str) -> Option<PathBuf> {

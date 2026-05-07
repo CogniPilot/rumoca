@@ -19,6 +19,11 @@ use rumoca_transport_udp::UdpConfig;
 pub struct SimulationConfig {
     pub sim: SimConfig,
 
+    /// Additional Modelica package roots loaded before the physics/controller
+    /// compile unit. Paths are resolved relative to the config file by the CLI.
+    #[serde(default)]
+    pub source_roots: Vec<String>,
+
     /// Legacy flat `[udp]` section. Prefer `[transport.udp]` in new configs.
     #[serde(default)]
     pub udp: Option<UdpConfig>,
@@ -295,6 +300,7 @@ bfbs = []
             .join("quadrotor_cerebri.toml");
         let cfg = SimulationConfig::load(&path).expect("quadrotor_cerebri.toml must parse");
         assert!(cfg.has_fb());
+        assert_eq!(cfg.source_roots, vec!["../modelica_libraries".to_string()]);
         assert_eq!(cfg.locals["rc"].len, Some(16));
     }
 }

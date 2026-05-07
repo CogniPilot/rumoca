@@ -173,22 +173,13 @@ fn resolve_lowered_pre_key_value(key: &str, env: &VarEnv<f64>) -> Option<f64> {
     {
         return Some(value);
     }
-    if target.contains('[') {
-        if let Some(value) = get_pre_value(target) {
-            return Some(value);
-        }
-        if let Some(base_name) = dae::component_base_name(target)
-            && let Some(value) = get_pre_value(base_name.as_str())
-        {
-            return Some(value);
-        }
-        if let Some(static_key) = expr_env_key(&dae::Expression::VarRef {
-            name: dae::VarName::new(target),
-            subscripts: vec![],
-        }) && let Some(value) = get_pre_value(static_key.as_str())
-        {
-            return Some(value);
-        }
+    if let Some(static_key) = expr_env_key(&dae::Expression::VarRef {
+        name: dae::VarName::new(target),
+        subscripts: vec![],
+    }) && static_key != target
+        && let Some(value) = get_pre_value(static_key.as_str())
+    {
+        return Some(value);
     }
     let _ = env;
     None

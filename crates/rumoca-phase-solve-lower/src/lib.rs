@@ -35,7 +35,7 @@ pub mod cranelift;
 pub mod wasm;
 
 pub use ad::{lower_initial_residual_ad, lower_residual_ad};
-pub use layout::build_var_layout;
+pub use layout::{build_var_layout, build_var_layout_with_solver_len};
 pub use lower::{
     LowerError, LoweredExpression, lower_discrete_rhs, lower_expression,
     lower_expression_rows_from_expressions,
@@ -64,9 +64,13 @@ pub use eval::{
 pub use cranelift::{
     Backend, CompileError, CompiledExpressionRows, CompiledJacobianV, CompiledResidual,
     compile_discrete_rhs, compile_expression_row_block, compile_expressions,
-    compile_initial_expressions, compile_initial_jacobian_v, compile_initial_residual,
-    compile_jacobian_row_block, compile_jacobian_v, compile_residual, compile_residual_row_block,
-    compile_root_conditions,
+    compile_expressions_with_solver_len, compile_initial_expressions,
+    compile_initial_expressions_with_solver_len, compile_initial_jacobian_v,
+    compile_initial_jacobian_v_with_solver_len, compile_initial_residual,
+    compile_initial_residual_with_solver_len, compile_jacobian_row_block, compile_jacobian_v,
+    compile_jacobian_v_with_solver_len, compile_residual, compile_residual_row_block,
+    compile_residual_with_solver_len, compile_root_conditions,
+    compile_root_conditions_with_solver_len,
 };
 #[cfg(feature = "wasm")]
 pub use wasm::{
@@ -121,11 +125,12 @@ pub fn build_solver_name_index_maps(
     y_len: usize,
 ) -> solve::SolverNameIndexMaps {
     let solver_names = collect_solver_names(dae_model, y_len);
-    let name_to_idx = solver_names
+    let mut name_to_idx: HashMap<String, usize> = solver_names
         .iter()
         .enumerate()
         .map(|(idx, name)| (name.clone(), idx))
         .collect();
+    insert_solver_name_aliases(dae_model, y_len, &mut name_to_idx);
     let mut base_to_indices: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, name) in solver_names.iter().enumerate() {
         let base = dae::component_base_name(name).unwrap_or_else(|| name.to_string());
@@ -168,4 +173,142 @@ fn collect_solver_names(dae_model: &dae::Dae, solver_len: usize) -> Vec<String> 
     );
     names.truncate(solver_len);
     names
+}
+
+fn insert_solver_name_aliases(
+    dae_model: &dae::Dae,
+    solver_len: usize,
+    name_to_idx: &mut HashMap<String, usize>,
+) {
+    let mut offset = 0usize;
+    for (name, var) in dae_model
+        .states
+        .iter()
+        .chain(dae_model.algebraics.iter())
+        .chain(dae_model.outputs.iter())
+    {
+        let size = var.size();
+        if size == 0 {
+            continue;
+        }
+        if offset >= solver_len {
+            break;
+        }
+
+        let visible_size = size.min(solver_len - offset);
+        if size > 1 {
+            name_to_idx
+                .entry(name.as_str().to_string())
+                .or_insert(offset);
+        }
+        for flat_idx in 0..visible_size {
+            if let Some(subs) = flat_index_to_subscripts(flat_idx, &var.dims)
+                && subs.len() > 1
+            {
+                name_to_idx
+                    .entry(format_subscript_key(name.as_str(), &subs))
+                    .or_insert(offset + flat_idx);
+            }
+        }
+        offset += size;
+    }
+}
+
+fn flat_index_to_subscripts(flat_index: usize, dims: &[i64]) -> Option<Vec<usize>> {
+    if dims.is_empty() {
+        return None;
+    }
+    let mut dims_usize = Vec::with_capacity(dims.len());
+    for &d in dims {
+        let dim = usize::try_from(d).ok()?;
+        if dim == 0 {
+            return None;
+        }
+        dims_usize.push(dim);
+    }
+
+    let mut remainder = flat_index;
+    let mut subs_rev = Vec::with_capacity(dims_usize.len());
+    for dim in dims_usize.iter().rev().copied() {
+        subs_rev.push((remainder % dim) + 1);
+        remainder /= dim;
+    }
+    if remainder != 0 {
+        return None;
+    }
+    subs_rev.reverse();
+    Some(subs_rev)
+}
+
+fn format_subscript_key(name: &str, subs: &[usize]) -> String {
+    let mut key = String::from(name);
+    key.push('[');
+    for (idx, sub) in subs.iter().enumerate() {
+        if idx > 0 {
+            key.push(',');
+        }
+        key.push_str(&sub.to_string());
+    }
+    key.push(']');
+    key
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn array_var(name: &str, dims: &[i64]) -> dae::Variable {
+        dae::Variable {
+            name: dae::VarName::new(name),
+            dims: dims.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn solver_name_index_maps_include_matrix_aliases() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .algebraics
+            .insert(dae::VarName::new("M"), array_var("M", &[3, 4]));
+
+        let maps = build_solver_name_index_maps(&dae_model, 12);
+
+        assert_eq!(
+            maps.names,
+            (1..=12).map(|idx| format!("M[{idx}]")).collect::<Vec<_>>()
+        );
+        assert_eq!(maps.name_to_idx.get("M"), Some(&0));
+        assert_eq!(maps.name_to_idx.get("M[1,1]"), Some(&0));
+        assert_eq!(maps.name_to_idx.get("M[1,2]"), Some(&1));
+        assert_eq!(maps.name_to_idx.get("M[2,1]"), Some(&4));
+        assert_eq!(maps.name_to_idx.get("M[3,4]"), Some(&11));
+        assert_eq!(
+            solve::solver_idx_for_target("M[2,1]", &maps.name_to_idx),
+            Some(4)
+        );
+        assert_eq!(
+            maps.base_to_indices.get("M").cloned().unwrap_or_default(),
+            (0..12).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn solver_name_index_aliases_respect_truncated_solver_len() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .algebraics
+            .insert(dae::VarName::new("M"), array_var("M", &[2, 2]));
+
+        let maps = build_solver_name_index_maps(&dae_model, 3);
+
+        assert_eq!(
+            maps.names,
+            vec!["M[1]".to_string(), "M[2]".to_string(), "M[3]".to_string()]
+        );
+        assert_eq!(maps.name_to_idx.get("M[1,1]"), Some(&0));
+        assert_eq!(maps.name_to_idx.get("M[1,2]"), Some(&1));
+        assert_eq!(maps.name_to_idx.get("M[2,1]"), Some(&2));
+        assert_eq!(maps.name_to_idx.get("M[2,2]"), None);
+    }
 }

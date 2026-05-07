@@ -202,6 +202,33 @@ fn is_known_assignment_name_accepts_indexed_names_for_known_bases() {
 }
 
 #[test]
+fn variable_size_for_assignment_name_uses_dae_shape_metadata() {
+    let mut dae = test_dae_with_vars();
+    dae.algebraics.insert(
+        dae::VarName::new("arr"),
+        dae::Variable {
+            name: dae::VarName::new("arr"),
+            dims: vec![2, 3],
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(variable_size_for_assignment_name(&dae, "arr"), Some(6));
+    assert_eq!(variable_size_for_assignment_name(&dae, "arr[2,1]"), Some(1));
+    assert_eq!(variable_size_for_assignment_name(&dae, "missing[1]"), None);
+
+    let aggregate = assignment_target_shape(&dae, "arr").expect("aggregate shape");
+    assert_eq!(aggregate.dims, vec![2, 3]);
+    assert!(aggregate.is_exact_variable);
+    assert!(aggregate.is_aggregate);
+
+    let scalar_projection = assignment_target_shape(&dae, "arr[2,1]").expect("projection shape");
+    assert_eq!(scalar_projection.dims, vec![2, 3]);
+    assert!(!scalar_projection.is_exact_variable);
+    assert!(!scalar_projection.is_aggregate);
+}
+
+#[test]
 fn collect_direct_assignment_target_stats_counts_alias_and_non_alias_rows() {
     let mut dae = test_dae_with_vars();
     dae.f_x.push(dae::Equation::residual(

@@ -23,6 +23,8 @@
 
 # ── Physics + sim core ─────────────────────────────────────────────────────
 
+source_roots = ["../modelica_libraries"]
+
 [physics]
 file = "QuadrotorSIL.mo"
 name = "QuadrotorSIL"
@@ -64,10 +66,10 @@ root_type = "cerebri2.topic.MotorOutput"
 [receive.route]
 # Scale = sqrt(F_max/Ct) = sqrt(20/8.54858e-6) ≈ 1529 rad/s matches cerebri
 # rdd2_sim's F_max = 20 N assumption so the PID sees the expected authority.
-"motors.m0" = { to = "stepper:omega_cmd_1", scale = 1529.0 }
-"motors.m1" = { to = "stepper:omega_cmd_2", scale = 1529.0 }
-"motors.m2" = { to = "stepper:omega_cmd_3", scale = 1529.0 }
-"motors.m3" = { to = "stepper:omega_cmd_4", scale = 1529.0 }
+"motors.m0" = { to = "stepper:omega_cmd[1]", scale = 1529.0 }
+"motors.m1" = { to = "stepper:omega_cmd[2]", scale = 1529.0 }
+"motors.m2" = { to = "stepper:omega_cmd[3]", scale = 1529.0 }
+"motors.m3" = { to = "stepper:omega_cmd[4]", scale = 1529.0 }
 # armed_actual is the reflected state from cerebri; kept separate from the
 # user's `armed` request local so receive doesn't clobber the user toggle
 # every frame (one-frame oscillation that prevented arming from latching).
@@ -190,12 +192,12 @@ clamp  = [0.0, 1.0]
 # ── Signal assembly: outgoing SignalFrame populated from these ─────────────
 
 [signals.send]
-gyro_x          = "stepper:gyro_x"
-gyro_y          = "stepper:gyro_y"
-gyro_z          = "stepper:gyro_z"
-accel_x         = "stepper:accel_x"
-accel_y         = "stepper:accel_y"
-accel_z         = "stepper:accel_z"
+gyro_x          = "stepper:gyro[1]"
+gyro_y          = "stepper:gyro[2]"
+gyro_z          = "stepper:gyro[3]"
+accel_x         = "stepper:accel[1]"
+accel_y         = "stepper:accel[2]"
+accel_z         = "stepper:accel[3]"
 rc_0            = "local:rc.0"
 rc_1            = "local:rc.1"
 rc_2            = "local:rc.2"
@@ -222,26 +224,26 @@ imu_valid       = { const = 1.0 }
 t           = "stepper:time"
 frame       = "runtime:frame_num"
 wall_ms     = "runtime:wall_ms"
-px          = "stepper:px"
-py          = "stepper:py"
-pz          = "stepper:pz"
-vx          = "stepper:vx"
-vy          = "stepper:vy"
-vz          = "stepper:vz"
-q0          = { from = "stepper:q0", default = 1.0 }
-q1          = "stepper:q1"
-q2          = "stepper:q2"
-q3          = "stepper:q3"
-omega_m1    = "stepper:omega_m1"
-omega_m2    = "stepper:omega_m2"
-omega_m3    = "stepper:omega_m3"
-omega_m4    = "stepper:omega_m4"
-accel_x     = "stepper:accel_x"
-accel_y     = "stepper:accel_y"
-accel_z     = "stepper:accel_z"
-gyro_x      = "stepper:gyro_x"
-gyro_y      = "stepper:gyro_y"
-gyro_z      = "stepper:gyro_z"
+px          = "stepper:position[1]"
+py          = "stepper:position[2]"
+pz          = "stepper:position[3]"
+vx          = "stepper:velocity[1]"
+vy          = "stepper:velocity[2]"
+vz          = "stepper:velocity[3]"
+q0          = { from = "stepper:quat[1]", default = 1.0 }
+q1          = "stepper:quat[2]"
+q2          = "stepper:quat[3]"
+q3          = "stepper:quat[4]"
+omega_m1    = "stepper:omega_m[1]"
+omega_m2    = "stepper:omega_m[2]"
+omega_m3    = "stepper:omega_m[3]"
+omega_m4    = "stepper:omega_m[4]"
+accel_x     = "stepper:accel[1]"
+accel_y     = "stepper:accel[2]"
+accel_z     = "stepper:accel[3]"
+gyro_x      = "stepper:gyro[1]"
+gyro_y      = "stepper:gyro[2]"
+gyro_z      = "stepper:gyro[3]"
 armed       = "local:armed_actual"
 armed_req   = "local:armed"
 rc_throttle = "local:rc.2"
@@ -256,12 +258,12 @@ capture = [
   "runtime:frame_num", "runtime:wall_ms", "stepper:time",
   "local:armed", "local:armed_actual",
   "local:rc.0", "local:rc.1", "local:rc.2", "local:rc.3", "local:rc.4",
-  "stepper:omega_m1", "stepper:omega_m2", "stepper:omega_m3", "stepper:omega_m4",
-  "stepper:px", "stepper:py", "stepper:pz",
-  "stepper:vx", "stepper:vy", "stepper:vz",
-  "stepper:q0", "stepper:q1", "stepper:q2", "stepper:q3",
-  "stepper:accel_x", "stepper:accel_y", "stepper:accel_z",
-  "stepper:gyro_x", "stepper:gyro_y", "stepper:gyro_z",
+  "stepper:omega_m[1]", "stepper:omega_m[2]", "stepper:omega_m[3]", "stepper:omega_m[4]",
+  "stepper:position[1]", "stepper:position[2]", "stepper:position[3]",
+  "stepper:velocity[1]", "stepper:velocity[2]", "stepper:velocity[3]",
+  "stepper:quat[1]", "stepper:quat[2]", "stepper:quat[3]", "stepper:quat[4]",
+  "stepper:accel[1]", "stepper:accel[2]", "stepper:accel[3]",
+  "stepper:gyro[1]", "stepper:gyro[2]", "stepper:gyro[3]",
 ]
 
 # ── Reset behavior ─────────────────────────────────────────────────────────

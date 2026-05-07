@@ -326,22 +326,58 @@ fn contains_runtime_unknown_name(dae: &dae::Dae, key: &dae::VarName) -> bool {
         || dae.discrete_valued.contains_key(key)
 }
 
-pub fn variable_size_for_assignment_name(dae: &dae::Dae, name: &str) -> Option<usize> {
-    if name.contains('[') {
-        return Some(1);
-    }
-    let key = dae::VarName::new(name);
+fn assignment_variable_for_key<'a>(
+    dae: &'a dae::Dae,
+    key: &dae::VarName,
+) -> Option<&'a dae::Variable> {
     dae.states
-        .get(&key)
-        .or_else(|| dae.algebraics.get(&key))
-        .or_else(|| dae.outputs.get(&key))
-        .or_else(|| dae.inputs.get(&key))
-        .or_else(|| dae.parameters.get(&key))
-        .or_else(|| dae.constants.get(&key))
-        .or_else(|| dae.discrete_reals.get(&key))
-        .or_else(|| dae.discrete_valued.get(&key))
-        .or_else(|| dae.derivative_aliases.get(&key))
-        .map(|var| var.size())
+        .get(key)
+        .or_else(|| dae.algebraics.get(key))
+        .or_else(|| dae.outputs.get(key))
+        .or_else(|| dae.inputs.get(key))
+        .or_else(|| dae.parameters.get(key))
+        .or_else(|| dae.constants.get(key))
+        .or_else(|| dae.discrete_reals.get(key))
+        .or_else(|| dae.discrete_valued.get(key))
+        .or_else(|| dae.derivative_aliases.get(key))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignmentTargetShape {
+    pub size: usize,
+    pub dims: Vec<i64>,
+    pub is_exact_variable: bool,
+    pub is_aggregate: bool,
+}
+
+pub fn assignment_target_shape(dae: &dae::Dae, name: &str) -> Option<AssignmentTargetShape> {
+    let key = dae::VarName::new(name);
+    if let Some(var) = assignment_variable_for_key(dae, &key) {
+        let size = var.size();
+        return Some(AssignmentTargetShape {
+            size,
+            dims: var.dims.clone(),
+            is_exact_variable: true,
+            is_aggregate: size > 1,
+        });
+    }
+
+    let base = dae::component_base_name(name)?;
+    let base_key = dae::VarName::new(base);
+    assignment_variable_for_key(dae, &base_key).map(|var| AssignmentTargetShape {
+        size: 1,
+        dims: var.dims.clone(),
+        is_exact_variable: false,
+        is_aggregate: false,
+    })
+}
+
+pub fn variable_size_for_assignment_name(dae: &dae::Dae, name: &str) -> Option<usize> {
+    assignment_target_shape(dae, name).map(|shape| shape.size)
+}
+
+pub fn variable_dims_for_assignment_name(dae: &dae::Dae, name: &str) -> Option<Vec<i64>> {
+    assignment_target_shape(dae, name).map(|shape| shape.dims)
 }
 
 pub fn assignment_solution_is_alias_varref(dae: &dae::Dae, solution: &dae::Expression) -> bool {
@@ -1033,9 +1069,6 @@ fn apply_runtime_direct_assignment_vector(
     env: &mut VarEnv<f64>,
     names: &[String],
 ) -> Option<(bool, usize)> {
-    if target.contains('[') {
-        return None;
-    }
     let indices = base_to_indices.get(target)?;
     if indices.len() <= 1 {
         return None;

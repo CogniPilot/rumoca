@@ -286,6 +286,47 @@ fn test_stepper_applies_discrete_updates_after_synthetic_root() {
 }
 
 #[test]
+fn test_stepper_crosses_synthetic_root_without_discrete_updates() {
+    let mut dae = Dae::new();
+
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+
+    let root_condition = Expression::Binary {
+        op: OpBinary::Lt(Default::default()),
+        lhs: Box::new(var_ref("time")),
+        rhs: Box::new(real(0.05)),
+    };
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("x")],
+            },
+            Expression::If {
+                branches: vec![(root_condition.clone(), real(0.0))],
+                else_branch: Box::new(real(1.0)),
+            },
+        ),
+        span: Span::DUMMY,
+        origin: "x_piecewise_rate".to_string(),
+        scalar_count: 1,
+    });
+    dae.synthetic_root_conditions.push(root_condition);
+
+    let mut stepper = stepper::SimStepper::new(&dae, stepper::StepperOptions::default())
+        .expect("stepper should initialize");
+    stepper.step(0.1).expect("stepper should cross the root");
+
+    let x = stepper.get("x").expect("stepper should expose state x");
+    assert!(
+        (x - 0.05).abs() < 2.0e-3,
+        "expected x to integrate after the continuous root only, got x={x}"
+    );
+}
+
+#[test]
 fn test_record_outputs_until_accepts_boundary_sample_with_time_tolerance() {
     let t_out_list = vec![0.0, 0.20000000000000015, 0.4];
     let mut t_out_idx = 1usize; // t=0.0 is already captured at initialization.

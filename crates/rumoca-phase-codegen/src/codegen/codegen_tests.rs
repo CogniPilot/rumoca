@@ -120,12 +120,226 @@ fn test_dae_template_json_uses_canonical_keys_only() {
 }
 
 #[test]
+fn test_dae_template_json_includes_projected_function_output_refs() {
+    let mut dae = dae::Dae::new();
+    let mut function = dae::Function::new("LieGroup.SO3.rotationMatrix", Default::default());
+    function.add_input(dae::FunctionParam::new("q", "Real").with_dims(vec![4]));
+    function.add_output(dae::FunctionParam::new("R", "Real").with_dims(vec![3, 3]));
+    dae.functions
+        .insert("LieGroup.SO3.rotationMatrix".into(), function);
+
+    let value = dae_template_json(&dae);
+    let refs = value
+        .get("symbol_refs")
+        .and_then(serde_json::Value::as_array)
+        .expect("symbol_refs should be present")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+
+    assert!(
+        refs.contains(&"LieGroup.SO3.rotationMatrix.R[1]"),
+        "first projected array-output function symbol should be allocated: {refs:?}",
+    );
+    assert!(
+        refs.contains(&"LieGroup.SO3.rotationMatrix.R[9]"),
+        "last projected array-output function symbol should be allocated: {refs:?}",
+    );
+}
+
+#[test]
 fn test_render_expr_function() {
     let dae = dae::Dae::new();
     // Test the render_expr function is available
     let template = r#"{% set cfg = {"prefix": "ca.", "power": "**"} %}OK"#;
     let result = render_template(&dae, template).unwrap();
     assert!(result.contains("OK"));
+}
+
+#[test]
+fn test_render_event_indicator_lowers_relation_to_numeric_residual() {
+    let expr = dae::Expression::Binary {
+        op: rumoca_ir_core::OpBinary::Lt(Default::default()),
+        lhs: Box::new(dae::Expression::VarRef {
+            name: "a".into(),
+            subscripts: vec![],
+        }),
+        rhs: Box::new(dae::Expression::VarRef {
+            name: "b".into(),
+            subscripts: vec![],
+        }),
+    };
+    let value = Value::from_serialize(&expr);
+
+    let rendered = render_event_indicator(&value, &ExprConfig::default()).unwrap();
+    assert_eq!(rendered, "((a) - (b))");
+
+    let binary = get_field(&value, "Binary").unwrap();
+    let rendered_from_inner = render_event_indicator(&binary, &ExprConfig::default()).unwrap();
+    assert_eq!(rendered_from_inner, "((a) - (b))");
+}
+
+#[test]
+fn test_render_event_indicator_template_function() {
+    let mut dae = dae::Dae::new();
+    dae.relation.push(dae::Expression::Binary {
+        op: rumoca_ir_core::OpBinary::Ge(Default::default()),
+        lhs: Box::new(dae::Expression::VarRef {
+            name: "height".into(),
+            subscripts: vec![],
+        }),
+        rhs: Box::new(dae::Expression::Literal(dae::Literal::Real(0.0))),
+    });
+
+    let template =
+        r#"{% set cfg = {"power": "pow"} %}{{ render_event_indicator(dae.relation[0], cfg) }}"#;
+    let rendered = render_template(&dae, template).unwrap();
+    assert_eq!(rendered, "((height) - (0.0))");
+}
+
+#[test]
+fn test_target_symbols_use_short_readable_names_without_collisions() {
+    let mut dae = dae::Dae::new();
+    for name in ["body.x", "other.x", "body_x"] {
+        dae.algebraics.insert(
+            name.into(),
+            dae::Variable {
+                name: name.into(),
+                ..Default::default()
+            },
+        );
+    }
+    let template = r#"
+{% set policy = {"separator": "_", "reserved": [], "generated_prefixes": []} %}
+{% set symbols = target_symbols(dae.symbol_refs, policy) %}
+{{ symbol(symbols, "body.x") }} {{ symbol(symbols, "other.x") }} {{ symbol(symbols, "body_x") }}
+"#;
+    let rendered = render_template(&dae, template).unwrap();
+    assert_eq!(rendered.trim(), "x other_x body_x");
+}
+
+#[test]
+fn test_target_symbols_scalarize_array_refs_readably_and_without_collision() {
+    let mut dae = dae::Dae::new();
+    dae.algebraics.insert(
+        "plant.leg_f_b".into(),
+        dae::Variable {
+            name: "plant.leg_f_b".into(),
+            dims: vec![4, 3],
+            ..Default::default()
+        },
+    );
+    dae.algebraics.insert(
+        "leg_f_b_2_1".into(),
+        dae::Variable {
+            name: "leg_f_b_2_1".into(),
+            ..Default::default()
+        },
+    );
+    let template = r#"
+{% set policy = {"separator": "_", "reserved": [], "generated_prefixes": []} %}
+{% set symbols = target_symbols(dae.symbol_refs, policy) %}
+{{ symbol(symbols, "plant.leg_f_b[2,1]") }}
+"#;
+    let rendered = render_template(&dae, template).unwrap();
+    assert_eq!(rendered.trim(), "plant_leg_f_b_2_1");
+}
+
+#[test]
+fn test_source_ref_template_helper_preserves_scalar_names() {
+    let dae = dae::Dae::new();
+    let rendered = render_template(&dae, r#"{{ source_ref("x", [], 1) }}"#).unwrap();
+    assert_eq!(rendered, "x");
+}
+
+#[test]
+fn test_render_expr_uses_template_symbol_map_for_indexed_refs() {
+    let expr = dae::Expression::VarRef {
+        name: "plant.leg_f_b".into(),
+        subscripts: vec![dae::Subscript::Index(2), dae::Subscript::Index(1)],
+    };
+    let symbols = serde_json::json!({
+        "plant.leg_f_b": "leg_f_b",
+        "plant.leg_f_b[2,1]": "leg_f_b_2_1"
+    });
+    let cfg = ExprConfig {
+        subscript_underscore: true,
+        symbols: Some(Value::from_serialize(symbols)),
+        ..ExprConfig::default()
+    };
+
+    let rendered = render_expression(&Value::from_serialize(&expr), &cfg).unwrap();
+    assert_eq!(rendered, "leg_f_b_2_1");
+}
+
+#[test]
+fn test_fmi3_initialize_defaults_uses_allocated_symbols_for_start_aliases() {
+    let mut dae = dae::Dae::new();
+    for (name, start) in [
+        ("plant.ground_z", 0.0),
+        ("plant.leg_z", -0.1),
+        ("plant.initial_ground_clearance", 0.02),
+    ] {
+        dae.parameters.insert(
+            name.into(),
+            dae::Variable {
+                name: name.into(),
+                start: Some(dae::Expression::Literal(dae::Literal::Real(start))),
+                ..Default::default()
+            },
+        );
+    }
+
+    let p3_start = dae::Expression::Binary {
+        op: rumoca_ir_core::OpBinary::Add(Default::default()),
+        lhs: Box::new(dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            lhs: Box::new(dae::Expression::VarRef {
+                name: "ground_z".into(),
+                subscripts: Vec::new(),
+            }),
+            rhs: Box::new(dae::Expression::VarRef {
+                name: "leg_z".into(),
+                subscripts: Vec::new(),
+            }),
+        }),
+        rhs: Box::new(dae::Expression::VarRef {
+            name: "initial_ground_clearance".into(),
+            subscripts: Vec::new(),
+        }),
+    };
+    dae.states.insert(
+        "plant.p".into(),
+        dae::Variable {
+            name: "plant.p".into(),
+            dims: vec![3],
+            start: Some(dae::Expression::Array {
+                elements: vec![
+                    dae::Expression::Literal(dae::Literal::Integer(0)),
+                    dae::Expression::Literal(dae::Literal::Integer(0)),
+                    p3_start,
+                ],
+                is_matrix: false,
+            }),
+            ..Default::default()
+        },
+    );
+
+    let rendered =
+        render_template_with_name(&dae, crate::templates::FMI3_MODEL, "TestModel").unwrap();
+
+    assert!(
+        rendered.contains("double ground_z = 0.0;"),
+        "parameter alias should use the allocated readable symbol:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("double plant_ground_z = 0.0;"),
+        "initialize_defaults must not bypass the symbol allocator:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("m->x[2] = ((ground_z - leg_z) + initial_ground_clearance);"),
+        "state start expression should compile against the local aliases:\n{rendered}"
+    );
 }
 
 #[test]
@@ -171,6 +385,257 @@ fn test_embedded_c_alg_rhs_indexes_common_array_binary_rhs() {
     assert!(
         !rendered.contains("WARNING: no equation found for error_dot[2]"),
         "codegen should not fall back to warning stub for indexed array algebraics:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_alg_rhs_prefers_direct_array_connection_over_rearranged_equation() {
+    fn var(name: &str) -> dae::Expression {
+        dae::Expression::VarRef {
+            name: name.into(),
+            subscripts: Vec::new(),
+        }
+    }
+    fn sub(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+        dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    let indirect_motor_equation = sub(
+        var("motor_1_omega_error"),
+        sub(var("motor_1_omega_cmd"), var("motor_1_omega")),
+    );
+    let direct_array_connection = sub(
+        dae::Expression::Array {
+            elements: vec![
+                var("motor_1_omega_cmd"),
+                var("motor_2_omega_cmd"),
+                var("motor_3_omega_cmd"),
+                var("motor_4_omega_cmd"),
+            ],
+            is_matrix: false,
+        },
+        var("plant_omega_cmd"),
+    );
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "plant_omega_cmd[1]": "plant_omega_cmd_1"
+        },
+        "f_x": [
+            {"rhs": serde_json::to_value(indirect_motor_equation).unwrap()},
+            {"rhs": serde_json::to_value(direct_array_connection).unwrap()}
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var("motor_1_omega_cmd", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "plant_omega_cmd_1");
+}
+
+#[test]
+fn test_c_alg_rhs_prefers_direct_indexed_equation_for_array_element() {
+    fn var(name: &str, subscripts: Vec<i64>) -> dae::Expression {
+        dae::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts.into_iter().map(dae::Subscript::Index).collect(),
+        }
+    }
+    fn sub(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+        dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    let earlier_reverse_array_alias = sub(
+        dae::Expression::Array {
+            elements: vec![
+                var("motor_1_omega_cmd", vec![]),
+                var("motor_2_omega_cmd", vec![]),
+                var("motor_3_omega_cmd", vec![]),
+                var("motor_4_omega_cmd", vec![]),
+            ],
+            is_matrix: false,
+        },
+        var("plant_omega_cmd", vec![]),
+    );
+    let direct_indexed_equation = sub(var("plant_omega_cmd", vec![1]), var("motor_cmd", vec![1]));
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "plant_omega_cmd[1]": "plant_omega_cmd_1",
+            "motor_cmd[1]": "motor_cmd_1"
+        },
+        "f_x": [
+            {"rhs": serde_json::to_value(earlier_reverse_array_alias).unwrap()},
+            {"rhs": serde_json::to_value(direct_indexed_equation).unwrap()}
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "powf", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ alg_rhs_for_var("plant_omega_cmd[1]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert_eq!(rendered.trim(), "motor_cmd_1");
+}
+
+#[test]
+fn test_c_ode_rhs_solves_preserved_matrix_vector_derivative_equation() {
+    let residual = dae::Expression::Binary {
+        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+        lhs: Box::new(dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Mul(Default::default()),
+            lhs: Box::new(dae::Expression::VarRef {
+                name: "J".into(),
+                subscripts: Vec::new(),
+            }),
+            rhs: Box::new(dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Der,
+                args: vec![dae::Expression::VarRef {
+                    name: "omega".into(),
+                    subscripts: Vec::new(),
+                }],
+            }),
+        }),
+        rhs: Box::new(dae::Expression::VarRef {
+            name: "M_body".into(),
+            subscripts: Vec::new(),
+        }),
+    };
+    let residual_value = serde_json::to_value(residual).unwrap();
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "J[1,1]": "J_1_1",
+            "J[1,2]": "J_1_2",
+            "J[1,3]": "J_1_3",
+            "J[2,1]": "J_2_1",
+            "J[2,2]": "J_2_2",
+            "J[2,3]": "J_2_3",
+            "J[3,1]": "J_3_1",
+            "J[3,2]": "J_3_2",
+            "J[3,3]": "J_3_3",
+            "M_body[1]": "M_body_1",
+            "M_body[2]": "M_body_2",
+            "M_body[3]": "M_body_3"
+        },
+        "f_x": [
+            {
+                "rhs": residual_value,
+                "scalar_count": 3
+            }
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "pow", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ ode_rhs_for_state("omega[2]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("__rumoca_solve_linear_component((double[]){J_1_1, J_1_2, J_1_3, J_2_1, J_2_2, J_2_3, J_3_1, J_3_2, J_3_3}, (double[]){M_body_1, M_body_2, M_body_3}, 3, 1)"),
+        "expected a generated dense linear solve for the vector derivative equation, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("WARNING: no ODE equation found"),
+        "matrix-vector derivative equation should not fall back to a zero derivative:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_c_ode_rhs_solves_scalarized_coupled_derivative_rows() {
+    fn var(name: &str, subscripts: Vec<i64>) -> dae::Expression {
+        dae::Expression::VarRef {
+            name: name.into(),
+            subscripts: subscripts.into_iter().map(dae::Subscript::Index).collect(),
+        }
+    }
+    fn der_omega(index: i64) -> dae::Expression {
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Der,
+            args: vec![var("omega", vec![index])],
+        }
+    }
+    fn mul(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+        dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Mul(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+    fn add(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+        dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Add(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+    fn sub(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+        dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+    fn row(row: i64) -> dae::Expression {
+        sub(
+            add(
+                add(
+                    mul(var("J", vec![row, 1]), der_omega(1)),
+                    mul(var("J", vec![row, 2]), der_omega(2)),
+                ),
+                mul(var("J", vec![row, 3]), der_omega(3)),
+            ),
+            var("M_body", vec![row]),
+        )
+    }
+
+    let row_1 = serde_json::to_value(row(1)).unwrap();
+    let row_2 = serde_json::to_value(row(2)).unwrap();
+    let row_3 = serde_json::to_value(row(3)).unwrap();
+    let dae_json = serde_json::json!({
+        "symbols": {
+            "J[1,1]": "J_1_1",
+            "J[1,2]": "J_1_2",
+            "J[1,3]": "J_1_3",
+            "J[2,1]": "J_2_1",
+            "J[2,2]": "J_2_2",
+            "J[2,3]": "J_2_3",
+            "J[3,1]": "J_3_1",
+            "J[3,2]": "J_3_2",
+            "J[3,3]": "J_3_3",
+            "M_body[1]": "M_body_1",
+            "M_body[2]": "M_body_2",
+            "M_body[3]": "M_body_3",
+            "omega[1]": "omega_1",
+            "omega[2]": "omega_2",
+            "omega[3]": "omega_3"
+        },
+        "f_x": [
+            {"rhs": row_1, "scalar_count": 1},
+            {"rhs": row_2, "scalar_count": 1},
+            {"rhs": row_3, "scalar_count": 1}
+        ]
+    });
+    let template = r#"
+{% set cfg = {"power": "pow", "subscript_underscore": true, "symbols": dae.symbols} %}
+{{ ode_rhs_for_state("omega[3]", dae.f_x, cfg) }}
+"#;
+    let rendered = render_template_with_dae_json(&dae_json, template).unwrap();
+
+    assert!(
+        rendered.contains("__rumoca_solve_linear_component((double[]){J_1_1, J_1_2, J_1_3, J_2_1, J_2_2, J_2_3, J_3_1, J_3_2, J_3_3}, (double[]){M_body_1, M_body_2, M_body_3}, 3, 2)"),
+        "expected scalarized derivative rows to become one dense solve, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("WARNING: no ODE equation found"),
+        "coupled scalar derivative rows should not fall back to a zero derivative:\n{rendered}"
     );
 }
 
@@ -496,6 +961,27 @@ fn test_template_missing_assignment_target_fails_fast() {
         msg.contains("Assignment missing 'comp' field")
             || msg.contains("target resolved to empty component reference"),
         "expected strict assignment error, got: {msg}"
+    );
+}
+
+#[test]
+fn test_render_statement_if_blocks_use_stmts_field() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{% set stmt = {"If": {"cond_blocks": [
+    {"cond": {"Literal": {"Boolean": true}}, "stmts": [
+        {"Assignment": {"comp": "lat", "value": {"Literal": {"Real": 40.0}}}},
+        {"Assignment": {"comp": "lon", "value": {"Literal": {"Real": -86.0}}}}
+    ]}
+], "else_block": [
+    {"Assignment": {"comp": "lat", "value": {"Literal": {"Real": 0.0}}}}
+]}} %}
+{{ render_statement(stmt, {"if_style": "ternary"}, "") }}
+"#;
+    let rendered = render_template(&dae, template).expect("render if statement");
+    assert!(
+        rendered.contains("lat = 40") && rendered.contains("lon = -86"),
+        "if branch assignments should render from StatementBlock.stmts:\n{rendered}"
     );
 }
 

@@ -4073,8 +4073,11 @@ function updateSourceBreadcrumbs() {
 
 // Web Worker setup (cache-busted to avoid stale JS/WASM bundles during local iteration)
 const workerCacheBust = String(Date.now());
-const smokePkgSubdir = new URLSearchParams(window.location.search).get('smoke_pkg_subdir') || 'release-full-web';
-const workerUrl = new URL(`../../pkg/${smokePkgSubdir}/rumoca_worker.js`, window.location.href);
+const wasmUrlParams = new URLSearchParams(window.location.search);
+const defaultWasmPkgBase = window.rumocaWasmPkgBase || '../../pkg';
+const defaultWasmPkgSubdir = window.rumocaWasmPkgSubdir || 'release-full-web-rayon';
+const wasmPkgSubdir = wasmUrlParams.get('smoke_pkg_subdir') || defaultWasmPkgSubdir;
+const workerUrl = new URL(`${defaultWasmPkgBase}/${wasmPkgSubdir}/rumoca_worker.js`, window.location.href);
 workerUrl.searchParams.set('v', workerCacheBust);
 const worker = new Worker(workerUrl, { type: 'module' });
 let requestId = 0;

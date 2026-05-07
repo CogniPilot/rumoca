@@ -13,6 +13,17 @@ fn time_lt_expr(rhs: f64) -> ir_dae::Expression {
     }
 }
 
+fn state_lt_expr(name: &str, rhs: f64) -> ir_dae::Expression {
+    ir_dae::Expression::Binary {
+        op: rumoca_sim_core::ir_core::OpBinary::Lt(Default::default()),
+        lhs: Box::new(ir_dae::Expression::VarRef {
+            name: ir_dae::VarName::new(name),
+            subscripts: Vec::new(),
+        }),
+        rhs: Box::new(ir_dae::Expression::Literal(ir_dae::Literal::Real(rhs))),
+    }
+}
+
 #[test]
 fn runtime_event_uses_frozen_pre_values_for_synthetic_time_root() {
     let mut dae = Dae::new();
@@ -272,6 +283,33 @@ fn next_restart_time_if_synthetic_roots_still_armed_advances_time_root_surface()
         restart_t,
         next_restart_t,
         clearance
+    );
+}
+
+#[test]
+fn next_restart_time_if_synthetic_roots_still_armed_does_not_advance_state_root_surface() {
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.synthetic_root_conditions
+        .push(state_lt_expr("x", 1.0e-6));
+    let opts = SimOptions::default();
+    let restart_t = event_restart_time(&opts, 0.0);
+    let compiled_synthetic_root = crate::problem::build_compiled_synthetic_root_context(&dae, 1)
+        .expect("compile synthetic root context");
+
+    assert!(
+        next_restart_time_if_synthetic_roots_still_armed(
+            &compiled_synthetic_root,
+            &dae,
+            &[0.0],
+            &[],
+            &opts,
+            restart_t,
+            opts.atol
+        )
+        .is_none(),
+        "state-dependent roots cannot be cleared by advancing restart time without integration"
     );
 }
 

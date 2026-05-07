@@ -263,10 +263,11 @@ fn compile_mass_matrix_expression_rows(
     dae_model: &dae::Dae,
     expressions: &[dae::Expression],
 ) -> Result<CompiledExpressionRows, String> {
-    rumoca_phase_solve_lower::compile_expressions(
+    rumoca_phase_solve_lower::compile_expressions_with_solver_len(
         dae_model,
         expressions,
         rumoca_phase_solve_lower::Backend::Cranelift,
+        dae_model.f_x.len(),
     )
     .map_err(|err| err.to_string())
 }
@@ -513,7 +514,12 @@ pub fn compute_mass_matrix(
     Ok(mass_matrix)
 }
 
-fn build_pin_equation(name: &dae::VarName, sz: usize, idx: usize, start_val: f64) -> dae::Equation {
+fn build_pin_equation(
+    name: &dae::VarName,
+    sz: usize,
+    idx: usize,
+    start_expr: dae::Expression,
+) -> dae::Equation {
     let var_ref = if sz <= 1 {
         dae::Expression::VarRef {
             name: name.clone(),
@@ -530,7 +536,7 @@ fn build_pin_equation(name: &dae::VarName, sz: usize, idx: usize, start_val: f64
         rhs: dae::Expression::Binary {
             op: rumoca_ir_core::OpBinary::Sub(Default::default()),
             lhs: Box::new(var_ref),
-            rhs: Box::new(dae::Expression::Literal(dae::Literal::Real(start_val))),
+            rhs: Box::new(start_expr),
         },
         span: Span::DUMMY,
         origin: "orphaned_variable_pin".to_string(),
@@ -545,7 +551,7 @@ struct PinScalarCandidate {
     scalar_idx: usize,
     base: String,
     size: usize,
-    start: Option<dae::Expression>,
+    start_expr: dae::Expression,
     is_preferred: bool,
     is_substitution_linked: bool,
     refs: usize,
@@ -554,12 +560,15 @@ struct PinScalarCandidate {
 
 struct PinScalarInputs<'a> {
     direct_assignment_targets: &'a HashSet<String>,
+    direct_assignment_scalar_starts: &'a HashMap<String, dae::Expression>,
     diff_derivative_assignment_targets: &'a HashSet<String>,
     algebraic_ref_counts: &'a HashMap<String, usize>,
     preferred_pin_scalars: &'a HashSet<String>,
+    state_alias_members: &'a HashSet<String>,
     substitution_linked_names: &'a HashSet<String>,
     runtime_defined_unknowns: &'a HashSet<String>,
     ref_counts: &'a HashMap<String, usize>,
+    scalarization: &'a rumoca_phase_structural::scalarize::ExpressionScalarizationContext,
 }
 
 fn add_substitution_link_name(set: &mut HashSet<String>, name: &str) {
@@ -589,32 +598,6 @@ fn collect_substitution_linked_names(
 
 fn component_base_name(name: &str) -> Option<String> {
     dae::component_base_name(name)
-}
-
-fn direct_assignment_target_bases(expr: &dae::Expression, out: &mut HashSet<String>) {
-    match expr {
-        dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(_),
-            lhs,
-            rhs,
-        } => {
-            if let dae::Expression::VarRef { name, .. } = lhs.as_ref()
-                && let Some(base) = component_base_name(name.as_str())
-            {
-                out.insert(base);
-            }
-            if let dae::Expression::VarRef { name, .. } = rhs.as_ref()
-                && let Some(base) = component_base_name(name.as_str())
-            {
-                out.insert(base);
-            }
-        }
-        dae::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Minus(_),
-            rhs,
-        } => direct_assignment_target_bases(rhs, out),
-        _ => {}
-    }
 }
 
 fn expr_contains_der_call(expr: &dae::Expression) -> bool {
@@ -722,27 +705,42 @@ fn build_pin_scalar_candidates(
         }
         let algebraic_refs = inputs.algebraic_ref_counts.get(&base).copied().unwrap_or(0);
         let is_output = dae_model.outputs.contains_key(n);
-        if inputs.diff_derivative_assignment_targets.contains(&base)
-            && (is_output || algebraic_refs > 0)
+        let skip_diff_derivative_target = inputs.diff_derivative_assignment_targets.contains(&base)
+            && (is_output || algebraic_refs > 0);
+        let refs = inputs.ref_counts.get(&base).copied().unwrap_or(0);
+        let has_direct_assignment = inputs.direct_assignment_targets.contains(&base);
+        if has_direct_assignment
+            || inputs.state_alias_members.contains(n.as_str())
+            || inputs.state_alias_members.contains(&base)
         {
             continue;
         }
-        let refs = inputs.ref_counts.get(&base).copied().unwrap_or(0);
-        let has_direct_assignment = inputs.direct_assignment_targets.contains(&base);
         let size = v.size();
 
         if size <= 1 {
             let scalar_name = n.as_str().to_string();
-            let is_preferred = inputs.preferred_pin_scalars.contains(&scalar_name);
+            if inputs.state_alias_members.contains(&scalar_name) {
+                continue;
+            }
+            let is_preferred = inputs.preferred_pin_scalars.contains(&scalar_name)
+                || inputs.preferred_pin_scalars.contains(&base);
+            if skip_diff_derivative_target && !is_preferred {
+                continue;
+            }
             let is_substitution_linked = inputs.substitution_linked_names.contains(&scalar_name)
                 || inputs.substitution_linked_names.contains(&base);
+            let start_expr = inputs
+                .direct_assignment_scalar_starts
+                .get(&scalar_name)
+                .cloned()
+                .unwrap_or_else(|| scalar_pin_start_expr(v, size, 0, inputs.scalarization));
             all_vars.push(PinScalarCandidate {
                 name: n.clone(),
                 scalar_name,
                 scalar_idx: 0,
                 base: base.clone(),
                 size,
-                start: v.start.clone(),
+                start_expr,
                 is_preferred,
                 is_substitution_linked,
                 refs,
@@ -753,16 +751,29 @@ fn build_pin_scalar_candidates(
 
         for scalar_idx in 0..size {
             let scalar_name = format!("{}[{}]", n.as_str(), scalar_idx + 1);
+            if inputs.state_alias_members.contains(&scalar_name) {
+                continue;
+            }
             let is_preferred = inputs.preferred_pin_scalars.contains(&scalar_name);
+            if skip_diff_derivative_target && !is_preferred {
+                continue;
+            }
             let is_substitution_linked = inputs.substitution_linked_names.contains(&scalar_name)
                 || inputs.substitution_linked_names.contains(&base);
+            let start_expr = inputs
+                .direct_assignment_scalar_starts
+                .get(&scalar_name)
+                .cloned()
+                .unwrap_or_else(|| {
+                    scalar_pin_start_expr(v, size, scalar_idx, inputs.scalarization)
+                });
             all_vars.push(PinScalarCandidate {
                 name: n.clone(),
                 scalar_name,
                 scalar_idx,
                 base: base.clone(),
                 size,
-                start: v.start.clone(),
+                start_expr,
                 is_preferred,
                 is_substitution_linked,
                 refs,
@@ -771,6 +782,25 @@ fn build_pin_scalar_candidates(
         }
     }
     all_vars
+}
+
+fn scalar_pin_start_expr(
+    var: &dae::Variable,
+    size: usize,
+    scalar_idx: usize,
+    scalarization: &rumoca_phase_structural::scalarize::ExpressionScalarizationContext,
+) -> dae::Expression {
+    let Some(start) = var.start.as_ref() else {
+        return dae::Expression::Literal(dae::Literal::Real(0.0));
+    };
+    if size <= 1 {
+        return start.clone();
+    }
+    let rows =
+        rumoca_phase_structural::scalarize::scalarize_expression_rows(start, size, scalarization);
+    rows.get(scalar_idx)
+        .cloned()
+        .unwrap_or_else(|| start.clone())
 }
 
 fn maybe_collect_structural_relaxation_preferences(
@@ -799,12 +829,73 @@ fn maybe_collect_structural_relaxation_preferences(
     }
 }
 
-fn collect_direct_assignment_targets(dae_model: &dae::Dae) -> HashSet<String> {
+fn collect_direct_assignment_targets_and_starts(
+    dae_model: &dae::Dae,
+    scalarization: &rumoca_phase_structural::scalarize::ExpressionScalarizationContext,
+) -> (HashSet<String>, HashMap<String, dae::Expression>) {
     let mut direct_assignment_targets = HashSet::new();
+    let mut direct_assignment_scalar_starts = HashMap::new();
     for eq in &dae_model.f_x {
-        direct_assignment_target_bases(&eq.rhs, &mut direct_assignment_targets);
+        let Some((target, solution)) =
+            crate::runtime::assignment::direct_assignment_from_equation(eq)
+        else {
+            continue;
+        };
+        let base = component_base_name(target.as_str()).unwrap_or_else(|| target.clone());
+        direct_assignment_targets.insert(base);
+        let target_shape =
+            crate::runtime::assignment::assignment_target_shape(dae_model, target.as_str());
+        if !target_shape
+            .as_ref()
+            .is_some_and(|shape| shape.is_aggregate)
+        {
+            maybe_insert_direct_assignment_scalar_start(
+                &mut direct_assignment_scalar_starts,
+                target,
+                solution.clone(),
+            );
+            continue;
+        }
+        let solution_rows = rumoca_phase_structural::scalarize::scalarize_expression_rows(
+            solution,
+            target_shape.as_ref().map_or(1, |shape| shape.size),
+            scalarization,
+        );
+        for idx in 0..target_shape.as_ref().map_or(1, |shape| shape.size) {
+            let scalar_name = format!("{target}[{}]", idx + 1);
+            let scalar_solution = solution_rows
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| solution.clone());
+            maybe_insert_direct_assignment_scalar_start(
+                &mut direct_assignment_scalar_starts,
+                scalar_name,
+                scalar_solution,
+            );
+        }
     }
-    direct_assignment_targets
+    (direct_assignment_targets, direct_assignment_scalar_starts)
+}
+
+fn maybe_insert_direct_assignment_scalar_start(
+    starts: &mut HashMap<String, dae::Expression>,
+    scalar_name: String,
+    expr: dae::Expression,
+) {
+    if is_safe_direct_pin_start_expr(&expr) {
+        starts.insert(scalar_name, expr);
+    }
+}
+
+fn is_safe_direct_pin_start_expr(expr: &dae::Expression) -> bool {
+    match expr {
+        dae::Expression::Literal(_) | dae::Expression::VarRef { .. } => true,
+        dae::Expression::Unary {
+            op: rumoca_ir_core::OpUnary::Minus(_),
+            rhs,
+        } => is_safe_direct_pin_start_expr(rhs),
+        _ => false,
+    }
 }
 
 fn collect_runtime_defined_unknowns(dae_model: &dae::Dae) -> HashSet<String> {
@@ -816,6 +907,33 @@ fn collect_runtime_defined_unknowns(dae_model: &dae::Dae) -> HashSet<String> {
         }
     }
     runtime_defined
+}
+
+fn collect_state_alias_members(dae_model: &dae::Dae, n_x: usize) -> HashSet<String> {
+    let adjacency =
+        crate::runtime::alias::build_runtime_alias_adjacency_with_known_assignments(dae_model, n_x);
+    let mut protected = HashSet::new();
+    let mut visited = HashSet::new();
+
+    for node in adjacency.keys() {
+        if !visited.insert(node.clone()) {
+            continue;
+        }
+        let component =
+            crate::runtime::alias::collect_alias_component(node, &adjacency, &mut visited);
+        let has_state = component.iter().any(|name| {
+            let base = component_base_name(name.as_str()).unwrap_or_else(|| name.clone());
+            dae_model.states.contains_key(&dae::VarName::new(base))
+        });
+        if !has_state {
+            continue;
+        }
+        for name in component {
+            crate::runtime::alias::insert_name_and_base(&mut protected, name.as_str());
+        }
+    }
+
+    protected
 }
 
 fn extend_preferred_pin_scalars_from_singular_ic(
@@ -864,9 +982,9 @@ fn sort_pin_candidates(candidates: &mut [PinScalarCandidate]) {
     candidates.sort_by(|a, b| {
         (!a.is_preferred)
             .cmp(&(!b.is_preferred))
+            .then(a.has_direct_assignment.cmp(&b.has_direct_assignment))
             .then(a.is_substitution_linked.cmp(&b.is_substitution_linked))
             .then((a.refs == 0).cmp(&(b.refs == 0)))
-            .then(a.has_direct_assignment.cmp(&b.has_direct_assignment))
             .then(a.refs.cmp(&b.refs))
             .then(a.base.cmp(&b.base))
             .then(a.scalar_name.cmp(&b.scalar_name))
@@ -904,14 +1022,15 @@ fn trace_pin_candidates(meta: &PinTraceMeta<'_>, candidates: &[PinScalarCandidat
     );
     for (rank, candidate) in candidates.iter().take(12).enumerate() {
         eprintln!(
-            "[sim-trace] pin candidate rank={} name={} preferred={} substitution_linked={} direct={} refs={} size={}",
+            "[sim-trace] pin candidate rank={} name={} preferred={} substitution_linked={} direct={} refs={} size={} start={:?}",
             rank,
             candidate.scalar_name,
             candidate.is_preferred,
             candidate.is_substitution_linked,
             candidate.has_direct_assignment,
             candidate.refs,
-            candidate.size
+            candidate.size,
+            candidate.start_expr
         );
     }
 }
@@ -922,22 +1041,17 @@ fn append_pin_equations(
     excess: usize,
 ) {
     for candidate in candidates.iter().take(excess) {
-        let start_val = candidate
-            .start
-            .as_ref()
-            .map(rumoca_phase_solve_lower::eval_const_expr)
-            .unwrap_or(0.0);
         if sim_trace_enabled() {
             eprintln!(
                 "[sim-trace] pin selected name={} size={} idx={} start={:?}",
-                candidate.scalar_name, candidate.size, candidate.scalar_idx, candidate.start
+                candidate.scalar_name, candidate.size, candidate.scalar_idx, candidate.start_expr
             );
         }
         dae_model.f_x.push(build_pin_equation(
             &candidate.name,
             candidate.size,
             candidate.scalar_idx,
-            start_val,
+            candidate.start_expr.clone(),
         ));
     }
 }
@@ -976,7 +1090,11 @@ pub fn pin_orphaned_variables(
         );
     }
 
-    let direct_assignment_targets = collect_direct_assignment_targets(dae_model);
+    let scalarization =
+        rumoca_phase_structural::scalarize::build_expression_scalarization_context(dae_model);
+    let (direct_assignment_targets, direct_assignment_scalar_starts) =
+        collect_direct_assignment_targets_and_starts(dae_model, &scalarization);
+    let state_alias_members = collect_state_alias_members(dae_model, n_x);
     let substitution_linked_names = collect_substitution_linked_names(elim);
     let runtime_defined_unknowns = collect_runtime_defined_unknowns(dae_model);
     let ref_counts = collect_equation_ref_counts(dae_model);
@@ -984,12 +1102,15 @@ pub fn pin_orphaned_variables(
 
     let pin_inputs = PinScalarInputs {
         direct_assignment_targets: &direct_assignment_targets,
+        direct_assignment_scalar_starts: &direct_assignment_scalar_starts,
         diff_derivative_assignment_targets: &diff_derivative_assignment_targets,
         algebraic_ref_counts: &algebraic_ref_counts,
         preferred_pin_scalars: &preferred_pin_scalars,
+        state_alias_members: &state_alias_members,
         substitution_linked_names: &substitution_linked_names,
         runtime_defined_unknowns: &runtime_defined_unknowns,
         ref_counts: &ref_counts,
+        scalarization: &scalarization,
     };
     let mut all_vars = build_pin_scalar_candidates(dae_model, &pin_inputs);
     let n_z_vars_effective = all_vars.len();
@@ -1005,7 +1126,7 @@ pub fn pin_orphaned_variables(
         })
         .count();
     let excess = if excess_by_count > 0 {
-        excess_by_count
+        raw_excess.min(all_vars.len())
     } else {
         preferred_fallback_available.min(raw_excess)
     };
@@ -1051,6 +1172,306 @@ mod tests {
             origin: origin.to_string(),
             scalar_count: 1,
         }
+    }
+
+    fn lit(value: f64) -> dae::Expression {
+        dae::Expression::Literal(dae::Literal::Real(value))
+    }
+
+    fn var_ref(name: &str) -> dae::Expression {
+        dae::Expression::VarRef {
+            name: dae::VarName::new(name),
+            subscripts: vec![],
+        }
+    }
+
+    fn indexed_var_ref(name: &str, idx: i64) -> dae::Expression {
+        dae::Expression::VarRef {
+            name: dae::VarName::new(name),
+            subscripts: vec![dae::Subscript::Index(idx)],
+        }
+    }
+
+    #[test]
+    fn pin_sort_prioritizes_structural_preferences_before_direct_assignment_tie_breaker() {
+        let mut candidates = vec![
+            PinScalarCandidate {
+                name: dae::VarName::new("direct"),
+                scalar_name: "direct".to_string(),
+                scalar_idx: 0,
+                base: "direct".to_string(),
+                size: 1,
+                start_expr: lit(0.0),
+                is_preferred: true,
+                is_substitution_linked: false,
+                refs: 1,
+                has_direct_assignment: true,
+            },
+            PinScalarCandidate {
+                name: dae::VarName::new("free_preferred"),
+                scalar_name: "free_preferred".to_string(),
+                scalar_idx: 0,
+                base: "free_preferred".to_string(),
+                size: 1,
+                start_expr: lit(0.0),
+                is_preferred: true,
+                is_substitution_linked: false,
+                refs: 0,
+                has_direct_assignment: false,
+            },
+            PinScalarCandidate {
+                name: dae::VarName::new("free_unpreferred"),
+                scalar_name: "free_unpreferred".to_string(),
+                scalar_idx: 0,
+                base: "free_unpreferred".to_string(),
+                size: 1,
+                start_expr: lit(0.0),
+                is_preferred: false,
+                is_substitution_linked: false,
+                refs: 0,
+                has_direct_assignment: false,
+            },
+        ];
+
+        sort_pin_candidates(&mut candidates);
+
+        assert_eq!(candidates[0].scalar_name, "free_preferred");
+        assert_eq!(candidates[1].scalar_name, "direct");
+        assert_eq!(candidates[2].scalar_name, "free_unpreferred");
+    }
+
+    #[test]
+    fn orphan_pins_preserve_scalarized_start_expressions() {
+        let mut dae_model = dae::Dae::default();
+
+        let mut p_start = dae::Variable::new(dae::VarName::new("p_start"));
+        p_start.dims = vec![3];
+        p_start.start = Some(dae::Expression::Array {
+            elements: vec![lit(1.0), lit(2.0), lit(3.0)],
+            is_matrix: false,
+        });
+        dae_model
+            .parameters
+            .insert(dae::VarName::new("p_start"), p_start);
+
+        let mut p = dae::Variable::new(dae::VarName::new("p"));
+        p.dims = vec![3];
+        p.start = Some(var_ref("p_start"));
+        dae_model.algebraics.insert(dae::VarName::new("p"), p);
+
+        let elim = EliminationResult {
+            substitutions: vec![],
+            n_eliminated: 0,
+        };
+
+        pin_orphaned_variables(&mut dae_model, &elim);
+
+        let pins: Vec<_> = dae_model
+            .f_x
+            .iter()
+            .filter(|eq| eq.origin == "orphaned_variable_pin")
+            .collect();
+        assert_eq!(pins.len(), 3);
+
+        let dae::Expression::Binary { lhs, rhs, .. } = &pins[2].rhs else {
+            panic!("expected binary pin equation");
+        };
+        assert!(
+            matches!(
+                lhs.as_ref(),
+                dae::Expression::VarRef {
+                    name,
+                    subscripts
+                } if name.as_str() == "p"
+                    && matches!(subscripts.as_slice(), [dae::Subscript::Index(3)])
+            ),
+            "expected third pin to target p[3], got {lhs:?}"
+        );
+        assert!(
+            matches!(
+                rhs.as_ref(),
+                dae::Expression::VarRef {
+                    name,
+                    subscripts
+                } if name.as_str() == "p_start"
+                    && matches!(subscripts.as_slice(), [dae::Subscript::Index(3)])
+            ),
+            "expected third pin to preserve p_start[3], got {rhs:?}"
+        );
+    }
+
+    #[test]
+    fn direct_assignment_pin_starts_use_scalarized_solution() {
+        let mut dae_model = dae::Dae::default();
+
+        let mut source = dae::Variable::new(dae::VarName::new("source"));
+        source.dims = vec![3];
+        dae_model
+            .algebraics
+            .insert(dae::VarName::new("source"), source);
+
+        let mut y = dae::Variable::new(dae::VarName::new("y"));
+        y.dims = vec![3];
+        dae_model.outputs.insert(dae::VarName::new("y"), y);
+        dae_model.f_x.push(residual(
+            dae::Expression::Binary {
+                op: OpBinary::Sub(Default::default()),
+                lhs: Box::new(var_ref("y")),
+                rhs: Box::new(var_ref("source")),
+            },
+            "direct vector assignment",
+        ));
+
+        let scalarization =
+            rumoca_phase_structural::scalarize::build_expression_scalarization_context(&dae_model);
+        let (targets, starts) =
+            collect_direct_assignment_targets_and_starts(&dae_model, &scalarization);
+
+        assert!(targets.contains("y"));
+        assert!(
+            matches!(
+                starts.get("y[3]"),
+                Some(dae::Expression::VarRef { name, subscripts })
+                    if name.as_str() == "source"
+                        && matches!(subscripts.as_slice(), [dae::Subscript::Index(3)])
+            ),
+            "expected y[3] pin start to use source[3], got {:?}",
+            starts.get("y[3]")
+        );
+    }
+
+    #[test]
+    fn computed_direct_assignment_pin_starts_are_not_reused() {
+        let mut dae_model = dae::Dae::default();
+
+        dae_model.algebraics.insert(
+            dae::VarName::new("source"),
+            dae::Variable::new(dae::VarName::new("source")),
+        );
+
+        let mut y = dae::Variable::new(dae::VarName::new("y"));
+        y.dims = vec![1];
+        y.start = Some(lit(4.0));
+        dae_model.outputs.insert(dae::VarName::new("y"), y);
+        dae_model.f_x.push(residual(
+            dae::Expression::Binary {
+                op: OpBinary::Sub(Default::default()),
+                lhs: Box::new(indexed_var_ref("y", 1)),
+                rhs: Box::new(dae::Expression::Binary {
+                    op: OpBinary::Add(Default::default()),
+                    lhs: Box::new(var_ref("source")),
+                    rhs: Box::new(lit(1.0)),
+                }),
+            },
+            "computed direct assignment",
+        ));
+
+        let scalarization =
+            rumoca_phase_structural::scalarize::build_expression_scalarization_context(&dae_model);
+        let (targets, starts) =
+            collect_direct_assignment_targets_and_starts(&dae_model, &scalarization);
+
+        assert!(targets.contains("y"));
+        assert!(
+            !starts.contains_key("y[1]"),
+            "computed direct assignment should not become a pin start: {:?}",
+            starts.get("y[1]")
+        );
+    }
+
+    #[test]
+    fn preferred_diff_derivative_targets_remain_pin_candidates() {
+        let mut dae_model = dae::Dae::default();
+
+        let mut v_w = dae::Variable::new(dae::VarName::new("v_w"));
+        v_w.dims = vec![2];
+        v_w.start = Some(dae::Expression::Array {
+            elements: vec![lit(1.0), lit(2.0)],
+            is_matrix: false,
+        });
+        dae_model.algebraics.insert(dae::VarName::new("v_w"), v_w);
+
+        let scalarization =
+            rumoca_phase_structural::scalarize::build_expression_scalarization_context(&dae_model);
+        let mut diff_derivative_assignment_targets = HashSet::new();
+        diff_derivative_assignment_targets.insert("v_w".to_string());
+        let mut algebraic_ref_counts = HashMap::new();
+        algebraic_ref_counts.insert("v_w".to_string(), 1);
+        let mut preferred_pin_scalars = HashSet::new();
+        preferred_pin_scalars.insert("v_w[2]".to_string());
+        let empty_names = HashSet::new();
+        let empty_starts = HashMap::new();
+        let empty_counts = HashMap::new();
+
+        let inputs = PinScalarInputs {
+            direct_assignment_targets: &empty_names,
+            direct_assignment_scalar_starts: &empty_starts,
+            diff_derivative_assignment_targets: &diff_derivative_assignment_targets,
+            algebraic_ref_counts: &algebraic_ref_counts,
+            preferred_pin_scalars: &preferred_pin_scalars,
+            state_alias_members: &empty_names,
+            substitution_linked_names: &empty_names,
+            runtime_defined_unknowns: &empty_names,
+            ref_counts: &empty_counts,
+            scalarization: &scalarization,
+        };
+        let candidates = build_pin_scalar_candidates(&dae_model, &inputs);
+
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.scalar_name == "v_w[2]")
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.scalar_name != "v_w[1]")
+        );
+    }
+
+    #[test]
+    fn pin_orphaned_variables_does_not_pin_direct_assignment_targets() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.outputs.insert(
+            dae::VarName::new("y"),
+            dae::Variable::new(dae::VarName::new("y")),
+        );
+        dae_model.algebraics.insert(
+            dae::VarName::new("z"),
+            dae::Variable::new(dae::VarName::new("z")),
+        );
+        dae_model.f_x.push(residual(
+            dae::Expression::Binary {
+                op: OpBinary::Sub(Default::default()),
+                lhs: Box::new(var_ref("y")),
+                rhs: Box::new(lit(1.0)),
+            },
+            "direct assignment",
+        ));
+
+        let elim = EliminationResult {
+            substitutions: vec![],
+            n_eliminated: 0,
+        };
+
+        pin_orphaned_variables(&mut dae_model, &elim);
+
+        let pins: Vec<_> = dae_model
+            .f_x
+            .iter()
+            .filter(|eq| eq.origin == "orphaned_variable_pin")
+            .collect();
+        assert_eq!(pins.len(), 1);
+        let dae::Expression::Binary { lhs, .. } = &pins[0].rhs else {
+            panic!("expected binary pin equation");
+        };
+        assert!(
+            matches!(
+                lhs.as_ref(),
+                dae::Expression::VarRef { name, .. } if name.as_str() == "z"
+            ),
+            "expected only free algebraic z to be pinned, got {lhs:?}"
+        );
     }
 
     #[test]

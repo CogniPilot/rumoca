@@ -18,6 +18,10 @@ use rumoca_ir_dae as dae;
 
 use crate::{BltBlock, EquationRef, UnknownId, sort_dae};
 
+mod contains;
+
+pub use contains::expr_contains_var;
+
 type Dae = dae::Dae;
 type BuiltinFunction = dae::BuiltinFunction;
 type Expression = dae::Expression;
@@ -801,7 +805,7 @@ fn eliminate_via_blt(
         }
 
         // Only eliminate scalar variables (size == 1).
-        let var_size = dae.algebraics.get(&var_name).map(|v| v.size()).unwrap_or(1);
+        let var_size = dae_var_size(dae, &var_name);
         if var_size != 1 {
             continue;
         }
@@ -1127,16 +1131,47 @@ fn assignment_target_name(expr: &Expression) -> Option<VarName> {
         return None;
     }
     if let Expression::VarRef { name, subscripts } = lhs.as_ref()
-        && subscripts.is_empty()
+        && let Some(target) = assignment_var_ref_name(name, subscripts)
     {
-        return Some(name.clone());
+        return Some(target);
     }
     if let Expression::VarRef { name, subscripts } = rhs.as_ref()
-        && subscripts.is_empty()
+        && let Some(target) = assignment_var_ref_name(name, subscripts)
     {
-        return Some(name.clone());
+        return Some(target);
     }
     None
+}
+
+fn assignment_var_ref_name(
+    name: &VarName,
+    subscripts: &[rumoca_ir_dae::Subscript],
+) -> Option<VarName> {
+    if subscripts.is_empty() {
+        return Some(name.clone());
+    }
+    let mut indices = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        let idx = match subscript {
+            rumoca_ir_dae::Subscript::Index(idx) => *idx,
+            rumoca_ir_dae::Subscript::Expr(expr) => match expr.as_ref() {
+                Expression::Literal(rumoca_ir_dae::Literal::Integer(idx)) => *idx,
+                Expression::Literal(rumoca_ir_dae::Literal::Real(value))
+                    if value.is_finite() && value.fract() == 0.0 =>
+                {
+                    *value as i64
+                }
+                _ => return None,
+            },
+            rumoca_ir_dae::Subscript::Colon => return None,
+        };
+        indices.push(idx.to_string());
+    }
+    Some(VarName::new(format!(
+        "{}[{}]",
+        name.as_str(),
+        indices.join(",")
+    )))
 }
 
 fn runtime_partition_or_event_refs_var(dae: &Dae, var_name: &VarName) -> bool {
@@ -1664,6 +1699,52 @@ fn subscripts_match_indices(subscripts: &[rumoca_ir_dae::Subscript], expected: &
         })
 }
 
+fn embedded_alias_indices_for_substitution(
+    name: &VarName,
+    subscripts: &[rumoca_ir_dae::Subscript],
+    var: &VarName,
+) -> Option<Vec<i64>> {
+    if !subscripts.is_empty() || name == var {
+        return None;
+    }
+    let name_field = split_complex_field_suffix(name.as_str());
+    let var_field = split_complex_field_suffix(var.as_str());
+    if name_field.is_some() || var_field.is_some() {
+        return None;
+    }
+    let name_base = dae::component_base_name(name.as_str())?;
+    let var_base = dae::component_base_name(var.as_str())?;
+    if name_base != var_base {
+        return None;
+    }
+    parse_embedded_subscripts(name.as_str()).filter(|indices| !indices.is_empty())
+}
+
+fn index_replacement_expr(replacement: &Expression, indices: &[i64]) -> Expression {
+    if indices.is_empty() {
+        return replacement.clone();
+    }
+    let extra_subscripts = indices
+        .iter()
+        .copied()
+        .map(rumoca_ir_dae::Subscript::Index)
+        .collect::<Vec<_>>();
+    match replacement {
+        Expression::VarRef { name, subscripts } => {
+            let mut projected_subscripts = subscripts.clone();
+            projected_subscripts.extend(extra_subscripts);
+            Expression::VarRef {
+                name: name.clone(),
+                subscripts: projected_subscripts,
+            }
+        }
+        _ => Expression::Index {
+            base: Box::new(replacement.clone()),
+            subscripts: extra_subscripts,
+        },
+    }
+}
+
 fn split_complex_field_suffix(name: &str) -> Option<(&str, &str)> {
     let (base, field) = name.rsplit_once('.')?;
     matches!(field, "re" | "im").then_some((base, field))
@@ -1753,58 +1834,6 @@ fn is_var_ref(expr: &Expression, var: &VarName) -> bool {
     }
 }
 
-/// Check if an expression references a variable (by base name).
-pub fn expr_contains_var(expr: &Expression, var: &VarName) -> bool {
-    match expr {
-        Expression::VarRef { name, subscripts } => {
-            if var_ref_matches_unknown(name, subscripts, var) {
-                return true;
-            }
-            subscripts.iter().any(|s| match s {
-                rumoca_ir_dae::Subscript::Expr(e) => expr_contains_var(e, var),
-                _ => false,
-            })
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            expr_contains_var(lhs, var) || expr_contains_var(rhs, var)
-        }
-        Expression::Unary { rhs, .. } => expr_contains_var(rhs, var),
-        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-            args.iter().any(|a| expr_contains_var(a, var))
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches
-                .iter()
-                .any(|(c, v)| expr_contains_var(c, var) || expr_contains_var(v, var))
-                || expr_contains_var(else_branch, var)
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            elements.iter().any(|e| expr_contains_var(e, var))
-        }
-        Expression::Range { start, step, end } => {
-            expr_contains_var(start, var)
-                || step.as_ref().is_some_and(|s| expr_contains_var(s, var))
-                || expr_contains_var(end, var)
-        }
-        Expression::Index { base, subscripts } => {
-            expr_contains_var(base, var)
-                || subscripts.iter().any(|s| match s {
-                    rumoca_ir_dae::Subscript::Expr(e) => expr_contains_var(e, var),
-                    _ => false,
-                })
-        }
-        Expression::ArrayComprehension { expr, filter, .. } => {
-            expr_contains_var(expr, var)
-                || filter.as_ref().is_some_and(|f| expr_contains_var(f, var))
-        }
-        Expression::FieldAccess { base, .. } => expr_contains_var(base, var),
-        Expression::Literal(_) | Expression::Empty => false,
-    }
-}
-
 fn substitute_expr_list(
     exprs: &[Expression],
     var: &VarName,
@@ -1839,12 +1868,19 @@ pub(crate) fn substitute_var(
     replacement: &Expression,
 ) -> Expression {
     match expr {
-        Expression::VarRef { name, subscripts }
-            if var_ref_matches_unknown_for_substitution(name, subscripts, var) =>
-        {
-            replacement.clone()
+        Expression::VarRef { name, subscripts } => {
+            if let Some(indices) = embedded_alias_indices_for_substitution(name, subscripts, var) {
+                // MLS §10.6: if a vector alias is eliminated before scalarization,
+                // scalarized references to that alias must map to the same scalar
+                // component of the replacement expression.
+                index_replacement_expr(replacement, &indices)
+            } else if var_ref_matches_unknown_for_substitution(name, subscripts, var) {
+                replacement.clone()
+            } else {
+                expr.clone()
+            }
         }
-        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => expr.clone(),
+        Expression::Literal(_) | Expression::Empty => expr.clone(),
         Expression::Binary { op, lhs, rhs } => Expression::Binary {
             op: op.clone(),
             lhs: Box::new(substitute_var(lhs, var, replacement)),

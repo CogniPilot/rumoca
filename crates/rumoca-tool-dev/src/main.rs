@@ -455,18 +455,20 @@ fn cmd_wasm(args: WasmArgs) -> Result<()> {
         WasmCommand::Test => run_wasm_test_suite(&repo_root()),
         WasmCommand::Edit(args) => {
             let root = repo_root();
+            let rayon = default_wasm_rayon_enabled();
             if !args.skip_build {
                 ensure_wasm_deps(&root)?;
                 build_wasm(
                     &root,
                     WasmBuildProfile::Release,
                     WasmVariant::FullWeb,
-                    default_wasm_rayon_enabled(),
+                    rayon,
                     false,
                     false,
                 )?;
             }
-            serve_wasm(&root, args.port)
+            let pkg_subdir = select_full_web_pkg_subdir(&root, rayon);
+            serve_wasm(&root, args.port, &pkg_subdir)
         }
         WasmCommand::Clean => clean_wasm(&repo_root()),
     }
@@ -1599,7 +1601,14 @@ fn cmd_build_wasm(args: WasmBuildArgs) -> Result<()> {
     } else {
         WasmBuildProfile::Release
     };
-    build_wasm(&root, profile, args.variant, args.rayon, args.pack, false)
+    build_wasm(
+        &root,
+        profile,
+        args.variant,
+        args.rayon,
+        args.pack,
+        args.pack,
+    )
 }
 
 pub(crate) fn run_wasm_test_suite(root: &Path) -> Result<()> {
@@ -1819,6 +1828,20 @@ fn wasm_build_subdir_name(profile: WasmBuildProfile, variant: WasmVariant, rayon
     }
 }
 
+fn select_full_web_pkg_subdir(root: &Path, rayon: bool) -> String {
+    let preferred = wasm_build_subdir_name(WasmBuildProfile::Release, WasmVariant::FullWeb, rayon);
+    if root.join("pkg").join(&preferred).is_dir() {
+        return preferred;
+    }
+
+    let fallback = wasm_build_subdir_name(WasmBuildProfile::Release, WasmVariant::FullWeb, !rayon);
+    if root.join("pkg").join(&fallback).is_dir() {
+        return fallback;
+    }
+
+    preferred
+}
+
 fn build_wasm(
     root: &Path,
     profile: WasmBuildProfile,
@@ -1869,8 +1892,8 @@ fn clean_wasm(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn serve_wasm(root: &Path, explicit_port: Option<u16>) -> Result<()> {
-    static_server::serve(root, explicit_port)
+fn serve_wasm(root: &Path, explicit_port: Option<u16>, pkg_subdir: &str) -> Result<()> {
+    static_server::serve(root, explicit_port, Some(pkg_subdir))
 }
 
 #[cfg(unix)]

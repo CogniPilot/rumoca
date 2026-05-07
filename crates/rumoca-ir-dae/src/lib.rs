@@ -27,8 +27,9 @@ mod types;
 pub mod visitor;
 pub use types::{
     BuiltinFunction, ComponentRefPart, ComponentReference, ComprehensionIndex,
-    DerivativeAnnotation, Expression, ExternalFunction, ForIndex, Function, FunctionParam, Literal,
-    Statement, StatementBlock, Subscript, VarName, component_base_name, extract_algorithm_outputs,
+    DerivativeAnnotation, Expression, ExternalFunction, ForEquation, ForEquationIteration,
+    ForIndex, Function, FunctionParam, Literal, Statement, StatementBlock, Subscript, VarName,
+    component_base_name, extract_algorithm_outputs,
 };
 pub use visitor::{
     AlgorithmOutputCollector, ContainsDerChecker, ContainsDerOfStateChecker, ExpressionVisitor,
@@ -169,6 +170,13 @@ pub struct Dae {
     /// All continuous equations in one unified set — no ODE/algebraic/output split.
     #[serde(rename = "f_x")]
     pub f_x: Vec<Equation>,
+    /// Preserved source grouping metadata for for-equations whose expanded
+    /// continuous equations are present in `f_x`.
+    ///
+    /// This lets code generators decide whether to emit the grouped loop or
+    /// scalarize it for a target that cannot handle structured loops.
+    #[serde(default)]
+    pub for_equations: Vec<ForEquation>,
     /// Discrete Real update equations: z = f_z(v, c) (MLS B.1b).
     /// Extracted from when-clauses that assign to Real variables.
     #[serde(rename = "f_z")]
@@ -212,6 +220,10 @@ pub struct Dae {
 
     /// Initial equations.
     pub initial_equations: Vec<Equation>,
+    /// Preserved source grouping metadata for initial for-equations whose
+    /// expanded equations are present in `initial_equations`.
+    #[serde(default)]
+    pub initial_for_equations: Vec<ForEquation>,
 
     /// True if the model is declared with the `partial` keyword.
     /// MLS §4.7: Partial models are incomplete and shouldn't be balance-checked.

@@ -1525,7 +1525,7 @@ pub(crate) use init::{
 mod runtime_newton;
 use runtime_newton::{
     CompiledEvalContext, CompiledInitialNewtonContext, CompiledRuntimeExpressionContext,
-    build_compiled_eval_context, build_compiled_initial_newton_context,
+    build_compiled_eval_context, build_compiled_initial_newton_context, build_compiled_problem_dae,
     build_compiled_runtime_expression_context,
     build_compiled_runtime_expression_context_for_start_rows, call_compiled_expression_rows,
     call_compiled_jacobian, call_compiled_residual, eval_compiled_initial_jacobian,

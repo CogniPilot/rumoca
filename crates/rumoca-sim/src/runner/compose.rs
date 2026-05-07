@@ -13,12 +13,24 @@
 //! that through the existing compile pipeline unchanged.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use rumoca_compile::compile::{
+    AstCausality, AstComponent, AstComponentRefPart, AstComponentReference, AstExpression,
+    AstForIndex, AstSubscript, AstToken, AstVariability, Session,
+};
 
 /// Name of the synthesized wrapper model. Callers pass this as the
 /// compiler's top-level model name when composition is active.
 pub const WRAPPER_MODEL_NAME: &str = "ComposedModel";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicRealDecl {
+    name: String,
+    dimensions: String,
+    start_modifier: Option<String>,
+}
 
 /// Build the combined Modelica source: physics + controller + synthesized
 /// wrapper. Returns the source string and the wrapper model name for the
@@ -31,21 +43,34 @@ pub fn synthesize(
     actuate: &HashMap<String, String>,
     sense: &HashMap<String, String>,
 ) -> Result<String> {
-    let controller_inputs = extract_input_names(controller_source);
+    let physics_components = class_components_from_source(physics_source, physics_name, "physics")?;
+    let controller_components =
+        class_components_from_source(controller_source, controller_name, "controller")?;
     let sense_receivers: BTreeSet<&str> = sense.values().map(String::as_str).collect();
 
     // Top-level wrapper inputs = controller inputs not fed by `sense`.
-    let top_inputs: Vec<&str> = controller_inputs
+    let top_inputs: Vec<String> = controller_components
         .iter()
-        .filter(|name| !sense_receivers.contains(name.as_str()))
-        .map(String::as_str)
+        .filter(|component| {
+            is_real_component(component)
+                && matches!(&component.causality, AstCausality::Input(_))
+                && !sense_receivers.contains(component.name.as_str())
+        })
+        .map(|component| component.name.clone())
         .collect();
 
-    // Top-level wrapper outputs = every public (non-protected, non-input)
-    // Real variable declared in the physics model. Passed through as
-    // `name = physics.name` so user configs keep using `stepper:px` etc.
-    // without caring that physics is now a sub-component.
-    let physics_outputs = extract_public_real_names(physics_source, physics_name);
+    // Top-level wrapper outputs = actual public output Real variables declared
+    // in the physics model. Passed through as `name = physics.name` so user
+    // configs keep using `stepper:px` etc. without caring that physics is now
+    // a sub-component.
+    let physics_component_names: BTreeSet<String> = physics_components
+        .iter()
+        .map(|component| component.name.clone())
+        .collect();
+    let physics_outputs = physics_components
+        .iter()
+        .filter_map(|component| public_real_decl(component, &physics_component_names))
+        .collect::<Vec<_>>();
 
     let mut wrapper = String::new();
     wrapper.push_str(&format!(
@@ -55,12 +80,17 @@ pub fn synthesize(
 
     // Top-level inputs (passed through to controller).
     for name in &top_inputs {
-        wrapper.push_str(&format!("  input Real {name}(start = 0);\n"));
+        wrapper.push_str(&format!("  input Real {name}(start = 0, fixed = true);\n"));
     }
 
     // Top-level outputs (passthroughs from physics sub-component).
-    for name in &physics_outputs {
-        wrapper.push_str(&format!("  output Real {name};\n"));
+    for decl in &physics_outputs {
+        wrapper.push_str(&format!(
+            "  output Real {}{}{};\n",
+            decl.name,
+            decl.dimensions,
+            decl.start_modifier.as_deref().unwrap_or("")
+        ));
     }
 
     // Sub-components.
@@ -89,8 +119,8 @@ pub fn synthesize(
     }
 
     // Physics output passthroughs.
-    for name in &physics_outputs {
-        wrapper.push_str(&format!("  {name} = physics.{name};\n"));
+    for decl in &physics_outputs {
+        wrapper.push_str(&format!("  {0} = physics.{0};\n", decl.name));
     }
 
     wrapper.push_str(&format!("end {WRAPPER_MODEL_NAME};\n"));
@@ -104,6 +134,21 @@ pub fn synthesize(
     combined.push_str(&wrapper);
 
     Ok(combined)
+}
+
+fn class_components_from_source(
+    source: &str,
+    class_name: &str,
+    role: &str,
+) -> Result<Vec<AstComponent>> {
+    let mut session = Session::default();
+    let uri = format!("{role}.mo");
+    session
+        .add_document(&uri, source)
+        .with_context(|| format!("Parse {role} Modelica source"))?;
+    session
+        .class_components_query(&uri, class_name)
+        .with_context(|| format!("Find {role} model class `{class_name}`"))
 }
 
 fn ensure_trailing_newline(s: &mut String) {
@@ -130,147 +175,254 @@ fn actuate_sorted(actuate: &HashMap<String, String>) -> Vec<(&str, &str)> {
     v
 }
 
-/// Scan a Modelica source for top-level `input Real <name>` declarations.
-///
-/// Very pragmatic — matches lines that look like input declarations in
-/// the common shape. Does not parse the full grammar; specifically doesn't
-/// try to support nested scopes, `inner/outer`, `connector`, etc. That's
-/// fine for the controllers we're composing: they use plain
-/// `input Real <name>(start = …) "...";` syntax.
-fn extract_input_names(source: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut in_block_comment = false;
-    for raw in source.lines() {
-        let mut line = raw;
-        // Block-comment bookkeeping.
-        if in_block_comment {
-            if let Some(idx) = line.find("*/") {
-                line = &line[idx + 2..];
-                in_block_comment = false;
-            } else {
-                continue;
-            }
-        }
-        // Strip inline line comments.
-        let line = if let Some(idx) = line.find("//") {
-            &line[..idx]
-        } else {
-            line
-        };
-        // Track block-comment starts that span the end of the line.
-        let line_owned: String;
-        let line = if let Some(start) = line.find("/*") {
-            if let Some(end_rel) = line[start..].find("*/") {
-                line_owned = format!("{}{}", &line[..start], &line[start + end_rel + 2..]);
-                line_owned.as_str()
-            } else {
-                in_block_comment = true;
-                &line[..start]
-            }
-        } else {
-            line
-        };
-        let trimmed = line.trim_start();
-        let Some(rest) = trimmed.strip_prefix("input") else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        let Some(rest) = rest.strip_prefix("Real") else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        // rest starts with "<name>(...)" or "<name>=..." or "<name>;"
-        let name: String = rest
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        if !name.is_empty() {
-            out.push(name);
-        }
+fn public_real_decl(
+    component: &AstComponent,
+    physics_component_names: &BTreeSet<String>,
+) -> Option<PublicRealDecl> {
+    if !is_real_component(component)
+        || component.is_protected
+        || !matches!(&component.causality, AstCausality::Output(_))
+        || matches!(
+            &component.variability,
+            AstVariability::Parameter(_)
+                | AstVariability::Constant(_)
+                | AstVariability::Discrete(_)
+        )
+    {
+        return None;
     }
-    out
+
+    Some(PublicRealDecl {
+        name: component.name.clone(),
+        dimensions: component_dimensions(component),
+        start_modifier: output_start_modifier(component, physics_component_names),
+    })
 }
 
-/// Scan a Modelica source for public (non-protected) Real variable
-/// declarations inside the named model. Excludes `input`, `parameter`,
-/// and anything inside the `protected` section. Used by the synthesizer
-/// to auto-expose physics outputs as top-level passthroughs so user
-/// configs keep `stepper:px` working after composition.
-fn extract_public_real_names(source: &str, model_name: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut in_target_model = false;
-    let mut depth_protected = 0;
-    let mut equation_seen = false;
-    let model_header = format!("model {model_name}");
-    let end_marker = format!("end {model_name}");
-
-    for raw in source.lines() {
-        let trimmed = raw.trim();
-        if trimmed.starts_with("//") {
-            continue;
-        }
-        if !in_target_model {
-            if trimmed.starts_with(&model_header) {
-                in_target_model = true;
-            }
-            continue;
-        }
-        if trimmed.starts_with(&end_marker) {
-            break;
-        }
-        if trimmed == "protected" {
-            depth_protected = 1;
-            continue;
-        }
-        if trimmed == "equation" || trimmed == "algorithm" {
-            equation_seen = true;
-            continue;
-        }
-        if depth_protected > 0 || equation_seen {
-            continue;
-        }
-        // We're in the public declaration body. Match lines that look like
-        // `[output] Real <name>` (optionally preceded by nothing else).
-        let line = trimmed;
-        let line = line
-            .strip_prefix("output")
-            .map(str::trim_start)
-            .unwrap_or(line);
-        // Skip input/parameter/constant.
-        if line.starts_with("input")
-            || line.starts_with("parameter")
-            || line.starts_with("constant")
-            || line.starts_with("discrete")
-        {
-            continue;
-        }
-        let Some(rest) = line.strip_prefix("Real") else {
-            continue;
+fn output_start_modifier(
+    component: &AstComponent,
+    physics_component_names: &BTreeSet<String>,
+) -> Option<String> {
+    component.start_is_modification.then(|| {
+        let start = qualify_physics_start_expr(&component.start, physics_component_names);
+        let each = if component.start_has_each {
+            "each "
+        } else {
+            ""
         };
-        let rest = rest.trim_start();
-        // One declaration per line is the common case. Handle the
-        // `Real a, b, c;` shape too.
-        // Grab names until `(`, `=`, `"`, or `;`.
-        let mut chunk = String::new();
-        for ch in rest.chars() {
-            if ch == '(' || ch == '=' || ch == '"' || ch == ';' || ch == '\n' {
-                break;
-            }
-            chunk.push(ch);
-        }
-        for piece in chunk.split(',') {
-            let name: String = piece
-                .trim()
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            if !name.is_empty() && seen.insert(name.clone()) {
-                out.push(name);
-            }
-        }
+        format!("({each}start = {start})")
+    })
+}
+
+fn qualify_physics_start_arc(
+    expr: &AstExpression,
+    physics_component_names: &BTreeSet<String>,
+) -> Arc<AstExpression> {
+    Arc::new(qualify_physics_start_expr(expr, physics_component_names))
+}
+
+fn qualify_physics_start_exprs(
+    elements: &[AstExpression],
+    physics_component_names: &BTreeSet<String>,
+) -> Vec<AstExpression> {
+    elements
+        .iter()
+        .map(|element| qualify_physics_start_expr(element, physics_component_names))
+        .collect()
+}
+
+fn qualify_physics_start_branches(
+    branches: &[(AstExpression, AstExpression)],
+    physics_component_names: &BTreeSet<String>,
+) -> Vec<(AstExpression, AstExpression)> {
+    branches
+        .iter()
+        .map(|(cond, value)| {
+            (
+                qualify_physics_start_expr(cond, physics_component_names),
+                qualify_physics_start_expr(value, physics_component_names),
+            )
+        })
+        .collect()
+}
+
+fn qualify_physics_start_indices(
+    indices: &[AstForIndex],
+    physics_component_names: &BTreeSet<String>,
+) -> Vec<AstForIndex> {
+    indices
+        .iter()
+        .map(|index| AstForIndex {
+            ident: index.ident.clone(),
+            range: qualify_physics_start_expr(&index.range, physics_component_names),
+        })
+        .collect()
+}
+
+fn qualify_physics_start_expr(
+    expr: &AstExpression,
+    physics_component_names: &BTreeSet<String>,
+) -> AstExpression {
+    match expr {
+        AstExpression::Range { start, step, end } => AstExpression::Range {
+            start: qualify_physics_start_arc(start, physics_component_names),
+            step: step
+                .as_ref()
+                .map(|expr| qualify_physics_start_arc(expr, physics_component_names)),
+            end: qualify_physics_start_arc(end, physics_component_names),
+        },
+        AstExpression::Unary { op, rhs } => AstExpression::Unary {
+            op: op.clone(),
+            rhs: qualify_physics_start_arc(rhs, physics_component_names),
+        },
+        AstExpression::Binary { op, lhs, rhs } => AstExpression::Binary {
+            op: op.clone(),
+            lhs: qualify_physics_start_arc(lhs, physics_component_names),
+            rhs: qualify_physics_start_arc(rhs, physics_component_names),
+        },
+        AstExpression::ComponentReference(reference) => AstExpression::ComponentReference(
+            qualify_physics_component_ref(reference, physics_component_names),
+        ),
+        AstExpression::FunctionCall { comp, args } => AstExpression::FunctionCall {
+            comp: comp.clone(),
+            args: qualify_physics_start_exprs(args, physics_component_names),
+        },
+        AstExpression::ClassModification {
+            target,
+            modifications,
+        } => AstExpression::ClassModification {
+            target: target.clone(),
+            modifications: qualify_physics_start_exprs(modifications, physics_component_names),
+        },
+        AstExpression::NamedArgument { name, value } => AstExpression::NamedArgument {
+            name: name.clone(),
+            value: qualify_physics_start_arc(value, physics_component_names),
+        },
+        AstExpression::Modification { target, value } => AstExpression::Modification {
+            target: target.clone(),
+            value: qualify_physics_start_arc(value, physics_component_names),
+        },
+        AstExpression::Array {
+            elements,
+            is_matrix,
+        } => AstExpression::Array {
+            elements: qualify_physics_start_exprs(elements, physics_component_names),
+            is_matrix: *is_matrix,
+        },
+        AstExpression::Tuple { elements } => AstExpression::Tuple {
+            elements: qualify_physics_start_exprs(elements, physics_component_names),
+        },
+        AstExpression::If {
+            branches,
+            else_branch,
+        } => AstExpression::If {
+            branches: qualify_physics_start_branches(branches, physics_component_names),
+            else_branch: qualify_physics_start_arc(else_branch, physics_component_names),
+        },
+        AstExpression::Parenthesized { inner } => AstExpression::Parenthesized {
+            inner: qualify_physics_start_arc(inner, physics_component_names),
+        },
+        AstExpression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => AstExpression::ArrayComprehension {
+            expr: qualify_physics_start_arc(expr, physics_component_names),
+            indices: qualify_physics_start_indices(indices, physics_component_names),
+            filter: filter
+                .as_ref()
+                .map(|expr| qualify_physics_start_arc(expr, physics_component_names)),
+        },
+        AstExpression::ArrayIndex { base, subscripts } => AstExpression::ArrayIndex {
+            base: qualify_physics_start_arc(base, physics_component_names),
+            subscripts: subscripts
+                .iter()
+                .map(|subscript| qualify_physics_subscript(subscript, physics_component_names))
+                .collect(),
+        },
+        AstExpression::FieldAccess { base, field } => AstExpression::FieldAccess {
+            base: qualify_physics_start_arc(base, physics_component_names),
+            field: field.clone(),
+        },
+        AstExpression::Empty | AstExpression::Terminal { .. } => expr.clone(),
     }
-    out
+}
+
+fn qualify_physics_component_ref(
+    reference: &AstComponentReference,
+    physics_component_names: &BTreeSet<String>,
+) -> AstComponentReference {
+    let Some(first) = reference.parts.first() else {
+        return reference.clone();
+    };
+    if reference.local || first.ident.text.as_ref() == "physics" {
+        return reference.clone();
+    }
+
+    let mut parts = Vec::with_capacity(reference.parts.len() + 1);
+    parts.push(AstComponentRefPart {
+        ident: AstToken {
+            text: Arc::from("physics"),
+            ..AstToken::default()
+        },
+        subs: None,
+    });
+    parts.extend(reference.parts.iter().cloned().map(|mut part| {
+        part.subs = part.subs.map(|subs| {
+            subs.iter()
+                .map(|subscript| qualify_physics_subscript(subscript, physics_component_names))
+                .collect()
+        });
+        part
+    }));
+
+    AstComponentReference {
+        local: false,
+        parts,
+        def_id: None,
+    }
+}
+
+fn qualify_physics_subscript(
+    subscript: &AstSubscript,
+    physics_component_names: &BTreeSet<String>,
+) -> AstSubscript {
+    match subscript {
+        AstSubscript::Expression(expr) => {
+            AstSubscript::Expression(qualify_physics_start_expr(expr, physics_component_names))
+        }
+        AstSubscript::Empty | AstSubscript::Range { .. } => subscript.clone(),
+    }
+}
+
+fn is_real_component(component: &AstComponent) -> bool {
+    component.type_name.to_string() == "Real"
+}
+
+fn component_dimensions(component: &AstComponent) -> String {
+    if !component.shape_expr.is_empty() {
+        return format!(
+            "[{}]",
+            component
+                .shape_expr
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if component.shape.is_empty() {
+        return String::new();
+    }
+    format!(
+        "[{}]",
+        component
+            .shape
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 #[cfg(test)]
@@ -278,53 +430,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extracts_input_names_from_typical_modelica() {
-        let src = r#"
-model M
-  input Real x(start = 0);
-  input Real y (start=1) "pitch";
-  // input Real z_commented;
-  /* input Real w_also_commented; */
-  input Real q;
-equation
-  // nothing
-end M;
-"#;
-        let names = extract_input_names(src);
-        assert_eq!(names, vec!["x", "y", "q"]);
-    }
-
-    #[test]
-    fn extracts_public_reals_excluding_protected_and_inputs() {
-        let src = r#"
-model P
-  parameter Real k = 1.0;
-  input Real u(start = 0);
-  Real x(start = 0);
-  Real y;
-  output Real accel_x;
-protected
-  Real internal;
-equation
-  der(x) = u;
-  y = x + 1;
-  accel_x = der(x);
-  internal = 0;
-end P;
-"#;
-        let names = extract_public_real_names(src, "P");
-        assert_eq!(names, vec!["x", "y", "accel_x"]);
-    }
-
-    #[test]
     fn synthesizes_wrapper_with_routes() {
         let physics = "model P\n  input Real u;\n  Real x;\nequation\n  der(x) = u;\nend P;\n";
-        let ctrl = "model C\n  input Real y;\n  input Real r;\n  Real v;\nequation\n  v = r - y;\nend C;\n";
+        let ctrl = "model C\n  input Real y;\n  input Real r;\n  output Real v;\nequation\n  v = r - y;\nend C;\n";
         let actuate: HashMap<String, String> = [("v".into(), "u".into())].into_iter().collect();
         let sense: HashMap<String, String> = [("x".into(), "y".into())].into_iter().collect();
         let out = synthesize(physics, "P", ctrl, "C", &actuate, &sense).unwrap();
         assert!(out.contains("model ComposedModel"));
-        assert!(out.contains("input Real r(start = 0)"));
+        assert!(out.contains("input Real r(start = 0, fixed = true)"));
         assert!(
             !out.contains("input Real y(start"),
             "sensed inputs must not be top-level"
@@ -332,5 +445,97 @@ end P;
         assert!(out.contains("controller.r = r"));
         assert!(out.contains("controller.y = physics.x"));
         assert!(out.contains("physics.u = controller.v"));
+    }
+
+    #[test]
+    fn synthesizer_uses_ast_components_and_ignores_nested_class_members() {
+        let physics = r#"
+model P
+  model Motor
+    output Real thrust;
+  equation
+    thrust = 1;
+  end Motor;
+
+  input Real u;
+  parameter Real p_start[3] = {0, 0, 0.12};
+  output Real position[3](start = p_start);
+  Real x;
+protected
+  Real hidden;
+equation
+  x = u;
+end P;
+"#;
+        let ctrl = "model C\n  input Real r;\n  output Real v;\nequation\n  v = r;\nend C;\n";
+        let actuate: HashMap<String, String> = [("v".into(), "u".into())].into_iter().collect();
+        let sense = HashMap::new();
+
+        let out = synthesize(physics, "P", ctrl, "C", &actuate, &sense).unwrap();
+        let wrapper = out
+            .split("// Synthesized wrapper")
+            .nth(1)
+            .expect("wrapper should be appended");
+        assert!(wrapper.contains("output Real position[3](start = physics.p_start)"));
+        assert!(!wrapper.contains("output Real x"));
+        assert!(!wrapper.contains("output Real thrust"));
+        assert!(!wrapper.contains("thrust = physics.thrust"));
+        assert!(!wrapper.contains("output Real hidden"));
+    }
+
+    #[test]
+    fn compiled_wrapper_does_not_expose_nested_physics_inputs() {
+        let physics = r#"
+model P
+  model Motor
+    input Real omega_cmd;
+    output Real omega(start = 0);
+  equation
+    der(omega) = omega_cmd - omega;
+  end Motor;
+
+  input Real omega_cmd[2];
+  output Real omega[2];
+protected
+  Motor motor[2];
+equation
+  motor.omega_cmd = omega_cmd;
+  omega = motor.omega;
+end P;
+"#;
+        let ctrl = r#"
+model C
+  input Real stick;
+  output Real motor_cmd_0;
+  output Real motor_cmd_1;
+equation
+  motor_cmd_0 = stick;
+  motor_cmd_1 = stick;
+end C;
+"#;
+        let actuate: HashMap<String, String> = [
+            ("motor_cmd_0".into(), "omega_cmd[1]".into()),
+            ("motor_cmd_1".into(), "omega_cmd[2]".into()),
+        ]
+        .into_iter()
+        .collect();
+        let sense = HashMap::new();
+        let source = synthesize(physics, "P", ctrl, "C", &actuate, &sense).unwrap();
+
+        let mut session = Session::default();
+        session
+            .add_document("composed.mo", &source)
+            .expect("composed source should parse");
+        let result = session
+            .compile_model(WRAPPER_MODEL_NAME)
+            .expect("composed wrapper should compile");
+        let input_names = result
+            .dae
+            .inputs
+            .keys()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
+        assert_eq!(input_names, vec!["stick"]);
     }
 }

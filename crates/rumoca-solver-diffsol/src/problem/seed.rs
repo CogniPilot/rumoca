@@ -657,9 +657,9 @@ pub(crate) fn build_runtime_direct_seed_candidates(
         if solution_has_solver_dependent_branch_condition(&normalized_solution, &branch_ctx) {
             continue;
         }
-        let target_size = direct_seed_target_size(ctx.dae, target.as_str(), ctx.base_to_indices);
+        let target_shape = direct_seed_target_shape(ctx.dae, target.as_str(), ctx.base_to_indices);
         let row_range = rows_by_eq.and_then(|rows| rows.get(&equation_key(eq)).cloned());
-        let apply = if !target.contains('[') && target_size > 1 {
+        let apply = if target_shape.is_aggregate {
             if let Some(indices) = ctx
                 .base_to_indices
                 .get(target.as_str())
@@ -670,7 +670,7 @@ pub(crate) fn build_runtime_direct_seed_candidates(
                 }
             } else {
                 RuntimeDirectSeedApply::EnvArray {
-                    dims: direct_seed_target_dims(ctx.dae, target.as_str(), target_size),
+                    dims: direct_seed_target_dims(ctx.dae, target.as_str(), target_shape.size),
                 }
             }
         } else if let Some(solver_idx) = solver_idx_for_target(target.as_str(), ctx.name_to_idx) {
@@ -692,7 +692,7 @@ pub(crate) fn build_runtime_direct_seed_candidates(
             trace_target: should_trace_direct_seed_target(target.as_str()),
             target,
             solution: normalized_solution,
-            value_count: target_size.max(1),
+            value_count: target_shape.size.max(1),
             row_range,
             apply,
         });
@@ -969,13 +969,34 @@ pub(crate) fn direct_seed_target_size(
     target: &str,
     base_to_indices: &HashMap<String, Vec<usize>>,
 ) -> usize {
-    rt::assignment::variable_size_for_assignment_name(dae, target)
-        .or_else(|| {
-            (!target.contains('['))
-                .then(|| base_to_indices.get(target).map(Vec::len))
-                .flatten()
-        })
-        .unwrap_or(1)
+    direct_seed_target_shape(dae, target, base_to_indices).size
+}
+
+pub(crate) fn direct_seed_target_shape(
+    dae: &Dae,
+    target: &str,
+    base_to_indices: &HashMap<String, Vec<usize>>,
+) -> rt::assignment::AssignmentTargetShape {
+    if let Some(shape) = rt::assignment::assignment_target_shape(dae, target) {
+        return shape;
+    }
+    if let Some(indices) = base_to_indices
+        .get(target)
+        .filter(|indices| indices.len() > 1)
+    {
+        return rt::assignment::AssignmentTargetShape {
+            size: indices.len(),
+            dims: vec![indices.len() as i64],
+            is_exact_variable: false,
+            is_aggregate: true,
+        };
+    }
+    rt::assignment::AssignmentTargetShape {
+        size: 1,
+        dims: Vec::new(),
+        is_exact_variable: false,
+        is_aggregate: false,
+    }
 }
 
 pub(crate) fn direct_seed_solution_is_runtime_clock_signal(
@@ -1250,22 +1271,7 @@ pub(crate) fn solution_branch_condition_in_subscripts(
 }
 
 pub(crate) fn direct_seed_target_dims(dae: &Dae, target: &str, width: usize) -> Vec<i64> {
-    let lookup = |name: &str| {
-        dae.states
-            .get(&dae::VarName::new(name))
-            .or_else(|| dae.algebraics.get(&dae::VarName::new(name)))
-            .or_else(|| dae.outputs.get(&dae::VarName::new(name)))
-            .or_else(|| dae.inputs.get(&dae::VarName::new(name)))
-            .or_else(|| dae.parameters.get(&dae::VarName::new(name)))
-            .or_else(|| dae.constants.get(&dae::VarName::new(name)))
-            .or_else(|| dae.discrete_reals.get(&dae::VarName::new(name)))
-            .or_else(|| dae.discrete_valued.get(&dae::VarName::new(name)))
-            .or_else(|| dae.derivative_aliases.get(&dae::VarName::new(name)))
-            .map(|var| var.dims.clone())
-    };
-
-    lookup(target)
-        .or_else(|| dae::component_base_name(target).and_then(|base| lookup(&base)))
+    rt::assignment::variable_dims_for_assignment_name(dae, target)
         .unwrap_or_else(|| vec![width as i64])
 }
 
@@ -1395,7 +1401,7 @@ pub(crate) fn apply_seed_direct_assignment_equation(
         return (false, 0);
     }
 
-    let target_size = direct_seed_target_size(ctx.dae, target.as_str(), ctx.base_to_indices);
+    let target_shape = direct_seed_target_shape(ctx.dae, target.as_str(), ctx.base_to_indices);
     if let Some(result) = apply_seed_direct_assignment_array_target(
         ctx,
         eq,
@@ -1405,7 +1411,8 @@ pub(crate) fn apply_seed_direct_assignment_equation(
         SeedArrayTarget {
             name: target.as_str(),
             solution: &normalized_solution,
-            size: target_size,
+            size: target_shape.size,
+            is_aggregate: target_shape.is_aggregate,
         },
     ) {
         return result;
@@ -1460,7 +1467,7 @@ pub(crate) fn apply_seed_direct_assignment_array_target(
     compiled_pass: Option<&DirectSeedPass<'_>>,
     target: SeedArrayTarget<'_>,
 ) -> Option<(bool, usize)> {
-    if target.name.contains('[') || target.size <= 1 {
+    if !target.is_aggregate {
         return None;
     }
     let values = compiled_direct_seed_values(eq, compiled_pass)
@@ -1487,6 +1494,7 @@ pub(crate) struct SeedArrayTarget<'a> {
     name: &'a str,
     solution: &'a Expression,
     size: usize,
+    is_aggregate: bool,
 }
 
 pub(crate) fn runtime_seed_values<'a>(
@@ -1835,8 +1843,7 @@ pub(crate) fn apply_runtime_direct_propagation_equation(
         return (false, 0);
     }
 
-    if !target.contains('[')
-        && let Some(indices) = ctx.base_to_indices.get(target.as_str())
+    if let Some(indices) = ctx.base_to_indices.get(target.as_str())
         && indices.len() > 1
     {
         let values = compiled_pass

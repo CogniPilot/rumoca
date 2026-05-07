@@ -122,6 +122,10 @@ pub(super) fn eval_index_from_nested_expr<T: SimFloat>(
             let element = elements.get(idx0)?;
             eval_index_from_nested_expr(element, &indices[1..], env)
         }
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Transpose,
+            ..
+        } => eval_matrix_index(expr, indices, env),
         dae::Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
             eval_index_from_env_path(name.as_str(), indices, env)
         }
@@ -703,6 +707,12 @@ pub(super) fn eval_binary<T: SimFloat>(
     {
         return dot;
     }
+    if matches!(op, rumoca_ir_core::OpBinary::Mul(_))
+        && let Some(values) = eval_binary_array_values(op, lhs, rhs, env)
+        && let Some(first) = values.first().copied()
+    {
+        return first;
+    }
 
     let l = eval_expr::<T>(lhs, env);
     let r = eval_expr::<T>(rhs, env);
@@ -1184,7 +1194,14 @@ fn eval_builtin_array_fallback<T: SimFloat>(
         dae::BuiltinFunction::Ones => T::one(),
         dae::BuiltinFunction::Fill
         | dae::BuiltinFunction::Scalar
-        | dae::BuiltinFunction::Vector => arg(0),
+        | dae::BuiltinFunction::Vector
+        | dae::BuiltinFunction::Matrix => arg(0),
+        dae::BuiltinFunction::Transpose => eval_transpose_values(args, env)
+            .and_then(|values| values.first().copied())
+            .unwrap_or_else(T::zero),
+        dae::BuiltinFunction::Cross => eval_cross_values(args, env)
+            .and_then(|values| values.first().copied())
+            .unwrap_or_else(T::zero),
         dae::BuiltinFunction::Linspace => eval_linspace_values(args, env)
             .first()
             .copied()

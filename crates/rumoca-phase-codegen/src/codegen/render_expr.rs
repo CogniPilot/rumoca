@@ -218,23 +218,25 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
             // VarName serializes as a plain string (newtype struct)
             // or as {"0": "name"} depending on serialization format
             get_field(&n, "0")
-                .map(|v| v.to_string())
-                .unwrap_or_else(|_| n.to_string())
+                .map(|v| super::value_to_string(&v))
+                .unwrap_or_else(|_| super::value_to_string(&n))
         })
         .unwrap_or_default();
-    let name = if cfg.sanitize_dots {
-        super::sanitize_name(&raw_name)
-    } else {
-        super::escape_reserved_keyword(&raw_name)
-    };
 
     let subscripts = render_subscripts(var_ref, cfg)?;
     if subscripts.is_empty() {
-        Ok(name)
+        Ok(super::emitted_symbol_or_fallback(&raw_name, cfg))
     } else if cfg.subscript_underscore {
-        // Underscore style: x[1] → x_1 (1-based, matches C template unpack_vars naming)
-        Ok(format!("{}_{}", name, subscripts))
+        // Underscore style: x[1] -> x_1, x[1,2] -> x_1_2.
+        let compact_subscripts = subscripts.replace(' ', "");
+        let source_ref = format!("{raw_name}[{compact_subscripts}]");
+        if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_ref) {
+            return Ok(symbol);
+        }
+        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+        Ok(format!("{}_{}", name, compact_subscripts.replace(',', "_")))
     } else {
+        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
         Ok(format!("{}[{}]", name, subscripts))
     }
 }
@@ -540,8 +542,8 @@ fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
         .map(|n| {
             // VarName serializes as a plain string (newtype struct)
             get_field(&n, "0")
-                .map(|v| v.to_string())
-                .unwrap_or_else(|_| n.to_string())
+                .map(|v| super::value_to_string(&v))
+                .unwrap_or_else(|_| super::value_to_string(&n))
         })
         .unwrap_or_default();
 
@@ -551,11 +553,7 @@ fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(render_builtin_python(builtin, &args, cfg));
     }
 
-    let name = if cfg.sanitize_dots {
-        raw_name.replace('.', "_")
-    } else {
-        raw_name
-    };
+    let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
 
     let args = render_args(func_call, cfg)?;
     Ok(format!("{}({})", name, args))

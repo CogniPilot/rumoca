@@ -1142,6 +1142,26 @@ impl Session {
             .unwrap_or_default()
     }
 
+    /// Resolve direct AST component declarations for one class scope.
+    pub fn class_components_query(
+        &mut self,
+        uri: &str,
+        qualified_name: &str,
+    ) -> Option<Vec<ast::Component>> {
+        let definition = self.documents.get(uri)?.summary_definition();
+        let class = parsed_class_by_qualified_name(definition, qualified_name)?;
+        Some(class.components.values().cloned().collect())
+    }
+
+    /// Resolve direct AST component declarations for a class by qualified name.
+    pub fn class_components_in_class_query(
+        &mut self,
+        class_name: &str,
+    ) -> Option<Vec<ast::Component>> {
+        let target = self.lookup_query_class_target(class_name)?;
+        self.class_components_query(&target.uri, &target.qualified_name)
+    }
+
     /// Resolve local component hover/goto data from class-body semantics.
     pub fn local_component_info_query(
         &mut self,

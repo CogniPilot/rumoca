@@ -172,6 +172,9 @@ pub(crate) fn finalize_flat_model(
     ctx.refresh_enum_parameter_lookup(flat);
     enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
     flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree);
+    if options.simplify_variable_names {
+        name_simplify::simplify_flat_names(flat);
+    }
 
     Ok(())
 }

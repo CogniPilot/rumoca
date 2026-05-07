@@ -10,6 +10,8 @@ controller via UDP + FlatBuffer.
 | File | Role |
 |---|---|
 | `QuadrotorSIL.mo` | 6-DOF physics plant (NED frame, FRD body) |
+| `../modelica_libraries/LieGroup/package.mo` | SO(3) attitude utilities |
+| `../modelica_libraries/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
 | `AcroRatePID.mo` | In-process acro-mode rate PID controller |
 | `quadrotor_acro.toml` | Config — physics + in-process Modelica controller |
 | `quadrotor_cerebri.toml` | Config — physics + external Cerebri autopilot (UDP+FB) |
@@ -26,9 +28,10 @@ cargo run -p rumoca --release -- \
   lockstep run -c examples/quadrotor_sil/quadrotor_acro.toml
 ```
 
-`lockstep run` reads the TOML, composes `QuadrotorSIL` + `AcroRatePID`
-into a single DAE (via a synthesized wrapper), compiles, starts the HTTP
-/ WS viewer servers, and enters the free-run loop.
+`lockstep run` reads the TOML, loads the shared `LieGroup` and `RigidBody`
+Modelica packages from `source_roots`, composes `QuadrotorSIL` +
+`AcroRatePID` into a single DAE (via a synthesized wrapper), compiles,
+starts the HTTP / WS viewer servers, and enters the free-run loop.
 
 **External Cerebri autopilot** (requires a Cerebri build on this machine):
 
@@ -77,9 +80,9 @@ input engine          rumoca lockstep                     Browser
 The composition wrapper is synthesized at load time from
 `[controller.actuate]` (controller output → physics input) and
 `[controller.sense]` (physics output → controller input). Physics public
-variables pass through automatically, so `stepper:px`, `stepper:omega_m1`,
-etc. resolve from the top level without the user knowing they live under
-a sub-component.
+variables pass through automatically, so viewer mappings read physics arrays
+directly through paths such as `stepper:position[1]`, `stepper:omega_m[1]`,
+`stepper:accel[1]`, and `stepper:gyro[1]`.
 
 ## Swapping between controllers
 
@@ -111,7 +114,7 @@ the other file to `lockstep run`.
 | Ct (thrust coeff) | 8.55e-6 | N/(rad/s)² |
 | Cm (torque coeff) | 0.016 | — |
 | arm_length | 0.25 | m |
-| tau_motor | 0.02 | s (first-order lag) |
+| tau_up / tau_down | 0.0125 / 0.025 | s (asymmetric first-order lag) |
 
 ## Ports
 
