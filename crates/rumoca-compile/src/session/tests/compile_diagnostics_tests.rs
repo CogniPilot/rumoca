@@ -869,3 +869,34 @@ fn test_compile_recovers_after_document_parse_error() {
         phase
     );
 }
+
+#[test]
+fn test_regression_compile_enum_2d_index_lookup() {
+    let mut session = Session::default();
+    let source = r#"
+package P
+  type L = enumeration(U, X, Z, ZERO, ONE);
+
+  model M
+    parameter Integer map[L, L] = [1,1,1,1,1;
+                                   1,2,2,2,2;
+                                   1,2,3,3,3;
+                                   1,2,3,4,4;
+                                   1,2,3,4,5];
+    L a(start=L.U);
+    L b(start=L.U);
+    Integer f(start=1);
+  algorithm
+    if change(a) or change(b) then
+      f := map[a, b];
+    end if;
+  end M;
+end P;
+"#;
+    session.update_document("input.mo", source);
+    let result = session.compile_model_phases("P.M");
+    assert!(
+        matches!(result, Ok(PhaseResult::Success(_))),
+        "expected compile success for enum 2D lookup model, got {result:?}"
+    );
+}

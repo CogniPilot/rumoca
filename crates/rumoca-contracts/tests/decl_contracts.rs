@@ -86,6 +86,24 @@ fn decl_002_block_connector_needs_io_prefix() {
     );
 }
 
+#[test]
+fn decl_002_allows_block_connector_with_member_level_io() {
+    expect_success(
+        r#"
+        connector C
+            input Real u;
+            output Real y;
+        end C;
+        block B
+            C c;
+        equation
+            c.y = c.u;
+        end B;
+    "#,
+        "B",
+    );
+}
+
 // =============================================================================
 // DECL-003: Record public only
 // "Only public sections are allowed in record definition"
