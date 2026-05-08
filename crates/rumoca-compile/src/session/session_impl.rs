@@ -1023,6 +1023,70 @@ impl Session {
         self.compile_model_strict_reachable_report(model_name, true)
     }
 
+    /// Check strict-recovery compilation for the requested model without
+    /// materializing full `CompilationResult` payloads.
+    ///
+    /// This avoids expensive DAE/flat deep clones in memory-constrained wasm
+    /// surfaces while preserving strict-recovery diagnostics.
+    pub fn check_model_strict_requested_only(&mut self, model_name: &str) -> Result<(), String> {
+        let (resolved, resolve_diags) = self
+            .build_resolved_for_strict_compile_with_diagnostics()
+            .map_err(|diags| {
+            let failures: Vec<ModelFailureDiagnostic> = diags
+                .iter()
+                .map(|diag| ModelFailureDiagnostic {
+                    model_name: "<resolve>".to_string(),
+                    phase: None,
+                    error_code: diag.code.clone(),
+                    error: diag.message.clone(),
+                    primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
+                })
+                .collect();
+            let requested = requested_missing_result_message(model_name, &failures);
+            format_strict_failure_summary(model_name, requested, &failures, 8)
+        })?;
+
+        let tree = &resolved.0;
+        let closure = self.reachable_model_closure_query(
+            tree,
+            ResolveBuildMode::StrictCompileRecovery,
+            model_name,
+        );
+        let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
+        let mut failures = collect_parse_failures_for_files(
+            &self.documents,
+            &tree.source_map,
+            &target_source_files,
+        );
+        let resolve_failures = collect_resolve_failures_for_files(
+            &resolve_diags,
+            &tree.source_map,
+            &target_source_files,
+        );
+        let target_has_resolve_failures = !resolve_failures.is_empty();
+        failures.extend(resolve_failures);
+        if target_has_resolve_failures {
+            let requested = requested_missing_result_message(model_name, &failures);
+            return Err(format_strict_failure_summary(
+                model_name, requested, &failures, 8,
+            ));
+        }
+
+        let requested_result =
+            self.dae_phase_result_query(tree, ResolveBuildMode::StrictCompileRecovery, model_name);
+        let requested = dae_phase_result_requested_message(model_name, &requested_result);
+        if let Some(failure) = dae_phase_result_to_failure(tree, model_name, &requested_result) {
+            failures.push(failure);
+        }
+        if !failures.is_empty() {
+            return Err(format_strict_failure_summary(
+                model_name, requested, &failures, 8,
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Compile the requested model using strict-reachable semantics with
     /// internal recovery while bypassing the session compile cache.
     ///
@@ -1121,9 +1185,10 @@ impl Session {
 
         match requested_result {
             DaePhaseResult::Success(result) => Ok(result),
-            DaePhaseResult::NeedsInner { .. } | DaePhaseResult::Failed { .. } => {
-                unreachable!("strict DAE compile returned failure without diagnostics")
-            }
+            DaePhaseResult::NeedsInner { .. } | DaePhaseResult::Failed { .. } => Err(
+                "strict DAE compile returned non-success requested result without collected diagnostics"
+                    .to_string(),
+            ),
         }
     }
 

@@ -1116,7 +1116,7 @@ fn check_connector_variability_restriction(
     let var_str = match &comp.variability {
         Variability::Parameter(_) => "parameter",
         Variability::Constant(_) => "constant",
-        _ => unreachable!(),
+        _ => return,
     };
     let prefix_label = match &comp.variability {
         Variability::Parameter(token) => label_from_token(
@@ -1129,7 +1129,7 @@ fn check_connector_variability_restriction(
             "check_cross_class_restrictions/connector_constant",
             "invalid 'constant' prefix on connector component",
         ),
-        _ => unreachable!(),
+        _ => return,
     };
     diags.push(semantic_error(
         ER027_CONNECTOR_PARAMETER_OR_CONSTANT,
@@ -1158,6 +1158,10 @@ fn check_block_connector_causality_restrictions(
                 && matches!(comp.causality, Causality::Empty)
                 // Also check if the type alias itself provides causality
                 && matches!(tc.causality, Causality::Empty)
+                // StateGraph-style connectors can be directionally typed via
+                // their member declarations (input/output) without component
+                // prefixes on the block member itself.
+                && !connector_members_define_causality(tc)
         {
             diags.push(semantic_error(
                 ER020_BLOCK_CONNECTOR_MISSING_IO_PREFIX,
@@ -1174,6 +1178,13 @@ fn check_block_connector_causality_restrictions(
             ));
         }
     }
+}
+
+fn connector_members_define_causality(connector: &ClassDef) -> bool {
+    connector
+        .components
+        .values()
+        .any(|member| !matches!(member.causality, Causality::Empty))
 }
 
 /// CONN-017: Check flow/potential balance in connector.
@@ -1260,7 +1271,7 @@ fn check_parameter_variability(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
         let var_str = match &comp.variability {
             Variability::Parameter(_) => "parameter",
             Variability::Constant(_) => "constant",
-            _ => unreachable!(),
+            _ => continue,
         };
         let label = label_from_expression_or_token(
             binding,
