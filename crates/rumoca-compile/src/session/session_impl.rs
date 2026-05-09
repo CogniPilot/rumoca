@@ -1029,6 +1029,19 @@ impl Session {
     /// This avoids expensive DAE/flat deep clones in memory-constrained wasm
     /// surfaces while preserving strict-recovery diagnostics.
     pub fn check_model_strict_requested_only(&mut self, model_name: &str) -> Result<(), String> {
+        self.check_model_strict_requested_only_with_timing(model_name)
+            .map(|_| ())
+    }
+
+    /// Same as `check_model_strict_requested_only`, but returns coarse timing
+    /// stats to help diagnose strict-check latency hotspots.
+    pub fn check_model_strict_requested_only_with_timing(
+        &mut self,
+        model_name: &str,
+    ) -> Result<StrictCheckTiming, String> {
+        let total_started = maybe_start_timer();
+
+        let build_resolved_started = maybe_start_timer();
         let (resolved, resolve_diags) = self
             .build_resolved_for_strict_compile_with_diagnostics()
             .map_err(|diags| {
@@ -1045,24 +1058,39 @@ impl Session {
             let requested = requested_missing_result_message(model_name, &failures);
             format_strict_failure_summary(model_name, requested, &failures, 8)
         })?;
+        let build_resolved_ms = maybe_elapsed_duration(build_resolved_started)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
         let tree = &resolved.0;
+        let closure_started = maybe_start_timer();
         let closure = self.reachable_model_closure_query(
             tree,
             ResolveBuildMode::StrictCompileRecovery,
             model_name,
         );
+        let reachable_closure_ms = maybe_elapsed_duration(closure_started)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
+        let parse_failures_started = maybe_start_timer();
         let mut failures = collect_parse_failures_for_files(
             &self.documents,
             &tree.source_map,
             &target_source_files,
         );
+        let collect_parse_failures_ms = maybe_elapsed_duration(parse_failures_started)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let resolve_failures_started = maybe_start_timer();
         let resolve_failures = collect_resolve_failures_for_files(
             &resolve_diags,
             &tree.source_map,
             &target_source_files,
         );
+        let collect_resolve_failures_ms = maybe_elapsed_duration(resolve_failures_started)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         let target_has_resolve_failures = !resolve_failures.is_empty();
         failures.extend(resolve_failures);
         if target_has_resolve_failures {
@@ -1072,8 +1100,12 @@ impl Session {
             ));
         }
 
+        let dae_query_started = maybe_start_timer();
         let requested_result =
             self.dae_phase_result_query(tree, ResolveBuildMode::StrictCompileRecovery, model_name);
+        let dae_phase_query_ms = maybe_elapsed_duration(dae_query_started)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         let requested = dae_phase_result_requested_message(model_name, &requested_result);
         if let Some(failure) = dae_phase_result_to_failure(tree, model_name, &requested_result) {
             failures.push(failure);
@@ -1084,7 +1116,17 @@ impl Session {
             ));
         }
 
-        Ok(())
+        let total_ms = maybe_elapsed_duration(total_started)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        Ok(StrictCheckTiming {
+            build_resolved_ms,
+            reachable_closure_ms,
+            collect_parse_failures_ms,
+            collect_resolve_failures_ms,
+            dae_phase_query_ms,
+            total_ms,
+        })
     }
 
     /// Compile the requested model using strict-reachable semantics with

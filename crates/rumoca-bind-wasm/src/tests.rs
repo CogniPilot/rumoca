@@ -458,10 +458,20 @@ fn test_compile_to_json_matches_compile_wrapper_output() {
 
     let compiled = compile(source, "Ball").expect("compile should succeed");
     let compiled_to_json = compile_to_json(source, "Ball").expect("compile_to_json should succeed");
-    let compiled_value: serde_json::Value =
+    let mut compiled_value: serde_json::Value =
         serde_json::from_str(&compiled).expect("compile should return valid JSON");
-    let compiled_to_json_value: serde_json::Value =
+    let mut compiled_to_json_value: serde_json::Value =
         serde_json::from_str(&compiled_to_json).expect("compile_to_json should return valid JSON");
+
+    // Timing metadata is intentionally non-semantic and can vary by call path.
+    // Keep strict alias comparison for all other fields.
+    for value in [&mut compiled_value, &mut compiled_to_json_value] {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("__compile_phase_timing");
+            object.remove("__compile_check_timing");
+        }
+    }
+
     assert_eq!(
         compiled_value, compiled_to_json_value,
         "compile_to_json should remain an exact alias of compile"

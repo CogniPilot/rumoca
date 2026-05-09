@@ -5,7 +5,10 @@ use rumoca_core::{
     SourceId, SourceMap, Span,
 };
 use rumoca_ir_ast as ast;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 pub(super) fn phase_result_to_failure(
     tree: &ast::ClassTree,
@@ -329,8 +332,29 @@ fn leading_non_whitespace_span(source_id: SourceId, content: &str) -> Span {
 }
 
 pub(super) fn same_path(left: &str, right: &str) -> bool {
-    let left_key = std::fs::canonicalize(left).unwrap_or_else(|_| std::path::PathBuf::from(left));
-    let right_key =
-        std::fs::canonicalize(right).unwrap_or_else(|_| std::path::PathBuf::from(right));
+    if left == right {
+        return true;
+    }
+    let left_key = canonicalized_path_key(left);
+    let right_key = canonicalized_path_key(right);
     left_key == right_key
+}
+
+fn canonicalized_path_key(path: &str) -> PathBuf {
+    static CANON_CACHE: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    let cache = CANON_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    if let Ok(guard) = cache.lock()
+        && let Some(cached) = guard.get(path)
+    {
+        return cached.clone();
+    }
+
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(path.to_string(), resolved.clone());
+    }
+
+    resolved
 }

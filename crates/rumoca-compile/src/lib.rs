@@ -139,9 +139,9 @@ pub mod compile {
         ParsedSourceRootLoad, PhaseResult, SemanticDiagnosticsMode, Session, SessionChange,
         SessionConfig, SessionSnapshot, SourceRootActivityKind, SourceRootActivityPhase,
         SourceRootActivitySnapshot, SourceRootDurability, SourceRootKind, SourceRootLoadMode,
-        SourceRootLoadReport, SourceRootStatusSnapshot, StrictCompileReport, WorkspaceSymbol,
-        WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming, compile_phase_timing_stats,
-        reset_compile_phase_timing_stats,
+        SourceRootLoadReport, SourceRootStatusSnapshot, StrictCheckTiming, StrictCompileReport,
+        WorkspaceSymbol, WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming,
+        compile_phase_timing_stats, reset_compile_phase_timing_stats,
     };
 }
 
