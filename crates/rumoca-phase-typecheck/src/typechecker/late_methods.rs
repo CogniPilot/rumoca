@@ -440,6 +440,7 @@ impl TypeChecker {
     /// - Non-input variables must have evaluable dimensions at translation time
     pub(crate) fn validate_dimensions(&mut self, overlay: &InstanceOverlay) {
         use rumoca_ir_ast as ast;
+        use rumoca_ir_core::Variability;
 
         for (_def_id, instance_data) in &overlay.components {
             // Only check primitives with dimension expressions
@@ -459,6 +460,18 @@ impl TypeChecker {
                 .any(|s| matches!(s, ast::Subscript::Range { .. }));
             let is_input = matches!(instance_data.causality, rumoca_ir_core::Causality::Input(_));
             if is_input && has_colon_dim {
+                continue;
+            }
+
+            // MLS §10.1 allows `[:]` dimensions to remain unspecified until a
+            // binding (or enclosing configuration) determines concrete size.
+            // For parameters/constants this often happens at instantiation time
+            // through record constructor modifications.
+            let is_structural_parameter_like = matches!(
+                instance_data.variability,
+                Variability::Parameter(_) | Variability::Constant(_)
+            );
+            if has_colon_dim && is_structural_parameter_like {
                 continue;
             }
 

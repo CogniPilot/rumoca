@@ -29,7 +29,8 @@ use rumoca_compile::Session;
 use rumoca_compile::codegen::render_dae_template_with_json;
 use rumoca_compile::codegen::templates as runtime_templates;
 use rumoca_compile::compile::{
-    CompilationMode, CompilationResult, FailedPhase, PhaseResult, session_cache_stats,
+    CompilationMode, CompilationResult, CompilePhaseTimingSnapshot, FailedPhase, PhaseResult,
+    compile_phase_timing_stats, reset_compile_phase_timing_stats, session_cache_stats,
 };
 use rumoca_compile::parsing::ir_core as rumoca_ir_core;
 use rumoca_compile::parsing::{
@@ -83,22 +84,22 @@ type WTimingStart = f64;
 type WTimingStart = std::time::Instant;
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_timing_start() -> WTimingStart {
+pub(crate) fn wasm_timing_start() -> WTimingStart {
     Date::now()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn wasm_timing_start() -> WTimingStart {
+pub(crate) fn wasm_timing_start() -> WTimingStart {
     std::time::Instant::now()
 }
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_elapsed_ms(start: WTimingStart) -> u64 {
+pub(crate) fn wasm_elapsed_ms(start: WTimingStart) -> u64 {
     (Date::now() - start).max(0.0).round() as u64
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn wasm_elapsed_ms(start: WTimingStart) -> u64 {
+pub(crate) fn wasm_elapsed_ms(start: WTimingStart) -> u64 {
     start.elapsed().as_millis() as u64
 }
 
@@ -432,7 +433,26 @@ fn attach_build_metadata(payload: &mut Value) {
 }
 
 /// Build a rich compile response with DAE, balance info, and pretty output.
-fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue> {
+fn compile_timing_snapshot_to_json(snapshot: CompilePhaseTimingSnapshot) -> Value {
+    let stat = |calls: u64, total_nanos: u64| {
+        serde_json::json!({
+            "calls": calls,
+            "total_nanos": total_nanos,
+            "total_ms": (total_nanos as f64) / 1_000_000.0,
+        })
+    };
+    serde_json::json!({
+        "instantiate": stat(snapshot.instantiate.calls, snapshot.instantiate.total_nanos),
+        "typecheck": stat(snapshot.typecheck.calls, snapshot.typecheck.total_nanos),
+        "flatten": stat(snapshot.flatten.calls, snapshot.flatten.total_nanos),
+        "todae": stat(snapshot.todae.calls, snapshot.todae.total_nanos),
+    })
+}
+
+fn build_compile_response(
+    result: &CompilationResult,
+    compile_phase_timing: CompilePhaseTimingSnapshot,
+) -> Result<String, JsValue> {
     let dae = &result.dae;
     let mut dae_native_json =
         serde_json::to_value(dae).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))?;
@@ -458,6 +478,7 @@ fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue>
         "dae_native": dae_native_json,
         "balance": balance,
         "pretty": pretty,
+        "__compile_phase_timing": compile_timing_snapshot_to_json(compile_phase_timing),
     });
 
     serde_json::to_string(&response).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
@@ -542,10 +563,12 @@ fn compile_source_in_session(
     source: &str,
     model_name: &str,
 ) -> Result<String, JsValue> {
+    reset_compile_phase_timing_stats();
     session.update_document("input.mo", source);
     let requested_model = qualify_input_model_name(session, model_name);
     let result = compile_requested_model(session, &requested_model)?;
-    build_compile_response(&result)
+    let timing = compile_phase_timing_stats();
+    build_compile_response(&result, timing)
 }
 
 /// Compile Modelica source code to DAE JSON.
