@@ -260,6 +260,32 @@ fn test_colon_dimension_inference() {
 }
 
 #[test]
+fn test_parameter_colon_dimension_without_binding_is_allowed() {
+    // Parameter `[:]` may remain unresolved until instantiation binds it.
+    let source = r#"
+        model Test
+            parameter Real p[:];
+        end Test;
+    "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let typed = typecheck(resolved).expect("typecheck should succeed");
+
+    let tree = typed.into_inner();
+    let test_class = tree
+        .definitions
+        .classes
+        .get("Test")
+        .expect("Test class should exist");
+    let p = test_class.components.get("p").expect("p should exist");
+    assert!(
+        p.shape.is_empty(),
+        "unbound parameter colon dimensions should remain unresolved"
+    );
+}
+
+#[test]
 fn test_import_constant_prefixes_include_alias_and_full_path() {
     let import = ScopeImport::Renamed {
         alias: "Medium".to_string(),

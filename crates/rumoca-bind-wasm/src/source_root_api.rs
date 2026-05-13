@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use wasm_bindgen::prelude::*;
 
 use rumoca_compile::Session;
-use rumoca_compile::compile::SourceRootKind;
+use rumoca_compile::compile::{
+    SourceRootKind, compile_phase_timing_stats, reset_compile_phase_timing_stats,
+};
 use rumoca_compile::parsing::{StoredDefinition, parse_source_to_ast};
 #[cfg(not(target_arch = "wasm32"))]
 use rumoca_compile::source_roots::resolve_source_root_cache_dir;
@@ -12,7 +14,7 @@ use rumoca_compile::source_roots::resolve_source_root_cache_dir;
 use super::{
     BUNDLED_SOURCE_ROOT_CACHE_BYTES, BUNDLED_SOURCE_ROOT_MANIFEST_JSON, BundledSourceRootManifest,
     SESSION, WASM_BUNDLED_SOURCE_ROOT_SET_ID, WASM_PROJECT_SOURCE_SET_ID,
-    compile_source_in_session,
+    compile_source_in_session, wasm_elapsed_ms, wasm_timing_start,
 };
 
 #[derive(Default)]
@@ -255,15 +257,70 @@ pub fn compile_check_with_source_roots(
     source_roots_json: &str,
 ) -> Result<String, JsValue> {
     super::with_singleton_session(|session| {
+        let total_started = wasm_timing_start();
+
+        let load_started = wasm_timing_start();
         load_source_root_sources_in_session(session, source_roots_json)?;
+        let load_ms = wasm_elapsed_ms(load_started);
+
+        reset_compile_phase_timing_stats();
+
+        let update_started = wasm_timing_start();
         session.update_document("input.mo", source);
+        let update_ms = wasm_elapsed_ms(update_started);
+
+        let qualify_started = wasm_timing_start();
         let requested_model = super::qualify_input_model_name(session, model_name);
-        session
-            .check_model_strict_requested_only(&requested_model)
+        let qualify_ms = wasm_elapsed_ms(qualify_started);
+
+        let check_started = wasm_timing_start();
+        let strict_timing = session
+            .check_model_strict_requested_only_with_timing(&requested_model)
             .map_err(|message| JsValue::from_str(&message))?;
+        let check_ms = wasm_elapsed_ms(check_started);
+        let total_ms = wasm_elapsed_ms(total_started);
+
+        let timing = compile_phase_timing_stats();
         Ok(serde_json::json!({
             "status": "compiled",
             "model_name": requested_model,
+            "__compile_check_timing": {
+                "load_source_roots_ms": load_ms,
+                "update_document_ms": update_ms,
+                "qualify_model_ms": qualify_ms,
+                "check_model_ms": check_ms,
+                "total_ms": total_ms,
+                "strict": {
+                    "build_resolved_ms": strict_timing.build_resolved_ms,
+                    "reachable_closure_ms": strict_timing.reachable_closure_ms,
+                    "collect_parse_failures_ms": strict_timing.collect_parse_failures_ms,
+                    "collect_resolve_failures_ms": strict_timing.collect_resolve_failures_ms,
+                    "dae_phase_query_ms": strict_timing.dae_phase_query_ms,
+                    "total_ms": strict_timing.total_ms,
+                }
+            },
+            "__compile_phase_timing": {
+                "instantiate": {
+                    "calls": timing.instantiate.calls,
+                    "total_nanos": timing.instantiate.total_nanos,
+                    "total_ms": (timing.instantiate.total_nanos as f64) / 1_000_000.0,
+                },
+                "typecheck": {
+                    "calls": timing.typecheck.calls,
+                    "total_nanos": timing.typecheck.total_nanos,
+                    "total_ms": (timing.typecheck.total_nanos as f64) / 1_000_000.0,
+                },
+                "flatten": {
+                    "calls": timing.flatten.calls,
+                    "total_nanos": timing.flatten.total_nanos,
+                    "total_ms": (timing.flatten.total_nanos as f64) / 1_000_000.0,
+                },
+                "todae": {
+                    "calls": timing.todae.calls,
+                    "total_nanos": timing.todae.total_nanos,
+                    "total_ms": (timing.todae.total_nanos as f64) / 1_000_000.0,
+                },
+            }
         })
         .to_string())
     })

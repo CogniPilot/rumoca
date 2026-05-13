@@ -1635,6 +1635,17 @@ pub struct StrictCompileReport {
     pub source_map: Option<SourceMap>,
 }
 
+/// Coarse timing breakdown for strict requested-only model checks.
+#[derive(Debug, Clone, Default)]
+pub struct StrictCheckTiming {
+    pub build_resolved_ms: u64,
+    pub reachable_closure_ms: u64,
+    pub collect_parse_failures_ms: u64,
+    pub collect_resolve_failures_ms: u64,
+    pub dae_phase_query_ms: u64,
+    pub total_ms: u64,
+}
+
 impl StrictCompileReport {
     /// Returns true when strict compile succeeded for the requested closure.
     pub fn requested_succeeded(&self) -> bool {
