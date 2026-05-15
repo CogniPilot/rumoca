@@ -699,16 +699,18 @@ fn extract_reinit_target(comp: &ComponentReference, args: &[Expression]) -> Opti
     let Expression::ComponentReference(target) = args.first()? else {
         return None;
     };
-    let target = target.parts.first()?;
-    span_from_location(&target.ident.location).map(|span| (target.ident.text.to_string(), span))
+    let first_target_part = target.parts.first()?;
+    let target_key = target.to_string();
+    span_from_location(&first_target_part.ident.location).map(|span| (target_key, span))
 }
 
 fn extract_component_reference_target(expr: &Expression) -> Option<(String, Span)> {
     let Expression::ComponentReference(comp) = expr else {
         return None;
     };
-    let target = comp.parts.first()?;
-    span_from_location(&target.ident.location).map(|span| (target.ident.text.to_string(), span))
+    let first_part = comp.parts.first()?;
+    let target_key = comp.to_string();
+    span_from_location(&first_part.ident.location).map(|span| (target_key, span))
 }
 
 fn label_from_span(span: Span, message: String) -> PrimaryLabel {

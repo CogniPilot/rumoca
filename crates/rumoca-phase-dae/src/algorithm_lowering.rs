@@ -592,6 +592,27 @@ fn eval_integer_expr(expr: &Expression, flat: &Model) -> Option<i64> {
     scalar_size::try_eval_flat_expr_i64(expr, flat, 0)
 }
 
+fn eval_integer_array_expr(expr: &Expression, flat: &Model, depth: u8) -> Option<Vec<i64>> {
+    if depth > 8 {
+        return None;
+    }
+    match expr {
+        Expression::Array {
+            elements,
+            is_matrix: false,
+        } => elements
+            .iter()
+            .map(|element| scalar_size::try_eval_flat_expr_i64(element, flat, depth + 1))
+            .collect(),
+        Expression::VarRef { name, .. } => {
+            let var = flat.variables.get(name)?;
+            let binding = var.binding.as_ref()?;
+            eval_integer_array_expr(binding, flat, depth + 1)
+        }
+        _ => None,
+    }
+}
+
 fn eval_for_range_values(range: &Expression, flat: &Model) -> Result<Vec<i64>, String> {
     const MAX_LOOP_EXPANSION: usize = 100_000;
     let (start, step, end) = match range {
@@ -609,9 +630,13 @@ fn eval_for_range_values(range: &Expression, flat: &Model) -> Result<Vec<i64>, S
             (start_value, step_value, end_value)
         }
         _ => {
-            let end_value = eval_integer_expr(range, flat)
-                .ok_or_else(|| format!("ForRangeNotConstant({range:?})"))?;
-            (1, 1, end_value)
+            if let Some(end_value) = eval_integer_expr(range, flat) {
+                (1, 1, end_value)
+            } else if let Some(values) = eval_integer_array_expr(range, flat, 0) {
+                return Ok(values);
+            } else {
+                return Err(format!("ForRangeNotConstant({range:?})"));
+            }
         }
     };
     if step == 0 {

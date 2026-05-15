@@ -51,8 +51,10 @@ use crate::class_browser_helpers::{
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 use crate::simulation_api::{simulate_model_impl, simulate_model_with_project_sources_impl};
 pub use crate::source_root_api::{
-    clear_source_root_cache, compile_check_with_source_roots, compile_with_project_sources,
-    compile_with_source_roots, export_parsed_source_roots_binary, get_bundled_source_root_manifest,
+    clear_source_root_cache, compile_check_with_source_roots,
+    compile_check_with_source_roots_with_options, compile_with_project_sources,
+    compile_with_source_roots, compile_with_source_roots_with_options,
+    export_parsed_source_roots_binary, get_bundled_source_root_manifest,
     get_source_root_document_count, get_source_root_statuses, load_bundled_source_root_cache,
     load_source_roots, merge_parsed_source_roots, merge_parsed_source_roots_binary,
     parse_source_root_file, sync_project_sources,

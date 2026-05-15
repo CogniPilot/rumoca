@@ -343,6 +343,10 @@ impl TypeChecker {
         // over inherited replaceable defaults (MLS §7.3).
         Self::collect_model_extends_redeclare_constants(tree, model_name, &mut self.eval_ctx);
 
+        // Collect nested/redeclare constants from component *type* hierarchies
+        // into each instance scope (e.g. `voltage.term.PhaseSystem.n`).
+        Self::collect_component_type_nested_constants(tree, overlay, &mut self.eval_ctx);
+
         // Collect constants from the enclosing class (MLS §5.3).
         // When compiling `Package.BaseProperties`, constants like nX, nXi
         // defined in `Package` need to be available for dimension evaluation.
@@ -527,12 +531,26 @@ impl TypeChecker {
             return;
         }
 
+        let is_active_alias = active_alias == Some(alias);
+        if is_active_alias {
+            // MLS §7.3: active alias redeclare owns the unqualified
+            // component-local projection (e.g., `medium.nX`), so stale values
+            // from inherited/default aliases must be replaced.
+            //
+            // Important: clear this before writing `comp_scope.alias.*` so we
+            // do not erase freshly extracted alias constants.
+            Self::clear_alias_scope_values(ctx, comp_scope);
+        }
+
         let alias_scope = format!("{comp_scope}.{alias}");
+        // MLS §7.3: instance-level redeclare overrides must replace inherited/default
+        // package constants in the local alias scope.
+        Self::clear_alias_scope_values(ctx, &alias_scope);
         Self::extract_override_class_constants(tree, &alias_scope, def_id, ctx);
 
         // For declarations like `Medium.BaseProperties medium`, expose
         // unqualified constants (`medium.nX`) from the active alias only.
-        if active_alias == Some(alias) {
+        if is_active_alias {
             Self::extract_override_class_constants(tree, comp_scope, def_id, ctx);
         }
     }
@@ -1577,6 +1595,13 @@ impl TypeChecker {
             // Follow extends chains to concrete types and extract their constants
             for ext in &nested_class.extends {
                 Self::extract_extends_modification_constants(nested_name, ext, ctx);
+                Self::extract_nested_extends_redeclare_constants(
+                    tree,
+                    nested_name,
+                    model_name,
+                    ext,
+                    ctx,
+                );
                 Self::extract_class_constants_from_extends(
                     tree,
                     nested_name,
@@ -1585,6 +1610,152 @@ impl TypeChecker {
                     ctx,
                 );
             }
+        }
+    }
+
+    /// Extract nested/redeclare constants for each instantiated component type
+    /// into the component instance scope.
+    fn collect_component_type_nested_constants(
+        tree: &ClassTree,
+        overlay: &InstanceOverlay,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        const MAX_PASSES: usize = 4;
+        for _ in 0..MAX_PASSES {
+            let prev =
+                ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len();
+            for instance_data in overlay.components.values() {
+                Self::collect_component_instance_type_nested_constants(tree, instance_data, ctx);
+            }
+            let new =
+                ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len();
+            if new == prev {
+                break;
+            }
+        }
+    }
+
+    fn collect_component_instance_type_nested_constants(
+        tree: &ClassTree,
+        instance_data: &rumoca_ir_ast::InstanceData,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        let comp_scope = instance_data.qualified_name.to_flat_string();
+        if comp_scope.is_empty() {
+            return;
+        }
+        let type_name = instance_data.type_name.as_str();
+        if type_name.is_empty() {
+            return;
+        }
+
+        let ancestors = Self::collect_ancestor_classes(tree, type_name);
+        for ancestor in ancestors {
+            Self::extract_class_extends_redeclare_constants_for_scope(
+                tree,
+                ancestor,
+                &comp_scope,
+                type_name,
+                ctx,
+            );
+            Self::extract_nested_class_constants_from_scoped(
+                tree,
+                ancestor,
+                &comp_scope,
+                type_name,
+                ctx,
+            );
+        }
+    }
+
+    /// Materialize class-level extends redeclare constants under an instance scope.
+    ///
+    /// Example:
+    /// `comp_scope = voltage.term`, class has
+    /// `extends Interfaces.TerminalDC(redeclare package PhaseSystem = ...);`
+    /// -> populate `voltage.term.PhaseSystem.*`.
+    fn extract_class_extends_redeclare_constants_for_scope(
+        tree: &ClassTree,
+        class_def: &ClassDef,
+        comp_scope: &str,
+        resolve_context: &str,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        for ext in &class_def.extends {
+            Self::extract_nested_extends_redeclare_constants(
+                tree,
+                comp_scope,
+                resolve_context,
+                ext,
+                ctx,
+            );
+        }
+    }
+
+    /// Scoped variant of nested class constant extraction.
+    ///
+    /// Emits constants under `<base_scope>.<nested_name>.*` so dimension
+    /// expressions in nested members resolve lexically in instance scope.
+    fn extract_nested_class_constants_from_scoped(
+        tree: &ClassTree,
+        class_def: &ClassDef,
+        base_scope: &str,
+        resolve_context: &str,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        for (nested_name, nested_class) in &class_def.classes {
+            let nested_alias = format!("{base_scope}.{nested_name}");
+            Self::extract_class_constants(&nested_alias, nested_class, ctx);
+            for ext in &nested_class.extends {
+                Self::extract_extends_modification_constants(&nested_alias, ext, ctx);
+                Self::extract_nested_extends_redeclare_constants(
+                    tree,
+                    &nested_alias,
+                    resolve_context,
+                    ext,
+                    ctx,
+                );
+                Self::extract_class_constants_from_extends(
+                    tree,
+                    &nested_alias,
+                    &ext.base_name.to_string(),
+                    resolve_context,
+                    ctx,
+                );
+            }
+        }
+    }
+
+    /// Materialize nested-class `extends(... redeclare package/class ...)` constants.
+    ///
+    /// Example: inside nested class `TwoPin`,
+    /// `extends Interfaces.TerminalDC(redeclare package PhaseSystem = PhaseSystems.TwoConductor)`
+    /// must populate `TwoPin.PhaseSystem.*` so expressions like `PhaseSystem.n`
+    /// in inherited dimension declarations become evaluable.
+    fn extract_nested_extends_redeclare_constants(
+        tree: &ClassTree,
+        nested_alias: &str,
+        resolve_context: &str,
+        ext: &rumoca_ir_ast::Extend,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        for ext_mod in &ext.modifications {
+            let Expression::Modification { target, value } = &ext_mod.expr else {
+                continue;
+            };
+            let looks_like_class_or_package_rebind = matches!(
+                value.as_ref(),
+                Expression::ComponentReference(_) | Expression::ClassModification { .. }
+            );
+            if !ext_mod.redeclare && !looks_like_class_or_package_rebind {
+                continue;
+            }
+            let Some(def_id) = Self::resolve_redeclare_target_def_id(tree, value, resolve_context)
+            else {
+                continue;
+            };
+            let alias_scope = format!("{nested_alias}.{target}");
+            Self::extract_override_class_constants(tree, &alias_scope, def_id, ctx);
         }
     }
 
@@ -1772,203 +1943,6 @@ impl TypeChecker {
 
             self.eval_ctx.build_suffix_index();
         }
-    }
-
-    /// Collect record-parameter aliases from overlay bindings (MLS §7.2.3).
-    ///
-    /// Example: for `chain(cellData = cellData2)`, collect
-    /// `chain.cellData -> cellData2` so field references like
-    /// `chain.cellData.nRC` can resolve through the modifier binding.
-    fn collect_record_aliases(overlay: &InstanceOverlay) -> Vec<(String, String)> {
-        let mut aliases: HashMap<String, String> = HashMap::new();
-        let (known_paths, known_prefixes) = Self::collect_known_component_paths(overlay);
-        for instance_data in overlay.components.values() {
-            let Some(binding) = &instance_data.binding else {
-                continue;
-            };
-            let Some(target_unqualified) = Self::extract_simple_path(binding) else {
-                continue;
-            };
-            let source = instance_data.qualified_name.to_flat_string();
-            let target = Self::resolve_alias_target(
-                &source,
-                &target_unqualified,
-                instance_data.binding_from_modification,
-                &known_paths,
-                &known_prefixes,
-            );
-            if source != target {
-                aliases.insert(source, target);
-            }
-        }
-        Self::collapse_alias_chains(&mut aliases);
-        let mut out: Vec<(String, String)> = aliases.into_iter().collect();
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        out
-    }
-
-    /// Extract a simple dotted path from an expression if it is a plain reference.
-    fn extract_simple_path(expr: &Expression) -> Option<String> {
-        match expr {
-            Expression::ComponentReference(cr) => (!cr.parts.is_empty()).then(|| cr.to_string()),
-            Expression::FieldAccess { base, field } => {
-                let base_path = Self::extract_simple_path(base)?;
-                Some(format!("{base_path}.{field}"))
-            }
-            _ => None,
-        }
-    }
-
-    /// Collect full component paths and all dotted prefixes from the overlay.
-    fn collect_known_component_paths(
-        overlay: &InstanceOverlay,
-    ) -> (HashSet<String>, HashSet<String>) {
-        let mut known_paths: HashSet<String> = HashSet::new();
-        let mut known_prefixes: HashSet<String> = HashSet::new();
-        for instance_data in overlay.components.values() {
-            let full = instance_data.qualified_name.to_flat_string();
-            known_paths.insert(full.clone());
-            let mut scope = full.as_str();
-            while let Some((prefix, _)) = scope.rsplit_once('.') {
-                known_prefixes.insert(prefix.to_string());
-                scope = prefix;
-            }
-        }
-        (known_paths, known_prefixes)
-    }
-
-    /// Resolve modifier/declaration alias targets into absolute instance scope.
-    ///
-    /// Applies lexical scope traversal and picks the first candidate that maps
-    /// to an existing overlay path or a known parent prefix.
-    fn resolve_alias_target(
-        source: &str,
-        target_unqualified: &str,
-        from_modification: bool,
-        known_paths: &HashSet<String>,
-        known_prefixes: &HashSet<String>,
-    ) -> String {
-        let mut scope = if from_modification {
-            Self::grandparent_scope(source)
-        } else {
-            Self::parent_scope(source)
-        };
-        loop {
-            let candidate = if scope.is_empty() {
-                target_unqualified.to_string()
-            } else {
-                format!("{scope}.{target_unqualified}")
-            };
-            if Self::is_known_component_or_prefix(&candidate, known_paths, known_prefixes) {
-                return candidate;
-            }
-            if scope.is_empty() {
-                break;
-            }
-            scope = Self::parent_scope(scope);
-        }
-        target_unqualified.to_string()
-    }
-
-    fn is_known_component_or_prefix(
-        candidate: &str,
-        known_paths: &HashSet<String>,
-        known_prefixes: &HashSet<String>,
-    ) -> bool {
-        known_paths.contains(candidate) || known_prefixes.contains(candidate)
-    }
-
-    fn parent_scope(path: &str) -> &str {
-        path.rsplit_once('.').map_or("", |(prefix, _)| prefix)
-    }
-
-    fn grandparent_scope(path: &str) -> &str {
-        Self::parent_scope(Self::parent_scope(path))
-    }
-
-    /// Collapse `A->B->C` alias chains to direct `A->C` mappings.
-    fn collapse_alias_chains(aliases: &mut HashMap<String, String>) {
-        const MAX_PASSES: usize = 20;
-        for _ in 0..MAX_PASSES {
-            let mut changed = false;
-            let keys: Vec<String> = aliases.keys().cloned().collect();
-            for key in keys {
-                changed |= Self::collapse_alias_for_key(aliases, &key);
-            }
-            if !changed {
-                break;
-            }
-        }
-    }
-
-    fn collapse_alias_for_key(aliases: &mut HashMap<String, String>, key: &str) -> bool {
-        let Some(target) = Self::resolve_alias_terminal(aliases, key) else {
-            return false;
-        };
-        if aliases.get(key) == Some(&target) {
-            return false;
-        }
-        aliases.insert(key.to_string(), target);
-        true
-    }
-
-    fn resolve_alias_terminal(aliases: &HashMap<String, String>, key: &str) -> Option<String> {
-        let mut target = aliases.get(key)?.clone();
-        let mut seen = std::collections::HashSet::new();
-        while seen.insert(target.clone()) {
-            let Some(next) = aliases.get(&target).cloned() else {
-                break;
-            };
-            target = next;
-        }
-        Some(target)
-    }
-
-    /// Propagate evaluated scalar/dimension values through record aliases.
-    ///
-    /// If `A -> B`, then `A.field` should mirror `B.field` for compile-time
-    /// evaluation of dimension expressions and range bounds.
-    fn propagate_record_alias_values(&mut self, record_aliases: &[(String, String)]) -> bool {
-        Self::propagate_alias_map(record_aliases, &mut self.eval_ctx.integers)
-            | Self::propagate_alias_map(record_aliases, &mut self.eval_ctx.reals)
-            | Self::propagate_alias_map(record_aliases, &mut self.eval_ctx.booleans)
-            | Self::propagate_alias_map(record_aliases, &mut self.eval_ctx.enums)
-            | Self::propagate_alias_map(record_aliases, &mut self.eval_ctx.dimensions)
-    }
-
-    fn propagate_alias_map<T: Clone + PartialEq>(
-        record_aliases: &[(String, String)],
-        values: &mut rustc_hash::FxHashMap<String, T>,
-    ) -> bool {
-        if record_aliases.is_empty() || values.is_empty() {
-            return false;
-        }
-        let mut sorted_keys: Vec<String> = values.keys().cloned().collect();
-        sorted_keys.sort_unstable();
-
-        let mut updates: rustc_hash::FxHashMap<String, T> = rustc_hash::FxHashMap::default();
-        for (alias_source, alias_target) in record_aliases {
-            Self::queue_alias_root_update(alias_source, alias_target, values, &mut updates);
-            let target_prefix = format!("{alias_target}.");
-            for field_name in Self::alias_field_key_range(&sorted_keys, &target_prefix) {
-                Self::queue_alias_field_update(
-                    alias_source,
-                    &target_prefix,
-                    field_name,
-                    values,
-                    &mut updates,
-                );
-            }
-        }
-
-        let mut progress = false;
-        for (name, value) in updates {
-            if values.get(&name) != Some(&value) {
-                values.insert(name, value);
-                progress = true;
-            }
-        }
-        progress
     }
 }
 

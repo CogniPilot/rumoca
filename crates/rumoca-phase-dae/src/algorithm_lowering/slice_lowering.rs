@@ -202,11 +202,65 @@ fn index_vector_expr(expr: &Expression, index: i64) -> Expression {
     }
 }
 
+fn lower_index_list_assignment(
+    comp: &ComponentReference,
+    value: &Expression,
+) -> Option<Vec<AlgorithmAssignment>> {
+    let (base_target, subscripts) = algorithm_assignment_base_with_subscripts(comp)?;
+    if subscripts.len() != 1 {
+        return None;
+    }
+
+    let Subscript::Expr(index_expr) = &subscripts[0] else {
+        return None;
+    };
+    let Expression::Array {
+        elements: index_elements,
+        is_matrix: false,
+    } = index_expr.as_ref()
+    else {
+        return None;
+    };
+    let Expression::Array {
+        elements: value_elements,
+        is_matrix: false,
+    } = value
+    else {
+        return None;
+    };
+
+    if index_elements.is_empty() || index_elements.len() != value_elements.len() {
+        return None;
+    }
+
+    Some(
+        index_elements
+            .iter()
+            .zip(value_elements.iter())
+            .map(|(index_element, rhs)| {
+                (
+                    varref_with_subscripts(
+                        &base_target,
+                        &[Subscript::Expr(Box::new(index_element.clone()))],
+                    ),
+                    rhs.clone(),
+                    Span::DUMMY,
+                    "algorithm assignment (index-list lowering)".to_string(),
+                )
+            })
+            .collect(),
+    )
+}
+
 pub(super) fn lower_assignment_statement(
     flat: &Model,
     comp: &ComponentReference,
     value: &Expression,
 ) -> Result<Vec<AlgorithmAssignment>, String> {
+    if let Some(lowered) = lower_index_list_assignment(comp, value) {
+        return Ok(lowered);
+    }
+
     if let Some(lowered) = lower_supported_slice_assignment(flat, comp, value) {
         return Ok(lowered);
     }

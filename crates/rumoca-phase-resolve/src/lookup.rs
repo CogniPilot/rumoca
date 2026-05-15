@@ -64,7 +64,27 @@ impl Resolver {
             let next_qualified = format!("{}.{}", current_qualified, part.text);
 
             // O(1) lookup using the inverse map
-            current_def_id = *self.name_to_def.get(&next_qualified)?;
+            if let Some(next_def_id) = self.name_to_def.get(&next_qualified) {
+                current_def_id = *next_def_id;
+                continue;
+            }
+
+            // Fallback: the current node may be a short class definition alias
+            // (e.g. `package PS = PhaseSystem;`) where members are inherited from
+            // the aliased base class. Those inherited members are not explicitly
+            // declared under `current_qualified.*` in `name_to_def`.
+            //
+            // MLS §7.3 semantics require dotted access like `PS.j` to resolve.
+            // Reuse inherited-member lookup for this dotted navigation step.
+            if self.class_types.contains_key(&current_def_id)
+                && let Some(inherited_def_id) =
+                    self.lookup_inherited_member(current_qualified, &part.text)
+            {
+                current_def_id = inherited_def_id;
+                continue;
+            }
+
+            return None;
         }
 
         Some(current_def_id)

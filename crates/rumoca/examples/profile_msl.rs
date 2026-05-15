@@ -55,7 +55,10 @@ fn main() {
     // Create session and build resolved tree
     println!("Creating session...");
     let start = Instant::now();
-    let mut session = Session::new(SessionConfig { parallel: true });
+    let mut session = Session::new(SessionConfig {
+        parallel: true,
+        ..SessionConfig::default()
+    });
     session.add_parsed_batch(successes);
     let model_names = session.model_names().expect("Failed to get model names");
     println!(

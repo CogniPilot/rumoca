@@ -104,6 +104,8 @@ impl Session {
             snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
+            evaluate_scope_is_error: self.evaluate_scope_is_error,
+            when_single_assign_is_error: self.when_single_assign_is_error,
         }
     }
 
@@ -293,6 +295,8 @@ impl Session {
             snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
+            evaluate_scope_is_error: self.evaluate_scope_is_error,
+            when_single_assign_is_error: self.when_single_assign_is_error,
         };
         SessionSnapshot {
             session: Arc::new(Mutex::new(snapshot)),
@@ -378,6 +382,8 @@ impl Session {
                 ..SessionQueryState::default()
             },
             snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
+            evaluate_scope_is_error: self.evaluate_scope_is_error,
+            when_single_assign_is_error: self.when_single_assign_is_error,
             lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
         };
@@ -447,6 +453,8 @@ impl Session {
                 ..SessionQueryState::default()
             },
             snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
+            evaluate_scope_is_error: self.evaluate_scope_is_error,
+            when_single_assign_is_error: self.when_single_assign_is_error,
             lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
         };
