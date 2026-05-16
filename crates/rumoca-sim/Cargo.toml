@@ -1,36 +1,55 @@
 [package]
 name = "rumoca-sim"
-description = "Simulation facade and backend abstraction for Rumoca"
+description = "High-level simulation facade for Rumoca (sim-core + solvers + I/O runner)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["diffsol"]
-diffsol = ["dep:diffsol"]
+default = ["solver-diffsol"]
+solver-diffsol = ["dep:rumoca-solver-diffsol"]
+solver-rk45 = ["dep:rumoca-solver-rk45"]
+viz = ["dep:rumoca-viz-web"]
+# HTML simulation report renderer. Pure-Rust deps (viz-web + compile);
+# cross-compiles cleanly. Independent of `runner` so non-lockstep
+# CLIs can still emit HTML reports from `simulate`.
+report = ["viz", "dep:rumoca-compile"]
+runner = [
+    "solver-diffsol",
+    "viz",
+    "report",
+    "dep:rumoca-codec",
+    "dep:rumoca-input",
+    "rumoca-input/devices",
+    "dep:rumoca-transport-udp",
+    "dep:rumoca-transport-websocket",
+    "dep:rumoca-compile",
+    "dep:signal-hook",
+    "dep:anyhow",
+    "dep:toml",
+]
 
 [dependencies]
-rumoca-core = { workspace = true }
-rumoca-ir-dae = { workspace = true }
-rumoca-ir-core = { workspace = true }
-rumoca-eval-dae = { workspace = true }
-rumoca-phase-solve = { workspace = true }
-diffsol = { version = "0.10", optional = true }
-levenberg-marquardt = "0.15"
-nalgebra = "0.34"
-indexmap = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+rumoca-sim-core = { workspace = true }
+rumoca-solver-diffsol = { workspace = true, optional = true }
+rumoca-solver-rk45 = { workspace = true, optional = true }
+serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
-thiserror = { workspace = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.3", features = ["wasm_js"] }
-instant = { version = "0.1", features = ["wasm-bindgen"] }
-rumoca-eval-dae = { workspace = true, features = ["wasm"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rumoca-eval-dae = { workspace = true, features = ["cranelift"] }
+rumoca-codec = { workspace = true, optional = true }
+rumoca-input = { workspace = true, optional = true }
+rumoca-transport-udp = { workspace = true, optional = true }
+rumoca-transport-websocket = { workspace = true, optional = true }
+rumoca-viz-web = { workspace = true, optional = true }
+rumoca-compile = { workspace = true, optional = true }
+signal-hook = { version = "0.3", optional = true }
+anyhow = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+libc = "0.2"
 
 [lints]
 workspace = true

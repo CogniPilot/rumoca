@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Url};
-use rumoca_session::{compile::WorkspaceSymbol, compile::WorkspaceSymbolKind, parsing::ast};
+use rumoca_compile::{compile::WorkspaceSymbol, compile::WorkspaceSymbolKind, parsing::ast};
 
 use crate::helpers::location_to_range;
 

@@ -19,8 +19,8 @@
 //! | 8 | Inheritance | Extends, modifications, redeclarations |
 //! | 9 | Advanced | Algorithms, external functions |
 
+use rumoca_compile::{Session, SessionConfig};
 use rumoca_ir_dae::{self as dae, Dae};
-use rumoca_session::{Session, SessionConfig};
 
 /// Check if a Expression contains an If expression anywhere in its tree.
 fn contains_if_expr(expr: &dae::Expression) -> bool {
@@ -130,7 +130,7 @@ fn compile(source: &str, model_name: &str) -> Result<CompileResult, String> {
         inputs: dae.inputs.len(),
         outputs: dae.outputs.len(),
         f_x_count: dae.f_x.len(),
-        balance: rumoca_eval_dae::analysis::balance(&dae),
+        balance: rumoca_analysis_dae::balance(&dae),
         dae,
     })
 }

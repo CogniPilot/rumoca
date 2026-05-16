@@ -293,7 +293,7 @@ fn compile_model_for_simulation_reuses_warm_save_diagnostics_for_single_document
             );
             let diagnostics = session.semantic_diagnostics_query(
                 "Decay",
-                rumoca_session::compile::SemanticDiagnosticsMode::Save,
+                rumoca_compile::compile::SemanticDiagnosticsMode::Save,
             );
             assert!(
                 diagnostics.diagnostics.is_empty(),
@@ -329,6 +329,67 @@ fn compile_model_for_simulation_reuses_warm_save_diagnostics_for_single_document
         assert_eq!(
             delta.dae_model_builds, 0,
             "simulation compile should reuse the dae-model artifact from save diagnostics"
+        );
+    });
+}
+
+#[test]
+fn simulate_model_returns_shared_report_payload_and_metrics() {
+    run_async_test(async {
+        let temp = new_temp_dir("simulate-shared-report");
+        let focus = temp.join("Decay.mo");
+        std::fs::write(
+            &focus,
+            "model Decay\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Decay;\n",
+        )
+        .expect("write focus");
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+
+        let response = server
+            .execute_simulate_model(
+                Some(serde_json::json!({
+                    "uri": Url::from_file_path(&focus)
+                        .expect("file uri")
+                        .to_string(),
+                    "model": "Decay",
+                    "settings": {
+                        "solver": "auto",
+                        "tEnd": 1.0,
+                        "dt": 0.1,
+                    },
+                })),
+                None,
+            )
+            .await
+            .expect("simulate should return a response");
+
+        assert_eq!(
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "simulation command should report success"
+        );
+        assert_eq!(response["payload"]["nStates"], 1);
+        assert_eq!(
+            response["payload"]["simDetails"]["requested"]["solver"],
+            "auto"
+        );
+        assert!(
+            response["metrics"]["compilePhaseSeconds"]["prepareContext"].is_number(),
+            "shared metrics payload should include prepareContext timing: {response:?}"
+        );
+        assert!(
+            response["payload"]["simDetails"]["timing"]["compile_phase_seconds"]["strict_resolve"]
+                .is_number(),
+            "shared payload should include strict_resolve timing: {response:?}"
         );
     });
 }

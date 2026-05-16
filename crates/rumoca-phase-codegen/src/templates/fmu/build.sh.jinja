@@ -1,0 +1,17 @@
+#!/bin/sh
+# Build script for {{ model_name }} FMU
+set -e
+cd "$(dirname "$0")"
+
+case "$(uname -s)" in
+  Linux*)   PLATFORM=linux64; LIB_EXT=so ;;
+  Darwin*)  PLATFORM=darwin64; LIB_EXT=dylib ;;
+  MINGW*|MSYS*|CYGWIN*) PLATFORM=win64; LIB_EXT=dll ;;
+  *) echo "Unknown platform"; exit 1 ;;
+esac
+
+mkdir -p binaries/$PLATFORM
+cc -shared -fPIC -O2 -o binaries/$PLATFORM/{{ model_name }}.$LIB_EXT sources/{{ model_name }}.c -lm
+
+zip -r {{ model_name }}.fmu modelDescription.xml binaries/ sources/
+echo "Created {{ model_name }}.fmu"

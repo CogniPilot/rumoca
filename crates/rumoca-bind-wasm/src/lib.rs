@@ -1,11 +1,13 @@
 //! WebAssembly bindings for Rumoca.
 //!
-//! Thin layer over `rumoca-session` and `rumoca-tool-lsp`. All heavy logic
+//! Thin layer over `rumoca-compile` and `rumoca-tool-lsp`. All heavy logic
 //! lives in those crates; this module only provides WASM entry points.
 
 mod class_browser_helpers;
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_api;
-mod source_root_api;
+pub mod source_root_api;
+#[cfg(feature = "stepper-diffsol")]
 mod stepper_api;
 
 use std::{
@@ -23,38 +25,39 @@ use wasm_bindgen_futures::JsFuture;
 #[cfg(all(target_arch = "wasm32", feature = "wasm-rayon"))]
 use wasm_bindgen_rayon::init_thread_pool;
 
-use rumoca_session::Session;
-use rumoca_session::compile::{
-    CompilationMode, CompilationResult, FailedPhase, PhaseResult, session_cache_stats,
+use rumoca_compile::Session;
+use rumoca_compile::codegen::render_dae_template_with_json;
+use rumoca_compile::codegen::templates as runtime_templates;
+use rumoca_compile::compile::{
+    CompilationMode, CompilationResult, CompilePhaseTimingSnapshot, FailedPhase, PhaseResult,
+    compile_phase_timing_stats, reset_compile_phase_timing_stats, session_cache_stats,
 };
-use rumoca_session::parsing::ir_core as rumoca_ir_core;
-use rumoca_session::parsing::{
+use rumoca_compile::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::parsing::{
     Causality, ClassDef, Expression, OpBinary, StoredDefinition, Variability, collect_model_names,
     parse_source_to_ast, validate_source_syntax,
-};
-use rumoca_session::runtime::templates as runtime_templates;
-use rumoca_session::runtime::{
-    dae_balance, prepare_dae_for_template_codegen, render_dae_template_with_json,
 };
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use rumoca_tool_lsp::completion_metrics::{
     CompletionTimingSummary, extract_namespace_completion_prefix,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::class_browser_helpers::{
     class_type_label, component_reference_to_path, expression_path, extract_string_literal,
     join_path, token_list_to_text,
 };
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 use crate::simulation_api::{simulate_model_impl, simulate_model_with_project_sources_impl};
 pub use crate::source_root_api::{
-    clear_source_root_cache, compile_with_project_sources, compile_with_source_roots,
-    export_parsed_source_roots_binary, get_bundled_source_root_manifest,
+    clear_source_root_cache, compile_check_with_source_roots, compile_with_project_sources,
+    compile_with_source_roots, export_parsed_source_roots_binary, get_bundled_source_root_manifest,
     get_source_root_document_count, get_source_root_statuses, load_bundled_source_root_cache,
     load_source_roots, merge_parsed_source_roots, merge_parsed_source_roots_binary,
     parse_source_root_file, sync_project_sources,
 };
+#[cfg(feature = "stepper-diffsol")]
 pub use crate::stepper_api::WasmStepper;
 
 /// Global compilation session containing both bundled source-root and user documents.
@@ -81,22 +84,22 @@ type WTimingStart = f64;
 type WTimingStart = std::time::Instant;
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_timing_start() -> WTimingStart {
+pub(crate) fn wasm_timing_start() -> WTimingStart {
     Date::now()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn wasm_timing_start() -> WTimingStart {
+pub(crate) fn wasm_timing_start() -> WTimingStart {
     std::time::Instant::now()
 }
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_elapsed_ms(start: WTimingStart) -> u64 {
+pub(crate) fn wasm_elapsed_ms(start: WTimingStart) -> u64 {
     (Date::now() - start).max(0.0).round() as u64
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn wasm_elapsed_ms(start: WTimingStart) -> u64 {
+pub(crate) fn wasm_elapsed_ms(start: WTimingStart) -> u64 {
     start.elapsed().as_millis() as u64
 }
 
@@ -195,13 +198,13 @@ pub fn get_builtin_templates() -> JsValue {
             source: runtime_templates::CASADI_MX,
         },
         WasmBuiltinTemplate {
-            id: "embedded_c.h.jinja",
+            id: "embedded_c/model.h.jinja",
             label: "Embedded C Header",
             language: "c",
             source: runtime_templates::EMBEDDED_C_H,
         },
         WasmBuiltinTemplate {
-            id: "embedded_c_impl.c.jinja",
+            id: "embedded_c/model.c.jinja",
             label: "Embedded C Implementation",
             language: "c",
             source: runtime_templates::EMBEDDED_C_IMPL,
@@ -219,37 +222,37 @@ pub fn get_builtin_templates() -> JsValue {
             source: runtime_templates::FLAT_MODELICA,
         },
         WasmBuiltinTemplate {
-            id: "fmi2_model_description.xml.jinja",
+            id: "fmi2/modelDescription.xml.jinja",
             label: "FMI 2.0 modelDescription.xml",
             language: "xml",
             source: runtime_templates::FMI2_MODEL_DESCRIPTION,
         },
         WasmBuiltinTemplate {
-            id: "fmi2_model.c.jinja",
+            id: "fmi2/model.c.jinja",
             label: "FMI 2.0 model.c",
             language: "c",
             source: runtime_templates::FMI2_MODEL,
         },
         WasmBuiltinTemplate {
-            id: "fmi2_test_driver.c.jinja",
+            id: "fmi2/test_driver.c.jinja",
             label: "FMI 2.0 test driver",
             language: "c",
             source: runtime_templates::FMI2_TEST_DRIVER,
         },
         WasmBuiltinTemplate {
-            id: "fmi3_model_description.xml.jinja",
+            id: "fmi3/modelDescription.xml.jinja",
             label: "FMI 3.0 modelDescription.xml",
             language: "xml",
             source: runtime_templates::FMI3_MODEL_DESCRIPTION,
         },
         WasmBuiltinTemplate {
-            id: "fmi3_model.c.jinja",
+            id: "fmi3/model.c.jinja",
             label: "FMI 3.0 model.c",
             language: "c",
             source: runtime_templates::FMI3_MODEL,
         },
         WasmBuiltinTemplate {
-            id: "fmi3_test_driver.c.jinja",
+            id: "fmi3/test_driver.c.jinja",
             label: "FMI 3.0 test driver",
             language: "c",
             source: runtime_templates::FMI3_TEST_DRIVER,
@@ -417,429 +420,6 @@ pub fn check(source: &str) -> JsValue {
 // Compilation
 // ==========================================================================
 
-fn as_object(value: &Value) -> Option<&Map<String, Value>> {
-    value.as_object()
-}
-
-fn as_object_mut(value: &mut Value) -> Option<&mut Map<String, Value>> {
-    value.as_object_mut()
-}
-
-fn expr_var_name(expr: &Value) -> Option<String> {
-    let obj = as_object(expr)?;
-    if let Some(var_ref) = obj.get("VarRef").and_then(Value::as_object) {
-        return var_ref
-            .get("name")
-            .and_then(Value::as_str)
-            .map(ToString::to_string);
-    }
-    obj.get("name")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-}
-
-fn is_binary_sub(op: &Value) -> bool {
-    if let Some(text) = op.as_str() {
-        return text == "-" || text.eq_ignore_ascii_case("sub");
-    }
-    let Some(obj) = op.as_object() else {
-        return false;
-    };
-    if obj.contains_key("Sub") {
-        return true;
-    }
-    obj.get("token")
-        .and_then(Value::as_object)
-        .and_then(|tok| tok.get("text"))
-        .and_then(Value::as_str)
-        .is_some_and(|text| text == "-")
-}
-
-fn extract_residual_assignment_expr(residual_expr: &Value, target: &str) -> Option<Value> {
-    let binary = residual_expr
-        .as_object()
-        .and_then(|obj| obj.get("Binary"))
-        .and_then(Value::as_object)?;
-    if !binary.get("op").is_some_and(is_binary_sub) {
-        return None;
-    }
-    let lhs = binary.get("lhs")?;
-    let rhs = binary.get("rhs")?;
-    let lhs_name = expr_var_name(lhs);
-    let rhs_name = expr_var_name(rhs);
-    if lhs_name.as_deref() == Some(target) && rhs_name.as_deref() != Some(target) {
-        return Some(rhs.clone());
-    }
-    if rhs_name.as_deref() == Some(target) && lhs_name.as_deref() != Some(target) {
-        return Some(lhs.clone());
-    }
-    None
-}
-
-fn lhs_var_name(lhs: &Value) -> Option<String> {
-    if let Some(s) = lhs.as_str() {
-        return Some(s.to_string());
-    }
-    expr_var_name(lhs)
-}
-
-fn collect_observable_expr_candidates_from_native(native: &Value, target: &str) -> Vec<Value> {
-    let Some(obj) = native.as_object() else {
-        return Vec::new();
-    };
-    let mut out: Vec<Value> = Vec::new();
-
-    for key in ["f_z", "f_m", "f_c"] {
-        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
-            out.extend(
-                rows.iter()
-                    .filter_map(Value::as_object)
-                    .filter(|row_obj| {
-                        row_obj
-                            .get("lhs")
-                            .and_then(lhs_var_name)
-                            .is_some_and(|name| name == target)
-                    })
-                    .filter_map(|row_obj| row_obj.get("rhs").cloned()),
-            );
-        }
-    }
-
-    for key in ["f_x", "fx"] {
-        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
-            out.extend(
-                rows.iter()
-                    .filter_map(Value::as_object)
-                    .filter_map(|row_obj| {
-                        row_obj
-                            .get("rhs")
-                            .or_else(|| row_obj.get("residual"))
-                            .and_then(|expr| extract_residual_assignment_expr(expr, target))
-                    }),
-            );
-        }
-    }
-
-    out
-}
-
-fn expr_complexity(expr: &Value) -> usize {
-    match expr {
-        Value::Object(map) => {
-            1 + map
-                .values()
-                .map(expr_complexity)
-                .fold(0usize, |acc, n| acc.saturating_add(n))
-        }
-        Value::Array(items) => {
-            1 + items
-                .iter()
-                .map(expr_complexity)
-                .fold(0usize, |acc, n| acc.saturating_add(n))
-        }
-        _ => 1,
-    }
-}
-
-fn is_simple_alias_expr(expr: &Value) -> bool {
-    let is_var_like = |v: &Value| {
-        v.as_object()
-            .is_some_and(|m| m.contains_key("VarRef") || m.contains_key("ComponentReference"))
-    };
-    if is_var_like(expr) {
-        return true;
-    }
-    let Some(obj) = expr.as_object() else {
-        return false;
-    };
-    let Some(unary) = obj.get("Unary").and_then(Value::as_object) else {
-        return false;
-    };
-    unary.get("arg").is_some_and(is_var_like)
-}
-
-fn find_observable_expr_from_native(native: &Value, target: &str) -> Option<Value> {
-    let candidates = collect_observable_expr_candidates_from_native(native, target);
-    if candidates.is_empty() {
-        return None;
-    }
-    candidates.into_iter().max_by_key(|expr| {
-        let non_alias = if is_simple_alias_expr(expr) {
-            0usize
-        } else {
-            1usize
-        };
-        (non_alias, expr_complexity(expr))
-    })
-}
-
-fn component_ref_name(expr: &Value) -> Option<String> {
-    let obj = expr.as_object()?;
-    let cr = obj.get("ComponentReference")?.as_object()?;
-    let parts = cr.get("parts")?.as_array()?;
-    let mut segs: Vec<String> = Vec::new();
-    for part in parts {
-        let part_obj = part.as_object()?;
-        let ident = part_obj.get("ident")?.as_object()?;
-        let text = ident.get("text")?.as_str()?;
-        segs.push(text.to_string());
-    }
-    if segs.is_empty() {
-        return None;
-    }
-    Some(segs.join("."))
-}
-
-fn collect_prepared_symbol_names(
-    prepared_obj: &Map<String, Value>,
-) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
-    for key in [
-        "p",
-        "constants",
-        "cp",
-        "x",
-        "y",
-        "z",
-        "m",
-        "w",
-        "u",
-        "x_dot_alias",
-    ] {
-        if let Some(map) = prepared_obj.get(key).and_then(Value::as_object) {
-            out.extend(map.keys().cloned());
-        }
-    }
-    out
-}
-
-fn rewrite_observable_expr_with_native_aliases(
-    native_json: &Value,
-    expr: &Value,
-    prepared_symbols: &std::collections::HashSet<String>,
-    visiting: &mut std::collections::HashSet<String>,
-    depth: usize,
-) -> Value {
-    if depth > 24 {
-        return expr.clone();
-    }
-
-    if let Some(obj) = expr.as_object() {
-        if let Some(vr) = obj.get("VarRef").and_then(Value::as_object)
-            && let Some(name) = vr.get("name").and_then(Value::as_str)
-            && !prepared_symbols.contains(name)
-            && !visiting.contains(name)
-            && let Some(alias_expr) = find_observable_expr_from_native(native_json, name)
-        {
-            visiting.insert(name.to_string());
-            let rewritten = rewrite_observable_expr_with_native_aliases(
-                native_json,
-                &alias_expr,
-                prepared_symbols,
-                visiting,
-                depth + 1,
-            );
-            visiting.remove(name);
-            return rewritten;
-        }
-
-        if let Some(name) = component_ref_name(expr)
-            && !prepared_symbols.contains(&name)
-            && !visiting.contains(&name)
-            && let Some(alias_expr) = find_observable_expr_from_native(native_json, &name)
-        {
-            visiting.insert(name.clone());
-            let rewritten = rewrite_observable_expr_with_native_aliases(
-                native_json,
-                &alias_expr,
-                prepared_symbols,
-                visiting,
-                depth + 1,
-            );
-            visiting.remove(&name);
-            return rewritten;
-        }
-
-        let mut out = Map::new();
-        for (k, v) in obj {
-            out.insert(
-                k.clone(),
-                rewrite_observable_expr_with_native_aliases(
-                    native_json,
-                    v,
-                    prepared_symbols,
-                    visiting,
-                    depth + 1,
-                ),
-            );
-        }
-        return Value::Object(out);
-    }
-
-    if let Some(arr) = expr.as_array() {
-        return Value::Array(
-            arr.iter()
-                .map(|v| {
-                    rewrite_observable_expr_with_native_aliases(
-                        native_json,
-                        v,
-                        prepared_symbols,
-                        visiting,
-                        depth + 1,
-                    )
-                })
-                .collect(),
-        );
-    }
-
-    expr.clone()
-}
-
-fn augment_prepared_with_native_observables(
-    native_json: &Value,
-    prepared_json: &mut Value,
-) -> Option<usize> {
-    let native_obj = native_json.as_object()?;
-    let prepared_obj = as_object_mut(prepared_json)?;
-    let native_y = native_obj.get("y").and_then(Value::as_object)?;
-    let prepared_y = prepared_obj.get("y").and_then(Value::as_object);
-    let prepared_symbols = collect_prepared_symbol_names(prepared_obj);
-
-    let mut observables: Vec<Value> = Vec::new();
-    for (name, comp) in native_y {
-        if prepared_y.is_some_and(|m| m.contains_key(name)) {
-            continue;
-        }
-        let Some(expr_raw) = find_observable_expr_from_native(native_json, name) else {
-            continue;
-        };
-        let mut visiting = std::collections::HashSet::new();
-        let expr = rewrite_observable_expr_with_native_aliases(
-            native_json,
-            &expr_raw,
-            &prepared_symbols,
-            &mut visiting,
-            0,
-        );
-        let mut entry = Map::new();
-        entry.insert("name".to_string(), Value::String(name.clone()));
-        entry.insert("expr".to_string(), expr);
-        if let Some(comp_obj) = comp.as_object() {
-            if let Some(start) = comp_obj.get("start") {
-                entry.insert("start".to_string(), start.clone());
-            }
-            if let Some(unit) = comp_obj
-                .get("unit")
-                .or_else(|| comp_obj.get("displayUnit"))
-                .or_else(|| comp_obj.get("display_unit"))
-            {
-                entry.insert("unit".to_string(), unit.clone());
-            }
-        }
-        observables.push(Value::Object(entry));
-    }
-
-    if observables.is_empty() {
-        return Some(0);
-    }
-    let n = observables.len();
-    prepared_obj.insert(
-        "__rumoca_observables".to_string(),
-        Value::Array(observables),
-    );
-    Some(n)
-}
-
-fn object_len(value: &Value, key: &str) -> usize {
-    value
-        .get(key)
-        .and_then(Value::as_object)
-        .map_or(0, serde_json::Map::len)
-}
-
-fn attach_prepared_template_metadata(
-    prepared_json: &mut Value,
-    native_json: &Value,
-    status: &str,
-    diagnostics: &[String],
-) {
-    let Some(prepared_obj) = as_object_mut(prepared_json) else {
-        return;
-    };
-    let prepared_obj_ref: &Map<String, Value> = prepared_obj;
-    let obj_len = |key: &str| {
-        prepared_obj_ref
-            .get(key)
-            .and_then(Value::as_object)
-            .map_or(0, serde_json::Map::len)
-    };
-    let arr_len = |key: &str| {
-        prepared_obj_ref
-            .get(key)
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len)
-    };
-    let obj_keys = |key: &str| {
-        prepared_obj_ref
-            .get(key)
-            .and_then(Value::as_object)
-            .map(|map| map.keys().cloned().map(Value::String).collect::<Vec<_>>())
-            .unwrap_or_default()
-    };
-    let observable_count = prepared_obj_ref
-        .get("__rumoca_observables")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    let hints = serde_json::json!({
-        "variable_counts": {
-            "x": obj_len("x"),
-            "y": obj_len("y"),
-            "z": obj_len("z"),
-            "m": obj_len("m"),
-            "w": obj_len("w"),
-            "u": obj_len("u"),
-            "p": obj_len("p"),
-            "constants": obj_len("constants"),
-            "native_y": object_len(native_json, "y"),
-            "observables": observable_count,
-        },
-        "equation_counts": {
-            "f_x": arr_len("f_x"),
-            "f_c": arr_len("f_c"),
-            "f_z": arr_len("f_z"),
-            "f_m": arr_len("f_m"),
-            "when_clauses": arr_len("when_clauses"),
-            "relation": arr_len("relation"),
-            "initial_equations": arr_len("initial_equations"),
-        },
-        "variable_order": {
-            "x": obj_keys("x"),
-            "y": obj_keys("y"),
-            "z": obj_keys("z"),
-            "m": obj_keys("m"),
-            "w": obj_keys("w"),
-            "u": obj_keys("u"),
-            "p": obj_keys("p"),
-            "constants": obj_keys("constants"),
-        },
-        "events": {
-            "has_conditions": arr_len("f_c") > 0,
-            "has_when_clauses": arr_len("when_clauses") > 0,
-            "has_resets": arr_len("f_z") > 0 || arr_len("f_m") > 0,
-        }
-    });
-
-    prepared_obj.insert(
-        "__rumoca_prepared_status".to_string(),
-        Value::String(status.to_string()),
-    );
-    prepared_obj.insert(
-        "__rumoca_prepared_diagnostics".to_string(),
-        Value::Array(diagnostics.iter().cloned().map(Value::String).collect()),
-    );
-    prepared_obj.insert("__rumoca_solver_hints".to_string(), hints);
-}
-
 fn attach_build_metadata(payload: &mut Value) {
     let Some(obj) = payload.as_object_mut() else {
         return;
@@ -853,63 +433,36 @@ fn attach_build_metadata(payload: &mut Value) {
 }
 
 /// Build a rich compile response with DAE, balance info, and pretty output.
-fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue> {
+fn compile_timing_snapshot_to_json(snapshot: CompilePhaseTimingSnapshot) -> Value {
+    let stat = |calls: u64, total_nanos: u64| {
+        serde_json::json!({
+            "calls": calls,
+            "total_nanos": total_nanos,
+            "total_ms": (total_nanos as f64) / 1_000_000.0,
+        })
+    };
+    serde_json::json!({
+        "instantiate": stat(snapshot.instantiate.calls, snapshot.instantiate.total_nanos),
+        "typecheck": stat(snapshot.typecheck.calls, snapshot.typecheck.total_nanos),
+        "flatten": stat(snapshot.flatten.calls, snapshot.flatten.total_nanos),
+        "todae": stat(snapshot.todae.calls, snapshot.todae.total_nanos),
+    })
+}
+
+fn build_compile_response(
+    result: &CompilationResult,
+    compile_phase_timing: CompilePhaseTimingSnapshot,
+) -> Result<String, JsValue> {
     let dae = &result.dae;
     let mut dae_native_json =
         serde_json::to_value(dae).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))?;
     attach_build_metadata(&mut dae_native_json);
-    let mut prepared_diagnostics: Vec<String> = Vec::new();
-    let mut prepared_status = "prepared".to_string();
-
-    let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        prepare_dae_for_template_codegen(dae, true)
-    }));
-    let (mut dae_prepared, dae_prepared_error) = match prepared {
-        Ok(Ok(prepped)) => {
-            let mut prepared_json = serde_json::to_value(prepped).map_err(|e| {
-                JsValue::from_str(&format!("JSON error converting prepared DAE: {}", e))
-            })?;
-            if augment_prepared_with_native_observables(&dae_native_json, &mut prepared_json)
-                .is_none()
-            {
-                prepared_diagnostics
-                    .push("unable to augment prepared DAE with native observables".to_string());
-            }
-            (prepared_json, None)
-        }
-        Ok(Err(err)) => {
-            prepared_status = "fallback_native".to_string();
-            let msg = err.to_string();
-            prepared_diagnostics.push(format!(
-                "prepare_dae_for_template_codegen failed; using native DAE: {}",
-                msg
-            ));
-            (dae_native_json.clone(), Some(msg))
-        }
-        Err(panic_payload) => {
-            prepared_status = "fallback_native".to_string();
-            let panic_msg = if let Some(msg) = panic_payload.downcast_ref::<&str>() {
-                (*msg).to_string()
-            } else if let Some(msg) = panic_payload.downcast_ref::<String>() {
-                msg.clone()
-            } else {
-                "unknown panic payload".to_string()
-            };
-            let msg = format!("prepare_dae_for_template_codegen panicked: {}", panic_msg);
-            prepared_diagnostics.push(format!("{}; using native DAE", msg));
-            (dae_native_json.clone(), Some(msg))
-        }
-    };
-    attach_prepared_template_metadata(
-        &mut dae_prepared,
-        &dae_native_json,
-        &prepared_status,
-        &prepared_diagnostics,
-    );
-    attach_build_metadata(&mut dae_prepared);
 
     let num_eqs = dae.num_equations();
-    let balance_val = dae_balance(dae);
+    let continuous_unknowns = dae.states.values().map(|v| v.size()).sum::<usize>()
+        + dae.algebraics.values().map(|v| v.size()).sum::<usize>()
+        + dae.outputs.values().map(|v| v.size()).sum::<usize>();
+    let balance_val = num_eqs as i64 - continuous_unknowns as i64;
     let num_unknowns = num_eqs as i64 - balance_val;
     let balance = serde_json::json!({
         "is_balanced": balance_val == 0,
@@ -923,18 +476,15 @@ fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue>
     let response = serde_json::json!({
         "dae": dae_native_json.clone(),
         "dae_native": dae_native_json,
-        "dae_prepared": dae_prepared,
-        "dae_prepared_status": prepared_status,
-        "dae_prepared_diagnostics": prepared_diagnostics,
-        "dae_prepared_error": dae_prepared_error,
         "balance": balance,
         "pretty": pretty,
+        "__compile_phase_timing": compile_timing_snapshot_to_json(compile_phase_timing),
     });
 
     serde_json::to_string(&response).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
 }
 
-fn compile_requested_model(
+pub(crate) fn compile_requested_model(
     session: &mut Session,
     model_name: &str,
 ) -> Result<CompilationResult, JsValue> {
@@ -972,7 +522,7 @@ fn compile_requested_model(
     }
 }
 
-fn with_singleton_session<T>(
+pub(crate) fn with_singleton_session<T>(
     f: impl FnOnce(&mut Session) -> Result<T, JsValue>,
 ) -> Result<T, JsValue> {
     let mut lock = SESSION
@@ -982,7 +532,7 @@ fn with_singleton_session<T>(
     f(session)
 }
 
-fn qualify_input_model_name(session: &Session, model_name: &str) -> String {
+pub(crate) fn qualify_input_model_name(session: &Session, model_name: &str) -> String {
     if model_name.contains('.') {
         return model_name.to_string();
     }
@@ -1013,10 +563,12 @@ fn compile_source_in_session(
     source: &str,
     model_name: &str,
 ) -> Result<String, JsValue> {
+    reset_compile_phase_timing_stats();
     session.update_document("input.mo", source);
     let requested_model = qualify_input_model_name(session, model_name);
     let result = compile_requested_model(session, &requested_model)?;
-    build_compile_response(&result)
+    let timing = compile_phase_timing_stats();
+    build_compile_response(&result, timing)
 }
 
 /// Compile Modelica source code to DAE JSON.
@@ -1364,6 +916,17 @@ pub fn get_class_info(qualified_name: &str) -> Result<String, JsValue> {
 /// Render a Jinja template with DAE data.
 #[wasm_bindgen]
 pub fn render_template(dae_json: &str, template: &str) -> Result<String, JsValue> {
+    // Round-trip through `Dae` so we can scalarize vector equations — the
+    // runtime-C templates (FMI2/FMI3/embedded-C) emit one xdot entry per
+    // scalar state, and compile() hands us a native-array DAE. For scalar
+    // models scalarize is a no-op. If the JSON carries user-added metadata
+    // that doesn't round-trip, fall back to the raw JSON path so those
+    // augmentations survive.
+    if let Ok(mut dae) = serde_json::from_str::<rumoca_compile::compile::Dae>(dae_json) {
+        rumoca_compile::phase_structural::scalarize::scalarize_equations(&mut dae);
+        return rumoca_compile::codegen::render_dae_template(&dae, template)
+            .map_err(|e| JsValue::from_str(&format!("Template error: {}", e)));
+    }
     let dae_value: serde_json::Value = serde_json::from_str(dae_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid DAE JSON: {}", e)))?;
     render_dae_template_with_json(&dae_value, template)
@@ -1495,7 +1058,7 @@ fn resolved_tree_for_navigation(
     session: &mut Session,
     ast: Option<&StoredDefinition>,
     line: u32,
-) -> Option<rumoca_session::parsing::ast::ResolvedTree> {
+) -> Option<rumoca_compile::parsing::ast::ResolvedTree> {
     ast.and_then(|parsed| {
         rumoca_tool_lsp::helpers::find_enclosing_class_qualified_name(parsed, line)
     })
@@ -1508,7 +1071,7 @@ fn resolved_tree_for_navigation(
     .or_else(|| session.resolved_cached())
 }
 
-fn local_component_hover(info: &rumoca_session::compile::LocalComponentInfo) -> lsp_types::Hover {
+fn local_component_hover(info: &rumoca_compile::compile::LocalComponentInfo) -> lsp_types::Hover {
     let mut parts = Vec::new();
     if let Some(keyword_prefix) = &info.keyword_prefix {
         parts.push(keyword_prefix.clone());
@@ -1534,7 +1097,7 @@ fn local_component_hover(info: &rumoca_session::compile::LocalComponentInfo) -> 
 }
 
 fn class_target_hover(
-    info: &rumoca_session::compile::NavigationClassTargetInfo,
+    info: &rumoca_compile::compile::NavigationClassTargetInfo,
 ) -> lsp_types::Hover {
     let mut value = format!(
         "```modelica\n{} {}\n```",
@@ -1583,7 +1146,7 @@ fn url_from_session_document_uri(document_uri: &str) -> Option<Url> {
 
 fn class_target_definition(
     session: &Session,
-    info: &rumoca_session::compile::NavigationClassTargetInfo,
+    info: &rumoca_compile::compile::NavigationClassTargetInfo,
     fallback_uri: &Url,
 ) -> lsp_types::GotoDefinitionResponse {
     let target_uri = resolve_session_target_uri(session, &info.target_uri, fallback_uri);
@@ -1596,7 +1159,7 @@ fn class_target_definition(
 fn parsed_source_root_class_definition(
     session: &Session,
     ast: &StoredDefinition,
-    tree: &rumoca_session::parsing::ast::ClassTree,
+    tree: &rumoca_compile::parsing::ast::ClassTree,
     source: &str,
     position: Position,
     fallback_uri: &Url,
@@ -1613,7 +1176,7 @@ fn parsed_source_root_class_definition(
 }
 
 fn local_component_definition(
-    info: &rumoca_session::compile::LocalComponentInfo,
+    info: &rumoca_compile::compile::LocalComponentInfo,
     uri: &Url,
 ) -> lsp_types::GotoDefinitionResponse {
     lsp_types::GotoDefinitionResponse::Scalar(lsp_types::Location {
@@ -1624,9 +1187,9 @@ fn local_component_definition(
 
 fn imported_def_id_in_definition(
     ast: &StoredDefinition,
-    tree: &rumoca_session::parsing::ast::ClassTree,
+    tree: &rumoca_compile::parsing::ast::ClassTree,
     name: &str,
-) -> Option<rumoca_session::compile::core::DefId> {
+) -> Option<rumoca_compile::compile::core::DefId> {
     ast.classes
         .values()
         .find_map(|class| imported_def_id_in_class(class, tree, name))
@@ -1634,9 +1197,9 @@ fn imported_def_id_in_definition(
 
 fn imported_def_id_in_class(
     class: &ClassDef,
-    tree: &rumoca_session::parsing::ast::ClassTree,
+    tree: &rumoca_compile::parsing::ast::ClassTree,
     name: &str,
-) -> Option<rumoca_session::compile::core::DefId> {
+) -> Option<rumoca_compile::compile::core::DefId> {
     for import in &class.imports {
         if let Some(def_id) = rumoca_tool_lsp::helpers::imported_def_id(import, tree, name) {
             return Some(def_id);
@@ -1650,8 +1213,8 @@ fn imported_def_id_in_class(
 
 fn goto_response_for_def_id(
     session: &Session,
-    tree: &rumoca_session::parsing::ast::ClassTree,
-    def_id: rumoca_session::compile::core::DefId,
+    tree: &rumoca_compile::parsing::ast::ClassTree,
+    def_id: rumoca_compile::compile::core::DefId,
     fallback_uri: &Url,
 ) -> Option<lsp_types::GotoDefinitionResponse> {
     let class = tree.get_class_by_def_id(def_id)?;
@@ -1751,17 +1314,17 @@ fn url_from_file_path(path: impl AsRef<Path>) -> Option<Url> {
     Url::parse(&format!("file://{normalized}")).ok()
 }
 
-fn class_type_keyword(class_type: &rumoca_session::parsing::ast::ClassType) -> &'static str {
+fn class_type_keyword(class_type: &rumoca_compile::parsing::ast::ClassType) -> &'static str {
     match class_type {
-        rumoca_session::parsing::ast::ClassType::Model => "model",
-        rumoca_session::parsing::ast::ClassType::Block => "block",
-        rumoca_session::parsing::ast::ClassType::Connector => "connector",
-        rumoca_session::parsing::ast::ClassType::Record => "record",
-        rumoca_session::parsing::ast::ClassType::Type => "type",
-        rumoca_session::parsing::ast::ClassType::Package => "package",
-        rumoca_session::parsing::ast::ClassType::Function => "function",
-        rumoca_session::parsing::ast::ClassType::Class => "class",
-        rumoca_session::parsing::ast::ClassType::Operator => "operator",
+        rumoca_compile::parsing::ast::ClassType::Model => "model",
+        rumoca_compile::parsing::ast::ClassType::Block => "block",
+        rumoca_compile::parsing::ast::ClassType::Connector => "connector",
+        rumoca_compile::parsing::ast::ClassType::Record => "record",
+        rumoca_compile::parsing::ast::ClassType::Type => "type",
+        rumoca_compile::parsing::ast::ClassType::Package => "package",
+        rumoca_compile::parsing::ast::ClassType::Function => "function",
+        rumoca_compile::parsing::ast::ClassType::Class => "class",
+        rumoca_compile::parsing::ast::ClassType::Operator => "operator",
     }
 }
 
@@ -1934,6 +1497,7 @@ pub fn lsp_semantic_token_legend() -> Result<String, JsValue> {
 }
 
 /// Compile and simulate a Modelica model.
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 #[wasm_bindgen]
 pub fn simulate_model(
     source: &str,
@@ -1946,6 +1510,7 @@ pub fn simulate_model(
 }
 
 /// Compile with additional project-local sources and simulate a Modelica model.
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 #[wasm_bindgen]
 pub fn simulate_model_with_project_sources(
     source: &str,

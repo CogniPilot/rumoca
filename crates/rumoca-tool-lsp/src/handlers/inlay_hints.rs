@@ -1,7 +1,7 @@
 //! Inlay hints handler for Modelica files.
 
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, Position, Range};
-use rumoca_session::parsing::ast;
+use rumoca_compile::parsing::ast;
 use std::ops::ControlFlow;
 
 use crate::traversal_adapter;
@@ -204,7 +204,7 @@ fn collect_loose_builtin_call_hints(source: &str, range: &Range, hints: &mut Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_session::parsing::parse_source_to_ast;
+    use rumoca_compile::parsing::parse_source_to_ast;
 
     #[test]
     fn provides_array_dimension_inlay_hint() {

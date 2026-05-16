@@ -1,6 +1,6 @@
 use super::*;
 pub(super) use crate::completion_metrics::{CompletionProgressSummary, CompletionTimingSummary};
-use rumoca_session::compile::{SessionCacheStatsSnapshot, SourceRootStatusSnapshot};
+use rumoca_compile::compile::{SessionCacheStatsSnapshot, SourceRootStatusSnapshot};
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -116,8 +116,6 @@ pub(super) struct ProjectReloadTiming {
 pub(super) struct SimulationMetrics {
     pub(super) compile_elapsed: f64,
     pub(super) sim_elapsed: f64,
-    pub(super) point_count: usize,
-    pub(super) variable_count: usize,
     pub(super) prepare_context_seconds: f64,
     pub(super) build_snapshot_seconds: f64,
     pub(super) strict_compile_seconds: f64,

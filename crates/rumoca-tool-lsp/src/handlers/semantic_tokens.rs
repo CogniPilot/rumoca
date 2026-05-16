@@ -2,8 +2,8 @@
 //!
 //! Ported from the main branch's `src/lsp/handlers/semantic_tokens.rs`.
 
-use rumoca_session::parsing::ast;
-use rumoca_session::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::parsing::ast;
+use rumoca_compile::parsing::ir_core as rumoca_ir_core;
 use std::ops::ControlFlow::{self, Continue};
 
 use lsp_types::{
@@ -67,7 +67,7 @@ pub fn get_semantic_token_legend() -> SemanticTokensLegend {
 
 /// Handle semantic tokens request - provides rich syntax highlighting.
 ///
-/// Takes a parsed AST from `rumoca-session`.
+/// Takes a parsed AST from `rumoca-compile`.
 pub fn handle_semantic_tokens(ast: &StoredDefinition) -> Option<SemanticTokensResult> {
     let mut collector = SemanticTokenCollector::new();
     let _ = traversal_adapter::walk_stored_definition(&mut collector, ast);
@@ -325,7 +325,7 @@ impl ast::visitor::Visitor for SemanticTokenCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_session::parsing::parse_source_to_ast;
+    use rumoca_compile::parsing::parse_source_to_ast;
 
     fn decode_tokens(tokens: &[SemanticToken]) -> Vec<(u32, u32, u32, u32)> {
         let mut decoded = Vec::with_capacity(tokens.len());

@@ -1040,7 +1040,7 @@ fn test_top_level_connector_members_use_component_anchoring() {
 
     let dae = to_dae(&flat).expect("to_dae should succeed");
     assert_eq!(
-        rumoca_eval_dae::analysis::balance(&dae),
+        rumoca_analysis_dae::balance(&dae),
         0,
         "component-anchored and unanchored connector sets should both balance"
     );
@@ -1141,7 +1141,7 @@ fn test_connected_discrete_input_alias_keeps_discrete_partition() {
         "connected discrete input alias must contribute one discrete-valued equation"
     );
     assert_eq!(
-        rumoca_eval_dae::analysis::balance(&dae),
+        rumoca_analysis_dae::balance(&dae),
         0,
         "discrete connected input aliases must not affect continuous balance"
     );
@@ -1191,7 +1191,7 @@ fn test_connected_real_input_propagates_discrete_partition_from_peer() {
         "connected real input should not remain continuous algebraic"
     );
     assert_eq!(
-        rumoca_eval_dae::analysis::balance(&dae),
+        rumoca_analysis_dae::balance(&dae),
         0,
         "discrete connection propagation should avoid continuous balance deficits"
     );

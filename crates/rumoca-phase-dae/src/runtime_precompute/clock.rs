@@ -2,11 +2,32 @@ use super::ToDaeError;
 use super::{eval_scalar_const_expr, extract_time_event_instant};
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::{ExpressionVisitor, ImplicitSampleChecker, VarRefWithSubscriptsCollector};
 
-type SourceMap<'a> = HashMap<String, Vec<&'a dae::Expression>>;
+struct SourceMap<'a> {
+    forward: HashMap<String, Vec<&'a dae::Expression>>,
+    reverse_alias: HashMap<String, Vec<String>>,
+}
+
+impl<'a> SourceMap<'a> {
+    fn new(forward: HashMap<String, Vec<&'a dae::Expression>>) -> Self {
+        Self {
+            forward,
+            reverse_alias: HashMap::new(),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&Vec<&'a dae::Expression>> {
+        self.forward.get(key)
+    }
+
+    fn reverse_targets_for(&self, key: &str) -> Option<&Vec<String>> {
+        self.reverse_alias.get(key)
+    }
+}
 type ClockRuntimeMetadata = (
     Vec<dae::Expression>,
     Vec<dae::ClockSchedule>,
@@ -604,14 +625,20 @@ pub(super) fn canonical_var_ref_key(
     let mut key = name.as_str().to_string();
     for subscript in subscripts {
         match subscript {
-            dae::Subscript::Index(index) => key.push_str(&format!("[{index}]")),
+            dae::Subscript::Index(index) => {
+                key.push('[');
+                let _ = write!(&mut key, "{index}");
+                key.push(']');
+            }
             dae::Subscript::Expr(expr) => {
                 let raw = eval_scalar_const_expr(expr, constants)?;
                 let rounded = raw.round();
                 if !rounded.is_finite() {
                     return None;
                 }
-                key.push_str(&format!("[{}]", rounded as i64));
+                key.push('[');
+                let _ = write!(&mut key, "{}", rounded as i64);
+                key.push(']');
             }
             dae::Subscript::Colon => return None,
         }
@@ -686,20 +713,51 @@ fn build_clock_source_map<'a>(
     dae_model: &'a dae::Dae,
     constants: &HashMap<String, f64>,
 ) -> SourceMap<'a> {
-    let mut sources = HashMap::new();
+    let mut forward = HashMap::new();
+    let mut assignment_sources = Vec::new();
     for eq in dae_model
         .f_z
         .iter()
         .chain(dae_model.f_m.iter())
         .chain(dae_model.f_x.iter())
     {
-        let mut assignment_sources = Vec::new();
+        assignment_sources.clear();
         collect_assignment_sources(eq, constants, &mut assignment_sources);
-        for (target, source) in assignment_sources {
-            sources.entry(target).or_insert_with(Vec::new).push(source);
+        for (target, source) in assignment_sources.iter() {
+            forward
+                .entry(target.clone())
+                .or_insert_with(Vec::new)
+                .push(*source);
         }
     }
+    let mut sources = SourceMap::new(forward);
+    sources.reverse_alias = build_reverse_alias_index(&sources.forward, constants);
     sources
+}
+
+fn build_reverse_alias_index(
+    forward: &HashMap<String, Vec<&dae::Expression>>,
+    constants: &HashMap<String, f64>,
+) -> HashMap<String, Vec<String>> {
+    let mut reverse = HashMap::new();
+    for (target, source_exprs) in forward {
+        if target.contains('[') {
+            continue;
+        }
+        for expr in source_exprs {
+            let dae::Expression::VarRef { name, subscripts } = expr else {
+                continue;
+            };
+            let Some(source_key) = canonical_var_ref_key(name, subscripts, constants) else {
+                continue;
+            };
+            let targets = reverse.entry(source_key).or_insert_with(Vec::new);
+            if !targets.iter().any(|existing| existing == target) {
+                targets.push(target.clone());
+            }
+        }
+    }
+    reverse
 }
 
 fn infer_clock_intervals_by_variable(
@@ -709,14 +767,12 @@ fn infer_clock_intervals_by_variable(
 ) -> IndexMap<String, f64> {
     let sources = build_clock_source_map(dae_model, constants);
     let mut intervals = IndexMap::new();
+    let mut visiting = HashSet::new();
 
     for name in clock_interval_candidate_names(dae_model) {
-        let expr = dae::Expression::VarRef {
-            name: name.clone(),
-            subscripts: Vec::new(),
-        };
+        visiting.clear();
         if let Some((period, _phase)) =
-            infer_clock_timing_from_expr(&expr, constants, &sources, 24, &mut HashSet::new())
+            infer_clock_timing_from_var_ref(name, &[], constants, &sources, 24, &mut visiting)
             && period.is_finite()
             && period > 0.0
         {
@@ -1109,20 +1165,7 @@ fn infer_clock_timing_from_reverse_alias_sources(
     remaining_depth: usize,
     visiting: &mut HashSet<String>,
 ) -> Option<(f64, f64)> {
-    sources.iter().find_map(|(target, source_exprs)| {
-        if target.contains('[') {
-            return None;
-        }
-        let alias_hit = source_exprs.iter().any(|expr| {
-            if let dae::Expression::VarRef { name, subscripts } = expr {
-                canonical_var_ref_key(name, subscripts, constants).as_deref() == Some(key)
-            } else {
-                false
-            }
-        });
-        if !alias_hit {
-            return None;
-        }
+    sources.reverse_targets_for(key)?.iter().find_map(|target| {
         infer_clock_timing_next(
             &dae::Expression::VarRef {
                 name: dae::VarName::new(target.as_str()),

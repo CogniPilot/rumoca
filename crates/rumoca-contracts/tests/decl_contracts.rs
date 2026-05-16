@@ -2,11 +2,11 @@
 //!
 //! Tests for the 36 declaration contracts defined in SPEC_0022.
 
+use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_parse_err_with_code,
     expect_parse_ok, expect_resolve_failure_with_code, expect_success,
 };
-use rumoca_session::compile::FailedPhase;
 
 // =============================================================================
 // DECL-001: Name uniqueness
@@ -83,6 +83,24 @@ fn decl_002_block_connector_needs_io_prefix() {
     "#,
         "B",
         "ER020",
+    );
+}
+
+#[test]
+fn decl_002_allows_block_connector_with_member_level_io() {
+    expect_success(
+        r#"
+        connector C
+            input Real u;
+            output Real y;
+        end C;
+        block B
+            C c;
+        equation
+            c.y = c.u;
+        end B;
+    "#,
+        "B",
     );
 }
 

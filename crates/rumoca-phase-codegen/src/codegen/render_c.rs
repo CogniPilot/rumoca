@@ -1,7 +1,7 @@
 //! C-backend template functions for FMI2 and embedded-C code generation.
 //!
 //! These functions are registered in the minijinja environment and used by
-//! `fmi2_model.c.jinja` and `embedded_c_impl.c.jinja` templates to extract explicit
+//! `fmi2/model.c.jinja` and `embedded_c/model.c.jinja` templates to extract explicit
 //! ODE/algebraic RHS expressions from residual-form DAE equations.
 
 use super::{ExprConfig, RenderResult};

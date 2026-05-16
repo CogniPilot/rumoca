@@ -1,6 +1,6 @@
 use super::*;
-use rumoca_session::compile::SourceRootKind;
-use rumoca_session::parsing::parse_source_to_ast;
+use rumoca_compile::compile::SourceRootKind;
+use rumoca_compile::parsing::parse_source_to_ast;
 
 fn parse_ast(source: &str) -> ast::StoredDefinition {
     parse_source_to_ast(source, "input.mo").expect("parse should succeed")

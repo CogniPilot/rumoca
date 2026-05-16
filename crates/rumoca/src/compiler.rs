@@ -38,457 +38,20 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use rumoca_session::compile::{
+use rumoca_compile::codegen::{render_dae_template, render_dae_template_with_name};
+use rumoca_compile::compile::{
     Dae, FailedPhase, FlatModel, PhaseResult, ResolvedTree, Session, SessionConfig, SourceRootKind,
 };
-use rumoca_session::parsing::collect_compile_unit_source_files;
-use rumoca_session::runtime::{
-    dae_balance, dae_is_balanced, dae_to_template_json, prepare_dae_for_template_codegen,
-    render_dae_template, render_dae_template_with_json, render_dae_template_with_json_and_name,
-    render_dae_template_with_name,
-};
-use rumoca_session::source_roots::{
+use rumoca_compile::parsing::collect_compile_unit_source_files;
+use rumoca_compile::source_roots::{
     PackageLayoutError, canonical_path_key, parse_source_root_with_cache, plan_source_root_loads,
     referenced_unloaded_source_root_paths, render_source_root_status_message,
     resolve_source_root_cache_dir, source_root_source_set_key,
 };
+use rumoca_sim::{dae_balance, dae_is_balanced};
 use serde_json::{Map, Value};
 
 use crate::error::CompilerError;
-
-fn as_object_mut(value: &mut Value) -> Option<&mut Map<String, Value>> {
-    value.as_object_mut()
-}
-
-fn expr_var_name(expr: &Value) -> Option<String> {
-    let obj = expr.as_object()?;
-    if let Some(vr) = obj.get("VarRef").and_then(Value::as_object)
-        && let Some(n) = vr.get("name").and_then(Value::as_str)
-    {
-        return Some(n.to_string());
-    }
-    None
-}
-
-fn lhs_var_name(lhs: &Value) -> Option<String> {
-    if let Some(obj) = lhs.as_object()
-        && let Some(vr) = obj.get("VarRef")
-    {
-        return expr_var_name(vr);
-    }
-    if let Some(s) = lhs.as_str() {
-        return Some(s.to_string());
-    }
-    expr_var_name(lhs)
-}
-
-fn extract_residual_assignment_expr(expr: &Value, target: &str) -> Option<Value> {
-    let obj = expr.as_object()?;
-    let bin = obj.get("Binary")?.as_object()?;
-    let lhs = bin.get("lhs")?;
-    let rhs = bin.get("rhs")?;
-    let op = bin.get("op")?.as_object()?;
-    if !op.contains_key("Sub") {
-        return None;
-    }
-
-    if expr_var_name(lhs).is_some_and(|n| n == target) {
-        return Some(rhs.clone());
-    }
-    if expr_var_name(rhs).is_some_and(|n| n == target) {
-        return Some(lhs.clone());
-    }
-    None
-}
-
-fn extract_direct_residual_assignment_expr(expr: &Value, target: &str) -> Option<Value> {
-    let obj = expr.as_object()?;
-    let bin = obj.get("Binary")?.as_object()?;
-    let lhs = bin.get("lhs")?;
-    let rhs = bin.get("rhs")?;
-    let op = bin.get("op")?.as_object()?;
-    if !op.contains_key("Sub") {
-        return None;
-    }
-    if expr_var_name(lhs).is_some_and(|n| n == target) {
-        return Some(rhs.clone());
-    }
-    None
-}
-
-fn collect_observable_expr_candidates_from_native(native: &Value, target: &str) -> Vec<Value> {
-    let Some(obj) = native.as_object() else {
-        return Vec::new();
-    };
-    let mut out: Vec<Value> = Vec::new();
-
-    for key in ["f_z", "f_m", "f_c"] {
-        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
-            out.extend(
-                rows.iter()
-                    .filter_map(Value::as_object)
-                    .filter(|row_obj| {
-                        row_obj
-                            .get("lhs")
-                            .and_then(lhs_var_name)
-                            .is_some_and(|name| name == target)
-                    })
-                    .filter_map(|row_obj| row_obj.get("rhs").cloned()),
-            );
-        }
-    }
-
-    for key in ["f_x", "fx"] {
-        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
-            out.extend(
-                rows.iter()
-                    .filter_map(Value::as_object)
-                    .filter_map(|row_obj| {
-                        row_obj
-                            .get("residual")
-                            .or_else(|| row_obj.get("rhs"))
-                            .and_then(|expr| extract_residual_assignment_expr(expr, target))
-                    }),
-            );
-        }
-    }
-
-    out
-}
-
-fn collect_direct_assignment_expr_candidates_from_native(
-    native: &Value,
-    target: &str,
-) -> Vec<Value> {
-    let Some(obj) = native.as_object() else {
-        return Vec::new();
-    };
-    let mut out: Vec<Value> = Vec::new();
-
-    for key in ["f_z", "f_m", "f_c"] {
-        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
-            out.extend(
-                rows.iter()
-                    .filter_map(Value::as_object)
-                    .filter(|row_obj| {
-                        row_obj
-                            .get("lhs")
-                            .and_then(lhs_var_name)
-                            .is_some_and(|name| name == target)
-                    })
-                    .filter_map(|row_obj| row_obj.get("rhs").cloned()),
-            );
-        }
-    }
-
-    for key in ["f_x", "fx"] {
-        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
-            out.extend(
-                rows.iter()
-                    .filter_map(Value::as_object)
-                    .filter_map(|row_obj| {
-                        row_obj
-                            .get("residual")
-                            .or_else(|| row_obj.get("rhs"))
-                            .and_then(|expr| extract_direct_residual_assignment_expr(expr, target))
-                    }),
-            );
-        }
-    }
-
-    out
-}
-
-fn expr_complexity(expr: &Value) -> usize {
-    match expr {
-        Value::Object(map) => {
-            1 + map
-                .values()
-                .map(expr_complexity)
-                .fold(0usize, |acc, n| acc.saturating_add(n))
-        }
-        Value::Array(items) => {
-            1 + items
-                .iter()
-                .map(expr_complexity)
-                .fold(0usize, |acc, n| acc.saturating_add(n))
-        }
-        _ => 1,
-    }
-}
-
-fn is_simple_alias_expr(expr: &Value) -> bool {
-    let is_var_like = |v: &Value| {
-        v.as_object()
-            .is_some_and(|m| m.contains_key("VarRef") || m.contains_key("ComponentReference"))
-    };
-    if is_var_like(expr) {
-        return true;
-    }
-    let Some(obj) = expr.as_object() else {
-        return false;
-    };
-    let Some(unary) = obj.get("Unary").and_then(Value::as_object) else {
-        return false;
-    };
-    unary.get("arg").is_some_and(is_var_like)
-}
-
-fn find_observable_expr_from_native(native: &Value, target: &str) -> Option<Value> {
-    let mut candidates = collect_direct_assignment_expr_candidates_from_native(native, target);
-    if candidates.is_empty() {
-        candidates = collect_observable_expr_candidates_from_native(native, target);
-    }
-    if candidates.is_empty() {
-        return None;
-    }
-    if let Some(best_alias) = candidates
-        .iter()
-        .filter(|expr| is_simple_alias_expr(expr))
-        .min_by_key(|expr| expr_complexity(expr))
-        .cloned()
-    {
-        return Some(best_alias);
-    }
-    candidates.into_iter().max_by_key(|expr| {
-        let non_alias = if is_simple_alias_expr(expr) {
-            0usize
-        } else {
-            1usize
-        };
-        (non_alias, expr_complexity(expr))
-    })
-}
-
-fn find_bridge_expr_from_native(native: &Value, target: &str) -> Option<Value> {
-    let mut candidates = collect_direct_assignment_expr_candidates_from_native(native, target);
-    if candidates.is_empty() {
-        candidates = collect_observable_expr_candidates_from_native(native, target);
-    }
-    if candidates.is_empty() {
-        return None;
-    }
-    candidates.into_iter().min_by_key(|expr| {
-        let alias_penalty = if is_simple_alias_expr(expr) {
-            0usize
-        } else {
-            1usize
-        };
-        (alias_penalty, expr_complexity(expr))
-    })
-}
-
-fn component_ref_name(expr: &Value) -> Option<String> {
-    let obj = expr.as_object()?;
-    let cr = obj.get("ComponentReference")?.as_object()?;
-    let parts = cr.get("parts")?.as_array()?;
-    let mut segs: Vec<String> = Vec::new();
-    for part in parts {
-        let part_obj = part.as_object()?;
-        let ident = part_obj.get("ident")?.as_object()?;
-        let text = ident.get("text")?.as_str()?;
-        segs.push(text.to_string());
-    }
-    if segs.is_empty() {
-        return None;
-    }
-    Some(segs.join("."))
-}
-
-fn collect_prepared_symbol_names(prepared_obj: &Map<String, Value>) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for key in [
-        "p",
-        "constants",
-        "cp",
-        "x",
-        "y",
-        "z",
-        "m",
-        "w",
-        "u",
-        "x_dot_alias",
-    ] {
-        if let Some(map) = prepared_obj.get(key).and_then(Value::as_object) {
-            out.extend(map.keys().cloned());
-        }
-    }
-    out
-}
-
-fn rewrite_observable_expr_with_native_aliases(
-    native_json: &Value,
-    expr: &Value,
-    prepared_symbols: &HashSet<String>,
-    visiting: &mut HashSet<String>,
-    depth: usize,
-) -> Value {
-    if depth > 24 {
-        return expr.clone();
-    }
-
-    if let Some(obj) = expr.as_object() {
-        if let Some(vr) = obj.get("VarRef").and_then(Value::as_object)
-            && let Some(name) = vr.get("name").and_then(Value::as_str)
-            && !prepared_symbols.contains(name)
-            && !visiting.contains(name)
-            && let Some(alias_expr) = find_bridge_expr_from_native(native_json, name)
-        {
-            visiting.insert(name.to_string());
-            let rewritten = rewrite_observable_expr_with_native_aliases(
-                native_json,
-                &alias_expr,
-                prepared_symbols,
-                visiting,
-                depth + 1,
-            );
-            visiting.remove(name);
-            return rewritten;
-        }
-
-        if let Some(name) = component_ref_name(expr)
-            && !prepared_symbols.contains(&name)
-            && !visiting.contains(&name)
-            && let Some(alias_expr) = find_bridge_expr_from_native(native_json, &name)
-        {
-            visiting.insert(name.clone());
-            let rewritten = rewrite_observable_expr_with_native_aliases(
-                native_json,
-                &alias_expr,
-                prepared_symbols,
-                visiting,
-                depth + 1,
-            );
-            visiting.remove(&name);
-            return rewritten;
-        }
-
-        let mut out = Map::new();
-        for (k, v) in obj {
-            out.insert(
-                k.clone(),
-                rewrite_observable_expr_with_native_aliases(
-                    native_json,
-                    v,
-                    prepared_symbols,
-                    visiting,
-                    depth + 1,
-                ),
-            );
-        }
-        return Value::Object(out);
-    }
-
-    if let Some(arr) = expr.as_array() {
-        return Value::Array(
-            arr.iter()
-                .map(|v| {
-                    rewrite_observable_expr_with_native_aliases(
-                        native_json,
-                        v,
-                        prepared_symbols,
-                        visiting,
-                        depth + 1,
-                    )
-                })
-                .collect(),
-        );
-    }
-
-    expr.clone()
-}
-
-fn augment_prepared_with_native_observables(
-    native_json: &Value,
-    prepared_json: &mut Value,
-) -> Option<usize> {
-    let native_obj = native_json.as_object()?;
-    let prepared_obj = as_object_mut(prepared_json)?;
-    let prepared_y = prepared_obj.get("y").and_then(Value::as_object);
-    let prepared_w = prepared_obj.get("w").and_then(Value::as_object);
-    let prepared_symbols = collect_prepared_symbol_names(prepared_obj);
-
-    let mut observables: Vec<Value> = Vec::new();
-    for (section_name, causality, native_entries) in [
-        ("y", "local", native_obj.get("y").and_then(Value::as_object)),
-        (
-            "w",
-            "output",
-            native_obj.get("w").and_then(Value::as_object),
-        ),
-    ] {
-        let Some(native_entries) = native_entries else {
-            continue;
-        };
-        for (name, comp) in native_entries {
-            if section_name == "w" && (name.contains('.') || name.contains('[')) {
-                continue;
-            }
-            if prepared_y.is_some_and(|m| m.contains_key(name))
-                || prepared_w.is_some_and(|m| m.contains_key(name))
-            {
-                continue;
-            }
-            let Some(expr_raw) = find_observable_expr_from_native(native_json, name) else {
-                continue;
-            };
-            let mut visiting = HashSet::new();
-            let expr = rewrite_observable_expr_with_native_aliases(
-                native_json,
-                &expr_raw,
-                &prepared_symbols,
-                &mut visiting,
-                0,
-            );
-            let mut entry = Map::new();
-            entry.insert("name".to_string(), Value::String(name.clone()));
-            entry.insert("dims".to_string(), Value::Array(Vec::new()));
-            entry.insert("expr".to_string(), expr);
-            entry.insert(
-                "causality".to_string(),
-                Value::String(causality.to_string()),
-            );
-            entry.insert(
-                "section".to_string(),
-                Value::String(section_name.to_string()),
-            );
-            entry.insert("description".to_string(), Value::Null);
-            entry.insert("nominal".to_string(), Value::Null);
-            entry.insert("min".to_string(), Value::Null);
-            entry.insert("max".to_string(), Value::Null);
-            entry.insert("fixed".to_string(), Value::Bool(false));
-            entry.insert("is_tunable".to_string(), Value::Bool(false));
-            let start = comp
-                .as_object()
-                .and_then(|comp_obj| comp_obj.get("start"))
-                .cloned()
-                .unwrap_or(Value::Null);
-            let unit = comp
-                .as_object()
-                .and_then(|comp_obj| {
-                    comp_obj
-                        .get("unit")
-                        .or_else(|| comp_obj.get("displayUnit"))
-                        .or_else(|| comp_obj.get("display_unit"))
-                })
-                .cloned()
-                .unwrap_or(Value::Null);
-            entry.insert("start".to_string(), start);
-            entry.insert("unit".to_string(), unit);
-            observables.push(Value::Object(entry));
-        }
-    }
-
-    if observables.is_empty() {
-        return Some(0);
-    }
-    let n = observables.len();
-    prepared_obj.insert(
-        "__rumoca_observables".to_string(),
-        Value::Array(observables),
-    );
-    Some(n)
-}
 
 /// Result of a successful compilation.
 #[derive(Debug)]
@@ -499,6 +62,17 @@ pub struct CompilationResult {
     pub flat: FlatModel,
     /// The resolved tree (intermediate, before instantiation and typechecking).
     pub resolved: ResolvedTree,
+}
+
+/// Return a scalarized clone of `dae` — vector equations like
+/// `der(x) = -x` for `x: Real[3]` are expanded to one equation per element.
+///
+/// For scalar-only models this is a no-op on the resulting DAE, so it is
+/// safe to apply unconditionally before template rendering.
+fn scalarized_dae(dae: &Dae) -> Dae {
+    let mut dae = dae.clone();
+    rumoca_compile::phase_structural::scalarize::scalarize_equations(&mut dae);
+    dae
 }
 
 impl CompilationResult {
@@ -681,27 +255,17 @@ impl CompilationResult {
         self.render_template_str(&template_content)
     }
 
-    /// Render a structurally prepared DAE using a template file.
-    ///
-    /// This runs the same template-preparation pass used by the simulation
-    /// pipeline (without solver-only artifacts), then renders against the
-    /// prepared DAE.
-    pub fn render_template_prepared(
-        &self,
-        template_path: &str,
-        scalarize: bool,
-    ) -> Result<String, CompilerError> {
-        let template_content = fs::read_to_string(template_path)
-            .map_err(|e| CompilerError::io_error(template_path, e.to_string()))?;
-
-        self.render_template_str_prepared(&template_content, scalarize)
-    }
-
     /// Render the DAE using a template string.
     pub fn render_template_str(&self, template: &str) -> Result<String, CompilerError> {
         // Use the codegen module's render function which sets up the context properly
-        // with the DAE as `dae` and includes custom filters/functions
-        render_dae_template(&self.dae, template).map_err(CompilerError::TemplateError)
+        // with the DAE as `dae` and includes custom filters/functions.
+        //
+        // Scalarize first: backend templates (FMI2/3 runtime C, embedded C, etc.)
+        // emit one output row per scalar state, so vector equations like
+        // `der(x) = -x` for `x: Real[3]` must be expanded to three scalar
+        // equations. For scalar models this is a no-op.
+        let dae = scalarized_dae(&self.dae);
+        render_dae_template(&dae, template).map_err(CompilerError::TemplateError)
     }
 
     /// Render the DAE using a template string with an explicit model name.
@@ -712,38 +276,8 @@ impl CompilationResult {
         template: &str,
         model_name: &str,
     ) -> Result<String, CompilerError> {
-        render_dae_template_with_name(&self.dae, template, model_name)
-            .map_err(CompilerError::TemplateError)
-    }
-
-    /// Render a structurally prepared DAE using a template string.
-    pub fn render_template_str_prepared(
-        &self,
-        template: &str,
-        scalarize: bool,
-    ) -> Result<String, CompilerError> {
-        let prepared = prepare_dae_for_template_codegen(&self.dae, scalarize)
-            .map_err(CompilerError::TemplateError)?;
-        let native_json = dae_to_template_json(&self.dae);
-        let mut prepared_json = dae_to_template_json(&prepared);
-        let _ = augment_prepared_with_native_observables(&native_json, &mut prepared_json);
-        render_dae_template_with_json(&prepared_json, template)
-            .map_err(CompilerError::TemplateError)
-    }
-
-    /// Render a structurally prepared DAE using a template string with model name.
-    pub fn render_template_str_prepared_with_name(
-        &self,
-        template: &str,
-        model_name: &str,
-        scalarize: bool,
-    ) -> Result<String, CompilerError> {
-        let prepared = prepare_dae_for_template_codegen(&self.dae, scalarize)
-            .map_err(CompilerError::TemplateError)?;
-        let native_json = dae_to_template_json(&self.dae);
-        let mut prepared_json = dae_to_template_json(&prepared);
-        let _ = augment_prepared_with_native_observables(&native_json, &mut prepared_json);
-        render_dae_template_with_json_and_name(&prepared_json, template, model_name)
+        let dae = scalarized_dae(&self.dae);
+        render_dae_template_with_name(&dae, template, model_name)
             .map_err(CompilerError::TemplateError)
     }
 
@@ -1373,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_template_prepared_retains_orbit_observables() {
+    fn test_render_template_exposes_orbit_algebraics_from_native_dae() {
         let source = r#"
             model SatelliteOrbit2D
               parameter Real mu = 398600.4418;
@@ -1414,11 +948,8 @@ mod tests {
             .compile_str(source, "orbit.mo")
             .expect("compilation should succeed");
         let rendered = result
-            .render_template_str_prepared(
-                "{% for o in dae.__rumoca_observables %}{{ o.name }}\n{% endfor %}",
-                true,
-            )
-            .expect("prepared template render should succeed");
+            .render_template_str("{% for name, comp in dae.y | items %}{{ name }}\n{% endfor %}")
+            .expect("template render should succeed");
 
         for expected in [
             "inv_r",
@@ -1433,305 +964,9 @@ mod tests {
         ] {
             assert!(
                 rendered.lines().any(|line| line.trim() == expected),
-                "expected observable `{expected}` in prepared template output; got:\n{rendered}"
+                "expected algebraic `{expected}` in template output; got:\n{rendered}"
             );
         }
-    }
-
-    #[test]
-    fn test_render_template_prepared_with_name_retains_orbit_observables() {
-        let source = r#"
-            model SatelliteOrbit2D
-              parameter Real mu = 398600.4418;
-              parameter Real r0 = 7000;
-              parameter Real v0 = sqrt(mu / r0);
-              Real rx(start = r0, fixed = true);
-              Real ry(start = 0, fixed = true);
-              Real vx(start = 0, fixed = true);
-              Real vy(start = v0, fixed = true);
-              Real inv_r;
-              Real inv_v2;
-              Real inv_h;
-              Real inv_energy;
-              Real inv_a;
-              Real inv_rv;
-              Real inv_ex;
-              Real inv_ey;
-              Real inv_ecc;
-            equation
-              der(rx) = vx;
-              der(ry) = vy;
-              inv_r = sqrt(rx * rx + ry * ry);
-              inv_v2 = vx * vx + vy * vy;
-              inv_h = rx * vy - ry * vx;
-              inv_energy = 0.5 * inv_v2 - mu / inv_r;
-              inv_a = 1 / (2 / inv_r - inv_v2 / mu);
-              inv_rv = rx * vx + ry * vy;
-              inv_ex = ((inv_v2 - mu / inv_r) * rx - inv_rv * vx) / mu;
-              inv_ey = ((inv_v2 - mu / inv_r) * ry - inv_rv * vy) / mu;
-              inv_ecc = sqrt(inv_ex * inv_ex + inv_ey * inv_ey);
-              der(vx) = -mu * rx / (inv_r ^ 3);
-              der(vy) = -mu * ry / (inv_r ^ 3);
-            end SatelliteOrbit2D;
-        "#;
-
-        let result = Compiler::new()
-            .model("SatelliteOrbit2D")
-            .compile_str(source, "orbit.mo")
-            .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_prepared_with_name(
-                "{% for o in dae.__rumoca_observables %}{{ o.name }}\n{% endfor %}",
-                "SatelliteOrbit2D",
-                true,
-            )
-            .expect("prepared named template render should succeed");
-
-        for expected in [
-            "inv_r",
-            "inv_v2",
-            "inv_h",
-            "inv_energy",
-            "inv_a",
-            "inv_rv",
-            "inv_ex",
-            "inv_ey",
-            "inv_ecc",
-        ] {
-            assert!(
-                rendered.lines().any(|line| line.trim() == expected),
-                "expected observable `{expected}` in prepared named template output; got:\n{rendered}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_render_fmi2_model_description_with_name_restores_output_observables() {
-        let source = r#"
-            model OutputAlias
-              Real x(start = 2, fixed = true);
-              output Real y;
-              output Real negY;
-            equation
-              der(x) = -x;
-              y = x;
-              negY = -y;
-            end OutputAlias;
-        "#;
-
-        let result = Compiler::new()
-            .model("OutputAlias")
-            .compile_str(source, "output_alias.mo")
-            .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_prepared_with_name(
-                rumoca_phase_codegen::templates::FMI2_MODEL_DESCRIPTION,
-                "OutputAlias",
-                true,
-            )
-            .expect("prepared named FMI2 modelDescription render should succeed");
-
-        assert!(
-            rendered.contains(r#"name="y""#),
-            "expected restored output alias `y` in FMI2 modelDescription; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains(r#"name="negY""#),
-            "expected restored output alias `negY` in FMI2 modelDescription; got:\n{rendered}"
-        );
-    }
-
-    #[test]
-    fn test_residual_observable_assignment_preserves_rhs_target_sign() {
-        let residual = serde_json::json!({
-            "Binary": {
-                "op": {"Sub": {}},
-                "lhs": {"VarRef": {"name": "x"}},
-                "rhs": {"VarRef": {"name": "y"}}
-            }
-        });
-
-        let restored = extract_residual_assignment_expr(&residual, "y")
-            .expect("residual x - y = 0 should restore y as x");
-
-        assert_eq!(
-            restored,
-            serde_json::json!({"VarRef": {"name": "x"}}),
-            "residual x - y = 0 assigns y = x, not y = -x"
-        );
-    }
-
-    #[test]
-    fn test_render_fmi2_model_restores_output_observable_signs() {
-        let source = r#"
-            model OutputAlias
-              Real x(start = 2, fixed = true);
-              output Real y;
-              output Real negY;
-            equation
-              der(x) = -x;
-              y = x;
-              negY = -y;
-            end OutputAlias;
-        "#;
-
-        let result = Compiler::new()
-            .model("OutputAlias")
-            .compile_str(source, "output_alias.mo")
-            .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_prepared_with_name(
-                rumoca_phase_codegen::templates::FMI2_MODEL,
-                "OutputAlias",
-                true,
-            )
-            .expect("prepared named FMI2 model render should succeed");
-
-        assert!(
-            rendered.contains("#define y (x)"),
-            "expected output alias y to preserve positive x sign; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("#define negY ((-x))"),
-            "expected negY to remain the negative alias; got:\n{rendered}"
-        );
-    }
-
-    #[test]
-    fn test_render_fmi2_model_propagates_tunable_parameter_bindings_on_initialization() {
-        let source = r#"
-            model Child
-              parameter Real p = 1;
-              Real x(start = p, fixed = true);
-            initial equation
-              x = p;
-            equation
-              der(x) = 0;
-            end Child;
-
-            model BindingProbe
-              parameter Real root = 5;
-              Child child(p = root);
-            end BindingProbe;
-        "#;
-
-        let result = Compiler::new()
-            .model("BindingProbe")
-            .compile_str(source, "binding_probe.mo")
-            .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_prepared_with_name(
-                rumoca_phase_codegen::templates::FMI2_MODEL,
-                "BindingProbe",
-                true,
-            )
-            .expect("prepared FMI2 C render should succeed");
-
-        assert!(
-            rendered.contains("child_p = root;\n    m->p[1] = child_p;  /* binding child.p */"),
-            "FMI2 C must re-evaluate modifier-derived child.p from root after setReal; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("m->x[0] = child_p;  /* initial child.x */"),
-            "FMI2 C must apply direct initial equation x = p after parameter bindings; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("apply_parameter_bindings(m);\n    apply_initial_equations(m);"),
-            "fmi2ExitInitializationMode must apply parameter bindings before initial equations; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("apply_parameter_bindings(m);\n    return fmi2OK;"),
-            "fmi2SetReal must re-apply dependent parameter bindings after batched writes; got:\n{rendered}"
-        );
-    }
-
-    #[test]
-    fn test_render_fmi2_model_description_omits_symbolic_starts() {
-        let source = r#"
-            model Child
-              parameter Real p = 1;
-              Real x(start = p, fixed = true);
-            initial equation
-              x = p;
-            equation
-              der(x) = 0;
-            end Child;
-
-            model BindingProbe
-              parameter Real root = 5;
-              Child child(p = root);
-            end BindingProbe;
-        "#;
-
-        let result = Compiler::new()
-            .model("BindingProbe")
-            .compile_str(source, "binding_probe.mo")
-            .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_prepared_with_name(
-                rumoca_phase_codegen::templates::FMI2_MODEL_DESCRIPTION,
-                "BindingProbe",
-                true,
-            )
-            .expect("prepared FMI2 modelDescription render should succeed");
-
-        assert!(
-            rendered.contains(r#"name="root" valueReference="2" causality="parameter" variability="fixed" initial="exact">
-      <Real start="5.0"/>"#),
-            "numeric parameter starts should still be emitted; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains(r#"name="child.p" valueReference="3" causality="parameter" variability="fixed" initial="exact">
-      <Real/>"#),
-            "symbolic parameter starts must be omitted from FMI2 XML instead of writing non-numeric expressions; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains(r#"name="child.x" valueReference="0" causality="local" variability="continuous" initial="exact">
-      <Real/>"#),
-            "symbolic state starts must be omitted from FMI2 XML instead of writing non-numeric expressions; got:\n{rendered}"
-        );
-    }
-
-    #[test]
-    fn test_render_fmi2_model_preserves_array_slice_modifier_bindings() {
-        let source = r#"
-            model Child
-              parameter Real p = 1;
-              Real x(start = p, fixed = true);
-            initial equation
-              x = p;
-            equation
-              der(x) = 0;
-            end Child;
-
-            model ArrayModifierProbe
-              parameter Real root[5] = {11, 12, 13, 14, 15};
-              Child child[5](p = root[1:5]);
-            end ArrayModifierProbe;
-        "#;
-
-        let result = Compiler::new()
-            .model("ArrayModifierProbe")
-            .compile_str(source, "array_modifier_probe.mo")
-            .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_prepared_with_name(
-                rumoca_phase_codegen::templates::FMI2_MODEL,
-                "ArrayModifierProbe",
-                true,
-            )
-            .expect("prepared FMI2 C render should succeed");
-
-        assert!(
-            rendered.contains(
-                "child_1_p = root_1;\n    m->p[5] = child_1_p;  /* binding child[1].p */"
-            ),
-            "array component modifier bindings must preserve element-wise source dependencies; got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("m->x[0] = child_1_p;  /* initial child[1].x */"),
-            "initial equations must use the dependent array modifier parameter; got:\n{rendered}"
-        );
     }
 
     #[test]

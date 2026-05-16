@@ -16,6 +16,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use rumoca_sim::viz_web::THREE_JS;
 use rumoca_sim::{SimStepper, StepperOptions};
 use tungstenite::{Message, accept};
 
@@ -27,8 +28,6 @@ const MODEL_SOURCE: &str = include_str!("../../../examples/QuadrotorAttitude.mo"
 const HOVER_THRUST: f64 = 2.0 * 9.80665; // mass * g
 const MAX_ANGLE: f64 = 0.5; // ~28 degrees max tilt
 const MAX_YAW_RATE: f64 = 2.0; // rad/s
-const THREE_JS: &str = include_str!("../../rumoca-sim/web/three.min.js");
-
 const HTML_PAGE: &str = r##"<!DOCTYPE html>
 <html>
 <head>

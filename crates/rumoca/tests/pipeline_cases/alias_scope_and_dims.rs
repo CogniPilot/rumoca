@@ -171,9 +171,9 @@ end UsesForwardedMedium;
     );
 
     assert!(
-        rumoca_eval_dae::analysis::is_balanced(&result.dae),
+        rumoca_analysis_dae::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_eval_dae::analysis::balance_detail(&result.dae)
+        rumoca_analysis_dae::balance_detail(&result.dae)
     );
 }
 
@@ -344,9 +344,9 @@ end UsesMedium;
     let result = session.compile_model("UsesMedium").expect("compile failed");
 
     assert!(
-        rumoca_eval_dae::analysis::is_balanced(&result.dae),
+        rumoca_analysis_dae::is_balanced(&result.dae),
         "Model should be balanced when fixedX=false disables the no-else branch: {}",
-        rumoca_eval_dae::analysis::balance_detail(&result.dae)
+        rumoca_analysis_dae::balance_detail(&result.dae)
     );
 }
 
@@ -626,9 +626,9 @@ end UsesRangeInBaseProperties;
     );
 
     assert!(
-        rumoca_eval_dae::analysis::is_balanced(&result.dae),
+        rumoca_analysis_dae::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_eval_dae::analysis::balance_detail(&result.dae)
+        rumoca_analysis_dae::balance_detail(&result.dae)
     );
 }
 

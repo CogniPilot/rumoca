@@ -1,5 +1,5 @@
 use lsp_types::Position;
-use rumoca_session::compile::SessionCacheStatsSnapshot;
+use rumoca_compile::compile::SessionCacheStatsSnapshot;
 use serde::{Deserialize, Serialize};
 
 use crate::helpers::get_text_before_cursor;

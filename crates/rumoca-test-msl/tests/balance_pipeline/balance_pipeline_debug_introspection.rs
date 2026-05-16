@@ -230,10 +230,7 @@ pub(super) fn print_compiled_debug_with_limit(
     flat: &rumoca_ir_flat::Model,
     eq_limit: usize,
 ) {
-    println!(
-        "Success! {}",
-        rumoca_eval_dae::analysis::balance_detail(dae)
-    );
+    println!("Success! {}", rumoca_analysis_dae::balance_detail(dae));
     println!(
         "active_discrete_scalar_count = {}",
         active_discrete_scalar_count(flat, dae)
@@ -253,7 +250,7 @@ pub(super) fn print_compiled_debug_with_limit(
 
 pub(super) fn maybe_dump_model_introspection(
     name: &str,
-    result: &rumoca_session::compile::CompilationResult,
+    result: &rumoca_compile::compile::CompilationResult,
     ctx: &RenderSimContext<'_>,
 ) {
     if !msl_introspect_enabled() || !should_introspect_model(name) {

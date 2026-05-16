@@ -806,7 +806,7 @@ fn try_expand_range_subscript_connection(
                 });
             }
         }
-        (None, None) => unreachable!(), // Already checked above
+        (None, None) => return None,
     }
 
     if expanded.is_empty() {

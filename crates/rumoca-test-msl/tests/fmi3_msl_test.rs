@@ -19,9 +19,11 @@
 //! - `RUMOCA_FMI3_MSL_TOLERANCE=0.20` — max allowed trace deviation (default 0.20)
 
 use flate2::read::GzDecoder;
-use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
-use rumoca_session::parsing::parse_files_parallel_lenient;
-use rumoca_session::runtime::{SimOptions, SimResult, simulate_dae};
+use rumoca_compile::codegen::{render_dae_template_with_name, templates};
+use rumoca_compile::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
+use rumoca_compile::parsing::parse_files_parallel_lenient;
+use rumoca_sim::simulate_dae;
+use rumoca_sim::{SimOptions, SimResult};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
@@ -51,7 +53,7 @@ const MSL_URL: &str =
 
 fn get_msl_cache_dir() -> PathBuf {
     let cache_dir =
-        rumoca_session::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
+        rumoca_compile::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
     fs::create_dir_all(&cache_dir).expect("Failed to create MSL cache directory");
     cache_dir
 }
@@ -182,19 +184,11 @@ fn fmi3_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    let model_c = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::FMI3_MODEL,
-        model_name,
-    )
-    .map_err(|e| format!("render model: {e}"))?;
+    let model_c = render_dae_template_with_name(dae, templates::FMI3_MODEL, model_name)
+        .map_err(|e| format!("render model: {e}"))?;
 
-    let driver_c = rumoca_phase_codegen::render_template_with_name(
-        dae,
-        rumoca_phase_codegen::templates::FMI3_TEST_DRIVER,
-        model_name,
-    )
-    .map_err(|e| format!("render driver: {e}"))?;
+    let driver_c = render_dae_template_with_name(dae, templates::FMI3_TEST_DRIVER, model_name)
+        .map_err(|e| format!("render driver: {e}"))?;
 
     let dir = tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let model_path = dir.path().join("model.c");

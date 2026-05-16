@@ -2,12 +2,12 @@
 //!
 //! Tests the full compilation pipeline using the Session API.
 
+use rumoca_compile::compile::PhaseResult;
+use rumoca_compile::phase_structural::{BltBlock, analyze_structure, sort_dae};
+use rumoca_compile::{Session, SessionConfig};
 use rumoca_ir_dae::{self as dae, Dae, VarName as DaeVarName};
 use rumoca_ir_flat as flat;
 use rumoca_phase_codegen::{render_flat_template_with_name, render_template, templates};
-use rumoca_phase_solve::{BltBlock, analyze_structure, sort_dae};
-use rumoca_session::compile::PhaseResult;
-use rumoca_session::{Session, SessionConfig};
 
 /// Helper to run the full pipeline on a model using Session.
 fn compile_model(source: &str, model_name: &str) -> Result<Dae, String> {
@@ -156,10 +156,10 @@ end Empty;
 
     let dae = result.unwrap();
     assert!(
-        rumoca_eval_dae::analysis::is_balanced(&dae),
+        rumoca_analysis_dae::is_balanced(&dae),
         "Empty model should be balanced"
     );
-    assert_eq!(rumoca_eval_dae::analysis::balance(&dae), 0);
+    assert_eq!(rumoca_analysis_dae::balance(&dae), 0);
 }
 
 #[test]
@@ -181,7 +181,7 @@ end SimpleParam;
         "SimpleParam: params={}, algebraics={}, balance={}",
         dae.parameters.len(),
         dae.algebraics.len(),
-        rumoca_eval_dae::analysis::balance(&dae)
+        rumoca_analysis_dae::balance(&dae)
     );
 }
 
@@ -207,7 +207,7 @@ end SimpleVar;
         "SimpleVar: {} states, {} algebraics, balance = {}",
         dae.states.len(),
         dae.algebraics.len(),
-        rumoca_eval_dae::analysis::balance(&dae)
+        rumoca_analysis_dae::balance(&dae)
     );
 }
 
@@ -233,7 +233,7 @@ end SimpleEq;
         dae.states.len(),
         dae.algebraics.len(),
         dae.f_x.len(),
-        rumoca_eval_dae::analysis::balance(&dae)
+        rumoca_analysis_dae::balance(&dae)
     );
 }
 
@@ -264,7 +264,7 @@ end InverseLike;
         "both equations should be preserved, including input alias constraint"
     );
     assert_eq!(
-        rumoca_eval_dae::analysis::balance(&dae),
+        rumoca_analysis_dae::balance(&dae),
         0,
         "model should be structurally balanced"
     );
@@ -414,7 +414,7 @@ end SimpleODE;
         dae.states.len(),
         dae.algebraics.len(),
         dae.f_x.len(),
-        rumoca_eval_dae::analysis::balance(&dae)
+        rumoca_analysis_dae::balance(&dae)
     );
 
     // Should have 1 state (x) and 1 continuous equation
@@ -449,7 +449,7 @@ end Oscillator;
         dae.algebraics.len(),
         dae.parameters.len(),
         dae.f_x.len(),
-        rumoca_eval_dae::analysis::balance(&dae)
+        rumoca_analysis_dae::balance(&dae)
     );
 
     // State detection works - variables appearing in der() are states
@@ -919,7 +919,7 @@ end KeepBindingWithSubscriptedUnknown;
     };
 
     assert_eq!(
-        rumoca_eval_dae::analysis::balance(&result.dae),
+        rumoca_analysis_dae::balance(&result.dae),
         0,
         "model should remain balanced when declaration binding and explicit equation both contribute constraints"
     );
@@ -978,7 +978,7 @@ end ModifierBindingScope;
         "component modifier a(x=2) must not become a declaration binding on nested member a.c.x"
     );
     assert_eq!(
-        rumoca_eval_dae::analysis::balance(&result.dae),
+        rumoca_analysis_dae::balance(&result.dae),
         0,
         "model should stay balanced without nested binding leakage"
     );
@@ -1358,11 +1358,11 @@ end MyMedium;
 
     // Model should be balanced: 4 unknowns (d, T, state.p, state.T), 4 equations
     assert!(
-        rumoca_eval_dae::analysis::is_balanced(&result.dae),
+        rumoca_analysis_dae::is_balanced(&result.dae),
         "Model should be balanced: {}",
-        rumoca_eval_dae::analysis::balance_detail(&result.dae)
+        rumoca_analysis_dae::balance_detail(&result.dae)
     );
-    assert_eq!(rumoca_eval_dae::analysis::balance(&result.dae), 0);
+    assert_eq!(rumoca_analysis_dae::balance(&result.dae), 0);
 }
 
 /// MLS §7.3: Record redeclarations inherited through package extends-chains
@@ -1435,9 +1435,9 @@ end TwoPhaseWater;
     );
 
     assert!(
-        rumoca_eval_dae::analysis::is_balanced(&result.dae),
+        rumoca_analysis_dae::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_eval_dae::analysis::balance_detail(&result.dae)
+        rumoca_analysis_dae::balance_detail(&result.dae)
     );
 }
 
@@ -1518,9 +1518,9 @@ end DottedStateInputs;
     );
 
     assert!(
-        rumoca_eval_dae::analysis::is_balanced(&result.dae),
+        rumoca_analysis_dae::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_eval_dae::analysis::balance_detail(&result.dae)
+        rumoca_analysis_dae::balance_detail(&result.dae)
     );
 }
 
@@ -1591,9 +1591,9 @@ end UsesBaseProperties;
     );
 
     assert!(
-        rumoca_eval_dae::analysis::is_balanced(&result.dae),
+        rumoca_analysis_dae::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_eval_dae::analysis::balance_detail(&result.dae)
+        rumoca_analysis_dae::balance_detail(&result.dae)
     );
 }
 
@@ -1656,9 +1656,9 @@ end UsesConstrainedBaseProperties;
     );
 
     assert!(
-        rumoca_eval_dae::analysis::is_balanced(&result.dae),
+        rumoca_analysis_dae::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_eval_dae::analysis::balance_detail(&result.dae)
+        rumoca_analysis_dae::balance_detail(&result.dae)
     );
 }
 

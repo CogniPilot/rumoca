@@ -1,6 +1,6 @@
 use super::*;
 use futures_util::StreamExt;
-use rumoca_session::compile::{
+use rumoca_compile::compile::{
     ParsedSourceRootLoad, reset_session_cache_stats, session_cache_stats,
 };
 use serde::Deserialize;
@@ -108,7 +108,7 @@ struct LoggedCompletionTimingSummary {
     source_set_package_membership_query_hits: u64,
     #[serde(default)]
     source_set_package_membership_query_misses: u64,
-    session_cache_delta: rumoca_session::compile::SessionCacheStatsSnapshot,
+    session_cache_delta: rumoca_compile::compile::SessionCacheStatsSnapshot,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,7 +124,7 @@ struct LoggedDiagnosticsTimingSummary {
     semantic_layer: String,
     requested_source_root_load: bool,
     ran_compile: bool,
-    session_cache_delta: rumoca_session::compile::SessionCacheStatsSnapshot,
+    session_cache_delta: rumoca_compile::compile::SessionCacheStatsSnapshot,
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,7 +154,7 @@ struct LoggedNavigationTimingSummary {
     format_ms: Option<u64>,
     built_resolved_tree: bool,
     had_resolved_cache_before: bool,
-    session_cache_delta: rumoca_session::compile::SessionCacheStatsSnapshot,
+    session_cache_delta: rumoca_compile::compile::SessionCacheStatsSnapshot,
 }
 
 fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
@@ -167,7 +167,7 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
 }
 
 fn assert_no_model_query_activity(
-    delta: rumoca_session::compile::SessionCacheStatsSnapshot,
+    delta: rumoca_compile::compile::SessionCacheStatsSnapshot,
     context: &str,
 ) {
     for (stage, hits, misses, builds) in [
@@ -203,7 +203,7 @@ fn assert_no_model_query_activity(
 }
 
 fn assert_model_query_build_chain(
-    delta: rumoca_session::compile::SessionCacheStatsSnapshot,
+    delta: rumoca_compile::compile::SessionCacheStatsSnapshot,
     context: &str,
 ) {
     for (stage, misses, builds) in [

@@ -931,6 +931,7 @@ struct ResolvedComponentTarget<'a> {
     component: &'a ast::Component,
     type_class: Option<&'a ClassDef>,
     token: &'a Token,
+    part: &'a ast::ComponentRefPart,
 }
 
 fn component_type_class<'a>(
@@ -955,6 +956,7 @@ fn resolve_component_reference_target<'a>(
     let mut component = class.components.get(first.ident.text.as_ref())?;
     let mut type_class = component_type_class(component, def);
     let mut token = &first.ident;
+    let mut target_part = first;
 
     for part in cref.parts.iter().skip(1) {
         let current_type_class = type_class?;
@@ -963,12 +965,14 @@ fn resolve_component_reference_target<'a>(
             .get(part.ident.text.as_ref())?;
         type_class = component_type_class(component, def);
         token = &part.ident;
+        target_part = part;
     }
 
     Some(ResolvedComponentTarget {
         component,
         type_class,
         token,
+        part: target_part,
     })
 }
 
@@ -1072,7 +1076,7 @@ fn check_partial_class_instantiation_restriction(
     if matches!(tc.class_type, ClassType::Package | ClassType::Function) {
         return;
     }
-    if !tc.partial {
+    if !tc.partial || type_name_has_replaceable_root(class, comp) {
         return;
     }
 
@@ -1090,6 +1094,17 @@ fn check_partial_class_instantiation_restriction(
             format!("instantiation of partial class '{}'", type_name),
         ),
     ));
+}
+
+fn type_name_has_replaceable_root(class: &ClassDef, comp: &ast::Component) -> bool {
+    let Some(root) = comp.type_name.name.first().map(|token| token.text.as_ref()) else {
+        return false;
+    };
+    comp.type_name.name.len() > 1
+        && class
+            .classes
+            .get(root)
+            .is_some_and(|root_class| root_class.is_replaceable)
 }
 
 fn check_connector_variability_restriction(
@@ -1114,7 +1129,7 @@ fn check_connector_variability_restriction(
     let var_str = match &comp.variability {
         Variability::Parameter(_) => "parameter",
         Variability::Constant(_) => "constant",
-        _ => unreachable!(),
+        _ => return,
     };
     let prefix_label = match &comp.variability {
         Variability::Parameter(token) => label_from_token(
@@ -1127,7 +1142,7 @@ fn check_connector_variability_restriction(
             "check_cross_class_restrictions/connector_constant",
             "invalid 'constant' prefix on connector component",
         ),
-        _ => unreachable!(),
+        _ => return,
     };
     diags.push(semantic_error(
         ER027_CONNECTOR_PARAMETER_OR_CONSTANT,
@@ -1156,6 +1171,10 @@ fn check_block_connector_causality_restrictions(
                 && matches!(comp.causality, Causality::Empty)
                 // Also check if the type alias itself provides causality
                 && matches!(tc.causality, Causality::Empty)
+                // StateGraph-style connectors can be directionally typed via
+                // their member declarations (input/output) without component
+                // prefixes on the block member itself.
+                && !connector_members_define_causality(tc)
         {
             diags.push(semantic_error(
                 ER020_BLOCK_CONNECTOR_MISSING_IO_PREFIX,
@@ -1172,6 +1191,13 @@ fn check_block_connector_causality_restrictions(
             ));
         }
     }
+}
+
+fn connector_members_define_causality(connector: &ClassDef) -> bool {
+    connector
+        .components
+        .values()
+        .any(|member| !matches!(member.causality, Causality::Empty))
 }
 
 /// CONN-017: Check flow/potential balance in connector.
@@ -1258,7 +1284,7 @@ fn check_parameter_variability(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
         let var_str = match &comp.variability {
             Variability::Parameter(_) => "parameter",
             Variability::Constant(_) => "constant",
-            _ => unreachable!(),
+            _ => continue,
         };
         let label = label_from_expression_or_token(
             binding,
