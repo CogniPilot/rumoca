@@ -3,6 +3,11 @@
 This file tells coding agents how to work in `rumoca` without drifting from the
 Modelica Language Specification (MLS) or Rumoca's design decisions.
 
+For the detailed operational workflow (triage proof requirements, upstream-first
+fix policy, and MSL-backed validation expectations), also read:
+
+- `docs/development_instructions.md`
+
 ## Scope
 
 - Treat active specs in `spec/README.md` as the source of truth.
