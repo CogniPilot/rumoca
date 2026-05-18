@@ -815,6 +815,52 @@ fn test_todae_rejects_model_algorithm_for_loop_with_non_constant_range() {
 }
 
 #[test]
+fn test_todae_accepts_model_algorithm_for_loop_with_constant_array_binding_range() {
+    let mut flat = Model::new();
+    add_primitive_real(&mut flat, "y");
+    flat.add_variable(
+        VarName::new("switched"),
+        flat::Variable {
+            name: VarName::new("switched"),
+            variability: rumoca_ir_flat::Variability::Parameter(rumoca_ir_core::Token::default()),
+            binding: Some(flat::Expression::Array {
+                elements: vec![
+                    flat::Expression::Literal(flat::Literal::Integer(1)),
+                    flat::Expression::Literal(flat::Literal::Integer(3)),
+                ],
+                is_matrix: false,
+            }),
+            is_discrete_type: true,
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+
+    flat.algorithms.push(flat::Algorithm::new(
+        vec![flat::Statement::For {
+            indices: vec![flat::ForIndex {
+                ident: "i".to_string(),
+                range: make_var_ref("switched"),
+            }],
+            equations: vec![flat::Statement::Assignment {
+                comp: make_comp_ref("y"),
+                value: make_var_ref("i"),
+            }],
+        }],
+        Span::DUMMY,
+        "model for constant array binding range".to_string(),
+    ));
+
+    to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("for-loop algorithms with constant array binding ranges should lower");
+}
+
+#[test]
 fn test_todae_lowers_supported_algorithm_slice_row_write_and_read() {
     let flat = build_supported_algorithm_slice_row_model();
     let dae = to_dae_with_options(

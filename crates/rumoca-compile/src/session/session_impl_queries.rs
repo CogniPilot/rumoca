@@ -69,8 +69,33 @@ impl Session {
             snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
+            evaluate_scope_is_error: config.evaluate_scope_is_error,
+            when_single_assign_is_error: config.when_single_assign_is_error,
             query_state,
         }
+    }
+
+    pub fn set_semantic_strictness(
+        &mut self,
+        evaluate_scope_is_error: bool,
+        when_single_assign_is_error: bool,
+    ) {
+        if self.evaluate_scope_is_error == evaluate_scope_is_error
+            && self.when_single_assign_is_error == when_single_assign_is_error
+        {
+            return;
+        }
+        self.evaluate_scope_is_error = evaluate_scope_is_error;
+        self.when_single_assign_is_error = when_single_assign_is_error;
+        self.invalidate_resolved_state(CacheInvalidationCause::DocumentMutation);
+        self.invalidate_strict_compile_state(CacheInvalidationCause::DocumentMutation);
+    }
+
+    pub fn semantic_strictness(&self) -> (bool, bool) {
+        (
+            self.evaluate_scope_is_error,
+            self.when_single_assign_is_error,
+        )
     }
 
     pub(crate) fn invalidate_resolved_state(&mut self, cause: CacheInvalidationCause) {

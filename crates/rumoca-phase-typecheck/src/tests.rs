@@ -260,6 +260,114 @@ fn test_colon_dimension_inference() {
 }
 
 #[test]
+fn test_redeclared_phase_system_dimension_resolves() {
+    // Regression for PowerSystems-style connector dimensions:
+    // PhaseSystem.n must resolve through the full type scope when a connector
+    // extends another connector and redeclares the replaceable package.
+    let source = r#"
+        package PhaseSystems
+          partial package PartialPhaseSystem
+            constant Integer n;
+            constant Integer m;
+            type Voltage = Real;
+            type Current = Real;
+          end PartialPhaseSystem;
+
+          package TwoConductor
+            extends PartialPhaseSystem(n=2, m=0);
+          end TwoConductor;
+        end PhaseSystems;
+
+        package Interfaces
+          connector TerminalDC
+            replaceable package PhaseSystem = PhaseSystems.PartialPhaseSystem;
+            PhaseSystem.Voltage v[PhaseSystem.n];
+            flow PhaseSystem.Current i[PhaseSystem.n];
+          end TerminalDC;
+        end Interfaces;
+
+        package Ports
+          connector TwoPin
+            extends Interfaces.TerminalDC(
+              redeclare package PhaseSystem = PhaseSystems.TwoConductor
+            );
+          end TwoPin;
+        end Ports;
+
+        model Test
+          Ports.TwoPin term;
+        end Test;
+    "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let typed = typecheck(resolved).expect("typecheck should succeed");
+
+    let tree = typed.into_inner();
+    let test_class = tree
+        .definitions
+        .classes
+        .get("Test")
+        .expect("Test class should exist");
+
+    let term = test_class
+        .components
+        .get("term")
+        .expect("term should exist");
+    assert_eq!(
+        term.shape,
+        vec![],
+        "term connector itself should remain scalar"
+    );
+}
+
+#[test]
+fn test_redeclared_phase_system_dimension_resolves_in_nested_component() {
+    // Mirrors `voltage.term.v[PhaseSystem.n]` shape in PowerSystems examples.
+    let source = r#"
+        package PhaseSystems
+          partial package PartialPhaseSystem
+            constant Integer n;
+            type Voltage = Real;
+            type Current = Real;
+          end PartialPhaseSystem;
+
+          package TwoConductor
+            extends PartialPhaseSystem(n=2);
+          end TwoConductor;
+        end PhaseSystems;
+
+        package Interfaces
+          connector TerminalDC
+            replaceable package PhaseSystem = PhaseSystems.PartialPhaseSystem;
+            PhaseSystem.Voltage v[PhaseSystem.n];
+            flow PhaseSystem.Current i[PhaseSystem.n];
+          end TerminalDC;
+        end Interfaces;
+
+        package Ports
+          connector TwoPin
+            extends Interfaces.TerminalDC(
+              redeclare package PhaseSystem = PhaseSystems.TwoConductor
+            );
+          end TwoPin;
+        end Ports;
+
+        model Source
+          Ports.TwoPin term;
+        end Source;
+
+        model Top
+          Source voltage;
+        end Top;
+    "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    typecheck(resolved).expect("typecheck should succeed");
+}
+
+#[test]
 fn test_parameter_colon_dimension_without_binding_is_allowed() {
     // Parameter `[:]` may remain unresolved until instantiation binds it.
     let source = r#"

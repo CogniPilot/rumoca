@@ -245,6 +245,91 @@ fn test_constrainedby_non_subtype_rejected() {
     assert!(err.to_string().contains("violates constrainedby"));
 }
 
+#[test]
+fn test_class_redeclaration_default_constraint_uses_declared_base() {
+    let mut tree = ast::ClassTree::default();
+
+    let partial = ast::ClassDef {
+        name: make_token("PartialPhaseSystem"),
+        def_id: Some(DefId::new(1)),
+        ..Default::default()
+    };
+    let two_conductor = ast::ClassDef {
+        name: make_token("TwoConductor"),
+        def_id: Some(DefId::new(2)),
+        extends: vec![ast::Extend {
+            base_name: rumoca_ir_ast::Name {
+                name: vec![make_token("PartialPhaseSystem")],
+                def_id: Some(DefId::new(1)),
+            },
+            base_def_id: Some(DefId::new(1)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let alias_phase_system = ast::ClassDef {
+        name: make_token("PhaseSystem"),
+        def_id: Some(DefId::new(3)),
+        is_replaceable: true,
+        extends: vec![ast::Extend {
+            base_name: rumoca_ir_ast::Name {
+                name: vec![make_token("PartialPhaseSystem")],
+                def_id: Some(DefId::new(1)),
+            },
+            base_def_id: Some(DefId::new(1)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    tree.definitions
+        .classes
+        .insert("PhaseSystems.PartialPhaseSystem".to_string(), partial);
+    tree.definitions
+        .classes
+        .insert("PhaseSystems.TwoConductor".to_string(), two_conductor);
+    tree.definitions.classes.insert(
+        "Interfaces.TerminalDC.PhaseSystem".to_string(),
+        alias_phase_system.clone(),
+    );
+
+    tree.name_map
+        .insert("PhaseSystems.PartialPhaseSystem".to_string(), DefId::new(1));
+    tree.name_map
+        .insert("PhaseSystems.TwoConductor".to_string(), DefId::new(2));
+    tree.name_map.insert(
+        "Interfaces.TerminalDC.PhaseSystem".to_string(),
+        DefId::new(3),
+    );
+
+    tree.def_map
+        .insert(DefId::new(1), "PhaseSystems.PartialPhaseSystem".to_string());
+    tree.def_map
+        .insert(DefId::new(2), "PhaseSystems.TwoConductor".to_string());
+    tree.def_map.insert(
+        DefId::new(3),
+        "Interfaces.TerminalDC.PhaseSystem".to_string(),
+    );
+
+    let result = validate_class_redeclaration(
+        &tree,
+        &alias_phase_system,
+        "PhaseSystem",
+        Some("PhaseSystems.TwoConductor"),
+        Span::DUMMY,
+    );
+    let err = result.expect_err("test setup should trigger subtype failure in unit fixture");
+    assert!(
+        err.to_string().contains("PhaseSystems.PartialPhaseSystem"),
+        "default constraint should come from declared base type"
+    );
+    assert!(
+        !err.to_string()
+            .contains("Interfaces.TerminalDC.PhaseSystem"),
+        "default constraint must not fall back to alias class name"
+    );
+}
+
 // -------------------------------------------------------------------------
 // is_type_subtype tests
 // -------------------------------------------------------------------------

@@ -637,9 +637,11 @@ impl ast::Visitor for ExprTypeIssuesVisitor<'_> {
             // TYPE-005: Class name used as value in equation
             Expression::ComponentReference(cref) if cref.parts.len() == 1 => {
                 let name = &*cref.parts[0].ident.text;
-                if !self.class.components.contains_key(name)
-                    && find_class_by_name(self.def, name).is_some()
-                {
+                let refers_to_class = cref
+                    .def_id
+                    .and_then(|def_id| find_class_by_def_id(self.def, def_id))
+                    .is_some();
+                if !self.class.components.contains_key(name) && refers_to_class {
                     self.diags.push(semantic_error(
                         ER011_CLASS_USED_AS_VALUE,
                         format!(

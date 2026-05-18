@@ -17,6 +17,48 @@ use super::{
     compile_source_in_session, wasm_elapsed_ms, wasm_timing_start,
 };
 
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmCompileBehaviorOptions {
+    /// Compatibility option:
+    /// allow `annotation(Evaluate=true)` on non-parameter/non-constant fields.
+    ///
+    /// Strict MLS behavior keeps this `false`.
+    ///
+    /// Example pattern (commonly used in PowerSystems records):
+    /// `Boolean puUnits annotation(Evaluate=true, Dialog(...));`
+    /// where `puUnits` is not explicitly declared `parameter` or `constant`.
+    #[serde(default)]
+    allow_non_param_evaluate_annotation: bool,
+    /// Compatibility option:
+    /// allow duplicate target assignment across separate `when` equations.
+    ///
+    /// Strict MLS behavior keeps this `false`.
+    ///
+    /// Note: valid distinct indexed targets (e.g. `t0[1]` and `t0[2]`) are
+    /// accepted in strict mode and should not require this option.
+    #[serde(default)]
+    allow_multi_when_single_assign: bool,
+}
+
+fn parse_compile_behavior_options(
+    options_json: &str,
+) -> Result<WasmCompileBehaviorOptions, JsValue> {
+    let trimmed = options_json.trim();
+    if trimmed.is_empty() || trimmed == "{}" {
+        return Ok(WasmCompileBehaviorOptions::default());
+    }
+    serde_json::from_str(trimmed)
+        .map_err(|e| JsValue::from_str(&format!("Invalid compile options JSON: {}", e)))
+}
+
+fn semantic_strictness_from_options(options: WasmCompileBehaviorOptions) -> (bool, bool) {
+    (
+        !options.allow_non_param_evaluate_annotation,
+        !options.allow_multi_when_single_assign,
+    )
+}
+
 #[derive(Default)]
 pub(crate) struct SourceLoadSummary {
     pub(crate) parsed_count: usize,
@@ -244,9 +286,33 @@ pub fn compile_with_source_roots(
     model_name: &str,
     source_roots_json: &str,
 ) -> Result<String, JsValue> {
+    compile_with_source_roots_with_options(source, model_name, source_roots_json, "{}")
+}
+
+#[wasm_bindgen]
+/// Compile using loaded source roots with explicit compile behavior options.
+///
+/// `compile_options_json` example:
+/// `{"allowNonParamEvaluateAnnotation":true,"allowMultiWhenSingleAssign":false}`
+///
+/// Strict behavior remains default when this function is not used (or options are false).
+pub fn compile_with_source_roots_with_options(
+    source: &str,
+    model_name: &str,
+    source_roots_json: &str,
+    compile_options_json: &str,
+) -> Result<String, JsValue> {
+    let compile_options = parse_compile_behavior_options(compile_options_json)?;
     super::with_singleton_session(|session| {
-        load_source_root_sources_in_session(session, source_roots_json)?;
-        compile_source_in_session(session, source, model_name)
+        let previous_strictness = session.semantic_strictness();
+        let next_strictness = semantic_strictness_from_options(compile_options);
+        session.set_semantic_strictness(next_strictness.0, next_strictness.1);
+        let result = (|| {
+            load_source_root_sources_in_session(session, source_roots_json)?;
+            compile_source_in_session(session, source, model_name)
+        })();
+        session.set_semantic_strictness(previous_strictness.0, previous_strictness.1);
+        result
     })
 }
 
@@ -256,73 +322,94 @@ pub fn compile_check_with_source_roots(
     model_name: &str,
     source_roots_json: &str,
 ) -> Result<String, JsValue> {
+    compile_check_with_source_roots_with_options(source, model_name, source_roots_json, "{}")
+}
+
+#[wasm_bindgen]
+/// Strict compile-check using loaded source roots with explicit behavior options.
+///
+/// This validates requested-model compilation without producing full DAE output.
+/// Option semantics are identical to `compile_with_source_roots_with_options`.
+pub fn compile_check_with_source_roots_with_options(
+    source: &str,
+    model_name: &str,
+    source_roots_json: &str,
+    compile_options_json: &str,
+) -> Result<String, JsValue> {
+    let compile_options = parse_compile_behavior_options(compile_options_json)?;
     super::with_singleton_session(|session| {
         let total_started = wasm_timing_start();
+        let previous_strictness = session.semantic_strictness();
+        let next_strictness = semantic_strictness_from_options(compile_options);
+        session.set_semantic_strictness(next_strictness.0, next_strictness.1);
+        let result = (|| {
+            let load_started = wasm_timing_start();
+            load_source_root_sources_in_session(session, source_roots_json)?;
+            let load_ms = wasm_elapsed_ms(load_started);
 
-        let load_started = wasm_timing_start();
-        load_source_root_sources_in_session(session, source_roots_json)?;
-        let load_ms = wasm_elapsed_ms(load_started);
+            reset_compile_phase_timing_stats();
 
-        reset_compile_phase_timing_stats();
+            let update_started = wasm_timing_start();
+            session.update_document("input.mo", source);
+            let update_ms = wasm_elapsed_ms(update_started);
 
-        let update_started = wasm_timing_start();
-        session.update_document("input.mo", source);
-        let update_ms = wasm_elapsed_ms(update_started);
+            let qualify_started = wasm_timing_start();
+            let requested_model = super::qualify_input_model_name(session, model_name);
+            let qualify_ms = wasm_elapsed_ms(qualify_started);
 
-        let qualify_started = wasm_timing_start();
-        let requested_model = super::qualify_input_model_name(session, model_name);
-        let qualify_ms = wasm_elapsed_ms(qualify_started);
+            let check_started = wasm_timing_start();
+            let strict_timing = session
+                .check_model_strict_requested_only_with_timing(&requested_model)
+                .map_err(|message| JsValue::from_str(&message))?;
+            let check_ms = wasm_elapsed_ms(check_started);
+            let total_ms = wasm_elapsed_ms(total_started);
 
-        let check_started = wasm_timing_start();
-        let strict_timing = session
-            .check_model_strict_requested_only_with_timing(&requested_model)
-            .map_err(|message| JsValue::from_str(&message))?;
-        let check_ms = wasm_elapsed_ms(check_started);
-        let total_ms = wasm_elapsed_ms(total_started);
-
-        let timing = compile_phase_timing_stats();
-        Ok(serde_json::json!({
-            "status": "compiled",
-            "model_name": requested_model,
-            "__compile_check_timing": {
-                "load_source_roots_ms": load_ms,
-                "update_document_ms": update_ms,
-                "qualify_model_ms": qualify_ms,
-                "check_model_ms": check_ms,
-                "total_ms": total_ms,
-                "strict": {
-                    "build_resolved_ms": strict_timing.build_resolved_ms,
-                    "reachable_closure_ms": strict_timing.reachable_closure_ms,
-                    "collect_parse_failures_ms": strict_timing.collect_parse_failures_ms,
-                    "collect_resolve_failures_ms": strict_timing.collect_resolve_failures_ms,
-                    "dae_phase_query_ms": strict_timing.dae_phase_query_ms,
-                    "total_ms": strict_timing.total_ms,
+            let timing = compile_phase_timing_stats();
+            Ok(serde_json::json!({
+                "status": "compiled",
+                "model_name": requested_model,
+                "__compile_check_timing": {
+                    "load_source_roots_ms": load_ms,
+                    "update_document_ms": update_ms,
+                    "qualify_model_ms": qualify_ms,
+                    "check_model_ms": check_ms,
+                    "total_ms": total_ms,
+                    "strict": {
+                        "build_resolved_ms": strict_timing.build_resolved_ms,
+                        "reachable_closure_ms": strict_timing.reachable_closure_ms,
+                        "collect_parse_failures_ms": strict_timing.collect_parse_failures_ms,
+                        "collect_resolve_failures_ms": strict_timing.collect_resolve_failures_ms,
+                        "dae_phase_query_ms": strict_timing.dae_phase_query_ms,
+                        "total_ms": strict_timing.total_ms,
+                    }
+                },
+                "__compile_phase_timing": {
+                    "instantiate": {
+                        "calls": timing.instantiate.calls,
+                        "total_nanos": timing.instantiate.total_nanos,
+                        "total_ms": (timing.instantiate.total_nanos as f64) / 1_000_000.0,
+                    },
+                    "typecheck": {
+                        "calls": timing.typecheck.calls,
+                        "total_nanos": timing.typecheck.total_nanos,
+                        "total_ms": (timing.typecheck.total_nanos as f64) / 1_000_000.0,
+                    },
+                    "flatten": {
+                        "calls": timing.flatten.calls,
+                        "total_nanos": timing.flatten.total_nanos,
+                        "total_ms": (timing.flatten.total_nanos as f64) / 1_000_000.0,
+                    },
+                    "todae": {
+                        "calls": timing.todae.calls,
+                        "total_nanos": timing.todae.total_nanos,
+                        "total_ms": (timing.todae.total_nanos as f64) / 1_000_000.0,
+                    },
                 }
-            },
-            "__compile_phase_timing": {
-                "instantiate": {
-                    "calls": timing.instantiate.calls,
-                    "total_nanos": timing.instantiate.total_nanos,
-                    "total_ms": (timing.instantiate.total_nanos as f64) / 1_000_000.0,
-                },
-                "typecheck": {
-                    "calls": timing.typecheck.calls,
-                    "total_nanos": timing.typecheck.total_nanos,
-                    "total_ms": (timing.typecheck.total_nanos as f64) / 1_000_000.0,
-                },
-                "flatten": {
-                    "calls": timing.flatten.calls,
-                    "total_nanos": timing.flatten.total_nanos,
-                    "total_ms": (timing.flatten.total_nanos as f64) / 1_000_000.0,
-                },
-                "todae": {
-                    "calls": timing.todae.calls,
-                    "total_nanos": timing.todae.total_nanos,
-                    "total_ms": (timing.todae.total_nanos as f64) / 1_000_000.0,
-                },
-            }
-        })
-        .to_string())
+            })
+            .to_string())
+        })();
+        session.set_semantic_strictness(previous_strictness.0, previous_strictness.1);
+        result
     })
 }
 

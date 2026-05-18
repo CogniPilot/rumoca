@@ -949,6 +949,28 @@ fn is_known_dae_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> b
     if known_refs.flat_queries.contains(raw) || known_refs.dae_queries.contains(raw) {
         return true;
     }
+    // Accept short leaf-name aliases for enum literals and known references.
+    // Libraries often use imported aliases and unqualified enum names (e.g. `TableDir`).
+    if !raw.contains('.') {
+        if known_refs
+            .enum_literal_queries
+            .iter()
+            .any(|candidate| short_leaf_matches(candidate, raw))
+        {
+            return true;
+        }
+        if known_refs
+            .flat_queries
+            .iter()
+            .any(|candidate| short_leaf_matches(candidate, raw))
+            || known_refs
+                .dae_queries
+                .iter()
+                .any(|candidate| short_leaf_matches(candidate, raw))
+        {
+            return true;
+        }
+    }
 
     path_utils::subscript_fallback_chain(&dae_to_flat_var_name(name))
         .into_iter()
@@ -993,5 +1015,22 @@ mod tests {
         assert!(queries.contains("StateSelect.'prefer'"));
         assert!(queries.contains("Color.'deep red'"));
         assert!(queries.contains("Color.deep red"));
+    }
+
+    #[test]
+    fn known_reference_accepts_short_enum_leaf_name() {
+        let mut ordinals = IndexMap::new();
+        ordinals.insert(
+            "Modelica.Blocks.Types.Extrapolation.TableDir".to_string(),
+            2,
+        );
+
+        let known = KnownReferenceIndex {
+            flat_queries: HashSet::new(),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: build_enum_literal_query_set(&ordinals),
+        };
+
+        assert!(is_known_dae_reference(&VarName::from("TableDir"), &known));
     }
 }

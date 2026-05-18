@@ -183,7 +183,7 @@ impl TypeChecker {
         &self,
         sub: &rumoca_ir_ast::Subscript,
         instance_scope: &str,
-        type_scope_hints: &HashMap<String, String>,
+        type_scope_hints: &HashMap<String, Vec<String>>,
     ) -> Option<i64> {
         rumoca_eval_ast::eval::eval_dimension_with_scope(sub, &self.eval_ctx, instance_scope)
             .or_else(|| {
@@ -197,24 +197,35 @@ impl TypeChecker {
             .map(|v| v as i64)
     }
 
-    /// Build component-name → type-scope hints for dimension lookup fallback.
+    /// Build component-name -> ordered type-scope hints for dimension lookup fallback.
     ///
     /// For component `state1` of type `Medium.ThermodynamicState`, this records:
-    /// `state1` → `Medium`. Nested fields like `state1.X` can then resolve `nX`
-    /// through the type scope when instance-scope lookup is insufficient.
-    pub(crate) fn build_type_scope_hints(overlay: &InstanceOverlay) -> HashMap<String, String> {
+    /// `state1` -> [`Medium.ThermodynamicState`, `Medium`]. Nested fields like
+    /// `state1.X` can then resolve dimension symbols through the type scopes
+    /// when instance-scope lookup is insufficient.
+    pub(crate) fn build_type_scope_hints(
+        overlay: &InstanceOverlay,
+    ) -> HashMap<String, Vec<String>> {
         let mut hints = HashMap::new();
         for (_def_id, instance_data) in &overlay.components {
-            let Some(pos) = find_last_top_level_dot(&instance_data.type_name) else {
+            if instance_data.type_name.is_empty() {
                 continue;
-            };
-            let component_name = instance_data.qualified_name.to_flat_string();
-            let type_scope = &instance_data.type_name[..pos];
-            if !type_scope.is_empty() {
-                hints.insert(component_name, type_scope.to_string());
             }
+            let component_name = instance_data.qualified_name.to_flat_string();
+            let mut scopes = Vec::with_capacity(2);
+            scopes.push(instance_data.type_name.clone());
+            if let Some(parent_scope) = Self::parent_type_scope(&instance_data.type_name) {
+                scopes.push(parent_scope.to_string());
+            }
+            hints.insert(component_name, scopes);
         }
         hints
+    }
+
+    fn parent_type_scope(type_name: &str) -> Option<&str> {
+        let pos = find_last_top_level_dot(type_name)?;
+        let parent_scope = &type_name[..pos];
+        (!parent_scope.is_empty()).then_some(parent_scope)
     }
 
     /// Fallback dimension evaluation using enclosing component type scopes.
@@ -224,7 +235,7 @@ impl TypeChecker {
     pub(crate) fn eval_dimension_with_type_scope_fallback(
         sub: &rumoca_ir_ast::Subscript,
         instance_scope: &str,
-        type_scope_hints: &HashMap<String, String>,
+        type_scope_hints: &HashMap<String, Vec<String>>,
         ctx: &rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) -> Option<usize> {
         if instance_scope.is_empty() {
@@ -232,11 +243,10 @@ impl TypeChecker {
         }
         let mut current = instance_scope;
         loop {
-            if let Some(type_scope) = type_scope_hints.get(current)
-                && let Some(v) =
-                    rumoca_eval_ast::eval::eval_dimension_with_scope(sub, ctx, type_scope)
+            if let Some(type_scopes) = type_scope_hints.get(current)
+                && let Some(value) = Self::eval_dimension_from_type_scopes(sub, ctx, type_scopes)
             {
-                return Some(v);
+                return Some(value);
             }
             if let Some(parent_scope) = parent_scope(current) {
                 current = parent_scope;
@@ -245,6 +255,16 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    fn eval_dimension_from_type_scopes(
+        sub: &rumoca_ir_ast::Subscript,
+        ctx: &rumoca_eval_ast::eval::TypeCheckEvalContext,
+        type_scopes: &[String],
+    ) -> Option<usize> {
+        type_scopes
+            .iter()
+            .find_map(|scope| rumoca_eval_ast::eval::eval_dimension_with_scope(sub, ctx, scope))
     }
 
     /// Re-evaluate integer parameters that may depend on size() of arrays.
@@ -476,8 +496,7 @@ impl TypeChecker {
             }
 
             let var_name = instance_data.qualified_name.to_flat_string();
-
-            let reason = match (has_colon_dim, instance_data.binding.is_none()) {
+            let base_reason = match (has_colon_dim, instance_data.binding.is_none()) {
                 (true, true) => {
                     "colon dimension without binding - provide an array literal or use explicit size"
                         .to_string()
@@ -490,8 +509,9 @@ impl TypeChecker {
                     instance_data.dims_expr
                 ),
             };
+            let reason = base_reason;
 
-            // Emit as error per MLS §10.1
+            // Emit as error per MLS §10.1.
             let span = self.source_map.location_to_span(
                 &instance_data.source_location.file_name,
                 instance_data.source_location.start as usize,

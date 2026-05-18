@@ -415,10 +415,28 @@ fn validate_class_redeclaration(
     }
 
     if let Some(new_type_name) = new_type {
+        // MLS §7.3.2 default constraint for class/package redeclare:
+        // if constrainedby is omitted, use the original declared type,
+        // not the nested alias class name itself.
+        let default_constraint_from_decl = class.extends.first().map(|extend| {
+            let base_raw = extend.base_name.to_string();
+            extend
+                .base_name
+                .def_id
+                .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+                .or_else(|| {
+                    tree.name_map
+                        .get(&base_raw)
+                        .and_then(|def_id| tree.def_map.get(def_id).cloned())
+                })
+                .unwrap_or(base_raw)
+        });
+
         let constraint_type_raw = class
             .constrainedby
             .as_ref()
             .map(ToString::to_string)
+            .or(default_constraint_from_decl)
             .unwrap_or_else(|| {
                 class
                     .def_id
@@ -433,8 +451,15 @@ fn validate_class_redeclaration(
             .and_then(|def_id| tree.def_map.get(&def_id).cloned())
             .or_else(|| {
                 class
-                    .def_id
+                    .extends
+                    .first()
+                    .and_then(|extend| extend.base_name.def_id)
                     .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+            })
+            .or_else(|| {
+                tree.name_map
+                    .get(&constraint_type_raw)
+                    .and_then(|def_id| tree.def_map.get(def_id).cloned())
             })
             .unwrap_or(constraint_type_raw.clone());
 

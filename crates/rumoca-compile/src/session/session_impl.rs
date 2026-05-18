@@ -326,6 +326,8 @@ impl Session {
         let resolve_options = ResolveOptions {
             unresolved_component_refs_are_errors: unresolved_are_errors,
             unresolved_function_calls_are_errors: unresolved_are_errors,
+            evaluate_scope_is_error: self.evaluate_scope_is_error,
+            when_single_assign_is_error: self.when_single_assign_is_error,
         };
         let (resolved, diagnostics) = if mode == ResolveBuildMode::StrictCompileRecovery {
             resolve_with_options_collect(parsed, resolve_options)

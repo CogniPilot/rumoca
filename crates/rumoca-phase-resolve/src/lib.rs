@@ -35,8 +35,8 @@ pub use validation::{UnresolvedKind, UnresolvedSymbol, ValidationResult, validat
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, DefId, Diagnostics, PrimaryLabel, ScopeId,
-    SourceMap, Span, maybe_elapsed_ms, maybe_start_timer,
+    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, DefId, Diagnostic, DiagnosticSeverity,
+    Diagnostics, PrimaryLabel, ScopeId, SourceMap, Span, maybe_elapsed_ms, maybe_start_timer,
 };
 use rumoca_ir_ast as ast;
 #[cfg(not(target_arch = "wasm32"))]
@@ -58,6 +58,10 @@ pub struct ResolveOptions {
     pub unresolved_component_refs_are_errors: bool,
     /// Whether unresolved function calls are treated as hard errors.
     pub unresolved_function_calls_are_errors: bool,
+    /// Whether ER070 (annotation Evaluate scope) is treated as a hard error.
+    pub evaluate_scope_is_error: bool,
+    /// Whether ER053 (single-assignment in when-equation) is treated as a hard error.
+    pub when_single_assign_is_error: bool,
 }
 
 impl Default for ResolveOptions {
@@ -65,8 +69,21 @@ impl Default for ResolveOptions {
         Self {
             unresolved_component_refs_are_errors: true,
             unresolved_function_calls_are_errors: true,
+            evaluate_scope_is_error: true,
+            when_single_assign_is_error: true,
         }
     }
+}
+
+fn apply_semantic_diagnostic_policy(mut diag: Diagnostic, options: ResolveOptions) -> Diagnostic {
+    let code = diag.code.as_deref().unwrap_or_default();
+    if code == "ER070" && !options.evaluate_scope_is_error {
+        diag.severity = DiagnosticSeverity::Warning;
+    }
+    if code == "ER053" && !options.when_single_assign_is_error {
+        diag.severity = DiagnosticSeverity::Warning;
+    }
+    diag
 }
 
 /// Convert a Location to a Span for error reporting using the source map.
@@ -509,7 +526,9 @@ pub fn resolve_with_options_collect(
     // Run semantic checks on the AST.
     let semantic_checks_start = maybe_start_timer();
     for diag in semantic_checks::check_all_semantics(&tree.definitions, &tree.source_map) {
-        resolver.diagnostics.emit(diag);
+        resolver
+            .diagnostics
+            .emit(apply_semantic_diagnostic_policy(diag, options));
     }
     let semantic_checks_ms = maybe_elapsed_ms(semantic_checks_start);
 
@@ -565,7 +584,10 @@ pub fn resolve_with_stats(parsed: ParsedTree) -> ResolveWithStatsResult {
 
     // Run semantic checks.
     for diag in semantic_checks::check_all_semantics(&tree.definitions, &tree.source_map) {
-        resolver.diagnostics.emit(diag);
+        resolver.diagnostics.emit(apply_semantic_diagnostic_policy(
+            diag,
+            ResolveOptions::default(),
+        ));
     }
 
     // Validate unresolved symbols gathered by post-resolution visitor (MLS §5.3)
@@ -831,6 +853,37 @@ end UsesReplaceableMedium;
     }
 
     #[test]
+    fn test_short_package_alias_member_lookup_resolves_inherited_member() {
+        let source = r#"
+package PhaseSystems
+  package ThreePhase_dq0
+    function j
+      input Real x;
+      output Real y;
+    algorithm
+      y := x;
+    end j;
+  end ThreePhase_dq0;
+end PhaseSystems;
+
+package AC3ph
+  package Ports
+    model PortBase
+      package PS = PhaseSystems.ThreePhase_dq0;
+      function j = PS.j;
+      Real y;
+    equation
+      y = j(1.0);
+    end PortBase;
+  end Ports;
+end AC3ph;
+"#;
+
+        resolve_test_source(source)
+            .expect("short package alias member access like `PS.j` should resolve");
+    }
+
+    #[test]
     fn test_cardinality_allows_indexed_connector_array_element() {
         let source = r#"
 connector Port
@@ -868,6 +921,92 @@ end UsesArrayCardinality;
             diags.iter().any(|d| d.code.as_deref() == Some("ER057")
                 && d.message.contains("connector array 'ports'")),
             "expected cardinality connector-array diagnostic, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_loop_index_named_like_class_does_not_trigger_class_used_as_value() {
+        let source = r#"
+package P
+  model j
+  end j;
+end P;
+
+model UsesLoopIndexJ
+  Integer y;
+equation
+  for j in 1:2 loop
+    y = j;
+  end for;
+end UsesLoopIndexJ;
+"#;
+        resolve_test_source(source)
+            .expect("loop index `j` must resolve as a value, not as global class `j`");
+    }
+
+    #[test]
+    fn test_evaluate_on_non_parameter_component_is_error_by_default() {
+        let source = r#"
+model EvaluateScopeWarning
+  Real x annotation(Evaluate=true);
+equation
+  x = 1;
+end EvaluateScopeWarning;
+"#;
+        let diagnostics = resolve_test_source(source)
+            .expect_err("Evaluate annotation scope should fail by default in strict mode");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diag| diag.code.as_deref() == Some("ER070")),
+            "expected ER070 for invalid Evaluate annotation, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_when_single_assign_allows_distinct_indexed_targets() {
+        let source = r#"
+model IndexedWhenTargets
+  Boolean open1;
+  Boolean open2;
+  Real t0[2];
+equation
+  when edge(open1) then
+    t0[1] = time;
+  end when;
+  when edge(open2) then
+    t0[2] = time;
+  end when;
+end IndexedWhenTargets;
+"#;
+        resolve_test_source(source)
+            .expect("distinct indexed targets in separate when-equations should be allowed");
+    }
+
+    #[test]
+    fn test_when_single_assign_rejects_same_target_across_when_equations() {
+        let source = r#"
+model DuplicateWhenTarget
+  Boolean open1;
+  Boolean open2;
+  Real t0;
+equation
+  when edge(open1) then
+    t0 = time;
+  end when;
+  when edge(open2) then
+    t0 = time;
+  end when;
+end DuplicateWhenTarget;
+"#;
+        let result = resolve_test_source(source);
+        assert!(result.is_err(), "duplicate when target should fail");
+        let diagnostics = result.expect_err("expected diagnostics");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diag| diag.code.as_deref() == Some("ER053")),
+            "expected ER053 for duplicate when target, got: {diagnostics:?}"
         );
     }
 
@@ -1189,6 +1328,7 @@ end Test;
         let options = ResolveOptions {
             unresolved_component_refs_are_errors: false,
             unresolved_function_calls_are_errors: false,
+            ..ResolveOptions::default()
         };
         let result = resolve_with_options(parsed, options);
         assert!(

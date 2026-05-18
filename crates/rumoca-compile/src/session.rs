@@ -426,10 +426,24 @@ fn init_rayon_pool() {
 }
 
 /// Configuration for a compilation session.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SessionConfig {
     /// Enable parallel compilation.
     pub parallel: bool,
+    /// Strictness toggle for ER070 Evaluate-scope diagnostics.
+    pub evaluate_scope_is_error: bool,
+    /// Strictness toggle for ER053 when single-assignment diagnostics.
+    pub when_single_assign_is_error: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            parallel: false,
+            evaluate_scope_is_error: true,
+            when_single_assign_is_error: true,
+        }
+    }
 }
 
 /// Durability/ownership class for a source root tracked by the session.
@@ -1916,6 +1930,10 @@ pub struct Session {
     lightweight_snapshot_cache: Arc<Mutex<SharedSessionSnapshot>>,
     /// Shared medium-weight snapshot for global workspace symbol reads.
     workspace_symbol_snapshot_cache: Arc<Mutex<SharedSessionSnapshot>>,
+    /// Session-wide semantic strictness for ER070.
+    evaluate_scope_is_error: bool,
+    /// Session-wide semantic strictness for ER053.
+    when_single_assign_is_error: bool,
 }
 
 /// Immutable query snapshot cloned from one host session revision.

@@ -249,6 +249,7 @@ impl Session {
 
         resolve_diagnostics
             .iter()
+            .filter(|diag| diag.is_error())
             .filter(|diag| resolve_diagnostic_in_target_files(tree, &target_source_files, diag))
             .cloned()
             .collect()

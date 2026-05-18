@@ -400,7 +400,10 @@ fn load_msl_session(paths: &MslPaths) -> Result<Session> {
             failures.len()
         );
     }
-    let mut session = Session::new(SessionConfig { parallel: true });
+    let mut session = Session::new(SessionConfig {
+        parallel: true,
+        ..SessionConfig::default()
+    });
     session.add_parsed_batch(successes);
     Ok(session)
 }

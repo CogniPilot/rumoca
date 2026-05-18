@@ -67,6 +67,14 @@ fn lookup_with_scope<'a, T: PartialEq>(
         return Some(val);
     }
 
+    // For dotted names (e.g. PhaseSystem.n), first prefer the nearest scoped
+    // suffix match before falling back to global suffix matching.
+    if has_top_level_dot(name)
+        && let Some(val) = lookup_dotted_by_nearest_scope(name, scope, map, suffix_index)
+    {
+        return Some(val);
+    }
+
     // Suffix fallback for package constants (MLS §7.3).
     // For bare names like "nX", look for any entry ending in ".nX".
     // For dotted names like "Medium.nX", prefer full dotted suffix
@@ -82,6 +90,86 @@ fn lookup_with_scope<'a, T: PartialEq>(
     }
 
     lookup_by_suffix(name, map, suffix_index)
+}
+
+fn lookup_dotted_by_nearest_scope<'a, T>(
+    name: &str,
+    scope: &str,
+    map: &'a FxHashMap<String, T>,
+    suffix_index: Option<&SuffixIndex>,
+) -> Option<&'a T> {
+    if scope.is_empty() {
+        return None;
+    }
+
+    let mut best_key: Option<String> = None;
+    let mut best_prefix_len = 0usize;
+    let mut ambiguous = false;
+
+    let mut consider_key = |key: &str| {
+        if !has_top_level_suffix_match(key, name) || !map.contains_key(key) {
+            return;
+        }
+        let candidate_scope = key
+            .strip_suffix(name)
+            .and_then(|prefix| prefix.strip_suffix('.'))
+            .unwrap_or_default();
+        let prefix_len = common_scope_prefix_len(scope, candidate_scope);
+        if prefix_len == 0 {
+            return;
+        }
+        if prefix_len > best_prefix_len {
+            best_prefix_len = prefix_len;
+            best_key = Some(key.to_string());
+            ambiguous = false;
+            return;
+        }
+        if prefix_len == best_prefix_len && best_key.as_deref() != Some(key) {
+            ambiguous = true;
+        }
+    };
+
+    if let Some(index) = suffix_index {
+        if let Some(candidates) = index.keys_by_dotted_suffix.get(name) {
+            for idx in candidates {
+                consider_key(index.key(*idx));
+            }
+        }
+    } else {
+        for key in map.keys() {
+            consider_key(key.as_str());
+        }
+    }
+
+    if ambiguous {
+        return None;
+    }
+    best_key.and_then(|k| map.get(k.as_str()))
+}
+
+fn common_scope_prefix_len(a: &str, b: &str) -> usize {
+    let mut len = 0usize;
+    let mut last_boundary = 0usize;
+    let bytes_a = a.as_bytes();
+    let bytes_b = b.as_bytes();
+    while len < bytes_a.len() && len < bytes_b.len() && bytes_a[len] == bytes_b[len] {
+        if bytes_a[len] == b'.' {
+            last_boundary = len + 1;
+        }
+        len += 1;
+    }
+
+    if len == bytes_a.len() && len == bytes_b.len() {
+        return len;
+    }
+    if len == bytes_a.len() && bytes_b.get(len) == Some(&b'.') {
+        return len;
+    }
+    if len == bytes_b.len() && bytes_a.get(len) == Some(&b'.') {
+        return len;
+    }
+
+    last_boundary
 }
 
 /// Structural lookup used by shape inference and strict dimension resolution.
@@ -1383,6 +1471,16 @@ pub fn eval_integer_with_scope(
             // Try integer lookup first, then enum ordinal lookup
             lookup_with_scope(&ref_path, scope, &ctx.integers, ctx.suffix_index.as_ref())
                 .copied()
+                .or_else(|| {
+                    // Compatibility bridge: some models expose phase-system
+                    // structural constants through local alias `PS.*` while
+                    // dimensions reference `PhaseSystem.*`.
+                    ref_path.strip_prefix("PhaseSystem.").and_then(|tail| {
+                        let alt = format!("PS.{tail}");
+                        lookup_with_scope(&alt, scope, &ctx.integers, ctx.suffix_index.as_ref())
+                            .copied()
+                    })
+                })
                 .or_else(|| {
                     lookup_with_scope(
                         &ref_path,

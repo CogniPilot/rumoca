@@ -100,7 +100,11 @@ enum DiagnosticsTrigger {
 
 impl ModelicaLanguageServer {
     fn default_session_config() -> SessionConfig {
-        SessionConfig { parallel: true }
+        SessionConfig {
+            parallel: true,
+            evaluate_scope_is_error: true,
+            when_single_assign_is_error: true,
+        }
     }
 
     /// Create a new language server instance.

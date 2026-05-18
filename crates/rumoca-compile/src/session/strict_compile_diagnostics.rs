@@ -115,6 +115,7 @@ pub(super) fn collect_resolve_failures_for_files(
     }
     diagnostics
         .iter()
+        .filter(|diag| diag.is_error())
         .filter(|diag| {
             diag.labels.iter().any(|label| {
                 source_map
