@@ -24,8 +24,15 @@ pub(super) fn check_annotation_restrictions(class: &ClassDef, diags: &mut Vec<Di
         );
     }
 
-    for comp in class.components.values() {
-        check_component_evaluate_annotations(comp, diags);
+    // MLS §18.6 Evaluate annotation scope applies to component declarations
+    // in classes; function-local variables are not parameterized simulation
+    // components and may carry Evaluate hints in MSL utility functions.
+    let function_like = class.class_type == ClassType::Function
+        || class.class_type_token.text.as_ref() == "function";
+    if !function_like {
+        for comp in class.components.values() {
+            check_component_evaluate_annotations(comp, diags);
+        }
     }
 }
 

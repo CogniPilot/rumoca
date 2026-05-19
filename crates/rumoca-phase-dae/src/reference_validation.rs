@@ -17,6 +17,7 @@ struct KnownReferenceIndex {
     flat_queries: HashSet<String>,
     dae_queries: HashSet<String>,
     enum_literal_queries: HashSet<String>,
+    scoped_index_names: HashSet<String>,
 }
 
 impl KnownReferenceIndex {
@@ -39,8 +40,206 @@ impl KnownReferenceIndex {
                     .map(VarName::as_str),
             ),
             enum_literal_queries: build_enum_literal_query_set(&dae.enum_literal_ordinals),
+            scoped_index_names: collect_scoped_index_names(dae),
         }
     }
+}
+
+fn collect_scoped_index_names(dae: &Dae) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for equation in dae
+        .f_x
+        .iter()
+        .chain(dae.f_z.iter())
+        .chain(dae.f_m.iter())
+        .chain(dae.f_c.iter())
+        .chain(dae.initial_equations.iter())
+    {
+        collect_indices_from_expression(&equation.rhs, &mut names);
+    }
+    for expr in dae
+        .relation
+        .iter()
+        .chain(dae.synthetic_root_conditions.iter())
+        .chain(dae.triggered_clock_conditions.iter())
+    {
+        collect_indices_from_expression(expr, &mut names);
+    }
+    for function in dae.functions.values() {
+        for stmt in &function.body {
+            collect_indices_from_statement(stmt, &mut names);
+        }
+    }
+    names
+}
+
+fn collect_indices_from_statement(stmt: &Statement, names: &mut HashSet<String>) {
+    match stmt {
+        Statement::Assignment { comp, value } => {
+            collect_indices_from_component_reference(comp, names);
+            collect_indices_from_expression(value, names);
+        }
+        Statement::For { indices, equations } => {
+            for index in indices {
+                names.insert(index.ident.to_string());
+                collect_indices_from_expression(&index.range, names);
+            }
+            for nested in equations {
+                collect_indices_from_statement(nested, names);
+            }
+        }
+        Statement::While(block) => {
+            collect_indices_from_expression(&block.cond, names);
+            for nested in &block.stmts {
+                collect_indices_from_statement(nested, names);
+            }
+        }
+        Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            for block in cond_blocks {
+                collect_indices_from_expression(&block.cond, names);
+                for nested in &block.stmts {
+                    collect_indices_from_statement(nested, names);
+                }
+            }
+            if let Some(else_block) = else_block {
+                for nested in else_block {
+                    collect_indices_from_statement(nested, names);
+                }
+            }
+        }
+        Statement::When(blocks) => {
+            for block in blocks {
+                collect_indices_from_expression(&block.cond, names);
+                for nested in &block.stmts {
+                    collect_indices_from_statement(nested, names);
+                }
+            }
+        }
+        Statement::FunctionCall { comp, args, outputs } => {
+            collect_indices_from_component_reference(comp, names);
+            for arg in args {
+                collect_indices_from_expression(arg, names);
+            }
+            for output in outputs {
+                collect_indices_from_expression(output, names);
+            }
+        }
+        Statement::Reinit { variable, value } => {
+            collect_indices_from_component_reference(variable, names);
+            collect_indices_from_expression(value, names);
+        }
+        Statement::Assert {
+            condition,
+            message,
+            level,
+            ..
+        } => {
+            collect_indices_from_expression(condition, names);
+            collect_indices_from_expression(message, names);
+            if let Some(level) = level {
+                collect_indices_from_expression(level, names);
+            }
+        }
+        Statement::Return | Statement::Break | Statement::Empty => {}
+    }
+}
+
+fn collect_indices_from_expression(expr: &Expression, names: &mut HashSet<String>) {
+    match expr {
+        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => {}
+        Expression::Binary { lhs, rhs, .. } => {
+            collect_indices_from_expression(lhs, names);
+            collect_indices_from_expression(rhs, names);
+        }
+        Expression::Unary { rhs, .. } => collect_indices_from_expression(rhs, names),
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_indices_from_expression(arg, names);
+            }
+        }
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, value) in branches {
+                collect_indices_from_expression(cond, names);
+                collect_indices_from_expression(value, names);
+            }
+            collect_indices_from_expression(else_branch, names);
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+            for element in elements {
+                collect_indices_from_expression(element, names);
+            }
+        }
+        Expression::Range { start, step, end } => {
+            collect_indices_from_expression(start, names);
+            if let Some(step) = step {
+                collect_indices_from_expression(step, names);
+            }
+            collect_indices_from_expression(end, names);
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            for index in indices {
+                names.insert(index.name.to_string());
+                collect_indices_from_expression(&index.range, names);
+            }
+            collect_indices_from_expression(expr, names);
+            if let Some(filter) = filter {
+                collect_indices_from_expression(filter, names);
+            }
+        }
+        Expression::Index { base, subscripts } => {
+            collect_indices_from_expression(base, names);
+            for subscript in subscripts {
+                if let Subscript::Expr(expr) = subscript {
+                    collect_indices_from_expression(expr, names);
+                }
+            }
+        }
+        Expression::FieldAccess { base, .. } => collect_indices_from_expression(base, names),
+    }
+}
+
+fn collect_indices_from_component_reference(
+    comp: &ComponentReference,
+    names: &mut HashSet<String>,
+) {
+    for part in &comp.parts {
+        for subscript in &part.subs {
+            if let Subscript::Expr(expr) = subscript {
+                collect_indices_from_expression(expr, names);
+            }
+        }
+    }
+}
+
+fn reference_query_matches(known_refs: &KnownReferenceIndex, candidate: &str) -> bool {
+    known_refs.flat_queries.contains(candidate)
+        || known_refs.dae_queries.contains(candidate)
+        || enum_literal_query_matches(known_refs, candidate)
+}
+
+fn enum_literal_query_matches(known_refs: &KnownReferenceIndex, candidate: &str) -> bool {
+    if known_refs.enum_literal_queries.contains(candidate) {
+        return true;
+    }
+    if !candidate.contains('.') {
+        return false;
+    }
+
+    let suffix = format!(".{candidate}");
+    known_refs
+        .enum_literal_queries
+        .iter()
+        .any(|known| known.ends_with(&suffix))
 }
 
 fn build_flat_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> HashSet<String> {
@@ -140,7 +339,7 @@ fn validate_constructor_field_projection(
         }
 
         let projected_name = format!("{}.{}", name.as_str(), field);
-        let Some(constructor) = functions.get(name) else {
+        let Some(constructor) = resolve_constructor_function(name, functions) else {
             if std::env::var("RUMOCA_DEBUG_TODAE").is_ok() {
                 let mut candidates: Vec<String> =
                     functions.keys().map(|f| f.as_str().to_string()).collect();
@@ -200,6 +399,31 @@ fn validate_constructor_field_projection(
     }
 
     validate_expression_constructor_projections(base, functions, span)
+}
+
+fn resolve_constructor_function<'a>(
+    name: &VarName,
+    functions: &'a IndexMap<VarName, Function>,
+) -> Option<&'a Function> {
+    if let Some(function) = functions.get(name) {
+        return Some(function);
+    }
+
+    // MLS §5.3/§7.3: short or partially qualified type names may be visible
+    // in local scope; if ToDae sees such a name here, recover by unique suffix.
+    let mut matches = functions
+        .iter()
+        .filter(|(candidate, _)| {
+            let text = candidate.as_str();
+            text == name.as_str() || text.ends_with(&format!(".{}", name.as_str()))
+        })
+        .map(|(_, function)| function);
+
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first)
 }
 
 fn validate_expression_constructor_projections(
@@ -834,14 +1058,38 @@ fn validate_var_ref_expression_references(
     }
 
     if !is_known_dae_reference(name, known_refs) {
+        if is_scoped_index_reference(name, known_refs) {
+            return validate_subscript_expr_references(
+                subscripts,
+                dae,
+                span,
+                function_scope,
+                known_refs,
+            );
+        }
         return Err(ToDaeError::unresolved_reference(name.as_str(), span));
     }
 
     validate_subscript_expr_references(subscripts, dae, span, function_scope, known_refs)
 }
 
+fn is_scoped_index_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> bool {
+    let Some(leaf) = name.as_str().rsplit('.').next() else {
+        return false;
+    };
+    name.as_str().contains('.') && known_refs.scoped_index_names.contains(leaf)
+}
+
 fn function_scope_contains_reference(name: &VarName, scope: &HashSet<&str>) -> bool {
     if scope.contains(name.as_str()) {
+        return true;
+    }
+    if name
+        .as_str()
+        .rsplit('.')
+        .next()
+        .is_some_and(|leaf| scope.contains(leaf))
+    {
         return true;
     }
     path_utils::get_top_level_prefix(name.as_str())
@@ -943,7 +1191,7 @@ fn is_known_dae_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> b
         return true;
     }
 
-    if known_refs.enum_literal_queries.contains(raw) {
+    if enum_literal_query_matches(known_refs, raw) {
         return true;
     }
     if known_refs.flat_queries.contains(raw) || known_refs.dae_queries.contains(raw) {
@@ -972,12 +1220,113 @@ fn is_known_dae_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> b
         }
     }
 
-    path_utils::subscript_fallback_chain(&dae_to_flat_var_name(name))
+    let known_via_subscript = path_utils::subscript_fallback_chain(&dae_to_flat_var_name(name))
         .into_iter()
         .any(|candidate| {
             known_refs.flat_queries.contains(candidate.as_str())
                 || known_refs.dae_queries.contains(candidate.as_str())
-        })
+        });
+    let known_via_outer_scope =
+        resolves_via_outer_scope_component_modifier_fallback(raw, known_refs);
+    let known_via_leading_scope =
+        resolves_via_leading_component_scope_fallback(raw, known_refs);
+    let known_via_member_value_scope =
+        resolves_via_component_member_value_fallback(raw, known_refs);
+    let known_via_nested_member_value_scope =
+        resolves_via_component_nested_member_value_fallback(raw, known_refs);
+
+    known_via_subscript
+        || known_via_outer_scope
+        || known_via_leading_scope
+        || known_via_member_value_scope
+        || known_via_nested_member_value_scope
+}
+
+fn resolves_via_outer_scope_component_modifier_fallback(
+    raw: &str,
+    known_refs: &KnownReferenceIndex,
+) -> bool {
+    let segments = path_utils::split_path_with_indices(raw);
+    if segments.len() < 3 {
+        return false;
+    }
+
+    // MLS §7.2/§7.3: names used in component modifiers are looked up in the
+    // enclosing lexical scope. If an earlier phase over-qualifies that name
+    // with the modified component segment (e.g. `a.b.k` vs `a.k`), allow
+    // fallback to the enclosing scope spelling.
+    let mut collapsed = Vec::with_capacity(segments.len() - 1);
+    collapsed.extend(segments.iter().take(segments.len() - 2).copied());
+    collapsed.push(segments[segments.len() - 1]);
+    let candidate = collapsed.join(".");
+
+    known_refs.flat_queries.contains(candidate.as_str())
+        || known_refs.dae_queries.contains(candidate.as_str())
+}
+
+fn resolves_via_leading_component_scope_fallback(raw: &str, known_refs: &KnownReferenceIndex) -> bool {
+    let segments = path_utils::split_path_with_indices(raw);
+    if segments.len() < 2 {
+        return false;
+    }
+
+    // Some expressions are over-qualified with a leading instance segment
+    // (`inst.Type.EnumLiteral`). Try dropping that leading segment only.
+    let candidate = segments[1..].join(".");
+    reference_query_matches(known_refs, &candidate)
+}
+
+fn resolves_via_component_member_value_fallback(raw: &str, known_refs: &KnownReferenceIndex) -> bool {
+    let segments = path_utils::split_path_with_indices(raw);
+    if segments.len() != 3 {
+        return false;
+    }
+
+    // Guarded fallback for over-qualified modifier values like
+    // `component.member.valueSymbol`, where `valueSymbol` belongs to the
+    // enclosing scope (MLS §7.2/§7.3 name lookup in modifications).
+    if !segments[2].starts_with(segments[1]) {
+        return false;
+    }
+    if reference_query_matches(known_refs, segments[2]) {
+        return true;
+    }
+
+    let suffix = format!(".{}", segments[2]);
+    known_refs
+        .flat_queries
+        .iter()
+        .chain(known_refs.dae_queries.iter())
+        .any(|known| known.ends_with(&suffix))
+}
+
+fn resolves_via_component_nested_member_value_fallback(
+    raw: &str,
+    known_refs: &KnownReferenceIndex,
+) -> bool {
+    let segments = path_utils::split_path_with_indices(raw);
+    if segments.len() < 4 {
+        return false;
+    }
+
+    // Guarded fallback for nested over-qualified modifier values like
+    // `inst.scope.arr[i].scope`, where the trailing scope symbol refers to
+    // an enclosing declaration rather than the indexed member chain.
+    let scope_name = segments[1];
+    let trailing = segments[segments.len() - 1];
+    if trailing != scope_name && !trailing.starts_with(scope_name) {
+        return false;
+    }
+
+    if reference_query_matches(known_refs, trailing) {
+        return true;
+    }
+    let suffix = format!(".{trailing}");
+    known_refs
+        .flat_queries
+        .iter()
+        .chain(known_refs.dae_queries.iter())
+        .any(|known| known.ends_with(&suffix))
 }
 
 #[cfg(test)]
@@ -1029,8 +1378,92 @@ mod tests {
             flat_queries: HashSet::new(),
             dae_queries: HashSet::new(),
             enum_literal_queries: build_enum_literal_query_set(&ordinals),
+            scoped_index_names: HashSet::new(),
         };
 
         assert!(is_known_dae_reference(&VarName::from("TableDir"), &known));
+    }
+
+    #[test]
+    fn known_reference_accepts_outer_scope_modifier_fallback() {
+        let known_refs = KnownReferenceIndex {
+            flat_queries: HashSet::from([String::from("rectifier.RonThyristor")]),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: HashSet::new(),
+            scoped_index_names: HashSet::new(),
+        };
+
+        assert!(is_known_dae_reference(
+            &VarName::new("rectifier.thyristor_p.RonThyristor"),
+            &known_refs
+        ));
+    }
+
+    #[test]
+    fn known_reference_accepts_leading_component_scope_fallback() {
+        let known_refs = KnownReferenceIndex {
+            flat_queries: HashSet::new(),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: HashSet::from([String::from(
+                "Modelica.Electrical.PowerConverters.Types.PWMType.SVPWM",
+            )]),
+            scoped_index_names: HashSet::new(),
+        };
+
+        assert!(is_known_dae_reference(
+            &VarName::new("pwm.PowerConverters.Types.PWMType.SVPWM"),
+            &known_refs
+        ));
+    }
+
+    #[test]
+    fn resolve_constructor_function_accepts_unique_suffix_match() {
+        let name = VarName::new("Machines.Losses.BrushParameters");
+        let full = VarName::new("Modelica.Electrical.Machines.Losses.BrushParameters");
+        let mut functions = IndexMap::new();
+        functions.insert(full.clone(), Function::new(full.as_str(), Span::DUMMY));
+
+        let resolved = resolve_constructor_function(&name, &functions);
+        assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn known_reference_accepts_component_member_value_fallback() {
+        let known_refs = KnownReferenceIndex {
+            flat_queries: HashSet::from([String::from("cellData2")]),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: HashSet::new(),
+            scoped_index_names: HashSet::new(),
+        };
+
+        assert!(is_known_dae_reference(
+            &VarName::new("battery2.cellData.cellData2"),
+            &known_refs
+        ));
+    }
+
+    #[test]
+    fn known_reference_accepts_component_nested_member_value_fallback() {
+        let known_refs = KnownReferenceIndex {
+            flat_queries: HashSet::from([String::from("stackData")]),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: HashSet::new(),
+            scoped_index_names: HashSet::new(),
+        };
+
+        assert!(is_known_dae_reference(
+            &VarName::new("stack.stackData.cellData[1,1].stackData"),
+            &known_refs
+        ));
+    }
+
+    #[test]
+    fn function_scope_contains_reference_accepts_overqualified_leaf() {
+        let mut scope = HashSet::new();
+        scope.insert("k");
+        assert!(function_scope_contains_reference(
+            &VarName::new("symmetricalComponents_1.k"),
+            &scope
+        ));
     }
 }

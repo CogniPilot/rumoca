@@ -1154,6 +1154,9 @@ fn check_block_connector_causality_restrictions(
         let type_name = comp.type_name.to_string();
         if let Some(tc) = find_class_by_name(def, &type_name)
             && tc.class_type == ClassType::Connector
+                // Expandable signal buses are intentionally used without
+                // component-level input/output causality on block members.
+                && !is_bus_like_connector(tc, &type_name)
                 && !comp.is_protected
                 && matches!(comp.causality, Causality::Empty)
                 // Also check if the type alias itself provides causality
@@ -1178,6 +1181,20 @@ fn check_block_connector_causality_restrictions(
             ));
         }
     }
+}
+
+fn is_bus_like_connector(connector: &ClassDef, type_name: &str) -> bool {
+    if connector.expandable {
+        return true;
+    }
+    let class_name = connector.name.text.as_ref();
+    if class_name.ends_with("Bus") || class_name.ends_with("BusArrays") {
+        return true;
+    }
+    type_name.ends_with(".Bus")
+        || type_name.ends_with("Bus")
+        || type_name.ends_with(".BusArrays")
+        || type_name.ends_with("BusArrays")
 }
 
 fn connector_members_define_causality(connector: &ClassDef) -> bool {
