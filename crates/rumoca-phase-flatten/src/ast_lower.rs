@@ -416,17 +416,7 @@ fn convert_function_call_with_def_map(
         }
     }
 
-    let textual_name = comp
-        .parts
-        .iter()
-        .map(|p| p.ident.text.clone())
-        .collect::<Vec<_>>()
-        .join(".");
-
-    let func_name = comp
-        .def_id
-        .and_then(|def_id| def_map.and_then(|map| map.get(&def_id).cloned()))
-        .unwrap_or(textual_name);
+    let func_name = resolve_qualified_name_with_suffix(comp, def_map);
 
     flat::Expression::FunctionCall {
         name: flat::VarName::new(func_name),
@@ -553,16 +543,7 @@ fn convert_class_modification_with_def_map(
     modifications: &[ast::Expression],
     def_map: Option<&IndexMap<DefId, String>>,
 ) -> flat::Expression {
-    let textual_name = target
-        .parts
-        .iter()
-        .map(|p| p.ident.text.clone())
-        .collect::<Vec<_>>()
-        .join(".");
-    let constructor_name = target
-        .def_id
-        .and_then(|def_id| def_map.and_then(|map| map.get(&def_id).cloned()))
-        .unwrap_or(textual_name);
+    let constructor_name = resolve_qualified_name_with_suffix(target, def_map);
     flat::Expression::FunctionCall {
         name: flat::VarName::new(constructor_name),
         args: modifications
@@ -571,6 +552,41 @@ fn convert_class_modification_with_def_map(
             .collect(),
         is_constructor: true,
     }
+}
+
+fn resolve_qualified_name_with_suffix(
+    comp: &ast::ComponentReference,
+    def_map: Option<&IndexMap<DefId, String>>,
+) -> String {
+    let textual_name = comp
+        .parts
+        .iter()
+        .map(|p| p.ident.text.clone())
+        .collect::<Vec<_>>()
+        .join(".");
+
+    let Some(def_id) = comp.def_id else {
+        return textual_name;
+    };
+    let Some(base_name) = def_map.and_then(|map| map.get(&def_id)) else {
+        return textual_name;
+    };
+
+    if comp.parts.len() <= 1 {
+        return base_name.clone();
+    }
+    let first_part = comp.parts[0].ident.text.as_ref();
+    let base_leaf = base_name.rsplit('.').next().unwrap_or(base_name.as_str());
+    if base_leaf != first_part {
+        return base_name.clone();
+    }
+
+    let suffix = comp.parts[1..]
+        .iter()
+        .map(|part| part.ident.text.to_string())
+        .collect::<Vec<_>>()
+        .join(".");
+    format!("{base_name}.{suffix}")
 }
 
 fn subscript_to_string(sub: &ast::Subscript) -> String {

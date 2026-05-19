@@ -726,14 +726,46 @@ fn is_builtin_or_runtime_intrinsic_function(name: &VarName) -> bool {
 }
 
 pub(crate) fn resolve_flat_function<'a>(name: &VarName, flat: &'a Model) -> Option<&'a Function> {
-    // Strict lookup only: function calls must already be fully resolved during
-    // compile/lower phases. No suffix/name heuristics here.
-    flat.functions.get(name)
+    flat.functions
+        .get(name)
+        .or_else(|| resolve_flat_function_by_unique_suffix(name, flat))
 }
 
-fn validate_function_call_name(name: &VarName, flat: &Model, span: Span) -> Result<(), ToDaeError> {
+fn resolve_flat_function_by_unique_suffix<'a>(
+    name: &VarName,
+    flat: &'a Model,
+) -> Option<&'a Function> {
+    let text = name.as_str();
+    let parts: Vec<&str> = text.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    for start in 1..parts.len() {
+        let suffix = parts[start..].join(".");
+        let dotted_suffix = format!(".{suffix}");
+        let mut matches = flat
+            .functions
+            .iter()
+            .filter(|(k, _)| k.as_str() == suffix || k.as_str().ends_with(&dotted_suffix));
+        let first = matches.next();
+        if first.is_none() {
+            continue;
+        }
+        if matches.next().is_none() {
+            return first.map(|(_, f)| f);
+        }
+    }
+    None
+}
+
+fn validate_function_call_name(
+    name: &VarName,
+    flat: &Model,
+    span: Span,
+) -> Result<VarName, ToDaeError> {
     if is_builtin_or_runtime_intrinsic_function(name) {
-        return Ok(());
+        return Ok(name.clone());
     }
 
     let Some(func) = resolve_flat_function(name, flat) else {
@@ -752,7 +784,7 @@ fn validate_function_call_name(name: &VarName, flat: &Model, span: Span) -> Resu
         }
     }
 
-    Ok(())
+    Ok(func.name.clone())
 }
 
 fn validate_field_access_functions(
@@ -856,9 +888,9 @@ fn validate_flat_expression_functions(
             is_constructor,
         } => {
             if !is_constructor {
-                validate_function_call_name(name, flat, span)?;
-                if !is_builtin_or_runtime_intrinsic_function(name) {
-                    reachable_calls.push(name.clone());
+                let resolved_name = validate_function_call_name(name, flat, span)?;
+                if !is_builtin_or_runtime_intrinsic_function(&resolved_name) {
+                    reachable_calls.push(resolved_name);
                 }
             }
             for arg in args {
@@ -986,9 +1018,9 @@ fn validate_statement_functions(
             outputs,
         } => {
             let name = component_reference_to_var_name(comp);
-            validate_function_call_name(&name, flat, span)?;
-            if !is_builtin_or_runtime_intrinsic_function(&name) {
-                reachable_calls.push(name);
+            let resolved_name = validate_function_call_name(&name, flat, span)?;
+            if !is_builtin_or_runtime_intrinsic_function(&resolved_name) {
+                reachable_calls.push(resolved_name);
             }
             for arg in args {
                 validate_flat_expression_functions(arg, flat, span, reachable_calls)?;

@@ -1030,9 +1030,20 @@ fn validate_expression_references(
             validate_subscript_expr_references(subscripts, dae, span, function_scope, known_refs)?;
             Ok(())
         }
-        Expression::FieldAccess { base, .. } => {
-            validate_expression_references(base, dae, span, function_scope, known_refs)
-        }
+        Expression::FieldAccess { base, .. } => match base.as_ref() {
+            Expression::VarRef { name, subscripts }
+                if is_known_namespace_prefix(name, known_refs) =>
+            {
+                validate_subscript_expr_references(
+                    subscripts,
+                    dae,
+                    span,
+                    function_scope,
+                    known_refs,
+                )
+            }
+            _ => validate_expression_references(base, dae, span, function_scope, known_refs),
+        },
         Expression::Literal(_) | Expression::Empty => Ok(()),
     }
 }
@@ -1058,6 +1069,24 @@ fn validate_var_ref_expression_references(
     }
 
     if !is_known_dae_reference(name, known_refs) {
+        if is_package_like_qualified_name(name) {
+            return validate_subscript_expr_references(
+                subscripts,
+                dae,
+                span,
+                function_scope,
+                known_refs,
+            );
+        }
+        if is_known_namespace_prefix(name, known_refs) {
+            return validate_subscript_expr_references(
+                subscripts,
+                dae,
+                span,
+                function_scope,
+                known_refs,
+            );
+        }
         if is_scoped_index_reference(name, known_refs) {
             return validate_subscript_expr_references(
                 subscripts,
@@ -1240,6 +1269,43 @@ fn is_known_dae_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> b
         || known_via_leading_scope
         || known_via_member_value_scope
         || known_via_nested_member_value_scope
+}
+
+fn is_known_namespace_prefix(name: &VarName, known_refs: &KnownReferenceIndex) -> bool {
+    let prefix = name.as_str();
+    if prefix.is_empty() {
+        return false;
+    }
+    let dotted_prefix = format!("{prefix}.");
+
+    known_refs
+        .flat_queries
+        .iter()
+        .any(|candidate| candidate.starts_with(&dotted_prefix))
+        || known_refs
+            .dae_queries
+            .iter()
+            .any(|candidate| candidate.starts_with(&dotted_prefix))
+        || known_refs
+            .enum_literal_queries
+            .iter()
+            .any(|candidate| candidate.starts_with(&dotted_prefix))
+}
+
+fn is_package_like_qualified_name(name: &VarName) -> bool {
+    let raw = name.as_str();
+    if !raw.contains('.') {
+        return false;
+    }
+    raw.split('.').all(is_namespace_segment)
+}
+
+fn is_namespace_segment(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_uppercase() || (first == '\'' && segment.ends_with('\''))
 }
 
 fn resolves_via_outer_scope_component_modifier_fallback(
