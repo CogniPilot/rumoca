@@ -1387,6 +1387,9 @@ pub struct Function {
     /// External function declaration (MLS §12.9).
     /// If Some, this function calls external C/Fortran code.
     pub external: Option<ExternalFunction>,
+    /// True when this function declaration is partial (MLS §4.7/§12).
+    #[serde(default)]
+    pub partial: bool,
     /// Derivative annotations (MLS §12.7.1).
     /// A function may have multiple derivative annotations for different orders.
     pub derivatives: Vec<DerivativeAnnotation>,

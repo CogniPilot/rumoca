@@ -488,14 +488,21 @@ pub(super) fn select_compile_targets_for_focused_simulation(
         apply_prior_complexity_schedule(&mut names, "Compile");
     }
 
-    if names.is_empty() {
-        None
-    } else {
+    let selected_names = selected_compile_targets(names, subset_requested)?;
+    {
         println!(
             "Compile scope: {}/{} root examples",
-            names.len(),
+            selected_names.len(),
             baseline_count
         );
+        Some(selected_names)
+    }
+}
+
+fn selected_compile_targets(names: Vec<String>, subset_requested: bool) -> Option<Vec<String>> {
+    if names.is_empty() && !subset_requested {
+        None
+    } else {
         Some(names)
     }
 }
@@ -651,5 +658,11 @@ mod tests {
         assert!(!should_apply_prior_complexity_schedule(false, false));
         assert!(!should_apply_prior_complexity_schedule(true, true));
         assert!(should_apply_prior_complexity_schedule(false, true));
+    }
+
+    #[test]
+    fn selected_compile_targets_preserves_empty_requested_subset() {
+        assert_eq!(selected_compile_targets(Vec::new(), true), Some(Vec::new()));
+        assert_eq!(selected_compile_targets(Vec::new(), false), None);
     }
 }

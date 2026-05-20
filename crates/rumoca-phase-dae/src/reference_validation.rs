@@ -17,29 +17,41 @@ struct KnownReferenceIndex {
     flat_queries: HashSet<String>,
     dae_queries: HashSet<String>,
     enum_literal_queries: HashSet<String>,
+    enum_suffix_queries: HashSet<String>,
+    flat_dae_leaf_queries: HashSet<String>,
+    namespace_prefixes: HashSet<String>,
     scoped_index_names: HashSet<String>,
 }
 
 impl KnownReferenceIndex {
     fn build(dae: &Dae, known_flat_var_names: &HashSet<String>) -> Self {
+        let flat_queries =
+            build_flat_reference_query_set(known_flat_var_names.iter().map(String::as_str));
+        let dae_queries = build_dae_reference_query_set(
+            dae.states
+                .keys()
+                .chain(dae.algebraics.keys())
+                .chain(dae.inputs.keys())
+                .chain(dae.outputs.keys())
+                .chain(dae.parameters.keys())
+                .chain(dae.constants.keys())
+                .chain(dae.discrete_reals.keys())
+                .chain(dae.discrete_valued.keys())
+                .chain(dae.derivative_aliases.keys())
+                .map(VarName::as_str),
+        );
+        let enum_literal_queries = build_enum_literal_query_set(&dae.enum_literal_ordinals);
         Self {
-            flat_queries: build_flat_reference_query_set(
-                known_flat_var_names.iter().map(String::as_str),
+            enum_suffix_queries: build_enum_suffix_query_set(&enum_literal_queries),
+            flat_dae_leaf_queries: build_leaf_query_set(&flat_queries, &dae_queries),
+            namespace_prefixes: build_namespace_prefix_set(
+                [&flat_queries, &dae_queries, &enum_literal_queries]
+                    .into_iter()
+                    .flatten(),
             ),
-            dae_queries: build_dae_reference_query_set(
-                dae.states
-                    .keys()
-                    .chain(dae.algebraics.keys())
-                    .chain(dae.inputs.keys())
-                    .chain(dae.outputs.keys())
-                    .chain(dae.parameters.keys())
-                    .chain(dae.constants.keys())
-                    .chain(dae.discrete_reals.keys())
-                    .chain(dae.discrete_valued.keys())
-                    .chain(dae.derivative_aliases.keys())
-                    .map(VarName::as_str),
-            ),
-            enum_literal_queries: build_enum_literal_query_set(&dae.enum_literal_ordinals),
+            flat_queries,
+            dae_queries,
+            enum_literal_queries,
             scoped_index_names: collect_scoped_index_names(dae),
         }
     }
@@ -118,7 +130,11 @@ fn collect_indices_from_statement(stmt: &Statement, names: &mut HashSet<String>)
                 }
             }
         }
-        Statement::FunctionCall { comp, args, outputs } => {
+        Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+        } => {
             collect_indices_from_component_reference(comp, names);
             for arg in args {
                 collect_indices_from_expression(arg, names);
@@ -231,15 +247,7 @@ fn enum_literal_query_matches(known_refs: &KnownReferenceIndex, candidate: &str)
     if known_refs.enum_literal_queries.contains(candidate) {
         return true;
     }
-    if !candidate.contains('.') {
-        return false;
-    }
-
-    let suffix = format!(".{candidate}");
-    known_refs
-        .enum_literal_queries
-        .iter()
-        .any(|known| known.ends_with(&suffix))
+    known_refs.enum_suffix_queries.contains(candidate)
 }
 
 fn build_flat_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> HashSet<String> {
@@ -276,6 +284,51 @@ fn build_enum_literal_query_set(ordinals: &IndexMap<String, i64>) -> HashSet<Str
         }
     }
     queries
+}
+
+fn build_enum_suffix_query_set(queries: &HashSet<String>) -> HashSet<String> {
+    let mut suffixes = HashSet::new();
+    for query in queries {
+        let parts = path_utils::split_path_with_indices(query);
+        if parts.len() < 2 {
+            continue;
+        }
+        for start in 1..parts.len() {
+            suffixes.insert(parts[start..].join("."));
+        }
+    }
+    suffixes
+}
+
+fn build_leaf_query_set(flat: &HashSet<String>, dae: &HashSet<String>) -> HashSet<String> {
+    let mut leaves = HashSet::new();
+    for query in flat.iter().chain(dae.iter()) {
+        if let Some(leaf) = query.rsplit('.').next()
+            && !leaf.is_empty()
+        {
+            leaves.insert(leaf.to_string());
+        }
+    }
+    leaves
+}
+
+fn build_namespace_prefix_set<'a>(queries: impl Iterator<Item = &'a String>) -> HashSet<String> {
+    let mut prefixes = HashSet::new();
+    for query in queries {
+        let parts = path_utils::split_path_with_indices(query);
+        if parts.len() < 2 {
+            continue;
+        }
+        let mut prefix = String::new();
+        for part in parts.iter().take(parts.len() - 1) {
+            if !prefix.is_empty() {
+                prefix.push('.');
+            }
+            prefix.push_str(part);
+            prefixes.insert(prefix.clone());
+        }
+    }
+    prefixes
 }
 
 fn alternate_enum_literal_alias(name: &str) -> Option<String> {
@@ -1229,22 +1282,10 @@ fn is_known_dae_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> b
     // Accept short leaf-name aliases for enum literals and known references.
     // Libraries often use imported aliases and unqualified enum names (e.g. `TableDir`).
     if !raw.contains('.') {
-        if known_refs
-            .enum_literal_queries
-            .iter()
-            .any(|candidate| short_leaf_matches(candidate, raw))
-        {
+        if known_refs.enum_suffix_queries.contains(raw) {
             return true;
         }
-        if known_refs
-            .flat_queries
-            .iter()
-            .any(|candidate| short_leaf_matches(candidate, raw))
-            || known_refs
-                .dae_queries
-                .iter()
-                .any(|candidate| short_leaf_matches(candidate, raw))
-        {
+        if known_refs.flat_dae_leaf_queries.contains(raw) {
             return true;
         }
     }
@@ -1257,39 +1298,24 @@ fn is_known_dae_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> b
         });
     let known_via_outer_scope =
         resolves_via_outer_scope_component_modifier_fallback(raw, known_refs);
-    let known_via_leading_scope =
-        resolves_via_leading_component_scope_fallback(raw, known_refs);
+    let known_via_leading_scope = resolves_via_leading_component_scope_fallback(raw, known_refs);
     let known_via_member_value_scope =
         resolves_via_component_member_value_fallback(raw, known_refs);
     let known_via_nested_member_value_scope =
         resolves_via_component_nested_member_value_fallback(raw, known_refs);
+    let known_via_component_package_constant_scope =
+        resolves_via_component_package_constant_fallback(raw, known_refs);
 
     known_via_subscript
         || known_via_outer_scope
         || known_via_leading_scope
         || known_via_member_value_scope
         || known_via_nested_member_value_scope
+        || known_via_component_package_constant_scope
 }
 
 fn is_known_namespace_prefix(name: &VarName, known_refs: &KnownReferenceIndex) -> bool {
-    let prefix = name.as_str();
-    if prefix.is_empty() {
-        return false;
-    }
-    let dotted_prefix = format!("{prefix}.");
-
-    known_refs
-        .flat_queries
-        .iter()
-        .any(|candidate| candidate.starts_with(&dotted_prefix))
-        || known_refs
-            .dae_queries
-            .iter()
-            .any(|candidate| candidate.starts_with(&dotted_prefix))
-        || known_refs
-            .enum_literal_queries
-            .iter()
-            .any(|candidate| candidate.starts_with(&dotted_prefix))
+    known_refs.namespace_prefixes.contains(name.as_str())
 }
 
 fn is_package_like_qualified_name(name: &VarName) -> bool {
@@ -1330,7 +1356,10 @@ fn resolves_via_outer_scope_component_modifier_fallback(
         || known_refs.dae_queries.contains(candidate.as_str())
 }
 
-fn resolves_via_leading_component_scope_fallback(raw: &str, known_refs: &KnownReferenceIndex) -> bool {
+fn resolves_via_leading_component_scope_fallback(
+    raw: &str,
+    known_refs: &KnownReferenceIndex,
+) -> bool {
     let segments = path_utils::split_path_with_indices(raw);
     if segments.len() < 2 {
         return false;
@@ -1342,7 +1371,10 @@ fn resolves_via_leading_component_scope_fallback(raw: &str, known_refs: &KnownRe
     reference_query_matches(known_refs, &candidate)
 }
 
-fn resolves_via_component_member_value_fallback(raw: &str, known_refs: &KnownReferenceIndex) -> bool {
+fn resolves_via_component_member_value_fallback(
+    raw: &str,
+    known_refs: &KnownReferenceIndex,
+) -> bool {
     let segments = path_utils::split_path_with_indices(raw);
     if segments.len() != 3 {
         return false;
@@ -1358,12 +1390,7 @@ fn resolves_via_component_member_value_fallback(raw: &str, known_refs: &KnownRef
         return true;
     }
 
-    let suffix = format!(".{}", segments[2]);
-    known_refs
-        .flat_queries
-        .iter()
-        .chain(known_refs.dae_queries.iter())
-        .any(|known| known.ends_with(&suffix))
+    known_refs.flat_dae_leaf_queries.contains(segments[2])
 }
 
 fn resolves_via_component_nested_member_value_fallback(
@@ -1387,17 +1414,64 @@ fn resolves_via_component_nested_member_value_fallback(
     if reference_query_matches(known_refs, trailing) {
         return true;
     }
-    let suffix = format!(".{trailing}");
-    known_refs
-        .flat_queries
-        .iter()
-        .chain(known_refs.dae_queries.iter())
-        .any(|known| known.ends_with(&suffix))
+    known_refs.flat_dae_leaf_queries.contains(trailing)
+}
+
+fn resolves_via_component_package_constant_fallback(
+    raw: &str,
+    known_refs: &KnownReferenceIndex,
+) -> bool {
+    let segments = path_utils::split_path_with_indices(raw);
+    if segments.len() != 2 {
+        return false;
+    }
+
+    let symbol = segments[1];
+    if !symbol
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        return false;
+    }
+
+    let base = segments[0];
+    if reference_query_matches(known_refs, base) {
+        return true;
+    }
+
+    if reference_query_matches(known_refs, symbol) {
+        return true;
+    }
+
+    // Guarded fallback for over-qualified lexical symbols emitted as
+    // `component.symbol` instead of lexical `symbol` from class/package scope.
+    known_refs.flat_dae_leaf_queries.contains(symbol)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_known_refs(
+        flat_queries: HashSet<String>,
+        dae_queries: HashSet<String>,
+        enum_literal_queries: HashSet<String>,
+    ) -> KnownReferenceIndex {
+        KnownReferenceIndex {
+            enum_suffix_queries: build_enum_suffix_query_set(&enum_literal_queries),
+            flat_dae_leaf_queries: build_leaf_query_set(&flat_queries, &dae_queries),
+            namespace_prefixes: build_namespace_prefix_set(
+                [&flat_queries, &dae_queries, &enum_literal_queries]
+                    .into_iter()
+                    .flatten(),
+            ),
+            flat_queries,
+            dae_queries,
+            enum_literal_queries,
+            scoped_index_names: HashSet::new(),
+        }
+    }
 
     #[test]
     fn flat_reference_queries_include_normalized_member_names() {
@@ -1440,24 +1514,22 @@ mod tests {
             2,
         );
 
-        let known = KnownReferenceIndex {
-            flat_queries: HashSet::new(),
-            dae_queries: HashSet::new(),
-            enum_literal_queries: build_enum_literal_query_set(&ordinals),
-            scoped_index_names: HashSet::new(),
-        };
+        let known = test_known_refs(
+            HashSet::new(),
+            HashSet::new(),
+            build_enum_literal_query_set(&ordinals),
+        );
 
         assert!(is_known_dae_reference(&VarName::from("TableDir"), &known));
     }
 
     #[test]
     fn known_reference_accepts_outer_scope_modifier_fallback() {
-        let known_refs = KnownReferenceIndex {
-            flat_queries: HashSet::from([String::from("rectifier.RonThyristor")]),
-            dae_queries: HashSet::new(),
-            enum_literal_queries: HashSet::new(),
-            scoped_index_names: HashSet::new(),
-        };
+        let known_refs = test_known_refs(
+            HashSet::from([String::from("rectifier.RonThyristor")]),
+            HashSet::new(),
+            HashSet::new(),
+        );
 
         assert!(is_known_dae_reference(
             &VarName::new("rectifier.thyristor_p.RonThyristor"),
@@ -1467,14 +1539,13 @@ mod tests {
 
     #[test]
     fn known_reference_accepts_leading_component_scope_fallback() {
-        let known_refs = KnownReferenceIndex {
-            flat_queries: HashSet::new(),
-            dae_queries: HashSet::new(),
-            enum_literal_queries: HashSet::from([String::from(
+        let known_refs = test_known_refs(
+            HashSet::new(),
+            HashSet::new(),
+            HashSet::from([String::from(
                 "Modelica.Electrical.PowerConverters.Types.PWMType.SVPWM",
             )]),
-            scoped_index_names: HashSet::new(),
-        };
+        );
 
         assert!(is_known_dae_reference(
             &VarName::new("pwm.PowerConverters.Types.PWMType.SVPWM"),
@@ -1495,12 +1566,11 @@ mod tests {
 
     #[test]
     fn known_reference_accepts_component_member_value_fallback() {
-        let known_refs = KnownReferenceIndex {
-            flat_queries: HashSet::from([String::from("cellData2")]),
-            dae_queries: HashSet::new(),
-            enum_literal_queries: HashSet::new(),
-            scoped_index_names: HashSet::new(),
-        };
+        let known_refs = test_known_refs(
+            HashSet::from([String::from("cellData2")]),
+            HashSet::new(),
+            HashSet::new(),
+        );
 
         assert!(is_known_dae_reference(
             &VarName::new("battery2.cellData.cellData2"),
@@ -1510,12 +1580,11 @@ mod tests {
 
     #[test]
     fn known_reference_accepts_component_nested_member_value_fallback() {
-        let known_refs = KnownReferenceIndex {
-            flat_queries: HashSet::from([String::from("stackData")]),
-            dae_queries: HashSet::new(),
-            enum_literal_queries: HashSet::new(),
-            scoped_index_names: HashSet::new(),
-        };
+        let known_refs = test_known_refs(
+            HashSet::from([String::from("stackData")]),
+            HashSet::new(),
+            HashSet::new(),
+        );
 
         assert!(is_known_dae_reference(
             &VarName::new("stack.stackData.cellData[1,1].stackData"),
@@ -1530,6 +1599,27 @@ mod tests {
         assert!(function_scope_contains_reference(
             &VarName::new("symmetricalComponents_1.k"),
             &scope
+        ));
+    }
+
+    #[test]
+    fn known_reference_accepts_component_qualified_package_constant() {
+        let known_refs = test_known_refs(
+            HashSet::from([
+                String::from("medium"),
+                String::from("Modelica.Media.Air.MoistAir.MMX"),
+            ]),
+            HashSet::new(),
+            HashSet::new(),
+        );
+
+        assert!(is_known_dae_reference(
+            &VarName::new("medium.MMX"),
+            &known_refs
+        ));
+        assert!(is_known_dae_reference(
+            &VarName::new("medium.k_mair"),
+            &known_refs
         ));
     }
 }

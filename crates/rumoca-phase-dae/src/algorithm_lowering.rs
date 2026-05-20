@@ -535,43 +535,141 @@ fn not_expr(expr: Expression) -> Expression {
     if let Expression::Literal(Literal::Boolean(flag)) = expr {
         return bool_expr(!flag);
     }
+    if let Expression::Unary {
+        op: rumoca_ir_core::OpUnary::Not(_),
+        rhs,
+    } = expr
+    {
+        return *rhs;
+    }
     Expression::Unary {
         op: rumoca_ir_core::OpUnary::Not(Default::default()),
         rhs: Box::new(expr),
     }
 }
 
+fn expr_structural_key(expr: &Expression) -> String {
+    format!("{expr:?}")
+}
+
+fn collect_bool_terms_for_op(expr: Expression, is_and: bool, terms: &mut Vec<Expression>) {
+    match expr {
+        Expression::Binary { op, lhs, rhs }
+            if (is_and && matches!(op, rumoca_ir_core::OpBinary::And(_)))
+                || (!is_and && matches!(op, rumoca_ir_core::OpBinary::Or(_))) =>
+        {
+            collect_bool_terms_for_op(*lhs, is_and, terms);
+            collect_bool_terms_for_op(*rhs, is_and, terms);
+        }
+        other => terms.push(other),
+    }
+}
+
+fn not_inner_key(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::Unary {
+            op: rumoca_ir_core::OpUnary::Not(_),
+            rhs,
+        } => Some(expr_structural_key(rhs)),
+        _ => None,
+    }
+}
+
 fn and_expr(lhs: Expression, rhs: Expression) -> Expression {
-    if is_bool_expr(&lhs, false) || is_bool_expr(&rhs, false) {
-        return bool_expr(false);
+    let mut raw_terms = Vec::new();
+    collect_bool_terms_for_op(lhs, true, &mut raw_terms);
+    collect_bool_terms_for_op(rhs, true, &mut raw_terms);
+
+    let mut terms = Vec::new();
+    let mut seen = HashSet::new();
+    let mut negated = HashSet::new();
+    for term in raw_terms {
+        if is_bool_expr(&term, false) {
+            return bool_expr(false);
+        }
+        if is_bool_expr(&term, true) {
+            continue;
+        }
+        let term_key = expr_structural_key(&term);
+        if seen.contains(&term_key) {
+            continue;
+        }
+        if let Some(inner_key) = not_inner_key(&term) {
+            if seen.contains(&inner_key) {
+                return bool_expr(false);
+            }
+            negated.insert(inner_key);
+        } else if negated.contains(&term_key) {
+            return bool_expr(false);
+        }
+        seen.insert(term_key);
+        terms.push(term);
     }
-    if is_bool_expr(&lhs, true) {
-        return rhs;
-    }
-    if is_bool_expr(&rhs, true) {
-        return lhs;
-    }
-    Expression::Binary {
-        op: rumoca_ir_core::OpBinary::And(Default::default()),
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
+
+    match terms.len() {
+        0 => bool_expr(true),
+        1 => terms.remove(0),
+        _ => {
+            let mut iter = terms.into_iter();
+            let mut acc = iter.next().expect("non-empty terms");
+            for term in iter {
+                acc = Expression::Binary {
+                    op: rumoca_ir_core::OpBinary::And(Default::default()),
+                    lhs: Box::new(acc),
+                    rhs: Box::new(term),
+                };
+            }
+            acc
+        }
     }
 }
 
 fn or_expr(lhs: Expression, rhs: Expression) -> Expression {
-    if is_bool_expr(&lhs, true) || is_bool_expr(&rhs, true) {
-        return bool_expr(true);
+    let mut raw_terms = Vec::new();
+    collect_bool_terms_for_op(lhs, false, &mut raw_terms);
+    collect_bool_terms_for_op(rhs, false, &mut raw_terms);
+
+    let mut terms = Vec::new();
+    let mut seen = HashSet::new();
+    let mut negated = HashSet::new();
+    for term in raw_terms {
+        if is_bool_expr(&term, true) {
+            return bool_expr(true);
+        }
+        if is_bool_expr(&term, false) {
+            continue;
+        }
+        let term_key = expr_structural_key(&term);
+        if seen.contains(&term_key) {
+            continue;
+        }
+        if let Some(inner_key) = not_inner_key(&term) {
+            if seen.contains(&inner_key) {
+                return bool_expr(true);
+            }
+            negated.insert(inner_key);
+        } else if negated.contains(&term_key) {
+            return bool_expr(true);
+        }
+        seen.insert(term_key);
+        terms.push(term);
     }
-    if is_bool_expr(&lhs, false) {
-        return rhs;
-    }
-    if is_bool_expr(&rhs, false) {
-        return lhs;
-    }
-    Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Or(Default::default()),
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
+
+    match terms.len() {
+        0 => bool_expr(false),
+        1 => terms.remove(0),
+        _ => {
+            let mut iter = terms.into_iter();
+            let mut acc = iter.next().expect("non-empty terms");
+            for term in iter {
+                acc = Expression::Binary {
+                    op: rumoca_ir_core::OpBinary::Or(Default::default()),
+                    lhs: Box::new(acc),
+                    rhs: Box::new(term),
+                };
+            }
+            acc
+        }
     }
 }
 
@@ -728,35 +826,169 @@ fn current_target_expr(target: &VarName) -> Expression {
     }
 }
 
+struct AlgorithmRewriteContext {
+    target_prefixes: HashSet<String>,
+    contains_known_target_cache: HashMap<String, bool>,
+    rewrite_skipped_subtrees: usize,
+}
+
+impl AlgorithmRewriteContext {
+    fn new(known_targets: &HashSet<VarName>) -> Self {
+        let target_prefixes = known_targets
+            .iter()
+            .filter_map(|target| path_utils::get_top_level_prefix(target.as_str()))
+            .collect();
+        Self {
+            target_prefixes,
+            contains_known_target_cache: HashMap::new(),
+            rewrite_skipped_subtrees: 0,
+        }
+    }
+
+    fn refresh_known_targets(&mut self, known_targets: &HashSet<VarName>) {
+        self.target_prefixes = known_targets
+            .iter()
+            .filter_map(|target| path_utils::get_top_level_prefix(target.as_str()))
+            .collect();
+        self.contains_known_target_cache.clear();
+    }
+
+    fn record_skip(&mut self) {
+        self.rewrite_skipped_subtrees += 1;
+    }
+
+    fn skipped_subtrees(&self) -> usize {
+        self.rewrite_skipped_subtrees
+    }
+}
+
+fn expr_var_ref_may_hit_known_target(
+    name: &VarName,
+    subscripts: &[Subscript],
+    known_targets: &HashSet<VarName>,
+    target_prefixes: &HashSet<String>,
+) -> bool {
+    let target = varref_with_subscripts(name, subscripts);
+    known_targets.contains(&target)
+        || path_utils::get_top_level_prefix(target.as_str())
+            .is_some_and(|prefix| target_prefixes.contains(prefix.as_str()))
+}
+
+fn expr_contains_known_target(
+    ctx: &mut AlgorithmRewriteContext,
+    expr: &Expression,
+    known_targets: &HashSet<VarName>,
+) -> bool {
+    let cache_key = expr_structural_key(expr);
+    if let Some(cached) = ctx.contains_known_target_cache.get(&cache_key) {
+        return *cached;
+    }
+
+    let contains = match expr {
+        Expression::VarRef { name, subscripts } => {
+            expr_var_ref_may_hit_known_target(name, subscripts, known_targets, &ctx.target_prefixes)
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            expr_contains_known_target(ctx, lhs, known_targets)
+                || expr_contains_known_target(ctx, rhs, known_targets)
+        }
+        Expression::Unary { rhs, .. } => expr_contains_known_target(ctx, rhs, known_targets),
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => args
+            .iter()
+            .any(|arg| expr_contains_known_target(ctx, arg, known_targets)),
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches
+                .iter()
+                .any(|(cond, value)| {
+                    expr_contains_known_target(ctx, cond, known_targets)
+                        || expr_contains_known_target(ctx, value, known_targets)
+                })
+                || expr_contains_known_target(ctx, else_branch, known_targets)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => elements
+            .iter()
+            .any(|element| expr_contains_known_target(ctx, element, known_targets)),
+        Expression::Range { start, step, end } => {
+            expr_contains_known_target(ctx, start, known_targets)
+                || step
+                    .as_deref()
+                    .is_some_and(|value| expr_contains_known_target(ctx, value, known_targets))
+                || expr_contains_known_target(ctx, end, known_targets)
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expr_contains_known_target(ctx, expr, known_targets)
+                || indices.iter().any(|index| {
+                    expr_contains_known_target(ctx, &index.range, known_targets)
+                })
+                || filter
+                    .as_deref()
+                    .is_some_and(|value| expr_contains_known_target(ctx, value, known_targets))
+        }
+        Expression::Index { base, subscripts } => {
+            expr_contains_known_target(ctx, base, known_targets)
+                || subscripts.iter().any(|subscript| {
+                    matches!(subscript, Subscript::Expr(value) if expr_contains_known_target(ctx, value, known_targets))
+                })
+        }
+        Expression::FieldAccess { base, .. } => expr_contains_known_target(ctx, base, known_targets),
+        Expression::Literal(_) | Expression::Empty => false,
+    };
+
+    ctx.contains_known_target_cache.insert(cache_key, contains);
+    contains
+}
+
 fn rewrite_algorithm_current_refs(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     expr: &Expression,
     current_values: &IndexMap<VarName, Expression>,
     known_targets: &HashSet<VarName>,
 ) -> Expression {
+    let cache_key = expr_structural_key(expr);
+    let contains_known_target =
+        if let Some(cached) = ctx.contains_known_target_cache.get(&cache_key) {
+            *cached
+        } else {
+            let contains = expr_contains_known_target(ctx, expr, known_targets);
+            contains
+        };
+    if !contains_known_target {
+        ctx.record_skip();
+        return expr.clone();
+    }
+
     match expr {
         Expression::VarRef { name, subscripts } => {
             rewrite_algorithm_current_var_ref(dae, name, subscripts, current_values, known_targets)
         }
         Expression::Binary { op, lhs, rhs } => Expression::Binary {
             op: op.clone(),
-            lhs: rewrite_algorithm_current_box(dae, lhs, current_values, known_targets),
-            rhs: rewrite_algorithm_current_box(dae, rhs, current_values, known_targets),
+            lhs: rewrite_algorithm_current_box(ctx, dae, lhs, current_values, known_targets),
+            rhs: rewrite_algorithm_current_box(ctx, dae, rhs, current_values, known_targets),
         },
         Expression::Unary { op, rhs } => Expression::Unary {
             op: op.clone(),
-            rhs: rewrite_algorithm_current_box(dae, rhs, current_values, known_targets),
+            rhs: rewrite_algorithm_current_box(ctx, dae, rhs, current_values, known_targets),
         },
         Expression::BuiltinCall { function, args } => {
             if matches!(function, BuiltinFunction::Pre) {
-                return Expression::BuiltinCall {
+                Expression::BuiltinCall {
                     function: *function,
                     args: args.clone(),
-                };
-            }
-            Expression::BuiltinCall {
-                function: *function,
-                args: rewrite_algorithm_expr_vec(dae, args, current_values, known_targets),
+                }
+            } else {
+                Expression::BuiltinCall {
+                    function: *function,
+                    args: rewrite_algorithm_expr_vec(ctx, dae, args, current_values, known_targets),
+                }
             }
         }
         Expression::FunctionCall {
@@ -765,13 +997,14 @@ fn rewrite_algorithm_current_refs(
             is_constructor,
         } => Expression::FunctionCall {
             name: name.clone(),
-            args: rewrite_algorithm_expr_vec(dae, args, current_values, known_targets),
+            args: rewrite_algorithm_expr_vec(ctx, dae, args, current_values, known_targets),
             is_constructor: *is_constructor,
         },
         Expression::If {
             branches,
             else_branch,
         } => rewrite_algorithm_current_if_expr(
+            ctx,
             dae,
             branches,
             else_branch,
@@ -782,13 +1015,14 @@ fn rewrite_algorithm_current_refs(
             elements,
             is_matrix,
         } => Expression::Array {
-            elements: rewrite_algorithm_expr_vec(dae, elements, current_values, known_targets),
+            elements: rewrite_algorithm_expr_vec(ctx, dae, elements, current_values, known_targets),
             is_matrix: *is_matrix,
         },
         Expression::Tuple { elements } => Expression::Tuple {
-            elements: rewrite_algorithm_expr_vec(dae, elements, current_values, known_targets),
+            elements: rewrite_algorithm_expr_vec(ctx, dae, elements, current_values, known_targets),
         },
         Expression::Range { start, step, end } => rewrite_algorithm_current_range_expr(
+            ctx,
             dae,
             start,
             step.as_deref(),
@@ -801,6 +1035,7 @@ fn rewrite_algorithm_current_refs(
             indices,
             filter,
         } => rewrite_algorithm_current_comprehension_expr(
+            ctx,
             dae,
             expr,
             indices,
@@ -809,11 +1044,11 @@ fn rewrite_algorithm_current_refs(
             known_targets,
         ),
         Expression::Index { base, subscripts } => Expression::Index {
-            base: rewrite_algorithm_current_box(dae, base, current_values, known_targets),
+            base: rewrite_algorithm_current_box(ctx, dae, base, current_values, known_targets),
             subscripts: subscripts.to_vec(),
         },
         Expression::FieldAccess { base, field } => Expression::FieldAccess {
-            base: rewrite_algorithm_current_box(dae, base, current_values, known_targets),
+            base: rewrite_algorithm_current_box(ctx, dae, base, current_values, known_targets),
             field: field.clone(),
         },
         Expression::Literal(literal) => Expression::Literal(literal.clone()),
@@ -822,12 +1057,14 @@ fn rewrite_algorithm_current_refs(
 }
 
 fn rewrite_algorithm_current_box(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     expr: &Expression,
     current_values: &IndexMap<VarName, Expression>,
     known_targets: &HashSet<VarName>,
 ) -> Box<Expression> {
     Box::new(rewrite_algorithm_current_refs(
+        ctx,
         dae,
         expr,
         current_values,
@@ -856,6 +1093,7 @@ fn rewrite_algorithm_current_var_ref(
 }
 
 fn rewrite_algorithm_expr_vec(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     exprs: &[Expression],
     current_values: &IndexMap<VarName, Expression>,
@@ -863,11 +1101,12 @@ fn rewrite_algorithm_expr_vec(
 ) -> Vec<Expression> {
     exprs
         .iter()
-        .map(|expr| rewrite_algorithm_current_refs(dae, expr, current_values, known_targets))
+        .map(|expr| rewrite_algorithm_current_refs(ctx, dae, expr, current_values, known_targets))
         .collect()
 }
 
 fn rewrite_algorithm_current_if_expr(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
@@ -879,12 +1118,19 @@ fn rewrite_algorithm_current_if_expr(
             .iter()
             .map(|(condition, value)| {
                 (
-                    rewrite_algorithm_current_refs(dae, condition, current_values, known_targets),
-                    rewrite_algorithm_current_refs(dae, value, current_values, known_targets),
+                    rewrite_algorithm_current_refs(
+                        ctx,
+                        dae,
+                        condition,
+                        current_values,
+                        known_targets,
+                    ),
+                    rewrite_algorithm_current_refs(ctx, dae, value, current_values, known_targets),
                 )
             })
             .collect(),
         else_branch: Box::new(rewrite_algorithm_current_refs(
+            ctx,
             dae,
             else_branch,
             current_values,
@@ -894,6 +1140,7 @@ fn rewrite_algorithm_current_if_expr(
 }
 
 fn rewrite_algorithm_current_range_expr(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     start: &Expression,
     step: Option<&Expression>,
@@ -903,6 +1150,7 @@ fn rewrite_algorithm_current_range_expr(
 ) -> Expression {
     Expression::Range {
         start: Box::new(rewrite_algorithm_current_refs(
+            ctx,
             dae,
             start,
             current_values,
@@ -910,6 +1158,7 @@ fn rewrite_algorithm_current_range_expr(
         )),
         step: step.map(|value| {
             Box::new(rewrite_algorithm_current_refs(
+                ctx,
                 dae,
                 value,
                 current_values,
@@ -917,6 +1166,7 @@ fn rewrite_algorithm_current_range_expr(
             ))
         }),
         end: Box::new(rewrite_algorithm_current_refs(
+            ctx,
             dae,
             end,
             current_values,
@@ -926,6 +1176,7 @@ fn rewrite_algorithm_current_range_expr(
 }
 
 fn rewrite_algorithm_current_comprehension_expr(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     expr: &Expression,
     indices: &[ComprehensionIndex],
@@ -935,6 +1186,7 @@ fn rewrite_algorithm_current_comprehension_expr(
 ) -> Expression {
     Expression::ArrayComprehension {
         expr: Box::new(rewrite_algorithm_current_refs(
+            ctx,
             dae,
             expr,
             current_values,
@@ -945,6 +1197,7 @@ fn rewrite_algorithm_current_comprehension_expr(
             .map(|index| ComprehensionIndex {
                 name: index.name.clone(),
                 range: rewrite_algorithm_current_refs(
+                    ctx,
                     dae,
                     &index.range,
                     current_values,
@@ -954,6 +1207,7 @@ fn rewrite_algorithm_current_comprehension_expr(
             .collect(),
         filter: filter.map(|value| {
             Box::new(rewrite_algorithm_current_refs(
+                ctx,
                 dae,
                 value,
                 current_values,
@@ -1217,6 +1471,7 @@ fn collect_algorithm_block_assignments(
             known_targets.insert(target);
         }
     }
+    let mut rewrite_ctx = AlgorithmRewriteContext::new(&known_targets);
     for statement in statements {
         for (target, value, span, origin) in lower_statement_assignments_with_context(
             dae,
@@ -1225,12 +1480,23 @@ fn collect_algorithm_block_assignments(
             &current_values,
             &known_targets,
         )? {
-            let rewritten =
-                rewrite_algorithm_current_refs(dae, &value, &current_values, &known_targets);
+            let rewritten = rewrite_algorithm_current_refs(
+                &mut rewrite_ctx,
+                dae,
+                &value,
+                &current_values,
+                &known_targets,
+            );
             let normalized = normalize_algorithm_current_value(dae, &target, &rewritten);
             current_values.insert(target.clone(), normalized.clone());
             assignments.insert(target.clone(), (target, normalized, span, origin));
         }
+    }
+    if std::env::var("RUMOCA_DEBUG_TODAE").is_ok() {
+        eprintln!(
+            "DEBUG TODAE algorithm_rewrite skipped_subtrees={}",
+            rewrite_ctx.skipped_subtrees()
+        );
     }
     Ok(assignments)
 }
@@ -1309,11 +1575,11 @@ fn lower_if_statement_assignments(
     Ok(lowered)
 }
 
-#[derive(Default)]
 struct ForLoopLowerState {
     assignments: IndexMap<VarName, Expression>,
     known_targets: HashSet<VarName>,
     break_condition: Option<Expression>,
+    rewrite_ctx: AlgorithmRewriteContext,
 }
 
 fn loop_active_guard(base_guard: Expression, break_condition: &Option<Expression>) -> Expression {
@@ -1331,8 +1597,13 @@ fn apply_guarded_loop_assignment(
     value: Expression,
     guard: Expression,
 ) {
-    let rewritten =
-        rewrite_algorithm_current_refs(dae, &value, &state.assignments, &state.known_targets);
+    let rewritten = rewrite_algorithm_current_refs(
+        &mut state.rewrite_ctx,
+        dae,
+        &value,
+        &state.assignments,
+        &state.known_targets,
+    );
     let fallback = state
         .assignments
         .get(&target)
@@ -1491,6 +1762,7 @@ fn lower_for_statement_assignments(
         assignments: outer_current_values.clone(),
         known_targets: outer_known_targets.clone(),
         break_condition: None,
+        rewrite_ctx: AlgorithmRewriteContext::new(outer_known_targets),
     };
     let mut loop_targets = HashSet::new();
     let bindings = HashMap::new();
@@ -1498,18 +1770,18 @@ fn lower_for_statement_assignments(
     for iteration in &iteration_bindings {
         for statement in equations {
             let substituted = substitute_statement_with_bindings(statement, iteration);
-            for (target, _, _, _) in lower_statement_assignments_with_context(
-                dae,
-                flat,
-                &substituted,
-                &state.assignments,
-                &state.known_targets,
-            )? {
+            // Target discovery only needs assignment LHS names. Avoid full
+            // contextual lowering here because the actual lowering pass runs
+            // immediately after and performs the expensive rewrites once.
+            for target in collect_statement_targets(dae, flat, &substituted)? {
                 state.known_targets.insert(target.clone());
                 loop_targets.insert(target);
             }
         }
     }
+    state
+        .rewrite_ctx
+        .refresh_known_targets(&state.known_targets);
     for iteration in iteration_bindings {
         let iteration_guard = loop_active_guard(bool_expr(true), &state.break_condition);
         lower_for_statement_sequence_with_guard(

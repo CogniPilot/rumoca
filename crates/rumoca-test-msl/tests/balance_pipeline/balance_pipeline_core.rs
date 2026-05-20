@@ -10,12 +10,24 @@ const STREAMING_COMPILE_RESULT_QUEUE_BOUND: usize = 1;
 const SLOW_COMPILE_LOG_THRESHOLD_ENV: &str = "RUMOCA_MSL_SLOW_COMPILE_LOG_SECS";
 
 trait FocusedClosureCompiler {
-    fn strict_compile_for_focused_model(&self, model_name: &str) -> StrictCompileReport;
+    fn strict_compile_for_focused_model(
+        &self,
+        model_name: &str,
+        use_cache: bool,
+    ) -> StrictCompileReport;
 }
 
 impl FocusedClosureCompiler for CompiledSourceRoot {
-    fn strict_compile_for_focused_model(&self, model_name: &str) -> StrictCompileReport {
-        self.compile_model_strict_reachable_uncached_with_recovery(model_name)
+    fn strict_compile_for_focused_model(
+        &self,
+        model_name: &str,
+        use_cache: bool,
+    ) -> StrictCompileReport {
+        if use_cache {
+            self.compile_model_strict_reachable_with_recovery(model_name)
+        } else {
+            self.compile_model_strict_reachable_uncached_with_recovery(model_name)
+        }
     }
 }
 
@@ -304,6 +316,7 @@ fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send>(
     source_root: &std::sync::Arc<T>,
     model_name: &str,
     budget_secs: f64,
+    use_cache: bool,
 ) -> ModelCompileEntry {
     let slow_log_threshold = slow_compile_log_threshold_secs();
     let compile_timing_before = slow_log_threshold.map(|_| compile_phase_timing_stats());
@@ -312,8 +325,9 @@ fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send>(
     // Compile synchronously inside the bounded Rayon worker pool. The earlier
     // detached-thread timeout path could not actually cancel compile work, so
     // timed-out models kept consuming memory in the background.
-    let compile_outcome =
-        ModelCompileOutcome::StrictReport(source_root.strict_compile_for_focused_model(model_name));
+    let compile_outcome = ModelCompileOutcome::StrictReport(
+        source_root.strict_compile_for_focused_model(model_name, use_cache),
+    );
     let elapsed_secs = start.elapsed().as_secs_f64();
     if let (Some(threshold_secs), Some(before_compile), Some(before_flatten)) = (
         slow_log_threshold,
@@ -335,9 +349,11 @@ fn compile_chunk_with_model_budgets<T: FocusedClosureCompiler + Sync + Send>(
     names_chunk: &[String],
     compile_threads: usize,
     budget_secs: f64,
+    use_cache: bool,
 ) -> Vec<ModelCompileEntry> {
-    let compile_worker =
-        |name: &String| compile_model_with_budget_timeout(source_root, name, budget_secs);
+    let compile_worker = |name: &String| {
+        compile_model_with_budget_timeout(source_root, name, budget_secs, use_cache)
+    };
     match rayon::ThreadPoolBuilder::new()
         .num_threads(compile_threads.max(1))
         .build()
@@ -640,7 +656,12 @@ fn run_streaming_compile_and_render_chunk<T: FocusedClosureCompiler + Sync + Sen
         );
         for (result_idx, model_name) in names_chunk.iter().enumerate() {
             let entry = prepare_streaming_compile_result_entry(
-                compile_model_with_budget_timeout(source_root, model_name, model_budget_secs),
+                compile_model_with_budget_timeout(
+                    source_root,
+                    model_name,
+                    model_budget_secs,
+                    false,
+                ),
                 context,
             );
             if compile_tx.send((result_idx, entry)).is_err() {
@@ -746,6 +767,7 @@ fn run_parallel_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
             names_chunk,
             simulation_threads,
             model_budget_secs,
+            false,
         )
     };
     compile_in_flight.store(false, Ordering::Relaxed);
@@ -804,8 +826,13 @@ fn run_compile_only_chunk<T: FocusedClosureCompiler + Sync + Send>(
         compile_chunk_with_model_budgets(
             source_root,
             names_chunk,
-            simulation_threads,
+            // Compile-only MSL sweeps intentionally use the shared compile cache
+            // sequentially. Parallel focused closures in the same MSL family
+            // duplicate overlapping ToDae work and turn cache misses into
+            // artificial per-model timeout failures.
+            1,
             model_budget_secs,
+            true,
         )
     };
     compile_in_flight.store(false, Ordering::Relaxed);
@@ -1097,14 +1124,24 @@ mod tests {
     use std::sync::Mutex;
 
     struct FakeFocusedCompiler {
+        cached_called: Mutex<Vec<String>>,
         uncached_called: Mutex<Vec<String>>,
     }
 
     impl FocusedClosureCompiler for FakeFocusedCompiler {
-        fn strict_compile_for_focused_model(&self, model_name: &str) -> StrictCompileReport {
-            self.uncached_called
+        fn strict_compile_for_focused_model(
+            &self,
+            model_name: &str,
+            use_cache: bool,
+        ) -> StrictCompileReport {
+            let calls = if use_cache {
+                &self.cached_called
+            } else {
+                &self.uncached_called
+            };
+            calls
                 .lock()
-                .expect("uncached call log should not be poisoned")
+                .expect("focused compile call log should not be poisoned")
                 .push(model_name.to_string());
             StrictCompileReport {
                 requested_model: model_name.to_string(),
@@ -1213,8 +1250,9 @@ mod tests {
     }
 
     #[test]
-    fn compile_model_with_budget_timeout_uses_focused_uncached_compile_path() {
+    fn compile_model_with_budget_timeout_uses_requested_compile_cache_mode() {
         let compiler = std::sync::Arc::new(FakeFocusedCompiler {
+            cached_called: Mutex::new(Vec::new()),
             uncached_called: Mutex::new(Vec::new()),
         });
 
@@ -1222,17 +1260,23 @@ mod tests {
             &compiler,
             "Modelica.Electrical.Digital.Examples.DFFREG",
             10.0,
+            true,
         );
 
         assert!(entry.remaining_budget_secs.is_none());
+        let cached = compiler
+            .cached_called
+            .lock()
+            .expect("cached call log should not be poisoned");
+        assert_eq!(
+            cached.as_slice(),
+            &["Modelica.Electrical.Digital.Examples.DFFREG".to_string()]
+        );
         let calls = compiler
             .uncached_called
             .lock()
             .expect("uncached call log should not be poisoned");
-        assert_eq!(
-            calls.as_slice(),
-            &["Modelica.Electrical.Digital.Examples.DFFREG".to_string()]
-        );
+        assert!(calls.is_empty());
     }
 
     #[test]
@@ -1296,6 +1340,21 @@ pub(super) fn test_msl_all() {
     print_msl_balance_summary(&summary);
 
     print_simulation_results(&summary);
+    print_timing_breakdown(&summary);
+    print_failure_details(&summary);
+    print_final_stats(&summary);
+}
+
+/// Compile and balance the focused MSL target set without running simulation.
+///
+/// This keeps compile-rate triage separate from solver/runtime timeout work.
+#[test]
+#[ignore = "slow-msl-compile-only"]
+pub(super) fn test_msl_compile_only() {
+    check_release_mode();
+    let summary = run_msl_test(false);
+
+    print_msl_balance_summary(&summary);
     print_timing_breakdown(&summary);
     print_failure_details(&summary);
     print_final_stats(&summary);

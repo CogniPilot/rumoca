@@ -306,6 +306,44 @@ fn test_todae_rejects_non_external_function_without_body() {
 }
 
 #[test]
+fn test_todae_allows_partial_function_declaration_without_body() {
+    let mut flat = Model::new();
+    add_primitive_real(&mut flat, "x");
+
+    let mut partial = rumoca_ir_flat::Function::new("Medium.setState_pTX", Span::DUMMY);
+    partial.partial = true;
+    flat.add_function(partial);
+
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: flat::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
+            lhs: Box::new(flat::Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![make_var_ref("x")],
+            }),
+            rhs: Box::new(flat::Expression::FunctionCall {
+                name: VarName::new("Medium.setState_pTX"),
+                args: vec![make_var_ref("x"), make_var_ref("x")],
+                is_constructor: false,
+            }),
+        },
+        span: Span::DUMMY,
+        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "probe".to_string(),
+        },
+        scalar_count: 1,
+    });
+
+    to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("partial function declarations can remain symbolic in compile-only DAE");
+}
+
+#[test]
 fn test_todae_ignores_unreachable_function_without_body() {
     let mut flat = Model::new();
     add_primitive_real(&mut flat, "x");
@@ -336,6 +374,82 @@ fn test_todae_ignores_unreachable_function_without_body() {
         },
     )
     .expect("unreachable empty function bodies should not fail ToDae validation");
+}
+
+#[test]
+fn test_todae_prefers_unique_executable_override_for_partial_function_stub() {
+    let mut flat = Model::new();
+    add_primitive_real(&mut flat, "x");
+
+    let partial_stub = rumoca_ir_flat::Function::new(
+        "Modelica.Media.Interfaces.PartialMedium.setState_pTX",
+        Span::DUMMY,
+    );
+    flat.add_function(partial_stub);
+
+    let mut concrete_impl = rumoca_ir_flat::Function::new(
+        "Modelica.Media.Air.ReferenceMoistAir.setState_pTX",
+        Span::DUMMY,
+    );
+    concrete_impl.body.push(rumoca_ir_flat::Statement::Return);
+    flat.add_function(concrete_impl);
+
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: flat::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
+            lhs: Box::new(flat::Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![make_var_ref("x")],
+            }),
+            rhs: Box::new(flat::Expression::FunctionCall {
+                name: VarName::new("Modelica.Media.Interfaces.PartialMedium.setState_pTX"),
+                args: vec![make_var_ref("x"), make_var_ref("x")],
+                is_constructor: false,
+            }),
+        },
+        span: Span::DUMMY,
+        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "probe".to_string(),
+        },
+        scalar_count: 1,
+    });
+
+    to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("ToDae should use unique executable override for partial function stub");
+}
+
+#[test]
+fn test_todae_prefers_unique_executable_suffix_match_for_partial_stub() {
+    let mut flat = Model::new();
+    add_primitive_real(&mut flat, "x");
+
+    let partial_stub = rumoca_ir_flat::Function::new(
+        "Modelica.Media.Interfaces.PartialMedium.setState_pTX",
+        Span::DUMMY,
+    );
+    flat.add_function(partial_stub);
+
+    let mut concrete_impl = rumoca_ir_flat::Function::new(
+        "Modelica.Media.Water.StandardWater.setState_pTX",
+        Span::DUMMY,
+    );
+    concrete_impl.body.push(rumoca_ir_flat::Statement::Return);
+    flat.add_function(concrete_impl);
+
+    add_scalar_ode_with_rhs_call(&mut flat, "x", "Foo.Bar.PartialMedium.setState_pTX");
+
+    to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("ToDae should resolve to the unique executable suffix match");
 }
 
 #[test]
