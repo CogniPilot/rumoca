@@ -55,3 +55,15 @@ Rumoca is:
 ## Guiding Idea
 
 > Rumoca extracts symbolic systems from Modelica models and makes them usable across different execution environments.
+
+---
+
+## Development Discipline
+
+This file defines philosophy and scope, not procedural workflow policy.
+
+For implementation rules and AI-agent development workflow, use:
+
+- `docs/development_instructions.md`
+- `AGENTS.md`
+- `spec/README.md`
