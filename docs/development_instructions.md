@@ -147,6 +147,76 @@ evidence block format:
 - Negative/ambiguity regression:
 - Focused runtime/compile check:
 
+## Communication Clarity Rule (Mandatory)
+
+For non-trivial compiler bugs, AI updates must include a plain-language
+explanation in addition to technical details.
+
+Required plain-language content:
+
+1. What is broken
+- One short sentence in everyday language.
+
+2. Where it breaks
+- The exact model + path/symbol + compiler phase.
+
+3. What should happen
+- One short sentence describing expected behavior.
+
+4. Why it broke
+- One short sentence naming the first bad transformation.
+
+5. What changed
+- One short sentence describing the fix and why it is safe.
+
+Do not hide the core issue behind jargon-only explanations.
+If technical terms are used, define them briefly.
+
+## Concrete Example Rule (Mandatory)
+
+For any non-trivial fix or bug explanation, include at least one concrete,
+real example taken from the actual failure location.
+
+Required example content:
+
+1. Show the real code/snippet
+- Use the exact model/code path where the bug was found.
+- For Modelica bugs: include the exact Modelica snippet.
+- For Rust bugs: include the exact Rust snippet.
+- If exact code cannot be shown, include minimal pseudo-code that preserves the
+  real structure and names.
+
+2. Show expected vs actual in plain language
+- "Actual:" one short line describing what Rumoca produced/did.
+- "Expected:" one short line describing what should have happened.
+
+3. Show phase-by-phase mapping
+- One short line per relevant phase (for example resolve, instantiate, flatten,
+  ToDae) describing what happened to the example in that phase.
+- Explicitly identify the first phase where the example becomes wrong.
+
+4. Tie fix directly to that example
+- State exactly what changed and why it corrects that specific example.
+- Avoid abstract explanations that are not anchored in the concrete example.
+
+This rule is mandatory in addition to the Communication Clarity Rule.
+
+## Symptom-Patch Guard (Mandatory)
+
+Before merging a fix, explicitly answer:
+
+1. "Did we change only a validator/checker fallback?"
+- If yes, stop and continue investigation unless Gate 5 is explicitly justified.
+
+2. "Did we identify and patch the first producer of the wrong symbol/value/path?"
+- If no, stop and continue investigation.
+
+3. "Can we point to one concrete before/after artifact proving the producer changed?"
+- If no, fix is not complete.
+
+For symbol-qualification bugs, validation-layer relaxations are temporary triage
+only and must not be final unless an upstream fix is proven infeasible.
+
 ## Symbol Identity & Namespace Discipline (Mandatory)
 
 Do not treat two names as equivalent because they "look related" (for example,

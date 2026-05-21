@@ -171,6 +171,13 @@ pub(super) fn pre_resolve_array_modifications(
         if comp.each_modifications.contains(name) {
             continue; // `each` modifications are not distributed
         }
+        // Keep component-reference modifiers (for example `R=R`) in symbolic
+        // form so per-element indexing can preserve owner scope (`R[1]`).
+        // Eager resolution here can over-collapse to outer-source expressions
+        // like `RRef.d`, losing the declaring component context.
+        if matches!(expr, ast::Expression::ComponentReference(_)) {
+            continue;
+        }
         let val = resolve_mod_to_array(expr, mod_env, effective_components, tree);
         if matches!(val, ast::Expression::Array { .. }) {
             resolved.push((name.clone(), val));
