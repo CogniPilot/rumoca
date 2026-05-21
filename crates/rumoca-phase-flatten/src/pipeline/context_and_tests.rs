@@ -983,124 +983,179 @@ pub(crate) fn process_class_instance(
 ) -> Result<(), FlattenError> {
     let previous_class_scope = ctx.current_class_scope_path.clone();
     ctx.current_class_scope_path = class_def_id.and_then(|id| tree.def_map.get(&id).cloned());
+    let result = process_class_instance_body(ctx, flat, class_data, component_override_map, tree);
+    ctx.current_class_scope_path = previous_class_scope;
+    result
+}
 
+fn process_class_instance_body(
+    ctx: &mut Context,
+    flat: &mut Model,
+    class_data: &ClassInstanceData,
+    component_override_map: &ComponentOverrideMap,
+    tree: &ClassTree,
+) -> Result<(), FlattenError> {
     let prefix = &class_data.qualified_name;
     let def_map = Some(&tree.def_map);
-    let (override_packages, override_functions) = override_context_for_scope(
-        &class_data.qualified_name.to_flat_string(),
-        component_override_map,
+    let scope = class_data.qualified_name.to_flat_string();
+    let (override_packages, override_functions) =
+        override_context_for_scope(&scope, component_override_map, tree);
+    set_class_imports(ctx, class_data, tree);
+    let params = ClassFlattenParams {
+        prefix,
+        def_map,
         tree,
-    );
+        override_packages: &override_packages,
+        override_functions: &override_functions,
+    };
+    flatten_class_equations(ctx, flat, class_data, &params)?;
+    flatten_class_algorithms(flat, class_data, &ctx.current_imports, &params)
+}
 
-    // MLS §13.2: Set the import map for this class instance so that
-    // qualification resolves imported short names (e.g., `pi` → `Modelica.Constants.pi`)
-    // instead of incorrectly prefixing them with the component path.
+struct ClassFlattenParams<'a> {
+    prefix: &'a QualifiedName,
+    def_map: Option<&'a crate::ResolveDefMap>,
+    tree: &'a ClassTree,
+    override_packages: &'a [String],
+    override_functions: &'a rustc_hash::FxHashMap<String, String>,
+}
+
+fn set_class_imports(ctx: &mut Context, class_data: &ClassInstanceData, tree: &ClassTree) {
+    // MLS §13.2: Resolve imported short names instead of prefix-qualifying with component path.
     let mut imports: crate::qualify::ImportMap =
         class_data.resolved_imports.iter().cloned().collect();
     if let Some(class_name) = class_scope_name_for_instance(class_data) {
         crate::qualify::collect_lexical_package_aliases(tree, &class_name, &mut imports);
     }
     ctx.current_imports = imports;
+}
 
-    // Convert regular equations.
+fn flatten_class_equations(
+    ctx: &mut Context,
+    flat: &mut Model,
+    class_data: &ClassInstanceData,
+    params: &ClassFlattenParams<'_>,
+) -> Result<(), FlattenError> {
     for inst_eq in &class_data.equations {
-        // Handle when-equations separately (pass context for parameter evaluation).
-        let mut clauses = when_equations::flatten_when_equation(ctx, inst_eq, prefix, def_map)?;
-        for clause in &mut clauses {
-            rewrite_function_overrides_in_when_clause(
-                clause,
-                tree,
-                &override_packages,
-                &override_functions,
-            );
-        }
-        flat.when_clauses.extend(clauses);
-
-        // Handle other equations (including for-loops that may contain when-equations).
-        let mut flattened =
-            equations::flatten_equation_with_def_map(ctx, inst_eq, prefix, def_map)?;
-        rewrite_function_overrides_in_flattened(
-            &mut flattened,
-            tree,
-            &override_packages,
-            &override_functions,
-        );
-        let equation_base = flat.equations.len();
-        for eq in flattened.equations {
-            flat.add_equation(eq);
-        }
-        for mut for_eq in flattened.for_equations {
-            for_eq.first_equation_index += equation_base;
-            flat.add_for_equation(for_eq);
-        }
-        flat.assert_equations.extend(flattened.assert_equations);
-        flat.when_clauses.extend(flattened.when_clauses);
-        flat.definite_roots.extend(flattened.definite_roots);
-        flat.branches.extend(flattened.branches);
-        flat.potential_roots.extend(flattened.potential_roots);
+        flatten_regular_equation(ctx, flat, inst_eq, params)?;
     }
-
-    // Convert initial equations (when-equations are rejected per EQN-006).
     for inst_eq in &class_data.initial_equations {
-        if matches!(&inst_eq.equation, rumoca_ir_ast::Equation::When(_)) {
-            return Err(FlattenError::unsupported_equation(
-                "when-equations are not allowed in initial equations (MLS §8.6)",
-                inst_eq.span,
-            ));
-        }
+        flatten_initial_equation(ctx, flat, inst_eq, params)?;
+    }
+    Ok(())
+}
 
-        let mut flattened =
-            equations::flatten_equation_with_def_map(ctx, inst_eq, prefix, def_map)?;
-        rewrite_function_overrides_in_flattened(
-            &mut flattened,
-            tree,
-            &override_packages,
-            &override_functions,
+fn flatten_regular_equation(
+    ctx: &mut Context,
+    flat: &mut Model,
+    inst_eq: &rumoca_ir_ast::InstanceEquation,
+    params: &ClassFlattenParams<'_>,
+) -> Result<(), FlattenError> {
+    let mut clauses =
+        when_equations::flatten_when_equation(ctx, inst_eq, params.prefix, params.def_map)?;
+    for clause in &mut clauses {
+        rewrite_function_overrides_in_when_clause(
+            clause,
+            params.tree,
+            params.override_packages,
+            params.override_functions,
         );
-        let equation_base = flat.initial_equations.len();
-        for eq in flattened.equations {
-            flat.add_initial_equation(eq);
-        }
-        for mut for_eq in flattened.for_equations {
-            for_eq.first_equation_index += equation_base;
-            flat.add_initial_for_equation(for_eq);
-        }
-        flat.initial_assert_equations
-            .extend(flattened.assert_equations);
-        if !flattened.when_clauses.is_empty() {
-            return Err(FlattenError::unsupported_equation(
-                "when-equations are not allowed in initial equations (MLS §8.6)",
-                inst_eq.span,
-            ));
-        }
+    }
+    flat.when_clauses.extend(clauses);
+
+    let mut flattened =
+        equations::flatten_equation_with_def_map(ctx, inst_eq, params.prefix, params.def_map)?;
+    rewrite_function_overrides_in_flattened(
+        &mut flattened,
+        params.tree,
+        params.override_packages,
+        params.override_functions,
+    );
+    let equation_base = flat.equations.len();
+    for eq in flattened.equations {
+        flat.add_equation(eq);
+    }
+    for mut for_eq in flattened.for_equations {
+        for_eq.first_equation_index += equation_base;
+        flat.add_for_equation(for_eq);
+    }
+    flat.assert_equations.extend(flattened.assert_equations);
+    flat.when_clauses.extend(flattened.when_clauses);
+    flat.definite_roots.extend(flattened.definite_roots);
+    flat.branches.extend(flattened.branches);
+    flat.potential_roots.extend(flattened.potential_roots);
+    Ok(())
+}
+
+fn flatten_initial_equation(
+    ctx: &mut Context,
+    flat: &mut Model,
+    inst_eq: &rumoca_ir_ast::InstanceEquation,
+    params: &ClassFlattenParams<'_>,
+) -> Result<(), FlattenError> {
+    if matches!(&inst_eq.equation, rumoca_ir_ast::Equation::When(_)) {
+        return Err(FlattenError::unsupported_equation(
+            "when-equations are not allowed in initial equations (MLS §8.6)",
+            inst_eq.span,
+        ));
     }
 
-    // Convert algorithms (preserve structure per SPEC_0020)
-    let imports = &ctx.current_imports;
+    let mut flattened =
+        equations::flatten_equation_with_def_map(ctx, inst_eq, params.prefix, params.def_map)?;
+    rewrite_function_overrides_in_flattened(
+        &mut flattened,
+        params.tree,
+        params.override_packages,
+        params.override_functions,
+    );
+    let equation_base = flat.initial_equations.len();
+    for eq in flattened.equations {
+        flat.add_initial_equation(eq);
+    }
+    for mut for_eq in flattened.for_equations {
+        for_eq.first_equation_index += equation_base;
+        flat.add_initial_for_equation(for_eq);
+    }
+    flat.initial_assert_equations
+        .extend(flattened.assert_equations);
+    if !flattened.when_clauses.is_empty() {
+        return Err(FlattenError::unsupported_equation(
+            "when-equations are not allowed in initial equations (MLS §8.6)",
+            inst_eq.span,
+        ));
+    }
+    Ok(())
+}
+
+fn flatten_class_algorithms(
+    flat: &mut Model,
+    class_data: &ClassInstanceData,
+    imports: &qualify::ImportMap,
+    params: &ClassFlattenParams<'_>,
+) -> Result<(), FlattenError> {
     for inst_algs in &class_data.algorithms {
-        let mut flat_alg = flatten_algorithm_section(inst_algs, prefix, imports, def_map)?;
+        let mut flat_alg =
+            flatten_algorithm_section(inst_algs, params.prefix, imports, params.def_map)?;
         rewrite_function_overrides_in_algorithm(
             &mut flat_alg,
-            tree,
-            &override_packages,
-            &override_functions,
+            params.tree,
+            params.override_packages,
+            params.override_functions,
         );
         flat.algorithms.push(flat_alg);
     }
 
-    // Convert initial algorithms
     for inst_algs in &class_data.initial_algorithms {
-        let mut flat_alg = flatten_algorithm_section(inst_algs, prefix, imports, def_map)?;
+        let mut flat_alg =
+            flatten_algorithm_section(inst_algs, params.prefix, imports, params.def_map)?;
         rewrite_function_overrides_in_algorithm(
             &mut flat_alg,
-            tree,
-            &override_packages,
-            &override_functions,
+            params.tree,
+            params.override_packages,
+            params.override_functions,
         );
         flat.initial_algorithms.push(flat_alg);
     }
-
-    ctx.current_class_scope_path = previous_class_scope;
     Ok(())
 }
 
@@ -1291,12 +1346,7 @@ fn canonicalize_class_reference_paths(
 ) -> ast::Expression {
     match expr {
         ast::Expression::ComponentReference(cr) => ast::Expression::ComponentReference(
-            canonicalize_class_component_ref(
-                cr,
-                def_map,
-                class_def_ids,
-                current_class_scope_path,
-            ),
+            canonicalize_class_component_ref(cr, def_map, class_def_ids, current_class_scope_path),
         ),
         ast::Expression::Binary { op, lhs, rhs } => ast::Expression::Binary {
             op: op.clone(),
