@@ -574,6 +574,10 @@ fn completion_class_names_tolerate_unrelated_resolve_diagnostics() {
                 Real x;
               end A;
             end Lib;
+
+            model Broken
+              MissingType unresolved;
+            end Broken;
             "#,
         )
         .expect("input should parse");

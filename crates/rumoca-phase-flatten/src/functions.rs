@@ -244,16 +244,40 @@ fn lookup_function_with_scope(
     func_name: &str,
     caller_scope: Option<&str>,
 ) -> Option<(String, flat::Function)> {
-    let qualified_name = resolve_function_qualified_name_with_scope(tree, func_name, caller_scope)?;
-    let class_def = tree.get_class_by_qualified_name(&qualified_name)?;
+    let (lookup_name, emitted_name) =
+        resolve_function_target_with_scope(tree, func_name, caller_scope)?;
+    let class_def = tree.get_class_by_qualified_name(&lookup_name)?;
     let flat_func = convert_callable(
         tree,
         class_def,
-        &qualified_name,
+        &emitted_name,
         &tree.source_map,
         &tree.def_map,
     )?;
-    Some((qualified_name, flat_func))
+    Some((emitted_name, flat_func))
+}
+
+fn resolve_function_target_with_scope(
+    tree: &ast::ClassTree,
+    func_name: &str,
+    caller_scope: Option<&str>,
+) -> Option<(String, String)> {
+    if let Some(class_def) = tree.get_class_by_qualified_name(func_name)
+        && is_callable_class_type(&class_def.class_type)
+    {
+        return Some((func_name.to_string(), func_name.to_string()));
+    }
+
+    if let Some((package_name, leaf)) = func_name.rsplit_once('.')
+        && tree.get_class_by_qualified_name(package_name).is_some()
+        && let Some(inherited_name) =
+            crate::pipeline::resolve_function_in_package_chain(tree, package_name, leaf)
+    {
+        return Some((inherited_name, func_name.to_string()));
+    }
+
+    resolve_function_qualified_name_with_scope(tree, func_name, caller_scope)
+        .map(|name| (name.clone(), name))
 }
 
 /// Resolve alias-style function names (e.g. `Medium.dynamicViscosity`) by
@@ -695,6 +719,7 @@ fn convert_function(
     // Use pure flag from ast::ClassDef (MLS §12.3)
     // Functions are pure by default unless declared with `impure` keyword
     func.pure = class_def.pure;
+    func.partial = class_def.partial;
 
     // Convert external function declaration (MLS §12.9)
     if let Some(ref ext) = class_def.external {

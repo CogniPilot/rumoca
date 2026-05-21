@@ -964,6 +964,22 @@ end EvaluateScopeWarning;
     }
 
     #[test]
+    fn test_evaluate_on_function_local_component_is_allowed() {
+        let source = r#"
+function F
+  input Real x[:];
+  output Real y;
+protected
+  Integer m=size(x, 1) annotation(Evaluate=true);
+algorithm
+  y := m;
+end F;
+"#;
+        resolve_test_source(source)
+            .expect("Evaluate annotation on function local component should be accepted");
+    }
+
+    #[test]
     fn test_when_single_assign_allows_distinct_indexed_targets() {
         let source = r#"
 model IndexedWhenTargets

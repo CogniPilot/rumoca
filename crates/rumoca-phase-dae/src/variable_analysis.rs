@@ -726,21 +726,80 @@ fn is_builtin_or_runtime_intrinsic_function(name: &VarName) -> bool {
 }
 
 pub(crate) fn resolve_flat_function<'a>(name: &VarName, flat: &'a Model) -> Option<&'a Function> {
-    // Strict lookup only: function calls must already be fully resolved during
-    // compile/lower phases. No suffix/name heuristics here.
-    flat.functions.get(name)
+    flat.functions
+        .get(name)
+        .or_else(|| resolve_flat_function_by_unique_suffix(name, flat))
 }
 
-fn validate_function_call_name(name: &VarName, flat: &Model, span: Span) -> Result<(), ToDaeError> {
+fn function_has_implementation(func: &Function) -> bool {
+    func.external.is_some() || !func.body.is_empty()
+}
+
+fn resolve_flat_function_by_unique_suffix<'a>(
+    name: &VarName,
+    flat: &'a Model,
+) -> Option<&'a Function> {
+    let text = name.as_str();
+    let parts: Vec<&str> = text.split('.').collect();
+    // Keep member-style unresolved calls (e.g. world.f(...)) strict: those
+    // should be resolved upstream, not by ToDae suffix guessing.
+    if parts.len() < 3 {
+        return None;
+    }
+
+    for start in 1..parts.len() {
+        let suffix = parts[start..].join(".");
+        let dotted_suffix = format!(".{suffix}");
+        let matches: Vec<&Function> = flat
+            .functions
+            .iter()
+            .filter(|(k, _)| k.as_str() == suffix || k.as_str().ends_with(&dotted_suffix))
+            .map(|(_, func)| func)
+            .collect();
+        if matches.is_empty() {
+            continue;
+        }
+        if matches.len() == 1 {
+            return matches.into_iter().next();
+        }
+
+        // Prefer a unique executable implementation when the suffix matches
+        // include both partial declaration stubs and concrete redeclarations.
+        // This keeps compile-only lookup deterministic for calls such as
+        // Medium.setState_pTX that are legally redeclared in media packages.
+        let executable: Vec<&Function> = matches
+            .iter()
+            .copied()
+            .filter(|func| function_has_implementation(func))
+            .collect();
+        if executable.len() == 1 {
+            return executable.into_iter().next();
+        }
+    }
+    None
+}
+
+fn validate_function_call_name(
+    name: &VarName,
+    flat: &Model,
+    span: Span,
+) -> Result<VarName, ToDaeError> {
     if is_builtin_or_runtime_intrinsic_function(name) {
-        return Ok(());
+        return Ok(name.clone());
     }
 
     let Some(func) = resolve_flat_function(name, flat) else {
         return Err(ToDaeError::unresolved_function_call(name.as_str(), span));
     };
 
-    if func.external.is_none() && func.body.is_empty() {
+    // MLS partial functions are declarations that can be redeclared by concrete
+    // packages. Keep them symbolic for compile-only DAE; runtime validation
+    // still rejects execution without an implementation.
+    if !function_has_implementation(func) && !func.partial {
+        if let Some(resolved) = resolve_unique_executable_short_name(name, flat, func.name.as_str())
+        {
+            return Ok(resolved);
+        }
         let short_name = func
             .name
             .as_str()
@@ -752,7 +811,39 @@ fn validate_function_call_name(name: &VarName, flat: &Model, span: Span) -> Resu
         }
     }
 
-    Ok(())
+    Ok(func.name.clone())
+}
+
+fn resolve_unique_executable_short_name(
+    requested_name: &VarName,
+    flat: &Model,
+    current_name: &str,
+) -> Option<VarName> {
+    let requested_short = requested_name
+        .as_str()
+        .rsplit('.')
+        .next()
+        .unwrap_or(requested_name.as_str());
+
+    let mut matches = flat.functions.iter().filter_map(|(name, func)| {
+        if name.as_str() == current_name {
+            return None;
+        }
+        let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+        if short != requested_short {
+            return None;
+        }
+        if func.external.is_none() && func.body.is_empty() {
+            return None;
+        }
+        Some(name.clone())
+    });
+
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first)
 }
 
 fn validate_field_access_functions(
@@ -856,9 +947,9 @@ fn validate_flat_expression_functions(
             is_constructor,
         } => {
             if !is_constructor {
-                validate_function_call_name(name, flat, span)?;
-                if !is_builtin_or_runtime_intrinsic_function(name) {
-                    reachable_calls.push(name.clone());
+                let resolved_name = validate_function_call_name(name, flat, span)?;
+                if !is_builtin_or_runtime_intrinsic_function(&resolved_name) {
+                    reachable_calls.push(resolved_name);
                 }
             }
             for arg in args {
@@ -986,9 +1077,9 @@ fn validate_statement_functions(
             outputs,
         } => {
             let name = component_reference_to_var_name(comp);
-            validate_function_call_name(&name, flat, span)?;
-            if !is_builtin_or_runtime_intrinsic_function(&name) {
-                reachable_calls.push(name);
+            let resolved_name = validate_function_call_name(&name, flat, span)?;
+            if !is_builtin_or_runtime_intrinsic_function(&resolved_name) {
+                reachable_calls.push(resolved_name);
             }
             for arg in args {
                 validate_flat_expression_functions(arg, flat, span, reachable_calls)?;

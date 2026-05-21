@@ -725,9 +725,9 @@ pub(crate) fn rewrite_function_extends_aliases_in_flat_functions(
     flat: &mut Model,
     tree: &ClassTree,
 ) {
-    let override_packages: Vec<String> = Vec::new();
     let override_functions = OverrideFunctionMap::default();
     for function in flat.functions.values_mut() {
+        let override_packages = function_package_override_chain(function.name.as_str(), tree);
         for param in function
             .inputs
             .iter_mut()
@@ -751,6 +751,17 @@ pub(crate) fn rewrite_function_extends_aliases_in_flat_functions(
                 &override_functions,
             );
         }
+    }
+}
+
+fn function_package_override_chain(function_name: &str, tree: &ClassTree) -> Vec<String> {
+    let Some((package_name, _leaf)) = function_name.rsplit_once('.') else {
+        return Vec::new();
+    };
+    if tree.get_class_by_qualified_name(package_name).is_some() {
+        vec![package_name.to_string()]
+    } else {
+        Vec::new()
     }
 }
 

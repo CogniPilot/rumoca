@@ -105,6 +105,17 @@ If MSL quality/baseline data changes, regenerate and promote it using the
 workflow in `SPEC_0025_PR_REVIEW_PROCESS.md` and
 `SPEC_0030_COVERAGE_TRIM_PROCESS.md`.
 
+## Compile-Time Performance Triage
+
+If MSL runs show many compile timeouts or very slow compiles:
+
+- Do not only increase timeout limits.
+- Reproduce with one concrete model first (for example via
+  `modelica_compare_cli.mjs probe-compile --model ... --compile-debug`).
+- Profile Rumoca compiler hot paths with Rust tooling (`cargo`-based
+  profiling/bench workflows) to find the dominant phase/crate before changing
+  compile strategy.
+
 ## Architecture Discipline
 
 - Respect crate boundaries and phase ownership (`SPEC_0029`).

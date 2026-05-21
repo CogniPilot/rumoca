@@ -3,11 +3,12 @@ use crate::when_guard::when_guard_activation_expr;
 use crate::{
     dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression, flat_to_dae_var_name,
 };
+mod canonicalize_discrete_assignments;
 mod rewrite_discrete;
 mod slice_lowering;
 mod substitution;
 mod target_names;
-use rewrite_discrete::{discrete_assignment_rhs_var_name, rewrite_discrete_self_refs_to_pre};
+use rewrite_discrete::rewrite_discrete_self_refs_to_pre;
 use slice_lowering::lower_assignment_statement;
 use substitution::*;
 use target_names::{
@@ -15,12 +16,15 @@ use target_names::{
     algorithm_output_target_name, varref_with_subscripts,
 };
 
-enum DiscreteEquationBucket {
+pub(super) enum DiscreteEquationBucket {
     DiscreteReal,
     DiscreteValued,
 }
 
-fn discrete_equation_bucket_for_lhs(dae: &Dae, lhs: &VarName) -> Option<DiscreteEquationBucket> {
+pub(super) fn discrete_equation_bucket_for_lhs(
+    dae: &Dae,
+    lhs: &VarName,
+) -> Option<DiscreteEquationBucket> {
     // MLS Appendix B notes reinit as a special case outside B.1b/B.1c.
     // Solver-facing DAE stores state resets in the event partition (`f_z`) so
     // runtime event updates can apply them without high-level when clauses.
@@ -131,381 +135,13 @@ pub(super) fn route_discrete_event_equations(
     }
 }
 
+#[cfg(test)]
 fn is_connection_equation_origin(origin: &str) -> bool {
     origin.contains("connection equation:")
 }
 
-fn anchored_collision_targets(
-    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
-) -> std::collections::HashSet<VarName> {
-    grouped
-        .iter()
-        .filter(|(_, equations)| {
-            equations
-                .iter()
-                .any(|equation| !is_connection_equation_origin(&equation.origin))
-        })
-        .map(|(lhs, _)| lhs.clone())
-        .collect()
-}
-
-fn flip_edge_key(origin: &str, lhs: &VarName, rhs: &VarName) -> (String, String, String) {
-    (
-        origin.to_string(),
-        lhs.as_str().to_string(),
-        rhs.as_str().to_string(),
-    )
-}
-
-fn choose_collision_keep_index(
-    equations: &[rumoca_ir_dae::Equation],
-    lhs: &VarName,
-    anchored_targets: &std::collections::HashSet<VarName>,
-    flipped_once: &std::collections::HashSet<(String, String, String)>,
-) -> Option<usize> {
-    for (idx, equation) in equations.iter().enumerate() {
-        let rhs_expr = dae_to_flat_expression(&equation.rhs);
-        let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
-            continue;
-        };
-        let reverse_key = flip_edge_key(&equation.origin, &rhs_target, lhs);
-        if flipped_once.contains(&reverse_key) {
-            return Some(idx);
-        }
-    }
-
-    for (idx, equation) in equations.iter().enumerate() {
-        let rhs_expr = dae_to_flat_expression(&equation.rhs);
-        let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
-            continue;
-        };
-        if anchored_targets.contains(&rhs_target) {
-            return Some(idx);
-        }
-    }
-    None
-}
-
-fn has_reverse_connection_alias(
-    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
-    lhs: &VarName,
-    rhs_target: &VarName,
-) -> bool {
-    grouped.get(rhs_target).is_some_and(|rhs_equations| {
-        rhs_equations.iter().any(|rhs_equation| {
-            if !is_connection_equation_origin(&rhs_equation.origin) {
-                return false;
-            }
-            let rhs_expr = dae_to_flat_expression(&rhs_equation.rhs);
-            discrete_assignment_rhs_var_name(&rhs_expr)
-                .as_ref()
-                .is_some_and(|candidate| candidate == lhs)
-        })
-    })
-}
-
-fn keep_collision_equation_without_flip(dae: &Dae, lhs: &VarName, rhs_target: &VarName) -> bool {
-    rhs_target == lhs || discrete_equation_bucket_for_lhs(dae, rhs_target).is_none()
-}
-
-fn resolve_collision_equation(
-    dae: &Dae,
-    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
-    lhs: &VarName,
-    equation: &rumoca_ir_dae::Equation,
-    rhs_target: &VarName,
-    flipped_once: &std::collections::HashSet<(String, String, String)>,
-) -> Option<VarName> {
-    if keep_collision_equation_without_flip(dae, lhs, rhs_target) {
-        return None;
-    }
-    if has_reverse_connection_alias(grouped, lhs, rhs_target) {
-        return Some(lhs.clone());
-    }
-    let reverse_flip_key = flip_edge_key(&equation.origin, rhs_target, lhs);
-    if flipped_once.contains(&reverse_flip_key) {
-        return Some(lhs.clone());
-    }
-    Some(rhs_target.clone())
-}
-
-fn process_collision_equation(
-    dae: &Dae,
-    grouped: &mut IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
-    lhs: &VarName,
-    equation: rumoca_ir_dae::Equation,
-    flipped_once: &mut std::collections::HashSet<(String, String, String)>,
-    debug_canonicalize: bool,
-) -> bool {
-    let rhs_expr = dae_to_flat_expression(&equation.rhs);
-    let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
-        if debug_canonicalize {
-            eprintln!(
-                "f_m canonicalize no-rhs-var lhs={} origin={}",
-                lhs, equation.origin
-            );
-        }
-        grouped.entry(lhs.clone()).or_default().push(equation);
-        return false;
-    };
-
-    let Some(resolved_target) =
-        resolve_collision_equation(dae, grouped, lhs, &equation, &rhs_target, flipped_once)
-    else {
-        if debug_canonicalize {
-            eprintln!(
-                "f_m canonicalize keep-collision lhs={} rhs={} origin={}",
-                lhs, rhs_target, equation.origin
-            );
-        }
-        grouped.entry(lhs.clone()).or_default().push(equation);
-        return false;
-    };
-
-    if resolved_target == *lhs {
-        if debug_canonicalize {
-            eprintln!(
-                "f_m canonicalize drop-redundant-edge lhs={} rhs={} origin={}",
-                lhs, rhs_target, equation.origin
-            );
-        }
-        return true;
-    }
-
-    flipped_once.insert(flip_edge_key(&equation.origin, lhs, &rhs_target));
-    let mut flipped = equation;
-    flipped.lhs = Some(flat_to_dae_var_name(&resolved_target));
-    flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
-        name: lhs.clone(),
-        subscripts: vec![],
-    });
-    if debug_canonicalize {
-        eprintln!(
-            "f_m canonicalize flip lhs={} -> lhs={} origin={}",
-            lhs, resolved_target, flipped.origin
-        );
-    }
-    grouped.entry(resolved_target).or_default().push(flipped);
-    true
-}
-
-fn resolve_connection_alias_target_collisions(
-    grouped: &mut IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
-    dae: &Dae,
-) {
-    let debug_canonicalize = std::env::var("RUMOCA_DEBUG_FM_CANON").is_ok();
-    let anchored_targets = anchored_collision_targets(grouped);
-
-    let mut iteration = 0usize;
-    let max_iterations = 16usize;
-    let mut flipped_once: std::collections::HashSet<(String, String, String)> =
-        std::collections::HashSet::new();
-    loop {
-        iteration += 1;
-        if iteration > max_iterations {
-            if debug_canonicalize {
-                eprintln!("f_m canonicalize collision-pass reached max iterations");
-            }
-            break;
-        }
-
-        let mut changed = false;
-        let keys: Vec<VarName> = grouped.keys().cloned().collect();
-
-        for lhs in keys {
-            let Some(equations) = grouped.get(&lhs) else {
-                continue;
-            };
-            if equations.len() <= 1 {
-                continue;
-            }
-            if equations
-                .iter()
-                .any(|equation| !is_connection_equation_origin(&equation.origin))
-            {
-                continue;
-            }
-
-            let candidate_keep_idx =
-                choose_collision_keep_index(equations, &lhs, &anchored_targets, &flipped_once);
-
-            let Some(mut current_equations) = grouped.swap_remove(&lhs) else {
-                continue;
-            };
-            if current_equations.len() <= 1 {
-                grouped.insert(lhs.clone(), current_equations);
-                continue;
-            }
-
-            let keep_idx = candidate_keep_idx
-                .unwrap_or(0)
-                .min(current_equations.len() - 1);
-            let keep_equation = current_equations.remove(keep_idx);
-            grouped.insert(lhs.clone(), vec![keep_equation]);
-
-            for equation in current_equations {
-                changed |= process_collision_equation(
-                    dae,
-                    grouped,
-                    &lhs,
-                    equation,
-                    &mut flipped_once,
-                    debug_canonicalize,
-                );
-            }
-        }
-
-        if !changed {
-            break;
-        }
-    }
-}
-
 pub(super) fn canonicalize_discrete_assignment_equations(dae: &mut Dae) {
-    let debug_canonicalize = std::env::var("RUMOCA_DEBUG_FM_CANON").is_ok();
-    let (mut grouped, passthrough) = drain_grouped_discrete_assignments(dae);
-    reroute_connection_aliases_for_defined_targets(&mut grouped, dae);
-    resolve_connection_alias_target_collisions(&mut grouped, dae);
-    debug_log_grouped_duplicates(debug_canonicalize, &grouped);
-
-    let mut rebuilt = Vec::with_capacity(passthrough.len() + grouped.len());
-    rebuilt.extend(passthrough);
-    for (lhs, equations) in grouped {
-        rebuilt.extend(canonicalize_assignment_group(lhs, equations));
-    }
-    dae.f_m = rebuilt;
-    debug_log_final_duplicates(debug_canonicalize, &dae.f_m);
-}
-
-fn drain_grouped_discrete_assignments(
-    dae: &mut Dae,
-) -> (
-    IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
-    Vec<rumoca_ir_dae::Equation>,
-) {
-    let mut grouped: IndexMap<VarName, Vec<rumoca_ir_dae::Equation>> = IndexMap::new();
-    let mut passthrough = Vec::new();
-    for equation in dae.f_m.drain(..) {
-        if let Some(lhs) = equation.lhs.as_ref() {
-            grouped
-                .entry(dae_to_flat_var_name(lhs))
-                .or_default()
-                .push(equation);
-        } else {
-            passthrough.push(equation);
-        }
-    }
-    (grouped, passthrough)
-}
-
-fn reroute_connection_aliases_for_defined_targets(
-    grouped: &mut IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
-    dae: &Dae,
-) {
-    let mut rerouted: IndexMap<VarName, Vec<rumoca_ir_dae::Equation>> = IndexMap::new();
-    for (lhs, equations) in grouped.iter_mut() {
-        if equations.len() <= 1
-            || !equations
-                .iter()
-                .any(|equation| !is_connection_equation_origin(&equation.origin))
-        {
-            continue;
-        }
-
-        for equation in equations
-            .iter()
-            .filter(|equation| is_connection_equation_origin(&equation.origin))
-        {
-            let rhs_expr = dae_to_flat_expression(&equation.rhs);
-            let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
-                continue;
-            };
-            if keep_collision_equation_without_flip(dae, lhs, &rhs_target) {
-                continue;
-            }
-            let mut flipped = equation.clone();
-            flipped.lhs = Some(flat_to_dae_var_name(&rhs_target));
-            flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
-                name: lhs.clone(),
-                subscripts: vec![],
-            });
-            rerouted.entry(rhs_target).or_default().push(flipped);
-        }
-    }
-    for (lhs, aliases) in rerouted {
-        grouped.entry(lhs).or_default().extend(aliases);
-    }
-}
-
-fn canonicalize_assignment_group(
-    lhs: VarName,
-    mut equations: Vec<rumoca_ir_dae::Equation>,
-) -> Vec<rumoca_ir_dae::Equation> {
-    if equations.len() == 1 {
-        let mut equation = equations.remove(0);
-        let rewritten =
-            rewrite_discrete_self_refs_to_pre(&dae_to_flat_expression(&equation.rhs), &lhs);
-        equation.rhs = flat_to_dae_expression(&rewritten);
-        return vec![equation];
-    }
-
-    if equations
-        .iter()
-        .any(|equation| !is_connection_equation_origin(&equation.origin))
-    {
-        equations.retain(|equation| !is_connection_equation_origin(&equation.origin));
-    }
-
-    let mut seen_origin = HashSet::<String>::default();
-    equations.retain(|equation| seen_origin.insert(equation.origin.clone()));
-
-    let mut seen_rhs = HashSet::<String>::default();
-    let mut deduped = Vec::new();
-    for mut equation in equations {
-        let rewritten =
-            rewrite_discrete_self_refs_to_pre(&dae_to_flat_expression(&equation.rhs), &lhs);
-        equation.rhs = flat_to_dae_expression(&rewritten);
-        let rhs_key = format!("{:?}", equation.rhs);
-        if seen_rhs.insert(rhs_key) {
-            deduped.push(equation);
-        }
-    }
-    deduped
-}
-
-fn debug_log_grouped_duplicates(
-    debug_canonicalize: bool,
-    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
-) {
-    if !debug_canonicalize {
-        return;
-    }
-    for (lhs, equations) in grouped.iter().filter(|(_, eqs)| eqs.len() > 1) {
-        eprintln!(
-            "f_m canonicalize grouped-dup lhs={} count={} origins={:?}",
-            lhs,
-            equations.len(),
-            equations
-                .iter()
-                .map(|eq| eq.origin.clone())
-                .collect::<Vec<_>>()
-        );
-    }
-}
-
-fn debug_log_final_duplicates(debug_canonicalize: bool, equations: &[rumoca_ir_dae::Equation]) {
-    if !debug_canonicalize {
-        return;
-    }
-    let mut counts: IndexMap<String, usize> = IndexMap::new();
-    for equation in equations {
-        if let Some(lhs) = equation.lhs.as_ref() {
-            *counts.entry(lhs.as_str().to_string()).or_default() += 1;
-        }
-    }
-    for (lhs, count) in counts.into_iter().filter(|(_, count)| *count > 1) {
-        eprintln!("f_m canonicalize final-dup lhs={} count={}", lhs, count);
-    }
+    canonicalize_discrete_assignments::canonicalize_discrete_assignment_equations(dae);
 }
 
 fn lookup_algorithm_target_scalar_count(dae: &Dae, target: &VarName) -> usize {
@@ -535,43 +171,141 @@ fn not_expr(expr: Expression) -> Expression {
     if let Expression::Literal(Literal::Boolean(flag)) = expr {
         return bool_expr(!flag);
     }
+    if let Expression::Unary {
+        op: rumoca_ir_core::OpUnary::Not(_),
+        rhs,
+    } = expr
+    {
+        return *rhs;
+    }
     Expression::Unary {
         op: rumoca_ir_core::OpUnary::Not(Default::default()),
         rhs: Box::new(expr),
     }
 }
 
+fn expr_structural_key(expr: &Expression) -> String {
+    format!("{expr:?}")
+}
+
+fn collect_bool_terms_for_op(expr: Expression, is_and: bool, terms: &mut Vec<Expression>) {
+    match expr {
+        Expression::Binary { op, lhs, rhs }
+            if (is_and && matches!(op, rumoca_ir_core::OpBinary::And(_)))
+                || (!is_and && matches!(op, rumoca_ir_core::OpBinary::Or(_))) =>
+        {
+            collect_bool_terms_for_op(*lhs, is_and, terms);
+            collect_bool_terms_for_op(*rhs, is_and, terms);
+        }
+        other => terms.push(other),
+    }
+}
+
+fn not_inner_key(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::Unary {
+            op: rumoca_ir_core::OpUnary::Not(_),
+            rhs,
+        } => Some(expr_structural_key(rhs)),
+        _ => None,
+    }
+}
+
 fn and_expr(lhs: Expression, rhs: Expression) -> Expression {
-    if is_bool_expr(&lhs, false) || is_bool_expr(&rhs, false) {
-        return bool_expr(false);
+    let mut raw_terms = Vec::new();
+    collect_bool_terms_for_op(lhs, true, &mut raw_terms);
+    collect_bool_terms_for_op(rhs, true, &mut raw_terms);
+
+    let mut terms = Vec::new();
+    let mut seen = HashSet::new();
+    let mut negated = HashSet::new();
+    for term in raw_terms {
+        if is_bool_expr(&term, false) {
+            return bool_expr(false);
+        }
+        if is_bool_expr(&term, true) {
+            continue;
+        }
+        let term_key = expr_structural_key(&term);
+        if seen.contains(&term_key) {
+            continue;
+        }
+        if let Some(inner_key) = not_inner_key(&term) {
+            if seen.contains(&inner_key) {
+                return bool_expr(false);
+            }
+            negated.insert(inner_key);
+        } else if negated.contains(&term_key) {
+            return bool_expr(false);
+        }
+        seen.insert(term_key);
+        terms.push(term);
     }
-    if is_bool_expr(&lhs, true) {
-        return rhs;
-    }
-    if is_bool_expr(&rhs, true) {
-        return lhs;
-    }
-    Expression::Binary {
-        op: rumoca_ir_core::OpBinary::And(Default::default()),
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
+
+    match terms.len() {
+        0 => bool_expr(true),
+        1 => terms.remove(0),
+        _ => {
+            let mut iter = terms.into_iter();
+            let mut acc = iter.next().expect("non-empty terms");
+            for term in iter {
+                acc = Expression::Binary {
+                    op: rumoca_ir_core::OpBinary::And(Default::default()),
+                    lhs: Box::new(acc),
+                    rhs: Box::new(term),
+                };
+            }
+            acc
+        }
     }
 }
 
 fn or_expr(lhs: Expression, rhs: Expression) -> Expression {
-    if is_bool_expr(&lhs, true) || is_bool_expr(&rhs, true) {
-        return bool_expr(true);
+    let mut raw_terms = Vec::new();
+    collect_bool_terms_for_op(lhs, false, &mut raw_terms);
+    collect_bool_terms_for_op(rhs, false, &mut raw_terms);
+
+    let mut terms = Vec::new();
+    let mut seen = HashSet::new();
+    let mut negated = HashSet::new();
+    for term in raw_terms {
+        if is_bool_expr(&term, true) {
+            return bool_expr(true);
+        }
+        if is_bool_expr(&term, false) {
+            continue;
+        }
+        let term_key = expr_structural_key(&term);
+        if seen.contains(&term_key) {
+            continue;
+        }
+        if let Some(inner_key) = not_inner_key(&term) {
+            if seen.contains(&inner_key) {
+                return bool_expr(true);
+            }
+            negated.insert(inner_key);
+        } else if negated.contains(&term_key) {
+            return bool_expr(true);
+        }
+        seen.insert(term_key);
+        terms.push(term);
     }
-    if is_bool_expr(&lhs, false) {
-        return rhs;
-    }
-    if is_bool_expr(&rhs, false) {
-        return lhs;
-    }
-    Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Or(Default::default()),
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
+
+    match terms.len() {
+        0 => bool_expr(false),
+        1 => terms.remove(0),
+        _ => {
+            let mut iter = terms.into_iter();
+            let mut acc = iter.next().expect("non-empty terms");
+            for term in iter {
+                acc = Expression::Binary {
+                    op: rumoca_ir_core::OpBinary::Or(Default::default()),
+                    lhs: Box::new(acc),
+                    rhs: Box::new(term),
+                };
+            }
+            acc
+        }
     }
 }
 
@@ -728,7 +462,141 @@ fn current_target_expr(target: &VarName) -> Expression {
     }
 }
 
+struct AlgorithmRewriteContext {
+    target_prefixes: HashSet<String>,
+    contains_known_target_cache: HashMap<String, bool>,
+    rewrite_skipped_subtrees: usize,
+}
+
+impl AlgorithmRewriteContext {
+    fn new(known_targets: &HashSet<VarName>) -> Self {
+        let target_prefixes = known_targets
+            .iter()
+            .filter_map(|target| path_utils::get_top_level_prefix(target.as_str()))
+            .collect();
+        Self {
+            target_prefixes,
+            contains_known_target_cache: HashMap::new(),
+            rewrite_skipped_subtrees: 0,
+        }
+    }
+
+    fn refresh_known_targets(&mut self, known_targets: &HashSet<VarName>) {
+        self.target_prefixes = known_targets
+            .iter()
+            .filter_map(|target| path_utils::get_top_level_prefix(target.as_str()))
+            .collect();
+        self.contains_known_target_cache.clear();
+    }
+
+    fn record_skip(&mut self) {
+        self.rewrite_skipped_subtrees += 1;
+    }
+
+    fn skipped_subtrees(&self) -> usize {
+        self.rewrite_skipped_subtrees
+    }
+}
+
+fn expr_var_ref_may_hit_known_target(
+    name: &VarName,
+    subscripts: &[Subscript],
+    known_targets: &HashSet<VarName>,
+    target_prefixes: &HashSet<String>,
+) -> bool {
+    let target = varref_with_subscripts(name, subscripts);
+    known_targets.contains(&target)
+        || path_utils::get_top_level_prefix(target.as_str())
+            .is_some_and(|prefix| target_prefixes.contains(prefix.as_str()))
+}
+
+fn expr_contains_known_target(
+    ctx: &mut AlgorithmRewriteContext,
+    expr: &Expression,
+    known_targets: &HashSet<VarName>,
+) -> bool {
+    let cache_key = expr_structural_key(expr);
+    if let Some(cached) = ctx.contains_known_target_cache.get(&cache_key) {
+        return *cached;
+    }
+
+    let contains = match expr {
+        Expression::VarRef { name, subscripts } => {
+            expr_var_ref_may_hit_known_target(name, subscripts, known_targets, &ctx.target_prefixes)
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            expr_contains_known_target(ctx, lhs, known_targets)
+                || expr_contains_known_target(ctx, rhs, known_targets)
+        }
+        Expression::Unary { rhs, .. } => expr_contains_known_target(ctx, rhs, known_targets),
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => args
+            .iter()
+            .any(|arg| expr_contains_known_target(ctx, arg, known_targets)),
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches
+                .iter()
+                .any(|(cond, value)| {
+                    expr_contains_known_target(ctx, cond, known_targets)
+                        || expr_contains_known_target(ctx, value, known_targets)
+                })
+                || expr_contains_known_target(ctx, else_branch, known_targets)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => elements
+            .iter()
+            .any(|element| expr_contains_known_target(ctx, element, known_targets)),
+        Expression::Range { start, step, end } => {
+            expr_contains_known_target(ctx, start, known_targets)
+                || step
+                    .as_deref()
+                    .is_some_and(|value| expr_contains_known_target(ctx, value, known_targets))
+                || expr_contains_known_target(ctx, end, known_targets)
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expr_contains_known_target(ctx, expr, known_targets)
+                || indices.iter().any(|index| {
+                    expr_contains_known_target(ctx, &index.range, known_targets)
+                })
+                || filter
+                    .as_deref()
+                    .is_some_and(|value| expr_contains_known_target(ctx, value, known_targets))
+        }
+        Expression::Index { base, subscripts } => {
+            expr_contains_known_target(ctx, base, known_targets)
+                || subscripts.iter().any(|subscript| {
+                    matches!(subscript, Subscript::Expr(value) if expr_contains_known_target(ctx, value, known_targets))
+                })
+        }
+        Expression::FieldAccess { base, .. } => expr_contains_known_target(ctx, base, known_targets),
+        Expression::Literal(_) | Expression::Empty => false,
+    };
+
+    ctx.contains_known_target_cache.insert(cache_key, contains);
+    contains
+}
+
 fn rewrite_algorithm_current_refs(
+    ctx: &mut AlgorithmRewriteContext,
+    dae: &Dae,
+    expr: &Expression,
+    current_values: &IndexMap<VarName, Expression>,
+    known_targets: &HashSet<VarName>,
+) -> Expression {
+    if !expr_has_known_target(ctx, expr, known_targets) {
+        ctx.record_skip();
+        return expr.clone();
+    }
+    rewrite_algorithm_current_refs_inner(ctx, dae, expr, current_values, known_targets)
+}
+
+fn rewrite_algorithm_current_refs_inner(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     expr: &Expression,
     current_values: &IndexMap<VarName, Expression>,
@@ -740,23 +608,24 @@ fn rewrite_algorithm_current_refs(
         }
         Expression::Binary { op, lhs, rhs } => Expression::Binary {
             op: op.clone(),
-            lhs: rewrite_algorithm_current_box(dae, lhs, current_values, known_targets),
-            rhs: rewrite_algorithm_current_box(dae, rhs, current_values, known_targets),
+            lhs: rewrite_algorithm_current_box(ctx, dae, lhs, current_values, known_targets),
+            rhs: rewrite_algorithm_current_box(ctx, dae, rhs, current_values, known_targets),
         },
         Expression::Unary { op, rhs } => Expression::Unary {
             op: op.clone(),
-            rhs: rewrite_algorithm_current_box(dae, rhs, current_values, known_targets),
+            rhs: rewrite_algorithm_current_box(ctx, dae, rhs, current_values, known_targets),
         },
         Expression::BuiltinCall { function, args } => {
             if matches!(function, BuiltinFunction::Pre) {
-                return Expression::BuiltinCall {
+                Expression::BuiltinCall {
                     function: *function,
                     args: args.clone(),
-                };
-            }
-            Expression::BuiltinCall {
-                function: *function,
-                args: rewrite_algorithm_expr_vec(dae, args, current_values, known_targets),
+                }
+            } else {
+                Expression::BuiltinCall {
+                    function: *function,
+                    args: rewrite_algorithm_expr_vec(ctx, dae, args, current_values, known_targets),
+                }
             }
         }
         Expression::FunctionCall {
@@ -765,13 +634,14 @@ fn rewrite_algorithm_current_refs(
             is_constructor,
         } => Expression::FunctionCall {
             name: name.clone(),
-            args: rewrite_algorithm_expr_vec(dae, args, current_values, known_targets),
+            args: rewrite_algorithm_expr_vec(ctx, dae, args, current_values, known_targets),
             is_constructor: *is_constructor,
         },
         Expression::If {
             branches,
             else_branch,
         } => rewrite_algorithm_current_if_expr(
+            ctx,
             dae,
             branches,
             else_branch,
@@ -782,13 +652,14 @@ fn rewrite_algorithm_current_refs(
             elements,
             is_matrix,
         } => Expression::Array {
-            elements: rewrite_algorithm_expr_vec(dae, elements, current_values, known_targets),
+            elements: rewrite_algorithm_expr_vec(ctx, dae, elements, current_values, known_targets),
             is_matrix: *is_matrix,
         },
         Expression::Tuple { elements } => Expression::Tuple {
-            elements: rewrite_algorithm_expr_vec(dae, elements, current_values, known_targets),
+            elements: rewrite_algorithm_expr_vec(ctx, dae, elements, current_values, known_targets),
         },
         Expression::Range { start, step, end } => rewrite_algorithm_current_range_expr(
+            ctx,
             dae,
             start,
             step.as_deref(),
@@ -801,6 +672,7 @@ fn rewrite_algorithm_current_refs(
             indices,
             filter,
         } => rewrite_algorithm_current_comprehension_expr(
+            ctx,
             dae,
             expr,
             indices,
@@ -809,11 +681,11 @@ fn rewrite_algorithm_current_refs(
             known_targets,
         ),
         Expression::Index { base, subscripts } => Expression::Index {
-            base: rewrite_algorithm_current_box(dae, base, current_values, known_targets),
+            base: rewrite_algorithm_current_box(ctx, dae, base, current_values, known_targets),
             subscripts: subscripts.to_vec(),
         },
         Expression::FieldAccess { base, field } => Expression::FieldAccess {
-            base: rewrite_algorithm_current_box(dae, base, current_values, known_targets),
+            base: rewrite_algorithm_current_box(ctx, dae, base, current_values, known_targets),
             field: field.clone(),
         },
         Expression::Literal(literal) => Expression::Literal(literal.clone()),
@@ -821,13 +693,27 @@ fn rewrite_algorithm_current_refs(
     }
 }
 
+fn expr_has_known_target(
+    ctx: &mut AlgorithmRewriteContext,
+    expr: &Expression,
+    known_targets: &HashSet<VarName>,
+) -> bool {
+    let cache_key = expr_structural_key(expr);
+    if let Some(cached) = ctx.contains_known_target_cache.get(&cache_key) {
+        return *cached;
+    }
+    expr_contains_known_target(ctx, expr, known_targets)
+}
+
 fn rewrite_algorithm_current_box(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     expr: &Expression,
     current_values: &IndexMap<VarName, Expression>,
     known_targets: &HashSet<VarName>,
 ) -> Box<Expression> {
     Box::new(rewrite_algorithm_current_refs(
+        ctx,
         dae,
         expr,
         current_values,
@@ -856,6 +742,7 @@ fn rewrite_algorithm_current_var_ref(
 }
 
 fn rewrite_algorithm_expr_vec(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     exprs: &[Expression],
     current_values: &IndexMap<VarName, Expression>,
@@ -863,11 +750,12 @@ fn rewrite_algorithm_expr_vec(
 ) -> Vec<Expression> {
     exprs
         .iter()
-        .map(|expr| rewrite_algorithm_current_refs(dae, expr, current_values, known_targets))
+        .map(|expr| rewrite_algorithm_current_refs(ctx, dae, expr, current_values, known_targets))
         .collect()
 }
 
 fn rewrite_algorithm_current_if_expr(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
@@ -879,12 +767,19 @@ fn rewrite_algorithm_current_if_expr(
             .iter()
             .map(|(condition, value)| {
                 (
-                    rewrite_algorithm_current_refs(dae, condition, current_values, known_targets),
-                    rewrite_algorithm_current_refs(dae, value, current_values, known_targets),
+                    rewrite_algorithm_current_refs(
+                        ctx,
+                        dae,
+                        condition,
+                        current_values,
+                        known_targets,
+                    ),
+                    rewrite_algorithm_current_refs(ctx, dae, value, current_values, known_targets),
                 )
             })
             .collect(),
         else_branch: Box::new(rewrite_algorithm_current_refs(
+            ctx,
             dae,
             else_branch,
             current_values,
@@ -894,6 +789,7 @@ fn rewrite_algorithm_current_if_expr(
 }
 
 fn rewrite_algorithm_current_range_expr(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     start: &Expression,
     step: Option<&Expression>,
@@ -903,6 +799,7 @@ fn rewrite_algorithm_current_range_expr(
 ) -> Expression {
     Expression::Range {
         start: Box::new(rewrite_algorithm_current_refs(
+            ctx,
             dae,
             start,
             current_values,
@@ -910,6 +807,7 @@ fn rewrite_algorithm_current_range_expr(
         )),
         step: step.map(|value| {
             Box::new(rewrite_algorithm_current_refs(
+                ctx,
                 dae,
                 value,
                 current_values,
@@ -917,6 +815,7 @@ fn rewrite_algorithm_current_range_expr(
             ))
         }),
         end: Box::new(rewrite_algorithm_current_refs(
+            ctx,
             dae,
             end,
             current_values,
@@ -926,6 +825,7 @@ fn rewrite_algorithm_current_range_expr(
 }
 
 fn rewrite_algorithm_current_comprehension_expr(
+    ctx: &mut AlgorithmRewriteContext,
     dae: &Dae,
     expr: &Expression,
     indices: &[ComprehensionIndex],
@@ -935,6 +835,7 @@ fn rewrite_algorithm_current_comprehension_expr(
 ) -> Expression {
     Expression::ArrayComprehension {
         expr: Box::new(rewrite_algorithm_current_refs(
+            ctx,
             dae,
             expr,
             current_values,
@@ -945,6 +846,7 @@ fn rewrite_algorithm_current_comprehension_expr(
             .map(|index| ComprehensionIndex {
                 name: index.name.clone(),
                 range: rewrite_algorithm_current_refs(
+                    ctx,
                     dae,
                     &index.range,
                     current_values,
@@ -954,6 +856,7 @@ fn rewrite_algorithm_current_comprehension_expr(
             .collect(),
         filter: filter.map(|value| {
             Box::new(rewrite_algorithm_current_refs(
+                ctx,
                 dae,
                 value,
                 current_values,
@@ -1217,6 +1120,7 @@ fn collect_algorithm_block_assignments(
             known_targets.insert(target);
         }
     }
+    let mut rewrite_ctx = AlgorithmRewriteContext::new(&known_targets);
     for statement in statements {
         for (target, value, span, origin) in lower_statement_assignments_with_context(
             dae,
@@ -1225,12 +1129,23 @@ fn collect_algorithm_block_assignments(
             &current_values,
             &known_targets,
         )? {
-            let rewritten =
-                rewrite_algorithm_current_refs(dae, &value, &current_values, &known_targets);
+            let rewritten = rewrite_algorithm_current_refs(
+                &mut rewrite_ctx,
+                dae,
+                &value,
+                &current_values,
+                &known_targets,
+            );
             let normalized = normalize_algorithm_current_value(dae, &target, &rewritten);
             current_values.insert(target.clone(), normalized.clone());
             assignments.insert(target.clone(), (target, normalized, span, origin));
         }
+    }
+    if std::env::var("RUMOCA_DEBUG_TODAE").is_ok() {
+        eprintln!(
+            "DEBUG TODAE algorithm_rewrite skipped_subtrees={}",
+            rewrite_ctx.skipped_subtrees()
+        );
     }
     Ok(assignments)
 }
@@ -1309,11 +1224,11 @@ fn lower_if_statement_assignments(
     Ok(lowered)
 }
 
-#[derive(Default)]
 struct ForLoopLowerState {
     assignments: IndexMap<VarName, Expression>,
     known_targets: HashSet<VarName>,
     break_condition: Option<Expression>,
+    rewrite_ctx: AlgorithmRewriteContext,
 }
 
 fn loop_active_guard(base_guard: Expression, break_condition: &Option<Expression>) -> Expression {
@@ -1331,8 +1246,13 @@ fn apply_guarded_loop_assignment(
     value: Expression,
     guard: Expression,
 ) {
-    let rewritten =
-        rewrite_algorithm_current_refs(dae, &value, &state.assignments, &state.known_targets);
+    let rewritten = rewrite_algorithm_current_refs(
+        &mut state.rewrite_ctx,
+        dae,
+        &value,
+        &state.assignments,
+        &state.known_targets,
+    );
     let fallback = state
         .assignments
         .get(&target)
@@ -1491,6 +1411,7 @@ fn lower_for_statement_assignments(
         assignments: outer_current_values.clone(),
         known_targets: outer_known_targets.clone(),
         break_condition: None,
+        rewrite_ctx: AlgorithmRewriteContext::new(outer_known_targets),
     };
     let mut loop_targets = HashSet::new();
     let bindings = HashMap::new();
@@ -1498,18 +1419,18 @@ fn lower_for_statement_assignments(
     for iteration in &iteration_bindings {
         for statement in equations {
             let substituted = substitute_statement_with_bindings(statement, iteration);
-            for (target, _, _, _) in lower_statement_assignments_with_context(
-                dae,
-                flat,
-                &substituted,
-                &state.assignments,
-                &state.known_targets,
-            )? {
+            // Target discovery only needs assignment LHS names. Avoid full
+            // contextual lowering here because the actual lowering pass runs
+            // immediately after and performs the expensive rewrites once.
+            for target in collect_statement_targets(dae, flat, &substituted)? {
                 state.known_targets.insert(target.clone());
                 loop_targets.insert(target);
             }
         }
     }
+    state
+        .rewrite_ctx
+        .refresh_known_targets(&state.known_targets);
     for iteration in iteration_bindings {
         let iteration_guard = loop_active_guard(bool_expr(true), &state.break_condition);
         lower_for_statement_sequence_with_guard(
