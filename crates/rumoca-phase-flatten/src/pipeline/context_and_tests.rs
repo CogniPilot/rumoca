@@ -1324,6 +1324,12 @@ fn canonicalize_class_component_ref(
     if !class_def_ids.contains(&def_id) {
         return cr.clone();
     }
+    // Preserve member access rooted at lexical class/package aliases (e.g. `Medium.nC`)
+    // so normal instance qualification can produce `s.Medium.nC` rather than
+    // over-qualifying to `s.P.Source.Medium.nC`.
+    if cr.parts.len() > 1 {
+        return cr.clone();
+    }
     let Some(path) = def_map.and_then(|map| map.get(&def_id)) else {
         return cr.clone();
     };
