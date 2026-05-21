@@ -313,7 +313,7 @@ fn build_duplicate_binding_set(flat: &Model) -> HashSet<VarName> {
             continue;
         }
 
-        // Extract LHS name and RHS expression from residual: lhs - rhs = 0.
+        // Extract canonical assignment from residual: target - expr = 0.
         let Expression::Binary { op, lhs, rhs } = &eq.residual else {
             continue;
         };
@@ -323,7 +323,6 @@ fn build_duplicate_binding_set(flat: &Model) -> HashSet<VarName> {
         let Expression::VarRef { name, .. } = lhs.as_ref() else {
             continue;
         };
-
         let is_dup = flat
             .variables
             .get(name)
