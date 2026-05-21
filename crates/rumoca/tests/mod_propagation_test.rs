@@ -196,6 +196,60 @@ fn test_modification_propagation_nested() {
     }
 }
 
+#[test]
+fn test_array_modifier_distribution_preserves_binding_source_scope() {
+    let source = r#"
+        record R
+            Real p;
+        end R;
+
+        model Sub
+            parameter R x[2];
+        end Sub;
+
+        model Top
+            parameter Real a[2] = {1.0, 2.0};
+            Sub s(x = {R(a[1]), R(a[2])});
+        end Top;
+    "#;
+
+    let stored_def = parse_to_ast(source, "<test>").expect("parse failed");
+    let tree = ast::ClassTree::from_parsed(stored_def);
+    let parsed = ast::ParsedTree::new(tree);
+    let resolved = resolve(parsed).expect("resolve failed");
+    let tree = resolved.into_inner();
+
+    let overlay = match instantiate_model_with_outcome(&tree, "Top") {
+        InstantiationOutcome::Success(o) => o,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("Needs inner: {:?}", missing_inners);
+        }
+        InstantiationOutcome::Error(e) => {
+            panic!("Error: {:?}", e);
+        }
+    };
+
+    let x1 = find_component(&overlay, "s.x[1]").expect("s.x[1] should exist");
+    let x2 = find_component(&overlay, "s.x[2]").expect("s.x[2] should exist");
+
+    assert!(
+        x1.binding_from_modification,
+        "s.x[1] should be marked as modifier-derived"
+    );
+    assert!(
+        x2.binding_from_modification,
+        "s.x[2] should be marked as modifier-derived"
+    );
+    assert!(
+        x1.binding_source_scope.is_some(),
+        "s.x[1] modifier binding should keep lexical source scope"
+    );
+    assert!(
+        x2.binding_source_scope.is_some(),
+        "s.x[2] modifier binding should keep lexical source scope"
+    );
+}
+
 /// Test that typecheck_instanced evaluates dimensions correctly.
 #[test]
 fn test_dimension_evaluation_after_typecheck() {
@@ -919,4 +973,57 @@ where
             );
         }
     }
+}
+
+#[test]
+fn test_flowmodel_modifier_keeps_enclosing_port_scope() {
+    let source = r#"
+        package Medium
+          function setState_p
+            input Real p;
+            output Real s;
+          algorithm
+            s := p;
+          end setState_p;
+        end Medium;
+
+        connector FluidPort
+          Real p;
+          flow Real m_flow;
+        end FluidPort;
+
+        model FlowModel
+          parameter Real states[2];
+          Real m_flows[1];
+        end FlowModel;
+
+        model StaticPipe
+          FluidPort port_a;
+          FluidPort port_b;
+          FlowModel flowModel(states={
+            Medium.setState_p(port_a.p),
+            Medium.setState_p(port_b.p)});
+        equation
+          port_a.m_flow = flowModel.m_flows[1];
+        end StaticPipe;
+
+        model Top
+          StaticPipe pipe;
+        end Top;
+    "#;
+
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(source, "test.mo")
+        .expect("Top should compile");
+
+    let flat_dump = format!("{:#?}", compiled.flat);
+    assert!(
+        !flat_dump.contains("pipe.flowModel.port_a.p"),
+        "flowModel modifier should resolve port_a.p in enclosing scope, got over-qualified ref"
+    );
+    assert!(
+        flat_dump.contains("pipe.port_a.p"),
+        "expected canonical enclosing connector pressure path in flattened model"
+    );
 }

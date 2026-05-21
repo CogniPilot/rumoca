@@ -112,9 +112,20 @@ pub(super) fn expand_array_component(
         // component name would overwrite the per-element indexed binding.
         let previous_binding = ctx.mod_env().active.get(&binding_qn).cloned();
         if let Some(binding_expr) = &scalar_comp.binding {
+            let preserved_source_scope = previous_binding
+                .as_ref()
+                .and_then(|value| value.source_scope.clone());
+            let preserved_source = previous_binding
+                .as_ref()
+                .and_then(|value| value.source.clone())
+                .or_else(|| Some(binding_expr.clone()));
             ctx.mod_env_mut().active.insert(
                 binding_qn.clone(),
-                ast::ModificationValue::simple(binding_expr.clone()),
+                ast::ModificationValue::with_source_scope(
+                    binding_expr.clone(),
+                    preserved_source,
+                    preserved_source_scope,
+                ),
             );
         }
 

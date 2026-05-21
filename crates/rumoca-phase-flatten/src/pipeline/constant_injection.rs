@@ -202,7 +202,10 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
     for _pass in 0..MAX_PASSES {
         let prev = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+            + ctx.boolean_parameter_values.len()
+            + ctx.real_parameter_values.len()
+            + ctx.enum_parameter_values.len()
+            + ctx.constant_values.len();
         for ancestor in ancestors {
             for ext in &ancestor.extends {
                 extract_extends_modification_constants(tree, "", ext, resolve_context, ctx);
@@ -211,7 +214,10 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
         }
         let new = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+            + ctx.boolean_parameter_values.len()
+            + ctx.real_parameter_values.len()
+            + ctx.enum_parameter_values.len()
+            + ctx.constant_values.len();
         if new == prev {
             break;
         }

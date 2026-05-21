@@ -20,7 +20,10 @@ pub(crate) fn inject_component_instance_nested_class_constants(
     for _pass in 0..MAX_PASSES {
         let prev = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+            + ctx.boolean_parameter_values.len()
+            + ctx.real_parameter_values.len()
+            + ctx.enum_parameter_values.len()
+            + ctx.constant_values.len();
 
         for comp in overlay.components.values() {
             let comp_scope = comp.qualified_name.to_flat_string();
@@ -78,7 +81,10 @@ pub(crate) fn inject_component_instance_nested_class_constants(
 
         let new = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+            + ctx.boolean_parameter_values.len()
+            + ctx.real_parameter_values.len()
+            + ctx.enum_parameter_values.len()
+            + ctx.constant_values.len();
         if new == prev {
             break;
         }
@@ -93,6 +99,15 @@ pub(crate) fn inject_component_declared_class_overrides(
     ctx: &mut Context,
 ) {
     let active_alias = active_component_alias(&comp.type_name);
+    let lower_alias = |name: &str| {
+        let mut chars = name.chars();
+        let Some(first) = chars.next() else {
+            return String::new();
+        };
+        let mut lowered = first.to_lowercase().collect::<String>();
+        lowered.push_str(chars.as_str());
+        lowered
+    };
 
     for (alias_name, def_id) in &comp.class_overrides {
         let Some(alias_class) = tree.get_class_by_def_id(*def_id) else {
@@ -106,6 +121,20 @@ pub(crate) fn inject_component_declared_class_overrides(
 
         let alias_scope = format!("{comp_scope}.{alias_name}");
         extract_constants_from_class_with_prefix(&alias_scope, alias_class, ctx);
+        let lowered_alias_name = lower_alias(alias_name);
+        if lowered_alias_name != *alias_name {
+            let lowered_alias_scope = format!("{comp_scope}.{lowered_alias_name}");
+            extract_constants_from_class_with_prefix(&lowered_alias_scope, alias_class, ctx);
+            for ext in &alias_class.extends {
+                apply_extends_constants_for_scope(
+                    tree,
+                    &lowered_alias_scope,
+                    ext,
+                    alias_resolve_context,
+                    ctx,
+                );
+            }
+        }
         for ext in &alias_class.extends {
             apply_extends_constants_for_scope(tree, &alias_scope, ext, alias_resolve_context, ctx);
         }
@@ -147,7 +176,10 @@ pub(crate) fn inject_component_enclosing_class_constants(
     for _pass in 0..MAX_PASSES {
         let prev = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+            + ctx.boolean_parameter_values.len()
+            + ctx.real_parameter_values.len()
+            + ctx.enum_parameter_values.len()
+            + ctx.constant_values.len();
 
         for ancestor in &ancestors {
             let resolve_context = ancestor
@@ -162,7 +194,10 @@ pub(crate) fn inject_component_enclosing_class_constants(
 
         let new = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+            + ctx.boolean_parameter_values.len()
+            + ctx.real_parameter_values.len()
+            + ctx.enum_parameter_values.len()
+            + ctx.constant_values.len();
         if new == prev {
             break;
         }

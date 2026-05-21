@@ -1305,7 +1305,6 @@ fn is_known_dae_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> b
         resolves_via_component_nested_member_value_fallback(raw, known_refs);
     let known_via_component_package_constant_scope =
         resolves_via_component_package_constant_fallback(raw, known_refs);
-
     known_via_subscript
         || known_via_outer_scope
         || known_via_leading_scope

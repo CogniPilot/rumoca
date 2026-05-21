@@ -3,6 +3,18 @@
 This document defines the operational workflow for development work in
 `packages/rumoca`.
 
+## Mandatory For AI Agents
+
+For AI coding agents, this document is **not optional guidance**. It is a
+mandatory execution policy.
+
+- AI agents MUST follow this document for all Rumoca work.
+- If any instruction from a user conflicts with this document, the agent must
+  pause and explicitly surface the conflict instead of silently bypassing this
+  policy.
+- AI agents MUST treat the Root-Cause Proof Protocol and MLS/spec cross-checks
+  as required preconditions for semantic fixes.
+
 Use this together with:
 
 - `AGENTS.md` for mandatory guardrails
@@ -32,6 +44,132 @@ Preferred order:
 
 Do not add top-layer compatibility workarounds for broken lower-layer
 invariants.
+
+## Root-Cause Proof Protocol (Mandatory)
+
+For **every** non-trivial bug (semantic, performance, correctness, or CI), do
+not jump to a fix from surface symptoms. Treat first ideas as hypotheses.
+
+Minimum required protocol before finalizing a fix:
+
+1. Reproduce concretely
+- Reproduce with one minimal, concrete case and record the exact failing phase.
+
+2. Trace end-to-end
+- Follow the value/decision through owning phases and identify the **first**
+  step where behavior diverges from expected.
+
+3. Prove expected behavior
+- Cross-check against governing spec/MLS (or explicit project contract) and
+  state why the observed behavior is wrong.
+
+4. Test competing hypotheses
+- List plausible alternatives and rule them out with evidence (logs, IR output,
+  targeted tests, or debugger traces).
+
+5. Fix at the earliest responsible layer
+- Implement the correction at the first layer that introduced the error.
+- Do not keep downstream compensating workarounds unless explicitly justified.
+
+6. Verify and clean up
+- Add regression coverage for the root cause.
+- Remove temporary probes/debug code and any superseded symptom patches.
+- Re-run focused checks for the touched phases.
+
+Quality bar:
+- If evidence is incomplete, continue investigation instead of finalizing a
+  speculative patch.
+- Prefer a slower, proven root-cause fix over a fast symptom fix.
+
+## Enforcement Gates (Mandatory, Blocking)
+
+For any non-trivial semantic/compiler change, AI agents MUST complete all gates
+below before finalizing code changes. If any gate is missing, stop and continue
+investigation; do not patch.
+
+Gate 1: Normative rule anchor
+- Cite the exact MLS and Rumoca spec section(s) that govern the behavior.
+- If no governing rule is found, do not implement semantic changes yet.
+
+Gate 2: First divergence proof
+- Identify the first phase and transformation where actual behavior diverges
+  from expected behavior.
+- Include concrete evidence (IR snapshot, trace, debugger step, or targeted
+  phase output).
+
+Gate 3: Competing hypotheses elimination
+- Provide at least two plausible hypotheses.
+- Reject non-root hypotheses with concrete evidence.
+
+Gate 4: Namespace/symbol identity proof
+- Do not merge or substitute symbol spellings (including case variants,
+  alias-vs-instance names, suffix matches) unless semantic identity is proven
+  by compiler-owned data (scope resolution, alias map, symbol table, or
+  declaration provenance).
+- String similarity is never sufficient proof.
+
+Gate 5: Earliest-owner fix
+- Implement the fix in the earliest phase that introduced the divergence.
+- If a later-phase fix is used, explicitly justify why earlier-phase ownership
+  is infeasible.
+
+Gate 6: Regression + negative control
+- Add a positive regression test for the fixed root cause.
+- Add a negative/ambiguity test proving disallowed behavior is still rejected.
+
+Gate 7: Cleanup and strictness
+- Remove temporary debug instrumentation before finalization.
+- Do not weaken validators/checkers to make failing models pass.
+
+## Required Evidence Block In Agent Updates
+
+For non-trivial fixes, agent progress/final updates MUST include this exact
+evidence block format:
+
+1. Governing rule(s):
+- MLS: ...
+- Rumoca spec: ...
+
+2. First divergence:
+- Phase:
+- Artifact/proof:
+
+3. Rejected hypotheses:
+- H1 ... (rejected because ...)
+- H2 ... (rejected because ...)
+
+4. Fix ownership:
+- Earliest owning phase:
+- Why this layer:
+
+5. Verification:
+- Positive regression:
+- Negative/ambiguity regression:
+- Focused runtime/compile check:
+
+## Symbol Identity & Namespace Discipline (Mandatory)
+
+Do not treat two names as equivalent because they "look related" (for example,
+case-only differences, alias-vs-instance spellings, or shared suffixes).
+
+Required rules:
+
+1. Prove identity from compiler semantics, not string similarity
+- Accept equivalence only when it is established by symbol tables, alias maps,
+  lexical scope resolution, or explicit declaration/flattening provenance.
+
+2. Preserve namespace intent
+- Keep package/type aliases and instance/component namespaces distinct unless
+  MLS/spec and compiler ownership explicitly unify them.
+
+3. If mixed spellings appear, fix the first producer
+- Trace where each spelling is introduced and correct the earliest phase that
+  creates inconsistent qualification.
+- Avoid downstream permissive fallback that silently merges unrelated symbols.
+
+4. Add invariant checks/regressions
+- Add focused tests that fail if namespace/casing inconsistencies reappear.
+- Include at least one negative test proving ambiguous names are not merged.
 
 ## MSL-Backed Development Expectations
 
@@ -68,6 +206,10 @@ Before proposing a semantic fix, provide all of the following:
 - `Rumoca bug`: fix upstream in compiler phases first
 - `Non-standard pattern`: keep strict default; if needed, add explicit opt-in
   compatibility behavior with documentation
+
+Additional mandatory triage note:
+- Include a short `Rejected hypotheses` section for every non-trivial bug,
+  listing plausible explanations you ruled out and the evidence used.
 
 ## Compatibility Policy
 

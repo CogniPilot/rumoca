@@ -88,7 +88,12 @@ fn insert_modifier_value_with_structural_overrides(
     let (binding_source, binding_source_scope) =
         inherited_modifier_source_metadata(target_name, value_expr, ctx.mod_env()).map_or(
             (Some(value_expr.clone()), insert_ctx.source_scope.clone()),
-            |(src, scope)| (src.or_else(|| Some(value_expr.clone())), scope),
+            |(src, scope)| {
+                (
+                    src.or_else(|| Some(value_expr.clone())),
+                    scope.or_else(|| insert_ctx.source_scope.clone()),
+                )
+            },
         );
     let resolved_expr = resolve_modification_expr(
         value_expr,

@@ -758,7 +758,7 @@ impl Context {
     /// - `stack.cell.stackData.cellData` -> `stack.stackData.cellData`
     ///
     /// Returns the original name if no alias applies.
-    fn resolve_alias(&self, name: &str) -> String {
+    pub(crate) fn resolve_alias(&self, name: &str) -> String {
         const MAX_DEPTH: usize = 10; // Prevent infinite loops
         let mut current = name.to_string();
         for _iteration in 0..MAX_DEPTH {

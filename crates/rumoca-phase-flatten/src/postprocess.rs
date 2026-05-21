@@ -552,6 +552,264 @@ pub(super) fn substitute_known_constants_in_flat(flat: &mut flat::Model, ctx: &C
     substitute_function_bodies(&mut flat.functions, ctx, &live_vars);
 }
 
+/// Canonicalize VarRef names through record aliases when the resolved target
+/// exists in flattened variables.
+///
+/// This keeps equation references aligned with flattened declaration paths
+/// (MLS §7.2.3 alias semantics), instead of carrying intermediate component
+/// implementation paths that do not exist as flat variables.
+pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ctx: &Context) {
+    let known_vars: std::collections::HashSet<flat::VarName> =
+        flat.variables.keys().cloned().collect();
+    if known_vars.is_empty() || ctx.record_aliases.is_empty() {
+        return;
+    }
+
+    let rewrite_name = |name: &flat::VarName| -> flat::VarName {
+        let resolved = ctx.resolve_alias(name.as_str());
+        if resolved == name.as_str() {
+            return name.clone();
+        }
+        let resolved_name = flat::VarName::new(resolved);
+        if known_vars.contains(&resolved_name) {
+            resolved_name
+        } else {
+            name.clone()
+        }
+    };
+
+    rewrite_varrefs_in_opt_exprs(
+        flat.variables.values_mut().flat_map(|v| {
+            [
+                &mut v.binding,
+                &mut v.start,
+                &mut v.min,
+                &mut v.max,
+                &mut v.nominal,
+            ]
+        }),
+        &rewrite_name,
+    );
+    rewrite_varrefs_in_equations(&mut flat.equations, &rewrite_name);
+    rewrite_varrefs_in_equations(&mut flat.initial_equations, &rewrite_name);
+    rewrite_varrefs_in_asserts(&mut flat.assert_equations, &rewrite_name);
+    rewrite_varrefs_in_asserts(&mut flat.initial_assert_equations, &rewrite_name);
+    for algo in flat
+        .algorithms
+        .iter_mut()
+        .chain(flat.initial_algorithms.iter_mut())
+    {
+        rewrite_varrefs_in_statements(&mut algo.statements, &rewrite_name);
+    }
+    for when in &mut flat.when_clauses {
+        rewrite_varrefs_in_expr(&mut when.condition, &rewrite_name);
+        rewrite_varrefs_in_when_equations(&mut when.equations, &rewrite_name);
+    }
+    for function in flat.functions.values_mut() {
+        for param in function
+            .inputs
+            .iter_mut()
+            .chain(function.outputs.iter_mut())
+            .chain(function.locals.iter_mut())
+        {
+            if let Some(default) = &mut param.default {
+                rewrite_varrefs_in_expr(default, &rewrite_name);
+            }
+        }
+        rewrite_varrefs_in_statements(&mut function.body, &rewrite_name);
+    }
+}
+
+fn rewrite_varrefs_in_opt_exprs<'a>(
+    exprs: impl Iterator<Item = &'a mut Option<flat::Expression>>,
+    rewrite_name: &impl Fn(&flat::VarName) -> flat::VarName,
+) {
+    for value in exprs.flatten() {
+        rewrite_varrefs_in_expr(value, rewrite_name);
+    }
+}
+
+fn rewrite_varrefs_in_equations(
+    equations: &mut [flat::Equation],
+    rewrite_name: &impl Fn(&flat::VarName) -> flat::VarName,
+) {
+    for equation in equations {
+        rewrite_varrefs_in_expr(&mut equation.residual, rewrite_name);
+    }
+}
+
+fn rewrite_varrefs_in_asserts(
+    asserts: &mut [flat::AssertEquation],
+    rewrite_name: &impl Fn(&flat::VarName) -> flat::VarName,
+) {
+    for assertion in asserts {
+        rewrite_varrefs_in_expr(&mut assertion.condition, rewrite_name);
+        rewrite_varrefs_in_expr(&mut assertion.message, rewrite_name);
+        if let Some(level) = &mut assertion.level {
+            rewrite_varrefs_in_expr(level, rewrite_name);
+        }
+    }
+}
+
+fn rewrite_varrefs_in_statements(
+    statements: &mut [flat::Statement],
+    rewrite_name: &impl Fn(&flat::VarName) -> flat::VarName,
+) {
+    for statement in statements {
+        match statement {
+            flat::Statement::Assignment { value, .. } | flat::Statement::Reinit { value, .. } => {
+                rewrite_varrefs_in_expr(value, rewrite_name);
+            }
+            flat::Statement::FunctionCall { args, outputs, .. } => {
+                for arg in args {
+                    rewrite_varrefs_in_expr(arg, rewrite_name);
+                }
+                for out in outputs {
+                    rewrite_varrefs_in_expr(out, rewrite_name);
+                }
+            }
+            flat::Statement::If {
+                cond_blocks,
+                else_block,
+            } => {
+                for block in cond_blocks {
+                    rewrite_varrefs_in_expr(&mut block.cond, rewrite_name);
+                    rewrite_varrefs_in_statements(&mut block.stmts, rewrite_name);
+                }
+                if let Some(stmts) = else_block {
+                    rewrite_varrefs_in_statements(stmts, rewrite_name);
+                }
+            }
+            flat::Statement::For { indices, equations } => {
+                for idx in indices {
+                    rewrite_varrefs_in_expr(&mut idx.range, rewrite_name);
+                }
+                rewrite_varrefs_in_statements(equations, rewrite_name);
+            }
+            flat::Statement::While(block) => {
+                rewrite_varrefs_in_expr(&mut block.cond, rewrite_name);
+                rewrite_varrefs_in_statements(&mut block.stmts, rewrite_name);
+            }
+            flat::Statement::When(blocks) => {
+                for block in blocks {
+                    rewrite_varrefs_in_expr(&mut block.cond, rewrite_name);
+                    rewrite_varrefs_in_statements(&mut block.stmts, rewrite_name);
+                }
+            }
+            flat::Statement::Assert {
+                condition,
+                message,
+                level,
+            } => {
+                rewrite_varrefs_in_expr(condition, rewrite_name);
+                rewrite_varrefs_in_expr(message, rewrite_name);
+                if let Some(level) = level {
+                    rewrite_varrefs_in_expr(level, rewrite_name);
+                }
+            }
+            flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
+        }
+    }
+}
+
+fn rewrite_varrefs_in_when_equations(
+    equations: &mut [flat::WhenEquation],
+    rewrite_name: &impl Fn(&flat::VarName) -> flat::VarName,
+) {
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+                rewrite_varrefs_in_expr(value, rewrite_name);
+            }
+            flat::WhenEquation::Assert { condition, .. } => {
+                rewrite_varrefs_in_expr(condition, rewrite_name);
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (condition, nested) in branches {
+                    rewrite_varrefs_in_expr(condition, rewrite_name);
+                    rewrite_varrefs_in_when_equations(nested, rewrite_name);
+                }
+                rewrite_varrefs_in_when_equations(else_branch, rewrite_name);
+            }
+            flat::WhenEquation::FunctionCallOutputs { function, .. } => {
+                rewrite_varrefs_in_expr(function, rewrite_name);
+            }
+            flat::WhenEquation::Terminate { .. } => {}
+        }
+    }
+}
+
+fn rewrite_varrefs_in_expr(
+    expr: &mut flat::Expression,
+    rewrite_name: &impl Fn(&flat::VarName) -> flat::VarName,
+) {
+    match expr {
+        flat::Expression::VarRef { name, .. } => {
+            *name = rewrite_name(name);
+        }
+        flat::Expression::FunctionCall { args, .. }
+        | flat::Expression::BuiltinCall { args, .. } => {
+            for arg in args {
+                rewrite_varrefs_in_expr(arg, rewrite_name);
+            }
+        }
+        flat::Expression::Binary { lhs, rhs, .. } => {
+            rewrite_varrefs_in_expr(lhs, rewrite_name);
+            rewrite_varrefs_in_expr(rhs, rewrite_name);
+        }
+        flat::Expression::Unary { rhs, .. } => rewrite_varrefs_in_expr(rhs, rewrite_name),
+        flat::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, value) in branches {
+                rewrite_varrefs_in_expr(cond, rewrite_name);
+                rewrite_varrefs_in_expr(value, rewrite_name);
+            }
+            rewrite_varrefs_in_expr(else_branch, rewrite_name);
+        }
+        flat::Expression::Array { elements, .. } | flat::Expression::Tuple { elements } => {
+            for element in elements {
+                rewrite_varrefs_in_expr(element, rewrite_name);
+            }
+        }
+        flat::Expression::Range { start, step, end } => {
+            rewrite_varrefs_in_expr(start, rewrite_name);
+            if let Some(step_expr) = step {
+                rewrite_varrefs_in_expr(step_expr, rewrite_name);
+            }
+            rewrite_varrefs_in_expr(end, rewrite_name);
+        }
+        flat::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            rewrite_varrefs_in_expr(expr, rewrite_name);
+            for idx in indices {
+                rewrite_varrefs_in_expr(&mut idx.range, rewrite_name);
+            }
+            if let Some(filter_expr) = filter {
+                rewrite_varrefs_in_expr(filter_expr, rewrite_name);
+            }
+        }
+        flat::Expression::Index { base, subscripts } => {
+            rewrite_varrefs_in_expr(base, rewrite_name);
+            for subscript in subscripts {
+                if let flat::Subscript::Expr(inner) = subscript {
+                    rewrite_varrefs_in_expr(inner, rewrite_name);
+                }
+            }
+        }
+        flat::Expression::FieldAccess { base, .. } => rewrite_varrefs_in_expr(base, rewrite_name),
+        flat::Expression::Literal(_) | flat::Expression::Empty => {}
+    }
+}
+
 fn substitute_assert_equations(
     equations: &mut [flat::AssertEquation],
     ctx: &Context,
@@ -592,7 +850,339 @@ fn substitute_variable_annotations(
         substitute_opt_expr(&mut var.min, ctx, live_vars, locals);
         substitute_opt_expr(&mut var.max, ctx, live_vars, locals);
         substitute_opt_expr(&mut var.nominal, ctx, live_vars, locals);
+        let scope = crate::path_utils::parent_scope(var.name.as_str()).unwrap_or("");
+        substitute_unqualified_scope_constants_opt(&mut var.binding, scope, ctx, live_vars, locals);
+        substitute_unqualified_scope_constants_opt(&mut var.start, scope, ctx, live_vars, locals);
+        substitute_unqualified_scope_constants_opt(&mut var.min, scope, ctx, live_vars, locals);
+        substitute_unqualified_scope_constants_opt(&mut var.max, scope, ctx, live_vars, locals);
+        substitute_unqualified_scope_constants_opt(&mut var.nominal, scope, ctx, live_vars, locals);
     }
+}
+
+fn substitute_unqualified_scope_constants_opt(
+    expr: &mut Option<flat::Expression>,
+    scope: &str,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+) {
+    if let Some(expr) = expr {
+        *expr = substitute_unqualified_scope_constants_expr(
+            expr.clone(),
+            scope,
+            ctx,
+            live_vars,
+            locals,
+        );
+    }
+}
+
+fn substitute_unqualified_scope_constants_expr(
+    expr: flat::Expression,
+    scope: &str,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+) -> flat::Expression {
+    if let flat::Expression::VarRef { name, subscripts } = &expr
+        && subscripts.is_empty()
+        && !crate::path_utils::has_top_level_dot(name.as_str())
+        && !live_vars.contains(name.as_str())
+        && !locals.contains(name.as_str())
+    {
+        return substitute_scoped_simple_var_ref(name.clone(), subscripts.clone(), scope, ctx);
+    }
+    substitute_unqualified_scope_constants_non_var_expr(expr, scope, ctx, live_vars, locals)
+}
+
+fn substitute_unqualified_scope_constants_non_var_expr(
+    expr: flat::Expression,
+    scope: &str,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+) -> flat::Expression {
+    match expr {
+        flat::Expression::Binary { lhs, rhs, op } => flat::Expression::Binary {
+            lhs: Box::new(substitute_unqualified_scope_constants_expr(
+                *lhs, scope, ctx, live_vars, locals,
+            )),
+            rhs: Box::new(substitute_unqualified_scope_constants_expr(
+                *rhs, scope, ctx, live_vars, locals,
+            )),
+            op,
+        },
+        flat::Expression::Unary { rhs, op } => flat::Expression::Unary {
+            rhs: Box::new(substitute_unqualified_scope_constants_expr(
+                *rhs, scope, ctx, live_vars, locals,
+            )),
+            op,
+        },
+        flat::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+        } => flat::Expression::FunctionCall {
+            name,
+            args: substitute_scoped_expr_vec(args, scope, ctx, live_vars, locals),
+            is_constructor,
+        },
+        flat::Expression::BuiltinCall { function, args } => flat::Expression::BuiltinCall {
+            function,
+            args: substitute_scoped_expr_vec(args, scope, ctx, live_vars, locals),
+        },
+        flat::Expression::Array {
+            elements,
+            is_matrix,
+        } => flat::Expression::Array {
+            elements: substitute_scoped_expr_vec(elements, scope, ctx, live_vars, locals),
+            is_matrix,
+        },
+        flat::Expression::Tuple { elements } => flat::Expression::Tuple {
+            elements: substitute_scoped_expr_vec(elements, scope, ctx, live_vars, locals),
+        },
+        flat::Expression::Range { start, step, end } => flat::Expression::Range {
+            start: Box::new(substitute_unqualified_scope_constants_expr(
+                *start, scope, ctx, live_vars, locals,
+            )),
+            step: step.map(|s| {
+                Box::new(substitute_unqualified_scope_constants_expr(
+                    *s, scope, ctx, live_vars, locals,
+                ))
+            }),
+            end: Box::new(substitute_unqualified_scope_constants_expr(
+                *end, scope, ctx, live_vars, locals,
+            )),
+        },
+        flat::Expression::FieldAccess { base, field } => flat::Expression::FieldAccess {
+            base: Box::new(substitute_unqualified_scope_constants_expr(
+                *base, scope, ctx, live_vars, locals,
+            )),
+            field,
+        },
+        flat::Expression::Index { base, subscripts } => flat::Expression::Index {
+            base: Box::new(substitute_unqualified_scope_constants_expr(
+                *base, scope, ctx, live_vars, locals,
+            )),
+            subscripts: substitute_scoped_subscripts(subscripts, scope, ctx, live_vars, locals),
+        },
+        flat::Expression::If {
+            branches,
+            else_branch,
+        } => substitute_scoped_if_expr(branches, *else_branch, scope, ctx, live_vars, locals),
+        flat::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => substitute_scoped_array_comprehension_expr(
+            *expr, indices, filter, scope, ctx, live_vars, locals,
+        ),
+        flat::Expression::VarRef { name, subscripts } => {
+            flat::Expression::VarRef { name, subscripts }
+        }
+        other => other,
+    }
+}
+
+fn substitute_scoped_if_expr(
+    branches: Vec<(flat::Expression, flat::Expression)>,
+    else_branch: flat::Expression,
+    scope: &str,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+) -> flat::Expression {
+    flat::Expression::If {
+        branches: branches
+            .into_iter()
+            .map(|(cond, value)| {
+                (
+                    substitute_unqualified_scope_constants_expr(
+                        cond, scope, ctx, live_vars, locals,
+                    ),
+                    substitute_unqualified_scope_constants_expr(
+                        value, scope, ctx, live_vars, locals,
+                    ),
+                )
+            })
+            .collect(),
+        else_branch: Box::new(substitute_unqualified_scope_constants_expr(
+            else_branch,
+            scope,
+            ctx,
+            live_vars,
+            locals,
+        )),
+    }
+}
+
+fn substitute_scoped_array_comprehension_expr(
+    expr: flat::Expression,
+    indices: Vec<flat::ComprehensionIndex>,
+    filter: Option<Box<flat::Expression>>,
+    scope: &str,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+) -> flat::Expression {
+    flat::Expression::ArrayComprehension {
+        expr: Box::new(substitute_unqualified_scope_constants_expr(
+            expr, scope, ctx, live_vars, locals,
+        )),
+        indices: indices
+            .into_iter()
+            .map(|mut idx| {
+                idx.range = substitute_unqualified_scope_constants_expr(
+                    idx.range, scope, ctx, live_vars, locals,
+                );
+                idx
+            })
+            .collect(),
+        filter: filter.map(|f| {
+            Box::new(substitute_unqualified_scope_constants_expr(
+                *f, scope, ctx, live_vars, locals,
+            ))
+        }),
+    }
+}
+
+fn substitute_scoped_simple_var_ref(
+    name: flat::VarName,
+    subscripts: Vec<flat::Subscript>,
+    scope: &str,
+    ctx: &Context,
+) -> flat::Expression {
+    if let Some(v) =
+        lookup_constant_expr_with_scope_local(name.as_str(), scope, &ctx.constant_values)
+    {
+        return v;
+    }
+    if let Some(v) = lookup_with_scope_local(name.as_str(), scope, &ctx.real_parameter_values)
+        && v.is_finite()
+    {
+        return flat::Expression::Literal(flat::Literal::Real(v));
+    }
+    if let Some(v) = lookup_with_scope_local(name.as_str(), scope, &ctx.parameter_values) {
+        return flat::Expression::Literal(flat::Literal::Integer(v));
+    }
+    if let Some(v) = lookup_with_scope_local(name.as_str(), scope, &ctx.boolean_parameter_values) {
+        return flat::Expression::Literal(flat::Literal::Boolean(v));
+    }
+    if let Some(v) = lookup_with_scope_local(name.as_str(), scope, &ctx.enum_parameter_values) {
+        return flat::Expression::VarRef {
+            name: flat::VarName::new(v),
+            subscripts: vec![],
+        };
+    }
+    flat::Expression::VarRef { name, subscripts }
+}
+
+fn substitute_scoped_expr_vec(
+    exprs: Vec<flat::Expression>,
+    scope: &str,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+) -> Vec<flat::Expression> {
+    exprs
+        .into_iter()
+        .map(|expr| {
+            substitute_unqualified_scope_constants_expr(expr, scope, ctx, live_vars, locals)
+        })
+        .collect()
+}
+
+fn substitute_scoped_subscripts(
+    subscripts: Vec<flat::Subscript>,
+    scope: &str,
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+    locals: &HashSet<String>,
+) -> Vec<flat::Subscript> {
+    subscripts
+        .into_iter()
+        .map(|subscript| match subscript {
+            flat::Subscript::Expr(expr) => flat::Subscript::Expr(Box::new(
+                substitute_unqualified_scope_constants_expr(*expr, scope, ctx, live_vars, locals),
+            )),
+            other => other,
+        })
+        .collect()
+}
+
+fn lookup_with_scope_local<V: Clone + PartialEq>(
+    name: &str,
+    scope: &str,
+    map: &rustc_hash::FxHashMap<String, V>,
+) -> Option<V> {
+    let mut current_scope = scope;
+    loop {
+        let qualified = if current_scope.is_empty() {
+            name.to_string()
+        } else {
+            format!("{current_scope}.{name}")
+        };
+        if let Some(val) = map.get(&qualified) {
+            return Some(val.clone());
+        }
+        if let Some(parent_scope) = crate::path_utils::parent_scope(current_scope) {
+            current_scope = parent_scope;
+        } else if !current_scope.is_empty() {
+            current_scope = "";
+        } else {
+            break;
+        }
+    }
+    if let Some(val) = map.get(name) {
+        return Some(val.clone());
+    }
+    if crate::path_utils::has_top_level_dot(name) {
+        return lookup_unique_dotted_suffix_value(name, map).cloned();
+    }
+    None
+}
+
+fn lookup_constant_expr_with_scope_local(
+    name: &str,
+    scope: &str,
+    map: &rustc_hash::FxHashMap<String, flat::Expression>,
+) -> Option<flat::Expression> {
+    let mut current_scope = scope;
+    loop {
+        let qualified = if current_scope.is_empty() {
+            name.to_string()
+        } else {
+            format!("{current_scope}.{name}")
+        };
+        if let Some(val) = map.get(&qualified) {
+            return Some(val.clone());
+        }
+        if let Some(parent_scope) = crate::path_utils::parent_scope(current_scope) {
+            current_scope = parent_scope;
+        } else if !current_scope.is_empty() {
+            current_scope = "";
+        } else {
+            break;
+        }
+    }
+    if let Some(val) = map.get(name) {
+        return Some(val.clone());
+    }
+    if crate::path_utils::has_top_level_dot(name) {
+        let suffix = format!(".{name}");
+        let mut found: Option<flat::Expression> = None;
+        for (key, value) in map {
+            if !key.ends_with(&suffix) {
+                continue;
+            }
+            if found.is_some() {
+                return None;
+            }
+            found = Some(value.clone());
+        }
+        return found;
+    }
+    None
 }
 
 fn substitute_function_bodies(
@@ -608,6 +1198,7 @@ fn substitute_function_bodies(
             .chain(function.locals.iter())
             .map(|param| param.name.clone())
             .collect();
+        let function_scope = crate::path_utils::parent_scope(function.name.as_str()).unwrap_or("");
 
         for param in function
             .inputs
@@ -616,6 +1207,13 @@ fn substitute_function_bodies(
             .chain(function.locals.iter_mut())
         {
             substitute_opt_expr(&mut param.default, ctx, live_vars, &function_locals);
+            substitute_unqualified_scope_constants_opt(
+                &mut param.default,
+                function_scope,
+                ctx,
+                live_vars,
+                &function_locals,
+            );
         }
         for statement in &mut function.body {
             substitute_known_constants_statement(statement, ctx, live_vars, &function_locals);
@@ -712,6 +1310,42 @@ fn substitute_scalar_var_ref(
     if inline_index_base_is_live_or_local(key, live_vars, locals) {
         return None;
     }
+    if let Some(expr) = lookup_scalar_key_value(key, ctx) {
+        return Some(expr);
+    }
+    if let Some(case_variant_key) = resolve_case_variant_symbol_key(key, ctx)
+        && let Some(expr) = lookup_scalar_key_value(&case_variant_key, ctx)
+    {
+        return Some(expr);
+    }
+    if !crate::path_utils::has_top_level_dot(key)
+        && let Some(expr) = lookup_scalar_suffix_value(key, ctx)
+    {
+        return Some(expr);
+    }
+    if let Some(expr) = resolve_inline_indexed_constant(key, ctx) {
+        return Some(expr);
+    }
+
+    if let Some(resolved_key) = resolve_varref_through_constant_aliases(key, ctx)
+        && resolved_key != key
+    {
+        if let Some(expr) = lookup_scalar_key_value(&resolved_key, ctx) {
+            return Some(expr);
+        }
+        if let Some(expr) = resolve_inline_indexed_constant(&resolved_key, ctx) {
+            return Some(expr);
+        }
+        return Some(flat::Expression::VarRef {
+            name: flat::VarName::new(resolved_key),
+            subscripts: vec![],
+        });
+    }
+
+    None
+}
+
+fn lookup_scalar_key_value(key: &str, ctx: &Context) -> Option<flat::Expression> {
     if let Some(v) = resolve_constant_value_expr(key, ctx) {
         return Some(v.clone());
     }
@@ -732,43 +1366,117 @@ fn substitute_scalar_var_ref(
             subscripts: vec![],
         });
     }
-    if let Some(expr) = resolve_inline_indexed_constant(key, ctx) {
-        return Some(expr);
-    }
+    None
+}
 
-    if let Some(resolved_key) = resolve_varref_through_constant_aliases(key, ctx)
-        && resolved_key != key
+fn lookup_scalar_suffix_value(key: &str, ctx: &Context) -> Option<flat::Expression> {
+    if let Some(expr) = lookup_unique_dotted_suffix_expr(key, &ctx.constant_values) {
+        return Some(expr.clone());
+    }
+    if let Some(v) = lookup_unique_dotted_suffix_value(key, &ctx.real_parameter_values)
+        && v.is_finite()
     {
-        if let Some(v) = resolve_constant_value_expr(&resolved_key, ctx) {
-            return Some(v.clone());
-        }
-        if let Some(v) = ctx.real_parameter_values.get(&resolved_key)
-            && v.is_finite()
-        {
-            return Some(flat::Expression::Literal(flat::Literal::Real(*v)));
-        }
-        if let Some(v) = ctx.parameter_values.get(&resolved_key) {
-            return Some(flat::Expression::Literal(flat::Literal::Integer(*v)));
-        }
-        if let Some(v) = ctx.boolean_parameter_values.get(&resolved_key) {
-            return Some(flat::Expression::Literal(flat::Literal::Boolean(*v)));
-        }
-        if let Some(v) = ctx.enum_parameter_values.get(&resolved_key) {
-            return Some(flat::Expression::VarRef {
-                name: flat::VarName::new(v.clone()),
-                subscripts: vec![],
-            });
-        }
-        if let Some(expr) = resolve_inline_indexed_constant(&resolved_key, ctx) {
-            return Some(expr);
-        }
+        return Some(flat::Expression::Literal(flat::Literal::Real(*v)));
+    }
+    if let Some(v) = lookup_unique_dotted_suffix_value(key, &ctx.parameter_values) {
+        return Some(flat::Expression::Literal(flat::Literal::Integer(*v)));
+    }
+    if let Some(v) = lookup_unique_dotted_suffix_value(key, &ctx.boolean_parameter_values) {
+        return Some(flat::Expression::Literal(flat::Literal::Boolean(*v)));
+    }
+    if let Some(v) = lookup_unique_dotted_suffix_value(key, &ctx.enum_parameter_values) {
         return Some(flat::Expression::VarRef {
-            name: flat::VarName::new(resolved_key),
+            name: flat::VarName::new(v.clone()),
             subscripts: vec![],
         });
     }
-
     None
+}
+
+fn resolve_case_variant_symbol_key(key: &str, ctx: &Context) -> Option<String> {
+    if !crate::path_utils::has_top_level_dot(key) {
+        return None;
+    }
+    let mut parts: Vec<String> = key.split('.').map(|s| s.to_string()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    for idx in 1..parts.len() {
+        let segment = &parts[idx];
+        let mut chars = segment.chars();
+        let Some(first) = chars.next() else {
+            continue;
+        };
+        if !first.is_ascii_alphabetic() {
+            continue;
+        }
+        let rest = chars.as_str();
+        let flipped = if first.is_ascii_lowercase() {
+            format!("{}{}", first.to_ascii_uppercase(), rest)
+        } else {
+            format!("{}{}", first.to_ascii_lowercase(), rest)
+        };
+
+        let original = parts[idx].clone();
+        parts[idx] = flipped;
+        let candidate = parts.join(".");
+        parts[idx] = original;
+
+        if symbol_key_exists_in_any_context_map(&candidate, ctx) {
+            candidates.push(candidate);
+        }
+    }
+
+    if candidates.len() == 1 {
+        return candidates.into_iter().next();
+    }
+    None
+}
+
+fn symbol_key_exists_in_any_context_map(key: &str, ctx: &Context) -> bool {
+    ctx.constant_values.contains_key(key)
+        || ctx.real_parameter_values.contains_key(key)
+        || ctx.parameter_values.contains_key(key)
+        || ctx.boolean_parameter_values.contains_key(key)
+        || ctx.enum_parameter_values.contains_key(key)
+}
+
+fn lookup_unique_dotted_suffix_value<'a, T: PartialEq>(
+    simple_name: &str,
+    map: &'a rustc_hash::FxHashMap<String, T>,
+) -> Option<&'a T> {
+    let suffix = format!(".{simple_name}");
+    let mut found: Option<&T> = None;
+    for (key, value) in map {
+        if !key.ends_with(&suffix) {
+            continue;
+        }
+        if found.is_some_and(|prev| prev != value) {
+            return None;
+        }
+        found = Some(value);
+    }
+    found
+}
+
+fn lookup_unique_dotted_suffix_expr<'a>(
+    simple_name: &str,
+    map: &'a rustc_hash::FxHashMap<String, flat::Expression>,
+) -> Option<&'a flat::Expression> {
+    let suffix = format!(".{simple_name}");
+    let mut found: Option<&flat::Expression> = None;
+    for (key, value) in map {
+        if !key.ends_with(&suffix) {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(value);
+    }
+    found
 }
 
 fn inline_index_base_is_live_or_local(
@@ -1221,286 +1929,5 @@ pub(super) fn drop_invalid_field_access_bindings(flat: &mut flat::Model) {
 }
 
 #[cfg(test)]
-mod substitute_constant_tests {
-    use super::*;
-    use rumoca_core::Span;
-
-    fn simple_assignment(value: flat::Expression) -> flat::Statement {
-        flat::Statement::Assignment {
-            comp: flat::ComponentReference {
-                local: false,
-                parts: vec![flat::ComponentRefPart {
-                    ident: "y".to_string(),
-                    subs: vec![],
-                }],
-                def_id: None,
-            },
-            value,
-        }
-    }
-
-    #[test]
-    fn substitutes_known_constants_inside_function_defaults_and_body() {
-        let mut model = flat::Model::new();
-        let mut function = flat::Function::new("Pkg.f", Span::DUMMY);
-        function.add_input(flat::FunctionParam::new("u", "Real").with_default(
-            flat::Expression::VarRef {
-                name: flat::VarName::new("Pkg.Constants.k"),
-                subscripts: vec![],
-            },
-        ));
-        function
-            .body
-            .push(simple_assignment(flat::Expression::VarRef {
-                name: flat::VarName::new("Pkg.Constants.k"),
-                subscripts: vec![],
-            }));
-        model.add_function(function);
-
-        let mut ctx = Context::new();
-        ctx.constant_values.insert(
-            "Pkg.Constants.k".to_string(),
-            flat::Expression::Literal(flat::Literal::Real(42.0)),
-        );
-
-        substitute_known_constants_in_flat(&mut model, &ctx);
-
-        let function = model
-            .functions
-            .get(&flat::VarName::new("Pkg.f"))
-            .expect("function should exist");
-        assert!(matches!(
-            function.inputs[0].default,
-            Some(flat::Expression::Literal(flat::Literal::Real(v))) if (v - 42.0).abs() < f64::EPSILON
-        ));
-        match &function.body[0] {
-            flat::Statement::Assignment { value, .. } => assert!(matches!(
-                value,
-                flat::Expression::Literal(flat::Literal::Real(v)) if (*v - 42.0).abs() < f64::EPSILON
-            )),
-            other => panic!("expected assignment statement, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn does_not_substitute_function_local_names() {
-        let mut model = flat::Model::new();
-        let mut function = flat::Function::new("Pkg.g", Span::DUMMY);
-        function.add_input(flat::FunctionParam::new("k", "Real"));
-        function
-            .body
-            .push(simple_assignment(flat::Expression::VarRef {
-                name: flat::VarName::new("k"),
-                subscripts: vec![],
-            }));
-        model.add_function(function);
-
-        let mut ctx = Context::new();
-        ctx.constant_values.insert(
-            "k".to_string(),
-            flat::Expression::Literal(flat::Literal::Real(7.0)),
-        );
-
-        substitute_known_constants_in_flat(&mut model, &ctx);
-
-        let function = model
-            .functions
-            .get(&flat::VarName::new("Pkg.g"))
-            .expect("function should exist");
-        match &function.body[0] {
-            flat::Statement::Assignment { value, .. } => assert!(matches!(
-                value,
-                flat::Expression::VarRef { name, .. } if name.as_str() == "k"
-            )),
-            other => panic!("expected assignment statement, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn does_not_substitute_indexed_function_local_names() {
-        let mut model = flat::Model::new();
-        let mut function = flat::Function::new("Pkg.g_indexed", Span::DUMMY);
-        function.add_input(flat::FunctionParam::new("table", "Real").with_dims(vec![7, 2]));
-        function
-            .body
-            .push(simple_assignment(flat::Expression::VarRef {
-                name: flat::VarName::new("table"),
-                subscripts: vec![
-                    flat::Subscript::Expr(Box::new(flat::Expression::VarRef {
-                        name: flat::VarName::new("next"),
-                        subscripts: vec![],
-                    })),
-                    flat::Subscript::Index(1),
-                ],
-            }));
-        model.add_function(function);
-
-        let mut ctx = Context::new();
-        ctx.constant_values.insert(
-            "table".to_string(),
-            flat::Expression::BuiltinCall {
-                function: flat::BuiltinFunction::Fill,
-                args: vec![
-                    flat::Expression::Literal(flat::Literal::Real(0.0)),
-                    flat::Expression::Literal(flat::Literal::Integer(0)),
-                    flat::Expression::Literal(flat::Literal::Integer(2)),
-                ],
-            },
-        );
-
-        substitute_known_constants_in_flat(&mut model, &ctx);
-
-        let function = model
-            .functions
-            .get(&flat::VarName::new("Pkg.g_indexed"))
-            .expect("function should exist");
-        match &function.body[0] {
-            flat::Statement::Assignment { value, .. } => match value {
-                flat::Expression::VarRef { name, subscripts } => {
-                    assert_eq!(name.as_str(), "table");
-                    assert_eq!(subscripts.len(), 2);
-                }
-                other => panic!("expected table varref, got {other:?}"),
-            },
-            other => panic!("expected assignment statement, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn substitutes_inline_multi_indexed_constant_varref_names() {
-        let mut model = flat::Model::new();
-        let mut function = flat::Function::new("Pkg.h", Span::DUMMY);
-        function
-            .body
-            .push(simple_assignment(flat::Expression::VarRef {
-                name: flat::VarName::new("Modelica.Blocks.Sources.IntegerTable.table[1,1]"),
-                subscripts: vec![],
-            }));
-        model.add_function(function);
-
-        let mut ctx = Context::new();
-        ctx.constant_values.insert(
-            "Modelica.Blocks.Sources.IntegerTable.table".to_string(),
-            flat::Expression::Array {
-                elements: vec![
-                    flat::Expression::Literal(flat::Literal::Integer(0)),
-                    flat::Expression::Literal(flat::Literal::Integer(1)),
-                ],
-                is_matrix: false,
-            },
-        );
-
-        substitute_known_constants_in_flat(&mut model, &ctx);
-
-        let function = model
-            .functions
-            .get(&flat::VarName::new("Pkg.h"))
-            .expect("function should exist");
-        match &function.body[0] {
-            flat::Statement::Assignment { value, .. } => match value {
-                flat::Expression::Index { base, subscripts } => {
-                    assert!(matches!(
-                        base.as_ref(),
-                        flat::Expression::Array { elements, is_matrix }
-                            if !*is_matrix && elements.len() == 2
-                    ));
-                    assert_eq!(subscripts.len(), 2);
-                    assert!(matches!(
-                        &subscripts[0],
-                        flat::Subscript::Expr(expr)
-                            if matches!(expr.as_ref(), flat::Expression::Literal(flat::Literal::Integer(1)))
-                    ));
-                    assert!(matches!(
-                        &subscripts[1],
-                        flat::Subscript::Expr(expr)
-                            if matches!(expr.as_ref(), flat::Expression::Literal(flat::Literal::Integer(1)))
-                    ));
-                }
-                other => panic!("expected indexed expression, got {other:?}"),
-            },
-            other => panic!("expected assignment statement, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn does_not_substitute_inline_indexed_varref_when_base_is_local() {
-        let mut model = flat::Model::new();
-        let mut function = flat::Function::new("Pkg.inline_local", Span::DUMMY);
-        function.add_input(flat::FunctionParam::new("table", "Real").with_dims(vec![7, 2]));
-        function
-            .body
-            .push(simple_assignment(flat::Expression::VarRef {
-                name: flat::VarName::new("table[1,1]"),
-                subscripts: vec![],
-            }));
-        model.add_function(function);
-
-        let mut ctx = Context::new();
-        ctx.constant_values.insert(
-            "table".to_string(),
-            flat::Expression::BuiltinCall {
-                function: flat::BuiltinFunction::Fill,
-                args: vec![
-                    flat::Expression::Literal(flat::Literal::Real(0.0)),
-                    flat::Expression::Literal(flat::Literal::Integer(0)),
-                    flat::Expression::Literal(flat::Literal::Integer(2)),
-                ],
-            },
-        );
-
-        substitute_known_constants_in_flat(&mut model, &ctx);
-
-        let function = model
-            .functions
-            .get(&flat::VarName::new("Pkg.inline_local"))
-            .expect("function should exist");
-        match &function.body[0] {
-            flat::Statement::Assignment { value, .. } => assert!(matches!(
-                value,
-                flat::Expression::VarRef { name, subscripts }
-                    if name.as_str() == "table[1,1]" && subscripts.is_empty()
-            )),
-            other => panic!("expected assignment statement, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn substitutes_field_access_on_zero_arg_constructor_constants() {
-        let mut model = flat::Model::new();
-        let mut function = flat::Function::new("Pkg.k", Span::DUMMY);
-        function
-            .body
-            .push(simple_assignment(flat::Expression::FieldAccess {
-                base: Box::new(flat::Expression::FunctionCall {
-                    name: flat::VarName::new(
-                        "Modelica.Electrical.Batteries.ParameterRecords.ExampleData",
-                    ),
-                    args: vec![],
-                    is_constructor: true,
-                }),
-                field: "useLinearSOCDependency".to_string(),
-            }));
-        model.add_function(function);
-
-        let mut ctx = Context::new();
-        ctx.boolean_parameter_values.insert(
-            "Modelica.Electrical.Batteries.ParameterRecords.ExampleData.useLinearSOCDependency"
-                .to_string(),
-            false,
-        );
-
-        substitute_known_constants_in_flat(&mut model, &ctx);
-
-        let function = model
-            .functions
-            .get(&flat::VarName::new("Pkg.k"))
-            .expect("function should exist");
-        match &function.body[0] {
-            flat::Statement::Assignment { value, .. } => assert!(matches!(
-                value,
-                flat::Expression::Literal(flat::Literal::Boolean(false))
-            )),
-            other => panic!("expected assignment statement, got {other:?}"),
-        }
-    }
-}
+#[path = "postprocess_tests.rs"]
+mod postprocess_tests;
