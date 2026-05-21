@@ -268,6 +268,13 @@ pub fn flatten_ref_with_options(
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
+    ctx.class_def_ids = std::sync::Arc::new(
+        tree.def_map
+            .keys()
+            .filter(|def_id| tree.get_class_by_def_id(**def_id).is_some())
+            .copied()
+            .collect(),
+    );
     let mut flat = flat::Model::new();
     let global_imports = collect_global_imports(overlay);
     let component_override_map = build_component_override_map(overlay, tree);

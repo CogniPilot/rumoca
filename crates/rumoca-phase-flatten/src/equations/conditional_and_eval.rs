@@ -103,6 +103,7 @@ pub(super) fn expand_nested_if_to_simple(
 
 /// Create a single conditional equation from pre-expanded simple equations.
 pub(super) struct ConditionalEquationContext<'a> {
+    pub(super) ctx: &'a Context,
     pub(super) prefix: &'a QualifiedName,
     pub(super) span: rumoca_core::Span,
     pub(super) origin: &'a rumoca_ir_flat::EquationOrigin,
@@ -121,11 +122,12 @@ pub(super) fn create_conditional_equation_from_simple(
     // This preserves MLS semantics even when branch equations do not share the same lhs.
     let conditional_residual =
         build_conditional_residual_from_simple(expanded_branches, else_simple_eqs, eq_idx)?;
-    let residual = qualify_expression_imports_with_def_map(
+    let residual = qualify_expression_imports_with_def_map_ctx(
         &conditional_residual,
         context.prefix,
         context.imports,
         context.def_map,
+        context.ctx,
     );
     Ok(flat::Equation::new(
         residual,
@@ -204,7 +206,7 @@ fn flatten_simple_in_list(
     let lhs = expand_array_comprehensions_in_expression(ctx, lhs, prefix, span)?;
     let rhs = expand_array_comprehensions_in_expression(ctx, rhs, prefix, span)?;
 
-    let residual = make_residual(&lhs, &rhs, prefix, &ctx.current_imports, def_map);
+    let residual = make_residual(ctx, &lhs, &rhs, prefix, &ctx.current_imports, def_map);
     let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, prefix, ctx);
     if scalar_count == 0 {
         return Ok(vec![]);
@@ -261,10 +263,16 @@ pub(super) fn flatten_equations_list(
             } => {
                 let imports = &ctx.current_imports;
                 let assert_eq = AssertEquation::new(
-                    qualify_expression_imports_with_def_map(condition, prefix, imports, def_map),
-                    qualify_expression_imports_with_def_map(message, prefix, imports, def_map),
+                    qualify_expression_imports_with_def_map_ctx(
+                        condition, prefix, imports, def_map, ctx,
+                    ),
+                    qualify_expression_imports_with_def_map_ctx(
+                        message, prefix, imports, def_map, ctx,
+                    ),
                     level.as_ref().map(|expr| {
-                        qualify_expression_imports_with_def_map(expr, prefix, imports, def_map)
+                        qualify_expression_imports_with_def_map_ctx(
+                            expr, prefix, imports, def_map, ctx,
+                        )
                     }),
                     span,
                 );
@@ -282,6 +290,7 @@ pub(super) fn flatten_equations_list(
             }
             ast::Equation::FunctionCall { comp, args } => {
                 let flattened = flatten_function_call_equation(
+                    ctx,
                     comp,
                     args,
                     prefix,
@@ -1171,7 +1180,7 @@ fn try_eval_with_rumoca_eval_const(
     let fallback_start = crate::maybe_start_timer();
     // Convert AST expression to qualified ast::Expression
     let flat_expr =
-        qualify_expression_imports_with_def_map(expr, prefix, &ctx.current_imports, None);
+        qualify_expression_imports_with_def_map_ctx(expr, prefix, &ctx.current_imports, None, ctx);
 
     // Reuse the per-flatten base evaluation context to avoid rebuilding
     // parameter/function maps on every complex-expression fallback.

@@ -28,6 +28,7 @@ impl Context {
             cardinality_counts: rustc_hash::FxHashMap::default(),
             eval_fallback_context: std::cell::OnceCell::new(),
             current_imports: crate::qualify::ImportMap::default(),
+            class_def_ids: std::sync::Arc::new(rustc_hash::FxHashSet::default()),
         }
     }
 
@@ -49,7 +50,6 @@ impl Context {
         self.seed_flat_parameter_constant_keys(flat);
         let params = self.collect_parameters(flat);
 
-        self.supplement_record_aliases(&params);
         self.init_array_dimensions(flat);
 
         let var_bindings = Self::collect_var_bindings(flat);
@@ -133,22 +133,6 @@ impl Context {
                 expr.map(|b| (name.to_string(), b.clone()))
             })
             .collect()
-    }
-
-    /// Supplement record aliases from flat variable bindings (MLS §7.2.3).
-    fn supplement_record_aliases(&mut self, params: &[(String, Expression)]) {
-        for (name, binding) in params {
-            if let Expression::VarRef {
-                name: alias_target,
-                subscripts,
-            } = binding
-                && subscripts.is_empty()
-                && !self.record_aliases.contains_key(name)
-            {
-                self.record_aliases
-                    .insert(name.clone(), alias_target.to_string());
-            }
-        }
     }
 
     /// Initialize array dimensions from declared dims (MLS §10.1).
@@ -1268,4 +1252,97 @@ pub(crate) fn qualify_expression_imports_with_def_map(
     };
     let qualified = qualify::qualify_expression_with_imports(expr, prefix, opts, imports);
     crate::ast_lower::expression_from_ast_with_def_map(&qualified, def_map)
+}
+
+/// Like `qualify_expression_imports_with_def_map`, but uses flatten context
+/// semantic metadata (class DefIds) to keep class/type references lexical.
+pub(crate) fn qualify_expression_imports_with_def_map_ctx(
+    expr: &ast::Expression,
+    prefix: &QualifiedName,
+    imports: &qualify::ImportMap,
+    def_map: Option<&crate::ResolveDefMap>,
+    ctx: &Context,
+) -> rumoca_ir_flat::Expression {
+    let expr = canonicalize_class_reference_paths(expr, def_map, &ctx.class_def_ids);
+    let opts = qualify::QualifyOptions {
+        preserve_def_id: true,
+        ..qualify::QualifyOptions::default()
+    };
+    let qualified = qualify::qualify_expression_with_imports(&expr, prefix, opts, imports);
+    crate::ast_lower::expression_from_ast_with_def_map(&qualified, def_map)
+}
+
+fn canonicalize_class_reference_paths(
+    expr: &ast::Expression,
+    def_map: Option<&crate::ResolveDefMap>,
+    class_def_ids: &rustc_hash::FxHashSet<rumoca_core::DefId>,
+) -> ast::Expression {
+    match expr {
+        ast::Expression::ComponentReference(cr) => ast::Expression::ComponentReference(
+            canonicalize_class_component_ref(cr, def_map, class_def_ids),
+        ),
+        ast::Expression::Binary { op, lhs, rhs } => ast::Expression::Binary {
+            op: op.clone(),
+            lhs: std::sync::Arc::new(canonicalize_class_reference_paths(
+                lhs,
+                def_map,
+                class_def_ids,
+            )),
+            rhs: std::sync::Arc::new(canonicalize_class_reference_paths(
+                rhs,
+                def_map,
+                class_def_ids,
+            )),
+        },
+        ast::Expression::Unary { op, rhs } => ast::Expression::Unary {
+            op: op.clone(),
+            rhs: std::sync::Arc::new(canonicalize_class_reference_paths(
+                rhs,
+                def_map,
+                class_def_ids,
+            )),
+        },
+        ast::Expression::FunctionCall { comp, args } => ast::Expression::FunctionCall {
+            comp: canonicalize_class_component_ref(comp, def_map, class_def_ids),
+            args: args
+                .iter()
+                .map(|arg| canonicalize_class_reference_paths(arg, def_map, class_def_ids))
+                .collect(),
+        },
+        _ => expr.clone(),
+    }
+}
+
+fn canonicalize_class_component_ref(
+    cr: &ast::ComponentReference,
+    def_map: Option<&crate::ResolveDefMap>,
+    class_def_ids: &rustc_hash::FxHashSet<rumoca_core::DefId>,
+) -> ast::ComponentReference {
+    let Some(def_id) = cr.def_id else {
+        return cr.clone();
+    };
+    if !class_def_ids.contains(&def_id) {
+        return cr.clone();
+    }
+    let Some(path) = def_map.and_then(|map| map.get(&def_id)) else {
+        return cr.clone();
+    };
+    let mut parts: Vec<ast::ComponentRefPart> = path
+        .split('.')
+        .map(|segment| ast::ComponentRefPart {
+            ident: rumoca_ir_ast::Token {
+                text: std::sync::Arc::from(segment),
+                ..Default::default()
+            },
+            subs: None,
+        })
+        .collect();
+    if cr.parts.len() > 1 {
+        parts.extend(cr.parts.iter().skip(1).cloned());
+    }
+    ast::ComponentReference {
+        local: false,
+        parts,
+        def_id: Some(def_id),
+    }
 }

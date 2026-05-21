@@ -1591,6 +1591,9 @@ pub(crate) struct Context {
     /// Current import map for the class instance being processed (MLS §13.2).
     /// Set before processing each class instance's equations, cleared after.
     pub current_imports: crate::qualify::ImportMap,
+    /// Set of DefIds that correspond to class definitions in the current tree.
+    /// Used by qualification to distinguish class/type references from components.
+    pub class_def_ids: std::sync::Arc<rustc_hash::FxHashSet<rumoca_core::DefId>>,
 }
 
 #[cfg(test)]

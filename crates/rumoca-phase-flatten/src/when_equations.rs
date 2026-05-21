@@ -16,7 +16,7 @@ use rumoca_ir_flat as flat;
 
 use crate::equations::{build_qualified_name, expand_range_indices, substitute_index_in_equation};
 use crate::errors::FlattenError;
-use crate::{Context, qualify_expression_imports_with_def_map};
+use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
 /// Flatten a when-equation to a list of WhenClauses.
 ///
@@ -70,8 +70,13 @@ pub(crate) fn flatten_when_block(
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<flat::WhenClause, FlattenError> {
     // Qualify the condition expression
-    let condition =
-        qualify_expression_imports_with_def_map(&block.cond, prefix, &ctx.current_imports, def_map);
+    let condition = qualify_expression_imports_with_def_map_ctx(
+        &block.cond,
+        prefix,
+        &ctx.current_imports,
+        def_map,
+        ctx,
+    );
 
     let mut clause = flat::WhenClause::new(condition, span);
 
@@ -106,12 +111,12 @@ fn flatten_when_body_equation(
 ) -> Result<Vec<flat::WhenEquation>, FlattenError> {
     match eq {
         ast::Equation::Simple { lhs, rhs } => {
-            flatten_when_simple_equation(lhs, rhs, prefix, span, &ctx.current_imports, def_map)
+            flatten_when_simple_equation(ctx, lhs, rhs, prefix, span, &ctx.current_imports, def_map)
                 .map(|opt| opt.into_iter().collect())
         }
 
         ast::Equation::FunctionCall { comp, args } => {
-            flatten_when_function_call(comp, args, prefix, span, &ctx.current_imports, def_map)
+            flatten_when_function_call(ctx, comp, args, prefix, span, &ctx.current_imports, def_map)
                 .map(|opt| opt.into_iter().collect())
         }
 
@@ -171,11 +176,12 @@ fn flatten_when_if_equation(
 
     // Process each if/elseif branch
     for block in cond_blocks {
-        let condition = qualify_expression_imports_with_def_map(
+        let condition = qualify_expression_imports_with_def_map_ctx(
             &block.cond,
             prefix,
             &ctx.current_imports,
             def_map,
+            ctx,
         );
         let mut branch_eqs = Vec::new();
 
@@ -344,6 +350,7 @@ fn validate_when_branch_targets(
 /// Handles both simple assignments like `x = expr` and tuple assignments
 /// like `(a, b) = func(args)` for multi-output function calls.
 fn flatten_when_simple_equation(
+    ctx: &Context,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     prefix: &ast::QualifiedName,
@@ -371,7 +378,8 @@ fn flatten_when_simple_equation(
         }
 
         // Qualify the function call expression
-        let function = qualify_expression_imports_with_def_map(rhs, prefix, imports, def_map);
+        let function =
+            qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx);
         let origin = format!(
             "when equation multi-output assignment to ({})",
             outputs
@@ -388,7 +396,7 @@ fn flatten_when_simple_equation(
 
     // Simple single-target assignment
     let target = extract_assignment_target(lhs, prefix)?;
-    let value = qualify_expression_imports_with_def_map(rhs, prefix, imports, def_map);
+    let value = qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx);
     let origin = format!("when equation assignment to {}", target);
     Ok(Some(flat::WhenEquation::assign(
         target, value, span, origin,
@@ -397,6 +405,7 @@ fn flatten_when_simple_equation(
 
 /// Flatten a function call in a when-clause (reinit, assert, terminate).
 fn flatten_when_function_call(
+    ctx: &Context,
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
@@ -421,8 +430,8 @@ fn flatten_when_function_call(
 
     // Check for known functions (by first part or full qualified name)
     match &**func_name {
-        "reinit" => flatten_reinit_call(args, prefix, span, imports, def_map),
-        "assert" => flatten_assert_call(args, prefix, span, imports, def_map),
+        "reinit" => flatten_reinit_call(ctx, args, prefix, span, imports, def_map),
+        "assert" => flatten_assert_call(ctx, args, prefix, span, imports, def_map),
         "terminate" => flatten_terminate_call(args, span),
         // print() is a side-effect function that outputs debug messages
         // It doesn't contribute to the DAE system, so we skip it
@@ -508,6 +517,7 @@ fn flatten_when_for_equation(
 
 /// Flatten an assert() call: assert(condition, message, level?)
 fn flatten_assert_call(
+    ctx: &Context,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
@@ -521,7 +531,8 @@ fn flatten_assert_call(
         ));
     }
 
-    let condition = qualify_expression_imports_with_def_map(&args[0], prefix, imports, def_map);
+    let condition =
+        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx);
     let message =
         extract_string_literal(&args[1]).unwrap_or_else(|| "assertion failed".to_string());
     let origin = "assert in when-clause".to_string();
@@ -571,6 +582,7 @@ fn extract_string_literal(expr: &ast::Expression) -> Option<String> {
 
 /// Flatten a reinit() call: reinit(x, expr)
 fn flatten_reinit_call(
+    ctx: &Context,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
@@ -585,7 +597,8 @@ fn flatten_reinit_call(
     }
 
     let state = extract_assignment_target(&args[0], prefix)?;
-    let value = qualify_expression_imports_with_def_map(&args[1], prefix, imports, def_map);
+    let value =
+        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx);
     let origin = format!("reinit({})", state);
 
     // Note: EQN-016 validation (reinit target must be state) is done in ToDae phase
