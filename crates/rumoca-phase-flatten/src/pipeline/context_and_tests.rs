@@ -29,6 +29,7 @@ impl Context {
             eval_fallback_context: std::cell::OnceCell::new(),
             current_imports: crate::qualify::ImportMap::default(),
             class_def_ids: std::sync::Arc::new(rustc_hash::FxHashSet::default()),
+            current_class_scope_path: None,
         }
     }
 
@@ -976,9 +977,13 @@ pub(crate) fn process_class_instance(
     ctx: &mut Context,
     flat: &mut Model,
     class_data: &ClassInstanceData,
+    class_def_id: Option<rumoca_core::DefId>,
     component_override_map: &ComponentOverrideMap,
     tree: &ClassTree,
 ) -> Result<(), FlattenError> {
+    let previous_class_scope = ctx.current_class_scope_path.clone();
+    ctx.current_class_scope_path = class_def_id.and_then(|id| tree.def_map.get(&id).cloned());
+
     let prefix = &class_data.qualified_name;
     let def_map = Some(&tree.def_map);
     let (override_packages, override_functions) = override_context_for_scope(
@@ -1095,6 +1100,7 @@ pub(crate) fn process_class_instance(
         flat.initial_algorithms.push(flat_alg);
     }
 
+    ctx.current_class_scope_path = previous_class_scope;
     Ok(())
 }
 
@@ -1263,7 +1269,12 @@ pub(crate) fn qualify_expression_imports_with_def_map_ctx(
     def_map: Option<&crate::ResolveDefMap>,
     ctx: &Context,
 ) -> rumoca_ir_flat::Expression {
-    let expr = canonicalize_class_reference_paths(expr, def_map, &ctx.class_def_ids);
+    let expr = canonicalize_class_reference_paths(
+        expr,
+        def_map,
+        &ctx.class_def_ids,
+        ctx.current_class_scope_path.as_deref(),
+    );
     let opts = qualify::QualifyOptions {
         preserve_def_id: true,
         ..qualify::QualifyOptions::default()
@@ -1276,10 +1287,16 @@ fn canonicalize_class_reference_paths(
     expr: &ast::Expression,
     def_map: Option<&crate::ResolveDefMap>,
     class_def_ids: &rustc_hash::FxHashSet<rumoca_core::DefId>,
+    current_class_scope_path: Option<&str>,
 ) -> ast::Expression {
     match expr {
         ast::Expression::ComponentReference(cr) => ast::Expression::ComponentReference(
-            canonicalize_class_component_ref(cr, def_map, class_def_ids),
+            canonicalize_class_component_ref(
+                cr,
+                def_map,
+                class_def_ids,
+                current_class_scope_path,
+            ),
         ),
         ast::Expression::Binary { op, lhs, rhs } => ast::Expression::Binary {
             op: op.clone(),
@@ -1287,11 +1304,13 @@ fn canonicalize_class_reference_paths(
                 lhs,
                 def_map,
                 class_def_ids,
+                current_class_scope_path,
             )),
             rhs: std::sync::Arc::new(canonicalize_class_reference_paths(
                 rhs,
                 def_map,
                 class_def_ids,
+                current_class_scope_path,
             )),
         },
         ast::Expression::Unary { op, rhs } => ast::Expression::Unary {
@@ -1300,13 +1319,26 @@ fn canonicalize_class_reference_paths(
                 rhs,
                 def_map,
                 class_def_ids,
+                current_class_scope_path,
             )),
         },
         ast::Expression::FunctionCall { comp, args } => ast::Expression::FunctionCall {
-            comp: canonicalize_class_component_ref(comp, def_map, class_def_ids),
+            comp: canonicalize_class_component_ref(
+                comp,
+                def_map,
+                class_def_ids,
+                current_class_scope_path,
+            ),
             args: args
                 .iter()
-                .map(|arg| canonicalize_class_reference_paths(arg, def_map, class_def_ids))
+                .map(|arg| {
+                    canonicalize_class_reference_paths(
+                        arg,
+                        def_map,
+                        class_def_ids,
+                        current_class_scope_path,
+                    )
+                })
                 .collect(),
         },
         _ => expr.clone(),
@@ -1317,6 +1349,7 @@ fn canonicalize_class_component_ref(
     cr: &ast::ComponentReference,
     def_map: Option<&crate::ResolveDefMap>,
     class_def_ids: &rustc_hash::FxHashSet<rumoca_core::DefId>,
+    current_class_scope_path: Option<&str>,
 ) -> ast::ComponentReference {
     let Some(def_id) = cr.def_id else {
         return cr.clone();
@@ -1324,16 +1357,15 @@ fn canonicalize_class_component_ref(
     if !class_def_ids.contains(&def_id) {
         return cr.clone();
     }
-    // Preserve member access rooted at lexical class/package aliases (e.g. `Medium.nC`)
-    // so normal instance qualification can produce `s.Medium.nC` rather than
-    // over-qualifying to `s.P.Source.Medium.nC`.
-    if cr.parts.len() > 1 {
-        return cr.clone();
-    }
     let Some(path) = def_map.and_then(|map| map.get(&def_id)) else {
         return cr.clone();
     };
-    let mut parts: Vec<ast::ComponentRefPart> = path
+    let base_path = current_class_scope_path
+        .and_then(|class_scope| path.strip_prefix(class_scope))
+        .and_then(|suffix| suffix.strip_prefix('.'))
+        .filter(|suffix| !suffix.is_empty())
+        .unwrap_or(path.as_str());
+    let mut parts: Vec<ast::ComponentRefPart> = base_path
         .split('.')
         .map(|segment| ast::ComponentRefPart {
             ident: rumoca_ir_ast::Token {

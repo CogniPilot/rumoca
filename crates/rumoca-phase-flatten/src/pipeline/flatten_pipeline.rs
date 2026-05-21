@@ -123,7 +123,14 @@ pub(crate) fn process_class_instances_for_flatten(
         if is_in_disabled_component(&class_data.qualified_name, &overlay.disabled_components) {
             continue;
         }
-        process_class_instance(ctx, flat, class_data, component_override_map, tree)?;
+        process_class_instance(
+            ctx,
+            flat,
+            class_data,
+            class_data.class_def_id,
+            component_override_map,
+            tree,
+        )?;
     }
     Ok(())
 }

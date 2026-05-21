@@ -1009,6 +1009,7 @@ mod tests {
         overlay.classes.insert(
             ast::InstanceId::new(1),
             ast::ClassInstanceData {
+                class_def_id: None,
                 qualified_name: ast::QualifiedName::from_ident("root"),
                 resolved_imports: Vec::new(),
                 connections: vec![

@@ -472,6 +472,8 @@ pub struct InstanceData {
 pub struct ClassInstanceData {
     /// Unique identifier for this class instance.
     pub instance_id: InstanceId,
+    /// DefId of the class definition this instance was instantiated from.
+    pub class_def_id: Option<DefId>,
     /// Fully qualified name in the instance tree.
     pub qualified_name: QualifiedName,
     /// Equations from this instance (not inherited).

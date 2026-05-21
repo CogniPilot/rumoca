@@ -1040,6 +1040,7 @@ fn instantiate_class(
 
     let class_data = ast::ClassInstanceData {
         instance_id,
+        class_def_id: class.def_id,
         qualified_name: qualified_name.clone(),
         equations: instance_equations,
         initial_equations: instance_initial_equations,
