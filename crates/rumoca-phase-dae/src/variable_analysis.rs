@@ -783,7 +783,15 @@ fn validate_function_call_name(
     name: &VarName,
     flat: &Model,
     span: Span,
+    function_scope: Option<&HashSet<String>>,
 ) -> Result<VarName, ToDaeError> {
+    if is_function_typed_member_call(name, flat) {
+        return Ok(name.clone());
+    }
+
+    if function_scope.is_some_and(|scope| function_scope_contains_function_call(name, scope)) {
+        return Ok(name.clone());
+    }
     if is_builtin_or_runtime_intrinsic_function(name) {
         return Ok(name.clone());
     }
@@ -814,6 +822,69 @@ fn validate_function_call_name(
     Ok(func.name.clone())
 }
 
+fn function_scope_contains_function_call(name: &VarName, scope: &HashSet<String>) -> bool {
+    if scope.contains(name.as_str()) {
+        return true;
+    }
+    name.as_str()
+        .rsplit('.')
+        .next()
+        .is_some_and(|leaf| scope.contains(leaf))
+}
+
+fn function_param_is_function_typed(param: &flat::FunctionParam, flat: &Model) -> bool {
+    if param.type_name.is_empty() {
+        return false;
+    }
+    // MLS §12 allows function-typed formal parameters. Recognize them by
+    // resolving the declared type name to a function declaration in flat IR.
+    if resolve_flat_function(&VarName::new(&param.type_name), flat).is_some() {
+        return true;
+    }
+    !matches!(
+        param.type_name.as_str(),
+        "Real"
+            | "Integer"
+            | "Boolean"
+            | "String"
+            | "Clock"
+            | "Complex"
+            | "Modelica.ComplexMath.Complex"
+    )
+}
+
+fn is_function_typed_member_call(name: &VarName, flat: &Model) -> bool {
+    let raw = name.as_str();
+    let Some((owner, member)) = raw.rsplit_once('.') else {
+        return false;
+    };
+    let owner_name = VarName::new(owner);
+    let Some(function) = resolve_flat_function(&owner_name, flat) else {
+        return false;
+    };
+    function
+        .inputs
+        .iter()
+        .chain(function.outputs.iter())
+        .chain(function.locals.iter())
+        .any(|param| param.name == member && function_param_is_function_typed(param, flat))
+}
+
+fn function_callable_scope(function: &Function, flat: &Model) -> HashSet<String> {
+    function
+        .inputs
+        .iter()
+        .chain(function.outputs.iter())
+        .chain(function.locals.iter())
+        .filter(|param| function_param_is_function_typed(param, flat))
+        .flat_map(|param| {
+            [
+                param.name.clone(),
+                format!("{}.{}", function.name.as_str(), param.name),
+            ]
+        })
+        .collect()
+}
 fn resolve_unique_executable_short_name(
     requested_name: &VarName,
     flat: &Model,
@@ -852,6 +923,7 @@ fn validate_field_access_functions(
     flat: &Model,
     span: Span,
     reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
 ) -> Result<(), ToDaeError> {
     if let Expression::FunctionCall {
         name,
@@ -860,7 +932,7 @@ fn validate_field_access_functions(
     } = base
     {
         for arg in args {
-            validate_flat_expression_functions(arg, flat, span, reachable_calls)?;
+            validate_flat_expression_functions(arg, flat, span, reachable_calls, function_scope)?;
         }
 
         // Complex constructors commonly project `.re`/`.im` without explicit
@@ -931,7 +1003,7 @@ fn validate_field_access_functions(
         return Ok(());
     }
 
-    validate_flat_expression_functions(base, flat, span, reachable_calls)
+    validate_flat_expression_functions(base, flat, span, reachable_calls, function_scope)
 }
 
 fn validate_flat_expression_functions(
@@ -939,82 +1011,206 @@ fn validate_flat_expression_functions(
     flat: &Model,
     span: Span,
     reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
 ) -> Result<(), ToDaeError> {
     match expr {
         Expression::FunctionCall {
             name,
             args,
             is_constructor,
-        } => {
-            if !is_constructor {
-                let resolved_name = validate_function_call_name(name, flat, span)?;
-                if !is_builtin_or_runtime_intrinsic_function(&resolved_name) {
-                    reachable_calls.push(resolved_name);
-                }
-            }
-            for arg in args {
-                validate_flat_expression_functions(arg, flat, span, reachable_calls)?;
-            }
-        }
+        } => validate_function_call_expr(
+            name,
+            args,
+            *is_constructor,
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?,
         Expression::BuiltinCall { args, .. } => {
-            for arg in args {
-                validate_flat_expression_functions(arg, flat, span, reachable_calls)?;
-            }
+            validate_expr_list(args, flat, span, reachable_calls, function_scope)?
         }
         Expression::Binary { lhs, rhs, .. } => {
-            validate_flat_expression_functions(lhs, flat, span, reachable_calls)?;
-            validate_flat_expression_functions(rhs, flat, span, reachable_calls)?;
+            validate_flat_expression_functions(lhs, flat, span, reachable_calls, function_scope)?;
+            validate_flat_expression_functions(rhs, flat, span, reachable_calls, function_scope)?
         }
         Expression::Unary { rhs, .. } => {
-            validate_flat_expression_functions(rhs, flat, span, reachable_calls)?
+            validate_flat_expression_functions(rhs, flat, span, reachable_calls, function_scope)?
         }
         Expression::If {
             branches,
             else_branch,
-        } => {
-            for (cond, value) in branches {
-                validate_flat_expression_functions(cond, flat, span, reachable_calls)?;
-                validate_flat_expression_functions(value, flat, span, reachable_calls)?;
-            }
-            validate_flat_expression_functions(else_branch, flat, span, reachable_calls)?;
-        }
+        } => validate_if_expr(
+            branches,
+            else_branch,
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?,
         Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            for element in elements {
-                validate_flat_expression_functions(element, flat, span, reachable_calls)?;
-            }
+            validate_expr_list(elements, flat, span, reachable_calls, function_scope)?
         }
-        Expression::Range { start, step, end } => {
-            validate_flat_expression_functions(start, flat, span, reachable_calls)?;
-            if let Some(step) = step {
-                validate_flat_expression_functions(step, flat, span, reachable_calls)?;
-            }
-            validate_flat_expression_functions(end, flat, span, reachable_calls)?;
-        }
-        Expression::Index { base, subscripts } => {
-            validate_flat_expression_functions(base, flat, span, reachable_calls)?;
-            for subscript in subscripts {
-                if let Subscript::Expr(expr) = subscript {
-                    validate_flat_expression_functions(expr, flat, span, reachable_calls)?;
-                }
-            }
-        }
+        Expression::Range { start, step, end } => validate_range_expr(
+            start,
+            step.as_deref(),
+            end,
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?,
+        Expression::Index { base, subscripts } => validate_index_expr(
+            base,
+            subscripts,
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?,
         Expression::FieldAccess { base, field } => {
-            validate_field_access_functions(base, field, flat, span, reachable_calls)?;
+            validate_field_access_functions(
+                base,
+                field,
+                flat,
+                span,
+                reachable_calls,
+                function_scope,
+            )?;
         }
         Expression::ArrayComprehension {
             expr,
             indices,
             filter,
-        } => {
-            validate_flat_expression_functions(expr, flat, span, reachable_calls)?;
-            for index in indices {
-                validate_flat_expression_functions(&index.range, flat, span, reachable_calls)?;
-            }
-            if let Some(filter_expr) = filter {
-                validate_flat_expression_functions(filter_expr, flat, span, reachable_calls)?;
-            }
-        }
+        } => validate_array_comprehension_expr(
+            expr,
+            indices,
+            filter.as_deref(),
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?,
         Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => {}
+    }
+    Ok(())
+}
+
+fn validate_function_call_expr(
+    name: &VarName,
+    args: &[Expression],
+    is_constructor: bool,
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    if !is_constructor {
+        let resolved_name = validate_function_call_name(name, flat, span, function_scope)?;
+        maybe_enqueue_reachable_call(&resolved_name, flat, reachable_calls, function_scope);
+    }
+    validate_expr_list(args, flat, span, reachable_calls, function_scope)
+}
+
+fn maybe_enqueue_reachable_call(
+    resolved_name: &VarName,
+    flat: &Model,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) {
+    let scope_callable = function_scope
+        .is_some_and(|scope| function_scope_contains_function_call(resolved_name, scope));
+    let dynamic_member_call = is_function_typed_member_call(resolved_name, flat);
+    if !is_builtin_or_runtime_intrinsic_function(resolved_name)
+        && !scope_callable
+        && !dynamic_member_call
+    {
+        reachable_calls.push(resolved_name.clone());
+    }
+}
+
+fn validate_expr_list(
+    exprs: &[Expression],
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    for expr in exprs {
+        validate_flat_expression_functions(expr, flat, span, reachable_calls, function_scope)?;
+    }
+    Ok(())
+}
+
+fn validate_if_expr(
+    branches: &[(Expression, Expression)],
+    else_branch: &Expression,
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    for (cond, value) in branches {
+        validate_flat_expression_functions(cond, flat, span, reachable_calls, function_scope)?;
+        validate_flat_expression_functions(value, flat, span, reachable_calls, function_scope)?;
+    }
+    validate_flat_expression_functions(else_branch, flat, span, reachable_calls, function_scope)
+}
+
+fn validate_range_expr(
+    start: &Expression,
+    step: Option<&Expression>,
+    end: &Expression,
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    validate_flat_expression_functions(start, flat, span, reachable_calls, function_scope)?;
+    if let Some(step) = step {
+        validate_flat_expression_functions(step, flat, span, reachable_calls, function_scope)?;
+    }
+    validate_flat_expression_functions(end, flat, span, reachable_calls, function_scope)
+}
+
+fn validate_index_expr(
+    base: &Expression,
+    subscripts: &[Subscript],
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    validate_flat_expression_functions(base, flat, span, reachable_calls, function_scope)?;
+    for subscript in subscripts {
+        if let Subscript::Expr(expr) = subscript {
+            validate_flat_expression_functions(expr, flat, span, reachable_calls, function_scope)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_array_comprehension_expr(
+    expr: &Expression,
+    indices: &[rumoca_ir_flat::ComprehensionIndex],
+    filter: Option<&Expression>,
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    validate_flat_expression_functions(expr, flat, span, reachable_calls, function_scope)?;
+    for index in indices {
+        validate_flat_expression_functions(
+            &index.range,
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?;
+    }
+    if let Some(filter) = filter {
+        validate_flat_expression_functions(filter, flat, span, reachable_calls, function_scope)?;
     }
     Ok(())
 }
@@ -1028,81 +1224,190 @@ fn validate_statement_functions(
     flat: &Model,
     span: Span,
     reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
 ) -> Result<(), ToDaeError> {
     match stmt {
         Statement::Assignment { value, .. } => {
-            validate_flat_expression_functions(value, flat, span, reachable_calls)?
+            validate_flat_expression_functions(value, flat, span, reachable_calls, function_scope)?
         }
-        Statement::For { indices, equations } => {
-            for index in indices {
-                validate_flat_expression_functions(&index.range, flat, span, reachable_calls)?;
-            }
-            for nested in equations {
-                validate_statement_functions(nested, flat, span, reachable_calls)?;
-            }
-        }
+        Statement::For { indices, equations } => validate_for_statement(
+            indices,
+            equations,
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?,
         Statement::While(block) => {
-            validate_flat_expression_functions(&block.cond, flat, span, reachable_calls)?;
-            for nested in &block.stmts {
-                validate_statement_functions(nested, flat, span, reachable_calls)?;
-            }
+            validate_while_statement(block, flat, span, reachable_calls, function_scope)?
         }
         Statement::If {
             cond_blocks,
             else_block,
-        } => {
-            for block in cond_blocks {
-                validate_flat_expression_functions(&block.cond, flat, span, reachable_calls)?;
-                for nested in &block.stmts {
-                    validate_statement_functions(nested, flat, span, reachable_calls)?;
-                }
-            }
-            if let Some(else_block) = else_block {
-                for nested in else_block {
-                    validate_statement_functions(nested, flat, span, reachable_calls)?;
-                }
-            }
-        }
+        } => validate_if_statement(
+            cond_blocks,
+            else_block.as_deref(),
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?,
         Statement::When(blocks) => {
-            for block in blocks {
-                validate_flat_expression_functions(&block.cond, flat, span, reachable_calls)?;
-                for nested in &block.stmts {
-                    validate_statement_functions(nested, flat, span, reachable_calls)?;
-                }
-            }
+            validate_when_statement(blocks, flat, span, reachable_calls, function_scope)?
         }
         Statement::FunctionCall {
             comp,
             args,
             outputs,
-        } => {
-            let name = component_reference_to_var_name(comp);
-            let resolved_name = validate_function_call_name(&name, flat, span)?;
-            if !is_builtin_or_runtime_intrinsic_function(&resolved_name) {
-                reachable_calls.push(resolved_name);
-            }
-            for arg in args {
-                validate_flat_expression_functions(arg, flat, span, reachable_calls)?;
-            }
-            for output in outputs {
-                validate_flat_expression_functions(output, flat, span, reachable_calls)?;
-            }
-        }
+        } => validate_statement_function_call(
+            comp,
+            args,
+            outputs,
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?,
         Statement::Reinit { value, .. } => {
-            validate_flat_expression_functions(value, flat, span, reachable_calls)?
+            validate_flat_expression_functions(value, flat, span, reachable_calls, function_scope)?
         }
         Statement::Assert {
             condition,
             message,
             level,
         } => {
-            validate_flat_expression_functions(condition, flat, span, reachable_calls)?;
-            validate_flat_expression_functions(message, flat, span, reachable_calls)?;
+            validate_flat_expression_functions(
+                condition,
+                flat,
+                span,
+                reachable_calls,
+                function_scope,
+            )?;
+            validate_flat_expression_functions(
+                message,
+                flat,
+                span,
+                reachable_calls,
+                function_scope,
+            )?;
             if let Some(level) = level {
-                validate_flat_expression_functions(level, flat, span, reachable_calls)?;
+                validate_flat_expression_functions(
+                    level,
+                    flat,
+                    span,
+                    reachable_calls,
+                    function_scope,
+                )?;
             }
         }
         Statement::Empty | Statement::Return | Statement::Break => {}
+    }
+    Ok(())
+}
+
+fn validate_for_statement(
+    indices: &[rumoca_ir_flat::ForIndex],
+    equations: &[Statement],
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    for index in indices {
+        validate_flat_expression_functions(
+            &index.range,
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?;
+    }
+    for nested in equations {
+        validate_statement_functions(nested, flat, span, reachable_calls, function_scope)?;
+    }
+    Ok(())
+}
+
+fn validate_while_statement(
+    block: &rumoca_ir_flat::StatementBlock,
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    validate_flat_expression_functions(&block.cond, flat, span, reachable_calls, function_scope)?;
+    validate_statement_list(&block.stmts, flat, span, reachable_calls, function_scope)
+}
+
+fn validate_if_statement(
+    cond_blocks: &[rumoca_ir_flat::StatementBlock],
+    else_block: Option<&[Statement]>,
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    for block in cond_blocks {
+        validate_flat_expression_functions(
+            &block.cond,
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?;
+        validate_statement_list(&block.stmts, flat, span, reachable_calls, function_scope)?;
+    }
+    if let Some(else_block) = else_block {
+        validate_statement_list(else_block, flat, span, reachable_calls, function_scope)?;
+    }
+    Ok(())
+}
+
+fn validate_when_statement(
+    blocks: &[rumoca_ir_flat::StatementBlock],
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    for block in blocks {
+        validate_flat_expression_functions(
+            &block.cond,
+            flat,
+            span,
+            reachable_calls,
+            function_scope,
+        )?;
+        validate_statement_list(&block.stmts, flat, span, reachable_calls, function_scope)?;
+    }
+    Ok(())
+}
+
+fn validate_statement_function_call(
+    comp: &ComponentReference,
+    args: &[Expression],
+    outputs: &[Expression],
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    let name = component_reference_to_var_name(comp);
+    let resolved_name = validate_function_call_name(&name, flat, span, function_scope)?;
+    maybe_enqueue_reachable_call(&resolved_name, flat, reachable_calls, function_scope);
+    validate_expr_list(args, flat, span, reachable_calls, function_scope)?;
+    validate_expr_list(outputs, flat, span, reachable_calls, function_scope)
+}
+
+fn validate_statement_list(
+    stmts: &[Statement],
+    flat: &Model,
+    span: Span,
+    reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
+) -> Result<(), ToDaeError> {
+    for stmt in stmts {
+        validate_statement_functions(stmt, flat, span, reachable_calls, function_scope)?;
     }
     Ok(())
 }
@@ -1111,17 +1416,24 @@ fn validate_when_equation_functions(
     equation: &rumoca_ir_flat::WhenEquation,
     flat: &Model,
     reachable_calls: &mut Vec<VarName>,
+    function_scope: Option<&HashSet<String>>,
 ) -> Result<(), ToDaeError> {
     match equation {
         rumoca_ir_flat::WhenEquation::Assign { value, span, .. } => {
-            validate_flat_expression_functions(value, flat, *span, reachable_calls)?
+            validate_flat_expression_functions(value, flat, *span, reachable_calls, function_scope)?
         }
         rumoca_ir_flat::WhenEquation::Reinit { value, span, .. } => {
-            validate_flat_expression_functions(value, flat, *span, reachable_calls)?
+            validate_flat_expression_functions(value, flat, *span, reachable_calls, function_scope)?
         }
         rumoca_ir_flat::WhenEquation::Assert {
             condition, span, ..
-        } => validate_flat_expression_functions(condition, flat, *span, reachable_calls)?,
+        } => validate_flat_expression_functions(
+            condition,
+            flat,
+            *span,
+            reachable_calls,
+            function_scope,
+        )?,
         rumoca_ir_flat::WhenEquation::Terminate { .. } => {}
         rumoca_ir_flat::WhenEquation::Conditional {
             branches,
@@ -1129,17 +1441,34 @@ fn validate_when_equation_functions(
             ..
         } => {
             for (condition, equations) in branches {
-                validate_flat_expression_functions(condition, flat, Span::DUMMY, reachable_calls)?;
+                validate_flat_expression_functions(
+                    condition,
+                    flat,
+                    Span::DUMMY,
+                    reachable_calls,
+                    function_scope,
+                )?;
                 for nested in equations {
-                    validate_when_equation_functions(nested, flat, reachable_calls)?;
+                    validate_when_equation_functions(
+                        nested,
+                        flat,
+                        reachable_calls,
+                        function_scope,
+                    )?;
                 }
             }
             for nested in else_branch {
-                validate_when_equation_functions(nested, flat, reachable_calls)?;
+                validate_when_equation_functions(nested, flat, reachable_calls, function_scope)?;
             }
         }
         rumoca_ir_flat::WhenEquation::FunctionCallOutputs { function, span, .. } => {
-            validate_flat_expression_functions(function, flat, *span, reachable_calls)?
+            validate_flat_expression_functions(
+                function,
+                flat,
+                *span,
+                reachable_calls,
+                function_scope,
+            )?
         }
     }
     Ok(())
@@ -1148,6 +1477,25 @@ fn validate_when_equation_functions(
 pub(crate) fn validate_flat_function_calls(flat: &Model) -> Result<(), ToDaeError> {
     let mut reachable_calls: Vec<VarName> = Vec::new();
 
+    collect_root_reachable_calls(flat, &mut reachable_calls)?;
+    validate_reachable_function_closure(flat, &mut reachable_calls)
+}
+
+fn collect_root_reachable_calls(
+    flat: &Model,
+    reachable_calls: &mut Vec<VarName>,
+) -> Result<(), ToDaeError> {
+    collect_variable_attr_calls(flat, reachable_calls)?;
+    collect_equation_calls(flat, reachable_calls)?;
+    collect_assertion_calls(flat, reachable_calls)?;
+    collect_when_calls(flat, reachable_calls)?;
+    collect_algorithm_calls(flat, reachable_calls)
+}
+
+fn collect_variable_attr_calls(
+    flat: &Model,
+    reachable_calls: &mut Vec<VarName>,
+) -> Result<(), ToDaeError> {
     for variable in flat.variables.values() {
         let is_param_or_const = matches!(
             variable.variability,
@@ -1156,7 +1504,6 @@ pub(crate) fn validate_flat_function_calls(flat: &Model) -> Result<(), ToDaeErro
         if is_param_or_const {
             continue;
         }
-
         for expr in [
             variable.start.as_ref(),
             variable.min.as_ref(),
@@ -1167,19 +1514,32 @@ pub(crate) fn validate_flat_function_calls(flat: &Model) -> Result<(), ToDaeErro
         .into_iter()
         .flatten()
         {
-            validate_flat_expression_functions(expr, flat, Span::DUMMY, &mut reachable_calls)?;
+            validate_flat_expression_functions(expr, flat, Span::DUMMY, reachable_calls, None)?;
         }
     }
+    Ok(())
+}
 
+fn collect_equation_calls(
+    flat: &Model,
+    reachable_calls: &mut Vec<VarName>,
+) -> Result<(), ToDaeError> {
     for equation in flat.equations.iter().chain(flat.initial_equations.iter()) {
         validate_flat_expression_functions(
             &equation.residual,
             flat,
             equation.span,
-            &mut reachable_calls,
+            reachable_calls,
+            None,
         )?;
     }
+    Ok(())
+}
 
+fn collect_assertion_calls(
+    flat: &Model,
+    reachable_calls: &mut Vec<VarName>,
+) -> Result<(), ToDaeError> {
     for assertion in flat
         .assert_equations
         .iter()
@@ -1189,32 +1549,59 @@ pub(crate) fn validate_flat_function_calls(flat: &Model) -> Result<(), ToDaeErro
             &assertion.condition,
             flat,
             assertion.span,
-            &mut reachable_calls,
+            reachable_calls,
+            None,
         )?;
         validate_flat_expression_functions(
             &assertion.message,
             flat,
             assertion.span,
-            &mut reachable_calls,
+            reachable_calls,
+            None,
         )?;
         if let Some(level) = &assertion.level {
-            validate_flat_expression_functions(level, flat, assertion.span, &mut reachable_calls)?;
+            validate_flat_expression_functions(level, flat, assertion.span, reachable_calls, None)?;
         }
     }
+    Ok(())
+}
 
+fn collect_when_calls(flat: &Model, reachable_calls: &mut Vec<VarName>) -> Result<(), ToDaeError> {
     for when in &flat.when_clauses {
-        validate_flat_expression_functions(&when.condition, flat, when.span, &mut reachable_calls)?;
+        validate_flat_expression_functions(
+            &when.condition,
+            flat,
+            when.span,
+            reachable_calls,
+            None,
+        )?;
         for equation in &when.equations {
-            validate_when_equation_functions(equation, flat, &mut reachable_calls)?;
+            validate_when_equation_functions(equation, flat, reachable_calls, None)?;
         }
     }
+    Ok(())
+}
 
+fn collect_algorithm_calls(
+    flat: &Model,
+    reachable_calls: &mut Vec<VarName>,
+) -> Result<(), ToDaeError> {
     for algorithm in flat.algorithms.iter().chain(flat.initial_algorithms.iter()) {
-        for statement in &algorithm.statements {
-            validate_statement_functions(statement, flat, algorithm.span, &mut reachable_calls)?;
-        }
+        validate_statement_list(
+            &algorithm.statements,
+            flat,
+            algorithm.span,
+            reachable_calls,
+            None,
+        )?;
     }
+    Ok(())
+}
 
+fn validate_reachable_function_closure(
+    flat: &Model,
+    reachable_calls: &mut Vec<VarName>,
+) -> Result<(), ToDaeError> {
     let mut visited: HashSet<VarName> = HashSet::default();
     while let Some(function_name) = reachable_calls.pop() {
         if !visited.insert(function_name.clone()) {
@@ -1226,26 +1613,40 @@ pub(crate) fn validate_flat_function_calls(flat: &Model) -> Result<(), ToDaeErro
                 Span::DUMMY,
             ));
         };
-        for param in function
-            .inputs
-            .iter()
-            .chain(function.outputs.iter())
-            .chain(function.locals.iter())
-        {
-            if let Some(default_expr) = &param.default {
-                validate_flat_expression_functions(
-                    default_expr,
-                    flat,
-                    function.span,
-                    &mut reachable_calls,
-                )?;
-            }
-        }
-        for statement in &function.body {
-            validate_statement_functions(statement, flat, function.span, &mut reachable_calls)?;
+        validate_function_defaults(function, flat, reachable_calls)?;
+        let callable_scope = function_callable_scope(function, flat);
+        validate_statement_list(
+            &function.body,
+            flat,
+            function.span,
+            reachable_calls,
+            Some(&callable_scope),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_function_defaults(
+    function: &Function,
+    flat: &Model,
+    reachable_calls: &mut Vec<VarName>,
+) -> Result<(), ToDaeError> {
+    for param in function
+        .inputs
+        .iter()
+        .chain(function.outputs.iter())
+        .chain(function.locals.iter())
+    {
+        if let Some(default_expr) = &param.default {
+            validate_flat_expression_functions(
+                default_expr,
+                flat,
+                function.span,
+                reachable_calls,
+                None,
+            )?;
         }
     }
-
     Ok(())
 }
 

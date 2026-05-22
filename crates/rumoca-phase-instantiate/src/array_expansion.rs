@@ -112,9 +112,20 @@ pub(super) fn expand_array_component(
         // component name would overwrite the per-element indexed binding.
         let previous_binding = ctx.mod_env().active.get(&binding_qn).cloned();
         if let Some(binding_expr) = &scalar_comp.binding {
+            let preserved_source_scope = previous_binding
+                .as_ref()
+                .and_then(|value| value.source_scope.clone());
+            let preserved_source = previous_binding
+                .as_ref()
+                .and_then(|value| value.source.clone())
+                .or_else(|| Some(binding_expr.clone()));
             ctx.mod_env_mut().active.insert(
                 binding_qn.clone(),
-                ast::ModificationValue::simple(binding_expr.clone()),
+                ast::ModificationValue::with_source_scope(
+                    binding_expr.clone(),
+                    preserved_source,
+                    preserved_source_scope,
+                ),
             );
         }
 
@@ -159,6 +170,13 @@ pub(super) fn pre_resolve_array_modifications(
     for (name, expr) in &comp.modifications {
         if comp.each_modifications.contains(name) {
             continue; // `each` modifications are not distributed
+        }
+        // Keep component-reference modifiers (for example `R=R`) in symbolic
+        // form so per-element indexing can preserve owner scope (`R[1]`).
+        // Eager resolution here can over-collapse to outer-source expressions
+        // like `RRef.d`, losing the declaring component context.
+        if matches!(expr, ast::Expression::ComponentReference(_)) {
+            continue;
         }
         let val = resolve_mod_to_array(expr, mod_env, effective_components, tree);
         if matches!(val, ast::Expression::Array { .. }) {

@@ -10,7 +10,14 @@ mod clock;
 
 pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<(), ToDaeError> {
     let profile = std::env::var("RUMOCA_TODAE_PROFILE").is_ok();
+    let scalar_collection_start = maybe_start_timer_if(profile);
     let compile_time_scalars = collect_compile_time_scalars(dae_model);
+    if scalar_collection_start.is_some() {
+        eprintln!(
+            "ToDae runtime_precompute compile_time_scalars: {:.3}s",
+            maybe_elapsed_seconds(scalar_collection_start)
+        );
+    }
 
     let synthetic_root_start = maybe_start_timer_if(profile);
     let mut synthetic_roots = Vec::new();
@@ -121,7 +128,9 @@ fn insert_compile_time_scalar(values: &mut HashMap<String, f64>, name: &str, val
         values.insert(name.to_string(), value);
         changed = true;
     }
-    if let Some(base) = dae::component_base_name(name)
+    let is_indexed_name = name.contains('[');
+    if !is_indexed_name
+        && let Some(base) = dae::component_base_name(name)
         && values
             .get(base.as_str())
             .is_none_or(|existing| (existing - value).abs() > 1.0e-12)
@@ -202,20 +211,26 @@ fn collect_array_scalar_entries(
 }
 
 fn collect_compile_time_scalars(dae_model: &dae::Dae) -> HashMap<String, f64> {
+    let profile = std::env::var("RUMOCA_TODAE_PROFILE").is_ok();
+    let collect_start = maybe_start_timer_if(profile);
     let mut values = HashMap::new();
     for (literal, ordinal) in &dae_model.enum_literal_ordinals {
         values.insert(literal.clone(), *ordinal as f64);
     }
+    // Compile-time scalar propagation only includes true compile-time entities.
+    // Inputs are externally driven at runtime and their `start` values are not
+    // compile-time constants for static event/clock extraction.
     let bindings: Vec<(&dae::VarName, &dae::Expression)> = dae_model
         .parameters
         .iter()
         .chain(dae_model.constants.iter())
-        .chain(dae_model.inputs.iter())
         .filter_map(|(name, variable)| variable.start.as_ref().map(|start| (name, start)))
         .collect();
 
     let max_passes = (bindings.len().max(1)).saturating_mul(2);
+    let mut passes_run = 0usize;
     for _ in 0..max_passes {
+        passes_run += 1;
         let mut changed = false;
         for (name, start) in &bindings {
             if let Some(value) = eval_scalar_const_expr(start, &values) {
@@ -229,6 +244,14 @@ fn collect_compile_time_scalars(dae_model: &dae::Dae) -> HashMap<String, f64> {
         if !changed {
             break;
         }
+    }
+    if collect_start.is_some() {
+        eprintln!(
+            "ToDae runtime_precompute compile_time_scalars stats: bindings={} passes={} values={}",
+            bindings.len(),
+            passes_run,
+            values.len()
+        );
     }
 
     values

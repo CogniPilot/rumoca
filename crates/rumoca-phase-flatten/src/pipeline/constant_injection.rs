@@ -202,7 +202,10 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
     for _pass in 0..MAX_PASSES {
         let prev = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+            + ctx.boolean_parameter_values.len()
+            + ctx.real_parameter_values.len()
+            + ctx.enum_parameter_values.len()
+            + ctx.constant_values.len();
         for ancestor in ancestors {
             for ext in &ancestor.extends {
                 extract_extends_modification_constants(tree, "", ext, resolve_context, ctx);
@@ -211,7 +214,10 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
         }
         let new = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+            + ctx.boolean_parameter_values.len()
+            + ctx.real_parameter_values.len()
+            + ctx.enum_parameter_values.len()
+            + ctx.constant_values.len();
         if new == prev {
             break;
         }
@@ -1585,6 +1591,12 @@ pub(crate) struct Context {
     /// Current import map for the class instance being processed (MLS §13.2).
     /// Set before processing each class instance's equations, cleared after.
     pub current_imports: crate::qualify::ImportMap,
+    /// Set of DefIds that correspond to class definitions in the current tree.
+    /// Used by qualification to distinguish class/type references from components.
+    pub class_def_ids: std::sync::Arc<rustc_hash::FxHashSet<rumoca_core::DefId>>,
+    /// Canonical class scope path for the class instance currently being flattened.
+    /// Derived from `def_map` via the owning class DefId.
+    pub current_class_scope_path: Option<String>,
 }
 
 #[cfg(test)]

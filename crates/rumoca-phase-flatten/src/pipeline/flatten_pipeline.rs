@@ -123,7 +123,14 @@ pub(crate) fn process_class_instances_for_flatten(
         if is_in_disabled_component(&class_data.qualified_name, &overlay.disabled_components) {
             continue;
         }
-        process_class_instance(ctx, flat, class_data, component_override_map, tree)?;
+        process_class_instance(
+            ctx,
+            flat,
+            class_data,
+            class_data.class_def_id,
+            component_override_map,
+            tree,
+        )?;
     }
     Ok(())
 }
@@ -152,6 +159,8 @@ pub(crate) fn finalize_flat_model(
     mark_record_constructor_calls(flat, tree);
     functions::lower_record_function_params(flat);
     functions::insert_array_size_args(flat);
+    functions::specialize_static_function_params(flat);
+    canonicalize_varrefs_via_record_aliases(flat, ctx);
     drop_invalid_field_access_bindings(flat);
     propagate_unexpanded_record_array_dims(flat, overlay);
     flat.oc_break_edge_scalar_count = vcg::compute_break_edge_scalar_count(

@@ -1969,5 +1969,6 @@ fn test_model_description_propagation() {
 
 mod tests_embedded_range;
 mod tests_flow_sum;
+mod tests_function_param_calls;
 mod tests_regressions;
 mod tests_scalar_shape;

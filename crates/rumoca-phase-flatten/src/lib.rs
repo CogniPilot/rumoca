@@ -268,6 +268,13 @@ pub fn flatten_ref_with_options(
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
+    ctx.class_def_ids = std::sync::Arc::new(
+        tree.def_map
+            .keys()
+            .filter(|def_id| tree.get_class_by_def_id(**def_id).is_some())
+            .copied()
+            .collect(),
+    );
     let mut flat = flat::Model::new();
     let global_imports = collect_global_imports(overlay);
     let component_override_map = build_component_override_map(overlay, tree);
@@ -484,6 +491,12 @@ fn extract_simple_path(expr: &ast::Expression) -> Option<String> {
 /// of the component (MLS §7.2.4).
 fn extract_record_aliases(ctx: &mut Context, overlay: &ast::InstanceOverlay) {
     for (_def_id, instance_data) in &overlay.components {
+        // Record-alias canonicalization is only valid for non-primitive component
+        // containers (records/connectors/classes). Primitive scalar bindings like
+        // `output Real y = x` are value bindings, not prefix aliases.
+        if instance_data.is_primitive {
+            continue;
+        }
         // Check if this component has a binding that's a simple path
         let Some(binding) = &instance_data.binding else {
             continue;

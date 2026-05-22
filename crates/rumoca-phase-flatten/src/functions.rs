@@ -11,8 +11,6 @@
 //! - An algorithm section (the function body)
 
 use indexmap::IndexMap;
-#[cfg(test)]
-use rumoca_core::Span;
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 use std::collections::{HashMap, HashSet};
@@ -21,6 +19,20 @@ use crate::algorithms;
 use crate::ast_lower;
 use crate::errors::FlattenError;
 use crate::qualify;
+
+const NON_FUNCTION_SCALAR_TYPES: &[&str] = &[
+    "Real",
+    "Integer",
+    "Boolean",
+    "String",
+    "Clock",
+    "Complex",
+    "Modelica.ComplexMath.Complex",
+];
+type StaticBindingPairs = Vec<(String, String)>;
+type SpecializationKey = (String, StaticBindingPairs);
+type SpecializationCache = HashMap<SpecializationKey, flat::VarName>;
+type StaticBindingResult = (SpecializationKey, String);
 
 fn is_callable_class_type(class_type: &ast::ClassType) -> bool {
     !matches!(
@@ -221,6 +233,753 @@ pub(crate) fn collect_functions(
     }
 
     Ok(())
+}
+
+/// Specialize static function-typed parameters at flatten level.
+///
+/// For calls where a function-typed input has a concrete static binding
+/// (explicit argument or function default), clone the callee into a specialized
+/// function and rewrite local function-parameter calls to the concrete target.
+///
+/// MLS §12.4.1/§12.4.2: function formals are lexically scoped and call-time
+/// bound; this pass resolves static bindings early for compile-time overhead
+/// reduction while preserving semantics.
+pub(crate) fn specialize_static_function_params(flat: &mut flat::Model) {
+    let function_index = flat.functions.clone();
+    let mut cache: SpecializationCache = HashMap::new();
+    let mut pending_new_functions: Vec<flat::Function> = Vec::new();
+
+    specialize_equation_lists(
+        flat,
+        &function_index,
+        &mut cache,
+        &mut pending_new_functions,
+    );
+    specialize_variable_annotations(
+        flat,
+        &function_index,
+        &mut cache,
+        &mut pending_new_functions,
+    );
+    specialize_assertions(
+        flat,
+        &function_index,
+        &mut cache,
+        &mut pending_new_functions,
+    );
+    specialize_when_clauses(
+        flat,
+        &function_index,
+        &mut cache,
+        &mut pending_new_functions,
+    );
+    specialize_algorithms(
+        flat,
+        &function_index,
+        &mut cache,
+        &mut pending_new_functions,
+    );
+    specialize_functions(
+        flat,
+        &function_index,
+        &mut cache,
+        &mut pending_new_functions,
+    );
+
+    for func in pending_new_functions {
+        flat.functions.insert(func.name.clone(), func);
+    }
+}
+
+fn specialize_equation_lists(
+    flat: &mut flat::Model,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    for eq in &mut flat.equations {
+        specialize_in_expr(
+            &mut eq.residual,
+            function_index,
+            cache,
+            pending_new_functions,
+        );
+    }
+    for eq in &mut flat.initial_equations {
+        specialize_in_expr(
+            &mut eq.residual,
+            function_index,
+            cache,
+            pending_new_functions,
+        );
+    }
+}
+
+fn specialize_variable_annotations(
+    flat: &mut flat::Model,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    for var in flat.variables.values_mut() {
+        for expr in [
+            &mut var.binding,
+            &mut var.start,
+            &mut var.min,
+            &mut var.max,
+            &mut var.nominal,
+        ] {
+            rewrite_opt_expr(expr, function_index, cache, pending_new_functions);
+        }
+    }
+}
+
+fn specialize_assertions(
+    flat: &mut flat::Model,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    for assertion in &mut flat.assert_equations {
+        specialize_in_expr(
+            &mut assertion.condition,
+            function_index,
+            cache,
+            pending_new_functions,
+        );
+        specialize_in_expr(
+            &mut assertion.message,
+            function_index,
+            cache,
+            pending_new_functions,
+        );
+        rewrite_opt_expr(
+            &mut assertion.level,
+            function_index,
+            cache,
+            pending_new_functions,
+        );
+    }
+    for assertion in &mut flat.initial_assert_equations {
+        specialize_in_expr(
+            &mut assertion.condition,
+            function_index,
+            cache,
+            pending_new_functions,
+        );
+        specialize_in_expr(
+            &mut assertion.message,
+            function_index,
+            cache,
+            pending_new_functions,
+        );
+        rewrite_opt_expr(
+            &mut assertion.level,
+            function_index,
+            cache,
+            pending_new_functions,
+        );
+    }
+}
+
+fn specialize_when_clauses(
+    flat: &mut flat::Model,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    for when in &mut flat.when_clauses {
+        specialize_in_expr(
+            &mut when.condition,
+            function_index,
+            cache,
+            pending_new_functions,
+        );
+        for eq in &mut when.equations {
+            specialize_in_when_equation(eq, function_index, cache, pending_new_functions);
+        }
+    }
+}
+
+fn specialize_algorithms(
+    flat: &mut flat::Model,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    for alg in &mut flat.algorithms {
+        for stmt in &mut alg.statements {
+            specialize_in_statement(stmt, function_index, cache, pending_new_functions);
+        }
+    }
+    for alg in &mut flat.initial_algorithms {
+        for stmt in &mut alg.statements {
+            specialize_in_statement(stmt, function_index, cache, pending_new_functions);
+        }
+    }
+}
+
+fn specialize_functions(
+    flat: &mut flat::Model,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    for func in flat.functions.values_mut() {
+        for param in func
+            .inputs
+            .iter_mut()
+            .chain(func.outputs.iter_mut())
+            .chain(func.locals.iter_mut())
+        {
+            rewrite_opt_expr(
+                &mut param.default,
+                function_index,
+                cache,
+                pending_new_functions,
+            );
+        }
+        for stmt in &mut func.body {
+            specialize_in_statement(stmt, function_index, cache, pending_new_functions);
+        }
+    }
+}
+
+fn rewrite_opt_expr(
+    expr: &mut Option<flat::Expression>,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    if let Some(expr) = expr {
+        specialize_in_expr(expr, function_index, cache, pending_new_functions);
+    }
+}
+
+fn specialize_in_statement(
+    stmt: &mut flat::Statement,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    match stmt {
+        flat::Statement::Assignment { value, .. } => {
+            specialize_in_expr(value, function_index, cache, pending_new_functions);
+        }
+        flat::Statement::For { indices, equations } => {
+            for idx in indices {
+                specialize_in_expr(&mut idx.range, function_index, cache, pending_new_functions);
+            }
+            for nested in equations {
+                specialize_in_statement(nested, function_index, cache, pending_new_functions);
+            }
+        }
+        flat::Statement::While(block) => {
+            specialize_in_expr(
+                &mut block.cond,
+                function_index,
+                cache,
+                pending_new_functions,
+            );
+            for nested in &mut block.stmts {
+                specialize_in_statement(nested, function_index, cache, pending_new_functions);
+            }
+        }
+        flat::Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            for block in cond_blocks {
+                specialize_in_expr(
+                    &mut block.cond,
+                    function_index,
+                    cache,
+                    pending_new_functions,
+                );
+                for nested in &mut block.stmts {
+                    specialize_in_statement(nested, function_index, cache, pending_new_functions);
+                }
+            }
+            if let Some(stmts) = else_block {
+                for nested in stmts {
+                    specialize_in_statement(nested, function_index, cache, pending_new_functions);
+                }
+            }
+        }
+        flat::Statement::When(blocks) => {
+            for block in blocks {
+                specialize_in_expr(
+                    &mut block.cond,
+                    function_index,
+                    cache,
+                    pending_new_functions,
+                );
+                for nested in &mut block.stmts {
+                    specialize_in_statement(nested, function_index, cache, pending_new_functions);
+                }
+            }
+        }
+        flat::Statement::FunctionCall { args, outputs, .. } => {
+            for arg in args {
+                specialize_in_expr(arg, function_index, cache, pending_new_functions);
+            }
+            for output in outputs {
+                specialize_in_expr(output, function_index, cache, pending_new_functions);
+            }
+        }
+        flat::Statement::Reinit { value, .. } => {
+            specialize_in_expr(value, function_index, cache, pending_new_functions);
+        }
+        flat::Statement::Assert {
+            condition,
+            message,
+            level,
+        } => {
+            specialize_in_expr(condition, function_index, cache, pending_new_functions);
+            specialize_in_expr(message, function_index, cache, pending_new_functions);
+            if let Some(level_expr) = level {
+                specialize_in_expr(level_expr, function_index, cache, pending_new_functions);
+            }
+        }
+        flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
+    }
+}
+
+fn specialize_in_when_equation(
+    eq: &mut flat::WhenEquation,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    match eq {
+        flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+            specialize_in_expr(value, function_index, cache, pending_new_functions);
+        }
+        flat::WhenEquation::Assert { condition, .. } => {
+            specialize_in_expr(condition, function_index, cache, pending_new_functions);
+        }
+        flat::WhenEquation::Conditional {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, equations) in branches {
+                specialize_in_expr(condition, function_index, cache, pending_new_functions);
+                for nested in equations {
+                    specialize_in_when_equation(
+                        nested,
+                        function_index,
+                        cache,
+                        pending_new_functions,
+                    );
+                }
+            }
+            for nested in else_branch {
+                specialize_in_when_equation(nested, function_index, cache, pending_new_functions);
+            }
+        }
+        flat::WhenEquation::FunctionCallOutputs { function, .. } => {
+            specialize_in_expr(function, function_index, cache, pending_new_functions);
+        }
+        flat::WhenEquation::Terminate { .. } => {}
+    }
+}
+
+fn specialize_in_expr(
+    expr: &mut flat::Expression,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    match expr {
+        flat::Expression::Binary { lhs, rhs, .. } => {
+            specialize_in_expr(lhs, function_index, cache, pending_new_functions);
+            specialize_in_expr(rhs, function_index, cache, pending_new_functions);
+        }
+        flat::Expression::Unary { rhs, .. } => {
+            specialize_in_expr(rhs, function_index, cache, pending_new_functions);
+        }
+        flat::Expression::BuiltinCall { args, .. } => {
+            for arg in args {
+                specialize_in_expr(arg, function_index, cache, pending_new_functions);
+            }
+        }
+        flat::Expression::FunctionCall { name, args, .. } => {
+            for arg in args.iter_mut() {
+                specialize_in_expr(arg, function_index, cache, pending_new_functions);
+            }
+            rewrite_static_function_call(name, args, function_index, cache, pending_new_functions);
+        }
+        flat::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, then_expr) in branches {
+                specialize_in_expr(cond, function_index, cache, pending_new_functions);
+                specialize_in_expr(then_expr, function_index, cache, pending_new_functions);
+            }
+            specialize_in_expr(else_branch, function_index, cache, pending_new_functions);
+        }
+        flat::Expression::Array { elements, .. } | flat::Expression::Tuple { elements } => {
+            for elem in elements {
+                specialize_in_expr(elem, function_index, cache, pending_new_functions);
+            }
+        }
+        flat::Expression::Range { start, step, end } => {
+            specialize_in_expr(start, function_index, cache, pending_new_functions);
+            if let Some(step) = step {
+                specialize_in_expr(step, function_index, cache, pending_new_functions);
+            }
+            specialize_in_expr(end, function_index, cache, pending_new_functions);
+        }
+        flat::Expression::Index { base, subscripts } => {
+            specialize_in_expr(base, function_index, cache, pending_new_functions);
+            for sub in subscripts {
+                if let flat::Subscript::Expr(inner) = sub {
+                    specialize_in_expr(inner, function_index, cache, pending_new_functions);
+                }
+            }
+        }
+        flat::Expression::FieldAccess { base, .. } => {
+            specialize_in_expr(base, function_index, cache, pending_new_functions);
+        }
+        flat::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            specialize_in_expr(expr, function_index, cache, pending_new_functions);
+            for idx in indices {
+                specialize_in_expr(&mut idx.range, function_index, cache, pending_new_functions);
+            }
+            if let Some(filter) = filter {
+                specialize_in_expr(filter, function_index, cache, pending_new_functions);
+            }
+        }
+        flat::Expression::VarRef { .. }
+        | flat::Expression::Literal(_)
+        | flat::Expression::Empty => {}
+    }
+}
+
+fn rewrite_static_function_call(
+    name: &mut flat::VarName,
+    args: &mut [flat::Expression],
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) {
+    let Some((key, specialized_name)) =
+        build_static_function_binding(name.as_str(), args, function_index)
+    else {
+        return;
+    };
+    let Some(specialized) = resolve_specialized_name(
+        &key,
+        &specialized_name,
+        name.as_str(),
+        function_index,
+        cache,
+        pending_new_functions,
+    ) else {
+        return;
+    };
+    *name = specialized;
+}
+
+fn resolve_specialized_name(
+    key: &SpecializationKey,
+    specialized_name: &str,
+    original_name: &str,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    cache: &mut SpecializationCache,
+    pending_new_functions: &mut Vec<flat::Function>,
+) -> Option<flat::VarName> {
+    if let Some(existing) = cache.get(key) {
+        return Some(existing.clone());
+    }
+    let func =
+        create_specialized_function(function_index, original_name, specialized_name, &key.1)?;
+    let new_name = func.name.clone();
+    cache.insert(key.clone(), new_name.clone());
+    pending_new_functions.push(func);
+    Some(new_name)
+}
+
+fn build_static_function_binding(
+    function_name: &str,
+    args: &[flat::Expression],
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+) -> Option<StaticBindingResult> {
+    let function = function_index.get(&flat::VarName::new(function_name))?;
+    let mut binding_pairs = Vec::new();
+    for (index, param) in function.inputs.iter().enumerate() {
+        if !is_function_typed_param(param, function_index) {
+            continue;
+        }
+        let arg_expr = args.get(index).or(param.default.as_ref())?;
+        let target = function_name_from_expr(arg_expr)?;
+        if !can_specialize_target_function(&target, function_index) {
+            // Keep canonical call names for non-specializable targets
+            // (notably external/runtime functions).
+            return None;
+        }
+        binding_pairs.push((param.name.clone(), target));
+    }
+    if binding_pairs.is_empty() {
+        return None;
+    }
+    let suffix = binding_pairs
+        .iter()
+        .map(|(param, target)| format!("{param}={target}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    let specialized_name = format!(
+        "{}$spec${}",
+        function.name.as_str(),
+        simple_hash_hex(&suffix)
+    );
+    Some((
+        (function.name.as_str().to_string(), binding_pairs),
+        specialized_name,
+    ))
+}
+
+fn is_function_typed_param(
+    param: &flat::FunctionParam,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+) -> bool {
+    if NON_FUNCTION_SCALAR_TYPES.contains(&param.type_name.as_str()) {
+        return false;
+    }
+    // Treat as function-typed only when the declared type resolves to a partial
+    // function signature. Do not infer "function-typed" from arbitrary named
+    // types that happen to have constructor functions.
+    function_index
+        .get(&flat::VarName::new(param.type_name.as_str()))
+        .is_some_and(|sig| sig.partial)
+        || param.type_name.contains("partial")
+}
+
+fn can_specialize_target_function(
+    target_name: &str,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+) -> bool {
+    let Some(target) = function_index.get(&flat::VarName::new(target_name)) else {
+        // Unknown targets must stay canonical.
+        return false;
+    };
+    // External/runtime-bound functions must keep canonical symbol names.
+    target.external.is_none()
+}
+
+fn function_name_from_expr(expr: &flat::Expression) -> Option<String> {
+    match expr {
+        flat::Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
+            Some(name.as_str().to_string())
+        }
+        flat::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+        } if args.is_empty() => Some(name.as_str().to_string()),
+        _ => None,
+    }
+}
+
+fn create_specialized_function(
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+    original_name: &str,
+    specialized_name: &str,
+    bindings: &[(String, String)],
+) -> Option<flat::Function> {
+    let mut cloned = function_index
+        .get(&flat::VarName::new(original_name))?
+        .clone();
+    cloned.name = flat::VarName::new(specialized_name);
+    let binding_map: HashMap<&str, &str> = bindings
+        .iter()
+        .map(|(param, target)| (param.as_str(), target.as_str()))
+        .collect();
+    for stmt in &mut cloned.body {
+        rewrite_function_param_callees_in_statement(stmt, original_name, &binding_map);
+    }
+    Some(cloned)
+}
+
+fn rewrite_function_param_callees_in_statement(
+    stmt: &mut flat::Statement,
+    owner_name: &str,
+    bindings: &HashMap<&str, &str>,
+) {
+    match stmt {
+        flat::Statement::Assignment { value, .. } => {
+            rewrite_function_param_callees_in_expr(value, owner_name, bindings);
+        }
+        flat::Statement::For { indices, equations } => {
+            for idx in indices {
+                rewrite_function_param_callees_in_expr(&mut idx.range, owner_name, bindings);
+            }
+            for nested in equations {
+                rewrite_function_param_callees_in_statement(nested, owner_name, bindings);
+            }
+        }
+        flat::Statement::While(block) => {
+            rewrite_function_param_callees_in_expr(&mut block.cond, owner_name, bindings);
+            for nested in &mut block.stmts {
+                rewrite_function_param_callees_in_statement(nested, owner_name, bindings);
+            }
+        }
+        flat::Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            for block in cond_blocks {
+                rewrite_function_param_callees_in_expr(&mut block.cond, owner_name, bindings);
+                for nested in &mut block.stmts {
+                    rewrite_function_param_callees_in_statement(nested, owner_name, bindings);
+                }
+            }
+            if let Some(stmts) = else_block {
+                for nested in stmts {
+                    rewrite_function_param_callees_in_statement(nested, owner_name, bindings);
+                }
+            }
+        }
+        flat::Statement::When(blocks) => {
+            for block in blocks {
+                rewrite_function_param_callees_in_expr(&mut block.cond, owner_name, bindings);
+                for nested in &mut block.stmts {
+                    rewrite_function_param_callees_in_statement(nested, owner_name, bindings);
+                }
+            }
+        }
+        flat::Statement::FunctionCall { args, outputs, .. } => {
+            for arg in args {
+                rewrite_function_param_callees_in_expr(arg, owner_name, bindings);
+            }
+            for output in outputs {
+                rewrite_function_param_callees_in_expr(output, owner_name, bindings);
+            }
+        }
+        flat::Statement::Reinit { value, .. } => {
+            rewrite_function_param_callees_in_expr(value, owner_name, bindings);
+        }
+        flat::Statement::Assert {
+            condition,
+            message,
+            level,
+        } => {
+            rewrite_function_param_callees_in_expr(condition, owner_name, bindings);
+            rewrite_function_param_callees_in_expr(message, owner_name, bindings);
+            if let Some(level_expr) = level {
+                rewrite_function_param_callees_in_expr(level_expr, owner_name, bindings);
+            }
+        }
+        flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
+    }
+}
+
+fn rewrite_function_param_callees_in_expr(
+    expr: &mut flat::Expression,
+    owner_name: &str,
+    bindings: &HashMap<&str, &str>,
+) {
+    match expr {
+        flat::Expression::Binary { lhs, rhs, .. } => {
+            rewrite_function_param_callees_in_expr(lhs, owner_name, bindings);
+            rewrite_function_param_callees_in_expr(rhs, owner_name, bindings);
+        }
+        flat::Expression::Unary { rhs, .. } => {
+            rewrite_function_param_callees_in_expr(rhs, owner_name, bindings);
+        }
+        flat::Expression::BuiltinCall { args, .. } => {
+            for arg in args {
+                rewrite_function_param_callees_in_expr(arg, owner_name, bindings);
+            }
+        }
+        flat::Expression::FunctionCall { name, args, .. } => {
+            for arg in args {
+                rewrite_function_param_callees_in_expr(arg, owner_name, bindings);
+            }
+            if let Some(rewritten) = rewrite_callee_name(name.as_str(), owner_name, bindings) {
+                *name = flat::VarName::new(rewritten);
+            }
+        }
+        flat::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, then_expr) in branches {
+                rewrite_function_param_callees_in_expr(cond, owner_name, bindings);
+                rewrite_function_param_callees_in_expr(then_expr, owner_name, bindings);
+            }
+            rewrite_function_param_callees_in_expr(else_branch, owner_name, bindings);
+        }
+        flat::Expression::Array { elements, .. } | flat::Expression::Tuple { elements } => {
+            for elem in elements {
+                rewrite_function_param_callees_in_expr(elem, owner_name, bindings);
+            }
+        }
+        flat::Expression::Range { start, step, end } => {
+            rewrite_function_param_callees_in_expr(start, owner_name, bindings);
+            if let Some(step) = step {
+                rewrite_function_param_callees_in_expr(step, owner_name, bindings);
+            }
+            rewrite_function_param_callees_in_expr(end, owner_name, bindings);
+        }
+        flat::Expression::Index { base, subscripts } => {
+            rewrite_function_param_callees_in_expr(base, owner_name, bindings);
+            for sub in subscripts {
+                if let flat::Subscript::Expr(inner) = sub {
+                    rewrite_function_param_callees_in_expr(inner, owner_name, bindings);
+                }
+            }
+        }
+        flat::Expression::FieldAccess { base, .. } => {
+            rewrite_function_param_callees_in_expr(base, owner_name, bindings);
+        }
+        flat::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            rewrite_function_param_callees_in_expr(expr, owner_name, bindings);
+            for idx in indices {
+                rewrite_function_param_callees_in_expr(&mut idx.range, owner_name, bindings);
+            }
+            if let Some(filter) = filter {
+                rewrite_function_param_callees_in_expr(filter, owner_name, bindings);
+            }
+        }
+        flat::Expression::VarRef { .. }
+        | flat::Expression::Literal(_)
+        | flat::Expression::Empty => {}
+    }
+}
+
+fn rewrite_callee_name(
+    name: &str,
+    owner_name: &str,
+    bindings: &HashMap<&str, &str>,
+) -> Option<String> {
+    if let Some(target) = bindings.get(name) {
+        return Some((*target).to_string());
+    }
+    if let Some((owner, member)) = name.rsplit_once('.')
+        && owner == owner_name
+        && let Some(target) = bindings.get(member)
+    {
+        return Some((*target).to_string());
+    }
+    None
+}
+
+fn simple_hash_hex(input: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    input.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// Look up a function by name from the ast::ClassTree and convert to flat::Function.
@@ -1204,265 +1963,5 @@ fn qualify_function_expr(
 pub(crate) use crate::function_lowering::{insert_array_size_args, lower_record_function_params};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_collect_no_function_calls() {
-        let flat = flat::Model::new();
-        let calls = collect_function_calls(&flat);
-        assert!(calls.is_empty());
-    }
-
-    #[test]
-    fn test_collect_function_call_in_equation() {
-        let mut flat = flat::Model::new();
-
-        // Create an equation with a function call: 0 = myFunc(x) - y
-        let func_call = flat::Expression::FunctionCall {
-            name: flat::VarName::new("MyPackage.myFunc"),
-            args: vec![flat::Expression::VarRef {
-                name: flat::VarName::new("x"),
-                subscripts: vec![],
-            }],
-            is_constructor: false,
-        };
-        let residual = flat::Expression::Binary {
-            op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_flat::Token::default()),
-            lhs: Box::new(func_call),
-            rhs: Box::new(flat::Expression::VarRef {
-                name: flat::VarName::new("y"),
-                subscripts: vec![],
-            }),
-        };
-        flat.add_equation(flat::Equation::new(
-            residual,
-            Span::DUMMY,
-            rumoca_ir_flat::EquationOrigin::ComponentEquation {
-                component: "test".to_string(),
-            },
-        ));
-
-        let calls = collect_function_calls(&flat);
-        assert!(calls.contains("MyPackage.myFunc"));
-        assert_eq!(calls.len(), 1);
-    }
-
-    #[test]
-    fn test_collect_nested_function_calls() {
-        let mut flat = flat::Model::new();
-
-        // Create: 0 = outer(inner(x)) - y
-        let inner_call = flat::Expression::FunctionCall {
-            name: flat::VarName::new("inner"),
-            args: vec![flat::Expression::VarRef {
-                name: flat::VarName::new("x"),
-                subscripts: vec![],
-            }],
-            is_constructor: false,
-        };
-        let outer_call = flat::Expression::FunctionCall {
-            name: flat::VarName::new("outer"),
-            args: vec![inner_call],
-            is_constructor: false,
-        };
-        let residual = flat::Expression::Binary {
-            op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_flat::Token::default()),
-            lhs: Box::new(outer_call),
-            rhs: Box::new(flat::Expression::VarRef {
-                name: flat::VarName::new("y"),
-                subscripts: vec![],
-            }),
-        };
-        flat.add_equation(flat::Equation::new(
-            residual,
-            Span::DUMMY,
-            rumoca_ir_flat::EquationOrigin::ComponentEquation {
-                component: "test".to_string(),
-            },
-        ));
-
-        let calls = collect_function_calls(&flat);
-        assert!(calls.contains("inner"));
-        assert!(calls.contains("outer"));
-        assert_eq!(calls.len(), 2);
-    }
-
-    #[test]
-    fn test_convert_component_to_param_prefers_binding_over_start_default() {
-        let component = ast::Component {
-            type_name: ast::Name::from_string("Real"),
-            has_explicit_binding: true,
-            start: ast::Expression::Terminal {
-                terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-                token: rumoca_ir_core::Token {
-                    text: "0".into(),
-                    ..Default::default()
-                },
-            },
-            binding: Some(ast::Expression::Terminal {
-                terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-                token: rumoca_ir_core::Token {
-                    text: "3".into(),
-                    ..Default::default()
-                },
-            }),
-            ..Default::default()
-        };
-
-        let def_map = indexmap::IndexMap::new();
-        let param = convert_component_to_param(
-            "m",
-            &component,
-            &def_map,
-            &qualify::ImportMap::default(),
-            &HashSet::new(),
-        );
-        assert!(matches!(
-            param.default,
-            Some(flat::Expression::Literal(flat::Literal::Integer(3)))
-        ));
-    }
-
-    #[test]
-    fn test_extract_derivative_annotation_simple() {
-        use rumoca_ir_ast::{ComponentRefPart, ComponentReference, Token};
-        use std::sync::Arc;
-
-        // Test: annotation(derivative = myFunc_der)
-        let annotations = vec![ast::Expression::NamedArgument {
-            name: Token {
-                text: Arc::from("derivative"),
-                ..Default::default()
-            },
-            value: Arc::new(ast::Expression::ComponentReference(ComponentReference {
-                local: false,
-                def_id: None,
-                parts: vec![ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("myFunc_der"),
-                        ..Default::default()
-                    },
-                    subs: None,
-                }],
-            })),
-        }];
-
-        let derivs = extract_derivative_annotations(&annotations);
-        assert_eq!(derivs.len(), 1);
-        assert_eq!(derivs[0].derivative_function, "myFunc_der");
-        assert_eq!(derivs[0].order, 1);
-        assert!(derivs[0].zero_derivative.is_empty());
-        assert!(derivs[0].no_derivative.is_empty());
-    }
-
-    #[test]
-    fn test_extract_derivative_annotation_with_modification() {
-        use rumoca_ir_ast::{ComponentRefPart, ComponentReference, Token};
-        use std::sync::Arc;
-
-        // Test: annotation(derivative(order=2) = myFunc_der2)
-        // This is represented as a Modification with target having subscripts
-        let annotations = vec![ast::Expression::Modification {
-            target: ComponentReference {
-                local: false,
-                def_id: None,
-                parts: vec![ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("derivative"),
-                        ..Default::default()
-                    },
-                    subs: Some(vec![ast::Subscript::Expression(
-                        ast::Expression::NamedArgument {
-                            name: Token {
-                                text: Arc::from("order"),
-                                ..Default::default()
-                            },
-                            value: Arc::new(ast::Expression::Terminal {
-                                terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-                                token: Token {
-                                    text: Arc::from("2"),
-                                    ..Default::default()
-                                },
-                            }),
-                        },
-                    )]),
-                }],
-            },
-            value: Arc::new(ast::Expression::ComponentReference(ComponentReference {
-                local: false,
-                def_id: None,
-                parts: vec![ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("myFunc_der2"),
-                        ..Default::default()
-                    },
-                    subs: None,
-                }],
-            })),
-        }];
-
-        let derivs = extract_derivative_annotations(&annotations);
-        assert_eq!(derivs.len(), 1);
-        assert_eq!(derivs[0].derivative_function, "myFunc_der2");
-        assert_eq!(derivs[0].order, 2);
-    }
-
-    #[test]
-    fn test_extract_derivative_annotation_with_zero_derivative() {
-        use rumoca_ir_ast::{ComponentRefPart, ComponentReference, Token};
-        use std::sync::Arc;
-
-        // Test: annotation(derivative(zeroDerivative=k) = myFunc_der)
-        let annotations = vec![ast::Expression::Modification {
-            target: ComponentReference {
-                local: false,
-                def_id: None,
-                parts: vec![ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("derivative"),
-                        ..Default::default()
-                    },
-                    subs: Some(vec![ast::Subscript::Expression(
-                        ast::Expression::NamedArgument {
-                            name: Token {
-                                text: Arc::from("zeroDerivative"),
-                                ..Default::default()
-                            },
-                            value: Arc::new(ast::Expression::ComponentReference(
-                                ComponentReference {
-                                    local: false,
-                                    def_id: None,
-                                    parts: vec![ComponentRefPart {
-                                        ident: Token {
-                                            text: Arc::from("k"),
-                                            ..Default::default()
-                                        },
-                                        subs: None,
-                                    }],
-                                },
-                            )),
-                        },
-                    )]),
-                }],
-            },
-            value: Arc::new(ast::Expression::ComponentReference(ComponentReference {
-                local: false,
-                def_id: None,
-                parts: vec![ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("myFunc_der"),
-                        ..Default::default()
-                    },
-                    subs: None,
-                }],
-            })),
-        }];
-
-        let derivs = extract_derivative_annotations(&annotations);
-        assert_eq!(derivs.len(), 1);
-        assert_eq!(derivs[0].derivative_function, "myFunc_der");
-        assert_eq!(derivs[0].order, 1);
-        assert_eq!(derivs[0].zero_derivative, vec!["k"]);
-    }
-}
+#[path = "functions_tests.rs"]
+mod functions_tests;

@@ -16,7 +16,7 @@ use crate::boolean_eval::{
     is_structural_expression, try_eval_boolean_with_ctx_inner, try_eval_structural_boolean,
 };
 use crate::errors::FlattenError;
-use crate::{Context, qualify_expression_imports_with_def_map};
+use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
 mod conditional_and_eval;
 mod connections_graph;
@@ -507,7 +507,7 @@ pub(crate) fn flatten_equation_with_def_map(
 
             // Preserve simple equations as a single residual equation.
             // Array scalarization and counting are handled downstream.
-            let residual = make_residual(&lhs, &rhs, prefix, &ctx.current_imports, def_map);
+            let residual = make_residual(ctx, &lhs, &rhs, prefix, &ctx.current_imports, def_map);
             let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, prefix, ctx);
             if scalar_count == 0 {
                 return Ok(FlattenedEquations::default());
@@ -554,9 +554,15 @@ pub(crate) fn flatten_equation_with_def_map(
             expand_if_equation(ctx, cond_blocks, else_block, prefix, span, &origin, def_map)
         }
 
-        ast::Equation::FunctionCall { comp, args } => {
-            flatten_function_call_equation(comp, args, prefix, span, &ctx.current_imports, def_map)
-        }
+        ast::Equation::FunctionCall { comp, args } => flatten_function_call_equation(
+            ctx,
+            comp,
+            args,
+            prefix,
+            span,
+            &ctx.current_imports,
+            def_map,
+        ),
 
         ast::Equation::Assert {
             condition,
@@ -567,10 +573,12 @@ pub(crate) fn flatten_equation_with_def_map(
             // They do not contribute to the DAE residual equation system.
             let imports = &ctx.current_imports;
             let assert_eq = flat::AssertEquation::new(
-                qualify_expression_imports_with_def_map(condition, prefix, imports, def_map),
-                qualify_expression_imports_with_def_map(message, prefix, imports, def_map),
+                qualify_expression_imports_with_def_map_ctx(
+                    condition, prefix, imports, def_map, ctx,
+                ),
+                qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx),
                 level.as_ref().map(|expr| {
-                    qualify_expression_imports_with_def_map(expr, prefix, imports, def_map)
+                    qualify_expression_imports_with_def_map_ctx(expr, prefix, imports, def_map, ctx)
                 }),
                 span,
             );
@@ -588,6 +596,7 @@ pub(crate) fn flatten_equation_with_def_map(
 }
 
 fn flatten_function_call_equation(
+    ctx: &Context,
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
@@ -596,7 +605,7 @@ fn flatten_function_call_equation(
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<FlattenedEquations, FlattenError> {
     if is_assert_function_call(comp) {
-        return flatten_assert_function_call(args, prefix, span, imports, def_map);
+        return flatten_assert_function_call(ctx, args, prefix, span, imports, def_map);
     }
     Ok(extract_vcg_data_from_function_call(comp, args, prefix))
 }
@@ -609,6 +618,7 @@ fn is_assert_function_call(comp: &ast::ComponentReference) -> bool {
 }
 
 fn flatten_assert_function_call(
+    ctx: &Context,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
@@ -634,9 +644,11 @@ fn flatten_assert_function_call(
     };
 
     let assert_eq = flat::AssertEquation::new(
-        qualify_expression_imports_with_def_map(condition, prefix, imports, def_map),
-        qualify_expression_imports_with_def_map(message, prefix, imports, def_map),
-        level.map(|expr| qualify_expression_imports_with_def_map(expr, prefix, imports, def_map)),
+        qualify_expression_imports_with_def_map_ctx(condition, prefix, imports, def_map, ctx),
+        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx),
+        level.map(|expr| {
+            qualify_expression_imports_with_def_map_ctx(expr, prefix, imports, def_map, ctx)
+        }),
         span,
     );
 
@@ -668,6 +680,7 @@ fn named_call_arg<'a>(args: &'a [ast::Expression], name: &str) -> Option<&'a ast
 
 /// Create a residual expression: lhs - rhs
 fn make_residual(
+    ctx: &Context,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     prefix: &ast::QualifiedName,
@@ -681,7 +694,7 @@ fn make_residual(
         rhs: Arc::new(rhs.clone()),
     };
 
-    qualify_expression_imports_with_def_map(&residual, prefix, imports, def_map)
+    qualify_expression_imports_with_def_map_ctx(&residual, prefix, imports, def_map, ctx)
 }
 
 /// Expand array comprehensions in equation expressions when index ranges are structural.
@@ -1559,6 +1572,7 @@ fn expand_if_equation(
         // Fast path: position-based matching (original behavior)
         let mut result = FlattenedEquations::default();
         let eq_context = ConditionalEquationContext {
+            ctx,
             prefix,
             span,
             origin,
