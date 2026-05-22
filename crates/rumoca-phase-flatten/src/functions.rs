@@ -719,6 +719,11 @@ fn build_static_function_binding(
         }
         let arg_expr = args.get(index).or(param.default.as_ref())?;
         let target = function_name_from_expr(arg_expr)?;
+        if !can_specialize_target_function(&target, function_index) {
+            // Keep canonical call names for non-specializable targets
+            // (notably external/runtime functions).
+            return None;
+        }
         binding_pairs.push((param.name.clone(), target));
     }
     if binding_pairs.is_empty() {
@@ -747,8 +752,25 @@ fn is_function_typed_param(
     if NON_FUNCTION_SCALAR_TYPES.contains(&param.type_name.as_str()) {
         return false;
     }
-    function_index.contains_key(&flat::VarName::new(param.type_name.as_str()))
+    // Treat as function-typed only when the declared type resolves to a partial
+    // function signature. Do not infer "function-typed" from arbitrary named
+    // types that happen to have constructor functions.
+    function_index
+        .get(&flat::VarName::new(param.type_name.as_str()))
+        .is_some_and(|sig| sig.partial)
         || param.type_name.contains("partial")
+}
+
+fn can_specialize_target_function(
+    target_name: &str,
+    function_index: &IndexMap<flat::VarName, flat::Function>,
+) -> bool {
+    let Some(target) = function_index.get(&flat::VarName::new(target_name)) else {
+        // Unknown targets must stay canonical.
+        return false;
+    };
+    // External/runtime-bound functions must keep canonical symbol names.
+    target.external.is_none()
 }
 
 fn function_name_from_expr(expr: &flat::Expression) -> Option<String> {

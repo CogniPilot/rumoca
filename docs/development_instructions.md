@@ -328,6 +328,86 @@ If MSL runs show many compile timeouts or very slow compiles:
   profiling/bench workflows) to find the dominant phase/crate before changing
   compile strategy.
 
+## Commit-to-Commit Regression Diff Workflow
+
+When CI quality drops after a compiler change, compare commits with the same
+focused model list before touching code.
+
+1. Pick a focused target list JSON
+- Include the exact models that changed in CI.
+- Keep one list and reuse it across compared commits.
+
+2. Run the same command per commit/worktree
+- Use `RUMOCA_MSL_SIM_TARGETS_FILE=<list>.json`.
+- Capture each run in a separate log file.
+
+3. Compare phase outcomes before percentages
+- `ToDae failed`, `Successfully compiled`, `sim_ok`,
+  `sim_solver_fail`, `sim_timeout`.
+- Do not start from aggregate success rates alone.
+
+4. Diff per-model status transitions
+- Extract `[sim_*] <model>` lines from each log.
+- Identify exact `ok -> fail`, `fail -> ok`, and
+  `not attempted -> attempted` transitions.
+
+5. Interpret transitions before patching
+- `ToDae fail -> sim fail` may indicate upstream compile progress exposing an
+  existing runtime limitation, not a new simulation regression.
+- `ok -> fail` on identical targets is stronger root-cause evidence.
+
+6. Only then inspect emitted IR/flatten artifacts
+- For true `ok -> fail` models, diff emitted names/expressions across commits
+  and patch the first producer phase.
+
+## Flattened/Instantiated Artifact Comparison (Mandatory for Compiler/Solver Triage)
+
+For semantic work and solver/runtime failures, compare compiler-produced
+artifacts, not only test pass/fail summaries.
+
+1. Select one concrete model
+- Regression case: prefer a model with clear `sim_ok -> fail` transition.
+- New behavior case: prefer a model that should exhibit the new rule clearly.
+- Solver/runtime case: prefer a model with reproducible solver failure and a
+  known-good reference run when available.
+- Keep the model in the same filtered CI target set when possible.
+
+2. Generate and diff flattened/DAE artifacts
+- Regression case: compare known-good vs known-bad commits.
+- New behavior case: compare before-change vs after-change outputs (and keep a
+  reference snapshot).
+- Use identical options and target model list.
+- Compare emitted function calls, qualification paths, and equation RHS/LHS
+  names before finalizing code.
+
+3. Compare against OMC instantiated output
+- Generate or collect OMC `instantiated.mo` (or equivalent instantiated form)
+  for the same model.
+- Use OMC output as a reference for canonical function naming and call shape
+  (especially external/runtime-bound functions).
+
+4. Identify the first producer mismatch or intended delta
+- Regression case: if bad output introduces altered symbols (for example
+  specialized/hash suffixes) not present in good output/OMC, treat that
+  producer phase as the root-cause owner.
+- New behavior case: verify the intended artifact delta appears in the owning
+  phase and does not create unrelated symbol/name drift.
+- Solver/runtime case: check whether the failing solve path is caused by
+  upstream emitted equations/symbols before changing solver code.
+- Do not fix downstream validators/simulator first.
+
+5. Preserve canonical symbol identity for runtime-bound calls
+- External/runtime-resolved function calls must keep stable canonical fully
+  qualified names in emitted artifacts.
+- Any specialization/rewriting that changes those symbol names must be treated
+  as a semantic regression unless explicitly spec-backed.
+
+6. Treat solver failures as potentially upstream by default
+- A solver error can be the first visible symptom of an upstream compile/flatten
+  emission bug.
+- Before solver-side fixes, confirm whether equation form, variable selection,
+  or function naming changed in flattened/DAE artifacts.
+
 ## Architecture Discipline
 
 - Respect crate boundaries and phase ownership (`SPEC_0029`).
