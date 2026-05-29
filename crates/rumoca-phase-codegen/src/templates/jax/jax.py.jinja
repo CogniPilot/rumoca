@@ -172,12 +172,12 @@ def ode_fn(t, y, args):
     Args:
         t: Current time
         y: State vector as JAX array
-        args: Tuple of (params, constants_and_discrete)
+        args: Tuple of (params, inputs, constants_and_discrete)
 
     Returns:
         State derivatives as JAX array
     """
-    params, cd = args
+    params, inputs, cd = args
     time = t
 
     # Unpack state variables
@@ -188,6 +188,11 @@ def ode_fn(t, y, args):
     # Unpack parameters
 {% for name, var in dae.p | items %}
     {{ name | sanitize }} = params[{{ loop.index0 }}]
+{% endfor %}
+
+    # Unpack inputs
+{% for name, var in dae.u | items %}
+    {{ name | sanitize }} = inputs[{{ loop.index0 }}]
 {% endfor %}
 
     # Constants
@@ -247,11 +252,12 @@ def ode_fn(t, y, args):
 # Simulation
 # =========================================================================
 
-def simulate(x0=None, t_span=(0.0, 1.0), dt=0.01):
+def simulate(x0=None, u=None, t_span=(0.0, 1.0), dt=0.01):
     """Simulate the model.
 
     Args:
         x0: Initial state as JAX array (uses defaults if None)
+        u: Constant input vector applied over the rollout (zeros if None)
         t_span: Tuple of (t0, tf)
         dt: Integration step size
 
@@ -266,6 +272,12 @@ def simulate(x0=None, t_span=(0.0, 1.0), dt=0.01):
         y0 = jnp.asarray(x0)
 
     params = jnp.array(defaults['p0'])
+
+    n_u = len(get_input_names())
+    if u is None:
+        inputs = jnp.zeros(n_u)
+    else:
+        inputs = jnp.asarray(u)
 
     # Merge constants and discrete vars into a single dict
     cd = {}
@@ -287,7 +299,7 @@ def simulate(x0=None, t_span=(0.0, 1.0), dt=0.01):
         t1=tf,
         dt0=dt,
         y0=y0,
-        args=(params, cd),
+        args=(params, inputs, cd),
         saveat=save_at,
     )
 
