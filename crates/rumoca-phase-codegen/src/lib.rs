@@ -25,7 +25,8 @@
 //!
 //! // From built-in (convenience for quick use)
 //! use rumoca_phase_codegen::templates;
-//! let code = render_template(&dae, templates::CASADI_SX)?;
+//! let target = templates::builtin_target("casadi-sx").unwrap();
+//! let code = render_template(&dae, target.template_source("casadi_sx.py.jinja").unwrap())?;
 //! ```
 //!
 //! # Writing Templates
@@ -35,7 +36,7 @@
 //! - `dae.y` - Algebraic variables
 //! - `dae.p` - Parameters
 //! - `dae.u` - Input variables
-//! - `dae.constants` - Constants
+//! - `dae.variables.constants` - Constants
 //! - `dae.f_x` - Continuous implicit equations (MLS B.1a)
 //!
 //! Expression trees are nested dictionaries that templates can walk:
@@ -59,8 +60,9 @@ mod errors;
 
 pub use codegen::{
     CodegenInput, dae_template_json, render_ast_template, render_ast_template_with_name,
-    render_flat_template_with_name, render_template, render_template_file,
-    render_template_for_input, render_template_with_dae_json, render_template_with_name,
+    render_flat_template_with_name, render_solve_template_with_name, render_template,
+    render_template_file, render_template_for_input, render_template_with_dae_json,
+    render_template_with_dae_json_and_name, render_template_with_name,
     render_template_with_name_for_input,
 };
 pub use errors::CodegenError;
@@ -72,48 +74,41 @@ pub use errors::CodegenError;
 ///
 /// The template source files are in `crates/rumoca-phase-codegen/src/templates/`.
 pub mod templates {
-    /// CasADi SX template (Python) — scalar symbolic expressions.
-    pub const CASADI_SX: &str = include_str!("templates/casadi_sx.py.jinja");
-    /// CasADi MX template (Python) — matrix symbolic with vector variables and casadi.Function DAE.
-    pub const CASADI_MX: &str = include_str!("templates/casadi_mx.py.jinja");
-    /// Julia ModelingToolkit template.
-    pub const JULIA_MTK: &str = include_str!("templates/julia_mtk.jl.jinja");
-    /// JAX/Diffrax template (Python).
-    pub const JAX: &str = include_str!("templates/jax.py.jinja");
-    /// ONNX model builder template (Python).
-    pub const ONNX: &str = include_str!("templates/onnx.py.jinja");
-    /// DAE Modelica template (renders Dae IR with classified variables and split equations).
-    pub const DAE_MODELICA: &str = include_str!("templates/dae_modelica.mo.jinja");
-    /// Flat Modelica template (renders Model for OMC comparison).
-    pub const FLAT_MODELICA: &str = include_str!("templates/flat_modelica.mo.jinja");
-    /// FMI 2.0 Model Exchange — modelDescription.xml template.
-    pub const FMI2_MODEL_DESCRIPTION: &str =
-        include_str!("templates/fmi2/modelDescription.xml.jinja");
-    /// FMI 2.0 Model Exchange — C source implementing the FMI2 API.
-    pub const FMI2_MODEL: &str = include_str!("templates/fmi2/model.c.jinja");
-    /// FMI 2.0 multi-file compile target manifest.
-    pub const FMI2_TARGET_MANIFEST: &str = include_str!("templates/fmi2/target.yaml");
-    /// FMI 2.0 test driver — standalone main() that simulates via FMI2 ME and outputs CSV.
-    pub const FMI2_TEST_DRIVER: &str = include_str!("templates/fmi2/test_driver.c.jinja");
-    /// FMI 3.0 Model Exchange — modelDescription.xml template.
-    pub const FMI3_MODEL_DESCRIPTION: &str =
-        include_str!("templates/fmi3/modelDescription.xml.jinja");
-    /// FMI 3.0 Model Exchange — C source implementing the FMI3 API.
-    pub const FMI3_MODEL: &str = include_str!("templates/fmi3/model.c.jinja");
-    /// FMI 3.0 multi-file compile target manifest.
-    pub const FMI3_TARGET_MANIFEST: &str = include_str!("templates/fmi3/target.yaml");
-    /// FMI 3.0 test driver — standalone main() that simulates via FMI3 ME and outputs CSV.
-    pub const FMI3_TEST_DRIVER: &str = include_str!("templates/fmi3/test_driver.c.jinja");
-    /// Shared FMU CMake helper template.
-    pub const FMU_CMAKE_LISTS: &str = include_str!("templates/fmu/CMakeLists.txt.jinja");
-    /// Shared FMU shell build helper template.
-    pub const FMU_BUILD_SCRIPT: &str = include_str!("templates/fmu/build.sh.jinja");
-    /// Embedded C header template — struct definition with named fields, dimension macros, prototypes.
-    pub const EMBEDDED_C_H: &str = include_str!("templates/embedded_c/model.h.jinja");
-    /// Embedded C implementation template — function bodies using named struct fields.
-    pub const EMBEDDED_C_IMPL: &str = include_str!("templates/embedded_c/model.c.jinja");
-    /// Embedded C multi-file compile target manifest.
-    pub const EMBEDDED_C_TARGET_MANIFEST: &str = include_str!("templates/embedded_c/target.yaml");
-    /// SymPy template (Python) — symbolic DAE model with residual form and explicit solve.
-    pub const SYMPY: &str = include_str!("templates/sympy.py.jinja");
+    /// Built-in target directory bundled into the binary.
+    #[derive(Clone, Copy, Debug)]
+    pub struct BuiltinTarget {
+        pub name: &'static str,
+        pub manifest: &'static str,
+        pub templates: &'static [BuiltinTargetTemplate],
+    }
+
+    /// Built-in template source addressed by a target manifest-local path.
+    #[derive(Clone, Copy, Debug)]
+    pub struct BuiltinTargetTemplate {
+        pub path: &'static str,
+        pub source: &'static str,
+    }
+
+    impl BuiltinTarget {
+        pub fn template_source(&self, path: &str) -> Option<&'static str> {
+            self.templates
+                .iter()
+                .find(|template| template.path == path)
+                .map(|template| template.source)
+        }
+    }
+
+    pub fn builtin_target(name: &str) -> Option<&'static BuiltinTarget> {
+        BUILTIN_TARGETS.iter().find(|target| target.name == name)
+    }
+
+    pub fn builtin_targets() -> &'static [BuiltinTarget] {
+        BUILTIN_TARGETS
+    }
+
+    pub fn builtin_template_source(target: &str, template: &str) -> Option<&'static str> {
+        builtin_target(target).and_then(|target| target.template_source(template))
+    }
+
+    include!(concat!(env!("OUT_DIR"), "/templates_generated.rs"));
 }

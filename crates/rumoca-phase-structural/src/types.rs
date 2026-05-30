@@ -3,18 +3,13 @@
 use rumoca_core::Diagnostic;
 use rumoca_ir_dae as dae;
 
-/// Reference to an equation in the original [`dae::Dae`].
+/// Reference to a continuous equation in the original DAE `f_x` list.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub enum EquationRef {
-    /// Continuous equation at index `i` in `dae.f_x` (MLS B.1a).
-    Continuous(usize),
-}
+pub struct EquationRef(pub usize);
 
 impl std::fmt::Display for EquationRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Continuous(i) => write!(f, "f_x[{i}]"),
-        }
+        write!(f, "f_x[{}]", self.0)
     }
 }
 
@@ -22,9 +17,11 @@ impl std::fmt::Display for EquationRef {
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum UnknownId {
     /// Derivative of a state variable: `der(x_i)`.
-    DerState(dae::VarName),
+    DerState(rumoca_core::VarName),
     /// Algebraic or output variable: `z_j` or `w_k`.
-    Variable(dae::VarName),
+    Variable(rumoca_core::VarName),
+    /// Solver-vector scalar used by structural consumers outside DAE source.
+    SolverY(usize),
 }
 
 impl std::fmt::Display for UnknownId {
@@ -32,6 +29,7 @@ impl std::fmt::Display for UnknownId {
         match self {
             Self::DerState(name) => write!(f, "der({name})"),
             Self::Variable(name) => write!(f, "{name}"),
+            Self::SolverY(index) => write!(f, "y[{index}]"),
         }
     }
 }
@@ -65,11 +63,13 @@ pub struct SortedDae<'a> {
 }
 
 /// Errors from structural analysis that prevent simulation code generation.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum StructuralError {
     /// The system is structurally singular: no perfect matching exists.
     #[error(
-        "structurally singular system: {n_matched} matched out of {n_equations} equations and {n_unknowns} unknowns"
+        "structurally singular system: {n_matched} matched out of {n_equations} equations and {n_unknowns} unknowns; unmatched equations: {}; unmatched unknowns: {}",
+        summarize_singular_names(unmatched_equations),
+        summarize_singular_names(unmatched_unknowns)
     )]
     Singular {
         n_equations: usize,
@@ -77,8 +77,44 @@ pub enum StructuralError {
         n_matched: usize,
         unmatched_equations: Vec<String>,
         unmatched_unknowns: Vec<String>,
+        /// Source spans of the unmatched unknowns, parallel to
+        /// `unmatched_unknowns`, so the failure is traceable back to source.
+        unmatched_unknown_spans: Vec<rumoca_core::Span>,
     },
     /// The system has no equations or unknowns.
     #[error("empty system: no equations or unknowns")]
     EmptySystem,
+    /// An IC plan referenced an unknown that cannot be mapped to the solver vector.
+    #[error("invalid IC plan: unresolved unknown `{name}`")]
+    InvalidIcPlanUnknown { name: String },
+}
+
+impl StructuralError {
+    /// Source span of the first unmatched unknown carrying one, so a structural
+    /// singularity can be reported against the offending model variable.
+    #[must_use]
+    pub fn source_span(&self) -> Option<rumoca_core::Span> {
+        match self {
+            Self::Singular {
+                unmatched_unknown_spans,
+                ..
+            } => unmatched_unknown_spans
+                .iter()
+                .copied()
+                .find(|span| *span != rumoca_core::Span::DUMMY),
+            Self::EmptySystem | Self::InvalidIcPlanUnknown { .. } => None,
+        }
+    }
+}
+
+fn summarize_singular_names(names: &[String]) -> String {
+    const LIMIT: usize = 12;
+    if names.is_empty() {
+        return "-".to_string();
+    }
+    let mut summary: Vec<String> = names.iter().take(LIMIT).cloned().collect();
+    if names.len() > LIMIT {
+        summary.push(format!("... +{}", names.len() - LIMIT));
+    }
+    summary.join(", ")
 }

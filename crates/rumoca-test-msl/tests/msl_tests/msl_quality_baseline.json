@@ -1,52 +1,222 @@
 {
-  "git_commit": "b5429e541a81dd4d38987e0b65bef4e47e750a97",
+  "quality_gate_version": 1,
+  "run_scope": "full",
+  "git_commit": "bac3be350bc0eecb0727f3f0fa27c38320b81173",
   "msl_version": "v4.1.0",
+  "omc_version": "OpenModelica 1.26.7~1-g2b913cc",
   "sim_timeout_seconds": 10.0,
-  "simulatable_attempted": 195,
-  "compiled_models": 180,
-  "balanced_models": 180,
+  "simulatable_attempted": 566,
+  "parse_models": 566,
+  "flatten_models": 556,
+  "dae_models": 414,
+  "compiled_models": 414,
+  "solve_models": 336,
+  "balanced_models": 401,
   "unbalanced_models": 0,
-  "partial_models": 0,
-  "balance_denominator": 180,
-  "initial_balanced_models": 180,
+  "partial_models": 13,
+  "balance_denominator": 401,
+  "initial_balanced_models": 401,
   "initial_unbalanced_models": 0,
-  "sim_target_models": 180,
-  "sim_attempted": 164,
-  "sim_ok": 120,
-  "sim_success_rate": 0.7317073170731707,
+  "sim_target_models": 566,
+  "sim_attempted": 344,
+  "ic_attempted": 193,
+  "ic_ok": 182,
+  "ic_solver_fail": 11,
+  "sim_ok": 132,
+  "sim_success_rate": 0.2332155477031802,
   "trace_accuracy_stats": {
-    "models_compared": 107,
-    "missing_trace_models": 5,
+    "models_compared": 123,
+    "missing_trace_models": 0,
     "skipped_models": 8,
-    "agreement_high": 50,
-    "agreement_high_percent": 46.728971962616825,
-    "agreement_minor": 19,
-    "agreement_minor_percent": 17.757009345794394,
-    "agreement_deviation": 38,
-    "agreement_deviation_percent": 35.51401869158879,
-    "total_channels_compared": 2397,
-    "bad_channels_total": 924,
-    "severe_channels_total": 311,
-    "bad_channels_percent": 38.54818523153943,
-    "severe_channels_percent": 12.974551522736755,
-    "violation_mass_total": 444.313071150472,
-    "violation_mass_mean_per_model": 4.152458608882916,
-    "violation_mass_mean_per_channel": 0.18536214899894535,
-    "models_with_bad_channel": null,
-    "models_with_severe_channel": null,
-    "models_with_any_channel_deviation": 43,
-    "models_with_any_channel_deviation_percent": 40.18691588785047,
+    "agreement_high": 65,
+    "agreement_high_percent": 52.84552845528455,
+    "agreement_minor": 16,
+    "agreement_minor_percent": 13.008130081300813,
+    "agreement_deviation": 42,
+    "agreement_deviation_percent": 34.146341463414636,
+    "total_channels_compared": 2909,
+    "bad_channels_total": 1047,
+    "severe_channels_total": 35,
+    "bad_channels_percent": 35.991749742179444,
+    "severe_channels_percent": 1.2031625988312136,
+    "violation_mass_total": 379.4442697282035,
+    "violation_mass_mean_per_model": 3.084912762017915,
+    "violation_mass_mean_per_channel": 0.1304380439079421,
+    "models_with_bad_channel": 46,
+    "models_with_severe_channel": 6,
+    "models_with_any_channel_deviation": 46,
+    "models_with_any_channel_deviation_percent": 37.39837398373984,
     "max_model_channel_deviation_percent": 100.0,
     "bounded_normalized_l1": {
-      "sample_count": 107,
+      "sample_count": 123,
       "min": 0.0,
-      "median": 0.0039840637450199385,
-      "mean": 0.12254661616271728,
-      "max": 0.9999998602150836
+      "median": 0.0009990012685451735,
+      "mean": 0.10394713518341658,
+      "max": 0.977431517604619
     },
-    "mean_model_mean_channel_bounded_normalized_l1": 0.13534266253024488,
-    "max_model_max_channel_bounded_normalized_l1": 1.0,
+    "mean_model_mean_channel_bounded_normalized_l1": 0.1046581368539954,
+    "max_model_max_channel_bounded_normalized_l1": 0.9999999993333334,
     "model_mean_channel_bounded_normalized_l1": null,
-    "model_max_channel_bounded_normalized_l1": null
+    "model_max_channel_bounded_normalized_l1": null,
+    "initial_condition": {
+      "models_compared": 123,
+      "models_with_accurate_initial_conditions": 89,
+      "models_with_initial_condition_deviation": 34,
+      "accurate_initial_conditions_percent": 72.35772357723577,
+      "models_with_initial_condition_deviation_percent": 27.642276422764223,
+      "total_channels_compared": 2909,
+      "high_channels_total": 2263,
+      "near_channels_total": 29,
+      "deviation_channels_total": 617,
+      "severe_channels_total": 14,
+      "high_channels_percent": 77.79305603300104,
+      "near_channels_percent": 0.9969061533172912,
+      "deviation_channels_percent": 21.210037813681677,
+      "severe_channels_percent": 0.4812650395324854,
+      "violation_mass_total": 282.8104600110146,
+      "violation_mass_mean_per_model": 2.2992720326098746,
+      "violation_mass_mean_per_channel": 0.09721913372671524,
+      "mean_channel_bounded_normalized_error": 0.14068691142385384,
+      "max_channel_bounded_normalized_error": 0.999999999998
+    },
+    "state_selection": {
+      "models_compared": 123,
+      "exact_state_set_match_models": 122,
+      "state_count_match_models": 123,
+      "exact_state_set_match_percent": 99.1869918699187,
+      "state_count_match_percent": 100.0,
+      "total_rumoca_states": 64,
+      "total_omc_states": 64,
+      "total_matching_states": 62,
+      "total_rumoca_only_states": 2,
+      "total_omc_only_states": 2,
+      "max_model_state_set_difference": 4
+    }
+  },
+  "pipeline_progress": {
+    "total_mo_files": 2555,
+    "parse_errors": 0,
+    "total_models": 566,
+    "parse_models": 566,
+    "flatten_models": 556,
+    "dae_models": 414,
+    "compiled_models": 414,
+    "solve_models": 336,
+    "balanced_models": 401,
+    "initial_balanced_models": 401,
+    "state_selection": {
+      "models_compared": 123,
+      "exact_state_set_match_models": 122,
+      "state_count_match_models": 123,
+      "exact_state_set_match_percent": 99.1869918699187,
+      "state_count_match_percent": 100.0,
+      "total_rumoca_states": 64,
+      "total_omc_states": 64,
+      "total_matching_states": 62,
+      "total_rumoca_only_states": 2,
+      "total_omc_only_states": 2,
+      "max_model_state_set_difference": 4
+    },
+    "omc_assertion_failure_models": 0,
+    "sim_target_models": 566,
+    "sim_attempted": 344,
+    "ic_attempted": 193,
+    "ic_ok": 182,
+    "ic_solver_fail": 11,
+    "sim_ok": 132,
+    "sim_nan": 0,
+    "sim_solver_fail": 204,
+    "sim_timeout": 8,
+    "error_code_counts": {
+      "EMSL_TIMEOUT_MODEL_ATTEMPT": 1
+    },
+    "unsupported_feature_counts": {
+      "replaceable_media_package_lookup": 9
+    },
+    "unsupported_feature_counts_by_backend": {},
+    "phase_failure_counts": {
+      "Flatten": 7,
+      "Instantiate": 1,
+      "ToDae": 142,
+      "Typecheck": 2
+    }
+  },
+  "mls_contract_coverage": {
+    "ARR": {
+      "models": 11,
+      "compiled": 8,
+      "solve_ir": 8,
+      "balanced": 8,
+      "sim_ok": 8,
+      "phase_counts": {
+        "Flatten": 1,
+        "Success": 8,
+        "Typecheck": 2
+      },
+      "error_code_counts": {}
+    },
+    "CLK_SM": {
+      "models": 77,
+      "compiled": 77,
+      "solve_ir": 76,
+      "balanced": 76,
+      "sim_ok": 60,
+      "phase_counts": {
+        "Success": 76,
+        "ToDae": 1
+      },
+      "error_code_counts": {}
+    },
+    "CONN_STRM": {
+      "models": 339,
+      "compiled": 332,
+      "solve_ir": 185,
+      "balanced": 246,
+      "sim_ok": 37,
+      "phase_counts": {
+        "Flatten": 6,
+        "Instantiate": 1,
+        "Success": 246,
+        "ToDae": 86
+      },
+      "error_code_counts": {
+        "EMSL_TIMEOUT_MODEL_ATTEMPT": 1
+      }
+    },
+    "EQN_ALG_SIM": {
+      "models": 2,
+      "compiled": 2,
+      "solve_ir": 0,
+      "balanced": 0,
+      "sim_ok": 0,
+      "phase_counts": {
+        "ToDae": 2
+      },
+      "error_code_counts": {}
+    },
+    "FUNC": {
+      "models": 8,
+      "compiled": 8,
+      "solve_ir": 1,
+      "balanced": 1,
+      "sim_ok": 0,
+      "phase_counts": {
+        "Success": 1,
+        "ToDae": 7
+      },
+      "error_code_counts": {}
+    },
+    "OTHER": {
+      "models": 129,
+      "compiled": 129,
+      "solve_ir": 66,
+      "balanced": 83,
+      "sim_ok": 27,
+      "phase_counts": {
+        "Success": 83,
+        "ToDae": 46
+      },
+      "error_code_counts": {}
+    }
   }
 }

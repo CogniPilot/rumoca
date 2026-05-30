@@ -1,12 +1,11 @@
 //! Utility functions for LSP handlers.
 
 use lsp_types::{Position, Range};
-use rumoca_compile::compile::core::DefId;
-use rumoca_compile::parsing::ast;
-use rumoca_compile::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::compile::core as rumoca_core;
+use rumoca_compile::parsing::{self, DefId, ast};
 
-/// Convert a rumoca_ir_core::Token to an LSP Range (0-indexed).
-pub fn token_to_range(token: &rumoca_ir_core::Token) -> Range {
+/// Convert a Modelica token to an LSP Range (0-indexed).
+pub fn token_to_range(token: &parsing::Token) -> Range {
     Range {
         start: Position {
             line: token.location.start_line.saturating_sub(1),
@@ -19,8 +18,8 @@ pub fn token_to_range(token: &rumoca_ir_core::Token) -> Range {
     }
 }
 
-/// Convert a rumoca_ir_core::Location to an LSP Range (0-indexed).
-pub fn location_to_range(loc: &rumoca_ir_core::Location) -> Range {
+/// Convert a Modelica source location to an LSP Range (0-indexed).
+pub fn location_to_range(loc: &parsing::Location) -> Range {
     Range {
         start: Position {
             line: loc.start_line.saturating_sub(1),
@@ -77,11 +76,38 @@ pub fn get_dotted_token_at_position(text: &str, position: Position) -> Option<St
     Some(line[start..end].to_string())
 }
 
+/// Return the dotted identifier token immediately before the cursor text.
+///
+/// This is intentionally token-oriented: dots inside bracketed subscript text
+/// are not treated as qualified-name separators because `[`/`]` terminate the
+/// token scan.
+pub fn trailing_dotted_identifier_token(text_before_cursor: &str) -> Option<&str> {
+    let trimmed = text_before_cursor.trim_end();
+    let start = trimmed
+        .char_indices()
+        .rev()
+        .find_map(|(idx, ch)| (!is_dotted_identifier_char(ch)).then_some(idx + ch.len_utf8()))
+        .unwrap_or(0);
+    let token = &trimmed[start..];
+    if token.is_empty() || token.starts_with('.') || token.chars().all(|ch| ch == '.') {
+        return None;
+    }
+    Some(token)
+}
+
+pub fn trailing_qualified_identifier_token(text_before_cursor: &str) -> Option<&str> {
+    trailing_dotted_identifier_token(text_before_cursor)
+        .filter(|token| rumoca_core::has_top_level_dot(token))
+}
+
+fn is_dotted_identifier_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_' || ch == '.'
+}
+
 /// Get a qualified class-like token at the given position in text.
 pub fn get_qualified_class_name_at_position(text: &str, position: Position) -> Option<String> {
     let token = get_dotted_token_at_position(text, position)?;
-    token
-        .contains('.')
+    rumoca_core::has_top_level_dot(&token)
         .then_some(token)
         .filter(|token| token.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
 }
@@ -233,7 +259,7 @@ pub fn parsed_class_by_qualified_name<'a>(
         .as_ref()
         .and_then(|prefix| class_name.strip_prefix(&format!("{prefix}.")))
         .unwrap_or(class_name);
-    let mut parts = relative_name.split('.');
+    let mut parts = rumoca_core::split_path_with_indices(relative_name).into_iter();
     let first = parts.next()?;
     let mut class = ast.classes.get(first)?;
     for part in parts {

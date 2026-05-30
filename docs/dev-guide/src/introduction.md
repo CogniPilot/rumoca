@@ -1,6 +1,6 @@
 # Rumoca Internals
 
-Welcome to the Rumoca developer guide. This book explains how the Rumoca Modelica compiler works internally, and how to contribute to its development.
+Welcome to the Rumoca developer guide.
 
 ## What is Rumoca?
 
@@ -30,12 +30,8 @@ You should be comfortable with:
 
 Familiarity with Modelica is helpful but not required - we'll explain the relevant concepts as needed.
 
-## How to read this guide
+## Architecture and Contribution Rules
 
-- **Getting Started** - Build the project and run tests
-- **Architecture** - Understand the high-level structure
-- **Compiler Internals** - Deep dive into each compilation phase
-- **Language Server** - LSP implementation details
-- **Editor Integration** - VSCode and web playground
-
-Start with [Building from Source](./getting-started/building.md) to get your development environment set up.
+Normative architecture and contribution rules live in `spec/`, not in this
+guide. Start with `spec/README.md` and follow the required reading list in
+`AGENTS.md` before editing compiler or runtime code.

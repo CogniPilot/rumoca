@@ -3,9 +3,10 @@
 //! This module extracts connect() statements from equations and converts
 //! them to ast::InstanceConnection structs.
 
-use rumoca_core::{SourceMap, Span};
+use rumoca_core::{ComponentPath, SourceMap, Span, scoped_component_path_candidates};
 use rumoca_ir_ast as ast;
 
+use crate::errors::{InstantiateError, InstantiateResult};
 use crate::inheritance::option_location_to_span;
 
 /// Parameters for connection extraction, including both boolean and integer values.
@@ -34,30 +35,53 @@ pub fn extract_connections(
     prefix: &ast::QualifiedName,
     params: &ConnectionParams,
     source_map: &SourceMap,
-) -> Vec<ast::InstanceConnection> {
-    if std::env::var("RUMOCA_DEBUG_CONNECTION_PARAMS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-    {
+) -> InstantiateResult<Vec<ast::InstanceConnection>> {
+    if connection_params_debug_enabled() {
         let mut ints: Vec<_> = params.integers.iter().collect();
         ints.sort_by(|a, b| a.0.cmp(b.0));
-        eprintln!(
-            "-- extract_connections debug [{}] int_params={} --",
+        let sample = ints
+            .iter()
+            .take(80)
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        log_connection_params_debug(format!(
+            "extract_connections prefix={} int_params={} sample=[{}]",
             prefix,
-            ints.len()
-        );
-        for (k, v) in ints.iter().take(80) {
-            eprintln!("  {k} = {v}");
-        }
+            ints.len(),
+            sample
+        ));
     }
 
     let mut connections = Vec::new();
 
     for eq in equations {
-        extract_connections_from_equation(&mut connections, eq, prefix, params, source_map);
+        extract_connections_from_equation(&mut connections, eq, prefix, params, source_map)?;
     }
 
-    connections
+    Ok(connections)
+}
+
+fn connection_params_debug_enabled() -> bool {
+    #[cfg(feature = "tracing")]
+    {
+        tracing::enabled!(
+            target: "rumoca_phase_instantiate::connections",
+            tracing::Level::DEBUG
+        )
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        false
+    }
+}
+
+fn log_connection_params_debug(message: String) {
+    #[cfg(feature = "tracing")]
+    tracing::debug!(target: "rumoca_phase_instantiate::connections", message = %message);
+
+    #[cfg(not(feature = "tracing"))]
+    let _ = message;
 }
 
 /// Extract connections from an equation, recursively handling nested structures.
@@ -67,7 +91,7 @@ fn extract_connections_from_equation(
     prefix: &ast::QualifiedName,
     params: &ConnectionParams,
     source_map: &SourceMap,
-) {
+) -> InstantiateResult<()> {
     match eq {
         ast::Equation::Connect { lhs, rhs, .. } => {
             let span = option_location_to_span(eq.get_location(), source_map);
@@ -90,6 +114,7 @@ fn extract_connections_from_equation(
                     scope: prefix.to_flat_string(),
                 });
             }
+            Ok(())
         }
 
         ast::Equation::If {
@@ -106,7 +131,7 @@ fn extract_connections_from_equation(
                 prefix,
                 params,
                 source_map,
-            );
+            )
         }
 
         ast::Equation::For { indices, equations } => {
@@ -119,11 +144,11 @@ fn extract_connections_from_equation(
                 prefix,
                 params,
                 source_map,
-            );
+            )
         }
 
         // Other equation types don't contain connections
-        _ => {}
+        _ => Ok(()),
     }
 }
 
@@ -139,25 +164,27 @@ fn extract_connections_from_if_equation(
     prefix: &ast::QualifiedName,
     params: &ConnectionParams,
     source_map: &SourceMap,
-) {
-    let selected_branch = try_select_branch(cond_blocks, else_block, params);
+) -> InstantiateResult<()> {
+    let selected_branch = try_select_branch(cond_blocks, else_block, prefix, params);
 
     if let Some(branch_eqs) = selected_branch {
         // Condition was evaluated - only extract from selected branch
         for nested_eq in &branch_eqs {
-            extract_connections_from_equation(connections, nested_eq, prefix, params, source_map);
+            extract_connections_from_equation(connections, nested_eq, prefix, params, source_map)?;
         }
-    } else {
-        // Condition couldn't be evaluated - extract from all branches
-        extract_connections_from_all_branches(
-            connections,
-            cond_blocks,
-            else_block,
-            prefix,
-            params,
-            source_map,
-        );
+        return Ok(());
     }
+
+    // Condition couldn't be evaluated, so retain the existing conservative
+    // branch extraction behavior for structural if-equations.
+    extract_connections_from_all_branches(
+        connections,
+        cond_blocks,
+        else_block,
+        prefix,
+        params,
+        source_map,
+    )
 }
 
 /// Extract connections from all branches of an if-equation.
@@ -170,17 +197,18 @@ fn extract_connections_from_all_branches(
     prefix: &ast::QualifiedName,
     params: &ConnectionParams,
     source_map: &SourceMap,
-) {
+) -> InstantiateResult<()> {
     for block in cond_blocks {
         for nested_eq in &block.eqs {
-            extract_connections_from_equation(connections, nested_eq, prefix, params, source_map);
+            extract_connections_from_equation(connections, nested_eq, prefix, params, source_map)?;
         }
     }
     if let Some(else_eqs) = else_block {
         for nested_eq in else_eqs {
-            extract_connections_from_equation(connections, nested_eq, prefix, params, source_map);
+            extract_connections_from_equation(connections, nested_eq, prefix, params, source_map)?;
         }
     }
+    Ok(())
 }
 
 /// Extract connections from a for-equation by expanding the loop.
@@ -195,13 +223,17 @@ fn extract_connections_from_for_equation(
     prefix: &ast::QualifiedName,
     params: &ConnectionParams,
     source_map: &SourceMap,
-) {
+) -> InstantiateResult<()> {
+    if !equations_contain_connect(equations) {
+        return Ok(());
+    }
+
     if indices.is_empty() {
         // No indices, just process the equations directly
         for eq in equations {
-            extract_connections_from_equation(connections, eq, prefix, params, source_map);
+            extract_connections_from_equation(connections, eq, prefix, params, source_map)?;
         }
-        return;
+        return Ok(());
     }
 
     // Get the first index and expand it
@@ -210,31 +242,83 @@ fn extract_connections_from_for_equation(
     let index_name = &first_index.ident.text;
 
     // Try to evaluate the range to get concrete index values, using integer params
-    if let Some(range_values) = expand_for_range(&first_index.range, &params.integers) {
+    if let Some(range_values) = expand_for_range(&first_index.range, &params.integers, prefix) {
         for value in range_values {
             // Substitute the index variable with this value in all equations
             let substituted: Vec<ast::Equation> = equations
                 .iter()
                 .map(|eq| substitute_index_in_equation(eq, index_name, value))
                 .collect();
+            let substituted_indices =
+                substitute_index_in_for_indices(remaining_indices, index_name, value);
 
             // Recursively process with remaining indices
             extract_connections_from_for_equation(
                 connections,
-                remaining_indices,
+                &substituted_indices,
                 &substituted,
                 prefix,
                 params,
                 source_map,
-            );
+            )?;
         }
-    } else {
-        // Range couldn't be evaluated - fall back to extracting without expansion
-        // This may lose subscript information, but avoids failing completely
-        for eq in equations {
-            extract_connections_from_equation(connections, eq, prefix, params, source_map);
+        return Ok(());
+    }
+
+    Err(Box::new(InstantiateError::structural_param_error(
+        index_name.to_string(),
+        format!(
+            "cannot evaluate connection for-equation range `{}` in `{prefix}`",
+            first_index.range
+        ),
+        option_location_to_span(first_index.range.get_location(), source_map),
+    )))
+}
+
+fn substitute_index_in_for_indices(
+    indices: &[rumoca_ir_ast::ForIndex],
+    var_name: &str,
+    value: i64,
+) -> Vec<rumoca_ir_ast::ForIndex> {
+    indices
+        .iter()
+        .map(|idx| {
+            let range = if idx.ident.text.as_ref() == var_name {
+                idx.range.clone()
+            } else {
+                substitute_index_in_expr(&idx.range, var_name, value)
+            };
+            rumoca_ir_ast::ForIndex {
+                ident: idx.ident.clone(),
+                range,
+            }
+        })
+        .collect()
+}
+
+fn equations_contain_connect(equations: &[ast::Equation]) -> bool {
+    use std::ops::ControlFlow::Break;
+
+    struct ConnectFinder(bool);
+
+    impl rumoca_ir_ast::Visitor for ConnectFinder {
+        fn visit_connect(
+            &mut self,
+            _lhs: &ast::ComponentReference,
+            _rhs: &ast::ComponentReference,
+        ) -> std::ops::ControlFlow<()> {
+            self.0 = true;
+            Break(())
         }
     }
+
+    let mut finder = ConnectFinder(false);
+    for equation in equations {
+        if rumoca_ir_ast::Visitor::visit_equation(&mut finder, equation).is_break() {
+            return true;
+        }
+    }
+    finder.0
 }
 
 /// Try to expand a for-loop range to concrete integer values.
@@ -243,14 +327,17 @@ fn extract_connections_from_for_equation(
 fn expand_for_range(
     range_expr: &ast::Expression,
     int_params: &rustc_hash::FxHashMap<String, i64>,
+    scope: &ast::QualifiedName,
 ) -> Option<Vec<i64>> {
     match range_expr {
-        ast::Expression::Range { start, step, end } => {
-            let start_val = expr_to_i64_with_params(start, int_params)?;
-            let end_val = expr_to_i64_with_params(end, int_params)?;
+        ast::Expression::Range {
+            start, step, end, ..
+        } => {
+            let start_val = expr_to_i64_with_params(start, int_params, scope)?;
+            let end_val = expr_to_i64_with_params(end, int_params, scope)?;
             let step_val = step
                 .as_ref()
-                .and_then(|s| expr_to_i64_with_params(s, int_params))
+                .and_then(|s| expr_to_i64_with_params(s, int_params, scope))
                 .unwrap_or(1);
 
             if step_val == 0 {
@@ -280,7 +367,7 @@ fn expand_for_range(
         }
         // Single expression (like just `m` meaning 1:m)
         _ => {
-            let n = expr_to_i64_with_params(range_expr, int_params)?;
+            let n = expr_to_i64_with_params(range_expr, int_params, scope)?;
             if n >= 1 {
                 Some((1..=n).collect())
             } else {
@@ -295,46 +382,50 @@ fn expand_for_range(
 fn expr_to_i64_with_params(
     expr: &ast::Expression,
     int_params: &rustc_hash::FxHashMap<String, i64>,
+    scope: &ast::QualifiedName,
 ) -> Option<i64> {
     match expr {
         // Literal integer
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token,
+            ..
         } => token.text.parse().ok(),
 
         // Parameter reference (single-part or multi-part like cellData.nRC)
         ast::Expression::ComponentReference(cr)
             if !cr.parts.is_empty() && cr.parts.iter().all(|p| p.subs.is_none()) =>
         {
-            resolve_int_param_ref(cr, int_params)
+            resolve_int_param_ref(cr, int_params, scope)
         }
 
         // Binary arithmetic
-        ast::Expression::Binary { op, lhs, rhs } => {
-            let l = expr_to_i64_with_params(lhs, int_params)?;
-            let r = expr_to_i64_with_params(rhs, int_params)?;
+        ast::Expression::Binary { op, lhs, rhs, .. } => {
+            let l = expr_to_i64_with_params(lhs, int_params, scope)?;
+            let r = expr_to_i64_with_params(rhs, int_params, scope)?;
             eval_binary_i64(op, l, r)
         }
 
         // Unary
-        ast::Expression::Unary { op, rhs } => {
-            let val = expr_to_i64_with_params(rhs, int_params)?;
+        ast::Expression::Unary { op, rhs, .. } => {
+            let val = expr_to_i64_with_params(rhs, int_params, scope)?;
             eval_unary_i64(op, val)
         }
 
         // Parenthesized
-        ast::Expression::Parenthesized { inner } => expr_to_i64_with_params(inner, int_params),
+        ast::Expression::Parenthesized { inner, .. } => {
+            expr_to_i64_with_params(inner, int_params, scope)
+        }
 
         // Built-in div() function
-        ast::Expression::FunctionCall { comp, args }
+        ast::Expression::FunctionCall { comp, args, .. }
             if comp.parts.len() == 1
                 && comp.parts[0].subs.is_none()
                 && comp.parts[0].ident.text.as_ref() == "div"
                 && args.len() == 2 =>
         {
-            let a = expr_to_i64_with_params(&args[0], int_params)?;
-            let b = expr_to_i64_with_params(&args[1], int_params)?;
+            let a = expr_to_i64_with_params(&args[0], int_params, scope)?;
+            let b = expr_to_i64_with_params(&args[1], int_params, scope)?;
             if b == 0 { None } else { Some(a / b) }
         }
 
@@ -342,62 +433,29 @@ fn expr_to_i64_with_params(
     }
 }
 
-/// Resolve a component reference to an integer parameter value.
-///
-/// Uses progressively looser matching:
-/// 1. Exact key match (`a.b.c`)
-/// 2. Unique dotted suffix match (`x.a.b.c`)
-/// 3. Unique leaf-name match (`c`)
-///
-/// This preserves indexed connect references when integer parameter maps contain
-/// local names (`nRC`) or fully-qualified names (`cell.cellData.nRC`).
+/// Resolve a component reference to an integer parameter value in lexical scope.
 fn resolve_int_param_ref(
     cr: &ast::ComponentReference,
     int_params: &rustc_hash::FxHashMap<String, i64>,
+    scope: &ast::QualifiedName,
 ) -> Option<i64> {
-    let dotted: String = cr
-        .parts
-        .iter()
-        .map(|p| p.ident.text.as_ref())
-        .collect::<Vec<_>>()
-        .join(".");
-
-    if let Some(v) = int_params.get(dotted.as_str()) {
-        return Some(*v);
-    }
-
-    let dotted_suffix = format!(".{dotted}");
-    let mut suffix_match: Option<i64> = None;
-    for (k, v) in int_params {
-        if k.ends_with(&dotted_suffix) {
-            if suffix_match.is_some() {
-                suffix_match = None;
-                break;
-            }
-            suffix_match = Some(*v);
+    let name = component_ref_path_no_subscripts(cr)?;
+    let scope = scope.to_component_path();
+    for candidate in scoped_component_path_candidates(&name, &scope) {
+        if let Some(value) = int_params.get(candidate.as_str()) {
+            return Some(*value);
         }
     }
-    if suffix_match.is_some() {
-        return suffix_match;
-    }
+    None
+}
 
-    let leaf = cr.parts.last()?.ident.text.as_ref();
-    if let Some(v) = int_params.get(leaf) {
-        return Some(*v);
+fn component_ref_path_no_subscripts(cr: &ast::ComponentReference) -> Option<ComponentPath> {
+    if cr.parts.is_empty() || cr.parts.iter().any(|part| part.subs.is_some()) {
+        return None;
     }
-
-    let leaf_suffix = format!(".{leaf}");
-    let mut leaf_match: Option<i64> = None;
-    for (k, v) in int_params {
-        if k.ends_with(&leaf_suffix) {
-            if leaf_match.is_some() {
-                leaf_match = None;
-                break;
-            }
-            leaf_match = Some(*v);
-        }
-    }
-    leaf_match
+    Some(ComponentPath::from_parts(
+        cr.parts.iter().map(|part| part.ident.text.as_ref()),
+    ))
 }
 
 /// Substitute an index variable with a concrete value in an equation.
@@ -476,6 +534,7 @@ fn substitute_index_in_comp_ref(
             })
             .collect(),
         def_id: comp_ref.def_id,
+        span: comp_ref.span,
     }
 }
 
@@ -505,12 +564,13 @@ fn substitute_index_in_expr(expr: &ast::Expression, var_name: &str, value: i64) 
                 // Replace with integer literal
                 ast::Expression::Terminal {
                     terminal_type: ast::TerminalType::UnsignedInteger,
-                    token: rumoca_ir_core::Token {
+                    token: rumoca_core::Token {
                         text: std::sync::Arc::from(value.to_string()),
                         location: cr.parts[0].ident.location.clone(),
                         token_number: 0,
                         token_type: 0,
                     },
+                    span: cr.span,
                 }
             } else {
                 // Substitute in subscripts
@@ -519,41 +579,53 @@ fn substitute_index_in_expr(expr: &ast::Expression, var_name: &str, value: i64) 
                 ))
             }
         }
-        ast::Expression::Binary { op, lhs, rhs } => ast::Expression::Binary {
+        ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
             op: op.clone(),
             lhs: std::sync::Arc::new(substitute_index_in_expr(lhs, var_name, value)),
             rhs: std::sync::Arc::new(substitute_index_in_expr(rhs, var_name, value)),
+            span: *span,
         },
-        ast::Expression::Unary { op, rhs } => ast::Expression::Unary {
+        ast::Expression::Unary { op, rhs, span } => ast::Expression::Unary {
             op: op.clone(),
             rhs: std::sync::Arc::new(substitute_index_in_expr(rhs, var_name, value)),
+            span: *span,
         },
-        ast::Expression::Parenthesized { inner } => ast::Expression::Parenthesized {
+        ast::Expression::Parenthesized { inner, span } => ast::Expression::Parenthesized {
             inner: std::sync::Arc::new(substitute_index_in_expr(inner, var_name, value)),
+            span: *span,
         },
         ast::Expression::Array {
             elements,
             is_matrix,
+            span,
         } => ast::Expression::Array {
             elements: elements
                 .iter()
                 .map(|e| substitute_index_in_expr(e, var_name, value))
                 .collect(),
             is_matrix: *is_matrix,
+            span: *span,
         },
-        ast::Expression::FunctionCall { comp, args } => ast::Expression::FunctionCall {
+        ast::Expression::FunctionCall { comp, args, span } => ast::Expression::FunctionCall {
             comp: substitute_index_in_comp_ref(comp, var_name, value),
             args: args
                 .iter()
                 .map(|a| substitute_index_in_expr(a, var_name, value))
                 .collect(),
+            span: *span,
         },
-        ast::Expression::Range { start, step, end } => ast::Expression::Range {
+        ast::Expression::Range {
+            start,
+            step,
+            end,
+            span,
+        } => ast::Expression::Range {
             start: std::sync::Arc::new(substitute_index_in_expr(start, var_name, value)),
             step: step
                 .as_ref()
                 .map(|s| std::sync::Arc::new(substitute_index_in_expr(s, var_name, value))),
             end: std::sync::Arc::new(substitute_index_in_expr(end, var_name, value)),
+            span: *span,
         },
         // Other expressions are returned as-is
         other => other.clone(),
@@ -567,10 +639,12 @@ fn substitute_index_in_expr(expr: &ast::Expression, var_name: &str, value: i64) 
 fn try_select_branch(
     cond_blocks: &[rumoca_ir_ast::EquationBlock],
     else_block: &Option<Vec<ast::Equation>>,
+    scope: &ast::QualifiedName,
     params: &ConnectionParams,
 ) -> Option<Vec<ast::Equation>> {
     for block in cond_blocks {
-        if let Some(value) = try_eval_bool_expr(&block.cond, &params.bools, &params.integers) {
+        if let Some(value) = try_eval_bool_expr(&block.cond, &params.bools, &params.integers, scope)
+        {
             if value {
                 return Some(block.eqs.clone());
             }
@@ -590,12 +664,14 @@ fn try_eval_bool_expr(
     expr: &ast::Expression,
     bool_params: &rustc_hash::FxHashMap<String, bool>,
     int_params: &rustc_hash::FxHashMap<String, i64>,
+    scope: &ast::QualifiedName,
 ) -> Option<bool> {
     match expr {
         // Literal boolean (true or false)
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::Bool,
             token,
+            ..
         } => match token.text.as_ref() {
             "true" => Some(true),
             "false" => Some(false),
@@ -603,66 +679,76 @@ fn try_eval_bool_expr(
         },
 
         // Parameter reference
-        ast::Expression::ComponentReference(cr) => {
-            let name = cr
-                .parts
-                .iter()
-                .map(|p| p.ident.text.as_ref())
-                .collect::<Vec<_>>()
-                .join(".");
-            bool_params.get(&name).copied()
-        }
+        ast::Expression::ComponentReference(cr) => resolve_bool_param_ref(cr, bool_params, scope),
 
         // Not expression
         ast::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Not(_),
+            op: rumoca_core::OpUnary::Not,
             rhs: inner,
-        } => try_eval_bool_expr(inner, bool_params, int_params).map(|v| !v),
+            ..
+        } => try_eval_bool_expr(inner, bool_params, int_params, scope).map(|v| !v),
 
         // And expression
         ast::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::And(_),
+            op: rumoca_core::OpBinary::And,
             lhs,
             rhs,
+            ..
         } => {
-            let l = try_eval_bool_expr(lhs, bool_params, int_params)?;
-            let r = try_eval_bool_expr(rhs, bool_params, int_params)?;
+            let l = try_eval_bool_expr(lhs, bool_params, int_params, scope)?;
+            let r = try_eval_bool_expr(rhs, bool_params, int_params, scope)?;
             Some(l && r)
         }
 
         // Or expression
         ast::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Or(_),
+            op: rumoca_core::OpBinary::Or,
             lhs,
             rhs,
+            ..
         } => {
-            let l = try_eval_bool_expr(lhs, bool_params, int_params)?;
-            let r = try_eval_bool_expr(rhs, bool_params, int_params)?;
+            let l = try_eval_bool_expr(lhs, bool_params, int_params, scope)?;
+            let r = try_eval_bool_expr(rhs, bool_params, int_params, scope)?;
             Some(l || r)
         }
 
         // Integer comparison expressions (e.g., i > 1 after index substitution)
-        ast::Expression::Binary { op, lhs, rhs } => {
-            let l = expr_to_i64_with_params(lhs, int_params)?;
-            let r = expr_to_i64_with_params(rhs, int_params)?;
+        ast::Expression::Binary { op, lhs, rhs, .. } => {
+            let l = expr_to_i64_with_params(lhs, int_params, scope)?;
+            let r = expr_to_i64_with_params(rhs, int_params, scope)?;
             match op {
-                rumoca_ir_core::OpBinary::Gt(_) => Some(l > r),
-                rumoca_ir_core::OpBinary::Ge(_) => Some(l >= r),
-                rumoca_ir_core::OpBinary::Lt(_) => Some(l < r),
-                rumoca_ir_core::OpBinary::Le(_) => Some(l <= r),
-                rumoca_ir_core::OpBinary::Eq(_) => Some(l == r),
-                rumoca_ir_core::OpBinary::Neq(_) => Some(l != r),
+                rumoca_core::OpBinary::Gt => Some(l > r),
+                rumoca_core::OpBinary::Ge => Some(l >= r),
+                rumoca_core::OpBinary::Lt => Some(l < r),
+                rumoca_core::OpBinary::Le => Some(l <= r),
+                rumoca_core::OpBinary::Eq => Some(l == r),
+                rumoca_core::OpBinary::Neq => Some(l != r),
                 _ => None,
             }
         }
 
         // Parenthesized boolean expression
-        ast::Expression::Parenthesized { inner } => {
-            try_eval_bool_expr(inner, bool_params, int_params)
+        ast::Expression::Parenthesized { inner, .. } => {
+            try_eval_bool_expr(inner, bool_params, int_params, scope)
         }
 
         _ => None,
     }
+}
+
+fn resolve_bool_param_ref(
+    cr: &ast::ComponentReference,
+    bool_params: &rustc_hash::FxHashMap<String, bool>,
+    scope: &ast::QualifiedName,
+) -> Option<bool> {
+    let name = component_ref_path_no_subscripts(cr)?;
+    let scope = scope.to_component_path();
+    for candidate in scoped_component_path_candidates(&name, &scope) {
+        if let Some(value) = bool_params.get(candidate.as_str()) {
+            return Some(*value);
+        }
+    }
+    None
 }
 
 /// Convert a ast::ComponentReference to a ast::QualifiedName with prefix.
@@ -680,7 +766,7 @@ fn component_ref_to_qualified_name(
         // Convert subscripts to i64, resolving parameter references via int_params
         let subscripts: Vec<i64> = if let Some(subs) = &part.subs {
             subs.iter()
-                .filter_map(|sub| subscript_to_i64(sub, int_params))
+                .filter_map(|sub| subscript_to_i64(sub, int_params, prefix))
                 .collect()
         } else {
             Vec::new()
@@ -696,20 +782,21 @@ fn component_ref_to_qualified_name(
 fn subscript_to_i64(
     sub: &ast::Subscript,
     int_params: &rustc_hash::FxHashMap<String, i64>,
+    scope: &ast::QualifiedName,
 ) -> Option<i64> {
     match sub {
-        ast::Subscript::Expression(expr) => expr_to_i64_with_params(expr, int_params),
+        ast::Subscript::Expression(expr) => expr_to_i64_with_params(expr, int_params, scope),
         ast::Subscript::Range { .. } | ast::Subscript::Empty => None,
     }
 }
 
 /// Evaluate a binary integer operation.
-fn eval_binary_i64(op: &rumoca_ir_core::OpBinary, l: i64, r: i64) -> Option<i64> {
+fn eval_binary_i64(op: &rumoca_core::OpBinary, l: i64, r: i64) -> Option<i64> {
     match op {
-        rumoca_ir_core::OpBinary::Add(_) | rumoca_ir_core::OpBinary::AddElem(_) => Some(l + r),
-        rumoca_ir_core::OpBinary::Sub(_) | rumoca_ir_core::OpBinary::SubElem(_) => Some(l - r),
-        rumoca_ir_core::OpBinary::Mul(_) | rumoca_ir_core::OpBinary::MulElem(_) => Some(l * r),
-        rumoca_ir_core::OpBinary::Div(_) | rumoca_ir_core::OpBinary::DivElem(_) => {
+        rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => Some(l + r),
+        rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => Some(l - r),
+        rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => Some(l * r),
+        rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
             if r == 0 {
                 None
             } else {
@@ -721,10 +808,10 @@ fn eval_binary_i64(op: &rumoca_ir_core::OpBinary, l: i64, r: i64) -> Option<i64>
 }
 
 /// Evaluate a unary integer operation.
-fn eval_unary_i64(op: &rumoca_ir_core::OpUnary, val: i64) -> Option<i64> {
+fn eval_unary_i64(op: &rumoca_core::OpUnary, val: i64) -> Option<i64> {
     match op {
-        rumoca_ir_core::OpUnary::Minus(_) | rumoca_ir_core::OpUnary::DotMinus(_) => Some(-val),
-        rumoca_ir_core::OpUnary::Plus(_) | rumoca_ir_core::OpUnary::DotPlus(_) => Some(val),
+        rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => Some(-val),
+        rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => Some(val),
         _ => None,
     }
 }
@@ -742,8 +829,8 @@ fn try_expand_range_subscript_connection(
     int_params: &rustc_hash::FxHashMap<String, i64>,
     span: Span,
 ) -> Option<Vec<ast::InstanceConnection>> {
-    let lhs_range = extract_range_subscript(lhs, int_params);
-    let rhs_range = extract_range_subscript(rhs, int_params);
+    let lhs_range = extract_range_subscript(lhs, int_params, prefix);
+    let rhs_range = extract_range_subscript(rhs, int_params, prefix);
 
     // If neither side has range subscripts, return None (use normal path)
     if lhs_range.is_none() && rhs_range.is_none() {
@@ -823,13 +910,14 @@ fn try_expand_range_subscript_connection(
 fn extract_range_subscript(
     comp_ref: &ast::ComponentReference,
     int_params: &rustc_hash::FxHashMap<String, i64>,
+    scope: &ast::QualifiedName,
 ) -> Option<(usize, Vec<i64>)> {
     for (part_idx, part) in comp_ref.parts.iter().enumerate() {
         let Some(subs) = part.subs.as_ref() else {
             continue;
         };
         for sub in subs {
-            let values = try_expand_subscript_range(sub, int_params);
+            let values = try_expand_subscript_range(sub, int_params, scope);
             if let Some(values) = values {
                 return Some((part_idx, values));
             }
@@ -842,18 +930,19 @@ fn extract_range_subscript(
 fn try_expand_subscript_range(
     sub: &ast::Subscript,
     int_params: &rustc_hash::FxHashMap<String, i64>,
+    scope: &ast::QualifiedName,
 ) -> Option<Vec<i64>> {
     let (start, step, end) = match sub {
-        ast::Subscript::Expression(ast::Expression::Range { start, step, end }) => {
-            (start, step, end)
-        }
+        ast::Subscript::Expression(ast::Expression::Range {
+            start, step, end, ..
+        }) => (start, step, end),
         _ => return None,
     };
-    let start_val = expr_to_i64_with_params(start, int_params)?;
-    let end_val = expr_to_i64_with_params(end, int_params)?;
+    let start_val = expr_to_i64_with_params(start, int_params, scope)?;
+    let end_val = expr_to_i64_with_params(end, int_params, scope)?;
     let step_val = step
         .as_ref()
-        .and_then(|s| expr_to_i64_with_params(s, int_params))
+        .and_then(|s| expr_to_i64_with_params(s, int_params, scope))
         .unwrap_or(1);
     if step_val == 0 {
         return None;
@@ -893,12 +982,13 @@ fn replace_range_with_index(
                         subs: Some(vec![ast::Subscript::Expression(
                             ast::Expression::Terminal {
                                 terminal_type: ast::TerminalType::UnsignedInteger,
-                                token: rumoca_ir_core::Token {
+                                token: rumoca_core::Token {
                                     text: std::sync::Arc::from(value.to_string()),
                                     location: part.ident.location.clone(),
                                     token_number: 0,
                                     token_type: 0,
                                 },
+                                span: comp_ref.span,
                             },
                         )]),
                     }
@@ -908,6 +998,7 @@ fn replace_range_with_index(
             })
             .collect(),
         def_id: comp_ref.def_id,
+        span: comp_ref.span,
     }
 }
 
@@ -938,10 +1029,10 @@ pub fn filter_out_connections(equations: &[ast::Equation]) -> Vec<ast::Equation>
 mod tests {
     use super::*;
 
-    fn make_token(text: &str) -> rumoca_ir_core::Token {
-        rumoca_ir_core::Token {
+    fn make_token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
             text: std::sync::Arc::from(text),
-            location: rumoca_ir_core::Location::default(),
+            location: rumoca_core::Location::default(),
             token_number: 0,
             token_type: 0,
         }
@@ -958,6 +1049,28 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
+        ast::Expression::ComponentReference(make_comp_ref(names))
+    }
+
+    fn make_integer_terminal(value: &str) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token: make_token(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn make_range_expr(start: ast::Expression, end: ast::Expression) -> ast::Expression {
+        ast::Expression::Range {
+            start: std::sync::Arc::new(start),
+            step: None,
+            end: std::sync::Arc::new(end),
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -985,6 +1098,7 @@ mod tests {
             local: false,
             parts,
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -998,7 +1112,7 @@ mod tests {
         let prefix = ast::QualifiedName::new();
         let source_map = SourceMap::new();
         let connections =
-            extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map);
+            extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map).unwrap();
 
         assert_eq!(connections.len(), 1);
         assert_eq!(connections[0].a.to_flat_string(), "a.p");
@@ -1013,12 +1127,15 @@ mod tests {
             start: std::sync::Arc::new(ast::Expression::Terminal {
                 terminal_type: ast::TerminalType::UnsignedInteger,
                 token: make_token("1"),
+                span: rumoca_core::Span::DUMMY,
             }),
             step: None,
             end: std::sync::Arc::new(ast::Expression::Terminal {
                 terminal_type: ast::TerminalType::UnsignedInteger,
                 token: make_token("2"),
+                span: rumoca_core::Span::DUMMY,
             }),
+            span: rumoca_core::Span::DUMMY,
         };
         let eq = ast::Equation::Connect {
             lhs: make_comp_ref(&["mux2", "y"]),
@@ -1028,7 +1145,7 @@ mod tests {
         let prefix = ast::QualifiedName::new();
         let source_map = SourceMap::new();
         let connections =
-            extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map);
+            extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map).unwrap();
 
         let mut got: Vec<(String, String)> = connections
             .iter()
@@ -1047,104 +1164,11 @@ mod tests {
 
     #[test]
     fn test_extract_connections_nested_for_range_depends_on_outer_index() {
-        // for j in 1:2 loop
-        //   for i in j+1:3 loop
-        //     connect(a[j], b[i]);
-        //   end for;
-        // end for;
-        //
-        // Expected expansion:
-        // j=1 -> i=2,3 => connect(a[1], b[2]), connect(a[1], b[3])
-        // j=2 -> i=3   => connect(a[2], b[3])
-        let outer_idx = rumoca_ir_ast::ForIndex {
-            ident: make_token("j"),
-            range: ast::Expression::Range {
-                start: std::sync::Arc::new(ast::Expression::Terminal {
-                    terminal_type: ast::TerminalType::UnsignedInteger,
-                    token: make_token("1"),
-                }),
-                step: None,
-                end: std::sync::Arc::new(ast::Expression::Terminal {
-                    terminal_type: ast::TerminalType::UnsignedInteger,
-                    token: make_token("2"),
-                }),
-            },
-        };
-        let inner_idx = rumoca_ir_ast::ForIndex {
-            ident: make_token("i"),
-            range: ast::Expression::Range {
-                start: std::sync::Arc::new(ast::Expression::Binary {
-                    op: rumoca_ir_core::OpBinary::Add(make_token("+")),
-                    lhs: std::sync::Arc::new(ast::Expression::ComponentReference(
-                        ast::ComponentReference {
-                            local: false,
-                            parts: vec![ast::ComponentRefPart {
-                                ident: make_token("j"),
-                                subs: None,
-                            }],
-                            def_id: None,
-                        },
-                    )),
-                    rhs: std::sync::Arc::new(ast::Expression::Terminal {
-                        terminal_type: ast::TerminalType::UnsignedInteger,
-                        token: make_token("1"),
-                    }),
-                }),
-                step: None,
-                end: std::sync::Arc::new(ast::Expression::Terminal {
-                    terminal_type: ast::TerminalType::UnsignedInteger,
-                    token: make_token("3"),
-                }),
-            },
-        };
-
-        let eq = ast::Equation::For {
-            indices: vec![outer_idx],
-            equations: vec![ast::Equation::For {
-                indices: vec![inner_idx],
-                equations: vec![ast::Equation::Connect {
-                    lhs: ast::ComponentReference {
-                        local: false,
-                        parts: vec![ast::ComponentRefPart {
-                            ident: make_token("a"),
-                            subs: Some(vec![ast::Subscript::Expression(
-                                ast::Expression::ComponentReference(ast::ComponentReference {
-                                    local: false,
-                                    parts: vec![ast::ComponentRefPart {
-                                        ident: make_token("j"),
-                                        subs: None,
-                                    }],
-                                    def_id: None,
-                                }),
-                            )]),
-                        }],
-                        def_id: None,
-                    },
-                    rhs: ast::ComponentReference {
-                        local: false,
-                        parts: vec![ast::ComponentRefPart {
-                            ident: make_token("b"),
-                            subs: Some(vec![ast::Subscript::Expression(
-                                ast::Expression::ComponentReference(ast::ComponentReference {
-                                    local: false,
-                                    parts: vec![ast::ComponentRefPart {
-                                        ident: make_token("i"),
-                                        subs: None,
-                                    }],
-                                    def_id: None,
-                                }),
-                            )]),
-                        }],
-                        def_id: None,
-                    },
-                }],
-            }],
-        };
-
+        let eq = nested_dependent_for_connection_eq();
         let prefix = ast::QualifiedName::new();
         let source_map = SourceMap::new();
         let params = ConnectionParams::new();
-        let conns = extract_connections(&[eq], &prefix, &params, &source_map);
+        let conns = extract_connections(&[eq], &prefix, &params, &source_map).unwrap();
 
         let mut got: Vec<(String, String)> = conns
             .iter()
@@ -1161,9 +1185,109 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_connections_multi_index_range_depends_on_prior_index() {
+        let eq = multi_index_dependent_for_connection_eq();
+        let prefix = ast::QualifiedName::new();
+        let source_map = SourceMap::new();
+        let params = ConnectionParams::new();
+        let conns = extract_connections(&[eq], &prefix, &params, &source_map).unwrap();
+
+        let mut got: Vec<(String, String)> = conns
+            .iter()
+            .map(|c| (c.a.to_flat_string(), c.b.to_flat_string()))
+            .collect();
+        got.sort();
+
+        let expected = vec![
+            ("a[1]".to_string(), "b[2]".to_string()),
+            ("a[1]".to_string(), "b[3]".to_string()),
+            ("a[2]".to_string(), "b[3]".to_string()),
+        ];
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn test_extract_connections_skips_non_connection_for_equation_range() {
+        let eq = ast::Equation::For {
+            indices: vec![rumoca_ir_ast::ForIndex {
+                ident: make_token("i"),
+                range: ast::Expression::ComponentReference(make_comp_ref(&["nout"])),
+            }],
+            equations: vec![ast::Equation::Simple {
+                lhs: make_comp_ref_expr(&["aux", "i"]),
+                rhs: make_integer_terminal("0"),
+            }],
+        };
+
+        let prefix = ast::QualifiedName::new();
+        let source_map = SourceMap::new();
+        let connections =
+            extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map).unwrap();
+
+        assert!(connections.is_empty());
+    }
+
+    fn nested_dependent_for_connection_eq() -> ast::Equation {
+        let outer_idx = rumoca_ir_ast::ForIndex {
+            ident: make_token("j"),
+            range: make_range_expr(make_integer_terminal("1"), make_integer_terminal("2")),
+        };
+        let inner_idx = rumoca_ir_ast::ForIndex {
+            ident: make_token("i"),
+            range: make_range_expr(j_plus_one_expr(), make_integer_terminal("3")),
+        };
+        ast::Equation::For {
+            indices: vec![outer_idx],
+            equations: vec![ast::Equation::For {
+                indices: vec![inner_idx],
+                equations: vec![ast::Equation::Connect {
+                    lhs: make_comp_ref_with_sub(make_comp_ref_expr(&["j"]), &["a"]),
+                    rhs: make_comp_ref_with_sub(make_comp_ref_expr(&["i"]), &["b"]),
+                }],
+            }],
+        }
+    }
+
+    fn multi_index_dependent_for_connection_eq() -> ast::Equation {
+        let prior_idx = rumoca_ir_ast::ForIndex {
+            ident: make_token("i"),
+            range: make_range_expr(make_integer_terminal("1"), make_integer_terminal("2")),
+        };
+        let dependent_idx = rumoca_ir_ast::ForIndex {
+            ident: make_token("j"),
+            range: make_range_expr(i_plus_one_expr(), make_integer_terminal("3")),
+        };
+        ast::Equation::For {
+            indices: vec![prior_idx, dependent_idx],
+            equations: vec![ast::Equation::Connect {
+                lhs: make_comp_ref_with_sub(make_comp_ref_expr(&["i"]), &["a"]),
+                rhs: make_comp_ref_with_sub(make_comp_ref_expr(&["j"]), &["b"]),
+            }],
+        }
+    }
+
+    fn i_plus_one_expr() -> ast::Expression {
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: std::sync::Arc::new(make_comp_ref_expr(&["i"])),
+            rhs: std::sync::Arc::new(make_integer_terminal("1")),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn j_plus_one_expr() -> ast::Expression {
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: std::sync::Arc::new(make_comp_ref_expr(&["j"])),
+            rhs: std::sync::Arc::new(make_integer_terminal("1")),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    #[test]
     fn test_component_ref_subscript_resolves_leaf_integer_param_key() {
         // resistor[cellData.nRC].n should keep the subscript when only leaf key
-        // nRC is available in int_params.
+        // The full component-reference path is available in int_params.
         let sub_expr = ast::Expression::ComponentReference(ast::ComponentReference {
             local: false,
             parts: vec![
@@ -1177,19 +1301,21 @@ mod tests {
                 },
             ],
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
         });
         let cr = make_comp_ref_with_sub(sub_expr, &["resistor", "n"]);
         let prefix = ast::QualifiedName::new();
         let mut int_params = rustc_hash::FxHashMap::default();
-        int_params.insert("nRC".to_string(), 2);
+        int_params.insert("cellData.nRC".to_string(), 2);
 
         let qn = component_ref_to_qualified_name(&cr, &prefix, &int_params);
         assert_eq!(qn.to_flat_string(), "resistor[2].n");
     }
 
     #[test]
-    fn test_component_ref_subscript_resolves_unique_dotted_suffix_param_key() {
-        // cellData.nRC should resolve from a qualified key like x.cellData.nRC.
+    fn test_component_ref_subscript_resolves_scoped_dotted_param_key() {
+        // cellData.nRC resolves from cell.cellData.nRC only when the instance
+        // scope is cell.
         let sub_expr = ast::Expression::ComponentReference(ast::ComponentReference {
             local: false,
             parts: vec![
@@ -1203,13 +1329,33 @@ mod tests {
                 },
             ],
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
         });
         let cr = make_comp_ref_with_sub(sub_expr, &["resistor", "n"]);
-        let prefix = ast::QualifiedName::new();
+        let prefix = ast::QualifiedName::from_dotted("cell");
         let mut int_params = rustc_hash::FxHashMap::default();
         int_params.insert("cell.cellData.nRC".to_string(), 2);
 
         let qn = component_ref_to_qualified_name(&cr, &prefix, &int_params);
-        assert_eq!(qn.to_flat_string(), "resistor[2].n");
+        assert_eq!(qn.to_flat_string(), "cell.resistor[2].n");
+    }
+
+    #[test]
+    fn test_component_ref_subscript_does_not_scan_suffix_param_keys() {
+        let cr = ast::ComponentReference {
+            local: false,
+            parts: vec![ast::ComponentRefPart {
+                ident: make_token("nRC"),
+                subs: None,
+            }],
+            def_id: None,
+            span: rumoca_core::Span::DUMMY,
+        };
+        let mut int_params = rustc_hash::FxHashMap::default();
+        int_params.insert("cellData.fake_nRC".to_string(), 4);
+        int_params.insert("cellData.real.nRC".to_string(), 2);
+
+        let scope = ast::QualifiedName::new();
+        assert_eq!(resolve_int_param_ref(&cr, &int_params, &scope), None);
     }
 }

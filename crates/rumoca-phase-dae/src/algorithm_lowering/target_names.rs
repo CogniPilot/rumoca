@@ -2,10 +2,13 @@ use super::*;
 
 fn algorithm_target_subscript_name(subscript: &Subscript) -> Option<String> {
     match subscript {
-        Subscript::Index(index) => Some(index.to_string()),
-        Subscript::Colon => Some(":".to_string()),
-        Subscript::Expr(expr) => match expr.as_ref() {
-            Expression::Literal(Literal::Integer(value)) => Some(value.to_string()),
+        Subscript::Index { value: index, .. } => Some(index.to_string()),
+        Subscript::Colon { .. } => Some(":".to_string()),
+        Subscript::Expr { expr, .. } => match expr.as_ref() {
+            Expression::Literal {
+                value: Literal::Integer(value),
+                ..
+            } => Some(value.to_string()),
             _ => None,
         },
     }
@@ -53,16 +56,23 @@ pub(super) fn algorithm_assignment_base_with_subscripts(
     Some((VarName::new(parts.join(".")), &last.subs))
 }
 
-pub(super) fn varref_with_subscripts(name: &VarName, subscripts: &[Subscript]) -> VarName {
+pub(super) fn varref_with_subscripts(
+    name: &rumoca_core::Reference,
+    subscripts: &[Subscript],
+) -> VarName {
+    varname_with_subscripts(name.var_name(), subscripts)
+}
+
+pub(super) fn varname_with_subscripts(name: &VarName, subscripts: &[Subscript]) -> VarName {
     if subscripts.is_empty() {
         return name.clone();
     }
 
     fn render_subscript(subscript: &Subscript) -> String {
         match subscript {
-            Subscript::Index(index) => index.to_string(),
-            Subscript::Colon => ":".to_string(),
-            Subscript::Expr(expr) => format!("{expr:?}"),
+            Subscript::Index { value: index, .. } => index.to_string(),
+            Subscript::Colon { .. } => ":".to_string(),
+            Subscript::Expr { expr, .. } => format!("{expr:?}"),
         }
     }
 
@@ -74,17 +84,6 @@ pub(super) fn varref_with_subscripts(name: &VarName, subscripts: &[Subscript]) -
     VarName::new(format!("{}[{rendered}]", name.as_str()))
 }
 
-pub(super) fn algorithm_output_target_name(output: &Expression) -> Option<VarName> {
-    match output {
-        Expression::VarRef { name, subscripts } => Some(varref_with_subscripts(name, subscripts)),
-        Expression::FieldAccess { base, field } => {
-            if let Expression::VarRef { name, subscripts } = base.as_ref() {
-                let base = varref_with_subscripts(name, subscripts);
-                Some(VarName::new(format!("{}.{}", base.as_str(), field)))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
+pub(super) fn algorithm_output_target_name(output: &ComponentReference) -> Option<VarName> {
+    algorithm_assignment_target_name(output)
 }

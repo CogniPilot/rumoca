@@ -1,7 +1,12 @@
+#![allow(dead_code)]
+
 use super::*;
 
+mod balance_pipeline_config;
 mod balance_pipeline_core;
 mod balance_pipeline_debug_introspection;
+mod balance_pipeline_example_targets;
+mod balance_pipeline_perf;
 mod balance_pipeline_quality_gate;
 mod balance_pipeline_render_sim;
 mod balance_pipeline_reporting;
@@ -10,7 +15,10 @@ mod balance_pipeline_sim_worker;
 mod balance_pipeline_stats_report;
 mod balance_pipeline_summary;
 
+pub(crate) use balance_pipeline_config::*;
 use balance_pipeline_debug_introspection::*;
+use balance_pipeline_example_targets::*;
+use balance_pipeline_perf::*;
 use balance_pipeline_quality_gate::*;
 use balance_pipeline_render_sim::*;
 use balance_pipeline_reporting::*;
@@ -19,114 +27,37 @@ use balance_pipeline_sim_worker::*;
 use balance_pipeline_stats_report::*;
 use balance_pipeline_summary::*;
 
-fn is_explicit_msl_example_model(model_name: &str) -> bool {
-    model_name.starts_with("Modelica.") && model_name.contains(".Examples.")
-}
-
-/// Package segments that indicate support/helper classes within Examples trees.
-const EXAMPLE_SUPPORT_SEGMENTS: &[&str] = &["Utilities", "BaseClasses", "Internal", "Interfaces"];
-
-/// Root MSL examples by name:
-/// - under `Modelica.*.Examples.*`
-/// - not nested under support/helper package segments
-fn is_root_msl_example_model_name(model_name: &str) -> bool {
-    if !is_explicit_msl_example_model(model_name) {
-        return false;
-    }
-    let Some((_, suffix)) = model_name.split_once(".Examples.") else {
-        return false;
-    };
-    let mut segments: Vec<&str> = suffix.split('.').collect();
-    if segments.len() <= 1 {
-        return true;
-    }
-    // Exclude class name itself; only inspect package path under Examples.
-    let _ = segments.pop();
-    !segments
-        .iter()
-        .any(|seg| EXAMPLE_SUPPORT_SEGMENTS.contains(seg))
-}
-
-/// Root standalone MSL examples:
-/// - root example by package name
-/// - non-partial
-/// - no top-level input connectors requiring external bindings
-/// - no unbound fixed parameters (fixed=true by default for parameters)
-fn is_root_standalone_msl_example_model(
-    model_name: &str,
-    result: &rumoca_compile::compile::CompilationResult,
-) -> bool {
-    is_root_msl_example_model_name(model_name)
-        && !result.dae.is_partial
-        && result.dae.inputs.is_empty()
-        && !result.flat.has_unbound_fixed_parameters()
-}
-
+/// Per-equation introspection dump. Edit to enable while debugging.
 fn msl_introspect_enabled() -> bool {
-    std::env::var("RUMOCA_MSL_INTROSPECT").is_ok()
+    false
 }
 
 fn msl_introspect_eq_limit() -> usize {
-    std::env::var("RUMOCA_MSL_INTROSPECT_EQ_LIMIT")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(120)
+    120
 }
 
-static MSL_INTROSPECT_MATCH_PATTERNS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-
-fn msl_introspect_match_patterns() -> &'static [String] {
-    MSL_INTROSPECT_MATCH_PATTERNS
-        .get_or_init(|| {
-            std::env::var("RUMOCA_MSL_INTROSPECT_MATCH")
-                .ok()
-                .map(|raw| {
-                    raw.split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(ToOwned::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default()
-        })
-        .as_slice()
+fn should_introspect_model(_model_name: &str) -> bool {
+    // No model filter; introspection (when enabled above) applies to all.
+    true
 }
 
-fn should_introspect_model(model_name: &str) -> bool {
-    let pats = msl_introspect_match_patterns();
-    pats.is_empty() || pats.iter().any(|pat| model_name.contains(pat))
-}
-
+/// Render simulation plots during the MSL run. Edit to enable.
 fn msl_render_enabled() -> bool {
-    std::env::var("RUMOCA_MSL_RENDER")
-        .ok()
-        .map(|raw| {
-            matches!(
-                raw.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    false
 }
 
 pub(super) const STAGE_WATCHDOG_LOG_INTERVAL_SECS: u64 = 15;
-pub(super) const MODEL_ATTEMPT_TIMEOUT_SECS: f64 = 10.0;
-
-pub(super) fn stage_timeout_seconds(env_key: &str, default_secs: u64) -> u64 {
-    std::env::var(env_key)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|secs| *secs > 0)
-        .unwrap_or(default_secs)
-}
+/// Per-model, per-phase wall budget. Heavy MSL models (MultiBody, Machines, FFT
+/// rectifiers) take 10-19s to *lower* to Solve-IR on a shared 4-core CI runner,
+/// so a 10s budget timed them out non-deterministically and made the IR-Solve
+/// pass count flaky right at the quality-gate threshold. The budget only bounds
+/// genuinely stuck models; correct-but-slow lowering must be allowed to finish,
+/// so it is sized above the observed worst case with margin (local fast runners
+/// never approach it).
+pub(super) const MODEL_ATTEMPT_TIMEOUT_SECS: f64 = 45.0;
 
 pub(super) fn model_attempt_timeout_secs() -> f64 {
-    std::env::var("RUMOCA_MSL_MODEL_ATTEMPT_TIMEOUT_SECS")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<f64>().ok())
-        .filter(|secs| secs.is_finite() && *secs > 0.0)
-        .unwrap_or(MODEL_ATTEMPT_TIMEOUT_SECS)
+    MODEL_ATTEMPT_TIMEOUT_SECS
 }
 
 pub(super) struct ModelCompileEntry {
@@ -134,16 +65,19 @@ pub(super) struct ModelCompileEntry {
     compile_outcome: ModelCompileOutcome,
     remaining_budget_secs: Option<f64>,
     compile_seconds: f64,
+    compile_perf_profile_file: Option<String>,
 }
 
 pub(super) enum ModelCompileOutcome {
     Phase(PhaseResult),
-    StrictReport(StrictCompileReport),
+    StrictReport(Box<StrictCompileReport>),
+    StrictDaeSuccess(Box<rumoca_compile::compile::DaeCompilationResult>),
+    StrictDaeFailure(String),
 }
 
 impl ModelCompileOutcome {
     fn is_success(&self) -> bool {
-        self.success_result().is_some()
+        self.success_result().is_some() || matches!(self, ModelCompileOutcome::StrictDaeSuccess(_))
     }
 
     fn success_result(&self) -> Option<&rumoca_compile::compile::CompilationResult> {
@@ -201,9 +135,8 @@ fn run_stage_watchdog_loop(
 }
 
 impl StageAbortWatchdog {
-    pub(super) fn new(stage_name: impl Into<String>, env_key: &str, default_secs: u64) -> Self {
+    pub(super) fn new(stage_name: impl Into<String>, timeout_secs: u64) -> Self {
         let stage_name = stage_name.into();
-        let timeout_secs = stage_timeout_seconds(env_key, default_secs);
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let done_flag = std::sync::Arc::clone(&done);
         let worker = std::thread::spawn(move || {
@@ -277,6 +210,15 @@ struct MslSummary {
     /// Flatten error categories with (model_name, error) pairs
     #[serde(default)]
     error_categories: HashMap<String, Vec<(String, String)>>,
+    /// Stable compiler diagnostic/error-code counts across all failed models.
+    #[serde(default)]
+    error_code_counts: HashMap<String, usize>,
+    /// Unsupported backend/semantic feature IDs extracted from stable error codes/messages.
+    #[serde(default)]
+    unsupported_feature_counts: HashMap<String, usize>,
+    /// Unsupported feature IDs grouped by manifest target/backend label.
+    #[serde(default)]
+    unsupported_feature_counts_by_backend: HashMap<String, HashMap<String, usize>>,
     /// Most common undefined variables with counts
     #[serde(default)]
     undefined_vars: HashMap<String, usize>,
@@ -308,6 +250,15 @@ struct MslSummary {
     /// Number of models where simulation was attempted.
     #[serde(default)]
     sim_attempted: usize,
+    /// Number of simulation-target models whose initialization problem was attempted.
+    #[serde(default)]
+    ic_attempted: usize,
+    /// Number of models whose initialization problem solved before integration.
+    #[serde(default)]
+    ic_ok: usize,
+    /// Number of models whose initialization problem failed before integration.
+    #[serde(default)]
+    ic_solver_fail: usize,
     /// Total solver/integration seconds (sum of per-model worker-reported runtime).
     #[serde(default)]
     total_sim_seconds: f64,
@@ -364,6 +315,9 @@ struct ResultCounters {
     initial_unbalanced_list: Vec<String>,
     non_sim_list: Vec<String>,
     error_categories: HashMap<String, Vec<(String, String)>>,
+    error_code_counts: HashMap<String, usize>,
+    unsupported_feature_counts: HashMap<String, usize>,
+    unsupported_feature_counts_by_backend: HashMap<String, HashMap<String, usize>>,
     undefined_vars: HashMap<String, usize>,
     balance_distribution: HashMap<i64, usize>,
     // Simulation counters
@@ -373,6 +327,9 @@ struct ResultCounters {
     sim_timeout: usize,
     sim_balance_fail: usize,
     sim_attempted: usize,
+    ic_attempted: usize,
+    ic_ok: usize,
+    ic_solver_fail: usize,
     total_sim_seconds: f64,
     total_sim_build_seconds: f64,
     total_sim_run_seconds: f64,
@@ -416,6 +373,142 @@ fn process_success_result(result: &MslModelResult, counters: &mut ResultCounters
             result.model_name, before, after
         ));
     }
+}
+
+fn process_result_error_taxonomy(result: &MslModelResult, counters: &mut ResultCounters) {
+    if let Some(code) = result.error_code.as_deref() {
+        *counters
+            .error_code_counts
+            .entry(code.to_string())
+            .or_insert(0) += 1;
+    }
+
+    let mut features = HashSet::new();
+    let mut backend_features = HashSet::new();
+    if let Some(code) = result.error_code.as_deref()
+        && let Some(feature) = unsupported_feature_id_from_text(code)
+    {
+        features.insert(feature);
+    }
+    for text in [
+        result.error.as_deref(),
+        result.sim_error.as_deref(),
+        result.ic_error.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(feature) = unsupported_feature_id_from_text(text) {
+            if let Some(target) = unsupported_feature_target_from_text(text) {
+                backend_features.insert((target, feature.clone()));
+            }
+            features.insert(feature);
+        }
+    }
+    for feature in derived_unsupported_feature_ids(result) {
+        features.insert(feature);
+    }
+    for feature in features {
+        *counters
+            .unsupported_feature_counts
+            .entry(feature)
+            .or_insert(0) += 1;
+    }
+    for (backend, feature) in backend_features {
+        *counters
+            .unsupported_feature_counts_by_backend
+            .entry(backend)
+            .or_default()
+            .entry(feature)
+            .or_insert(0) += 1;
+    }
+}
+
+fn unsupported_feature_id_from_text(text: &str) -> Option<String> {
+    let normalized = text.trim();
+    if let Some(rest) = normalized.strip_prefix("unsupported-feature:") {
+        return stable_feature_id_prefix(rest);
+    }
+    let marker = "does not support feature '";
+    if let Some((_, rest)) = normalized.split_once(marker) {
+        let (feature, _) = rest.split_once('\'')?;
+        return stable_feature_id(feature);
+    }
+    None
+}
+
+fn unsupported_feature_target_from_text(text: &str) -> Option<String> {
+    let marker = "Target '";
+    let (_, rest) = text.split_once(marker)?;
+    let (target, _) = rest.split_once('\'')?;
+    let target = target.trim();
+    (!target.is_empty()).then(|| target.to_string())
+}
+
+fn stable_feature_id_prefix(text: &str) -> Option<String> {
+    let feature = text
+        .split(|ch: char| ch == ':' || ch.is_whitespace())
+        .next()
+        .unwrap_or_default();
+    stable_feature_id(feature)
+}
+
+fn stable_feature_id(feature: &str) -> Option<String> {
+    let feature = feature.trim();
+    if feature.is_empty() {
+        return None;
+    }
+    let stable = feature
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    Some(stable)
+}
+
+fn derived_phase_unsupported_feature_code(model_name: &str, error: Option<&str>) -> Option<String> {
+    let feature = derived_unsupported_feature_from_text(model_name, error?)?;
+    Some(format!("unsupported-feature:{feature}"))
+}
+
+fn derived_unsupported_feature_ids(result: &MslModelResult) -> Vec<String> {
+    [
+        result.error.as_deref(),
+        result.sim_error.as_deref(),
+        result.ic_error.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|text| derived_unsupported_feature_from_text(&result.model_name, text))
+    .collect()
+}
+
+fn derived_unsupported_feature_from_text(model_name: &str, text: &str) -> Option<String> {
+    if model_name.starts_with("Modelica.Fluid.")
+        && (text.contains("unresolved function call: `Medium`")
+            || text.contains("unresolved function call: 'Medium'"))
+    {
+        return Some("replaceable_media_package_lookup".to_string());
+    }
+    if model_name.starts_with("Modelica.Mechanics.MultiBody.")
+        && text.contains("Modelica.Mechanics.MultiBody.Parts.Body.world")
+    {
+        return Some("inner_outer_qualified_lookup".to_string());
+    }
+    if model_name.starts_with("Modelica.Media.") && text.contains("SymbolicSingular") {
+        return Some("media_property_initialization_singularity".to_string());
+    }
+    if model_name.starts_with("Modelica.Media.")
+        && text.contains("slice subscript `:` is unsupported")
+    {
+        return Some("media_property_vector_slice_observation".to_string());
+    }
+    None
 }
 
 /// Process a simple phase failure (NeedsInner, Instantiate, ToDae).
@@ -496,6 +589,9 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         initial_unbalanced_list: Vec::new(),
         non_sim_list: Vec::new(),
         error_categories: HashMap::new(),
+        error_code_counts: HashMap::new(),
+        unsupported_feature_counts: HashMap::new(),
+        unsupported_feature_counts_by_backend: HashMap::new(),
         undefined_vars: HashMap::new(),
         balance_distribution: HashMap::new(),
         model_results: Vec::new(),
@@ -506,6 +602,9 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         sim_timeout: 0,
         sim_balance_fail: 0,
         sim_attempted: 0,
+        ic_attempted: 0,
+        ic_ok: 0,
+        ic_solver_fail: 0,
         total_sim_seconds: 0.0,
         total_sim_build_seconds: 0.0,
         total_sim_run_seconds: 0.0,
@@ -520,6 +619,8 @@ fn phase_error_result(
     error: Option<String>,
     error_code: Option<String>,
 ) -> MslModelResult {
+    let error_code =
+        error_code.or_else(|| derived_phase_unsupported_feature_code(&name, error.as_deref()));
     MslModelResult {
         model_name: name,
         phase_reached: phase_reached.to_string(),
@@ -541,14 +642,36 @@ fn phase_error_result(
         initial_balance_deficit_after: None,
         initial_balance_ok: None,
         compile_seconds: None,
+        instantiate_seconds: None,
+        typecheck_seconds: None,
+        flatten_seconds: None,
+        dae_seconds: None,
+        compile_perf_profile_file: None,
+        ir_ast_file: None,
+        ir_flat_file: None,
         sim_status: None,
         sim_error: None,
+        sim_error_span: None,
+        ic_status: None,
+        ic_error: None,
+        ic_error_span: None,
+        ic_seconds: None,
         sim_seconds: None,
         sim_build_seconds: None,
+        ir_solve_seconds: None,
+        ir_solve_structural_dae_seconds: None,
+        ir_solve_lower_seconds: None,
+        sim_backend_build_seconds: None,
         sim_run_seconds: None,
         sim_wall_seconds: None,
         sim_trace_file: None,
+        sim_perf_profile_file: None,
         sim_trace_error: None,
+        ir_dae_file: None,
+        ir_solve_file: None,
+        ir_solve_error: None,
+        timeout_phase: None,
+        timeout_seconds: None,
     }
 }
 
@@ -564,7 +687,7 @@ fn is_non_sim_failure(phase: FailedPhase, error_code: Option<&str>) -> bool {
 pub(super) fn convert_phase_result(name: String, phase_result: PhaseResult) -> MslModelResult {
     match phase_result {
         PhaseResult::Success(result) => summarize_success_result(name, result.as_ref()),
-        PhaseResult::NeedsInner { missing_inners } => phase_error_result(
+        PhaseResult::NeedsInner { missing_inners, .. } => phase_error_result(
             name,
             "NeedsInner",
             Some(format!("Missing inners: {}", missing_inners.join(", "))),
@@ -593,24 +716,33 @@ pub(super) fn summarize_success_result(
     name: String,
     result: &rumoca_compile::compile::CompilationResult,
 ) -> MslModelResult {
-    let detail = rumoca_analysis_dae::balance_detail(&result.dae);
-    // Start from the exact DAE-balance basis (continuous unknowns/equations).
-    let scalar_unknowns =
-        (detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns) as i64;
-    let brk = detail.oc_break_edge_scalar_count as i64;
-    let available_oc_interface = detail.overconstrained_interface_count.max(0);
-    let base_without_iflow =
-        (detail.f_x_scalar + detail.algorithm_outputs + detail.when_eq_scalar) as i64;
-    let iflow_needed = (scalar_unknowns - base_without_iflow).max(0);
-    let effective_iflow = (detail.interface_flow_count as i64).min(iflow_needed);
-    let base_equations = base_without_iflow + effective_iflow;
-    let oc_needed = (scalar_unknowns - base_equations).max(0);
-    let effective_oc_interface = available_oc_interface.min(oc_needed);
-    let raw_equations = base_equations + effective_oc_interface;
-    let raw_balance = raw_equations - scalar_unknowns;
-    let effective_brk = brk.min(raw_balance.max(0));
-    let scalar_equations = raw_equations - effective_brk;
-    let init_check = initialization_balance_check(&result.dae, scalar_unknowns, scalar_equations);
+    let detail = rumoca_phase_dae::balance::balance_detail(&result.dae);
+    let discrete_scalars = active_discrete_scalar_count(&result.flat, &result.dae);
+    summarize_dae_success_fields(name, &result.dae, &detail, discrete_scalars)
+}
+
+pub(super) fn summarize_dae_success_result(
+    name: String,
+    result: &rumoca_compile::compile::DaeCompilationResult,
+) -> MslModelResult {
+    summarize_dae_success_fields(
+        name,
+        result.dae.as_ref(),
+        &result.balance_detail,
+        result.active_discrete_scalar_count,
+    )
+}
+
+fn summarize_dae_success_fields(
+    name: String,
+    dae: &Dae,
+    detail: &rumoca_phase_dae::balance::BalanceDetail,
+    discrete_scalars: i64,
+) -> MslModelResult {
+    let (scalar_equations, scalar_unknowns) = rumoca_phase_dae::balance::equations_unknowns(dae);
+    let scalar_equations = scalar_equations as i64;
+    let scalar_unknowns = scalar_unknowns as i64;
+    let init_check = initialization_balance_check(dae, scalar_unknowns, scalar_equations);
     let scalar_equations_with_init = scalar_equations + init_check.closure_used;
 
     // OMC checkModel() includes top-level input connector scalars as local
@@ -618,9 +750,16 @@ pub(super) fn summarize_success_result(
     // discrete outputs in local counts. It may also use initialization
     // equations to close local deficits. Include these in reported
     // comparison counts while preserving eq-var parity.
-    let input_scalars = result.dae.inputs.values().map(|v| v.size()).sum::<usize>() as i64;
-    let discrete_scalars = active_discrete_scalar_count(&result.flat, &result.dae);
-    let report_offset = input_scalars + discrete_scalars;
+    let input_scalars = dae
+        .variables
+        .inputs
+        .values()
+        .map(|v| v.size())
+        .sum::<usize>() as i64;
+    let balanced_discrete_scalars =
+        (detail.discrete_real_unknowns + detail.discrete_valued_unknowns) as i64;
+    let extra_discrete_report_scalars = (discrete_scalars - balanced_discrete_scalars).max(0);
+    let report_offset = input_scalars + extra_discrete_report_scalars;
     let scalar_unknowns_for_report = scalar_unknowns + report_offset;
     let scalar_equations_for_report = scalar_equations_with_init + report_offset;
     let balance_for_report = scalar_equations_for_report - scalar_unknowns_for_report;
@@ -629,13 +768,13 @@ pub(super) fn summarize_success_result(
         phase_reached: "Success".to_string(),
         error: None,
         error_code: None,
-        num_states: Some(result.dae.states.len()),
-        num_algebraics: Some(result.dae.algebraics.len()),
-        num_f_x: Some(result.dae.f_x.len()),
+        num_states: Some(dae.variables.states.len()),
+        num_algebraics: Some(dae.variables.algebraics.len()),
+        num_f_x: Some(dae.continuous.equations.len()),
         balance: Some(balance_for_report),
         is_balanced: Some(balance_for_report == 0),
-        is_partial: Some(result.dae.is_partial),
-        class_type: Some(result.dae.class_type.as_str().to_string()),
+        is_partial: Some(dae.metadata.is_partial),
+        class_type: Some(dae.metadata.class_type.as_str().to_string()),
         scalar_equations: usize::try_from(scalar_equations_for_report).ok(),
         scalar_unknowns: usize::try_from(scalar_unknowns_for_report).ok(),
         initial_equation_scalars: usize::try_from(init_check.initial_equation_scalars).ok(),
@@ -645,14 +784,36 @@ pub(super) fn summarize_success_result(
         initial_balance_deficit_after: Some(init_check.deficit_after),
         initial_balance_ok: Some(init_check.is_balanced()),
         compile_seconds: None,
+        instantiate_seconds: None,
+        typecheck_seconds: None,
+        flatten_seconds: None,
+        dae_seconds: None,
+        compile_perf_profile_file: None,
+        ir_ast_file: None,
+        ir_flat_file: None,
         sim_status: None,
         sim_error: None,
+        sim_error_span: None,
+        ic_status: None,
+        ic_error: None,
+        ic_error_span: None,
+        ic_seconds: None,
         sim_seconds: None,
         sim_build_seconds: None,
+        ir_solve_seconds: None,
+        ir_solve_structural_dae_seconds: None,
+        ir_solve_lower_seconds: None,
+        sim_backend_build_seconds: None,
         sim_run_seconds: None,
         sim_wall_seconds: None,
         sim_trace_file: None,
+        sim_perf_profile_file: None,
         sim_trace_error: None,
+        ir_dae_file: None,
+        ir_solve_file: None,
+        ir_solve_error: None,
+        timeout_phase: None,
+        timeout_seconds: None,
     }
 }
 
@@ -662,7 +823,15 @@ pub(super) fn convert_compile_outcome(
 ) -> MslModelResult {
     match compile_outcome {
         ModelCompileOutcome::Phase(phase_result) => convert_phase_result(name, phase_result),
+        ModelCompileOutcome::StrictDaeSuccess(result) => {
+            summarize_dae_success_result(name, &result)
+        }
+        ModelCompileOutcome::StrictDaeFailure(failure_summary) => {
+            let phase = strict_dae_failure_phase(&failure_summary);
+            phase_error_result(name, phase, Some(failure_summary), None)
+        }
         ModelCompileOutcome::StrictReport(report) => {
+            let report = *report;
             let failure_summary = report.failure_summary(usize::MAX);
             let error_code = report
                 .failures
@@ -677,11 +846,25 @@ pub(super) fn convert_compile_outcome(
                     convert_phase_result(name, phase_result)
                 }
                 Some(PhaseResult::Success(_)) | None => {
-                    phase_error_result(name, "Resolve", Some(failure_summary), error_code)
+                    let phase = strict_dae_failure_phase(&failure_summary);
+                    phase_error_result(name, phase, Some(failure_summary), error_code)
                 }
             }
         }
     }
+}
+
+fn strict_dae_failure_phase(failure_summary: &str) -> &'static str {
+    const PHASE_MARKERS: &[(&str, &str)] = &[
+        (" failed in Instantiate:", "Instantiate"),
+        (" failed in Typecheck:", "Typecheck"),
+        (" failed in Flatten:", "Flatten"),
+        (" failed in ToDae:", "ToDae"),
+    ];
+    PHASE_MARKERS
+        .iter()
+        .find_map(|(marker, phase)| failure_summary.contains(marker).then_some(*phase))
+        .unwrap_or("Resolve")
 }
 
 fn write_rendered_artifact<E>(
@@ -730,4 +913,22 @@ struct RenderSimContext<'a> {
     sim_solver_fail_live: &'a AtomicUsize,
     sim_balance_fail_live: &'a AtomicUsize,
     render_completed: &'a AtomicUsize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_dae_failure_phase_uses_reported_stage_marker() {
+        assert_eq!(
+            strict_dae_failure_phase("Modelica.A failed in Flatten: unsupported equation form"),
+            "Flatten"
+        );
+        assert_eq!(
+            strict_dae_failure_phase("Modelica.A failed in ToDae: unresolved reference"),
+            "ToDae"
+        );
+        assert_eq!(strict_dae_failure_phase("resolve diagnostics"), "Resolve");
+    }
 }

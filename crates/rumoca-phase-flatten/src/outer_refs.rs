@@ -1,6 +1,8 @@
 //! Helpers for redirecting outer-prefixed references to resolved inner prefixes (MLS §5.4).
 
-use indexmap::IndexMap;
+use indexmap::IndexSet;
+use rumoca_core::ExpressionRewriter;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rumoca_ir_flat as flat;
 
 /// Redirect outer-prefixed VarRef names in flat model structures (MLS §5.4).
@@ -14,6 +16,9 @@ pub(crate) fn redirect_outer_refs(
 ) {
     if outer_to_inner.is_empty() {
         return;
+    }
+    for var in flat.variables.values_mut() {
+        redirect_variable_attributes(var, outer_to_inner);
     }
     // Redirect VarRef names in equations.
     for eq in &mut flat.equations {
@@ -30,16 +35,16 @@ pub(crate) fn redirect_outer_refs(
     // Redirect algorithm output names.
     for algo in &mut flat.algorithms {
         for out in &mut algo.outputs {
-            redirect_var_name(out, outer_to_inner);
+            *out = redirect_reference(out, outer_to_inner);
         }
     }
     for algo in &mut flat.initial_algorithms {
         for out in &mut algo.outputs {
-            redirect_var_name(out, outer_to_inner);
+            *out = redirect_reference(out, outer_to_inner);
         }
     }
     // Redirect definite_roots.
-    let redirected_roots: std::collections::HashSet<String> = flat
+    let redirected_roots: IndexSet<String> = flat
         .definite_roots
         .iter()
         .map(|r| redirect_name_string(r, outer_to_inner).unwrap_or_else(|| r.clone()))
@@ -47,11 +52,38 @@ pub(crate) fn redirect_outer_refs(
     flat.definite_roots = redirected_roots;
 }
 
-/// Redirect a flat::VarName if it starts with an outer prefix.
-fn redirect_var_name(name: &mut flat::VarName, outer_to_inner: &IndexMap<String, String>) {
-    if let Some(new_name) = redirect_name_string(name.as_str(), outer_to_inner) {
-        *name = flat::VarName::new(new_name);
+fn redirect_variable_attributes(
+    var: &mut flat::Variable,
+    outer_to_inner: &IndexMap<String, String>,
+) {
+    for expr in [
+        &mut var.start,
+        &mut var.min,
+        &mut var.max,
+        &mut var.nominal,
+        &mut var.binding,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        redirect_flat_expr(expr, outer_to_inner);
     }
+}
+
+/// Redirect a rumoca_core::VarName if it starts with an outer prefix.
+fn redirect_var_name(name: &mut rumoca_core::VarName, outer_to_inner: &IndexMap<String, String>) {
+    if let Some(new_name) = redirect_name_string(name.as_str(), outer_to_inner) {
+        *name = rumoca_core::VarName::new(new_name);
+    }
+}
+
+fn redirect_reference(
+    name: &rumoca_core::Reference,
+    outer_to_inner: &IndexMap<String, String>,
+) -> rumoca_core::Reference {
+    redirect_name_string(name.as_str(), outer_to_inner)
+        .map(rumoca_core::Reference::new)
+        .unwrap_or_else(|| name.clone())
 }
 
 /// Check if a name starts with an outer prefix and return the redirected version.
@@ -68,79 +100,33 @@ fn redirect_name_string(name: &str, outer_to_inner: &IndexMap<String, String>) -
     None
 }
 
-/// Recursively redirect outer-prefixed VarRef names in a flat::Expression.
-fn redirect_flat_expr(expr: &mut flat::Expression, outer_to_inner: &IndexMap<String, String>) {
-    match expr {
-        flat::Expression::VarRef { name, subscripts } => {
-            redirect_var_name(name, outer_to_inner);
-            for sub in subscripts {
-                if let flat::Subscript::Expr(e) = sub {
-                    redirect_flat_expr(e, outer_to_inner);
-                }
-            }
+/// Recursively redirect outer-prefixed VarRef names in a rumoca_core::Expression.
+fn redirect_flat_expr(
+    expr: &mut rumoca_core::Expression,
+    outer_to_inner: &IndexMap<String, String>,
+) {
+    *expr = OuterRefRedirectRewriter { outer_to_inner }.rewrite_expression(expr);
+}
+
+struct OuterRefRedirectRewriter<'a> {
+    outer_to_inner: &'a IndexMap<String, String>,
+}
+
+impl ExpressionRewriter for OuterRefRedirectRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } = expr
+        {
+            return rumoca_core::Expression::VarRef {
+                name: redirect_reference(name, self.outer_to_inner),
+                subscripts: self.rewrite_subscripts(subscripts),
+                span: *span,
+            };
         }
-        flat::Expression::Binary { lhs, rhs, .. } => {
-            redirect_flat_expr(lhs, outer_to_inner);
-            redirect_flat_expr(rhs, outer_to_inner);
-        }
-        flat::Expression::Unary { rhs, .. } => {
-            redirect_flat_expr(rhs, outer_to_inner);
-        }
-        flat::Expression::BuiltinCall { args, .. }
-        | flat::Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                redirect_flat_expr(arg, outer_to_inner);
-            }
-        }
-        flat::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, body) in branches {
-                redirect_flat_expr(cond, outer_to_inner);
-                redirect_flat_expr(body, outer_to_inner);
-            }
-            redirect_flat_expr(else_branch, outer_to_inner);
-        }
-        flat::Expression::Array { elements, .. } | flat::Expression::Tuple { elements } => {
-            for elem in elements {
-                redirect_flat_expr(elem, outer_to_inner);
-            }
-        }
-        flat::Expression::Range { start, step, end } => {
-            redirect_flat_expr(start, outer_to_inner);
-            if let Some(s) = step {
-                redirect_flat_expr(s, outer_to_inner);
-            }
-            redirect_flat_expr(end, outer_to_inner);
-        }
-        flat::Expression::Index {
-            base, subscripts, ..
-        } => {
-            redirect_flat_expr(base, outer_to_inner);
-            for sub in subscripts {
-                if let flat::Subscript::Expr(e) = sub {
-                    redirect_flat_expr(e, outer_to_inner);
-                }
-            }
-        }
-        flat::Expression::FieldAccess { base, .. } => {
-            redirect_flat_expr(base, outer_to_inner);
-        }
-        flat::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            for index in indices {
-                redirect_flat_expr(&mut index.range, outer_to_inner);
-            }
-            redirect_flat_expr(expr, outer_to_inner);
-            if let Some(filter_expr) = filter.as_mut() {
-                redirect_flat_expr(filter_expr, outer_to_inner);
-            }
-        }
-        flat::Expression::Literal(_) | flat::Expression::Empty => {}
+        self.walk_expression(expr)
     }
 }
 
@@ -190,20 +176,20 @@ fn redirect_when_equations(
 mod tests {
     use super::*;
     use rumoca_core::Span;
-    use rumoca_ir_flat::{
-        Algorithm, ComprehensionIndex, Equation, EquationOrigin, Literal, WhenClause,
-    };
+    use rumoca_core::{ComprehensionIndex, Literal};
+    use rumoca_ir_flat::{Algorithm, Equation, EquationOrigin, WhenClause};
 
-    fn var_ref(name: &str) -> flat::Expression {
-        flat::Expression::VarRef {
-            name: flat::VarName::new(name),
+    fn var_ref(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
             subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
     #[test]
     fn test_redirect_name_string_handles_exact_and_prefixed_matches() {
-        let mut outer_to_inner = IndexMap::new();
+        let mut outer_to_inner = IndexMap::default();
         outer_to_inner.insert("outerBus".to_string(), "innerBus".to_string());
 
         assert_eq!(
@@ -228,10 +214,14 @@ mod tests {
             },
         ));
         flat.initial_equations.push(Equation::new(
-            flat::Expression::Range {
+            rumoca_core::Expression::Range {
                 start: Box::new(var_ref("outerBus.start")),
                 step: None,
-                end: Box::new(flat::Expression::Literal(Literal::Integer(1))),
+                end: Box::new(rumoca_core::Expression::Literal {
+                    value: Literal::Integer(1),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                span: rumoca_core::Span::DUMMY,
             },
             Span::DUMMY,
             EquationOrigin::Binding {
@@ -241,7 +231,7 @@ mod tests {
 
         let mut when_clause = WhenClause::new(var_ref("outerBus.trigger"), Span::DUMMY);
         when_clause.add_equation(flat::WhenEquation::Assign {
-            target: flat::VarName::new("outerBus.target"),
+            target: rumoca_core::VarName::new("outerBus.target"),
             value: var_ref("outerBus.value"),
             span: Span::DUMMY,
             origin: "test".to_string(),
@@ -250,36 +240,50 @@ mod tests {
 
         flat.algorithms.push(Algorithm {
             statements: Vec::new(),
-            outputs: vec![flat::VarName::new("outerBus.algOut")],
+            outputs: vec![rumoca_core::Reference::new("outerBus.algOut")],
             span: Span::DUMMY,
             origin: "test".to_string(),
         });
         flat.initial_algorithms.push(Algorithm {
             statements: Vec::new(),
-            outputs: vec![flat::VarName::new("outerBus.initOut")],
+            outputs: vec![rumoca_core::Reference::new("outerBus.initOut")],
             span: Span::DUMMY,
             origin: "test".to_string(),
         });
         flat.definite_roots.insert("outerBus.root".to_string());
+        let x_name = rumoca_core::VarName::new("x");
+        flat.variables.insert(
+            x_name.clone(),
+            flat::Variable {
+                name: x_name.clone(),
+                start: Some(var_ref("outerBus.startAttr")),
+                min: Some(var_ref("outerBus.minAttr")),
+                max: Some(var_ref("outerBus.maxAttr")),
+                nominal: Some(var_ref("outerBus.nominalAttr")),
+                binding: Some(var_ref("outerBus.binding")),
+                ..flat::Variable::default()
+            },
+        );
 
-        let mut outer_to_inner = IndexMap::new();
+        let mut outer_to_inner = IndexMap::default();
         outer_to_inner.insert("outerBus".to_string(), "innerBus".to_string());
         redirect_outer_refs(&mut flat, &outer_to_inner);
 
-        let flat::Expression::VarRef { name, .. } = &flat.equations[0].residual else {
+        let rumoca_core::Expression::VarRef { name, .. } = &flat.equations[0].residual else {
             panic!("expected var ref");
         };
         assert_eq!(name.as_str(), "innerBus.signal");
 
-        let flat::Expression::Range { start, .. } = &flat.initial_equations[0].residual else {
+        let rumoca_core::Expression::Range { start, .. } = &flat.initial_equations[0].residual
+        else {
             panic!("expected range expression");
         };
-        let flat::Expression::VarRef { name, .. } = start.as_ref() else {
+        let rumoca_core::Expression::VarRef { name, .. } = start.as_ref() else {
             panic!("expected range start var ref");
         };
         assert_eq!(name.as_str(), "innerBus.start");
 
-        let flat::Expression::VarRef { name, .. } = &flat.when_clauses[0].condition else {
+        let rumoca_core::Expression::VarRef { name, .. } = &flat.when_clauses[0].condition else {
             panic!("expected when condition var ref");
         };
         assert_eq!(name.as_str(), "innerBus.trigger");
@@ -288,7 +292,7 @@ mod tests {
             panic!("expected assign equation");
         };
         assert_eq!(target.as_str(), "innerBus.target");
-        let flat::Expression::VarRef { name, .. } = value else {
+        let rumoca_core::Expression::VarRef { name, .. } = value else {
             panic!("expected assign value var ref");
         };
         assert_eq!(name.as_str(), "innerBus.value");
@@ -300,38 +304,46 @@ mod tests {
         );
         assert!(flat.definite_roots.contains("innerBus.root"));
         assert!(!flat.definite_roots.contains("outerBus.root"));
+        let var = flat.variables.get(&x_name).expect("expected variable");
+        assert_var_ref(var.start.as_ref(), "innerBus.startAttr");
+        assert_var_ref(var.min.as_ref(), "innerBus.minAttr");
+        assert_var_ref(var.max.as_ref(), "innerBus.maxAttr");
+        assert_var_ref(var.nominal.as_ref(), "innerBus.nominalAttr");
+        assert_var_ref(var.binding.as_ref(), "innerBus.binding");
     }
 
     #[test]
     fn test_redirect_outer_refs_updates_array_comprehension_members() {
-        let mut expr = flat::Expression::ArrayComprehension {
+        let mut expr = rumoca_core::Expression::ArrayComprehension {
             expr: Box::new(var_ref("outerBus.value")),
             indices: vec![ComprehensionIndex {
                 name: "i".to_string(),
                 range: var_ref("outerBus.range"),
             }],
             filter: Some(Box::new(var_ref("outerBus.filter"))),
+            span: rumoca_core::Span::DUMMY,
         };
 
-        let mut outer_to_inner = IndexMap::new();
+        let mut outer_to_inner = IndexMap::default();
         outer_to_inner.insert("outerBus".to_string(), "innerBus".to_string());
         redirect_flat_expr(&mut expr, &outer_to_inner);
 
-        let flat::Expression::ArrayComprehension {
+        let rumoca_core::Expression::ArrayComprehension {
             expr,
             indices,
             filter,
+            ..
         } = expr
         else {
             panic!("expected array comprehension");
         };
 
-        let flat::Expression::VarRef { name, .. } = expr.as_ref() else {
+        let rumoca_core::Expression::VarRef { name, .. } = expr.as_ref() else {
             panic!("expected comprehension body var ref");
         };
         assert_eq!(name.as_str(), "innerBus.value");
 
-        let flat::Expression::VarRef { name, .. } = &indices[0].range else {
+        let rumoca_core::Expression::VarRef { name, .. } = &indices[0].range else {
             panic!("expected comprehension range var ref");
         };
         assert_eq!(name.as_str(), "innerBus.range");
@@ -339,9 +351,16 @@ mod tests {
         let Some(filter_expr) = filter else {
             panic!("expected comprehension filter");
         };
-        let flat::Expression::VarRef { name, .. } = filter_expr.as_ref() else {
+        let rumoca_core::Expression::VarRef { name, .. } = filter_expr.as_ref() else {
             panic!("expected comprehension filter var ref");
         };
         assert_eq!(name.as_str(), "innerBus.filter");
+    }
+
+    fn assert_var_ref(expr: Option<&rumoca_core::Expression>, expected: &str) {
+        let Some(rumoca_core::Expression::VarRef { name, .. }) = expr else {
+            panic!("expected var ref");
+        };
+        assert_eq!(name.as_str(), expected);
     }
 }

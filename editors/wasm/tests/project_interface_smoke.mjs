@@ -6,7 +6,7 @@ import { createProjectInterface } from "../src/modules/project_interface.js";
 
 const require = createRequire(import.meta.url);
 globalThis.RumocaVisualizationShared = require(
-  path.resolve("crates", "rumoca-sim", "web", "visualization_shared.js"),
+  path.resolve("crates", "rumoca-viz-web", "web", "visualization_shared.js"),
 );
 
 function assert(condition, message) {
@@ -15,7 +15,7 @@ function assert(condition, message) {
   }
 }
 
-function simulationPresetWritesLspCompatibleSidecars() {
+function simulationPresetWritesColocatedConfig() {
   const projectFs = createProjectFilesystem();
   projectFs.setActiveDocument("Ball.mo", "model Ball\nend Ball;\n");
   const projectInterface = createProjectInterface({ projectFs });
@@ -28,16 +28,8 @@ function simulationPresetWritesLspCompatibleSidecars() {
   assert(response?.ok === true, "expected setSimulationPreset ok response");
   const files = projectFs.listFiles().map((file) => file.path);
   assert(
-    files.includes(".rumoca/project.toml"),
-    "expected .rumoca/project.toml to be created",
-  );
-  assert(
-    files.some((path) => path.endsWith("/identity.toml")),
-    "expected LSP-compatible identity sidecar to be created",
-  );
-  assert(
-    files.some((path) => path.endsWith("/simulation.toml")),
-    "expected LSP-compatible simulation sidecar to be created",
+    files.includes("ball_sim.rum"),
+    `expected colocated Ball simulation config to be created, got ${files.join(", ")}`,
   );
 
   const config = projectInterface.execute("rumoca.project.getSimulationConfig", {
@@ -54,7 +46,7 @@ function simulationPresetWritesLspCompatibleSidecars() {
   );
 }
 
-function resetSimulationPresetRemovesSidecars() {
+function resetSimulationPresetClearsColocatedSimSection() {
   const projectFs = createProjectFilesystem();
   projectFs.setActiveDocument("Ball.mo", "model Ball\nend Ball;\n");
   const projectInterface = createProjectInterface({ projectFs });
@@ -68,16 +60,12 @@ function resetSimulationPresetRemovesSidecars() {
 
   const files = projectFs.listFiles().map((file) => file.path);
   assert(
-    !files.some((path) => path.endsWith("/simulation.toml")),
-    "expected simulation sidecars removed after reset",
-  );
-  assert(
-    !files.some((path) => path.endsWith("/identity.toml")),
-    "expected identity sidecar removed when no model settings remain",
+    files.includes("ball_sim.rum"),
+    "expected colocated model config to remain after reset",
   );
 }
 
-function parsesExistingLspProjectFiles() {
+function parsesExistingColocatedProjectFiles() {
   const projectFs = createProjectFilesystem();
   projectFs.loadFileEntries([
     {
@@ -85,50 +73,29 @@ function parsesExistingLspProjectFiles() {
       content: "model Ball\nend Ball;\n",
     },
     {
-      path: ".rumoca/project.toml",
+      path: "ball_sim.rum",
       content: [
-        "version = 1",
+        "version = 2",
+        "[model]",
+        'name = "Ball"',
         "",
-        "[simulation.defaults]",
+        "[sim]",
         'solver = "bdf"',
-        "t_end = 20.0",
-        "",
-      ].join("\n"),
-    },
-    {
-      path: ".rumoca/models/by-id/ball_12345678/identity.toml",
-      content: [
-        "version = 1",
-        'uuid = "ball_12345678"',
-        'qualified_name = "Ball"',
-        'class_name = "Ball"',
-        "last_seen_unix_ms = 1",
-        "",
-      ].join("\n"),
-    },
-    {
-      path: ".rumoca/models/by-id/ball_12345678/simulation.toml",
-      content: [
         "t_end = 30.0",
         "dt = 0.5",
         "",
-      ].join("\n"),
-    },
-    {
-      path: ".rumoca/models/by-id/ball_12345678/views.toml",
-      content: [
-        "[[views]]",
+        "[[plot.views]]",
         'id = "states_time"',
         'title = "States vs time"',
         'type = "timeseries"',
         'x = "time"',
         'y = ["x", "v"]',
         "",
-        "[[views]]",
+        "[[plot.views]]",
         'id = "viewer_3d"',
         'title = "Viewer"',
         'type = "3d"',
-        'script_path = ".rumoca/models/by-id/ball_12345678/viewer_3d.js"',
+        'script_path = "../shared/viewer_3d.js"',
         "",
       ].join("\n"),
     },
@@ -142,8 +109,8 @@ function parsesExistingLspProjectFiles() {
   const visualization = projectInterface.execute("rumoca.project.getVisualizationConfig", { model: "Ball" });
 
   assert(
-    simulation.defaults.solver === "bdf",
-    `expected defaults solver bdf, got ${simulation.defaults.solver}`,
+    simulation.effective.solver === "bdf",
+    `expected solver bdf, got ${simulation.effective.solver}`,
   );
   assert(
     simulation.effective.tEnd === 30,
@@ -155,10 +122,10 @@ function parsesExistingLspProjectFiles() {
   );
   assert(
     Array.isArray(visualization.views) && visualization.views.length === 2,
-    "expected visualization views to load from LSP-compatible sidecar",
+    "expected visualization views to load from colocated config",
   );
   assert(
-    visualization.views[1].scriptPath === ".rumoca/models/by-id/ball_12345678/viewer_3d.js",
+    visualization.views[1].scriptPath === "../shared/viewer_3d.js",
     `expected canonical scriptPath field, got ${visualization.views[1].scriptPath}`,
   );
 }
@@ -262,6 +229,10 @@ async function simulationCommandsUseRuntimeBridgeAndPersistSelectedModel() {
     runtimeRequests[1]?.payload?.payload?.solver === "auto",
     `expected startSimulation payload solver auto, got ${runtimeRequests[1]?.payload?.payload?.solver}`,
   );
+  assert(
+    !Object.prototype.hasOwnProperty.call(runtimeRequests[1]?.payload?.payload || {}, "projectSources"),
+    "expected startSimulation not to send projectSources unless explicitly provided",
+  );
 }
 
 function unifiedSettingsSurfaceUsesSharedModal() {
@@ -304,8 +275,55 @@ function unifiedSettingsSurfaceUsesSharedModal() {
   );
 }
 
-simulationPresetWritesLspCompatibleSidecars();
-resetSimulationPresetRemovesSidecars();
-parsesExistingLspProjectFiles();
+function languageProjectSyncStaysOnDiagnostics() {
+  const mainSource = readFileSync(
+    path.resolve("editors", "wasm", "src", "main.js"),
+    "utf8",
+  );
+  const match = mainSource.match(/function languageCommandNeedsProjectSources\(command\) \{\n([\s\S]*?)\n\}/);
+  assert(match, "expected languageCommandNeedsProjectSources helper in main.js");
+  const body = match[1];
+  assert(
+    body.includes("return command === 'rumoca.language.diagnostics';"),
+    "expected only diagnostics to sync workspace project sources",
+  );
+  for (const command of [
+    "rumoca.language.documentSymbols",
+    "rumoca.language.hover",
+    "rumoca.language.completion",
+    "rumoca.language.completionWithTiming",
+    "rumoca.language.definition",
+  ]) {
+    assert(
+      !body.includes(command),
+      `expected ${command} not to force full workspace source sync`,
+    );
+  }
+}
+
+function compileFailuresPreferRefreshedModelicaDiagnostics() {
+  const mainSource = readFileSync(
+    path.resolve("editors", "wasm", "src", "main.js"),
+    "utf8",
+  );
+  assert(
+    mainSource.includes("async function refreshDiagnosticsAfterCompileFailure(source)"),
+    "expected compile failures to refresh source diagnostics before rendering compile errors",
+  );
+  assert(
+    mainSource.includes("if (refreshedDiagnostics.hasErrorDiagnostics)"),
+    "expected span-bearing diagnostics to suppress duplicate compile-error bucket entries",
+  );
+  assert(
+    mainSource.includes("Compilation skipped due to diagnostics errors."),
+    "expected refreshed diagnostics to drive the standard diagnostics-error compile state",
+  );
+}
+
+simulationPresetWritesColocatedConfig();
+resetSimulationPresetClearsColocatedSimSection();
+parsesExistingColocatedProjectFiles();
 await simulationCommandsUseRuntimeBridgeAndPersistSelectedModel();
 unifiedSettingsSurfaceUsesSharedModal();
+languageProjectSyncStaysOnDiagnostics();
+compileFailuresPreferRefreshedModelicaDiagnostics();

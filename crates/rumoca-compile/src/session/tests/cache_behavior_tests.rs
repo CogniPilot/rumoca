@@ -612,15 +612,20 @@ fn test_compile_model_phases_uses_cache_until_session_invalidated() {
         .compile_results
         .get_mut("M")
         .expect("M should have compile cache entry after first compile");
-    cache_entry.result = PhaseResult::NeedsInner {
+    assert!(
+        matches!(cache_entry.result, CachedCompileResult::Success),
+        "successful query-backed compiles should not duplicate full Flat+DAE payloads"
+    );
+    cache_entry.result = CachedCompileResult::Full(PhaseResult::NeedsInner {
         missing_inners: vec!["cached-M".to_string()],
-    };
+        missing_spans: Vec::new(),
+    });
 
     let second = session
         .compile_model_phases("M")
         .expect("second compile should use cache");
     match second {
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             assert_eq!(missing_inners, vec!["cached-M".to_string()]);
         }
         other => panic!("expected cached result on second compile, got {other:?}"),
@@ -681,9 +686,10 @@ fn test_compile_cache_survives_unrelated_document_update() {
         .compile_results
         .get_mut("A")
         .expect("A should have compile cache entry after first compile");
-    cache_entry.result = PhaseResult::NeedsInner {
+    cache_entry.result = CachedCompileResult::Full(PhaseResult::NeedsInner {
         missing_inners: vec!["cached-A".to_string()],
-    };
+        missing_spans: Vec::new(),
+    });
 
     let b_update_err = session.update_document(
         "b.mo",
@@ -701,7 +707,7 @@ fn test_compile_cache_survives_unrelated_document_update() {
         .compile_model_phases("A")
         .expect("A should still compile after unrelated edit");
     match second {
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             assert_eq!(missing_inners, vec!["cached-A".to_string()]);
         }
         other => panic!("expected cached result after unrelated edit, got {other:?}"),
@@ -746,9 +752,10 @@ fn test_compile_cache_invalidates_when_dependency_changes() {
         .compile_results
         .get_mut("Child")
         .expect("Child should have compile cache entry after first compile");
-    cache_entry.result = PhaseResult::NeedsInner {
+    cache_entry.result = CachedCompileResult::Full(PhaseResult::NeedsInner {
         missing_inners: vec!["cached-Child".to_string()],
-    };
+        missing_spans: Vec::new(),
+    });
 
     let base_update_err = session.update_document(
         "base.mo",
@@ -802,35 +809,95 @@ fn test_compile_models_parallel_reuses_cache() {
         .compile_results
         .get_mut("A")
         .expect("A cache entry")
-        .result = PhaseResult::NeedsInner {
+        .result = CachedCompileResult::Full(PhaseResult::NeedsInner {
         missing_inners: vec!["cached-A".to_string()],
-    };
+        missing_spans: Vec::new(),
+    });
     session
         .query_state
         .dae
         .compile_results
         .get_mut("B")
         .expect("B cache entry")
-        .result = PhaseResult::NeedsInner {
+        .result = CachedCompileResult::Full(PhaseResult::NeedsInner {
         missing_inners: vec!["cached-B".to_string()],
-    };
+        missing_spans: Vec::new(),
+    });
 
     let second = session
         .compile_models_parallel(&["A", "B"])
         .expect("second parallel compile should hit cache");
     assert_eq!(second.len(), 2);
     match &second[0].1 {
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             assert_eq!(missing_inners, &vec!["cached-A".to_string()])
         }
         other => panic!("expected cached A result, got {other:?}"),
     }
     match &second[1].1 {
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             assert_eq!(missing_inners, &vec!["cached-B".to_string()])
         }
         other => panic!("expected cached B result, got {other:?}"),
     }
+}
+
+#[test]
+fn test_compiled_source_root_streaming_reuses_cache() {
+    let definition = rumoca_phase_parse::parse_to_ast(
+        r#"
+        model A
+          Real x(start=0);
+        equation
+          der(x) = 1;
+        end A;
+
+        model B
+          Real y(start=0);
+        equation
+          der(y) = 2;
+        end B;
+        "#,
+        "models.mo",
+    )
+    .expect("models should parse");
+    let source_root = CompiledSourceRoot::from_stored_definition(definition)
+        .expect("compiled source root should build");
+
+    let mut first = Vec::new();
+    source_root.compile_models_streaming(&["A", "B"], 1, |name, result| {
+        first.push((name, result));
+    });
+    assert_eq!(first.len(), 2);
+
+    {
+        let mut cache = source_root
+            .compile_cache
+            .lock()
+            .expect("compiled source-root cache poisoned");
+        *cache.get_mut("A").expect("A cache entry") = PhaseResult::NeedsInner {
+            missing_inners: vec!["cached-A".to_string()],
+            missing_spans: Vec::new(),
+        };
+        *cache.get_mut("B").expect("B cache entry") = PhaseResult::NeedsInner {
+            missing_inners: vec!["cached-B".to_string()],
+            missing_spans: Vec::new(),
+        };
+    }
+
+    let mut second = Vec::new();
+    source_root.compile_models_streaming(&["A", "B"], 1, |name, result| {
+        second.push((name, result));
+    });
+    assert_eq!(second.len(), 2);
+    assert!(matches!(
+        &second[0].1,
+        PhaseResult::NeedsInner { missing_inners, .. } if missing_inners == &vec!["cached-A".to_string()]
+    ));
+    assert!(matches!(
+        &second[1].1,
+        PhaseResult::NeedsInner { missing_inners, .. } if missing_inners == &vec!["cached-B".to_string()]
+    ));
 }
 
 #[test]
@@ -865,9 +932,10 @@ fn test_compile_model_strict_reachable_with_recovery_reuses_cache() {
         .compile_results
         .get_mut("P.A")
         .expect("P.A cache entry")
-        .result = PhaseResult::NeedsInner {
+        .result = CachedCompileResult::Full(PhaseResult::NeedsInner {
         missing_inners: vec!["cached-P.A".to_string()],
-    };
+        missing_spans: Vec::new(),
+    });
 
     let second = session.compile_model_strict_reachable_with_recovery("P.A");
     assert!(
@@ -875,7 +943,7 @@ fn test_compile_model_strict_reachable_with_recovery_reuses_cache() {
         "requested result should come from cache override"
     );
     match second.requested_result {
-        Some(PhaseResult::NeedsInner { missing_inners }) => {
+        Some(PhaseResult::NeedsInner { missing_inners, .. }) => {
             assert_eq!(missing_inners, vec!["cached-P.A".to_string()]);
         }
         other => panic!("expected cached strict requested result, got {other:?}"),
@@ -902,14 +970,19 @@ fn test_compile_model_strict_reachable_uncached_with_recovery_ignores_cache() {
 
     let first = session.compile_model_strict_reachable_uncached_with_recovery("P.A");
     assert!(first.requested_succeeded(), "P.A should compile");
+    assert!(
+        session.query_state.dae.compile_results.is_empty(),
+        "uncached strict compile should not populate the final compile-result cache"
+    );
 
     session.query_state.dae.compile_results.insert(
         "P.A".to_string(),
         CompileCacheEntry {
             fingerprint: [123; 32],
-            result: PhaseResult::NeedsInner {
+            result: CachedCompileResult::Full(PhaseResult::NeedsInner {
                 missing_inners: vec!["cached-P.A".to_string()],
-            },
+                missing_spans: Vec::new(),
+            }),
         },
     );
 

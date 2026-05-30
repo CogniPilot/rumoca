@@ -1,427 +1,202 @@
 # SPEC_0025: Pull Request Review Process
 
 ## Status
-ACTIVE
+ACCEPTED
 
 ## Summary
-Defines the mandatory review process for all pull requests to ensure code quality, maintainability, and compliance with project standards.
+Defines the mandatory PR review process and the rules that the GitHub PR
+template (`.github/pull_request_template.md`) must implement. The template
+is the canonical author/reviewer artifact; this spec defines the rules
+the template enforces.
 
 ## Motivation
 
-A consistent PR review process ensures:
-1. **Quality** - Defects are caught before merge
-2. **Consistency** - Code follows project conventions
-3. **Maintainability** - Code remains accessible to humans and AI assistants
-4. **Compliance** - Changes adhere to specifications and standards
+A consistent PR review process catches defects before merge, keeps code
+accessible to humans and AI assistants, and enforces spec compliance.
+Mirroring the PR template against this spec gives one source of truth.
 
-## Review Checklist
+## PR Template Alignment
 
-### 0. Code Size Budget (Required)
+The repository PR template at `.github/pull_request_template.md` MUST
+contain a section for every mandatory rule below. Section names in this
+spec mirror the template's section names so reviewers can map them
+one-to-one.
 
-Every PR must include an explicit size statement in the PR body:
+| SPEC_0025 §       | PR template section       |
+|-------------------|---------------------------|
+| §1 Summary        | "Summary"                 |
+| §2 Spec/MLS       | "Spec / MLS Alignment"    |
+| §3 Risk/Design    | "Risk and Design Notes"   |
+| §4 Testing        | "Testing"                 |
+| §5 Size Budget    | "Code Size Budget"        |
+| §6 Reviewer Gate  | "Reviewer Checklist"      |
 
-- `production_lines_added`: lines added to implementation code
-- `production_lines_deleted`: lines removed from implementation code
-- `test_lines_added`: lines added to tests
-- `test_lines_deleted`: lines removed from tests
-- `net_added_lines`: production + test net lines
-- `files_touched`: changed files count
-- `public_items_added`: `pub` item count increase
-- `public_items_removed`: `pub` item count decrease
+## Mandatory Rules
 
-Recommended line-diff command (for file/line deltas):
+### 1. Summary
 
-```bash
-git diff --numstat origin/main...HEAD
-```
+| Rule | Why |
+|---|---|
+| Describe user-facing behavior change | Reviewers and changelog readers need to know what shipped |
+| Cite the issue, spec, or design rule the PR addresses | Anchors the change against a recorded intent |
 
-Public API item deltas (`public_items_added` / `public_items_removed`) should be
-reported with a separate tool or script (e.g., public API comparison in CI or a
-manual check) and included with the PR body.
+### 2. Spec / MLS Alignment
 
-If `net_added_lines > 0`, the PR must include a justification and compression plan:
+| Rule | Why |
+|---|---|
+| List the relevant active spec(s) checked | SPEC_0029 §6, SPEC_0007, SPEC_0021, etc. — every change must touch known rules |
+| Cite the relevant MLS section(s) when Modelica semantics change | MLS is the language contract; changes without a citation are at risk of drifting |
+| Name the crate/phase owner | Localizes review attention to the responsible layer |
 
-- why each added major block was not removable,
-- which alternatives were evaluated,
-- what duplicate or legacy code was removed or replaced,
-- the planned follow-up cleanup if any lines remain uncompacted.
+Citation format in code:
 
-PRs for refactors or compatibility updates should target net-negative or near-zero net lines unless a migration rationale is written in review notes.
-
-### 1. Specification Compliance
-
-All changes MUST comply with existing specifications in `spec/`:
-
-| Check | Description |
-|-------|-------------|
-| SPEC_0001 | DefId system consistency |
-| SPEC_0002 | Scope tree structure |
-| SPEC_0008 | Phase error handling |
-| SPEC_0009 | Common crate usage |
-| SPEC_0017 | Ordered collections (IndexMap) |
-| SPEC_0019 | Array preservation |
-| SPEC_0020 | Model algorithm lowering + function algorithm preservation |
-| SPEC_0021 | Code complexity limits |
-| SPEC_0022 | MLS compiler compliance |
-| SPEC_0023 | Crate architecture |
-| SPEC_0024 | Diagnostic instrumentation |
-
-**Review questions:**
-- Does the change violate any existing specification?
-- If introducing new patterns, should a new spec be created?
-- Are spec references included in code comments where appropriate?
-- Does the change preserve the directed crate dependency graph (no crate-forwarding re-exports that bypass intended layer boundaries)?
-
-### 2. Modelica Language Standard (MLS) Compliance
-
-Changes affecting Modelica semantics MUST cite relevant MLS sections:
-
-**Required for:**
-- Parser changes
-- Type system modifications
-- Equation handling
-- Connection processing
-- Instantiation logic
-
-**Format:**
 ```rust
 // MLS §8.3.4: If-equations can contain any equation type in branches
 fn flatten_if_equation(...) { ... }
 ```
 
-**Review questions:**
-- Is the MLS reference accurate?
-- Does the implementation match MLS semantics?
-- Are edge cases from MLS considered?
+### 3. Risk and Design Notes
 
-### 3. Code Efficiency Review
+| Rule | Why |
+|---|---|
+| State the main correctness risk | Forces the author to think adversarially before merge |
+| State the main maintenance risk | Surfaces follow-up debt before the PR is closed |
+| Justify the crate(s) the change lives in | Prevents drift across crate boundaries (SPEC_0029) |
+| Document any new abstraction, public API, or migration path | New surface is permanent until removed; the PR is where the trade-off is recorded |
 
-Identify potential performance bottlenecks before they reach production:
+### 4. Testing
 
-**Checklist:**
+| Rule | Why |
+|---|---|
+| List the key commands run | Reviewers reproduce locally; absent commands signal untested paths |
+| Describe the behavior or regression covered | Tests must prove behavior, not just exercise code |
+| State commands NOT run and why | Honest disclosure beats silent gaps |
 
-| Check | Concern |
-|-------|---------|
-| Algorithm complexity | O(n) vs O(n²) vs O(n log n) |
-| Memory allocation | Unnecessary clones, Vec growth |
-| Collection choice | HashMap vs IndexMap vs Vec |
-| Iteration patterns | Nested loops over large data |
-| String operations | Repeated allocations |
-| Lock contention | Shared mutable state |
-
-**Review questions:**
-- What is the algorithmic complexity of new code paths?
-- Are there opportunities to avoid cloning?
-- Could this become a bottleneck as the codebase scales?
-- Are expensive operations inside hot loops?
-
-**Profiling:**
-For significant changes, consider running:
-```bash
-cargo flamegraph --bin rumoca -- --model LargeModel --json model.mo
-```
-
-### 4. Code Maintainability Review
-
-Ensure code remains accessible to both human developers and AI assistants.
-
-#### 4.1 Clippy Compliance
-
-All code MUST pass clippy with project-configured lints:
+Standard verification commands (all merged code MUST pass):
 
 ```bash
+cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace      # includes architecture_hardening_test + spec_budget_test
+cargo doc --no-deps
 ```
 
-**Zero tolerance for:**
-- `clippy::unwrap_used` in library code
-- `clippy::panic` in library code
-- `clippy::todo` in merged code
-- `clippy::dbg_macro` in merged code
-
-**No `#[allow]` for clippy lints:**
-- `#[allow(clippy::...)]` attributes MUST NOT be used to silence clippy warnings
-- Exception: Generated code (e.g., parser code from parol) may use `#[allow]`
-- If clippy flags an issue, the code MUST be refactored to comply
-- Complex algorithms should be broken into smaller helper functions
-
-#### 4.2 Code Complexity (SPEC_0021)
-
-| Metric | Target | Limit (clippy) |
-|--------|--------|-----------------|
-| Function lines | < 60 lines | 100 (SPEC_0021) |
-| Nesting depth | < 3 levels | 4 (SPEC_0021) |
-| Function parameters | < 5 | 7 (SPEC_0021) |
-
-**Review questions:**
-- Should this function be split?
-- Can nested logic be extracted?
-- Are there too many parameters (consider a struct)?
-- Does the change comply with `SPEC_0021` module decomposition rules (no `include!(...)` complexity/file-size bypass)?
-
-#### 4.3 Code Size Compression (mandatory for AI-assisted work)
-
-For each feature branch, reviewers must verify a compression pass happened after initial implementation.
-
-- any newly added abstraction is removing measurable duplication or replacing a wider block of code,
-- prefer fewer modules and fewer public exported concepts,
-- do not add abstraction layers unless they encode a real invariant or remove duplication,
-- prefer fewer modules and fewer exported concepts where possible,
-- avoid retaining compatibility code or legacy branches unless behind an explicit migration plan,
-- collapse duplicated adapters and helper wrappers when possible,
-- no one-time helper/ wrapper functions unless they materially improve correctness,
-- no trait/new typeclass added unless there are at least 2 real implementations,
-- no unit test for trivial pass-through behavior,
-- no speculative future-proofing or "extensibility" hooks,
-- no old/new code paths kept side-by-side without an explicit deprecation/removal policy,
-- dead code is removed at first pass, not left for later.
-
-Review questions:
-
-- Can this be done with fewer modules and fewer exported concepts?
-- Can this helper be deleted or merged into an existing path?
-- Can this be done by deleting/merging code in existing modules instead of adding new concepts?
-- Can this helper be inlined because it is single-use and not correctness-critical?
-- Can two newly introduced abstraction points be collapsed into one?
-- Are tests mostly regression and behavior-focused rather than pass-through assertions?
-- If a new public API is introduced, was reducing public surface considered first?
-
-#### 4.4 Code Clarity
-
-**Required:**
-- Clear, descriptive function names
-- Module-level documentation
-- Comments for non-obvious logic
-- Consistent naming conventions
-- Conformance to `SPEC_0029` import/re-export discipline and crate-boundary guardrails.
-
-**Avoid:**
-- Abbreviations without context
-- Magic numbers (use named constants)
-- Deep nesting
-- Long parameter lists
-
-**Review questions:**
-- Would a new contributor understand this code?
-- Could an AI assistant correctly modify this code?
-- Is the intent clear from reading the code?
-
-### 5. Test Coverage
-
-**Required tests:**
-- Unit tests for new functions
-- Integration tests for new features
-- Regression tests for bug fixes
-
-**MSL Compile/Balance Test (for compiler changes):**
-
-Changes to parsing, instantiation, flatten, or code generation phases MUST verify no regression in MSL compilation and balance rates:
+MSL gate (compiler / simulator changes):
 
 ```bash
-cargo test --release --package rumoca-test-msl --test msl_tests \
-  balance_pipeline::balance_pipeline_core::test_msl_all -- --ignored
+cargo test --release --package rumoca-test-msl --features msl-full-test \
+  --test msl_tests balance_pipeline::balance_pipeline_core::test_msl_all \
+  -- --nocapture
 ```
 
-**MSL Simulation + Scoreboard Freshness Gate (for compiler or simulator changes):**
-
-For compiler/simulator behavior changes, run the unified MSL gate once:
+ModelicaTest semantic gate (compiler / simulator semantic changes):
 
 ```bash
-cargo test --release --package rumoca-test-msl --test msl_tests \
-  balance_pipeline::balance_pipeline_core::test_msl_all -- --ignored
+RUMOCA_MSL_INCLUDE_MODELICATEST=1 \
+RUMOCA_MSL_REQUIRE_SELECTED_TARGETS_SUCCESS=1 \
+RUMOCA_MSL_SIM_TARGETS_FILE=crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json \
+RUMOCA_MSL_SIM_SET=full \
+cargo test --release --package rumoca-test-msl --features msl-full-test \
+  --test msl_tests balance_pipeline::balance_pipeline_core::test_msl_all \
+  -- --nocapture
 ```
 
-The gate is responsible for compile/balance/simulation, OMC parity refresh rules,
-trace comparison, and writing `target/msl/results/msl_quality_current.json`.
+### 4a. Test Workflow Interface
 
-Coverage-trim workflow and baseline handling are defined in:
-- `spec/SPEC_0030_COVERAGE_TRIM_PROCESS.md`
+Rust developer workflow MUST remain Cargo-native.
 
-If the run is approved and you want to update the committed baseline:
+- `cargo test` is the primary interface for tests. Developer tooling may wrap
+  Cargo commands for CI orchestration or repeatability, but it MUST NOT replace
+  or obscure the equivalent `cargo test` invocation.
+- Optional heavyweight test suites MUST be selectable through Cargo-native
+  mechanisms such as explicit test filters, package/test selection, or Cargo
+  features. Do not require user-facing bespoke environment variables solely to
+  decide whether a Rust test runs.
+- `rum` is a developer orchestration tool for repository maintenance,
+  verification bundles, packaging, editor/WASM checks, release workflows, and
+  avoiding ad-hoc shell/Python scripts. It MAY run Cargo test commands as part
+  of a larger workflow, but test ownership and documentation remain centered on
+  the underlying Cargo command.
+- The `rumoca` compiler binary is product-facing. It MUST NOT grow repository
+  test-runner subcommands.
+- The workspace MUST NOT use `#[ignore]` for parked or heavyweight tests. Tests
+  are either ordinary Cargo tests, Cargo-feature-selected heavyweight tests, or
+  deleted until they encode implemented behavior.
 
-```bash
-rum repo msl promote-quality-baseline
+| MSL rule | Why |
+|---|---|
+| Run the unified MSL gate for any parser, instantiate, flatten, ToDae, or sim change | One gate produces consistent OMC reference + sim trace + quality artifacts |
+| Run the separate ModelicaTest semantic gate for language-semantics changes when the MSL source-tree `ModelicaTest` package is available | ModelicaTest is an assertion-heavy semantic suite and must not be conflated with the curated MSL example target set |
+| Compare against `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` | Baseline is the regression bar |
+| Cumulative MSL stage counts (parse, flatten, DAE, IR-Solve, initial-condition solve, simulation) MUST NOT decrease on the fixed root-example baseline denominator | Early-stage pass-rate increases are always improvements, and later stages are compared against their own cumulative counts |
+| Balanced / OMC-agreement counts MUST NOT decrease | These are headline correctness and numerical-quality numbers |
+| Focused or limited MSL runs MUST mark quality snapshots as partial and partial snapshots MUST NOT be promoted | Prevents local-debug subsets from becoming the committed release baseline |
+| Trace-quality metrics MUST be gated against the committed baseline when OMC parity data is available | Prevents balanced-but-numerically-worse simulations from passing unnoticed |
+| Runtime speedup medians (system & wall) MUST NOT regress by > 20% | Tolerates noise without hiding real regressions |
+| Baseline updates require explicit `cargo xtask repo msl promote-quality-baseline` | Prevents silent baseline drift |
+| Coverage trim/gate updates follow `cargo xtask coverage {run,report,gate}` workflow | Coverage promotion is explicit only |
+
+### 5. Code Size Budget
+
+Every PR body MUST report these fields:
+
+```
+production_lines_added:
+production_lines_deleted:
+test_lines_added:
+test_lines_deleted:
+public_items_added:
+public_items_removed:
+files_touched:
+net_added_lines:
 ```
 
-Mandatory freshness checks before commit:
-- `target/msl/results/msl_results.json` `git_commit` MUST match `git rev-parse HEAD`
-- `target/msl/results/omc_reference.json`, `target/msl/results/omc_simulation_reference.json`, and `target/msl/results/sim_trace_comparison.json` MUST come from the same unified gate run window/target set
-- `target/msl/results/msl_quality_current.json` MUST be regenerated in the same run window
-- `target/msl/results/omc_simulation_reference.json` runtime ratio stats (`runtime_comparison.ratio_stats.system_ratio_both_success`, `runtime_comparison.ratio_stats.wall_ratio_both_success`) MUST be populated with `sample_count > 0` (not `null`)
-- `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` MUST only be updated via explicit promotion from `target/msl/results/msl_quality_current.json`
+| Rule | Why |
+|---|---|
+| Use `git diff --numstat origin/main...HEAD` for line deltas | Mechanical and reproducible |
+| Use a public-API diff tool/script for `public_items_*` | Public surface is hard to reverse; deltas must be visible |
+| `net_added_lines > 0` requires written justification + compression plan | Default bias is toward subtraction |
+| Refactors and compatibility changes target net-negative or near-zero | Refactor without a size win is suspect |
 
-Changes MUST be compared against the baseline in
-`crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` (baseline lineage is tracked in git history):
+### 6. Reviewer Gate
 
-- compiled model count must not decrease
-- balanced model count must not decrease
-- compile phase time must not increase
-- both-balanced agreement count (vs OMC) must not decrease
-- lucky-balance count (vs OMC) must not increase
-- rumoca-unbalanced-vs-OMC-balanced count must not increase
-- rumoca-failed-vs-OMC-succeeded count must not increase
-- overall balance rate may stay flat for an iteration, but must not regress versus baseline
-- runtime speedup medians (OMC/Rumoca) must not regress by more than 20% versus baseline for both system and wall ratios
-- fixes should be root-cause and generalizable; avoid model-specific balancing hacks that are not Modelica-spec compliant
+| Rule | Why |
+|---|---|
+| At least one approving review | Two-eyes on every merge |
+| All CI checks passing | CI gates (incl. `architecture_hardening_test`, `spec_budget_test`) are the non-negotiables |
+| No unresolved conversations | Open threads = open questions |
+| Branch is up-to-date with target | Avoids merge-on-stale surprises |
+| Signed-off-by on every commit (`git commit -s`) | DCO compliance |
+| No `Co-Authored-By` for AI assistants | The human author owns the code; AI assistance is human-authored work |
+| External material attributed and Apache-2.0 compatible | Provenance and license compliance |
+| No `#[allow(clippy::...)]` outside generated code | Allow signals an unfixed maintainability issue (SPEC_0021) |
+| No new trait without ≥ 2 concrete impls | Single-impl traits are noise |
+| No old/new code paths left side-by-side without explicit migration plan | Dead-but-alive code accretes |
 
-When a regression is unavoidable, the PR MUST include explicit justification and reviewer approval.
+### 7. Maintainability Quick Reference
 
-**Review questions:**
-- Are edge cases covered?
-- Do tests verify the fix, not just exercise the code?
-- Are tests deterministic (no flaky tests)?
-- Does the MSL balance test show any regression?
-- Does the PR report deltas versus `msl_quality_baseline.json` for compile, balance, simulation, and OMC parity stats?
-- Does the change improve or preserve general Modelica language-specification compliance (instead of special-casing one model)?
-- Was the committed baseline promoted from `target/msl/results/msl_quality_current.json` generated at the current commit?
+See SPEC_0021 for the authoritative function-length, nesting, and arg-count
+limits. The workspace `Cargo.toml` declares them as clippy `deny` lints, so
+they are enforced by §4 commands.
 
-### 6. Documentation
+## CI Enforcement
 
-**Required for:**
-- Public API changes
-- New features
-- Changed behavior
-
-**Format:**
-- Rust doc comments (`///`) for public items
-- Module-level docs (`//!`) for context
-- CHANGELOG entries for user-visible changes
-
-### 7. Contribution Provenance and License Compliance
-
-All contributions MUST be Apache-2.0 compliant.
-
-Requirements:
-- PRs MUST be reviewed for unattributed copied code.
-- External code/content (if any) MUST include clear attribution and source provenance.
-- External code/content (if any) MUST be verified as license-compatible with Apache-2.0.
-- If external material is adapted, the PR description MUST state what was used, from where, and under which license.
-
-## Review Process
-
-### 1. Author Checklist
-
-Before requesting review:
-- [ ] Repository hooks are installed (`rum repo hooks install`)
-- [ ] Local `pre-push` hook passes (fast quick gate: fmt, clippy, rustdoc, workspace tests)
-- [ ] Manual quick verification passes (`rum verify quick`)
-- [ ] `cargo fmt --check` passes
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes
-- [ ] `cargo test --workspace` passes
-- [ ] PR size budget submitted (`production_lines_added/deleted`, `test_lines_added/deleted`, `net_added_lines`)
-- [ ] MSL balance test shows no regression (for compiler changes)
-- [ ] For compiler/simulator behavior changes: ran `balance_pipeline::balance_pipeline_core::test_msl_all`
-- [ ] For compiler/simulator behavior changes: `target/msl/results/msl_results.json` `git_commit` matches `git rev-parse HEAD`
-- [ ] For compiler/simulator behavior changes: gate refreshed or reused consistent `omc_reference.json`, `omc_simulation_reference.json`, and `sim_trace_comparison.json` for the current target sets
-- [ ] For compiler/simulator behavior changes: regenerated `target/msl/results/msl_quality_current.json`
-- [ ] For compiler/simulator behavior changes: `omc_simulation_reference.json` has populated runtime ratio stats (`runtime_comparison.ratio_stats.system_ratio_both_success.sample_count > 0`, `runtime_comparison.ratio_stats.wall_ratio_both_success.sample_count > 0`)
-- [ ] For compiler/simulator behavior changes: if baseline changed, promoted with `rum repo msl promote-quality-baseline`
-- [ ] For coverage-trim or coverage-gate changes: followed `spec/SPEC_0030_COVERAGE_TRIM_PROCESS.md` (run, report, gate, and explicit promotion/rollback policy)
-- [ ] MSL metrics are compared against `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json`
-
-### 2. Reviewer Checklist
-
-#### 2.1 Code Size Reviewer Checklist
-
-- [ ] PR body contains all required size-budget fields.
-- [ ] If `net_added_lines` is positive, reviewer accepted justification and explicit compression follow-up.
-- [ ] New abstraction or helper usage is justified by measurable duplication reduction.
-- [ ] Old behavior paths were removed when equivalent new paths exist.
-- [ ] Test additions align with user-facing behavior, regression, or parser/semantic correctness.
-- [ ] No unattributed copied code is introduced
-- [ ] Any external material is attributed and verified Apache-2.0 compatible
-- [ ] Self-review completed
-- [ ] CHANGELOG updated (if applicable)
-
-### 3. Reviewer's General Checklist
-
-During review:
-- [ ] Specification compliance verified
-- [ ] Directed crate dependency graph preserved (no cross-layer crate-forwarding re-exports)
-- [ ] MLS compliance checked (if applicable)
-- [ ] Efficiency concerns addressed
-- [ ] Maintainability criteria met
-- [ ] Tests are adequate
-- [ ] MSL balance test shows no regression (for compiler changes)
-- [ ] For compiler/simulator behavior changes: committed baseline (if changed) was explicitly promoted from a fresh current-commit `target/msl/results/msl_quality_current.json`
-- [ ] For compiler/simulator behavior changes: unified gate produced a consistent `omc_reference.json`, `omc_simulation_reference.json`, and `sim_trace_comparison.json` for the same target sets and run window
-- [ ] PR includes baseline delta report from `msl_quality_baseline.json` for compile, balance, simulation, and OMC parity stats
-- [ ] Runtime speedup medians (OMC/Rumoca) do not regress by more than 20% versus baseline, or approved justification is included
-- [ ] Reviewed for unattributed copied code or unclear provenance
-- [ ] External material (if any) is attributed and Apache-2.0 compatible
-
-### 4. Merge Requirements
-
-- At least one approving review
-- All CI checks passing
-- No unresolved conversations
-- Branch is up-to-date with target
-- Provenance and Apache-2.0 license compliance confirmed
-
-### 5. Git Commit Guidelines
-
-**Signed-off-by Requirement:**
-- All commits MUST be signed off using `git commit -s`
-- This adds a `Signed-off-by: Name <email>` line indicating DCO compliance
-- Commits without Signed-off-by should be amended or rebased
-
-**AI Attribution:**
-- The human developer is responsible for all committed code
-- AI-assisted code is still human-authored code; the human reviewed and accepted it
-- Do NOT use `Co-Authored-By` headers for AI assistants
-
-## Automated Checks
-
-The following are enforced by CI:
-
-```yaml
-# .github/workflows/ci.yml
-- cargo fmt --check
-- cargo clippy --workspace --all-targets --all-features -- -D warnings
-- cargo test --workspace  # includes architecture_hardening_test guardrails (SPEC_0029)
-- cargo doc --no-deps
-```
-
-## Examples
-
-### Good PR Description
-
-```markdown
-## Summary
-Fix for-equation range evaluation when binding references sibling parameters.
-
-## Changes
-- Qualify binding expressions with parent prefix in `variables.rs`
-- Skip qualification for modification bindings (outer scope references)
-
-## MLS Reference
-MLS §8.3.3: For-equation ranges can use parameter expressions.
-
-## Testing
-- Added unit test for component parameter references
-- Verified with MSL 4.1.0 (reduced failures by 146)
-
-## Checklist
-- [x] Clippy clean
-- [x] Tests pass
-- [x] SPEC_0022 compliance verified
-```
-
-### Review Comment Examples
-
-**Efficiency concern:**
-> This nested loop over `all_variables` and `all_equations` is O(n*m). Consider building a lookup map first for O(n+m).
-
-**Maintainability concern:**
-> This function is 80 lines. Consider extracting the inner match arms into helper functions per SPEC_0021.
-
-**MLS concern:**
-> MLS §8.3.4 allows nested equations in if-branches. Does this implementation handle the recursive case?
+| Check | Enforces |
+|---|---|
+| `cargo fmt --check` | Format consistency |
+| `cargo clippy --all-features -- -D warnings` | SPEC_0021 maintainability limits |
+| `cargo test --workspace` | All tests including `architecture_hardening_test` (SPEC_0029) and `spec_budget_test` (SPEC_0000 §3) |
+| `cargo doc --no-deps` | Docs build without errors |
+| MSL gate (compiler/sim changes) | `msl_quality_baseline.json` regressions |
+| ModelicaTest semantic gate (semantic compiler/sim changes) | selected `ModelicaTest.*` models compile, simulate, and preserve assertion/parity diagnostics |
 
 ## References
 
-- SPEC_0021: Code Complexity Guidelines
-- SPEC_0022: MLS Compiler Compliance
-- SPEC_0024: Diagnostic Instrumentation
+- [`.github/pull_request_template.md`](../.github/pull_request_template.md) — canonical PR template
+- SPEC_0000 — spec writing and size guidelines
+- SPEC_0007 — IR pipeline contracts
+- SPEC_0008 — diagnostics and traceability
+- SPEC_0021 — code complexity limits
+- SPEC_0022 — MLS compiler compliance catalog
+- SPEC_0029 — crate boundaries
 - [Modelica Language Specification](https://specification.modelica.org/)
-- [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)

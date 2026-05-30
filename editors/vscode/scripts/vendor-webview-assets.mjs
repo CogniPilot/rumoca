@@ -3,8 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const root = process.cwd();
-const repoRoot = process.env.RUMOCA_REPO_ROOT
-  ? path.resolve(process.env.RUMOCA_REPO_ROOT)
+// During the staged VS Code smoke build, `cargo xtask` runs this from a temp
+// copy and leaves the real repo root in a marker file (argv can't thread
+// through the nested npm scripts). Fall back to the in-repo layout otherwise.
+const repoRootMarker = path.join(root, '.rumoca-smoke-repo-root');
+const repoRoot = fs.existsSync(repoRootMarker)
+  ? path.resolve(fs.readFileSync(repoRootMarker, 'utf8').trim())
   : path.resolve(root, '..', '..');
 const outDir = path.join(root, 'media', 'vendor');
 

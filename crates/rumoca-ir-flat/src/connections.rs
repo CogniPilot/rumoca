@@ -6,8 +6,9 @@
 //! - Spanning trees for equation generation
 
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::DefId;
+use rumoca_core::{DefId, Span};
 use serde::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
 
 use crate::VarName;
 
@@ -75,10 +76,12 @@ impl ConnectionSet {
 }
 
 /// A variable in a connection set.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectedVariable {
     /// Globally unique variable name.
     pub name: VarName,
+    /// Source span for the connector variable declaration, when available.
+    pub source_span: Span,
     /// Whether this is an inside connector (sign = +1) or outside connector (sign = -1).
     /// MLS §9.2: "The sign is +1 for inside connectors and -1 for outside connectors."
     pub is_inside: bool,
@@ -86,11 +89,30 @@ pub struct ConnectedVariable {
     pub connector_type: Option<DefId>,
 }
 
+impl PartialEq for ConnectedVariable {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.is_inside == other.is_inside
+            && self.connector_type == other.connector_type
+    }
+}
+
+impl Eq for ConnectedVariable {}
+
+impl Hash for ConnectedVariable {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.is_inside.hash(state);
+        self.connector_type.hash(state);
+    }
+}
+
 impl ConnectedVariable {
     /// Create a new connected variable.
     pub fn new(name: VarName, is_inside: bool) -> Self {
         Self {
             name,
+            source_span: Span::DUMMY,
             is_inside,
             connector_type: None,
         }
@@ -232,6 +254,8 @@ pub struct GraphEdge {
     pub a: VarName,
     /// Second endpoint.
     pub b: VarName,
+    /// Source span for the `connect`, `Connections.branch`, or related graph-edge source.
+    pub source_span: Span,
     /// Whether this edge is in the spanning tree.
     pub in_spanning_tree: bool,
 }
@@ -242,6 +266,7 @@ impl GraphEdge {
         Self {
             a,
             b,
+            source_span: Span::DUMMY,
             in_spanning_tree: false,
         }
     }
@@ -297,6 +322,8 @@ pub struct SpanningTreeEdge {
     pub parent: VarName,
     /// Child node.
     pub child: VarName,
+    /// Source span for the graph edge that produced this spanning-tree edge.
+    pub source_span: Span,
     /// Whether this was a required edge (from Connections.branch()).
     pub required: bool,
 }
@@ -307,6 +334,7 @@ impl SpanningTreeEdge {
         Self {
             parent,
             child,
+            source_span: Span::DUMMY,
             required,
         }
     }
@@ -325,6 +353,8 @@ pub struct EqualityConstraint {
     /// The function that computes the residual.
     /// Prototype: `function equalityConstraint(a: T, b: T) -> Real[n]`
     pub function_def: Option<DefId>,
+    /// Source span for the equalityConstraint declaration or use site.
+    pub source_span: Span,
     /// Number of scalar constraint equations (n in `Real[n]`).
     pub num_constraints: usize,
 }
@@ -334,6 +364,7 @@ impl EqualityConstraint {
     pub fn new(num_constraints: usize) -> Self {
         Self {
             function_def: None,
+            source_span: Span::DUMMY,
             num_constraints,
         }
     }

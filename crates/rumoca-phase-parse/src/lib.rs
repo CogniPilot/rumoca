@@ -154,23 +154,23 @@ impl SyntaxFile {
 /// This keeps Parol coupling in the parser crate while the canonical token
 /// definition lives in `rumoca-ir-core` (re-exported by `rumoca-ir-ast`).
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ParserToken(pub rumoca_ir_core::Token);
+pub struct ParserToken(pub rumoca_core::Token);
 
 impl Deref for ParserToken {
-    type Target = rumoca_ir_core::Token;
+    type Target = rumoca_core::Token;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl From<ParserToken> for rumoca_ir_core::Token {
+impl From<ParserToken> for rumoca_core::Token {
     fn from(value: ParserToken) -> Self {
         value.0
     }
 }
 
-impl From<&ParserToken> for rumoca_ir_core::Token {
+impl From<&ParserToken> for rumoca_core::Token {
     fn from(value: &ParserToken) -> Self {
         value.0.clone()
     }
@@ -180,9 +180,9 @@ impl TryFrom<&parol_runtime::Token<'_>> for ParserToken {
     type Error = anyhow::Error;
 
     fn try_from(value: &parol_runtime::Token<'_>) -> std::result::Result<Self, Self::Error> {
-        Ok(Self(rumoca_ir_core::Token {
+        Ok(Self(rumoca_core::Token {
             text: Arc::from(value.text()),
-            location: rumoca_ir_core::Location {
+            location: rumoca_core::Location {
                 start_line: value.location.start_line,
                 start_column: value.location.start_column,
                 end_line: value.location.end_line,
@@ -765,7 +765,9 @@ end Test;
         };
 
         match rhs {
-            ast::Expression::ArrayIndex { base, subscripts } => {
+            ast::Expression::ArrayIndex {
+                base, subscripts, ..
+            } => {
                 assert_eq!(subscripts.len(), 1, "expected one subscript");
                 assert!(
                     matches!(&**base, ast::Expression::Parenthesized { .. }),
@@ -820,7 +822,7 @@ end Test;
         };
 
         match rhs {
-            ast::Expression::FieldAccess { base, field } => {
+            ast::Expression::FieldAccess { base, field, .. } => {
                 assert_eq!(field, "re");
                 assert!(
                     matches!(&**base, ast::Expression::Parenthesized { .. }),
@@ -939,12 +941,51 @@ end Test;
             ast::Expression::Terminal {
                 terminal_type,
                 token,
+                ..
             } => {
                 assert_eq!(*terminal_type, TerminalType::Bool);
                 assert_eq!(&*token.text, "false");
             }
             other => panic!("expected Boolean default terminal start, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_declaration_binding_does_not_replace_start_attribute() {
+        let source = r#"
+model Test
+  Real x = 5;
+end Test;
+"#;
+
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+        let x = model.components.get("x").expect("x should exist");
+
+        assert!(
+            matches!(
+                &x.start,
+                ast::Expression::Terminal {
+                    terminal_type: TerminalType::UnsignedReal,
+                    token,
+                    ..
+                } if &*token.text == "0.0"
+            ),
+            "declaration binding must not be copied into start, got {:?}",
+            x.start
+        );
+        assert!(
+            matches!(
+                &x.binding,
+                Some(ast::Expression::Terminal {
+                    terminal_type: TerminalType::UnsignedInteger,
+                    token,
+                    ..
+                }) if &*token.text == "5"
+            ),
+            "declaration binding should remain in binding field, got {:?}",
+            x.binding
+        );
     }
 
     #[test]
@@ -1126,6 +1167,7 @@ end Test;
             ast::Expression::Terminal {
                 terminal_type,
                 token,
+                ..
             } => {
                 assert_eq!(*terminal_type, ast::TerminalType::UnsignedReal);
                 assert_eq!(&*token.text, "1.25");
@@ -1139,6 +1181,67 @@ end Test;
         assert!(
             v.modifications.contains_key("start"),
             "Alias start modifier should still be preserved for non-builtins"
+        );
+    }
+
+    #[test]
+    fn test_nested_class_inner_outer_prefixes_are_preserved() {
+        let source = r#"
+model Test
+    inner model LocalInner
+        Real x;
+    end LocalInner;
+
+    outer model LocalOuter
+        Real x;
+    end LocalOuter;
+end Test;
+"#;
+
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+
+        let local_inner = model
+            .classes
+            .get("LocalInner")
+            .expect("inner nested class should exist");
+        assert!(local_inner.is_inner);
+        assert!(!local_inner.is_outer);
+
+        let local_outer = model
+            .classes
+            .get("LocalOuter")
+            .expect("outer nested class should exist");
+        assert!(local_outer.is_outer);
+        assert!(!local_outer.is_inner);
+    }
+
+    #[test]
+    fn test_element_level_redeclare_prefix_is_preserved() {
+        let source = r#"
+model Test
+    redeclare model Local
+        Real x;
+    end Local;
+
+    redeclare Test.Local c;
+end Test;
+"#;
+
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+
+        assert!(
+            model
+                .classes
+                .get("Local")
+                .is_some_and(|class| class.is_redeclare)
+        );
+        assert!(
+            model
+                .components
+                .get("c")
+                .is_some_and(|component| component.is_redeclare)
         );
     }
 

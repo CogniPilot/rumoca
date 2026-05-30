@@ -68,7 +68,7 @@ impl ResolveError {
     pub fn duplicate_definition(name: impl Into<String>, span: Span) -> Self {
         Self::DuplicateDefinition {
             name: name.into(),
-            span: span.to_source_span(),
+            span: rumoca_core::span_to_source_span(span),
         }
     }
 
@@ -76,7 +76,7 @@ impl ResolveError {
     pub fn undefined_reference(name: impl Into<String>, span: Span) -> Self {
         Self::UndefinedReference {
             name: name.into(),
-            span: span.to_source_span(),
+            span: rumoca_core::span_to_source_span(span),
         }
     }
 
@@ -84,7 +84,7 @@ impl ResolveError {
     pub fn base_class_not_found(name: impl Into<String>, span: Span) -> Self {
         Self::BaseClassNotFound {
             name: name.into(),
-            span: span.to_source_span(),
+            span: rumoca_core::span_to_source_span(span),
         }
     }
 
@@ -92,7 +92,7 @@ impl ResolveError {
     pub fn circular_inheritance(name: impl Into<String>, span: Span) -> Self {
         Self::CircularInheritance {
             name: name.into(),
-            span: span.to_source_span(),
+            span: rumoca_core::span_to_source_span(span),
         }
     }
 }

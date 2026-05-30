@@ -300,11 +300,21 @@ fn collect_diagnostic_targets_from_class(
     }
 }
 
-fn should_compile_for_diagnostics(_class: &ast::ClassDef, qualified_name: &str) -> bool {
+fn should_compile_for_diagnostics(class: &ast::ClassDef, qualified_name: &str) -> bool {
     if is_builtin_operator(qualified_name) {
         return false;
     }
-    true
+    // MLS §4.7/Appendix B: packages, connectors, records, and types are valid
+    // class definitions, but they are not standalone simulation systems. LSP
+    // compile diagnostics should avoid treating those declarations as model
+    // targets while still checking their nested runnable classes/functions.
+    matches!(
+        class.class_type,
+        rumoca_compile::parsing::ir_core::ClassType::Model
+            | rumoca_compile::parsing::ir_core::ClassType::Block
+            | rumoca_compile::parsing::ir_core::ClassType::Class
+            | rumoca_compile::parsing::ir_core::ClassType::Function
+    )
 }
 
 fn is_builtin_operator(name: &str) -> bool {
@@ -334,12 +344,24 @@ fn common_diagnostic_to_lsp(
         severity: Some(severity),
         code: diag.code.clone().map(NumberOrString::String),
         source: Some("rumoca".to_string()),
-        message: summarize_message(&diag.message),
+        message: diagnostic_message_with_notes(diag),
         related_information: None,
         tags: None,
         code_description: None,
         data: Some(json!({ "precise_range": precise_range })),
     })
+}
+
+fn diagnostic_message_with_notes(diag: &CommonDiagnostic) -> String {
+    let mut message = summarize_message(&diag.message);
+    for note in &diag.notes {
+        let note = summarize_message(note);
+        if !note.is_empty() {
+            message.push_str("\nnote: ");
+            message.push_str(&note);
+        }
+    }
+    message
 }
 
 fn preferred_range(
@@ -790,7 +812,8 @@ fn lint_to_diagnostic(msg: &LintMessage) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_compile::compile::core::{PrimaryLabel, Span};
+    use rumoca_compile::compile::core::PrimaryLabel;
+    use rumoca_compile::parsing::Span;
 
     #[test]
     fn parse_diagnostics_include_precise_range_and_compact_message() {
@@ -804,22 +827,6 @@ mod tests {
         assert_eq!(first.severity, Some(DiagnosticSeverity::ERROR));
         assert_ne!(first.range.start.line, 0, "expected non-zero parse range");
         assert!(!first.message.contains('\n'), "message should be compact");
-    }
-
-    #[test]
-    fn parse_diagnostics_missing_semicolon_before_equation_has_nonzero_range() {
-        let source = "model Ball\n  Real x(start=0);\n  Real v(start=1)\nequation\n  der(x) = v;\nend Ball;\n";
-        let diagnostics = compute_diagnostics(source, "input.mo", None);
-        assert!(!diagnostics.is_empty(), "expected parse diagnostics");
-        let first = &diagnostics[0];
-        assert!(
-            first.range.start.line > 0 || first.range.start.character > 0,
-            "expected range recovered away from line 1 when possible"
-        );
-        assert!(
-            !first.message.contains("`equation` is a reserved keyword"),
-            "should avoid reserved-keyword mislabel for section transition"
-        );
     }
 
     #[test]
@@ -937,12 +944,59 @@ mod tests {
             .expect("expected valid AST for within-qualified package");
         let targets = collect_diagnostic_target_names(&ast);
         assert!(
-            targets.contains(&"Modelica.Blocks.Continuous".to_string()),
-            "expected top-level target with within prefix, got: {targets:?}"
-        );
-        assert!(
-            targets.contains(&"Modelica.Blocks.Continuous.PID".to_string()),
+            targets == ["Modelica.Blocks.Continuous.PID"],
             "expected nested target with within prefix, got: {targets:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_skip_package_and_connector_targets_in_circuit_example() {
+        let source = r#"
+package Circuit
+connector Pin
+  Real v;
+  flow Real i;
+end Pin;
+
+model TwoPin
+  Pin p, n;
+  Real v;
+  Real i;
+equation
+  v = p.v - n.v;
+  i = p.i;
+  p.i + n.i = 0;
+end TwoPin;
+
+model Ground
+  Pin p;
+equation
+  p.v = 0;
+end Ground;
+
+model Test
+  Ground gnd;
+  Pin p;
+equation
+  connect(p, gnd.p);
+end Test;
+end Circuit;
+"#;
+        let ast = parse_source_to_ast_with_errors(source, "input.mo")
+            .expect("expected valid AST for circuit package");
+        assert_eq!(
+            collect_diagnostic_target_names(&ast),
+            ["Circuit.TwoPin", "Circuit.Ground", "Circuit.Test"]
+        );
+
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("Circuit.Pin")
+                    && !diag.message.contains("Circuit could not be compiled")),
+            "package/connector declarations should not produce standalone compile diagnostics: {diagnostics:?}"
         );
     }
 
@@ -1344,6 +1398,21 @@ end EOTest;
     }
 
     #[test]
+    fn common_diagnostics_preserve_notes_in_lsp_message() {
+        let source = "model M\n  Real x;\nend M;\n";
+        let mut source_map = SourceMap::new();
+        let source_id = source_map.add("input.mo", source);
+        let span = Span::from_offsets(source_id, 8, 9);
+        let diag = CommonDiagnostic::warning("WT001", "main warning", PrimaryLabel::new(span))
+            .with_note("secondary explanation");
+
+        let converted = common_diagnostic_to_lsp(&diag, source, "input.mo", Some(&source_map))
+            .expect("expected diagnostic conversion");
+        assert!(converted.message.contains("main warning"));
+        assert!(converted.message.contains("note: secondary explanation"));
+    }
+
+    #[test]
     fn diagnostics_without_labels_use_top_left_range() {
         let source = "model M\n  Real x;\nend M;\n";
         let diag =
@@ -1731,239 +1800,10 @@ end Ball;
             diagnostics
         );
     }
-
-    #[test]
-    fn unknown_nested_builtin_modifier_is_reported_via_lsp_compile_diagnostics() {
-        let source = r#"
-model Plane
-  Real x, y, theta;
-equation
-  der(x) = cos(theta);
-  der(y) = sin(theta);
-  der(theta) = 1;
-end Plane;
-
-model Sim
-  Plane p1(x.star88t = 1.0), p2(y.start = 10.0);
-end Sim;
-"#;
-        let mut session = Session::default();
-        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
-        assert!(
-            diagnostics.iter().any(|d| {
-                d.code == Some(NumberOrString::String("ET001".to_string()))
-                    && d.message.contains("unknown modifier `x.star88t`")
-            }),
-            "expected unknown nested builtin modifier diagnostic, got: {:?}",
-            diagnostics
-        );
-    }
-
-    #[test]
-    fn global_resolution_failures_are_not_duplicated_per_class_target() {
-        let source = r#"
-model A
-  Real x;
-equation
-  x = 1;
-end A;
-
-model B
-  Real y;
-equation
-  y = 2;
-end B;
-"#;
-        let mut session = Session::default();
-        session
-            .add_document(
-                "other.mo",
-                r#"
-model A
-  Real z;
-equation
-  z = 3;
-end A;
-"#,
-            )
-            .expect("preload parses");
-        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
-        let dup_class_diags = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("Duplicate class 'A'"))
-            .count();
-        assert_eq!(
-            dup_class_diags, 1,
-            "expected one global merge diagnostic, got: {:?}",
-            diagnostics
-        );
-    }
-
-    #[test]
-    fn unresolved_source_root_diagnostics_do_not_panic_or_leak_into_active_file() {
-        let source = "model M\n  Real x;\nequation\n  der(x) = -x;\nend M;\n";
-        let mut session = Session::default();
-
-        let mut broken_source_root = String::from("model BrokenLib\n  Real x;\nequation\n");
-        for _ in 0..256 {
-            broken_source_root.push_str("  // filler\n");
-        }
-        broken_source_root.push_str("  x = unknownLibFn(1.0);\nend BrokenLib;\n");
-
-        session
-            .add_document("lib_with_error.mo", &broken_source_root)
-            .expect("source-root preload should parse");
-
-        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
-        assert!(
-            diagnostics
-                .iter()
-                .all(|diag| !diag.message.contains("unknownLibFn")),
-            "source-root-only unresolved diagnostics should be filtered out for active file: {:?}",
-            diagnostics
-        );
-    }
-
-    #[test]
-    fn unknown_builtin_modifier_is_reported_with_preloaded_source_root_session() {
-        let source = r#"
-model M
-  Real x(startd = 1.0);
-equation
-  der(x) = -x;
-end M;
-"#;
-        let mut session = Session::default();
-        session
-            .add_document(
-                "Lib.mo",
-                r#"
-package Lib
-  model Helper
-    Real y;
-  equation
-    y = 1.0;
-  end Helper;
-end Lib;
-"#,
-            )
-            .expect("source-root preload should parse");
-
-        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
-        assert!(
-            diagnostics.iter().any(|d| {
-                d.code == Some(NumberOrString::String("ET001".to_string()))
-                    && d.message.contains("unknown modifier `startd`")
-            }),
-            "expected unknown-modifier diagnostic with preloaded source roots, got: {:?}",
-            diagnostics
-        );
-    }
-
-    #[test]
-    fn unknown_builtin_modifier_startdt_is_reported_with_preloaded_source_root_session() {
-        let source = r#"
-model M
-  Real x(startdt=1.0);
-equation
-  der(x) = -x;
-end M;
-"#;
-        let mut session = Session::default();
-        session
-            .add_document(
-                "Lib.mo",
-                r#"
-package Lib
-  model Helper
-    Real y;
-  equation
-    y = 1.0;
-  end Helper;
-end Lib;
-"#,
-            )
-            .expect("source-root preload should parse");
-
-        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
-        assert!(
-            diagnostics.iter().any(|d| {
-                d.code == Some(NumberOrString::String("ET001".to_string()))
-                    && d.message.contains("unknown modifier `startdt`")
-            }),
-            "expected unknown-modifier diagnostic with preloaded source roots, got: {:?}",
-            diagnostics
-        );
-    }
-
-    #[test]
-    fn unknown_builtin_modifier_highlights_modifier_identifier() {
-        let source = "model M\n  Real x(sltart=0);\nequation\n  der(x) = -x;\nend M;\n";
-        let mut session = Session::default();
-        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
-        let unknown_modifier = diagnostics
-            .iter()
-            .find(|d| d.message.contains("unknown modifier `sltart`"))
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected unknown-modifier diagnostic, got: {:?}",
-                    diagnostics
-                )
-            });
-        assert_eq!(unknown_modifier.range.start.line, 1);
-        assert_eq!(unknown_modifier.range.start.character, 9);
-        assert_eq!(unknown_modifier.range.end.line, 1);
-        assert_eq!(unknown_modifier.range.end.character, 15);
-        assert_eq!(
-            unknown_modifier.data,
-            Some(json!({ "precise_range": true }))
-        );
-    }
-
-    #[test]
-    fn builtin_modifier_type_mismatch_is_reported_via_lsp_compile_diagnostics() {
-        let source = r#"
-model M
-  Boolean df = true;
-  Real v(start = df);
-equation
-  der(v) = -v;
-end M;
-"#;
-        let mut session = Session::default();
-        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
-        assert!(
-            diagnostics.iter().any(|d| {
-                d.code == Some(NumberOrString::String("ET002".to_string()))
-                    && d.message.contains("modifier `start`")
-                    && d.message.contains("expects `Real`, found `Boolean`")
-            }),
-            "expected modifier type mismatch diagnostic, got: {:?}",
-            diagnostics
-        );
-    }
-
-    #[test]
-    fn unknown_operator_record_member_is_reported_via_lsp_compile_diagnostics() {
-        let source = "operator record SE2\n  Real x;\n  Real y;\n  Real theta;\nend SE2;\n\nmodel Test2\n  SE2 pose;\nequation\n  der(pose.x) = 1;\n  der(pose.y) = 0;\n  der(pose.z) = 2;\nend Test2;\n";
-        let mut session = Session::default();
-        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
-        let unknown_member = diagnostics
-            .iter()
-            .find(|diag| {
-                diag.code == Some(NumberOrString::String("ET001".to_string()))
-                    && diag.message.contains("unknown member `z`")
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected ET001 unknown-member diagnostic, got: {:?}",
-                    diagnostics
-                )
-            });
-        assert_eq!(unknown_member.range.start.line, 11);
-        assert_eq!(unknown_member.range.start.character, 11);
-        assert_eq!(unknown_member.range.end.line, 11);
-        assert_eq!(unknown_member.range.end.character, 12);
-        assert_eq!(unknown_member.data, Some(json!({ "precise_range": true })));
-    }
 }
+
+#[cfg(test)]
+mod compile_extra_tests;
+
+#[cfg(test)]
+mod extra_tests;

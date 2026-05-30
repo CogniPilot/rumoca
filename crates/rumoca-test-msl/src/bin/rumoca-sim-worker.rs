@@ -4,12 +4,21 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
 
 use clap::Parser;
 use rumoca_compile::compile::Dae;
-use rumoca_sim::{SimError, build_simulation, run_prepared_simulation};
+use rumoca_sim::{
+    BuildSimulationTimings, SimError, build_simulation_with_stage_timing_and_solve_model,
+    check_prepared_initialization, run_prepared_simulation,
+};
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
+
+const DEFAULT_WORKER_STACK_MB: usize = 64;
 
 #[derive(Debug, Parser)]
 #[command(name = "rumoca-sim-worker")]
@@ -20,7 +29,7 @@ struct Args {
         required_unless_present = "dae_stdin",
         conflicts_with = "dae_stdin"
     )]
-    dae_bin: Option<PathBuf>,
+    dae_json: Option<PathBuf>,
     #[arg(long)]
     dae_stdin: bool,
     #[arg(long)]
@@ -45,9 +54,13 @@ struct Args {
     output_samples: usize,
     #[arg(long, default_value_t = 10.0)]
     timeout_seconds: f64,
+    #[arg(long, default_value_t = 10.0)]
+    solve_timeout_seconds: f64,
     /// Optional path for a per-model simulation trace JSON artifact.
     #[arg(long)]
     trace_json: Option<PathBuf>,
+    #[arg(long)]
+    solve_ir_json: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -55,15 +68,33 @@ struct SimWorkerResult {
     status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ic_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ic_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ic_seconds: Option<f64>,
     sim_seconds: f64,
     #[serde(default)]
     sim_build_seconds: f64,
+    #[serde(default)]
+    ir_solve_seconds: f64,
+    #[serde(default)]
+    ir_solve_structural_dae_seconds: f64,
+    #[serde(default)]
+    ir_solve_lower_seconds: f64,
+    #[serde(default)]
+    sim_backend_build_seconds: f64,
     #[serde(default)]
     sim_run_seconds: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trace_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trace_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    solve_ir_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    solve_ir_error: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -130,11 +161,141 @@ fn sim_worker_result(
     SimWorkerResult {
         status: status.to_string(),
         error,
+        ic_status: None,
+        ic_error: None,
+        ic_seconds: None,
         sim_seconds,
         sim_build_seconds,
+        ir_solve_seconds: 0.0,
+        ir_solve_structural_dae_seconds: 0.0,
+        ir_solve_lower_seconds: 0.0,
+        sim_backend_build_seconds: 0.0,
         sim_run_seconds,
         trace_file: None,
         trace_error: None,
+        solve_ir_file: None,
+        solve_ir_error: None,
+    }
+}
+
+fn with_build_timings(
+    mut result: SimWorkerResult,
+    build_timings: BuildSimulationTimings,
+) -> SimWorkerResult {
+    result.ir_solve_seconds = build_timings.ir_solve_seconds;
+    result.ir_solve_structural_dae_seconds = build_timings.ir_solve_structural_dae_seconds;
+    result.ir_solve_lower_seconds = build_timings.ir_solve_lower_seconds;
+    result.sim_backend_build_seconds = build_timings.backend_build_seconds;
+    result
+}
+
+#[derive(Debug, Clone)]
+struct ActiveWorkerStage {
+    name: String,
+    started_at: Instant,
+    timeout_seconds: f64,
+}
+
+#[derive(Clone)]
+struct WorkerStageWatchdog {
+    active_stage: Arc<Mutex<Option<ActiveWorkerStage>>>,
+}
+
+struct WorkerStageWatchdogHandle {
+    active_stage: Arc<Mutex<Option<ActiveWorkerStage>>>,
+    done: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl WorkerStageWatchdogHandle {
+    fn start(result_json: PathBuf) -> (Self, WorkerStageWatchdog) {
+        let active_stage = Arc::new(Mutex::new(None));
+        let done = Arc::new(AtomicBool::new(false));
+        let worker_active_stage = Arc::clone(&active_stage);
+        let worker_done = Arc::clone(&done);
+        let worker = std::thread::spawn(move || {
+            run_worker_stage_watchdog_loop(worker_active_stage, worker_done, result_json);
+        });
+        (
+            Self {
+                active_stage: Arc::clone(&active_stage),
+                done,
+                worker: Some(worker),
+            },
+            WorkerStageWatchdog { active_stage },
+        )
+    }
+}
+
+impl Drop for WorkerStageWatchdogHandle {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        if let Ok(mut active_stage) = self.active_stage.lock() {
+            *active_stage = None;
+        }
+    }
+}
+
+impl WorkerStageWatchdog {
+    fn enter(&self, name: impl Into<String>, timeout_seconds: f64) {
+        let mut active_stage = self
+            .active_stage
+            .lock()
+            .expect("worker stage watchdog mutex should not be poisoned");
+        *active_stage = Some(ActiveWorkerStage {
+            name: name.into(),
+            started_at: Instant::now(),
+            timeout_seconds,
+        });
+    }
+
+    fn clear(&self) {
+        let mut active_stage = self
+            .active_stage
+            .lock()
+            .expect("worker stage watchdog mutex should not be poisoned");
+        *active_stage = None;
+    }
+}
+
+fn run_worker_stage_watchdog_loop(
+    active_stage: Arc<Mutex<Option<ActiveWorkerStage>>>,
+    done: Arc<AtomicBool>,
+    result_json: PathBuf,
+) {
+    while !done.load(Ordering::Relaxed) {
+        let timed_out = {
+            let active_stage = active_stage
+                .lock()
+                .expect("worker stage watchdog mutex should not be poisoned");
+            active_stage.as_ref().and_then(|stage| {
+                let elapsed = stage.started_at.elapsed().as_secs_f64();
+                (elapsed >= stage.timeout_seconds).then(|| (stage.clone(), elapsed))
+            })
+        };
+        if let Some((stage, elapsed)) = timed_out {
+            let mut result = sim_worker_result(
+                "sim_timeout",
+                Some(format!(
+                    "{} timeout after {:.3}s (limit {:.3}s)",
+                    stage.name, elapsed, stage.timeout_seconds
+                )),
+                elapsed,
+                elapsed,
+                0.0,
+            );
+            if stage.name.starts_with("ir_solve") {
+                result.ir_solve_seconds = elapsed;
+            } else {
+                result.sim_run_seconds = elapsed;
+            }
+            let _ = write_result(&result_json, &result);
+            std::process::exit(0);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 
@@ -295,27 +456,29 @@ fn write_trace_json(trace_path: &Path, model_name: &str, result: &SimResult) -> 
     Ok(())
 }
 
-fn parse_dae_binary(mut reader: impl Read, source_label: &str) -> Result<Dae, String> {
+fn parse_dae_json(mut reader: impl Read, source_label: &str) -> Result<Dae, String> {
     let mut payload = Vec::new();
     reader
         .read_to_end(&mut payload)
-        .map_err(|e| format!("failed to read dae_bin '{source_label}': {e}"))?;
+        .map_err(|e| format!("failed to read DAE JSON '{source_label}': {e}"))?;
 
     let source = source_label.to_string();
     let thread_source = source.clone();
     let parser = std::thread::Builder::new()
-        .name("rumoca-sim-worker-binary-parse".to_string())
+        .name("rumoca-sim-worker-dae-json-parse".to_string())
         .stack_size(32 * 1024 * 1024)
         .spawn(move || {
-            bincode::deserialize::<Dae>(&payload)
-                .map_err(|e| format!("failed to parse dae_bin '{thread_source}': {e}"))
+            let mut deserializer = serde_json::Deserializer::from_slice(&payload);
+            deserializer.disable_recursion_limit();
+            <Dae as serde::Deserialize>::deserialize(&mut deserializer)
+                .map_err(|e| format!("failed to parse DAE JSON '{thread_source}': {e}"))
         })
-        .map_err(|e| format!("failed to spawn dae_bin parser thread for '{source}': {e}"))?;
+        .map_err(|e| format!("failed to spawn DAE JSON parser thread for '{source}': {e}"))?;
 
     match parser.join() {
         Ok(result) => result,
         Err(panic_info) => Err(format!(
-            "failed to parse dae_bin '{source}': parser thread panicked: {}",
+            "failed to parse DAE JSON '{source}': parser thread panicked: {}",
             panic_message(panic_info)
         )),
     }
@@ -340,32 +503,21 @@ fn effective_output_dt(args: &Args) -> Option<f64> {
         .or_else(|| sample_grid_dt(args))
 }
 
-fn run(args: &Args) -> SimWorkerResult {
-    let dae = match if args.dae_stdin {
-        parse_dae_binary(BufReader::new(std::io::stdin().lock()), "stdin")
+fn read_dae_from_args(args: &Args) -> Result<Dae, String> {
+    if args.dae_stdin {
+        parse_dae_json(BufReader::new(std::io::stdin().lock()), "stdin")
     } else {
-        let dae_bin = args
-            .dae_bin
+        let dae_json = args
+            .dae_json
             .as_ref()
-            .expect("clap should require dae_bin unless dae_stdin is set");
-        File::open(dae_bin)
-            .map_err(|e| format!("failed to open dae_bin '{}': {e}", dae_bin.display()))
-            .and_then(|file| parse_dae_binary(BufReader::new(file), &dae_bin.display().to_string()))
-    } {
-        Ok(dae) => dae,
-        Err(err) => {
-            return SimWorkerResult {
-                status: "sim_solver_fail".to_string(),
-                error: Some(err),
-                sim_seconds: 0.0,
-                sim_build_seconds: 0.0,
-                sim_run_seconds: 0.0,
-                trace_file: None,
-                trace_error: None,
-            };
-        }
-    };
+            .expect("clap should require dae_json unless dae_stdin is set");
+        File::open(dae_json)
+            .map_err(|e| format!("failed to open DAE JSON '{}': {e}", dae_json.display()))
+            .and_then(|file| parse_dae_json(BufReader::new(file), &dae_json.display().to_string()))
+    }
+}
 
+fn sim_options_from_args(args: &Args) -> SimOptions {
     let dt = effective_output_dt(args);
     let solver_mode = SimSolverMode::from_external_name(&args.solver);
     let mut opts = SimOptions {
@@ -382,26 +534,208 @@ fn run(args: &Args) -> SimWorkerResult {
     if let Some(atol) = args.atol.filter(|v| v.is_finite() && *v > 0.0) {
         opts.atol = atol;
     }
+    opts
+}
+
+type WorkerRunOk = (SimResult, BuildSimulationTimings, f64, f64, f64);
+type WorkerRunErr = (SimError, BuildSimulationTimings, f64, WorkerErrorPhase);
+
+#[derive(Debug, Clone, Copy)]
+enum WorkerErrorPhase {
+    Build,
+    Initialization { ic_seconds: f64 },
+    Simulation { sim_run_seconds: f64 },
+}
+
+fn write_solve_ir_json(path: &Path, model: &rumoca_ir_solve::SolveModel) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "failed to create Solve IR directory '{}': {e}",
+                parent.display()
+            )
+        })?;
+    }
+    let file = File::create(path)
+        .map_err(|e| format!("failed to create Solve IR JSON '{}': {e}", path.display()))?;
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer(&mut writer, model).map_err(|e| {
+        format!(
+            "failed to serialize Solve IR JSON '{}': {e}",
+            path.display()
+        )
+    })?;
+    writer
+        .write_all(b"\n")
+        .map_err(|e| format!("failed to finalize Solve IR JSON '{}': {e}", path.display()))
+}
+
+fn run_simulation_pipeline(
+    dae: &Dae,
+    opts: &SimOptions,
+    watchdog: &WorkerStageWatchdog,
+    solve_timeout_seconds: f64,
+    sim_timeout_seconds: f64,
+    solve_ir_json: Option<&Path>,
+) -> Result<WorkerRunOk, WorkerRunErr> {
+    let build_started = Instant::now();
+    let mut build_timings = BuildSimulationTimings::default();
+    let mut solve_ir_error: Option<String> = None;
+    let prepared = build_simulation_with_stage_timing_and_solve_model(
+        dae,
+        opts,
+        |stage| {
+            let timeout_seconds = if stage.starts_with("ir_solve") {
+                solve_timeout_seconds
+            } else {
+                sim_timeout_seconds
+            };
+            watchdog.enter(stage, timeout_seconds);
+        },
+        |solve_model| {
+            if let Some(path) = solve_ir_json
+                && let Err(err) = write_solve_ir_json(path, solve_model)
+            {
+                solve_ir_error = Some(err);
+            }
+        },
+    );
+    let sim_build_seconds = build_started.elapsed().as_secs_f64();
+    let (prepared, timings) = prepared.map_err(|err| {
+        (
+            err,
+            build_timings,
+            sim_build_seconds,
+            WorkerErrorPhase::Build,
+        )
+    })?;
+    build_timings = timings;
+    if let Some(error) = solve_ir_error {
+        return Err((
+            SimError::SolveIr(error),
+            build_timings,
+            sim_build_seconds,
+            WorkerErrorPhase::Build,
+        ));
+    }
+
+    let ic_started = Instant::now();
+    watchdog.enter("sim_initialization", sim_timeout_seconds);
+    check_prepared_initialization(&prepared).map_err(|err| {
+        (
+            err,
+            build_timings,
+            sim_build_seconds,
+            WorkerErrorPhase::Initialization {
+                ic_seconds: ic_started.elapsed().as_secs_f64(),
+            },
+        )
+    })?;
+    let ic_seconds = ic_started.elapsed().as_secs_f64();
+
+    let run_started = Instant::now();
+    watchdog.enter("sim", sim_timeout_seconds);
+    let result = run_prepared_simulation(&prepared);
+    let sim_run_seconds = run_started.elapsed().as_secs_f64();
+    watchdog.clear();
+    result
+        .map(|result| {
+            (
+                result,
+                build_timings,
+                sim_build_seconds,
+                sim_run_seconds,
+                ic_seconds,
+            )
+        })
+        .map_err(|err| {
+            (
+                err,
+                build_timings,
+                sim_build_seconds,
+                WorkerErrorPhase::Simulation { sim_run_seconds },
+            )
+        })
+}
+
+fn classify_worker_error(
+    err: SimError,
+    elapsed: f64,
+    build_timings: BuildSimulationTimings,
+    sim_build_seconds: f64,
+    phase: WorkerErrorPhase,
+) -> SimWorkerResult {
+    let sim_run_seconds = match phase {
+        WorkerErrorPhase::Simulation { sim_run_seconds } => sim_run_seconds,
+        WorkerErrorPhase::Build | WorkerErrorPhase::Initialization { .. } => 0.0,
+    };
+    let mut worker_result = with_build_timings(
+        classify_solver_error(err, elapsed, sim_build_seconds, sim_run_seconds),
+        build_timings,
+    );
+    match phase {
+        WorkerErrorPhase::Build => {}
+        WorkerErrorPhase::Initialization { ic_seconds } => {
+            worker_result.ic_status = Some("ic_solver_fail".to_string());
+            worker_result.ic_error = worker_result.error.clone();
+            worker_result.ic_seconds = Some(ic_seconds);
+        }
+        WorkerErrorPhase::Simulation { .. } => {
+            worker_result.ic_status = Some("ic_ok".to_string());
+        }
+    }
+    worker_result
+}
+
+fn run(args: &Args) -> SimWorkerResult {
+    let (_watchdog_handle, watchdog) = WorkerStageWatchdogHandle::start(args.result_json.clone());
+    let dae = match read_dae_from_args(args) {
+        Ok(dae) => dae,
+        Err(err) => {
+            return SimWorkerResult {
+                status: "sim_solver_fail".to_string(),
+                error: Some(err),
+                ic_status: None,
+                ic_error: None,
+                ic_seconds: None,
+                sim_seconds: 0.0,
+                sim_build_seconds: 0.0,
+                ir_solve_seconds: 0.0,
+                ir_solve_structural_dae_seconds: 0.0,
+                ir_solve_lower_seconds: 0.0,
+                sim_backend_build_seconds: 0.0,
+                sim_run_seconds: 0.0,
+                trace_file: None,
+                trace_error: None,
+                solve_ir_file: None,
+                solve_ir_error: None,
+            };
+        }
+    };
+
+    let opts = sim_options_from_args(args);
 
     let sim_start = Instant::now();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let build_started = Instant::now();
-        let prepared = build_simulation(&dae, &opts);
-        let sim_build_seconds = build_started.elapsed().as_secs_f64();
-        let prepared = prepared.map_err(|err| (err, sim_build_seconds, 0.0))?;
-
-        let run_started = Instant::now();
-        let result = run_prepared_simulation(&prepared);
-        let sim_run_seconds = run_started.elapsed().as_secs_f64();
-        result
-            .map(|result| (result, sim_build_seconds, sim_run_seconds))
-            .map_err(|err| (err, sim_build_seconds, sim_run_seconds))
+        run_simulation_pipeline(
+            &dae,
+            &opts,
+            &watchdog,
+            args.solve_timeout_seconds,
+            args.timeout_seconds,
+            args.solve_ir_json.as_deref(),
+        )
     }));
+    watchdog.clear();
     let elapsed = sim_start.elapsed().as_secs_f64();
     match outcome {
-        Ok(Ok((result, sim_build_seconds, sim_run_seconds))) => {
-            let mut worker_result =
-                classify_success(&result, elapsed, sim_build_seconds, sim_run_seconds);
+        Ok(Ok((result, build_timings, sim_build_seconds, sim_run_seconds, ic_seconds))) => {
+            let mut worker_result = with_build_timings(
+                classify_success(&result, elapsed, sim_build_seconds, sim_run_seconds),
+                build_timings,
+            );
+            worker_result.ic_status = Some("ic_ok".to_string());
+            worker_result.ic_seconds = Some(ic_seconds);
             if worker_result.status == "sim_ok"
                 && let Some(trace_path) = args.trace_json.as_deref()
             {
@@ -414,18 +748,43 @@ fn run(args: &Args) -> SimWorkerResult {
                     }
                 }
             }
+            if let Some(path) = args.solve_ir_json.as_deref()
+                && path.is_file()
+            {
+                worker_result.solve_ir_file = Some(path.to_string_lossy().to_string());
+            }
             worker_result
         }
-        Ok(Err((err, sim_build_seconds, sim_run_seconds))) => {
-            classify_solver_error(err, elapsed, sim_build_seconds, sim_run_seconds)
+        Ok(Err((err, build_timings, sim_build_seconds, sim_run_seconds))) => {
+            let mut result = classify_worker_error(
+                err,
+                elapsed,
+                build_timings,
+                sim_build_seconds,
+                sim_run_seconds,
+            );
+            if let Some(path) = args.solve_ir_json.as_deref()
+                && path.is_file()
+            {
+                result.solve_ir_file = Some(path.to_string_lossy().to_string());
+            }
+            result
         }
-        Err(panic_info) => sim_worker_result(
-            "sim_solver_fail",
-            Some(format!("panic: {}", panic_message(panic_info))),
-            elapsed,
-            0.0,
-            0.0,
-        ),
+        Err(panic_info) => {
+            let mut result = sim_worker_result(
+                "sim_solver_fail",
+                Some(format!("panic: {}", panic_message(panic_info))),
+                elapsed,
+                0.0,
+                0.0,
+            );
+            if let Some(path) = args.solve_ir_json.as_deref()
+                && path.is_file()
+            {
+                result.solve_ir_file = Some(path.to_string_lossy().to_string());
+            }
+            result
+        }
     }
 }
 
@@ -437,17 +796,50 @@ fn write_result(path: &PathBuf, result: &SimWorkerResult) -> std::io::Result<()>
     Ok(())
 }
 
+fn worker_stack_size_bytes() -> usize {
+    DEFAULT_WORKER_STACK_MB.saturating_mul(1024 * 1024)
+}
+
+fn run_on_worker_stack(args: Args) -> anyhow::Result<()> {
+    let result_json = args.result_json.clone();
+    let stack_size = worker_stack_size_bytes();
+    let handle = std::thread::Builder::new()
+        .name("rumoca-sim-worker-main".to_string())
+        .stack_size(stack_size)
+        .spawn(move || {
+            let result = run(&args);
+            write_result(&args.result_json, &result)
+        })?;
+
+    match handle.join() {
+        Ok(result) => result?,
+        Err(panic_info) => {
+            let result = sim_worker_result(
+                "sim_solver_fail",
+                Some(format!("panic: {}", panic_message(panic_info))),
+                0.0,
+                0.0,
+                0.0,
+            );
+            write_result(&result_json, &result)?;
+        }
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let result = run(&args);
-    write_result(&args.result_json, &result)?;
-    Ok(())
+    run_on_worker_stack(args)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, effective_output_dt, parse_dae_binary, sample_grid_dt};
+    use super::{
+        Args, WorkerErrorPhase, classify_worker_error, effective_output_dt, parse_dae_json,
+        sample_grid_dt,
+    };
     use rumoca_compile::compile::{Dae, Session, SessionConfig};
+    use rumoca_sim::{BuildSimulationTimings, SimError};
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -458,13 +850,18 @@ mod tests {
             .and_then(|node| node.get("op"))
             .cloned()
             .expect("base add expression should have Binary.op");
+        let rhs_one = base_add_expr
+            .get("Binary")
+            .and_then(|node| node.get("rhs"))
+            .cloned()
+            .expect("base add expression should have Binary.rhs");
 
         for _ in 0..depth {
             expr = json!({
                 "Binary": {
                     "op": add_op.clone(),
                     "lhs": expr,
-                    "rhs": {"Literal": {"Integer": 1}}
+                    "rhs": rhs_one.clone()
                 }
             });
         }
@@ -473,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_dae_binary_handles_deeply_nested_expression_trees() {
+    fn parse_dae_json_handles_deeply_nested_expression_trees() {
         let source = "model DeepBinary\n  Real x(start = 0);\nequation\n  der(x) = 0 + 1;\nend DeepBinary;\n";
         let mut session = Session::new(SessionConfig::default());
         session
@@ -487,15 +884,15 @@ mod tests {
         dae_json["f_x"][0]["rhs"]["Binary"]["rhs"] = deep_add_expr_json(&base_add_expr, 512);
         let deep_dae: Dae =
             serde_json::from_value(dae_json).expect("deserialize mutated deep DAE value");
-        let payload = bincode::serialize(&deep_dae).expect("encode deep DAE binary payload");
+        let payload = serde_json::to_vec(&deep_dae).expect("encode deep DAE JSON payload");
         let parsed =
-            parse_dae_binary(std::io::Cursor::new(payload), "in-memory").expect("parse deep DAE");
-        assert_eq!(parsed.f_x.len(), 1);
+            parse_dae_json(std::io::Cursor::new(payload), "in-memory").expect("parse deep DAE");
+        assert_eq!(parsed.continuous.equations.len(), 1);
     }
 
     fn test_args() -> Args {
         Args {
-            dae_bin: Some(PathBuf::from("in.bin")),
+            dae_json: Some(PathBuf::from("in.json")),
             dae_stdin: false,
             result_json: PathBuf::from("out.json"),
             model_name: "M".to_string(),
@@ -507,8 +904,63 @@ mod tests {
             solver: "auto".to_string(),
             output_samples: 100,
             timeout_seconds: 10.0,
+            solve_timeout_seconds: 10.0,
             trace_json: None,
+            solve_ir_json: None,
         }
+    }
+
+    #[test]
+    fn classify_build_error_does_not_mark_initial_conditions_ok() {
+        let result = classify_worker_error(
+            SimError::SolveIr("lowering failed".to_string()),
+            0.25,
+            BuildSimulationTimings::default(),
+            0.25,
+            WorkerErrorPhase::Build,
+        );
+
+        assert_eq!(result.status, "sim_solver_fail");
+        assert_eq!(result.ic_status, None);
+        assert_eq!(result.ic_seconds, None);
+        assert_eq!(result.sim_run_seconds, 0.0);
+    }
+
+    #[test]
+    fn classify_initialization_error_marks_initial_conditions_failed() {
+        let result = classify_worker_error(
+            SimError::SolveIr("initial residual failed".to_string()),
+            0.5,
+            BuildSimulationTimings::default(),
+            0.25,
+            WorkerErrorPhase::Initialization { ic_seconds: 0.125 },
+        );
+
+        assert_eq!(result.status, "sim_solver_fail");
+        assert_eq!(result.ic_status.as_deref(), Some("ic_solver_fail"));
+        assert_eq!(
+            result.ic_error.as_deref(),
+            Some("solve-IR evaluation failed: initial residual failed")
+        );
+        assert_eq!(result.ic_seconds, Some(0.125));
+        assert_eq!(result.sim_run_seconds, 0.0);
+    }
+
+    #[test]
+    fn classify_simulation_error_preserves_initial_conditions_ok() {
+        let result = classify_worker_error(
+            SimError::SolverError("step failed".to_string()),
+            0.75,
+            BuildSimulationTimings::default(),
+            0.25,
+            WorkerErrorPhase::Simulation {
+                sim_run_seconds: 0.5,
+            },
+        );
+
+        assert_eq!(result.status, "sim_solver_fail");
+        assert_eq!(result.ic_status.as_deref(), Some("ic_ok"));
+        assert_eq!(result.sim_run_seconds, 0.5);
     }
 
     #[test]

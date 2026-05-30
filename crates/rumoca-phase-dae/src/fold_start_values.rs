@@ -1,41 +1,37 @@
-//! Constant-fold parameter/state `start` expressions to numeric literals.
+//! Constant-fold parameter/state `start` expressions to typed literals.
 //!
 //! Many Modelica parameters have `start` values that reference other parameters
 //! (e.g., `G_T = G_T_ref` where `G_T_ref = 300.15`). Template backends (Julia MTK,
-//! SymPy, etc.) need concrete numeric values. This pass iteratively evaluates
-//! start expressions using a fixed-point approach, replacing evaluable expressions
-//! with `Literal::Real(value)`.
+//! SymPy, etc.) need concrete values. This pass iteratively evaluates start
+//! expressions using a fixed-point approach, replacing evaluable expressions
+//! with literal values.
 
-use rumoca_ir_core::{OpBinary, OpUnary};
-use rumoca_ir_dae::{BuiltinFunction, Dae, Expression, Literal, VarName, Variable};
+use crate::errors::ToDaeError;
+use rumoca_core::ExpressionVisitor;
+use rumoca_core::{Expression, Span, VarName};
+use rumoca_eval_dae::constant::{ConstValue, eval_const_expr_with};
+use rumoca_ir_dae::{Dae, DaeVariableMutVisitor, DaeVariablePartition, DaeVisitor, Variable};
 use std::collections::HashMap;
 
-/// Evaluate all parameter/state/constant start expressions to numeric literals
+/// Evaluate all parameter/state/constant start expressions to typed literals
 /// where possible. Modifies the DAE in place.
 pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
     // Phase 1: build a name→value map from constants, enum ordinals, and
     // parameter start expressions (fixed-point iteration).
-    let mut values: HashMap<String, f64> = HashMap::new();
+    let mut values: HashMap<String, ConstValue> = HashMap::new();
 
     // Seed with enum literal ordinals
-    for (name, ordinal) in &dae.enum_literal_ordinals {
-        values.insert(name.clone(), *ordinal as f64);
+    for (name, ordinal) in &dae.symbols.enum_literal_ordinals {
+        values.insert(name.clone(), ConstValue::Real(*ordinal as f64));
     }
 
     // Collect all named start bindings (constants, parameters, inputs, states,
     // discrete reals, discrete valued, algebraics, outputs)
-    let bindings: Vec<(VarName, Expression)> = dae
-        .constants
-        .iter()
-        .chain(dae.parameters.iter())
-        .chain(dae.inputs.iter())
-        .chain(dae.states.iter())
-        .chain(dae.discrete_reals.iter())
-        .chain(dae.discrete_valued.iter())
-        .chain(dae.algebraics.iter())
-        .chain(dae.outputs.iter())
-        .filter_map(|(name, var)| var.start.as_ref().map(|expr| (name.clone(), expr.clone())))
-        .collect();
+    let mut bindings = Vec::new();
+    StartBindingCollector {
+        bindings: &mut bindings,
+    }
+    .visit_dae(dae);
 
     // Fixed-point iteration: resolve chains like A = B, B = 3.14
     let max_passes = bindings.len().max(1) * 2;
@@ -45,10 +41,10 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
             if values.contains_key(name.as_str()) {
                 continue;
             }
-            if let Some(val) = eval_const_expr(expr, &values)
-                && val.is_finite()
+            if let Some(value) = eval_start_const_expr(expr, &values)
+                && value.is_finite()
             {
-                values.insert(name.to_string(), val);
+                values.insert(name.to_string(), value);
                 changed = true;
             }
         }
@@ -62,7 +58,9 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
     let rewrite = |var: &mut Variable| {
         if let Some(ref start) = var.start {
             // Check for self-reference: start = VarRef(own_name)
-            if let Expression::VarRef { name, subscripts } = start
+            if let Expression::VarRef {
+                name, subscripts, ..
+            } = start
                 && subscripts.is_empty()
                 && name.as_str() == var.name.as_str()
             {
@@ -83,182 +81,66 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
             {
                 return;
             }
-            if let Some(&val) = values.get(var.name.as_str()) {
-                var.start = Some(Expression::Literal(Literal::Real(val)));
+            if let Some(val) = values.get(var.name.as_str()).cloned() {
+                var.start = Some(Expression::Literal {
+                    value: val.into_literal(),
+                    span: rumoca_core::Span::DUMMY,
+                });
             }
         }
     };
 
-    for var in dae.constants.values_mut() {
-        rewrite(var);
-    }
-    for var in dae.parameters.values_mut() {
-        rewrite(var);
-    }
-    for var in dae.states.values_mut() {
-        rewrite(var);
-    }
-    for var in dae.inputs.values_mut() {
-        rewrite(var);
-    }
-    for var in dae.discrete_reals.values_mut() {
-        rewrite(var);
-    }
-    for var in dae.discrete_valued.values_mut() {
-        rewrite(var);
-    }
-    for var in dae.algebraics.values_mut() {
-        rewrite(var);
-    }
-    for var in dae.outputs.values_mut() {
-        rewrite(var);
+    StartRewriter { rewrite }.visit_variables_mut(&mut dae.variables);
+}
+
+struct StartBindingCollector<'a> {
+    bindings: &'a mut Vec<(VarName, Expression)>,
+}
+
+impl DaeVisitor for StartBindingCollector<'_> {
+    fn visit_variable(
+        &mut self,
+        _partition: DaeVariablePartition,
+        name: &VarName,
+        variable: &Variable,
+    ) {
+        if let Some(expr) = &variable.start {
+            self.bindings.push((name.clone(), expr.clone()));
+        }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Expression evaluator (subset sufficient for start-value resolution)
-// ---------------------------------------------------------------------------
+struct StartRewriter<F> {
+    rewrite: F,
+}
 
-fn eval_const_expr(expr: &Expression, env: &HashMap<String, f64>) -> Option<f64> {
-    match expr {
-        Expression::Literal(Literal::Integer(v)) => Some(*v as f64),
-        Expression::Literal(Literal::Real(v)) => Some(*v),
-        Expression::Literal(Literal::Boolean(v)) => Some(if *v { 1.0 } else { 0.0 }),
-
-        Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
-            env.get(name.as_str()).copied().or_else(|| {
-                rumoca_ir_dae::component_base_name(name.as_str())
-                    .and_then(|base| env.get(&base).copied())
-            })
-        }
-
-        Expression::Unary { op, rhs } => {
-            let r = eval_const_expr(rhs, env)?;
-            match op {
-                OpUnary::Minus(_) | OpUnary::DotMinus(_) => Some(-r),
-                OpUnary::Plus(_) | OpUnary::DotPlus(_) => Some(r),
-                OpUnary::Not(_) => Some(if r.abs() < 1e-12 { 1.0 } else { 0.0 }),
-                _ => None,
-            }
-        }
-
-        Expression::Binary { op, lhs, rhs } => {
-            let l = eval_const_expr(lhs, env)?;
-            let r = eval_const_expr(rhs, env)?;
-            match op {
-                OpBinary::Add(_) => Some(l + r),
-                OpBinary::Sub(_) => Some(l - r),
-                OpBinary::Mul(_) => Some(l * r),
-                OpBinary::Div(_) => {
-                    if r.abs() < 1e-300 {
-                        None
-                    } else {
-                        Some(l / r)
-                    }
-                }
-                OpBinary::Exp(_) | OpBinary::ExpElem(_) => Some(l.powf(r)),
-                OpBinary::Lt(_) => Some(if l < r { 1.0 } else { 0.0 }),
-                OpBinary::Le(_) => Some(if l <= r { 1.0 } else { 0.0 }),
-                OpBinary::Gt(_) => Some(if l > r { 1.0 } else { 0.0 }),
-                OpBinary::Ge(_) => Some(if l >= r { 1.0 } else { 0.0 }),
-                OpBinary::Eq(_) => Some(if (l - r).abs() < 1e-12 { 1.0 } else { 0.0 }),
-                OpBinary::Neq(_) => Some(if (l - r).abs() >= 1e-12 { 1.0 } else { 0.0 }),
-                OpBinary::And(_) => Some(if l.abs() > 1e-12 && r.abs() > 1e-12 {
-                    1.0
-                } else {
-                    0.0
-                }),
-                OpBinary::Or(_) => Some(if l.abs() > 1e-12 || r.abs() > 1e-12 {
-                    1.0
-                } else {
-                    0.0
-                }),
-                _ => None,
-            }
-        }
-
-        Expression::BuiltinCall { function, args } => eval_builtin(*function, args, env),
-
-        Expression::FunctionCall { name, args, .. } => {
-            let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-            eval_named_function(short, args, env)
-        }
-
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                let c = eval_const_expr(cond, env)?;
-                if c.abs() > 1e-12 {
-                    return eval_const_expr(then_expr, env);
-                }
-            }
-            eval_const_expr(else_branch, env)
-        }
-
-        _ => None,
+impl<F> DaeVariableMutVisitor for StartRewriter<F>
+where
+    F: FnMut(&mut Variable),
+{
+    fn visit_variable_mut(
+        &mut self,
+        _partition: DaeVariablePartition,
+        _name: &VarName,
+        variable: &mut Variable,
+    ) {
+        (self.rewrite)(variable);
     }
 }
 
-fn eval_builtin(
-    func: BuiltinFunction,
-    args: &[Expression],
-    env: &HashMap<String, f64>,
-) -> Option<f64> {
-    let arg = |i: usize| args.get(i).and_then(|e| eval_const_expr(e, env));
-
-    match func {
-        BuiltinFunction::Abs => arg(0).map(f64::abs),
-        BuiltinFunction::Sign => arg(0).map(f64::signum),
-        BuiltinFunction::Sqrt => arg(0).map(f64::sqrt),
-        BuiltinFunction::Floor => arg(0).map(f64::floor),
-        BuiltinFunction::Ceil => arg(0).map(f64::ceil),
-        BuiltinFunction::Sin => arg(0).map(f64::sin),
-        BuiltinFunction::Cos => arg(0).map(f64::cos),
-        BuiltinFunction::Tan => arg(0).map(f64::tan),
-        BuiltinFunction::Asin => arg(0).map(f64::asin),
-        BuiltinFunction::Acos => arg(0).map(f64::acos),
-        BuiltinFunction::Atan => arg(0).map(f64::atan),
-        BuiltinFunction::Atan2 => Some(arg(0)?.atan2(arg(1)?)),
-        BuiltinFunction::Sinh => arg(0).map(f64::sinh),
-        BuiltinFunction::Cosh => arg(0).map(f64::cosh),
-        BuiltinFunction::Tanh => arg(0).map(f64::tanh),
-        BuiltinFunction::Exp => arg(0).map(f64::exp),
-        BuiltinFunction::Log => arg(0).map(f64::ln),
-        BuiltinFunction::Log10 => arg(0).map(f64::log10),
-        BuiltinFunction::Integer => arg(0).map(f64::floor),
-        BuiltinFunction::Min => Some(arg(0)?.min(arg(1)?)),
-        BuiltinFunction::Max => Some(arg(0)?.max(arg(1)?)),
-        BuiltinFunction::Div => {
-            let a = arg(0)?;
-            let b = arg(1)?;
-            if b.abs() < 1e-300 {
-                None
-            } else {
-                Some((a / b).trunc())
-            }
+fn eval_start_const_expr(
+    expr: &Expression,
+    env: &HashMap<String, ConstValue>,
+) -> Option<ConstValue> {
+    eval_const_expr_with(expr, &|name, subscripts| {
+        if !subscripts.is_empty() {
+            return None;
         }
-        BuiltinFunction::Mod => {
-            let a = arg(0)?;
-            let b = arg(1)?;
-            if b.abs() < 1e-300 {
-                None
-            } else {
-                Some(a - (a / b).floor() * b)
-            }
-        }
-        BuiltinFunction::Rem => {
-            let a = arg(0)?;
-            let b = arg(1)?;
-            if b.abs() < 1e-300 {
-                None
-            } else {
-                Some(a - (a / b).trunc() * b)
-            }
-        }
-        _ => None,
-    }
+        env.get(name.as_str()).cloned().or_else(|| {
+            rumoca_ir_dae::component_base_name(name.as_str())
+                .and_then(|base| env.get(&base).cloned())
+        })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -270,87 +152,81 @@ fn collect_param_refs(
     expr: &Expression,
     param_names: &std::collections::HashSet<String>,
 ) -> Vec<String> {
-    let mut refs = Vec::new();
-    collect_param_refs_inner(expr, param_names, &mut refs);
-    refs
+    let mut collector = ParamRefCollector {
+        param_names,
+        refs: Vec::new(),
+    };
+    collector.visit_expression(expr);
+    collector.refs
 }
 
-fn collect_param_refs_inner(
-    expr: &Expression,
-    param_names: &std::collections::HashSet<String>,
-    refs: &mut Vec<String>,
-) {
-    match expr {
-        Expression::VarRef { name, .. } => {
-            let s = name.as_str().to_string();
-            if param_names.contains(&s) && !refs.contains(&s) {
-                refs.push(s);
-            } else {
-                // Also match base name for subscripted refs: "e[1]" → "e"
-                let base = var_base_name(&s).to_string();
-                if base != s && param_names.contains(&base) && !refs.contains(&base) {
-                    refs.push(base);
-                }
-            }
+struct ParamRefCollector<'a> {
+    param_names: &'a std::collections::HashSet<String>,
+    refs: Vec<String>,
+}
+
+impl ExpressionVisitor for ParamRefCollector<'_> {
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        self.insert_ref(name.as_str());
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
         }
-        Expression::Unary { rhs, .. } => {
-            collect_param_refs_inner(rhs, param_names, refs);
+    }
+}
+
+impl ParamRefCollector<'_> {
+    fn insert_ref(&mut self, name: &str) {
+        if self.param_names.contains(name) && !self.refs.iter().any(|item| item == name) {
+            self.refs.push(name.to_string());
+            return;
         }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_param_refs_inner(lhs, param_names, refs);
-            collect_param_refs_inner(rhs, param_names, refs);
+
+        // Also match base name for subscripted refs: "e[1]" -> "e".
+        let base = var_base_name(name);
+        if base != name
+            && self.param_names.contains(base)
+            && !self.refs.iter().any(|item| item == base)
+        {
+            self.refs.push(base.to_string());
         }
-        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_param_refs_inner(arg, param_names, refs);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                collect_param_refs_inner(cond, param_names, refs);
-                collect_param_refs_inner(then_expr, param_names, refs);
-            }
-            collect_param_refs_inner(else_branch, param_names, refs);
-        }
-        Expression::Array { elements, .. } => {
-            for e in elements {
-                collect_param_refs_inner(e, param_names, refs);
-            }
-        }
-        _ => {}
     }
 }
 
 /// Sort algebraic and output variable maps by equation dependency order.
 ///
-/// For each variable in `dae.algebraics` or `dae.outputs`, finds its defining
-/// equation in `dae.f_x` and extracts which other algebraic/output variables
+/// For each variable in `dae.variables.algebraics` or `dae.variables.outputs`, finds its defining
+/// equation in `dae.continuous.equations` and extracts which other algebraic/output variables
 /// the equation references. Then topologically sorts so that variables are
 /// evaluated after their dependencies.
-pub(crate) fn sort_algebraics_by_equation_deps(dae: &mut Dae) {
+pub(crate) fn sort_algebraics_by_equation_deps(dae: &mut Dae) -> Result<(), ToDaeError> {
     use std::collections::HashSet;
 
     // Collect all algebraic + output variable names
     let alg_names: HashSet<String> = dae
+        .variables
         .algebraics
         .keys()
-        .chain(dae.outputs.keys())
+        .chain(dae.variables.outputs.keys())
         .map(|k| k.as_str().to_string())
         .collect();
 
     if alg_names.len() <= 1 {
-        return;
+        return Ok(());
     }
 
     // For each algebraic/output variable, find which other alg/output vars
     // its equation references
     let mut eq_deps: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
+    for alg_name in &alg_names {
+        eq_deps.insert(alg_name.clone(), Vec::new());
+    }
 
-    for eq in &dae.f_x {
+    for eq in &dae.continuous.equations {
         let refs = collect_param_refs(&eq.rhs, &alg_names);
         // This equation may define one of our algebraic vars.
         // Try to identify which variable this equation defines
@@ -367,10 +243,11 @@ pub(crate) fn sort_algebraics_by_equation_deps(dae: &mut Dae) {
         }
     }
 
-    // Sort dae.algebraics
-    dae.algebraics = topo_sort_by_eq_deps(&dae.algebraics, &eq_deps);
-    // Sort dae.outputs
-    dae.outputs = topo_sort_by_eq_deps(&dae.outputs, &eq_deps);
+    // Sort dae.variables.algebraics
+    dae.variables.algebraics = topo_sort_by_eq_deps(&dae.variables.algebraics, &eq_deps)?;
+    // Sort dae.variables.outputs
+    dae.variables.outputs = topo_sort_by_eq_deps(&dae.variables.outputs, &eq_deps)?;
+    Ok(())
 }
 
 /// Check if an equation's RHS defines a given variable (appears as LHS of subtraction
@@ -381,14 +258,15 @@ fn equation_defines_var(rhs: &Expression, var_name: &str) -> bool {
             op,
             lhs,
             rhs: rhs_inner,
+            ..
         } => {
-            if matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+            if matches!(op, rumoca_core::OpBinary::Sub) {
                 // 0 = var - expr or 0 = expr - var
                 if is_var_ref_named(lhs, var_name) || is_var_ref_named(rhs_inner, var_name) {
                     return true;
                 }
             }
-            if matches!(op, rumoca_ir_core::OpBinary::Add(_)) {
+            if matches!(op, rumoca_core::OpBinary::Add) {
                 // Check additive terms
                 let terms = collect_additive_var_refs(rhs);
                 if terms.iter().any(|t| t == var_name) {
@@ -398,8 +276,9 @@ fn equation_defines_var(rhs: &Expression, var_name: &str) -> bool {
             false
         }
         Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Minus(_),
+            op: rumoca_core::OpUnary::Minus,
             rhs: inner,
+            ..
         } => equation_defines_var(inner, var_name),
         Expression::VarRef { name, .. } => name.as_str() == var_name,
         _ => false,
@@ -409,7 +288,7 @@ fn equation_defines_var(rhs: &Expression, var_name: &str) -> bool {
 /// Extract the base name from a possibly-subscripted variable name.
 /// E.g., `"e[1]"` → `"e"`, `"q_err_w"` → `"q_err_w"`.
 fn var_base_name(name: &str) -> &str {
-    name.find('[').map_or(name, |i| &name[..i])
+    rumoca_core::strip_scalar_name_subscripts(name).unwrap_or(name)
 }
 
 fn is_var_ref_named(expr: &Expression, name: &str) -> bool {
@@ -420,14 +299,16 @@ fn is_var_ref_named(expr: &Expression, name: &str) -> bool {
 fn collect_additive_var_refs(expr: &Expression) -> Vec<String> {
     match expr {
         Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(_),
+            op: rumoca_core::OpBinary::Add,
             lhs,
             rhs,
+            ..
         }
         | Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(_),
+            op: rumoca_core::OpBinary::Sub,
             lhs,
             rhs,
+            ..
         } => {
             let mut v = collect_additive_var_refs(lhs);
             v.extend(collect_additive_var_refs(rhs));
@@ -442,11 +323,11 @@ fn collect_additive_var_refs(expr: &Expression) -> Vec<String> {
 fn topo_sort_by_eq_deps(
     map: &indexmap::IndexMap<VarName, Variable>,
     eq_deps: &std::collections::HashMap<String, Vec<String>>,
-) -> indexmap::IndexMap<VarName, Variable> {
+) -> Result<indexmap::IndexMap<VarName, Variable>, ToDaeError> {
     use std::collections::{HashSet, VecDeque};
 
     if map.len() <= 1 {
-        return map.clone();
+        return Ok(map.clone());
     }
 
     let name_list: Vec<String> = map.keys().map(|k| k.as_str().to_string()).collect();
@@ -455,16 +336,21 @@ fn topo_sort_by_eq_deps(
     // Build adjacency
     let mut deps_idx: Vec<HashSet<usize>> = Vec::with_capacity(map.len());
     for name in &name_list {
-        let dep_indices: HashSet<usize> = eq_deps
-            .get(name)
-            .map(|dep_names| {
-                dep_names
-                    .iter()
-                    .filter(|d| name_set.contains(d.as_str()))
-                    .filter_map(|d| name_list.iter().position(|n| n == d))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let dep_names = eq_deps.get(name).ok_or_else(|| {
+            let span = map
+                .get(&VarName::new(name))
+                .map(|var| var.source_span)
+                .unwrap_or(Span::DUMMY);
+            ToDaeError::RuntimeContractViolation {
+                detail: format!("start-value dependency set missing for `{name}`"),
+                span: rumoca_core::span_to_source_span(span),
+            }
+        })?;
+        let dep_indices: HashSet<usize> = dep_names
+            .iter()
+            .filter(|d| name_set.contains(d.as_str()))
+            .filter_map(|d| name_list.iter().position(|n| n == d))
+            .collect();
         deps_idx.push(dep_indices);
     }
 
@@ -506,36 +392,170 @@ fn topo_sort_by_eq_deps(
         }
     }
 
-    let entries: Vec<(VarName, Variable)> =
-        map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    let mut sorted = indexmap::IndexMap::with_capacity(n);
-    for &idx in &order {
-        let (k, v) = entries[idx].clone();
-        sorted.insert(k, v);
-    }
-    sorted
+    reorder_by_index_order(map, &order)
 }
 
-fn eval_named_function(name: &str, args: &[Expression], env: &HashMap<String, f64>) -> Option<f64> {
-    let arg = |i: usize| args.get(i).and_then(|e| eval_const_expr(e, env));
-    match name {
-        "Integer" | "integer" | "floor" => arg(0).map(f64::floor),
-        "ceil" => arg(0).map(f64::ceil),
-        "abs" => arg(0).map(f64::abs),
-        "sign" | "signum" => arg(0).map(f64::signum),
-        "sqrt" => arg(0).map(f64::sqrt),
-        "sin" => arg(0).map(f64::sin),
-        "cos" => arg(0).map(f64::cos),
-        "tan" => arg(0).map(f64::tan),
-        "asin" => arg(0).map(f64::asin),
-        "acos" => arg(0).map(f64::acos),
-        "atan" => arg(0).map(f64::atan),
-        "atan2" => Some(arg(0)?.atan2(arg(1)?)),
-        "exp" => arg(0).map(f64::exp),
-        "log" | "ln" => arg(0).map(f64::ln),
-        "log10" => arg(0).map(f64::log10),
-        "min" => Some(arg(0)?.min(arg(1)?)),
-        "max" => Some(arg(0)?.max(arg(1)?)),
-        _ => None,
+fn reorder_by_index_order(
+    map: &indexmap::IndexMap<VarName, Variable>,
+    order: &[usize],
+) -> Result<indexmap::IndexMap<VarName, Variable>, ToDaeError> {
+    let mut sorted = indexmap::IndexMap::with_capacity(map.len());
+    for &idx in order {
+        let Some((k, v)) = map.get_index(idx) else {
+            return Err(ToDaeError::internal(format!(
+                "topological order index {idx} out of range for {} variables",
+                map.len()
+            )));
+        };
+        sorted.insert(k.clone(), v.clone());
+    }
+    Ok(sorted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{BuiltinFunction, Literal, OpBinary};
+
+    fn var(name: &str) -> Expression {
+        Expression::VarRef {
+            name: VarName::new(name).into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn real(value: f64) -> Expression {
+        Expression::Literal {
+            value: Literal::Real(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn integer(value: i64) -> Expression {
+        Expression::Literal {
+            value: Literal::Integer(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn string(value: &str) -> Expression {
+        Expression::Literal {
+            value: Literal::String(value.to_string()),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn parameter(name: &str, start: Expression) -> Variable {
+        let mut var = Variable::new(VarName::new(name));
+        var.start = Some(start);
+        var.is_tunable = false;
+        var
+    }
+
+    #[test]
+    fn var_base_name_strips_only_trailing_subscripts() {
+        assert_eq!(var_base_name("e[1]"), "e");
+        assert_eq!(var_base_name("e[1,2]"), "e");
+        assert_eq!(var_base_name("q_err_w"), "q_err_w");
+        assert_eq!(var_base_name("record[1].field"), "record[1].field");
+        assert_eq!(var_base_name("record[1].field[2]"), "record[1].field");
+        assert_eq!(var_base_name("record[index.re]"), "record[index.re]");
+    }
+
+    #[test]
+    fn var_ref_dependency_match_uses_trailing_scalar_subscript_base() {
+        assert!(is_var_ref_named(&var("e[1]"), "e"));
+        assert!(is_var_ref_named(
+            &var("record[1].field[2]"),
+            "record[1].field"
+        ));
+        assert!(!is_var_ref_named(&var("record[1].field"), "record"));
+        assert!(!is_var_ref_named(&var("record[index.re]"), "record"));
+    }
+
+    #[test]
+    fn reorder_by_index_order_reports_invalid_topological_index() {
+        let mut variables = indexmap::IndexMap::new();
+        variables.insert(VarName::new("x"), Variable::new(VarName::new("x")));
+
+        let err = reorder_by_index_order(&variables, &[1]).expect_err("invalid index");
+
+        assert!(
+            matches!(err, ToDaeError::Internal(message) if message.contains("topological order index 1 out of range for 1 variables"))
+        );
+    }
+
+    #[test]
+    fn folds_string_substring_condition_before_runtime_parameter_tail() {
+        let mut dae = Dae::new();
+        dae.variables.parameters.insert(
+            VarName::new("transformer1.VectorGroup"),
+            parameter("transformer1.VectorGroup", string("Dy01")),
+        );
+        dae.variables.parameters.insert(
+            VarName::new("transformerData1.C1"),
+            parameter(
+                "transformerData1.C1",
+                Expression::FunctionCall {
+                    name: VarName::new("Modelica.Utilities.Strings.substring").into(),
+                    args: vec![var("transformer1.VectorGroup"), integer(1), integer(1)],
+                    is_constructor: false,
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ),
+        );
+        dae.variables.parameters.insert(
+            VarName::new("transformerData1.V1"),
+            parameter("transformerData1.V1", real(100.0)),
+        );
+        dae.variables.parameters.insert(
+            VarName::new("transformerData1.V1ph"),
+            parameter(
+                "transformerData1.V1ph",
+                Expression::Binary {
+                    op: OpBinary::Div,
+                    lhs: Box::new(var("transformerData1.V1")),
+                    rhs: Box::new(Expression::If {
+                        branches: vec![(
+                            Expression::Binary {
+                                op: OpBinary::Eq,
+                                lhs: Box::new(var("transformerData1.C1")),
+                                rhs: Box::new(string("D")),
+                                span: rumoca_core::Span::DUMMY,
+                            },
+                            integer(1),
+                        )],
+                        else_branch: Box::new(Expression::BuiltinCall {
+                            function: BuiltinFunction::Sqrt,
+                            args: vec![integer(3)],
+                            span: rumoca_core::Span::DUMMY,
+                        }),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ),
+        );
+
+        fold_start_values_to_literals(&mut dae);
+
+        let c1 = &dae.variables.parameters[&VarName::new("transformerData1.C1")];
+        assert!(matches!(
+            c1.start,
+            Some(Expression::Literal {
+                value: Literal::String(ref value),
+                ..
+            }) if value == "D"
+        ));
+
+        let v1ph = &dae.variables.parameters[&VarName::new("transformerData1.V1ph")];
+        match v1ph.start {
+            Some(Expression::Literal {
+                value: Literal::Real(value),
+                ..
+            }) => assert!((value - 100.0).abs() <= 1.0e-12),
+            ref other => panic!("expected folded numeric V1ph start, got {other:?}"),
+        }
     }
 }

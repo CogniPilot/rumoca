@@ -19,7 +19,10 @@ pub(crate) fn compute_var_size(dims: &[i64]) -> usize {
 /// Each `Index` or `Expr` subscript reduces one dimension (selects a single element),
 /// while `Colon` preserves the dimension. The result is the product of remaining dimensions.
 /// For example, `M[1]` where M is `[2,3]` gives `3` (one row of a 2×3 matrix).
-pub(crate) fn compute_subscripted_size(dims: &[i64], subscripts: &[flat::Subscript]) -> usize {
+pub(crate) fn compute_subscripted_size(
+    dims: &[i64],
+    subscripts: &[rumoca_core::Subscript],
+) -> usize {
     let mut remaining_dims = Vec::new();
     let mut dim_idx = 0;
     for sub in subscripts {
@@ -27,7 +30,7 @@ pub(crate) fn compute_subscripted_size(dims: &[i64], subscripts: &[flat::Subscri
             break;
         }
         match sub {
-            flat::Subscript::Index(_) | flat::Subscript::Expr(_) => {
+            rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Expr { expr: _, .. } => {
                 // Indexing into a zero-sized dimension yields no scalar equations.
                 if dims[dim_idx] <= 0 {
                     return 0;
@@ -35,7 +38,7 @@ pub(crate) fn compute_subscripted_size(dims: &[i64], subscripts: &[flat::Subscri
                 // This subscript selects a single element, consuming one dimension
                 dim_idx += 1;
             }
-            flat::Subscript::Colon => {
+            rumoca_core::Subscript::Colon { .. } => {
                 // Colon preserves the dimension
                 remaining_dims.push(dims[dim_idx]);
                 dim_idx += 1;
@@ -133,15 +136,18 @@ pub(crate) fn count_embedded_subscripts(name: &str) -> usize {
 }
 
 pub(crate) fn residual_lhs_var_ref(
-    residual: &flat::Expression,
-) -> Option<(&flat::VarName, &[flat::Subscript])> {
-    let flat::Expression::Binary { op, lhs, .. } = residual else {
+    residual: &rumoca_core::Expression,
+) -> Option<(&rumoca_core::Reference, &[rumoca_core::Subscript])> {
+    let rumoca_core::Expression::Binary { op, lhs, .. } = residual else {
         return None;
     };
-    if !matches!(op, rumoca_ir_flat::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_core::OpBinary::Sub) {
         return None;
     }
-    if let flat::Expression::VarRef { name, subscripts } = lhs.as_ref() {
+    if let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = lhs.as_ref()
+    {
         Some((name, subscripts))
     } else {
         None
@@ -191,7 +197,9 @@ pub(crate) fn eval_embedded_scalar_subscript(token: &str, flat: &flat::Model) ->
     try_eval_subscript_term(token, flat)
 }
 
-pub(crate) fn collect_linearized_embedded_lhs_bases(flat: &flat::Model) -> HashSet<flat::VarName> {
+pub(crate) fn collect_linearized_embedded_lhs_bases(
+    flat: &flat::Model,
+) -> HashSet<rumoca_core::VarName> {
     let mut bases = HashSet::default();
     for eq in &flat.equations {
         let Some((lhs_name, lhs_subscripts)) = residual_lhs_var_ref(&eq.residual) else {
@@ -200,13 +208,15 @@ pub(crate) fn collect_linearized_embedded_lhs_bases(flat: &flat::Model) -> HashS
         if !lhs_subscripts.is_empty() {
             continue;
         }
-        if !lhs_name.as_str().contains('[') || has_embedded_range_subscript(lhs_name.as_str()) {
+        if !crate::path_utils::has_top_level_subscript(lhs_name.as_str())
+            || has_embedded_range_subscript(lhs_name.as_str())
+        {
             continue;
         }
         let Some(base) = strip_embedded_subscripts(lhs_name.as_str()) else {
             continue;
         };
-        let base_name = flat::VarName::new(base);
+        let base_name = rumoca_core::VarName::new(base);
         let Some(var) = flat.variables.get(&base_name) else {
             continue;
         };
@@ -307,7 +317,7 @@ pub(crate) fn eval_single_subscript_size(sub: &str, dim: i64, flat: &flat::Model
     }
 
     let start = try_eval_subscript_term(parts[0].trim(), flat);
-    let end = try_eval_subscript_term(parts.last().unwrap().trim(), flat);
+    let end = try_eval_subscript_term(parts[parts.len() - 1].trim(), flat);
     range_size_from_optional_bounds(start, end, dim)
 }
 
@@ -356,15 +366,14 @@ pub(crate) fn try_eval_subscript_term(term: &str, flat: &flat::Model) -> Option<
     if let Some(val) = try_eval_string_binary(trimmed, flat) {
         return Some(val);
     }
-    let var = flat.variables.get(&flat::VarName::new(trimmed))?;
+    let var = flat.variables.get(&rumoca_core::VarName::new(trimmed))?;
     // Dimension/range terms are structural. If a parameter/constant lacks an
     // explicit binding, fall back to its compile-time start value.
     let structural_value = var.binding.as_ref().or_else(|| {
         if var.evaluate
             || matches!(
                 var.variability,
-                rumoca_ir_core::Variability::Parameter(_)
-                    | rumoca_ir_core::Variability::Constant(_)
+                rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
             )
         {
             return var.start.as_ref();
@@ -409,7 +418,7 @@ pub(crate) fn try_eval_string_binary(expr: &str, flat: &flat::Model) -> Option<i
 /// Handles literals, parameter references (via binding), binary arithmetic
 /// (`+`, `-`, `*`), and `size(array, dim)` calls.
 pub(crate) fn try_eval_flat_expr_i64(
-    expr: &flat::Expression,
+    expr: &rumoca_core::Expression,
     flat: &flat::Model,
     depth: u8,
 ) -> Option<i64> {
@@ -417,8 +426,14 @@ pub(crate) fn try_eval_flat_expr_i64(
         return None;
     }
     match expr {
-        flat::Expression::Literal(flat::Literal::Integer(n)) => Some(*n),
-        flat::Expression::Literal(flat::Literal::Real(f)) => {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(n),
+            ..
+        } => Some(*n),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(f),
+            ..
+        } => {
             let n = *f as i64;
             if (n as f64 - *f).abs() < 0.001 {
                 Some(n)
@@ -426,18 +441,18 @@ pub(crate) fn try_eval_flat_expr_i64(
                 None
             }
         }
-        flat::Expression::VarRef { name, .. } => {
-            let var = flat.variables.get(name)?;
+        rumoca_core::Expression::VarRef { name, .. } => {
+            let var = flat.variables.get(name.var_name())?;
             let binding = var.binding.as_ref()?;
             try_eval_flat_expr_i64(binding, flat, depth + 1)
         }
-        flat::Expression::Binary { op, lhs, rhs } => {
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
             let l = try_eval_flat_expr_i64(lhs, flat, depth + 1)?;
             let r = try_eval_flat_expr_i64(rhs, flat, depth + 1)?;
             eval_binary_op_i64(op, l, r)
         }
-        flat::Expression::BuiltinCall { function, args }
-            if matches!(function, rumoca_ir_flat::BuiltinFunction::Size) && args.len() == 2 =>
+        rumoca_core::Expression::BuiltinCall { function, args, .. }
+            if matches!(function, rumoca_core::BuiltinFunction::Size) && args.len() == 2 =>
         {
             eval_size_call_i64(&args[0], &args[1], flat, depth)
         }
@@ -446,12 +461,12 @@ pub(crate) fn try_eval_flat_expr_i64(
 }
 
 /// Evaluate a binary arithmetic operation on two integer values.
-pub(crate) fn eval_binary_op_i64(op: &rumoca_ir_flat::OpBinary, l: i64, r: i64) -> Option<i64> {
+pub(crate) fn eval_binary_op_i64(op: &rumoca_core::OpBinary, l: i64, r: i64) -> Option<i64> {
     match op {
-        rumoca_ir_flat::OpBinary::Add(_) | rumoca_ir_flat::OpBinary::AddElem(_) => Some(l + r),
-        rumoca_ir_flat::OpBinary::Sub(_) | rumoca_ir_flat::OpBinary::SubElem(_) => Some(l - r),
-        rumoca_ir_flat::OpBinary::Mul(_) | rumoca_ir_flat::OpBinary::MulElem(_) => Some(l * r),
-        rumoca_ir_flat::OpBinary::Div(_) | rumoca_ir_flat::OpBinary::DivElem(_) => {
+        rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => Some(l + r),
+        rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => Some(l - r),
+        rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => Some(l * r),
+        rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
             if r != 0 {
                 Some(l / r)
             } else {
@@ -462,16 +477,19 @@ pub(crate) fn eval_binary_op_i64(op: &rumoca_ir_flat::OpBinary, l: i64, r: i64) 
     }
 }
 
-/// Evaluate `size(array, dim)` by looking up the variable's dimensions.
+/// Evaluate `size(array, dim)` from literal array shape or variable dimensions.
 pub(crate) fn eval_size_call_i64(
-    array_arg: &flat::Expression,
-    dim_arg: &flat::Expression,
+    array_arg: &rumoca_core::Expression,
+    dim_arg: &rumoca_core::Expression,
     flat: &flat::Model,
     depth: u8,
 ) -> Option<i64> {
     let dim = try_eval_flat_expr_i64(dim_arg, flat, depth + 1)? as usize;
-    if let flat::Expression::VarRef { name, .. } = array_arg {
-        let var = flat.variables.get(name)?;
+    if let Some(size) = literal_array_dim_size(array_arg, dim) {
+        return Some(size);
+    }
+    if let rumoca_core::Expression::VarRef { name, .. } = array_arg {
+        let var = flat.variables.get(name.var_name())?;
         let idx = dim.checked_sub(1)?;
         var.dims.get(idx).copied()
     } else {
@@ -479,20 +497,34 @@ pub(crate) fn eval_size_call_i64(
     }
 }
 
+fn literal_array_dim_size(expr: &rumoca_core::Expression, dim: usize) -> Option<i64> {
+    let rumoca_core::Expression::Array { elements, .. } = expr else {
+        return None;
+    };
+    match dim {
+        1 => Some(elements.len() as i64),
+        2 => elements.first().and_then(|first| match first {
+            rumoca_core::Expression::Array { elements, .. } => Some(elements.len() as i64),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
 /// Resolve the scalar size of a VarRef with embedded subscripts.
 ///
 /// When flatten expands multi-dim array equations (e.g. `RotationMatrix = {{...}}`),
 /// it creates partially-expanded equations like `RotationMatrix[1] = ...` where
-/// the subscript is embedded in the flat::VarName string. This function strips the
+/// the subscript is embedded in the rumoca_core::VarName string. This function strips the
 /// embedded subscripts, looks up the base variable, and computes the remaining
 /// scalar count from the unindexed dimensions.
 pub(crate) fn resolve_embedded_subscript_size(
     name: &str,
     flat: &flat::Model,
-    linearized_embedded_lhs_bases: &HashSet<flat::VarName>,
+    linearized_embedded_lhs_bases: &HashSet<rumoca_core::VarName>,
 ) -> Option<usize> {
     let base = strip_embedded_subscripts(name)?;
-    let base_name = flat::VarName::new(base);
+    let base_name = rumoca_core::VarName::new(base);
     let var = flat.variables.get(&base_name)?;
     let n = count_embedded_subscripts(name);
     if n > 0 && n < var.dims.len() {
@@ -513,7 +545,10 @@ mod tests {
     fn test_compute_subscripted_size_mixed_index_and_colon() {
         let size = compute_subscripted_size(
             &[2, 3, 4],
-            &[flat::Subscript::Index(1), flat::Subscript::Colon],
+            &[
+                rumoca_core::Subscript::generated_index(1, rumoca_core::Span::DUMMY),
+                rumoca_core::Subscript::generated_colon(rumoca_core::Span::DUMMY),
+            ],
         );
         assert_eq!(size, 12);
     }
@@ -522,5 +557,30 @@ mod tests {
     fn test_range_size_from_optional_bounds_clamps_to_dimension() {
         let size = range_size_from_optional_bounds(Some(-2), Some(10), 5);
         assert_eq!(size, 5);
+    }
+
+    #[test]
+    fn test_size_call_evaluates_literal_array_shape() {
+        let flat = flat::Model::new();
+        let array = rumoca_core::Expression::Array {
+            elements: vec![
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::String("CO2".to_string()),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::String("H2O".to_string()),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ],
+            is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
+        };
+        let dim = rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(1),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        assert_eq!(eval_size_call_i64(&array, &dim, &flat, 0), Some(2));
     }
 }

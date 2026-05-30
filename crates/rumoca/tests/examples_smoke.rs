@@ -1,19 +1,24 @@
-use std::fs;
-use std::path::PathBuf;
+use std::{env, fs};
+
+use std::path::{Path, PathBuf};
 
 use rumoca::Compiler;
+use rumoca_ir_solve::{ComputeBlock, ComputeNode};
+#[cfg(feature = "runner")]
+use rumoca_sim::{SimOptions, SimPacingMode, SimSolverMode, SimStepper};
 use tempfile::tempdir;
 
 fn example_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
-fn example_template_path(name: &str) -> PathBuf {
-    example_root().join("templates").join(name)
+fn cached_cmm_root() -> Option<PathBuf> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cmm/CMM-v0.0.1");
+    root.join("LieGroup/package.mo").is_file().then_some(root)
 }
 
 fn compile_ball_example() -> rumoca::CompilationResult {
-    let model_path = example_root().join("Ball.mo");
+    let model_path = example_root().join("models/Ball.mo");
     assert!(
         model_path.is_file(),
         "expected example model at {}",
@@ -28,6 +33,423 @@ fn compile_ball_example() -> rumoca::CompilationResult {
                 .expect("example path should be utf8 for this test"),
         )
         .expect("Ball example should compile")
+}
+
+#[derive(serde::Deserialize)]
+struct ExampleTomlConfig {
+    #[serde(default)]
+    rumoca: ExampleRumocaMarker,
+    #[serde(default)]
+    source_roots: Vec<String>,
+    model: ExampleTomlModel,
+    #[serde(default)]
+    sim: ExampleTomlSim,
+    #[serde(default)]
+    codegen: Option<ExampleTomlCodegen>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ExampleRumocaMarker {
+    #[serde(default)]
+    task: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ExampleTomlModel {
+    file: String,
+    name: String,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ExampleTomlSim {
+    dt: Option<f64>,
+    solver: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ExampleTomlCodegen {
+    target: String,
+    output_dir: String,
+}
+
+fn compile_quadrotor_acro_if_cmm_available() -> Option<rumoca::CompilationResult> {
+    let cmm_root = cached_cmm_root()?;
+    let model_path = example_root().join("interactive/quadrotor/QuadrotorSIL.mo");
+    Some(
+        Compiler::new()
+            .source_root(cmm_root.to_string_lossy().as_ref())
+            .model("QuadrotorAcro")
+            .compile_file(
+                model_path
+                    .to_str()
+                    .expect("quadrotor example path should be utf8"),
+            )
+            .expect("QuadrotorAcro should compile with cached CMM"),
+    )
+}
+
+#[cfg(feature = "runner")]
+fn compile_quadrotor_acro_config_if_cmm_available() -> Option<rumoca::CompilationResult> {
+    let config_path = example_root().join("interactive/quadrotor/rum.acro.toml");
+    compile_toml_model_if_source_roots_exist(&config_path)
+}
+
+fn max_scalar_row_ops(block: &ComputeBlock) -> usize {
+    block
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            ComputeNode::ScalarPrograms(rows) => rows.programs.iter().map(Vec::len).max(),
+            ComputeNode::MatMul { .. } | ComputeNode::LinSolve { .. } => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn collect_examples_scenario_files(out: &mut Vec<PathBuf>) {
+    let config_root = example_root();
+    collect_scenario_files(&config_root, out);
+}
+
+fn collect_scenario_files(root: &Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(root).expect("example directory should be readable") {
+        let entry = entry.expect("example directory entry should be readable");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_scenario_files(&path, out);
+        } else if is_scenario_file(&path) {
+            out.push(path);
+        }
+    }
+}
+
+fn is_scenario_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(rumoca_compile::project::is_rumoca_task_filename)
+}
+
+fn load_example_toml_config(config_path: &Path) -> ExampleTomlConfig {
+    let text = fs::read_to_string(config_path).unwrap_or_else(|error| {
+        panic!(
+            "example TOML {} should be readable: {error}",
+            config_path.display()
+        )
+    });
+    toml::from_str(&text).unwrap_or_else(|error| {
+        panic!(
+            "example TOML {} should parse: {error}",
+            config_path.display()
+        )
+    })
+}
+
+fn resolve_config_path(config_dir: &Path, raw: &str) -> PathBuf {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        config_dir.join(path)
+    }
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    let key = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.clone())
+        .to_string_lossy()
+        .to_string();
+    let already_seen = paths.iter().any(|existing| {
+        existing
+            .canonicalize()
+            .unwrap_or_else(|_| existing.clone())
+            .to_string_lossy()
+            == key
+    });
+    if !already_seen {
+        paths.push(path);
+    }
+}
+
+fn modelicapath_source_roots() -> Vec<PathBuf> {
+    env::var_os("MODELICAPATH")
+        .map(|raw| env::split_paths(&raw).collect::<Vec<_>>())
+        .into_iter()
+        .flatten()
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect()
+}
+
+fn configured_source_roots(config_path: &Path, config: &ExampleTomlConfig) -> Option<Vec<PathBuf>> {
+    let config_dir = config_path
+        .parent()
+        .expect("example TOML should have a parent directory");
+    let mut paths = Vec::new();
+    for source_root in &config.source_roots {
+        let path = resolve_config_path(config_dir, source_root);
+        if !path.exists() {
+            eprintln!(
+                "skipping {}: missing configured source root {}",
+                config_path.display(),
+                path.display()
+            );
+            return None;
+        }
+        push_unique_path(&mut paths, path);
+    }
+    for path in modelicapath_source_roots() {
+        if path.exists() {
+            push_unique_path(&mut paths, path);
+        }
+    }
+    Some(paths)
+}
+
+fn compile_toml_model_if_source_roots_exist(
+    config_path: &Path,
+) -> Option<rumoca::CompilationResult> {
+    let config = load_example_toml_config(config_path);
+    let source_roots = configured_source_roots(config_path, &config)?;
+    let config_dir = config_path
+        .parent()
+        .expect("example TOML should have a parent directory");
+    let model_path = resolve_config_path(config_dir, &config.model.file);
+    assert!(
+        model_path.is_file(),
+        "example TOML {} should point at a model file: {}",
+        config_path.display(),
+        model_path.display()
+    );
+
+    let mut compiler = Compiler::new().model(&config.model.name);
+    for source_root in &source_roots {
+        compiler = compiler.source_root(
+            source_root
+                .to_str()
+                .expect("example TOML source-root path should be utf8"),
+        );
+    }
+    Some(
+        compiler
+            .compile_file(
+                model_path
+                    .to_str()
+                    .expect("example TOML model path should be utf8"),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "example TOML {} should compile {}: {error}",
+                    config_path.display(),
+                    config.model.name
+                )
+            }),
+    )
+}
+
+fn assert_codegen_config_renders(
+    config_path: &Path,
+    config: &ExampleTomlConfig,
+    result: &rumoca::CompilationResult,
+) {
+    let Some(codegen) = config.codegen.as_ref() else {
+        panic!(
+            "codegen TOML {} should declare [codegen].target",
+            config_path.display()
+        );
+    };
+    assert!(
+        Path::new(&codegen.output_dir)
+            .components()
+            .next()
+            .is_some_and(|component| component.as_os_str() == "gen"),
+        "codegen TOML {} should write under examples/codegen/gen, got {}",
+        config_path.display(),
+        codegen.output_dir
+    );
+    if assert_raw_template_config_renders(config_path, config, result, &codegen.target) {
+        return;
+    }
+    let target = load_codegen_target(config_path, &codegen.target);
+    let manifest = target.parse_manifest().unwrap_or_else(|error| {
+        panic!(
+            "example TOML {} should parse target {}: {error}",
+            config_path.display(),
+            codegen.target
+        )
+    });
+    let rendered_files = rumoca_compile::codegen::targets::render_dae_target_files(
+        &target,
+        &manifest,
+        &result.dae,
+        &config.model.name,
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "example TOML {} should render target {}: {error}",
+            config_path.display(),
+            codegen.target
+        )
+    });
+    assert!(
+        !rendered_files.is_empty(),
+        "example TOML {} rendered no files for target {}",
+        config_path.display(),
+        codegen.target
+    );
+    for rendered in rendered_files {
+        assert!(
+            !rendered.content.trim().is_empty(),
+            "example TOML {} rendered empty {} output",
+            config_path.display(),
+            rendered.path
+        );
+    }
+}
+
+fn assert_raw_template_config_renders(
+    config_path: &Path,
+    config: &ExampleTomlConfig,
+    result: &rumoca::CompilationResult,
+    target: &str,
+) -> bool {
+    let config_dir = config_path
+        .parent()
+        .expect("example TOML should have a parent directory");
+    let target_path = resolve_config_path(config_dir, target);
+    if target_path.extension().and_then(|ext| ext.to_str()) != Some("jinja") {
+        return false;
+    }
+    let rendered = result
+        .render_template(
+            target_path
+                .to_str()
+                .expect("raw example template path should be utf8"),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "example TOML {} should render raw template {} for {}: {error}",
+                config_path.display(),
+                target_path.display(),
+                config.model.name
+            )
+        });
+    assert!(
+        !rendered.trim().is_empty(),
+        "example TOML {} rendered empty raw template {}",
+        config_path.display(),
+        target_path.display()
+    );
+    true
+}
+
+fn load_codegen_target(
+    config_path: &Path,
+    target: &str,
+) -> rumoca_compile::codegen::targets::TargetBundle {
+    if let Some(bundle) = rumoca_compile::codegen::targets::TargetBundle::builtin(target) {
+        return bundle;
+    }
+    let config_dir = config_path
+        .parent()
+        .expect("example TOML should have a parent directory");
+    let target_path = resolve_config_path(config_dir, target);
+    rumoca_compile::codegen::targets::TargetBundle::load(
+        target_path
+            .to_str()
+            .expect("example target path should be utf8"),
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "example TOML {} should load target {}: {error}",
+            config_path.display(),
+            target_path.display()
+        )
+    })
+}
+
+#[cfg(feature = "runner")]
+fn assert_sim_config_creates_stepper(
+    config_path: &Path,
+    config: &ExampleTomlConfig,
+    result: &rumoca::CompilationResult,
+) {
+    let (solver_mode, _) = SimSolverMode::parse_request(config.sim.solver.as_deref());
+    let dt = config.sim.dt.unwrap_or(0.004);
+    let mut stepper = SimStepper::new_with_diagnostics(
+        &result.dae,
+        SimOptions {
+            rtol: 1e-3,
+            atol: 1e-3,
+            dt: Some(dt),
+            solver_mode,
+            pacing_mode: SimPacingMode::AsFastAsPossible,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "example TOML {} should create a simulation stepper: {error}",
+            config_path.display()
+        )
+    });
+    for input_name in stepper.input_names().to_vec() {
+        stepper.set_input(&input_name, 0.0).unwrap_or_else(|error| {
+            panic!(
+                "example TOML {} should bind input {input_name}: {error}",
+                config_path.display()
+            )
+        });
+    }
+    stepper.step(dt).unwrap_or_else(|error| {
+        panic!(
+            "example TOML {} stepper should advance one frame: {error}",
+            config_path.display()
+        )
+    });
+    assert!(
+        stepper.time() > 0.0,
+        "example TOML {} stepper should advance time",
+        config_path.display()
+    );
+}
+
+fn assert_toml_config_task_smoke(
+    config_path: &Path,
+    config: &ExampleTomlConfig,
+    result: &rumoca::CompilationResult,
+) {
+    match config.rumoca.task.as_deref().unwrap_or("simulate") {
+        "codegen" => assert_codegen_config_renders(config_path, config, result),
+        #[cfg(feature = "runner")]
+        "simulate" => assert_sim_config_creates_stepper(config_path, config, result),
+        #[cfg(not(feature = "runner"))]
+        "simulate" => {
+            let _ = (config_path, config, result);
+        }
+        other => panic!(
+            "example TOML {} uses unsupported task {other}",
+            config_path.display()
+        ),
+    }
+}
+
+#[test]
+fn examples_directory_scenario_configs_compile_and_smoke_requested_task() {
+    let mut configs = Vec::new();
+    collect_examples_scenario_files(&mut configs);
+    configs.sort();
+
+    assert!(
+        !configs.is_empty(),
+        "examples directory should contain rum.toml scenarios to smoke-test"
+    );
+    for config_path in configs {
+        let config = load_example_toml_config(&config_path);
+        let Some(result) = compile_toml_model_if_source_roots_exist(&config_path) else {
+            continue;
+        };
+        assert_toml_config_task_smoke(&config_path, &config, &result);
+    }
 }
 
 #[test]
@@ -45,8 +467,8 @@ end Integrator;
         .compile_str(source, "Integrator.mo")
         .expect("basic usage example compile should succeed");
 
-    assert_eq!(result.dae.states.len(), 1);
-    assert!(!result.dae.f_x.is_empty());
+    assert_eq!(result.dae.variables.states.len(), 1);
+    assert!(!result.dae.continuous.equations.is_empty());
     let json = result.to_json().expect("json serialization should succeed");
     assert!(json.contains("\"f_x\""));
 }
@@ -76,8 +498,253 @@ end FileExample;
         )
         .expect("file compilation example should compile");
 
-    assert_eq!(result.dae.states.len(), 1);
-    assert_eq!(result.dae.f_x.len(), 1);
+    assert_eq!(result.dae.variables.states.len(), 1);
+    assert_eq!(result.dae.continuous.equations.len(), 1);
+}
+
+#[test]
+fn quadrotor_acro_solve_preserves_tensor_structure_when_cmm_available() {
+    let Some(result) = compile_quadrotor_acro_if_cmm_available() else {
+        eprintln!(
+            "skipping QuadrotorAcro tensor regression: requires cached CMM at \
+             target/cmm/CMM-v0.0.1; run `rum repo cmm ensure`"
+        );
+        return;
+    };
+
+    let problem = rumoca_phase_solve::lower_solve_problem(&result.dae)
+        .expect("QuadrotorAcro should lower to Solve IR");
+    let implicit_rhs = &problem.continuous.implicit_rhs;
+    let linsolve_nodes = implicit_rhs.compute_node_counts().linsolve;
+
+    assert!(
+        linsolve_nodes > 0,
+        "QuadrotorAcro should preserve rigid-body solves as LinSolve nodes"
+    );
+    assert!(
+        max_scalar_row_ops(implicit_rhs) < 5_000,
+        "QuadrotorAcro Solve IR scalar fallback rows should stay below the \
+         pre-tensor explosion threshold"
+    );
+}
+
+#[cfg(feature = "runner")]
+#[test]
+fn quadrotor_acro_config_creates_rk_stepper_when_cmm_available() {
+    let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
+        eprintln!(
+            "skipping QuadrotorAcro config runtime regression: requires cached CMM at \
+             target/cmm/CMM-v0.0.1; run `rum repo cmm ensure`"
+        );
+        return;
+    };
+
+    let mut stepper = SimStepper::new_with_diagnostics(
+        &result.dae,
+        SimOptions {
+            rtol: 1e-3,
+            atol: 1e-3,
+            dt: Some(0.01),
+            solver_mode: SimSolverMode::RkLike,
+            pacing_mode: SimPacingMode::AsFastAsPossible,
+            ..Default::default()
+        },
+    )
+    .expect("rum.acro.toml should create an RK-like simulation stepper");
+    stepper
+        .set_inputs(&[
+            ("stick_roll", 0.0),
+            ("stick_pitch", 0.0),
+            ("stick_yaw", 0.0),
+            ("stick_throttle", 0.0),
+            ("armed", 0.0),
+        ])
+        .expect("rum.acro.toml inputs should bind to the stepper");
+    stepper
+        .step(0.01)
+        .expect("rum.acro.toml stepper should advance one frame");
+
+    assert!(stepper.time() > 0.0);
+}
+
+#[cfg(feature = "runner")]
+#[test]
+fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
+    let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
+        eprintln!(
+            "skipping QuadrotorAcro roll response regression: requires cached CMM at \
+             target/cmm/CMM-v0.0.1; run `rum repo cmm ensure`"
+        );
+        return;
+    };
+
+    for (axis_input, gyro_output) in [
+        ("stick_roll", "gyro[1]"),
+        ("stick_pitch", "gyro[2]"),
+        ("stick_yaw", "gyro[3]"),
+    ] {
+        let mut stepper = SimStepper::new_with_diagnostics(
+            &result.dae,
+            SimOptions {
+                rtol: 1e-3,
+                atol: 1e-3,
+                dt: Some(0.01),
+                solver_mode: SimSolverMode::RkLike,
+                pacing_mode: SimPacingMode::AsFastAsPossible,
+                ..Default::default()
+            },
+        )
+        .expect("rum.acro.toml should create an RK-like simulation stepper");
+        stepper
+            .set_inputs(&[
+                ("stick_roll", 0.0),
+                ("stick_pitch", 0.0),
+                ("stick_yaw", 0.0),
+                ("stick_throttle", 0.65),
+                ("armed", 1.0),
+            ])
+            .expect("rum.acro.toml inputs should bind to the stepper");
+        stepper
+            .set_input(axis_input, 1.0)
+            .expect("rum.acro.toml axis input should bind to the stepper");
+        for _ in 0..20 {
+            stepper
+                .step(0.01)
+                .expect("rum.acro.toml stepper should advance under axis command");
+        }
+
+        let state = stepper.state();
+        let rate = state
+            .values
+            .get(gyro_output)
+            .copied()
+            .unwrap_or_else(|| panic!("quadrotor state should contain {gyro_output}"));
+        assert!(
+            rate.abs() > 0.05,
+            "{axis_input} should generate visible body rate at hover throttle; \
+             {gyro_output}={rate}"
+        );
+    }
+}
+
+#[cfg(feature = "runner")]
+#[test]
+fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
+    let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
+        eprintln!(
+            "skipping QuadrotorAcro attitude regression: requires cached CMM at \
+             target/cmm/CMM-v0.0.1; run `rum repo cmm ensure`"
+        );
+        return;
+    };
+
+    let sim_options = SimOptions {
+        rtol: 1e-3,
+        atol: 1e-3,
+        dt: Some(0.01),
+        solver_mode: SimSolverMode::RkLike,
+        pacing_mode: SimPacingMode::AsFastAsPossible,
+        ..Default::default()
+    };
+    let sim_dae =
+        rumoca_sim::structurally_lowered_dae_for_simulation_artifact(&result.dae, &sim_options)
+            .expect("QuadrotorAcro simulation structural lowering should succeed");
+    let sim_solve = rumoca_phase_solve::lower_dae_to_solve_model_owned(sim_dae)
+        .expect("QuadrotorAcro simulation DAE should lower to SolveModel");
+    let runtime = rumoca_eval_solve::SolveRuntime::new(&sim_solve);
+    let mut derivative_probe_state = sim_solve.initial_y[..sim_solve.state_scalar_count()].to_vec();
+    for (name, value) in [
+        ("vehicle.omega[1]", 1.0),
+        ("vehicle.omega[2]", 0.0),
+        ("vehicle.omega[3]", 0.0),
+        ("vehicle.attitude.q[1]", 1.0),
+        ("vehicle.attitude.q[2]", 0.0),
+        ("vehicle.attitude.q[3]", 0.0),
+        ("vehicle.attitude.q[4]", 0.0),
+    ] {
+        let index = solve_state_index(&sim_solve, name);
+        derivative_probe_state[index] = value;
+    }
+    let derivative_probe = runtime
+        .eval_state_derivatives(
+            0.0,
+            &derivative_probe_state,
+            &sim_solve.parameters,
+            1.0e-10,
+            32,
+        )
+        .expect("QuadrotorAcro derivative probe should evaluate");
+    let q2_dot = derivative_probe[solve_state_index(&sim_solve, "vehicle.attitude.q[2]")];
+    assert!(
+        q2_dot > 0.4,
+        "unit roll rate at identity attitude should drive quaternion roll component; q2_dot={q2_dot}"
+    );
+
+    let mut stepper = SimStepper::new_with_diagnostics(&result.dae, sim_options)
+        .expect("rum.acro.toml should create an RK-like simulation stepper");
+
+    stepper
+        .set_inputs(&[
+            ("stick_roll", 0.0),
+            ("stick_pitch", 0.0),
+            ("stick_yaw", 0.0),
+            ("stick_throttle", 0.0),
+            ("armed", 1.0),
+        ])
+        .expect("rum.acro.toml should arm while throttle is low");
+    stepper
+        .step(0.01)
+        .expect("rum.acro.toml should advance after arming");
+    stepper
+        .set_inputs(&[("stick_throttle", 1.0), ("stick_roll", 1.0)])
+        .expect("rum.acro.toml should accept throttle and roll commands");
+
+    for _ in 0..1_000 {
+        stepper
+            .step(0.01)
+            .expect("rum.acro.toml should advance under full roll command");
+    }
+
+    let state = stepper.state();
+    let roll_degrees = roll_degrees_from_state(&state.values);
+    assert!(
+        roll_degrees.abs() > 10.0,
+        "full-roll command should change attitude by more than 10 deg after 10 s; \
+         roll={roll_degrees:.3} deg"
+    );
+}
+
+#[cfg(feature = "runner")]
+fn solve_state_index(model: &rumoca_ir_solve::SolveModel, name: &str) -> usize {
+    model
+        .problem
+        .solve_layout
+        .solver_maps
+        .names
+        .iter()
+        .take(model.state_scalar_count())
+        .position(|state_name| state_name == name)
+        .unwrap_or_else(|| panic!("quadrotor solve state should contain {name}"))
+}
+
+#[cfg(feature = "runner")]
+fn roll_degrees_from_state(values: &std::collections::HashMap<String, f64>) -> f64 {
+    let q0 = state_value(values, "quat[1]");
+    let q1 = state_value(values, "quat[2]");
+    let q2 = state_value(values, "quat[3]");
+    let q3 = state_value(values, "quat[4]");
+    let sinr_cosp = 2.0 * (q0 * q1 + q2 * q3);
+    let cosr_cosp = 1.0 - 2.0 * (q1 * q1 + q2 * q2);
+    sinr_cosp.atan2(cosr_cosp).to_degrees()
+}
+
+#[cfg(feature = "runner")]
+fn state_value(values: &std::collections::HashMap<String, f64>, name: &str) -> f64 {
+    values.get(name).copied().unwrap_or_else(|| {
+        let mut keys = values.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        panic!("quadrotor state should contain {name}; visible keys={keys:?}");
+    })
 }
 
 #[test]
@@ -131,55 +798,74 @@ end ProtectedDemo;
 fn ball_example_file_compiles_from_examples_directory() {
     let result = compile_ball_example();
 
-    assert_eq!(result.dae.states.len(), 1);
-    assert_eq!(result.dae.f_x.len(), 1);
+    assert_eq!(result.dae.variables.states.len(), 2);
+    assert_eq!(result.dae.continuous.equations.len(), 2);
 }
 
 #[test]
-fn ball_example_renders_javascript_template() {
+fn ball_example_rk_simulation_applies_reinit_bounce() {
     let result = compile_ball_example();
-    let template_path = example_template_path("javascript.jinja");
-    assert!(
-        template_path.is_file(),
-        "expected JS example template at {}",
-        template_path.display()
-    );
+    let sim = rumoca_sim::simulate_dae_with_diagnostics(
+        &result.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 1.8,
+            dt: Some(0.004),
+            solver_mode: rumoca_sim::SimSolverMode::RkLike,
+            ..Default::default()
+        },
+    )
+    .expect("Ball example should simulate through the first bounce");
+    let v_idx = sim
+        .names
+        .iter()
+        .position(|name| name == "v")
+        .expect("Ball velocity should be visible");
+    let bounced = sim.data[v_idx].iter().any(|velocity| *velocity > 1.0);
 
-    let rendered = result
-        .render_template(template_path.to_string_lossy().as_ref())
-        .expect("Ball example should render the JavaScript template");
-
     assert!(
-        rendered.contains("function Model()"),
-        "expected JS example template to emit a model factory"
-    );
-    assert!(
-        rendered.contains("residual,") && rendered.contains("applyResets"),
-        "expected JS example template to emit the residual-model runtime hooks"
+        bounced,
+        "Ball.mo reinit event should reverse velocity after the first ground contact"
     );
 }
 
 #[test]
-fn ball_example_renders_standalone_html_template() {
-    let result = compile_ball_example();
-    let template_path = example_template_path("standalone_html.jinja");
-    assert!(
-        template_path.is_file(),
-        "expected standalone HTML template at {}",
-        template_path.display()
-    );
+fn ball_results_panel_path_applies_reinit_bounce() {
+    let config_path = example_root().join("simulation/rum.ball.toml");
+    let config = load_example_toml_config(&config_path);
+    let result = compile_toml_model_if_source_roots_exist(&config_path)
+        .expect("Ball simulation config should not require external source roots");
+    let (solver_mode, _) = SimSolverMode::parse_request(config.sim.solver.as_deref());
+    let sim = rumoca_sim::simulate_dae_with_diagnostics(
+        &result.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 1.8,
+            dt: config.sim.dt.or(Some(0.004)),
+            solver_mode,
+            ..Default::default()
+        },
+    )
+    .expect("Ball results-panel simulation path should simulate through the first bounce");
+    let v_idx = sim
+        .names
+        .iter()
+        .position(|name| name == "v")
+        .expect("Ball velocity should be visible");
+    let x_idx = sim
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("Ball height should be visible");
+    let bounced = sim.data[v_idx].iter().any(|velocity| *velocity > 1.0);
+    let final_x = sim.data[x_idx].last().copied().unwrap_or_default();
 
-    let rendered = result
-        .render_template(template_path.to_string_lossy().as_ref())
-        .expect("Ball example should render the standalone HTML template");
-
     assert!(
-        rendered.contains("<!doctype html>"),
-        "expected standalone template to emit an HTML document"
+        bounced,
+        "examples/simulation/rum.ball.toml should exercise the same RK-like \
+         results-panel path and reverse velocity after ground contact"
     );
     assert!(
-        rendered.contains("Run simulation"),
-        "expected standalone template to include the simulation UI"
+        final_x > 0.0,
+        "Ball should be above the ground after the first bounce at t=1.8; x={final_x}"
     );
 }
 
@@ -202,7 +888,7 @@ end Simple;
         .compile_str(source, "Simple.mo")
         .expect("vector derivative model should compile");
 
-    assert_eq!(result.dae.states.len(), 1, "one array state 'x'");
+    assert_eq!(result.dae.variables.states.len(), 1, "one array state 'x'");
 
     let opts = rumoca_sim::SimOptions {
         t_end: 1.0,

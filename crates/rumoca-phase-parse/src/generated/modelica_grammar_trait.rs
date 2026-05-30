@@ -1361,7 +1361,7 @@ pub struct ElementDefinitionGroupGroupComponentClause {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportClauseGroupIdentEquImportClauseOptName {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub import_clause_opt: Option<ImportClauseOpt>,
     pub name: rumoca_ir_ast::Name,
 }
@@ -1487,7 +1487,7 @@ pub struct InheritanceModificationGroupConnectEquation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct InheritanceModificationGroupIdent {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
 }
 
 ///
@@ -2093,7 +2093,7 @@ pub struct PrimaryUnsignedNumber {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryString {
-    pub string: rumoca_ir_core::Token,
+    pub string: rumoca_core::Token,
 }
 
 ///
@@ -2203,7 +2203,7 @@ pub struct OutputPrimaryOptGroupArraySubscripts {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OutputPrimaryOptGroupDotIdent {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
 }
 
 ///
@@ -2247,7 +2247,7 @@ pub struct GlobalFunctionCallGroupPure {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnsignedNumberUnsignedInteger {
-    pub unsigned_integer: rumoca_ir_core::Token,
+    pub unsigned_integer: rumoca_core::Token,
 }
 
 ///
@@ -2258,7 +2258,7 @@ pub struct UnsignedNumberUnsignedInteger {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnsignedNumberUnsignedReal {
-    pub unsigned_real: rumoca_ir_core::Token,
+    pub unsigned_real: rumoca_core::Token,
 }
 
 ///
@@ -3008,7 +3008,7 @@ pub struct ComponentPrimaryOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentRefPart {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub component_ref_part_opt: Option<ComponentRefPartOpt>,
 }
 
@@ -3028,7 +3028,7 @@ pub struct ComponentRefPartOpt {
 #[derive(Debug, Clone)]
 pub struct ComponentReference {
     pub component_reference_opt: Option<ComponentReferenceOpt>,
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub component_reference_opt0: Option<ComponentReferenceOpt0>,
     pub component_reference_list: Vec<ComponentReferenceList>,
 }
@@ -3238,7 +3238,7 @@ pub struct ConstrainingClauseOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Declaration {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub declaration_opt: Option<DeclarationOpt>,
     pub declaration_opt0: Option<DeclarationOpt0>,
 }
@@ -3276,10 +3276,10 @@ pub struct Der {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DerClassSpecifier {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub der: Der,
     pub type_specifier: TypeSpecifier,
-    pub ident0: rumoca_ir_core::Token,
+    pub ident0: rumoca_core::Token,
     pub der_class_specifier_list: Vec<DerClassSpecifierList>,
     pub description: Description,
 }
@@ -3290,7 +3290,7 @@ pub struct DerClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DerClassSpecifierList {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
 }
 
 ///
@@ -3327,7 +3327,7 @@ pub struct DescriptionString {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DescriptionStringOpt {
-    pub string: rumoca_ir_core::Token,
+    pub string: rumoca_core::Token,
     pub description_string_opt_list: Vec<DescriptionStringOptList>,
 }
 
@@ -3337,7 +3337,7 @@ pub struct DescriptionStringOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DescriptionStringOptList {
-    pub string: rumoca_ir_core::Token,
+    pub string: rumoca_core::Token,
 }
 
 ///
@@ -3650,7 +3650,7 @@ pub struct End {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnumClassSpecifier {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub enumeration: Enumeration,
     pub enum_class_specifier_group: EnumClassSpecifierGroup,
     pub description: Description,
@@ -3709,7 +3709,7 @@ pub struct Enumeration {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnumerationLiteral {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub description: Description,
 }
 
@@ -3823,11 +3823,11 @@ pub struct Extends {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExtendsClassSpecifier {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub extends_class_specifier_opt: Option<ExtendsClassSpecifierOpt>,
     pub description_string: crate::TokenList,
     pub composition: crate::Composition,
-    pub ident0: rumoca_ir_core::Token,
+    pub ident0: rumoca_core::Token,
 }
 
 ///
@@ -3885,7 +3885,7 @@ pub struct External {
 #[derive(Debug, Clone)]
 pub struct ExternalFunctionCall {
     pub external_function_call_opt: Option<ExternalFunctionCallOpt>,
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub external_function_call_opt0: Option<ExternalFunctionCallOpt0>,
 }
 
@@ -3998,7 +3998,7 @@ pub struct ForEquationList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForIndex {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub for_index_opt: Option<ForIndexOpt>,
 }
 
@@ -4185,7 +4185,7 @@ pub struct FunctionPartialApplicationOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionPartialClassSpecifier {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub function_partial_application: FunctionPartialApplication,
     pub description: Description,
 }
@@ -4417,7 +4417,7 @@ pub enum ImportClauseOpt1GroupGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportList {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub import_list_list: Vec<ImportListList>,
 }
 
@@ -4427,7 +4427,7 @@ pub struct ImportList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportListList {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
 }
 
 ///
@@ -4500,7 +4500,7 @@ pub struct Input {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LanguageSpecification {
-    pub string: rumoca_ir_core::Token,
+    pub string: rumoca_core::Token,
 }
 
 ///
@@ -4635,7 +4635,7 @@ pub enum MulOperator {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Name {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub name_list: Vec<NameList>,
 }
 
@@ -4645,7 +4645,7 @@ pub struct Name {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NameList {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
 }
 
 ///
@@ -4654,7 +4654,7 @@ pub struct NameList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NamedArgument {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub function_argument: rumoca_ir_ast::Expression,
 }
 
@@ -5047,10 +5047,10 @@ pub enum SomeEquationOption {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StandardClassSpecifier {
-    pub name: rumoca_ir_core::Token,
+    pub name: rumoca_core::Token,
     pub description_string: crate::TokenList,
     pub composition: crate::Composition,
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
 }
 
 ///
@@ -5227,7 +5227,7 @@ pub struct Type {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypeClassSpecifier {
-    pub ident: rumoca_ir_core::Token,
+    pub ident: rumoca_core::Token,
     pub base_prefix: BasePrefix,
     pub type_specifier: TypeSpecifier,
     pub type_class_specifier_opt: Option<TypeClassSpecifierOpt>,

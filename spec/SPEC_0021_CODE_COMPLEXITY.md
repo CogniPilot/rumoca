@@ -1,10 +1,11 @@
-# SPEC_0021: Code Complexity Guidelines
+# SPEC_0021: Maintainability and Determinism Guidelines
 
 ## Status
 ACCEPTED
 
 ## Summary
-Establishes complexity limits for functions using clippy's recommended lints: `excessive_nesting`, `too_many_lines`, and `too_many_arguments`.
+Establishes maintainability guardrails: function complexity limits, module
+shape, deterministic public collections, and code-size discipline.
 
 ## Motivation
 
@@ -161,6 +162,32 @@ Once a directory grows large, it stops being a module and becomes a search probl
 find crates -type d -exec sh -c 'echo -n "$1: "; find "$1" -maxdepth 1 -name "*.rs" | wc -l' _ {} \; | awk -F: '$2 > 15' | sort -t: -k2 -rn
 ```
 
+## Deterministic Public Collections
+
+Public IR/DAE fields that affect output, hashing, serialization, or codegen
+MUST use deterministic collection types such as `IndexMap`.
+
+Required rules:
+
+- Public fields on IR and DAE types use `IndexMap`/ordered collections when
+  iteration order can affect output.
+- `HashMap`/`HashSet` may be used for phase-internal lookup only when the map is
+  not iterated to produce output, or when results are collected into an ordered
+  structure before leaving the phase.
+- Serialized output must be deterministic for the same input and compiler
+  version.
+- Do not expose `HashMap` or `HashSet` as public fields on IR or DAE types.
+
+Permitted exception:
+
+```rust
+// Insertion order matches source order (already deterministic).
+let mut map = IndexMap::new();
+for item in already_ordered_items {
+    map.insert(item.name.clone(), item);
+}
+```
+
 ## Metrics Tooling
 
 ```bash
@@ -179,3 +206,4 @@ find crates -name "*.rs" ! -path "*/generated/*" -exec wc -l {} \; | awk '$1 > 1
 - [Clippy too_many_lines](https://rust-lang.github.io/rust-clippy/master/index.html#too_many_lines)
 - [Clippy too_many_arguments](https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments)
 - [Why cognitive_complexity is problematic](https://github.com/rust-lang/rust-clippy/issues/3793)
+- [indexmap crate](https://docs.rs/indexmap)

@@ -9,7 +9,16 @@ const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const vscodeDir = path.resolve(thisDir, "..");
 const suitePath = path.resolve(vscodeDir, "tests", "failed_start_extension_suite.cjs");
 
-async function createWorkspace(rootDir) {
+// Read a `--flag value` argument passed by `cargo xtask` (the harness's argv
+// channel; the editor configuration travels in the launched workspace file).
+function argValue(name) {
+  const idx = process.argv.indexOf(name);
+  return idx >= 0 && idx + 1 < process.argv.length
+    ? process.argv[idx + 1]
+    : undefined;
+}
+
+async function createWorkspace(rootDir, resultPath) {
   const workspaceRoot = path.join(rootDir, "workspace");
   const workspaceFile = path.join(rootDir, "failed-start.code-workspace");
   const documentPath = path.join(workspaceRoot, "Failure.mo");
@@ -39,6 +48,9 @@ async function createWorkspace(rootDir) {
           "rumoca.debug": false,
           "rumoca.serverPath": missingServerPath,
           "rumoca.sourceRootPaths": [],
+          // Config for the extension-host suite (read via getConfiguration; no env).
+          "rumoca.benchmark.failedStart.document": documentPath,
+          "rumoca.benchmark.failedStart.result": resultPath,
         },
       },
       null,
@@ -54,18 +66,12 @@ async function main() {
   const userDataDir = path.join(tempRoot, "user-data");
   const extensionsDir = path.join(tempRoot, "extensions");
   const resultPath = path.join(tempRoot, "result.json");
-  const artifactResultPath = process.env.RUMOCA_VSCODE_FAILED_START_ARTIFACT_RESULT;
-  const { workspaceFile, documentPath } = await createWorkspace(tempRoot);
+  const artifactResultPath = argValue("--artifact-result");
+  const { workspaceFile } = await createWorkspace(tempRoot, resultPath);
   await mkdir(userDataDir, { recursive: true });
   await mkdir(extensionsDir, { recursive: true });
 
-  process.env.RUMOCA_VSCODE_FAILED_START_DOCUMENT = documentPath;
-  process.env.RUMOCA_VSCODE_FAILED_START_RESULT = resultPath;
   process.env.ELECTRON_DISABLE_SANDBOX = "1";
-  process.env.RUMOCA_VSCODE_FAILED_START_ACTIVATE_MAX_MS =
-    process.env.RUMOCA_VSCODE_FAILED_START_ACTIVATE_MAX_MS ?? "15000";
-  process.env.RUMOCA_VSCODE_FAILED_START_COMMAND_MAX_MS =
-    process.env.RUMOCA_VSCODE_FAILED_START_COMMAND_MAX_MS ?? "10000";
 
   const launchArgs = [
     workspaceFile,
@@ -84,7 +90,7 @@ async function main() {
     extensionTestsEnv: { ...process.env },
   };
 
-  const executable = process.env.RUMOCA_VSCODE_SMOKE_EXECUTABLE;
+  const executable = argValue("--smoke-executable");
   if (executable) {
     options.vscodeExecutablePath = executable;
   }
@@ -101,9 +107,7 @@ async function main() {
     } catch {
       // Ignore missing/partial result files when the suite fails before persisting metrics.
     }
-    if (process.env.RUMOCA_VSCODE_SMOKE_KEEP_TEMP !== "1") {
-      await rm(tempRoot, { recursive: true, force: true });
-    }
+    await rm(tempRoot, { recursive: true, force: true });
   }
 }
 

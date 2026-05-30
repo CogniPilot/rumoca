@@ -1,0 +1,10 @@
+version = 1
+ir = "dae"
+name = "jax"
+description = "JAX/Diffrax Python DAE export"
+execution_mode = "symbolic"
+deployment_class = "symbolic"
+
+[[files]]
+path = "{{ model_name }}_jax.py"
+template = "jax.py.jinja"

@@ -14,20 +14,26 @@ name = "rumoca"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["runner"]
 # Pulls in sim's runner module: transports, codecs, input devices,
-# signal-hook, viz-web. Cross-compiled binary builds (musl, macOS, Windows)
-# leave this off so gilrs/libudev-sys aren't pulled in.
-lockstep = ["rumoca-sim/runner"]
+# signal-hook, and viz-web so scenario TOMLs with external_web viewers work
+# in the default CLI. Minimal batch-only builds can opt out with
+# `--no-default-features`.
+runner = ["rumoca-sim/runner"]
+examples-smoke-tests = []
+msl-sim-tests = []
+template-runtime-tests = []
 tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 
 [dependencies]
 # Internal crates: CLI consumes the high-level facades only.
 # rumoca-compile wraps all compilation phases.
 # rumoca-sim wraps simulation primitives, solvers, and (under the
-# `lockstep` feature here) the lockstep runner.
+# `runner` feature here) the interactive simulation runner.
 rumoca-compile = { workspace = true }
-rumoca-sim = { workspace = true, features = ["solver-diffsol", "report"] }
+rumoca-core = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers", "report"] }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 
@@ -35,39 +41,65 @@ rumoca-tool-lint = { workspace = true }
 anyhow = { workspace = true }
 mimalloc = { workspace = true }
 clap = { workspace = true }
+clap_complete = { workspace = true }
 miette = { workspace = true }
+minijinja = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
-serde_yaml = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 walkdir = { workspace = true }
 zip = { workspace = true }
+# Reset SIGPIPE to its default disposition so piping into `head` exits cleanly
+# instead of panicking on a broken-pipe write. Encapsulates the one unsafe libc
+# call so this crate keeps `unsafe_code = "deny"`.
+sigpipe = { workspace = true }
 
 [[example]]
 name = "stepper_demo"
 path = "examples/stepper_demo.rs"
 
 [[example]]
-name = "stepper_3d"
-path = "examples/stepper_3d.rs"
-
-[[example]]
-name = "stepper_debug"
-path = "examples/stepper_debug.rs"
-
-[[example]]
 name = "quadrotor_sil"
 path = "examples/quadrotor_sil.rs"
+
+[[test]]
+name = "examples_smoke"
+path = "tests/examples_smoke.rs"
+required-features = ["examples-smoke-tests"]
+
+[[test]]
+name = "template_target_ci"
+path = "tests/template_target_ci.rs"
+required-features = ["template-runtime-tests"]
+
+[[test]]
+name = "standalone_template_regression"
+path = "tests/standalone_template_regression.rs"
+required-features = ["template-runtime-tests"]
+
+[[test]]
+name = "sympy_template_regression"
+path = "tests/sympy_template_regression.rs"
+required-features = ["template-runtime-tests"]
+
+[[test]]
+name = "backend_template_runtime_regression"
+path = "tests/backend_template_runtime_regression.rs"
+required-features = ["template-runtime-tests"]
+
+[[test]]
+name = "msl_sim_regression"
+path = "tests/msl_sim_regression.rs"
+required-features = ["msl-sim-tests"]
 
 [dev-dependencies]
 crossterm = "0.28"
 tungstenite = "0.26"
 tempfile = { workspace = true }
 mimalloc = { workspace = true }
-rumoca-core = { workspace = true }
 # MSL test dependencies
 flate2 = "1.0"
 tar = "0.4"
@@ -80,7 +112,6 @@ ntest = "0.9"  # Test timeouts
 # Direct phase access for debugging/analysis tests
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-flat = { workspace = true }
-rumoca-ir-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
 rumoca-phase-instantiate = { workspace = true }
@@ -88,8 +119,9 @@ rumoca-phase-parse = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
+rumoca-eval-solve = { workspace = true }
+rumoca-phase-solve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
-rumoca-analysis-dae = { workspace = true }
 
 [lints]
 workspace = true

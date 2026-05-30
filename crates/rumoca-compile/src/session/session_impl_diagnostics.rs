@@ -4,7 +4,7 @@ use super::*;
 struct InterfaceSemanticDiagnosticsResult {
     resolved: Arc<ast::ResolvedTree>,
     fingerprint: Fingerprint,
-    class_type: Option<ast::ClassType>,
+    class_type: Option<rumoca_core::ClassType>,
 }
 
 #[derive(Debug, Clone)]
@@ -19,7 +19,7 @@ impl Session {
         model_name: &str,
         mode: SemanticDiagnosticsMode,
         fingerprint: Fingerprint,
-    ) -> Option<Option<ast::ClassType>> {
+    ) -> Option<Option<rumoca_core::ClassType>> {
         let key = SemanticDiagnosticsCacheKey::new(model_name, mode);
         let artifact = self
             .query_state
@@ -42,7 +42,7 @@ impl Session {
         model_name: String,
         mode: SemanticDiagnosticsMode,
         fingerprint: Fingerprint,
-        class_type: Option<ast::ClassType>,
+        class_type: Option<rumoca_core::ClassType>,
     ) {
         let key = SemanticDiagnosticsCacheKey::new(&model_name, mode);
         self.query_state
@@ -277,7 +277,7 @@ impl Session {
     fn interface_semantic_diagnostics_class_type(
         &mut self,
         model_name: &str,
-    ) -> Option<ast::ClassType> {
+    ) -> Option<rumoca_core::ClassType> {
         let target = self.lookup_query_class_target(model_name)?;
         self.class_interface_query(&target.uri, &target.qualified_name)
             .map(|class_interface| class_interface.class_type().clone())
@@ -287,16 +287,16 @@ impl Session {
         &mut self,
         model_name: &str,
         mode: SemanticDiagnosticsMode,
-    ) -> Result<InterfaceSemanticDiagnosticsResult, ModelDiagnostics> {
+    ) -> Result<InterfaceSemanticDiagnosticsResult, Box<ModelDiagnostics>> {
         let (resolved, resolve_diagnostics) = match self.build_semantic_diagnostics_resolved(mode) {
             Ok(tree) => tree,
             Err(diags) => {
                 record_interface_semantic_diagnostics_cache_miss();
                 record_interface_semantic_diagnostics_build();
-                return Err(global_resolution_failure_diagnostics(
+                return Err(Box::new(global_resolution_failure_diagnostics(
                     self.session_source_map(),
                     diags.iter().cloned().collect(),
-                ));
+                )));
             }
         };
 
@@ -309,10 +309,10 @@ impl Session {
             if !target_resolve_diagnostics.is_empty() {
                 record_interface_semantic_diagnostics_cache_miss();
                 record_interface_semantic_diagnostics_build();
-                return Err(model_diagnostics_for_tree(
+                return Err(Box::new(model_diagnostics_for_tree(
                     &resolved.0,
                     target_resolve_diagnostics,
-                ));
+                )));
             }
         }
 
@@ -405,7 +405,7 @@ impl Session {
     ) -> ModelDiagnostics {
         let interface = match self.interface_semantic_diagnostics_query(model_name, mode) {
             Ok(interface) => interface,
-            Err(diags) => return diags,
+            Err(diags) => return *diags,
         };
 
         let tree = &interface.resolved.0;

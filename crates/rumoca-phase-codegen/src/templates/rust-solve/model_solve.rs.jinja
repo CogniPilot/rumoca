@@ -1,0 +1,68 @@
+#![allow(non_snake_case)]
+
+pub const Y_LEN: usize = {{ solve.layout.y_scalars }};
+pub const P_LEN: usize = {{ solve.layout.p_scalars }};
+pub const DERIVATIVE_LEN: usize = {{ solve_blocks.continuous.derivative_rhs.output_count }};
+
+{%- if solve_blocks.continuous.derivative_rhs.scalar_programs_use_linear_solve_component %}
+fn rumoca_solve_linear_component(matrix: &[f64], rhs: &[f64], n: usize, component: usize) -> f64 {
+    if n == 0 || component >= n || matrix.len() < n * n || rhs.len() < n {
+        return 0.0;
+    }
+
+    let mut a = matrix[..n * n].to_vec();
+    let mut b = rhs[..n].to_vec();
+
+    for pivot in 0..n {
+        let mut best = pivot;
+        let mut best_abs = a[pivot * n + pivot].abs();
+        for row in pivot + 1..n {
+            let candidate = a[row * n + pivot].abs();
+            if candidate > best_abs {
+                best = row;
+                best_abs = candidate;
+            }
+        }
+        if best_abs == 0.0 {
+            return 0.0;
+        }
+        if best != pivot {
+            for col in pivot..n {
+                a.swap(pivot * n + col, best * n + col);
+            }
+            b.swap(pivot, best);
+        }
+        let diag = a[pivot * n + pivot];
+        for row in pivot + 1..n {
+            let factor = a[row * n + pivot] / diag;
+            a[row * n + pivot] = 0.0;
+            for col in pivot + 1..n {
+                a[row * n + col] -= factor * a[pivot * n + col];
+            }
+            b[row] -= factor * b[pivot];
+        }
+    }
+
+    let mut x = vec![0.0; n];
+    for row in (0..n).rev() {
+        let mut sum = b[row];
+        for col in row + 1..n {
+            sum -= a[row * n + col] * x[col];
+        }
+        x[row] = sum / a[row * n + row];
+    }
+    x[component]
+}
+{%- endif %}
+
+pub fn derivative_rhs(time: f64, y: &[f64], p: &[f64], out: &mut [f64]) {
+    let _ = time;
+    let _ = y;
+    let _ = p;
+{%- set cfg = {"time": "time", "y": "y[{}]", "p": "p[{}]"} %}
+{%- for row in solve_blocks.continuous.derivative_rhs.scalar_programs.programs %}
+    out[{{ loop.index0 }}] = {{ render_solve_row_rust(row, cfg) }};
+{%- else %}
+    let _ = out;
+{%- endfor %}
+}

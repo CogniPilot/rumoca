@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rumoca-input-types = { workspace = true }
+rumoca-input = { workspace = true }
 anyhow = { workspace = true }
 gilrs = "0.11"
 

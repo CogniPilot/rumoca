@@ -4,19 +4,18 @@
 //! test model (Ball, ParamDecay, Oscillator), we:
 //!   1. Compile the Modelica source and render the backend template
 //!   2. Execute the generated code (Python or C) to produce a CSV trace
-//!   3. Run rumoca's built-in diffsol simulator to produce a reference trace
+//!   3. Run rumoca's built-in simulator to produce a reference trace
 //!   4. Compare the two traces and assert bounded relative error
 //!
-//! Embedded C currently supports discrete models only, so its continuous-model
-//! cases assert template rejection instead of runtime execution.
+//! Embedded C renders from Solve IR and is covered here at template level.
 
+#[cfg(feature = "template-runtime-tests")]
 use std::collections::HashMap;
 use std::{fs, process::Command};
 
-use rumoca::{CompilationResult, Compiler};
+use rumoca::{CompilationResult, Compiler, TemplateIr};
 use rumoca_phase_codegen::templates;
-use rumoca_sim::simulate_dae;
-use rumoca_sim::{SimOptions, SimResult};
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
 use tempfile::Builder;
 
 // ============================================================================
@@ -24,15 +23,18 @@ use tempfile::Builder;
 // ============================================================================
 
 /// CasADi uses CVODES (adaptive high-order), so traces should be tight.
+#[cfg(feature = "template-runtime-tests")]
 const CASADI_TOLERANCE: f64 = 0.01;
 
 /// Embedded C uses RK4 with dt=0.001, FMI2 uses forward Euler with dt=0.001.
+#[cfg(feature = "template-runtime-tests")]
 const C_TOLERANCE: f64 = 0.05;
 
 // ============================================================================
 // Runtime detection
 // ============================================================================
 
+#[cfg(feature = "template-runtime-tests")]
 fn python_command() -> &'static str {
     for candidate in ["python3", "python"] {
         if Command::new(candidate).arg("--version").output().is_ok() {
@@ -62,10 +64,12 @@ fn compile_model(source: &str, model_name: &str) -> rumoca::CompilationResult {
         .expect("compile test model")
 }
 
+#[cfg(feature = "template-runtime-tests")]
 fn model_dae(source: &str, model_name: &str) -> rumoca_ir_dae::Dae {
     compile_model(source, model_name).dae
 }
 
+#[cfg(feature = "template-runtime-tests")]
 fn render_template(source: &str, model_name: &str, template: &str) -> String {
     compile_model(source, model_name)
         .render_template_str_with_name(template, model_name)
@@ -78,12 +82,28 @@ fn render_template(source: &str, model_name: &str, template: &str) -> String {
 
 fn reference_trace(source: &str, model_name: &str, t_end: f64) -> (CompilationResult, SimResult) {
     let compiled = compile_model(source, model_name);
-    let opts = SimOptions {
-        t_end,
-        ..SimOptions::default()
-    };
-    let sim = simulate_dae(&compiled.dae, &opts).expect("rumoca simulation");
+    let sim = reference_simulation(&compiled.dae, t_end);
     (compiled, sim)
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn simulate_compiled(compiled: &CompilationResult, t_end: f64) -> SimResult {
+    let opts = reference_sim_options(t_end, Some(30.0));
+    simulate_dae_with_diagnostics(&compiled.dae, &opts).expect("rumoca simulation")
+}
+
+fn reference_simulation(dae: &rumoca_ir_dae::Dae, t_end: f64) -> SimResult {
+    let opts = reference_sim_options(t_end, None);
+    simulate_dae_with_diagnostics(dae, &opts).expect("rumoca simulation")
+}
+
+fn reference_sim_options(t_end: f64, max_wall_seconds: Option<f64>) -> SimOptions {
+    SimOptions {
+        t_end,
+        max_wall_seconds,
+        solver_mode: SimSolverMode::RkLike,
+        ..SimOptions::default()
+    }
 }
 
 fn extract_sim_trace(sim: &SimResult, var_name: &str) -> Option<Vec<(f64, f64)>> {
@@ -101,6 +121,7 @@ fn extract_sim_trace(sim: &SimResult, var_name: &str) -> Option<Vec<(f64, f64)>>
 // CSV trace parsing and comparison
 // ============================================================================
 
+#[cfg(feature = "template-runtime-tests")]
 fn parse_csv_traces(csv: &str) -> HashMap<String, Vec<(f64, f64)>> {
     let mut lines = csv.lines();
     let header: Vec<String> = lines
@@ -135,6 +156,7 @@ fn parse_csv_traces(csv: &str) -> HashMap<String, Vec<(f64, f64)>> {
     traces
 }
 
+#[cfg(feature = "template-runtime-tests")]
 fn interpolate(trace: &[(f64, f64)], t: f64) -> f64 {
     if trace.is_empty() {
         return f64::NAN;
@@ -158,6 +180,7 @@ fn interpolate(trace: &[(f64, f64)], t: f64) -> f64 {
     v0 + frac * (v1 - v0)
 }
 
+#[cfg(feature = "template-runtime-tests")]
 fn trace_max_deviation(backend_trace: &[(f64, f64)], ref_trace: &[(f64, f64)]) -> f64 {
     let mut max_err = 0.0f64;
     for &(t, val) in backend_trace {
@@ -177,6 +200,29 @@ fn trace_max_deviation(backend_trace: &[(f64, f64)], ref_trace: &[(f64, f64)]) -
     max_err
 }
 
+#[cfg(feature = "template-runtime-tests")]
+fn state_trace_names(dae: &rumoca_ir_dae::Dae) -> Vec<String> {
+    let mut names = Vec::new();
+    for (name, var) in &dae.variables.states {
+        let name = name.as_str();
+        let scalar_count = var
+            .dims
+            .iter()
+            .map(|dim| usize::try_from(*dim).expect("state dimension should be nonnegative"))
+            .product::<usize>()
+            .max(1);
+        if scalar_count == 1 {
+            names.push(name.to_string());
+            continue;
+        }
+        for idx in 1..=scalar_count {
+            names.push(format!("{name}[{idx}]"));
+        }
+    }
+    names
+}
+
+#[cfg(feature = "template-runtime-tests")]
 fn assert_traces_match(
     backend_traces: &HashMap<String, Vec<(f64, f64)>>,
     dae: &rumoca_ir_dae::Dae,
@@ -184,18 +230,17 @@ fn assert_traces_match(
     tolerance: f64,
     backend_name: &str,
 ) {
-    for name in dae.states.keys() {
-        let name_str = name.as_str();
-        let Some(backend_trace) = backend_traces.get(name_str) else {
+    for name in state_trace_names(dae) {
+        let Some(backend_trace) = backend_traces.get(&name) else {
             continue;
         };
-        let Some(ref_trace) = extract_sim_trace(sim, name_str) else {
+        let Some(ref_trace) = extract_sim_trace(sim, &name) else {
             continue;
         };
         let dev = trace_max_deviation(backend_trace, &ref_trace);
         assert!(
             dev <= tolerance,
-            "{backend_name}: state '{name_str}' deviation {dev:.4e} exceeds tolerance {tolerance:.4e}"
+            "{backend_name}: state '{name}' deviation {dev:.4e} exceeds tolerance {tolerance:.4e}"
         );
     }
 }
@@ -204,6 +249,7 @@ fn assert_traces_match(
 // Python execution helper (returns stdout)
 // ============================================================================
 
+#[cfg(feature = "template-runtime-tests")]
 fn run_python(rendered: &str, driver: &str) -> String {
     let dir = Builder::new()
         .prefix("rumoca_runtime_test_")
@@ -293,6 +339,25 @@ equation
 end Ball;
 "#;
 
+const COSIM_DECAY_SOURCE: &str = r#"
+model CosimDecay
+  Real x(start=1);
+equation
+  der(x) = -x;
+end CosimDecay;
+"#;
+
+const EVENT_REINIT_SOURCE: &str = r#"
+model EventReinit
+  Real x(start=0);
+equation
+  der(x) = 1;
+  when time > 0.5 then
+    reinit(x, -1);
+  end when;
+end EventReinit;
+"#;
+
 const PARAM_DECAY_SOURCE: &str = r#"
 model ParamDecay
   parameter Real k = 3;
@@ -312,10 +377,38 @@ equation
 end Oscillator;
 "#;
 
+const MATRIX_DER_PRODUCT_SOURCE: &str = r#"
+model MatrixDerProduct
+  Real R[3,3](start={{1,0,0},{0,1,0},{0,0,1}}, fixed=true);
+  Real skew[3,3] = {{0,-1,0},{1,0,0},{0,0,0}};
+equation
+  der(R) = R * skew;
+end MatrixDerProduct;
+"#;
+
+#[test]
+fn native_simulates_matrix_derivative_product() {
+    let (_compiled, sim) = reference_trace(MATRIX_DER_PRODUCT_SOURCE, "MatrixDerProduct", 0.5);
+    let r12 = extract_sim_trace(&sim, "R[1,2]").expect("R[1,2] trace");
+    let r21 = extract_sim_trace(&sim, "R[2,1]").expect("R[2,1] trace");
+    let (_, r12_last) = *r12.last().expect("R[1,2] has samples");
+    let (_, r21_last) = *r21.last().expect("R[2,1] has samples");
+
+    assert!(
+        (r12_last + 0.5_f64.sin()).abs() < 0.02,
+        "expected R[1,2] to follow -sin(t), got {r12_last}"
+    );
+    assert!(
+        (r21_last - 0.5_f64.sin()).abs() < 0.02,
+        "expected R[2,1] to follow sin(t), got {r21_last}"
+    );
+}
+
 // ============================================================================
 // CasADi driver — outputs CSV: time,state1,state2,...
 // ============================================================================
 
+#[cfg(feature = "template-runtime-tests")]
 const CASADI_CSV_DRIVER: &str = r#"
 import importlib.util, sys, os
 import numpy as np
@@ -351,6 +444,7 @@ for i, t in enumerate(tgrid):
 // CasADi MX runtime tests
 // ============================================================================
 
+#[cfg(feature = "template-runtime-tests")]
 fn casadi_trace_test(source: &str, model_name: &str, template: &str) {
     let rendered = render_template(source, model_name, template);
     let csv = run_python(&rendered, CASADI_CSV_DRIVER);
@@ -360,21 +454,33 @@ fn casadi_trace_test(source: &str, model_name: &str, template: &str) {
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn casadi_mx_ball() {
-    casadi_trace_test(BALL_SOURCE, "Ball", templates::CASADI_MX);
+    casadi_trace_test(
+        BALL_SOURCE,
+        "Ball",
+        templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap(),
+    );
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn casadi_mx_param_decay() {
-    casadi_trace_test(PARAM_DECAY_SOURCE, "ParamDecay", templates::CASADI_MX);
+    casadi_trace_test(
+        PARAM_DECAY_SOURCE,
+        "ParamDecay",
+        templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap(),
+    );
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn casadi_mx_oscillator() {
-    casadi_trace_test(OSCILLATOR_SOURCE, "Oscillator", templates::CASADI_MX);
+    casadi_trace_test(
+        OSCILLATOR_SOURCE,
+        "Oscillator",
+        templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap(),
+    );
 }
 
 // ============================================================================
@@ -382,76 +488,100 @@ fn casadi_mx_oscillator() {
 // ============================================================================
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn casadi_sx_ball() {
-    casadi_trace_test(BALL_SOURCE, "Ball", templates::CASADI_SX);
+    casadi_trace_test(
+        BALL_SOURCE,
+        "Ball",
+        templates::builtin_template_source("casadi-sx", "casadi_sx.py.jinja").unwrap(),
+    );
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn casadi_sx_param_decay() {
-    casadi_trace_test(PARAM_DECAY_SOURCE, "ParamDecay", templates::CASADI_SX);
+    casadi_trace_test(
+        PARAM_DECAY_SOURCE,
+        "ParamDecay",
+        templates::builtin_template_source("casadi-sx", "casadi_sx.py.jinja").unwrap(),
+    );
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn casadi_sx_oscillator() {
-    casadi_trace_test(OSCILLATOR_SOURCE, "Oscillator", templates::CASADI_SX);
+    casadi_trace_test(
+        OSCILLATOR_SOURCE,
+        "Oscillator",
+        templates::builtin_template_source("casadi-sx", "casadi_sx.py.jinja").unwrap(),
+    );
 }
 
 // ============================================================================
 // Embedded C template compatibility tests
 // ============================================================================
 
-fn embedded_c_rejects_continuous_model(source: &str, model_name: &str) {
-    let dae = model_dae(source, model_name);
+fn embedded_c_renders_solve_ir(source: &str, model_name: &str) {
+    let compiled = compile_model(source, model_name);
 
-    for template in [templates::EMBEDDED_C_H, templates::EMBEDDED_C_IMPL] {
-        let err = rumoca_phase_codegen::render_template_with_name(&dae, template, model_name)
-            .expect_err("Embedded C must reject continuous models");
-        let msg = format!("{err}");
+    for template in [
+        templates::builtin_template_source("embedded-c", "model.h.jinja").unwrap(),
+        templates::builtin_template_source("embedded-c", "model.c.jinja").unwrap(),
+    ] {
+        let rendered = compiled
+            .render_template_str_with_name_and_ir(template, model_name, TemplateIr::Solve)
+            .expect("Embedded C should render from Solve IR");
         assert!(
-            msg.contains("only support discrete models") || msg.contains("dae.f_x must be empty"),
-            "expected embedded-C continuous-model rejection, got: {msg}"
+            rendered.contains("_derivative_rhs") || rendered.contains("_DERIVATIVE_LEN"),
+            "expected embedded-C Solve-IR runtime surface in rendered template, got:\n{rendered}"
         );
     }
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn embedded_c_ball() {
-    embedded_c_rejects_continuous_model(BALL_SOURCE, "Ball");
+    embedded_c_renders_solve_ir(BALL_SOURCE, "Ball");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn embedded_c_param_decay() {
-    embedded_c_rejects_continuous_model(PARAM_DECAY_SOURCE, "ParamDecay");
+    embedded_c_renders_solve_ir(PARAM_DECAY_SOURCE, "ParamDecay");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn embedded_c_oscillator() {
-    embedded_c_rejects_continuous_model(OSCILLATOR_SOURCE, "Oscillator");
+    embedded_c_renders_solve_ir(OSCILLATOR_SOURCE, "Oscillator");
+}
+
+#[test]
+fn embedded_c_event_reinit_renders_solve_ir() {
+    embedded_c_renders_solve_ir(EVENT_REINIT_SOURCE, "EventReinit");
+}
+
+fn render_fmi_solve_template(
+    compiled: &CompilationResult,
+    target: &str,
+    template: &str,
+    model_name: &str,
+) -> String {
+    compiled
+        .render_template_str_with_name_and_ir(
+            templates::builtin_template_source(target, template).unwrap(),
+            model_name,
+            TemplateIr::Solve,
+        )
+        .unwrap_or_else(|err| panic!("render {target}:{template} from Solve IR: {err}"))
 }
 
 // ============================================================================
 // FMI 2.0 runtime tests
 // ============================================================================
 
+#[cfg(feature = "template-runtime-tests")]
 fn fmi2_trace_test(source: &str, model_name: &str) {
-    let dae = model_dae(source, model_name);
-
-    let model_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI2_MODEL, model_name)
-            .expect("render FMI2 model");
-
-    let driver_c = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI2_TEST_DRIVER,
-        model_name,
-    )
-    .expect("render FMI2 test driver");
+    let compiled = compile_model(source, model_name);
+    let model_c = render_fmi_solve_template(&compiled, "fmi2", "model.c.jinja", model_name);
+    let driver_c = render_fmi_solve_template(&compiled, "fmi2", "test_driver.c.jinja", model_name);
 
     let csv = compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],
@@ -459,88 +589,130 @@ fn fmi2_trace_test(source: &str, model_name: &str) {
     );
     let backend_traces = parse_csv_traces(&csv);
 
-    let opts = SimOptions {
-        t_end: 1.0,
-        ..SimOptions::default()
-    };
-    let sim = simulate_dae(&dae, &opts).expect("rumoca simulation");
-    assert_traces_match(&backend_traces, &dae, &sim, C_TOLERANCE, "FMI2");
+    let sim = reference_simulation(&compiled.dae, 1.0);
+    assert_traces_match(&backend_traces, &compiled.dae, &sim, C_TOLERANCE, "FMI2");
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn fmi2_trace_csv(source: &str, model_name: &str) -> String {
+    let compiled = compile_model(source, model_name);
+    let model_c = render_fmi_solve_template(&compiled, "fmi2", "model.c.jinja", model_name);
+    let driver_c = render_fmi_solve_template(&compiled, "fmi2", "test_driver.c.jinja", model_name);
+    compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", &driver_c)],
+        &["--t-end", "1.0", "--dt", "0.001"],
+    )
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn assert_event_reinit_trace(csv: &str, backend_name: &str) {
+    let traces = parse_csv_traces(csv);
+    let x_trace = traces
+        .get("x")
+        .unwrap_or_else(|| panic!("{backend_name}: expected x trace:\n{csv}"));
+    let final_x = x_trace.last().map(|(_, value)| *value).unwrap_or(f64::NAN);
+    let min_x = x_trace
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        (final_x + 0.5).abs() <= C_TOLERANCE,
+        "{backend_name}: expected final x near -0.5 after reinit, got {final_x}\n{csv}"
+    );
+    assert!(
+        min_x < -0.95,
+        "{backend_name}: expected reinit jump below -0.95, got min x={min_x}\n{csv}"
+    );
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi2_ball() {
     fmi2_trace_test(BALL_SOURCE, "Ball");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi2_param_decay() {
     fmi2_trace_test(PARAM_DECAY_SOURCE, "ParamDecay");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi2_oscillator() {
     fmi2_trace_test(OSCILLATOR_SOURCE, "Oscillator");
+}
+
+#[test]
+#[cfg(feature = "template-runtime-tests")]
+fn fmi2_event_reinit_runtime() {
+    let csv = fmi2_trace_csv(EVENT_REINIT_SOURCE, "EventReinit");
+    assert_event_reinit_trace(&csv, "FMI2");
 }
 
 // ============================================================================
 // FMI 3.0 runtime tests
 // ============================================================================
 
-fn fmi3_trace_test(source: &str, model_name: &str) {
-    let dae = model_dae(source, model_name);
-
-    let model_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, model_name)
-            .expect("render FMI3 model");
-
-    let driver_c = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI3_TEST_DRIVER,
-        model_name,
-    )
-    .expect("render FMI3 test driver");
+#[cfg(feature = "template-runtime-tests")]
+fn fmi3_trace_from_compiled(compiled: &CompilationResult, model_name: &str, t_end: f64) -> String {
+    let model_c = render_fmi_solve_template(compiled, "fmi3", "model.c.jinja", model_name);
+    let driver_c = render_fmi_solve_template(compiled, "fmi3", "test_driver.c.jinja", model_name);
 
     std::fs::write("/tmp/arraydecay_model.c", &model_c).ok();
     std::fs::write("/tmp/arraydecay_driver.c", &driver_c).ok();
     std::fs::write(
         "/tmp/arraydecay_dae.json",
-        serde_json::to_string_pretty(&dae).unwrap_or_default(),
+        serde_json::to_string_pretty(&compiled.dae).unwrap_or_default(),
     )
     .ok();
 
-    let csv = compile_and_run_c(
+    compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],
-        &["--t-end", "1.0", "--dt", "0.001"],
-    );
+        &["--t-end", &t_end.to_string(), "--dt", "0.001"],
+    )
+}
+
+#[cfg(feature = "template-runtime-tests")]
+fn fmi3_trace_test(source: &str, model_name: &str) {
+    let compiled = compile_model(source, model_name);
+    let csv = fmi3_trace_from_compiled(&compiled, model_name, 1.0);
     let backend_traces = parse_csv_traces(&csv);
 
-    let opts = SimOptions {
-        t_end: 1.0,
-        ..SimOptions::default()
-    };
-    let sim = simulate_dae(&dae, &opts).expect("rumoca simulation");
-    assert_traces_match(&backend_traces, &dae, &sim, C_TOLERANCE, "FMI3");
+    let sim = simulate_compiled(&compiled, 1.0);
+    assert_traces_match(&backend_traces, &compiled.dae, &sim, C_TOLERANCE, "FMI3");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi3_ball() {
     fmi3_trace_test(BALL_SOURCE, "Ball");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi3_param_decay() {
     fmi3_trace_test(PARAM_DECAY_SOURCE, "ParamDecay");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi3_oscillator() {
     fmi3_trace_test(OSCILLATOR_SOURCE, "Oscillator");
+}
+
+#[test]
+#[cfg(feature = "template-runtime-tests")]
+fn fmi3_event_reinit_runtime() {
+    let compiled = compile_model(EVENT_REINIT_SOURCE, "EventReinit");
+    let csv = fmi3_trace_from_compiled(&compiled, "EventReinit", 1.0);
+    assert_event_reinit_trace(&csv, "FMI3");
+}
+
+#[test]
+#[cfg(feature = "template-runtime-tests")]
+fn fmi3_matrix_derivative_product_runtime() {
+    fmi3_trace_test(MATRIX_DER_PRODUCT_SOURCE, "MatrixDerProduct");
 }
 
 // ============================================================================
@@ -561,15 +733,14 @@ end TunableParam;
 "#;
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_tunable_param_xml() {
-    let dae = model_dae(TUNABLE_PARAM_SOURCE, "TunableParam");
-    let xml = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI3_MODEL_DESCRIPTION,
+    let compiled = compile_model(TUNABLE_PARAM_SOURCE, "TunableParam");
+    let xml = render_fmi_solve_template(
+        &compiled,
+        "fmi3",
+        "modelDescription.xml.jinja",
         "TunableParam",
-    )
-    .expect("render FMI3 model description");
+    );
 
     // k should be tunable (Real, non-structural)
     assert!(
@@ -584,7 +755,7 @@ fn fmi3_tunable_param_xml() {
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi3_tunable_param_runtime() {
     fmi3_trace_test(TUNABLE_PARAM_SOURCE, "TunableParam");
 }
@@ -593,25 +764,23 @@ fn fmi3_tunable_param_runtime() {
 // FMI 3.0 — Directional derivatives (Phase 3)
 //
 // Verify that fmi3GetDirectionalDerivative returns correct Jacobian entries
-// via finite differences for a simple model: der(x) = -k*x → ∂ẋ/∂x = -k.
+// from solve-IR AD rows for a simple model: der(x) = -k*x -> d(xdot)/dx = -k.
 // ============================================================================
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi3_directional_derivative() {
-    let dae = model_dae(PARAM_DECAY_SOURCE, "ParamDecay");
+    let compiled = compile_model(PARAM_DECAY_SOURCE, "ParamDecay");
 
-    let model_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
-            .expect("render FMI3 model");
+    let model_c = render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", "ParamDecay");
 
     // Verify XML advertises directional derivatives
-    let xml = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI3_MODEL_DESCRIPTION,
+    let xml = render_fmi_solve_template(
+        &compiled,
+        "fmi3",
+        "modelDescription.xml.jinja",
         "ParamDecay",
-    )
-    .expect("render FMI3 model description");
+    );
     assert!(
         xml.contains(r#"providesDirectionalDerivatives="true""#),
         "expected providesDirectionalDerivatives in XML"
@@ -659,31 +828,39 @@ int main(void) {
     fmi3EnterContinuousTimeMode(inst);
 
     /* ParamDecay: der(x) = -k*x, k=3, x(0)=2
-     * VR layout: x=0, xdot=1 (1 state)
-     * Jacobian: d(xdot)/d(x) = -k = -3
+     * VR layout: x=0, xdot=1, k=2
+     * Jacobian: d(xdot)/d(x) = -k = -3, d(xdot)/d(k) = -x = -2
      */
     fmi3ValueReference unknown = 1;  /* xdot */
-    fmi3ValueReference known = 0;    /* x */
+    fmi3ValueReference known_x = 0;  /* x */
+    fmi3ValueReference known_k = 2;  /* k */
     fmi3Float64 seed = 1.0;
-    fmi3Float64 sensitivity = 0.0;
+    fmi3Float64 sensitivity_x = 0.0;
+    fmi3Float64 sensitivity_k = 0.0;
 
-    fmi3Status s = fmi3GetDirectionalDerivative(
-        inst, &unknown, 1, &known, 1, &seed, 1, &sensitivity, 1);
+    fmi3Status s_x = fmi3GetDirectionalDerivative(
+        inst, &unknown, 1, &known_x, 1, &seed, 1, &sensitivity_x, 1);
+    fmi3Status s_k = fmi3GetDirectionalDerivative(
+        inst, &unknown, 1, &known_k, 1, &seed, 1, &sensitivity_k, 1);
 
-    printf("status=%d\n", s);
-    printf("sensitivity=%.10g\n", sensitivity);
-    printf("expected=-3\n");
-    printf("error=%.10g\n", fabs(sensitivity - (-3.0)));
+    printf("status_x=%d\n", s_x);
+    printf("status_k=%d\n", s_k);
+    printf("sensitivity_x=%.10g\n", sensitivity_x);
+    printf("sensitivity_k=%.10g\n", sensitivity_k);
+    printf("error_x=%.10g\n", fabs(sensitivity_x - (-3.0)));
+    printf("error_k=%.10g\n", fabs(sensitivity_k - (-2.0)));
 
     fmi3FreeInstance(inst);
-    return (s == fmi3OK && fabs(sensitivity - (-3.0)) < 0.01) ? 0 : 1;
+    return (s_x == fmi3OK && s_k == fmi3OK
+        && fabs(sensitivity_x - (-3.0)) < 0.01
+        && fabs(sensitivity_k - (-2.0)) < 0.01) ? 0 : 1;
 }
 "#;
 
     let csv = compile_and_run_c(&[("model.c", &model_c), ("driver.c", driver_c)], &[]);
     // If we get here without panic, the test passed (driver returns 0 on success)
     assert!(
-        csv.contains("sensitivity="),
+        csv.contains("sensitivity_x=") && csv.contains("sensitivity_k="),
         "expected sensitivity output:\n{csv}"
     );
 }
@@ -704,15 +881,14 @@ end ArrayDecay;
 "#;
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_native_array_xml() {
-    let dae = model_dae(ARRAY_DECAY_SOURCE, "ArrayDecay");
-    let xml = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI3_MODEL_DESCRIPTION,
+    let compiled = compile_model(ARRAY_DECAY_SOURCE, "ArrayDecay");
+    let xml = render_fmi_solve_template(
+        &compiled,
+        "fmi3",
+        "modelDescription.xml.jinja",
         "ArrayDecay",
-    )
-    .expect("render FMI3 model description");
+    );
 
     // Verify array variable has <Dimension> element
     assert!(
@@ -731,23 +907,18 @@ fn fmi3_native_array_xml() {
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi3_native_array_runtime() {
     // Test FMI3 C compile + run with array variables (per-variable VR layout).
     // Uses a standalone driver since the reference simulator doesn't handle
     // array state variables directly.
     //
-    // Routes through `Compiler::render_template_str_with_name` so the
-    // runtime C template sees the scalarized DAE it expects (one xdot
-    // entry per scalar state). The XML companion test deliberately uses
-    // the raw codegen API since it needs the unexpanded native-array view.
+    // Routes through `Compiler::render_template_str_with_name_and_ir` so the
+    // runtime C template exercises the same Solve-IR target path as CI.
     let compiled = compile_model(ARRAY_DECAY_SOURCE, "ArrayDecay");
-    let model_c = compiled
-        .render_template_str_with_name(templates::FMI3_MODEL, "ArrayDecay")
-        .expect("render FMI3 model");
-    let driver_c = compiled
-        .render_template_str_with_name(templates::FMI3_TEST_DRIVER, "ArrayDecay")
-        .expect("render FMI3 test driver");
+    let model_c = render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", "ArrayDecay");
+    let driver_c =
+        render_fmi_solve_template(&compiled, "fmi3", "test_driver.c.jinja", "ArrayDecay");
 
     let csv = compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],
@@ -782,21 +953,19 @@ fn fmi3_native_array_runtime() {
 // ============================================================================
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi3_adjoint_derivative() {
-    let dae = model_dae(PARAM_DECAY_SOURCE, "ParamDecay");
+    let compiled = compile_model(PARAM_DECAY_SOURCE, "ParamDecay");
 
-    let model_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
-            .expect("render FMI3 model");
+    let model_c = render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", "ParamDecay");
 
     // Verify XML advertises adjoint derivatives
-    let xml = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI3_MODEL_DESCRIPTION,
+    let xml = render_fmi_solve_template(
+        &compiled,
+        "fmi3",
+        "modelDescription.xml.jinja",
         "ParamDecay",
-    )
-    .expect("render FMI3 model description");
+    );
     assert!(
         xml.contains(r#"providesAdjointDerivatives="true""#),
         "expected providesAdjointDerivatives in XML"
@@ -879,6 +1048,7 @@ int main(void) {
 // ============================================================================
 
 /// C driver source for FMI 3.0 state serialization round-trip test.
+#[cfg(feature = "template-runtime-tests")]
 const FMI3_STATE_SERIALIZATION_DRIVER: &str = r#"
 #include <stdio.h>
 #include <stdlib.h>
@@ -1018,21 +1188,18 @@ int main(void) {
 "#;
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi3_fmu_state_serialization() {
-    let dae = model_dae(PARAM_DECAY_SOURCE, "ParamDecay");
-
-    let model_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
-            .expect("render FMI3 model");
+    let compiled = compile_model(PARAM_DECAY_SOURCE, "ParamDecay");
+    let model_c = render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", "ParamDecay");
 
     // Verify XML advertises state capabilities
-    let xml = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI3_MODEL_DESCRIPTION,
+    let xml = render_fmi_solve_template(
+        &compiled,
+        "fmi3",
+        "modelDescription.xml.jinja",
         "ParamDecay",
-    )
-    .expect("render FMI3 model description");
+    );
     assert!(
         xml.contains(r#"canGetAndSetFMUState="true""#),
         "expected canGetAndSetFMUState in XML"
@@ -1063,13 +1230,10 @@ fn fmi3_fmu_state_serialization() {
 // ============================================================================
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn fmi3_cosimulation_dostep() {
-    let dae = model_dae(BALL_SOURCE, "Ball");
-
-    let model_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "Ball")
-            .expect("render FMI3 model");
+    let compiled = compile_model(COSIM_DECAY_SOURCE, "CosimDecay");
+    let model_c = render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", "CosimDecay");
 
     let driver_c = r#"
 #include <stdio.h>
@@ -1103,7 +1267,7 @@ static void dummy_logger(fmi3InstanceEnvironment e, fmi3Status s, fmi3String c, 
 
 int main(void) {
     fmi3Instance inst = fmi3InstantiateCoSimulation(
-        "test", "Ball-rumoca", "", 0, 0, 0, 0, NULL, 0, NULL, dummy_logger, NULL);
+        "test", "CosimDecay-rumoca", "", 0, 0, 0, 0, NULL, 0, NULL, dummy_logger, NULL);
     if (!inst) { fprintf(stderr, "instantiate failed\n"); return 1; }
 
     fmi3EnterInitializationMode(inst, 0, 0.0, 0.0, 1, 1.0);
@@ -1124,17 +1288,15 @@ int main(void) {
     fmi3Float64 x;
     fmi3GetFloat64(inst, &vr, 1, &x, 1);
 
-    /* Ball: der(x) = -x, x(0) = 0 → x(1) ≈ 0 * exp(-1) = 0
-     * Actually x(0) = 0 so x stays 0. Use expected value. */
-    double expected = 0.0;
+    /* Built-in co-simulation uses explicit Euler: x_n = (1 - dt)^n. */
+    double expected = pow(1.0 - dt, 100.0);
     printf("x_final=%.10g\n", x);
     printf("expected=%.10g\n", expected);
 
     fmi3Terminate(inst);
     fmi3FreeInstance(inst);
 
-    /* Ball has x(start=0) so it should stay at 0 */
-    return (fabs(x - expected) < 0.01) ? 0 : 1;
+    return (fabs(x - expected) < 0.01 && fabs(x - 1.0) > 0.1) ? 0 : 1;
 }
 "#;
 
@@ -1150,15 +1312,14 @@ int main(void) {
 // ============================================================================
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn fmi3_structural_parameter_xml() {
-    let dae = model_dae(TUNABLE_PARAM_SOURCE, "TunableParam");
-    let xml = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI3_MODEL_DESCRIPTION,
+    let compiled = compile_model(TUNABLE_PARAM_SOURCE, "TunableParam");
+    let xml = render_fmi_solve_template(
+        &compiled,
+        "fmi3",
+        "modelDescription.xml.jinja",
         "TunableParam",
-    )
-    .expect("render FMI3 model description");
+    );
 
     // k (Real) should be tunable parameter
     assert!(
@@ -1173,34 +1334,36 @@ fn fmi3_structural_parameter_xml() {
 }
 
 // ============================================================================
-// FMI 3.0 — BuildConfiguration and Terminals in XML
+// FMI 3.0 — modelDescription/buildDescription schema split
 //
-// Verify that the model description includes BuildConfiguration with
-// source file reference and an empty Terminals element.
+// Verify that modelDescription follows the FMI 3 schema and build
+// configuration is emitted in sources/buildDescription.xml.
 // ============================================================================
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
-fn fmi3_xml_build_config_and_terminals() {
-    let dae = model_dae(BALL_SOURCE, "Ball");
-    let xml = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI3_MODEL_DESCRIPTION,
-        "Ball",
-    )
-    .expect("render FMI3 model description");
+fn fmi3_xml_build_description_schema_split() {
+    let compiled = compile_model(BALL_SOURCE, "Ball");
+    let xml = render_fmi_solve_template(&compiled, "fmi3", "modelDescription.xml.jinja", "Ball");
 
     assert!(
-        xml.contains("<BuildConfiguration>"),
-        "expected <BuildConfiguration> in XML:\n{xml}"
+        !xml.contains("<BuildConfiguration"),
+        "BuildConfiguration belongs in sources/buildDescription.xml:\n{xml}"
     );
     assert!(
-        xml.contains("<SourceFile"),
-        "expected <SourceFile> in BuildConfiguration:\n{xml}"
+        !xml.contains("<Terminals"),
+        "Terminals belong in terminalsAndIcons/terminalsAndIcons.xml:\n{xml}"
+    );
+
+    let build_xml =
+        render_fmi_solve_template(&compiled, "fmi3", "buildDescription.xml.jinja", "Ball");
+
+    assert!(
+        build_xml.contains(r#"<fmiBuildDescription fmiVersion="3.0">"#),
+        "expected FMI 3 build description root:\n{build_xml}"
     );
     assert!(
-        xml.contains("<Terminals/>"),
-        "expected <Terminals/> in XML:\n{xml}"
+        build_xml.contains(r#"<SourceFile name="Ball.c"/>"#),
+        "expected source file in buildDescription:\n{build_xml}"
     );
 }
 
@@ -1213,6 +1376,7 @@ fn fmi3_xml_build_config_and_terminals() {
 // rumoca reference derivatives.
 // ============================================================================
 
+#[cfg(feature = "template-runtime-tests")]
 const SYMPY_EVAL_DRIVER: &str = r#"
 import importlib.util, sys, os
 import json
@@ -1262,21 +1426,21 @@ for target, expr in solution.items():
 print(json.dumps({"state_names": state_names, "derivs_at_t0": deriv_vals}))
 "#;
 
+#[cfg(feature = "template-runtime-tests")]
 fn sympy_trace_test(source: &str, model_name: &str) {
     let dae = model_dae(source, model_name);
-    let rendered =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::SYMPY, model_name)
-            .expect("render template");
+    let rendered = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::builtin_template_source("sympy", "sympy.py.jinja").unwrap(),
+        model_name,
+    )
+    .expect("render template");
 
     let stdout = run_python(&rendered, SYMPY_EVAL_DRIVER);
     let result: serde_json::Value = serde_json::from_str(stdout.trim()).expect("parse JSON output");
 
     // Get reference derivatives at t=0 from rumoca simulator
-    let opts = SimOptions {
-        t_end: 0.001,
-        ..SimOptions::default()
-    };
-    let sim = simulate_dae(&dae, &opts).expect("rumoca simulation");
+    let sim = reference_simulation(&dae, 0.001);
 
     // Compare: for each state, check that SymPy's derivative at t=0
     // matches the finite-difference derivative from rumoca's first step
@@ -1301,19 +1465,19 @@ fn sympy_trace_test(source: &str, model_name: &str) {
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn sympy_ball() {
     sympy_trace_test(BALL_SOURCE, "Ball");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn sympy_param_decay() {
     sympy_trace_test(PARAM_DECAY_SOURCE, "ParamDecay");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn sympy_oscillator() {
     sympy_trace_test(OSCILLATOR_SOURCE, "Oscillator");
 }
@@ -1325,6 +1489,7 @@ fn sympy_oscillator() {
 // from render_expr output, then runs forward Euler via ONNX Runtime.
 // ============================================================================
 
+#[cfg(feature = "template-runtime-tests")]
 const ONNX_CSV_DRIVER: &str = r#"
 import importlib.util, sys, os
 
@@ -1335,8 +1500,26 @@ spec.loader.exec_module(mod)
 print(mod.simulate())
 "#;
 
+#[cfg(feature = "template-runtime-tests")]
+fn python_has_onnx() -> bool {
+    Command::new(python_command())
+        .args(["-c", "import onnx; import onnxruntime; import numpy"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "template-runtime-tests")]
 fn onnx_trace_test(source: &str, model_name: &str) {
-    let rendered = render_template(source, model_name, templates::ONNX);
+    if !python_has_onnx() {
+        eprintln!("SKIP: onnx/onnxruntime not available");
+        return;
+    }
+    let rendered = render_template(
+        source,
+        model_name,
+        templates::builtin_template_source("onnx", "onnx.py.jinja").unwrap(),
+    );
     let csv = run_python(&rendered, ONNX_CSV_DRIVER);
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
@@ -1344,19 +1527,19 @@ fn onnx_trace_test(source: &str, model_name: &str) {
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn onnx_ball() {
     onnx_trace_test(BALL_SOURCE, "Ball");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn onnx_param_decay() {
     onnx_trace_test(PARAM_DECAY_SOURCE, "ParamDecay");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn onnx_oscillator() {
     onnx_trace_test(OSCILLATOR_SOURCE, "Oscillator");
 }
@@ -1368,8 +1551,10 @@ fn onnx_oscillator() {
 // ============================================================================
 
 /// JAX uses Tsit5 (adaptive 5th-order), should be tight.
+#[cfg(feature = "template-runtime-tests")]
 const JAX_TOLERANCE: f64 = 0.02;
 
+#[cfg(feature = "template-runtime-tests")]
 const JAX_CSV_DRIVER: &str = r#"
 import importlib.util, sys, os
 
@@ -1380,6 +1565,7 @@ spec.loader.exec_module(mod)
 print(mod.simulate_csv())
 "#;
 
+#[cfg(feature = "template-runtime-tests")]
 fn python_has_jax() -> bool {
     Command::new(python_command())
         .args(["-c", "import jax; import diffrax; import numpy"])
@@ -1388,12 +1574,17 @@ fn python_has_jax() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "template-runtime-tests")]
 fn jax_trace_test(source: &str, model_name: &str) {
     if !python_has_jax() {
         eprintln!("SKIP: jax/diffrax not available");
         return;
     }
-    let rendered = render_template(source, model_name, templates::JAX);
+    let rendered = render_template(
+        source,
+        model_name,
+        templates::builtin_template_source("jax", "jax.py.jinja").unwrap(),
+    );
     let csv = run_python(&rendered, JAX_CSV_DRIVER);
     let backend_traces = parse_csv_traces(&csv);
     let (dae, sim) = reference_trace(source, model_name, 1.0);
@@ -1401,19 +1592,19 @@ fn jax_trace_test(source: &str, model_name: &str) {
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn jax_ball() {
     jax_trace_test(BALL_SOURCE, "Ball");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn jax_param_decay() {
     jax_trace_test(PARAM_DECAY_SOURCE, "ParamDecay");
 }
 
 #[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn jax_oscillator() {
     jax_trace_test(OSCILLATOR_SOURCE, "Oscillator");
 }
@@ -1452,40 +1643,33 @@ equation
 end CoupledGains;
 "#;
 
-    let dae = model_dae(SOURCE, "CoupledGains");
+    let compiled = compile_model(SOURCE, "CoupledGains");
+    let dae = &compiled.dae;
 
     // At least one algebraic or output variable must survive elimination
     // (the coupled gain blocks create a 2-unknown algebraic loop).
-    let n_alg = dae.outputs.len() + dae.algebraics.len();
+    let n_alg = dae.variables.outputs.len() + dae.variables.algebraics.len();
     assert!(
         n_alg > 0,
         "test model should have algebraic/output variables that survive elimination, \
          got outputs={:?} algebraics={:?}",
-        dae.outputs.keys().collect::<Vec<_>>(),
-        dae.algebraics.keys().collect::<Vec<_>>(),
+        dae.variables.outputs.keys().collect::<Vec<_>>(),
+        dae.variables.algebraics.keys().collect::<Vec<_>>(),
     );
 
     let model = "CoupledGains";
 
     // FMI2: render and compile
-    let fmi2_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI2_MODEL, model)
-            .expect("FMI2 render");
-    let fmi2_driver =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI2_TEST_DRIVER, model)
-            .expect("FMI2 driver render");
+    let fmi2_c = render_fmi_solve_template(&compiled, "fmi2", "model.c.jinja", model);
+    let fmi2_driver = render_fmi_solve_template(&compiled, "fmi2", "test_driver.c.jinja", model);
     compile_and_run_c(
         &[("model.c", &fmi2_c), ("driver.c", &fmi2_driver)],
         &["--t-end", "1.0", "--dt", "0.001"],
     );
 
     // FMI3: render and compile
-    let fmi3_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, model)
-            .expect("FMI3 render");
-    let fmi3_driver =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_TEST_DRIVER, model)
-            .expect("FMI3 driver render");
+    let fmi3_c = render_fmi_solve_template(&compiled, "fmi3", "model.c.jinja", model);
+    let fmi3_driver = render_fmi_solve_template(&compiled, "fmi3", "test_driver.c.jinja", model);
     compile_and_run_c(
         &[("model.c", &fmi3_c), ("driver.c", &fmi3_driver)],
         &["--t-end", "1.0", "--dt", "0.001"],

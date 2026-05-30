@@ -5,14 +5,16 @@ pub(super) fn is_hover_preview_candidate(ast: &ast::StoredDefinition, word: &str
     ast.classes.get(word).is_some_and(|class| {
         matches!(
             class.class_type,
-            ast::ClassType::Model | ast::ClassType::Block | ast::ClassType::Class
+            rumoca_compile::parsing::ir_core::ClassType::Model
+                | rumoca_compile::parsing::ir_core::ClassType::Block
+                | rumoca_compile::parsing::ir_core::ClassType::Class
         )
     })
 }
 
 pub(super) fn class_target_definition(
     target_uri: &str,
-    declaration_location: &ast::Location,
+    declaration_location: &rumoca_compile::parsing::ir_core::Location,
     fallback_uri: &Url,
 ) -> Option<GotoDefinitionResponse> {
     let target_uri = Url::from_file_path(target_uri)
@@ -75,17 +77,17 @@ pub(super) fn local_component_hover(info: &rumoca_compile::compile::LocalCompone
     }
 }
 
-fn class_type_keyword(class_type: &ast::ClassType) -> &'static str {
+fn class_type_keyword(class_type: &rumoca_compile::parsing::ir_core::ClassType) -> &'static str {
     match class_type {
-        ast::ClassType::Model => "model",
-        ast::ClassType::Block => "block",
-        ast::ClassType::Connector => "connector",
-        ast::ClassType::Record => "record",
-        ast::ClassType::Type => "type",
-        ast::ClassType::Package => "package",
-        ast::ClassType::Function => "function",
-        ast::ClassType::Class => "class",
-        ast::ClassType::Operator => "operator",
+        rumoca_compile::parsing::ir_core::ClassType::Model => "model",
+        rumoca_compile::parsing::ir_core::ClassType::Block => "block",
+        rumoca_compile::parsing::ir_core::ClassType::Connector => "connector",
+        rumoca_compile::parsing::ir_core::ClassType::Record => "record",
+        rumoca_compile::parsing::ir_core::ClassType::Type => "type",
+        rumoca_compile::parsing::ir_core::ClassType::Package => "package",
+        rumoca_compile::parsing::ir_core::ClassType::Function => "function",
+        rumoca_compile::parsing::ir_core::ClassType::Class => "class",
+        rumoca_compile::parsing::ir_core::ClassType::Operator => "operator",
     }
 }
 
@@ -104,14 +106,14 @@ pub(super) fn flattened_preview_for_model(
     let mut lines = Vec::new();
     lines.push(format!(
         "model={model_name} | f_x={} | f_z={} | f_m={} | m={} | balance={}",
-        result.dae.f_x.len(),
-        result.dae.f_z.len(),
-        result.dae.f_m.len(),
-        result.dae.discrete_valued.len(),
+        result.dae.continuous.equations.len(),
+        result.dae.discrete.real_updates.len(),
+        result.dae.discrete.valued_updates.len(),
+        result.dae.variables.discrete_valued.len(),
         dae_balance(&result.dae)
     ));
-    lines.push(format!("f_x ({}):", result.dae.f_x.len()));
-    for (idx, eq) in result.dae.f_x.iter().take(6).enumerate() {
+    lines.push(format!("f_x ({}):", result.dae.continuous.equations.len()));
+    for (idx, eq) in result.dae.continuous.equations.iter().take(6).enumerate() {
         let lhs = eq
             .lhs
             .as_ref()
@@ -120,14 +122,9 @@ pub(super) fn flattened_preview_for_model(
         let rhs = truncate_debug(&eq.rhs, 140);
         lines.push(format!("  {idx}: {lhs} = {rhs}"));
     }
-    if result.dae.f_x.len() > 6 {
-        lines.push(format!(
-            "  ... {} more f_x equations",
-            result.dae.f_x.len() - 6
-        ));
-    }
-    lines.push(format!("f_z ({}):", result.dae.f_z.len()));
-    for (idx, eq) in result.dae.f_z.iter().take(4).enumerate() {
+    push_more_equations_line(&mut lines, result.dae.continuous.equations.len(), 6, "f_x");
+    lines.push(format!("f_z ({}):", result.dae.discrete.real_updates.len()));
+    for (idx, eq) in result.dae.discrete.real_updates.iter().take(4).enumerate() {
         let lhs = eq
             .lhs
             .as_ref()
@@ -136,14 +133,19 @@ pub(super) fn flattened_preview_for_model(
         let rhs = truncate_debug(&eq.rhs, 140);
         lines.push(format!("  {idx}: {lhs} = {rhs}"));
     }
-    if result.dae.f_z.len() > 4 {
-        lines.push(format!(
-            "  ... {} more f_z equations",
-            result.dae.f_z.len() - 4
-        ));
-    }
-    lines.push(format!("f_m ({}):", result.dae.f_m.len()));
-    for (idx, eq) in result.dae.f_m.iter().take(4).enumerate() {
+    push_more_equations_line(&mut lines, result.dae.discrete.real_updates.len(), 4, "f_z");
+    lines.push(format!(
+        "f_m ({}):",
+        result.dae.discrete.valued_updates.len()
+    ));
+    for (idx, eq) in result
+        .dae
+        .discrete
+        .valued_updates
+        .iter()
+        .take(4)
+        .enumerate()
+    {
         let lhs = eq
             .lhs
             .as_ref()
@@ -152,15 +154,22 @@ pub(super) fn flattened_preview_for_model(
         let rhs = truncate_debug(&eq.rhs, 140);
         lines.push(format!("  {idx}: {lhs} = {rhs}"));
     }
-    if result.dae.f_m.len() > 4 {
-        lines.push(format!(
-            "  ... {} more f_m equations",
-            result.dae.f_m.len() - 4
-        ));
-    }
-    if !result.dae.discrete_valued.is_empty() {
+    push_more_equations_line(
+        &mut lines,
+        result.dae.discrete.valued_updates.len(),
+        4,
+        "f_m",
+    );
+    if !result.dae.variables.discrete_valued.is_empty() {
         lines.push("m (discrete-valued variables):".to_string());
-        for (idx, (name, var)) in result.dae.discrete_valued.iter().take(6).enumerate() {
+        for (idx, (name, var)) in result
+            .dae
+            .variables
+            .discrete_valued
+            .iter()
+            .take(6)
+            .enumerate()
+        {
             let start = var
                 .start
                 .as_ref()
@@ -168,10 +177,10 @@ pub(super) fn flattened_preview_for_model(
                 .unwrap_or_else(|| "<none>".to_string());
             lines.push(format!("{idx}: {name} start={start}"));
         }
-        if result.dae.discrete_valued.len() > 6 {
+        if result.dae.variables.discrete_valued.len() > 6 {
             lines.push(format!(
                 "... {} more discrete-valued variables",
-                result.dae.discrete_valued.len() - 6
+                result.dae.variables.discrete_valued.len() - 6
             ));
         }
     }
@@ -180,6 +189,12 @@ pub(super) fn flattened_preview_for_model(
         "**Flattened DAE Preview**\n\n```text\n{}\n```",
         lines.join("\n")
     ))
+}
+
+fn push_more_equations_line(lines: &mut Vec<String>, total: usize, shown: usize, label: &str) {
+    if total > shown {
+        lines.push(format!("  ... {} more {label} equations", total - shown));
+    }
 }
 
 fn truncate_debug<T: std::fmt::Debug>(value: &T, max_chars: usize) -> String {

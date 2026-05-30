@@ -1,8 +1,11 @@
-use super::evaluator::{evaluate_array_dimensions, try_eval_integer_shape_expr};
 use super::find_class_in_tree;
-use indexmap::IndexMap;
-use rumoca_core::{DefId, is_builtin_type};
+use super::inheritance::resolve_effective_components_for_eval;
+use rumoca_core::is_builtin_type;
+use rumoca_core::{DefId, split_path_with_indices};
+use rumoca_eval_ast::eval_instantiate::{evaluate_array_dimensions, try_eval_integer_shape_expr};
 use rumoca_ir_ast as ast;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
+use std::sync::Arc;
 
 /// Collect array subscripts from a type alias inheritance chain.
 ///
@@ -68,8 +71,15 @@ pub(super) fn resolve_type_alias_dimensions(
         return Vec::new();
     }
 
-    evaluate_array_dimensions(&[], &subscripts, mod_env, effective_components, tree)
-        .unwrap_or_default()
+    evaluate_array_dimensions(
+        &[],
+        &subscripts,
+        mod_env,
+        effective_components,
+        tree,
+        resolve_effective_components_for_eval,
+    )
+    .unwrap_or_default()
 }
 
 pub(super) fn resolve_component_dimensions(
@@ -78,17 +88,23 @@ pub(super) fn resolve_component_dimensions(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
+    imports: &[(String, String)],
 ) -> (Vec<i64>, Vec<ast::Subscript>) {
     let mut dims = Vec::new();
     let mut dims_expr = Vec::new();
     let mut shape_eval_succeeded = false;
+    let qualified_shape_expr = qualify_shape_subscripts_imports(&comp.shape_expr, imports);
     let needs_late_recompute =
-        !comp.shape_expr.is_empty() && shape_expr_needs_late_recompute(&comp.shape_expr);
+        !qualified_shape_expr.is_empty() && shape_expr_needs_late_recompute(&qualified_shape_expr);
 
-    if !comp.shape_expr.is_empty() {
-        if let Some(eval_dims) =
-            eval_shape_expr_dims(&comp.shape_expr, mod_env, effective_components, tree)
-        {
+    if !qualified_shape_expr.is_empty() {
+        if let Some(eval_dims) = eval_shape_expr_dims(
+            &qualified_shape_expr,
+            mod_env,
+            effective_components,
+            tree,
+            imports,
+        ) {
             if needs_late_recompute {
                 // Defer symbolic dimensions to later phases that have full local
                 // scope/modifier context (MLS §10.1 structural dimensions).
@@ -96,21 +112,21 @@ pub(super) fn resolve_component_dimensions(
                 // may have dropped colon positions (e.g. `[:, 2]` -> `[2]`) or
                 // captured values from an outer scope before local parameters
                 // converged.
-                dims_expr = comp.shape_expr.clone();
+                dims_expr = qualified_shape_expr.clone();
             } else {
                 dims = eval_dims;
                 shape_eval_succeeded = true;
             }
         } else if needs_late_recompute {
             // Preserve symbolic/range expressions for late fixed-point passes.
-            dims_expr = comp.shape_expr.clone();
+            dims_expr = qualified_shape_expr.clone();
         } else {
             // Keep a numeric fallback when available for non-symbolic shapes.
             dims = comp.shape.iter().map(|&d| d as i64).collect();
             let preserve_shape_expr_fallback =
                 mod_env_has_package_alias_bindings(mod_env) || comp.shape.is_empty();
             if preserve_shape_expr_fallback {
-                dims_expr = comp.shape_expr.clone();
+                dims_expr = qualified_shape_expr.clone();
             }
         }
     } else if !comp.shape.is_empty() {
@@ -118,8 +134,8 @@ pub(super) fn resolve_component_dimensions(
     }
 
     // Append dimensions inherited from type aliases (e.g., Orientation -> Real[4]).
-    // Keep legacy behavior for unresolved component shape expressions, but still
-    // append alias dimensions when we already evaluated a concrete base shape.
+    // If component dimensions remain symbolic, preserve them for later lowering;
+    // otherwise extend the concrete base shape with alias dimensions.
     if (dims_expr.is_empty() || shape_eval_succeeded) && !type_dims.is_empty() {
         dims.extend_from_slice(type_dims);
     }
@@ -160,15 +176,23 @@ fn eval_shape_expr_dims(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
+    imports: &[(String, String)],
 ) -> Option<Vec<i64>> {
     let mut dims = Vec::with_capacity(shape_expr.len());
     for sub in shape_expr {
         let ast::Subscript::Expression(expr) = sub else {
             return None;
         };
+        let expr = qualify_shape_expr_imports(expr, imports);
         // MLS §10.1: structural dimension expressions may use compile-time `if`
         // branches over parameter/constant conditions.
-        let dim = try_eval_integer_shape_expr(expr, mod_env, effective_components, tree)?;
+        let dim = try_eval_integer_shape_expr(
+            &expr,
+            mod_env,
+            effective_components,
+            tree,
+            resolve_effective_components_for_eval,
+        )?;
         if dim < 0 {
             return None;
         }
@@ -177,17 +201,139 @@ fn eval_shape_expr_dims(
     Some(dims)
 }
 
+pub(super) fn qualify_shape_subscripts_imports(
+    shape_expr: &[ast::Subscript],
+    imports: &[(String, String)],
+) -> Vec<ast::Subscript> {
+    shape_expr
+        .iter()
+        .map(|subscript| match subscript {
+            ast::Subscript::Expression(expr) => {
+                ast::Subscript::Expression(qualify_shape_expr_imports(expr, imports))
+            }
+            ast::Subscript::Range { token } => ast::Subscript::Range {
+                token: token.clone(),
+            },
+            ast::Subscript::Empty => ast::Subscript::Empty,
+        })
+        .collect()
+}
+
+fn qualify_shape_expr_imports(
+    expr: &ast::Expression,
+    imports: &[(String, String)],
+) -> ast::Expression {
+    match expr {
+        ast::Expression::ComponentReference(cref) => {
+            ast::Expression::ComponentReference(qualify_component_ref_imports(cref, imports))
+        }
+        ast::Expression::Range {
+            start,
+            step,
+            end,
+            span,
+        } => ast::Expression::Range {
+            start: Arc::new(qualify_shape_expr_imports(start, imports)),
+            step: step
+                .as_ref()
+                .map(|expr| Arc::new(qualify_shape_expr_imports(expr, imports))),
+            end: Arc::new(qualify_shape_expr_imports(end, imports)),
+            span: *span,
+        },
+        ast::Expression::Unary { op, rhs, span } => ast::Expression::Unary {
+            op: op.clone(),
+            rhs: Arc::new(qualify_shape_expr_imports(rhs, imports)),
+            span: *span,
+        },
+        ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
+            op: op.clone(),
+            lhs: Arc::new(qualify_shape_expr_imports(lhs, imports)),
+            rhs: Arc::new(qualify_shape_expr_imports(rhs, imports)),
+            span: *span,
+        },
+        ast::Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => ast::Expression::If {
+            branches: branches
+                .iter()
+                .map(|(cond, body)| {
+                    (
+                        qualify_shape_expr_imports(cond, imports),
+                        qualify_shape_expr_imports(body, imports),
+                    )
+                })
+                .collect(),
+            else_branch: Arc::new(qualify_shape_expr_imports(else_branch, imports)),
+            span: *span,
+        },
+        ast::Expression::Parenthesized { inner, span } => ast::Expression::Parenthesized {
+            inner: Arc::new(qualify_shape_expr_imports(inner, imports)),
+            span: *span,
+        },
+        ast::Expression::FunctionCall { comp, args, span } => ast::Expression::FunctionCall {
+            comp: qualify_component_ref_imports(comp, imports),
+            args: args
+                .iter()
+                .map(|arg| qualify_shape_expr_imports(arg, imports))
+                .collect(),
+            span: *span,
+        },
+        _ => expr.clone(),
+    }
+}
+
+fn qualify_component_ref_imports(
+    cref: &ast::ComponentReference,
+    imports: &[(String, String)],
+) -> ast::ComponentReference {
+    let Some(first) = cref.parts.first() else {
+        return cref.clone();
+    };
+    let alias = first.ident.text.as_ref();
+    let Some((_, target)) = imports
+        .iter()
+        .rev()
+        .find(|(candidate, _)| candidate == alias)
+    else {
+        return cref.clone();
+    };
+
+    let mut parts = split_path_with_indices(target)
+        .into_iter()
+        .map(|segment| ast::ComponentRefPart {
+            ident: rumoca_core::Token {
+                text: Arc::from(segment),
+                ..rumoca_core::Token::default()
+            },
+            subs: None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(last) = parts.last_mut() {
+        last.subs = first.subs.clone();
+    }
+    parts.extend(cref.parts.iter().skip(1).cloned());
+
+    ast::ComponentReference {
+        local: cref.local,
+        parts,
+        def_id: cref.def_id,
+        span: cref.span,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{resolve_component_dimensions, resolve_type_alias_dimensions};
-    use indexmap::IndexMap;
     use rumoca_ir_ast as ast;
+    use rumoca_ir_ast::AstIndexMap as IndexMap;
     use std::sync::Arc;
 
-    fn make_token(text: &str) -> rumoca_ir_core::Token {
-        rumoca_ir_core::Token {
+    fn make_token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
             text: Arc::from(text),
-            location: rumoca_ir_core::Location::default(),
+            location: rumoca_core::Location::default(),
             token_number: 0,
             token_type: 0,
         }
@@ -204,6 +350,7 @@ mod tests {
         ast::Subscript::Expression(ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token: make_token(&dim.to_string()),
+            span: rumoca_core::Span::DUMMY,
         })
     }
 
@@ -211,14 +358,15 @@ mod tests {
         ast::Subscript::Expression(ast::Expression::ComponentReference(
             ast::ComponentReference {
                 local: false,
-                parts: path
-                    .split('.')
+                parts: rumoca_core::split_path_with_indices(path)
+                    .into_iter()
                     .map(|part| ast::ComponentRefPart {
                         ident: make_token(part),
                         subs: None,
                     })
                     .collect(),
                 def_id: None,
+                span: rumoca_core::Span::DUMMY,
             },
         ))
     }
@@ -234,8 +382,9 @@ mod tests {
             &comp,
             &[4],
             &ast::ModificationEnvironment::default(),
-            &IndexMap::new(),
+            &IndexMap::default(),
             &ast::ClassTree::default(),
+            &[],
         );
         assert_eq!(dims, vec![2, 4]);
         assert!(dims_expr.is_empty());
@@ -252,8 +401,9 @@ mod tests {
             &comp,
             &[],
             &ast::ModificationEnvironment::default(),
-            &IndexMap::new(),
+            &IndexMap::default(),
             &ast::ClassTree::default(),
+            &[],
         );
         assert_eq!(dims, vec![2]);
         assert!(dims_expr.is_empty());
@@ -270,8 +420,9 @@ mod tests {
             &comp,
             &[],
             &ast::ModificationEnvironment::default(),
-            &IndexMap::new(),
+            &IndexMap::default(),
             &ast::ClassTree::default(),
+            &[],
         );
         assert!(dims.is_empty());
         assert_eq!(dims_expr.len(), 1);
@@ -284,13 +435,14 @@ mod tests {
             shape_expr: vec![make_cref_subscript("nout")],
             ..Default::default()
         };
-        let mut effective_components = IndexMap::new();
+        let mut effective_components = IndexMap::default();
         effective_components.insert(
             "nout".to_string(),
             ast::Component {
                 binding: Some(ast::Expression::Terminal {
                     terminal_type: ast::TerminalType::UnsignedInteger,
                     token: make_token("2"),
+                    span: rumoca_core::Span::DUMMY,
                 }),
                 has_explicit_binding: true,
                 ..Default::default()
@@ -302,6 +454,7 @@ mod tests {
             &ast::ModificationEnvironment::default(),
             &effective_components,
             &ast::ClassTree::default(),
+            &[],
         );
         assert!(dims.is_empty());
         assert_eq!(dims_expr.len(), 1);
@@ -323,8 +476,9 @@ mod tests {
             &comp,
             &[],
             &ast::ModificationEnvironment::default(),
-            &IndexMap::new(),
+            &IndexMap::default(),
             &ast::ClassTree::default(),
+            &[],
         );
         assert!(
             dims.is_empty(),
@@ -342,7 +496,7 @@ mod tests {
 
         let quaternion_base = ast::ClassDef {
             name: make_token("QuaternionBase"),
-            class_type: ast::ClassType::Type,
+            class_type: rumoca_core::ClassType::Type,
             extends: vec![ast::Extend {
                 base_name: make_name("Real"),
                 ..Default::default()
@@ -353,7 +507,7 @@ mod tests {
 
         let orientation = ast::ClassDef {
             name: make_token("Orientation"),
-            class_type: ast::ClassType::Type,
+            class_type: rumoca_core::ClassType::Type,
             extends: vec![ast::Extend {
                 base_name: make_name("QuaternionBase"),
                 ..Default::default()
@@ -373,7 +527,7 @@ mod tests {
             &tree,
             class_def,
             &ast::ModificationEnvironment::default(),
-            &IndexMap::new(),
+            &IndexMap::default(),
         );
         assert_eq!(dims, vec![4]);
     }

@@ -1,0 +1,19 @@
+[package]
+name = "rumoca-eval-dae"
+description = "DAE-level tree-walk expression evaluator for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+indexmap = { workspace = true }
+blake3 = { workspace = true }
+tracing = { workspace = true }
+rustc-hash = { workspace = true }
+
+[lints]
+workspace = true

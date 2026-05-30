@@ -13,7 +13,9 @@
 use ::rumoca::CompilationResult as HighLevelCompilationResult;
 use pyo3::prelude::*;
 use pyo3::{PyErr, exceptions::PyRuntimeError};
-use rumoca_compile::codegen::render_dae_template_with_json;
+use rumoca_compile::codegen::targets::{
+    TargetBundle, render_dae_target_files, validate_dae_target_capabilities,
+};
 use rumoca_compile::compile::{FailedPhase, PhaseResult, Session, SessionConfig, SourceRootKind};
 use rumoca_compile::parsing::{
     collect_compile_unit_source_files, collect_model_names, validate_source_syntax,
@@ -278,31 +280,41 @@ impl ProjectSession {
         render_compiled_model(&result, &actual_model_name, template)
     }
 
-    #[pyo3(signature = (source, template_id, model_name=None, filename=None))]
-    fn render_builtin_model(
+    #[pyo3(signature = (source, target, model_name=None, filename=None))]
+    fn render_target_model(
         &mut self,
         source: &str,
-        template_id: &str,
+        target: &str,
         model_name: Option<&str>,
         filename: Option<&str>,
     ) -> Result<String, PyRuntimeStringError> {
-        let template = builtin_template_source(template_id).ok_or_else(|| {
-            PyRuntimeStringError(format!("Unknown built-in template id: {template_id}"))
-        })?;
-        self.render_model(source, template, model_name, filename)
+        self.sync_source_root_paths()?;
+        let filename = filename.unwrap_or("input.mo");
+        let (result, actual_model_name) = compile_source_in_session(
+            &mut self.session,
+            source,
+            model_name,
+            filename,
+            &self.effective_source_root_paths,
+        )?;
+        render_compiled_target(&result, &actual_model_name, target)
     }
 
-    #[pyo3(signature = (path, template_id, model_name=None))]
-    fn render_builtin_file(
+    #[pyo3(signature = (path, target, model_name=None))]
+    fn render_target_file(
         &mut self,
         path: &str,
-        template_id: &str,
+        target: &str,
         model_name: Option<&str>,
     ) -> Result<String, PyRuntimeStringError> {
-        let template = builtin_template_source(template_id).ok_or_else(|| {
-            PyRuntimeStringError(format!("Unknown built-in template id: {template_id}"))
-        })?;
-        self.render_model_file(path, template, model_name)
+        self.sync_source_root_paths()?;
+        let (result, actual_model_name) = compile_file_in_session(
+            &mut self.session,
+            path,
+            model_name,
+            &self.effective_source_root_paths,
+        )?;
+        render_compiled_target(&result, &actual_model_name, target)
     }
 
     #[pyo3(signature = (source, model_name=None, filename=None, t_end=1.0, dt=None, solver=None))]
@@ -449,19 +461,10 @@ fn check(source: &str, filename: Option<&str>) -> Vec<LintMessage> {
     lint(source, Some(filename))
 }
 
-/// Render code from DAE JSON using an explicit template string.
+/// Return built-in target.toml codegen targets as JSON.
 #[pyfunction]
-fn render_template(dae_json: &str, template: &str) -> Result<String, PyRuntimeStringError> {
-    let dae_json: Value = serde_json::from_str(dae_json)
-        .map_err(|e| PyRuntimeStringError(format!("Invalid DAE JSON: {e}")))?;
-    render_dae_template_with_json(&dae_json, template)
-        .map_err(|e| PyRuntimeStringError(format!("Template rendering error: {e}")))
-}
-
-/// Return the built-in codegen templates as JSON.
-#[pyfunction]
-fn get_builtin_templates() -> Result<String, PyRuntimeStringError> {
-    serde_json::to_string(&builtin_templates_json())
+fn get_builtin_targets() -> Result<String, PyRuntimeStringError> {
+    serde_json::to_string(&builtin_targets_json())
         .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
 }
 
@@ -554,31 +557,31 @@ fn render_model_file(
     session.render_model_file(path, template, model_name)
 }
 
-/// Compile and render one built-in template against inline source.
+/// Compile and render one target.toml target against inline source.
 #[pyfunction]
-#[pyo3(signature = (source, template_id, model_name=None, filename=None, source_roots=None))]
-fn render_builtin_model(
+#[pyo3(signature = (source, target, model_name=None, filename=None, source_roots=None))]
+fn render_target_model(
     source: &str,
-    template_id: &str,
+    target: &str,
     model_name: Option<&str>,
     filename: Option<&str>,
     source_roots: Option<Vec<String>>,
 ) -> Result<String, PyRuntimeStringError> {
     let mut session = ProjectSession::new(source_roots);
-    session.render_builtin_model(source, template_id, model_name, filename)
+    session.render_target_model(source, target, model_name, filename)
 }
 
-/// Compile and render one built-in template against a model file.
+/// Compile and render one target.toml target against a model file.
 #[pyfunction]
-#[pyo3(signature = (path, template_id, model_name=None, source_roots=None))]
-fn render_builtin_file(
+#[pyo3(signature = (path, target, model_name=None, source_roots=None))]
+fn render_target_file(
     path: &str,
-    template_id: &str,
+    target: &str,
     model_name: Option<&str>,
     source_roots: Option<Vec<String>>,
 ) -> Result<String, PyRuntimeStringError> {
     let mut session = ProjectSession::new(source_roots);
-    session.render_builtin_file(path, template_id, model_name)
+    session.render_target_file(path, target, model_name)
 }
 
 /// Compile and simulate inline Modelica source.
@@ -612,131 +615,19 @@ fn simulate_file(
     session.simulate_file(path, model_name, t_end, dt, solver)
 }
 
-fn builtin_templates_json() -> Value {
-    json!([
-            {
-                "id": "sympy.py.jinja",
-                "label": "SymPy (Python)",
-                "language": "python",
-                "source": rumoca_compile::codegen::templates::SYMPY,
-            },
-            {
-                "id": "jax.py.jinja",
-                "label": "JAX / Diffrax (Python)",
-                "language": "python",
-                "source": rumoca_compile::codegen::templates::JAX,
-            },
-            {
-                "id": "onnx.py.jinja",
-                "label": "ONNX (Python)",
-                "language": "python",
-                "source": rumoca_compile::codegen::templates::ONNX,
-            },
-            {
-                "id": "julia_mtk.jl.jinja",
-                "label": "Julia MTK",
-                "language": "julia",
-                "source": rumoca_compile::codegen::templates::JULIA_MTK,
-            },
-            {
-                "id": "casadi_sx.py.jinja",
-                "label": "CasADi SX (Python)",
-                "language": "python",
-                "source": rumoca_compile::codegen::templates::CASADI_SX,
-            },
-            {
-                "id": "casadi_mx.py.jinja",
-                "label": "CasADi MX (Python)",
-                "language": "python",
-                "source": rumoca_compile::codegen::templates::CASADI_MX,
-            },
-    {
-                "id": "embedded_c/model.h.jinja",
-                "label": "Embedded C Header",
-                "language": "c",
-                "source": rumoca_compile::codegen::templates::EMBEDDED_C_H,
-            },
-            {
-                "id": "embedded_c/model.c.jinja",
-                "label": "Embedded C Implementation",
-                "language": "c",
-                "source": rumoca_compile::codegen::templates::EMBEDDED_C_IMPL,
-            },
-            {
-                "id": "dae_modelica.mo.jinja",
-                "label": "DAE Modelica",
-                "language": "modelica",
-                "source": rumoca_compile::codegen::templates::DAE_MODELICA,
-            },
-            {
-                "id": "flat_modelica.mo.jinja",
-                "label": "Flat Modelica",
-                "language": "modelica",
-                "source": rumoca_compile::codegen::templates::FLAT_MODELICA,
-            },
-            {
-                "id": "fmi2/modelDescription.xml.jinja",
-                "label": "FMI 2.0 modelDescription.xml",
-                "language": "xml",
-                "source": rumoca_compile::codegen::templates::FMI2_MODEL_DESCRIPTION,
-            },
-            {
-                "id": "fmi2/model.c.jinja",
-                "label": "FMI 2.0 model.c",
-                "language": "c",
-                "source": rumoca_compile::codegen::templates::FMI2_MODEL,
-            },
-            {
-                "id": "fmi2/test_driver.c.jinja",
-                "label": "FMI 2.0 test driver",
-                "language": "c",
-                "source": rumoca_compile::codegen::templates::FMI2_TEST_DRIVER,
-            },
-            {
-                "id": "fmi3/modelDescription.xml.jinja",
-                "label": "FMI 3.0 modelDescription.xml",
-                "language": "xml",
-                "source": rumoca_compile::codegen::templates::FMI3_MODEL_DESCRIPTION,
-            },
-            {
-                "id": "fmi3/model.c.jinja",
-                "label": "FMI 3.0 model.c",
-                "language": "c",
-                "source": rumoca_compile::codegen::templates::FMI3_MODEL,
-            },
-            {
-                "id": "fmi3/test_driver.c.jinja",
-                "label": "FMI 3.0 test driver",
-                "language": "c",
-                "source": rumoca_compile::codegen::templates::FMI3_TEST_DRIVER,
-            },
-        ])
-}
-
-fn builtin_template_source(template_id: &str) -> Option<&'static str> {
-    match template_id {
-        "sympy.py.jinja" => Some(rumoca_compile::codegen::templates::SYMPY),
-        "jax.py.jinja" => Some(rumoca_compile::codegen::templates::JAX),
-        "onnx.py.jinja" => Some(rumoca_compile::codegen::templates::ONNX),
-        "julia_mtk.jl.jinja" => Some(rumoca_compile::codegen::templates::JULIA_MTK),
-        "casadi_sx.py.jinja" => Some(rumoca_compile::codegen::templates::CASADI_SX),
-        "casadi_mx.py.jinja" => Some(rumoca_compile::codegen::templates::CASADI_MX),
-        "embedded_c/model.h.jinja" => Some(rumoca_compile::codegen::templates::EMBEDDED_C_H),
-        "embedded_c/model.c.jinja" => Some(rumoca_compile::codegen::templates::EMBEDDED_C_IMPL),
-        "dae_modelica.mo.jinja" => Some(rumoca_compile::codegen::templates::DAE_MODELICA),
-        "flat_modelica.mo.jinja" => Some(rumoca_compile::codegen::templates::FLAT_MODELICA),
-        "fmi2/modelDescription.xml.jinja" => {
-            Some(rumoca_compile::codegen::templates::FMI2_MODEL_DESCRIPTION)
-        }
-        "fmi2/model.c.jinja" => Some(rumoca_compile::codegen::templates::FMI2_MODEL),
-        "fmi2/test_driver.c.jinja" => Some(rumoca_compile::codegen::templates::FMI2_TEST_DRIVER),
-        "fmi3/modelDescription.xml.jinja" => {
-            Some(rumoca_compile::codegen::templates::FMI3_MODEL_DESCRIPTION)
-        }
-        "fmi3/model.c.jinja" => Some(rumoca_compile::codegen::templates::FMI3_MODEL),
-        "fmi3/test_driver.c.jinja" => Some(rumoca_compile::codegen::templates::FMI3_TEST_DRIVER),
-        _ => None,
-    }
+fn builtin_targets_json() -> Value {
+    Value::Array(
+        rumoca_compile::codegen::templates::builtin_targets()
+            .iter()
+            .map(|target| {
+                json!({
+                    "id": target.name,
+                    "manifest": target.manifest,
+                    "templates": target.templates.iter().map(|template| template.path).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn split_env_modelicapath() -> Vec<String> {
@@ -978,7 +869,7 @@ fn choose_single_candidate_by_suffix(candidates: &[String], suffix: &str) -> Opt
 }
 
 fn last_segment(qualified_name: &str) -> &str {
-    qualified_name.rsplit('.').next().unwrap_or(qualified_name)
+    rumoca_core::top_level_last_segment(qualified_name)
 }
 
 fn compile_requested_model(
@@ -1061,6 +952,26 @@ fn render_compiled_model(
     result
         .render_template_str_with_name(template, model_name)
         .map_err(|e| PyRuntimeStringError(format!("Template error: {e}")))
+}
+
+fn render_compiled_target(
+    result: &HighLevelCompilationResult,
+    model_name: &str,
+    target: &str,
+) -> Result<String, PyRuntimeStringError> {
+    let bundle = TargetBundle::load(target)
+        .map_err(|e| PyRuntimeStringError(format!("Target error: {e}")))?;
+    let manifest = bundle
+        .parse_manifest()
+        .map_err(|e| PyRuntimeStringError(format!("Target manifest error: {e}")))?;
+    if let Some(capabilities) = manifest.capabilities.as_ref() {
+        validate_dae_target_capabilities(&result.dae, &manifest, capabilities)
+            .map_err(|e| PyRuntimeStringError(format!("Target capability error: {e}")))?;
+    }
+    let files = render_dae_target_files(&bundle, &manifest, &result.dae, model_name)
+        .map_err(|e| PyRuntimeStringError(format!("Target rendering error: {e}")))?;
+    serde_json::to_string_pretty(&files)
+        .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
 }
 
 fn seconds_since(started: Instant) -> f64 {
@@ -1162,12 +1073,11 @@ fn rumoca(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compile_file, m)?)?;
     m.add_function(wrap_pyfunction!(compile_file_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(compile_source, m)?)?;
-    m.add_function(wrap_pyfunction!(render_template, m)?)?;
     m.add_function(wrap_pyfunction!(render_model, m)?)?;
     m.add_function(wrap_pyfunction!(render_model_file, m)?)?;
-    m.add_function(wrap_pyfunction!(render_builtin_model, m)?)?;
-    m.add_function(wrap_pyfunction!(render_builtin_file, m)?)?;
-    m.add_function(wrap_pyfunction!(get_builtin_templates, m)?)?;
+    m.add_function(wrap_pyfunction!(render_target_model, m)?)?;
+    m.add_function(wrap_pyfunction!(render_target_file, m)?)?;
+    m.add_function(wrap_pyfunction!(get_builtin_targets, m)?)?;
     m.add_function(wrap_pyfunction!(simulate, m)?)?;
     m.add_function(wrap_pyfunction!(simulate_file, m)?)?;
     m.add_class::<ParseResult>()?;
@@ -1180,6 +1090,15 @@ fn rumoca(m: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn assert_dae_model_class_type(dae: &Value) {
+        assert_eq!(
+            dae.get("metadata")
+                .and_then(|metadata| metadata.get("class_type"))
+                .and_then(Value::as_str),
+            Some("Model")
+        );
+    }
 
     #[test]
     fn test_version() {
@@ -1222,13 +1141,13 @@ mod tests {
     }
 
     #[test]
-    fn test_get_builtin_templates_includes_sympy() {
-        let templates = get_builtin_templates().expect("templates");
-        let parsed: Value = serde_json::from_str(&templates).expect("json");
+    fn test_get_builtin_targets_includes_sympy() {
+        let targets = get_builtin_targets().expect("targets");
+        let parsed: Value = serde_json::from_str(&targets).expect("json");
         assert!(parsed.as_array().is_some_and(|items| {
             items
                 .iter()
-                .any(|item| item.get("id").and_then(Value::as_str) == Some("sympy.py.jinja"))
+                .any(|item| item.get("id").and_then(Value::as_str) == Some("sympy"))
         }));
     }
 
@@ -1242,10 +1161,7 @@ mod tests {
         )
         .expect("compile inline");
         let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
-        assert_eq!(
-            dae.get("class_type").and_then(|v| v.as_str()),
-            Some("Model")
-        );
+        assert_dae_model_class_type(&dae);
         assert!(
             dae.get("x")
                 .and_then(|v| v.as_object())
@@ -1272,7 +1188,9 @@ mod tests {
 
     #[test]
     fn test_compile_file_reads_source_from_path() {
-        let temp_file = unique_temp_model_path("rumoca_bind_python_ball");
+        let temp_dir = unique_temp_model_dir("rumoca_bind_python_ball");
+        fs::create_dir(&temp_dir).expect("create temp model dir");
+        let temp_file = temp_dir.join("Ball.mo");
         fs::write(
             &temp_file,
             "model Ball\n  Real x(start=0);\nequation\n  der(x) = -x;\nend Ball;\n",
@@ -1282,12 +1200,9 @@ mod tests {
         let dae_json = compile_file(temp_file.to_string_lossy().as_ref(), Some("Ball"), None)
             .expect("compile from file");
         let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
-        assert_eq!(
-            dae.get("class_type").and_then(|v| v.as_str()),
-            Some("Model")
-        );
+        assert_dae_model_class_type(&dae);
 
-        let _ = fs::remove_file(temp_file);
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -1302,10 +1217,7 @@ mod tests {
         )
         .expect("compile from fixture");
         let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
-        assert_eq!(
-            dae.get("class_type").and_then(|v| v.as_str()),
-            Some("Model")
-        );
+        assert_dae_model_class_type(&dae);
         assert!(
             dae.get("x")
                 .and_then(|v| v.as_object())
@@ -1324,10 +1236,7 @@ mod tests {
             .compile_file(fixture.to_string_lossy().as_ref(), None)
             .expect("compile from project session");
         let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
-        assert_eq!(
-            dae.get("class_type").and_then(|v| v.as_str()),
-            Some("Model")
-        );
+        assert_dae_model_class_type(&dae);
 
         let statuses = session.source_root_statuses().expect("statuses");
         let parsed: Value = serde_json::from_str(&statuses).expect("status json");
@@ -1355,16 +1264,18 @@ mod tests {
     }
 
     #[test]
-    fn test_render_builtin_file_uses_native_dae_template() {
+    fn test_render_target_file_uses_native_dae_template() {
         let fixture = fixture_path("UsesLib.mo");
         let source_root = fixture_path("Lib");
-        let rendered = render_builtin_file(
+        let rendered_json = render_target_file(
             fixture.to_string_lossy().as_ref(),
-            "dae_modelica.mo.jinja",
+            "dae-modelica",
             None,
             Some(vec![source_root.to_string_lossy().to_string()]),
         )
-        .expect("render built-in template");
+        .expect("render target");
+        let rendered_files: Value = serde_json::from_str(&rendered_json).expect("target JSON");
+        let rendered = rendered_files[0]["content"].as_str().expect("content");
         assert!(rendered.contains("class UsesLib"));
     }
 
@@ -1378,10 +1289,7 @@ mod tests {
         )
         .expect("compile via alias");
         let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
-        assert_eq!(
-            dae.get("class_type").and_then(|v| v.as_str()),
-            Some("Model")
-        );
+        assert_dae_model_class_type(&dae);
     }
 
     #[test]
@@ -1420,11 +1328,11 @@ mod tests {
             .join(relative)
     }
 
-    fn unique_temp_model_path(stem: &str) -> std::path::PathBuf {
+    fn unique_temp_model_dir(stem: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time")
             .as_nanos();
-        std::env::temp_dir().join(format!("{stem}_{nanos}.mo"))
+        std::env::temp_dir().join(format!("{stem}_{nanos}"))
     }
 }

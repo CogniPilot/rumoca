@@ -1,115 +1,68 @@
 use super::*;
-use rumoca_compile::codegen::{render_dae_template_with_name, templates as runtime_templates};
-use serde::Serialize;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BuiltinTemplateDescriptor {
-    id: &'static str,
-    label: &'static str,
-    language: &'static str,
-    source: &'static str,
+use anyhow::Context;
+use rumoca_compile::codegen::render_dae_template_with_name;
+use rumoca_compile::codegen::targets::{
+    RenderedTargetFile, TargetBundle, TargetTemplateIr, builtin_target_descriptors_for_ir,
+    render_dae_target_files, target_ir_is_dae_renderable,
+};
+
+fn builtin_template_descriptors() -> Vec<rumoca_compile::codegen::targets::BuiltinTargetDescriptor>
+{
+    builtin_target_descriptors_for_ir(TargetTemplateIr::Dae)
 }
 
-fn builtin_template_descriptors() -> Vec<BuiltinTemplateDescriptor> {
-    vec![
-        BuiltinTemplateDescriptor {
-            id: "sympy.py.jinja",
-            label: "SymPy (Python)",
-            language: "python",
-            source: runtime_templates::SYMPY,
-        },
-        BuiltinTemplateDescriptor {
-            id: "jax.py.jinja",
-            label: "JAX / Diffrax (Python)",
-            language: "python",
-            source: runtime_templates::JAX,
-        },
-        BuiltinTemplateDescriptor {
-            id: "onnx.py.jinja",
-            label: "ONNX (Python)",
-            language: "python",
-            source: runtime_templates::ONNX,
-        },
-        BuiltinTemplateDescriptor {
-            id: "julia_mtk.jl.jinja",
-            label: "Julia MTK",
-            language: "julia",
-            source: runtime_templates::JULIA_MTK,
-        },
-        BuiltinTemplateDescriptor {
-            id: "casadi_sx.py.jinja",
-            label: "CasADi SX (Python)",
-            language: "python",
-            source: runtime_templates::CASADI_SX,
-        },
-        BuiltinTemplateDescriptor {
-            id: "casadi_mx.py.jinja",
-            label: "CasADi MX (Python)",
-            language: "python",
-            source: runtime_templates::CASADI_MX,
-        },
-        BuiltinTemplateDescriptor {
-            id: "embedded_c/model.h.jinja",
-            label: "Embedded C Header",
-            language: "c",
-            source: runtime_templates::EMBEDDED_C_H,
-        },
-        BuiltinTemplateDescriptor {
-            id: "embedded_c/model.c.jinja",
-            label: "Embedded C Implementation",
-            language: "c",
-            source: runtime_templates::EMBEDDED_C_IMPL,
-        },
-        BuiltinTemplateDescriptor {
-            id: "dae_modelica.mo.jinja",
-            label: "DAE Modelica",
-            language: "modelica",
-            source: runtime_templates::DAE_MODELICA,
-        },
-        BuiltinTemplateDescriptor {
-            id: "flat_modelica.mo.jinja",
-            label: "Flat Modelica",
-            language: "modelica",
-            source: runtime_templates::FLAT_MODELICA,
-        },
-        BuiltinTemplateDescriptor {
-            id: "fmi2/modelDescription.xml.jinja",
-            label: "FMI 2.0 modelDescription.xml",
-            language: "xml",
-            source: runtime_templates::FMI2_MODEL_DESCRIPTION,
-        },
-        BuiltinTemplateDescriptor {
-            id: "fmi2/model.c.jinja",
-            label: "FMI 2.0 model.c",
-            language: "c",
-            source: runtime_templates::FMI2_MODEL,
-        },
-        BuiltinTemplateDescriptor {
-            id: "fmi2/test_driver.c.jinja",
-            label: "FMI 2.0 test driver",
-            language: "c",
-            source: runtime_templates::FMI2_TEST_DRIVER,
-        },
-        BuiltinTemplateDescriptor {
-            id: "fmi3/modelDescription.xml.jinja",
-            label: "FMI 3.0 modelDescription.xml",
-            language: "xml",
-            source: runtime_templates::FMI3_MODEL_DESCRIPTION,
-        },
-        BuiltinTemplateDescriptor {
-            id: "fmi3/model.c.jinja",
-            label: "FMI 3.0 model.c",
-            language: "c",
-            source: runtime_templates::FMI3_MODEL,
-        },
-        BuiltinTemplateDescriptor {
-            id: "fmi3/test_driver.c.jinja",
-            label: "FMI 3.0 test driver",
-            language: "c",
-            source: runtime_templates::FMI3_TEST_DRIVER,
-        },
-    ]
+fn table_has_key(value: &toml::Value, key: &str) -> bool {
+    value
+        .as_table()
+        .is_some_and(|table| table.contains_key(key))
+}
+
+fn table_path<'a>(value: &'a toml::Value, path: &[&str]) -> Option<&'a toml::Value> {
+    let mut current = value;
+    for key in path {
+        current = current.as_table()?.get(*key)?;
+    }
+    Some(current)
+}
+
+fn scenario_requests_live_viewer(raw: &toml::Value) -> bool {
+    table_path(raw, &["transport", "http"]).is_some()
+        || table_has_key(raw, "input")
+        || table_has_key(raw, "signals")
+        || table_has_key(raw, "locals")
+        || table_has_key(raw, "derive")
+        || table_has_key(raw, "reset")
+        || table_has_key(raw, "external_interface")
+        || (table_has_key(raw, "schema")
+            && table_has_key(raw, "receive")
+            && table_has_key(raw, "send"))
+}
+
+fn scenario_viewer_mode(config: &ProjectConfigFile, raw: &toml::Value) -> &'static str {
+    match config.viewer.mode {
+        Some(ScenarioViewerMode::ResultsPanel) => "results_panel",
+        Some(ScenarioViewerMode::ExternalWeb) => "external_web",
+        None if scenario_requests_live_viewer(raw) => "external_web",
+        None => "results_panel",
+    }
+}
+
+fn scenario_http_port(raw: &toml::Value) -> Option<i64> {
+    table_path(raw, &["transport", "http", "port"]).and_then(toml::Value::as_integer)
+}
+
+fn scenario_websocket_port(raw: &toml::Value) -> Option<i64> {
+    table_path(raw, &["transport", "websocket", "port"]).and_then(toml::Value::as_integer)
+}
+
+fn scenario_http_scene(raw: &toml::Value) -> Option<&str> {
+    table_path(raw, &["transport", "http", "scene"]).and_then(toml::Value::as_str)
+}
+
+fn scenario_sim_mode(raw: &toml::Value) -> Option<&str> {
+    table_path(raw, &["sim", "mode"]).and_then(toml::Value::as_str)
 }
 
 impl ModelicaLanguageServer {
@@ -174,36 +127,107 @@ impl ModelicaLanguageServer {
             self.client
                 .log_message(
                     MessageType::WARNING,
-                    format!("[rumoca] project config: {diagnostic}"),
+                    format!("[rumoca] colocated model config: {diagnostic}"),
                 )
                 .await;
         }
     }
 
-    pub(super) async fn execute_get_builtin_templates(&self) -> Option<Value> {
+    pub(super) async fn execute_get_builtin_targets(&self) -> Option<Value> {
         serde_json::to_value(builtin_template_descriptors()).ok()
     }
 
-    pub(super) async fn execute_render_template(&self, params: Option<Value>) -> Option<Value> {
+    pub(super) async fn execute_get_scenario_config(&self, params: Option<Value>) -> Option<Value> {
+        let params_value = params?;
+        let obj = params_value.as_object()?;
+        let uri = obj.get("uri").and_then(Value::as_str)?;
+        let uri = Url::parse(uri).ok()?;
+        if !is_project_config_uri(&uri) {
+            return Some(Self::simulation_error_value(
+                "scenario config must be a rum.toml or rum.<profile>.toml file",
+            ));
+        }
+        let source = match self.open_document_source_for_uri(&uri).await {
+            Ok(source) => source,
+            Err(error) => return Some(Self::simulation_error_value(error)),
+        };
+        let raw_config = match toml::from_str::<toml::Value>(&source) {
+            Ok(config) => config,
+            Err(error) => {
+                return Some(Self::simulation_error_value(format!(
+                    "failed to parse scenario config: {error}",
+                )));
+            }
+        };
+        let config = match toml::from_str::<ProjectConfigFile>(&source) {
+            Ok(config) => config,
+            Err(error) => {
+                return Some(Self::simulation_error_value(format!(
+                    "failed to parse scenario config: {error}",
+                )));
+            }
+        };
+        let model = config
+            .model
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("");
+        if model.is_empty() {
+            return Some(Self::simulation_error_value(
+                "scenario config is missing [model].name",
+            ));
+        }
+        let target = config.codegen.target.as_deref().unwrap_or("").trim();
+        if config.rumoca.task == ProjectTask::Codegen && target.is_empty() {
+            return Some(Self::simulation_error_value(
+                "codegen scenario config is missing [codegen].target",
+            ));
+        }
+        Some(json!({
+            "ok": true,
+            "task": match config.rumoca.task {
+                ProjectTask::Simulate => "simulate",
+                ProjectTask::Codegen => "codegen",
+            },
+            "model": model,
+            "target": target,
+            "outputDir": config.codegen.output_dir,
+            "viewerMode": scenario_viewer_mode(&config, &raw_config),
+            "viewerPreferExternal": config.viewer.prefer_external,
+            "simMode": scenario_sim_mode(&raw_config),
+            "httpPort": scenario_http_port(&raw_config),
+            "websocketPort": scenario_websocket_port(&raw_config),
+            "httpScene": scenario_http_scene(&raw_config),
+            "interactive": scenario_requests_live_viewer(&raw_config),
+        }))
+    }
+
+    pub(super) async fn execute_render_target(&self, params: Option<Value>) -> Option<Value> {
         let params_value = params?;
         let obj = params_value.as_object()?;
         let uri = obj.get("uri").and_then(Value::as_str)?;
         let uri = Url::parse(uri).ok()?;
         let model = obj.get("model").and_then(Value::as_str)?.trim().to_string();
-        let template = obj.get("template").and_then(Value::as_str)?.to_string();
+        let target_name = obj
+            .get("target")
+            .and_then(Value::as_str)?
+            .trim()
+            .to_string();
         if model.is_empty() {
             return Some(Self::simulation_error_value("model is required"));
         }
-        if template.trim().is_empty() {
-            return Some(Self::simulation_error_value("template source is required"));
+        if target_name.is_empty() {
+            return Some(Self::simulation_error_value("target is required"));
         }
 
         let mut request_token = self.begin_analysis_request().await;
-        let source = match self.open_document_source_for_uri(&uri).await {
-            Ok(source) => source,
+        let (_focus_uri, uri_path, source) = match self.simulation_focus_for_uri(&uri).await {
+            Ok(focus) => focus,
             Err(error) => return Some(Self::simulation_error_value(error)),
         };
-        let uri_path = session_document_uri_key(&uri);
+        let target_base_path = render_target_base_path(&uri, Path::new(&uri_path));
 
         if self
             .wait_for_simulation_prewarm_if_current(&model, &uri_path)
@@ -236,13 +260,43 @@ impl ModelicaLanguageServer {
             return Some(response);
         }
 
-        match render_dae_template_with_name(compiled.dae.as_ref(), &template, &model) {
-            Ok(output) => Some(json!({
+        let target_path = resolve_scenario_codegen_target(&target_base_path, &target_name);
+        if raw_jinja_target(&target_path) {
+            return match render_raw_jinja_target(compiled.dae.as_ref(), &model, &target_path) {
+                Ok(files) => Some(json!({
+                    "ok": true,
+                    "target": target_name,
+                    "files": files,
+                })),
+                Err(error) => Some(Self::simulation_error_value(format!(
+                    "target render failed: {error}",
+                ))),
+            };
+        }
+
+        let bundle = match load_codegen_target_bundle(&target_name, &target_path) {
+            Ok(bundle) => bundle,
+            Err(error) => return Some(Self::simulation_error_value(error.to_string())),
+        };
+        let manifest = match bundle.parse_manifest() {
+            Ok(manifest) => manifest,
+            Err(error) => return Some(Self::simulation_error_value(error.to_string())),
+        };
+        if !target_ir_is_dae_renderable(manifest.ir) {
+            return Some(Self::simulation_error_value(format!(
+                "target '{}' uses {:?} IR; editor target rendering currently supports dae IR targets",
+                target_name, manifest.ir
+            )));
+        }
+
+        match render_dae_target_files(&bundle, &manifest, compiled.dae.as_ref(), &model) {
+            Ok(files) => Some(json!({
                 "ok": true,
-                "output": output,
+                "target": target_name,
+                "files": files,
             })),
             Err(error) => Some(Self::simulation_error_value(format!(
-                "template render failed: {error}",
+                "target render failed: {error}",
             ))),
         }
     }
@@ -390,71 +444,70 @@ impl ModelicaLanguageServer {
         }
         Some(json!({ "ok": true }))
     }
+}
 
-    pub(super) async fn execute_resync_sidecars(&self, params: Option<Value>) -> Option<Value> {
-        let workspace_root_default = self.workspace_root.read().await.clone();
-        let obj = params
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default();
-        let workspace_root = obj
-            .get("workspaceRoot")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .or(workspace_root_default)?;
-        let dry_run = obj.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
-        let prune_orphans = obj
-            .get("pruneOrphans")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-
-        let known_models = {
-            let session = self.session.read().await;
-            collect_workspace_known_models_from_session(&session, &workspace_root)
-        };
-        let report = resync_model_sidecars_with_move_hints(
-            &workspace_root,
-            &known_models,
-            &[],
-            dry_run,
-            prune_orphans,
-        )
-        .ok()?;
-        if self.workspace_root.read().await.as_ref() == Some(&workspace_root) {
-            self.reload_project_config().await;
-        }
-        Some(json!({ "ok": true, "report": report }))
+fn load_codegen_target_bundle(
+    target_name: &str,
+    target_path: &Path,
+) -> anyhow::Result<TargetBundle> {
+    if let Some(bundle) = TargetBundle::builtin(target_name) {
+        return Ok(bundle);
     }
+    TargetBundle::load(
+        target_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("codegen target path is not UTF-8"))?,
+    )
+}
 
-    pub(super) async fn execute_project_files_moved(&self, params: Option<Value>) -> Option<Value> {
-        let workspace_root_default = self.workspace_root.read().await.clone();
-        let obj = params
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default();
-        let workspace_root = obj
-            .get("workspaceRoot")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .or(workspace_root_default)?;
-        let moved_files = parse_file_move_hints(obj.get("files"));
-        if moved_files.is_empty() {
-            return Some(json!({ "ok": true }));
-        }
-
-        let known_models = {
-            let session = self.session.read().await;
-            collect_workspace_known_models_from_session(&session, &workspace_root)
-        };
-        let report = resync_model_sidecars_with_move_hints(
-            &workspace_root,
-            &known_models,
-            &moved_files,
-            false,
-            false,
-        )
-        .ok()?;
-        if self.workspace_root.read().await.as_ref() == Some(&workspace_root) {
-            self.reload_project_config().await;
-        }
-        Some(json!({ "ok": true, "report": report }))
+fn resolve_scenario_codegen_target(uri_path: &Path, target: &str) -> PathBuf {
+    let target_path = PathBuf::from(target);
+    if target_path.is_absolute() {
+        return target_path;
     }
+    uri_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(target_path)
+}
+
+fn render_target_base_path(request_uri: &Url, focus_path: &Path) -> PathBuf {
+    if is_project_config_uri(request_uri)
+        && let Ok(config_path) = request_uri.to_file_path()
+    {
+        return config_path;
+    }
+    focus_path.to_path_buf()
+}
+
+fn raw_jinja_target(target_path: &Path) -> bool {
+    target_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension == "jinja")
+}
+
+fn render_raw_jinja_target(
+    dae: &rumoca_compile::compile::Dae,
+    model: &str,
+    target_path: &Path,
+) -> anyhow::Result<Vec<RenderedTargetFile>> {
+    let template = std::fs::read_to_string(target_path)
+        .with_context(|| format!("Read template: {}", target_path.display()))?;
+    let model_identifier = model.replace('.', "_");
+    let content = render_dae_template_with_name(dae, &template, &model_identifier)
+        .with_context(|| format!("Render raw template: {}", target_path.display()))?;
+    Ok(vec![RenderedTargetFile {
+        path: raw_jinja_output_path(target_path),
+        content,
+    }])
+}
+
+fn raw_jinja_output_path(target_path: &Path) -> String {
+    target_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("rendered")
+        .to_string()
 }

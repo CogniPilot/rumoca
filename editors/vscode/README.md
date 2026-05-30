@@ -93,23 +93,15 @@ To use external Modelica packages like the Modelica Standard Library, configure 
 ```json
 {
   "rumoca.sourceRootPaths": [
-    "/path/to/ModelicaStandardLibrary",
-    "/path/to/other/source-root"
+    "target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0",
+    "target/cmm/CMM-v0.0.1"
   ]
 }
 ```
 
-These paths are added to the effective `MODELICAPATH` search set used for import resolution. Paths configured here take priority over the `MODELICAPATH` environment variable.
+These paths are added to the effective `MODELICAPATH` search set used for import resolution. Repository-relative paths are resolved against the workspace root, so they are suitable for committed workspace settings or `.code-workspace` files. Paths configured here take priority over the `MODELICAPATH` environment variable.
 
-**Example workspace configuration** (`.vscode/settings.json`):
-
-```json
-{
-  "rumoca.sourceRootPaths": [
-    "${workspaceFolder}/../ModelicaStandardLibrary"
-  ]
-}
-```
+You can also edit these from the Rumoca settings panel under **Workspace Modelica Path**. Scenario-specific TOMLs can still use top-level `source_roots` for paths that should only apply to that configured run.
 
 **Note:** The `MODELICAPATH` environment variable is also supported. If set before starting VS Code, those directories will be searched in addition to paths configured in settings.
 
@@ -151,29 +143,29 @@ Then check the "Rumoca Modelica" output channel in VS Code.
 
 ```bash
 # one-time bootstrap from repo root
-cargo run --bin rum -- repo cli install
+cargo xtask repo cli install
 
 # run the extension verification gate
-rum vscode test
+cargo xtask vscode test
 
 # build/package/install the extension locally
-rum vscode build
+cargo xtask vscode build
 
 # package a target-specific VSIX with bundled release binaries
-rum vscode package --target linux-x64
+cargo xtask vscode package --target linux-x64
 
 # development loop with watch mode + Extension Development Host
-rum vscode edit
+cargo xtask vscode edit
 ```
 
-`rum vscode package` is the maintainer path for release-style VSIX artifacts. On Debian/Ubuntu,
+`cargo xtask vscode package` is the maintainer path for release-style VSIX artifacts. On Debian/Ubuntu,
 you can let it install `musl-tools` on the first Linux packaging run:
 
 ```bash
-rum vscode package --target linux-x64 --install-musl-tools
+cargo xtask vscode package --target linux-x64 --install-musl-tools
 ```
 
-If you need the lower-level manual steps, `rum vscode build` and `rum vscode package` wrap the
+If you need the lower-level manual steps, `cargo xtask vscode build` and `cargo xtask vscode package` wrap the
 same TypeScript, Cargo, and VSIX packaging flow that lives under `editors/vscode/`.
 
 ## License

@@ -2,11 +2,13 @@
 
 use std::collections::{HashMap, HashSet};
 
+use rumoca_core::ExpressionVisitor;
 use rumoca_ir_dae as dae;
 
 use crate::types::{EquationRef, UnknownId};
 
 /// Incidence data for a DAE system.
+#[derive(Debug)]
 pub struct Incidence {
     /// Number of equations.
     pub n_eq: usize,
@@ -16,6 +18,10 @@ pub struct Incidence {
     pub eq_unknowns: Vec<HashSet<usize>>,
     /// Ordered list of unknown identifiers (index → `UnknownId`).
     pub unknown_names: Vec<UnknownId>,
+    /// Source span of each unknown (index → span), parallel to `unknown_names`,
+    /// so structural-singularity errors are traceable back to the offending
+    /// model variable. `Span::DUMMY` for unknowns not sourced from DAE variables.
+    pub unknown_spans: Vec<rumoca_core::Span>,
     /// dae::Equation references (index → `EquationRef`).
     pub equation_refs: Vec<EquationRef>,
 }
@@ -33,6 +39,7 @@ impl Incidence {
             n_eq,
             n_var,
             eq_unknowns,
+            unknown_spans: vec![rumoca_core::Span::DUMMY; n_var],
             unknown_names,
             equation_refs,
         }
@@ -41,79 +48,235 @@ impl Incidence {
 
 /// Build incidence data from a DAE.
 pub(crate) fn build_incidence(dae: &dae::Dae) -> Incidence {
-    let (_unknown_map, unknown_names) = build_unknown_map(dae);
-    let n_var = unknown_names.len();
+    let (_unknown_map, unknown_names, unknown_spans) = build_unknown_map(dae);
     let (der_resolver, variable_resolver) = build_unknown_resolvers(&unknown_names);
 
     let mut equation_refs = Vec::new();
-    let mut equations_rhs = Vec::new();
+    let mut equations = Vec::new();
 
-    for (i, eq) in dae.f_x.iter().enumerate() {
-        equation_refs.push(EquationRef::Continuous(i));
-        equations_rhs.push(&eq.rhs);
+    for (i, eq) in dae.continuous.equations.iter().enumerate() {
+        equation_refs.push(EquationRef(i));
+        equations.push(eq);
     }
 
     let n_eq = equation_refs.len();
 
-    let eq_unknowns: Vec<HashSet<usize>> = equations_rhs
+    let eq_unknowns: Vec<HashSet<usize>> = equations
         .iter()
-        .map(|rhs| collect_equation_unknowns(rhs, &der_resolver, &variable_resolver))
+        .map(|eq| collect_equation_unknowns(eq, &der_resolver, &variable_resolver))
         .collect();
 
     Incidence {
         n_eq,
-        n_var,
+        n_var: unknown_names.len(),
         eq_unknowns,
         unknown_names,
+        unknown_spans,
         equation_refs,
     }
 }
 
-/// Build the unknown map: assign an index to each unknown in the DAE.
-fn build_unknown_map(dae: &dae::Dae) -> (HashMap<UnknownId, usize>, Vec<UnknownId>) {
+/// Build the unknown map: assign an index to each unknown in the DAE, recording
+/// each unknown's source span (parallel to the names) for diagnostics.
+fn build_unknown_map(
+    dae: &dae::Dae,
+) -> (
+    HashMap<UnknownId, usize>,
+    Vec<UnknownId>,
+    Vec<rumoca_core::Span>,
+) {
     let mut map = HashMap::new();
     let mut names = Vec::new();
+    let mut spans = Vec::new();
 
-    for name in dae.states.keys() {
-        let id = UnknownId::DerState(name.clone());
-        map.insert(id.clone(), names.len());
-        names.push(id);
+    for (name, var) in &dae.variables.states {
+        push_unknowns_for_variable(
+            &mut map,
+            &mut names,
+            &mut spans,
+            name,
+            var,
+            UnknownKind::DerState,
+        );
     }
 
-    for name in dae.algebraics.keys() {
-        let id = UnknownId::Variable(name.clone());
-        map.insert(id.clone(), names.len());
-        names.push(id);
+    for (name, var) in &dae.variables.algebraics {
+        push_unknowns_for_variable(
+            &mut map,
+            &mut names,
+            &mut spans,
+            name,
+            var,
+            UnknownKind::Variable,
+        );
     }
 
-    for name in dae.outputs.keys() {
-        let id = UnknownId::Variable(name.clone());
-        map.insert(id.clone(), names.len());
-        names.push(id);
+    for (name, var) in &dae.variables.outputs {
+        push_unknowns_for_variable(
+            &mut map,
+            &mut names,
+            &mut spans,
+            name,
+            var,
+            UnknownKind::Variable,
+        );
     }
 
-    (map, names)
+    (map, names, spans)
+}
+
+#[derive(Clone, Copy)]
+enum UnknownKind {
+    DerState,
+    Variable,
+}
+
+fn push_unknowns_for_variable(
+    map: &mut HashMap<UnknownId, usize>,
+    names: &mut Vec<UnknownId>,
+    spans: &mut Vec<rumoca_core::Span>,
+    name: &rumoca_core::VarName,
+    var: &dae::Variable,
+    kind: UnknownKind,
+) {
+    let size = var.size();
+    if size <= 1 {
+        push_unknown(
+            map,
+            names,
+            spans,
+            unknown_id(kind, name.clone()),
+            var.source_span,
+        );
+        return;
+    }
+
+    for flat_index in 0..size {
+        let scalar_name =
+            dae::scalar_name_text_for_flat_index(name.as_str(), &var.dims, flat_index);
+        push_unknown(
+            map,
+            names,
+            spans,
+            unknown_id(kind, rumoca_core::VarName::new(scalar_name)),
+            var.source_span,
+        );
+    }
+}
+
+fn push_unknown(
+    map: &mut HashMap<UnknownId, usize>,
+    names: &mut Vec<UnknownId>,
+    spans: &mut Vec<rumoca_core::Span>,
+    id: UnknownId,
+    span: rumoca_core::Span,
+) {
+    map.insert(id.clone(), names.len());
+    names.push(id);
+    spans.push(span);
+}
+
+fn unknown_id(kind: UnknownKind, name: rumoca_core::VarName) -> UnknownId {
+    match kind {
+        UnknownKind::DerState => UnknownId::DerState(name),
+        UnknownKind::Variable => UnknownId::Variable(name),
+    }
 }
 
 /// Collect unknown indices referenced by an equation's expression.
 fn collect_equation_unknowns(
-    expr: &dae::Expression,
+    eq: &dae::Equation,
     der_resolver: &ScalarUnknownResolver,
     variable_resolver: &ScalarUnknownResolver,
 ) -> HashSet<usize> {
     let mut result = HashSet::new();
 
     let mut der_states = HashSet::new();
-    expr.collect_state_variables(&mut der_states);
+    eq.rhs.collect_state_variables(&mut der_states);
     for name in der_states {
         for idx in der_resolver.resolve_name_all(name.as_str()) {
             result.insert(idx);
         }
     }
 
-    collect_expression_unknowns(expr, variable_resolver, &mut result);
+    collect_equation_lhs_unknown(eq.lhs.as_ref(), variable_resolver, &mut result);
+    collect_expression_unknowns(&eq.rhs, variable_resolver, &mut result);
+    if !result.is_empty()
+        && let Some(target) = direct_residual_definition_target(&eq.rhs)
+        && equation_contains_derivative(&eq.rhs)
+    {
+        for idx in variable_resolver.resolve_var_ref_all(target.0, target.1) {
+            result.remove(&idx);
+        }
+    }
 
     result
+}
+
+fn direct_residual_definition_target(
+    expr: &rumoca_core::Expression,
+) -> Option<(&rumoca_core::Reference, &[rumoca_core::Subscript])> {
+    let rumoca_core::Expression::Binary {
+        op, lhs, rhs: _, ..
+    } = expr
+    else {
+        return None;
+    };
+    if !matches!(op, rumoca_core::OpBinary::Sub) {
+        return None;
+    }
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = lhs.as_ref()
+    else {
+        return None;
+    };
+    Some((name, subscripts))
+}
+
+fn equation_contains_derivative(expr: &rumoca_core::Expression) -> bool {
+    let mut checker = DerivativeCallChecker { found: false };
+    checker.visit_expression(expr);
+    checker.found
+}
+
+struct DerivativeCallChecker {
+    found: bool,
+}
+
+impl ExpressionVisitor for DerivativeCallChecker {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        if !self.found {
+            self.walk_expression(expr);
+        }
+    }
+
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if *function == rumoca_core::BuiltinFunction::Der {
+            self.found = true;
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+}
+
+pub(crate) fn collect_equation_lhs_unknown(
+    lhs: Option<&rumoca_core::VarName>,
+    resolver: &ScalarUnknownResolver,
+    cols: &mut HashSet<usize>,
+) {
+    let Some(lhs) = lhs else {
+        return;
+    };
+    for idx in resolver.resolve_name_all(lhs.as_str()) {
+        cols.insert(idx);
+    }
 }
 
 fn build_unknown_resolvers(
@@ -126,6 +289,7 @@ fn build_unknown_resolvers(
         match unknown {
             UnknownId::DerState(name) => der_entries.push((name.as_str().to_string(), idx)),
             UnknownId::Variable(name) => variable_entries.push((name.as_str().to_string(), idx)),
+            UnknownId::SolverY(_) => {}
         }
     }
 
@@ -148,10 +312,11 @@ impl ScalarUnknownResolver {
         let mut next_idx = 0usize;
 
         for (name, var) in dae
+            .variables
             .states
             .iter()
-            .chain(dae.algebraics.iter())
-            .chain(dae.outputs.iter())
+            .chain(dae.variables.algebraics.iter())
+            .chain(dae.variables.outputs.iter())
         {
             let sz = var.size();
             if sz <= 1 {
@@ -160,8 +325,11 @@ impl ScalarUnknownResolver {
                 continue;
             }
 
-            for i in 1..=sz {
-                entries.push((format!("{}[{i}]", name.as_str()), next_idx));
+            for i in 0..sz {
+                entries.push((
+                    dae::scalar_name_text_for_flat_index(name.as_str(), &var.dims, i),
+                    next_idx,
+                ));
                 next_idx = next_idx.saturating_add(1);
             }
         }
@@ -225,8 +393,8 @@ impl ScalarUnknownResolver {
 
     pub(crate) fn resolve_var_ref_all(
         &self,
-        name: &dae::VarName,
-        subscripts: &[dae::Subscript],
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
     ) -> Vec<usize> {
         if let Some(canonical) = canonical_var_ref_key(name, subscripts) {
             let resolved = self.resolve_name_all(&canonical);
@@ -238,23 +406,28 @@ impl ScalarUnknownResolver {
     }
 }
 
-fn subscript_index_value(sub: &dae::Subscript) -> Option<i64> {
+fn subscript_index_value(sub: &rumoca_core::Subscript) -> Option<i64> {
     match sub {
-        dae::Subscript::Index(i) => Some(*i),
-        dae::Subscript::Expr(expr) => match expr.as_ref() {
-            dae::Expression::Literal(dae::Literal::Integer(i)) => Some(*i),
-            dae::Expression::Literal(dae::Literal::Real(v))
-                if v.is_finite() && v.fract() == 0.0 =>
-            {
-                Some(*v as i64)
-            }
+        rumoca_core::Subscript::Index { value: i, .. } => Some(*i),
+        rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(i),
+                ..
+            } => Some(*i),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(v),
+                ..
+            } if v.is_finite() && v.fract() == 0.0 => Some(*v as i64),
             _ => None,
         },
-        dae::Subscript::Colon => None,
+        rumoca_core::Subscript::Colon { .. } => None,
     }
 }
 
-fn canonical_var_ref_key(name: &dae::VarName, subscripts: &[dae::Subscript]) -> Option<String> {
+fn canonical_var_ref_key(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+) -> Option<String> {
     if subscripts.is_empty() {
         return Some(name.as_str().to_string());
     }
@@ -266,118 +439,134 @@ fn canonical_var_ref_key(name: &dae::VarName, subscripts: &[dae::Subscript]) -> 
     Some(format!("{}[{}]", name.as_str(), index_parts.join(",")))
 }
 
-fn collect_subscript_unknowns(
-    subscripts: &[dae::Subscript],
+pub(crate) fn collect_expression_unknowns(
+    expr: &rumoca_core::Expression,
     resolver: &ScalarUnknownResolver,
     cols: &mut HashSet<usize>,
 ) {
-    for sub in subscripts {
-        if let dae::Subscript::Expr(expr) = sub {
-            collect_expression_unknowns(expr, resolver, cols);
+    let mut collector = ExpressionUnknownCollector { resolver, cols };
+    collector.visit_expression(expr);
+}
+
+struct ExpressionUnknownCollector<'a> {
+    resolver: &'a ScalarUnknownResolver,
+    cols: &'a mut HashSet<usize>,
+}
+
+impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        for idx in self.resolver.resolve_var_ref_all(name, subscripts) {
+            self.cols.insert(idx);
+        }
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
+
+    fn visit_index(
+        &mut self,
+        base: &rumoca_core::Expression,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        if let rumoca_core::Expression::VarRef {
+            name,
+            subscripts: base_subscripts,
+            span,
+        } = base
+            && span.is_dummy()
+        {
+            let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
+            combined.extend_from_slice(base_subscripts);
+            combined.extend_from_slice(subscripts);
+            for idx in self.resolver.resolve_var_ref_all(name, &combined) {
+                self.cols.insert(idx);
+            }
+            for subscript in base_subscripts {
+                self.visit_subscript(subscript);
+            }
+            for subscript in subscripts {
+                self.visit_subscript(subscript);
+            }
+            return;
+        }
+
+        self.visit_expression(base);
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
+
+    fn visit_field_access(&mut self, base: &rumoca_core::Expression, field: &str) {
+        if let Some((name, subscripts)) = indexed_field_access_var_ref_key(base, field) {
+            let reference = rumoca_core::Reference::new(&name);
+            for idx in self.resolver.resolve_var_ref_all(&reference, &subscripts) {
+                self.cols.insert(idx);
+            }
+            for subscript in &subscripts {
+                self.visit_subscript(subscript);
+            }
+            return;
+        }
+        self.visit_expression(base);
+    }
+
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if *function == rumoca_core::BuiltinFunction::Der {
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
         }
     }
 }
 
-pub(crate) fn collect_expression_unknowns(
-    expr: &dae::Expression,
-    resolver: &ScalarUnknownResolver,
-    cols: &mut HashSet<usize>,
-) {
-    match expr {
-        dae::Expression::VarRef { name, subscripts } => {
-            for idx in resolver.resolve_var_ref_all(name, subscripts) {
-                cols.insert(idx);
-            }
-            collect_subscript_unknowns(subscripts, resolver, cols);
-        }
-        dae::Expression::Index { base, subscripts } => {
-            if let dae::Expression::VarRef {
+fn indexed_field_access_var_ref_key(
+    base: &rumoca_core::Expression,
+    field: &str,
+) -> Option<(String, Vec<rumoca_core::Subscript>)> {
+    match base {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => Some((format!("{}.{}", name.as_str(), field), subscripts.clone())),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let rumoca_core::Expression::VarRef {
                 name,
                 subscripts: base_subscripts,
+                ..
             } = base.as_ref()
-            {
-                let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
-                combined.extend_from_slice(base_subscripts);
-                combined.extend_from_slice(subscripts);
-                for idx in resolver.resolve_var_ref_all(name, &combined) {
-                    cols.insert(idx);
-                }
-                collect_subscript_unknowns(base_subscripts, resolver, cols);
-                collect_subscript_unknowns(subscripts, resolver, cols);
-            } else {
-                collect_expression_unknowns(base, resolver, cols);
-                collect_subscript_unknowns(subscripts, resolver, cols);
-            }
+            else {
+                return None;
+            };
+            let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
+            combined.extend_from_slice(base_subscripts);
+            combined.extend_from_slice(subscripts);
+            Some((format!("{}.{}", name.as_str(), field), combined))
         }
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            collect_expression_unknowns(lhs, resolver, cols);
-            collect_expression_unknowns(rhs, resolver, cols);
-        }
-        dae::Expression::Unary { rhs, .. } => {
-            collect_expression_unknowns(rhs, resolver, cols);
-        }
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Der,
-            ..
-        } => {}
-        dae::Expression::BuiltinCall { args, .. } | dae::Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_expression_unknowns(arg, resolver, cols);
-            }
-        }
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, value) in branches {
-                collect_expression_unknowns(cond, resolver, cols);
-                collect_expression_unknowns(value, resolver, cols);
-            }
-            collect_expression_unknowns(else_branch, resolver, cols);
-        }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            for element in elements {
-                collect_expression_unknowns(element, resolver, cols);
-            }
-        }
-        dae::Expression::Range { start, step, end } => {
-            collect_expression_unknowns(start, resolver, cols);
-            if let Some(step) = step.as_deref() {
-                collect_expression_unknowns(step, resolver, cols);
-            }
-            collect_expression_unknowns(end, resolver, cols);
-        }
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            for index in indices {
-                collect_expression_unknowns(&index.range, resolver, cols);
-            }
-            collect_expression_unknowns(expr, resolver, cols);
-            if let Some(filter) = filter.as_deref() {
-                collect_expression_unknowns(filter, resolver, cols);
-            }
-        }
-        dae::Expression::FieldAccess { base, .. } => {
-            collect_expression_unknowns(base, resolver, cols);
-        }
-        dae::Expression::Literal(_) | dae::Expression::Empty => {}
+        _ => None,
     }
 }
 
-/// Build structural solver sparsity triplets `(row, col)` for `dae.f_x`.
+/// Build structural solver sparsity triplets `(row, col)` for `dae.continuous.equations`.
 ///
 /// Column order matches the solver state vector: states, then algebraics, then outputs.
-/// Row order matches the current `dae.f_x` order.
+/// Row order matches the current `dae.continuous.equations` order.
 ///
 /// This is intended to be called after equation reordering for solver use.
 pub fn build_solver_sparsity_triplets(dae: &dae::Dae) -> Vec<(usize, usize)> {
     let resolver = ScalarUnknownResolver::from_dae(dae);
     let mut triplets = Vec::new();
 
-    for (row, eq) in dae.f_x.iter().enumerate() {
+    for (row, eq) in dae.continuous.equations.iter().enumerate() {
         let mut cols = HashSet::new();
         collect_expression_unknowns(&eq.rhs, &resolver, &mut cols);
         let mut cols_sorted: Vec<usize> = cols.into_iter().collect();
@@ -419,34 +608,59 @@ mod tests {
     use rumoca_core::Span;
     use rumoca_ir_dae as dae;
 
-    fn var(name: &str) -> dae::Expression {
-        dae::Expression::VarRef {
-            name: dae::VarName::new(name),
+    fn var(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
             subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
-    fn lit(v: f64) -> dae::Expression {
-        dae::Expression::Literal(dae::Literal::Real(v))
+    fn index(expr: rumoca_core::Expression, value: i64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Index {
+            base: Box::new(expr),
+            subscripts: vec![rumoca_core::Subscript::generated_index(
+                value,
+                rumoca_core::Span::DUMMY,
+            )],
+            span: rumoca_core::Span::DUMMY,
+        }
     }
 
-    fn sub(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
-        dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
+    fn field(expr: rumoca_core::Expression, name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::FieldAccess {
+            base: Box::new(expr),
+            field: name.to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn lit(v: f64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(v),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
-    fn add(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
-        dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
+    fn add(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
-    fn eq(rhs: dae::Expression) -> dae::Equation {
+    fn eq(rhs: rumoca_core::Expression) -> dae::Equation {
         dae::Equation {
             lhs: None,
             rhs,
@@ -459,23 +673,26 @@ mod tests {
     #[test]
     fn test_build_solver_sparsity_triplets_skips_derivative_argument_dependencies() {
         let mut dae = dae::Dae::new();
-        dae.states.insert(
-            dae::VarName::new("x"),
-            dae::Variable::new(dae::VarName::new("x")),
+        dae.variables.states.insert(
+            rumoca_core::VarName::new("x"),
+            dae::Variable::new(rumoca_core::VarName::new("x")),
         );
-        dae.algebraics.insert(
-            dae::VarName::new("z"),
-            dae::Variable::new(dae::VarName::new("z")),
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("z"),
+            dae::Variable::new(rumoca_core::VarName::new("z")),
         );
 
-        dae.f_x.push(eq(sub(
-            dae::Expression::BuiltinCall {
-                function: dae::BuiltinFunction::Der,
+        dae.continuous.equations.push(eq(sub(
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Der,
                 args: vec![var("x")],
+                span: rumoca_core::Span::DUMMY,
             },
             var("z"),
         )));
-        dae.f_x.push(eq(sub(var("z"), add(var("x"), lit(1.0)))));
+        dae.continuous
+            .equations
+            .push(eq(sub(var("z"), add(var("x"), lit(1.0)))));
 
         let triplets = build_solver_sparsity_triplets(&dae);
         assert!(triplets.contains(&(0, 1))); // row0 depends on z
@@ -487,14 +704,15 @@ mod tests {
     #[test]
     fn test_build_solver_sparsity_triplets_resolves_indexed_component_names() {
         let mut dae = dae::Dae::new();
-        dae.states.insert(
-            dae::VarName::new("support.phi"),
-            dae::Variable::new(dae::VarName::new("support.phi")),
+        dae.variables.states.insert(
+            rumoca_core::VarName::new("support.phi"),
+            dae::Variable::new(rumoca_core::VarName::new("support.phi")),
         );
-        dae.f_x.push(eq(sub(
-            dae::Expression::VarRef {
-                name: dae::VarName::new("support[1].phi"),
+        dae.continuous.equations.push(eq(sub(
+            rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("support[1].phi"),
                 subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
             },
             lit(0.0),
         )));
@@ -507,23 +725,43 @@ mod tests {
     fn test_build_solver_sparsity_triplets_maps_whole_array_refs_to_all_scalars() {
         let mut dae = dae::Dae::new();
 
-        let mut u = dae::Variable::new(dae::VarName::new("u"));
+        let mut u = dae::Variable::new(rumoca_core::VarName::new("u"));
         u.dims = vec![2];
-        dae.algebraics.insert(dae::VarName::new("u"), u);
-        dae.algebraics.insert(
-            dae::VarName::new("y"),
-            dae::Variable::new(dae::VarName::new("y")),
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("u"), u);
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("y"),
+            dae::Variable::new(rumoca_core::VarName::new("y")),
         );
 
-        dae.f_x.push(eq(sub(
+        dae.continuous.equations.push(eq(sub(
             var("y"),
-            dae::Expression::BuiltinCall {
-                function: dae::BuiltinFunction::Product,
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Product,
                 args: vec![var("u")],
+                span: rumoca_core::Span::DUMMY,
             },
         )));
 
         let triplets = build_solver_sparsity_triplets(&dae);
         assert_eq!(triplets, vec![(0, 0), (0, 1), (0, 2)]);
+    }
+
+    #[test]
+    fn test_build_solver_sparsity_triplets_resolves_indexed_record_field_arrays() {
+        let mut dae = dae::Dae::new();
+
+        let mut z_re = dae::Variable::new(rumoca_core::VarName::new("z.re"));
+        z_re.dims = vec![3];
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("z.re"), z_re);
+        dae.continuous
+            .equations
+            .push(eq(sub(field(index(var("z"), 3), "re"), lit(0.0))));
+
+        let triplets = build_solver_sparsity_triplets(&dae);
+        assert_eq!(triplets, vec![(0, 2)]);
     }
 }

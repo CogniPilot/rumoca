@@ -123,10 +123,10 @@ pub(crate) fn apply_subscripts_to_dims(dims: &[i64], subscripts: &[Subscript]) -
             break;
         }
         match sub {
-            Subscript::Index(_) | Subscript::Expr(_) => {
+            Subscript::Index { .. } | Subscript::Expr { expr: _, .. } => {
                 dim_idx += 1;
             }
-            Subscript::Colon => {
+            Subscript::Colon { .. } => {
                 remaining_dims.push(dims[dim_idx]);
                 dim_idx += 1;
             }
@@ -137,12 +137,13 @@ pub(crate) fn apply_subscripts_to_dims(dims: &[i64], subscripts: &[Subscript]) -
 }
 
 pub(crate) fn infer_varref_form(
-    name: &VarName,
+    name: &str,
     subscripts: &[Subscript],
     flat: &Model,
     prefix_counts: &FxHashMap<String, usize>,
 ) -> ExpressionForm {
-    if let Some(var) = flat.variables.get(name) {
+    let lookup_name = VarName::new(name);
+    if let Some(var) = flat.variables.get(&lookup_name) {
         if subscripts.is_empty() {
             return expression_form_from_dims(&var.dims);
         }
@@ -151,18 +152,18 @@ pub(crate) fn infer_varref_form(
     }
 
     // Embedded subscripts: e.g. "x[1]" or "M[1,2]"
-    if let Some(base) = strip_embedded_subscripts(name.as_str())
+    if let Some(base) = strip_embedded_subscripts(name)
         && let Some(var) = flat.variables.get(&VarName::new(base))
     {
-        if has_embedded_range_subscript(name.as_str()) {
-            let size = compute_embedded_range_size(name.as_str(), &var.dims, flat);
+        if has_embedded_range_subscript(name) {
+            let size = compute_embedded_range_size(name, &var.dims, flat);
             return if size <= 1 {
                 ExpressionForm::Scalar
             } else {
                 ExpressionForm::Vector(size)
             };
         }
-        let n = count_embedded_subscripts(name.as_str());
+        let n = count_embedded_subscripts(name);
         if n >= var.dims.len() {
             return ExpressionForm::Scalar;
         }
@@ -188,7 +189,7 @@ pub(crate) fn infer_varref_form(
         }
     }
 
-    if let Some(&count) = prefix_counts.get(name.as_str()) {
+    if let Some(&count) = prefix_counts.get(name) {
         return if count <= 1 {
             ExpressionForm::Scalar
         } else {
@@ -264,7 +265,7 @@ pub(crate) fn combine_elementwise_forms(
 }
 
 pub(crate) fn infer_binary_expression_form(
-    op: &rumoca_ir_flat::OpBinary,
+    op: &rumoca_core::OpBinary,
     lhs: &Expression,
     rhs: &Expression,
     flat: &Model,
@@ -273,38 +274,38 @@ pub(crate) fn infer_binary_expression_form(
     let lhs_form = infer_expression_form(lhs, flat, prefix_counts);
     let rhs_form = infer_expression_form(rhs, flat, prefix_counts);
     match op {
-        rumoca_ir_core::OpBinary::Add(_)
-        | rumoca_ir_core::OpBinary::Sub(_)
-        | rumoca_ir_core::OpBinary::AddElem(_)
-        | rumoca_ir_core::OpBinary::SubElem(_) => combine_additive_forms(lhs_form, rhs_form),
-        rumoca_ir_core::OpBinary::Mul(_) => combine_mul_forms(lhs_form, rhs_form),
-        rumoca_ir_core::OpBinary::MulElem(_) => combine_elementwise_forms(lhs_form, rhs_form),
-        rumoca_ir_core::OpBinary::Div(_) => match (lhs_form, rhs_form) {
+        rumoca_core::OpBinary::Add
+        | rumoca_core::OpBinary::Sub
+        | rumoca_core::OpBinary::AddElem
+        | rumoca_core::OpBinary::SubElem => combine_additive_forms(lhs_form, rhs_form),
+        rumoca_core::OpBinary::Mul => combine_mul_forms(lhs_form, rhs_form),
+        rumoca_core::OpBinary::MulElem => combine_elementwise_forms(lhs_form, rhs_form),
+        rumoca_core::OpBinary::Div => match (lhs_form, rhs_form) {
             (ExpressionForm::Scalar, ExpressionForm::Scalar) => ExpressionForm::Scalar,
             (ExpressionForm::Vector(n), ExpressionForm::Scalar) => ExpressionForm::Vector(n),
             (ExpressionForm::Matrix(r, c), ExpressionForm::Scalar) => ExpressionForm::Matrix(r, c),
             _ => ExpressionForm::Other,
         },
-        rumoca_ir_core::OpBinary::DivElem(_) | rumoca_ir_core::OpBinary::ExpElem(_) => {
+        rumoca_core::OpBinary::DivElem | rumoca_core::OpBinary::ExpElem => {
             combine_elementwise_forms(lhs_form, rhs_form)
         }
-        rumoca_ir_core::OpBinary::Exp(_) => match (lhs_form, rhs_form) {
+        rumoca_core::OpBinary::Exp => match (lhs_form, rhs_form) {
             (ExpressionForm::Scalar, ExpressionForm::Scalar) => ExpressionForm::Scalar,
             (ExpressionForm::Vector(n), ExpressionForm::Scalar) => ExpressionForm::Vector(n),
             (ExpressionForm::Matrix(r, c), ExpressionForm::Scalar) => ExpressionForm::Matrix(r, c),
             _ => ExpressionForm::Other,
         },
         // Relational/logical expressions are scalar.
-        rumoca_ir_core::OpBinary::Eq(_)
-        | rumoca_ir_core::OpBinary::Neq(_)
-        | rumoca_ir_core::OpBinary::Lt(_)
-        | rumoca_ir_core::OpBinary::Le(_)
-        | rumoca_ir_core::OpBinary::Gt(_)
-        | rumoca_ir_core::OpBinary::Ge(_)
-        | rumoca_ir_core::OpBinary::And(_)
-        | rumoca_ir_core::OpBinary::Or(_)
-        | rumoca_ir_core::OpBinary::Assign(_)
-        | rumoca_ir_core::OpBinary::Empty => ExpressionForm::Scalar,
+        rumoca_core::OpBinary::Eq
+        | rumoca_core::OpBinary::Neq
+        | rumoca_core::OpBinary::Lt
+        | rumoca_core::OpBinary::Le
+        | rumoca_core::OpBinary::Gt
+        | rumoca_core::OpBinary::Ge
+        | rumoca_core::OpBinary::And
+        | rumoca_core::OpBinary::Or
+        | rumoca_core::OpBinary::Assign
+        | rumoca_core::OpBinary::Empty => ExpressionForm::Scalar,
     }
 }
 
@@ -374,19 +375,19 @@ pub(crate) fn infer_expression_form(
     prefix_counts: &FxHashMap<String, usize>,
 ) -> ExpressionForm {
     match expr {
-        Expression::Literal(_) => ExpressionForm::Scalar,
-        Expression::VarRef { name, subscripts } => {
-            infer_varref_form(name, subscripts, flat, prefix_counts)
-        }
+        Expression::Literal { value: _, .. } => ExpressionForm::Scalar,
+        Expression::VarRef {
+            name, subscripts, ..
+        } => infer_varref_form(name.as_str(), subscripts, flat, prefix_counts),
         Expression::Unary { rhs, .. } => infer_expression_form(rhs, flat, prefix_counts),
-        Expression::Binary { op, lhs, rhs } => {
+        Expression::Binary { op, lhs, rhs, .. } => {
             infer_binary_expression_form(op, lhs, rhs, flat, prefix_counts)
         }
-        Expression::BuiltinCall { function, args } => {
+        Expression::BuiltinCall { function, args, .. } => {
             infer_builtin_expression_form(function, args, flat, prefix_counts)
         }
         Expression::FunctionCall { name, .. } => {
-            if let Some(dims) = infer_function_output_dims(name, flat) {
+            if let Some(dims) = infer_function_output_dims(name.as_str(), flat) {
                 return expression_form_from_dims(&dims);
             }
             ExpressionForm::Other
@@ -394,12 +395,16 @@ pub(crate) fn infer_expression_form(
         Expression::Array {
             elements,
             is_matrix,
+            ..
         } => infer_array_expression_form(elements, *is_matrix, flat, prefix_counts),
         Expression::If {
             branches,
             else_branch,
+            ..
         } => infer_if_expression_form(branches, else_branch, flat, prefix_counts),
-        Expression::Index { base, subscripts } => {
+        Expression::Index {
+            base, subscripts, ..
+        } => {
             let base_form = infer_expression_form(base, flat, prefix_counts);
             match (base_form, subscripts.is_empty()) {
                 (ExpressionForm::Vector(_), false) => ExpressionForm::Scalar,
@@ -410,7 +415,7 @@ pub(crate) fn infer_expression_form(
         | Expression::Range { .. }
         | Expression::FieldAccess { .. }
         | Expression::ArrayComprehension { .. }
-        | Expression::Empty => ExpressionForm::Other,
+        | Expression::Empty { .. } => ExpressionForm::Other,
     }
 }
 
@@ -419,10 +424,10 @@ pub(crate) fn infer_equation_scalar_count_from_forms(
     flat: &Model,
     prefix_counts: &FxHashMap<String, usize>,
 ) -> Option<usize> {
-    let Expression::Binary { op, lhs, rhs } = residual else {
+    let Expression::Binary { op, lhs, rhs, .. } = residual else {
         return None;
     };
-    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_core::OpBinary::Sub) {
         return None;
     }
 
@@ -464,8 +469,8 @@ pub(crate) fn infer_equation_scalar_count(
     // If LHS is a function call and we couldn't resolve its output size,
     // prefer RHS-based inference. This avoids inflating scalar count from
     // record-typed function arguments on the LHS.
-    if let Expression::Binary { op, lhs, rhs } = residual
-        && matches!(op, rumoca_ir_flat::OpBinary::Sub(_))
+    if let Expression::Binary { op, lhs, rhs, .. } = residual
+        && matches!(op, rumoca_core::OpBinary::Sub)
         && matches!(lhs.as_ref(), Expression::FunctionCall { .. })
         && let Some(size) =
             infer_scalar_count_from_varrefs_skip_function_args(rhs, flat, prefix_counts)
@@ -558,8 +563,12 @@ pub(crate) fn infer_flow_sum_scalar_count(
             continue;
         }
 
-        let size = match infer_varref_form(&var_ref.name, &var_ref.subscripts, flat, prefix_counts)
-        {
+        let size = match infer_varref_form(
+            var_ref.name.as_str(),
+            &var_ref.subscripts,
+            flat,
+            prefix_counts,
+        ) {
             ExpressionForm::Scalar => 1,
             ExpressionForm::Vector(n) => n,
             ExpressionForm::Matrix(r, c) => r.saturating_mul(c),

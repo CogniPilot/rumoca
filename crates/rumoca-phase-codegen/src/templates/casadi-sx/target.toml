@@ -1,0 +1,10 @@
+version = 1
+ir = "dae"
+name = "casadi-sx"
+description = "CasADi SX Python DAE export"
+execution_mode = "symbolic"
+deployment_class = "symbolic"
+
+[[files]]
+path = "{{ model_name }}_casadi_sx.py"
+template = "casadi_sx.py.jinja"

@@ -3,9 +3,10 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_core::{DefId, EvalLookup};
+    use rumoca_core::EvalLookup;
+    use rumoca_core::{ClassType, DefId};
     use rumoca_ir_ast as ast;
-    use rumoca_ir_ast::{ClassDef, ClassTree, ClassType, Component, InstanceData, InstanceId};
+    use rumoca_ir_ast::{ClassDef, ClassTree, Component, InstanceData, InstanceId};
     use rumoca_ir_flat as flat;
     use std::sync::Arc;
 
@@ -13,9 +14,9 @@ mod tests {
         let parts = crate::path_utils::split_path_with_indices(path)
             .into_iter()
             .map(|segment| ast::ComponentRefPart {
-                ident: rumoca_ir_core::Token {
+                ident: rumoca_core::Token {
                     text: Arc::from(segment),
-                    ..rumoca_ir_core::Token::default()
+                    ..rumoca_core::Token::default()
                 },
                 subs: None,
             })
@@ -25,7 +26,38 @@ mod tests {
             local: false,
             parts,
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
         })
+    }
+
+    fn int_lit(value: i64) -> Expression {
+        Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn int_array(values: &[i64]) -> Expression {
+        Expression::Array {
+            elements: values.iter().copied().map(int_lit).collect(),
+            is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn size_dim_expr(name: &str, dim: i64) -> Expression {
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args: vec![
+                Expression::VarRef {
+                    name: rumoca_core::Reference::new(name),
+                    subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
+                },
+                int_lit(dim),
+            ],
+            span: rumoca_core::Span::DUMMY,
+        }
     }
 
     #[test]
@@ -42,8 +74,11 @@ mod tests {
                 ("v".to_string(), Vec::new()),
             ],
         };
-        let mut disabled = std::collections::HashSet::new();
-        disabled.insert("bus[data.medium].pin".to_string());
+        let mut disabled = indexmap::IndexSet::new();
+        disabled.insert(rumoca_core::ComponentPath::from_parts([
+            "bus[data.medium]",
+            "pin",
+        ]));
 
         assert!(is_in_disabled_component(&qn, &disabled));
     }
@@ -57,8 +92,11 @@ mod tests {
                 ("v".to_string(), Vec::new()),
             ],
         };
-        let mut disabled = std::collections::HashSet::new();
-        disabled.insert("bus[data.other].pin".to_string());
+        let mut disabled = indexmap::IndexSet::new();
+        disabled.insert(rumoca_core::ComponentPath::from_parts([
+            "bus[data.other]",
+            "pin",
+        ]));
 
         assert!(!is_in_disabled_component(&qn, &disabled));
     }
@@ -67,19 +105,33 @@ mod tests {
     fn test_infer_array_dimensions_1d() {
         // {0} -> [1]
         let expr = Expression::Array {
-            elements: vec![Expression::Literal(flat::Literal::Integer(0))],
+            elements: vec![Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                span: rumoca_core::Span::DUMMY,
+            }],
             is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![1]));
 
         // {1, 2, 3} -> [3]
         let expr = Expression::Array {
             elements: vec![
-                Expression::Literal(flat::Literal::Integer(1)),
-                Expression::Literal(flat::Literal::Integer(2)),
-                Expression::Literal(flat::Literal::Integer(3)),
+                Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                Expression::Literal {
+                    value: rumoca_core::Literal::Integer(2),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                Expression::Literal {
+                    value: rumoca_core::Literal::Integer(3),
+                    span: rumoca_core::Span::DUMMY,
+                },
             ],
             is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![3]));
 
@@ -87,6 +139,7 @@ mod tests {
         let expr = Expression::Array {
             elements: vec![],
             is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![0]));
     }
@@ -98,20 +151,35 @@ mod tests {
             elements: vec![
                 Expression::Array {
                     elements: vec![
-                        Expression::Literal(flat::Literal::Integer(1)),
-                        Expression::Literal(flat::Literal::Integer(2)),
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(1),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(2),
+                            span: rumoca_core::Span::DUMMY,
+                        },
                     ],
                     is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
                 },
                 Expression::Array {
                     elements: vec![
-                        Expression::Literal(flat::Literal::Integer(3)),
-                        Expression::Literal(flat::Literal::Integer(4)),
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(3),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(4),
+                            span: rumoca_core::Span::DUMMY,
+                        },
                     ],
                     is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
                 },
             ],
             is_matrix: true,
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![2, 2]));
     }
@@ -121,10 +189,17 @@ mod tests {
         // [1, 2] -> [1, 2]
         let expr = Expression::Array {
             elements: vec![
-                Expression::Literal(flat::Literal::Integer(1)),
-                Expression::Literal(flat::Literal::Integer(2)),
+                Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                Expression::Literal {
+                    value: rumoca_core::Literal::Integer(2),
+                    span: rumoca_core::Span::DUMMY,
+                },
             ],
             is_matrix: true,
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![1, 2]));
     }
@@ -132,15 +207,28 @@ mod tests {
     #[test]
     fn test_infer_array_dimensions_non_array() {
         // Scalar literal -> None
-        let expr = Expression::Literal(flat::Literal::Integer(5));
+        let expr = Expression::Literal {
+            value: rumoca_core::Literal::Integer(5),
+            span: rumoca_core::Span::DUMMY,
+        };
         assert_eq!(infer_array_dimensions(&expr), None);
 
         // flat::Variable reference -> None
         let expr = Expression::VarRef {
-            name: flat::VarName::new("x"),
+            name: rumoca_core::Reference::new("x"),
             subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_array_dimensions(&expr), None);
+    }
+
+    #[test]
+    fn concrete_dimensions_replace_unknown_same_rank_dimensions() {
+        assert!(dims_are_better(&[4], &[0]));
+        assert!(dims_are_better(&[3, 2], &[3, 0]));
+        assert!(dims_are_better(&[8, 2], &[1, 2]));
+        assert!(!dims_are_better(&[0], &[4]));
+        assert!(!dims_are_better(&[1, 2], &[8, 2]));
     }
 
     #[test]
@@ -153,12 +241,17 @@ mod tests {
         let params = vec![(
             "pipe.flowModel.n".to_string(),
             Expression::Binary {
-                op: flat::OpBinary::Sub(flat::Token::default()),
+                op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(Expression::VarRef {
-                    name: flat::VarName::new("pipe.n"),
+                    name: rumoca_core::Reference::new("pipe.n"),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 }),
-                rhs: Box::new(Expression::Literal(flat::Literal::Integer(1))),
+                rhs: Box::new(Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                span: rumoca_core::Span::DUMMY,
             },
         )];
 
@@ -168,6 +261,29 @@ mod tests {
             "expected reevaluation to replace stale seeded value"
         );
         assert_eq!(ctx.get_integer_param("pipe.flowModel.n"), Some(2));
+    }
+
+    #[test]
+    fn test_modified_integer_binding_resolves_in_enclosing_scope() {
+        let mut ctx = Context::new();
+        ctx.parameter_values.insert("order".to_string(), 3);
+        ctx.parameter_values.insert("filter.order".to_string(), 2);
+
+        let params = vec![(
+            "filter.order".to_string(),
+            Expression::VarRef {
+                name: rumoca_core::Reference::new("order"),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            },
+        )];
+
+        let progress = ctx.eval_modified_integer_params(&params);
+        assert!(
+            progress,
+            "modifier-origin binding should replace component declaration default"
+        );
+        assert_eq!(ctx.get_integer_param("filter.order"), Some(3));
     }
 
     #[test]
@@ -202,14 +318,14 @@ mod tests {
         let mut flat = flat::Model::default();
 
         let mut field = flat::Variable {
-            name: flat::VarName::new("world.cylinders.R.T"),
+            name: rumoca_core::VarName::new("world.cylinders.R.T"),
             is_primitive: true,
             dims: vec![3, 3],
             ..Default::default()
         };
         flat.add_variable(field.name.clone(), field.clone());
 
-        field.name = flat::VarName::new("world.cylinders.r_shape");
+        field.name = rumoca_core::VarName::new("world.cylinders.r_shape");
         field.dims = vec![3];
         flat.add_variable(field.name.clone(), field);
 
@@ -229,14 +345,14 @@ mod tests {
 
         assert_eq!(
             flat.variables
-                .get(&flat::VarName::new("world.cylinders.R.T"))
+                .get(&rumoca_core::VarName::new("world.cylinders.R.T"))
                 .expect("missing field R.T")
                 .dims,
             vec![2, 3, 3]
         );
         assert_eq!(
             flat.variables
-                .get(&flat::VarName::new("world.cylinders.r_shape"))
+                .get(&rumoca_core::VarName::new("world.cylinders.r_shape"))
                 .expect("missing field r_shape")
                 .dims,
             vec![2, 3]
@@ -246,7 +362,7 @@ mod tests {
     #[test]
     fn test_propagate_unexpanded_record_array_dims_does_not_double_prefix_dims() {
         let mut flat = flat::Model::default();
-        let var_name = flat::VarName::new("world.cylinders.R.T");
+        let var_name = rumoca_core::VarName::new("world.cylinders.R.T");
         flat.add_variable(
             var_name.clone(),
             flat::Variable {
@@ -283,7 +399,7 @@ mod tests {
     #[test]
     fn test_propagate_unexpanded_record_array_dims_combines_parent_and_child_from_start() {
         let mut flat = flat::Model::default();
-        let var_name = flat::VarName::new("world.cylinders.lengthDirection");
+        let var_name = rumoca_core::VarName::new("world.cylinders.lengthDirection");
         flat.add_variable(
             var_name.clone(),
             flat::Variable {
@@ -293,23 +409,36 @@ mod tests {
                 binding: Some(Expression::Array {
                     elements: vec![
                         Expression::VarRef {
-                            name: flat::VarName::new("a"),
+                            name: rumoca_core::Reference::new("a"),
                             subscripts: vec![],
+                            span: rumoca_core::Span::DUMMY,
                         },
                         Expression::VarRef {
-                            name: flat::VarName::new("b"),
+                            name: rumoca_core::Reference::new("b"),
                             subscripts: vec![],
+                            span: rumoca_core::Span::DUMMY,
                         },
                     ],
                     is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
                 }),
                 start: Some(Expression::Array {
                     elements: vec![
-                        Expression::Literal(flat::Literal::Integer(1)),
-                        Expression::Literal(flat::Literal::Integer(0)),
-                        Expression::Literal(flat::Literal::Integer(0)),
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(1),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(0),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(0),
+                            span: rumoca_core::Span::DUMMY,
+                        },
                     ],
                     is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
                 }),
                 ..Default::default()
             },
@@ -339,24 +468,510 @@ mod tests {
     }
 
     #[test]
+    fn symbolic_component_dimensions_replace_stale_flat_dimensions() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+        let nf_name = rumoca_core::VarName::new("realFFT.nf");
+        flat.add_variable(
+            nf_name.clone(),
+            flat::Variable {
+                name: nf_name,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(Expression::Literal {
+                    value: rumoca_core::Literal::Integer(401),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                is_discrete_type: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+        let abs_name = rumoca_core::VarName::new("realFFT.abs");
+        flat.add_variable(
+            abs_name.clone(),
+            flat::Variable {
+                name: abs_name.clone(),
+                dims: vec![4],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            InstanceData {
+                instance_id: InstanceId::new(1),
+                qualified_name: QualifiedName::from_dotted("realFFT.abs"),
+                dims_expr: vec![ast::Subscript::Expression(component_ref_expr("realFFT.nf"))],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+        assert_eq!(ctx.array_dimensions.get("realFFT.abs"), Some(&vec![4]));
+
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("symbolic dimensions should resolve");
+
+        assert!(changed);
+        assert_eq!(
+            flat.variables.get(&abs_name).expect("abs variable").dims,
+            vec![401]
+        );
+        assert_eq!(ctx.array_dimensions.get("realFFT.abs"), Some(&vec![401]));
+    }
+
+    #[test]
+    fn enum_type_component_dimensions_use_literal_count() {
+        let mut ctx = Context::new();
+        let mut tree = ClassTree::new();
+        let logic_def_id = DefId::new(42);
+        let mut logic = ClassDef {
+            name: token("Logic"),
+            class_type: ClassType::Type,
+            def_id: Some(logic_def_id),
+            ..Default::default()
+        };
+        for literal in ["U", "X", "0", "1", "Z", "W", "L", "H", "-"] {
+            logic.enum_literals.push(ast::EnumLiteral {
+                ident: token(literal),
+                description: Vec::new(),
+            });
+        }
+        tree.definitions.classes.insert("Logic".to_string(), logic);
+        tree.def_map.insert(logic_def_id, "Logic".to_string());
+        tree.name_map.insert("Logic".to_string(), logic_def_id);
+
+        let mut flat = flat::Model::default();
+        let table_name = rumoca_core::VarName::new("gate.delayTable");
+        flat.add_variable(
+            table_name.clone(),
+            flat::Variable {
+                name: table_name.clone(),
+                dims: vec![1, 1],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            InstanceData {
+                instance_id: InstanceId::new(1),
+                qualified_name: QualifiedName::from_dotted("gate.delayTable"),
+                dims_expr: vec![
+                    ast::Subscript::Expression(ast::Expression::ComponentReference(
+                        ast::ComponentReference {
+                            local: false,
+                            parts: vec![ast::ComponentRefPart {
+                                ident: token("Logic"),
+                                subs: None,
+                            }],
+                            def_id: Some(logic_def_id),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                    )),
+                    ast::Subscript::Expression(ast::Expression::ComponentReference(
+                        ast::ComponentReference {
+                            local: false,
+                            parts: vec![ast::ComponentRefPart {
+                                ident: token("Logic"),
+                                subs: None,
+                            }],
+                            def_id: Some(logic_def_id),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                    )),
+                ],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("enum type dimensions should resolve from literal count");
+
+        assert!(changed);
+        assert_eq!(
+            flat.variables
+                .get(&table_name)
+                .expect("delayTable variable")
+                .dims,
+            vec![9, 9]
+        );
+        assert_eq!(
+            ctx.array_dimensions.get("gate.delayTable"),
+            Some(&vec![9, 9])
+        );
+    }
+
+    #[test]
+    fn colon_component_dimensions_use_enum_range_binding_shape() {
+        let mut ctx = Context::new();
+        let mut tree = ClassTree::new();
+        let logic_def_id = DefId::new(42);
+        let mut logic = ClassDef {
+            name: token("Logic"),
+            class_type: ClassType::Type,
+            def_id: Some(logic_def_id),
+            ..Default::default()
+        };
+        for literal in ["U", "X", "0", "1", "Z", "W", "L", "H", "-"] {
+            logic.enum_literals.push(ast::EnumLiteral {
+                ident: token(literal),
+                description: Vec::new(),
+            });
+        }
+        tree.definitions.classes.insert("Logic".to_string(), logic);
+        tree.def_map.insert(logic_def_id, "Logic".to_string());
+        tree.name_map.insert("Logic".to_string(), logic_def_id);
+
+        let enum_ref = |literal: &str| {
+            let component_ref = rumoca_core::ComponentReference {
+                local: false,
+                span: rumoca_core::Span::DUMMY,
+                parts: vec![
+                    rumoca_core::ComponentRefPart {
+                        ident: "Logic".to_string(),
+                        span: rumoca_core::Span::DUMMY,
+                        subs: Vec::new(),
+                    },
+                    rumoca_core::ComponentRefPart {
+                        ident: literal.to_string(),
+                        span: rumoca_core::Span::DUMMY,
+                        subs: Vec::new(),
+                    },
+                ],
+                def_id: Some(logic_def_id),
+            };
+            Expression::VarRef {
+                name: rumoca_core::Reference::from_component_reference(component_ref),
+                subscripts: Vec::new(),
+                span: rumoca_core::Span::DUMMY,
+            }
+        };
+
+        let mut flat = flat::Model::default();
+        let values_name = rumoca_core::VarName::new("delay.LogicValues");
+        flat.add_variable(
+            values_name.clone(),
+            flat::Variable {
+                name: values_name.clone(),
+                dims: vec![1],
+                binding: Some(Expression::Range {
+                    start: Box::new(enum_ref("U")),
+                    step: None,
+                    end: Box::new(enum_ref("-")),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            InstanceData {
+                instance_id: InstanceId::new(1),
+                qualified_name: QualifiedName::from_dotted("delay.LogicValues"),
+                dims_expr: vec![ast::Subscript::Range {
+                    token: rumoca_core::Token::default(),
+                }],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("enum range binding should resolve colon dimension");
+
+        assert!(changed);
+        assert_eq!(
+            flat.variables
+                .get(&values_name)
+                .expect("LogicValues variable")
+                .dims,
+            vec![9]
+        );
+        assert_eq!(
+            ctx.array_dimensions.get("delay.LogicValues"),
+            Some(&vec![9])
+        );
+    }
+
+    #[test]
+    fn colon_component_dimensions_use_binding_shape() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+        let x_name = rumoca_core::VarName::new("a.x");
+        flat.add_variable(
+            x_name.clone(),
+            flat::Variable {
+                name: x_name.clone(),
+                dims: vec![1],
+                binding: Some(Expression::Array {
+                    elements: vec![
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(1),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(0),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(1),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        Expression::Literal {
+                            value: rumoca_core::Literal::Integer(0),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                    ],
+                    is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            InstanceData {
+                instance_id: InstanceId::new(1),
+                qualified_name: QualifiedName::from_dotted("a.x"),
+                dims_expr: vec![ast::Subscript::Range {
+                    token: rumoca_core::Token::default(),
+                }],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("colon dimension should resolve from binding shape");
+
+        assert!(changed);
+        assert_eq!(
+            flat.variables.get(&x_name).expect("a.x variable").dims,
+            vec![4]
+        );
+        assert_eq!(ctx.array_dimensions.get("a.x"), Some(&vec![4]));
+    }
+
+    #[test]
+    fn colon_component_dimensions_without_shape_fail_fast() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+        let x_name = rumoca_core::VarName::new("a.x");
+        flat.add_variable(
+            x_name,
+            flat::Variable {
+                name: rumoca_core::VarName::new("a.x"),
+                dims: vec![1],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            InstanceData {
+                instance_id: InstanceId::new(1),
+                qualified_name: QualifiedName::from_dotted("a.x"),
+                dims_expr: vec![ast::Subscript::Range {
+                    token: rumoca_core::Token::default(),
+                }],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        let err = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect_err("colon dimension without a known shape should fail");
+
+        assert!(matches!(
+            err,
+            FlattenError::UnresolvedComponentDimension { .. }
+        ));
+    }
+
+    #[test]
+    fn symbolic_colon_component_dimensions_can_reuse_known_flat_dims() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+        let table_name = rumoca_core::VarName::new("model.table");
+        flat.add_variable(
+            table_name.clone(),
+            flat::Variable {
+                name: rumoca_core::VarName::new("model.table"),
+                dims: vec![8, 2],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            InstanceData {
+                instance_id: InstanceId::new(1),
+                qualified_name: QualifiedName::from_dotted("model.table"),
+                dims_expr: vec![ast::Subscript::Range {
+                    token: rumoca_core::Token::default(),
+                }],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("known flat dimensions should satisfy colon resolution");
+
+        assert!(changed);
+        assert_eq!(
+            flat.variables
+                .get(&table_name)
+                .expect("table variable should remain present")
+                .dims,
+            vec![8]
+        );
+    }
+
+    #[test]
+    fn lookup_infers_array_literal_dims_inside_array_component_element() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+        let a_name = rumoca_core::VarName::new("adaptor.filter[1].transferFunction[1].a");
+        flat.add_variable(
+            a_name.clone(),
+            flat::Variable {
+                name: a_name,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(int_array(&[-1, 1])),
+                binding_from_modification: true,
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+        let nx_name = rumoca_core::VarName::new("adaptor.filter[1].transferFunction[1].nx");
+        flat.add_variable(
+            nx_name.clone(),
+            flat::Variable {
+                name: nx_name,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(Expression::Binary {
+                    op: rumoca_core::OpBinary::Sub,
+                    lhs: Box::new(size_dim_expr("a", 1)),
+                    rhs: Box::new(int_lit(1)),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        assert_eq!(
+            ctx.array_dimensions
+                .get("adaptor.filter[1].transferFunction[1].a"),
+            Some(&vec![2])
+        );
+        assert_eq!(
+            ctx.parameter_values
+                .get("adaptor.filter[1].transferFunction[1].nx"),
+            Some(&1_i64)
+        );
+    }
+
+    #[test]
+    fn unresolved_symbolic_component_dimensions_fail_before_flat_ir_is_used() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+        let y_name = rumoca_core::VarName::new("model.y");
+        flat.add_variable(
+            y_name,
+            flat::Variable {
+                name: rumoca_core::VarName::new("model.y"),
+                dims: vec![1],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            InstanceData {
+                instance_id: InstanceId::new(1),
+                qualified_name: QualifiedName::from_dotted("model.y"),
+                dims_expr: vec![ast::Subscript::Expression(component_ref_expr(
+                    "model.missing_dim",
+                ))],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        let err = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect_err("unresolved component dimension should fail");
+
+        assert!(matches!(
+            err,
+            FlattenError::UnresolvedComponentDimension { .. }
+        ));
+    }
+
+    #[test]
     fn test_eval_enum_params_resolves_alias_target_reference() {
         let mut ctx = Context::new();
-        ctx.record_aliases
-            .insert("pipe1.system".to_string(), "system".to_string());
+        ctx.record_aliases.insert(
+            rumoca_core::ComponentPath::from_flat_path("pipe1.system"),
+            rumoca_core::ComponentPath::from_flat_path("system"),
+        );
 
         let params = vec![
             (
                 "system.energyDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("Modelica.Fluid.Types.Dynamics.SteadyStateInitial"),
+                    name: rumoca_core::Reference::new(
+                        "Modelica.Fluid.Types.Dynamics.SteadyStateInitial",
+                    ),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
             (
                 "pipe1.energyDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("pipe1.system.energyDynamics"),
+                    name: rumoca_core::Reference::new("pipe1.system.energyDynamics"),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
         ];
@@ -370,51 +985,60 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_enum_params_resolves_suffix_reference_without_alias() {
+    fn test_eval_enum_params_requires_alias_for_outer_like_reference() {
         let mut ctx = Context::new();
 
         let params = vec![
             (
                 "system.energyDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("Modelica.Fluid.Types.Dynamics.SteadyStateInitial"),
+                    name: rumoca_core::Reference::new(
+                        "Modelica.Fluid.Types.Dynamics.SteadyStateInitial",
+                    ),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
             (
                 "pipe1.energyDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("pipe1.system.energyDynamics"),
+                    name: rumoca_core::Reference::new("pipe1.system.energyDynamics"),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
         ];
 
         ctx.eval_enum_params(&params);
 
-        assert_eq!(
-            ctx.get_enum_param("pipe1.energyDynamics"),
-            Some("Modelica.Fluid.Types.Dynamics.SteadyStateInitial".to_string())
-        );
+        assert_eq!(ctx.get_enum_param("pipe1.energyDynamics"), None);
     }
 
     #[test]
-    fn test_eval_enum_params_resolves_uppercase_scoped_reference() {
+    fn test_eval_enum_params_resolves_uppercase_scoped_reference_through_alias() {
         let mut ctx = Context::new();
+        ctx.record_aliases.insert(
+            rumoca_core::ComponentPath::from_flat_path("HEX.system"),
+            rumoca_core::ComponentPath::from_flat_path("system"),
+        );
 
         let params = vec![
             (
                 "system.energyDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("Modelica.Fluid.Types.Dynamics.SteadyStateInitial"),
+                    name: rumoca_core::Reference::new(
+                        "Modelica.Fluid.Types.Dynamics.SteadyStateInitial",
+                    ),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
             (
                 "HEX.energyDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("HEX.system.energyDynamics"),
+                    name: rumoca_core::Reference::new("HEX.system.energyDynamics"),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
         ];
@@ -435,22 +1059,27 @@ mod tests {
             (
                 "system.energyDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("Modelica.Fluid.Types.Dynamics.SteadyStateInitial"),
+                    name: rumoca_core::Reference::new(
+                        "Modelica.Fluid.Types.Dynamics.SteadyStateInitial",
+                    ),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
             (
                 "pipe.energyDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("system.energyDynamics"),
+                    name: rumoca_core::Reference::new("system.energyDynamics"),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
             (
                 "HEX.energyDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("pipe.energyDynamics"),
+                    name: rumoca_core::Reference::new("pipe.energyDynamics"),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
         ];
@@ -466,6 +1095,10 @@ mod tests {
     #[test]
     fn test_eval_enum_params_resolves_conditional_enum_binding_from_known_boolean() {
         let mut ctx = Context::new();
+        ctx.record_aliases.insert(
+            rumoca_core::ComponentPath::from_flat_path("pipe1.system"),
+            rumoca_core::ComponentPath::from_flat_path("system"),
+        );
         ctx.boolean_parameter_values
             .insert("Medium.singleState".to_string(), true);
 
@@ -475,39 +1108,46 @@ mod tests {
                 Expression::If {
                     branches: vec![(
                         Expression::VarRef {
-                            name: flat::VarName::new("Medium.singleState"),
+                            name: rumoca_core::Reference::new("Medium.singleState"),
                             subscripts: vec![],
+                            span: rumoca_core::Span::DUMMY,
                         },
                         Expression::VarRef {
-                            name: flat::VarName::new("Dynamics.SteadyState"),
+                            name: rumoca_core::Reference::new("Dynamics.SteadyState"),
                             subscripts: vec![],
+                            span: rumoca_core::Span::DUMMY,
                         },
                     )],
                     else_branch: Box::new(Expression::VarRef {
-                        name: flat::VarName::new("Dynamics.SteadyStateInitial"),
+                        name: rumoca_core::Reference::new("Dynamics.SteadyStateInitial"),
                         subscripts: vec![],
+                        span: rumoca_core::Span::DUMMY,
                     }),
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
             (
                 "system.massDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("systemMassDynamics"),
+                    name: rumoca_core::Reference::new("systemMassDynamics"),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
             (
                 "pipe1.massDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("pipe1.system.massDynamics"),
+                    name: rumoca_core::Reference::new("pipe1.system.massDynamics"),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
             (
                 "pipe1.traceDynamics".to_string(),
                 Expression::VarRef {
-                    name: flat::VarName::new("pipe1.massDynamics"),
+                    name: rumoca_core::Reference::new("pipe1.massDynamics"),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             ),
         ];
@@ -561,11 +1201,11 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_with_scope_dotted_name_uses_full_suffix() {
+    fn test_lookup_with_scope_dotted_name_does_not_use_suffix_lookup() {
         let mut values: rustc_hash::FxHashMap<String, i64> = rustc_hash::FxHashMap::default();
         values.insert("source.medium.nXi".to_string(), 3);
 
-        assert_eq!(lookup_with_scope("medium.nXi", "", &values), Some(3));
+        assert_eq!(lookup_with_scope("medium.nXi", "", &values), None);
     }
 
     #[test]
@@ -587,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_lookup_trait_resolves_scoped_and_suffix_values() {
+    fn test_eval_lookup_trait_resolves_scoped_values() {
         let mut ctx = Context::new();
         ctx.parameter_values.insert("sys.n".to_string(), 4);
         ctx.real_parameter_values
@@ -598,8 +1238,10 @@ mod tests {
             .insert("sys.mode".to_string(), "Pkg.Mode.Fast".to_string());
         ctx.parameter_values
             .insert("source.medium.nXi".to_string(), 3);
-        ctx.record_aliases
-            .insert("sys.alias".to_string(), "sys".to_string());
+        ctx.record_aliases.insert(
+            rumoca_core::ComponentPath::from_flat_path("sys.alias"),
+            rumoca_core::ComponentPath::from_flat_path("sys"),
+        );
 
         assert_eq!(ctx.lookup_integer("n", "sys.inner"), Some(4));
         assert_eq!(ctx.lookup_integer("n", "sys.alias.inner"), Some(4));
@@ -609,45 +1251,74 @@ mod tests {
             ctx.lookup_enum("mode", "sys.inner").as_deref(),
             Some("Pkg.Mode.Fast")
         );
-        assert_eq!(ctx.lookup_integer("medium.nXi", ""), Some(3));
+        assert_eq!(ctx.lookup_integer("medium.nXi", ""), None);
     }
 
     #[test]
     fn test_resolve_through_prefix_handles_dot_inside_subscript_expression() {
-        let mut aliases: rustc_hash::FxHashMap<String, String> = rustc_hash::FxHashMap::default();
-        aliases.insert("bus[data.medium]".to_string(), "busMedium".to_string());
+        let mut aliases: rustc_hash::FxHashMap<
+            rumoca_core::ComponentPath,
+            rumoca_core::ComponentPath,
+        > = rustc_hash::FxHashMap::default();
+        aliases.insert(
+            rumoca_core::ComponentPath::from_flat_path("bus[data.medium]"),
+            rumoca_core::ComponentPath::from_flat_path("busMedium"),
+        );
 
-        let resolved = resolve_through_prefix("bus[data.medium].pin.v", "source", &aliases);
-        assert_eq!(resolved.as_deref(), Some("busMedium.pin.v"));
+        let resolved = crate::alias_paths::resolve_component_alias_once(
+            &rumoca_core::ComponentPath::from_flat_path("bus[data.medium].pin.v"),
+            Some(&rumoca_core::ComponentPath::from_flat_path("source")),
+            &aliases,
+        );
+        assert_eq!(
+            resolved.as_ref().map(|path| path.to_flat_string()),
+            Some("busMedium.pin.v".to_string())
+        );
     }
 
     #[test]
     fn test_synthesize_intermediate_aliases_handles_dot_inside_subscript_expression() {
-        let mut aliases: rustc_hash::FxHashMap<String, String> = rustc_hash::FxHashMap::default();
-        aliases.insert("stack.stackData".to_string(), "stackData".to_string());
+        let mut aliases: rustc_hash::FxHashMap<
+            rumoca_core::ComponentPath,
+            rumoca_core::ComponentPath,
+        > = rustc_hash::FxHashMap::default();
         aliases.insert(
-            "src".to_string(),
-            "stack.cell[data.medium].stackData.cellData".to_string(),
+            rumoca_core::ComponentPath::from_flat_path("stack.stackData"),
+            rumoca_core::ComponentPath::from_flat_path("stackData"),
+        );
+        aliases.insert(
+            rumoca_core::ComponentPath::from_flat_path("src"),
+            rumoca_core::ComponentPath::from_flat_path(
+                "stack.cell[data.medium].stackData.cellData",
+            ),
         );
 
         synthesize_intermediate_aliases(&mut aliases);
 
         assert_eq!(
-            aliases.get("stack.cell[data.medium].stackData"),
-            Some(&"stack.stackData".to_string())
+            aliases.get(&rumoca_core::ComponentPath::from_flat_path(
+                "stack.cell[data.medium].stackData"
+            )),
+            Some(&rumoca_core::ComponentPath::from_flat_path(
+                "stack.stackData"
+            ))
         );
     }
 
     #[test]
-    fn test_infer_function_call_dims_uses_bracket_aware_leaf_matching() {
+    fn test_infer_function_call_dims_requires_exact_resolved_name() {
         let mut function_output_dims = DimMap::new();
         function_output_dims.insert("foo[data.medium]".to_string(), vec![2]);
-        function_output_dims.insert("bar[data.medium]".to_string(), vec![3]);
+        function_output_dims.insert("model.foo[data.medium]".to_string(), vec![3]);
 
         assert_eq!(
             infer_function_call_dims("model.foo[data.medium]", &function_output_dims),
-            Some(vec![2]),
-            "dot-inside-subscript should not create ambiguous leaf matching"
+            Some(vec![3]),
+            "function output dims use the resolved function name, not textual leaf recovery"
+        );
+        assert_eq!(
+            infer_function_call_dims("other.foo[data.medium]", &function_output_dims),
+            None
         );
     }
 
@@ -656,20 +1327,35 @@ mod tests {
         let expr = Expression::ArrayComprehension {
             expr: Box::new(Expression::Array {
                 elements: vec![
-                    Expression::Literal(flat::Literal::Integer(1)),
-                    Expression::Literal(flat::Literal::Integer(2)),
+                    Expression::Literal {
+                        value: rumoca_core::Literal::Integer(1),
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                    Expression::Literal {
+                        value: rumoca_core::Literal::Integer(2),
+                        span: rumoca_core::Span::DUMMY,
+                    },
                 ],
                 is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
             }),
-            indices: vec![rumoca_ir_flat::ComprehensionIndex {
+            indices: vec![rumoca_core::ComprehensionIndex {
                 name: "i".to_string(),
                 range: Expression::Range {
-                    start: Box::new(Expression::Literal(flat::Literal::Integer(1))),
+                    start: Box::new(Expression::Literal {
+                        value: rumoca_core::Literal::Integer(1),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
                     step: None,
-                    end: Box::new(Expression::Literal(flat::Literal::Integer(3))),
+                    end: Box::new(Expression::Literal {
+                        value: rumoca_core::Literal::Integer(3),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    span: rumoca_core::Span::DUMMY,
                 },
             }],
             filter: None,
+            span: rumoca_core::Span::DUMMY,
         };
 
         assert_eq!(
@@ -681,28 +1367,40 @@ mod tests {
     #[test]
     fn test_infer_expr_dims_array_comprehension_with_filter_returns_none() {
         let expr = Expression::ArrayComprehension {
-            expr: Box::new(Expression::Literal(flat::Literal::Integer(1))),
-            indices: vec![rumoca_ir_flat::ComprehensionIndex {
+            expr: Box::new(Expression::Literal {
+                value: rumoca_core::Literal::Integer(1),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            indices: vec![rumoca_core::ComprehensionIndex {
                 name: "i".to_string(),
                 range: Expression::Range {
-                    start: Box::new(Expression::Literal(flat::Literal::Integer(1))),
+                    start: Box::new(Expression::Literal {
+                        value: rumoca_core::Literal::Integer(1),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
                     step: None,
-                    end: Box::new(Expression::Literal(flat::Literal::Integer(3))),
+                    end: Box::new(Expression::Literal {
+                        value: rumoca_core::Literal::Integer(3),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    span: rumoca_core::Span::DUMMY,
                 },
             }],
             filter: Some(Box::new(Expression::VarRef {
                 name: "cond".to_string().into(),
                 subscripts: Vec::new(),
+                span: rumoca_core::Span::DUMMY,
             })),
+            span: rumoca_core::Span::DUMMY,
         };
 
         assert_eq!(infer_expr_dims(&expr, &DimMap::new(), &DimMap::new()), None);
     }
 
-    fn token(name: &str) -> rumoca_ir_core::Token {
-        rumoca_ir_core::Token {
+    fn token(name: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
             text: Arc::from(name.to_string()),
-            ..rumoca_ir_core::Token::default()
+            ..rumoca_core::Token::default()
         }
     }
 
@@ -754,10 +1452,11 @@ mod tests {
             ..Default::default()
         };
 
-        let overrides = component_overrides(&instance, &tree);
+        let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+        let overrides = component_overrides(&instance, &tree, &class_index);
         assert_eq!(
-            overrides.get("noise"),
-            Some(&"DefaultNoise".to_string()),
+            overrides.get("noise").map(|target| target.name.as_str()),
+            Some("DefaultNoise"),
             "replaceable component defaults should seed constructor/function override aliases"
         );
     }
@@ -798,10 +1497,13 @@ mod tests {
             ..Default::default()
         };
 
-        let overrides = component_overrides(&instance, &tree);
+        let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+        let overrides = component_overrides(&instance, &tree, &class_index);
         assert_eq!(
-            overrides.get("frictionParameters"),
-            Some(&"FrictionParameters".to_string()),
+            overrides
+                .get("frictionParameters")
+                .map(|target| target.name.as_str()),
+            Some("FrictionParameters"),
             "non-replaceable component constructor aliases should be available for rewrite"
         );
     }
@@ -849,14 +1551,21 @@ mod tests {
             type_def_id: Some(host_def_id),
             ..Default::default()
         };
-        instance
-            .class_overrides
-            .insert("noise".to_string(), redeclared_noise_def_id);
+        instance.class_overrides.insert(
+            default_noise_def_id,
+            rumoca_ir_ast::ClassOverride::new(
+                "noise",
+                default_noise_def_id,
+                redeclared_noise_def_id,
+                None,
+            ),
+        );
 
-        let overrides = component_overrides(&instance, &tree);
+        let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+        let overrides = component_overrides(&instance, &tree, &class_index);
         assert_eq!(
-            overrides.get("noise"),
-            Some(&"RedeclaredNoise".to_string()),
+            overrides.get("noise").map(|target| target.name.as_str()),
+            Some("RedeclaredNoise"),
             "explicit class redeclare must override default replaceable binding"
         );
     }

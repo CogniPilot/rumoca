@@ -1,0 +1,30 @@
+{#- Embedded C header over prepared Solve IR. -#}
+{%- if ir_kind != "solve" -%}
+{{ fail("embedded-c target requires Solve IR") }}
+{%- endif -%}
+{%- set model_name = model_name | default("model") | sanitize -%}
+{%- set y_len = solve.layout.y_scalars -%}
+{%- set p_len = solve.layout.p_scalars -%}
+{%- set derivative_len = solve_blocks.continuous.derivative_rhs.output_count -%}
+#pragma once
+
+#include <stddef.h>
+
+typedef double real_t;
+
+enum {
+    {{ model_name | upper }}_Y_LEN = {{ y_len }},
+    {{ model_name | upper }}_P_LEN = {{ p_len }},
+    {{ model_name | upper }}_STATE_LEN = {{ solve.solve_layout.state_scalar_count }},
+    {{ model_name | upper }}_DERIVATIVE_LEN = {{ derivative_len }}
+};
+
+typedef struct {
+    real_t time;
+    real_t y[{{ y_len if y_len > 0 else 1 }}];
+    real_t p[{{ p_len if p_len > 0 else 1 }}];
+} {{ model_name }}_t;
+
+void {{ model_name }}_init({{ model_name }}_t *m);
+void {{ model_name }}_derivative_rhs(const {{ model_name }}_t *m, real_t *out);
+void {{ model_name }}_step({{ model_name }}_t *m, real_t dt);

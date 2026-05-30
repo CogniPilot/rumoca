@@ -16,7 +16,7 @@ use crossterm::{
     execute,
     terminal::{self, ClearType},
 };
-use rumoca_sim::{SimStepper, StepperOptions};
+use rumoca_sim::{SimOptions, SimStepper};
 
 const MODEL_SOURCE: &str = r#"
 model MassSpringDamperControl
@@ -41,7 +41,7 @@ fn main() -> anyhow::Result<()> {
     let result = compiler.compile_str(MODEL_SOURCE, "demo.mo")?;
 
     // Create the stepper
-    let mut stepper = SimStepper::new(&result.dae, StepperOptions::default())?;
+    let mut stepper = SimStepper::new(&result.dae, SimOptions::default())?;
 
     println!("Inputs:  {:?}", stepper.input_names());
     println!("Variables: {:?}", stepper.variable_names());

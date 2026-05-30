@@ -1,0 +1,90 @@
+#include "{{ model_name }}_solve.h"
+
+#include <math.h>
+
+{%- if solve_blocks.continuous.derivative_rhs.scalar_programs_use_linear_solve_component %}
+static double __rumoca_solve_linear_component(
+    const double *matrix,
+    const double *rhs,
+    int n,
+    int component)
+{
+    if (n < 1 || component < 0 || component >= n) {
+        return 0.0;
+    }
+
+    double a[(size_t)n * (size_t)n];
+    double b[(size_t)n];
+
+    for (int i = 0; i < n * n; ++i) {
+        a[i] = matrix[i];
+    }
+    for (int i = 0; i < n; ++i) {
+        b[i] = rhs[i];
+    }
+
+    for (int pivot = 0; pivot < n; ++pivot) {
+        int best = pivot;
+        double best_abs = fabs(a[pivot * n + pivot]);
+        for (int row = pivot + 1; row < n; ++row) {
+            double candidate = fabs(a[row * n + pivot]);
+            if (candidate > best_abs) {
+                best = row;
+                best_abs = candidate;
+            }
+        }
+        if (best_abs == 0.0) {
+            return 0.0;
+        }
+        if (best != pivot) {
+            for (int col = pivot; col < n; ++col) {
+                double tmp = a[pivot * n + col];
+                a[pivot * n + col] = a[best * n + col];
+                a[best * n + col] = tmp;
+            }
+            double tmp = b[pivot];
+            b[pivot] = b[best];
+            b[best] = tmp;
+        }
+        double diag = a[pivot * n + pivot];
+        for (int row = pivot + 1; row < n; ++row) {
+            double factor = a[row * n + pivot] / diag;
+            a[row * n + pivot] = 0.0;
+            for (int col = pivot + 1; col < n; ++col) {
+                a[row * n + col] -= factor * a[pivot * n + col];
+            }
+            b[row] -= factor * b[pivot];
+        }
+    }
+
+    double x[(size_t)n];
+    for (int i = 0; i < n; ++i) {
+        x[i] = 0.0;
+    }
+    for (int row = n - 1; row >= 0; --row) {
+        double sum = b[row];
+        for (int col = row + 1; col < n; ++col) {
+            sum -= a[row * n + col] * x[col];
+        }
+        x[row] = sum / a[row * n + row];
+    }
+    return x[component];
+}
+{%- endif %}
+
+void {{ model_name | sanitize }}_derivative_rhs(
+    double time,
+    const double *y,
+    const double *p,
+    double *out)
+{
+    (void)time;
+    (void)y;
+    (void)p;
+{%- set cfg = {"time": "time", "y": "y[{}]", "p": "p[{}]"} %}
+{%- for row in solve_blocks.continuous.derivative_rhs.scalar_programs.programs %}
+    out[{{ loop.index0 }}] = {{ render_solve_row_c(row, cfg) }};
+{%- else %}
+    (void)out;
+{%- endfor %}
+}

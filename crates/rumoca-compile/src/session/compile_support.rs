@@ -8,10 +8,9 @@ pub(super) fn resolve_class_for_completion<'a>(
         return Some(class);
     }
 
-    let suffix = format!(".{class_name}");
     let mut matched_name: Option<&str> = None;
     for name in tree.name_map.keys() {
-        if !(name == class_name || name.ends_with(&suffix)) {
+        if !class_name_matches_completion_target(name, class_name) {
             continue;
         }
         if matched_name.is_some() {
@@ -20,6 +19,11 @@ pub(super) fn resolve_class_for_completion<'a>(
         matched_name = Some(name);
     }
     matched_name.and_then(|name| tree.get_class_by_qualified_name(name))
+}
+
+fn class_name_matches_completion_target(qualified_name: &str, class_name: &str) -> bool {
+    qualified_name == class_name
+        || rumoca_core::top_level_path_ends_with(qualified_name, class_name)
 }
 
 pub(super) fn collect_class_component_members(
@@ -102,15 +106,13 @@ pub(super) fn split_cached_target_results(
     (results, missing)
 }
 
-pub(super) fn is_simulatable_class_type(class_type: &ast::ClassType) -> bool {
+pub(super) fn is_simulatable_class_type(class_type: &rumoca_core::ClassType) -> bool {
     matches!(
         class_type,
-        ast::ClassType::Model | ast::ClassType::Block | ast::ClassType::Class
+        rumoca_core::ClassType::Model
+            | rumoca_core::ClassType::Block
+            | rumoca_core::ClassType::Class
     )
-}
-
-fn has_multiple_top_level_classes(tree: &ast::ClassTree) -> bool {
-    tree.definitions.classes.len() > 1
 }
 
 fn summarize_typecheck_error_code(diags: &CommonDiagnostics) -> Option<String> {
@@ -125,9 +127,9 @@ fn summarize_typecheck_error_code(diags: &CommonDiagnostics) -> Option<String> {
     }
 }
 
-pub(super) fn todae_options_for_tree(tree: &ast::ClassTree) -> ToDaeOptions {
+pub(super) fn todae_options_for_target_model() -> ToDaeOptions {
     ToDaeOptions {
-        error_on_unbalanced: !has_multiple_top_level_classes(tree),
+        error_on_unbalanced: true,
     }
 }
 
@@ -137,7 +139,69 @@ pub(super) fn flatten_options_for_tree() -> FlattenOptions {
     // when the source tree contains many external source-root classes.
     FlattenOptions {
         strict_connection_validation: true,
+        simplify_variable_names: false,
     }
+}
+
+fn dae_model_outcome_internal_with_options(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    instantiation_options: InstantiateOptions,
+) -> DaeModelOutcome {
+    dae_model_outcome_internal_with_phase_options(
+        tree,
+        model_name,
+        instantiation_options,
+        todae_options_for_target_model(),
+    )
+}
+
+fn dae_model_outcome_internal_with_phase_options(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    instantiation_options: InstantiateOptions,
+    todae_options: ToDaeOptions,
+) -> DaeModelOutcome {
+    notify_compile_phase(FailedPhase::Instantiate, CompilePhaseEvent::Started);
+    let instantiate_start = maybe_start_timer();
+    let instantiate_outcome = InstantiatedModelOutcome::from_instantiation_outcome(
+        instantiate_model_with_outcome_options(tree, model_name, instantiation_options),
+    );
+    maybe_record_compile_phase_timing(FailedPhase::Instantiate, instantiate_start);
+    notify_compile_phase(FailedPhase::Instantiate, CompilePhaseEvent::Completed);
+
+    notify_compile_phase(FailedPhase::Typecheck, CompilePhaseEvent::Started);
+    let typecheck_start = maybe_start_timer();
+    let (typed_outcome, typechecked_built) =
+        typed_model_outcome_from_instantiated(tree, model_name, instantiate_outcome);
+    if typechecked_built {
+        maybe_record_compile_phase_timing(FailedPhase::Typecheck, typecheck_start);
+    }
+    notify_compile_phase(FailedPhase::Typecheck, CompilePhaseEvent::Completed);
+
+    notify_compile_phase(FailedPhase::Flatten, CompilePhaseEvent::Started);
+    let flatten_start = maybe_start_timer();
+    let (flat_outcome, flattened_built) =
+        flat_model_outcome_from_typed(tree, model_name, typed_outcome);
+    if flattened_built {
+        maybe_record_compile_phase_timing(FailedPhase::Flatten, flatten_start);
+    }
+    notify_compile_phase(FailedPhase::Flatten, CompilePhaseEvent::Completed);
+
+    notify_compile_phase(FailedPhase::ToDae, CompilePhaseEvent::Started);
+    let todae_start = maybe_start_timer();
+    let (dae_outcome, todae_built) =
+        dae_model_outcome_from_flat_with_options(tree, flat_outcome, todae_options);
+    if todae_built {
+        maybe_record_compile_phase_timing(FailedPhase::ToDae, todae_start);
+    }
+    notify_compile_phase(FailedPhase::ToDae, CompilePhaseEvent::Completed);
+
+    dae_outcome
+}
+
+fn dae_model_outcome_internal(tree: &ast::ClassTree, model_name: &str) -> DaeModelOutcome {
+    dae_model_outcome_internal_with_options(tree, model_name, InstantiateOptions::default())
 }
 
 /// Internal function for parallel compilation.
@@ -146,33 +210,66 @@ pub(super) fn flatten_options_for_tree() -> FlattenOptions {
 /// Type checking runs after instantiation so it has full access to the
 /// modification context for dimension evaluation (MLS §10.1).
 pub(super) fn compile_model_internal(tree: &ast::ClassTree, model_name: &str) -> PhaseResult {
-    let instantiate_start = maybe_start_timer();
-    let instantiate_outcome = InstantiatedModelOutcome::from_instantiation_outcome(
-        instantiate_model_with_outcome(tree, model_name),
-    );
-    maybe_record_compile_phase_timing(FailedPhase::Instantiate, instantiate_start);
-
-    let typecheck_start = maybe_start_timer();
-    let (typed_outcome, typechecked_built) =
-        typed_model_outcome_from_instantiated(tree, model_name, instantiate_outcome);
-    if typechecked_built {
-        maybe_record_compile_phase_timing(FailedPhase::Typecheck, typecheck_start);
-    }
-
-    let flatten_start = maybe_start_timer();
-    let (flat_outcome, flattened_built) =
-        flat_model_outcome_from_typed(tree, model_name, typed_outcome);
-    if flattened_built {
-        maybe_record_compile_phase_timing(FailedPhase::Flatten, flatten_start);
-    }
-
-    let todae_start = maybe_start_timer();
-    let (dae_outcome, todae_built) = dae_model_outcome_from_flat(tree, flat_outcome);
-    if todae_built {
-        maybe_record_compile_phase_timing(FailedPhase::ToDae, todae_start);
-    }
-
+    let dae_outcome = dae_model_outcome_internal(tree, model_name);
     compile_phase_result_from_dae(tree, model_name, dae_outcome)
+}
+
+pub(super) fn compile_model_internal_with_options(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    instantiation_options: InstantiateOptions,
+) -> PhaseResult {
+    let dae_outcome =
+        dae_model_outcome_internal_with_options(tree, model_name, instantiation_options);
+    compile_phase_result_from_dae(tree, model_name, dae_outcome)
+}
+
+pub(super) fn compile_model_internal_allow_unbalanced_for_diagnostics(
+    tree: &ast::ClassTree,
+    model_name: &str,
+) -> PhaseResult {
+    let dae_outcome = dae_model_outcome_internal_with_phase_options(
+        tree,
+        model_name,
+        InstantiateOptions::default(),
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    );
+    compile_phase_result_from_dae(tree, model_name, dae_outcome)
+}
+
+pub(super) fn compile_model_dae_internal(
+    tree: &ast::ClassTree,
+    model_name: &str,
+) -> DaePhaseResult {
+    let dae_outcome = dae_model_outcome_internal(tree, model_name);
+    dae_phase_result_from_dae(tree, model_name, dae_outcome)
+}
+
+pub(super) fn compile_model_dae_internal_with_options(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    instantiation_options: InstantiateOptions,
+) -> DaePhaseResult {
+    let dae_outcome =
+        dae_model_outcome_internal_with_options(tree, model_name, instantiation_options);
+    dae_phase_result_from_dae(tree, model_name, dae_outcome)
+}
+
+pub(super) fn compile_model_dae_internal_allow_unbalanced_for_diagnostics(
+    tree: &ast::ClassTree,
+    model_name: &str,
+) -> DaePhaseResult {
+    let dae_outcome = dae_model_outcome_internal_with_phase_options(
+        tree,
+        model_name,
+        InstantiateOptions::default(),
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    );
+    dae_phase_result_from_dae(tree, model_name, dae_outcome)
 }
 
 pub(super) fn typed_model_outcome_from_instantiated(
@@ -251,8 +348,16 @@ pub(super) fn flat_model_outcome_from_typed(
 }
 
 pub(super) fn dae_model_outcome_from_flat(
-    tree: &ast::ClassTree,
+    _tree: &ast::ClassTree,
     flat_outcome: FlatModelOutcome,
+) -> (DaeModelOutcome, bool) {
+    dae_model_outcome_from_flat_with_options(_tree, flat_outcome, todae_options_for_target_model())
+}
+
+pub(super) fn dae_model_outcome_from_flat_with_options(
+    _tree: &ast::ClassTree,
+    flat_outcome: FlatModelOutcome,
+    todae_options: ToDaeOptions,
 ) -> (DaeModelOutcome, bool) {
     let artifact = match flat_outcome {
         FlatModelOutcome::Success(artifact) => *artifact,
@@ -281,7 +386,7 @@ pub(super) fn dae_model_outcome_from_flat(
 
     // MLS §5.6 / SPEC_0004: ToDae stays downstream of flatten and should
     // consume the cached flat artifact rather than rebuilding earlier phases.
-    match to_dae_with_options(&artifact.flat, todae_options_for_tree(tree)) {
+    match to_dae_with_options(&artifact.flat, todae_options) {
         Ok(dae) => (
             DaeModelOutcome::Success(Box::new(DaeModelArtifactData {
                 flat: Arc::new(artifact.flat),
@@ -302,6 +407,152 @@ fn unwrap_or_clone_arc<T: Clone>(value: Arc<T>) -> T {
     Arc::unwrap_or_clone(value)
 }
 
+fn has_component_boundary_prefix(candidate: &str, prefix: &str) -> bool {
+    candidate
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(|ch| ch == '.' || ch == '[')
+}
+
+fn names_match_via_component_prefix(active_name: &str, discrete_name: &str) -> bool {
+    active_name == discrete_name
+        || has_component_boundary_prefix(discrete_name, active_name)
+        || has_component_boundary_prefix(active_name, discrete_name)
+}
+
+fn collect_active_refs_from_dae(dae_model: &dae::Dae, active: &mut HashSet<String>) {
+    for eq in [
+        dae_model.continuous.equations.as_slice(),
+        dae_model.initialization.equations.as_slice(),
+        dae_model.discrete.real_updates.as_slice(),
+        dae_model.discrete.valued_updates.as_slice(),
+        dae_model.conditions.equations.as_slice(),
+    ] {
+        for equation in eq {
+            if let Some(lhs) = &equation.lhs {
+                active.insert(lhs.as_str().to_string());
+            }
+            let mut refs = HashSet::new();
+            equation.rhs.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        }
+    }
+    for relation in &dae_model.conditions.relations {
+        let mut refs = HashSet::new();
+        relation.collect_var_refs(&mut refs);
+        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+    }
+}
+
+fn collect_active_refs_from_flat_when_equation(
+    equation: &flat::WhenEquation,
+    active: &mut HashSet<String>,
+) {
+    match equation {
+        flat::WhenEquation::Assign { target, value, .. } => {
+            active.insert(target.as_str().to_string());
+            let mut refs = HashSet::new();
+            value.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        }
+        flat::WhenEquation::Reinit { state, value, .. } => {
+            active.insert(state.as_str().to_string());
+            let mut refs = HashSet::new();
+            value.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        }
+        flat::WhenEquation::Assert { condition, .. } => {
+            let mut refs = HashSet::new();
+            condition.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        }
+        flat::WhenEquation::Terminate { .. } => {}
+        flat::WhenEquation::Conditional {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, equations) in branches {
+                let mut refs = HashSet::new();
+                condition.collect_var_refs(&mut refs);
+                active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+                for nested in equations {
+                    collect_active_refs_from_flat_when_equation(nested, active);
+                }
+            }
+            for nested in else_branch {
+                collect_active_refs_from_flat_when_equation(nested, active);
+            }
+        }
+        flat::WhenEquation::FunctionCallOutputs {
+            outputs, function, ..
+        } => {
+            for out in outputs {
+                active.insert(out.as_str().to_string());
+            }
+            let mut refs = HashSet::new();
+            function.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        }
+    }
+}
+
+fn collect_active_refs_from_flat(flat_model: &flat::Model, active: &mut HashSet<String>) {
+    for when in &flat_model.when_clauses {
+        let mut refs = HashSet::new();
+        when.condition.collect_var_refs(&mut refs);
+        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        for equation in &when.equations {
+            collect_active_refs_from_flat_when_equation(equation, active);
+        }
+    }
+}
+
+fn active_discrete_scalar_count(flat_model: &flat::Model, dae_model: &dae::Dae) -> i64 {
+    let mut active = HashSet::<String>::new();
+    collect_active_refs_from_dae(dae_model, &mut active);
+    collect_active_refs_from_flat(flat_model, &mut active);
+
+    let count_discrete = |variables: &IndexMap<rumoca_core::VarName, dae::Variable>| {
+        variables
+            .iter()
+            .filter(|(name, _)| {
+                active
+                    .iter()
+                    .any(|active_name| names_match_via_component_prefix(active_name, name.as_str()))
+            })
+            .map(|(_, variable)| variable.size())
+            .sum::<usize>()
+    };
+
+    (count_discrete(&dae_model.variables.discrete_reals)
+        + count_discrete(&dae_model.variables.discrete_valued)) as i64
+}
+
+fn dae_compilation_result_from_artifact(
+    artifact: DaeModelArtifactData,
+    experiment_settings: ExperimentSettings,
+    source_map: SourceMap,
+) -> DaeCompilationResult {
+    let has_unbound_fixed_parameters = artifact.flat.has_unbound_fixed_parameters();
+    let active_discrete_scalar_count = active_discrete_scalar_count(&artifact.flat, &artifact.dae);
+    let balance_detail = rumoca_phase_dae::balance_detail(&artifact.dae);
+
+    DaeCompilationResult {
+        flat: artifact.flat,
+        dae: artifact.dae,
+        source_map: Some(source_map),
+        has_unbound_fixed_parameters,
+        active_discrete_scalar_count,
+        balance_detail,
+        experiment_start_time: experiment_settings.start_time,
+        experiment_stop_time: experiment_settings.stop_time,
+        experiment_tolerance: experiment_settings.tolerance,
+        experiment_interval: experiment_settings.interval,
+        experiment_solver: experiment_settings.solver,
+    }
+}
+
 pub(super) fn dae_phase_result_from_dae(
     tree: &ast::ClassTree,
     model_name: &str,
@@ -311,18 +562,20 @@ pub(super) fn dae_phase_result_from_dae(
 
     match dae_outcome {
         DaeModelOutcome::Success(artifact) => {
-            DaePhaseResult::Success(Box::new(DaeCompilationResult {
-                dae: artifact.dae,
-                experiment_start_time: experiment_settings.start_time,
-                experiment_stop_time: experiment_settings.stop_time,
-                experiment_tolerance: experiment_settings.tolerance,
-                experiment_interval: experiment_settings.interval,
-                experiment_solver: experiment_settings.solver,
-            }))
+            DaePhaseResult::Success(Box::new(dae_compilation_result_from_artifact(
+                *artifact,
+                experiment_settings,
+                tree.source_map.clone(),
+            )))
         }
-        DaeModelOutcome::NeedsInner { missing_inners, .. } => {
-            DaePhaseResult::NeedsInner { missing_inners }
-        }
+        DaeModelOutcome::NeedsInner {
+            missing_inners,
+            missing_spans,
+            ..
+        } => DaePhaseResult::NeedsInner {
+            missing_inners,
+            missing_spans,
+        },
         DaeModelOutcome::InstantiateError(error) => {
             use miette::Diagnostic;
             DaePhaseResult::Failed {
@@ -371,8 +624,15 @@ pub(super) fn compile_phase_result_from_dae(
 
     let artifact = match dae_outcome {
         DaeModelOutcome::Success(artifact) => *artifact,
-        DaeModelOutcome::NeedsInner { missing_inners, .. } => {
-            return PhaseResult::NeedsInner { missing_inners };
+        DaeModelOutcome::NeedsInner {
+            missing_inners,
+            missing_spans,
+            ..
+        } => {
+            return PhaseResult::NeedsInner {
+                missing_inners,
+                missing_spans,
+            };
         }
         DaeModelOutcome::InstantiateError(error) => {
             use miette::Diagnostic;
@@ -433,10 +693,30 @@ pub(super) fn finalize_strict_compile_report(
     mut failures: Vec<ModelFailureDiagnostic>,
     results: Vec<(String, PhaseResult)>,
 ) -> StrictCompileReport {
-    let summary = CompilationSummary::from_results(&results);
+    finalize_strict_compile_report_from_results(
+        tree,
+        requested_model,
+        target_has_resolve_failures,
+        &mut failures,
+        results,
+    )
+}
+
+pub(super) fn finalize_strict_compile_report_from_results<I>(
+    tree: &ast::ClassTree,
+    requested_model: &str,
+    target_has_resolve_failures: bool,
+    failures: &mut Vec<ModelFailureDiagnostic>,
+    results: I,
+) -> StrictCompileReport
+where
+    I: IntoIterator<Item = (String, PhaseResult)>,
+{
+    let mut summary = CompilationSummary::default();
     let mut requested_result = None;
 
     for (name, result) in results {
+        summary.add_result(&result);
         if let Some(failure) = phase_result_to_failure(tree, &name, &result) {
             failures.push(failure);
         }
@@ -449,7 +729,110 @@ pub(super) fn finalize_strict_compile_report(
         requested_model: requested_model.to_string(),
         requested_result,
         summary,
-        failures,
+        failures: std::mem::take(failures),
         source_map: Some(tree.source_map.clone()),
+    }
+}
+
+pub(super) fn finalize_strict_compile_report_from_uncached_targets(
+    tree: &ast::ClassTree,
+    requested_model: &str,
+    target_has_resolve_failures: bool,
+    failures: Vec<ModelFailureDiagnostic>,
+    targets: &[String],
+    instantiation_options: InstantiateOptions,
+) -> StrictCompileReport {
+    finalize_strict_compile_report_from_uncached_targets_impl(
+        tree,
+        requested_model,
+        target_has_resolve_failures,
+        failures,
+        targets,
+        instantiation_options,
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn finalize_strict_compile_report_from_uncached_targets_impl(
+    tree: &ast::ClassTree,
+    requested_model: &str,
+    target_has_resolve_failures: bool,
+    failures: Vec<ModelFailureDiagnostic>,
+    targets: &[String],
+    instantiation_options: InstantiateOptions,
+) -> StrictCompileReport {
+    let mut failures = failures;
+    let results = targets.iter().map(|name| {
+        (
+            name.clone(),
+            compile_model_internal_with_options(tree, name, instantiation_options),
+        )
+    });
+    finalize_strict_compile_report_from_results(
+        tree,
+        requested_model,
+        target_has_resolve_failures,
+        &mut failures,
+        results,
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn finalize_strict_compile_report_from_uncached_targets_impl(
+    tree: &ast::ClassTree,
+    requested_model: &str,
+    target_has_resolve_failures: bool,
+    failures: Vec<ModelFailureDiagnostic>,
+    targets: &[String],
+    instantiation_options: InstantiateOptions,
+) -> StrictCompileReport {
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<(String, PhaseResult)>(1);
+
+    std::thread::scope(|scope| {
+        let consumer = scope.spawn(move || {
+            let mut failures = failures;
+            finalize_strict_compile_report_from_results(
+                tree,
+                requested_model,
+                target_has_resolve_failures,
+                &mut failures,
+                result_rx,
+            )
+        });
+
+        targets.par_iter().for_each_with(result_tx, |tx, name| {
+            let result = compile_model_internal_with_options(tree, name, instantiation_options);
+            let _ = tx.send((name.clone(), result));
+        });
+
+        consumer
+            .join()
+            .expect("strict compile result consumer panicked")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_class_match_requires_top_level_segment_boundary() {
+        assert!(class_name_matches_completion_target("Pkg.Target", "Target"));
+        assert!(class_name_matches_completion_target(
+            "Root.Pkg.Target",
+            "Pkg.Target"
+        ));
+        assert!(!class_name_matches_completion_target(
+            "Pkg.MyTarget",
+            "Target"
+        ));
+        assert!(!class_name_matches_completion_target(
+            "Pkg.TargetAlias",
+            "Target"
+        ));
+        assert!(!class_name_matches_completion_target(
+            "Pkg[index.Target]",
+            "Target"
+        ));
     }
 }

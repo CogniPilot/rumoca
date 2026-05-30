@@ -323,7 +323,7 @@ fn navigation_class_target_query_resolves_imported_and_qualified_paths() {
     assert_eq!(imported.target_uri, "lib.mo");
     assert_eq!(imported.qualified_name, "Lib.Target");
     assert_eq!(imported.class_name, "Target");
-    assert_eq!(imported.class_type, ast::ClassType::Block);
+    assert_eq!(imported.class_type, rumoca_core::ClassType::Block);
     assert_eq!(imported.description.as_deref(), Some("test target"));
     assert_eq!(imported.component_count, 1);
     assert_eq!(imported.equation_count, 1);

@@ -15,23 +15,30 @@ pub(super) fn maybe_render_model_outputs(
     if !msl_render_enabled() {
         return;
     }
-    let is_root_example = is_root_standalone_msl_example_model(name, result);
-    let is_partial = result.dae.is_partial;
-    let should_render = !is_partial
-        && (!ctx.run_simulation || (is_root_example && is_selected_sim_target(name, ctx)));
+    let is_partial = result.dae.metadata.is_partial;
+    let should_render =
+        !is_partial && (!ctx.run_simulation || is_standalone_sim_target(name, result, ctx));
     if !should_render {
         return;
     }
 
     write_rendered_artifact(
-        render_dae_template_with_name(&result.dae, templates::DAE_MODELICA, name),
+        render_dae_template_with_name(
+            &result.dae,
+            templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja").unwrap(),
+            name,
+        ),
         ctx.dae_dir.join(format!("{name}.mo")),
         ctx.dae_rendered,
         ctx.render_errors,
     );
 
     write_rendered_artifact(
-        render_flat_template_with_name(&result.flat, templates::FLAT_MODELICA, name),
+        render_flat_template_with_name(
+            &result.flat,
+            templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
+            name,
+        ),
         ctx.flat_dir.join(format!("{name}.mo")),
         ctx.flat_rendered,
         ctx.render_errors,
@@ -42,28 +49,50 @@ pub(super) fn maybe_render_model_outputs(
 }
 
 pub(super) fn simulation_solver_override() -> Option<String> {
-    std::env::var("RUMOCA_MSL_SIM_SOLVER")
-        .ok()
-        .map(|raw| raw.trim().to_string())
-        .filter(|value| !value.is_empty())
+    // No solver override; use the model's experiment annotation (else auto).
+    None
 }
 
 pub(super) fn simulation_stop_time_override() -> Option<f64> {
-    std::env::var("RUMOCA_MSL_SIM_STOP_TIME_OVERRIDE")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<f64>().ok())
-        .filter(|value| value.is_finite() && *value > 0.0)
+    // No stop-time override; use the model's experiment annotation.
+    None
 }
 
 pub(super) fn simulation_settings_from_result(
     result: &rumoca_compile::compile::CompilationResult,
 ) -> SimExecutionSettings {
-    let mut t_start = result
-        .experiment_start_time
+    simulation_settings_from_parts(
+        result.experiment_start_time,
+        result.experiment_stop_time,
+        result.experiment_tolerance,
+        result.experiment_interval,
+        result.experiment_solver.as_deref(),
+    )
+}
+
+pub(super) fn simulation_settings_from_dae_result(
+    result: &rumoca_compile::compile::DaeCompilationResult,
+) -> SimExecutionSettings {
+    simulation_settings_from_parts(
+        result.experiment_start_time,
+        result.experiment_stop_time,
+        result.experiment_tolerance,
+        result.experiment_interval,
+        result.experiment_solver.as_deref(),
+    )
+}
+
+fn simulation_settings_from_parts(
+    experiment_start_time: Option<f64>,
+    experiment_stop_time: Option<f64>,
+    experiment_tolerance: Option<f64>,
+    experiment_interval: Option<f64>,
+    experiment_solver: Option<&str>,
+) -> SimExecutionSettings {
+    let mut t_start = experiment_start_time
         .filter(|seconds| seconds.is_finite())
         .unwrap_or(0.0);
-    let mut t_end = result
-        .experiment_stop_time
+    let mut t_end = experiment_stop_time
         .filter(|seconds| seconds.is_finite() && *seconds > t_start)
         .unwrap_or(t_start + DEFAULT_SIM_END_TIME_SECS);
 
@@ -77,20 +106,16 @@ pub(super) fn simulation_settings_from_result(
         t_end = stop_time;
     }
 
-    let tolerance = result
-        .experiment_tolerance
-        .filter(|value| value.is_finite() && *value > 0.0);
+    let tolerance = experiment_tolerance.filter(|value| value.is_finite() && *value > 0.0);
 
     SimExecutionSettings {
         t_start,
         t_end,
-        dt: result
-            .experiment_interval
-            .filter(|value| value.is_finite() && *value > 0.0),
+        dt: experiment_interval.filter(|value| value.is_finite() && *value > 0.0),
         rtol: tolerance,
         atol: tolerance,
         solver: simulation_solver_override()
-            .or_else(|| result.experiment_solver.clone())
+            .or_else(|| experiment_solver.map(ToString::to_string))
             .unwrap_or_else(|| "auto".to_string()),
         timeout_seconds: None,
     }
@@ -102,11 +127,7 @@ pub(super) fn maybe_run_simulation(
     ctx: &RenderSimContext<'_>,
     remaining_budget_secs: Option<f64>,
 ) -> Option<MslSimModelResult> {
-    if !ctx.run_simulation
-        || result.dae.is_partial
-        || !is_root_standalone_msl_example_model(name, result)
-        || !is_selected_sim_target(name, ctx)
-    {
+    if !ctx.run_simulation || !is_standalone_sim_target(name, result, ctx) {
         return None;
     }
     ctx.sim_attempted.fetch_add(1, Ordering::Relaxed);
@@ -122,18 +143,43 @@ pub(super) fn maybe_run_simulation(
                 error: Some(
                     "model attempt timeout exhausted before simulation could start".to_string(),
                 ),
-                n_states: Some(result.dae.states.len()),
-                n_algebraics: Some(result.dae.algebraics.len()),
+                ic_status: None,
+                ic_error: None,
+                ic_seconds: None,
+                n_states: Some(result.dae.variables.states.len()),
+                n_algebraics: Some(result.dae.variables.algebraics.len()),
                 sim_seconds: Some(0.0),
                 sim_build_seconds: Some(0.0),
+                ir_solve_seconds: Some(0.0),
+                ir_solve_structural_dae_seconds: Some(0.0),
+                ir_solve_lower_seconds: Some(0.0),
+                sim_backend_build_seconds: Some(0.0),
                 sim_run_seconds: Some(0.0),
                 sim_wall_seconds: Some(0.0),
                 sim_trace_file: None,
+                sim_perf_profile_file: None,
                 sim_trace_error: None,
+                ir_dae_file: None,
+                ir_solve_file: None,
+                ir_solve_error: None,
             });
         }
     };
     Some(try_simulate_dae_with_settings(&result.dae, name, &settings))
+}
+
+fn is_standalone_sim_target(
+    name: &str,
+    result: &rumoca_compile::compile::CompilationResult,
+    ctx: &RenderSimContext<'_>,
+) -> bool {
+    if result.dae.metadata.is_partial || !is_selected_sim_target(name, ctx) {
+        return false;
+    }
+    if sim_targets_file_override().is_some() {
+        return true;
+    }
+    is_root_standalone_msl_example_model(name, result)
 }
 
 pub(super) fn maybe_log_sim_progress(done: usize, ctx: &RenderSimContext<'_>) {
@@ -185,6 +231,7 @@ pub(super) fn convert_compile_result_entry(
         compile_outcome,
         remaining_budget_secs,
         compile_seconds,
+        compile_perf_profile_file,
     } = entry;
 
     let sim_result = if let Some(result) = compile_outcome.success_result() {
@@ -197,17 +244,22 @@ pub(super) fn convert_compile_result_entry(
 
     let mut model_result = convert_compile_outcome(name, compile_outcome);
     model_result.compile_seconds = Some(compile_seconds);
+    model_result.compile_perf_profile_file = compile_perf_profile_file;
     if let Some(sim) = sim_result {
         let done = ctx.sim_completed.fetch_add(1, Ordering::Relaxed) + 1;
         update_live_sim_status(&sim, ctx);
         maybe_log_sim_progress(done, ctx);
         model_result.sim_status = Some(sim.status.to_string());
         model_result.sim_error = sim.error;
+        model_result.ic_status = sim.ic_status;
+        model_result.ic_error = sim.ic_error;
+        model_result.ic_seconds = sim.ic_seconds;
         model_result.sim_seconds = sim.sim_seconds;
         model_result.sim_build_seconds = sim.sim_build_seconds;
         model_result.sim_run_seconds = sim.sim_run_seconds;
         model_result.sim_wall_seconds = sim.sim_wall_seconds;
         model_result.sim_trace_file = sim.sim_trace_file;
+        model_result.sim_perf_profile_file = sim.sim_perf_profile_file;
         model_result.sim_trace_error = sim.sim_trace_error;
     }
 
@@ -263,7 +315,7 @@ impl RenderSimSetup {
         );
         if run_simulation {
             println!(
-                "Target standalone root MSL examples for simulation: {}",
+                "Target standalone models for simulation: {}",
                 total_sim_targets
             );
         }
@@ -340,7 +392,7 @@ impl RenderSimSetup {
         }
         if run_simulation {
             println!(
-                "Simulated {} standalone root MSL Example models (target={})",
+                "Simulated {} standalone selected models (target={})",
                 self.sim_attempted.load(Ordering::Relaxed),
                 self.total_sim_targets,
             );
@@ -384,7 +436,7 @@ fn apply_default_sim_set_mode_selection(names: &mut Vec<String>) {
     let limit = sim_set_limit();
     if limit >= names.len() {
         println!(
-            "Simulation set mode ({mode}) selected {}/{} compile-scope models (RUMOCA_MSL_SIM_SET_LIMIT={})",
+            "Simulation set mode ({mode}) selected {}/{} compile-scope models (sim_set_limit={})",
             names.len(),
             names.len(),
             limit
@@ -406,45 +458,6 @@ fn apply_lexical_mode_limit(names: &mut Vec<String>, mode: SimSetMode, limit: us
             *names = names.split_off(keep_from);
         }
         SimSetMode::Full => {}
-    }
-}
-
-pub(super) fn collect_render_sim_results(
-    compile_results: Vec<ModelCompileEntry>,
-    run_simulation: bool,
-    context: &RenderSimContext<'_>,
-    simulation_threads: usize,
-    log_parallelism: bool,
-) -> Vec<MslModelResult> {
-    if !run_simulation {
-        return compile_results
-            .into_par_iter()
-            .map(|entry| convert_compile_result_entry(entry, context))
-            .collect();
-    }
-
-    if log_parallelism {
-        println!("Simulation execution parallelism: {simulation_threads}");
-    }
-    match rayon::ThreadPoolBuilder::new()
-        .num_threads(simulation_threads.max(1))
-        .build()
-    {
-        Ok(pool) => pool.install(|| {
-            compile_results
-                .into_par_iter()
-                .map(|entry| convert_compile_result_entry(entry, context))
-                .collect()
-        }),
-        Err(err) => {
-            eprintln!(
-                "WARNING: failed to build simulation thread pool ({err}); falling back to global rayon pool"
-            );
-            compile_results
-                .into_par_iter()
-                .map(|entry| convert_compile_result_entry(entry, context))
-                .collect()
-        }
     }
 }
 

@@ -32,7 +32,7 @@ pub(crate) fn class_component_members_from_tree(
 }
 
 pub(crate) fn collect_qualified_class_names_recursive(
-    classes: &IndexMap<String, ast::ClassDef>,
+    classes: &ast::AstIndexMap<String, ast::ClassDef>,
     prefix: &str,
     names: &mut Vec<String>,
 ) {

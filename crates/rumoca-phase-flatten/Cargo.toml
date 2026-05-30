@@ -8,14 +8,14 @@ repository.workspace = true
 
 [features]
 default = []
-tracing = ["dep:tracing"]
+tracing = ["dep:tracing", "rumoca-eval-flat/tracing"]
 
 [dependencies]
-rumoca-core = { path = "../rumoca-core" }
+rumoca-core = { workspace = true }
+rumoca-eval-ast = { workspace = true }
 rumoca-eval-flat = { workspace = true }
-rumoca-ir-ast = { path = "../rumoca-ir-ast" }
-rumoca-ir-flat = { path = "../rumoca-ir-flat" }
-rumoca-ir-core = { path = "../rumoca-ir-core" }
+rumoca-ir-ast = { workspace = true }
+rumoca-ir-flat = { workspace = true }
 indexmap = "2.2"
 rustc-hash = { workspace = true }
 thiserror = "2.0"

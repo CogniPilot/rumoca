@@ -1433,74 +1433,38 @@ fn test_compile_to_json_exposes_orbit_algebraics_from_native_dae() {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 #[test]
-fn test_render_template_uses_native_dae_json_context() {
+fn test_render_target_wrapper_serializes_target_files() {
     let mut session = Session::default();
     let source = r#"
-    model SatelliteOrbit2D
-      parameter Real mu = 398600.4418;
-      parameter Real r0 = 7000;
-      parameter Real v0 = sqrt(mu / r0);
-      Real rx(start = r0, fixed = true);
-      Real ry(start = 0, fixed = true);
-      Real vx(start = 0, fixed = true);
-      Real vy(start = v0, fixed = true);
-      Real inv_r;
-      Real inv_v2;
-      Real inv_h;
-      Real inv_energy;
-      Real inv_a;
-      Real inv_rv;
-      Real inv_ex;
-      Real inv_ey;
-      Real inv_ecc;
+    model SimpleDecay
+      Real x(start = 1);
     equation
-      der(rx) = vx;
-      der(ry) = vy;
-      inv_r = sqrt(rx * rx + ry * ry);
-      inv_v2 = vx * vx + vy * vy;
-      inv_h = rx * vy - ry * vx;
-      inv_energy = 0.5 * inv_v2 - mu / inv_r;
-      inv_a = 1 / (2 / inv_r - inv_v2 / mu);
-      inv_rv = rx * vx + ry * vy;
-      inv_ex = ((inv_v2 - mu / inv_r) * rx - inv_rv * vx) / mu;
-      inv_ey = ((inv_v2 - mu / inv_r) * ry - inv_rv * vy) / mu;
-      inv_ecc = sqrt(inv_ex * inv_ex + inv_ey * inv_ey);
-      der(vx) = -mu * rx / (inv_r ^ 3);
-      der(vy) = -mu * ry / (inv_r ^ 3);
-    end SatelliteOrbit2D;
+      der(x) = -x;
+    end SimpleDecay;
     "#;
 
-    let compiled = compile_source_in_session(&mut session, source, "SatelliteOrbit2D")
-        .expect("compile should succeed for orbit model");
+    let compiled = compile_source_in_session(&mut session, source, "SimpleDecay")
+        .expect("compile should succeed for simple model");
     let parsed: serde_json::Value =
         serde_json::from_str(&compiled).expect("compile should return valid JSON");
     let native = parsed
         .get("dae_native")
         .expect("compile response should contain dae_native");
 
-    let rendered = render_template(
-        &native.to_string(),
-        "{% for name, comp in dae.y | items %}{{ name }}\n{% endfor %}",
-    )
-    .expect("render_template should succeed with JSON context");
-
-    for expected in [
-        "inv_r",
-        "inv_v2",
-        "inv_h",
-        "inv_energy",
-        "inv_a",
-        "inv_rv",
-        "inv_ex",
-        "inv_ey",
-        "inv_ecc",
-    ] {
-        assert!(
-            rendered.lines().any(|line| line.trim() == expected),
-            "expected rendered algebraics to contain `{expected}`, got:\n{rendered}"
-        );
-    }
+    let rendered = render_target(&native.to_string(), "SimpleDecay", "sympy", "", "{}")
+        .expect("render target should succeed");
+    let decoded: serde_json::Value = decode_wasm_value(rendered);
+    assert!(
+        decoded
+            .get("files")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|files| files.iter().any(|file| {
+                file.get("path").and_then(serde_json::Value::as_str) == Some("SimpleDecay_sympy.py")
+            })),
+        "render target should include the SymPy target file"
+    );
 }
 
 #[test]
@@ -1713,7 +1677,7 @@ fn test_compile_to_json_recovers_after_syntax_diagnostics() {
     );
 }
 
-#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
 fn test_simulate_model_wrapper_returns_time_series_payload() {
     let _guard = session_test_guard();
@@ -1777,7 +1741,7 @@ fn test_simulate_model_wrapper_returns_time_series_payload() {
     clear_source_root_cache();
 }
 
-#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
 fn test_simulate_model_wrapper_surfaces_velocity_series_for_reinit_model() {
     let _guard = session_test_guard();
@@ -1785,20 +1749,19 @@ fn test_simulate_model_wrapper_surfaces_velocity_series_for_reinit_model() {
 
     let source = r#"
     model BallWasmSmoke
-      parameter Real e = 0.8;
-      Real x(start = 1.0);
-      Real v(start = 0.0);
+      Real x(start = 1.0, fixed = true);
+      Real v(start = 0.0, fixed = true);
     equation
       der(x) = v;
       der(v) = -9.81;
-      when x < 0 then
-        reinit(v, -e * pre(v));
+      when time >= 0.5 then
+        reinit(v, 2.0);
       end when;
     end BallWasmSmoke;
     "#;
 
     let json = simulate_model(source, "BallWasmSmoke", 1.5, 0.01, "auto")
-        .expect("simulate_model wrapper should handle reinit state export");
+        .expect("simulate_model wrapper should handle time-event reinit state export");
     let simulation: serde_json::Value =
         serde_json::from_str(&json).expect("simulation payload should be valid JSON");
     let payload = simulation
@@ -1836,7 +1799,7 @@ fn test_simulate_model_wrapper_surfaces_velocity_series_for_reinit_model() {
 
     assert!(
         times.len() >= 20,
-        "expected at least 20 samples for reinit smoke, got {}",
+        "expected at least 20 samples for time-event reinit smoke, got {}",
         times.len()
     );
     assert_eq!(
@@ -1854,6 +1817,68 @@ fn test_simulate_model_wrapper_surfaces_velocity_series_for_reinit_model() {
         v.iter().copied().any(|value| value < -0.5),
         "expected nonzero downward speed, got v={v:?}"
     );
+    let first_downward = v
+        .iter()
+        .position(|value| *value < -0.5)
+        .expect("expected downward velocity before bounce");
+    assert!(
+        v.iter().skip(first_downward).any(|value| *value > 0.5),
+        "expected time-event reinit to reset velocity upward, got v={v:?}"
+    );
+
+    clear_source_root_cache();
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_simulate_model_wrapper_advances_after_relation_root_crossing() {
+    let _guard = session_test_guard();
+    clear_source_root_cache();
+
+    let source = r#"
+    model RootCrossWasmSmoke
+      Real x(start = 0.0);
+      Real s(start = 0.0);
+      Real y;
+    equation
+      der(x) = 1.0;
+      der(s) = if x < 0.53 then 0.0 else 1.0;
+      y = if x < 0.53 then 0.0 else 1.0;
+    end RootCrossWasmSmoke;
+    "#;
+
+    let json = simulate_model(source, "RootCrossWasmSmoke", 1.0, 0.05, "auto")
+        .expect("simulate_model wrapper should advance after relation root crossing");
+    let simulation: serde_json::Value =
+        serde_json::from_str(&json).expect("simulation payload should be valid JSON");
+    let payload = simulation
+        .get("payload")
+        .expect("simulation output should include nested payload");
+    let names = payload["names"]
+        .as_array()
+        .expect("simulation payload should include names");
+    let all_data = payload["allData"]
+        .as_array()
+        .expect("simulation payload should include allData columns");
+    let name_index = |name: &str| {
+        names
+            .iter()
+            .position(|value| value.as_str() == Some(name))
+            .expect("expected named simulation series")
+    };
+    let values = |name: &str| -> Vec<f64> {
+        all_data[name_index(name) + 1]
+            .as_array()
+            .expect("series should be present")
+            .iter()
+            .map(|value| value.as_f64().expect("samples must be numeric"))
+            .collect()
+    };
+    let y = values("y");
+    let s = values("s");
+
+    assert!(y.iter().copied().fold(0.0, f64::max) >= 0.9);
+    assert!(s.last().copied().unwrap_or(0.0) >= 0.3);
 
     clear_source_root_cache();
 }

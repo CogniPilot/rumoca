@@ -9,32 +9,32 @@ import {
   collectDocumentCompletionTimings,
 } from "./msl_extension_smoke_support.mjs";
 
-function envMs(name, fallback) {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`invalid timeout env var ${name}=${raw}`);
-  }
-  return parsed;
+// Read a `--flag value` argument passed by `cargo xtask` (the harness's argv
+// channel; editor configuration travels in the launched workspace file).
+function argValue(name) {
+  const idx = process.argv.indexOf(name);
+  return idx >= 0 && idx + 1 < process.argv.length
+    ? process.argv[idx + 1]
+    : undefined;
 }
 
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const vscodeDir = path.resolve(thisDir, "..");
 const repoRoot = path.resolve(vscodeDir, "..", "..");
 
-const mslArchiveRoot = process.env.RUMOCA_VSCODE_MSL_ROOT
-  ? path.resolve(process.env.RUMOCA_VSCODE_MSL_ROOT)
+const mslRootArg = argValue("--msl-root");
+const mslArchiveRoot = mslRootArg
+  ? path.resolve(mslRootArg)
   : path.resolve(repoRoot, "target", "msl", "ModelicaStandardLibrary-4.1.0");
 const mslModelicaRoot = path.join(mslArchiveRoot, "Modelica 4.1.0");
 const mslServicesRoot = path.join(mslArchiveRoot, "ModelicaServices 4.1.0");
 const mslComplexFile = path.join(mslArchiveRoot, "Complex.mo");
 const mslSourceRootPaths = [mslModelicaRoot, mslServicesRoot, mslComplexFile];
-const serverPath = process.env.RUMOCA_VSCODE_SMOKE_SERVER_PATH
-  ? path.resolve(process.env.RUMOCA_VSCODE_SMOKE_SERVER_PATH)
-  : path.resolve(vscodeDir, "bin", process.platform === "win32" ? "rumoca-lsp.exe" : "rumoca-lsp");
+const serverPath = path.resolve(
+  vscodeDir,
+  "bin",
+  process.platform === "win32" ? "rumoca-lsp.exe" : "rumoca-lsp",
+);
 const suitePath = path.resolve(vscodeDir, "tests", "msl_extension_suite.cjs");
 const documentPath = path.join(
   mslModelicaRoot,
@@ -44,19 +44,25 @@ const documentPath = path.join(
   "Resistor.mo",
 );
 
-async function createWorkspaceFile(rootDir) {
-  const smokeDebug = process.env.RUMOCA_VSCODE_SMOKE_DEBUG === "1";
+async function createWorkspaceFile(rootDir, { completionTimingPath, documentPath, resultPath }) {
   await mkdtemp(path.join(rootDir, "workspace-"));
   const workspaceFile = path.join(rootDir, "msl-smoke.code-workspace");
+  // The `.code-workspace` is the smoke's config file: the suite and extension
+  // read these `rumoca.benchmark.*` keys via `getConfiguration` (no env vars).
   await writeFile(
     workspaceFile,
     JSON.stringify(
       {
         folders: [{ path: mslModelicaRoot }],
         settings: {
-          "rumoca.debug": smokeDebug,
+          "rumoca.debug": false,
           "rumoca.serverPath": serverPath,
           "rumoca.sourceRootPaths": mslSourceRootPaths,
+          // Document/result are consumed by the extension-host test suite.
+          "rumoca.benchmark.smoke.document": documentPath,
+          "rumoca.benchmark.smoke.result": resultPath,
+          // The extension forwards this to rumoca-lsp as `--completion-timing-file`.
+          "rumoca.benchmark.completionTimingFile": completionTimingPath,
         },
       },
       null,
@@ -72,32 +78,18 @@ async function main() {
   const extensionsDir = path.join(tempRoot, "extensions");
   const resultPath = path.join(tempRoot, "result.json");
   const completionTimingPath = path.join(tempRoot, "completion-timings.jsonl");
-  const workspaceFile = await createWorkspaceFile(tempRoot);
-  const artifactResultPath = process.env.RUMOCA_VSCODE_SMOKE_ARTIFACT_RESULT;
-  const artifactTimingPath = process.env.RUMOCA_VSCODE_SMOKE_ARTIFACT_TIMINGS;
+  const workspaceFile = await createWorkspaceFile(tempRoot, {
+    completionTimingPath,
+    documentPath,
+    resultPath,
+  });
+  const artifactResultPath = argValue("--artifact-result");
+  const artifactTimingPath = argValue("--artifact-timings");
   await mkdir(userDataDir, { recursive: true });
   await mkdir(extensionsDir, { recursive: true });
 
-  process.env.RUMOCA_VSCODE_SMOKE_DOCUMENT = documentPath;
-  process.env.RUMOCA_VSCODE_SMOKE_RESULT = resultPath;
-  process.env.RUMOCA_LSP_COMPLETION_TIMING_FILE = completionTimingPath;
   process.env.MODELICAPATH = mslSourceRootPaths.join(path.delimiter);
   process.env.ELECTRON_DISABLE_SANDBOX = "1";
-  process.env.RUMOCA_VSCODE_SMOKE_ACTIVATE_MAX_MS = String(
-    envMs("RUMOCA_VSCODE_SMOKE_ACTIVATE_MAX_MS", 15000),
-  );
-  process.env.RUMOCA_VSCODE_SMOKE_CODELENS_MAX_MS = String(
-    envMs("RUMOCA_VSCODE_SMOKE_CODELENS_MAX_MS", 5000),
-  );
-  process.env.RUMOCA_VSCODE_SMOKE_COMPLETION_MAX_MS = String(
-    envMs("RUMOCA_VSCODE_SMOKE_COMPLETION_MAX_MS", 20000),
-  );
-  process.env.RUMOCA_VSCODE_SMOKE_HOVER_MAX_MS = String(
-    envMs("RUMOCA_VSCODE_SMOKE_HOVER_MAX_MS", 10000),
-  );
-  process.env.RUMOCA_VSCODE_SMOKE_DEFINITION_MAX_MS = String(
-    envMs("RUMOCA_VSCODE_SMOKE_DEFINITION_MAX_MS", 10000),
-  );
 
   const launchArgs = [
     workspaceFile,
@@ -116,7 +108,7 @@ async function main() {
     extensionTestsEnv: { ...process.env },
   };
 
-  const executable = process.env.RUMOCA_VSCODE_SMOKE_EXECUTABLE;
+  const executable = argValue("--smoke-executable");
   if (executable) {
     options.vscodeExecutablePath = executable;
   }
@@ -134,7 +126,7 @@ async function main() {
       const rawTimings = await readFile(completionTimingPath, "utf8");
       Object.assign(summary, collectDocumentCompletionTimings(rawTimings, documentPath));
       assertMslCompletionCacheProof(summary, documentPath);
-      const summaryOutPath = process.env.RUMOCA_VSCODE_SMOKE_SUMMARY_OUT;
+      const summaryOutPath = argValue("--summary-out");
       if (summaryOutPath) {
         await mkdir(path.dirname(summaryOutPath), { recursive: true });
         await writeFile(summaryOutPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
@@ -148,9 +140,7 @@ async function main() {
         await writeFile(artifactTimingPath, rawTimings, "utf8");
       }
     }
-    if (process.env.RUMOCA_VSCODE_SMOKE_KEEP_TEMP !== "1") {
-      await rm(tempRoot, { recursive: true, force: true });
-    }
+    await rm(tempRoot, { recursive: true, force: true });
   }
 }
 

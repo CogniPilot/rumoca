@@ -27,10 +27,11 @@ impl WasmStepper {
             Ok(result.dae)
         })?;
 
-        let opts = rumoca_sim::StepperOptions {
+        let opts = rumoca_sim::SimOptions {
             rtol: 1e-3,
             atol: 1e-3,
-            ..rumoca_sim::StepperOptions::default()
+            solver_mode: rumoca_sim::SimSolverMode::Bdf,
+            ..rumoca_sim::SimOptions::default()
         };
         let stepper = rumoca_sim::SimStepper::new(&dae, opts)
             .map_err(|e| JsValue::from_str(&format!("Stepper creation error: {e}")))?;
@@ -84,10 +85,11 @@ impl WasmStepper {
 
     /// Reset the simulation to initial conditions.
     pub fn reset(&mut self) -> Result<(), JsValue> {
-        let opts = rumoca_sim::StepperOptions {
+        let opts = rumoca_sim::SimOptions {
             rtol: 1e-3,
             atol: 1e-3,
-            ..rumoca_sim::StepperOptions::default()
+            solver_mode: rumoca_sim::SimSolverMode::Bdf,
+            ..rumoca_sim::SimOptions::default()
         };
         self.stepper = rumoca_sim::SimStepper::new(&self.dae, opts)
             .map_err(|e| JsValue::from_str(&format!("Reset failed: {e}")))?;

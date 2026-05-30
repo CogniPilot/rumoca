@@ -414,6 +414,49 @@ fn keyword_completion_includes_operator() {
 }
 
 #[test]
+fn namespace_completion_prefix_ignores_dots_inside_subscript_text() {
+    let (search_prefix, filter_partial) = extract_qualified_prefix("  bus[index.with.dot].");
+    assert_eq!(search_prefix, "");
+    assert_eq!(filter_partial, "");
+    assert!(
+        text_dot_completion_target("  bus[index.with.dot].").is_none(),
+        "bracket-local dotted text must not be treated as a qualified completion target"
+    );
+
+    let source = "model Active\n  bus[index.with.dot].\nend Active;\n";
+    let position = lsp_types::Position {
+        line: 1,
+        character: "  bus[index.with.dot].".len() as u32,
+    };
+    assert_eq!(
+        crate::completion_metrics::extract_namespace_completion_prefix(source, position),
+        None
+    );
+}
+
+#[test]
+fn namespace_completion_prefix_uses_top_level_dot_boundaries() {
+    assert_eq!(
+        extract_qualified_prefix("  Modelica.Blocks.Con"),
+        ("Modelica.Blocks.".to_string(), "Con".to_string())
+    );
+    assert_eq!(
+        extract_qualified_prefix("  Modelica.Blocks."),
+        ("Modelica.Blocks.".to_string(), String::new())
+    );
+
+    let target = text_dot_completion_target("  Modelica.Blocks.Con")
+        .expect("qualified text target should parse");
+    assert_eq!(
+        target,
+        DotCompletionTarget {
+            base_segments: vec!["Modelica".to_string(), "Blocks".to_string()],
+            member_partial: "Con".to_string(),
+        }
+    );
+}
+
+#[test]
 fn external_source_root_completion_uses_namespace_cache_after_local_edit() {
     let lib = r#"
 package Lib

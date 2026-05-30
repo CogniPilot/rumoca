@@ -30,7 +30,7 @@ impl Path {
     pub fn parse(s: &str) -> Self {
         // Strip leading "local:" prefix if present (tolerant).
         let s = s.strip_prefix("local:").unwrap_or(s);
-        if let Some((lhs, rhs)) = s.rsplit_once('.')
+        if let Some((lhs, rhs)) = split_numeric_suffix(s)
             && let Ok(i) = rhs.parse::<usize>()
         {
             return Self {
@@ -43,6 +43,21 @@ impl Path {
             index: None,
         }
     }
+
+    pub fn display_name(&self) -> String {
+        match self.index {
+            Some(index) => format!("{}.{}", self.name, index),
+            None => self.name.clone(),
+        }
+    }
+}
+
+fn split_numeric_suffix(path: &str) -> Option<(&str, &str)> {
+    let dot_idx = path
+        .char_indices()
+        .rev()
+        .find_map(|(idx, ch)| (ch == '.').then_some(idx))?;
+    Some((&path[..dot_idx], &path[dot_idx + 1..]))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +115,29 @@ impl Precondition {
             PreconditionOp::Gt => lhs > self.value,
         }
     }
+
+    pub fn failure_summary(&self, lhs: f64) -> String {
+        format!(
+            "{}={:.3} violates {} {:.3}",
+            self.var.display_name(),
+            lhs,
+            self.op.as_str(),
+            self.value
+        )
+    }
+}
+
+impl PreconditionOp {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Eq => "==",
+            Self::Ne => "!=",
+            Self::Ge => ">=",
+            Self::Gt => ">",
+        }
+    }
 }
 
 // ── Source type: either a gamepad axis, a keyboard key, or a local ref ────
@@ -154,6 +192,7 @@ pub struct CompiledGamepadButton {
     pub action: ButtonAction,
     pub debounce_ms: u64,
     pub precondition: Option<Precondition>,
+    pub reject_message: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +210,7 @@ pub struct CompiledKey {
     pub action: KeyAction,
     pub debounce_ms: u64,
     pub precondition: Option<Precondition>,
+    pub reject_message: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -348,6 +388,7 @@ fn compile_gp_button(
         action,
         debounce_ms: btn.debounce_ms.unwrap_or(0),
         precondition,
+        reject_message: btn.reject_message.clone(),
     })
 }
 
@@ -429,6 +470,7 @@ fn compile_key(
         action,
         debounce_ms: key.debounce_ms.unwrap_or(0),
         precondition,
+        reject_message: key.reject_message.clone(),
     })
 }
 
@@ -627,14 +669,6 @@ mod tests {
 
     #[test]
     fn compile_full_quadrotor_config() {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("examples")
-            .join("quadrotor_sil")
-            .join("quadrotor_cerebri.toml");
         #[derive(serde::Deserialize)]
         struct Subset {
             #[serde(default)]
@@ -643,8 +677,7 @@ mod tests {
             derive: HashMap<String, DeriveSpec>,
             input: crate::config::InputConfig,
         }
-        let text = std::fs::read_to_string(&root).expect("read toml");
-        let cfg: Subset = toml::from_str(&text).expect("parse");
+        let cfg: Subset = toml::from_str(TEST_INPUT_CONFIG).expect("parse");
         let compiled = compile(&cfg.input, &cfg.derive, &cfg.locals).expect("compile");
         // Quadrotor config expectations.
         assert_eq!(compiled.gamepad_axes.len(), 3);
@@ -655,6 +688,175 @@ mod tests {
         assert_eq!(compiled.keyboard_integrators.len(), 1);
         assert_eq!(compiled.derive.len(), 5);
     }
+
+    const TEST_INPUT_CONFIG: &str = r#"
+[input]
+mode = "auto"
+
+[input.gamepad.axes.pitch]
+source = "RightStickY"
+write = "pitch_cmd"
+
+[input.gamepad.axes.roll]
+source = "RightStickX"
+write = "roll_cmd"
+
+[input.gamepad.axes.yaw]
+source = "LeftStickX"
+write = "yaw_cmd"
+
+[input.gamepad.buttons.arm]
+action = "toggle"
+debounce_ms = 500
+precondition = "rc.2 <= 1050"
+source = "Start"
+state = "armed"
+
+[input.gamepad.buttons.log]
+action = "signal"
+signal = "log"
+source = "North"
+
+[input.gamepad.buttons.reset]
+action = "signal"
+signal = "reset"
+source = "South"
+
+[input.gamepad.integrators.throttle]
+clamp = [0.0, 1.0]
+deadband = 0.1
+rate = 0.7
+source = "LeftStickY"
+write = "throttle"
+
+[input.keyboard.decay]
+factor = 0.85
+ref_dt = 0.016
+targets = ["roll_cmd", "pitch_cmd", "yaw_cmd", "throttle_input"]
+
+[input.keyboard.integrators.throttle]
+clamp = [0.0, 1.0]
+rate = 0.7
+source = "local:throttle_input"
+write = "throttle"
+
+[input.keyboard.keys.ArrowDown]
+action = "set"
+target = "roll_cmd"
+value = -0.3
+
+[input.keyboard.keys.ArrowLeft]
+action = "set"
+target = "pitch_cmd"
+value = 0.3
+
+[input.keyboard.keys.ArrowRight]
+action = "set"
+target = "pitch_cmd"
+value = -0.3
+
+[input.keyboard.keys.ArrowUp]
+action = "set"
+target = "roll_cmd"
+value = 0.3
+
+[input.keyboard.keys.Space]
+action = "toggle"
+debounce_ms = 500
+precondition = "rc.2 <= 1050"
+state = "armed"
+
+[input.keyboard.keys.a]
+action = "set"
+target = "yaw_cmd"
+value = 0.6
+
+[input.keyboard.keys.d]
+action = "set"
+target = "yaw_cmd"
+value = -0.6
+
+[input.keyboard.keys.l]
+action = "signal"
+signal = "log"
+
+[input.keyboard.keys.q]
+action = "signal"
+signal = "quit"
+
+[input.keyboard.keys.r]
+action = "signal"
+signal = "reset"
+
+[input.keyboard.keys.s]
+action = "set"
+target = "throttle_input"
+value = -1.0
+
+[input.keyboard.keys.w]
+action = "set"
+target = "throttle_input"
+value = 1.0
+
+[locals.armed]
+default = false
+type = "bool"
+
+[locals.pitch_cmd]
+default = 0.0
+type = "float"
+
+[locals.rc]
+default = 1500
+element = "int"
+len = 16
+type = "array"
+
+[locals.roll_cmd]
+default = 0.0
+type = "float"
+
+[locals.throttle]
+default = 0.0
+type = "float"
+
+[locals.throttle_input]
+default = 0.0
+type = "float"
+
+[locals.yaw_cmd]
+default = 0.0
+type = "float"
+
+[derive."rc.0"]
+clamp = [1000.0, 2000.0]
+from = "roll_cmd"
+offset = 1500.0
+scale = 500.0
+
+[derive."rc.1"]
+clamp = [1000.0, 2000.0]
+from = "pitch_cmd"
+offset = 1500.0
+scale = -500.0
+
+[derive."rc.2"]
+clamp = [1000.0, 2000.0]
+from = "throttle"
+offset = 1000.0
+scale = 1000.0
+
+[derive."rc.3"]
+clamp = [1000.0, 2000.0]
+from = "yaw_cmd"
+offset = 1500.0
+scale = 500.0
+
+[derive."rc.4"]
+from = "armed"
+when_false = 1000
+when_true = 2000
+"#;
 
     #[test]
     fn compile_rejects_undeclared_local() {

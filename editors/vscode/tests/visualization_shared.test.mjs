@@ -26,14 +26,14 @@ test("normalizeVisualizationViews preserves scatter config and canonical scriptP
       type: "3d",
       x: "time",
       y: ["x", "y", "z"],
-      scriptPath: ".rumoca/models/by-id/uuid/viewer_3d.js",
+      scriptPath: "../shared/viewer_3d.js",
     },
   ]);
 
   assert.deepEqual(views[0].scatterSeries, [
     { name: "x vs time", x: "time", y: "x" },
   ]);
-  assert.equal(views[1].scriptPath, ".rumoca/models/by-id/uuid/viewer_3d.js");
+  assert.equal(views[1].scriptPath, "../shared/viewer_3d.js");
   assert.deepEqual(views[1].y, ["x", "y"]);
 });
 
@@ -51,7 +51,7 @@ test("shared visualization helpers expose the default 3d viewer script", () => {
 test("shared visualization helpers expose stable viewer and run artifact paths", () => {
   assert.match(
     shared.preferredViewerScriptPathForModel("Pkg.System.Ball", "viewer_3d"),
-    /^\.rumoca\/models\/by-id\/[a-z0-9_]+_[0-9a-f]{8}\/viewer_3d\.js$/,
+    /^viewer_3d\.js$/,
   );
   assert.equal(
     shared.simulationRunDocumentPath("run_123"),
@@ -447,19 +447,18 @@ test("shared simulation settings document supports browser hosts and hidden host
       sourceRootOverrides: [],
     },
     codegen: {
-      mode: "custom",
-      builtinTemplateId: "sympy.py.jinja",
-      customTemplatePath: "templates/custom.py.jinja",
+      mode: "custom-target",
+      builtinTargetId: "sympy",
+      customTargetPath: "templates/custom-target",
     },
     codegenTemplates: [
-      { id: "sympy.py.jinja", label: "SymPy" },
-      { id: "casadi.py.jinja", label: "CasADi" },
+      { id: "sympy", label: "sympy" },
+      { id: "casadi-sx", label: "casadi-sx" },
     ],
     views: [],
     features: {
       addSourceRootPath: false,
       prepareModels: false,
-      resyncSidecars: false,
       workspaceSettings: false,
       userSettings: false,
       openViewScript: false,
@@ -475,8 +474,8 @@ test("shared simulation settings document supports browser hosts and hidden host
   assert.match(html, /<h3>Codegen<\/h3>/);
   assert.match(html, /id="codegenMode"/);
   assert.match(html, /id="codegenBuiltinTemplateId"/);
-  assert.match(html, /id="codegenCustomTemplatePath"/);
-  assert.match(html, /templates\/custom\.py\.jinja/);
+  assert.match(html, /id="codegenCustomTargetPath"/);
+  assert.match(html, /templates\/custom-target/);
   assert.match(html, /split\(\/\\r\?\\n\|,\/\)/);
   assert.match(html, /split\(\/\\r\?\\n\/\)/);
   assert.match(html, /join\('\\n'\)/);
@@ -493,6 +492,7 @@ test("shared simulation settings helpers normalize state and build host handlers
       outputDir: "out",
       sourceRootPaths: ["MSL"],
     },
+    workspaceSourceRootPaths: ["target/msl/Modelica"],
     views: [{ id: "states_time", title: "States", type: "timeseries", x: "time", y: ["x"] }],
   });
   assert.deepEqual(state.current, {
@@ -502,10 +502,11 @@ test("shared simulation settings helpers normalize state and build host handlers
     outputDir: "out",
     sourceRootOverrides: ["MSL"],
   });
+  assert.deepEqual(state.workspaceSourceRootPaths, ["target/msl/Modelica"]);
   assert.deepEqual(state.codegen, {
-    mode: "builtin",
-    builtinTemplateId: "sympy.py.jinja",
-    customTemplatePath: "",
+    mode: "target",
+    builtinTargetId: "sympy",
+    customTargetPath: "",
   });
 
   const builtState = shared.buildHostedSimulationSettingsState({
@@ -519,14 +520,15 @@ test("shared simulation settings helpers normalize state and build host handlers
       outputDir: "",
       sourceRootPaths: ["Fallback"],
     },
+    workspaceSourceRootPaths: ["target/cmm/CMM-v0.0.1"],
     fallbackCodegen: {
-      mode: "custom",
-      builtinTemplateId: "casadi.py.jinja",
-      customTemplatePath: "templates/generated.py.jinja",
+      mode: "custom-target",
+      builtinTargetId: "casadi-sx",
+      customTargetPath: "templates/generated-target",
     },
     codegenTemplates: [
-      { id: "sympy.py.jinja", label: "SymPy" },
-      { id: "casadi.py.jinja", label: "CasADi" },
+      { id: "sympy", label: "sympy" },
+      { id: "casadi-sx", label: "casadi-sx" },
     ],
     views: [],
     defaultViews: [{ id: "states_time", title: "States", type: "timeseries", x: "time", y: ["x"] }],
@@ -539,14 +541,15 @@ test("shared simulation settings helpers normalize state and build host handlers
     outputDir: "",
     sourceRootOverrides: ["Fallback"],
   });
+  assert.deepEqual(builtState.workspaceSourceRootPaths, ["target/cmm/CMM-v0.0.1"]);
   assert.deepEqual(builtState.codegen, {
-    mode: "custom",
-    builtinTemplateId: "casadi.py.jinja",
-    customTemplatePath: "templates/generated.py.jinja",
+    mode: "custom-target",
+    builtinTargetId: "casadi-sx",
+    customTargetPath: "templates/generated-target",
   });
   assert.deepEqual(builtState.codegenTemplates, [
-    { id: "sympy.py.jinja", label: "SymPy" },
-    { id: "casadi.py.jinja", label: "CasADi" },
+    { id: "sympy", label: "sympy" },
+    { id: "casadi-sx", label: "casadi-sx" },
   ]);
   assert.equal(builtState.views.length, 1);
 
@@ -567,9 +570,9 @@ test("shared simulation settings helpers normalize state and build host handlers
         sourceRootPaths: ["MSL"],
       },
       codegen: {
-        mode: "builtin",
-        builtinTemplateId: "casadi.py.jinja",
-        customTemplatePath: "",
+        mode: "target",
+        builtinTargetId: "casadi-sx",
+        customTargetPath: "",
       },
       views: [],
     }),
@@ -584,9 +587,9 @@ test("shared simulation settings helpers normalize state and build host handlers
       outputDir: "out",
       sourceRootPaths: ["MSL"],
       codegen: {
-        mode: "custom",
-        builtinTemplateId: "sympy.py.jinja",
-        customTemplatePath: "templates/generated.py.jinja",
+        mode: "custom-target",
+        builtinTargetId: "sympy",
+        customTargetPath: "templates/generated-target",
       },
       views: [{ id: "states_time", title: "States", type: "timeseries", x: "time", y: ["x"] }],
     },
@@ -601,9 +604,9 @@ test("shared simulation settings helpers normalize state and build host handlers
       sourceRootOverrides: ["MSL"],
     },
     codegenSettings: {
-      mode: "custom",
-      builtinTemplateId: "sympy.py.jinja",
-      customTemplatePath: "templates/generated.py.jinja",
+      mode: "custom-target",
+      builtinTargetId: "sympy",
+      customTargetPath: "templates/generated-target",
     },
     viewCount: 1,
   });
@@ -616,9 +619,9 @@ test("shared simulation settings helpers normalize state and build host handlers
     outputDir: "",
     sourceRootPaths: ["MSL"],
     codegen: {
-      mode: "builtin",
-      builtinTemplateId: "casadi.py.jinja",
-      customTemplatePath: "",
+      mode: "target",
+      builtinTargetId: "casadi-sx",
+      customTargetPath: "",
     },
     views: [],
   });
@@ -646,10 +649,8 @@ test("shared simulation settings helpers normalize state and build host handlers
   const actionHandlers = shared.buildHostedSimulationSettingsHandlers({
     getActiveModel: () => "Pkg.Ball",
     pickSourceRootPath: async () => "/tmp/MSL",
-    resyncSidecars: async () => ({
-      remapped_models: 3,
-      parse_failures: 1,
-    }),
+    pickWorkspaceSourceRootPath: async () => "target/msl/Modelica",
+    saveWorkspaceSourceRootPaths: async ({ paths }) => ({ ok: true, paths }),
     prepareModels: async () => ({
       preparedModels: ["Pkg.Ball"],
       failures: [{ model: "Pkg.Other", error: "boom" }],
@@ -662,8 +663,18 @@ test("shared simulation settings helpers normalize state and build host handlers
     { path: "/tmp/MSL" },
   );
   assert.deepEqual(
-    await actionHandlers.resyncSidecars({ method: "resyncSidecars", payload: {} }),
-    { message: "Resync complete: remapped=3, parseFailures=1" },
+    await actionHandlers.pickWorkspaceSourceRootPath({
+      method: "pickWorkspaceSourceRootPath",
+      payload: {},
+    }),
+    { path: "target/msl/Modelica" },
+  );
+  assert.deepEqual(
+    await actionHandlers.saveWorkspaceSourceRootPaths({
+      method: "saveWorkspaceSourceRootPaths",
+      payload: { paths: ["target/msl/Modelica"] },
+    }),
+    { ok: true, paths: ["target/msl/Modelica"] },
   );
   assert.deepEqual(
     await actionHandlers.prepareModels({ method: "prepareModels", payload: {} }),
@@ -784,17 +795,17 @@ test("buildVisualizationModel uses canonical persisted payload shape", () => {
     x: "time",
     y: ["x", "z"],
     script: "ctx.onFrame = () => {};",
-    scriptPath: ".rumoca/models/by-id/uuid/viewer_3d.js",
+    scriptPath: "../shared/viewer_3d.js",
   });
   assert.equal(threeD.type, "3d");
   assert.deepEqual(threeD.labels, { x: "time", y: "x", z: "z" });
   assert.deepEqual(threeD.points[0], { x: 0, y: 10, z: 30 });
   assert.deepEqual(threeD.times, [0, 1, 2]);
   assert.equal(threeD.script, "ctx.onFrame = () => {};");
-  assert.equal(threeD.scriptPath, ".rumoca/models/by-id/uuid/viewer_3d.js");
+  assert.equal(threeD.scriptPath, "../shared/viewer_3d.js");
 });
 
-test("shared project sidecar commands persist and reload simulation settings and views", () => {
+test("shared project config commands persist and reload simulation settings and views", () => {
   function applySnapshotResponse(snapshot, response) {
     const next = {
       files: [...snapshot.files],
@@ -829,13 +840,7 @@ test("shared project sidecar commands persist and reload simulation settings and
   );
   assert.equal(presetResponse.result.ok, true);
   assert.ok(
-    presetResponse.writes.some((file) => file.path === ".rumoca/project.toml"),
-  );
-  assert.ok(
-    presetResponse.writes.some((file) => file.path.endsWith("/identity.toml")),
-  );
-  assert.ok(
-    presetResponse.writes.some((file) => file.path.endsWith("/simulation.toml")),
+    presetResponse.writes.some((file) => file.path === "ball_sim.rum"),
   );
   snapshot = applySnapshotResponse(snapshot, presetResponse);
 
@@ -850,13 +855,13 @@ test("shared project sidecar commands persist and reload simulation settings and
         type: "3d",
         x: "time",
         y: ["x", "y", "z"],
-        scriptPath: ".rumoca/models/by-id/ball_12345678/viewer_3d.js",
+        scriptPath: "../shared/viewer_3d.js",
       }],
     },
   );
   assert.equal(viewsResponse.result.ok, true);
   assert.ok(
-    viewsResponse.writes.some((file) => file.path.endsWith("/views.toml")),
+    viewsResponse.writes.some((file) => file.path === "ball_sim.rum"),
   );
   snapshot = applySnapshotResponse(snapshot, viewsResponse);
 
@@ -879,7 +884,7 @@ test("shared project sidecar commands persist and reload simulation settings and
   assert.equal(visualization.views.length, 1);
   assert.equal(
     visualization.views[0].scriptPath,
-    ".rumoca/models/by-id/ball_12345678/viewer_3d.js",
+    "../shared/viewer_3d.js",
   );
 
   const selection = shared.executeHostedProjectSidecarCommand(

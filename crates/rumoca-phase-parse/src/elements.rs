@@ -7,7 +7,7 @@ use super::definitions::{ElementList, validate_annotation_modifiers};
 use super::helpers::{loc_info, span_location};
 use crate::errors::{semantic_error_from_component_reference, semantic_error_from_token};
 use crate::generated::modelica_grammar_trait;
-use indexmap::IndexMap;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
 
 //-----------------------------------------------------------------------------
 // Helper functions for extracting type prefix attributes
@@ -32,36 +32,34 @@ fn extract_connection(
 /// Extract variability from type prefix.
 fn extract_variability(
     type_prefix: &modelica_grammar_trait::TypePrefix,
-) -> rumoca_ir_core::Variability {
+) -> rumoca_core::Variability {
     let Some(opt) = &type_prefix.type_prefix_opt0 else {
-        return rumoca_ir_core::Variability::Empty;
+        return rumoca_core::Variability::Empty;
     };
     match &opt.type_prefix_opt0_group {
         modelica_grammar_trait::TypePrefixOpt0Group::Constant(c) => {
-            rumoca_ir_core::Variability::Constant(c.constant.constant.clone().into())
+            rumoca_core::Variability::Constant(c.constant.constant.clone().into())
         }
         modelica_grammar_trait::TypePrefixOpt0Group::Discrete(c) => {
-            rumoca_ir_core::Variability::Discrete(c.discrete.discrete.clone().into())
+            rumoca_core::Variability::Discrete(c.discrete.discrete.clone().into())
         }
         modelica_grammar_trait::TypePrefixOpt0Group::Parameter(c) => {
-            rumoca_ir_core::Variability::Parameter(c.parameter.parameter.clone().into())
+            rumoca_core::Variability::Parameter(c.parameter.parameter.clone().into())
         }
     }
 }
 
 /// Extract causality from type prefix.
-fn extract_causality(
-    type_prefix: &modelica_grammar_trait::TypePrefix,
-) -> rumoca_ir_core::Causality {
+fn extract_causality(type_prefix: &modelica_grammar_trait::TypePrefix) -> rumoca_core::Causality {
     let Some(opt) = &type_prefix.type_prefix_opt1 else {
-        return rumoca_ir_core::Causality::Empty;
+        return rumoca_core::Causality::Empty;
     };
     match &opt.type_prefix_opt1_group {
         modelica_grammar_trait::TypePrefixOpt1Group::Input(c) => {
-            rumoca_ir_core::Causality::Input(c.input.input.clone().into())
+            rumoca_core::Causality::Input(c.input.input.clone().into())
         }
         modelica_grammar_trait::TypePrefixOpt1Group::Output(c) => {
-            rumoca_ir_core::Causality::Output(c.output.output.clone().into())
+            rumoca_core::Causality::Output(c.output.output.clone().into())
         }
     }
 }
@@ -73,6 +71,7 @@ fn try_extract_dimension(subscript: &rumoca_ir_ast::Subscript) -> Option<usize> 
         rumoca_ir_ast::Subscript::Expression(rumoca_ir_ast::Expression::Terminal {
             token,
             terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
+            ..
         }) => token.text.parse::<usize>().ok(),
         rumoca_ir_ast::Subscript::Expression(rumoca_ir_ast::Expression::ComponentReference(
             comp_ref,
@@ -115,26 +114,31 @@ fn default_start_value(type_name: &str) -> rumoca_ir_ast::Expression {
     match type_name {
         "Real" => rumoca_ir_ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::UnsignedReal,
-            token: rumoca_ir_core::Token {
+            token: rumoca_core::Token {
                 text: Arc::from("0.0"),
                 ..Default::default()
             },
+            span: rumoca_core::Span::DUMMY,
         },
         "Integer" => rumoca_ir_ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-            token: rumoca_ir_core::Token {
+            token: rumoca_core::Token {
                 text: Arc::from("0"),
                 ..Default::default()
             },
+            span: rumoca_core::Span::DUMMY,
         },
         "Boolean" => rumoca_ir_ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::Bool,
-            token: rumoca_ir_core::Token {
+            token: rumoca_core::Token {
                 text: Arc::from("false"),
                 ..Default::default()
             },
+            span: rumoca_core::Span::DUMMY,
         },
-        _ => rumoca_ir_ast::Expression::Empty {},
+        _ => rumoca_ir_ast::Expression::Empty {
+            span: rumoca_core::Span::DUMMY,
+        },
     }
 }
 
@@ -182,7 +186,7 @@ fn extract_extends_annotation(
 /// Check if an outer component has illegal bindings or modifications.
 fn check_outer_component_restrictions(
     value: &rumoca_ir_ast::Component,
-    ident: &rumoca_ir_core::Token,
+    ident: &rumoca_core::Token,
 ) -> anyhow::Result<()> {
     if value.has_explicit_binding || value.binding.is_some() {
         return Err(semantic_error_from_token(
@@ -212,7 +216,7 @@ fn check_outer_component_restrictions(
 fn check_duplicate_component(
     def: &ElementList,
     comp_name: &str,
-    ident: &rumoca_ir_core::Token,
+    ident: &rumoca_core::Token,
 ) -> anyhow::Result<()> {
     if let Some(existing) = def.components.get(comp_name) {
         return Err(semantic_error_from_token(
@@ -262,7 +266,7 @@ fn process_import_clause(
 
 fn import_clause_location(
     import_clause: &modelica_grammar_trait::ImportClause,
-) -> rumoca_ir_core::Location {
+) -> rumoca_core::Location {
     let mut location = import_clause.import.import.location.clone();
     match &import_clause.import_clause_group {
         modelica_grammar_trait::ImportClauseGroup::IdentEquImportClauseOptName(renamed) => {
@@ -303,18 +307,15 @@ fn import_clause_location(
     location
 }
 
-fn extend_location_end_with_name(
-    location: &mut rumoca_ir_core::Location,
-    name: &rumoca_ir_ast::Name,
-) {
+fn extend_location_end_with_name(location: &mut rumoca_core::Location, name: &rumoca_ir_ast::Name) {
     if let Some(last) = name.name.last() {
         extend_location_end_with_token(location, last);
     }
 }
 
 fn extend_location_end_with_token(
-    location: &mut rumoca_ir_core::Location,
-    token: &rumoca_ir_core::Token,
+    location: &mut rumoca_core::Location,
+    token: &rumoca_core::Token,
 ) {
     let token_loc = &token.location;
     if token_loc.end > location.end
@@ -332,7 +333,7 @@ fn extend_location_end_with_token(
 fn process_import_suffix(
     opt: &Option<modelica_grammar_trait::ImportClauseOpt1>,
     path: rumoca_ir_ast::Name,
-    location: rumoca_ir_core::Location,
+    location: rumoca_core::Location,
     global_scope: bool,
 ) -> rumoca_ir_ast::Import {
     let Some(suffix) = opt else {
@@ -412,6 +413,7 @@ fn extract_extends_mods(
             mods.push(rumoca_ir_ast::ExtendModification {
                 expr: arg.argument.expression.clone(),
                 each: arg.argument.each,
+                final_: arg.argument.r#final,
                 redeclare: arg.argument.redeclare,
             });
         }
@@ -433,6 +435,7 @@ fn extract_extends_mods(
                 mods.push(rumoca_ir_ast::ExtendModification {
                     expr: arg.argument.expression.clone(),
                     each: arg.argument.each,
+                    final_: arg.argument.r#final,
                     redeclare: arg.argument.redeclare,
                 });
             }
@@ -452,9 +455,15 @@ fn process_class_definition(
     def: &mut ElementList,
     class: &modelica_grammar_trait::ElementDefinitionGroupClassDefinition,
     is_final: bool,
+    is_inner: bool,
+    is_outer: bool,
+    is_redeclare: bool,
 ) -> anyhow::Result<()> {
     let mut nested_class = class.class_definition.clone();
     nested_class.is_final = is_final;
+    nested_class.is_inner = is_inner;
+    nested_class.is_outer = is_outer;
+    nested_class.is_redeclare = is_redeclare;
     nested_class.is_replaceable = false;
 
     let name = nested_class.name.text.to_string();
@@ -475,8 +484,8 @@ fn process_class_definition(
 
 /// Context for component processing.
 struct ComponentContext {
-    variability: rumoca_ir_core::Variability,
-    causality: rumoca_ir_core::Causality,
+    variability: rumoca_core::Variability,
+    causality: rumoca_core::Causality,
     connection: rumoca_ir_ast::Connection,
     type_name: rumoca_ir_ast::Name,
     type_level_shape: Vec<usize>,
@@ -485,6 +494,7 @@ struct ComponentContext {
     is_inner: bool,
     is_outer: bool,
     is_replaceable: bool,
+    is_redeclare: bool,
     constrainedby: Option<rumoca_ir_ast::Name>,
 }
 
@@ -527,16 +537,17 @@ fn process_single_component(
         shape_expr: ctx.type_level_shape_expr.clone(),
         shape_is_modification: false,
         annotation,
-        modifications: indexmap::IndexMap::new(),
+        modifications: IndexMap::default(),
         location: comp_location,
         condition,
         inner: ctx.is_inner,
         outer: ctx.is_outer,
-        final_attributes: std::collections::HashSet::new(),
-        each_modifications: std::collections::HashSet::new(),
+        final_attributes: indexmap::IndexSet::new(),
+        each_modifications: indexmap::IndexSet::new(),
         is_protected: false,
         is_final: ctx.is_final,
         is_replaceable: ctx.is_replaceable,
+        is_redeclare: ctx.is_redeclare,
         constrainedby: ctx.constrainedby.clone(),
         is_structural: false,
     };
@@ -574,6 +585,7 @@ fn process_component_clause(
     is_final: bool,
     is_inner: bool,
     is_outer: bool,
+    is_redeclare: bool,
 ) -> anyhow::Result<()> {
     let type_prefix = &clause.component_clause.type_prefix;
     let ctx = ComponentContext {
@@ -590,6 +602,7 @@ fn process_component_clause(
         is_inner,
         is_outer,
         is_replaceable: false,
+        is_redeclare,
         constrainedby: None,
     };
 
@@ -620,7 +633,10 @@ fn process_replaceable_element(
         modelica_grammar_trait::ElementDefinitionGroupGroup::ClassDefinition(class) => {
             let mut nested_class = class.class_definition.clone();
             nested_class.is_final = is_final;
+            nested_class.is_inner = is_inner;
+            nested_class.is_outer = is_outer;
             nested_class.is_replaceable = true;
+            nested_class.is_redeclare = false;
             nested_class.constrainedby = constrainedby;
             let name = nested_class.name.text.to_string();
             def.classes.insert(name, nested_class);
@@ -640,6 +656,7 @@ fn process_replaceable_element(
                 is_inner,
                 is_outer,
                 is_replaceable: true,
+                is_redeclare: false,
                 constrainedby: constrainedby.clone(),
             };
 
@@ -724,7 +741,7 @@ fn constraining_arg_target_name(arg: &rumoca_ir_ast::Expression) -> Option<Strin
         rumoca_ir_ast::Expression::Modification { target, .. }
         | rumoca_ir_ast::Expression::ClassModification { target, .. } => Some(target.to_string()),
         rumoca_ir_ast::Expression::Binary { op, lhs, .. }
-            if matches!(op, rumoca_ir_core::OpBinary::Assign(_))
+            if matches!(op, rumoca_core::OpBinary::Assign)
                 && matches!(
                     lhs.as_ref(),
                     rumoca_ir_ast::Expression::ClassModification { .. }
@@ -757,7 +774,7 @@ fn normalized_constraining_arg_value(
         // Nested component mods/bindings are stored as full expression.
         rumoca_ir_ast::Expression::ClassModification { .. } => Some(arg.clone()),
         rumoca_ir_ast::Expression::Binary { op, lhs, .. }
-            if matches!(op, rumoca_ir_core::OpBinary::Assign(_))
+            if matches!(op, rumoca_core::OpBinary::Assign)
                 && matches!(
                     lhs.as_ref(),
                     rumoca_ir_ast::Expression::ClassModification { .. }
@@ -806,7 +823,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
         ast: &modelica_grammar_trait::ElementList,
     ) -> std::result::Result<Self, Self::Error> {
         let mut def = ElementList {
-            components: IndexMap::new(),
+            components: IndexMap::default(),
             ..Default::default()
         };
         for elem_list in &ast.element_list_list {
@@ -841,16 +858,17 @@ fn process_element_definition(
     def: &mut ElementList,
     edef: &modelica_grammar_trait::ElementElementDefinition,
 ) -> anyhow::Result<()> {
+    let is_redeclare = edef.element_definition.element_definition_opt.is_some();
     let is_final = edef.element_definition.element_definition_opt0.is_some();
     let is_inner = edef.element_definition.element_definition_opt1.is_some();
     let is_outer = edef.element_definition.element_definition_opt2.is_some();
 
     match &edef.element_definition.element_definition_group {
         modelica_grammar_trait::ElementDefinitionGroup::ClassDefinition(class) => {
-            process_class_definition(def, class, is_final)?;
+            process_class_definition(def, class, is_final, is_inner, is_outer, is_redeclare)?;
         }
         modelica_grammar_trait::ElementDefinitionGroup::ComponentClause(clause) => {
-            process_component_clause(def, clause, is_final, is_inner, is_outer)?;
+            process_component_clause(def, clause, is_final, is_inner, is_outer, is_redeclare)?;
         }
         modelica_grammar_trait::ElementDefinitionGroup::ReplaceableElementDefinitionGroupGroupElementDefinitionOpt3(repl) => {
             process_replaceable_element(def, repl, is_final, is_inner, is_outer)?;
@@ -862,42 +880,9 @@ fn process_element_definition(
 //-----------------------------------------------------------------------------
 // Helper functions for component modification processing
 
-/// Valid built-in type attributes that cannot have sub-modifications.
-const ALL_BUILTIN_ATTRS: &[&str] = &[
-    "start",
-    "fixed",
-    "min",
-    "max",
-    "nominal",
-    "unit",
-    "displayUnit",
-    "quantity",
-    "stateSelect",
-    "unbounded",
-];
-
-/// Valid attributes for each builtin type.
-const REAL_ATTRS: &[&str] = &[
-    "start",
-    "fixed",
-    "min",
-    "max",
-    "nominal",
-    "unit",
-    "displayUnit",
-    "quantity",
-    "stateSelect",
-    "unbounded",
-    "each",
-    "final",
-];
-const INTEGER_ATTRS: &[&str] = &["start", "fixed", "min", "max", "quantity", "each", "final"];
-const BOOLEAN_ATTRS: &[&str] = &["start", "fixed", "quantity", "each", "final"];
-const STRING_ATTRS: &[&str] = &["start", "fixed", "quantity", "each", "final"];
-
 /// Check if a type is a builtin type.
 fn is_builtin_type(type_name: &str) -> bool {
-    matches!(type_name, "Real" | "Integer" | "Boolean" | "String")
+    rumoca_core::is_predefined_component_type(type_name)
 }
 
 fn duplicate_modification_error(
@@ -932,14 +917,8 @@ fn store_component_modification(
 }
 
 /// Get valid attributes for a builtin type.
-fn get_valid_attrs(type_name: &str) -> &'static [&'static str] {
-    match type_name {
-        "Real" => REAL_ATTRS,
-        "Integer" => INTEGER_ATTRS,
-        "Boolean" => BOOLEAN_ATTRS,
-        "String" => STRING_ATTRS,
-        _ => &[],
-    }
+fn get_valid_attrs(type_name: &str) -> Vec<&'static str> {
+    rumoca_core::predefined_component_modification_names(type_name)
 }
 
 /// Check for invalid sub-modifications on builtin attributes.
@@ -951,7 +930,7 @@ fn check_builtin_submod(
         return Ok(());
     }
     let func_name = comp.to_string();
-    if ALL_BUILTIN_ATTRS.contains(&func_name.as_str()) {
+    if rumoca_core::is_any_predefined_component_attribute(&func_name) {
         let loc = comp
             .parts
             .first()
@@ -963,39 +942,37 @@ fn check_builtin_submod(
 }
 
 /// Extract shape from an expression.
-fn extract_shape(expr: &rumoca_ir_ast::Expression) -> Vec<usize> {
+fn extract_shape(expr: &rumoca_ir_ast::Expression) -> anyhow::Result<Vec<usize>> {
     match expr {
         rumoca_ir_ast::Expression::Terminal {
             token,
             terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-        } => token.text.parse().map(|d| vec![d]).unwrap_or_default(),
-        rumoca_ir_ast::Expression::Parenthesized { inner } => {
-            if let rumoca_ir_ast::Expression::Terminal {
-                token,
-                terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-            } = &**inner
-            {
-                return token.text.parse().map(|d| vec![d]).unwrap_or_default();
-            }
-            Vec::new()
-        }
+            ..
+        } => Ok(vec![parse_shape_dimension(token)?]),
+        rumoca_ir_ast::Expression::Parenthesized { inner, .. } => extract_shape(inner),
         rumoca_ir_ast::Expression::Array { elements, .. }
-        | rumoca_ir_ast::Expression::Tuple { elements } => elements
-            .iter()
-            .filter_map(|e| {
+        | rumoca_ir_ast::Expression::Tuple { elements, .. } => {
+            let mut shape = Vec::new();
+            for element in elements {
                 if let rumoca_ir_ast::Expression::Terminal {
                     token,
                     terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-                } = e
+                    ..
+                } = element
                 {
-                    token.text.parse().ok()
-                } else {
-                    None
+                    shape.push(parse_shape_dimension(token)?);
                 }
-            })
-            .collect(),
-        _ => Vec::new(),
+            }
+            Ok(shape)
+        }
+        _ => Ok(Vec::new()),
     }
+}
+
+fn parse_shape_dimension(token: &rumoca_core::Token) -> anyhow::Result<usize> {
+    token.text.parse().map_err(|_| {
+        semantic_error_from_token(format!("malformed shape dimension `{}`", token.text), token)
+    })
 }
 
 /// Validate that a modification is valid for a builtin type.
@@ -1054,7 +1031,7 @@ fn process_named_arg(
             }
         }
         "shape" => {
-            value.shape = extract_shape(rhs);
+            value.shape = extract_shape(rhs)?;
         }
         _ => {
             validate_builtin_mod(param_name, &type_name, comp)?;
@@ -1079,8 +1056,8 @@ fn process_mod_arg(
     }
 
     // Handle named argument (param = value)
-    if let rumoca_ir_ast::Expression::Binary { op, lhs, rhs } = arg
-        && matches!(op, rumoca_ir_core::OpBinary::Assign(_))
+    if let rumoca_ir_ast::Expression::Binary { op, lhs, rhs, .. } = arg
+        && matches!(op, rumoca_core::OpBinary::Assign)
         && let rumoca_ir_ast::Expression::ComponentReference(comp) = &**lhs
     {
         let param_name = comp.to_string();
@@ -1091,6 +1068,7 @@ fn process_mod_arg(
     if let rumoca_ir_ast::Expression::Modification {
         target,
         value: mod_value,
+        ..
     } = arg
     {
         let param_name = target.to_string();
@@ -1147,8 +1125,10 @@ fn process_mod_arg(
 
     // Handle nested modifications WITH binding: field(start=X)=expr
     // The parser produces Binary { Assign, ClassModification { target, mods }, rhs }
-    if let rumoca_ir_ast::Expression::Binary { op, lhs, rhs: _ } = arg
-        && matches!(op, rumoca_ir_core::OpBinary::Assign(_))
+    if let rumoca_ir_ast::Expression::Binary {
+        op, lhs, rhs: _, ..
+    } = arg
+        && matches!(op, rumoca_core::OpBinary::Assign)
         && let rumoca_ir_ast::Expression::ClassModification { target, .. } = &**lhs
     {
         let param_name = target.to_string();
@@ -1178,11 +1158,6 @@ fn process_mod_expr(
         // Store the binding expression in the dedicated binding field
         value.binding = Some(expr.expression.clone());
         value.has_explicit_binding = true;
-        // Also set start as fallback (used when there is no explicit start= modifier)
-        // This will be overwritten if there's an explicit start= modifier
-        if !value.start_is_modification {
-            value.start = expr.expression.clone();
-        }
     }
     // 'break' means remove any inherited binding - do nothing
 }

@@ -1,6 +1,6 @@
-use indexmap::IndexMap;
-use rumoca_core::DefId;
+use rumoca_core::{DefId, parent_scope, top_level_last_segment};
 use rumoca_ir_ast as ast;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -65,7 +65,7 @@ pub(crate) fn get_or_compute_template(
         return Ok(cached);
     }
 
-    let mut inheritance_cache = InheritanceCache::new();
+    let mut inheritance_cache = InheritanceCache::default();
     let inherited = process_extends_with_cache(tree, class, &mut inheritance_cache)?;
     let effective_components =
         get_effective_components_with_cache(tree, class, &mut inheritance_cache)?;
@@ -122,7 +122,7 @@ fn collect_lexical_ancestor_imports(
 ) {
     let mut ancestors = Vec::new();
     let mut scope = class_name;
-    while let Some((parent, _)) = scope.rsplit_once('.') {
+    while let Some(parent) = parent_scope(scope) {
         ancestors.push(parent.to_string());
         scope = parent;
     }
@@ -178,9 +178,7 @@ fn resolve_single_import(
     match import {
         ast::Import::Qualified { path, .. } => {
             let fqn = path.to_string();
-            if let Some(short) = fqn.rsplit('.').next() {
-                pairs.push((short.to_string(), fqn));
-            }
+            pairs.push((top_level_last_segment(&fqn).to_string(), fqn));
         }
         ast::Import::Renamed { alias, path, .. } => {
             pairs.push((alias.text.to_string(), path.to_string()));
@@ -222,7 +220,7 @@ mod tests {
 
     fn empty_template() -> Arc<ClassTemplate> {
         Arc::new(ClassTemplate {
-            effective_components: IndexMap::new(),
+            effective_components: IndexMap::default(),
             effective_equations: Vec::new(),
             initial_equations: Vec::new(),
             algorithms: Vec::new(),
@@ -233,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_store_cached_template_requires_def_id() {
-        let mut cache = ClassTemplateCache::new();
+        let mut cache = ClassTemplateCache::default();
         let template = empty_template();
 
         store_cached_template(None, &mut cache, &template);
@@ -246,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_cached_template_roundtrip_returns_same_arc() {
-        let mut cache = ClassTemplateCache::new();
+        let mut cache = ClassTemplateCache::default();
         let template = empty_template();
         let def_id = DefId(42);
 

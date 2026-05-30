@@ -1,4 +1,4 @@
-//! Lockstep simulation loop driven entirely by the TOML config.
+//! Interactive simulation loop driven entirely by the TOML config.
 //!
 //! Per-frame orchestration (transports live in sibling crates):
 //!   1. poll input engine (config-driven gamepad/keyboard)
@@ -8,8 +8,9 @@
 //!   5. pack + send UDP
 //!   6. build viewer JSON via signal mapper
 //!   7. push to WebSocket
-//!   8. realtime pacing
+//!   8. optional realtime pacing
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -19,26 +20,28 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::{InteractiveStepper, SimOptions, SimPacingMode, SimSolverMode};
 use anyhow::{Context, Result};
 use rumoca_codec::{PackCodec, UnpackCodec};
-use rumoca_solver_diffsol::{SimStepper, StepperOptions};
+use rumoca_input::{
+    InputEngine, KeyCode, KeyModifiers, KeyboardEvent, RuntimeContext, SignalMapper,
+};
 use rumoca_transport_udp::{UdpConfig, UdpTransport};
 use rumoca_transport_websocket::run_broadcast_server;
+use serde::Deserialize;
 
-use rumoca_input::{Devices, InputEngine, RuntimeContext, SignalMapper};
+use crate::runner::devices::{self, Devices};
 
-use crate::runner::config::{ResetConfig, SimMode, SimulationConfig};
+use crate::runner::config::{ResetConfig, SimulationConfig};
 
-const MAX_SUB_DT: f64 = 0.002;
+// ── External-interface subprocess ──────────────────────────────────────────
 
-// ── Autopilot subprocess ───────────────────────────────────────────────────
-
-struct AutopilotProcess {
+struct ExternalInterfaceProcess {
     child: Option<Child>,
     command: String,
 }
 
-impl AutopilotProcess {
+impl ExternalInterfaceProcess {
     fn new(command: &str) -> Self {
         Self {
             child: None,
@@ -48,12 +51,15 @@ impl AutopilotProcess {
 
     fn start(&mut self) -> Result<()> {
         self.stop();
-        eprintln!("[autopilot] starting: {}", self.command);
+        eprintln!("[external_interface] starting: {}", self.command);
         let mut cmd = Command::new(&self.command);
         cmd.stdin(Stdio::null());
-        // `RUMOCA_AUTOPILOT_LOG=1` lets the child's stdout/stderr through
-        // to this terminal — handy for debugging Cerebri boot issues.
-        if std::env::var("RUMOCA_AUTOPILOT_LOG").is_ok() {
+        // Enabling the `rumoca_sim::external_interface` (or `::autopilot`) trace
+        // target lets the child's stdout/stderr through to this terminal — handy
+        // for debugging Cerebri boot issues.
+        if tracing::enabled!(target: "rumoca_sim::external_interface", tracing::Level::DEBUG)
+            || tracing::enabled!(target: "rumoca_sim::autopilot", tracing::Level::DEBUG)
+        {
             cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         } else {
             cmd.stdout(Stdio::null()).stderr(Stdio::null());
@@ -74,8 +80,8 @@ impl AutopilotProcess {
         install_pdeathsig(&mut cmd);
         let child = cmd
             .spawn()
-            .with_context(|| format!("Failed to start autopilot: {}", self.command))?;
-        eprintln!("[autopilot] pid {}", child.id());
+            .with_context(|| format!("Failed to start external interface: {}", self.command))?;
+        eprintln!("[external_interface] pid {}", child.id());
         self.child = Some(child);
         Ok(())
     }
@@ -85,7 +91,7 @@ impl AutopilotProcess {
             return;
         };
         let pid = child.id();
-        eprintln!("[autopilot] killing pid {pid}");
+        eprintln!("[external_interface] killing pid {pid}");
         let _ = child.kill();
         // Best-effort wait; if the child won't die within 500ms (e.g., a
         // ptrace'd debugger is eating SIGKILL), abandon the wait rather
@@ -98,11 +104,11 @@ impl AutopilotProcess {
                 Err(_) => return,
             }
         }
-        eprintln!("[autopilot] pid {pid} did not exit within 500ms; abandoning");
+        eprintln!("[external_interface] pid {pid} did not exit within 500ms; abandoning");
     }
 }
 
-impl Drop for AutopilotProcess {
+impl Drop for ExternalInterfaceProcess {
     fn drop(&mut self) {
         self.stop();
     }
@@ -127,8 +133,9 @@ fn install_pdeathsig(cmd: &mut Command) {
 
 // ── Trace log (streaming CSV of captured fields, one row per frame) ───────
 //
-// Activated by `RUMOCA_TRACE_LOG=/path/to/trace.csv` when the config has a
-// `[debug_log]` section. Fields come from `debug_log.capture`, evaluated
+// Activated by a `[debug_log]` section in the scenario config (path defaults to
+// `rumoca_trace.csv`, override with `path = ...`). Fields come from
+// `debug_log.capture`, evaluated
 // each frame. Writes through a BufWriter and flushes on Drop. Designed
 // for offline plotting — load into a notebook with pandas.read_csv.
 
@@ -171,10 +178,10 @@ fn open_trace_logger(cfg: &SimulationConfig) -> Result<Option<TraceLogger>> {
     let Some(dbg) = cfg.debug_log.as_ref() else {
         return Ok(None);
     };
-    // Default: drop `rumoca_trace.csv` in the cwd so you always have a log
-    // to share with no setup. Override with RUMOCA_TRACE_LOG=/path/other.csv.
-    let path = std::env::var("RUMOCA_TRACE_LOG").unwrap_or_else(|_| "rumoca_trace.csv".to_string());
-    let logger = TraceLogger::open(PathBuf::from(path), dbg.capture.clone())?;
+    // Default: drop `rumoca_trace.csv` in the cwd so you always have a log to
+    // share with no setup. Override with `path = "/path/other.csv"` under the
+    // scenario's [debug_log] config.
+    let logger = TraceLogger::open(PathBuf::from(dbg.path.clone()), dbg.capture.clone())?;
     Ok(Some(logger))
 }
 
@@ -211,19 +218,135 @@ fn resolve_trace_field(name: &str, engine: &InputEngine, rt: &RuntimeContext<'_>
     f64::NAN
 }
 
-// ── UDP config resolution (bridge legacy [udp] + new [transport.udp]) ──────
+// ── UDP config resolution ───────────────────────────────────────────────────
 
 fn resolve_udp(cfg: &SimulationConfig) -> Option<&UdpConfig> {
-    cfg.transport
-        .as_ref()
-        .and_then(|t| t.udp.as_ref())
-        .or(cfg.udp.as_ref())
+    cfg.transport.as_ref().and_then(|t| t.udp.as_ref())
+}
+
+#[derive(Deserialize)]
+struct ViewerInputCommand {
+    key: Option<ViewerKeyCommand>,
+    #[serde(default)]
+    quit: bool,
+}
+
+#[derive(Deserialize)]
+struct ViewerKeyCommand {
+    code: String,
+    key: Option<String>,
+    #[serde(default = "default_key_pressed")]
+    pressed: bool,
+    #[serde(default)]
+    shift: bool,
+    #[serde(default)]
+    ctrl: bool,
+    #[serde(default)]
+    alt: bool,
+}
+
+fn default_key_pressed() -> bool {
+    true
+}
+
+#[derive(Default)]
+struct ViewerInputDrain {
+    keys: Vec<KeyboardEvent>,
+    labels: Vec<String>,
+    quit: bool,
+}
+
+fn drain_viewer_input(
+    rx: &mpsc::Receiver<String>,
+    first_packet_timeout: Option<Duration>,
+    debug: bool,
+) -> ViewerInputDrain {
+    let mut drained = ViewerInputDrain::default();
+    let mut events = Vec::new();
+    if let Some(timeout) = first_packet_timeout
+        && let Ok(text) = rx.recv_timeout(timeout)
+    {
+        drain_viewer_command_text(text, &mut drained, &mut events);
+    }
+    while let Ok(text) = rx.try_recv() {
+        drain_viewer_command_text(text, &mut drained, &mut events);
+    }
+    if debug && !events.is_empty() {
+        eprintln!(
+            "\r[input] viewer keys: {}                    ",
+            drained.labels.join(", ")
+        );
+    }
+    drained.keys = events;
+    drained
+}
+
+fn drain_viewer_command_text(
+    text: String,
+    drained: &mut ViewerInputDrain,
+    events: &mut Vec<KeyboardEvent>,
+) {
+    let Ok(command) = serde_json::from_str::<ViewerInputCommand>(&text) else {
+        return;
+    };
+    if command.quit {
+        drained.quit = true;
+    }
+    if let Some(key) = command.key
+        && let Some(event) = browser_key_to_event(&key)
+    {
+        let suffix = if key.pressed { "" } else { " up" };
+        drained.labels.push(format!("{}{}", key.code, suffix));
+        events.push(event);
+    }
+}
+
+fn browser_key_to_event(key: &ViewerKeyCommand) -> Option<KeyboardEvent> {
+    let code = match key.code.as_str() {
+        "ArrowUp" => KeyCode::Up,
+        "ArrowDown" => KeyCode::Down,
+        "ArrowLeft" => KeyCode::Left,
+        "ArrowRight" => KeyCode::Right,
+        "Enter" => KeyCode::Enter,
+        "Tab" => KeyCode::Tab,
+        "Escape" => KeyCode::Esc,
+        "Backspace" => KeyCode::Backspace,
+        "Delete" => KeyCode::Delete,
+        "Space" => KeyCode::Char(' '),
+        code if code.starts_with("Key") && code.len() == 4 => {
+            KeyCode::Char(code.chars().nth(3)?.to_ascii_lowercase())
+        }
+        code if code.starts_with("Digit") && code.len() == 6 => KeyCode::Char(code.chars().nth(5)?),
+        _ => {
+            let key_text = key.key.as_deref()?;
+            if key_text.chars().count() == 1 {
+                KeyCode::Char(key_text.chars().next()?.to_ascii_lowercase())
+            } else {
+                return None;
+            }
+        }
+    };
+    let mut modifiers = KeyModifiers::NONE;
+    if key.shift {
+        modifiers |= KeyModifiers::SHIFT;
+    }
+    if key.ctrl {
+        modifiers |= KeyModifiers::CONTROL;
+    }
+    if key.alt {
+        modifiers |= KeyModifiers::ALT;
+    }
+    Some(if key.pressed {
+        KeyboardEvent::holdable_press(code, modifiers)
+    } else {
+        KeyboardEvent::released(code, modifiers)
+    })
 }
 
 // ── Main loop ──────────────────────────────────────────────────────────────
 
 /// Bundle of per-frame FB transport state. Present only when `[schema]` +
-/// `[receive]` + `[send]` are configured (autopilot coupling). Absent in
+/// `[receive]` + `[send]` are configured (external coupling). Absent in
 /// standalone mode (e.g. rover demo).
 struct FbTransport {
     udp: UdpTransport,
@@ -237,15 +360,17 @@ struct FrameCtx<'a> {
     cfg: &'a SimulationConfig,
     fb: Option<&'a FbTransport>,
     mapper: &'a SignalMapper,
+    viewer_input_rx: &'a mpsc::Receiver<String>,
     state_tx: &'a mpsc::Sender<String>,
     realtime: &'a Arc<AtomicBool>,
     quit: &'a Arc<AtomicBool>,
-    autopilot: &'a Arc<Mutex<Option<AutopilotProcess>>>,
+    external_interface: &'a Arc<Mutex<Option<ExternalInterfaceProcess>>>,
     model_source: &'a str,
     model_name: &'a str,
+    source_roots: &'a [PathBuf],
     debug: bool,
     dt: f64,
-    mode: SimMode,
+    mode: SimPacingMode,
 }
 
 /// Mutable per-frame state that carries across iterations.
@@ -257,29 +382,66 @@ struct FrameState {
     trace: Option<TraceLogger>,
 }
 
+pub struct SimLoopArgs<'a> {
+    pub cfg: &'a SimulationConfig,
+    pub model_source: &'a str,
+    pub model_name: &'a str,
+    pub source_roots: &'a [PathBuf],
+    pub http_port: u16,
+    pub ws_port: u16,
+    pub debug: bool,
+}
+
+struct StepperFrameSnapshot {
+    values: Option<HashMap<String, f64>>,
+}
+
+impl StepperFrameSnapshot {
+    fn new(stepper: &impl InteractiveStepper, names: &[String]) -> Self {
+        Self {
+            values: stepper.values_for(names),
+        }
+    }
+
+    fn get(&self, stepper: &impl InteractiveStepper, name: &str) -> Option<f64> {
+        self.values
+            .as_ref()
+            .and_then(|values| values.get(name).copied())
+            .or_else(|| stepper.get(name))
+    }
+}
+
 enum FrameControl {
     Continue,
     Break,
 }
 
-/// Run the lockstep simulation app. Blocks the calling thread. In standalone
+/// Run the interactive simulation app. Blocks the calling thread. In standalone
 /// mode (no `[schema]`/`[receive]`/`[send]` in config) the UDP socket and
-/// codecs are not created and no autopilot coupling happens.
-pub fn run_sim_loop(
-    cfg: &SimulationConfig,
-    stepper: &mut SimStepper,
-    model_source: &str,
-    model_name: &str,
-    ws_port: u16,
-    debug: bool,
-) -> Result<()> {
+/// codecs are not created and no external-interface coupling happens.
+pub fn run_sim_loop<S>(stepper: &mut S, args: SimLoopArgs<'_>) -> Result<()>
+where
+    S: InteractiveStepper,
+{
+    let SimLoopArgs {
+        cfg,
+        model_source,
+        model_name,
+        source_roots,
+        http_port,
+        ws_port,
+        debug,
+    } = args;
+
     // ── Signal handler FIRST, before any other thread or child spawns. ───
     // signal_hook masks the target signals on threads spawned after it, so
-    // installing it ahead of the input engine / WS thread / autopilot child
+    // installing it ahead of the input engine / WS thread / external child
     // ensures SIGINT/SIGTERM funnel to our dedicated signal thread — not a
     // gilrs worker, not zephyr's pgrp.
-    let autopilot: Arc<Mutex<Option<AutopilotProcess>>> = Arc::new(Mutex::new(None));
-    spawn_sigint_handler(Arc::clone(&autopilot));
+    let external_interface: Arc<Mutex<Option<ExternalInterfaceProcess>>> =
+        Arc::new(Mutex::new(None));
+    let quit = Arc::new(AtomicBool::new(false));
+    spawn_sigint_handler(Arc::clone(&external_interface), Arc::clone(&quit));
 
     let fb = setup_fb_transport(cfg)?;
 
@@ -299,36 +461,60 @@ pub fn run_sim_loop(
     engine.set_mode(input_runtime.mode());
     let mapper = SignalMapper::new(signals_cfg, &cfg.locals).context("Compile signal mapper")?;
 
-    // ── Autopilot + WS thread ─────────────────────────────────────────────
-    start_autopilot_into(cfg, &autopilot)?;
+    // ── External interface + WS thread ────────────────────────────────────
+    start_external_interface_into(cfg, &external_interface)?;
     let (state_tx, state_rx) = mpsc::channel::<String>();
-    let realtime = Arc::new(AtomicBool::new(cfg.sim.realtime));
-    let quit = Arc::new(AtomicBool::new(false));
+    let (viewer_input_tx, viewer_input_rx) = mpsc::channel::<String>();
+    let mode = cfg.effective_pacing_mode();
+    let realtime = Arc::new(AtomicBool::new(matches!(mode, SimPacingMode::Realtime)));
     let realtime_ws = Arc::clone(&realtime);
     let quit_ws = Arc::clone(&quit);
-    thread::spawn(move || run_broadcast_server(ws_port, state_rx, realtime_ws, quit_ws));
+    let (ws_ready_tx, ws_ready_rx) = mpsc::channel();
+    thread::spawn(move || {
+        run_broadcast_server(
+            ws_port,
+            state_rx,
+            Some(viewer_input_tx),
+            Some(ws_ready_tx),
+            realtime_ws,
+            quit_ws,
+        )
+    });
+    let ws_ready = ws_ready_rx
+        .recv()
+        .context("WebSocket server exited before reporting readiness")?;
+    if let Err(error) = ws_ready {
+        anyhow::bail!(error);
+    }
 
-    let mode = SimMode::resolve(cfg.sim.mode, cfg.has_fb());
-    eprintln!(
+    status_line(&format!(
         "  Pacing: {}",
         match mode {
-            SimMode::Lockstep => "lockstep (autopilot-paced)",
-            SimMode::FreeRun => "free-run (wall-clock paced)",
+            SimPacingMode::AsFastAsPossible => "as_fast_as_possible",
+            SimPacingMode::Realtime => "realtime",
+            SimPacingMode::Lockstep => "lockstep (input-packet-paced)",
         }
-    );
-    eprintln!("\nReady. Simulation running.");
+    ));
+    status_line("");
+    status_line("Ready. Simulation running.");
+    status_line(&format!(
+        "  Open http://localhost:{http_port} in a browser."
+    ));
+    notify_editor_viewer_ready(http_port);
 
     // ── Loop ──────────────────────────────────────────────────────────────
     let ctx = FrameCtx {
         cfg,
         fb: fb.as_ref(),
         mapper: &mapper,
+        viewer_input_rx: &viewer_input_rx,
         state_tx: &state_tx,
         realtime: &realtime,
         quit: &quit,
-        autopilot: &autopilot,
+        external_interface: &external_interface,
         model_source,
         model_name,
+        source_roots,
         debug,
         dt: cfg.sim.dt,
         mode,
@@ -346,9 +532,9 @@ pub fn run_sim_loop(
     {}
 
     // Explicit stop: the signal-handler thread still holds an Arc clone of
-    // `autopilot`, so Drop would not fire on normal exit and zephyr would
-    // orphan. Kill the child here, deterministically.
-    if let Ok(mut ap) = autopilot.lock()
+    // `external_interface`, so Drop would not fire on normal exit and a child
+    // process could orphan. Kill the child here, deterministically.
+    if let Ok(mut ap) = external_interface.lock()
         && let Some(proc) = ap.as_mut()
     {
         proc.stop();
@@ -356,19 +542,40 @@ pub fn run_sim_loop(
     Ok(())
 }
 
+/// Emit a machine-parseable readiness marker on stderr once the HTTP server is
+/// up, so an editor launching the interactive viewer can detect when to open the
+/// webview. Always printed (it is a benign status line); editors grep for it.
+fn notify_editor_viewer_ready(http_port: u16) {
+    status_line(&format!(
+        "rumoca-viewer-ready http://127.0.0.1:{http_port}/"
+    ));
+}
+
+fn status_line(message: &str) {
+    let _ = write!(std::io::stderr(), "{message}\r\n");
+}
+
 fn setup_fb_transport(cfg: &SimulationConfig) -> Result<Option<FbTransport>> {
     if !cfg.has_fb() {
         eprintln!("  Mode: standalone (no UDP/codec)");
         return Ok(None);
     }
-    let schema_cfg = cfg.schema.as_ref().unwrap(); // validated by has_fb
-    let send_cfg = cfg.send.as_ref().unwrap();
-    let recv_cfg = cfg.receive.as_ref().unwrap();
+    let schema_cfg = cfg
+        .schema
+        .as_ref()
+        .context("FB config present but missing [schema] section")?;
+    let send_cfg = cfg
+        .send
+        .as_ref()
+        .context("FB config present but missing [send] section")?;
+    let recv_cfg = cfg
+        .receive
+        .as_ref()
+        .context("FB config present but missing [receive] section")?;
     let pack = rumoca_codec::build_pack(schema_cfg, send_cfg).context("Build pack codec")?;
     let unpack = rumoca_codec::build_unpack(schema_cfg, recv_cfg).context("Build unpack codec")?;
     let recv_expected = unpack.expected_size();
-    let udp_cfg =
-        resolve_udp(cfg).context("FB config present but no [transport.udp] or [udp] section")?;
+    let udp_cfg = resolve_udp(cfg).context("FB config present but no [transport.udp] section")?;
     eprintln!("  UDP listen: {}", udp_cfg.listen);
     eprintln!("  UDP send:   {}", udp_cfg.send);
     eprintln!("  Expecting {recv_expected}-byte receive packets");
@@ -385,41 +592,63 @@ impl FrameCtx<'_> {
     fn run_one_frame(
         &self,
         state: &mut FrameState,
-        stepper: &mut SimStepper,
+        stepper: &mut impl InteractiveStepper,
         engine: &mut InputEngine,
         input_runtime: &mut Devices,
     ) -> Result<FrameControl> {
         let frame_start = Instant::now();
 
-        // Poll input + handle engine-emitted signals (shared).
-        let poll_dt = state.last_poll.elapsed().as_secs_f64();
-        state.last_poll = Instant::now();
-        input_runtime.poll(engine, poll_dt);
-        if let FrameControl::Break = self.handle_signals(engine, stepper)? {
+        let first_packet_timeout =
+            if matches!(self.mode, SimPacingMode::Lockstep) && self.fb.is_none() {
+                Some(Duration::from_millis(50))
+            } else {
+                None
+            };
+        let viewer_input =
+            drain_viewer_input(self.viewer_input_rx, first_packet_timeout, self.debug);
+        let viewer_packet = !viewer_input.keys.is_empty();
+
+        if viewer_input.quit {
+            self.quit.store(true, Ordering::Relaxed);
+        }
+        if self.quit.load(Ordering::Relaxed) {
+            eprintln!("\n[sim] quit requested");
             return Ok(FrameControl::Break);
         }
 
-        // Mode-specific receive + step gate.
-        //   free_run: drain non-blocking, always step
-        //   lockstep: block for one packet; if timeout, skip step entirely
+        // Pacing-specific receive + step gate.
         match self.mode {
-            SimMode::FreeRun => {
+            SimPacingMode::AsFastAsPossible | SimPacingMode::Realtime => {
                 self.drain_udp(state, stepper, engine);
             }
-            SimMode::Lockstep => {
-                if !self.wait_for_command(state, stepper, engine) {
-                    // No command arrived within socket timeout — try again,
-                    // physics stays paused (lockstep semantics).
+            SimPacingMode::Lockstep => {
+                let transport_packet = self.wait_for_command(state, stepper, engine);
+                if !viewer_packet && !transport_packet {
+                    // No input packet arrived — try again. Physics and input
+                    // integrators stay paused (lockstep semantics).
                     return Ok(FrameControl::Continue);
                 }
             }
         }
-        step_substeps(stepper, self.dt);
+
+        let poll_dt = if matches!(self.mode, SimPacingMode::Lockstep | SimPacingMode::Realtime) {
+            self.dt
+        } else {
+            let elapsed = state.last_poll.elapsed().as_secs_f64();
+            state.last_poll = Instant::now();
+            elapsed
+        };
+        input_runtime.poll_with_keyboard_events(engine, poll_dt, viewer_input.keys);
+        if let FrameControl::Break = self.handle_signals(engine, stepper)? {
+            return Ok(FrameControl::Break);
+        }
+        self.apply_stepper_inputs(state, stepper, engine, input_runtime);
+        step_substeps(stepper, self.dt)?;
 
         self.emit_payloads(state, stepper, engine, input_runtime)?;
 
-        // Status line (~1 Hz) — in lockstep the period is approximate since
-        // frame rate depends on autopilot pacing.
+        // Status line (~1 Hz). In lockstep the period is approximate because
+        // frame rate depends on external input pacing.
         let status_period = (1.0_f64 / self.dt).max(1.0) as u64;
         if state.frame_num.is_multiple_of(status_period) {
             eprint!(
@@ -430,9 +659,9 @@ impl FrameCtx<'_> {
             );
         }
 
-        // Realtime pacing: free-run only. Lockstep is paced by the autopilot,
-        // so wall-clock sleep would starve physics of commands.
-        if matches!(self.mode, SimMode::FreeRun) && self.realtime.load(Ordering::Relaxed) {
+        // Realtime pacing is an explicit mode. Lockstep is paced by input
+        // arrival, and as-fast-as-possible intentionally never sleeps here.
+        if matches!(self.mode, SimPacingMode::Realtime) && self.realtime.load(Ordering::Relaxed) {
             let elapsed = frame_start.elapsed();
             let target = Duration::from_secs_f64(self.dt);
             if elapsed < target {
@@ -443,12 +672,40 @@ impl FrameCtx<'_> {
         Ok(FrameControl::Continue)
     }
 
-    /// Build payloads + apply stepper_inputs + send FB + push viewer JSON.
-    /// Shared by both free-run and lockstep paths.
+    /// Apply configured local/runtime signal routes into model inputs before stepping.
+    fn apply_stepper_inputs(
+        &self,
+        state: &FrameState,
+        stepper: &mut impl InteractiveStepper,
+        engine: &mut InputEngine,
+        input_runtime: &Devices,
+    ) {
+        let wall_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as f64;
+        let stepper_time = stepper.time();
+        let stepper_get = |name: &str| stepper.get(name);
+        let rt = RuntimeContext {
+            frame_num: state.frame_num,
+            wall_ms,
+            input_connected: input_runtime.is_connected(),
+            input_mode: input_runtime.mode(),
+            input_message: engine.last_message(),
+            stepper_time,
+            stepper_get: &stepper_get,
+        };
+        for (name, val) in self.mapper.build_stepper_inputs(engine, &rt) {
+            let _ = stepper.set_input(&name, val);
+        }
+    }
+
+    /// Build payloads + send FB + push viewer JSON.
+    /// Shared by all pacing paths.
     fn emit_payloads(
         &self,
         state: &mut FrameState,
-        stepper: &mut SimStepper,
+        stepper: &mut impl InteractiveStepper,
         engine: &mut InputEngine,
         input_runtime: &Devices,
     ) -> Result<()> {
@@ -456,28 +713,26 @@ impl FrameCtx<'_> {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as f64;
-        let (stepper_inputs, send_frame, json) = {
+        let (send_frame, json) = {
             let stepper_time = stepper.time();
-            let stepper_get = |name: &str| stepper.get(name);
+            let snapshot = StepperFrameSnapshot::new(stepper, self.mapper.stepper_lookup_names());
+            let stepper_get = |name: &str| snapshot.get(stepper, name);
             let rt = RuntimeContext {
                 frame_num: state.frame_num,
                 wall_ms,
                 input_connected: input_runtime.is_connected(),
                 input_mode: input_runtime.mode(),
+                input_message: engine.last_message(),
                 stepper_time,
                 stepper_get: &stepper_get,
             };
-            let stepper_inputs = self.mapper.build_stepper_inputs(engine, &rt);
             let send_frame = self.fb.map(|_| self.mapper.build_send(engine, &rt));
             let json = self.mapper.build_viewer_json(engine, &rt);
             if let Some(trace) = state.trace.as_mut() {
                 trace.record(engine, &rt);
             }
-            (stepper_inputs, send_frame, json)
+            (send_frame, json)
         };
-        for (name, val) in stepper_inputs {
-            let _ = stepper.set_input(&name, val);
-        }
         if let (Some(fb), Some(frame)) = (self.fb, send_frame) {
             fb.udp.send(&fb.pack.pack(&frame));
         }
@@ -485,18 +740,16 @@ impl FrameCtx<'_> {
         Ok(())
     }
 
-    /// Lockstep receive: block for one packet, apply to stepper/locals.
+    /// Lockstep receive: consume one transport packet, apply to stepper/locals.
     /// Returns `true` if a packet was consumed, `false` on timeout.
     fn wait_for_command(
         &self,
         state: &mut FrameState,
-        stepper: &mut SimStepper,
+        stepper: &mut impl InteractiveStepper,
         engine: &mut InputEngine,
     ) -> bool {
         let Some(fb) = self.fb else {
-            // No FB transport configured — caller shouldn't use lockstep
-            // mode in standalone; treat as "packet arrived" so we step.
-            return true;
+            return false;
         };
         let Some(n) = fb.udp.recv_blocking(&mut state.recv_buf) else {
             return false;
@@ -512,7 +765,7 @@ impl FrameCtx<'_> {
     fn handle_signals(
         &self,
         engine: &mut InputEngine,
-        stepper: &mut SimStepper,
+        stepper: &mut impl InteractiveStepper,
     ) -> Result<FrameControl> {
         if engine.take_signal("quit") {
             eprintln!("\n[sim] quit requested");
@@ -529,9 +782,15 @@ impl FrameCtx<'_> {
                 reset_cfg,
                 engine,
                 stepper,
-                self.model_source,
-                self.model_name,
-                self.autopilot,
+                ResetRuntime {
+                    model_source: self.model_source,
+                    model_name: self.model_name,
+                    source_roots: self.source_roots,
+                    dt: self.dt,
+                    pacing_mode: self.mode,
+                    solver_mode: SimSolverMode::parse_request(self.cfg.sim.solver.as_deref()).0,
+                    external_handle: self.external_interface,
+                },
             )?;
         }
         if self.debug
@@ -547,7 +806,7 @@ impl FrameCtx<'_> {
     fn drain_udp(
         &self,
         state: &mut FrameState,
-        stepper: &mut SimStepper,
+        stepper: &mut impl InteractiveStepper,
         engine: &mut InputEngine,
     ) {
         let Some(fb) = self.fb else {
@@ -564,31 +823,40 @@ impl FrameCtx<'_> {
     }
 }
 
-fn start_autopilot_into(
+fn start_external_interface_into(
     cfg: &SimulationConfig,
-    autopilot: &Arc<Mutex<Option<AutopilotProcess>>>,
+    external_interface: &Arc<Mutex<Option<ExternalInterfaceProcess>>>,
 ) -> Result<()> {
-    if let Some(ap_cfg) = &cfg.autopilot {
-        let mut ap = AutopilotProcess::new(&ap_cfg.command);
+    if let Some(interface_cfg) = &cfg.external_interface {
+        let mut ap = ExternalInterfaceProcess::new(&interface_cfg.command);
         ap.start()?;
-        *autopilot.lock().unwrap() = Some(ap);
+        *external_interface
+            .lock()
+            .map_err(|_| anyhow::anyhow!("external-interface lock poisoned"))? = Some(ap);
     }
     Ok(())
 }
 
 /// Set up a robust shutdown path for SIGINT/SIGTERM:
-/// - 1st signal: clean shutdown (kill autopilot with timeout, disable raw
-///   mode, exit 0)
+/// - 1st signal: clean shutdown (kill external interface with timeout, disable raw
+///   mode, ask the main loop to exit)
 /// - 2nd signal: hard exit 130 (skip cleanup)
 ///
 /// Uses `signal_hook::iterator::Signals` — a blocking iterator that wakes
 /// exactly when a signal arrives. No polling, no race windows. Unix-only;
 /// on Windows the std runtime's default Ctrl-C handler is used.
 #[cfg(not(unix))]
-fn spawn_sigint_handler(_autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {}
+fn spawn_sigint_handler(
+    _external_interface: Arc<Mutex<Option<ExternalInterfaceProcess>>>,
+    _quit: Arc<AtomicBool>,
+) {
+}
 
 #[cfg(unix)]
-fn spawn_sigint_handler(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
+fn spawn_sigint_handler(
+    external_interface: Arc<Mutex<Option<ExternalInterfaceProcess>>>,
+    quit: Arc<AtomicBool>,
+) {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use signal_hook::iterator::Signals;
 
@@ -608,25 +876,26 @@ fn spawn_sigint_handler(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
             eprintln!("\r[sim] signal {sig} received (press {presses})                    \r");
             if presses == 1 {
                 eprintln!("[sim] shutdown requested — press Ctrl-C again to force quit");
-                spawn_cleanup_thread(Arc::clone(&autopilot));
+                quit.store(true, Ordering::Relaxed);
+                spawn_cleanup_thread(Arc::clone(&external_interface));
             } else {
                 eprintln!("[sim] force quit");
-                rumoca_input::devices::disable_terminal_raw_mode();
+                devices::disable_terminal_raw_mode();
                 std::process::exit(130);
             }
         }
     });
 }
 
-fn spawn_cleanup_thread(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
+#[cfg(unix)]
+fn spawn_cleanup_thread(external_interface: Arc<Mutex<Option<ExternalInterfaceProcess>>>) {
     thread::spawn(move || {
-        if let Ok(mut ap) = autopilot.lock()
+        if let Ok(mut ap) = external_interface.lock()
             && let Some(proc) = ap.as_mut()
         {
             proc.stop();
         }
-        rumoca_input::devices::disable_terminal_raw_mode();
-        std::process::exit(0);
+        devices::disable_terminal_raw_mode();
     });
 }
 
@@ -638,7 +907,7 @@ fn spawn_cleanup_thread(autopilot: Arc<Mutex<Option<AutopilotProcess>>>) {
 /// the stepper for convenience.
 fn apply_received(
     values: &rumoca_codec::SignalFrame,
-    stepper: &mut SimStepper,
+    stepper: &mut impl InteractiveStepper,
     engine: &mut InputEngine,
 ) {
     for (key, val) in values.iter() {
@@ -652,38 +921,57 @@ fn apply_received(
     }
 }
 
-fn handle_reset(
+struct ResetRuntime<'a> {
+    model_source: &'a str,
+    model_name: &'a str,
+    source_roots: &'a [PathBuf],
+    dt: f64,
+    pacing_mode: SimPacingMode,
+    solver_mode: SimSolverMode,
+    external_handle: &'a Arc<Mutex<Option<ExternalInterfaceProcess>>>,
+}
+
+fn handle_reset<S>(
     reset_cfg: &ResetConfig,
     engine: &mut InputEngine,
-    stepper: &mut SimStepper,
-    model_source: &str,
-    model_name: &str,
-    ap_handle: &Arc<Mutex<Option<AutopilotProcess>>>,
-) -> Result<()> {
+    stepper: &mut S,
+    runtime: ResetRuntime<'_>,
+) -> Result<()>
+where
+    S: InteractiveStepper,
+{
     eprintln!("\n[reset] triggered");
     if reset_cfg.reset_locals {
         engine.reset();
     }
-    if reset_cfg.restart_autopilot
-        && let Ok(mut ap) = ap_handle.lock()
+    if reset_cfg.restart_external_interface
+        && let Ok(mut ap) = runtime.external_handle.lock()
         && let Some(proc) = ap.as_mut()
         && let Err(e) = proc.start()
     {
-        eprintln!("[reset] autopilot restart failed: {e}");
+        eprintln!("[reset] external-interface restart failed: {e}");
     }
     if reset_cfg.rebuild_stepper {
+        let reset_time = stepper.time();
         let mut session = rumoca_compile::compile::Session::default();
+        super::load_source_roots_into_session(&mut session, runtime.source_roots)?;
         session
-            .add_document(&format!("{model_name}.mo"), model_source)
+            .add_document(&format!("{}.mo", runtime.model_name), runtime.model_source)
             .map_err(|e| anyhow::anyhow!("reset: parse failed: {e}"))?;
-        let result = session
-            .compile_model(model_name)
-            .context("reset: compilation failed")?;
-        let new_stepper = SimStepper::new(
+        let result = super::compile_model_with_diagnostics(
+            &mut session,
+            runtime.model_name,
+            "reset: compilation failed",
+        )?;
+        let new_stepper = S::new_from_dae(
             &result.dae,
-            StepperOptions {
+            SimOptions {
+                t_start: reset_time,
                 rtol: 1e-3,
                 atol: 1e-3,
+                dt: Some(runtime.dt),
+                solver_mode: runtime.solver_mode,
+                pacing_mode: runtime.pacing_mode,
                 ..Default::default()
             },
         )
@@ -696,13 +984,14 @@ fn handle_reset(
 
 // ── Step helper ────────────────────────────────────────────────────────────
 
-fn step_substeps(stepper: &mut SimStepper, dt: f64) {
+fn step_substeps(stepper: &mut impl InteractiveStepper, dt: f64) -> Result<()> {
     let target = stepper.time() + dt;
     let step_dt = target - stepper.time();
     if step_dt <= 0.0 {
-        return;
+        return Ok(());
     }
-    let n_steps = ((step_dt / MAX_SUB_DT).ceil() as usize).max(1);
+    let max_sub_dt = stepper.max_runner_step_dt().unwrap_or(step_dt);
+    let n_steps = ((step_dt / max_sub_dt).ceil() as usize).max(1);
     let sub_dt = step_dt / n_steps as f64;
     for i in 0..n_steps {
         if let Err(e) = stepper.step(sub_dt) {
@@ -710,9 +999,84 @@ fn step_substeps(stepper: &mut SimStepper, dt: f64) {
                 "\r[sim] step {}/{n_steps} failed (sub_dt={sub_dt:.4}): {e}",
                 i + 1,
             );
+            return Err(anyhow::anyhow!(
+                "simulation step {}/{n_steps} failed at t={:.9}: {e}",
+                i + 1,
+                stepper.time()
+            ));
         }
     }
+    Ok(())
 }
 
 // WebSocket server lives in rumoca-transport-websocket.
 // HTTP viewer server lives in rumoca-viz-web.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn browser_key(code: &str, key: &str) -> ViewerKeyCommand {
+        ViewerKeyCommand {
+            code: code.to_string(),
+            key: Some(key.to_string()),
+            pressed: true,
+            shift: false,
+            ctrl: false,
+            alt: false,
+        }
+    }
+
+    #[test]
+    fn browser_arrow_key_maps_to_keyboard_event() {
+        let event = browser_key_to_event(&browser_key("ArrowUp", "ArrowUp")).unwrap();
+        assert_eq!(event.code, KeyCode::Up);
+        assert_eq!(event.modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn browser_letter_key_maps_to_lowercase_keyboard_event() {
+        let event = browser_key_to_event(&browser_key("KeyW", "W")).unwrap();
+        assert_eq!(event.code, KeyCode::Char('w'));
+        assert_eq!(event.modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn browser_space_key_maps_to_space_keyboard_event() {
+        let event = browser_key_to_event(&browser_key("Space", " ")).unwrap();
+        assert_eq!(event.code, KeyCode::Char(' '));
+    }
+
+    #[test]
+    fn viewer_input_drain_preserves_keys_before_quit() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(
+            r#"{"key":{"code":"Space","key":" ","shift":false,"ctrl":false,"alt":false}}"#
+                .to_string(),
+        )
+        .unwrap();
+        tx.send(r#"{"quit":true}"#.to_string()).unwrap();
+
+        let drained = drain_viewer_input(&rx, None, false);
+        assert!(drained.quit);
+        assert_eq!(drained.keys.len(), 1);
+        assert_eq!(drained.labels, ["Space"]);
+        assert_eq!(drained.keys[0].code, KeyCode::Char(' '));
+    }
+
+    #[test]
+    fn viewer_input_drain_preserves_key_release() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(
+            r#"{"key":{"code":"ArrowUp","key":"ArrowUp","pressed":false,"shift":false,"ctrl":false,"alt":false}}"#
+                .to_string(),
+        )
+        .unwrap();
+
+        let drained = drain_viewer_input(&rx, None, false);
+        assert_eq!(drained.keys.len(), 1);
+        assert_eq!(drained.labels, ["ArrowUp up"]);
+        assert_eq!(drained.keys[0].code, KeyCode::Up);
+        assert!(!drained.keys[0].pressed);
+    }
+}

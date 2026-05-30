@@ -9,6 +9,7 @@ const PROJECT_TEXT_FILE_EXTENSIONS = new Set([
     '.ts',
     '.js',
     '.json',
+    '.rum',
     '.toml',
     '.txt',
     '.md',

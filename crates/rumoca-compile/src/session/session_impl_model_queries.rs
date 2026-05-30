@@ -131,9 +131,9 @@ impl Session {
         tree: &ast::ClassTree,
         model_name: &str,
     ) -> InstantiatedModelOutcome {
-        InstantiatedModelOutcome::from_instantiation_outcome(instantiate_model_with_outcome(
-            tree, model_name,
-        ))
+        InstantiatedModelOutcome::from_instantiation_outcome(
+            instantiate_model_with_outcome_options(tree, model_name, self.instantiation_options),
+        )
     }
 
     fn instantiated_model_query_with_status(
@@ -336,7 +336,7 @@ impl Session {
         );
     }
 
-    fn flat_model_query_impl(
+    pub(super) fn flat_model_query_impl(
         &mut self,
         tree: &ast::ClassTree,
         mode: ResolveBuildMode,

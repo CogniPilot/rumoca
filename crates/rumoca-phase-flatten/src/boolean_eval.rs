@@ -10,7 +10,6 @@ use rumoca_ir_ast as ast;
 
 use crate::Context;
 use crate::equations::build_qualified_name;
-use crate::path_utils::parent_scope;
 
 /// Try to evaluate an expression to a constant boolean for structural branch selection.
 ///
@@ -58,7 +57,7 @@ pub(crate) fn is_structural_expression(
 
             // Fallback for constants/parameters injected from class/package scopes
             // that are tracked in scalar lookup maps.
-            if scoped_lookup_map(&ctx.parameter_values, &cref_name, prefix).is_some()
+            if scoped_lookup_integer_param(ctx, &cref_name, prefix).is_some()
                 || scoped_lookup_map(&ctx.boolean_parameter_values, &cref_name, prefix).is_some()
                 || scoped_lookup_map(&ctx.enum_parameter_values, &cref_name, prefix).is_some()
             {
@@ -80,7 +79,9 @@ pub(crate) fn is_structural_expression(
         // Recursively check sub-expressions
         ast::Expression::Unary { rhs, .. } => is_structural_expression(ctx, rhs, prefix),
 
-        ast::Expression::Parenthesized { inner } => is_structural_expression(ctx, inner, prefix),
+        ast::Expression::Parenthesized { inner, .. } => {
+            is_structural_expression(ctx, inner, prefix)
+        }
 
         ast::Expression::Binary { lhs, rhs, .. } => {
             is_structural_expression(ctx, lhs, prefix) && is_structural_expression(ctx, rhs, prefix)
@@ -92,7 +93,7 @@ pub(crate) fn is_structural_expression(
             let func_name = comp.to_string();
             matches!(
                 func_name.as_str(),
-                "Connections.isRoot" | "Connections.rooted" | "cardinality"
+                "Connections.branch" | "Connections.isRoot" | "Connections.rooted" | "cardinality"
             )
         }
 
@@ -139,6 +140,7 @@ pub(crate) fn try_eval_boolean_with_ctx_inner(
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::Bool,
             token,
+            ..
         } => match &*token.text {
             "true" => Some(true),
             "false" => Some(false),
@@ -152,23 +154,24 @@ pub(crate) fn try_eval_boolean_with_ctx_inner(
         }
 
         ast::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Not(_),
+            op: rumoca_core::OpUnary::Not,
             rhs,
+            ..
         } => {
             let val = try_eval_boolean_with_ctx_inner(rhs, ctx, prefix)?;
             Some(!val)
         }
 
-        ast::Expression::Parenthesized { inner } => {
+        ast::Expression::Parenthesized { inner, .. } => {
             try_eval_boolean_with_ctx_inner(inner, ctx, prefix)
         }
 
-        ast::Expression::Binary { op, lhs, rhs } => {
+        ast::Expression::Binary { op, lhs, rhs, .. } => {
             eval_boolean_binary_op(op, lhs, rhs, ctx, prefix)
         }
 
         // Handle connection graph functions (MLS §9.4)
-        ast::Expression::FunctionCall { comp, args } => {
+        ast::Expression::FunctionCall { comp, args, .. } => {
             let func_name = comp.to_string();
             match func_name.as_str() {
                 "Connections.isRoot" => lookup_vcg_is_root(ctx, args, prefix),
@@ -183,45 +186,45 @@ pub(crate) fn try_eval_boolean_with_ctx_inner(
 
 /// Evaluate a binary boolean operation.
 pub(crate) fn eval_boolean_binary_op(
-    op: &rumoca_ir_core::OpBinary,
+    op: &rumoca_core::OpBinary,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     ctx: Option<&Context>,
     prefix: &ast::QualifiedName,
 ) -> Option<bool> {
     match op {
-        rumoca_ir_core::OpBinary::And(_) => {
+        rumoca_core::OpBinary::And => {
             let l = try_eval_boolean_with_ctx_inner(lhs, ctx, prefix)?;
             let r = try_eval_boolean_with_ctx_inner(rhs, ctx, prefix)?;
             Some(l && r)
         }
-        rumoca_ir_core::OpBinary::Or(_) => {
+        rumoca_core::OpBinary::Or => {
             let l = try_eval_boolean_with_ctx_inner(lhs, ctx, prefix)?;
             let r = try_eval_boolean_with_ctx_inner(rhs, ctx, prefix)?;
             Some(l || r)
         }
-        rumoca_ir_core::OpBinary::Lt(_) => {
+        rumoca_core::OpBinary::Lt => {
             let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
             let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
             Some(l < r)
         }
-        rumoca_ir_core::OpBinary::Le(_) => {
+        rumoca_core::OpBinary::Le => {
             let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
             let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
             Some(l <= r)
         }
-        rumoca_ir_core::OpBinary::Gt(_) => {
+        rumoca_core::OpBinary::Gt => {
             let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
             let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
             Some(l > r)
         }
-        rumoca_ir_core::OpBinary::Ge(_) => {
+        rumoca_core::OpBinary::Ge => {
             let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
             let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
             Some(l >= r)
         }
-        rumoca_ir_core::OpBinary::Eq(_) => eval_equality(lhs, rhs, ctx, prefix, true),
-        rumoca_ir_core::OpBinary::Neq(_) => eval_equality(lhs, rhs, ctx, prefix, false),
+        rumoca_core::OpBinary::Eq => eval_equality(lhs, rhs, ctx, prefix, true),
+        rumoca_core::OpBinary::Neq => eval_equality(lhs, rhs, ctx, prefix, false),
         _ => None,
     }
 }
@@ -276,15 +279,17 @@ pub(crate) fn try_resolve_enum_value(
             {
                 return Some(enum_val);
             }
-            if let Some(ctx) = ctx
-                && cr.parts.len() >= 2
-            {
+            if let Some(ctx) = ctx {
                 let cref_name = cr.to_string();
                 if let Some(enum_val) =
                     scoped_lookup_map(&ctx.enum_parameter_values, &cref_name, prefix)
                 {
                     return Some(enum_val);
                 }
+            }
+            if let Some(ctx) = ctx
+                && cr.parts.len() >= 2
+            {
                 let tail_name = cr
                     .parts
                     .iter()
@@ -331,28 +336,30 @@ fn try_eval_integer_for_comparison(
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token,
+            ..
         } => token.text.parse::<i64>().ok(),
 
         ast::Expression::ComponentReference(cr) => {
             let ctx = ctx?;
             let cref_name = cr.to_string();
-            scoped_lookup_map(&ctx.parameter_values, &cref_name, prefix)
+            scoped_lookup_integer_param(ctx, &cref_name, prefix)
         }
 
         ast::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Minus(_),
+            op: rumoca_core::OpUnary::Minus,
             rhs,
+            ..
         } => {
             let val = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
             Some(-val)
         }
 
-        ast::Expression::Parenthesized { inner } => {
+        ast::Expression::Parenthesized { inner, .. } => {
             try_eval_integer_for_comparison(ctx, inner, prefix)
         }
 
         // MLS §3.7.2.3: cardinality(c) returns the number of connect() statements referencing c
-        ast::Expression::FunctionCall { comp, args } => {
+        ast::Expression::FunctionCall { comp, args, .. } => {
             let func_name = comp.to_string();
             if func_name == "cardinality" {
                 return lookup_cardinality(ctx, args, prefix);
@@ -375,6 +382,8 @@ fn lookup_cardinality(
 ) -> Option<i64> {
     let ctx = ctx?;
     let path = extract_vcg_arg_path(args, prefix)?;
+    // MLS §9.4.2: cardinality() returns 0 for unconnected connectors; missing
+    // map entry means the connector has no connections recorded, which is 0.
     Some(*ctx.cardinality_counts.get(&path).unwrap_or(&0))
 }
 
@@ -383,25 +392,56 @@ fn scoped_lookup_map<T: Clone>(
     name: &str,
     prefix: &ast::QualifiedName,
 ) -> Option<T> {
-    let mut scope = prefix.to_flat_string();
-    loop {
-        let candidate = if scope.is_empty() {
-            name.to_string()
-        } else {
-            format!("{scope}.{name}")
-        };
-        if let Some(value) = map.get(&candidate) {
+    let name_path = rumoca_core::ComponentPath::from_flat_path(name);
+    let scope_path = prefix.to_component_path();
+    for candidate in rumoca_core::scoped_component_path_candidates(&name_path, &scope_path) {
+        if let Some(value) = lookup_map_exact_or_unindexed(map, &candidate) {
             return Some(value.clone());
         }
-        if let Some(parent) = parent_scope(scope.as_str()) {
-            scope.truncate(parent.len());
-        } else if !scope.is_empty() {
-            scope.clear();
-        } else {
-            break;
+    }
+    lookup_map_exact_or_unindexed(map, name).cloned()
+}
+
+fn scoped_lookup_integer_param(
+    ctx: &Context,
+    name: &str,
+    prefix: &ast::QualifiedName,
+) -> Option<i64> {
+    let name_path = rumoca_core::ComponentPath::from_flat_path(name);
+    let scope_path = prefix.to_component_path();
+    for candidate in rumoca_core::scoped_component_path_candidates(&name_path, &scope_path) {
+        if let Some(value) = lookup_integer_exact_or_unindexed(ctx, &candidate) {
+            return Some(value);
         }
     }
-    map.get(name).cloned()
+    lookup_integer_exact_or_unindexed(ctx, name)
+}
+
+fn lookup_integer_exact_or_unindexed(ctx: &Context, key: &str) -> Option<i64> {
+    if let Some(value) = ctx.get_integer_param(key) {
+        return Some(value);
+    }
+    for candidate in crate::path_utils::unindexed_lookup_variants(key) {
+        if let Some(value) = ctx.get_integer_param(&candidate) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn lookup_map_exact_or_unindexed<'a, T>(
+    map: &'a rustc_hash::FxHashMap<String, T>,
+    key: &str,
+) -> Option<&'a T> {
+    if let Some(value) = map.get(key) {
+        return Some(value);
+    }
+    for candidate in crate::path_utils::unindexed_lookup_variants(key) {
+        if let Some(value) = map.get(&candidate) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn scoped_set_contains(
@@ -409,25 +449,23 @@ fn scoped_set_contains(
     name: &str,
     prefix: &ast::QualifiedName,
 ) -> bool {
-    let mut scope = prefix.to_flat_string();
-    loop {
-        let candidate = if scope.is_empty() {
-            name.to_string()
-        } else {
-            format!("{scope}.{name}")
-        };
-        if set.contains(&candidate) {
+    let name_path = rumoca_core::ComponentPath::from_flat_path(name);
+    let scope_path = prefix.to_component_path();
+    for candidate in rumoca_core::scoped_component_path_candidates(&name_path, &scope_path) {
+        if set_contains_exact_or_unindexed(set, &candidate) {
             return true;
         }
-        if let Some(parent) = parent_scope(scope.as_str()) {
-            scope.truncate(parent.len());
-        } else if !scope.is_empty() {
-            scope.clear();
-        } else {
-            break;
-        }
     }
-    set.contains(name)
+    set_contains_exact_or_unindexed(set, name)
+}
+
+fn set_contains_exact_or_unindexed(set: &std::collections::HashSet<String>, key: &str) -> bool {
+    if set.contains(key) {
+        return true;
+    }
+    crate::path_utils::unindexed_lookup_variants(key)
+        .iter()
+        .any(|candidate| set.contains(candidate))
 }
 
 /// Look up `Connections.isRoot(R)` in the VCG map (MLS §9.4).
@@ -503,6 +541,27 @@ mod tests {
     }
 
     #[test]
+    fn scoped_lookup_map_uses_unindexed_array_element_scope() {
+        let mut map = FxHashMap::default();
+        map.insert("adaptor.filter.transferFunction.nx".to_string(), 1);
+
+        let prefix = ast::QualifiedName::from_dotted("adaptor.filter[1].transferFunction[1]");
+        let resolved = scoped_lookup_map(&map, "nx", &prefix);
+        assert_eq!(resolved, Some(1));
+    }
+
+    #[test]
+    fn scoped_lookup_map_prefers_indexed_scope_override() {
+        let mut map = FxHashMap::default();
+        map.insert("adaptor.filter.transferFunction.nx".to_string(), 1);
+        map.insert("adaptor.filter[1].transferFunction[1].nx".to_string(), 0);
+
+        let prefix = ast::QualifiedName::from_dotted("adaptor.filter[1].transferFunction[1]");
+        let resolved = scoped_lookup_map(&map, "nx", &prefix);
+        assert_eq!(resolved, Some(0));
+    }
+
+    #[test]
     fn scoped_set_contains_ignores_dot_inside_subscript_scope() {
         let set = HashSet::from(["pkg.arr[data.flag".to_string()]);
         assert!(
@@ -511,24 +570,25 @@ mod tests {
         );
     }
 
-    fn token(text: &str) -> rumoca_ir_core::Token {
-        rumoca_ir_core::Token {
+    fn token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
             text: Arc::from(text.to_string()),
-            ..rumoca_ir_core::Token::default()
+            ..rumoca_core::Token::default()
         }
     }
 
     fn comp_ref(path: &str) -> ast::ComponentReference {
         ast::ComponentReference {
             local: false,
-            parts: path
-                .split('.')
+            parts: crate::path_utils::split_path_with_indices(path)
+                .into_iter()
                 .map(|part| ast::ComponentRefPart {
                     ident: token(part),
                     subs: None,
                 })
                 .collect(),
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -538,10 +598,31 @@ mod tests {
 
     fn eq_expr(lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
         ast::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Eq(token("==")),
+            op: rumoca_core::OpBinary::Eq,
             lhs: Arc::new(lhs),
             rhs: Arc::new(rhs),
+            span: rumoca_core::Span::DUMMY,
         }
+    }
+
+    fn int_expr(value: i64) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token: token(&value.to_string()),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn integer_comparison_uses_unindexed_integral_real_scope() {
+        let mut ctx = Context::new();
+        ctx.real_parameter_values
+            .insert("adaptor.filter.transferFunction[1].nx".to_string(), 1.0);
+
+        let prefix = ast::QualifiedName::from_dotted("adaptor.filter[1].transferFunction[1]");
+        let expr = eq_expr(cref_expr("nx"), int_expr(0));
+        let value = try_eval_boolean_with_ctx_inner(&expr, Some(&ctx), &prefix);
+        assert_eq!(value, Some(false));
     }
 
     #[test]

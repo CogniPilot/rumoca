@@ -22,5 +22,4 @@ enforced-import-renames = [
   { path = "rumoca_ir_ast", rename = "ast" },
   { path = "rumoca_ir_flat", rename = "flat" },
   { path = "rumoca_ir_dae", rename = "dae" },
-  { path = "rumoca_ir_core", rename = "ir_core" },
 ]

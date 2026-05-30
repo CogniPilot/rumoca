@@ -1,0 +1,25 @@
+source_roots = [
+    "../../target/msl/ModelicaStandardLibrary-4.1.0",
+]
+
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+file = "../models/KalmanFilterStepTest.mo"
+name = "KalmanFilterStepTest"
+
+[viewer]
+mode = "results_panel"
+
+[sim]
+solver = "auto"
+t_end = 10.0
+
+[[plot.views]]
+id = "states_time"
+title = "States vs Time"
+type = "timeseries"
+x = "time"
+y = ["*states"]

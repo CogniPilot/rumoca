@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::{Result, anyhow};
 pub use gilrs::Gilrs;
-use rumoca_input_types::{GamepadAxis, GamepadButton, GamepadSnapshot};
+use rumoca_input::{GamepadAxis, GamepadButton, GamepadSnapshot};
 
 pub struct GamepadDevice {
     gilrs: Gilrs,

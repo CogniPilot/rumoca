@@ -30,7 +30,9 @@ mod traversal_adapter;
 mod server;
 
 #[cfg(feature = "server")]
-pub use server::{ModelicaLanguageServer, run_server};
+pub use server::{
+    LspTimingPaths, ModelicaLanguageServer, run_server, run_server_with_timing_paths,
+};
 
 // Re-export key handler functions
 pub use handlers::{

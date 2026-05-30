@@ -28,35 +28,31 @@ const SURFACE_COVERAGE = {
   },
   packageCommands: {
     "rumoca.collapseAllAnnotations": [COMMAND_CONTRACT_REF],
+    "rumoca.createScenarioConfig": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.expandAllAnnotations": [COMMAND_CONTRACT_REF],
     "rumoca.openSettingsMenu": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.openSimulationSettings": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
-    "rumoca.openTemplateSettings": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
-    "rumoca.renderTemplate": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.simulateModel": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.toggleAnnotation": [COMMAND_CONTRACT_REF],
   },
   activationCommands: {
+    "rumoca.createScenarioConfig": [ACTIVATION_CONTRACT_REF],
     "rumoca.openSettingsMenu": [ACTIVATION_CONTRACT_REF],
     "rumoca.openSimulationSettings": [ACTIVATION_CONTRACT_REF],
-    "rumoca.openTemplateSettings": [ACTIVATION_CONTRACT_REF],
-    "rumoca.renderTemplate": [ACTIVATION_CONTRACT_REF],
     "rumoca.simulateModel": [ACTIVATION_CONTRACT_REF],
   },
   extensionCommands: {
     "rumoca.collapseAllAnnotations": [REGISTRATION_CONTRACT_REF],
+    "rumoca.createScenarioConfig": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.expandAllAnnotations": [REGISTRATION_CONTRACT_REF],
     "rumoca.openSettingsMenu": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.openSimulationSettings": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
-    "rumoca.openTemplateSettings": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
-    "rumoca.resyncSidecars": [REGISTRATION_CONTRACT_REF],
-    "rumoca.renderTemplate": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.simulateModel": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.toggleAnnotation": [REGISTRATION_CONTRACT_REF],
   },
   menuEntries: {
-    "editor/title:rumoca.openSettingsMenu": [COMMAND_CONTRACT_REF],
-    "editor/title:rumoca.renderTemplate": [COMMAND_CONTRACT_REF],
+    "editor/title:rumoca.createScenarioConfig": [COMMAND_CONTRACT_REF],
+    "editor/title:rumoca.openSimulationSettings": [COMMAND_CONTRACT_REF],
     "editor/title/run:rumoca.simulateModel": [COMMAND_CONTRACT_REF],
   },
   serializers: {
@@ -69,8 +65,6 @@ const SURFACE_COVERAGE = {
       NOTEBOOK_CONTROLLER_RUNTIME_REF,
     ],
     "workspace.onDidChangeTextDocument": [REGISTRATION_CONTRACT_REF],
-    "workspace.onDidCreateFiles": [REGISTRATION_CONTRACT_REF],
-    "workspace.onDidDeleteFiles": [REGISTRATION_CONTRACT_REF],
     "workspace.onDidOpenTextDocument": [REGISTRATION_CONTRACT_REF],
     "workspace.onDidRenameFiles": [REGISTRATION_CONTRACT_REF],
   },
@@ -97,10 +91,11 @@ const SURFACE_COVERAGE = {
     "settings.openViewScript": [REGISTRATION_CONTRACT_REF],
     "settings.openWorkspaceSettings": [REGISTRATION_CONTRACT_REF],
     "settings.pickSourceRootPath": [REGISTRATION_CONTRACT_REF],
+    "settings.pickWorkspaceSourceRootPath": [REGISTRATION_CONTRACT_REF],
     "settings.prepareModels": [REGISTRATION_CONTRACT_REF],
     "settings.reset": [REGISTRATION_CONTRACT_REF],
-    "settings.resyncSidecars": [REGISTRATION_CONTRACT_REF],
     "settings.save": [REGISTRATION_CONTRACT_REF],
+    "settings.saveWorkspaceSourceRootPaths": [REGISTRATION_CONTRACT_REF],
   },
   resultsWebviewMessages: {
     "results.request": [REGISTRATION_CONTRACT_REF],
@@ -109,10 +104,7 @@ const SURFACE_COVERAGE = {
   fileSystemWatchers: {
     "workspace.createFileSystemWatcher:**/*.mo": [REGISTRATION_CONTRACT_REF],
   },
-  fileSystemWatcherHooks: {
-    "modelicaFsWatcher.onDidCreate": [REGISTRATION_CONTRACT_REF],
-    "modelicaFsWatcher.onDidDelete": [REGISTRATION_CONTRACT_REF],
-  },
+  fileSystemWatcherHooks: {},
 };
 
 function readPackageJson() {
@@ -328,6 +320,29 @@ test("surface contract: modelica files activate the extension", () => {
   );
 });
 
+test("surface contract: rum.toml scenario files activate as toml", () => {
+  const packageJson = readPackageJson();
+  const activationEvents = packageJson.activationEvents ?? [];
+
+  // Scenarios are `rum.toml` / `rum.<task>.toml` (e.g. `rum.f16.toml`),
+  // ordinary `.toml` files — not a bespoke `.rum` extension. They activate
+  // through the built-in TOML language so TOML extensions stay active.
+  assert.ok(
+    Array.isArray(activationEvents) && activationEvents.includes("onLanguage:toml"),
+    "opening a rum.toml scenario should activate the extension through the TOML language",
+  );
+  assert.ok(
+    activationEvents.includes("workspaceContains:**/rum.toml")
+      && activationEvents.includes("workspaceContains:**/rum.*.toml"),
+    "a workspace containing rum.toml / rum.<task>.toml scenarios should activate the extension",
+  );
+  assert.equal(
+    (packageJson.contributes?.languages ?? []).some((entry) => entry.id === "toml"),
+    false,
+    "the extension must not redefine the TOML language; rum.toml uses the standard .toml extension",
+  );
+});
+
 test("surface contract: packaged VSIX bundles vscode-languageclient runtime", () => {
   const packageJson = readPackageJson();
   const esbuildBase = packageJson.scripts?.["esbuild-base"];
@@ -358,12 +373,6 @@ test("surface contract: shared settings command opens the unified settings panel
     "const simulationSettingsCommand = vscode.commands.registerCommand(",
     "context.subscriptions.push(simulationSettingsCommand);",
   );
-  const templateSettingsCommandBlock = sliceFrom(
-    source,
-    "const templateSettingsCommand = vscode.commands.registerCommand(",
-    "context.subscriptions.push(templateSettingsCommand);",
-  );
-
   assert.ok(
     !settingsMenuCommandBlock.includes("vscode.window.showQuickPick("),
     "shared settings command should no longer present a picker",
@@ -375,10 +384,6 @@ test("surface contract: shared settings command opens the unified settings panel
   assert.ok(
     simulationSettingsCommandBlock.includes("await openUnifiedSettingsForEditor(editor);"),
     "simulation settings command should open the unified settings panel",
-  );
-  assert.ok(
-    templateSettingsCommandBlock.includes("await openUnifiedSettingsForEditor(editor);"),
-    "template settings command should open the unified settings panel",
   );
 });
 

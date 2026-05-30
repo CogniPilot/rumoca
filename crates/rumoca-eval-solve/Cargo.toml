@@ -1,0 +1,21 @@
+[package]
+name = "rumoca-eval-solve"
+description = "Solve-IR row evaluator for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-solver = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+rumoca-ir-dae = { workspace = true }
+rumoca-eval-dae = { workspace = true }
+
+[lints]
+workspace = true

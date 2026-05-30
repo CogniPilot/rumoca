@@ -2,8 +2,7 @@
 
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 use rumoca_compile::compile::core as rumoca_core;
-use rumoca_compile::parsing::ast;
-use rumoca_compile::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::parsing::{self, ast};
 
 use crate::helpers::{
     find_class_at_position, find_component_at_position, find_enclosing_class,
@@ -86,10 +85,9 @@ fn component_hover(ast: &ast::StoredDefinition, name: &str) -> Option<Hover> {
 fn format_component_info(comp: &ast::Component) -> String {
     let mut parts = Vec::new();
 
-    // rumoca_ir_core::Variability prefix
     match &comp.variability {
-        rumoca_ir_core::Variability::Parameter(_) => parts.push("parameter".to_string()),
-        rumoca_ir_core::Variability::Constant(_) => parts.push("constant".to_string()),
+        parsing::Variability::Parameter(_) => parts.push("parameter".to_string()),
+        parsing::Variability::Constant(_) => parts.push("constant".to_string()),
         _ => {}
     }
 
@@ -220,7 +218,7 @@ fn imported_class_def_id(
     ast: &ast::StoredDefinition,
     tree: &ast::ClassTree,
     name: &str,
-) -> Option<rumoca_core::DefId> {
+) -> Option<parsing::DefId> {
     for class in ast.classes.values() {
         if let Some(def_id) = imported_class_def_id_in_class(class, tree, name) {
             return Some(def_id);
@@ -233,7 +231,7 @@ fn imported_class_def_id_in_class(
     class: &ast::ClassDef,
     tree: &ast::ClassTree,
     name: &str,
-) -> Option<rumoca_core::DefId> {
+) -> Option<parsing::DefId> {
     for import in &class.imports {
         if let Some(def_id) = imported_def_id(import, tree, name) {
             return Some(def_id);
@@ -249,15 +247,15 @@ fn imported_class_def_id_in_class(
 
 fn format_class_info(name: &str, class: &ast::ClassDef) -> String {
     let class_type = match class.class_type {
-        ast::ClassType::Model => "model",
-        ast::ClassType::Block => "block",
-        ast::ClassType::Connector => "connector",
-        ast::ClassType::Record => "record",
-        ast::ClassType::Type => "type",
-        ast::ClassType::Package => "package",
-        ast::ClassType::Function => "function",
-        ast::ClassType::Class => "class",
-        ast::ClassType::Operator => "operator",
+        rumoca_compile::parsing::ir_core::ClassType::Model => "model",
+        rumoca_compile::parsing::ir_core::ClassType::Block => "block",
+        rumoca_compile::parsing::ir_core::ClassType::Connector => "connector",
+        rumoca_compile::parsing::ir_core::ClassType::Record => "record",
+        rumoca_compile::parsing::ir_core::ClassType::Type => "type",
+        rumoca_compile::parsing::ir_core::ClassType::Package => "package",
+        rumoca_compile::parsing::ir_core::ClassType::Function => "function",
+        rumoca_compile::parsing::ir_core::ClassType::Class => "class",
+        rumoca_compile::parsing::ir_core::ClassType::Operator => "operator",
     };
 
     let mut result = format!("```modelica\n{} {}\n```", class_type, name);

@@ -1,6 +1,6 @@
-use indexmap::IndexMap;
+use rumoca_core::{ClassType, Location, Token};
+use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rumoca_ir_ast::{ClassDef, Name, StoredDefinition};
-use rumoca_ir_core::{ClassType, Location, Token};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -347,7 +347,7 @@ impl RecoveryParser {
         if let Some(short_end) = find_short_class_terminator(&self.tokens, next_index) {
             let builder = RecoveredClassBuilder {
                 header,
-                classes: IndexMap::new(),
+                classes: IndexMap::default(),
             };
             let end_location = self.tokens[short_end].token.location.clone();
             self.insert_completed_class(builder.finish(end_location, None));
@@ -357,7 +357,7 @@ impl RecoveryParser {
 
         self.stack.push(RecoveredClassBuilder {
             header,
-            classes: IndexMap::new(),
+            classes: IndexMap::default(),
         });
         self.position = next_index;
         true
@@ -525,7 +525,8 @@ pub fn parse_to_recovered_ast(source: &str, file_name: &str) -> StoredDefinition
 #[cfg(test)]
 mod tests {
     use super::parse_to_recovered_ast;
-    use rumoca_ir_core::ClassType;
+    use rumoca_core::ClassType;
+    use rumoca_ir_ast::{ClassDef, StoredDefinition};
 
     #[test]
     fn recovers_within_and_top_level_model_after_syntax_error() {
@@ -570,5 +571,77 @@ mod tests {
         let recovered = parse_to_recovered_ast(source, "T.mo");
         let class = recovered.classes.get("T").expect("type alias");
         assert_eq!(class.class_type, ClassType::Type);
+    }
+
+    #[test]
+    fn recovery_lexer_tracks_parser_class_headers_for_valid_modelica() {
+        assert_recovered_class_tree_matches_parser(
+            r#"
+                within Modelica.Electrical;
+                package P
+                  connector Pin
+                    Real v;
+                    flow Real i;
+                  end Pin;
+
+                  operator record Rotation
+                    Real q[4];
+                  end Rotation;
+
+                  function f
+                    input Real u;
+                    output Real y;
+                  algorithm
+                    y := u;
+                  end f;
+
+                  model M
+                    Pin p;
+                    type Gain = Real(final unit="1");
+                  equation
+                    p.v = f(time);
+                  end M;
+                end P;
+            "#,
+            "valid_package.mo",
+        );
+    }
+
+    fn assert_recovered_class_tree_matches_parser(source: &str, file_name: &str) {
+        let parsed = crate::parse_to_ast(source, file_name).expect("valid sample should parse");
+        let recovered = parse_to_recovered_ast(source, file_name);
+        assert_eq!(
+            recovered.within.as_ref().map(ToString::to_string),
+            parsed.within.as_ref().map(ToString::to_string)
+        );
+        assert_class_maps_match(&recovered, &parsed);
+    }
+
+    fn assert_class_maps_match(recovered: &StoredDefinition, parsed: &StoredDefinition) {
+        assert_eq!(
+            recovered.classes.keys().collect::<Vec<_>>(),
+            parsed.classes.keys().collect::<Vec<_>>()
+        );
+        for (name, recovered_class) in &recovered.classes {
+            let parsed_class = parsed.classes.get(name).expect("class present");
+            assert_class_matches(recovered_class, parsed_class);
+        }
+    }
+
+    fn assert_class_matches(recovered: &ClassDef, parsed: &ClassDef) {
+        assert_eq!(recovered.name.text, parsed.name.text);
+        assert_eq!(recovered.class_type, parsed.class_type);
+        assert_eq!(recovered.encapsulated, parsed.encapsulated);
+        assert_eq!(recovered.partial, parsed.partial);
+        assert_eq!(recovered.expandable, parsed.expandable);
+        assert_eq!(recovered.operator_record, parsed.operator_record);
+        assert_eq!(
+            recovered.classes.keys().collect::<Vec<_>>(),
+            parsed.classes.keys().collect::<Vec<_>>()
+        );
+        for (name, recovered_child) in &recovered.classes {
+            let parsed_child = parsed.classes.get(name).expect("nested class present");
+            assert_class_matches(recovered_child, parsed_child);
+        }
     }
 }

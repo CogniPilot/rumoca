@@ -10,24 +10,14 @@
 
 use super::errors::EvalError;
 use super::value::Value;
-use rumoca_core::Span;
+use rumoca_core::{BuiltinFunction, Span, apply_scalar_binary_math, apply_scalar_unary_math};
 
 /// Evaluate a built-in function call.
 pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, EvalError> {
+    if let Some(result) = eval_scalar_math_builtin(name, args, span) {
+        return result;
+    }
     match name {
-        // Math functions (single argument)
-        "sin" => eval_math_1(args, f64::sin, span),
-        "cos" => eval_math_1(args, f64::cos, span),
-        "tan" => eval_math_1(args, f64::tan, span),
-        "asin" => eval_math_1(args, f64::asin, span),
-        "acos" => eval_math_1(args, f64::acos, span),
-        "atan" => eval_math_1(args, f64::atan, span),
-        "sinh" => eval_math_1(args, f64::sinh, span),
-        "cosh" => eval_math_1(args, f64::cosh, span),
-        "tanh" => eval_math_1(args, f64::tanh, span),
-        "exp" => eval_math_1(args, f64::exp, span),
-        "log" => eval_math_1(args, f64::ln, span),
-        "log10" => eval_math_1(args, f64::log10, span),
         "sqrt" => eval_math_1(args, f64::sqrt, span),
         "abs" => eval_abs(args, span),
         "sign" => eval_sign(args, span),
@@ -66,6 +56,24 @@ pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, Eva
 
         _ => Err(EvalError::unknown_function(name, span)),
     }
+}
+
+fn eval_scalar_math_builtin(
+    name: &str,
+    args: &[Value],
+    span: Span,
+) -> Option<Result<Value, EvalError>> {
+    let function = BuiltinFunction::from_name(name)?;
+    if !function.is_unary_real_math() {
+        return None;
+    }
+    Some((|| {
+        check_arg_count(args, 1, span)?;
+        let arg = to_real(&args[0], span)?;
+        let value = apply_scalar_unary_math(function, arg)
+            .ok_or_else(|| EvalError::function_error("unsupported scalar math builtin", span))?;
+        Ok(Value::Real(value))
+    })())
 }
 
 /// Check if a function name is a known built-in.
@@ -221,14 +229,14 @@ fn eval_min_max(args: &[Value], is_min: bool, span: Span) -> Result<Value, EvalE
         // Check if all Integer
         let all_int = arr.iter().all(|v| matches!(v, Value::Integer(_)));
         if all_int {
-            // SAFETY: all_int guard above guarantees as_integer() succeeds
-            let values: Vec<i64> = arr.iter().map(|v| v.as_integer().unwrap()).collect();
-            // SAFETY: arr.is_empty() check above guarantees min/max returns Some
-            let result = if is_min {
-                *values.iter().min().unwrap()
-            } else {
-                *values.iter().max().unwrap()
-            };
+            let result =
+                arr[1..]
+                    .iter()
+                    .try_fold(integer_value(&arr[0], span)?, |acc, value| {
+                        let value = integer_value(value, span)?;
+                        let result = select_min_max_integer(acc, value, is_min);
+                        Ok(result)
+                    })?;
             return Ok(Value::Integer(result));
         }
 
@@ -237,11 +245,16 @@ fn eval_min_max(args: &[Value], is_min: bool, span: Span) -> Result<Value, EvalE
             .iter()
             .map(|v| to_real(v, span))
             .collect::<Result<_, _>>()?;
-        // SAFETY: arr.is_empty() check above guarantees reduce returns Some
         let result = if is_min {
-            values.iter().copied().reduce(f64::min).unwrap()
+            values[1..]
+                .iter()
+                .copied()
+                .fold(values[0], |acc, value| acc.min(value))
         } else {
-            values.iter().copied().reduce(f64::max).unwrap()
+            values[1..]
+                .iter()
+                .copied()
+                .fold(values[0], |acc, value| acc.max(value))
         };
         Ok(Value::Real(result))
     } else {
@@ -256,8 +269,22 @@ fn eval_min_max(args: &[Value], is_min: bool, span: Span) -> Result<Value, EvalE
 
         let x = to_real(&args[0], span)?;
         let y = to_real(&args[1], span)?;
-        let result = if is_min { x.min(y) } else { x.max(y) };
+        let function = if is_min {
+            BuiltinFunction::Min
+        } else {
+            BuiltinFunction::Max
+        };
+        let result = apply_scalar_binary_math(function, x, y)
+            .ok_or_else(|| EvalError::function_error("min/max evaluation failed", span))?;
         Ok(Value::Real(result))
+    }
+}
+
+fn select_min_max_integer(acc: i64, value: i64, is_min: bool) -> i64 {
+    if is_min {
+        acc.min(value)
+    } else {
+        acc.max(value)
     }
 }
 
@@ -269,7 +296,9 @@ fn eval_mod(args: &[Value], span: Span) -> Result<Value, EvalError> {
     if y == 0.0 {
         return Err(EvalError::DivisionByZero { span });
     }
-    Ok(Value::Real(x - (x / y).floor() * y))
+    apply_scalar_binary_math(BuiltinFunction::Mod, x, y)
+        .map(Value::Real)
+        .ok_or(EvalError::DivisionByZero { span })
 }
 
 // rem: x - div(x,y) * y (truncated division)
@@ -280,7 +309,9 @@ fn eval_rem(args: &[Value], span: Span) -> Result<Value, EvalError> {
     if y == 0.0 {
         return Err(EvalError::DivisionByZero { span });
     }
-    Ok(Value::Real(x - (x / y).trunc() * y))
+    apply_scalar_binary_math(BuiltinFunction::Rem, x, y)
+        .map(Value::Real)
+        .ok_or(EvalError::DivisionByZero { span })
 }
 
 // div: integer division truncated toward zero
@@ -379,8 +410,9 @@ fn eval_sum(args: &[Value], span: Span) -> Result<Value, EvalError> {
     // Check if all Integer
     let all_int = arr.iter().all(|v| matches!(v, Value::Integer(_)));
     if all_int {
-        // SAFETY: all_int guard above guarantees as_integer() succeeds
-        let sum: i64 = arr.iter().map(|v| v.as_integer().unwrap()).sum();
+        let sum = arr.iter().try_fold(0_i64, |acc, value| {
+            integer_value(value, span).map(|value| acc + value)
+        })?;
         return Ok(Value::Integer(sum));
     }
 
@@ -401,8 +433,9 @@ fn eval_product(args: &[Value], span: Span) -> Result<Value, EvalError> {
     // Check if all Integer
     let all_int = arr.iter().all(|v| matches!(v, Value::Integer(_)));
     if all_int {
-        // SAFETY: all_int guard above guarantees as_integer() succeeds
-        let prod: i64 = arr.iter().map(|v| v.as_integer().unwrap()).product();
+        let prod = arr.iter().try_fold(1_i64, |acc, value| {
+            integer_value(value, span).map(|value| acc * value)
+        })?;
         return Ok(Value::Integer(prod));
     }
 
@@ -655,6 +688,11 @@ fn check_arg_count(args: &[Value], expected: usize, span: Span) -> Result<(), Ev
 fn to_real(v: &Value, span: Span) -> Result<f64, EvalError> {
     v.to_real()
         .ok_or_else(|| EvalError::type_mismatch("Real or Integer", v.type_name(), span))
+}
+
+fn integer_value(v: &Value, span: Span) -> Result<i64, EvalError> {
+    v.as_integer()
+        .ok_or_else(|| EvalError::type_mismatch("Integer", v.type_name(), span))
 }
 
 // Helper: get nested array dimension size (reduces nesting in eval_size)

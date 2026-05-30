@@ -1,7 +1,6 @@
 use super::*;
-use rumoca_ir_ast::{
-    ClassType, Component, ComponentRefPart, ComponentReference, ForIndex, Token, Variability,
-};
+use rumoca_core::{ClassType, Token, Variability};
+use rumoca_ir_ast::{Component, ComponentRefPart, ComponentReference, ForIndex};
 use rustc_hash::FxHashMap;
 
 fn token(text: &str) -> Token {
@@ -24,6 +23,7 @@ fn cref(name: &str) -> ComponentReference {
             })
             .collect(),
         def_id: None,
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -31,6 +31,8 @@ fn int_expr(value: i64) -> Expression {
     Expression::Terminal {
         terminal_type: TerminalType::UnsignedInteger,
         token: token(&value.to_string()),
+
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -38,6 +40,8 @@ fn real_expr(value: f64) -> Expression {
     Expression::Terminal {
         terminal_type: TerminalType::UnsignedReal,
         token: token(&value.to_string()),
+
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -45,6 +49,8 @@ fn bool_expr(value: bool) -> Expression {
     Expression::Terminal {
         terminal_type: TerminalType::Bool,
         token: token(if value { "true" } else { "false" }),
+
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -56,6 +62,8 @@ fn call(name: &str, args: Vec<Expression>) -> Expression {
     Expression::FunctionCall {
         comp: cref(name),
         args,
+
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -64,6 +72,8 @@ fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
         op,
         lhs: Arc::new(lhs),
         rhs: Arc::new(rhs),
+
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -92,19 +102,15 @@ fn ns1_init_statement() -> Statement {
     Statement::Assignment {
         comp: cref("ns1"),
         value: binary(
-            OpBinary::Mul(token("*")),
+            OpBinary::Mul,
             int_expr(2),
             call(
                 "integer",
                 vec![call(
                     "ceil",
                     vec![binary(
-                        OpBinary::Div(token("/")),
-                        binary(
-                            OpBinary::Mul(token("*")),
-                            cref_expr("f_max"),
-                            cref_expr("f_max_factor"),
-                        ),
+                        OpBinary::Div,
+                        binary(OpBinary::Mul, cref_expr("f_max"), cref_expr("f_max_factor")),
                         cref_expr("f_resolution"),
                     )],
                 )],
@@ -119,14 +125,12 @@ fn ns_update_statement() -> Statement {
         comp: cref("ns"),
         value: Expression::If {
             branches: vec![(
-                binary(OpBinary::Eq(token("==")), mod_ns1_2, int_expr(0)),
+                binary(OpBinary::Eq, mod_ns1_2, int_expr(0)),
                 cref_expr("ns1"),
             )],
-            else_branch: Arc::new(binary(
-                OpBinary::Add(token("+")),
-                cref_expr("ns1"),
-                int_expr(1),
-            )),
+            else_branch: Arc::new(binary(OpBinary::Add, cref_expr("ns1"), int_expr(1))),
+
+            span: rumoca_core::Span::DUMMY,
         },
     }
 }
@@ -135,7 +139,7 @@ fn reduce_factors_loop(modulus: i64) -> Statement {
     let divisor = int_expr(modulus);
     Statement::While(StatementBlock {
         cond: binary(
-            OpBinary::Eq(token("==")),
+            OpBinary::Eq,
             call("mod", vec![cref_expr("ns1"), divisor.clone()]),
             int_expr(0),
         ),
@@ -159,7 +163,7 @@ fn ns_adjustment_loop() -> Statement {
             reduce_factors_loop(5),
             Statement::If {
                 cond_blocks: vec![StatementBlock {
-                    cond: binary(OpBinary::Le(token("<=")), cref_expr("ns1"), int_expr(1)),
+                    cond: binary(OpBinary::Le, cref_expr("ns1"), int_expr(1)),
                     stmts: vec![Statement::Break {
                         token: token("break"),
                     }],
@@ -168,7 +172,7 @@ fn ns_adjustment_loop() -> Statement {
             },
             Statement::Assignment {
                 comp: cref("ns"),
-                value: binary(OpBinary::Add(token("+")), cref_expr("ns"), int_expr(2)),
+                value: binary(OpBinary::Add, cref_expr("ns"), int_expr(2)),
             },
         ],
     })
@@ -224,22 +228,18 @@ fn nfi_expr() -> Expression {
                 "min",
                 vec![
                     binary(
-                        OpBinary::Add(token("+")),
+                        OpBinary::Add,
                         call(
                             "integer",
                             vec![call(
                                 "ceil",
-                                vec![binary(
-                                    OpBinary::Div(token("/")),
-                                    int_expr(4),
-                                    real_expr(0.2),
-                                )],
+                                vec![binary(OpBinary::Div, int_expr(4), real_expr(0.2))],
                             )],
                         ),
                         int_expr(1),
                     ),
                     binary(
-                        OpBinary::Add(token("+")),
+                        OpBinary::Add,
                         call("div", vec![cref_expr("ns"), int_expr(2)]),
                         int_expr(1),
                     ),
@@ -252,7 +252,7 @@ fn nfi_expr() -> Expression {
 #[test]
 fn eval_integer_with_scope_div_operator_requires_exact_quotient() {
     let ctx = TypeCheckEvalContext::new();
-    let expr = binary(OpBinary::Div(token("/")), int_expr(7), int_expr(2));
+    let expr = binary(OpBinary::Div, int_expr(7), int_expr(2));
     assert_eq!(eval_integer_with_scope(&expr, &ctx, ""), None);
 }
 
@@ -266,14 +266,14 @@ fn eval_integer_with_scope_div_builtin_remains_truncating() {
 #[test]
 fn eval_integer_with_scope_add_elem_uses_shared_binary_semantics() {
     let ctx = TypeCheckEvalContext::new();
-    let expr = binary(OpBinary::AddElem(token(".+")), int_expr(2), int_expr(3));
+    let expr = binary(OpBinary::AddElem, int_expr(2), int_expr(3));
     assert_eq!(eval_integer_with_scope(&expr, &ctx, ""), Some(5));
 }
 
 #[test]
 fn eval_integer_with_scope_exp_elem_uses_shared_binary_semantics() {
     let ctx = TypeCheckEvalContext::new();
-    let expr = binary(OpBinary::ExpElem(token(".^")), int_expr(2), int_expr(5));
+    let expr = binary(OpBinary::ExpElem, int_expr(2), int_expr(5));
     assert_eq!(eval_integer_with_scope(&expr, &ctx, ""), Some(32));
 }
 
@@ -286,7 +286,7 @@ fn eval_boolean_with_scope_enum_eq_accepts_suffix_qualification() {
     );
 
     let expr = binary(
-        OpBinary::Eq(token("==")),
+        OpBinary::Eq,
         cref_expr("controllerType"),
         cref_expr("SimpleController.PI"),
     );
@@ -303,7 +303,7 @@ fn eval_boolean_with_scope_enum_eq_accepts_shared_type_literal_tail() {
     );
 
     let expr = binary(
-        OpBinary::Eq(token("==")),
+        OpBinary::Eq,
         cref_expr("frameResolve"),
         cref_expr("Modelica.Mechanics.MultiBody.Types.ResolveInFrameA.frame_resolve"),
     );
@@ -320,7 +320,7 @@ fn eval_boolean_with_scope_enum_eq_rejects_different_enum_type() {
     );
 
     let expr = binary(
-        OpBinary::Eq(token("==")),
+        OpBinary::Eq,
         cref_expr("mode"),
         cref_expr("Modelica.Blocks.Types.SimpleController.PI"),
     );
@@ -353,6 +353,7 @@ fn eval_for_stmt_break_exits_only_inner_loop() {
                 start: Arc::new(int_expr(1)),
                 step: None,
                 end: Arc::new(int_expr(3)),
+                span: rumoca_core::Span::DUMMY,
             },
         }],
         equations: vec![
@@ -371,4 +372,55 @@ fn eval_for_stmt_break_exits_only_inner_loop() {
         Some(FunctionStmtFlow::Continue)
     );
     assert_eq!(ctx.integers.get("x"), Some(&1));
+}
+
+#[test]
+fn eval_unsupported_function_statement_fails_evaluation() {
+    let mut ctx = TypeCheckEvalContext::new();
+    let statements = vec![Statement::Assert {
+        condition: bool_expr(true),
+        message: Expression::Terminal {
+            terminal_type: TerminalType::String,
+            token: token("ok"),
+
+            span: rumoca_core::Span::DUMMY,
+        },
+        level: None,
+    }];
+
+    assert_eq!(interpret_stmts(&statements, &mut ctx), None);
+}
+
+#[test]
+fn eval_multi_index_for_stmt_fails_evaluation() {
+    let mut ctx = TypeCheckEvalContext::new();
+    let statements = vec![Statement::For {
+        indices: vec![
+            ForIndex {
+                ident: token("i"),
+                range: Expression::Range {
+                    start: Arc::new(int_expr(1)),
+                    step: None,
+                    end: Arc::new(int_expr(2)),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            },
+            ForIndex {
+                ident: token("j"),
+                range: Expression::Range {
+                    start: Arc::new(int_expr(1)),
+                    step: None,
+                    end: Arc::new(int_expr(2)),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            },
+        ],
+        equations: vec![Statement::Assignment {
+            comp: cref("x"),
+            value: int_expr(1),
+        }],
+    }];
+
+    assert_eq!(interpret_stmts(&statements, &mut ctx), None);
+    assert!(!ctx.integers.contains_key("x"));
 }

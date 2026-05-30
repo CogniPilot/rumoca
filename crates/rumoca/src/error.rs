@@ -59,9 +59,9 @@ pub enum CompilerError {
     ToDaeError(String),
 
     /// Template rendering error.
-    #[error("template error: {0}")]
-    #[diagnostic(code(rumoca::compiler::E010))]
-    TemplateError(String),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    TemplateError(#[from] rumoca_compile::codegen::CodegenError),
 
     /// JSON serialization error.
     #[error("JSON error: {0}")]
@@ -74,7 +74,7 @@ pub enum CompilerError {
     CompileDiagnosticsError {
         summary: String,
         failures: Vec<ModelFailureDiagnostic>,
-        source_map: Option<SourceMap>,
+        source_map: Option<Box<SourceMap>>,
     },
 
     /// Structured source-backed diagnostics that should render directly in the CLI.
@@ -83,7 +83,7 @@ pub enum CompilerError {
     SourceDiagnosticsError {
         summary: String,
         diagnostics: Vec<CommonDiagnostic>,
-        source_map: SourceMap,
+        source_map: Box<SourceMap>,
     },
 }
 

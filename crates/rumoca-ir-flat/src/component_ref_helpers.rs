@@ -1,4 +1,25 @@
 use super::*;
+use rumoca_core::{ComponentRefPart, ComponentReference, Reference, Span, split_path_with_indices};
+
+pub(super) fn component_reference_from_path(
+    path: &str,
+    span: Span,
+    def_id: Option<DefId>,
+) -> ComponentReference {
+    ComponentReference {
+        local: false,
+        span,
+        parts: split_path_with_indices(path)
+            .into_iter()
+            .map(|segment| ComponentRefPart {
+                ident: segment.to_string(),
+                span,
+                subs: Vec::new(),
+            })
+            .collect(),
+        def_id,
+    }
+}
 
 /// Convert a component reference to a VarRef with optional def-map canonicalization.
 ///
@@ -13,9 +34,11 @@ pub(super) fn from_component_ref_with_def_map_impl(
         && let Some(def_id) = cr.def_id
         && let Some(path) = def_map.and_then(|map| map.get(&def_id))
     {
+        let component_ref = component_reference_from_path(path, cr.span, Some(def_id));
         return Expression::VarRef {
-            name: VarName::new(path.clone()),
+            name: Reference::from_component_reference(component_ref),
             subscripts: vec![],
+            span: cr.span,
         };
     }
 
@@ -24,9 +47,11 @@ pub(super) fn from_component_ref_with_def_map_impl(
         && let Some(path) = def_map.and_then(|map| map.get(&def_id))
         && is_enum_literal_ref(cr, path)
     {
+        let component_ref = component_reference_from_path(path, cr.span, Some(def_id));
         return Expression::VarRef {
-            name: VarName::new(path.clone()),
+            name: Reference::from_component_reference(component_ref),
             subscripts: vec![],
+            span: cr.span,
         };
     }
 
@@ -34,7 +59,7 @@ pub(super) fn from_component_ref_with_def_map_impl(
         return index_expr;
     }
 
-    Expression::from_component_ref(cr)
+    expression_from_component_ref(cr)
 }
 
 fn component_ref_with_dynamic_final_subscripts(cr: &ast::ComponentReference) -> Option<Expression> {
@@ -44,39 +69,27 @@ fn component_ref_with_dynamic_final_subscripts(cr: &ast::ComponentReference) -> 
         return None;
     }
 
-    let last_subs: Vec<Subscript> = last_subs_ast.iter().map(Subscript::from_ast).collect();
+    let last_subs: Vec<Subscript> = last_subs_ast.iter().map(subscript_from_ast).collect();
     let has_dynamic = last_subs
         .iter()
-        .any(|sub| !matches!(sub, Subscript::Index(_)));
+        .any(|sub| !matches!(sub, Subscript::Index { .. }));
     if !has_dynamic {
         return None;
     }
 
-    let mut name_parts: Vec<String> = Vec::with_capacity(cr.parts.len());
-    for (idx, part) in cr.parts.iter().enumerate() {
-        let base = part.ident.text.to_string();
-        if idx + 1 == cr.parts.len() {
-            // Keep dynamic final subscripts as structured Index nodes.
-            name_parts.push(base);
-            continue;
-        }
-
-        let seg = match &part.subs {
-            Some(subs) if !subs.is_empty() => {
-                let sub_text: Vec<String> = subs.iter().map(subscript_to_string).collect();
-                format!("{base}[{}]", sub_text.join(","))
-            }
-            _ => base,
-        };
-        name_parts.push(seg);
+    let mut base_ref = component_reference_from_ast_with_def_map(cr, None);
+    if let Some(last) = base_ref.parts.last_mut() {
+        last.subs.clear();
     }
 
     Some(Expression::Index {
         base: Box::new(Expression::VarRef {
-            name: VarName::new(name_parts.join(".")),
+            name: Reference::from_component_reference(base_ref),
             subscripts: vec![],
+            span: cr.span,
         }),
         subscripts: last_subs,
+        span: cr.span,
     })
 }
 
@@ -91,10 +104,7 @@ fn is_enum_literal_ref(cr: &ast::ComponentReference, canonical_path: &str) -> bo
         return false;
     }
 
-    canonical_path
-        .rsplit('.')
-        .next()
-        .is_some_and(is_quoted_identifier)
+    is_quoted_identifier(rumoca_core::top_level_last_segment(canonical_path))
 }
 
 /// Modelica quoted identifiers use single quotes (e.g., `'1'`).

@@ -1,7 +1,8 @@
 //! Diagnostic tests for understanding balance issues in MSL models.
 
 use rumoca_compile::compile::{CompiledSourceRoot, FailedPhase, PhaseResult};
-use rumoca_ir_dae::{Dae, VarName};
+use rumoca_core::VarName;
+use rumoca_ir_dae::Dae;
 
 /// Test a simple logical Not model to understand balance
 #[test]
@@ -22,22 +23,34 @@ end Not;
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== Simple Not Model ===");
-            println!("States: {:?}", dae.states.keys().collect::<Vec<_>>());
+            println!(
+                "States: {:?}",
+                dae.variables.states.keys().collect::<Vec<_>>()
+            );
             println!(
                 "Algebraics: {:?}",
-                dae.algebraics.keys().collect::<Vec<_>>()
+                dae.variables.algebraics.keys().collect::<Vec<_>>()
             );
-            println!("Inputs: {:?}", dae.inputs.keys().collect::<Vec<_>>());
-            println!("Outputs: {:?}", dae.outputs.keys().collect::<Vec<_>>());
-            println!("Continuous equations (f_x): {}", dae.f_x.len());
-            println!("Balance: {}", rumoca_analysis_dae::balance(dae));
+            println!(
+                "Inputs: {:?}",
+                dae.variables.inputs.keys().collect::<Vec<_>>()
+            );
+            println!(
+                "Outputs: {:?}",
+                dae.variables.outputs.keys().collect::<Vec<_>>()
+            );
+            println!(
+                "Continuous equations (f_x): {}",
+                dae.continuous.equations.len()
+            );
+            println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
             assert_eq!(
-                rumoca_analysis_dae::balance(dae),
+                rumoca_phase_dae::balance::balance(dae),
                 0,
                 "Simple Not should be balanced"
             );
         }
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             panic!("Model needs inner declarations: {:?}", missing_inners);
         }
         PhaseResult::Failed { phase, error, .. } => {
@@ -77,22 +90,34 @@ end Not;
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== Connector-Style Not Model ===");
-            println!("States: {:?}", dae.states.keys().collect::<Vec<_>>());
+            println!(
+                "States: {:?}",
+                dae.variables.states.keys().collect::<Vec<_>>()
+            );
             println!(
                 "Algebraics: {:?}",
-                dae.algebraics.keys().collect::<Vec<_>>()
+                dae.variables.algebraics.keys().collect::<Vec<_>>()
             );
-            println!("Inputs: {:?}", dae.inputs.keys().collect::<Vec<_>>());
-            println!("Outputs: {:?}", dae.outputs.keys().collect::<Vec<_>>());
-            println!("Continuous equations (f_x): {}", dae.f_x.len());
-            println!("Balance: {}", rumoca_analysis_dae::balance(dae));
+            println!(
+                "Inputs: {:?}",
+                dae.variables.inputs.keys().collect::<Vec<_>>()
+            );
+            println!(
+                "Outputs: {:?}",
+                dae.variables.outputs.keys().collect::<Vec<_>>()
+            );
+            println!(
+                "Continuous equations (f_x): {}",
+                dae.continuous.equations.len()
+            );
+            println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
             assert_eq!(
-                rumoca_analysis_dae::balance(dae),
+                rumoca_phase_dae::balance::balance(dae),
                 0,
                 "Connector-style Not should be balanced"
             );
         }
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             panic!("Model needs inner declarations: {:?}", missing_inners);
         }
         PhaseResult::Failed { phase, error, .. } => {
@@ -122,22 +147,34 @@ end TestOutput;
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== Output Equation Model ===");
-            println!("States: {:?}", dae.states.keys().collect::<Vec<_>>());
+            println!(
+                "States: {:?}",
+                dae.variables.states.keys().collect::<Vec<_>>()
+            );
             println!(
                 "Algebraics: {:?}",
-                dae.algebraics.keys().collect::<Vec<_>>()
+                dae.variables.algebraics.keys().collect::<Vec<_>>()
             );
-            println!("Inputs: {:?}", dae.inputs.keys().collect::<Vec<_>>());
-            println!("Outputs: {:?}", dae.outputs.keys().collect::<Vec<_>>());
-            println!("Continuous equations (f_x): {}", dae.f_x.len());
-            println!("Balance: {}", rumoca_analysis_dae::balance(dae));
+            println!(
+                "Inputs: {:?}",
+                dae.variables.inputs.keys().collect::<Vec<_>>()
+            );
+            println!(
+                "Outputs: {:?}",
+                dae.variables.outputs.keys().collect::<Vec<_>>()
+            );
+            println!(
+                "Continuous equations (f_x): {}",
+                dae.continuous.equations.len()
+            );
+            println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
             // This model has: 0 states, 0 algebraics (y is output),
             // 1 input (u - not unknown), 1 output (y - not unknown)
             // 1 algebraic equation
             // So balance = 1 - 0 = 1 (over-determined) - but that's wrong!
             // The equation y = 2*u should define output y, not be an algebraic equation
         }
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             panic!("Model needs inner declarations: {:?}", missing_inners);
         }
         PhaseResult::Failed { phase, error, .. } => {
@@ -163,18 +200,21 @@ end PartialModel;
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== Partial Model ===");
-            println!("States: {:?}", dae.states.keys().collect::<Vec<_>>());
+            println!(
+                "States: {:?}",
+                dae.variables.states.keys().collect::<Vec<_>>()
+            );
             println!(
                 "Algebraics: {:?}",
-                dae.algebraics.keys().collect::<Vec<_>>()
+                dae.variables.algebraics.keys().collect::<Vec<_>>()
             );
-            println!("ODE equations: {}", dae.f_x.len());
-            println!("Algebraic equations: {}", dae.f_x.len());
-            println!("Balance: {}", rumoca_analysis_dae::balance(dae));
+            println!("ODE equations: {}", dae.continuous.equations.len());
+            println!("Algebraic equations: {}", dae.continuous.equations.len());
+            println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
             // Partial models ARE expected to be unbalanced
             // They should be excluded from balance checking
         }
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             panic!("Model needs inner declarations: {:?}", missing_inners);
         }
         PhaseResult::Failed { phase, error, .. } => {
@@ -236,82 +276,101 @@ end QuasiStatic;
     let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
     match source_root.compile_model_phases("QuasiStatic.Ground") {
-        PhaseResult::Success(result) => {
-            let dae = &result.dae;
-            println!("\n=== QuasiStatic.Ground Model ===");
-            println!(
-                "States ({}): {:?}",
-                dae.states.len(),
-                dae.states.keys().collect::<Vec<_>>()
-            );
-            println!(
-                "Algebraics ({}): {:?}",
-                dae.algebraics.len(),
-                dae.algebraics.keys().collect::<Vec<_>>()
-            );
-            println!(
-                "Inputs ({}): {:?}",
-                dae.inputs.len(),
-                dae.inputs.keys().collect::<Vec<_>>()
-            );
-            println!(
-                "Outputs ({}): {:?}",
-                dae.outputs.len(),
-                dae.outputs.keys().collect::<Vec<_>>()
-            );
-
-            let f_x_scalar: usize = dae.f_x.iter().map(|e| e.scalar_count).sum();
-            println!("\nEquations:");
-            println!("  f_x: {} objects, {} scalar", dae.f_x.len(), f_x_scalar);
-            for eq in &dae.f_x {
-                println!("    [{}] {}", eq.scalar_count, eq.origin);
-            }
-
-            println!("\nInterface contributions:");
-            println!("  interface_flow_count: {}", dae.interface_flow_count);
-            println!(
-                "  overconstrained_interface_count: {}",
-                dae.overconstrained_interface_count
-            );
-
-            let unknowns = dae.states.len() + dae.algebraics.len() + dae.outputs.len();
-            let total_eqs = (f_x_scalar + dae.interface_flow_count) as i64
-                + dae.overconstrained_interface_count;
-            println!("\nBalance calculation:");
-            println!("  Unknowns: {}", unknowns);
-            println!(
-                "  Equations: {} (f_x={} + flow={} + overconstrained={})",
-                total_eqs,
-                f_x_scalar,
-                dae.interface_flow_count,
-                dae.overconstrained_interface_count
-            );
-            println!("  Balance: {}", rumoca_analysis_dae::balance(dae));
-
-            // The issue: overconstrained_interface_count should NOT add an equation
-            // when there's already an explicit equation from Connections.isRoot()
-            if rumoca_analysis_dae::balance(dae) != 0 {
-                println!(
-                    "\nBUG: Balance should be 0, but is {}",
-                    rumoca_analysis_dae::balance(dae)
-                );
-                println!(
-                    "The overconstrained_interface_count is double-counting the root equation"
-                );
-            }
-            assert_eq!(
-                rumoca_analysis_dae::balance(dae),
-                0,
-                "QuasiStatic.Ground should be balanced"
-            );
-        }
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::Success(result) => assert_quasistatic_ground_balanced(&result.dae),
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             panic!("Model needs inner declarations: {:?}", missing_inners);
         }
         PhaseResult::Failed { phase, error, .. } => {
             panic!("Compilation failed at {:?}: {}", phase, error);
         }
     }
+}
+
+fn assert_quasistatic_ground_balanced(dae: &rumoca_ir_dae::Dae) {
+    print_quasistatic_ground_balance_details(dae);
+    if rumoca_phase_dae::balance::balance(dae) != 0 {
+        println!(
+            "\nBUG: Balance should be 0, but is {}",
+            rumoca_phase_dae::balance::balance(dae)
+        );
+        println!("The overconstrained_interface_count is double-counting the root equation");
+    }
+    assert_eq!(
+        rumoca_phase_dae::balance::balance(dae),
+        0,
+        "QuasiStatic.Ground should be balanced"
+    );
+}
+
+fn print_quasistatic_ground_balance_details(dae: &rumoca_ir_dae::Dae) {
+    println!("\n=== QuasiStatic.Ground Model ===");
+    println!(
+        "States ({}): {:?}",
+        dae.variables.states.len(),
+        dae.variables.states.keys().collect::<Vec<_>>()
+    );
+    println!(
+        "Algebraics ({}): {:?}",
+        dae.variables.algebraics.len(),
+        dae.variables.algebraics.keys().collect::<Vec<_>>()
+    );
+    println!(
+        "Inputs ({}): {:?}",
+        dae.variables.inputs.len(),
+        dae.variables.inputs.keys().collect::<Vec<_>>()
+    );
+    println!(
+        "Outputs ({}): {:?}",
+        dae.variables.outputs.len(),
+        dae.variables.outputs.keys().collect::<Vec<_>>()
+    );
+    let f_x_scalar = print_quasistatic_equations(dae);
+    print_quasistatic_balance_calculation(dae, f_x_scalar);
+}
+
+fn print_quasistatic_equations(dae: &rumoca_ir_dae::Dae) -> usize {
+    let f_x_scalar: usize = dae
+        .continuous
+        .equations
+        .iter()
+        .map(|e| e.scalar_count)
+        .sum();
+    println!("\nEquations:");
+    println!(
+        "  f_x: {} objects, {} scalar",
+        dae.continuous.equations.len(),
+        f_x_scalar
+    );
+    for eq in &dae.continuous.equations {
+        println!("    [{}] {}", eq.scalar_count, eq.origin);
+    }
+    f_x_scalar
+}
+
+fn print_quasistatic_balance_calculation(dae: &rumoca_ir_dae::Dae, f_x_scalar: usize) {
+    println!("\nInterface contributions:");
+    println!(
+        "  interface_flow_count: {}",
+        dae.metadata.interface_flow_count
+    );
+    println!(
+        "  overconstrained_interface_count: {}",
+        dae.metadata.overconstrained_interface_count
+    );
+    let unknowns =
+        dae.variables.states.len() + dae.variables.algebraics.len() + dae.variables.outputs.len();
+    let total_eqs = (f_x_scalar + dae.metadata.interface_flow_count) as i64
+        + dae.metadata.overconstrained_interface_count;
+    println!("\nBalance calculation:");
+    println!("  Unknowns: {}", unknowns);
+    println!(
+        "  Equations: {} (f_x={} + flow={} + overconstrained={})",
+        total_eqs,
+        f_x_scalar,
+        dae.metadata.interface_flow_count,
+        dae.metadata.overconstrained_interface_count
+    );
+    println!("  Balance: {}", rumoca_phase_dae::balance::balance(dae));
 }
 
 /// QuasiStatic model source for VoltageSource test
@@ -353,11 +412,11 @@ fn test_quasistatic_voltage_source_balance() {
             println!("\n=== QuasiStatic.VoltageSource ===");
             print_dae_summary(dae);
             // Source uses Connections.root() - balance may be +1 if root eq is generated
-            if rumoca_analysis_dae::balance(dae) != 0 {
+            if rumoca_phase_dae::balance::balance(dae) != 0 {
                 println!("Analysis: Source uses Connections.root() without explicit isRoot()");
             }
         }
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             panic!("Model needs inner declarations: {:?}", missing_inners);
         }
         PhaseResult::Failed { phase, error, .. } => {
@@ -374,21 +433,26 @@ fn test_quasistatic_voltage_source_balance() {
 fn print_dae_summary(dae: &Dae) {
     println!(
         "States: {}, Algs: {}",
-        dae.states.len(),
-        dae.algebraics.len()
+        dae.variables.states.len(),
+        dae.variables.algebraics.len()
     );
     println!(
         "Inputs: {}, Outputs: {}",
-        dae.inputs.len(),
-        dae.outputs.len()
+        dae.variables.inputs.len(),
+        dae.variables.outputs.len()
     );
-    let alg_scalar: usize = dae.f_x.iter().map(|e| e.scalar_count).sum();
+    let alg_scalar: usize = dae
+        .continuous
+        .equations
+        .iter()
+        .map(|e| e.scalar_count)
+        .sum();
     println!("Equations: {} scalar", alg_scalar);
     println!(
         "Interface: flow={}, overconstrained={}",
-        dae.interface_flow_count, dae.overconstrained_interface_count
+        dae.metadata.interface_flow_count, dae.metadata.overconstrained_interface_count
     );
-    println!("Balance: {}", rumoca_analysis_dae::balance(dae));
+    println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
 }
 
 /// Test inherited Real connector (like SI units)
@@ -418,26 +482,38 @@ end Gain;
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== Gain Model (SISO inheritance) ===");
-            println!("States: {:?}", dae.states.keys().collect::<Vec<_>>());
+            println!(
+                "States: {:?}",
+                dae.variables.states.keys().collect::<Vec<_>>()
+            );
             println!(
                 "Algebraics: {:?}",
-                dae.algebraics.keys().collect::<Vec<_>>()
+                dae.variables.algebraics.keys().collect::<Vec<_>>()
             );
-            println!("Inputs: {:?}", dae.inputs.keys().collect::<Vec<_>>());
-            println!("Outputs: {:?}", dae.outputs.keys().collect::<Vec<_>>());
+            println!(
+                "Inputs: {:?}",
+                dae.variables.inputs.keys().collect::<Vec<_>>()
+            );
+            println!(
+                "Outputs: {:?}",
+                dae.variables.outputs.keys().collect::<Vec<_>>()
+            );
             println!(
                 "Parameters: {:?}",
-                dae.parameters.keys().collect::<Vec<_>>()
+                dae.variables.parameters.keys().collect::<Vec<_>>()
             );
-            println!("Continuous equations (f_x): {}", dae.f_x.len());
-            println!("Balance: {}", rumoca_analysis_dae::balance(dae));
+            println!(
+                "Continuous equations (f_x): {}",
+                dae.continuous.equations.len()
+            );
+            println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
             assert_eq!(
-                rumoca_analysis_dae::balance(dae),
+                rumoca_phase_dae::balance::balance(dae),
                 0,
                 "Gain should be balanced"
             );
         }
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             panic!("Model needs inner declarations: {:?}", missing_inners);
         }
         PhaseResult::Failed { phase, error, .. } => {
@@ -495,20 +571,22 @@ end TestEquationDefinedInput;
             // The RHS check in find_equation_defined_inputs should detect it
             // and promote it to algebraic.
             assert!(
-                !dae.inputs.contains_key(&VarName::new("medium.p")),
+                !dae.variables.inputs.contains_key(&VarName::new("medium.p")),
                 "medium.p should NOT be an input (equation-defined via RHS)"
             );
             assert!(
-                dae.algebraics.contains_key(&VarName::new("medium.p")),
+                dae.variables
+                    .algebraics
+                    .contains_key(&VarName::new("medium.p")),
                 "medium.p should be an algebraic unknown"
             );
             assert_eq!(
-                rumoca_analysis_dae::balance(dae),
+                rumoca_phase_dae::balance::balance(dae),
                 0,
                 "Model with equation-defined internal inputs should be balanced"
             );
         }
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             panic!("Model needs inner declarations: {:?}", missing_inners);
         }
         PhaseResult::Failed { phase, error, .. } => {
@@ -538,13 +616,15 @@ model Volume
     BaseProps medium;
     Real vessel_ps_static;
 equation
+    medium.p = 1;
     vessel_ps_static = medium.p;
 end Volume;
 "#;
 
     // Flattened equations:
     //   1. medium.state_p - medium.p = 0   (from BaseProps, origin=medium)
-    //   2. vessel_ps_static - medium.p = 0 (from Volume, origin=top-level)
+    //   2. medium.p - 1 = 0                (from Volume, origin=top-level)
+    //   3. vessel_ps_static - medium.p = 0 (from Volume, origin=top-level)
     //
     // The RHS check promotes medium.p via equation 1 (origin matches parent)
     // but NOT via equation 2 (origin mismatch). In this simple model, medium.p
@@ -559,11 +639,13 @@ end Volume;
             // medium.p should be promoted via the intra-component alias
             // (equation 1: state_p = p, origin=medium matches parent=medium)
             assert!(
-                dae.algebraics.contains_key(&VarName::new("medium.p")),
+                dae.variables
+                    .algebraics
+                    .contains_key(&VarName::new("medium.p")),
                 "medium.p should be algebraic (promoted via intra-component alias)"
             );
         }
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             panic!("Model needs inner declarations: {:?}", missing_inners);
         }
         PhaseResult::Failed { phase, error, .. } => {

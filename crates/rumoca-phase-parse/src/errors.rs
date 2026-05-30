@@ -3,7 +3,8 @@
 //! Error codes: EP0xx for parse phase (per SPEC_0008).
 
 use parol_runtime::errors::{ParolError, ParserError, SyntaxError};
-use rumoca_core::{BytePos, Diagnostic, PhaseError, PrimaryLabel, SourceId, Span};
+use rumoca_core::{BytePos, SourceId, Span};
+use rumoca_core::{Diagnostic, PhaseError, PrimaryLabel};
 use rumoca_ir_ast as ast;
 
 /// Parse-phase semantic error carrying a concrete source span.
@@ -14,11 +15,11 @@ pub struct ParseSemanticError {
 }
 
 impl ParseSemanticError {
-    pub fn from_token(message: impl Into<String>, token: &rumoca_ir_core::Token) -> Self {
+    pub fn from_token(message: impl Into<String>, token: &rumoca_core::Token) -> Self {
         Self::from_location(message, &token.location)
     }
 
-    pub fn from_location(message: impl Into<String>, location: &rumoca_ir_core::Location) -> Self {
+    pub fn from_location(message: impl Into<String>, location: &rumoca_core::Location) -> Self {
         Self {
             message: message.into(),
             span: ast_location_to_span(location),
@@ -37,7 +38,7 @@ impl std::error::Error for ParseSemanticError {}
 /// Build an anyhow error that retains parse semantic span information.
 pub fn semantic_error_from_token(
     message: impl Into<String>,
-    token: &rumoca_ir_core::Token,
+    token: &rumoca_core::Token,
 ) -> anyhow::Error {
     anyhow::Error::new(ParseSemanticError::from_token(message, token))
 }
@@ -45,7 +46,7 @@ pub fn semantic_error_from_token(
 /// Build an anyhow error that retains parse semantic span information.
 pub fn semantic_error_from_location(
     message: impl Into<String>,
-    location: &rumoca_ir_core::Location,
+    location: &rumoca_core::Location,
 ) -> anyhow::Error {
     anyhow::Error::new(ParseSemanticError::from_location(message, location))
 }
@@ -53,7 +54,7 @@ pub fn semantic_error_from_location(
 /// Build a parse semantic error when a source location may be unavailable.
 pub fn semantic_error_from_optional_location(
     message: impl Into<String>,
-    location: Option<&rumoca_ir_core::Location>,
+    location: Option<&rumoca_core::Location>,
 ) -> anyhow::Error {
     let message = message.into();
     match location {
@@ -153,7 +154,7 @@ const EP002_NO_AST_PRODUCED: &str = "EP002";
 const EP003_IO_ERROR: &str = "EP003";
 
 fn default_parse_span() -> Span {
-    Span::from_offsets(SourceId(0), 0, 1)
+    Span::from_offsets(SourceId::DUMMY, 0, 1)
 }
 
 fn normalize_span(span: Span) -> Span {
@@ -175,11 +176,11 @@ fn fallback_span_from_source(source: &str) -> Span {
     }
 
     if let Some((start, ch)) = source.char_indices().find(|(_, ch)| !ch.is_whitespace()) {
-        return Span::from_offsets(SourceId(0), start, start + ch.len_utf8());
+        return Span::from_offsets(SourceId::DUMMY, start, start + ch.len_utf8());
     }
 
     let end = source.chars().next().map_or(1, |ch| ch.len_utf8());
-    Span::from_offsets(SourceId(0), 0, end)
+    Span::from_offsets(SourceId::DUMMY, 0, end)
 }
 
 impl PhaseError for ParseError {
@@ -435,7 +436,11 @@ fn span_from_cause_location(cause: &str, source: &str) -> Option<Span> {
     if end <= start {
         end = start.saturating_add(1).min(source.len());
     }
-    Some(normalize_span(Span::from_offsets(SourceId(0), start, end)))
+    Some(normalize_span(Span::from_offsets(
+        SourceId::DUMMY,
+        start,
+        end,
+    )))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -629,17 +634,21 @@ fn location_to_span(loc: &parol_runtime::lexer::Location) -> Span {
     // Use byte offsets from parol's Location
     let start = BytePos(loc.start as usize);
     let end = BytePos(loc.end as usize);
-    // Use SourceId(0) as a placeholder - the actual source is tracked separately
-    normalize_span(Span::new(SourceId(0), start, end))
+    let source_name = loc.file_name.to_string_lossy();
+    normalize_span(Span::new(
+        SourceId::from_source_name(source_name.as_ref()),
+        start,
+        end,
+    ))
 }
 
-fn ast_location_to_span(location: &rumoca_ir_core::Location) -> Span {
+fn ast_location_to_span(location: &rumoca_core::Location) -> Span {
     let start = BytePos(location.start as usize);
     let mut end = BytePos(location.end as usize);
     if end.0 <= start.0 {
         end = BytePos(start.0.saturating_add(1));
     }
-    Span::new(SourceId(0), start, end)
+    Span::new(SourceId::from_source_name(&location.file_name), start, end)
 }
 
 /// Format a parse error with source context using miette.

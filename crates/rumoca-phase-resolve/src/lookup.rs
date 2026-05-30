@@ -4,7 +4,7 @@
 //! looking up inherited members during extends resolution.
 
 use crate::Resolver;
-use rumoca_core::{DefId, ScopeId};
+use rumoca_core::{ComponentPath, DefId, ScopeId};
 use std::collections::HashSet;
 
 impl Resolver {
@@ -44,6 +44,7 @@ impl Resolver {
 
         // Get the first part of the name
         let first_part = &name.name[0].text;
+        let first_path = ComponentPath::from_flat_path(first_part);
 
         // Only apply exclusion for simple (single-part) names.
         // For qualified names like `Pkg.Class`, we need to navigate into `Pkg` even if
@@ -53,7 +54,7 @@ impl Resolver {
         // Look up the first part in the scope chain
         let mut current_def_id =
             self.scope_tree
-                .lookup_excluding(scope, first_part, effective_exclude)?;
+                .lookup_excluding(scope, &first_path, effective_exclude)?;
 
         // If there are more parts, navigate nested classes using O(1) lookup
         for part in name.name.iter().skip(1) {

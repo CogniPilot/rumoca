@@ -176,7 +176,9 @@ impl Default for Transition {
         Self {
             from: String::new(),
             to: String::new(),
-            condition: Expression::Empty,
+            condition: Expression::Empty {
+                span: rumoca_core::Span::DUMMY,
+            },
             immediate: true,
             reset: true,
             synchronize: false,

@@ -1,143 +1,101 @@
-use std::borrow::Cow;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use rumoca::CompilationResult;
-use serde::Deserialize;
+use rumoca::{CompilationResult, TemplateIr};
+use rumoca_compile::codegen::targets::{
+    TargetBuildKind, TargetBundle, TargetCapabilities, TargetFile, TargetManifest,
+    TargetTemplateIr, TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
+    safe_target_join, validate_dae_target_capabilities,
+};
 
 pub(crate) fn compile_target(
     result: &CompilationResult,
     model: &str,
     target: &str,
     output: Option<PathBuf>,
-    build: bool,
+    phase: Option<TemplateIr>,
 ) -> Result<()> {
+    if raw_template_target(target) {
+        // A raw .jinja receives the IR chosen by --phase (default DAE).
+        return compile_raw_template_target(
+            result,
+            model,
+            target,
+            output,
+            phase.unwrap_or(TemplateIr::Dae),
+        );
+    }
+    // --phase only picks the IR fed to a raw .jinja template; a built-in /
+    // directory target dictates its own IR.
+    if phase.is_some() {
+        bail!(
+            "--phase only applies to a raw .jinja --target (it picks the IR fed to the \
+             template); the code-gen target '{target}' dictates its own IR."
+        );
+    }
+    // The old `*-ir` pseudo-targets are now `--emit <stage>-json` / `<stage>-mo`.
+    if let Some(stage) = target.strip_suffix("-ir") {
+        bail!(
+            "`--target {target}` was removed; dump the IR with `--emit {stage}-json` \
+             (or `--emit {stage}-mo` for Modelica)."
+        );
+    }
+    // Distinguish an unknown target from a real built-in / directory before the
+    // loader emits a cryptic `<target>/target.toml: No such file` error.
+    if TargetBundle::builtin(target).is_none() && !Path::new(target).is_dir() {
+        bail!(
+            "unknown target '{target}'. Run `rumoca targets` to list built-in targets, \
+             or pass a directory containing target.toml or a .jinja template."
+        );
+    }
     let bundle = TargetBundle::load(target)?;
     let manifest = bundle.parse_manifest()?;
-    compile_manifest_target(result, model, &bundle, &manifest, output, build)
+    compile_manifest_target(result, model, &bundle, &manifest, output)
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TargetManifest {
-    version: u32,
-    name: Option<String>,
-    description: Option<String>,
-    build: Option<TargetBuildKind>,
-    #[serde(alias = "requires")]
-    requirements: Option<TargetRequirements>,
-    files: Vec<TargetFile>,
+fn raw_template_target(target: &str) -> bool {
+    Path::new(target)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension == "jinja")
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-enum TargetBuildKind {
-    Fmu,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TargetRequirements {
-    continuous_states: Option<bool>,
-    residual_equations: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TargetFile {
-    path: String,
-    template: String,
-    mode: Option<String>,
-}
-
-enum TargetBundle {
-    Builtin {
-        name: &'static str,
-        manifest: &'static str,
-    },
-    Directory {
-        dir: PathBuf,
-        manifest: String,
-    },
-}
-
-impl TargetBundle {
-    fn load(target: &str) -> Result<Self> {
-        use rumoca_compile::codegen::templates;
-
-        match target {
-            "fmi2" => Ok(Self::Builtin {
-                name: "fmi2",
-                manifest: templates::FMI2_TARGET_MANIFEST,
-            }),
-            "fmi3" => Ok(Self::Builtin {
-                name: "fmi3",
-                manifest: templates::FMI3_TARGET_MANIFEST,
-            }),
-            "embedded-c" => Ok(Self::Builtin {
-                name: "embedded-c",
-                manifest: templates::EMBEDDED_C_TARGET_MANIFEST,
-            }),
-            custom => {
-                let dir = PathBuf::from(custom);
-                let manifest_path = dir.join("target.yaml");
-                let manifest = std::fs::read_to_string(&manifest_path).with_context(|| {
-                    format!(
-                        "Read target manifest for '{}' at {}",
-                        custom,
-                        manifest_path.display()
-                    )
-                })?;
-                Ok(Self::Directory { dir, manifest })
-            }
-        }
+fn compile_raw_template_target(
+    result: &CompilationResult,
+    model: &str,
+    target: &str,
+    output: Option<PathBuf>,
+    ir: TemplateIr,
+) -> Result<()> {
+    let template =
+        std::fs::read_to_string(target).with_context(|| format!("Read template: {target}"))?;
+    let model_identifier = model.replace('.', "_");
+    let rendered = result
+        .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
+        .with_context(|| format!("Render raw template: {target}"))?;
+    let Some(output_path) = output else {
+        print!("{rendered}");
+        return Ok(());
+    };
+    if let Some(parent) = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
     }
+    std::fs::write(&output_path, rendered)?;
+    eprintln!("Rendered raw template to: {}", output_path.display());
+    Ok(())
+}
 
-    fn parse_manifest(&self) -> Result<TargetManifest> {
-        let manifest: TargetManifest = match self {
-            Self::Builtin { manifest, .. } => serde_yaml::from_str(manifest),
-            Self::Directory { manifest, .. } => serde_yaml::from_str(manifest),
-        }
-        .context("Parse target.yaml")?;
-
-        if manifest.version != 1 {
-            bail!(
-                "Unsupported target manifest version {}; expected version 1",
-                manifest.version
-            );
-        }
-        if manifest.files.is_empty() {
-            bail!("target.yaml must contain at least one file entry");
-        }
-        Ok(manifest)
-    }
-
-    fn label<'a>(&'a self, manifest: &'a TargetManifest) -> &'a str {
-        manifest.name.as_deref().unwrap_or(match self {
-            Self::Builtin { name, .. } => name,
-            Self::Directory { dir, .. } => dir.to_str().unwrap_or("custom"),
-        })
-    }
-
-    fn template_source(&self, template: &str) -> Result<Cow<'static, str>> {
-        match self {
-            Self::Builtin { .. } => builtin_target_template_source(template)
-                .map(Cow::Borrowed)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Built-in target references unknown template '{template}'")
-                }),
-            Self::Directory { dir, .. } => {
-                let path = safe_join(dir, template)?;
-                if path.is_file() {
-                    return std::fs::read_to_string(&path)
-                        .map(Cow::Owned)
-                        .with_context(|| format!("Read target template {}", path.display()));
-                }
-                builtin_target_template_source(template)
-                    .map(Cow::Borrowed)
-                    .ok_or_else(|| anyhow::anyhow!("Target template not found: {}", path.display()))
-            }
-        }
+fn template_ir_to_cli(value: TargetTemplateIr) -> TemplateIr {
+    match value {
+        TargetTemplateIr::Dae => TemplateIr::Dae,
+        TargetTemplateIr::Solve => TemplateIr::Solve,
+        TargetTemplateIr::Flat => TemplateIr::Flat,
+        TargetTemplateIr::Ast => TemplateIr::Ast,
     }
 }
 
@@ -147,8 +105,8 @@ fn compile_manifest_target(
     bundle: &TargetBundle,
     manifest: &TargetManifest,
     output: Option<PathBuf>,
-    build: bool,
 ) -> Result<()> {
+    ensure_target_has_rendered_files(manifest)?;
     validate_target_requirements(result, manifest)?;
 
     let model_identifier = model.replace('.', "_");
@@ -165,66 +123,97 @@ fn compile_manifest_target(
     }
 
     for file in &manifest.files {
-        write_manifest_file(result, bundle, file, &out_dir, &model_identifier)?;
+        write_manifest_file(result, bundle, manifest, file, &out_dir, &model_identifier)?;
     }
 
-    if build {
-        match manifest.build {
-            Some(TargetBuildKind::Fmu) => crate::build_fmu(&out_dir, &model_identifier)?,
-            None => bail!(
-                "--build is not supported for target '{}'",
-                bundle.label(manifest)
-            ),
+    // The target.toml `build` field decides whether to package the rendered
+    // output (e.g. into an FMU); there is no CLI flag.
+    match manifest.build {
+        Some(TargetBuildKind::Fmu) => {
+            crate::fmu::build_fmu(&out_dir, &model_identifier, manifest.name.as_deref())?;
         }
-    } else {
-        print_target_completion_message(manifest, &out_dir, &model_identifier);
+        None => print_target_completion_message(manifest, &out_dir, &model_identifier)?,
     }
 
     Ok(())
-}
-
-fn builtin_target_template_source(template: &str) -> Option<&'static str> {
-    use rumoca_compile::codegen::templates;
-
-    match template {
-        "fmi2/modelDescription.xml.jinja" => Some(templates::FMI2_MODEL_DESCRIPTION),
-        "fmi2/model.c.jinja" => Some(templates::FMI2_MODEL),
-        "fmi3/modelDescription.xml.jinja" => Some(templates::FMI3_MODEL_DESCRIPTION),
-        "fmi3/model.c.jinja" => Some(templates::FMI3_MODEL),
-        "fmu/CMakeLists.txt.jinja" => Some(templates::FMU_CMAKE_LISTS),
-        "fmu/build.sh.jinja" => Some(templates::FMU_BUILD_SCRIPT),
-        "embedded_c/model.h.jinja" => Some(templates::EMBEDDED_C_H),
-        "embedded_c/model.c.jinja" => Some(templates::EMBEDDED_C_IMPL),
-        _ => None,
-    }
 }
 
 fn validate_target_requirements(
     result: &CompilationResult,
     manifest: &TargetManifest,
 ) -> Result<()> {
-    let Some(requirements) = &manifest.requirements else {
+    let Some(capabilities) = &manifest.capabilities else {
         return Ok(());
     };
-
-    if requirements.continuous_states == Some(false)
-        && (!result.dae.states.is_empty() || !result.dae.f_x.is_empty())
-    {
-        bail!(
-            "Target '{}' does not support continuous dynamics: {} state(s), {} residual derivative equation(s)",
-            manifest.name.as_deref().unwrap_or("custom"),
-            result.dae.states.len(),
-            result.dae.f_x.len()
-        );
-    }
-    if requirements.residual_equations == Some(false) && !result.dae.f_x.is_empty() {
-        bail!(
-            "Target '{}' does not support residual derivative equations: {} equation(s)",
-            manifest.name.as_deref().unwrap_or("custom"),
-            result.dae.f_x.len()
-        );
+    validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
+    if manifest.ir == TargetTemplateIr::Solve {
+        validate_solve_target_capabilities(result, manifest, capabilities)?;
     }
     Ok(())
+}
+
+fn validate_solve_target_capabilities(
+    result: &CompilationResult,
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+) -> Result<()> {
+    let scalar_fallback = capabilities.scalar_fallback.unwrap_or(true);
+    if capabilities.tensor.is_none() && scalar_fallback {
+        return Ok(());
+    }
+    let tensor = capabilities.tensor.as_ref();
+    let solve = rumoca_sim::lower_solve_problem(&result.dae)
+        .context("Lower Solve IR for target capability validation")?;
+    let inventory = solve.compute_node_counts();
+    let matmul_capability = tensor.and_then(|tensor| tensor.matmul);
+    let linsolve_capability = tensor.and_then(|tensor| tensor.linsolve);
+
+    if inventory.matmul > 0 && matmul_capability.is_none() && !scalar_fallback {
+        unsupported_tensor_feature(
+            manifest,
+            "tensor.matmul",
+            "MatMul nodes are present but the target does not declare native MatMul support and scalar fallback is disabled",
+        )?;
+    }
+    if inventory.linsolve > 0 && linsolve_capability.is_none() && !scalar_fallback {
+        unsupported_tensor_feature(
+            manifest,
+            "tensor.linsolve",
+            "LinSolve nodes are present but the target does not declare native LinSolve support and scalar fallback is disabled",
+        )?;
+    }
+    if inventory.matmul > 0
+        && matmul_capability == Some(TensorCapability::Scalar)
+        && !scalar_fallback
+    {
+        unsupported_tensor_feature(
+            manifest,
+            "tensor.matmul",
+            "MatMul is configured for scalar fallback but scalar fallback is disabled",
+        )?;
+    }
+    if inventory.linsolve > 0
+        && linsolve_capability == Some(TensorCapability::Scalar)
+        && !scalar_fallback
+    {
+        unsupported_tensor_feature(
+            manifest,
+            "tensor.linsolve",
+            "LinSolve is configured for scalar fallback but scalar fallback is disabled",
+        )?;
+    }
+    Ok(())
+}
+
+fn unsupported_tensor_feature(
+    manifest: &TargetManifest,
+    feature: &str,
+    detail: impl std::fmt::Display,
+) -> Result<()> {
+    bail!(
+        "unsupported-feature:{feature}: Target '{}' does not support feature '{feature}': {detail}",
+        manifest.name.as_deref().unwrap_or("custom")
+    )
 }
 
 fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) -> PathBuf {
@@ -237,21 +226,30 @@ fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) 
 fn write_manifest_file(
     result: &CompilationResult,
     bundle: &TargetBundle,
+    manifest: &TargetManifest,
     file: &TargetFile,
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
     let rendered_rel_path = result
-        .render_template_str_with_name(&file.path, model_identifier)
+        .render_template_str_with_name_and_ir(
+            &file.path,
+            model_identifier,
+            template_ir_to_cli(manifest.ir),
+        )
         .with_context(|| format!("Render target output path '{}'", file.path))?;
-    let output_path = safe_join(out_dir, rendered_rel_path.trim())?;
+    let output_path = safe_target_join(out_dir, rendered_rel_path.trim())?;
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
     let template = bundle.template_source(&file.template)?;
     let rendered = result
-        .render_template_str_with_name(template.as_ref(), model_identifier)
+        .render_template_str_with_name_and_ir(
+            template.as_ref(),
+            model_identifier,
+            template_ir_to_cli(manifest.ir),
+        )
         .with_context(|| format!("Render target template '{}'", file.template))?;
     std::fs::write(&output_path, rendered)?;
     apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
@@ -284,60 +282,207 @@ fn print_target_completion_message(
     manifest: &TargetManifest,
     out_dir: &Path,
     model_identifier: &str,
-) {
-    match manifest.build {
-        Some(TargetBuildKind::Fmu) => eprintln!(
-            "\nFMU sources compiled to: {}\nRun ./build.sh to compile and package the .fmu",
-            out_dir.display()
-        ),
-        None if manifest.name.as_deref() == Some("embedded-c") => eprintln!(
-            "\nEmbedded C sources compiled to: {}\nCompile: cc -O2 -Wall -c {}/{}.c",
-            out_dir.display(),
-            out_dir.display(),
-            model_identifier,
-        ),
-        None => eprintln!("\nTarget sources compiled to: {}", out_dir.display()),
+) -> Result<()> {
+    if let Some(message) = &manifest.completion_message {
+        let mut env = minijinja::Environment::new();
+        env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+        env.add_template("completion_message", message)
+            .context("Parse target completion_message")?;
+        let template = env
+            .get_template("completion_message")
+            .context("Load target completion_message")?;
+        let rendered = template
+            .render(minijinja::context! {
+                out_dir => out_dir.display().to_string(),
+                model_name => model_identifier,
+                target_name => manifest.name.as_deref().unwrap_or("custom"),
+            })
+            .context("Render target completion_message")?;
+        eprintln!("\n{rendered}");
+    } else {
+        eprintln!("\nTarget sources compiled to: {}", out_dir.display());
     }
-}
-
-fn safe_join(root: &Path, relative: impl AsRef<Path>) -> Result<PathBuf> {
-    let relative = relative.as_ref();
-    if relative.as_os_str().is_empty() {
-        bail!("Target manifest path must not be empty");
-    }
-    if relative.is_absolute() {
-        bail!(
-            "Target manifest path '{}' must be relative",
-            relative.display()
-        );
-    }
-    for component in relative.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                bail!(
-                    "Target manifest path '{}' must not escape the target root",
-                    relative.display()
-                );
-            }
-        }
-    }
-    Ok(root.join(relative))
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::safe_join;
-    use std::path::Path;
+    use super::*;
+    use rumoca::Compiler;
+
+    fn parse_manifest(source: &str) -> TargetManifest {
+        rumoca_compile::codegen::targets::parse_target_manifest(source)
+            .expect("target manifest should parse")
+    }
+
+    fn solve_manifest(capabilities: &str) -> TargetManifest {
+        parse_manifest(&format!(
+            r#"
+version = 1
+ir = "solve"
+name = "test-solve-target"
+
+{capabilities}
+
+[[files]]
+path = "model.out"
+template = "model.out.jinja"
+"#
+        ))
+    }
+
+    fn compile_tensor_target_demo() -> CompilationResult {
+        let source = r#"
+model TensorTargetDemo
+  Real omega[2](start={0, 0});
+  parameter Real J[2,2] = [2, 0; 0, 4];
+  parameter Real tau[2] = {8, 20};
+equation
+  J * der(omega) = tau;
+end TensorTargetDemo;
+"#;
+
+        Compiler::new()
+            .model("TensorTargetDemo")
+            .compile_str(source, "TensorTargetDemo.mo")
+            .expect("tensor target demo should compile")
+    }
+
+    fn compile_scalar_cuda_smoke_demo() -> CompilationResult {
+        let source = r#"
+model ScalarCudaSmoke
+  Real x(start=1);
+equation
+  der(x) = -2 * x;
+end ScalarCudaSmoke;
+"#;
+
+        Compiler::new()
+            .model("ScalarCudaSmoke")
+            .compile_str(source, "ScalarCudaSmoke.mo")
+            .expect("scalar CUDA smoke demo should compile")
+    }
+
+    fn command_available(command: &str) -> bool {
+        Command::new(command).arg("--version").output().is_ok()
+    }
 
     #[test]
-    fn target_manifest_rejects_escaping_paths() {
-        let root = Path::new("out");
-        assert!(safe_join(root, "../escape").is_err());
-        assert!(safe_join(root, "/absolute").is_err());
-        assert_eq!(
-            safe_join(root, "nested/file.c").unwrap(),
-            root.join("nested/file.c")
+    fn solve_target_capabilities_allow_scalar_tensor_fallback() {
+        let result = compile_tensor_target_demo();
+        let manifest = solve_manifest(
+            r#"
+[capabilities]
+scalar_fallback = true
+
+[capabilities.tensor]
+linsolve = "scalar"
+"#,
+        );
+
+        validate_target_requirements(&result, &manifest)
+            .expect("scalar tensor fallback target should accept LinSolve Solve IR");
+    }
+
+    #[test]
+    fn solve_target_capabilities_reject_missing_native_tensor_without_fallback() {
+        let result = compile_tensor_target_demo();
+        let manifest = solve_manifest(
+            r#"
+[capabilities]
+scalar_fallback = false
+
+[capabilities.tensor]
+matmul = "native"
+"#,
+        );
+
+        let err = validate_target_requirements(&result, &manifest)
+            .expect_err("LinSolve without native support or scalar fallback should fail");
+        let message = err.to_string();
+        assert!(message.contains("tensor.linsolve"), "{message}");
+        assert!(message.contains("scalar fallback is disabled"), "{message}");
+    }
+
+    #[test]
+    fn solve_target_capabilities_reject_tensor_ir_when_fallback_disabled_without_tensor_table() {
+        let result = compile_tensor_target_demo();
+        let manifest = solve_manifest(
+            r#"
+[capabilities]
+scalar_fallback = false
+"#,
+        );
+
+        let err = validate_target_requirements(&result, &manifest)
+            .expect_err("tensor Solve IR should require native support or scalar fallback");
+        let message = err.to_string();
+        assert!(message.contains("tensor.linsolve"), "{message}");
+        assert!(message.contains("scalar fallback is disabled"), "{message}");
+    }
+
+    #[test]
+    fn cuda_c_builtin_target_generates_level_one_skeleton() {
+        let result = compile_tensor_target_demo();
+        let bundle = TargetBundle::load("cuda-c").expect("load built-in cuda-c target");
+        let manifest = bundle.parse_manifest().expect("parse cuda-c manifest");
+        let out_dir = tempfile::tempdir().expect("temp output dir");
+
+        compile_manifest_target(
+            &result,
+            "TensorTargetDemo",
+            &bundle,
+            &manifest,
+            Some(out_dir.path().to_path_buf()),
+        )
+        .expect("cuda-c target should render level-one sources");
+
+        let generated = std::fs::read_to_string(out_dir.path().join("TensorTargetDemo_solve.cu"))
+            .expect("read generated CUDA C source");
+        assert!(generated.contains("TensorTargetDemo_derivative_rhs_batch"));
+        assert!(generated.contains("Readiness level 1"));
+        assert!(
+            generated.contains("LinSolve"),
+            "tensor inventory should be visible in generated source: {generated}"
+        );
+    }
+
+    #[test]
+    fn cuda_c_builtin_target_nvcc_smoke_for_scalar_model_when_available() {
+        if !command_available("nvcc") {
+            eprintln!("skipping cuda-c NVCC smoke: nvcc is not installed");
+            return;
+        }
+
+        let result = compile_scalar_cuda_smoke_demo();
+        let bundle = TargetBundle::load("cuda-c").expect("load built-in cuda-c target");
+        let manifest = bundle.parse_manifest().expect("parse cuda-c manifest");
+        let out_dir = tempfile::tempdir().expect("temp output dir");
+
+        compile_manifest_target(
+            &result,
+            "ScalarCudaSmoke",
+            &bundle,
+            &manifest,
+            Some(out_dir.path().to_path_buf()),
+        )
+        .expect("cuda-c target should render scalar smoke source");
+
+        let source = out_dir.path().join("ScalarCudaSmoke_solve.cu");
+        let object = out_dir.path().join("ScalarCudaSmoke_solve.o");
+        let output = Command::new("nvcc")
+            .arg("-c")
+            .arg(&source)
+            .arg("-o")
+            .arg(&object)
+            .output()
+            .expect("run nvcc");
+        assert!(
+            output.status.success(),
+            "nvcc failed for {}:\nstdout:\n{}\nstderr:\n{}",
+            source.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

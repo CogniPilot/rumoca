@@ -110,6 +110,8 @@ pub struct GamepadButton {
     pub debounce_ms: Option<u64>,
     #[serde(default)]
     pub precondition: Option<String>,
+    #[serde(default)]
+    pub reject_message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +148,8 @@ pub struct KeyBinding {
     pub debounce_ms: Option<u64>,
     #[serde(default)]
     pub precondition: Option<String>,
+    #[serde(default)]
+    pub reject_message: Option<String>,
 }
 
 // ── Signal assembly ────────────────────────────────────────────────────────
@@ -157,7 +161,7 @@ pub struct SignalsConfig {
     #[serde(default)]
     pub viewer: HashMap<String, SignalSpec>,
     /// Signals applied directly to the stepper each frame. Used in
-    /// standalone mode (no autopilot) to drive model inputs from local
+    /// standalone mode (no external interface) to drive model inputs from local
     /// state (e.g. gamepad → stepper input).
     #[serde(default)]
     pub stepper_inputs: HashMap<String, SignalSpec>,

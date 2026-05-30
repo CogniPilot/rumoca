@@ -1,0 +1,290 @@
+source_roots = ["../../../target/cmm/CMM-v0.0.1"]
+[rumoca]
+version = "1"
+task = "simulate"
+
+[input]
+mode = "auto"
+
+[input.gamepad.axes.pitch]
+source = "RightStickY"
+write = "pitch_cmd"
+
+[input.gamepad.axes.roll]
+source = "RightStickX"
+write = "roll_cmd"
+
+[input.gamepad.axes.yaw]
+source = "LeftStickX"
+write = "yaw_cmd"
+
+[input.gamepad.buttons.arm]
+action = "toggle"
+debounce_ms = 500
+precondition = "throttle <= 0.05"
+source = "Start"
+state = "armed"
+
+[input.gamepad.buttons.log]
+action = "signal"
+signal = "log"
+source = "North"
+
+[input.gamepad.buttons.reset]
+action = "signal"
+signal = "reset"
+source = "South"
+
+[input.gamepad.integrators.throttle]
+clamp = [
+    0.0,
+    1.0,
+]
+deadband = 0.1
+rate = 0.7
+source = "LeftStickY"
+write = "throttle"
+
+[input.keyboard.decay]
+factor = 0.85
+ref_dt = 0.016
+targets = [
+    "roll_cmd",
+    "pitch_cmd",
+    "yaw_cmd",
+    "throttle_input",
+]
+
+[input.keyboard.integrators.throttle]
+clamp = [
+    0.0,
+    1.0,
+]
+rate = 0.7
+source = "local:throttle_input"
+write = "throttle"
+
+[input.keyboard.keys.ArrowDown]
+action = "set"
+target = "roll_cmd"
+value = -0.3
+
+[input.keyboard.keys.ArrowLeft]
+action = "set"
+target = "pitch_cmd"
+value = 0.3
+
+[input.keyboard.keys.ArrowRight]
+action = "set"
+target = "pitch_cmd"
+value = -0.3
+
+[input.keyboard.keys.ArrowUp]
+action = "set"
+target = "roll_cmd"
+value = 0.3
+
+[input.keyboard.keys.Space]
+action = "toggle"
+debounce_ms = 500
+precondition = "throttle <= 0.05"
+state = "armed"
+
+[input.keyboard.keys.a]
+action = "set"
+target = "yaw_cmd"
+value = 0.6
+
+[input.keyboard.keys.d]
+action = "set"
+target = "yaw_cmd"
+value = -0.6
+
+[input.keyboard.keys.l]
+action = "signal"
+signal = "log"
+
+[input.keyboard.keys.q]
+action = "signal"
+signal = "quit"
+
+[input.keyboard.keys.r]
+action = "signal"
+signal = "reset"
+
+[input.keyboard.keys.s]
+action = "set"
+target = "throttle_input"
+value = -1.0
+
+[input.keyboard.keys.w]
+action = "set"
+target = "throttle_input"
+value = 1.0
+
+[locals.armed]
+default = false
+type = "bool"
+
+[locals.pitch_cmd]
+default = 0.0
+type = "float"
+
+[locals.roll_cmd]
+default = 0.0
+type = "float"
+
+[locals.throttle]
+default = 0.0
+type = "float"
+
+[locals.throttle_input]
+default = 0.0
+type = "float"
+
+[locals.yaw_cmd]
+default = 0.0
+type = "float"
+
+[model]
+file = "QuadrotorSIL.mo"
+name = "QuadrotorAcro"
+
+[reset]
+on_signal = "reset"
+rebuild_stepper = true
+reset_locals = true
+
+[signals.stepper_inputs]
+stick_pitch = "local:pitch_cmd"
+stick_roll = "local:roll_cmd"
+stick_throttle = "local:throttle"
+stick_yaw = "local:yaw_cmd"
+
+[signals.stepper_inputs.armed]
+from = "local:armed"
+when_false = 0.0
+when_true = 1.0
+
+[signals.viewer]
+accel_x = "stepper:accel[1]"
+accel_y = "stepper:accel[2]"
+accel_z = "stepper:accel[3]"
+armed = "local:armed"
+frame = "runtime:frame_num"
+gyro_x = "stepper:gyro[1]"
+gyro_y = "stepper:gyro[2]"
+gyro_z = "stepper:gyro[3]"
+input_mode = "runtime:input_mode"
+omega_m1 = "stepper:omega_m[1]"
+omega_m2 = "stepper:omega_m[2]"
+omega_m3 = "stepper:omega_m[3]"
+omega_m4 = "stepper:omega_m[4]"
+px = "stepper:position[1]"
+py = "stepper:position[2]"
+pz = "stepper:position[3]"
+q1 = "stepper:quat[2]"
+q2 = "stepper:quat[3]"
+q3 = "stepper:quat[4]"
+stick_pitch = "local:pitch_cmd"
+stick_roll = "local:roll_cmd"
+stick_throttle = "local:throttle"
+stick_yaw = "local:yaw_cmd"
+t = "stepper:time"
+vx = "stepper:velocity[1]"
+vy = "stepper:velocity[2]"
+vz = "stepper:velocity[3]"
+wall_ms = "runtime:wall_ms"
+
+[signals.viewer.q0]
+default = 1.0
+from = "stepper:quat[1]"
+
+[sim]
+dt = 0.01
+mode = "realtime"
+solver = "rk-like"
+
+[transport.http]
+port = 8080
+scene = "quadrotor_scene.js"
+
+[transport.websocket]
+port = 8081
+
+[viewer]
+mode = "external_web"
+show_armed = true
+status_title = "Vehicle"
+
+[[viewer.controls.keyboard]]
+keys = "Up / Down"
+action = "Roll"
+
+[[viewer.controls.keyboard]]
+keys = "Left / Right"
+action = "Pitch"
+
+[[viewer.controls.keyboard]]
+keys = "W / S"
+action = "Throttle"
+
+[[viewer.controls.keyboard]]
+keys = "A / D"
+action = "Yaw"
+
+[[viewer.controls.keyboard]]
+keys = "Space"
+action = "Arm / Disarm"
+
+[[viewer.controls.keyboard]]
+keys = "R"
+action = "Reset"
+
+[[viewer.controls.keyboard]]
+keys = "T"
+action = "Realtime"
+
+[[viewer.controls.keyboard]]
+keys = "C"
+action = "Camera"
+
+[[viewer.controls.keyboard]]
+keys = "H"
+action = "HUD"
+
+[[viewer.controls.keyboard]]
+keys = "L"
+action = "Save debug log"
+
+[[viewer.controls.keyboard]]
+keys = "Q"
+action = "Quit"
+
+[[viewer.controls.gamepad]]
+keys = "Left stick Y"
+action = "Throttle"
+
+[[viewer.controls.gamepad]]
+keys = "Left stick X"
+action = "Yaw"
+
+[[viewer.controls.gamepad]]
+keys = "Right stick Y"
+action = "Pitch"
+
+[[viewer.controls.gamepad]]
+keys = "Right stick X"
+action = "Roll"
+
+[[viewer.controls.gamepad]]
+keys = "Start"
+action = "Arm / Disarm"
+
+[[viewer.controls.gamepad]]
+keys = "A / South"
+action = "Reset"
+
+[[viewer.controls.gamepad]]
+keys = "Y / North"
+action = "Save debug log"

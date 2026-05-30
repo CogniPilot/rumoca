@@ -13,17 +13,51 @@
 
 use std::collections::HashSet;
 
-use rumoca_core::{maybe_elapsed_seconds, maybe_start_timer_if};
+use indexmap::{IndexMap, IndexSet};
+
+use rumoca_core::{ExpressionRewriter, maybe_elapsed_seconds, maybe_start_timer_if};
 use rumoca_ir_dae as dae;
 
-use crate::{BltBlock, EquationRef, UnknownId, sort_dae};
+mod orphan_unknowns;
+mod runtime_known;
+mod runtime_protection;
+mod solve_for_unknown;
+mod substitution_application;
+mod tearing_elimination;
+
+use orphan_unknowns::{drop_unreferenced_continuous_unknowns, output_partition_contains_unknown};
+use runtime_known::singular_rows_are_runtime_known_assignments;
+use runtime_protection::{
+    assignment_target_name, expr_references_any_discrete_name,
+    expr_references_any_runtime_discrete_target, is_runtime_protected_unknown,
+    runtime_defined_discrete_target_names, runtime_partition_or_event_refs_var,
+    runtime_protected_unknown_names, should_preserve_runtime_known_assignment,
+};
+pub use solve_for_unknown::try_solve_for_unknown;
+use substitution_application::{
+    apply_substitutions_in_order, apply_substitutions_to_dae_partitions,
+    apply_substitutions_to_remaining_once, equation_analysis_expr,
+};
+use tearing_elimination::tear_and_eliminate_loop_block;
+
+use crate::{BltBlock, EquationRef, StructuralError, UnknownId, sort_dae};
+
+use rumoca_core::ExpressionVisitor;
+#[cfg(test)]
+use rumoca_ir_dae::expr_contains_der_of;
+use rumoca_ir_dae::{
+    DerivativeNameMatcher, embedded_subscripts_all_one, expr_contains_der_of_any,
+    expr_contains_var, parse_embedded_subscripts, split_complex_field_suffix, subscripts_all_one,
+    var_ref_matches_unknown,
+};
 
 type Dae = dae::Dae;
-type BuiltinFunction = dae::BuiltinFunction;
-type Expression = dae::Expression;
-type OpBinary = rumoca_ir_core::OpBinary;
-type OpUnary = rumoca_ir_core::OpUnary;
-type VarName = dae::VarName;
+type BuiltinFunction = rumoca_core::BuiltinFunction;
+type Expression = rumoca_core::Expression;
+type OpBinary = rumoca_core::OpBinary;
+type OpUnary = rumoca_core::OpUnary;
+type Reference = rumoca_core::Reference;
+type VarName = rumoca_core::VarName;
 
 /// A single symbolic substitution: `var_name = expr`.
 #[derive(Debug, Clone)]
@@ -32,6 +66,10 @@ pub struct Substitution {
     pub var_name: VarName,
     /// The expression it equals (all prior substitutions already applied).
     pub expr: Expression,
+    /// Dimensions of the eliminated variable, if known.
+    pub var_dims: Vec<i64>,
+    /// Dimensions of the replacement expression, if known.
+    pub replacement_dims: Vec<i64>,
     /// Environment keys for this variable (e.g., `["z"]` or `["z[1]", "z[2]"]`).
     pub env_keys: Vec<String>,
 }
@@ -43,6 +81,8 @@ pub struct EliminationResult {
     pub substitutions: Vec<Substitution>,
     /// Number of equations/variables eliminated.
     pub n_eliminated: usize,
+    /// BLT structural error that prevented Phase B from running.
+    pub blt_error: Option<StructuralError>,
 }
 
 struct ZeroUnknownEliminationCtx<'a> {
@@ -50,7 +90,7 @@ struct ZeroUnknownEliminationCtx<'a> {
     state_names: &'a [VarName],
     all_unknowns: &'a [VarName],
     resolved: &'a HashSet<VarName>,
-    runtime_protected_unknowns: &'a HashSet<String>,
+    runtime_protected_unknowns: &'a IndexSet<String>,
     runtime_defined_discrete_targets: &'a HashSet<String>,
     substitutions: &'a mut Vec<Substitution>,
     eliminated_eq_indices: &'a mut Vec<usize>,
@@ -77,7 +117,7 @@ pub fn eliminate_trivial(dae: &mut Dae) -> EliminationResult {
     let t_boundary = maybe_start_timer_if(trace);
     let mut result = resolve_boundary_equations(dae);
     if trace {
-        eprintln!(
+        crate::structural_trace!(
             "[sim-trace] eliminate_trivial boundary elapsed={:.3}s eliminated_eqs={}",
             maybe_elapsed_seconds(t_boundary),
             result.n_eliminated
@@ -86,16 +126,24 @@ pub fn eliminate_trivial(dae: &mut Dae) -> EliminationResult {
 
     // Phase B: BLT scalar-block elimination on the (now hopefully non-singular) system.
     // Extract blocks before mutating dae (SortedDae borrows dae immutably).
-    let blocks = match sort_dae(dae) {
+    let mut blt_error = None;
+    let mut sort_input = dae.clone();
+    drop_unreferenced_continuous_unknowns(&mut sort_input);
+    let blocks = match sort_dae(&sort_input) {
         Ok(sorted) => Some(sorted.blocks.clone()),
-        Err(_) => None,
+        Err(StructuralError::EmptySystem) => None,
+        Err(err) if singular_rows_are_runtime_known_assignments(&sort_input, &err) => None,
+        Err(err) => {
+            blt_error = Some(err);
+            None
+        }
     };
     if let Some(blocks) = blocks {
-        let state_names: Vec<VarName> = dae.states.keys().cloned().collect();
+        let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
         let t_blt = maybe_start_timer_if(trace);
         let blt_result = eliminate_via_blt(dae, &blocks, &state_names);
         if trace {
-            eprintln!(
+            crate::structural_trace!(
                 "[sim-trace] eliminate_trivial blt elapsed={:.3}s eliminated_eqs={}",
                 maybe_elapsed_seconds(t_blt),
                 blt_result.n_eliminated
@@ -104,8 +152,10 @@ pub fn eliminate_trivial(dae: &mut Dae) -> EliminationResult {
         result.substitutions.extend(blt_result.substitutions);
         result.n_eliminated += blt_result.n_eliminated;
     }
+    result.blt_error = blt_error;
+    apply_substitutions_to_dae_partitions(dae, &result.substitutions);
     if trace {
-        eprintln!(
+        crate::structural_trace!(
             "[sim-trace] eliminate_trivial total elapsed={:.3}s eliminated_eqs={}",
             maybe_elapsed_seconds(t_total),
             result.n_eliminated
@@ -115,8 +165,12 @@ pub fn eliminate_trivial(dae: &mut Dae) -> EliminationResult {
     result
 }
 
+pub fn apply_elimination_substitutions_to_dae(dae: &mut Dae, substitutions: &[Substitution]) {
+    apply_substitutions_to_dae_partitions(dae, substitutions);
+}
+
 fn eliminate_trace_enabled() -> bool {
-    std::env::var("RUMOCA_SIM_TRACE").is_ok() || std::env::var("RUMOCA_SIM_INTROSPECT").is_ok()
+    crate::structural_trace_enabled()
 }
 
 // ── Phase A: Boundary Resolution ────────────────────────────────────────
@@ -132,26 +186,28 @@ fn eliminate_trace_enabled() -> bool {
 /// ODE equations (containing `der(state)`) are always skipped.
 fn resolve_boundary_equations(dae: &mut Dae) -> EliminationResult {
     let all_unknowns: Vec<VarName> = dae
+        .variables
         .algebraics
         .keys()
-        .chain(dae.outputs.keys())
+        .chain(dae.variables.outputs.keys())
         .cloned()
         .collect();
     let runtime_protected_unknowns = runtime_protected_unknown_names(dae);
     let runtime_defined_discrete_targets = runtime_defined_discrete_target_names(dae);
 
-    let state_names: Vec<VarName> = dae.states.keys().cloned().collect();
+    let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
+    let state_derivative_matcher = DerivativeNameMatcher::from_var_names(&state_names);
     // Track which unknowns have been resolved (removed from the live set).
     let mut resolved: HashSet<VarName> = HashSet::new();
     let mut substitutions: Vec<Substitution> = Vec::new();
     let mut eliminated_eq_indices: Vec<usize> = Vec::new();
-    let mut eliminated_eq_flags = vec![false; dae.f_x.len()];
+    let mut eliminated_eq_flags = vec![false; dae.continuous.equations.len()];
 
     // Build (eq_idx, unknown_count) pairs, sort by ascending unknown count.
-    let mut eq_order: Vec<(usize, usize)> = (0..dae.f_x.len())
+    let mut eq_order: Vec<(usize, usize)> = (0..dae.continuous.equations.len())
         .map(|eq_idx| {
-            let rhs = &dae.f_x[eq_idx].rhs;
-            let count = count_live_unknowns(rhs, &all_unknowns, &resolved, dae);
+            let expr = equation_analysis_expr(&dae.continuous.equations[eq_idx]);
+            let count = count_live_unknowns(&expr, &all_unknowns, &resolved, dae);
             (eq_idx, count)
         })
         .collect();
@@ -163,16 +219,15 @@ fn resolve_boundary_equations(dae: &mut Dae) -> EliminationResult {
             continue;
         }
 
-        let rhs = &dae.f_x[eq_idx].rhs;
-        let eq_rhs = apply_substitutions_in_order(rhs, &substitutions);
-        let is_connection_eq = dae.f_x[eq_idx].origin.starts_with("connection equation:");
+        let expr = equation_analysis_expr(&dae.continuous.equations[eq_idx]);
+        let eq_rhs = apply_substitutions_in_order(&expr, &substitutions);
+        let is_connection_eq = dae.continuous.equations[eq_idx]
+            .origin
+            .starts_with("connection equation:");
 
         // Re-count live unknowns (may have decreased due to prior resolutions).
         let live: Vec<VarName> = find_live_scalar_unknowns(&eq_rhs, &all_unknowns, &resolved, dae);
 
-        let has_state_derivative = state_names
-            .iter()
-            .any(|sn| expr_contains_der_of(&eq_rhs, sn));
         if should_skip_connection_equation(
             dae,
             &eq_rhs,
@@ -180,6 +235,19 @@ fn resolve_boundary_equations(dae: &mut Dae) -> EliminationResult {
             live.len(),
             &runtime_defined_discrete_targets,
         ) {
+            continue;
+        }
+        let has_state_derivative = expr_contains_der_of_any(&eq_rhs, &state_derivative_matcher);
+        if let Some((var_name, solution)) = aggregate_alias_for_elimination(
+            dae,
+            &eq_rhs,
+            &runtime_protected_unknowns,
+            &runtime_defined_discrete_targets,
+        ) {
+            substitutions.push(substitution_for_var(dae, var_name.clone(), solution));
+            eliminated_eq_indices.push(eq_idx);
+            eliminated_eq_flags[eq_idx] = true;
+            resolved.insert(var_name);
             continue;
         }
         if live.is_empty() {
@@ -210,40 +278,163 @@ fn resolve_boundary_equations(dae: &mut Dae) -> EliminationResult {
             has_state_derivative,
             &runtime_protected_unknowns,
         ) else {
-            // Not directly solvable for any live scalar unknown.
             continue;
         };
-        substitutions.push(Substitution {
-            var_name: var_name.clone(),
-            expr: solution.clone(),
-            env_keys: vec![var_name.as_str().to_string()],
-        });
+        substitutions.push(substitution_for_var(
+            dae,
+            var_name.clone(),
+            solution.clone(),
+        ));
         eliminated_eq_indices.push(eq_idx);
         eliminated_eq_flags[eq_idx] = true;
         resolved.insert(var_name.clone());
     }
 
-    // Apply boundary substitutions once to the remaining equations.
+    finish_boundary_elimination(
+        dae,
+        substitutions,
+        eliminated_eq_flags,
+        eliminated_eq_indices,
+        &resolved,
+    )
+}
+
+fn finish_boundary_elimination(
+    dae: &mut Dae,
+    substitutions: Vec<Substitution>,
+    eliminated_eq_flags: Vec<bool>,
+    mut eliminated_eq_indices: Vec<usize>,
+    resolved: &HashSet<VarName>,
+) -> EliminationResult {
     apply_substitutions_to_remaining_once(dae, &eliminated_eq_flags, &substitutions);
-
     let n_eliminated = eliminated_eq_indices.len();
-
-    // Remove eliminated equations (reverse order to preserve indices).
     eliminated_eq_indices.sort_unstable();
     for &idx in eliminated_eq_indices.iter().rev() {
-        dae.f_x.remove(idx);
+        dae.continuous.equations.remove(idx);
     }
-
-    // Remove resolved variables.
-    for name in &resolved {
-        dae.algebraics.shift_remove(name);
-        dae.outputs.shift_remove(name);
+    for name in resolved {
+        dae.variables.algebraics.shift_remove(name);
+        dae.variables.outputs.shift_remove(name);
     }
-
     EliminationResult {
         substitutions,
         n_eliminated,
+        blt_error: None,
     }
+}
+
+fn aggregate_alias_for_elimination(
+    dae: &Dae,
+    rhs: &Expression,
+    runtime_protected_unknowns: &IndexSet<String>,
+    runtime_defined_discrete_targets: &HashSet<String>,
+) -> Option<(VarName, Expression)> {
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = rhs
+    else {
+        return None;
+    };
+    let lhs_ref = full_var_ref(lhs)?;
+    let rhs_ref = full_var_ref(rhs)?;
+    if lhs_ref.var_name() == rhs_ref.var_name() {
+        return None;
+    }
+    if !same_aggregate_shape(dae, lhs_ref.var_name(), rhs_ref.var_name()) {
+        return None;
+    }
+
+    let lhs_candidate = aggregate_alias_candidate(
+        dae,
+        lhs_ref,
+        rhs_ref,
+        runtime_protected_unknowns,
+        runtime_defined_discrete_targets,
+    );
+    let rhs_candidate = aggregate_alias_candidate(
+        dae,
+        rhs_ref,
+        lhs_ref,
+        runtime_protected_unknowns,
+        runtime_defined_discrete_targets,
+    );
+    match (lhs_candidate, rhs_candidate) {
+        (Some(lhs), Some(rhs)) => Some(preferred_aggregate_alias_candidate(lhs, rhs)),
+        (Some(candidate), None) | (None, Some(candidate)) => Some(candidate),
+        (None, None) => None,
+    }
+}
+
+fn full_var_ref(expr: &Expression) -> Option<&Reference> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => Some(name),
+        _ => None,
+    }
+}
+
+fn same_aggregate_shape(dae: &Dae, lhs: &VarName, rhs: &VarName) -> bool {
+    let lhs_dims = dae_var_dims(dae, lhs);
+    !lhs_dims.is_empty() && lhs_dims == dae_var_dims(dae, rhs)
+}
+
+fn aggregate_alias_candidate(
+    dae: &Dae,
+    eliminated: &Reference,
+    replacement: &Reference,
+    runtime_protected_unknowns: &IndexSet<String>,
+    runtime_defined_discrete_targets: &HashSet<String>,
+) -> Option<(VarName, Expression)> {
+    let var_name = eliminated.var_name();
+    if !can_eliminate_aggregate_alias_var(
+        dae,
+        var_name,
+        runtime_protected_unknowns,
+        runtime_defined_discrete_targets,
+    ) {
+        return None;
+    }
+    Some((
+        var_name.clone(),
+        Expression::VarRef {
+            name: replacement.clone(),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        },
+    ))
+}
+
+fn can_eliminate_aggregate_alias_var(
+    dae: &Dae,
+    var_name: &VarName,
+    runtime_protected_unknowns: &IndexSet<String>,
+    runtime_defined_discrete_targets: &HashSet<String>,
+) -> bool {
+    !unknown_is_fixed(dae, var_name)
+        && !dae.variables.states.contains_key(var_name)
+        && !is_runtime_protected_unknown(var_name, runtime_protected_unknowns)
+        && !runtime_defined_discrete_targets.contains(var_name.as_str())
+        && !runtime_partition_or_event_refs_var(dae, var_name)
+        && (dae.variables.algebraics.contains_key(var_name)
+            || dae.variables.outputs.contains_key(var_name))
+}
+
+fn preferred_aggregate_alias_candidate(
+    lhs: (VarName, Expression),
+    rhs: (VarName, Expression),
+) -> (VarName, Expression) {
+    let lhs_rank = aggregate_alias_rank(&lhs.0);
+    let rhs_rank = aggregate_alias_rank(&rhs.0);
+    if lhs_rank >= rhs_rank { lhs } else { rhs }
+}
+
+fn aggregate_alias_rank(name: &VarName) -> (usize, usize) {
+    let path = rumoca_core::ComponentPath::from_flat_path(name.as_str());
+    (path.len(), name.as_str().len())
 }
 
 fn should_skip_connection_equation(
@@ -302,7 +493,9 @@ fn try_eliminate_zero_unknown_equation(
         ctx.runtime_defined_discrete_targets,
         ctx.substitutions,
     );
-    if assignment_target_name(eq_rhs).is_some() && ctx.substitutions.len() == n_subs_before {
+    if assignment_target_name(eq_rhs).is_some_and(|target| dae_var(ctx.dae, &target).is_some())
+        && ctx.substitutions.len() == n_subs_before
+    {
         return;
     }
     ctx.eliminated_eq_indices.push(eq_idx);
@@ -314,12 +507,12 @@ fn choose_solvable_unknown_for_elimination(
     rhs: &Expression,
     live: &[VarName],
     has_state_derivative: bool,
-    runtime_protected_unknowns: &HashSet<String>,
+    runtime_protected_unknowns: &IndexSet<String>,
 ) -> Option<(VarName, Expression)> {
     let mut candidates: Vec<&VarName> = live.iter().collect();
     candidates.sort_by(|a, b| {
-        let a_is_output = dae.outputs.contains_key(*a);
-        let b_is_output = dae.outputs.contains_key(*b);
+        let a_is_output = output_partition_contains_unknown(dae, a);
+        let b_is_output = output_partition_contains_unknown(dae, b);
         b_is_output
             .cmp(&a_is_output)
             .then_with(|| a.as_str().cmp(b.as_str()))
@@ -332,16 +525,23 @@ fn choose_solvable_unknown_for_elimination(
         if unknown_is_fixed(dae, candidate) {
             continue;
         }
+        if dae.variables.states.contains_key(candidate) {
+            continue;
+        }
         if is_runtime_protected_unknown(candidate, runtime_protected_unknowns) {
             continue;
         }
-        let is_output = dae.outputs.contains_key(candidate);
+        let is_output = output_partition_contains_unknown(dae, candidate);
         // Skip equations with state derivatives — unless the candidate is an
         // output that forms a direct alias (e.g. `output y = der(x)`), which
         // can be safely eliminated.
         if has_state_derivative && !is_output {
             continue;
         }
+        // Try the simple top-level Sub pattern first; fall back to the additive
+        // solver so substitution residues like `x - (y - 0)` (which the simple
+        // pattern can't see through) still resolve. The additive solver is gated
+        // by `live` to avoid accidentally solving a multi-unknown equation.
         let Some(solution) = try_solve_for_unknown(rhs, candidate) else {
             continue;
         };
@@ -376,27 +576,39 @@ fn choose_solvable_unknown_for_elimination(
 fn choose_solvable_non_unknown_alias_for_elimination(
     dae: &Dae,
     rhs: &Expression,
-    runtime_protected_unknowns: &HashSet<String>,
+    runtime_protected_unknowns: &IndexSet<String>,
     runtime_defined_discrete_targets: &HashSet<String>,
 ) -> Option<(VarName, Expression)> {
-    let Expression::Binary { op, lhs, rhs: r } = rhs else {
+    let Expression::Binary {
+        op,
+        lhs,
+        rhs: r,
+        span: rumoca_core::Span::DUMMY,
+    } = rhs
+    else {
         return None;
     };
-    if !matches!(op, OpBinary::Sub(_)) {
+    if !matches!(op, OpBinary::Sub) {
         return None;
     }
 
     let mut candidates: Vec<VarName> = Vec::with_capacity(2);
-    if let Expression::VarRef { name, subscripts } = lhs.as_ref()
+    if let Expression::VarRef {
+        name, subscripts, ..
+    } = lhs.as_ref()
         && subscripts.is_empty()
     {
-        candidates.push(name.clone());
+        candidates.push(name.var_name().clone());
     }
-    if let Expression::VarRef { name, subscripts } = r.as_ref()
+    if let Expression::VarRef {
+        name, subscripts, ..
+    } = r.as_ref()
         && subscripts.is_empty()
-        && !candidates.iter().any(|existing| existing == name)
+        && !candidates
+            .iter()
+            .any(|existing| existing == name.var_name())
     {
-        candidates.push(name.clone());
+        candidates.push(name.var_name().clone());
     }
 
     for candidate in candidates {
@@ -406,10 +618,12 @@ fn choose_solvable_non_unknown_alias_for_elimination(
         if is_runtime_protected_unknown(&candidate, runtime_protected_unknowns) {
             continue;
         }
-        if dae.parameters.contains_key(&candidate) || dae.constants.contains_key(&candidate) {
+        if dae.variables.parameters.contains_key(&candidate)
+            || dae.variables.constants.contains_key(&candidate)
+        {
             continue;
         }
-        if dae.states.contains_key(&candidate) {
+        if dae.variables.states.contains_key(&candidate) {
             continue;
         }
         if runtime_defined_discrete_targets.contains(candidate.as_str()) {
@@ -440,7 +654,7 @@ fn choose_solvable_non_unknown_alias_for_elimination(
 fn maybe_push_non_unknown_alias_substitution(
     dae: &Dae,
     eq_rhs: &Expression,
-    runtime_protected_unknowns: &HashSet<String>,
+    runtime_protected_unknowns: &IndexSet<String>,
     runtime_defined_discrete_targets: &HashSet<String>,
     substitutions: &mut Vec<Substitution>,
 ) {
@@ -452,18 +666,15 @@ fn maybe_push_non_unknown_alias_substitution(
     ) else {
         return;
     };
-    substitutions.push(Substitution {
-        var_name: var_name.clone(),
-        expr: solution,
-        env_keys: vec![var_name.as_str().to_string()],
-    });
+    substitutions.push(substitution_for_var(dae, var_name.clone(), solution));
 }
 
 fn unknown_is_fixed(dae: &Dae, name: &VarName) -> bool {
-    dae.states
+    dae.variables
+        .states
         .get(name)
-        .or_else(|| dae.algebraics.get(name))
-        .or_else(|| dae.outputs.get(name))
+        .or_else(|| dae.variables.algebraics.get(name))
+        .or_else(|| dae.variables.outputs.get(name))
         .and_then(|var| var.fixed)
         .unwrap_or(false)
 }
@@ -471,13 +682,15 @@ fn unknown_is_fixed(dae: &Dae, name: &VarName) -> bool {
 fn has_direct_assignment_form(rhs: &Expression, candidate: &VarName) -> bool {
     match rhs {
         Expression::Binary {
-            op: OpBinary::Sub(_),
+            op: OpBinary::Sub,
             lhs,
             rhs,
+            ..
         } => is_assignment_target(lhs, candidate) || is_assignment_target(rhs, candidate),
         Expression::Unary {
-            op: OpUnary::Minus(_),
+            op: OpUnary::Minus,
             rhs,
+            ..
         } => has_direct_assignment_form(rhs, candidate),
         _ => false,
     }
@@ -485,9 +698,9 @@ fn has_direct_assignment_form(rhs: &Expression, candidate: &VarName) -> bool {
 
 fn is_assignment_target(expr: &Expression, candidate: &VarName) -> bool {
     match expr {
-        Expression::VarRef { name, subscripts } => {
-            var_ref_matches_unknown(name, subscripts, candidate)
-        }
+        Expression::VarRef {
+            name, subscripts, ..
+        } => var_ref_matches_unknown(name, subscripts, candidate),
         _ => false,
     }
 }
@@ -513,12 +726,14 @@ fn is_trivial_alias(expr: &Expression) -> bool {
     match expr {
         Expression::VarRef { .. } => true,
         Expression::Unary {
-            op: OpUnary::Minus(_),
+            op: OpUnary::Minus,
             rhs,
+            ..
         } => is_trivial_alias(rhs),
         Expression::BuiltinCall {
             function: BuiltinFunction::Der,
             args,
+            ..
         } => args.len() == 1 && matches!(&args[0], Expression::VarRef { .. }),
         _ => false,
     }
@@ -528,8 +743,9 @@ fn is_alias_expression_of(expr: &Expression, target: &VarName) -> bool {
     match expr {
         Expression::VarRef { .. } => expr_contains_var(expr, target),
         Expression::Unary {
-            op: OpUnary::Minus(_),
+            op: OpUnary::Minus,
             rhs,
+            ..
         } => is_alias_expression_of(rhs, target),
         _ => false,
     }
@@ -538,12 +754,12 @@ fn is_alias_expression_of(expr: &Expression, target: &VarName) -> bool {
 fn is_symbolically_stable_solution(expr: &Expression) -> bool {
     match expr {
         Expression::If { .. } => false,
-        Expression::BuiltinCall { function, args } => {
+        Expression::BuiltinCall { function, args, .. } => {
             !matches!(
                 function,
-                rumoca_ir_dae::BuiltinFunction::Smooth
-                    | rumoca_ir_dae::BuiltinFunction::NoEvent
-                    | rumoca_ir_dae::BuiltinFunction::Homotopy
+                rumoca_core::BuiltinFunction::Smooth
+                    | rumoca_core::BuiltinFunction::NoEvent
+                    | rumoca_core::BuiltinFunction::Homotopy
             ) && args.iter().all(is_symbolically_stable_solution)
         }
         Expression::Binary { lhs, rhs, .. } => {
@@ -551,10 +767,12 @@ fn is_symbolically_stable_solution(expr: &Expression) -> bool {
         }
         Expression::Unary { rhs, .. } => is_symbolically_stable_solution(rhs),
         Expression::FunctionCall { args, .. } => args.iter().all(is_symbolically_stable_solution),
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
             elements.iter().all(is_symbolically_stable_solution)
         }
-        Expression::Range { start, step, end } => {
+        Expression::Range {
+            start, step, end, ..
+        } => {
             is_symbolically_stable_solution(start)
                 && step.as_deref().is_none_or(is_symbolically_stable_solution)
                 && is_symbolically_stable_solution(end)
@@ -565,15 +783,21 @@ fn is_symbolically_stable_solution(expr: &Expression) -> bool {
                     .as_deref()
                     .is_none_or(is_symbolically_stable_solution)
         }
-        Expression::Index { base, subscripts } => {
+        Expression::Index {
+            base, subscripts, ..
+        } => {
             is_symbolically_stable_solution(base)
                 && subscripts.iter().all(|sub| match sub {
-                    rumoca_ir_dae::Subscript::Expr(expr) => is_symbolically_stable_solution(expr),
+                    rumoca_core::Subscript::Expr { expr, .. } => {
+                        is_symbolically_stable_solution(expr)
+                    }
                     _ => true,
                 })
         }
         Expression::FieldAccess { base, .. } => is_symbolically_stable_solution(base),
-        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => true,
+        Expression::VarRef { .. }
+        | Expression::Literal { value: _, .. }
+        | Expression::Empty { .. } => true,
     }
 }
 
@@ -620,9 +844,10 @@ fn find_live_scalar_unknowns(
             !resolved.contains(*v)
                 && refs_contain_unknown(&var_refs, v, dae)
                 && dae
+                    .variables
                     .algebraics
                     .get(*v)
-                    .or_else(|| dae.outputs.get(*v))
+                    .or_else(|| dae.variables.outputs.get(*v))
                     .map(|var| var.size() == 1)
                     .unwrap_or(false)
         })
@@ -630,84 +855,31 @@ fn find_live_scalar_unknowns(
         .collect()
 }
 
-fn collect_var_ref_nodes<'a>(
-    expr: &'a Expression,
-    out: &mut Vec<(&'a VarName, &'a [rumoca_ir_dae::Subscript])>,
+fn collect_var_ref_nodes(
+    expr: &Expression,
+    out: &mut Vec<(Reference, Vec<rumoca_core::Subscript>)>,
 ) {
-    match expr {
-        Expression::VarRef { name, subscripts } => {
-            out.push((name, subscripts.as_slice()));
-            for subscript in subscripts {
-                if let rumoca_ir_dae::Subscript::Expr(inner) = subscript {
-                    collect_var_ref_nodes(inner, out);
-                }
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_var_ref_nodes(lhs, out);
-            collect_var_ref_nodes(rhs, out);
-        }
-        Expression::Unary { rhs, .. } => collect_var_ref_nodes(rhs, out),
-        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_var_ref_nodes(arg, out);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (condition, value) in branches {
-                collect_var_ref_nodes(condition, out);
-                collect_var_ref_nodes(value, out);
-            }
-            collect_var_ref_nodes(else_branch, out);
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            for element in elements {
-                collect_var_ref_nodes(element, out);
-            }
-        }
-        Expression::Range { start, step, end } => {
-            collect_var_ref_nodes(start, out);
-            if let Some(step) = step.as_deref() {
-                collect_var_ref_nodes(step, out);
-            }
-            collect_var_ref_nodes(end, out);
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            collect_var_ref_nodes(expr, out);
-            for idx in indices {
-                collect_var_ref_nodes(&idx.range, out);
-            }
-            if let Some(pred) = filter.as_deref() {
-                collect_var_ref_nodes(pred, out);
-            }
-        }
-        Expression::Index { base, subscripts } => {
-            collect_var_ref_nodes(base, out);
-            for subscript in subscripts {
-                if let rumoca_ir_dae::Subscript::Expr(inner) = subscript {
-                    collect_var_ref_nodes(inner, out);
-                }
-            }
-        }
-        Expression::FieldAccess { base, .. } => collect_var_ref_nodes(base, out),
-        Expression::Literal(_) | Expression::Empty => {}
+    struct Collector<'out> {
+        out: &'out mut Vec<(Reference, Vec<rumoca_core::Subscript>)>,
     }
+
+    impl ExpressionVisitor for Collector<'_> {
+        fn visit_var_ref(&mut self, name: &Reference, subscripts: &[rumoca_core::Subscript]) {
+            self.out.push((name.clone(), subscripts.to_vec()));
+            self.walk_var_ref(name, subscripts);
+        }
+    }
+
+    Collector { out }.visit_expression(expr);
 }
 
 fn refs_contain_unknown(
-    refs: &[(&VarName, &[rumoca_ir_dae::Subscript])],
+    refs: &[(Reference, Vec<rumoca_core::Subscript>)],
     unknown: &VarName,
     dae: &Dae,
 ) -> bool {
     refs.iter().any(|(name, subscripts)| {
-        var_ref_mentions_unknown_for_presence(name, subscripts, unknown, dae)
+        var_ref_mentions_unknown_for_presence(name, subscripts.as_slice(), unknown, dae)
     })
 }
 
@@ -716,22 +888,67 @@ fn unknown_scalar_size(dae: &Dae, unknown: &VarName) -> usize {
 }
 
 fn dae_var_size(dae: &Dae, name: &VarName) -> usize {
-    dae.algebraics
+    dae_var(dae, name).map(|v| v.size()).unwrap_or(1)
+}
+
+fn dae_var_dims(dae: &Dae, name: &VarName) -> Vec<i64> {
+    dae_var(dae, name)
+        .map(|var| var.dims.clone())
+        .unwrap_or_default()
+}
+
+fn dae_var<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a dae::Variable> {
+    dae.variables
+        .algebraics
         .get(name)
-        .or_else(|| dae.outputs.get(name))
-        .or_else(|| dae.states.get(name))
-        .or_else(|| dae.inputs.get(name))
-        .or_else(|| dae.discrete_reals.get(name))
-        .or_else(|| dae.discrete_valued.get(name))
-        .or_else(|| dae.parameters.get(name))
-        .or_else(|| dae.constants.get(name))
-        .map(|v| v.size())
-        .unwrap_or(1)
+        .or_else(|| dae.variables.outputs.get(name))
+        .or_else(|| dae.variables.states.get(name))
+        .or_else(|| dae.variables.inputs.get(name))
+        .or_else(|| dae.variables.discrete_reals.get(name))
+        .or_else(|| dae.variables.discrete_valued.get(name))
+        .or_else(|| dae.variables.parameters.get(name))
+        .or_else(|| dae.variables.constants.get(name))
+}
+
+pub(super) fn substitution_for_var(dae: &Dae, var_name: VarName, expr: Expression) -> Substitution {
+    Substitution {
+        var_dims: dae_var_dims(dae, &var_name),
+        replacement_dims: replacement_expr_dims(dae, &expr),
+        env_keys: vec![var_name.as_str().to_string()],
+        var_name,
+        expr,
+    }
+}
+
+fn replacement_expr_dims(dae: &Dae, expr: &Expression) -> Vec<i64> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => dae_var_dims(dae, name.var_name()),
+        Expression::VarRef { .. } | Expression::Index { .. } => Vec::new(),
+        Expression::Array {
+            elements,
+            is_matrix,
+            ..
+        } => array_expr_dims(elements, *is_matrix),
+        _ => Vec::new(),
+    }
+}
+
+fn array_expr_dims(elements: &[Expression], is_matrix: bool) -> Vec<i64> {
+    if !is_matrix {
+        return vec![elements.len() as i64];
+    }
+    let cols = match elements.first() {
+        Some(Expression::Array { elements, .. }) => elements.len(),
+        _ => return vec![elements.len() as i64],
+    };
+    vec![elements.len() as i64, cols as i64]
 }
 
 fn var_ref_mentions_unknown_for_presence(
-    name: &VarName,
-    subscripts: &[rumoca_ir_dae::Subscript],
+    name: &Reference,
+    subscripts: &[rumoca_core::Subscript],
     unknown: &VarName,
     dae: &Dae,
 ) -> bool {
@@ -739,13 +956,13 @@ fn var_ref_mentions_unknown_for_presence(
         return true;
     }
 
-    // Base-array unknowns are tracked as aggregate names before scalarization
-    // (e.g. `add.u`). Indexed references (`add.u[2]`) must still count as
-    // live references so boundary elimination does not drop those equations.
+    // MLS §10.6 / SPEC_0019: array equations stay aggregate before
+    // scalarization. Any indexed or sliced reference to an aggregate unknown is
+    // still a live reference to that unknown at this phase.
     if unknown_scalar_size(dae, unknown) <= 1 {
         return false;
     }
-    if unknown.as_str().contains('[') || !subscripts.is_empty() {
+    if path_has_scalar_indices(unknown.as_str()) {
         return false;
     }
 
@@ -770,88 +987,41 @@ fn eliminate_via_blt(
     blocks: &[BltBlock],
     state_names: &[VarName],
 ) -> EliminationResult {
+    let state_derivative_matcher = DerivativeNameMatcher::from_var_names(state_names);
     let runtime_protected_unknowns = runtime_protected_unknown_names(dae);
     let mut substitutions: Vec<Substitution> = Vec::new();
     let mut eliminated_eq_indices: Vec<usize> = Vec::new();
-    let mut eliminated_eq_flags = vec![false; dae.f_x.len()];
+    let mut eliminated_eq_flags = vec![false; dae.continuous.equations.len()];
     let mut eliminated_var_names: Vec<VarName> = Vec::new();
 
     for block in blocks {
-        let BltBlock::Scalar {
-            equation: EquationRef::Continuous(eq_idx),
-            unknown,
-        } = block
-        else {
-            continue;
-        };
-
-        // Only eliminate algebraic/output variables, not DerState (ODE equations).
-        let raw_var_name = match unknown {
-            UnknownId::DerState(_) => continue,
-            UnknownId::Variable(name) => name,
-        };
-        let var_name = normalize_unknown_for_dae(dae, raw_var_name);
-        if is_runtime_protected_unknown(&var_name, &runtime_protected_unknowns) {
-            continue;
+        match block {
+            BltBlock::Scalar { equation, unknown } => eliminate_scalar_blt_block(
+                dae,
+                equation,
+                unknown,
+                &runtime_protected_unknowns,
+                &state_derivative_matcher,
+                &mut substitutions,
+                &mut eliminated_eq_indices,
+                &mut eliminated_eq_flags,
+                &mut eliminated_var_names,
+            ),
+            BltBlock::AlgebraicLoop {
+                equations,
+                unknowns,
+            } => tear_and_eliminate_loop_block(
+                dae,
+                equations,
+                unknowns,
+                &runtime_protected_unknowns,
+                &state_derivative_matcher,
+                &mut substitutions,
+                &mut eliminated_eq_indices,
+                &mut eliminated_eq_flags,
+                &mut eliminated_var_names,
+            ),
         }
-        // Preserve hard Modelica initialization constraints from `fixed=true`
-        // aliases. Eliminating them in BLT can silently change IC branches.
-        if unknown_is_fixed(dae, &var_name) {
-            continue;
-        }
-
-        // Only eliminate scalar variables (size == 1).
-        let var_size = dae.algebraics.get(&var_name).map(|v| v.size()).unwrap_or(1);
-        if var_size != 1 {
-            continue;
-        }
-
-        let eq_idx = *eq_idx;
-        if eq_idx >= dae.f_x.len() {
-            continue;
-        }
-        if dae.f_x[eq_idx].origin.starts_with("connection equation:") {
-            continue;
-        }
-
-        // Skip equations containing der(state) — unless the candidate is an
-        // output that forms a direct alias, which can be safely eliminated.
-        let is_output = dae.outputs.contains_key(&var_name);
-        let has_state_derivative = state_names
-            .iter()
-            .any(|sn| expr_contains_der_of(&dae.f_x[eq_idx].rhs, sn));
-        if has_state_derivative && !is_output {
-            continue;
-        }
-
-        let eq_rhs = apply_substitutions_in_order(&dae.f_x[eq_idx].rhs, &substitutions);
-
-        // Try to solve 0 = rhs for var_name.
-        let solution = match try_solve_for_unknown(&eq_rhs, &var_name) {
-            Some(expr) => expr,
-            None => continue,
-        };
-
-        // Verify the solution doesn't reference the variable being eliminated.
-        if expr_contains_var(&solution, &var_name) {
-            continue;
-        }
-        if expr_contains_unsliced_multiscalar_ref(&solution, dae) {
-            continue;
-        }
-        if !is_symbolically_stable_solution(&solution) {
-            continue;
-        }
-
-        // Record substitution.
-        substitutions.push(Substitution {
-            var_name: var_name.clone(),
-            expr: solution.clone(),
-            env_keys: vec![var_name.as_str().to_string()],
-        });
-        eliminated_eq_indices.push(eq_idx);
-        eliminated_eq_flags[eq_idx] = true;
-        eliminated_var_names.push(var_name.clone());
     }
 
     // Apply BLT substitutions once to the remaining equations.
@@ -862,381 +1032,494 @@ fn eliminate_via_blt(
     // Remove eliminated equations (in reverse order to preserve indices).
     eliminated_eq_indices.sort_unstable();
     for &idx in eliminated_eq_indices.iter().rev() {
-        dae.f_x.remove(idx);
+        dae.continuous.equations.remove(idx);
     }
 
     // Remove eliminated variables from algebraics and outputs.
     for name in &eliminated_var_names {
-        dae.algebraics.shift_remove(name);
-        dae.outputs.shift_remove(name);
+        dae.variables.algebraics.shift_remove(name);
+        dae.variables.outputs.shift_remove(name);
     }
 
     EliminationResult {
         substitutions,
         n_eliminated,
+        blt_error: None,
     }
 }
 
-fn runtime_protected_unknown_names(dae: &Dae) -> HashSet<String> {
-    let mut protected = rumoca_analysis_dae::runtime_defined_continuous_unknown_names(dae);
-    protected.extend(branch_local_analog_protected_unknown_names(dae));
-    protected.extend(clocked_value_source_protected_unknown_names(dae));
-    protected
-}
-
-fn runtime_defined_discrete_target_names(dae: &Dae) -> HashSet<String> {
-    let mut targets = HashSet::default();
-    for lhs in dae
-        .f_m
-        .iter()
-        .chain(dae.f_z.iter())
-        .filter_map(|eq| eq.lhs.as_ref())
-    {
-        targets.insert(lhs.as_str().to_string());
-        if let Some(base) = dae::component_base_name(lhs.as_str()) {
-            targets.insert(base);
-        }
-    }
-    targets
-}
-
-fn is_runtime_protected_unknown(name: &VarName, protected: &HashSet<String>) -> bool {
-    protected.contains(name.as_str())
-}
-
-fn branch_local_analog_protected_unknown_names(dae: &Dae) -> HashSet<String> {
-    let mut protected = HashSet::new();
-    for eq in &dae.f_x {
-        if !expr_contains_branch_local_analog_operator(&eq.rhs) {
-            continue;
-        }
-
-        // MLS §3.3 / §3.7.5: noEvent/smooth preserve the value semantics of
-        // the enclosed expression while only changing event generation or
-        // differentiability treatment. Keep continuous helper unknowns that
-        // appear inside those branch-local analog rows so structural
-        // elimination does not rewrite them away into a numerically wider
-        // solve than the original Modelica equation system.
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        for name in refs {
-            maybe_protect_branch_local_unknown(dae, &mut protected, &name);
-        }
-        if let Some(target) = assignment_target_name(&eq.rhs) {
-            maybe_protect_branch_local_unknown(dae, &mut protected, &target);
-        }
-    }
-    protected
-}
-
-fn clocked_value_source_protected_unknown_names(dae: &Dae) -> HashSet<String> {
-    let mut protected = HashSet::new();
-    for eq in dae.f_z.iter().chain(dae.f_m.iter()) {
-        collect_clocked_value_source_unknowns(dae, &eq.rhs, &mut protected);
-    }
-    protected
-}
-
-fn collect_clocked_value_source_unknowns(
+#[allow(clippy::too_many_arguments)]
+fn eliminate_scalar_blt_block(
     dae: &Dae,
-    expr: &Expression,
-    protected: &mut HashSet<String>,
+    equation: &EquationRef,
+    unknown: &UnknownId,
+    runtime_protected_unknowns: &IndexSet<String>,
+    state_derivative_matcher: &DerivativeNameMatcher,
+    substitutions: &mut Vec<Substitution>,
+    eliminated_eq_indices: &mut Vec<usize>,
+    eliminated_eq_flags: &mut [bool],
+    eliminated_var_names: &mut Vec<VarName>,
 ) {
-    match expr {
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Sample,
-            args,
-        } => {
-            if let Some(source) = args.first() {
-                // MLS §16.5.1: sampled-value equations read the source signal
-                // at clock ticks. Keep continuous helper unknowns that feed the
-                // sampled value alive so structural elimination does not leave
-                // a dangling sampled source in f_z/f_m.
-                let mut refs = HashSet::new();
-                source.collect_var_refs(&mut refs);
-                for name in refs {
-                    maybe_protect_branch_local_unknown(dae, protected, &name);
-                }
-            }
-            for arg in args {
-                collect_clocked_value_source_unknowns(dae, arg, protected);
-            }
-        }
-        Expression::BuiltinCall { args, .. } => {
-            for arg in args {
-                collect_clocked_value_source_unknowns(dae, arg, protected);
-            }
-        }
-        Expression::FunctionCall { name, args, .. } => {
-            let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-            if matches!(
-                short,
-                "hold"
-                    | "previous"
-                    | "noClock"
-                    | "subSample"
-                    | "superSample"
-                    | "shiftSample"
-                    | "backSample"
-            ) && let Some(source) = args.first()
-            {
-                let mut refs = HashSet::new();
-                source.collect_var_refs(&mut refs);
-                for name in refs {
-                    maybe_protect_branch_local_unknown(dae, protected, &name);
-                }
-            }
-            for arg in args {
-                collect_clocked_value_source_unknowns(dae, arg, protected);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_clocked_value_source_unknowns(dae, lhs, protected);
-            collect_clocked_value_source_unknowns(dae, rhs, protected);
-        }
-        Expression::Unary { rhs, .. } | Expression::FieldAccess { base: rhs, .. } => {
-            collect_clocked_value_source_unknowns(dae, rhs, protected);
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (condition, value) in branches {
-                collect_clocked_value_source_unknowns(dae, condition, protected);
-                collect_clocked_value_source_unknowns(dae, value, protected);
-            }
-            collect_clocked_value_source_unknowns(dae, else_branch, protected);
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            for element in elements {
-                collect_clocked_value_source_unknowns(dae, element, protected);
-            }
-        }
-        Expression::Range { start, step, end } => {
-            collect_clocked_value_source_unknowns(dae, start, protected);
-            if let Some(step) = step.as_deref() {
-                collect_clocked_value_source_unknowns(dae, step, protected);
-            }
-            collect_clocked_value_source_unknowns(dae, end, protected);
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            collect_clocked_value_source_unknowns(dae, expr, protected);
-            for index in indices {
-                collect_clocked_value_source_unknowns(dae, &index.range, protected);
-            }
-            if let Some(filter) = filter.as_deref() {
-                collect_clocked_value_source_unknowns(dae, filter, protected);
-            }
-        }
-        Expression::Index { base, subscripts } => {
-            collect_clocked_value_source_unknowns(dae, base, protected);
-            for subscript in subscripts {
-                if let dae::Subscript::Expr(expr) = subscript {
-                    collect_clocked_value_source_unknowns(dae, expr, protected);
-                }
-            }
-        }
-        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => {}
-    }
-}
-
-fn maybe_protect_branch_local_unknown(dae: &Dae, protected: &mut HashSet<String>, name: &VarName) {
-    if dae.algebraics.contains_key(name) || dae.outputs.contains_key(name) {
-        protected.insert(name.as_str().to_string());
-    }
-
-    let Some(base) = dae::component_base_name(name.as_str()) else {
+    let Some((eq_idx, var_name, solution)) = scalar_blt_solution(
+        dae,
+        equation,
+        unknown,
+        runtime_protected_unknowns,
+        state_derivative_matcher,
+        substitutions,
+    ) else {
         return;
     };
-    let base = VarName::new(base);
-    if dae.algebraics.contains_key(&base) || dae.outputs.contains_key(&base) {
-        protected.insert(base.as_str().to_string());
-    }
+    substitutions.push(substitution_for_var(dae, var_name.clone(), solution));
+    eliminated_eq_indices.push(eq_idx);
+    eliminated_eq_flags[eq_idx] = true;
+    eliminated_var_names.push(var_name);
 }
 
-fn expr_contains_branch_local_analog_operator(expr: &Expression) -> bool {
-    match expr {
-        Expression::BuiltinCall { function, args } => {
-            matches!(function, BuiltinFunction::Smooth | BuiltinFunction::NoEvent)
-                || args.iter().any(expr_contains_branch_local_analog_operator)
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            expr_contains_branch_local_analog_operator(lhs)
-                || expr_contains_branch_local_analog_operator(rhs)
-        }
-        Expression::Unary { rhs, .. } | Expression::FieldAccess { base: rhs, .. } => {
-            expr_contains_branch_local_analog_operator(rhs)
-        }
-        Expression::FunctionCall { args, .. } => {
-            args.iter().any(expr_contains_branch_local_analog_operator)
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches.iter().any(|(condition, value)| {
-                expr_contains_branch_local_analog_operator(condition)
-                    || expr_contains_branch_local_analog_operator(value)
-            }) || expr_contains_branch_local_analog_operator(else_branch)
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => elements
-            .iter()
-            .any(expr_contains_branch_local_analog_operator),
-        Expression::Range { start, step, end } => {
-            expr_contains_branch_local_analog_operator(start)
-                || step
-                    .as_deref()
-                    .is_some_and(expr_contains_branch_local_analog_operator)
-                || expr_contains_branch_local_analog_operator(end)
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            expr_contains_branch_local_analog_operator(expr)
-                || indices
-                    .iter()
-                    .any(|idx| expr_contains_branch_local_analog_operator(&idx.range))
-                || filter
-                    .as_deref()
-                    .is_some_and(expr_contains_branch_local_analog_operator)
-        }
-        Expression::Index { base, subscripts } => {
-            expr_contains_branch_local_analog_operator(base)
-                || subscripts.iter().any(|subscript| match subscript {
-                    rumoca_ir_dae::Subscript::Expr(expr) => {
-                        expr_contains_branch_local_analog_operator(expr)
-                    }
-                    rumoca_ir_dae::Subscript::Index(_) | rumoca_ir_dae::Subscript::Colon => false,
-                })
-        }
-        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => false,
-    }
-}
-
-fn assignment_target_name(expr: &Expression) -> Option<VarName> {
-    let Expression::Binary { op, lhs, rhs } = expr else {
-        return None;
-    };
-    if !matches!(op, OpBinary::Sub(_)) {
+fn scalar_blt_solution(
+    dae: &Dae,
+    equation: &EquationRef,
+    unknown: &UnknownId,
+    runtime_protected_unknowns: &IndexSet<String>,
+    state_derivative_matcher: &DerivativeNameMatcher,
+    substitutions: &[Substitution],
+) -> Option<(usize, VarName, Expression)> {
+    let raw_var_name = algebraic_or_output_unknown(unknown)?;
+    let var_name = normalize_unknown_for_dae(dae, raw_var_name);
+    if !can_eliminate_scalar_unknown(dae, &var_name, runtime_protected_unknowns) {
         return None;
     }
-    if let Expression::VarRef { name, subscripts } = lhs.as_ref()
-        && subscripts.is_empty()
-    {
-        return Some(name.clone());
+
+    let eq_idx = equation.0;
+    if !can_use_equation_for_elimination(dae, eq_idx) {
+        return None;
     }
-    if let Expression::VarRef { name, subscripts } = rhs.as_ref()
-        && subscripts.is_empty()
-    {
-        return Some(name.clone());
+
+    let is_output = dae.variables.outputs.contains_key(&var_name);
+    let has_state_derivative = equation_has_state_derivative(dae, eq_idx, state_derivative_matcher);
+    if has_state_derivative && !is_output {
+        return None;
     }
-    None
+
+    let eq_rhs = apply_substitutions_in_order(&dae.continuous.equations[eq_idx].rhs, substitutions);
+    stable_solution_for_unknown(dae, &eq_rhs, &var_name)
+        .map(|solution| (eq_idx, var_name, solution))
 }
 
-fn runtime_partition_or_event_refs_var(dae: &Dae, var_name: &VarName) -> bool {
-    dae.f_z
-        .iter()
-        .any(|eq| expr_contains_var(&eq.rhs, var_name))
-        || dae
-            .f_m
-            .iter()
-            .any(|eq| expr_contains_var(&eq.rhs, var_name))
-        || dae
-            .f_c
-            .iter()
-            .any(|eq| expr_contains_var(&eq.rhs, var_name))
-        || dae
-            .relation
-            .iter()
-            .any(|expr| expr_contains_var(expr, var_name))
-        || dae
-            .synthetic_root_conditions
-            .iter()
-            .any(|expr| expr_contains_var(expr, var_name))
-        || dae
-            .clock_constructor_exprs
-            .iter()
-            .any(|expr| expr_contains_var(expr, var_name))
+fn algebraic_or_output_unknown(unknown: &UnknownId) -> Option<&VarName> {
+    match unknown {
+        UnknownId::Variable(name) => Some(name),
+        UnknownId::DerState(_) | UnknownId::SolverY(_) => None,
+    }
 }
 
-fn should_preserve_runtime_known_assignment(dae: &Dae, eq_rhs: &Expression) -> bool {
-    let Some(target) = assignment_target_name(eq_rhs) else {
-        return false;
-    };
-    dae.discrete_reals.contains_key(&target)
-        || dae.discrete_valued.contains_key(&target)
-        || runtime_partition_or_event_refs_var(dae, &target)
-}
-
-fn expr_references_any_runtime_discrete_target(
-    expr: &Expression,
-    runtime_defined_discrete_targets: &HashSet<String>,
+fn can_eliminate_scalar_unknown(
+    dae: &Dae,
+    var_name: &VarName,
+    runtime_protected_unknowns: &IndexSet<String>,
 ) -> bool {
-    if runtime_defined_discrete_targets.is_empty() {
-        return false;
+    !is_runtime_protected_unknown(var_name, runtime_protected_unknowns)
+        && !unknown_is_fixed(dae, var_name)
+        && !dae.variables.states.contains_key(var_name)
+        && dae_var_size(dae, var_name) == 1
+}
+
+fn can_use_equation_for_elimination(dae: &Dae, eq_idx: usize) -> bool {
+    dae.continuous
+        .equations
+        .get(eq_idx)
+        .is_some_and(|eq| !eq.origin.starts_with("connection equation:"))
+}
+
+fn equation_has_state_derivative(
+    dae: &Dae,
+    eq_idx: usize,
+    state_derivative_matcher: &DerivativeNameMatcher,
+) -> bool {
+    dae.continuous
+        .equations
+        .get(eq_idx)
+        .is_some_and(|eq| expr_contains_der_of_any(&eq.rhs, state_derivative_matcher))
+}
+
+fn stable_solution_for_unknown(
+    dae: &Dae,
+    rhs: &Expression,
+    var_name: &VarName,
+) -> Option<Expression> {
+    let solution = try_solve_for_unknown(rhs, var_name)?;
+    if expr_contains_var(&solution, var_name)
+        || expr_contains_unsliced_multiscalar_ref(&solution, dae)
+        || !is_symbolically_stable_solution(&solution)
+    {
+        return None;
     }
-
-    let mut refs: HashSet<VarName> = HashSet::new();
-    expr.collect_var_refs(&mut refs);
-    refs.iter().any(|name| {
-        let raw = name.as_str();
-        runtime_defined_discrete_targets.contains(raw)
-            || dae::component_base_name(raw)
-                .is_some_and(|base| runtime_defined_discrete_targets.contains(base.as_str()))
-    })
+    Some(solution)
 }
-
-fn expr_references_any_discrete_name(dae: &Dae, expr: &Expression) -> bool {
-    let mut refs: HashSet<VarName> = HashSet::new();
-    expr.collect_var_refs(&mut refs);
-    refs.iter().any(|name| {
-        dae.discrete_reals.contains_key(name)
-            || dae.discrete_valued.contains_key(name)
-            || dae::component_base_name(name.as_str()).is_some_and(|base| {
-                let base = VarName::new(base.as_str());
-                dae.discrete_reals.contains_key(&base) || dae.discrete_valued.contains_key(&base)
-            })
-    })
-}
-
-// ── Expression Helpers ──────────────────────────────────────────────────
 
 /// Apply substitutions in-order to an expression.
-fn apply_substitutions_in_order(expr: &Expression, substitutions: &[Substitution]) -> Expression {
-    let mut out = expr.clone();
+pub fn apply_substitutions_to_expr(
+    expr: &Expression,
+    substitutions: &[Substitution],
+) -> Expression {
+    let mut out = apply_record_field_aggregate_substitutions(expr, substitutions);
     for sub in substitutions {
-        if expr_contains_var(&out, &sub.var_name) {
-            out = substitute_var(&out, &sub.var_name, &sub.expr);
+        if expr_contains_substitution_target(&out, &sub.var_name, &sub.var_dims) {
+            out = SubstituteVarRewriter {
+                var: &sub.var_name,
+                replacement: &sub.expr,
+                var_dims: &sub.var_dims,
+                replacement_dims: &sub.replacement_dims,
+            }
+            .rewrite_expression(&out);
         }
     }
     out
 }
 
-/// Apply all substitutions to non-eliminated equations in one sweep.
-fn apply_substitutions_to_remaining_once(
-    dae: &mut Dae,
-    eliminated_eq_flags: &[bool],
-    substitutions: &[Substitution],
-) {
-    if substitutions.is_empty() {
-        return;
-    }
-    for (i, eq) in dae.f_x.iter_mut().enumerate() {
-        if eliminated_eq_flags.get(i).copied().unwrap_or(false) {
-            continue;
+fn expr_contains_substitution_target(expr: &Expression, var: &VarName, var_dims: &[i64]) -> bool {
+    let mut checker = SubstitutionTargetChecker {
+        var,
+        var_dims,
+        found: false,
+    };
+    checker.visit_expression(expr);
+    checker.found
+}
+
+struct SubstitutionTargetChecker<'a> {
+    var: &'a VarName,
+    var_dims: &'a [i64],
+    found: bool,
+}
+
+impl ExpressionVisitor for SubstitutionTargetChecker<'_> {
+    fn visit_expression(&mut self, expr: &Expression) {
+        if !self.found {
+            self.walk_expression(expr);
         }
-        eq.rhs = apply_substitutions_in_order(&eq.rhs, substitutions);
+    }
+
+    fn visit_var_ref(&mut self, name: &Reference, subscripts: &[rumoca_core::Subscript]) {
+        if aggregate_subscript_ref_matches_var(name, subscripts, self.var, self.var_dims)
+            || var_ref_matches_unknown_for_substitution(name, subscripts, self.var)
+            || embedded_alias_indices_for_substitution(name, subscripts, self.var).is_some()
+        {
+            self.found = true;
+            return;
+        }
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
     }
 }
 
+fn apply_record_field_aggregate_substitutions(
+    expr: &Expression,
+    substitutions: &[Substitution],
+) -> Expression {
+    let aggregate_alias_groups = aggregate_alias_substitution_groups(substitutions);
+    let indexed_groups = indexed_record_field_substitution_groups(substitutions);
+    let complex_groups = complex_field_substitution_groups(substitutions);
+    if aggregate_alias_groups.is_empty() && indexed_groups.is_empty() && complex_groups.is_empty() {
+        return expr.clone();
+    }
+    RecordFieldAggregateRewriter {
+        aggregate_alias_groups,
+        indexed_groups,
+        complex_groups,
+    }
+    .rewrite_expression(expr)
+}
+
+#[derive(Debug, Clone, Default)]
+struct AggregateAliasSubstitutionGroup {
+    dims: Vec<usize>,
+    replacement_base: Option<String>,
+    values: IndexMap<Vec<usize>, Expression>,
+}
+
+impl AggregateAliasSubstitutionGroup {
+    fn insert(&mut self, indices: Vec<usize>, expr: Expression) {
+        if indices.len() > self.dims.len() {
+            self.dims.resize(indices.len(), 0);
+        }
+        for (idx, value) in indices.iter().enumerate() {
+            self.dims[idx] = self.dims[idx].max(*value);
+        }
+        self.replacement_base =
+            replacement_aggregate_base(&expr, &indices, self.replacement_base.as_deref());
+        self.values.insert(indices, expr);
+    }
+
+    fn to_replacement_expr(&self, span: rumoca_core::Span) -> Option<Expression> {
+        let expected_len = self.expected_len();
+        if self.dims.is_empty() || expected_len <= 1 || self.values.len() != expected_len {
+            return None;
+        }
+        if let Some(base) = &self.replacement_base {
+            return Some(Expression::VarRef {
+                name: Reference::new(base),
+                subscripts: Vec::new(),
+                span,
+            });
+        }
+        self.array_expr_at_depth(0, &mut Vec::new())
+    }
+
+    fn expected_len(&self) -> usize {
+        self.dims.iter().product()
+    }
+
+    fn array_expr_at_depth(&self, depth: usize, current: &mut Vec<usize>) -> Option<Expression> {
+        if depth >= self.dims.len() {
+            return self.values.get(current).cloned();
+        }
+        let mut elements = Vec::with_capacity(self.dims[depth]);
+        for index in 1..=self.dims[depth] {
+            current.push(index);
+            elements.push(self.array_expr_at_depth(depth + 1, current)?);
+            current.pop();
+        }
+        Some(Expression::Array {
+            elements,
+            is_matrix: depth == 0 && self.dims.len() == 2,
+            span: rumoca_core::Span::DUMMY,
+        })
+    }
+}
+
+fn replacement_aggregate_base(
+    expr: &Expression,
+    expected_indices: &[usize],
+    existing_base: Option<&str>,
+) -> Option<String> {
+    let (base, indices) = scalar_var_ref_key(expr)?;
+    (indices == expected_indices && existing_base.is_none_or(|existing| existing == base))
+        .then_some(base.to_string())
+}
+
+fn aggregate_alias_substitution_groups(
+    substitutions: &[Substitution],
+) -> IndexMap<String, AggregateAliasSubstitutionGroup> {
+    let mut groups = IndexMap::new();
+    for substitution in substitutions {
+        let Some((base, indices)) = scalar_var_name_key(&substitution.var_name) else {
+            continue;
+        };
+        groups
+            .entry(base.to_string())
+            .or_insert_with(AggregateAliasSubstitutionGroup::default)
+            .insert(indices, substitution.expr.clone());
+    }
+    groups
+}
+
+fn scalar_var_name_key(var_name: &VarName) -> Option<(&str, Vec<usize>)> {
+    let scalar = rumoca_core::parse_scalar_name(var_name.as_str())?;
+    let indices = positive_usize_indices(&scalar.indices)?;
+    (!indices.is_empty()).then_some((scalar.base, indices))
+}
+
+fn scalar_var_ref_key(expr: &Expression) -> Option<(&str, Vec<usize>)> {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    let scalar = rumoca_core::parse_scalar_name(name.as_str())?;
+    let indices = positive_usize_indices(&scalar.indices)?;
+    (!indices.is_empty()).then_some((scalar.base, indices))
+}
+
+fn positive_usize_indices(indices: &[i64]) -> Option<Vec<usize>> {
+    indices
+        .iter()
+        .copied()
+        .map(|index| usize::try_from(index).ok().filter(|value| *value > 0))
+        .collect()
+}
+
+#[derive(Debug, Clone, Default)]
+struct IndexedRecordFieldSubstitutionGroup {
+    dims: Vec<usize>,
+    values: IndexMap<Vec<usize>, Expression>,
+}
+
+impl IndexedRecordFieldSubstitutionGroup {
+    fn insert(&mut self, indices: Vec<usize>, expr: Expression) {
+        if indices.len() > self.dims.len() {
+            self.dims.resize(indices.len(), 0);
+        }
+        for (idx, value) in indices.iter().enumerate() {
+            self.dims[idx] = self.dims[idx].max(*value);
+        }
+        self.values.insert(indices, expr);
+    }
+
+    fn to_array_expr(&self) -> Option<Expression> {
+        if self.dims.is_empty() || self.values.len() != self.expected_len() {
+            return None;
+        }
+        self.array_expr_at_depth(0, &mut Vec::new())
+    }
+
+    fn expected_len(&self) -> usize {
+        self.dims.iter().product()
+    }
+
+    fn array_expr_at_depth(&self, depth: usize, current: &mut Vec<usize>) -> Option<Expression> {
+        if depth >= self.dims.len() {
+            return self.values.get(current).cloned();
+        }
+        let mut elements = Vec::with_capacity(self.dims[depth]);
+        for index in 1..=self.dims[depth] {
+            current.push(index);
+            elements.push(self.array_expr_at_depth(depth + 1, current)?);
+            current.pop();
+        }
+        Some(Expression::Array {
+            elements,
+            is_matrix: depth == 0 && self.dims.len() == 2,
+            span: rumoca_core::Span::DUMMY,
+        })
+    }
+}
+
+fn indexed_record_field_substitution_groups(
+    substitutions: &[Substitution],
+) -> IndexMap<String, IndexedRecordFieldSubstitutionGroup> {
+    let mut groups = IndexMap::new();
+    for substitution in substitutions {
+        let Some((aggregate_key, indices)) =
+            indexed_record_field_substitution_key(&substitution.var_name)
+        else {
+            continue;
+        };
+        groups
+            .entry(aggregate_key)
+            .or_insert_with(IndexedRecordFieldSubstitutionGroup::default)
+            .insert(indices, substitution.expr.clone());
+    }
+    groups
+}
+
+fn indexed_record_field_substitution_key(var_name: &VarName) -> Option<(String, Vec<usize>)> {
+    let (indexed_base, field) = rumoca_core::split_last_top_level(var_name.as_str())?;
+    let scalar = rumoca_core::parse_scalar_name(indexed_base)?;
+    let indices = scalar
+        .indices
+        .iter()
+        .copied()
+        .map(usize::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if indices.is_empty() || indices.contains(&0) {
+        return None;
+    }
+    Some((format!("{}.{}", scalar.base, field), indices))
+}
+
+#[derive(Debug, Clone, Default)]
+struct ComplexFieldSubstitutionGroup {
+    re: Option<Expression>,
+    im: Option<Expression>,
+}
+
+impl ComplexFieldSubstitutionGroup {
+    fn insert(&mut self, field: &str, expr: Expression) {
+        match field {
+            "re" => self.re = Some(expr),
+            "im" => self.im = Some(expr),
+            _ => {}
+        }
+    }
+
+    fn to_constructor_expr(&self, span: rumoca_core::Span) -> Option<Expression> {
+        Some(Expression::FunctionCall {
+            name: Reference::new("Complex"),
+            args: vec![self.re.clone()?, self.im.clone()?],
+            is_constructor: true,
+            span,
+        })
+    }
+}
+
+fn complex_field_substitution_groups(
+    substitutions: &[Substitution],
+) -> IndexMap<String, ComplexFieldSubstitutionGroup> {
+    let mut groups = IndexMap::new();
+    for substitution in substitutions {
+        let Some((base, field)) = split_complex_field_suffix(substitution.var_name.as_str()) else {
+            continue;
+        };
+        groups
+            .entry(base.to_string())
+            .or_insert_with(ComplexFieldSubstitutionGroup::default)
+            .insert(field, substitution.expr.clone());
+    }
+    groups
+}
+
+struct RecordFieldAggregateRewriter {
+    aggregate_alias_groups: IndexMap<String, AggregateAliasSubstitutionGroup>,
+    indexed_groups: IndexMap<String, IndexedRecordFieldSubstitutionGroup>,
+    complex_groups: IndexMap<String, ComplexFieldSubstitutionGroup>,
+}
+
+impl ExpressionRewriter for RecordFieldAggregateRewriter {
+    fn rewrite_var_ref_expression(
+        &mut self,
+        name: &Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Expression {
+        if !subscripts.is_empty() {
+            return self.walk_var_ref_expression(name, subscripts, span);
+        }
+        if let Some(replacement) = self
+            .aggregate_alias_groups
+            .get(name.as_str())
+            .and_then(|group| group.to_replacement_expr(span))
+        {
+            return replacement;
+        }
+        if let Some(array_expr) = self
+            .indexed_groups
+            .get(name.as_str())
+            .and_then(IndexedRecordFieldSubstitutionGroup::to_array_expr)
+        {
+            return array_expr;
+        }
+        self.complex_groups
+            .get(name.as_str())
+            .and_then(|group| group.to_constructor_expr(span))
+            .unwrap_or_else(|| self.walk_var_ref_expression(name, subscripts, span))
+    }
+}
+
+pub fn resolve_substitutions_in_expr(
+    expr: &Expression,
+    substitutions: &[Substitution],
+) -> Expression {
+    let mut out = expr.clone();
+    for _ in 0..substitutions.len() {
+        let next = apply_substitutions_to_expr(&out, substitutions);
+        if next == out {
+            return out;
+        }
+        out = next;
+    }
+    out
+}
+
 fn normalize_unknown_for_dae(dae: &Dae, unknown: &VarName) -> VarName {
-    if dae.algebraics.contains_key(unknown) || dae.outputs.contains_key(unknown) {
+    if dae.variables.algebraics.contains_key(unknown) || dae.variables.outputs.contains_key(unknown)
+    {
         return unknown.clone();
     }
     let raw = unknown.as_str();
@@ -1248,9 +1531,10 @@ fn normalize_unknown_for_dae(dae: &Dae, unknown: &VarName) -> VarName {
     }
     let base_name = VarName::new(base.as_str());
     let is_singleton = dae
+        .variables
         .algebraics
         .get(&base_name)
-        .or_else(|| dae.outputs.get(&base_name))
+        .or_else(|| dae.variables.outputs.get(&base_name))
         .is_some_and(|var| var.size() == 1);
     if is_singleton {
         base_name
@@ -1260,476 +1544,187 @@ fn normalize_unknown_for_dae(dae: &Dae, unknown: &VarName) -> VarName {
 }
 
 fn expr_contains_unsliced_multiscalar_ref(expr: &Expression, dae: &Dae) -> bool {
-    match expr {
-        Expression::VarRef { name, subscripts } => {
-            if !subscripts.is_empty() {
-                return subscripts.iter().any(|subscript| match subscript {
-                    rumoca_ir_dae::Subscript::Expr(expr) => {
-                        expr_contains_unsliced_multiscalar_ref(expr, dae)
-                    }
-                    _ => false,
-                });
+    let mut checker = UnslicedMultiscalarRefChecker { dae, found: false };
+    checker.visit_expression(expr);
+    checker.found
+}
+
+struct UnslicedMultiscalarRefChecker<'a> {
+    dae: &'a Dae,
+    found: bool,
+}
+
+impl ExpressionVisitor for UnslicedMultiscalarRefChecker<'_> {
+    fn visit_expression(&mut self, expr: &Expression) {
+        if !self.found {
+            self.walk_expression(expr);
+        }
+    }
+
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        if !subscripts.is_empty() {
+            for subscript in subscripts {
+                self.visit_subscript(subscript);
             }
-            let size = dae
-                .states
-                .get(name)
-                .or_else(|| dae.algebraics.get(name))
-                .or_else(|| dae.outputs.get(name))
-                .map(|v| v.size())
-                .unwrap_or(0);
-            size > 1
+            return;
         }
-        Expression::Binary { lhs, rhs, .. } => {
-            expr_contains_unsliced_multiscalar_ref(lhs, dae)
-                || expr_contains_unsliced_multiscalar_ref(rhs, dae)
-        }
-        Expression::Unary { rhs, .. } => expr_contains_unsliced_multiscalar_ref(rhs, dae),
-        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => args
-            .iter()
-            .any(|arg| expr_contains_unsliced_multiscalar_ref(arg, dae)),
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches.iter().any(|(condition, value)| {
-                expr_contains_unsliced_multiscalar_ref(condition, dae)
-                    || expr_contains_unsliced_multiscalar_ref(value, dae)
-            }) || expr_contains_unsliced_multiscalar_ref(else_branch, dae)
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => elements
-            .iter()
-            .any(|element| expr_contains_unsliced_multiscalar_ref(element, dae)),
-        Expression::Range { start, step, end } => {
-            expr_contains_unsliced_multiscalar_ref(start, dae)
-                || step
-                    .as_deref()
-                    .is_some_and(|step| expr_contains_unsliced_multiscalar_ref(step, dae))
-                || expr_contains_unsliced_multiscalar_ref(end, dae)
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            indices
-                .iter()
-                .any(|idx| expr_contains_unsliced_multiscalar_ref(&idx.range, dae))
-                || expr_contains_unsliced_multiscalar_ref(expr, dae)
-                || filter
-                    .as_deref()
-                    .is_some_and(|pred| expr_contains_unsliced_multiscalar_ref(pred, dae))
-        }
-        Expression::Index { base, subscripts } => {
-            expr_contains_unsliced_multiscalar_ref(base, dae)
-                || subscripts.iter().any(|subscript| match subscript {
-                    rumoca_ir_dae::Subscript::Expr(expr) => {
-                        expr_contains_unsliced_multiscalar_ref(expr, dae)
-                    }
-                    _ => false,
-                })
-        }
-        Expression::FieldAccess { base, .. } => expr_contains_unsliced_multiscalar_ref(base, dae),
-        Expression::Literal(_) | Expression::Empty => false,
+
+        let size = self
+            .dae
+            .variables
+            .states
+            .get(name.var_name())
+            .or_else(|| self.dae.variables.algebraics.get(name.var_name()))
+            .or_else(|| self.dae.variables.outputs.get(name.var_name()))
+            .map(|v| v.size())
+            .unwrap_or(0);
+        self.found = size > 1;
     }
 }
 
-/// Try to solve `0 = rhs` for `unknown` symbolically.
-///
-/// Handles the common residual patterns produced by todae:
-/// - `0 = z`              -> `z = 0`
-/// - `0 = z - expr`       -> `z = expr`
-/// - `0 = expr - z`       -> `z = expr`
-/// - `0 = -(z - expr)`    -> `z = expr`
-/// - `0 = -(expr - z)`    -> `z = expr`
-pub fn try_solve_for_unknown(rhs: &Expression, unknown: &VarName) -> Option<Expression> {
-    match rhs {
-        // Pattern: 0 = z  ->  z = 0
-        Expression::VarRef { name, subscripts } if name == unknown && subscripts.is_empty() => {
-            Some(Expression::Literal(rumoca_ir_dae::Literal::Real(0.0)))
-        }
-        // Pattern: 0 = lhs - rhs_inner (Binary Sub)
-        Expression::Binary {
-            op: OpBinary::Sub(_),
-            lhs,
-            rhs: rhs_inner,
-        } => {
-            // 0 = z - expr -> z = expr
-            if is_var_ref(lhs, unknown) && !expr_contains_var(rhs_inner, unknown) {
-                return Some(*rhs_inner.clone());
-            }
-            // 0 = expr - z -> z = expr
-            if is_var_ref(rhs_inner, unknown) && !expr_contains_var(lhs, unknown) {
-                return Some(*lhs.clone());
-            }
-            None
-        }
-        // Pattern: 0 = -(something) (Unary Minus)
-        Expression::Unary {
-            op: OpUnary::Minus(_),
-            rhs: inner,
-        } => {
-            // Recurse into the negated expression.
-            // -(z - expr) has the same solutions as (z - expr).
-            try_solve_for_unknown(inner, unknown)
-        }
-        // Pattern: 0 = a + b + c + ... (additive form, e.g. connection equations)
-        // Handled by try_solve_additive_for_unknown() which requires the live
-        // unknown set to avoid solving 2-unknown equations incorrectly.
-        // This base function does NOT handle additive forms — callers that want
-        // additive solving should use try_solve_additive_for_unknown() directly.
-        _ => None,
-    }
-}
-
-/// Try to solve an additive equation `0 = a + b + c` for `unknown`, but only
-/// when exactly one term contains the unknown AND no other term contains a
-/// different live unknown (to avoid solving 2-unknown equations).
-pub fn try_solve_additive_for_unknown(
-    rhs: &Expression,
-    unknown: &VarName,
-    live_unknowns: &[VarName],
-) -> Option<Expression> {
-    let terms = flatten_additive_terms(rhs);
-    if terms.len() < 2 {
+fn embedded_alias_indices_for_substitution(
+    name: &Reference,
+    subscripts: &[rumoca_core::Subscript],
+    var: &VarName,
+) -> Option<Vec<i64>> {
+    if !subscripts.is_empty() || name.as_str() == var.as_str() {
         return None;
     }
-
-    // Find which term(s) contain the target unknown
-    let mut unknown_idx = None;
-    for (i, (_, term)) in terms.iter().enumerate() {
-        if expr_contains_var(term, unknown) {
-            if unknown_idx.is_some() {
-                return None; // multiple terms contain the unknown
-            }
-            unknown_idx = Some(i);
-        }
-    }
-    let unknown_idx = unknown_idx?;
-
-    // The unknown term must be a bare VarRef (linear, coefficient = 1)
-    let (unknown_positive, unknown_term) = terms[unknown_idx];
-    if !is_var_ref(unknown_term, unknown) {
+    let name_field = split_complex_field_suffix(name.as_str());
+    let var_field = split_complex_field_suffix(var.as_str());
+    if name_field.is_some() || var_field.is_some() {
         return None;
     }
-
-    // Check that no OTHER term contains a DIFFERENT live unknown
-    for (i, (_, term)) in terms.iter().enumerate() {
-        if i == unknown_idx {
-            continue;
-        }
-        for other_unknown in live_unknowns {
-            if other_unknown != unknown && expr_contains_var(term, other_unknown) {
-                return None; // another term has a different live unknown
-            }
-        }
+    if path_has_scalar_indices(var.as_str()) {
+        return None;
     }
-
-    // Safe to solve: build -(other_terms) or other_terms
-    let other_terms: Vec<(bool, &Expression)> = terms
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != unknown_idx)
-        .map(|(_, &(sign, term))| {
-            if unknown_positive {
-                (!sign, term)
-            } else {
-                (sign, term)
-            }
-        })
-        .collect();
-
-    build_sum_expr(&other_terms)
+    let name_base = dae::component_base_name(name.as_str())?;
+    let var_base = dae::component_base_name(var.as_str())?;
+    if name_base != var_base {
+        return None;
+    }
+    parse_embedded_subscripts(name.as_str())
+        .or_else(|| path_segment_scalar_indices(name.as_str()))
+        .filter(|indices| !indices.is_empty())
 }
 
-/// Flatten a tree of Add/Sub operations into signed terms.
-/// E.g., `a + b - c + d` → [(+, a), (+, b), (-, c), (+, d)]
-fn flatten_additive_terms(expr: &Expression) -> Vec<(bool, &Expression)> {
-    match expr {
-        Expression::Binary {
-            op: OpBinary::Add(_),
-            lhs,
-            rhs,
-        } => {
-            let mut terms = flatten_additive_terms(lhs);
-            terms.extend(flatten_additive_terms(rhs));
-            terms
-        }
-        Expression::Binary {
-            op: OpBinary::Sub(_),
-            lhs,
-            rhs,
-        } => {
-            let mut terms = flatten_additive_terms(lhs);
-            // Negate all terms from the RHS
-            for (sign, term) in flatten_additive_terms(rhs) {
-                terms.push((!sign, term));
-            }
-            terms
-        }
-        Expression::Unary {
-            op: OpUnary::Minus(_),
-            rhs: inner,
-        } => flatten_additive_terms(inner)
-            .into_iter()
-            .map(|(sign, term)| (!sign, term))
-            .collect(),
-        _ => vec![(true, expr)],
-    }
+fn path_has_scalar_indices(path: &str) -> bool {
+    parse_embedded_subscripts(path)
+        .or_else(|| path_segment_scalar_indices(path))
+        .is_some_and(|indices| !indices.is_empty())
 }
 
-/// Build an Expression from a list of signed terms.
-fn build_sum_expr(terms: &[(bool, &Expression)]) -> Option<Expression> {
-    if terms.is_empty() {
-        return Some(Expression::Literal(rumoca_ir_dae::Literal::Real(0.0)));
-    }
-    if terms.len() == 1 {
-        let (positive, expr) = terms[0];
-        return if positive {
-            Some(expr.clone())
-        } else {
-            Some(Expression::Unary {
-                op: OpUnary::Minus(Default::default()),
-                rhs: Box::new(expr.clone()),
-            })
-        };
-    }
-
-    // Start with the first term
-    let (first_positive, first_expr) = terms[0];
-    let mut result = if first_positive {
-        first_expr.clone()
-    } else {
-        Expression::Unary {
-            op: OpUnary::Minus(Default::default()),
-            rhs: Box::new(first_expr.clone()),
-        }
-    };
-
-    // Add remaining terms
-    for &(positive, term) in &terms[1..] {
-        if positive {
-            result = Expression::Binary {
-                op: OpBinary::Add(Default::default()),
-                lhs: Box::new(result),
-                rhs: Box::new(term.clone()),
-            };
-        } else {
-            result = Expression::Binary {
-                op: OpBinary::Sub(Default::default()),
-                lhs: Box::new(result),
-                rhs: Box::new(term.clone()),
-            };
-        }
-    }
-
-    Some(result)
-}
-
-/// Check if an expression contains `der(var_name)`.
-pub(crate) fn expr_contains_der_of(expr: &Expression, var_name: &VarName) -> bool {
-    match expr {
-        Expression::BuiltinCall {
-            function: rumoca_ir_dae::BuiltinFunction::Der,
-            args,
-        } => {
-            if args
-                .first()
-                .is_some_and(|arg| expr_refers_to_var_base(arg, var_name))
-            {
-                return true;
-            }
-            args.iter().any(|a| expr_contains_der_of(a, var_name))
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            expr_contains_der_of(lhs, var_name) || expr_contains_der_of(rhs, var_name)
-        }
-        Expression::Unary { rhs, .. } => expr_contains_der_of(rhs, var_name),
-        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-            args.iter().any(|a| expr_contains_der_of(a, var_name))
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches.iter().any(|(c, v)| {
-                expr_contains_der_of(c, var_name) || expr_contains_der_of(v, var_name)
-            }) || expr_contains_der_of(else_branch, var_name)
-        }
-        _ => false,
-    }
-}
-
-fn expr_refers_to_var_base(expr: &Expression, var_name: &VarName) -> bool {
-    match expr {
-        Expression::VarRef { name, .. } => {
-            let Some(name_base) = dae::component_base_name(name.as_str()) else {
-                return false;
-            };
-            let Some(var_base) = dae::component_base_name(var_name.as_str()) else {
-                return false;
-            };
-            name_base == var_base
-        }
-        Expression::Index { base, .. } => expr_refers_to_var_base(base, var_name),
-        _ => false,
-    }
-}
-
-fn parse_embedded_subscripts(name: &str) -> Option<Vec<i64>> {
+fn path_segment_scalar_indices(path: &str) -> Option<Vec<i64>> {
     let mut indices = Vec::new();
-    let mut depth = 0usize;
-    let mut current = String::new();
-    let mut saw_subscript = false;
-
-    for ch in name.chars() {
-        match ch {
-            '[' => {
-                depth += 1;
-                if depth == 1 {
-                    current.clear();
-                    saw_subscript = true;
-                } else {
-                    current.push(ch);
-                }
-            }
-            ']' => {
-                if depth == 1 {
-                    let trimmed = current.trim();
-                    let idx = parse_subscript_index(trimmed)?;
-                    indices.push(idx);
-                    current.clear();
-                } else if depth > 1 {
-                    current.push(ch);
-                }
-                depth = depth.saturating_sub(1);
-            }
-            _ if depth >= 1 => current.push(ch),
-            _ => {}
+    for segment in rumoca_core::split_path_with_indices(path) {
+        if let Some(scalar) = rumoca_core::parse_scalar_name(segment) {
+            indices.extend(scalar.indices);
         }
     }
-
-    (saw_subscript && depth == 0).then_some(indices)
+    (!indices.is_empty()).then_some(indices)
 }
 
-fn parse_subscript_index(text: &str) -> Option<i64> {
-    text.parse::<i64>().ok().or_else(|| {
-        text.parse::<f64>()
-            .ok()
-            .filter(|v| v.is_finite() && v.fract() == 0.0)
-            .map(|v| v as i64)
-    })
-}
-
-fn subscripts_all_one(subscripts: &[rumoca_ir_dae::Subscript]) -> bool {
-    !subscripts.is_empty()
-        && subscripts.iter().all(|sub| match sub {
-            rumoca_ir_dae::Subscript::Index(i) => *i == 1,
-            rumoca_ir_dae::Subscript::Expr(expr) => match expr.as_ref() {
-                Expression::Literal(rumoca_ir_dae::Literal::Integer(i)) => *i == 1,
-                Expression::Literal(rumoca_ir_dae::Literal::Real(v))
-                    if v.is_finite() && v.fract() == 0.0 =>
-                {
-                    (*v as i64) == 1
-                }
-                _ => false,
-            },
-            rumoca_ir_dae::Subscript::Colon => false,
-        })
-}
-
-fn embedded_subscripts_all_one(name: &str) -> bool {
-    parse_embedded_subscripts(name)
-        .is_some_and(|indices| !indices.is_empty() && indices.iter().all(|i| *i == 1))
-}
-
-fn subscripts_match_indices(subscripts: &[rumoca_ir_dae::Subscript], expected: &[i64]) -> bool {
-    if subscripts.len() != expected.len() || subscripts.is_empty() {
-        return false;
+fn index_replacement_expr(replacement: &Expression, indices: &[i64]) -> Expression {
+    let span = replacement.span().unwrap_or(rumoca_core::Span::DUMMY);
+    if indices.is_empty() {
+        return replacement.clone();
     }
-    subscripts
+    let extra_subscripts = indices
         .iter()
-        .zip(expected.iter())
-        .all(|(sub, expected_idx)| match sub {
-            rumoca_ir_dae::Subscript::Index(i) => *i == *expected_idx,
-            rumoca_ir_dae::Subscript::Expr(expr) => match expr.as_ref() {
-                Expression::Literal(rumoca_ir_dae::Literal::Integer(i)) => *i == *expected_idx,
-                Expression::Literal(rumoca_ir_dae::Literal::Real(v))
-                    if v.is_finite() && v.fract() == 0.0 =>
-                {
-                    (*v as i64) == *expected_idx
-                }
-                _ => false,
-            },
-            rumoca_ir_dae::Subscript::Colon => false,
-        })
-}
-
-fn split_complex_field_suffix(name: &str) -> Option<(&str, &str)> {
-    let (base, field) = name.rsplit_once('.')?;
-    matches!(field, "re" | "im").then_some((base, field))
-}
-
-fn complex_base_alias_match(base_or_field: &str, other: &str) -> bool {
-    split_complex_field_suffix(base_or_field).is_some_and(|(base, _)| base == other)
-        || split_complex_field_suffix(other).is_some_and(|(base, _)| base == base_or_field)
-}
-
-fn var_ref_matches_unknown(
-    name: &VarName,
-    subscripts: &[rumoca_ir_dae::Subscript],
-    unknown: &VarName,
-) -> bool {
-    if name == unknown {
-        return subscripts.is_empty() || subscripts_all_one(subscripts);
-    }
-    if subscripts.is_empty() && complex_base_alias_match(name.as_str(), unknown.as_str()) {
-        return true;
-    }
-    let Some(name_base) = dae::component_base_name(name.as_str()) else {
-        return false;
-    };
-    let Some(unknown_base) = dae::component_base_name(unknown.as_str()) else {
-        return false;
-    };
-    if complex_base_alias_match(&name_base, &unknown_base) {
-        return true;
-    }
-    if name_base != unknown_base {
-        return false;
-    }
-    if !subscripts.is_empty() {
-        if let Some(indices) = parse_embedded_subscripts(unknown.as_str())
-            && subscripts_match_indices(subscripts, &indices)
-        {
-            return true;
+        .copied()
+        .map(|index| rumoca_core::Subscript::generated_index(index, span))
+        .collect::<Vec<_>>();
+    match replacement {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            let mut projected_subscripts = subscripts.clone();
+            projected_subscripts.extend(extra_subscripts);
+            Expression::VarRef {
+                name: name.clone(),
+                subscripts: projected_subscripts,
+                span,
+            }
         }
-        return false;
+        _ => Expression::Index {
+            base: Box::new(replacement.clone()),
+            subscripts: extra_subscripts,
+            span,
+        },
     }
+}
 
-    let name_has_embedded = name.as_str().contains('[');
-    let unknown_has_embedded = unknown.as_str().contains('[');
-    if name_has_embedded != unknown_has_embedded {
-        let embedded_name = if name_has_embedded {
-            name.as_str()
+fn index_replacement_expr_with_subscripts(
+    replacement: &Expression,
+    subscripts: &[rumoca_core::Subscript],
+) -> Expression {
+    let span = replacement.span().unwrap_or(rumoca_core::Span::DUMMY);
+    if subscripts.is_empty() {
+        return replacement.clone();
+    }
+    match replacement {
+        Expression::VarRef {
+            name,
+            subscripts: replacement_subscripts,
+            ..
+        } => {
+            let mut projected_subscripts = replacement_subscripts.clone();
+            projected_subscripts.extend(subscripts.iter().cloned());
+            Expression::VarRef {
+                name: name.clone(),
+                subscripts: projected_subscripts,
+                span,
+            }
+        }
+        _ => Expression::Index {
+            base: Box::new(replacement.clone()),
+            subscripts: subscripts.to_vec(),
+            span,
+        },
+    }
+}
+
+fn replacement_indices_for_alias(
+    indices: &[i64],
+    var_dims: &[i64],
+    replacement_dims: &[i64],
+) -> Vec<i64> {
+    if indices.is_empty() {
+        return Vec::new();
+    }
+    if replacement_dims.is_empty() {
+        return if var_dims.is_empty() {
+            indices.to_vec()
         } else {
-            unknown.as_str()
+            Vec::new()
         };
-        if embedded_subscripts_all_one(embedded_name) {
-            return true;
-        }
-        return false;
     }
-    if name_has_embedded {
-        return name.as_str() == unknown.as_str();
+    if replacement_dims.len() >= indices.len() {
+        return indices.to_vec();
     }
-    true
+    if var_dims.len() == indices.len() && replacement_dims.len() < var_dims.len() {
+        let start = indices.len() - replacement_dims.len();
+        return indices[start..].to_vec();
+    }
+    indices.to_vec()
 }
 
 fn var_ref_matches_unknown_for_substitution(
-    name: &VarName,
-    subscripts: &[rumoca_ir_dae::Subscript],
+    name: &Reference,
+    subscripts: &[rumoca_core::Subscript],
     unknown: &VarName,
 ) -> bool {
+    if subscripts.is_empty()
+        && indexed_record_field_substitution_key(unknown)
+            .is_some_and(|(aggregate_key, _)| aggregate_key == name.as_str())
+    {
+        return false;
+    }
+
     let name_field = split_complex_field_suffix(name.as_str());
     let unknown_field = split_complex_field_suffix(unknown.as_str());
 
@@ -1737,201 +1732,97 @@ fn var_ref_matches_unknown_for_substitution(
     // base<->field alias matching here, otherwise `.re/.im` projections can be
     // applied to already-scalar replacement expressions.
     if name_field.is_some() || unknown_field.is_some() {
-        return name == unknown && (subscripts.is_empty() || subscripts_all_one(subscripts));
+        return name.as_str() == unknown.as_str()
+            && (subscripts.is_empty() || subscripts_all_one(subscripts));
+    }
+
+    if subscripts.is_empty()
+        && !path_has_scalar_indices(name.as_str())
+        && path_has_scalar_indices(unknown.as_str())
+    {
+        return false;
     }
 
     var_ref_matches_unknown(name, subscripts, unknown)
 }
 
+fn aggregate_subscript_ref_matches_var(
+    name: &Reference,
+    subscripts: &[rumoca_core::Subscript],
+    unknown: &VarName,
+    unknown_dims: &[i64],
+) -> bool {
+    !unknown_dims.is_empty() && !subscripts.is_empty() && name.var_name().id() == unknown.id()
+}
+
 /// Check if an expression is a simple VarRef to the given variable.
 fn is_var_ref(expr: &Expression, var: &VarName) -> bool {
     match expr {
-        Expression::VarRef { name, subscripts } => {
-            var_ref_matches_unknown_for_substitution(name, subscripts, var)
-        }
+        Expression::VarRef {
+            name, subscripts, ..
+        } => var_ref_matches_unknown_for_substitution(name, subscripts, var),
         _ => false,
     }
 }
 
-/// Check if an expression references a variable (by base name).
-pub fn expr_contains_var(expr: &Expression, var: &VarName) -> bool {
-    match expr {
-        Expression::VarRef { name, subscripts } => {
-            if var_ref_matches_unknown(name, subscripts, var) {
-                return true;
-            }
-            subscripts.iter().any(|s| match s {
-                rumoca_ir_dae::Subscript::Expr(e) => expr_contains_var(e, var),
-                _ => false,
-            })
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            expr_contains_var(lhs, var) || expr_contains_var(rhs, var)
-        }
-        Expression::Unary { rhs, .. } => expr_contains_var(rhs, var),
-        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-            args.iter().any(|a| expr_contains_var(a, var))
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches
-                .iter()
-                .any(|(c, v)| expr_contains_var(c, var) || expr_contains_var(v, var))
-                || expr_contains_var(else_branch, var)
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            elements.iter().any(|e| expr_contains_var(e, var))
-        }
-        Expression::Range { start, step, end } => {
-            expr_contains_var(start, var)
-                || step.as_ref().is_some_and(|s| expr_contains_var(s, var))
-                || expr_contains_var(end, var)
-        }
-        Expression::Index { base, subscripts } => {
-            expr_contains_var(base, var)
-                || subscripts.iter().any(|s| match s {
-                    rumoca_ir_dae::Subscript::Expr(e) => expr_contains_var(e, var),
-                    _ => false,
-                })
-        }
-        Expression::ArrayComprehension { expr, filter, .. } => {
-            expr_contains_var(expr, var)
-                || filter.as_ref().is_some_and(|f| expr_contains_var(f, var))
-        }
-        Expression::FieldAccess { base, .. } => expr_contains_var(base, var),
-        Expression::Literal(_) | Expression::Empty => false,
-    }
+struct SubstituteVarRewriter<'a> {
+    var: &'a VarName,
+    replacement: &'a Expression,
+    var_dims: &'a [i64],
+    replacement_dims: &'a [i64],
 }
 
-fn substitute_expr_list(
-    exprs: &[Expression],
-    var: &VarName,
-    replacement: &Expression,
-) -> Vec<Expression> {
-    exprs
-        .iter()
-        .map(|expr| substitute_var(expr, var, replacement))
-        .collect()
-}
-
-fn substitute_subscripts(
-    subscripts: &[rumoca_ir_dae::Subscript],
-    var: &VarName,
-    replacement: &Expression,
-) -> Vec<rumoca_ir_dae::Subscript> {
-    subscripts
-        .iter()
-        .map(|subscript| match subscript {
-            rumoca_ir_dae::Subscript::Expr(expr) => {
-                rumoca_ir_dae::Subscript::Expr(Box::new(substitute_var(expr, var, replacement)))
-            }
-            other => other.clone(),
-        })
-        .collect()
-}
-
-/// Replace all occurrences of `var` in `expr` with `replacement`.
-pub(crate) fn substitute_var(
-    expr: &Expression,
-    var: &VarName,
-    replacement: &Expression,
-) -> Expression {
-    match expr {
-        Expression::VarRef { name, subscripts }
-            if var_ref_matches_unknown_for_substitution(name, subscripts, var) =>
-        {
-            replacement.clone()
-        }
-        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => expr.clone(),
-        Expression::Binary { op, lhs, rhs } => Expression::Binary {
-            op: op.clone(),
-            lhs: Box::new(substitute_var(lhs, var, replacement)),
-            rhs: Box::new(substitute_var(rhs, var, replacement)),
-        },
-        Expression::Unary { op, rhs } => Expression::Unary {
-            op: op.clone(),
-            rhs: Box::new(substitute_var(rhs, var, replacement)),
-        },
-        Expression::BuiltinCall { function, args } => {
-            if matches!(
-                function,
-                BuiltinFunction::Pre | BuiltinFunction::Edge | BuiltinFunction::Change
-            ) {
+impl ExpressionRewriter for SubstituteVarRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
+        match expr {
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Pre | BuiltinFunction::Edge | BuiltinFunction::Change,
+                ..
+            } => {
                 // Preserve event-operator arguments to maintain MLS Appendix B
                 // pre/change/edge semantics during symbolic substitution.
-                Expression::BuiltinCall {
-                    function: *function,
-                    args: args.clone(),
-                }
-            } else {
-                Expression::BuiltinCall {
-                    function: *function,
-                    args: substitute_expr_list(args, var, replacement),
-                }
+                expr.clone()
             }
+            Expression::ArrayComprehension {
+                expr: inner,
+                indices,
+                filter,
+                span,
+            } => Expression::ArrayComprehension {
+                expr: Box::new(self.rewrite_expression(inner)),
+                indices: indices.clone(),
+                filter: filter
+                    .as_ref()
+                    .map(|filter| Box::new(self.rewrite_expression(filter))),
+                span: *span,
+            },
+            _ => self.walk_expression(expr),
         }
-        Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-        } => Expression::FunctionCall {
-            name: name.clone(),
-            args: substitute_expr_list(args, var, replacement),
-            is_constructor: *is_constructor,
-        },
-        Expression::If {
-            branches,
-            else_branch,
-        } => Expression::If {
-            branches: branches
-                .iter()
-                .map(|(c, v)| {
-                    (
-                        substitute_var(c, var, replacement),
-                        substitute_var(v, var, replacement),
-                    )
-                })
-                .collect(),
-            else_branch: Box::new(substitute_var(else_branch, var, replacement)),
-        },
-        Expression::Array {
-            elements,
-            is_matrix,
-        } => Expression::Array {
-            elements: substitute_expr_list(elements, var, replacement),
-            is_matrix: *is_matrix,
-        },
-        Expression::Tuple { elements } => Expression::Tuple {
-            elements: substitute_expr_list(elements, var, replacement),
-        },
-        Expression::Range { start, step, end } => Expression::Range {
-            start: Box::new(substitute_var(start, var, replacement)),
-            step: step
-                .as_ref()
-                .map(|s| Box::new(substitute_var(s, var, replacement))),
-            end: Box::new(substitute_var(end, var, replacement)),
-        },
-        Expression::Index { base, subscripts } => Expression::Index {
-            base: Box::new(substitute_var(base, var, replacement)),
-            subscripts: substitute_subscripts(subscripts, var, replacement),
-        },
-        Expression::ArrayComprehension {
-            expr: inner,
-            indices,
-            filter,
-        } => Expression::ArrayComprehension {
-            expr: Box::new(substitute_var(inner, var, replacement)),
-            indices: indices.clone(),
-            filter: filter
-                .as_ref()
-                .map(|f| Box::new(substitute_var(f, var, replacement))),
-        },
-        Expression::FieldAccess { base, field } => Expression::FieldAccess {
-            base: Box::new(substitute_var(base, var, replacement)),
-            field: field.clone(),
-        },
+    }
+
+    fn rewrite_var_ref_expression(
+        &mut self,
+        name: &Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Expression {
+        if let Some(indices) = embedded_alias_indices_for_substitution(name, subscripts, self.var) {
+            // MLS §10.6: if a vector alias is eliminated before scalarization,
+            // scalarized references to that alias must map to the same scalar
+            // component of the replacement expression.
+            let replacement_indices =
+                replacement_indices_for_alias(&indices, self.var_dims, self.replacement_dims);
+            index_replacement_expr(self.replacement, &replacement_indices)
+        } else if aggregate_subscript_ref_matches_var(name, subscripts, self.var, self.var_dims) {
+            index_replacement_expr_with_subscripts(self.replacement, subscripts)
+        } else if var_ref_matches_unknown_for_substitution(name, subscripts, self.var) {
+            if !subscripts.is_empty() && !self.var_dims.is_empty() {
+                return index_replacement_expr_with_subscripts(self.replacement, subscripts);
+            }
+            self.replacement.clone()
+        } else {
+            self.walk_var_ref_expression(name, subscripts, span)
+        }
     }
 }
 

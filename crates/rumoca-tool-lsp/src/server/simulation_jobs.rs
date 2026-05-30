@@ -1,5 +1,3 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::atomic::Ordering;
 
 use super::*;
@@ -13,6 +11,26 @@ pub(super) struct SimulationCompileKey {
     focus_document_path: String,
     source_root_epoch: u64,
     local_source_fingerprint: u64,
+}
+
+fn stable_u64_from_hash(hash: blake3::Hash) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&hash.as_bytes()[..8]);
+    u64::from_le_bytes(bytes)
+}
+
+fn simulation_models_from_project_config_source(
+    source: &str,
+) -> std::result::Result<Vec<String>, String> {
+    let config = toml::from_str::<ProjectConfigFile>(source)
+        .map_err(|error| format!("failed to parse simulation config TOML: {error}"))?;
+    let Some(model) = config.model.name.as_deref().map(str::trim) else {
+        return Err("simulation config TOML is missing [model] name".to_string());
+    };
+    if model.is_empty() {
+        return Err("simulation config TOML has an empty [model] name".to_string());
+    }
+    Ok(vec![model.to_string()])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -110,6 +128,7 @@ struct SimulationCompleteParams {
     payload: Option<Value>,
     error: Option<String>,
     metrics: Option<Value>,
+    diagnostic: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,12 +181,14 @@ impl ModelicaLanguageServer {
     }
 
     fn local_source_fingerprint(local_compile_unit_sources: &[(String, String)]) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = blake3::Hasher::new();
         for (uri, source) in local_compile_unit_sources {
-            uri.hash(&mut hasher);
-            source.hash(&mut hasher);
+            hasher.update(&(uri.len() as u64).to_le_bytes());
+            hasher.update(uri.as_bytes());
+            hasher.update(&(source.len() as u64).to_le_bytes());
+            hasher.update(source.as_bytes());
         }
-        hasher.finish()
+        stable_u64_from_hash(hasher.finalize())
     }
 
     fn simulation_compile_key(
@@ -252,6 +273,14 @@ impl ModelicaLanguageServer {
         uri: &Url,
     ) -> std::result::Result<Vec<String>, String> {
         let uri_path = session_document_uri_key(uri);
+        if is_project_config_uri(uri) {
+            let source = if let Some(doc) = self.document_snapshot(&uri_path).await {
+                doc.content.to_string()
+            } else {
+                self.open_document_source_for_uri(uri).await?
+            };
+            return simulation_models_from_project_config_source(&source);
+        }
         if let Some(doc) = self.document_snapshot(&uri_path).await {
             if let Some(parsed) = doc.parsed().cloned() {
                 return Ok(collect_model_names(&parsed));
@@ -400,10 +429,19 @@ impl ModelicaLanguageServer {
         uri: &Url,
     ) -> std::result::Result<String, String> {
         let uri_path = session_document_uri_key(uri);
-        self.document_snapshot(&uri_path)
-            .await
-            .map(|doc| doc.content)
-            .ok_or_else(|| format!("document not open in LSP session: {}", uri_path))
+        if let Some(doc) = self.document_snapshot(&uri_path).await {
+            return Ok(doc.content.to_string());
+        }
+        let path = uri
+            .to_file_path()
+            .map_err(|_| format!("document is not open and URI is not a file path: {uri}"))?;
+        std::fs::read_to_string(&path).map_err(|error| {
+            format!(
+                "failed to read document '{}' from disk: {}",
+                path.display(),
+                error
+            )
+        })
     }
 
     pub(super) async fn compile_model_for_simulation(
@@ -599,6 +637,7 @@ impl ModelicaLanguageServer {
                 .and_then(Value::as_str)
                 .map(ToString::to_string),
             metrics: response.get("metrics").cloned(),
+            diagnostic: response.get("diagnostic").cloned(),
         };
         self.client
             .send_notification::<SimulationCompleteNotification>(params)

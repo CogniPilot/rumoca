@@ -7,7 +7,13 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["solver-diffsol"]
+default = ["native-solvers"]
+native-solvers = ["solver-diffsol", "solver-rk45"]
+strict-ir-validation = [
+    "rumoca-phase-dae/strict-ir-validation",
+    "rumoca-phase-solve/strict-ir-validation",
+]
+wasm-solvers = ["solver-diffsol", "solver-rk45"]
 solver-diffsol = ["dep:rumoca-solver-diffsol"]
 solver-rk45 = ["dep:rumoca-solver-rk45"]
 viz = ["dep:rumoca-viz-web"]
@@ -16,12 +22,13 @@ viz = ["dep:rumoca-viz-web"]
 # CLIs can still emit HTML reports from `simulate`.
 report = ["viz", "dep:rumoca-compile"]
 runner = [
-    "solver-diffsol",
+    "native-solvers",
     "viz",
     "report",
     "dep:rumoca-codec",
     "dep:rumoca-input",
-    "rumoca-input/devices",
+    "dep:rumoca-input-gamepad",
+    "dep:rumoca-input-keyboard",
     "dep:rumoca-transport-udp",
     "dep:rumoca-transport-websocket",
     "dep:rumoca-compile",
@@ -31,15 +38,26 @@ runner = [
 ]
 
 [dependencies]
-rumoca-sim-core = { workspace = true }
+rumoca-core = { workspace = true }
+indexmap = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-phase-dae = { workspace = true }
+rumoca-phase-structural = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-phase-solve = { workspace = true }
+rumoca-eval-solve = { workspace = true }
+rumoca-solver = { workspace = true }
 rumoca-solver-diffsol = { workspace = true, optional = true }
 rumoca-solver-rk45 = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rumoca-codec = { workspace = true, optional = true }
 rumoca-input = { workspace = true, optional = true }
+rumoca-input-keyboard = { workspace = true, optional = true }
 rumoca-transport-udp = { workspace = true, optional = true }
 rumoca-transport-websocket = { workspace = true, optional = true }
 rumoca-viz-web = { workspace = true, optional = true }
@@ -50,6 +68,9 @@ toml = { workspace = true, optional = true }
 
 [target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
 libc = "0.2"
+
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_env = "musl")))'.dependencies]
+rumoca-input-gamepad = { workspace = true, optional = true }
 
 [lints]
 workspace = true

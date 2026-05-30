@@ -1,7 +1,16 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { ensureNodeSelfForWasmBindgenRayon } from "./node_rayon_shim.mjs";
-const wasmPkgSubdir = process.env.RUMOCA_WASM_PKG_SUBDIR || "release-full-web";
+const pkgSubdirArgIndex = process.argv.indexOf("--pkg-subdir");
+const wasmPkgSubdir =
+  pkgSubdirArgIndex >= 0 ? process.argv[pkgSubdirArgIndex + 1] : "release-full-web";
+
+// Opt-in real-MSL slice smoke (`--msl-slice`), reading the MSL cache from
+// `--cache-dir <path>` (default `target/msl`). Both are argv flags — no env.
+const runMslSlice = process.argv.includes("--msl-slice");
+const cacheDirArgIndex = process.argv.indexOf("--cache-dir");
+const mslCacheDir =
+  cacheDirArgIndex >= 0 ? process.argv[cacheDirArgIndex + 1] : "target/msl";
 
 let initWasm = null;
 let clear_source_root_cache = null;
@@ -59,9 +68,7 @@ function miniSourceRootJson() {
 }
 
 async function realMslSliceJson() {
-  const cacheRoot = process.env.RUMOCA_MSL_CACHE_DIR
-    ? path.resolve(process.env.RUMOCA_MSL_CACHE_DIR)
-    : path.resolve("target/msl");
+  const cacheRoot = path.resolve(mslCacheDir);
   const mslRoot = path.join(
     cacheRoot,
     "ModelicaStandardLibrary-4.1.0",
@@ -165,7 +172,7 @@ function runCompileWithSourceRootsSmoke() {
 }
 
 async function runRealMslSliceSmoke() {
-  if (process.env.RUMOCA_WASM_MSL_SMOKE !== "1") {
+  if (!runMslSlice) {
     return;
   }
 

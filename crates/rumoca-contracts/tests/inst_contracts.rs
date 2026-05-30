@@ -85,7 +85,7 @@ fn inst_002_outer_overrides_inner() {
     );
     // The DAE should have p=5, not p=1
     assert!(
-        !result.dae.parameters.is_empty(),
+        !result.dae.variables.parameters.is_empty(),
         "Should have parameters in DAE"
     );
 }
@@ -523,6 +523,8 @@ fn inst_027_constraining_clause_modifications_apply_after_redeclare() {
 
         model Top
             Conj p;
+        equation
+            p.comb.u = zeros(2);
         end Top;
     "#,
         "Top",

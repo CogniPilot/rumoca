@@ -2,24 +2,19 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { performance } = require("node:perf_hooks");
 
-function envPath(name) {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`missing required env var: ${name}`);
+// Baked timeout budgets (previously RUMOCA_VSCODE_FAILED_START_*_MAX_MS env
+// overrides that were never set).
+const ACTIVATE_MAX_MS = 15000;
+const COMMAND_MAX_MS = 10000;
+
+// Read a required string workspace setting under `rumoca.benchmark.*` (the smoke
+// runner writes these into the launched `.code-workspace`; no env vars).
+function requiredBenchmarkSetting(vscode, key) {
+  const value = vscode.workspace.getConfiguration("rumoca").get(key);
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`missing required workspace setting: rumoca.${key}`);
   }
   return value;
-}
-
-function envMs(name, fallback) {
-  const value = process.env[name];
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`invalid timeout env var ${name}=${value}`);
-  }
-  return parsed;
 }
 
 async function withTimeout(label, promiseFactory, timeoutMs) {
@@ -40,13 +35,14 @@ function writeResult(resultPath, payload) {
 exports.run = async function run() {
   const vscode = require("vscode");
 
-  const documentPath = envPath("RUMOCA_VSCODE_FAILED_START_DOCUMENT");
-  const resultPath = envPath("RUMOCA_VSCODE_FAILED_START_RESULT");
-  const activateMaxMs = envMs("RUMOCA_VSCODE_FAILED_START_ACTIVATE_MAX_MS", 15000);
-  const commandMaxMs = envMs("RUMOCA_VSCODE_FAILED_START_COMMAND_MAX_MS", 10000);
+  const documentPath = requiredBenchmarkSetting(vscode, "benchmark.failedStart.document");
+  const resultPath = requiredBenchmarkSetting(vscode, "benchmark.failedStart.result");
+  const activateMaxMs = ACTIVATE_MAX_MS;
+  const commandMaxMs = COMMAND_MAX_MS;
   const requiredCommands = [
+    "rumoca.createScenarioConfig",
     "rumoca.simulateModel",
-    "rumoca.renderTemplate",
+    "rumoca.openSimulationSettings",
     "rumoca.openSettingsMenu",
   ];
 
@@ -93,13 +89,13 @@ exports.run = async function run() {
   );
   result.simulateExecuteMs = Math.round(performance.now() - simulateStart);
 
-  const renderStart = performance.now();
+  const settingsStart = performance.now();
   await withTimeout(
-    "execute rumoca.renderTemplate",
-    () => vscode.commands.executeCommand("rumoca.renderTemplate"),
+    "execute rumoca.openSimulationSettings",
+    () => vscode.commands.executeCommand("rumoca.openSimulationSettings"),
     commandMaxMs,
   );
-  result.renderExecuteMs = Math.round(performance.now() - renderStart);
+  result.settingsExecuteMs = Math.round(performance.now() - settingsStart);
 
   writeResult(resultPath, result);
 };

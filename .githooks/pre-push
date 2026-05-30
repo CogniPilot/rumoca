@@ -20,12 +20,12 @@ if [[ -n "$required_toolchain" && "$active_toolchain" != "$required_toolchain"* 
 fi
 
 echo "pre-push: checking Rust file line counts across workspace..."
-cargo run --quiet --bin rum -- repo policy rust-file-lines --all-files
+cargo xtask repo policy rust-file-lines --all-files
 
 echo "pre-push: enforcing traversal policy..."
-cargo run --quiet --bin rumoca-traversal-policy-check
+cargo run --quiet --bin xtaskoca-traversal-policy-check
 
 echo "pre-push: running verify quick command (CI mirror without MSL parity)..."
-cargo run --bin rum -- verify quick
+cargo xtask verify quick
 
 echo "pre-push checks passed."

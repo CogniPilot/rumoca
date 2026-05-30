@@ -168,7 +168,7 @@ pub(super) struct NavigationTimingSummary {
 }
 
 pub(super) async fn maybe_log_completion_debug(client: &Client, message: impl Into<String>) {
-    if std::env::var_os("RUMOCA_LSP_COMPLETION_DEBUG").is_none() {
+    if !tracing::enabled!(target: "rumoca_tool_lsp::completion", tracing::Level::DEBUG) {
         return;
     }
     client
@@ -183,7 +183,7 @@ pub(super) fn write_completion_timing_summary(
     summary: &CompletionTimingSummary,
     explicit_path: Option<&Path>,
 ) {
-    let Some(path) = timing_output_path(explicit_path, "RUMOCA_LSP_COMPLETION_TIMING_FILE") else {
+    let Some(path) = timing_output_path(explicit_path) else {
         return;
     };
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
@@ -199,8 +199,7 @@ pub(super) fn write_completion_progress_summary(
     summary: &CompletionProgressSummary,
     explicit_path: Option<&Path>,
 ) {
-    let Some(path) = timing_output_path(explicit_path, "RUMOCA_LSP_COMPLETION_PROGRESS_FILE")
-    else {
+    let Some(path) = timing_output_path(explicit_path) else {
         return;
     };
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
@@ -216,7 +215,7 @@ pub(super) fn write_diagnostics_timing_summary(
     summary: &DiagnosticsTimingSummary,
     explicit_path: Option<&Path>,
 ) {
-    let Some(path) = timing_output_path(explicit_path, "RUMOCA_LSP_DIAGNOSTICS_TIMING_FILE") else {
+    let Some(path) = timing_output_path(explicit_path) else {
         return;
     };
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
@@ -232,7 +231,7 @@ pub(super) fn write_navigation_timing_summary(
     summary: &NavigationTimingSummary,
     explicit_path: Option<&Path>,
 ) {
-    let Some(path) = timing_output_path(explicit_path, "RUMOCA_LSP_NAVIGATION_TIMING_FILE") else {
+    let Some(path) = timing_output_path(explicit_path) else {
         return;
     };
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
@@ -248,7 +247,7 @@ pub(super) fn write_startup_timing_summary(
     summary: &StartupTimingSummary,
     explicit_path: Option<&Path>,
 ) {
-    let Some(path) = timing_output_path(explicit_path, "RUMOCA_LSP_STARTUP_TIMING_FILE") else {
+    let Some(path) = timing_output_path(explicit_path) else {
         return;
     };
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
@@ -260,10 +259,8 @@ pub(super) fn write_startup_timing_summary(
     let _ = writeln!(file, "{payload}");
 }
 
-fn timing_output_path(explicit_path: Option<&Path>, env_var: &str) -> Option<PathBuf> {
-    explicit_path
-        .map(Path::to_path_buf)
-        .or_else(|| std::env::var_os(env_var).map(PathBuf::from))
+fn timing_output_path(explicit_path: Option<&Path>) -> Option<PathBuf> {
+    explicit_path.map(Path::to_path_buf)
 }
 
 pub(super) fn diagnostics_trigger_label(trigger: DiagnosticsTrigger) -> &'static str {
@@ -666,7 +663,7 @@ fn collect_local_compile_unit_sources_with_lookup(
         if let Some(doc) = get_document(&uri)
             && !doc.content.is_empty()
         {
-            sources.push((uri, doc.content));
+            sources.push((uri, doc.content.to_string()));
             continue;
         }
 
@@ -733,12 +730,16 @@ pub(super) fn collect_simulation_parsed_docs_snapshot(
 }
 
 pub(super) fn is_project_config_uri(uri: &Url) -> bool {
+    // Rumoca task-file naming convention (`rum.toml` / `rum.<profile>.toml`) is
+    // the discovery hook; the `[rumoca]` marker section stays authoritative.
+    let matches = rumoca_compile::project::is_rumoca_task_filename;
     if let Ok(path) = uri.to_file_path() {
         return path
-            .components()
-            .any(|component| component.as_os_str() == ".rumoca");
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(matches);
     }
-    uri.path().contains("/.rumoca/")
+    uri.path().rsplit('/').next().is_some_and(matches)
 }
 
 pub(super) fn session_document_uri_key(uri: &Url) -> String {
@@ -746,84 +747,6 @@ pub(super) fn session_document_uri_key(uri: &Url) -> String {
         return path.to_string_lossy().to_string();
     }
     uri.path().to_string()
-}
-
-pub(super) fn parse_file_move_hints(value: Option<&Value>) -> Vec<ProjectFileMoveHint> {
-    let Some(Value::Array(items)) = value else {
-        return Vec::new();
-    };
-    let mut hints = Vec::new();
-    for item in items {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
-        let old_path = obj
-            .get("oldPath")
-            .or_else(|| obj.get("old_path"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let new_path = obj
-            .get("newPath")
-            .or_else(|| obj.get("new_path"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if old_path.is_empty() || new_path.is_empty() {
-            continue;
-        }
-        hints.push(ProjectFileMoveHint { old_path, new_path });
-    }
-    hints
-}
-
-pub(super) fn session_uri_path_to_pathbuf(uri_path: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Some(rest) = uri_path.strip_prefix('/') {
-            let bytes = rest.as_bytes();
-            if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-                return PathBuf::from(rest);
-            }
-        }
-    }
-    PathBuf::from(uri_path)
-}
-
-pub(super) fn collect_workspace_known_models_from_session(
-    session: &Session,
-    workspace_root: &Path,
-) -> Vec<String> {
-    let mut parsed_docs: Vec<(String, ast::StoredDefinition)> = Vec::new();
-    for uri in session.document_uris() {
-        let Some(document) = session.get_document(uri) else {
-            continue;
-        };
-        let Some(parsed) = document.parsed() else {
-            continue;
-        };
-        let path = session_uri_path_to_pathbuf(uri);
-        if !path.starts_with(workspace_root) || !path.is_file() {
-            continue;
-        }
-        parsed_docs.push((uri.to_string(), parsed.clone()));
-    }
-
-    if parsed_docs.is_empty() {
-        return Vec::new();
-    }
-
-    match merge_stored_definitions(parsed_docs) {
-        Ok(merged) => {
-            let mut names = collect_model_names(&merged);
-            names.sort();
-            names.dedup();
-            names
-        }
-        Err(_) => Vec::new(),
-    }
 }
 
 #[cfg(test)]
@@ -839,15 +762,12 @@ mod tests {
                 "title": "Viewer",
                 "type": "3d",
                 "y": [],
-                "scriptPath": ".rumoca/models/by-id/uuid/viewer_3d.js"
+                "scriptPath": "viewer_3d.js"
             }
         ]))
         .expect("parse views payload");
         assert_eq!(parsed.len(), 1);
-        assert_eq!(
-            parsed[0].script_path.as_deref(),
-            Some(".rumoca/models/by-id/uuid/viewer_3d.js")
-        );
+        assert_eq!(parsed[0].script_path.as_deref(), Some("viewer_3d.js"));
     }
 
     #[test]
@@ -859,12 +779,12 @@ mod tests {
             x: None,
             y: Vec::new(),
             script: None,
-            script_path: Some(".rumoca/models/by-id/uuid/viewer_3d.js".to_string()),
+            script_path: Some("viewer_3d.js".to_string()),
         });
         let encoded = serde_json::to_value(payload).expect("serialize payload");
         assert_eq!(
             encoded.get("scriptPath").and_then(Value::as_str),
-            Some(".rumoca/models/by-id/uuid/viewer_3d.js")
+            Some("viewer_3d.js")
         );
         assert!(encoded.get("script_path").is_none());
     }

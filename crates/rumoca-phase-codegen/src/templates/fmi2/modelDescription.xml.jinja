@@ -1,5 +1,5 @@
 {#- FMI 2.0 Model Exchange modelDescription.xml template. -#}
-{#- Generates a conformant modelDescription.xml from DAE IR. -#}
+{#- Generates FMI metadata from DAE metadata and Solve IR event rows. -#}
 {#- Reference: FMI 2.0.4 specification, §§2.2, 3.2 -#}
 {%- set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary"} -%}
 {#- Macro: compute total scalar size of a variable map -#}
@@ -23,6 +23,7 @@
 {%- set n_p = var_size(dae.p) | trim | int -%}
 {%- set n_z = var_size(dae.z) | trim | int -%}
 {%- set n_m = var_size(dae.m) | trim | int -%}
+{%- set solve_root_rows = solve.events.root_conditions.programs if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else [] -%}
 {#-
   Value reference layout (contiguous blocks):
     0          .. n_x-1        : states (x)
@@ -66,7 +67,7 @@
     guid="{{ model_name }}-rumoca"
 {% if dae.model_description %}    description="{{ xml_escape(dae.model_description) }}"
 {% endif %}    generationTool="Rumoca"
-    numberOfEventIndicators="{{ (dae.relation | default([]) | length) + (dae.synthetic_root_conditions | default([]) | length) }}">
+    numberOfEventIndicators="{{ solve_root_rows | length }}">
 
   <ModelExchange modelIdentifier="{{ model_name | sanitize }}"/>
 
@@ -85,7 +86,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "continuous", var, "exact") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "continuous", var, "exact") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -100,7 +101,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ deriv_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, ns_state_vr.offset) }}
+{{ deriv_var(source_ref(name, var.dims, i + 1), ns_vr.offset, ns_state_vr.offset) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% set ns_state_vr.offset = ns_state_vr.offset + 1 %}
 {% endfor %}
@@ -116,7 +117,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "continuous", var, "calculated") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "continuous", var, "calculated") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -130,7 +131,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "input", "continuous", var, none) }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "input", "continuous", var, none) }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -144,7 +145,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "output", "continuous", var, "calculated") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "output", "continuous", var, "calculated") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -158,7 +159,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "parameter", "fixed", var, "exact") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "parameter", "fixed", var, "exact") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -172,7 +173,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "discrete", var, "exact") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "discrete", var, "exact") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -186,7 +187,7 @@
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "discrete", var, "exact") }}
+{{ scalar_var(source_ref(name, var.dims, i + 1), ns_vr.offset, "local", "discrete", var, "exact") }}
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
 {% else %}

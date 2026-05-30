@@ -1,4 +1,8 @@
 use super::*;
+use crate::session::tests::semantic_cache_tests::{
+    expect_cached_child_compile, expect_cold_child_navigation, expect_warm_child_navigation,
+    set_child_compile_cache_marker, set_child_diagnostics_cache_sentinel,
+};
 
 fn expect_warm_child_diagnostics(session: &mut Session) {
     set_child_diagnostics_cache_sentinel(session);
@@ -44,7 +48,7 @@ end M;
     );
     assert!(
         !session.has_resolved_cached(),
-        "save diagnostics should not populate the legacy resolved owner"
+        "save diagnostics should not populate the model-stage resolved owner"
     );
     assert!(
         !session.has_standard_resolved_cached(),
@@ -205,7 +209,7 @@ end M;
         "M",
         SemanticDiagnosticsMode::Standard,
     )
-    .class_type = Some(ast::ClassType::Function);
+    .class_type = Some(rumoca_core::ClassType::Function);
     model_stage_semantic_diagnostics_artifact_mut(
         &mut session,
         "M",

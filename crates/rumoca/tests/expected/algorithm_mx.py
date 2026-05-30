@@ -195,7 +195,7 @@ def create_model():
     # Continuous Implicit Equations f_x (2)
     # =========================================================================
     f_x = ca.vertcat(
-        (der(x) - (-y)),  # equation from 
+        (der(x) - (-y)),  # top-level model equation
         (y - (k * x))  # algorithm assignment (algorithm from )
     )
 
@@ -328,6 +328,11 @@ def create_model():
     ))
     z0 = np.concatenate(_z0_parts) if _z0_parts else np.array([])
 
+    _zd0_parts = []
+    zd0 = np.concatenate(_zd0_parts) if _zd0_parts else np.array([])
+    u0 = np.zeros(n_u)
+    p_full0 = np.concatenate([p0, u0, zd0])
+
     return {
         'name': 'Model',
         't': t,
@@ -341,7 +346,10 @@ def create_model():
         'build_integrator': build_integrator,
         'x0': x0,
         'p0': p0,
+        'u0': u0,
         'z0': z0,
+        'zd0': zd0,
+        'p_full0': p_full0,
         'n_x': n_x,
         'n_z': n_z,
         'n_z_continuous': n_z_continuous,
@@ -373,13 +381,14 @@ def get_input_names():
     return []
 
 
-def simulate(x0=None, p0=None, u0=None, t_span=(0.0, 1.0), dt=0.01):
+def simulate(x0=None, p0=None, u0=None, zd0=None, t_span=(0.0, 1.0), dt=0.01):
     """Simulate the model using CasADi integrator.
 
     Args:
         x0: Initial state (numpy array). Uses model defaults if None.
         p0: Parameters (numpy array). Uses model defaults if None.
         u0: Inputs (numpy array). Uses zeros if None.
+        zd0: Discrete variables held fixed during continuous integration.
         t_span: Tuple of (t0, tf) time span.
         dt: Integration time step.
 
@@ -393,12 +402,14 @@ def simulate(x0=None, p0=None, u0=None, t_span=(0.0, 1.0), dt=0.01):
     if p0 is None:
         p0 = model['p0']
     if u0 is None:
-        u0 = np.zeros(model['n_u'])
+        u0 = model['u0']
+    if zd0 is None:
+        zd0 = model['zd0']
 
     t0, tf = t_span
     tgrid = np.arange(t0, tf + dt * 0.5, dt)
     integrator = model['build_integrator'](tgrid)
-    p_full = np.concatenate([p0, u0])
+    p_full = np.concatenate([p0, u0, zd0])
     result = integrator(x0=x0, p=p_full)
     states = np.array(result['xf'])
     return tgrid, states

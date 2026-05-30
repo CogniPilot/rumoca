@@ -1,0 +1,26 @@
+version = 1
+ir = "solve"
+name = "cuda-nvrtc-solve-jit"
+description = "Manifest-only CUDA NVRTC Solve JIT target for future batched GPU execution"
+execution_mode = "jit"
+deployment_class = "gpu"
+readiness_level = 0
+
+[capabilities]
+scalar_fallback = true
+events = false
+runtime_events = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+[capabilities.tensor]
+matmul = "native"
+linsolve = "native"
+elementwise = "native"
+reductions = "native"
+layout = "row-major"
+supports_dynamic_shapes = false
+sparse = false
+dtypes = ["f64"]

@@ -40,6 +40,7 @@ impl FunctionParam {
             name: name.into(),
             type_name: type_name.into(),
             dims: Vec::new(),
+            shape_expr: Vec::new(),
             default: None,
             description: None,
         }
@@ -48,6 +49,12 @@ impl FunctionParam {
     /// Create a new array parameter with dimensions.
     pub fn with_dims(mut self, dims: Vec<i64>) -> Self {
         self.dims = dims;
+        self
+    }
+
+    /// Preserve unevaluated shape expressions for structurally sized functions.
+    pub fn with_shape_expr(mut self, shape_expr: Vec<Subscript>) -> Self {
+        self.shape_expr = shape_expr;
         self
     }
 

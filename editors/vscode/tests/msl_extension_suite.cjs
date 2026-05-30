@@ -2,24 +2,22 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { performance } = require("node:perf_hooks");
 
-function envPath(name) {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`missing required env var: ${name}`);
+// Per-phase timeout budgets for the smoke (baked constants; previously
+// overridable via RUMOCA_VSCODE_SMOKE_*_MAX_MS env vars that were never set).
+const ACTIVATE_MAX_MS = 15000;
+const CODELENS_MAX_MS = 5000;
+const COMPLETION_MAX_MS = 20000;
+const HOVER_MAX_MS = 10000;
+const DEFINITION_MAX_MS = 10000;
+
+// Read a required string workspace setting under `rumoca.benchmark.*`. The
+// smoke runner writes these into the `.code-workspace` it launches (no env var).
+function requiredBenchmarkSetting(vscode, key) {
+  const value = vscode.workspace.getConfiguration("rumoca").get(key);
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`missing required workspace setting: rumoca.${key}`);
   }
   return value;
-}
-
-function envMs(name, fallback) {
-  const value = process.env[name];
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`invalid timeout env var ${name}=${value}`);
-  }
-  return parsed;
 }
 
 function labelText(label) {
@@ -58,13 +56,13 @@ exports.run = async function run() {
     findMslNavigationProbe,
   } = await import("./msl_extension_smoke_support.mjs");
 
-  const documentPath = envPath("RUMOCA_VSCODE_SMOKE_DOCUMENT");
-  const resultPath = envPath("RUMOCA_VSCODE_SMOKE_RESULT");
-  const activateMaxMs = envMs("RUMOCA_VSCODE_SMOKE_ACTIVATE_MAX_MS", 15000);
-  const codeLensMaxMs = envMs("RUMOCA_VSCODE_SMOKE_CODELENS_MAX_MS", 5000);
-  const completionMaxMs = envMs("RUMOCA_VSCODE_SMOKE_COMPLETION_MAX_MS", 20000);
-  const hoverMaxMs = envMs("RUMOCA_VSCODE_SMOKE_HOVER_MAX_MS", 10000);
-  const definitionMaxMs = envMs("RUMOCA_VSCODE_SMOKE_DEFINITION_MAX_MS", 10000);
+  const documentPath = requiredBenchmarkSetting(vscode, "benchmark.smoke.document");
+  const resultPath = requiredBenchmarkSetting(vscode, "benchmark.smoke.result");
+  const activateMaxMs = ACTIVATE_MAX_MS;
+  const codeLensMaxMs = CODELENS_MAX_MS;
+  const completionMaxMs = COMPLETION_MAX_MS;
+  const hoverMaxMs = HOVER_MAX_MS;
+  const definitionMaxMs = DEFINITION_MAX_MS;
 
   const extension = vscode.extensions.getExtension("JamesGoppert.rumoca-modelica");
   assert(extension, "Rumoca extension should be available in the extension host");

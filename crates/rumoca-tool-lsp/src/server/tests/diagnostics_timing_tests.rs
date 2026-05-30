@@ -222,7 +222,7 @@ fn save_publish_diagnostics_reuses_semantic_diagnostics_cache() {
 
         assert!(
             !server.session.read().await.has_resolved_cached(),
-            "save diagnostics should not populate the legacy resolved owner"
+            "save diagnostics should not populate the model-stage resolved owner"
         );
         assert!(
             !server.session.read().await.has_standard_resolved_cached(),

@@ -42,9 +42,12 @@ impl TypeChecker {
             BuiltinArgumentRule {
                 operator: "integer",
                 argument_name: "argument",
-                expected_type: "Real",
+                expected_type: "Real or Integer",
                 predicate: |root, type_table| {
-                    matches!(type_table.get(root), Some(Type::Builtin(BuiltinType::Real)))
+                    matches!(
+                        type_table.get(root),
+                        Some(Type::Builtin(BuiltinType::Real | BuiltinType::Integer))
+                    )
                 },
             },
         );
@@ -151,13 +154,14 @@ impl TypeChecker {
             location.end as usize,
         );
         let found = Self::format_type_name(type_table, found_type);
-        self.diagnostics.emit(CommonDiagnostic::error(
+        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
             "ET002",
             format!(
                 "{}() {} must have type `{}`, found `{found}`",
                 rule.operator, rule.argument_name, rule.expected_type
             ),
-            rumoca_core::PrimaryLabel::new(span).with_message("builtin argument here"),
+            "builtin argument here",
+            span,
         ));
     }
 

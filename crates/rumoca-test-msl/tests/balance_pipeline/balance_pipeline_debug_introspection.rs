@@ -7,29 +7,35 @@ use super::*;
 /// Print unknowns that appear in no equation (diagnostic helper).
 pub(super) fn print_orphaned_unknowns(dae: &rumoca_ir_dae::Dae) {
     use std::collections::HashSet as StdHashSet;
-    let mut eq_refs = StdHashSet::<rumoca_ir_dae::VarName>::new();
-    for eq in &dae.f_x {
+    let mut eq_refs = StdHashSet::<rumoca_compile::compile::core::VarName>::new();
+    for eq in &dae.continuous.equations {
         eq.rhs.collect_var_refs(&mut eq_refs);
     }
-    for eq in dae.f_z.iter().chain(dae.f_m.iter()).chain(dae.f_c.iter()) {
+    for eq in dae
+        .discrete
+        .real_updates
+        .iter()
+        .chain(dae.discrete.valued_updates.iter())
+        .chain(dae.conditions.equations.iter())
+    {
         eq.rhs.collect_var_refs(&mut eq_refs);
     }
-    for relation in &dae.relation {
+    for relation in &dae.conditions.relations {
         relation.collect_var_refs(&mut eq_refs);
     }
     println!("\n--- Orphaned unknowns (in no equation) ---");
     let mut orphaned = Vec::new();
-    for (n, v) in &dae.states {
+    for (n, v) in &dae.variables.states {
         if !eq_refs.contains(n) {
             orphaned.push((n.clone(), "state", v.size()));
         }
     }
-    for (n, v) in &dae.algebraics {
+    for (n, v) in &dae.variables.algebraics {
         if !eq_refs.contains(n) {
             orphaned.push((n.clone(), "alg", v.size()));
         }
     }
-    for (n, v) in &dae.outputs {
+    for (n, v) in &dae.variables.outputs {
         if !eq_refs.contains(n) {
             orphaned.push((n.clone(), "out", v.size()));
         }
@@ -91,12 +97,22 @@ pub(super) fn print_flat_variables(flat: &rumoca_ir_flat::Model) {
 }
 
 pub(super) fn print_dae_variables(dae: &Dae) {
-    let state_scalars: usize = dae.states.values().map(|v| v.size()).sum();
-    let algebraic_scalars: usize = dae.algebraics.values().map(|v| v.size()).sum();
-    let output_scalars: usize = dae.outputs.values().map(|v| v.size()).sum();
-    let input_scalars: usize = dae.inputs.values().map(|v| v.size()).sum();
-    let discrete_real_scalars: usize = dae.discrete_reals.values().map(|v| v.size()).sum();
-    let discrete_valued_scalars: usize = dae.discrete_valued.values().map(|v| v.size()).sum();
+    let state_scalars: usize = dae.variables.states.values().map(|v| v.size()).sum();
+    let algebraic_scalars: usize = dae.variables.algebraics.values().map(|v| v.size()).sum();
+    let output_scalars: usize = dae.variables.outputs.values().map(|v| v.size()).sum();
+    let input_scalars: usize = dae.variables.inputs.values().map(|v| v.size()).sum();
+    let discrete_real_scalars: usize = dae
+        .variables
+        .discrete_reals
+        .values()
+        .map(|v| v.size())
+        .sum();
+    let discrete_valued_scalars: usize = dae
+        .variables
+        .discrete_valued
+        .values()
+        .map(|v| v.size())
+        .sum();
 
     println!(
         "\n--- DAE Scalar Summary ---\n  states={} algebraics={} outputs={} inputs={} discrete_reals={} discrete_valued={}",
@@ -109,50 +125,52 @@ pub(super) fn print_dae_variables(dae: &Dae) {
     );
 
     println!("\n--- States ---");
-    for (n, v) in &dae.states {
+    for (n, v) in &dae.variables.states {
         println!("  {} (sc={})", n, v.size());
     }
     println!("\n--- Algebraics ---");
-    for (n, v) in &dae.algebraics {
+    for (n, v) in &dae.variables.algebraics {
         println!("  {} (sc={})", n, v.size());
     }
     println!("\n--- Outputs ---");
-    for (n, v) in &dae.outputs {
+    for (n, v) in &dae.variables.outputs {
         println!("  {} (sc={})", n, v.size());
     }
     println!("\n--- Inputs ---");
-    for (n, v) in &dae.inputs {
+    for (n, v) in &dae.variables.inputs {
         println!("  {} (dims={:?})", n, v.dims);
     }
     println!("\n--- Parameters ---");
-    for (n, _) in &dae.parameters {
+    for (n, _) in &dae.variables.parameters {
         println!("  {}", n);
     }
     println!("\n--- Constants ---");
-    for (n, _) in &dae.constants {
+    for (n, _) in &dae.variables.constants {
         println!("  {}", n);
     }
     println!("\n--- Discrete Reals ---");
-    for (n, _) in &dae.discrete_reals {
+    for (n, _) in &dae.variables.discrete_reals {
         println!("  {}", n);
     }
     println!("\n--- Discrete Valued ---");
-    for (n, _) in &dae.discrete_valued {
+    for (n, _) in &dae.variables.discrete_valued {
         println!("  {}", n);
     }
 }
 
 pub(super) fn print_dae_equations(dae: &Dae, eq_limit: usize) {
-    let shown = dae.f_x.len().min(eq_limit);
+    let shown = dae.continuous.equations.len().min(eq_limit);
     println!(
         "\n--- Continuous equations f_x ({}) showing {} ---",
-        dae.f_x.len(),
+        dae.continuous.equations.len(),
         shown
     );
-    for (i, eq) in dae.f_x.iter().take(eq_limit).enumerate() {
+    for (i, eq) in dae.continuous.equations.iter().take(eq_limit).enumerate() {
         let lhs_name = match &eq.rhs {
-            rumoca_ir_dae::Expression::Binary { lhs, .. } => match lhs.as_ref() {
-                rumoca_ir_dae::Expression::VarRef { name, .. } => name.as_str().to_string(),
+            rumoca_compile::compile::core::Expression::Binary { lhs, .. } => match lhs.as_ref() {
+                rumoca_compile::compile::core::Expression::VarRef { name, .. } => {
+                    name.as_str().to_string()
+                }
                 _ => "??".to_string(),
             },
             _ => "??".to_string(),
@@ -181,8 +199,11 @@ pub(super) fn print_dae_equations(dae: &Dae, eq_limit: usize) {
             );
         }
     }
-    if dae.f_x.len() > shown {
-        println!("  ... omitted {} equations", dae.f_x.len() - shown);
+    if dae.continuous.equations.len() > shown {
+        println!(
+            "  ... omitted {} equations",
+            dae.continuous.equations.len() - shown
+        );
     }
 }
 
@@ -190,18 +211,19 @@ pub(super) fn print_dae_equations(dae: &Dae, eq_limit: usize) {
 pub(super) fn print_equations_without_unknowns(dae: &Dae) {
     use std::collections::HashSet;
 
-    let unknowns: HashSet<rumoca_ir_dae::VarName> = dae
+    let unknowns: HashSet<rumoca_compile::compile::core::VarName> = dae
+        .variables
         .states
         .keys()
-        .chain(dae.algebraics.keys())
-        .chain(dae.outputs.keys())
+        .chain(dae.variables.algebraics.keys())
+        .chain(dae.variables.outputs.keys())
         .cloned()
         .collect();
 
     let mut total_sc = 0usize;
     let mut count = 0usize;
     println!("\n--- Equations Without Unknown Refs ---");
-    for (i, eq) in dae.f_x.iter().enumerate() {
+    for (i, eq) in dae.continuous.equations.iter().enumerate() {
         let mut refs = HashSet::new();
         eq.rhs.collect_var_refs(&mut refs);
         let has_unknown = refs.iter().any(|r| {
@@ -230,15 +252,21 @@ pub(super) fn print_compiled_debug_with_limit(
     flat: &rumoca_ir_flat::Model,
     eq_limit: usize,
 ) {
-    println!("Success! {}", rumoca_analysis_dae::balance_detail(dae));
+    println!(
+        "Success! {}",
+        rumoca_phase_dae::balance::balance_detail(dae)
+    );
     println!(
         "active_discrete_scalar_count = {}",
         active_discrete_scalar_count(flat, dae)
     );
-    println!("raw interface_flow_count = {}", dae.interface_flow_count);
+    println!(
+        "raw interface_flow_count = {}",
+        dae.metadata.interface_flow_count
+    );
     println!(
         "raw overconstrained_interface_count = {}",
-        dae.overconstrained_interface_count
+        dae.metadata.overconstrained_interface_count
     );
     print_flat_variables(flat);
     print_dae_variables(dae);

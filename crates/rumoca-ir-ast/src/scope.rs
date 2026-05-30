@@ -3,8 +3,8 @@
 //! This module provides the ScopeTree for tracking name visibility
 //! and performing name lookup during semantic analysis.
 
-use indexmap::IndexMap;
-use rumoca_core::{DefId, ScopeId};
+use crate::AstIndexMap as IndexMap;
+use rumoca_core::{ComponentPath, DefId, ScopeId};
 use serde::{Deserialize, Serialize};
 
 /// MLS §5.3: Scope tree for name lookup.
@@ -25,7 +25,7 @@ impl ScopeTree {
         tree.scopes.push(Scope {
             kind: ScopeKind::Global,
             parent: None,
-            members: IndexMap::new(),
+            members: IndexMap::default(),
             imports: Vec::new(),
         });
         tree
@@ -42,7 +42,7 @@ impl ScopeTree {
         self.scopes.push(Scope {
             kind,
             parent: Some(parent),
-            members: IndexMap::new(),
+            members: IndexMap::default(),
             imports: Vec::new(),
         });
         id
@@ -59,7 +59,7 @@ impl ScopeTree {
     }
 
     /// Add a member to a scope.
-    pub fn add_member(&mut self, scope: ScopeId, name: String, def_id: DefId) {
+    pub fn add_member(&mut self, scope: ScopeId, name: ComponentPath, def_id: DefId) {
         if let Some(s) = self.get_mut(scope) {
             s.members.insert(name, def_id);
         }
@@ -76,7 +76,7 @@ impl ScopeTree {
     ///
     /// MLS §5.3.1: Name lookup starts in the current scope and proceeds
     /// to enclosing scopes until the name is found or global scope is reached.
-    pub fn lookup(&self, scope: ScopeId, name: &str) -> Option<DefId> {
+    pub fn lookup(&self, scope: ScopeId, name: &ComponentPath) -> Option<DefId> {
         let mut current = Some(scope);
 
         while let Some(scope_id) = current {
@@ -94,15 +94,15 @@ impl ScopeTree {
                 return Some(def_id);
             }
 
-            // Move to parent scope
-            current = s.parent;
+            // MLS §5.3.1: encapsulated scopes do not see enclosing scopes.
+            current = self.next_lookup_scope(scope_id, s);
         }
 
         None
     }
 
     /// Look up a name only in the given scope (no parent search).
-    pub fn lookup_local(&self, scope: ScopeId, name: &str) -> Option<DefId> {
+    pub fn lookup_local(&self, scope: ScopeId, name: &ComponentPath) -> Option<DefId> {
         self.get(scope).and_then(|s| s.members.get(name).copied())
     }
 
@@ -115,7 +115,7 @@ impl ScopeTree {
     pub fn lookup_excluding(
         &self,
         scope: ScopeId,
-        name: &str,
+        name: &ComponentPath,
         exclude: Option<DefId>,
     ) -> Option<DefId> {
         let mut current = Some(scope);
@@ -145,8 +145,8 @@ impl ScopeTree {
                 return import_result;
             }
 
-            // Move to parent scope
-            current = s.parent;
+            // MLS §5.3.1: encapsulated scopes do not see enclosing scopes.
+            current = self.next_lookup_scope(scope_id, s);
         }
 
         None
@@ -155,6 +155,14 @@ impl ScopeTree {
     /// Get the parent scope.
     pub fn parent(&self, scope: ScopeId) -> Option<ScopeId> {
         self.get(scope).and_then(|s| s.parent)
+    }
+
+    fn next_lookup_scope(&self, scope_id: ScopeId, scope: &Scope) -> Option<ScopeId> {
+        if scope.is_encapsulated() && scope_id != ScopeId::GLOBAL {
+            Some(ScopeId::GLOBAL)
+        } else {
+            scope.parent
+        }
     }
 
     /// Get the number of scopes.
@@ -176,7 +184,7 @@ pub struct Scope {
     /// Parent scope (None for global scope).
     pub parent: Option<ScopeId>,
     /// Names defined in this scope.
-    pub members: IndexMap<String, DefId>,
+    pub members: IndexMap<ComponentPath, DefId>,
     /// Imports in this scope (MLS §13.2).
     pub imports: Vec<Import>,
 }
@@ -220,7 +228,7 @@ pub enum Import {
     /// Makes `C` available as `D`.
     Renamed {
         /// The alias name.
-        alias: String,
+        alias: ComponentPath,
         /// The full path being imported.
         path: Vec<String>,
         /// The definition being imported.
@@ -232,17 +240,17 @@ pub enum Import {
         /// The path to the package.
         path: Vec<String>,
         /// All names imported from the package.
-        names: IndexMap<String, DefId>,
+        names: IndexMap<ComponentPath, DefId>,
     },
 }
 
 impl Import {
     /// Check if this import resolves the given name.
-    pub fn resolves(&self, name: &str) -> Option<DefId> {
+    pub fn resolves(&self, name: &ComponentPath) -> Option<DefId> {
         match self {
             Import::Qualified { path, def_id } => {
                 // The last component of the path is the name
-                if path.last().map(|s| s.as_str()) == Some(name) {
+                if path.last().map(|s| s.as_str()) == Some(name.as_str()) {
                     Some(*def_id)
                 } else {
                     None

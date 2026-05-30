@@ -5,7 +5,7 @@
 //! Uses miette for rich diagnostic output with error codes and help text.
 
 use miette::Diagnostic;
-use rumoca_core::{BoxedResult, SourceSpan, error_constructor};
+use rumoca_core::{BoxedResult, SourceSpan, Span, error_constructor, span_to_source_span};
 use thiserror::Error;
 
 /// Type alias for ToDae results with boxed errors.
@@ -24,18 +24,6 @@ pub enum ToDaeError {
         equations: usize,
         unknowns: usize,
         balance: i64,
-    },
-
-    /// A state variable was expected but not found.
-    #[error("expected state variable not found: {name}")]
-    #[diagnostic(
-        code(rumoca::todae::ED002),
-        help("state variables must have der() calls in the equation system")
-    )]
-    MissingState {
-        name: String,
-        #[label("expected state here")]
-        span: SourceSpan,
     },
 
     /// Internal error during DAE conversion.
@@ -81,17 +69,17 @@ pub enum ToDaeError {
         span: SourceSpan,
     },
 
-    /// Constructor field projection cannot be resolved from constructor signature.
-    #[error("constructor field projection cannot be resolved: {projection}")]
+    /// Constructor field selection cannot be resolved from constructor signature.
+    #[error("constructor field selection cannot be resolved: {selection}")]
     #[diagnostic(
         code(rumoca::todae::ED007),
         help(
-            "ensure constructor field projections are fully resolved during flattening, with constructor signature fields available"
+            "ensure constructor field selections are fully resolved during flattening, with constructor signature fields available"
         )
     )]
-    ConstructorFieldProjectionUnresolved {
-        projection: String,
-        #[label("unresolved constructor field projection here")]
+    ConstructorFieldSelectionUnresolved {
+        selection: String,
+        #[label("unresolved constructor field selection here")]
         span: SourceSpan,
     },
 
@@ -116,7 +104,7 @@ pub enum ToDaeError {
     #[diagnostic(
         code(rumoca::todae::ED009),
         help(
-            "clock constructor timing must be lowered during ToDae; dynamic/unsupported constructors should fail before simulation"
+            "supported static forms include Clock(period), Clock(intervalCounter, resolution), shiftSample(...), backSample(...), and aliases resolved to those forms; event Clock(condition) remains dynamic, and other unresolved constructors must fail before simulation"
         )
     )]
     UnresolvedClockSchedule {
@@ -192,12 +180,29 @@ pub enum ToDaeError {
             "runtime DAE must provide coherent variable partitions and discrete update partitions before simulation"
         )
     )]
-    RuntimeContractViolation { detail: String },
+    RuntimeContractViolation {
+        detail: String,
+        #[label("invalid runtime contract originates here")]
+        span: SourceSpan,
+    },
+
+    /// SPEC_0007 Stage 3 Contract: no source temporal operator may survive into solver-facing DAE-IR.
+    #[error("source temporal operator survived DAE boundary: {detail}")]
+    #[diagnostic(
+        code(rumoca::todae::ED016),
+        help(
+            "SPEC_0007 Stage 3 Contract requires DAE temporal lowering to convert pre/edge/change/sample/previous into Appendix B variables, conditions, schedules, and ordinary equations before the DAE stage exits"
+        )
+    )]
+    SourceTemporalOperatorSurvivedDaeBoundary {
+        detail: String,
+        #[label("source temporal operator survived here")]
+        span: SourceSpan,
+    },
 }
 
 impl ToDaeError {
     // Constructor methods using the error_constructor! macro
-    error_constructor!(missing_state, MissingState { name: String });
     error_constructor!(reinit_non_state, ReinitNonState { name: String });
     error_constructor!(
         unresolved_function_call,
@@ -205,8 +210,8 @@ impl ToDaeError {
     );
     error_constructor!(function_without_body, FunctionWithoutBody { name: String });
     error_constructor!(
-        constructor_field_projection_unresolved,
-        ConstructorFieldProjectionUnresolved { projection: String }
+        constructor_field_selection_unresolved,
+        ConstructorFieldSelectionUnresolved { selection: String }
     );
     error_constructor!(unresolved_reference, UnresolvedReference { name: String });
     error_constructor!(
@@ -223,6 +228,10 @@ impl ToDaeError {
     error_constructor!(
         strict_solver_dae_violation,
         StrictSolverDaeViolation { detail: String }
+    );
+    error_constructor!(
+        source_temporal_operator_survived_dae_boundary,
+        SourceTemporalOperatorSurvivedDaeBoundary { detail: String }
     );
 
     /// Create an Unbalanced error (no span, computed balance).
@@ -269,8 +278,14 @@ impl ToDaeError {
 
     /// Create a runtime contract invariant error.
     pub fn runtime_contract_violation(detail: impl Into<String>) -> Self {
+        Self::runtime_contract_violation_at(detail, Span::DUMMY)
+    }
+
+    /// Create a runtime contract invariant error with the best available IR span.
+    pub fn runtime_contract_violation_at(detail: impl Into<String>, span: Span) -> Self {
         Self::RuntimeContractViolation {
             detail: detail.into(),
+            span: span_to_source_span(span),
         }
     }
 }
@@ -293,14 +308,101 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_state_with_help() {
+    fn active_todae_errors_keep_stable_diagnostic_codes() {
         let span = Span::from_offsets(SourceId(0), 0, 10);
-        let err = ToDaeError::missing_state("x", span);
-
-        // Check that help text is present
         use miette::Diagnostic;
-        let help = err.help().map(|h| h.to_string());
-        assert!(help.is_some());
-        assert!(help.unwrap().contains("der()"));
+
+        let cases = [
+            (
+                ToDaeError::unbalanced(5, 3),
+                "rumoca::todae::ED001",
+                Some("balanced model"),
+            ),
+            (
+                ToDaeError::internal("broken invariant"),
+                "rumoca::todae::ED003",
+                None,
+            ),
+            (
+                ToDaeError::reinit_non_state("x", span),
+                "rumoca::todae::ED004",
+                Some("reinit"),
+            ),
+            (
+                ToDaeError::unresolved_function_call("missingFn", span),
+                "rumoca::todae::ED005",
+                Some("called function"),
+            ),
+            (
+                ToDaeError::function_without_body("f", span),
+                "rumoca::todae::ED006",
+                Some("algorithm body"),
+            ),
+            (
+                ToDaeError::constructor_field_selection_unresolved("C.x", span),
+                "rumoca::todae::ED007",
+                Some("constructor field selections"),
+            ),
+            (
+                ToDaeError::unresolved_reference("x", span),
+                "rumoca::todae::ED008",
+                Some("flattened"),
+            ),
+            (
+                ToDaeError::unresolved_clock_schedule(2, 1, "Clock(x)"),
+                "rumoca::todae::ED009",
+                Some("Clock(period)"),
+            ),
+            (
+                ToDaeError::discrete_solved_form_violation("cycle", span),
+                "rumoca::todae::ED010",
+                Some("f_m"),
+            ),
+            (
+                ToDaeError::condition_partition_violation("mismatch"),
+                "rumoca::todae::ED011",
+                Some("f_c"),
+            ),
+            (
+                ToDaeError::runtime_metadata_violation("missing interval"),
+                "rumoca::todae::ED012",
+                Some("runtime metadata"),
+            ),
+            (
+                ToDaeError::unsupported_algorithm("model", "while", span),
+                "rumoca::todae::ED013",
+                Some("algorithms must lower"),
+            ),
+            (
+                ToDaeError::strict_solver_dae_violation("sample", span),
+                "rumoca::todae::ED014",
+                Some("lower synchronous constructs"),
+            ),
+            (
+                ToDaeError::runtime_contract_violation("overlap"),
+                "rumoca::todae::ED015",
+                Some("runtime DAE"),
+            ),
+            (
+                ToDaeError::source_temporal_operator_survived_dae_boundary("pre(x)", span),
+                "rumoca::todae::ED016",
+                Some("pre/edge/change/sample/previous"),
+            ),
+        ];
+
+        for (err, expected_code, help_fragment) in cases {
+            assert_eq!(
+                err.code().map(|c| c.to_string()).as_deref(),
+                Some(expected_code),
+                "unexpected diagnostic code for {err:?}"
+            );
+            if let Some(fragment) = help_fragment {
+                let help = err.help().map(|h| h.to_string()).unwrap_or_default();
+                assert!(
+                    help.contains(fragment),
+                    "expected help for {err:?} to contain `{fragment}`, got `{help}`"
+                );
+            }
+        }
     }
 }

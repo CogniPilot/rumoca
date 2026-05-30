@@ -19,7 +19,6 @@
     const RESULTS_ROOT = '.rumoca/results';
     const RESULTS_RUNS_ROOT = `${RESULTS_ROOT}/runs`;
     const RESULTS_INDEX_PATH = `${RESULTS_ROOT}/index.json`;
-    const MODEL_BY_ID_ROOT = '.rumoca/models/by-id';
 
     function sanitizeIdentifier(input) {
         const text = String(input || '');
@@ -63,10 +62,6 @@
         return cleaned.length > 0 ? cleaned : 'view';
     }
 
-    function stableModelUuid(model) {
-        return `${sanitizeIdentifier(model)}_${fnv1aHash(model)}`;
-    }
-
     function stableResultStem(model) {
         return `${sanitizeResultIdentifier(model)}_${fnv1aHash(model)}`;
     }
@@ -89,12 +84,12 @@
             .replace(/\u2029/g, '\\u2029');
     }
 
-    function modelScopedViewerScriptRelativePath(uuid, viewId) {
-        return `${MODEL_BY_ID_ROOT}/${uuid}/${sanitizeResultsPathSegment(viewId)}.js`;
+    function modelScopedViewerScriptRelativePath(_model, viewId) {
+        return `${sanitizeResultsPathSegment(viewId)}.js`;
     }
 
     function preferredViewerScriptPathForModel(model, viewId) {
-        return modelScopedViewerScriptRelativePath(stableModelUuid(model), viewId);
+        return modelScopedViewerScriptRelativePath(model, viewId);
     }
 
     function lastSimulationResultPath(model) {
@@ -987,11 +982,41 @@ ctx.onFrame = (api) => {
         const features = value && typeof value === 'object' ? value : {};
         return {
             addSourceRootPath: features.addSourceRootPath !== false,
+            simulationSettings: features.simulationSettings !== false,
+            codegenSettings: features.codegenSettings !== false,
+            sourceRootSettings: features.sourceRootSettings !== false,
+            resultsPanels: features.resultsPanels !== false,
             prepareModels: features.prepareModels !== false,
-            resyncSidecars: features.resyncSidecars !== false,
             workspaceSettings: features.workspaceSettings !== false,
             userSettings: features.userSettings !== false,
             openViewScript: features.openViewScript !== false,
+        };
+    }
+
+    function normalizeHostedCodegenTemplates(value) {
+        if (!Array.isArray(value)) {
+            return [];
+        }
+        return value
+            .map((entry) => {
+                const template = entry && typeof entry === 'object' ? entry : {};
+                return {
+                    id: trimMaybeString(template.id),
+                    label: trimMaybeString(template.label),
+                };
+            })
+            .filter((entry) => entry.id.length > 0 && entry.label.length > 0);
+    }
+
+    function normalizeHostedCodegenSettingsCurrent(value) {
+        const current = value && typeof value === 'object' ? value : {};
+        const mode = trimMaybeString(current.mode) === 'custom-target'
+                ? 'custom-target'
+                : 'target';
+        return {
+            mode,
+            builtinTargetId: trimMaybeString(current.builtinTargetId) || 'sympy',
+            customTargetPath: trimMaybeString(current.customTargetPath),
         };
     }
 
@@ -1020,10 +1045,19 @@ ctx.onFrame = (api) => {
     function normalizeHostedSimulationSettingsState(args) {
         const activeModel = trimMaybeString(args && args.activeModel) || 'Model';
         const availableModels = normalizeStringArray(args && args.availableModels);
+        const inheritedSourceRootPaths = args && args.inheritedSourceRootPaths !== undefined
+            ? args.inheritedSourceRootPaths
+            : args && args.fallbackCurrent
+                ? args.fallbackCurrent.sourceRootPaths
+                : [];
         return {
             activeModel,
             availableModels: availableModels.length > 0 ? availableModels : [activeModel],
             current: normalizeHostedSimulationSettingsCurrent(args && args.current),
+            workspaceSourceRootPaths: normalizeStringArray(args && args.workspaceSourceRootPaths),
+            inheritedSourceRootPaths: normalizeStringArray(inheritedSourceRootPaths),
+            codegen: normalizeHostedCodegenSettingsCurrent(args && args.codegen),
+            codegenTemplates: normalizeHostedCodegenTemplates(args && args.codegenTemplates),
             views: normalizeVisualizationViews(args && args.views),
             features: normalizeHostedSimulationSettingsFeatures(args && args.features),
         };
@@ -1031,10 +1065,19 @@ ctx.onFrame = (api) => {
 
     function buildHostedSimulationSettingsState(args) {
         const configuredViews = normalizeVisualizationViews(args && args.views);
+        const fallbackCurrent = args && args.fallbackCurrent;
         return normalizeHostedSimulationSettingsState({
             activeModel: args && args.activeModel,
             availableModels: args && args.availableModels,
-            current: (args && args.current) ?? (args && args.fallbackCurrent),
+            current: (args && args.current) ?? fallbackCurrent,
+            workspaceSourceRootPaths: args && args.workspaceSourceRootPaths,
+            inheritedSourceRootPaths: args && args.inheritedSourceRootPaths !== undefined
+                ? args.inheritedSourceRootPaths
+                : args && args.fallbackCurrent
+                    ? args.fallbackCurrent.sourceRootPaths
+                    : [],
+            codegen: (args && args.codegen) ?? (args && args.fallbackCodegen),
+            codegenTemplates: args && args.codegenTemplates,
             views: configuredViews.length > 0
                 ? configuredViews
                 : normalizeVisualizationViews(args && args.defaultViews),
@@ -1062,6 +1105,7 @@ ctx.onFrame = (api) => {
             dt,
             outputDir: trimMaybeString(payload && payload.outputDir),
             sourceRootOverrides: normalizeStringArray(payload && payload.sourceRootPaths),
+            codegen: normalizeHostedCodegenSettingsCurrent(payload && payload.codegen),
             views: normalizeVisualizationViews(payload && payload.views),
         };
     }
@@ -1071,12 +1115,20 @@ ctx.onFrame = (api) => {
         const current = normalizeHostedSimulationSettingsCurrent(
             source.current && typeof source.current === 'object' ? source.current : source,
         );
+        const sourceRootOverrides = source.sourceRootOverrides !== undefined
+            ? source.sourceRootOverrides
+            : source.current && source.current.sourceRootOverrides !== undefined
+                ? source.current.sourceRootOverrides
+                : source.current && source.current.sourceRootPaths !== undefined
+                    ? source.current.sourceRootPaths
+                    : source.sourceRootPaths;
         return {
             solver: current.solver,
             tEnd: current.tEnd,
             dt: current.dt,
             outputDir: current.outputDir,
-            sourceRootPaths: [...current.sourceRootOverrides],
+            sourceRootPaths: normalizeStringArray(sourceRootOverrides),
+            codegen: normalizeHostedCodegenSettingsCurrent(source.codegen),
             views: normalizeVisualizationViews(source.views),
         };
     }
@@ -1224,27 +1276,6 @@ ctx.onFrame = (api) => {
         return value;
     }
 
-    function normalizeSettingsResyncSidecarsResult(value) {
-        if (value && typeof value === 'object' && trimMaybeString(value.message)) {
-            return value;
-        }
-        if (typeof value === 'string') {
-            return { message: value };
-        }
-        if (value && typeof value === 'object') {
-            const remapped = Number(
-                value.remapped_models ?? value.remappedModels ?? 0,
-            );
-            const parseFailures = Number(
-                value.parse_failures ?? value.parseFailures ?? 0,
-            );
-            return {
-                message: `Resync complete: remapped=${remapped}, parseFailures=${parseFailures}`,
-            };
-        }
-        return { message: 'Resync completed.' };
-    }
-
     function normalizeSettingsPrepareModelsResult(value) {
         if (value && typeof value === 'object' && trimMaybeString(value.message)) {
             return value;
@@ -1333,6 +1364,7 @@ ctx.onFrame = (api) => {
                         outputDir: normalized.outputDir,
                         sourceRootOverrides: [...normalized.sourceRootOverrides],
                     },
+                    codegenSettings: normalized.codegen,
                     current: {
                         solver: normalized.solver,
                         tEnd: normalized.tEnd,
@@ -1398,16 +1430,24 @@ ctx.onFrame = (api) => {
                     await args.pickSourceRootPath({ model: currentModel(), payload }),
                 );
         }
+        if (typeof args?.pickWorkspaceSourceRootPath === 'function') {
+            handlers.pickWorkspaceSourceRootPath = async ({ payload }) =>
+                normalizeSettingsPickSourceRootPathResult(
+                    await args.pickWorkspaceSourceRootPath({ model: currentModel(), payload }),
+                );
+        }
+        if (typeof args?.saveWorkspaceSourceRootPaths === 'function') {
+            handlers.saveWorkspaceSourceRootPaths = async ({ payload }) =>
+                await args.saveWorkspaceSourceRootPaths({
+                    model: currentModel(),
+                    paths: normalizeStringArray(payload && payload.paths),
+                    payload,
+                });
+        }
         if (typeof args?.prepareModels === 'function') {
             handlers.prepareModels = async ({ payload }) =>
                 normalizeSettingsPrepareModelsResult(
                     await args.prepareModels({ model: currentModel(), payload }),
-                );
-        }
-        if (typeof args?.resyncSidecars === 'function') {
-            handlers.resyncSidecars = async ({ payload }) =>
-                normalizeSettingsResyncSidecarsResult(
-                    await args.resyncSidecars({ model: currentModel(), payload }),
                 );
         }
         for (const key of ['openWorkspaceSettings', 'openUserSettings']) {
@@ -1423,17 +1463,43 @@ ctx.onFrame = (api) => {
         const activeModel = state.activeModel;
         const availableModels = state.availableModels;
         const current = state.current;
+        const codegen = state.codegen;
+        const codegenTemplates = state.codegenTemplates;
         const features = state.features;
+        const workspaceSourceRootPaths = normalizeStringArray(state.workspaceSourceRootPaths);
+        const inheritedSourceRootPaths = normalizeStringArray(state.inheritedSourceRootPaths);
+        const inheritedSourceRootsMarkup = inheritedSourceRootPaths.length > 0
+            ? `
+      <div class="field">
+        <label for="inheritedSourceRootPaths">Effective Inherited Source Root Paths</label>
+        <textarea id="inheritedSourceRootPaths" readonly>${escapeHtml(inheritedSourceRootPaths.join('\n'))}</textarea>
+        <div class="hint">These paths come from workspace Rumoca settings and MODELICAPATH.</div>
+      </div>`
+            : '';
         const addSourceRootPathAttrs = features.addSourceRootPath ? '' : ' style="display:none;"';
+        const simulationAttrs = features.simulationSettings ? '' : ' style="display:none;"';
+        const codegenAttrs = features.codegenSettings ? '' : ' style="display:none;"';
+        const sourceRootsAttrs = features.sourceRootSettings ? '' : ' style="display:none;"';
+        const resultsPanelsAttrs = features.resultsPanels ? '' : ' style="display:none;"';
         const prepareModelsAttrs = features.prepareModels ? '' : ' style="display:none;"';
-        const resyncSidecarsAttrs = features.resyncSidecars ? '' : ' style="display:none;"';
         const workspaceSettingsAttrs = features.workspaceSettings ? '' : ' style="display:none;"';
         const userSettingsAttrs = features.userSettings ? '' : ' style="display:none;"';
         const openViewScriptAttrs = features.openViewScript ? '' : ' style="display:none;"';
+        const codegenTemplateOptions = codegenTemplates.length > 0
+            ? codegenTemplates
+                .map((template) => {
+                    const selected = template.id === codegen.builtinTargetId ? ' selected' : '';
+                    return `<option value="${escapeHtml(template.id)}"${selected}>${escapeHtml(template.label)}</option>`;
+                })
+                .join('')
+            : '<option value="sympy">sympy</option>';
         const initialState = {
             activeModel,
             availableModels,
             current,
+            inheritedSourceRootPaths,
+            codegen,
+            codegenTemplates,
             views: state.views,
         };
         const initialStateJson = escapeInlineScriptJson(JSON.stringify(initialState));
@@ -1610,7 +1676,7 @@ ctx.onFrame = (api) => {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card"${simulationAttrs}>
       <h3>Solver</h3>
       <div class="grid">
         <div class="field">
@@ -1632,20 +1698,56 @@ ctx.onFrame = (api) => {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card"${codegenAttrs}>
+      <h3>Codegen</h3>
+      <div class="grid">
+        <div class="field">
+          <label for="codegenMode">Codegen Source</label>
+          <select id="codegenMode">
+            <option value="target"${codegen.mode === 'target' ? ' selected' : ''}>Built-in target</option>
+            <option value="custom-target"${codegen.mode === 'custom-target' ? ' selected' : ''}>Custom target directory</option>
+          </select>
+        </div>
+        <div class="field" id="codegenBuiltinTargetField">
+          <label for="codegenBuiltinTargetId">Built-in Target</label>
+          <select id="codegenBuiltinTargetId">${codegenTemplateOptions}</select>
+        </div>
+        <div class="field" id="codegenCustomTargetField">
+          <label for="codegenCustomTargetPath">Custom Target Directory</label>
+          <input id="codegenCustomTargetPath" placeholder="templates/my_target" value="${escapeHtml(codegen.customTargetPath)}">
+        </div>
+        <div class="field" id="codegenBuiltinField" style="display:none;">
+          <label for="codegenBuiltinTemplateId">Built-in Target</label>
+          <select id="codegenBuiltinTemplateId">${codegenTemplateOptions}</select>
+        </div>
+      </div>
+      <div class="hint" style="margin-top: 8px;">Target rendering uses target.toml directories.</div>
+    </div>
+
+    <div class="card"${sourceRootsAttrs}>
       <h3>Source Root Paths</h3>
       <div class="toolbar">
-        <button id="addSourceRootPath" class="ghost"${addSourceRootPathAttrs}>Add Source Root Directory...</button>
-        <button id="clearSourceRoots" class="ghost">Clear</button>
+        <button id="addWorkspaceSourceRootPath" class="ghost"${addSourceRootPathAttrs}>Add Workspace Directory...</button>
+        <button id="saveWorkspaceSourceRootPaths" class="ghost"${workspaceSettingsAttrs}>Save Workspace Paths</button>
       </div>
       <div class="field">
-        <label for="sourceRootPaths">Additional Source Root Paths For This Model</label>
-        <textarea id="sourceRootPaths" placeholder="/path/to/ModelicaStandardLibrary"></textarea>
-        <div class="hint">If set, these are appended to the default source-root paths for this model.</div>
+        <label for="workspaceSourceRootPaths">Workspace Modelica Path</label>
+        <textarea id="workspaceSourceRootPaths" placeholder="target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0&#10;target/cmm/CMM-v0.0.1">${escapeHtml(workspaceSourceRootPaths.join('\n'))}</textarea>
+        <div class="hint">Saved to rumoca.sourceRootPaths at workspace scope. Use repository-relative paths for settings you want to commit.</div>
+      </div>
+      ${inheritedSourceRootsMarkup}
+      <div class="toolbar">
+        <button id="addSourceRootPath" class="ghost"${addSourceRootPathAttrs}>Add Scenario Directory...</button>
+        <button id="clearSourceRoots" class="ghost">Clear Scenario Paths</button>
+      </div>
+      <div class="field">
+        <label for="sourceRootPaths">Scenario Source Root Paths</label>
+        <textarea id="sourceRootPaths" placeholder="../../target/cmm/CMM-v0.0.1"></textarea>
+        <div class="hint">Saved in this .rum scenario and appended only for this configured model run.</div>
       </div>
     </div>
 
-    <div class="card">
+    <div class="card"${resultsPanelsAttrs}>
       <h3>Results Panels</h3>
       <div class="results-layout">
         <div class="results-list-pane">
@@ -1709,10 +1811,10 @@ ctx.onFrame = (api) => {
           <div id="viewScriptRow" class="field">
             <label for="viewScriptPath">3D Script File</label>
             <div class="row">
-              <input id="viewScriptPath" class="grow mono" placeholder=".rumoca/models/by-id/&lt;uuid&gt;/viewer_3d.js" readonly>
+              <input id="viewScriptPath" class="grow mono" placeholder="ball.viewer_3d.js" readonly>
               <button id="openViewScript" class="ghost"${openViewScriptAttrs}>Open Script File</button>
             </div>
-            <div class="hint">Rumoca stores 3D scripts next to the model sidecars under <code>.rumoca/models/by-id/&lt;uuid&gt;/</code>.</div>
+            <div class="hint">Rumoca stores 3D scripts beside the colocated model config.</div>
           </div>
         </div>
       </div>
@@ -1723,11 +1825,10 @@ ctx.onFrame = (api) => {
       <div class="actions">
         <button id="prepareModels" class="secondary"${prepareModelsAttrs}>Prepare All Models In File</button>
         <button id="reset" class="secondary">Reset Preset</button>
-        <button id="resyncSidecars" class="secondary"${resyncSidecarsAttrs}>Resync Sidecars</button>
         <button id="workspaceSettings" class="secondary"${workspaceSettingsAttrs}>Workspace Settings</button>
         <button id="userSettings" class="secondary"${userSettingsAttrs}>User Settings</button>
         <div id="status" class="status"></div>
-        <div class="actions-hint">Autosaves per-model preset for <code id="activeModelHint"></code> in <code>.rumoca/models/by-id/&lt;uuid&gt;/simulation.toml</code> and panel layout in <code>.rumoca/models/by-id/&lt;uuid&gt;/views.toml</code>. Play uses these values.</div>
+        <div class="actions-hint">Autosaves the per-model preset, panel layout, and target selection in a colocated .rum scenario for <code id="activeModelHint"></code>. Play and target rendering use these values.</div>
       </div>
     </div>
   </div>
@@ -1759,7 +1860,14 @@ ctx.onFrame = (api) => {
     const solverInput = document.getElementById('solver');
     const tEndInput = document.getElementById('tEnd');
     const dtInput = document.getElementById('dt');
+    const codegenModeInput = document.getElementById('codegenMode');
+    const codegenBuiltinTargetIdInput = document.getElementById('codegenBuiltinTargetId');
+    const codegenBuiltinTemplateIdInput = document.getElementById('codegenBuiltinTemplateId');
+    const codegenCustomTargetPathInput = document.getElementById('codegenCustomTargetPath');
+    const codegenBuiltinTargetField = document.getElementById('codegenBuiltinTargetField');
+    const codegenCustomTargetField = document.getElementById('codegenCustomTargetField');
     const modelSelectInput = document.getElementById('modelSelect');
+    const workspaceSourceRootPathsInput = document.getElementById('workspaceSourceRootPaths');
     const sourceRootPathsInput = document.getElementById('sourceRootPaths');
     const clearSourceRootsBtn = document.getElementById('clearSourceRoots');
     const statusEl = document.getElementById('status');
@@ -1787,6 +1895,11 @@ ctx.onFrame = (api) => {
     const pendingRequests = new Map();
     let nextRequestId = 1;
     const current = initialState && initialState.current ? initialState.current : {};
+    const initialCodegen = initialState && initialState.codegen ? initialState.codegen : {
+      mode: 'target',
+      builtinTargetId: 'sympy',
+      customTargetPath: '',
+    };
     const activeModelName = String(initialState && initialState.activeModel ? initialState.activeModel : '');
     const availableModels = Array.isArray(initialState && initialState.availableModels)
       ? initialState.availableModels.map((entry) => String(entry || '').trim()).filter(Boolean)
@@ -1799,6 +1912,12 @@ ctx.onFrame = (api) => {
     let selectedScatterSeriesIndex = -1;
     let autoSaveTimer = null;
     let isResettingFromHost = false;
+
+    function syncCodegenDraftVisibility() {
+      const mode = String(codegenModeInput.value || 'target');
+      codegenBuiltinTargetField.style.display = mode === 'target' ? 'grid' : 'none';
+      codegenCustomTargetField.style.display = mode === 'custom-target' ? 'grid' : 'none';
+    }
 
     function setStatus(text, level) {
       statusEl.textContent = text || '';
@@ -2191,6 +2310,13 @@ ctx.onFrame = (api) => {
         dt: dtInput.value.trim(),
         outputDir: preservedOutputDir,
         sourceRootPaths: libs,
+        codegen: {
+          mode: ['target', 'custom-target'].includes(String(codegenModeInput.value || '').trim())
+            ? String(codegenModeInput.value || '').trim()
+            : 'target',
+          builtinTargetId: String(codegenBuiltinTargetIdInput.value || codegenBuiltinTemplateIdInput.value || '').trim(),
+          customTargetPath: String(codegenCustomTargetPathInput.value || '').trim(),
+        },
         views: normalizedViews,
       };
     }
@@ -2224,7 +2350,7 @@ ctx.onFrame = (api) => {
 
     function shouldDelegateAutoSave(target) {
       if (!(target instanceof HTMLElement)) return false;
-      if (target.closest('#reset, #workspaceSettings, #userSettings, #openViewScript, #addSourceRootPath, #prepareModels, #resyncSidecars')) {
+      if (target.closest('#reset, #workspaceSettings, #userSettings, #openViewScript, #addSourceRootPath, #prepareModels')) {
         return false;
       }
       return !!target.closest('input, textarea, select');
@@ -2388,6 +2514,18 @@ ctx.onFrame = (api) => {
         solverInput.value = String(reset && reset.solver ? reset.solver : 'auto');
         tEndInput.value = String(reset && reset.tEnd !== undefined ? reset.tEnd : 10);
         dtInput.value = String(reset && reset.dt ? reset.dt : '');
+        const nextCodegen = reset && reset.codegen ? reset.codegen : {
+          mode: 'target',
+          builtinTargetId: 'sympy',
+          customTargetPath: '',
+        };
+        codegenModeInput.value = ['target', 'custom-target'].includes(String(nextCodegen.mode || ''))
+          ? String(nextCodegen.mode)
+          : 'target';
+        codegenBuiltinTargetIdInput.value = String(nextCodegen.builtinTargetId || 'sympy');
+        codegenBuiltinTemplateIdInput.value = String(nextCodegen.builtinTargetId || 'sympy');
+        codegenCustomTargetPathInput.value = String(nextCodegen.customTargetPath || '');
+        syncCodegenDraftVisibility();
         sourceRootPathsInput.value = Array.isArray(reset && reset.sourceRootPaths) ? reset.sourceRootPaths.join('\\n') : '';
         views = Array.isArray(reset && reset.views) && reset.views.length > 0
           ? reset.views
@@ -2412,16 +2550,6 @@ ctx.onFrame = (api) => {
       }
     });
 
-    document.getElementById('resyncSidecars').addEventListener('click', async () => {
-      setStatus('Resyncing sidecars…');
-      try {
-        const result = await requestHost('resyncSidecars', {});
-        setStatus(result && result.message ? result.message : 'Resync completed.', 'ok');
-      } catch (error) {
-        setStatus(String(error && error.message ? error.message : error), 'error');
-      }
-    });
-
     modelSelectInput.addEventListener('change', async () => {
       const nextModel = String(modelSelectInput.value || '').trim();
       if (!nextModel || nextModel === activeModelName) {
@@ -2430,6 +2558,40 @@ ctx.onFrame = (api) => {
       setStatus('Opening model settings…');
       try {
         await requestHost('openModel', { model: nextModel });
+      } catch (error) {
+        setStatus(String(error && error.message ? error.message : error), 'error');
+      }
+    });
+
+    document.getElementById('addWorkspaceSourceRootPath').addEventListener('click', async () => {
+      try {
+        const result = await requestHost('pickWorkspaceSourceRootPath', {});
+        if (result && result.path) {
+          const lines = workspaceSourceRootPathsInput.value
+            .split(/\\r?\\n/)
+            .map((value) => value.trim())
+            .filter(Boolean);
+          if (!lines.includes(result.path)) {
+            lines.push(result.path);
+            workspaceSourceRootPathsInput.value = lines.join('\\n');
+          }
+        }
+      } catch (error) {
+        setStatus(String(error && error.message ? error.message : error), 'error');
+      }
+    });
+
+    document.getElementById('saveWorkspaceSourceRootPaths').addEventListener('click', async () => {
+      try {
+        const paths = workspaceSourceRootPathsInput.value
+          .split(/\\r?\\n/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+        const result = await requestHost('saveWorkspaceSourceRootPaths', { paths });
+        if (result && Array.isArray(result.paths)) {
+          workspaceSourceRootPathsInput.value = result.paths.join('\\n');
+        }
+        setStatus('Saved workspace Modelica path.', 'ok');
       } catch (error) {
         setStatus(String(error && error.message ? error.message : error), 'error');
       }
@@ -2459,6 +2621,10 @@ ctx.onFrame = (api) => {
       scheduleAutoSave();
     });
 
+    codegenModeInput.addEventListener('change', () => {
+      syncCodegenDraftVisibility();
+    });
+
     document.getElementById('workspaceSettings').addEventListener('click', async () => {
       try {
         await requestHost('openWorkspaceSettings', {});
@@ -2478,6 +2644,16 @@ ctx.onFrame = (api) => {
     solverInput.value = String(current.solver || 'auto');
     tEndInput.value = String(current.tEnd || 10);
     dtInput.value = current.dt === null || current.dt === undefined ? '' : String(current.dt);
+    codegenModeInput.value = ['target', 'custom-target'].includes(String(initialCodegen.mode || ''))
+      ? String(initialCodegen.mode)
+      : 'target';
+    codegenBuiltinTargetIdInput.value = String(initialCodegen.builtinTargetId || 'sympy');
+    codegenBuiltinTemplateIdInput.value = String(initialCodegen.builtinTargetId || 'sympy');
+    codegenCustomTargetPathInput.value = String(initialCodegen.customTargetPath || '');
+    syncCodegenDraftVisibility();
+    workspaceSourceRootPathsInput.value = Array.isArray(initialState.workspaceSourceRootPaths)
+      ? initialState.workspaceSourceRootPaths.join('\\n')
+      : '';
     sourceRootPathsInput.value = Array.isArray(current.sourceRootOverrides) ? current.sourceRootOverrides.join('\\n') : '';
     renderModelSelect();
     renderViewList();
@@ -2957,11 +3133,6 @@ ctx.onFrame = (api) => {
     }
 
 
-    const PROJECT_CONFIG_PATH = '.rumoca/project.toml';
-    const MODEL_IDENTITY_FILE = 'identity.toml';
-    const MODEL_SIMULATION_FILE = 'simulation.toml';
-    const MODEL_VIEWS_FILE = 'views.toml';
-
     function stripTomlComment(line) {
         let inString = false;
         let escaped = false;
@@ -3074,7 +3245,7 @@ ctx.onFrame = (api) => {
         for (const rawLine of String(text || '').split(/\r?\n/)) {
             const line = stripTomlComment(rawLine);
             if (!line) continue;
-            if (line === '[[views]]') {
+            if (line === '[[views]]' || line === '[[plot.views]]') {
                 current = {};
                 views.push(current);
                 continue;
@@ -3108,49 +3279,6 @@ ctx.onFrame = (api) => {
 
     function classNameFromQualifiedName(model) {
         return String(model || '').split('.').filter(Boolean).pop() || 'Model';
-    }
-
-    function renderProjectToml(existingText, defaults, projectName) {
-        const current = parseSimpleTomlObject(existingText, ['project', 'simulation.defaults']);
-        const nextName = trimMaybeString(projectName) || trimMaybeString(current.project?.name);
-        const nextDefaults = {
-            solver: trimMaybeString(defaults?.solver) || trimMaybeString(current['simulation.defaults']?.solver),
-            tEnd: Number.isFinite(defaults?.tEnd) ? defaults.tEnd : current['simulation.defaults']?.t_end,
-            dt: Number.isFinite(defaults?.dt) ? defaults.dt : current['simulation.defaults']?.dt,
-            outputDir: trimMaybeString(defaults?.outputDir) || trimMaybeString(current['simulation.defaults']?.output_dir),
-        };
-
-        const lines = ['version = 1'];
-        if (nextName) {
-            lines.push('', '[project]', `name = ${tomlString(nextName)}`);
-        }
-        const hasDefaults = nextDefaults.solver
-            || Number.isFinite(nextDefaults.tEnd)
-            || Number.isFinite(nextDefaults.dt)
-            || nextDefaults.outputDir;
-        if (hasDefaults) {
-            lines.push('', '[simulation.defaults]');
-            if (nextDefaults.solver) lines.push(`solver = ${tomlString(nextDefaults.solver)}`);
-            const tEndLine = tomlNumberLine('t_end', nextDefaults.tEnd);
-            if (tEndLine) lines.push(tEndLine);
-            const dtLine = tomlNumberLine('dt', nextDefaults.dt);
-            if (dtLine) lines.push(dtLine);
-            if (nextDefaults.outputDir) lines.push(`output_dir = ${tomlString(nextDefaults.outputDir)}`);
-        }
-        return `${lines.join('\n')}\n`;
-    }
-
-    function renderIdentityToml(model, uuid, nowMs) {
-        return [
-            'version = 1',
-            `uuid = ${tomlString(uuid)}`,
-            `qualified_name = ${tomlString(model)}`,
-            `class_name = ${tomlString(classNameFromQualifiedName(model))}`,
-            'aliases = []',
-            'previous_source_files = []',
-            `last_seen_unix_ms = ${Math.max(0, Number(nowMs) || 0)}`,
-            '',
-        ].join('\n');
     }
 
     function normalizeProjectSimulationPreset(preset) {
@@ -3230,7 +3358,7 @@ ctx.onFrame = (api) => {
     function renderViewsToml(views) {
         const lines = [];
         for (const view of normalizeVisualizationViews(views)) {
-            lines.push('[[views]]');
+            lines.push('[[plot.views]]');
             if (trimMaybeString(view.id)) lines.push(`id = ${tomlString(view.id)}`);
             if (trimMaybeString(view.title)) lines.push(`title = ${tomlString(view.title)}`);
             if (trimMaybeString(view.type)) lines.push(`type = ${tomlString(view.type)}`);
@@ -3244,125 +3372,163 @@ ctx.onFrame = (api) => {
         return lines.join('\n');
     }
 
-    function extractUuidFromPath(path, fileName) {
-        const marker = `${MODEL_BY_ID_ROOT}/`;
-        const prefix = String(path || '');
-        const idx = prefix.indexOf(marker);
-        if (idx < 0 || !prefix.endsWith(`/${fileName}`)) {
-            return null;
-        }
-        const remainder = prefix.slice(idx + marker.length, prefix.length - fileName.length - 1);
-        return remainder.split('/').filter(Boolean)[0] || null;
-    }
-
-    function hostedProjectIdentityPath(uuid) {
-        return `${MODEL_BY_ID_ROOT}/${uuid}/${MODEL_IDENTITY_FILE}`;
-    }
-
-    function hostedProjectSimulationPath(uuid) {
-        return `${MODEL_BY_ID_ROOT}/${uuid}/${MODEL_SIMULATION_FILE}`;
-    }
-
-    function hostedProjectViewsPath(uuid) {
-        return `${MODEL_BY_ID_ROOT}/${uuid}/${MODEL_VIEWS_FILE}`;
-    }
-
     function hostedProjectSnapshotState(snapshot) {
         const files = Array.isArray(snapshot?.files)
-            ? snapshot.files.filter((file) => trimMaybeString(file?.path).startsWith('.rumoca/'))
+            ? snapshot.files.filter((file) => {
+                const filePath = trimMaybeString(file?.path);
+                return filePath.endsWith('.rum') && !filePath.startsWith('.rumoca/');
+            })
             : [];
-        const rootToml = files.find((file) => trimMaybeString(file.path) === PROJECT_CONFIG_PATH)?.content || '';
-        const root = parseSimpleTomlObject(rootToml, ['project', 'simulation.defaults']);
-        const defaults = normalizeProjectSimulationPreset({
-            solver: root['simulation.defaults']?.solver,
-            tEnd: root['simulation.defaults']?.t_end,
-            dt: root['simulation.defaults']?.dt,
-            outputDir: root['simulation.defaults']?.output_dir,
-        }) || {};
-        const identitiesByUuid = new Map();
-        const identitiesByModel = new Map();
         const simulationModels = new Map();
         const visualizationModels = new Map();
+        const configByModel = new Map();
 
         for (const file of files) {
-            if (!trimMaybeString(file.path).endsWith(`/${MODEL_IDENTITY_FILE}`)) {
+            const parsed = parseSimpleTomlObject(file.content, ['model', 'sim']);
+            const modelName = trimMaybeString(parsed.model?.name)
+                || trimMaybeString(parsed.model?.file).replace(/\.mo$/i, '')
+                || '';
+            if (!modelName) {
                 continue;
             }
-            const uuid = extractUuidFromPath(file.path, MODEL_IDENTITY_FILE);
-            if (!uuid) {
-                continue;
-            }
-            const identity = parseSimpleTomlObject(file.content);
-            const qualifiedName = trimMaybeString(identity.qualified_name);
-            if (!qualifiedName) {
-                continue;
-            }
+            const preset = normalizeProjectSimulationPreset({
+                solver: parsed.sim?.solver,
+                tEnd: parsed.sim?.t_end,
+                dt: parsed.sim?.dt,
+                outputDir: parsed.sim?.output_dir,
+                sourceRootOverrides: parsed.sim?.source_root_overrides,
+            });
+            const views = parseViewsToml(file.content);
             const record = {
-                uuid,
-                qualifiedName,
-                className: trimMaybeString(identity.class_name) || classNameFromQualifiedName(qualifiedName),
+                path: trimMaybeString(file.path),
+                content: String(file.content || ''),
+                modelFile: trimMaybeString(parsed.model?.file),
+                sourceRoots: normalizeStringArray(parsed.source_roots),
             };
-            identitiesByUuid.set(uuid, record);
-            identitiesByModel.set(qualifiedName, record);
-        }
-
-        for (const file of files) {
-            if (trimMaybeString(file.path).endsWith(`/${MODEL_SIMULATION_FILE}`)) {
-                const uuid = extractUuidFromPath(file.path, MODEL_SIMULATION_FILE);
-                const identity = uuid ? identitiesByUuid.get(uuid) : null;
-                if (!identity) {
-                    continue;
-                }
-                const parsed = parseSimpleTomlObject(file.content);
-                const preset = normalizeProjectSimulationPreset({
-                    solver: parsed.solver,
-                    tEnd: parsed.t_end,
-                    dt: parsed.dt,
-                    outputDir: parsed.output_dir,
-                    sourceRootOverrides: parsed.source_root_overrides,
-                });
-                if (preset) {
-                    simulationModels.set(identity.qualifiedName, preset);
-                }
-                continue;
+            configByModel.set(modelName, record);
+            if (preset) {
+                simulationModels.set(modelName, preset);
             }
-            if (trimMaybeString(file.path).endsWith(`/${MODEL_VIEWS_FILE}`)) {
-                const uuid = extractUuidFromPath(file.path, MODEL_VIEWS_FILE);
-                const identity = uuid ? identitiesByUuid.get(uuid) : null;
-                if (!identity) {
-                    continue;
-                }
-                const views = parseViewsToml(file.content);
-                if (views.length > 0) {
-                    visualizationModels.set(identity.qualifiedName, views);
-                }
+            if (views.length > 0) {
+                visualizationModels.set(modelName, views);
             }
         }
 
         return {
-            rootToml,
             files,
-            projectName: trimMaybeString(root.project?.name) || null,
-            defaults,
-            identitiesByModel,
+            defaults: {},
+            configByModel,
             simulationModels,
             visualizationModels,
             editorState: cloneJson(snapshot?.editorState || {}),
         };
     }
 
-    function pruneHostedProjectRemoves(files, liveUuids, removes) {
-        for (const file of files) {
-            const path = trimMaybeString(file?.path);
-            if (!path.startsWith(`${MODEL_BY_ID_ROOT}/`)) {
-                continue;
-            }
-            const parts = path.slice(MODEL_BY_ID_ROOT.length + 1).split('/');
-            const uuid = parts[0];
-            if (uuid && !liveUuids.has(uuid) && !removes.includes(path)) {
-                removes.push(path);
+    function scenarioHasLiveViewerShape(parsed) {
+        return Boolean(
+            parsed['transport.http']
+            || parsed.input
+            || parsed.signals
+            || parsed.locals
+            || parsed.derive
+            || parsed.reset
+            || parsed.external_interface
+            || (parsed.schema && parsed.receive && parsed.send),
+        );
+    }
+
+    function scenarioTextHasLiveViewerShape(content) {
+        return /^\s*\[(transport\.http|input(?:\.|])|signals(?:\.|])|locals(?:\.|])|derive(?:\.|])|reset]|external_interface]|schema]|receive]|send])/m
+            .test(String(content || ''));
+    }
+
+    function hostedScenarioConfigFromContent(path, content) {
+        const parsed = parseSimpleTomlObject(content, [
+            'model',
+            'codegen',
+            'viewer',
+            'sim',
+            'transport.http',
+            'input',
+            'signals',
+            'locals',
+            'derive',
+            'reset',
+            'external_interface',
+            'schema',
+            'receive',
+            'send',
+        ]);
+        const task = trimMaybeString(parsed.task) === 'codegen' ? 'codegen' : 'simulate';
+        const model = trimMaybeString(parsed.model?.name);
+        const target = trimMaybeString(parsed.codegen?.target);
+        if (!model) {
+            return { ok: false, error: '.rum scenario is missing [model].name' };
+        }
+        if (task === 'codegen' && !target) {
+            return { ok: false, error: 'codegen .rum scenario is missing [codegen].target' };
+        }
+        const explicitViewerMode = trimMaybeString(parsed.viewer?.mode);
+        const liveViewer = scenarioHasLiveViewerShape(parsed) || scenarioTextHasLiveViewerShape(content);
+        const viewerMode = explicitViewerMode === 'external_web'
+            ? 'external_web'
+            : explicitViewerMode === 'results_panel'
+                ? 'results_panel'
+                : liveViewer
+                    ? 'external_web'
+                    : 'results_panel';
+        return {
+            ok: true,
+            path: trimMaybeString(path),
+            task,
+            model,
+            target,
+            outputDir: trimMaybeString(parsed.codegen?.output_dir),
+            viewerMode,
+            simMode: trimMaybeString(parsed.sim?.mode),
+            httpPort: Number.isFinite(parsed['transport.http']?.port)
+                ? parsed['transport.http'].port
+                : undefined,
+            httpScene: trimMaybeString(parsed['transport.http']?.scene),
+            interactive: liveViewer,
+        };
+    }
+
+    function defaultColocatedConfigPath(model) {
+        return `${sanitizeIdentifier(classNameFromQualifiedName(model))}_sim.rum`;
+    }
+
+    function renderColocatedModelConfig(model, existing, preset, views) {
+        const parsed = parseSimpleTomlObject(existing?.content || '', ['model', 'viewer']);
+        const modelFile = trimMaybeString(existing?.modelFile) || trimMaybeString(parsed.model?.file);
+        const sourceRoots = normalizeStringArray(existing?.sourceRoots);
+        const lines = ['version = 2'];
+        lines.push('task = "simulate"');
+        if (sourceRoots.length > 0) {
+            lines.push(`source_roots = ${tomlStringArray(sourceRoots)}`);
+        }
+        const viewerMode = trimMaybeString(parsed.viewer?.mode) === 'external_web'
+            ? 'external_web'
+            : 'results_panel';
+        lines.push('', '[viewer]', `mode = ${tomlString(viewerMode)}`);
+        lines.push('', '[model]');
+        if (modelFile) lines.push(`file = ${tomlString(modelFile)}`);
+        lines.push(`name = ${tomlString(model)}`);
+
+        const normalizedPreset = normalizeProjectSimulationPreset(preset);
+        if (normalizedPreset) {
+            lines.push('', '[sim]');
+            const simulation = renderSimulationToml(normalizedPreset).trim();
+            if (simulation) {
+                lines.push(...simulation.split(/\r?\n/));
             }
         }
+
+        const viewText = renderViewsToml(views).trim();
+        if (viewText) {
+            lines.push('', viewText);
+        }
+        return `${lines.join('\n')}\n`;
     }
 
     function buildHostedProjectSimulationConfig(state, model, fallback) {
@@ -3374,12 +3540,17 @@ ctx.onFrame = (api) => {
             sourceRootPaths: [],
         }, fallback);
         const preset = normalizeProjectSimulationPreset(state.simulationModels.get(model));
+        const sourceRootOverrides = normalizeStringArray(preset?.sourceRootOverrides);
+        const sourceRootPaths = [...defaults.sourceRootPaths];
+        for (const path of sourceRootOverrides) {
+            if (!sourceRootPaths.includes(path)) {
+                sourceRootPaths.push(path);
+            }
+        }
         const effective = normalizeProjectSimulationSettings({
             ...defaults,
             ...(preset || {}),
-            sourceRootPaths: normalizeStringArray(preset?.sourceRootOverrides).length > 0
-                ? preset.sourceRootOverrides
-                : defaults.sourceRootPaths,
+            sourceRootPaths,
         }, defaults);
         return {
             preset: preset
@@ -3388,9 +3559,7 @@ ctx.onFrame = (api) => {
                     tEnd: effective.tEnd,
                     dt: effective.dt,
                     outputDir: effective.outputDir,
-                    sourceRootOverrides: normalizeStringArray(preset.sourceRootOverrides).length > 0
-                        ? [...preset.sourceRootOverrides]
-                        : [...defaults.sourceRootPaths],
+                    sourceRootOverrides: [...sourceRootOverrides],
                 }
                 : null,
             defaults: simulationSettingsJson(defaults),
@@ -3426,6 +3595,27 @@ ctx.onFrame = (api) => {
                     { views: cloneJson(state.visualizationModels.get(model) || []) },
                     patch,
                 );
+            case 'rumoca.project.getScenarioConfig': {
+                const requestedPath = trimMaybeString(payload?.path);
+                const requestedUri = trimMaybeString(payload?.uri);
+                const uriPath = requestedUri.startsWith('file://')
+                    ? decodeURIComponent(requestedUri.replace(/^file:\/\//, ''))
+                    : requestedUri;
+                const file = state.files.find((entry) => {
+                    const entryPath = trimMaybeString(entry.path);
+                    return entryPath === requestedPath || (uriPath && uriPath.endsWith(entryPath));
+                }) || (model ? state.configByModel.get(model) : null);
+                if (!file) {
+                    return buildHostedProjectResult(
+                        { ok: false, error: '.rum scenario was not found in the project' },
+                        patch,
+                    );
+                }
+                return buildHostedProjectResult(
+                    hostedScenarioConfigFromContent(file.path, file.content),
+                    patch,
+                );
+            }
             case 'rumoca.project.setSelectedSimulationModel': {
                 const nextEditorState = cloneJson(state.editorState || {}) || {};
                 const selectedModel = trimMaybeString(payload?.model);
@@ -3444,74 +3634,24 @@ ctx.onFrame = (api) => {
                 });
             case 'rumoca.project.setSimulationPreset': {
                 const preset = normalizeProjectSimulationPreset(payload?.preset);
-                const identity = state.identitiesByModel.get(model) || {
-                    uuid: stableModelUuid(model),
-                    qualifiedName: model,
-                };
-                const liveUuids = new Set(
-                    Array.from(state.identitiesByModel.values()).map((entry) => entry.uuid),
-                );
-                if (preset || state.visualizationModels.has(model)) {
-                    liveUuids.add(identity.uuid);
-                    patch.writes.push({
-                        path: hostedProjectIdentityPath(identity.uuid),
-                        content: renderIdentityToml(model, identity.uuid, Date.now()),
-                    });
-                } else {
-                    patch.removes.push(hostedProjectIdentityPath(identity.uuid));
-                    liveUuids.delete(identity.uuid);
-                }
-                if (!state.rootToml) {
-                    patch.writes.push({
-                        path: PROJECT_CONFIG_PATH,
-                        content: renderProjectToml('', state.defaults, state.projectName),
-                    });
-                }
-                if (preset) {
-                    patch.writes.push({
-                        path: hostedProjectSimulationPath(identity.uuid),
-                        content: renderSimulationToml(preset),
-                    });
-                } else {
-                    patch.removes.push(hostedProjectSimulationPath(identity.uuid));
-                }
-                pruneHostedProjectRemoves(state.files, liveUuids, patch.removes);
+                const existing = state.configByModel.get(model);
+                const path = existing?.path || defaultColocatedConfigPath(model);
+                const views = state.visualizationModels.get(model) || [];
+                patch.writes.push({
+                    path,
+                    content: renderColocatedModelConfig(model, existing, preset, views),
+                });
                 return buildHostedProjectResult({ ok: true }, patch);
             }
             case 'rumoca.project.setVisualizationConfig': {
                 const views = normalizeVisualizationViews(payload?.views);
-                const identity = state.identitiesByModel.get(model) || {
-                    uuid: stableModelUuid(model),
-                    qualifiedName: model,
-                };
-                const liveUuids = new Set(
-                    Array.from(state.identitiesByModel.values()).map((entry) => entry.uuid),
-                );
-                if (views.length > 0 || state.simulationModels.has(model)) {
-                    liveUuids.add(identity.uuid);
-                    patch.writes.push({
-                        path: hostedProjectIdentityPath(identity.uuid),
-                        content: renderIdentityToml(model, identity.uuid, Date.now()),
-                    });
-                } else {
-                    patch.removes.push(hostedProjectIdentityPath(identity.uuid));
-                    liveUuids.delete(identity.uuid);
-                }
-                if (!state.rootToml) {
-                    patch.writes.push({
-                        path: PROJECT_CONFIG_PATH,
-                        content: renderProjectToml('', state.defaults, state.projectName),
-                    });
-                }
-                if (views.length > 0) {
-                    patch.writes.push({
-                        path: hostedProjectViewsPath(identity.uuid),
-                        content: renderViewsToml(views),
-                    });
-                } else {
-                    patch.removes.push(hostedProjectViewsPath(identity.uuid));
-                }
-                pruneHostedProjectRemoves(state.files, liveUuids, patch.removes);
+                const existing = state.configByModel.get(model);
+                const path = existing?.path || defaultColocatedConfigPath(model);
+                const preset = state.simulationModels.get(model) || null;
+                patch.writes.push({
+                    path,
+                    content: renderColocatedModelConfig(model, existing, preset, views),
+                });
                 return buildHostedProjectResult({ ok: true }, patch);
             }
             default:

@@ -1,24 +1,23 @@
 //! Conversion of declaration bindings into continuous DAE equations.
 
-use std::collections::HashSet;
-
+use indexmap::IndexSet;
 use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
+use std::collections::HashSet;
 
 use crate::{
-    classification, flat_to_dae_expression, flat_to_dae_var_name, name_resolution,
-    path_utils::split_path_with_indices,
+    classification, flat_to_dae_expression, flat_to_dae_var_name, path_utils::strip_all_subscripts,
 };
 
 type Dae = dae::Dae;
 type VariableKind = dae::VariableKind;
 type EquationOrigin = flat::EquationOrigin;
-type Expression = flat::Expression;
-type Literal = flat::Literal;
+type Expression = rumoca_core::Expression;
+type Literal = rumoca_core::Literal;
 type Model = flat::Model;
-type VarName = flat::VarName;
+type VarName = rumoca_core::VarName;
 
 /// Convert variable bindings to equations (MLS §4.4.1).
 /// A declaration `Real y = expr` is equivalent to `Real y; equation y = expr;`
@@ -38,8 +37,8 @@ pub(super) fn convert_bindings_to_equations(
     dae: &mut Dae,
     flat: &Model,
     prefix_children: &FxHashMap<String, Vec<VarName>>,
-    state_vars: &HashSet<VarName>,
-    connected_inputs: &HashSet<VarName>,
+    state_vars: &IndexSet<VarName>,
+    connected_inputs: &IndexSet<VarName>,
     algorithm_defined_vars: &HashSet<VarName>,
     record_eq_defined_vars: &HashSet<VarName>,
 ) {
@@ -51,13 +50,15 @@ pub(super) fn convert_bindings_to_equations(
         .map(|name| name.as_str().to_string())
         .collect();
     let unknown_prefix_children = build_unknown_prefix_children(&unknowns);
+    let internal_inputs = super::InternalInputIndex::new(flat);
     let connected_inputs_only_connected_to_inputs =
-        find_connected_inputs_only_connected_to_inputs(flat);
+        super::find_connected_inputs_only_connected_to_inputs(flat, &internal_inputs);
 
-    // Build a map from flat equation LHS to the binding expression it matches.
-    // When a flat equation has the SAME LHS variable as a binding AND the same
-    // expression, skip the binding to avoid generating a duplicate equation.
-    let flat_eq_bindings: HashSet<VarName> = build_duplicate_binding_set(flat);
+    // Build a map from flat equation LHS to the binding expression it exactly
+    // shadows. This is an origin-selection rule at the conversion boundary, not
+    // a generic DAE residual suppression pass.
+    let explicitly_shadowed_bindings: HashSet<VarName> =
+        collect_bindings_shadowed_by_identical_explicit_equations(flat);
 
     // Variables whose explicit equations reference other unknowns in the RHS.
     // When an explicit equation relates a variable to unknowns (e.g., `x = y`),
@@ -70,8 +71,12 @@ pub(super) fn convert_bindings_to_equations(
             continue;
         }
 
-        let kind = if dae.discrete_reals.contains_key(&flat_to_dae_var_name(name))
+        let kind = if dae
+            .variables
+            .discrete_reals
+            .contains_key(&flat_to_dae_var_name(name))
             || dae
+                .variables
                 .discrete_valued
                 .contains_key(&flat_to_dae_var_name(name))
         {
@@ -107,10 +112,11 @@ pub(super) fn convert_bindings_to_equations(
             continue;
         }
 
-        // MLS §4.4.1: If the flat model already has an explicit equation with
-        // the same LHS variable AND the same RHS expression as the binding,
-        // skip the binding to avoid generating a duplicate equation.
-        if flat_eq_bindings.contains(name) {
+        // MLS §4.4.1: A declaration binding is converted to an equation only
+        // once. If flattening has already materialized an identical explicit
+        // equation for the same variable, use that source equation as the
+        // canonical origin.
+        if explicitly_shadowed_bindings.contains(name) {
             continue;
         }
 
@@ -171,18 +177,14 @@ pub(super) fn build_unknown_prefix_children(
 ) -> FxHashMap<String, Vec<VarName>> {
     let mut prefix_children: FxHashMap<String, Vec<VarName>> = FxHashMap::default();
     for unknown in unknowns {
-        let parts = split_path_with_indices(unknown.as_str());
-        if parts.len() < 2 {
-            continue;
-        }
-        let mut prefix = String::new();
-        for (idx, segment) in parts[..parts.len() - 1].iter().enumerate() {
-            if idx > 0 {
-                prefix.push('.');
-            }
-            prefix.push_str(segment);
+        let path = rumoca_core::ComponentPath::from_flat_path(unknown.as_str());
+        for idx in 1..path.len() {
+            let prefix = path
+                .prefix(idx)
+                .expect("prefix index is in range")
+                .to_flat_string();
             prefix_children
-                .entry(prefix.clone())
+                .entry(prefix)
                 .or_default()
                 .push(unknown.clone());
         }
@@ -269,38 +271,41 @@ pub(super) fn collect_vars_with_unknown_rhs(
         }
 
         // For standard equations: extract LHS, check if RHS references unknowns.
-        let Expression::Binary { op, lhs, rhs } = &eq.residual else {
+        let Expression::Binary { op, lhs, rhs, .. } = &eq.residual else {
             continue;
         };
-        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_core::OpBinary::Sub) {
             continue;
         }
         let Expression::VarRef { name: lhs_name, .. } = lhs.as_ref() else {
             continue;
         };
         let rhs_refs = super::collect_var_refs(rhs);
-        let lhs_resolved =
-            resolve_unknown_ref_by_shape(lhs_name, unknowns, &unknown_subscriptless_index)
-                .unwrap_or_else(|| lhs_name.clone());
+        let lhs_resolved = resolve_unknown_ref_by_shape(
+            lhs_name.var_name(),
+            unknowns,
+            &unknown_subscriptless_index,
+        )
+        .unwrap_or_else(|| lhs_name.var_name().clone());
         if rhs_refs
             .iter()
             .filter_map(|r| resolve_unknown_ref_by_shape(r, unknowns, &unknown_subscriptless_index))
             .any(|r| r != lhs_resolved)
         {
-            result.insert(lhs_name.clone());
+            result.insert(lhs_name.var_name().clone());
         }
     }
 
     result
 }
 
-/// Find variables whose bindings would duplicate an explicit equation in the flat model.
+/// Find bindings already materialized as explicit equations in the flat model.
 ///
 /// When the flat model has an equation `v = expr` (in residual form `v - expr = 0`)
 /// AND the variable `v` also has a binding `= expr` with the same expression,
-/// the binding should be skipped to avoid generating a duplicate equation.
-fn build_duplicate_binding_set(flat: &Model) -> HashSet<VarName> {
-    let mut duplicates = HashSet::default();
+/// the explicit equation carries the canonical source origin into DAE.
+fn collect_bindings_shadowed_by_identical_explicit_equations(flat: &Model) -> HashSet<VarName> {
+    let mut shadowed = HashSet::default();
 
     for eq in &flat.equations {
         if eq.origin.is_connection() {
@@ -313,27 +318,28 @@ fn build_duplicate_binding_set(flat: &Model) -> HashSet<VarName> {
             continue;
         }
 
-        // Extract canonical assignment from residual: target - expr = 0.
-        let Expression::Binary { op, lhs, rhs } = &eq.residual else {
+        // Extract LHS name and RHS expression from residual: lhs - rhs = 0.
+        let Expression::Binary { op, lhs, rhs, .. } = &eq.residual else {
             continue;
         };
-        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_core::OpBinary::Sub) {
             continue;
         }
         let Expression::VarRef { name, .. } = lhs.as_ref() else {
             continue;
         };
+
         let is_dup = flat
             .variables
-            .get(name)
+            .get(name.var_name())
             .and_then(|var| var.binding.as_ref())
             .is_some_and(|binding| expressions_equivalent(binding, rhs));
         if is_dup {
-            duplicates.insert(name.clone());
+            shadowed.insert(name.var_name().clone());
         }
     }
 
-    duplicates
+    shadowed
 }
 
 /// Check if two flat expressions are structurally equivalent.
@@ -346,36 +352,53 @@ fn expressions_equivalent(a: &Expression, b: &Expression) -> bool {
             Expression::VarRef {
                 name: n1,
                 subscripts: s1,
+                span: _,
             },
             Expression::VarRef {
                 name: n2,
                 subscripts: s2,
+                span: _,
             },
-        ) => n1 == n2 && s1.len() == s2.len(),
-        (Expression::Literal(l1), Expression::Literal(l2)) => match (l1, l2) {
-            (Literal::Integer(a), Literal::Integer(b)) => a == b,
-            (Literal::Real(a), Literal::Real(b)) => (a - b).abs() < 1e-15,
-            (Literal::Boolean(a), Literal::Boolean(b)) => a == b,
-            (Literal::String(a), Literal::String(b)) => a == b,
-            _ => false,
-        },
+        ) => n1.var_name() == n2.var_name() && subscript_slices_equivalent(s1, s2),
+        (Expression::Literal { value: l1, .. }, Expression::Literal { value: l2, .. }) => {
+            match (l1, l2) {
+                (Literal::Integer(a), Literal::Integer(b)) => a == b,
+                (Literal::Real(a), Literal::Real(b)) => (a - b).abs() < 1e-15,
+                (Literal::Boolean(a), Literal::Boolean(b)) => a == b,
+                (Literal::String(a), Literal::String(b)) => a == b,
+                _ => false,
+            }
+        }
         (
             Expression::Binary {
                 op: op1,
                 lhs: l1,
                 rhs: r1,
+                span: _,
             },
             Expression::Binary {
                 op: op2,
                 lhs: l2,
                 rhs: r2,
+                span: _,
             },
         ) => {
             std::mem::discriminant(op1) == std::mem::discriminant(op2)
                 && expressions_equivalent(l1, l2)
                 && expressions_equivalent(r1, r2)
         }
-        (Expression::Unary { op: op1, rhs: o1 }, Expression::Unary { op: op2, rhs: o2 }) => {
+        (
+            Expression::Unary {
+                op: op1,
+                rhs: o1,
+                span: _,
+            },
+            Expression::Unary {
+                op: op2,
+                rhs: o2,
+                span: _,
+            },
+        ) => {
             std::mem::discriminant(op1) == std::mem::discriminant(op2)
                 && expressions_equivalent(o1, o2)
         }
@@ -417,21 +440,30 @@ fn expressions_equivalent(a: &Expression, b: &Expression) -> bool {
     }
 }
 
-/// Remove all array subscripts from a flattened variable name.
-///
-/// Example: `a.b[1,:].c[2]` -> `a.b.c`
-fn strip_all_subscripts(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut depth = 0usize;
-    for ch in name.chars() {
-        match ch {
-            '[' => depth += 1,
-            ']' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => out.push(ch),
-            _ => {}
-        }
+fn subscript_slices_equivalent(
+    lhs: &[rumoca_core::Subscript],
+    rhs: &[rumoca_core::Subscript],
+) -> bool {
+    lhs.len() == rhs.len()
+        && lhs
+            .iter()
+            .zip(rhs)
+            .all(|(lhs, rhs)| subscripts_equivalent(lhs, rhs))
+}
+
+fn subscripts_equivalent(lhs: &rumoca_core::Subscript, rhs: &rumoca_core::Subscript) -> bool {
+    match (lhs, rhs) {
+        (
+            rumoca_core::Subscript::Index { value: lhs, .. },
+            rumoca_core::Subscript::Index { value: rhs, .. },
+        ) => lhs == rhs,
+        (rumoca_core::Subscript::Colon { .. }, rumoca_core::Subscript::Colon { .. }) => true,
+        (
+            rumoca_core::Subscript::Expr { expr: lhs, .. },
+            rumoca_core::Subscript::Expr { expr: rhs, .. },
+        ) => expressions_equivalent(lhs, rhs),
+        _ => false,
     }
-    out
 }
 
 fn build_unknown_subscriptless_index(
@@ -499,57 +531,8 @@ fn binding_defines_underdefined_unknown(
     })
 }
 
-/// Find internal inputs that only connect to other internal inputs in connect equations.
-///
-/// For these input-only alias sets, declaration bindings provide the value anchor
-/// (MLS §4.4.1), so skipping bindings can underdetermine the system.
-fn find_connected_inputs_only_connected_to_inputs(flat: &Model) -> HashSet<VarName> {
-    let mut connected_inputs: HashSet<VarName> = HashSet::default();
-    let mut connected_to_non_input_peer: HashSet<VarName> = HashSet::default();
-
-    for eq in flat.equations.iter().filter(|eq| eq.origin.is_connection()) {
-        let Expression::Binary { op, lhs, rhs } = &eq.residual else {
-            continue;
-        };
-        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
-            continue;
-        }
-
-        let lhs_name = name_resolution::extract_varref_name(lhs);
-        let rhs_name = name_resolution::extract_varref_name(rhs);
-
-        let lhs_input = lhs_name
-            .as_ref()
-            .and_then(|name| super::resolve_internal_input(name, flat));
-        let rhs_input = rhs_name
-            .as_ref()
-            .and_then(|name| super::resolve_internal_input(name, flat));
-
-        match (lhs_input, rhs_input) {
-            (Some(lhs_var), Some(rhs_var)) => {
-                connected_inputs.insert(lhs_var);
-                connected_inputs.insert(rhs_var);
-            }
-            (Some(lhs_var), None) => {
-                connected_inputs.insert(lhs_var.clone());
-                connected_to_non_input_peer.insert(lhs_var);
-            }
-            (None, Some(rhs_var)) => {
-                connected_inputs.insert(rhs_var.clone());
-                connected_to_non_input_peer.insert(rhs_var);
-            }
-            (None, None) => {}
-        }
-    }
-
-    connected_inputs
-        .into_iter()
-        .filter(|name| !connected_to_non_input_peer.contains(name))
-        .collect()
-}
-
 /// Collect all unknowns (state/algebraic/output variables).
-fn collect_unknowns(flat: &Model, state_vars: &HashSet<VarName>) -> HashSet<VarName> {
+fn collect_unknowns(flat: &Model, state_vars: &IndexSet<VarName>) -> HashSet<VarName> {
     flat.variables
         .iter()
         .filter(|(_, var)| {
@@ -567,7 +550,7 @@ fn collect_unknowns(flat: &Model, state_vars: &HashSet<VarName>) -> HashSet<VarN
 fn should_skip_variable_binding(
     kind: &VariableKind,
     name: &VarName,
-    connected_inputs: &HashSet<VarName>,
+    connected_inputs: &IndexSet<VarName>,
 ) -> bool {
     // Parameters/constants are fixed values and do not produce residual equations.
     if matches!(kind, VariableKind::Parameter | VariableKind::Constant) {
@@ -587,8 +570,7 @@ fn add_binding_equation(
     is_discrete_type: bool,
     known_var_names: &HashSet<String>,
 ) {
-    let projected_binding =
-        project_scalar_binding_record_field_alias(name, binding, known_var_names);
+    let selected_binding = select_scalar_binding_record_field_alias(name, binding, known_var_names);
     let scalar_count = super::compute_var_size(dims);
     let origin = rumoca_ir_flat::EquationOrigin::Binding {
         variable: name.as_str().to_string(),
@@ -598,20 +580,20 @@ fn add_binding_equation(
     if *kind == VariableKind::Discrete {
         let explicit = dae::Equation::explicit_with_scalar_count(
             flat_to_dae_var_name(name),
-            flat_to_dae_expression(&projected_binding),
+            flat_to_dae_expression(&selected_binding),
             Span::DUMMY,
             origin,
             scalar_count,
         );
         if is_discrete_type {
-            dae.f_m.push(explicit);
+            dae.discrete.valued_updates.push(explicit);
         } else {
-            dae.f_z.push(explicit);
+            dae.discrete.real_updates.push(explicit);
         }
         return;
     }
 
-    let residual = create_binding_residual(name, &projected_binding);
+    let residual = create_binding_residual(name, &selected_binding);
     let dae_eq = dae::Equation::residual_array(
         flat_to_dae_expression(&residual),
         Span::DUMMY,
@@ -620,10 +602,10 @@ fn add_binding_equation(
     );
 
     // All continuous equations go into f_x (MLS B.1a) — no ODE/algebraic/output split.
-    dae.f_x.push(dae_eq);
+    dae.continuous.equations.push(dae_eq);
 }
 
-fn project_scalar_binding_record_field_alias(
+fn select_scalar_binding_record_field_alias(
     lhs_name: &VarName,
     binding: &Expression,
     known_var_names: &HashSet<String>,
@@ -631,6 +613,7 @@ fn project_scalar_binding_record_field_alias(
     let Expression::VarRef {
         name: rhs_name,
         subscripts,
+        span: rumoca_core::Span::DUMMY,
     } = binding
     else {
         return binding.clone();
@@ -639,20 +622,25 @@ fn project_scalar_binding_record_field_alias(
         return binding.clone();
     }
 
-    let lhs_parts = split_path_with_indices(lhs_name.as_str());
-    if lhs_parts.len() < 2 {
+    let lhs_path = rumoca_core::ComponentPath::from_flat_path(lhs_name.as_str());
+    if lhs_path.len() < 2 {
         return binding.clone();
     }
-    let field_suffix = format!(".{}", lhs_parts[lhs_parts.len() - 1]);
+    let Some(field_name) = lhs_path.parts().last() else {
+        return binding.clone();
+    };
 
-    let projected = format!("{}{}", rhs_name.as_str(), field_suffix);
-    if !known_var_names.contains(projected.as_str()) {
+    let selected = rumoca_core::ComponentPath::from_reference(rhs_name)
+        .join(&rumoca_core::ComponentPath::from_flat_path(field_name))
+        .to_flat_string();
+    if !known_var_names.contains(selected.as_str()) {
         return binding.clone();
     }
 
     Expression::VarRef {
-        name: VarName::new(projected),
+        name: VarName::new(selected).into(),
         subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -662,14 +650,16 @@ fn project_scalar_binding_record_field_alias(
 /// which represents the equation `y - expr = 0` (i.e., `y = expr`).
 fn create_binding_residual(name: &VarName, binding: &Expression) -> Expression {
     let var_ref = Expression::VarRef {
-        name: name.clone(),
+        name: name.clone().into(),
         subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
     };
 
     Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
+        op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(var_ref),
         rhs: Box::new(binding.clone()),
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -729,11 +719,12 @@ mod tests {
 
         let var = flat::Variable {
             name: VarName::new("self"),
-            variability: rumoca_ir_core::Variability::Empty,
+            variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             binding: Some(Expression::VarRef {
-                name: VarName::new("port_p.v"),
+                name: VarName::new("port_p.v").into(),
                 subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
             }),
             ..Default::default()
         };
@@ -755,9 +746,12 @@ mod tests {
 
         let var = flat::Variable {
             name: VarName::new("x"),
-            variability: rumoca_ir_core::Variability::Empty,
+            variability: rumoca_core::Variability::Empty,
             is_primitive: true,
-            binding: Some(Expression::Literal(flat::Literal::Real(1.0))),
+            binding: Some(Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span: rumoca_core::Span::DUMMY,
+            }),
             ..Default::default()
         };
         assert!(should_skip_binding_for_explicit_var(
@@ -769,25 +763,33 @@ mod tests {
     }
 
     #[test]
-    fn test_build_duplicate_binding_set_matches_identical_rhs() {
+    fn test_collect_shadowed_bindings_matches_identical_rhs() {
         let mut flat = Model::new();
         flat.add_variable(
             VarName::new("x"),
             flat::Variable {
                 name: VarName::new("x"),
                 is_primitive: true,
-                binding: Some(Expression::Literal(flat::Literal::Real(1.0))),
+                binding: Some(Expression::Literal {
+                    value: rumoca_core::Literal::Real(1.0),
+                    span: rumoca_core::Span::DUMMY,
+                }),
                 ..Default::default()
             },
         );
         flat.add_equation(rumoca_ir_flat::Equation {
             residual: Expression::Binary {
-                op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
+                op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(Expression::VarRef {
-                    name: VarName::new("x"),
+                    name: VarName::new("x").into(),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 }),
-                rhs: Box::new(Expression::Literal(flat::Literal::Real(1.0))),
+                rhs: Box::new(Expression::Literal {
+                    value: rumoca_core::Literal::Real(1.0),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                span: rumoca_core::Span::DUMMY,
             },
             span: Span::DUMMY,
             origin: EquationOrigin::ComponentEquation {
@@ -796,30 +798,32 @@ mod tests {
             scalar_count: 1,
         });
 
-        let duplicates = build_duplicate_binding_set(&flat);
-        assert!(duplicates.contains(&VarName::new("x")));
+        let shadowed = collect_bindings_shadowed_by_identical_explicit_equations(&flat);
+        assert!(shadowed.contains(&VarName::new("x")));
     }
 
     #[test]
-    fn test_project_scalar_binding_record_field_alias_projects_known_field() {
+    fn test_select_scalar_binding_record_field_alias_selects_known_field() {
         let known_var_names = HashSet::from([
             "mach.friction.frictionParameters.wRef".to_string(),
             "data.frictionParameters.wRef".to_string(),
         ]);
         let lhs = VarName::new("mach.friction.frictionParameters.wRef");
         let binding = Expression::VarRef {
-            name: VarName::new("data.frictionParameters"),
+            name: VarName::new("data.frictionParameters").into(),
             subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
         };
 
-        let projected = project_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names);
+        let selected = select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names);
         assert_eq!(
-            format!("{projected:?}"),
+            format!("{selected:?}"),
             format!(
                 "{:?}",
                 Expression::VarRef {
-                    name: VarName::new("data.frictionParameters.wRef"),
+                    name: VarName::new("data.frictionParameters.wRef").into(),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 }
             )
         );

@@ -1,0 +1,1887 @@
+use super::function_projection::FunctionOutputProjection;
+use super::*;
+use rumoca_ir_solve::RandomGenerator;
+mod runtime_intrinsics;
+pub(super) use runtime_intrinsics::*;
+
+struct ComplexProjectionComprehensionCtx<'a> {
+    indices: &'a [rumoca_core::ComprehensionIndex],
+    filter: Option<&'a rumoca_core::Expression>,
+    field: &'a str,
+    scope: &'a mut Scope,
+    const_scope: &'a mut IndexMap<String, f64>,
+    call_depth: usize,
+}
+
+struct FlattenedRecordInputRequest<'a, 'b> {
+    input: &'a rumoca_core::FunctionParam,
+    fields: &'a [rumoca_core::FunctionParam],
+    positional_args: &'a [&'a rumoca_core::Expression],
+    positional_idx: &'b mut usize,
+    caller_scope: &'a Scope,
+    call_depth: usize,
+}
+
+struct NamedOrPositionalArg<'a> {
+    name: &'a str,
+    idx: usize,
+    default: f64,
+}
+
+impl<'a> LowerBuilder<'a> {
+    pub(super) fn try_lower_qualified_standard_numeric_intrinsic(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        _span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        match name.as_str() {
+            // MLS §12.4: a function call is an expression. These qualified
+            // Modelica Standard Library scalar math functions are rendered as
+            // solve-IR expressions instead of inlining their function bodies,
+            // so local helper arrays in the library function remain local and
+            // cannot leak into the runtime variable layout.
+            "Modelica.Math.Distributions.Uniform.quantile" => self
+                .lower_uniform_quantile(args, scope, call_depth)
+                .map(Some),
+            "Modelica.Math.Distributions.Normal.quantile" => self
+                .lower_normal_quantile(args, scope, call_depth)
+                .map(Some),
+            "Modelica.Math.Distributions.Weibull.quantile" => self
+                .lower_weibull_quantile(args, scope, call_depth)
+                .map(Some),
+            "Modelica.Math.Special.erfInv" => {
+                let u = self.lower_optional_arg(args, 0, scope, call_depth)?;
+                let half = self.emit_const(0.5);
+                let one = self.emit_const(1.0);
+                let shifted = self.emit_binary(BinaryOp::Add, u, one);
+                let p = self.emit_binary(BinaryOp::Mul, half, shifted);
+                let inv = self.emit_standard_normal_quantile(p);
+                let sqrt_two = self.emit_const(std::f64::consts::SQRT_2);
+                Ok(Some(self.emit_binary(BinaryOp::Div, inv, sqrt_two)))
+            }
+            "Modelica.Math.Special.erfcInv" => {
+                let u = self.lower_optional_arg(args, 0, scope, call_depth)?;
+                let half = self.emit_const(0.5);
+                let two = self.emit_const(2.0);
+                let shifted = self.emit_binary(BinaryOp::Sub, two, u);
+                let p = self.emit_binary(BinaryOp::Mul, half, shifted);
+                let inv = self.emit_standard_normal_quantile(p);
+                let sqrt_two = self.emit_const(std::f64::consts::SQRT_2);
+                Ok(Some(self.emit_binary(BinaryOp::Div, inv, sqrt_two)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub(super) fn try_lower_intrinsic_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        self.try_lower_intrinsic_function_call_key(name.as_str(), args, span, scope, call_depth)
+    }
+
+    pub(super) fn try_lower_intrinsic_function_call_key(
+        &mut self,
+        call_name: &str,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        if let Some(reg) =
+            self.lower_complex_operator_projection(call_name, args, scope, call_depth)?
+        {
+            return Ok(Some(reg));
+        }
+        if let Some(reg) =
+            self.lower_complex_math_sum_projection(call_name, args, scope, call_depth)?
+        {
+            return Ok(Some(reg));
+        }
+        if intrinsic_short_name(call_name) == "interval" {
+            return self
+                .lower_interval_intrinsic(args, scope, call_depth)
+                .map(Some);
+        }
+        if call_name == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
+            return self
+                .lower_builtin(
+                    rumoca_core::BuiltinFunction::Sample,
+                    args,
+                    span,
+                    scope,
+                    call_depth,
+                )
+                .map(Some);
+        }
+        if self.current_update_target.is_some()
+            && matches!(
+                intrinsic_short_name(call_name),
+                "subSample" | "superSample" | "shiftSample" | "backSample"
+            )
+            && let Some(reg) =
+                self.lower_synchronous_value_intrinsic(call_name, args, scope, call_depth)?
+        {
+            return Ok(Some(reg));
+        }
+        if let Some(reg) = self.lower_clock_constructor_tick(
+            intrinsic_short_name(call_name),
+            args,
+            scope,
+            call_depth,
+        )? {
+            return Ok(Some(reg));
+        }
+        if let Some(reg) =
+            self.lower_synchronous_value_intrinsic(call_name, args, scope, call_depth)?
+        {
+            return Ok(Some(reg));
+        }
+        if is_stream_passthrough_intrinsic(call_name) {
+            return args
+                .first()
+                .map(|arg| self.lower_expr(arg, scope, call_depth))
+                .transpose();
+        }
+        if let Some(reg) = self.lower_runtime_string_special_intrinsic(call_name, args)? {
+            return Ok(Some(reg));
+        }
+        if let Some(reg) =
+            self.lower_external_table_intrinsic(call_name, args, scope, call_depth)?
+        {
+            return Ok(Some(reg));
+        }
+        if let Some(reg) = self.lower_impure_random_intrinsic(call_name, args, scope, call_depth)? {
+            return Ok(Some(reg));
+        }
+        if let Some(reg) = self.lower_random_intrinsic(call_name, args, scope, call_depth)? {
+            return Ok(Some(reg));
+        }
+        if let Some(builtin) = resolve_intrinsic_builtin(call_name) {
+            let reg = self.lower_builtin(builtin, args, span, scope, call_depth)?;
+            return Ok(Some(reg));
+        }
+        Ok(None)
+    }
+
+    fn lower_synchronous_value_intrinsic(
+        &mut self,
+        call_name: &str,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let short = intrinsic_short_name(call_name);
+        match short {
+            // MLS §16.4 / §16.5.1: previous(v) reads the value from the
+            // previous clock tick. DAE lowering represents that as an explicit
+            // `__pre__.*` parameter slot before Solve-IR lowering.
+            "previous" => args
+                .first()
+                .map(|arg| self.lower_expr_in_mode(arg, scope, call_depth, ValueMode::Pre))
+                .transpose(),
+            // MLS §16.5.1: hold(v) exposes the held value on the
+            // continuous-time partition. Before the first tick of the clock
+            // associated with v, the output exposes the held source start
+            // value, falling back to the target start when source metadata is
+            // unavailable.
+            "hold" => self.lower_hold_intrinsic(args, scope, call_depth).map(Some),
+            // noClock(v) removes the clock without introducing a zero-order
+            // hold startup value.
+            "noClock" => args
+                .first()
+                .map(|arg| self.lower_expr(arg, scope, call_depth))
+                .transpose(),
+            "firstTick" => Ok(Some(self.lower_first_tick_intrinsic())),
+            // Value-form sample-rate conversion helpers update on their
+            // converted target clock and hold the current output at unrelated
+            // event instants.
+            "subSample" | "superSample" | "shiftSample" | "backSample" => self
+                .lower_clocked_value_conversion(short, args, scope, call_depth)
+                .map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    fn lower_hold_intrinsic(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        let Some(value_expr) = args.first() else {
+            return Ok(self.emit_const(0.0));
+        };
+        let value = self.lower_expr(value_expr, scope, call_depth)?;
+        let Some(start_expr) = self
+            .variable_start_expr(value_expr)
+            .or_else(|| self.current_update_target_start_expr())
+        else {
+            return Ok(value);
+        };
+        let source_phase = self.lower_clock_phase_expr(value_expr, scope, call_depth)?;
+        let time = self.emit_load_time();
+        let tol = self.emit_const(1.0e-9);
+        let first_source_boundary = self.emit_binary(BinaryOp::Sub, source_phase, tol);
+        let before_first_source_tick =
+            self.emit_compare(CompareOp::Lt, time, first_source_boundary);
+        let start_value = self.lower_expr(&start_expr, scope, call_depth)?;
+        let initial = self.lower_initial_builtin()?;
+        let use_start_value = self.emit_binary(BinaryOp::Or, initial, before_first_source_tick);
+        Ok(self.emit_select(use_start_value, start_value, value))
+    }
+
+    fn current_update_target_start_expr(&self) -> Option<rumoca_core::Expression> {
+        let target = self.current_update_target?;
+        self.variable_starts?.iter().find_map(|(name, start)| {
+            (self.layout.binding(name.as_str()) == Some(target)).then(|| start.clone())
+        })
+    }
+
+    fn lower_clocked_value_conversion(
+        &mut self,
+        short: &str,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        let Some(value_expr) = args.first() else {
+            return Ok(self.emit_const(0.0));
+        };
+        let value = self.lower_clocked_conversion_value(short, value_expr, scope, call_depth)?;
+        let Some(target) = self.current_update_target else {
+            return Ok(value);
+        };
+        let tick = self.lower_clock_constructor_tick(short, args, scope, call_depth)?;
+        let Some(tick) = tick else {
+            return Ok(value);
+        };
+        let held = self.emit_slot_load(target)?;
+        Ok(self.emit_select(tick, value, held))
+    }
+
+    fn lower_clocked_conversion_value(
+        &mut self,
+        short: &str,
+        value_expr: &rumoca_core::Expression,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        let value = self.lower_expr(value_expr, scope, call_depth)?;
+        if short != "backSample" {
+            return Ok(value);
+        }
+        let Some(start_expr) = self.variable_start_expr(value_expr) else {
+            return Ok(value);
+        };
+        let source_phase = self.lower_clock_phase_expr(value_expr, scope, call_depth)?;
+        let time = self.emit_load_time();
+        let tol = self.emit_const(1.0e-9);
+        let first_source_boundary = self.emit_binary(BinaryOp::Sub, source_phase, tol);
+        let before_first_source_tick =
+            self.emit_compare(CompareOp::Lt, time, first_source_boundary);
+        let start_value = self.lower_expr(&start_expr, scope, call_depth)?;
+        Ok(self.emit_select(before_first_source_tick, start_value, value))
+    }
+
+    fn variable_start_expr(
+        &self,
+        value_expr: &rumoca_core::Expression,
+    ) -> Option<rumoca_core::Expression> {
+        let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = value_expr
+        else {
+            return None;
+        };
+        if !subscripts.is_empty() {
+            return None;
+        }
+        self.variable_starts
+            .and_then(|starts| starts.get(name.as_str()).cloned())
+    }
+
+    fn lower_first_tick_intrinsic(&mut self) -> Reg {
+        if self.value_mode == ValueMode::Pre {
+            return self.emit_const(0.0);
+        }
+        let time = self.emit_load_time();
+        let abs_time = self.emit_unary(UnaryOp::Abs, time);
+        let tol = self.emit_const(1.0e-12);
+        self.emit_compare(CompareOp::Le, abs_time, tol)
+    }
+
+    pub(super) fn lower_runtime_string_special_intrinsic(
+        &mut self,
+        call_name: &str,
+        args: &[rumoca_core::Expression],
+    ) -> Result<Option<Reg>, LowerError> {
+        // The compiled evaluator is numeric-only. Keep it aligned with the
+        // runtime numeric evaluator for string/file helper calls instead of
+        // treating those helpers as unsupported externals on the strict path.
+        Ok(lower_runtime_string_special_value(call_name, args).map(|value| self.emit_const(value)))
+    }
+
+    fn lower_external_table_intrinsic(
+        &mut self,
+        call_name: &str,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        // MLS §12.2: standard-library pure functions are ordinary function calls.
+        // The table helper family is lowered to host-backed scalar ops here so
+        // compiled kernels stay on the compiled path instead of falling back to
+        // runtime expression evaluation.
+        let short = intrinsic_short_name(call_name);
+        match short {
+            "getTimeTableTmin" | "getTable1DAbscissaUmin" => {
+                let table_id = self.lower_optional_arg(args, 0, scope, call_depth)?;
+                Ok(Some(self.emit_table_bounds(table_id, false)))
+            }
+            "getTimeTableTmax" | "getTable1DAbscissaUmax" => {
+                let table_id = self.lower_optional_arg(args, 0, scope, call_depth)?;
+                Ok(Some(self.emit_table_bounds(table_id, true)))
+            }
+            "getTimeTableValueNoDer"
+            | "getTimeTableValueNoDer2"
+            | "getTimeTableValue"
+            | "getTable1DValueNoDer"
+            | "getTable1DValueNoDer2"
+            | "getTable1DValue" => {
+                let table_id = self.lower_optional_arg(args, 0, scope, call_depth)?;
+                let column = self.lower_optional_arg(args, 1, scope, call_depth)?;
+                let input = self.lower_optional_arg(args, 2, scope, call_depth)?;
+                Ok(Some(self.emit_table_lookup(table_id, column, input)))
+            }
+            "getNextTimeEvent" => {
+                let table_id = self.lower_optional_arg(args, 0, scope, call_depth)?;
+                let time = self.lower_optional_arg(args, 1, scope, call_depth)?;
+                Ok(Some(self.emit_table_next_event(table_id, time)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn lower_impure_random_intrinsic(
+        &mut self,
+        call_name: &str,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let (named_args, positional_args) = split_named_and_positional_call_args(call_name, args)?;
+        match call_name {
+            // MLS §12.3: impure function calls are event/initial computations.
+            // Represent MSL's hidden-state random utilities as explicit
+            // discrete solve-IR ops so continuous rows cannot treat them as
+            // pure algebraic functions and so event iteration can cache each
+            // call site at a fixed event instant.
+            "Modelica.Math.Random.Utilities.automaticGlobalSeed" | "automaticGlobalSeed" => {
+                let counter = self.alloc_call_site().saturating_add(1);
+                Ok(Some(self.emit_const(
+                    rumoca_eval_dae::deterministic_automatic_global_seed(counter) as f64,
+                )))
+            }
+            "Modelica.Math.Random.Utilities.automaticLocalSeed" | "automaticLocalSeed" => {
+                let seed = literal_string(args.first())
+                    .map(|path| i64::from(rumoca_eval_dae::modelica_strings_hash_string(path)))
+                    .unwrap_or_else(|| {
+                        let counter = self.alloc_call_site().saturating_add(1);
+                        rumoca_eval_dae::deterministic_automatic_global_seed(counter)
+                    });
+                Ok(Some(self.emit_const(seed as f64)))
+            }
+            "Modelica.Math.Random.Utilities.initializeImpureRandom" | "initializeImpureRandom" => {
+                let seed = self.lower_named_or_positional_arg(
+                    &named_args,
+                    &positional_args,
+                    NamedOrPositionalArg {
+                        name: "seed",
+                        idx: 0,
+                        default: 0.0,
+                    },
+                    scope,
+                    call_depth,
+                )?;
+                Ok(Some(self.emit_impure_random_init(seed)))
+            }
+            "Modelica.Math.Random.Utilities.impureRandom" | "impureRandom" => {
+                let id = self.lower_named_or_positional_arg(
+                    &named_args,
+                    &positional_args,
+                    NamedOrPositionalArg {
+                        name: "id",
+                        idx: 0,
+                        default: 0.0,
+                    },
+                    scope,
+                    call_depth,
+                )?;
+                Ok(Some(self.emit_impure_random(id)))
+            }
+            "Modelica.Math.Random.Utilities.impureRandomInteger" | "impureRandomInteger" => {
+                let id = self.lower_named_or_positional_arg(
+                    &named_args,
+                    &positional_args,
+                    NamedOrPositionalArg {
+                        name: "id",
+                        idx: 0,
+                        default: 0.0,
+                    },
+                    scope,
+                    call_depth,
+                )?;
+                let imin = self.lower_named_or_positional_arg(
+                    &named_args,
+                    &positional_args,
+                    NamedOrPositionalArg {
+                        name: "imin",
+                        idx: 1,
+                        default: 1.0,
+                    },
+                    scope,
+                    call_depth,
+                )?;
+                let imax = self.lower_named_or_positional_arg(
+                    &named_args,
+                    &positional_args,
+                    NamedOrPositionalArg {
+                        name: "imax",
+                        idx: 2,
+                        default: 268_435_456.0,
+                    },
+                    scope,
+                    call_depth,
+                )?;
+                Ok(Some(self.emit_impure_random_integer(id, imin, imax)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub(super) fn lower_projected_random_intrinsic(
+        &mut self,
+        projection: &FunctionOutputProjection,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some((generator, kind)) = random_intrinsic_kind(projection.base_function_name.as_str())
+        else {
+            return Ok(None);
+        };
+        match kind {
+            RandomIntrinsicKind::InitialState => {
+                if projection.output_name != "state" {
+                    return Ok(None);
+                }
+                let Some(state_index) = projection.indices.first().copied() else {
+                    return Ok(None);
+                };
+                let local_seed = self.lower_optional_arg(args, 0, scope, call_depth)?;
+                let global_seed = self.lower_optional_arg(args, 1, scope, call_depth)?;
+                let state_len = random_projection_state_len(generator, projection, args);
+                Ok(Some(self.emit_random_initial_state(
+                    generator,
+                    local_seed,
+                    global_seed,
+                    state_len,
+                    state_index.saturating_sub(1),
+                )))
+            }
+            RandomIntrinsicKind::Random => match projection.output_name.as_str() {
+                "result" if projection.indices.is_empty() => {
+                    let state_values = self.lower_random_state_argument(args, scope, call_depth)?;
+                    Ok(Some(self.emit_random_result(generator, &state_values)))
+                }
+                "stateOut" => {
+                    let Some(state_index) = projection.indices.first().copied() else {
+                        return Ok(None);
+                    };
+                    let state_values = self.lower_random_state_argument(args, scope, call_depth)?;
+                    Ok(Some(self.emit_random_state(
+                        generator,
+                        &state_values,
+                        state_index.saturating_sub(1),
+                    )))
+                }
+                _ => Ok(None),
+            },
+        }
+    }
+
+    fn lower_random_intrinsic(
+        &mut self,
+        call_name: &str,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some((generator, kind)) = random_intrinsic_kind(call_name) else {
+            return Ok(None);
+        };
+        match kind {
+            // Scalar context for an array-valued initialState means the first
+            // component. Array contexts call lower_random_initial_state_values.
+            RandomIntrinsicKind::InitialState => {
+                let local_seed = self.lower_optional_arg(args, 0, scope, call_depth)?;
+                let global_seed = self.lower_optional_arg(args, 1, scope, call_depth)?;
+                let state_len = random_generator_state_len(generator);
+                Ok(Some(self.emit_random_initial_state(
+                    generator,
+                    local_seed,
+                    global_seed,
+                    state_len,
+                    0,
+                )))
+            }
+            RandomIntrinsicKind::Random => {
+                let state_values = self.lower_random_state_argument(args, scope, call_depth)?;
+                Ok(Some(self.emit_random_result(generator, &state_values)))
+            }
+        }
+    }
+
+    pub(super) fn lower_random_array_values(
+        &mut self,
+        call_name: &str,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        if let Some((base_name, output_name)) = rumoca_core::split_last_top_level(call_name)
+            && let Some((generator, kind)) = random_intrinsic_kind(base_name)
+        {
+            return self.lower_projected_random_array_values(
+                generator,
+                kind,
+                output_name,
+                args,
+                scope,
+                call_depth,
+            );
+        }
+        let Some((generator, kind)) = random_intrinsic_kind(call_name) else {
+            return Ok(None);
+        };
+        let values = match kind {
+            RandomIntrinsicKind::InitialState => {
+                let local_seed = self.lower_optional_arg(args, 0, scope, call_depth)?;
+                let global_seed = self.lower_optional_arg(args, 1, scope, call_depth)?;
+                let state_len = random_generator_state_len(generator);
+                (0..state_len)
+                    .map(|state_index| {
+                        self.emit_random_initial_state(
+                            generator,
+                            local_seed,
+                            global_seed,
+                            state_len,
+                            state_index,
+                        )
+                    })
+                    .collect()
+            }
+            RandomIntrinsicKind::Random => {
+                let state_values = self.lower_random_state_argument(args, scope, call_depth)?;
+                let mut values = Vec::with_capacity(state_values.len().saturating_add(1));
+                values.push(self.emit_random_result(generator, &state_values));
+                values.extend((0..state_values.len()).map(|state_index| {
+                    self.emit_random_state(generator, &state_values, state_index)
+                }));
+                values
+            }
+        };
+        Ok(Some(values))
+    }
+
+    fn lower_projected_random_array_values(
+        &mut self,
+        generator: RandomGenerator,
+        kind: RandomIntrinsicKind,
+        output_name: &str,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        match (kind, output_name) {
+            (RandomIntrinsicKind::InitialState, "state") => {
+                let local_seed = self.lower_optional_arg(args, 0, scope, call_depth)?;
+                let global_seed = self.lower_optional_arg(args, 1, scope, call_depth)?;
+                let state_len = if args.get(2).is_some() {
+                    // Argument 2 (state length) was provided: it must be a compile-time integer
+                    // literal. A non-literal state length would corrupt the random state slot.
+                    random_state_len_arg(args).expect(
+                        "random state length argument (index 2) must be a compile-time integer \
+                         literal — a non-constant value produces a corrupt random state slot",
+                    )
+                } else {
+                    // No state length argument: fall back to generator default.
+                    random_generator_state_len(generator)
+                };
+                Ok(Some(
+                    (0..state_len)
+                        .map(|state_index| {
+                            self.emit_random_initial_state(
+                                generator,
+                                local_seed,
+                                global_seed,
+                                state_len,
+                                state_index,
+                            )
+                        })
+                        .collect(),
+                ))
+            }
+            (RandomIntrinsicKind::Random, "stateOut") => {
+                let state_values = self.lower_random_state_argument(args, scope, call_depth)?;
+                Ok(Some(
+                    (0..state_values.len())
+                        .map(|state_index| {
+                            self.emit_random_state(generator, &state_values, state_index)
+                        })
+                        .collect(),
+                ))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn lower_random_state_argument(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Vec<Reg>, LowerError> {
+        if let Some(state_expr) = args.first() {
+            let values = self.lower_array_like_values(state_expr, scope, call_depth)?;
+            if !values.is_empty() {
+                return Ok(values);
+            }
+        }
+        Ok(vec![self.emit_const(1.0)])
+    }
+
+    fn lower_optional_arg(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        idx: usize,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        if let Some(expr) = args.get(idx) {
+            self.lower_expr(expr, scope, call_depth)
+        } else {
+            Ok(self.emit_const(0.0))
+        }
+    }
+
+    fn lower_named_or_positional_arg(
+        &mut self,
+        named_args: &IndexMap<String, &rumoca_core::Expression>,
+        positional_args: &[&rumoca_core::Expression],
+        arg: NamedOrPositionalArg<'_>,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        if let Some(expr) = named_args
+            .get(arg.name)
+            .copied()
+            .or_else(|| positional_args.get(arg.idx).copied())
+        {
+            self.lower_expr(expr, scope, call_depth)
+        } else {
+            Ok(self.emit_const(arg.default))
+        }
+    }
+
+    fn lower_uniform_quantile(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        let u = self.lower_optional_arg(args, 0, scope, call_depth)?;
+        let y_min = self.lower_optional_arg(args, 1, scope, call_depth)?;
+        let y_max = self.lower_optional_arg(args, 2, scope, call_depth)?;
+        let span = self.emit_binary(BinaryOp::Sub, y_max, y_min);
+        let offset = self.emit_binary(BinaryOp::Mul, u, span);
+        Ok(self.emit_binary(BinaryOp::Add, y_min, offset))
+    }
+
+    fn lower_normal_quantile(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        let u = self.lower_optional_arg(args, 0, scope, call_depth)?;
+        let mu = self.lower_optional_arg(args, 1, scope, call_depth)?;
+        let sigma = if args.len() > 2 {
+            self.lower_optional_arg(args, 2, scope, call_depth)?
+        } else {
+            self.emit_const(1.0)
+        };
+        let unit = self.emit_standard_normal_quantile(u);
+        let scaled = self.emit_binary(BinaryOp::Mul, sigma, unit);
+        Ok(self.emit_binary(BinaryOp::Add, mu, scaled))
+    }
+
+    fn lower_weibull_quantile(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        let u = self.lower_optional_arg(args, 0, scope, call_depth)?;
+        let lambda = self.lower_optional_arg(args, 1, scope, call_depth)?;
+        let k = self.lower_optional_arg(args, 2, scope, call_depth)?;
+        let one = self.emit_const(1.0);
+        let p = self.emit_open_probability(u);
+        let survival = self.emit_binary(BinaryOp::Sub, one, p);
+        let log_survival = self.emit_unary(UnaryOp::Log, survival);
+        let neg_log = self.emit_unary(UnaryOp::Neg, log_survival);
+        let inv_k = self.emit_binary(BinaryOp::Div, one, k);
+        let powered = self.emit_binary(BinaryOp::Pow, neg_log, inv_k);
+        Ok(self.emit_binary(BinaryOp::Mul, lambda, powered))
+    }
+
+    fn emit_standard_normal_quantile(&mut self, p: Reg) -> Reg {
+        const P_LOW: f64 = 0.02425;
+        const A: [f64; 6] = [
+            -3.969_683_028_665_376e1,
+            2.209_460_984_245_205e2,
+            -2.759_285_104_469_687e2,
+            1.383_577_518_672_69e2,
+            -3.066_479_806_614_716e1,
+            2.506_628_277_459_239,
+        ];
+        const B: [f64; 6] = [
+            -5.447_609_879_822_406e1,
+            1.615_858_368_580_409e2,
+            -1.556_989_798_598_866e2,
+            6.680_131_188_771_972e1,
+            -1.328_068_155_288_572e1,
+            1.0,
+        ];
+        const C: [f64; 6] = [
+            -7.784_894_002_430_293e-3,
+            -3.223_964_580_411_365e-1,
+            -2.400_758_277_161_838,
+            -2.549_732_539_343_734,
+            4.374_664_141_464_968,
+            2.938_163_982_698_783,
+        ];
+        const D: [f64; 5] = [
+            7.784_695_709_041_462e-3,
+            3.224_671_290_700_398e-1,
+            2.445_134_137_142_996,
+            3.754_408_661_907_416,
+            1.0,
+        ];
+
+        let p = self.emit_open_probability(p);
+        let half = self.emit_const(0.5);
+        let q = self.emit_binary(BinaryOp::Sub, p, half);
+        let r = self.emit_binary(BinaryOp::Mul, q, q);
+        let central_poly = self.emit_polynomial(r, &A);
+        let central_num = self.emit_binary(BinaryOp::Mul, central_poly, q);
+        let central_den = self.emit_polynomial(r, &B);
+        let central = self.emit_binary(BinaryOp::Div, central_num, central_den);
+
+        let minus_two = self.emit_const(-2.0);
+        let lower_log = self.emit_unary(UnaryOp::Log, p);
+        let lower_log_scaled = self.emit_binary(BinaryOp::Mul, minus_two, lower_log);
+        let lower_q = self.emit_unary(UnaryOp::Sqrt, lower_log_scaled);
+        let lower = self.emit_rational_tail(lower_q, &C, &D);
+
+        let one = self.emit_const(1.0);
+        let one_minus_p = self.emit_binary(BinaryOp::Sub, one, p);
+        let upper_log = self.emit_unary(UnaryOp::Log, one_minus_p);
+        let upper_log_scaled = self.emit_binary(BinaryOp::Mul, minus_two, upper_log);
+        let upper_q = self.emit_unary(UnaryOp::Sqrt, upper_log_scaled);
+        let upper_tail = self.emit_rational_tail(upper_q, &C, &D);
+        let upper = self.emit_unary(UnaryOp::Neg, upper_tail);
+
+        let low_cutoff = self.emit_const(P_LOW);
+        let high_cutoff = self.emit_const(1.0 - P_LOW);
+        let low = self.emit_compare(CompareOp::Lt, p, low_cutoff);
+        let high = self.emit_compare(CompareOp::Gt, p, high_cutoff);
+        let high_or_central = self.emit_select(high, upper, central);
+        self.emit_select(low, lower, high_or_central)
+    }
+
+    fn emit_open_probability(&mut self, p: Reg) -> Reg {
+        let eps = self.emit_const(1.0e-15);
+        let one_minus_eps = self.emit_const(1.0 - 1.0e-15);
+        let above_zero = self.emit_binary(BinaryOp::Max, p, eps);
+        self.emit_binary(BinaryOp::Min, above_zero, one_minus_eps)
+    }
+
+    fn emit_rational_tail(&mut self, q: Reg, numerator: &[f64; 6], denominator: &[f64; 5]) -> Reg {
+        let num = self.emit_polynomial(q, numerator);
+        let den = self.emit_polynomial(q, denominator);
+        self.emit_binary(BinaryOp::Div, num, den)
+    }
+
+    fn emit_polynomial<const N: usize>(&mut self, x: Reg, coeffs: &[f64; N]) -> Reg {
+        let mut acc = self.emit_const(coeffs[0]);
+        for coeff in coeffs.iter().skip(1) {
+            let product = self.emit_binary(BinaryOp::Mul, acc, x);
+            let next = self.emit_const(*coeff);
+            acc = self.emit_binary(BinaryOp::Add, product, next);
+        }
+        acc
+    }
+
+    pub(super) fn lower_complex_math_sum_projection(
+        &mut self,
+        call_name: &str,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(field) = parse_complex_sum_projection_field(call_name) else {
+            return Ok(None);
+        };
+        let Some(arg) = args.first() else {
+            return Ok(Some(self.emit_const(0.0)));
+        };
+
+        let values = self.lower_complex_projection_values(arg, field, scope, call_depth)?;
+        let mut acc = self.emit_const(0.0);
+        for value in values {
+            acc = self.emit_binary(BinaryOp::Add, acc, value);
+        }
+        Ok(Some(acc))
+    }
+
+    fn lower_complex_operator_projection(
+        &mut self,
+        call_name: &str,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some((op, field)) = parse_complex_operator_projection(call_name) else {
+            return Ok(None);
+        };
+        let lhs = args.first().ok_or_else(|| LowerError::InvalidFunction {
+            name: call_name.to_string(),
+            reason: "missing lhs for complex operator projection".to_string(),
+        })?;
+        let rhs = args.get(1).ok_or_else(|| LowerError::InvalidFunction {
+            name: call_name.to_string(),
+            reason: "missing rhs for complex operator projection".to_string(),
+        })?;
+        let (lhs_re, lhs_im) = self.lower_complex_operand_parts(lhs, scope, call_depth)?;
+        let (rhs_re, rhs_im) = self.lower_complex_operand_parts(rhs, scope, call_depth)?;
+        let (re, im) = match op {
+            BinaryOp::Add => (
+                self.emit_binary(BinaryOp::Add, lhs_re, rhs_re),
+                self.emit_binary(BinaryOp::Add, lhs_im, rhs_im),
+            ),
+            BinaryOp::Sub => (
+                self.emit_binary(BinaryOp::Sub, lhs_re, rhs_re),
+                self.emit_binary(BinaryOp::Sub, lhs_im, rhs_im),
+            ),
+            BinaryOp::Mul => {
+                let ac = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_re);
+                let bd = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_im);
+                let ad = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_im);
+                let bc = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_re);
+                (
+                    self.emit_binary(BinaryOp::Sub, ac, bd),
+                    self.emit_binary(BinaryOp::Add, ad, bc),
+                )
+            }
+            BinaryOp::Div => {
+                let rr2 = self.emit_binary(BinaryOp::Mul, rhs_re, rhs_re);
+                let ri2 = self.emit_binary(BinaryOp::Mul, rhs_im, rhs_im);
+                let denom = self.emit_binary(BinaryOp::Add, rr2, ri2);
+                let lhs_rr = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_re);
+                let lhs_ri = self.emit_binary(BinaryOp::Mul, lhs_re, rhs_im);
+                let li_rr = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_re);
+                let li_ri = self.emit_binary(BinaryOp::Mul, lhs_im, rhs_im);
+                let re_num = self.emit_binary(BinaryOp::Add, lhs_rr, li_ri);
+                let im_num = self.emit_binary(BinaryOp::Sub, li_rr, lhs_ri);
+                (
+                    self.emit_binary(BinaryOp::Div, re_num, denom),
+                    self.emit_binary(BinaryOp::Div, im_num, denom),
+                )
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(if field == "re" { re } else { im }))
+    }
+
+    fn lower_complex_projection_values(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        field: &str,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Vec<Reg>, LowerError> {
+        match expr {
+            rumoca_core::Expression::Array { elements, .. }
+            | rumoca_core::Expression::Tuple { elements, .. } => {
+                let mut values = Vec::new();
+                for element in elements {
+                    values.extend(
+                        self.lower_complex_projection_values(element, field, scope, call_depth)?,
+                    );
+                }
+                Ok(values)
+            }
+            rumoca_core::Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                ..
+            } => {
+                let mut scope = scope.clone();
+                let mut const_scope = IndexMap::<String, f64>::new();
+                let mut values = Vec::new();
+                let mut ctx = ComplexProjectionComprehensionCtx {
+                    indices,
+                    filter: filter.as_deref(),
+                    field,
+                    scope: &mut scope,
+                    const_scope: &mut const_scope,
+                    call_depth,
+                };
+                self.lower_complex_projection_comprehension_values(expr, 0, &mut ctx, &mut values)?;
+                Ok(values)
+            }
+            _ => {
+                let projected = rumoca_core::Expression::FieldAccess {
+                    base: Box::new(expr.clone()),
+                    field: field.to_string(),
+                    span: rumoca_core::Span::DUMMY,
+                };
+                Ok(vec![self.lower_expr(&projected, scope, call_depth)?])
+            }
+        }
+    }
+
+    fn lower_complex_projection_comprehension_values(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        depth: usize,
+        ctx: &mut ComplexProjectionComprehensionCtx<'_>,
+        out: &mut Vec<Reg>,
+    ) -> Result<(), LowerError> {
+        if depth >= ctx.indices.len() {
+            if let Some(filter_expr) = ctx.filter
+                && self.eval_compile_time_expr(filter_expr, ctx.const_scope)? == 0.0
+            {
+                return Ok(());
+            }
+            out.extend(self.lower_complex_projection_values(
+                expr,
+                ctx.field,
+                ctx.scope,
+                ctx.call_depth,
+            )?);
+            return Ok(());
+        }
+
+        let iter = &ctx.indices[depth];
+        let iter_values = self.eval_for_index_values(&iter.range, ctx.const_scope)?;
+        for value in iter_values {
+            let iter_reg = self.emit_const(value);
+            ctx.scope.push_frame();
+            ctx.scope
+                .insert_scoped(ComponentPath::from_flat_path(&iter.name), iter_reg);
+            ctx.const_scope.insert(iter.name.clone(), value);
+            let result =
+                self.lower_complex_projection_comprehension_values(expr, depth + 1, ctx, out);
+            ctx.const_scope.shift_remove(&iter.name);
+            ctx.scope.pop_frame();
+            result?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn bind_function_inputs(
+        &mut self,
+        function_name: &rumoca_core::Reference,
+        inputs: &[rumoca_core::FunctionParam],
+        args: &[rumoca_core::Expression],
+        caller_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<FunctionInputBindings, LowerError> {
+        self.bind_function_inputs_for_name(
+            function_name.as_str(),
+            inputs,
+            args,
+            caller_scope,
+            call_depth,
+        )
+    }
+
+    pub(super) fn bind_function_inputs_for_name(
+        &mut self,
+        function_name: &str,
+        inputs: &[rumoca_core::FunctionParam],
+        args: &[rumoca_core::Expression],
+        caller_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<FunctionInputBindings, LowerError> {
+        let (named_args, positional_args) =
+            split_named_and_positional_call_args(function_name, args)?;
+        let mut scope = Scope::new();
+        let mut const_scope = self.local_const_bindings.clone();
+        let mut const_bindings = IndexMap::new();
+        let mut positional_idx = 0usize;
+
+        for input in inputs {
+            if let Some(arg_expr) = named_args.get(input.name.as_str()) {
+                self.bind_function_input_arg_or_closure(
+                    FunctionInputBindState {
+                        scope: &mut scope,
+                        const_scope: &mut const_scope,
+                        const_bindings: &mut const_bindings,
+                    },
+                    function_name,
+                    input,
+                    arg_expr,
+                    caller_scope,
+                    call_depth + 1,
+                )?;
+                continue;
+            }
+            if positional_args.len() > inputs.len()
+                && let Some(fields) = self.record_constructor_fields(&input.type_name)
+                && self.bind_flattened_record_function_input(
+                    FunctionInputBindState {
+                        scope: &mut scope,
+                        const_scope: &mut const_scope,
+                        const_bindings: &mut const_bindings,
+                    },
+                    FlattenedRecordInputRequest {
+                        input,
+                        fields: &fields,
+                        positional_args: &positional_args,
+                        positional_idx: &mut positional_idx,
+                        caller_scope,
+                        call_depth: call_depth + 1,
+                    },
+                )?
+            {
+                continue;
+            }
+            if let Some(arg_expr) =
+                next_positional_function_input_arg(input, &positional_args, &mut positional_idx)
+            {
+                self.bind_function_input_arg_or_closure(
+                    FunctionInputBindState {
+                        scope: &mut scope,
+                        const_scope: &mut const_scope,
+                        const_bindings: &mut const_bindings,
+                    },
+                    function_name,
+                    input,
+                    arg_expr,
+                    caller_scope,
+                    call_depth + 1,
+                )?;
+                continue;
+            }
+            if let Some(default) = input.default.as_ref() {
+                let local_scope = scope.clone();
+                self.bind_function_input_arg_or_closure(
+                    FunctionInputBindState {
+                        scope: &mut scope,
+                        const_scope: &mut const_scope,
+                        const_bindings: &mut const_bindings,
+                    },
+                    function_name,
+                    input,
+                    default,
+                    &local_scope,
+                    call_depth + 1,
+                )?;
+                continue;
+            }
+
+            return Err(LowerError::InvalidFunction {
+                name: function_name.to_string(),
+                reason: format!(
+                    "required input `{}` has no actual argument or default binding",
+                    input.name
+                ),
+            });
+        }
+
+        Ok(FunctionInputBindings {
+            scope,
+            const_bindings,
+        })
+    }
+
+    fn bind_function_input_arg_or_closure(
+        &mut self,
+        state: FunctionInputBindState<'_>,
+        function_name: &str,
+        input: &rumoca_core::FunctionParam,
+        arg_expr: &rumoca_core::Expression,
+        caller_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<(), LowerError> {
+        if self.bind_function_input_closure(function_name, input, arg_expr, caller_scope) {
+            return Ok(());
+        }
+        self.bind_function_input_value(state, input, arg_expr, caller_scope, call_depth)?;
+        Ok(())
+    }
+
+    fn bind_function_input_closure(
+        &mut self,
+        current_function_name: &str,
+        input: &rumoca_core::FunctionParam,
+        arg_expr: &rumoca_core::Expression,
+        caller_scope: &Scope,
+    ) -> bool {
+        if input.type_class != Some(rumoca_core::ClassType::Function)
+            && !input.type_name.to_ascii_lowercase().contains("function")
+        {
+            return false;
+        }
+        let Some(closure) = self.function_closure_from_arg(arg_expr, caller_scope) else {
+            return false;
+        };
+        self.function_closures
+            .insert(ComponentPath::from_flat_path(&input.name), closure.clone());
+        self.function_closures.insert(
+            ComponentPath::from_flat_path(&format!("{current_function_name}.{}", input.name)),
+            closure,
+        );
+        true
+    }
+
+    fn function_closure_from_arg(
+        &self,
+        arg_expr: &rumoca_core::Expression,
+        caller_scope: &Scope,
+    ) -> Option<FunctionClosure> {
+        match arg_expr {
+            rumoca_core::Expression::FunctionCall {
+                name,
+                args,
+                is_constructor: false,
+                ..
+            } if self.lookup_function(name).is_some() => Some(FunctionClosure {
+                target_name: name.clone(),
+                bound_args: args.clone(),
+                captured_scope: caller_scope.clone(),
+            }),
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => self.lookup_function_closure(name).cloned(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn bind_function_closure_inputs(
+        &mut self,
+        function_name: &rumoca_core::Reference,
+        inputs: &[rumoca_core::FunctionParam],
+        open_args: &[rumoca_core::Expression],
+        open_scope: &Scope,
+        closure: &FunctionClosure,
+        call_depth: usize,
+    ) -> Result<FunctionInputBindings, LowerError> {
+        let (bound_named_args, bound_positional_args) =
+            split_named_and_positional_call_args(function_name.as_str(), &closure.bound_args)?;
+        let mut scope = Scope::new();
+        let mut const_scope = self.local_const_bindings.clone();
+        let mut const_bindings = IndexMap::new();
+        let mut open_idx = 0usize;
+        let mut bound_idx = 0usize;
+
+        for input in inputs {
+            let (arg_expr, arg_scope) = if let Some(open_arg) = open_args.get(open_idx) {
+                open_idx += 1;
+                (open_arg, open_scope)
+            } else if let Some(bound_arg) = bound_named_args.get(input.name.as_str()) {
+                (*bound_arg, &closure.captured_scope)
+            } else if let Some(bound_arg) = bound_positional_args.get(bound_idx) {
+                bound_idx += 1;
+                (*bound_arg, &closure.captured_scope)
+            } else if let Some(default) = input.default.as_ref() {
+                let local_scope = scope.clone();
+                self.bind_function_input_value(
+                    FunctionInputBindState {
+                        scope: &mut scope,
+                        const_scope: &mut const_scope,
+                        const_bindings: &mut const_bindings,
+                    },
+                    input,
+                    default,
+                    &local_scope,
+                    call_depth + 1,
+                )?;
+                continue;
+            } else {
+                return Err(LowerError::InvalidFunction {
+                    name: function_name.as_str().to_string(),
+                    reason: format!(
+                        "required input `{}` has no actual argument or default binding",
+                        input.name
+                    ),
+                });
+            };
+
+            self.bind_function_input_value(
+                FunctionInputBindState {
+                    scope: &mut scope,
+                    const_scope: &mut const_scope,
+                    const_bindings: &mut const_bindings,
+                },
+                input,
+                arg_expr,
+                arg_scope,
+                call_depth + 1,
+            )?;
+        }
+
+        Ok(FunctionInputBindings {
+            scope,
+            const_bindings,
+        })
+    }
+
+    fn record_constructor_fields(
+        &self,
+        type_name: &str,
+    ) -> Option<Vec<rumoca_core::FunctionParam>> {
+        self.functions
+            .iter()
+            .find(|(name, function)| {
+                function.is_constructor
+                    && rumoca_core::qualified_type_name_matches(name.as_str(), type_name)
+            })
+            .map(|(_, function)| function.inputs.clone())
+            .filter(|fields| !fields.is_empty())
+    }
+
+    fn bind_flattened_record_function_input(
+        &mut self,
+        state: FunctionInputBindState<'_>,
+        req: FlattenedRecordInputRequest<'_, '_>,
+    ) -> Result<bool, LowerError> {
+        if req.input.type_class != Some(rumoca_core::ClassType::Record)
+            || is_complex_param(req.input)
+        {
+            return Ok(false);
+        }
+        if req
+            .positional_args
+            .len()
+            .saturating_sub(*req.positional_idx)
+            < req.fields.len()
+        {
+            return Ok(false);
+        }
+
+        for field in req.fields {
+            let Some(arg_expr) = req.positional_args.get(*req.positional_idx).copied() else {
+                return Ok(false);
+            };
+            *req.positional_idx += 1;
+            let local_name = format!("{}.{}", req.input.name, field.name);
+            self.bind_flattened_record_field_value(
+                FunctionInputBindState {
+                    scope: &mut *state.scope,
+                    const_scope: &mut *state.const_scope,
+                    const_bindings: &mut *state.const_bindings,
+                },
+                &local_name,
+                field,
+                arg_expr,
+                req.caller_scope,
+                req.call_depth,
+            )?;
+            if !field.dims.is_empty() {
+                skip_array_size_actuals(
+                    arg_expr,
+                    field.dims.len(),
+                    req.positional_args,
+                    req.positional_idx,
+                );
+            }
+        }
+        Ok(true)
+    }
+
+    fn bind_flattened_record_field_value(
+        &mut self,
+        state: FunctionInputBindState<'_>,
+        local_name: &str,
+        field: &rumoca_core::FunctionParam,
+        expr: &rumoca_core::Expression,
+        expr_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<(), LowerError> {
+        if !field.dims.is_empty() {
+            let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
+            self.bind_assignment_values_with_dims(state.scope, local_name, &values, &field.dims);
+            self.bind_local_array_shape(local_name, &field.dims, values.len());
+            return Ok(());
+        }
+
+        let inferred_dims = self.infer_expr_dims(expr, expr_scope);
+        if !inferred_dims.is_empty() {
+            let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
+            if bind_singleton_array_actual_to_scalar_formal(
+                state.scope,
+                local_name,
+                &inferred_dims,
+                &values,
+            ) {
+                return Ok(());
+            }
+            let dims = inferred_dims
+                .iter()
+                .map(|dim| *dim as i64)
+                .collect::<Vec<_>>();
+            self.bind_assignment_values_with_dims(state.scope, local_name, &values, &dims);
+            self.bind_local_array_shape(local_name, &dims, values.len());
+            return Ok(());
+        }
+
+        let reg = self.lower_expr(expr, expr_scope, call_depth)?;
+        if let Ok(value) = self.eval_compile_time_expr(expr, state.const_scope) {
+            state.const_scope.insert(local_name.to_string(), value);
+            state.const_bindings.insert(local_name.to_string(), value);
+        }
+        state
+            .scope
+            .insert(ComponentPath::from_flat_path(local_name), reg);
+        Ok(())
+    }
+
+    fn bind_record_constructor_function_input(
+        &mut self,
+        input: &rumoca_core::FunctionParam,
+        expr: &rumoca_core::Expression,
+        expr_scope: &Scope,
+        state: &mut FunctionInputBindState<'_>,
+        call_depth: usize,
+    ) -> Result<bool, LowerError> {
+        if input.type_class != Some(rumoca_core::ClassType::Record) || is_complex_param(input) {
+            return Ok(false);
+        }
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            ..
+        } = expr
+        else {
+            return Ok(false);
+        };
+        if !self.is_record_constructor_call(name, *is_constructor) {
+            return Ok(false);
+        }
+
+        let fields = self
+            .record_constructor_fields(name.as_str())
+            .unwrap_or_default();
+        let (named_args, positional_args) =
+            split_named_and_positional_call_args(name.as_str(), args)?;
+        let mut bound_any = false;
+        for (field_name, arg_expr) in named_args
+            .into_iter()
+            .filter(|(_, arg_expr)| !non_numeric_record_metadata(arg_expr))
+        {
+            let local_name = format!("{}.{}", input.name, field_name);
+            // If the constructor is registered (fields non-empty), a missing field
+            // is an ICE — earlier phases must guarantee field names match.
+            // If the constructor is not registered (fields empty), fall back to
+            // a scalar Real param (best-effort binding for unregistered records).
+            let field = record_constructor_field_or_real(name, &fields, &field_name);
+            self.bind_flattened_record_field_value(
+                FunctionInputBindState {
+                    scope: &mut *state.scope,
+                    const_scope: &mut *state.const_scope,
+                    const_bindings: &mut *state.const_bindings,
+                },
+                &local_name,
+                &field,
+                arg_expr,
+                expr_scope,
+                call_depth,
+            )?;
+            bound_any = true;
+        }
+
+        if !positional_args.is_empty() && !fields.is_empty() {
+            for (field, arg_expr) in fields
+                .iter()
+                .zip(positional_args)
+                .filter(|(_, arg_expr)| !non_numeric_record_metadata(arg_expr))
+            {
+                let local_name = format!("{}.{}", input.name, field.name);
+                self.bind_flattened_record_field_value(
+                    FunctionInputBindState {
+                        scope: &mut *state.scope,
+                        const_scope: &mut *state.const_scope,
+                        const_bindings: &mut *state.const_bindings,
+                    },
+                    &local_name,
+                    field,
+                    arg_expr,
+                    expr_scope,
+                    call_depth,
+                )?;
+                bound_any = true;
+            }
+        }
+
+        Ok(bound_any)
+    }
+
+    fn bind_function_input_value(
+        &mut self,
+        mut state: FunctionInputBindState<'_>,
+        input: &rumoca_core::FunctionParam,
+        expr: &rumoca_core::Expression,
+        expr_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<(), LowerError> {
+        if self.bind_record_constructor_function_input(
+            input, expr, expr_scope, &mut state, call_depth,
+        )? {
+            return Ok(());
+        }
+        if is_complex_param(input) {
+            self.bind_complex_input(state.scope, input, expr, expr_scope, call_depth)?;
+            return Ok(());
+        }
+        if !input.dims.is_empty() {
+            let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
+            self.bind_assignment_values_with_dims(state.scope, &input.name, &values, &input.dims);
+            self.bind_local_array_shape(&input.name, &input.dims, values.len());
+            return Ok(());
+        }
+        let inferred_dims = self.infer_expr_dims(expr, expr_scope);
+        if !inferred_dims.is_empty() {
+            let values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
+            if bind_singleton_array_actual_to_scalar_formal(
+                state.scope,
+                &input.name,
+                &inferred_dims,
+                &values,
+            ) {
+                return Ok(());
+            }
+            let dims = inferred_dims
+                .iter()
+                .map(|dim| *dim as i64)
+                .collect::<Vec<_>>();
+            self.bind_assignment_values_with_dims(state.scope, &input.name, &values, &dims);
+            self.bind_local_array_shape(&input.name, &dims, values.len());
+            return Ok(());
+        }
+        let reg = match self.lower_expr(expr, expr_scope, call_depth) {
+            Ok(reg) => reg,
+            Err(LowerError::MissingBinding { .. })
+                if self.bind_record_input_components(
+                    state.scope,
+                    &input.name,
+                    expr,
+                    expr_scope,
+                )? =>
+            {
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        };
+        if let Ok(value) = self.eval_compile_time_expr(expr, state.const_scope) {
+            state.const_scope.insert(input.name.clone(), value);
+            state.const_bindings.insert(input.name.clone(), value);
+        }
+        self.clear_local_array_metadata(&input.name);
+        state
+            .scope
+            .insert(ComponentPath::from_flat_path(&input.name), reg);
+        Ok(())
+    }
+
+    fn bind_record_input_components(
+        &mut self,
+        scope: &mut Scope,
+        input_name: &str,
+        expr: &rumoca_core::Expression,
+        expr_scope: &Scope,
+    ) -> Result<bool, LowerError> {
+        let Ok(base_key) = binding_base_key(expr) else {
+            return Ok(false);
+        };
+        let base_path = ComponentPath::from_flat_path(&base_key);
+        let input_path = ComponentPath::from_flat_path(input_name);
+        let mut bound_any = false;
+        for (key, reg) in expr_scope.iter() {
+            if let Some(suffix) = key.strip_prefix(&base_path) {
+                let local_path = input_path.join(&suffix);
+                let local_key = local_path.to_flat_string();
+                scope.insert(local_path, reg);
+                self.copy_record_input_component_dims(key.as_str(), &local_key);
+                bound_any = true;
+            }
+        }
+
+        let prefix = format!("{base_key}.");
+        let slots = self
+            .layout
+            .bindings()
+            .iter()
+            .filter_map(|(key, slot)| {
+                key.strip_prefix(prefix.as_str())
+                    .map(|suffix| (key.clone(), suffix.to_string(), *slot))
+            })
+            .collect::<Vec<_>>();
+        for (key, suffix, slot) in slots {
+            let local_key = format!("{input_name}.{suffix}");
+            let local_path = ComponentPath::from_flat_path(&local_key);
+            if scope.contains_key(&local_path) {
+                continue;
+            }
+            let slot = self.pre_mode_slot_for_key(&key).unwrap_or(slot);
+            let reg = self.emit_slot_load(slot)?;
+            scope.insert(local_path, reg);
+            self.copy_record_input_component_dims(&key, &local_key);
+            bound_any = true;
+        }
+
+        Ok(bound_any)
+    }
+
+    fn copy_record_input_component_dims(&mut self, source_key: &str, local_key: &str) {
+        if let Some(dims) = self.local_binding_dims.get(source_key).cloned() {
+            self.local_binding_dims.insert(local_key.to_string(), dims);
+            if self.known_empty_local_arrays.contains(source_key) {
+                self.known_empty_local_arrays.insert(local_key.to_string());
+            } else {
+                self.known_empty_local_arrays.shift_remove(local_key);
+            }
+            return;
+        }
+        if let Some(shape) = self.layout.shape(source_key) {
+            self.local_binding_dims.insert(
+                local_key.to_string(),
+                shape.iter().map(|dim| *dim as i64).collect(),
+            );
+            self.known_empty_local_arrays.shift_remove(local_key);
+        }
+    }
+
+    pub(super) fn with_local_lower_frame<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, LowerError>,
+    ) -> Result<T, LowerError> {
+        let frame = LocalLowerFrame {
+            structural_bindings: self.structural_bindings.clone(),
+            local_indexed_bindings: self.local_indexed_bindings.clone(),
+            local_binding_dims: self.local_binding_dims.clone(),
+            known_empty_local_arrays: self.known_empty_local_arrays.clone(),
+            local_const_bindings: self.local_const_bindings.clone(),
+            function_closures: self.function_closures.clone(),
+        };
+        let result = f(self);
+        self.structural_bindings = frame.structural_bindings;
+        self.local_indexed_bindings = frame.local_indexed_bindings;
+        self.local_binding_dims = frame.local_binding_dims;
+        self.known_empty_local_arrays = frame.known_empty_local_arrays;
+        self.local_const_bindings = frame.local_const_bindings;
+        self.function_closures = frame.function_closures;
+        result
+    }
+
+    pub(super) fn initialize_function_output_scope(
+        &mut self,
+        function: &rumoca_core::Function,
+        scope: &mut Scope,
+        call_depth: usize,
+    ) -> Result<(), LowerError> {
+        for param in function.outputs.iter().chain(function.locals.iter()) {
+            if param.default.is_none() {
+                self.initialize_declared_function_param(param);
+                continue;
+            }
+            let values = self.initial_function_param_values(param, scope, call_depth)?;
+            self.bind_assignment_values_with_dims(scope, &param.name, &values, &param.dims);
+            self.bind_local_array_shape(&param.name, &param.dims, values.len());
+            self.bind_initial_function_param_const(param);
+        }
+        Ok(())
+    }
+
+    fn initialize_declared_function_param(&mut self, param: &rumoca_core::FunctionParam) {
+        if param.dims.is_empty() {
+            self.clear_local_array_metadata(&param.name);
+            return;
+        }
+        self.bind_declared_function_param_shape(param);
+    }
+
+    pub(super) fn ensure_pure_inline_function(
+        &self,
+        function_name: &str,
+        function: &rumoca_core::Function,
+    ) -> Result<(), LowerError> {
+        if function.pure {
+            return Ok(());
+        }
+        Err(LowerError::Unsupported {
+            reason: format!(
+                "impure function call `{function_name}` cannot be lowered as a pure algebraic expression"
+            ),
+        })
+    }
+
+    pub(super) fn bind_initial_function_param_const(&mut self, param: &rumoca_core::FunctionParam) {
+        if !param.dims.is_empty() {
+            return;
+        }
+        let Some(default) = param.default.as_ref() else {
+            return;
+        };
+        if let Ok(value) = self.eval_compile_time_expr(default, &self.local_const_bindings) {
+            self.local_const_bindings.insert(param.name.clone(), value);
+        }
+    }
+
+    pub(super) fn bind_local_array_shape(&mut self, name: &str, dims: &[i64], value_count: usize) {
+        let resolved_dims = resolve_array_dims_for_value_count(dims, value_count);
+        for (idx, dim) in resolved_dims.iter().enumerate() {
+            let dim = if *dim > 0 {
+                *dim as f64
+            } else if idx == 0 {
+                value_count as f64
+            } else {
+                0.0
+            };
+            self.structural_bindings
+                .insert(super::size_binding_key(name, idx + 1), dim);
+        }
+    }
+
+    pub(super) fn clear_local_array_metadata(&mut self, name: &str) {
+        self.local_binding_dims.shift_remove(name);
+        self.local_indexed_bindings.shift_remove(name);
+        self.known_empty_local_arrays.shift_remove(name);
+        let prefix = format!("{}{}.", super::SIZE_BINDING_PREFIX, name);
+        let keys = self
+            .structural_bindings
+            .keys()
+            .filter(|key| key.starts_with(prefix.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.structural_bindings.shift_remove(key.as_str());
+        }
+    }
+
+    pub(super) fn set_known_local_array_dims(
+        &mut self,
+        name: &str,
+        dims: Vec<i64>,
+        value_count: usize,
+    ) {
+        let is_empty = dims.contains(&0);
+        self.local_binding_dims
+            .insert(name.to_string(), dims.clone());
+        self.bind_local_array_shape(name, &dims, value_count);
+        if is_empty {
+            self.known_empty_local_arrays.insert(name.to_string());
+        } else {
+            self.known_empty_local_arrays.shift_remove(name);
+        }
+    }
+
+    pub(super) fn bind_declared_function_param_shape(
+        &mut self,
+        param: &rumoca_core::FunctionParam,
+    ) {
+        if param.dims.is_empty() {
+            return;
+        }
+        if let Some(dims) = self.resolve_function_param_shape(param) {
+            self.set_known_local_array_dims(
+                &param.name,
+                dims.clone(),
+                exact_dim_value_count(&dims),
+            );
+            return;
+        }
+        if param.dims.contains(&0) && param.shape_expr.is_empty() {
+            self.set_known_local_array_dims(&param.name, param.dims.clone(), 0);
+            return;
+        }
+        if param.dims.iter().any(|dim| *dim <= 0) {
+            self.known_empty_local_arrays
+                .shift_remove(param.name.as_str());
+            return;
+        }
+
+        let value_count = dims_scalar_count(&param.dims);
+        self.set_known_local_array_dims(&param.name, param.dims.clone(), value_count);
+    }
+
+    fn resolve_function_param_shape(&self, param: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
+        if param.shape_expr.len() != param.dims.len() {
+            return None;
+        }
+        param
+            .shape_expr
+            .iter()
+            .map(|subscript| match subscript {
+                rumoca_core::Subscript::Index { value, .. } if *value >= 0 => Some(*value),
+                rumoca_core::Subscript::Expr { expr, .. } => self
+                    .eval_compile_time_int(expr, &self.local_const_bindings, "function shape")
+                    .ok()
+                    .filter(|dim| *dim >= 0),
+                rumoca_core::Subscript::Colon { .. } | rumoca_core::Subscript::Index { .. } => None,
+            })
+            .collect()
+    }
+
+    fn bind_complex_input(
+        &mut self,
+        scope: &mut Scope,
+        input: &rumoca_core::FunctionParam,
+        expr: &rumoca_core::Expression,
+        expr_scope: &Scope,
+        call_depth: usize,
+    ) -> Result<(), LowerError> {
+        if input.dims.is_empty() {
+            let (re, im) = self.lower_complex_operand_parts(expr, expr_scope, call_depth)?;
+            self.bind_complex_scalar_components(scope, &input.name, re, im);
+            return Ok(());
+        }
+
+        if let rumoca_core::Expression::FieldAccess { field, .. } = expr
+            && matches!(field.as_str(), "re" | "im")
+        {
+            let component_values = self.lower_array_like_values(expr, expr_scope, call_depth)?;
+            let zeros = (0..component_values.len())
+                .map(|_| self.emit_const(0.0))
+                .collect::<Vec<_>>();
+            if field == "re" {
+                self.bind_complex_component_values(scope, &input.name, &component_values, &zeros);
+            } else {
+                self.bind_complex_component_values(scope, &input.name, &zeros, &component_values);
+            }
+            return Ok(());
+        }
+
+        let re_expr = rumoca_core::Expression::FieldAccess {
+            base: Box::new(expr.clone()),
+            field: "re".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        };
+        let im_expr = rumoca_core::Expression::FieldAccess {
+            base: Box::new(expr.clone()),
+            field: "im".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let re_values = self.lower_array_like_values(&re_expr, expr_scope, call_depth)?;
+        let im_values = self.lower_array_like_values(&im_expr, expr_scope, call_depth)?;
+        self.bind_complex_component_values(scope, &input.name, &re_values, &im_values);
+        Ok(())
+    }
+
+    fn bind_complex_scalar_components(
+        &mut self,
+        scope: &mut Scope,
+        base_name: &str,
+        re: Reg,
+        im: Reg,
+    ) {
+        // MLS §3.7.2 and §12.6: Complex is a record with Real fields `re`
+        // and `im`; scalar function inputs must bind those field components
+        // whether the caller passed a record expression or an already-projected
+        // component reference.
+        scope.insert(ComponentPath::from_flat_path(base_name), re);
+        scope.insert(
+            ComponentPath::from_flat_path(&format!("{base_name}.re")),
+            re,
+        );
+        scope.insert(
+            ComponentPath::from_flat_path(&format!("{base_name}.im")),
+            im,
+        );
+    }
+
+    fn bind_complex_component_values(
+        &mut self,
+        scope: &mut Scope,
+        base_name: &str,
+        re_values: &[Reg],
+        im_values: &[Reg],
+    ) {
+        let width = re_values.len().max(im_values.len());
+        let zero_values = (0..width).map(|_| self.emit_const(0.0)).collect::<Vec<_>>();
+        let first = re_values
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.emit_const(0.0));
+        scope.insert(ComponentPath::from_flat_path(base_name), first);
+        if let Some(re) = re_values.first().copied() {
+            scope.insert(
+                ComponentPath::from_flat_path(&format!("{base_name}.re")),
+                re,
+            );
+        }
+        if let Some(im) = im_values.first().copied() {
+            scope.insert(
+                ComponentPath::from_flat_path(&format!("{base_name}.im")),
+                im,
+            );
+        }
+        self.bind_assignment_values(scope, &format!("{base_name}[:].re"), re_values);
+        self.bind_assignment_values(scope, &format!("{base_name}[:].im"), im_values);
+        self.bind_assignment_values(scope, &format!("{base_name}[:].re.re"), re_values);
+        self.bind_assignment_values(scope, &format!("{base_name}[:].re.im"), &zero_values);
+        self.bind_assignment_values(scope, &format!("{base_name}[:].im.re"), &zero_values);
+        self.bind_assignment_values(scope, &format!("{base_name}[:].im.im"), im_values);
+        for (idx, reg) in re_values.iter().copied().enumerate() {
+            scope.insert(
+                ComponentPath::from_flat_path(&format!("{base_name}[{}].re", idx + 1)),
+                reg,
+            );
+        }
+        for (idx, reg) in im_values.iter().copied().enumerate() {
+            scope.insert(
+                ComponentPath::from_flat_path(&format!("{base_name}[{}].im", idx + 1)),
+                reg,
+            );
+        }
+    }
+}
+
+fn record_constructor_field_or_real(
+    _name: &rumoca_core::Reference,
+    fields: &[rumoca_core::FunctionParam],
+    field_name: &str,
+) -> rumoca_core::FunctionParam {
+    if fields.is_empty() {
+        return rumoca_core::FunctionParam::new(field_name, "Real");
+    }
+    fields
+        .iter()
+        .find(|field| field.name == field_name)
+        .cloned()
+        .expect("registered record constructor must contain requested field")
+}

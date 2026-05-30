@@ -10,7 +10,10 @@ pub(crate) fn collect_class_dependencies(
     class_name: &str,
 ) -> IndexSet<String> {
     let mut collector = ClassDependencyCollector::new(tree, class_name);
-    collector.collect_class(class);
+    assert!(
+        !collector.collect_class(class).is_break(),
+        "class dependency traversal stopped while collecting `{class_name}`"
+    );
     collector.finish()
 }
 
@@ -34,12 +37,12 @@ impl<'a> ClassDependencyCollector<'a> {
         self.deps
     }
 
-    fn collect_class(&mut self, class: &ast::ClassDef) {
+    fn collect_class(&mut self, class: &ast::ClassDef) -> ControlFlow<()> {
         if let Some(constrainedby) = &class.constrainedby {
-            let _ = self.visit_type_name(constrainedby, TypeNameContext::ClassConstrainedBy);
+            self.visit_type_name(constrainedby, TypeNameContext::ClassConstrainedBy)?;
         }
         for extend in &class.extends {
-            self.collect_extend(extend);
+            self.collect_extend(extend)?;
         }
         let scope_imports = class
             .scope_id
@@ -49,68 +52,72 @@ impl<'a> ClassDependencyCollector<'a> {
             self.collect_import(import, scope_imports);
         }
         for subscript in &class.array_subscripts {
-            let _ = self.visit_subscript(subscript);
+            self.visit_subscript(subscript)?;
         }
         for annotation in &class.annotation {
-            let _ = self.visit_expression(annotation);
+            self.visit_expression(annotation)?;
         }
 
         for component in class.components.values() {
-            self.collect_component(component);
+            self.collect_component(component)?;
         }
 
         for equation in &class.equations {
-            let _ = self.visit_equation(equation);
+            self.visit_equation(equation)?;
         }
         for equation in &class.initial_equations {
-            let _ = self.visit_equation(equation);
+            self.visit_equation(equation)?;
         }
         for algorithm in &class.algorithms {
             for statement in algorithm {
-                let _ = self.visit_statement(statement);
+                self.visit_statement(statement)?;
             }
         }
         for algorithm in &class.initial_algorithms {
             for statement in algorithm {
-                let _ = self.visit_statement(statement);
+                self.visit_statement(statement)?;
             }
         }
 
         if let Some(external) = &class.external {
-            self.collect_external(external);
+            self.collect_external(external)?;
         }
+        Continue(())
     }
 
-    fn collect_extend(&mut self, extend: &ast::Extend) {
+    fn collect_extend(&mut self, extend: &ast::Extend) -> ControlFlow<()> {
         if let Some(base_def_id) = extend.base_def_id {
             self.add_class_dep_by_def_id(base_def_id);
         }
-        let _ = self.visit_extend(extend);
+        self.visit_extend(extend)?;
         for annotation in &extend.annotation {
-            let _ = self.visit_expression(annotation);
+            self.visit_expression(annotation)?;
         }
+        Continue(())
     }
 
-    fn collect_component(&mut self, component: &ast::Component) {
+    fn collect_component(&mut self, component: &ast::Component) -> ControlFlow<()> {
         if let Some(type_def_id) = component.type_def_id {
             self.add_class_dep_by_def_id(type_def_id);
         }
-        let _ = self.visit_component(component);
+        self.visit_component(component)?;
         if let Some(binding) = &component.binding {
-            let _ = self.visit_expression(binding);
+            self.visit_expression(binding)?;
         }
         for shape in &component.shape_expr {
-            let _ = self.visit_subscript(shape);
+            self.visit_subscript(shape)?;
         }
+        Continue(())
     }
 
-    fn collect_external(&mut self, external: &ast::ExternalFunction) {
+    fn collect_external(&mut self, external: &ast::ExternalFunction) -> ControlFlow<()> {
         if let Some(output) = &external.output {
-            let _ = self.visit_component_reference(output);
+            self.visit_component_reference(output)?;
         }
         for arg in &external.args {
-            let _ = self.visit_expression(arg);
+            self.visit_expression(arg)?;
         }
+        Continue(())
     }
 
     fn collect_import(
@@ -173,7 +180,7 @@ impl<'a> ClassDependencyCollector<'a> {
     fn add_selective_import_deps(
         &mut self,
         path: &ast::Name,
-        names: &[ast::Token],
+        names: &[rumoca_core::Token],
         scope_imports: Option<&[ast::scope::Import]>,
     ) -> bool {
         let Some(scope_imports) = scope_imports else {
@@ -191,10 +198,13 @@ impl<'a> ClassDependencyCollector<'a> {
             if !import_path_matches(path, import_path) {
                 continue;
             }
-            for def_id in names
-                .iter()
-                .filter_map(|name| resolved_names.get(name.text.as_ref()).copied())
-            {
+            for def_id in names.iter().filter_map(|name| {
+                resolved_names
+                    .get(&rumoca_core::ComponentPath::from_flat_path(
+                        name.text.as_ref(),
+                    ))
+                    .copied()
+            }) {
                 self.add_class_dep_by_def_id(def_id);
                 found = true;
             }

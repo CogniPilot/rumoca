@@ -51,10 +51,11 @@ end BoundaryWithDelta;
         .expect("model should compile");
 
     let dae = &result.dae;
-    let detail = rumoca_analysis_dae::balance_detail(dae);
+    let detail = rumoca_phase_dae::balance::balance_detail(dae);
     let unknown_scalars = detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns;
     let boundary_flow_zero_scalars: usize = dae
-        .f_x
+        .continuous
+        .equations
         .iter()
         .filter(|eq| eq.origin.starts_with("unconnected flow:"))
         .map(|eq| eq.scalar_count)
@@ -81,7 +82,7 @@ end BoundaryWithDelta;
         "effective interface-flow contribution must not double-count flows already closed by explicit flow=0 equations"
     );
     assert_eq!(
-        rumoca_analysis_dae::balance(dae),
+        rumoca_phase_dae::balance::balance(dae),
         0,
         "interface-flow terms must not overconstrain already-closed systems"
     );

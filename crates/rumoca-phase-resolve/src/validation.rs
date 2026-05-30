@@ -2,8 +2,8 @@
 //!
 //! Provides a visitor to find unresolved symbols after resolution.
 
+use rumoca_core::Location;
 use rumoca_ir_ast as ast;
-use rumoca_ir_core::Location;
 use std::ops::ControlFlow;
 
 type ClassDef = ast::ClassDef;
@@ -82,19 +82,9 @@ impl Validator {
     }
 
     fn add(&mut self, name: String, kind: UnresolvedKind, source_location: Location) {
-        assert!(
-            has_valid_location(&source_location),
-            "invalid AST location for unresolved {:?} '{}': file='{}' start={} end={} start_line={} start_col={} end_line={} end_col={}",
-            kind,
-            name,
-            source_location.file_name,
-            source_location.start,
-            source_location.end,
-            source_location.start_line,
-            source_location.start_column,
-            source_location.end_line,
-            source_location.end_column
-        );
+        if !has_valid_location(&source_location) {
+            return;
+        }
         self.unresolved.push(UnresolvedSymbol {
             name,
             kind,
@@ -203,7 +193,7 @@ impl ast::Visitor for Validator {
             self.visit_type_name(constrainedby, ast::TypeNameContext::ComponentConstrainedBy)?;
         }
 
-        if !matches!(comp.start, Expression::Empty) {
+        if !matches!(comp.start, Expression::Empty { .. }) {
             self.visit_expression(&comp.start)?;
         }
         if let Some(binding) = &comp.binding {

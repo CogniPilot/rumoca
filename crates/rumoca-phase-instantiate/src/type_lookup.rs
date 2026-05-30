@@ -1,4 +1,4 @@
-use rumoca_core::{DefId, TypeId};
+use rumoca_core::{DefId, TypeId, split_last_top_level, top_level_last_segment};
 use rumoca_ir_ast as ast;
 
 use super::inheritance;
@@ -14,7 +14,7 @@ pub(super) struct TypeInfo<'a> {
 
 /// Map a builtin primitive name to its TypeId in the class tree.
 fn builtin_type_id(tree: &ast::ClassTree, name: &str) -> Option<TypeId> {
-    let simple = name.rsplit('.').next().unwrap_or(name);
+    let simple = top_level_last_segment(name);
     match simple {
         "Real" => Some(tree.type_table.real()),
         "Integer" => Some(tree.type_table.integer()),
@@ -149,7 +149,7 @@ fn find_extends_redeclared_member_type<'a>(
             if !ext_mod.redeclare {
                 continue;
             }
-            let ast::Expression::Modification { target, value } = &ext_mod.expr else {
+            let ast::Expression::Modification { target, value, .. } = &ext_mod.expr else {
                 continue;
             };
             let Some(first_target) = target.parts.first() else {
@@ -167,20 +167,6 @@ fn find_extends_redeclared_member_type<'a>(
         }
     }
     None
-}
-
-/// Resolve a dotted member path against a class, following the extends chain
-/// at each segment via [`find_member_type_in_class`].
-pub(super) fn find_member_type_path_in_class<'a>(
-    tree: &'a ast::ClassTree,
-    class: &'a ast::ClassDef,
-    member_path: &str,
-) -> Option<&'a ast::ClassDef> {
-    let mut current = class;
-    for segment in member_path.split('.') {
-        current = find_member_type_in_class(tree, current, segment)?;
-    }
-    Some(current)
 }
 
 /// Look up type information for a component.
@@ -205,13 +191,11 @@ pub(super) fn lookup_type_info<'a>(
     // containing package. This is required for package-member model components
     // such as `Medium.BaseProperties medium`.
     if let Some(cd) = class_def
-        && matches!(cd.class_type, ast::ClassType::Package)
-        && let Some(last_dot) = type_name.rfind('.')
+        && matches!(cd.class_type, rumoca_core::ClassType::Package)
+        && let Some((_, member_name)) = split_last_top_level(type_name)
+        && let Some(member) = find_member_type_in_class(tree, cd, member_name)
     {
-        let member_name = &type_name[last_dot + 1..];
-        if let Some(member) = find_member_type_in_class(tree, cd, member_name) {
-            class_def = Some(member);
-        }
+        class_def = Some(member);
     }
 
     // is_effectively_primitive_transitive follows inheritance chains to detect:
@@ -232,15 +216,11 @@ pub(super) fn lookup_type_info<'a>(
     }
 }
 
-/// Check if inner and outer types are compatible using DefIds when available.
+/// Check if inner and outer types are compatible using resolved identity.
 ///
 /// MLS §5.4: The inner declaration's type must be a subtype of the outer's type.
-/// This version uses DefId comparison first (O(1), alias-aware), then falls back
-/// to string-based subtype checking.
-///
-/// Handles cases where type names differ in qualification level:
-/// - outer uses short form: "Interfaces.CompositeStepState"
-/// - inner uses qualified form: "StateGraph.Interfaces.CompositeStepState"
+/// DefIds are preferred because relative and qualified spellings should already
+/// have been resolved before compatibility checking reaches this path.
 pub(super) fn is_type_compatible_with_def_id(
     tree: &ast::ClassTree,
     outer_type: &str,
@@ -255,13 +235,10 @@ pub(super) fn is_type_compatible_with_def_id(
         return true;
     }
 
-    // Check if one name is a suffix of the other (short vs qualified name)
-    // e.g., "Interfaces.CompositeStepState" matches "StateGraph.Interfaces.CompositeStepState"
     if type_names_match(tree, outer_type, inner_type) {
         return true;
     }
 
-    // Fallback to string-based subtype checking (handles inheritance)
     is_type_subtype(tree, inner_type, outer_type)
 }
 

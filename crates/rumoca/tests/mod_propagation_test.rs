@@ -2,6 +2,7 @@
 //!
 //! This tests the pattern used in DFFREG: dFFR(n=n) should get n=2 when outer has n=2.
 
+use rumoca_core::ComponentPath;
 use rumoca_ir_ast as ast;
 use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_phase_parse::parse_to_ast;
@@ -19,6 +20,12 @@ fn find_component<'a>(
         .find(|d| d.qualified_name.to_flat_string() == name)
 }
 
+fn disabled_contains(overlay: &ast::InstanceOverlay, path: &str) -> bool {
+    overlay
+        .disabled_components
+        .contains(&ComponentPath::from_flat_path(path))
+}
+
 /// Helper: Assert that a component has the expected integer binding value.
 fn assert_integer_binding(overlay: &ast::InstanceOverlay, comp_name: &str, expected: &str) {
     let data =
@@ -31,6 +38,7 @@ fn assert_integer_binding(overlay: &ast::InstanceOverlay, comp_name: &str, expec
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token,
+            ..
         } => {
             assert_eq!(
                 token.text.as_ref(),
@@ -60,6 +68,7 @@ fn assert_bool_binding(overlay: &ast::InstanceOverlay, comp_name: &str, expected
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::Bool,
             token,
+            ..
         } => {
             assert_eq!(
                 token.text.as_ref(),
@@ -86,6 +95,98 @@ fn assert_dims(overlay: &ast::InstanceOverlay, comp_name: &str, expected_dims: &
         "{} should have dims {:?}, got {:?}",
         comp_name, expected_dims, data.dims
     );
+}
+
+fn flat_expr_is_numeric_value(expr: &rumoca_core::Expression, expected: i64) -> bool {
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => *value == expected,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } => (*value - expected as f64).abs() <= f64::EPSILON,
+        _ => false,
+    }
+}
+
+fn flat_expr_mentions_name(expr: &rumoca_core::Expression, needle: &str) -> bool {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            name.as_str().contains(needle)
+                || subscripts.iter().any(|subscript| match subscript {
+                    rumoca_core::Subscript::Expr { expr, .. } => {
+                        flat_expr_mentions_name(expr, needle)
+                    }
+                    _ => false,
+                })
+        }
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            field.contains(needle) || flat_expr_mentions_name(base, needle)
+        }
+        rumoca_core::Expression::FunctionCall { name, args, .. } => {
+            name.as_str().contains(needle)
+                || args
+                    .iter()
+                    .any(|expr| flat_expr_mentions_name(expr, needle))
+        }
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::Array { elements: args, .. }
+        | rumoca_core::Expression::Tuple { elements: args, .. } => args
+            .iter()
+            .any(|expr| flat_expr_mentions_name(expr, needle)),
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            flat_expr_mentions_name(lhs, needle) || flat_expr_mentions_name(rhs, needle)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => flat_expr_mentions_name(rhs, needle),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(cond, value)| {
+                flat_expr_mentions_name(cond, needle) || flat_expr_mentions_name(value, needle)
+            }) || flat_expr_mentions_name(else_branch, needle)
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            flat_expr_mentions_name(start, needle)
+                || step
+                    .as_ref()
+                    .is_some_and(|expr| flat_expr_mentions_name(expr, needle))
+                || flat_expr_mentions_name(end, needle)
+        }
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            flat_expr_mentions_name(base, needle)
+                || subscripts.iter().any(|subscript| match subscript {
+                    rumoca_core::Subscript::Expr { expr, .. } => {
+                        flat_expr_mentions_name(expr, needle)
+                    }
+                    _ => false,
+                })
+        }
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            flat_expr_mentions_name(expr, needle)
+                || indices
+                    .iter()
+                    .any(|index| flat_expr_mentions_name(&index.range, needle))
+                || filter
+                    .as_ref()
+                    .is_some_and(|expr| flat_expr_mentions_name(expr, needle))
+        }
+        rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => false,
+    }
 }
 
 #[test]
@@ -156,6 +257,7 @@ fn test_modification_propagation_nested() {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token,
+            ..
         } => {
             assert_eq!(token.text.as_ref(), "2", "cont.n should have binding 2");
         }
@@ -181,6 +283,7 @@ fn test_modification_propagation_nested() {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token,
+            ..
         } => {
             assert_eq!(
                 token.text.as_ref(),
@@ -344,6 +447,70 @@ fn test_dimension_evaluation_after_typecheck() {
     assert_eq!(cont_y.dims, vec![2], "cont.y should have dimension [2]");
 }
 
+#[test]
+fn test_nested_colon_parameter_binding_drives_size_dimension() {
+    let source = r#"
+        package P
+            package Conversions
+                function from_deg
+                    input Real degree;
+                    output Real radian;
+                algorithm
+                    radian := degree;
+                end from_deg;
+            end Conversions;
+
+            block Kinematic
+                parameter Real q_begin[:] = {0};
+                parameter Real q_end[:] = {1};
+                parameter Real qd_max[:] = {1};
+                parameter Real qdd_max[:] = {1};
+                final parameter Integer nout =
+                    max([size(q_begin, 1); size(q_end, 1); size(qd_max, 1); size(qdd_max, 1)]);
+                Real q[nout];
+            end Kinematic;
+
+            model PathPlanning
+                import Cv = P.Conversions;
+                parameter Integer naxis = 6;
+                parameter Real angleBegDeg[naxis] = zeros(naxis);
+                final parameter Real angleBeg[:] = Cv.from_deg(angleBegDeg);
+                Kinematic path(
+                    q_begin = angleBeg,
+                    q_end = angleBeg,
+                    qd_max = angleBeg,
+                    qdd_max = angleBeg);
+            end PathPlanning;
+
+            model Test
+                PathPlanning pathPlanning(
+                    naxis = 6,
+                    angleBegDeg = {1, 2, 3, 4, 5, 6});
+            end Test;
+        end P;
+    "#;
+
+    let stored_def = parse_to_ast(source, "<test>").expect("parse failed");
+    let tree = ast::ClassTree::from_parsed(stored_def);
+    let parsed = ast::ParsedTree::new(tree);
+    let resolved = resolve(parsed).expect("resolve failed");
+    let tree = resolved.into_inner();
+    let mut overlay = match instantiate_model_with_outcome(&tree, "P.Test") {
+        InstantiationOutcome::Success(o) => o,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("Needs inner: {:?}", missing_inners);
+        }
+        InstantiationOutcome::Error(e) => {
+            panic!("Error: {:?}", e);
+        }
+    };
+
+    typecheck_instanced(&tree, &mut overlay, "P.Test").expect("typecheck should succeed");
+
+    let q = find_component(&overlay, "pathPlanning.path.q").expect("path.q should exist");
+    assert_eq!(q.dims, vec![6]);
+}
+
 /// Test that mimics the DFFREG structure more closely
 /// DFFREG has: parameter n, dataIn[n], and DFFR dFFR(n=n) where DFFR also has dataIn[n]
 #[test]
@@ -385,6 +552,44 @@ fn test_dffreg_like_structure() {
     let _ = typecheck_instanced(&tree, &mut overlay, "");
     assert_dims(&overlay, "dFFREG.dataIn", &[2]);
     assert_dims(&overlay, "dFFREG.dFFR.dataIn", &[2]);
+}
+
+#[test]
+fn test_inherited_component_start_modifier_from_extends_is_preserved() {
+    let source = r#"
+        connector BooleanInput = input Boolean;
+        connector BooleanOutput = output Boolean;
+
+        partial block PartialClockedSISO
+            BooleanInput u;
+            BooleanOutput y;
+        end PartialClockedSISO;
+
+        block UnitDelay
+            extends PartialClockedSISO(u(final start = y_start));
+            parameter Boolean y_start = true;
+        equation
+            y = previous(u);
+        end UnitDelay;
+
+        model Top
+            UnitDelay delay;
+        end Top;
+    "#;
+
+    let (_tree, overlay) = instantiate_test_model(source, "Top");
+    let input = find_component(&overlay, "delay.u").expect("delay.u should be instantiated");
+    let start = input
+        .start
+        .as_ref()
+        .expect("extends modifier must preserve inherited input start attribute");
+
+    match start {
+        ast::Expression::ComponentReference(reference) => {
+            assert_eq!(reference.to_string(), "y_start");
+        }
+        other => panic!("expected start to reference y_start, got {other:?}"),
+    }
 }
 
 #[test]
@@ -456,11 +661,11 @@ fn test_nested_boolean_modifier_resolves_in_parent_scope_for_conditionals() {
     assert_bool_binding(&overlay, "p.twoPulse.useFilter", "false");
 
     assert!(
-        overlay.disabled_components.contains("p.twoPulse.filter"),
+        disabled_contains(&overlay, "p.twoPulse.filter"),
         "filter should be disabled when useFilter resolves to false"
     );
     assert!(
-        !overlay.disabled_components.contains("p.twoPulse.pass"),
+        !disabled_contains(&overlay, "p.twoPulse.pass"),
         "pass should stay enabled when not useFilter is true"
     );
 
@@ -524,7 +729,7 @@ fn test_fill_modifier_resolves_forwarded_boolean_for_array_components() {
         let heat_port = format!("w.leaf[{i}].heatPort");
         let heat_port_t = format!("{heat_port}.T");
         assert!(
-            !overlay.disabled_components.contains(&heat_port),
+            !disabled_contains(&overlay, &heat_port),
             "{heat_port} should stay enabled"
         );
         assert!(
@@ -575,11 +780,11 @@ fn test_nested_string_modifier_resolves_in_parent_scope_for_conditionals() {
     // For layout = "D3", terminalConnection resolves to "D":
     // star must be disabled and delta must be enabled.
     assert!(
-        overlay.disabled_components.contains("box.star"),
+        disabled_contains(&overlay, "box.star"),
         "star should be disabled when terminalConnection resolves to D"
     );
     assert!(
-        !overlay.disabled_components.contains("box.delta"),
+        !disabled_contains(&overlay, "box.delta"),
         "delta should stay enabled when terminalConnection resolves to D"
     );
 
@@ -643,11 +848,11 @@ fn test_nested_enum_modifier_resolves_forwarded_parameter_for_conditionals() {
     let (_tree, overlay) = instantiate_test_model(source, "Top");
 
     assert!(
-        overlay.disabled_components.contains("w.child.path_a"),
+        disabled_contains(&overlay, "w.child.path_a"),
         "path_a should be disabled when forwarded mode resolves to Mode.c"
     );
     assert!(
-        !overlay.disabled_components.contains("w.child.path_c"),
+        !disabled_contains(&overlay, "w.child.path_c"),
         "path_c should stay enabled when forwarded mode resolves to Mode.c"
     );
 
@@ -846,7 +1051,6 @@ fn test_nested_record_parameter_alias_preserves_child_field_bindings() {
         .iter()
         .find(|(name, _)| name.as_str() == "p.c.rp.a")
         .and_then(|(_, var)| var.binding.as_ref())
-        .map(|expr| format!("{expr:?}"))
         .expect("p.c.rp.a should have binding");
     let child_b = compiled
         .flat
@@ -854,21 +1058,16 @@ fn test_nested_record_parameter_alias_preserves_child_field_bindings() {
         .iter()
         .find(|(name, _)| name.as_str() == "p.c.rp.b")
         .and_then(|(_, var)| var.binding.as_ref())
-        .map(|expr| format!("{expr:?}"))
         .expect("p.c.rp.b should have binding");
 
     assert!(
-        child_a.contains("p.rp.a")
-            || child_a.contains("Literal(Real(3.0))")
-            || child_a.contains("Literal(Integer(3))"),
-        "unexpected binding for p.c.rp.a: {}",
+        flat_expr_mentions_name(child_a, "p.rp.a") || flat_expr_is_numeric_value(child_a, 3),
+        "unexpected binding for p.c.rp.a: {:?}",
         child_a
     );
     assert!(
-        child_b.contains("p.rp.b")
-            || child_b.contains("Literal(Real(4.0))")
-            || child_b.contains("Literal(Integer(4))"),
-        "unexpected binding for p.c.rp.b: {}",
+        flat_expr_mentions_name(child_b, "p.rp.b") || flat_expr_is_numeric_value(child_b, 4),
+        "unexpected binding for p.c.rp.b: {:?}",
         child_b
     );
 }
@@ -910,18 +1109,16 @@ fn test_nested_modifier_forwarding_keeps_outer_alias_scope() {
         .iter()
         .find(|(name, _)| name.as_str() == "mach.friction.frictionParameters.wRef")
         .and_then(|(_, var)| var.binding.as_ref())
-        .map(|expr| format!("{expr:?}"))
         .expect("mach.friction.frictionParameters.wRef should have binding");
 
     assert!(
-        !binding.contains("mach.data.frictionParameters"),
-        "nested modifier forwarding should not synthesize non-existent local alias path; binding={binding}"
+        !flat_expr_mentions_name(binding, "mach.data.frictionParameters"),
+        "nested modifier forwarding should not synthesize non-existent local alias path; binding={binding:?}"
     );
     assert!(
-        binding.contains("data.frictionParameters")
-            || binding.contains("Literal(Real(3.0))")
-            || binding.contains("Literal(Integer(3))"),
-        "nested modifier forwarding should preserve outer alias source; binding={binding}"
+        flat_expr_mentions_name(binding, "data.frictionParameters")
+            || flat_expr_is_numeric_value(binding, 3),
+        "nested modifier forwarding should preserve outer alias source; binding={binding:?}"
     );
 
     let unbound = compiled.flat.unbound_fixed_parameters();

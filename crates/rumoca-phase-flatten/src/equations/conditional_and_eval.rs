@@ -1,4 +1,5 @@
 use super::*;
+use crate::path_utils::split_last_top_level;
 
 /// Expand a nested non-constant if-equation to simple equations with conditional RHS.
 ///
@@ -81,15 +82,17 @@ pub(super) fn expand_nested_if_to_simple(
             build_simple_equation_residual(&else_simple_eqs[eq_idx])
         } else {
             ast::Expression::Binary {
-                op: OpBinary::Sub(Default::default()),
+                op: OpBinary::Sub,
                 lhs: Arc::new(expanded_branches[0].1[eq_idx].lhs.clone()),
                 rhs: Arc::new(zero_real_expr()),
+                span,
             }
         };
 
         let conditional_residual = ast::Expression::If {
             branches,
             else_branch: Arc::new(else_residual),
+            span,
         };
 
         result.push(SimpleEquation {
@@ -103,7 +106,6 @@ pub(super) fn expand_nested_if_to_simple(
 
 /// Create a single conditional equation from pre-expanded simple equations.
 pub(super) struct ConditionalEquationContext<'a> {
-    pub(super) ctx: &'a Context,
     pub(super) prefix: &'a QualifiedName,
     pub(super) span: rumoca_core::Span,
     pub(super) origin: &'a rumoca_ir_flat::EquationOrigin,
@@ -120,15 +122,18 @@ pub(super) fn create_conditional_equation_from_simple(
     // Build a conditional residual directly:
     // if c1 then (lhs1-rhs1) elseif c2 then (lhs2-rhs2) else (lhsN-rhsN)
     // This preserves MLS semantics even when branch equations do not share the same lhs.
-    let conditional_residual =
-        build_conditional_residual_from_simple(expanded_branches, else_simple_eqs, eq_idx)?;
-    let residual = qualify_expression_imports_with_def_map_ctx(
+    let conditional_residual = build_conditional_residual_from_simple(
+        expanded_branches,
+        else_simple_eqs,
+        eq_idx,
+        context.span,
+    )?;
+    let residual = qualify_expression_imports_with_def_map(
         &conditional_residual,
         context.prefix,
         context.imports,
         context.def_map,
-        context.ctx,
-    );
+    )?;
     Ok(flat::Equation::new(
         residual,
         context.span,
@@ -138,9 +143,10 @@ pub(super) fn create_conditional_equation_from_simple(
 
 fn build_simple_equation_residual(eq: &SimpleEquation) -> ast::Expression {
     ast::Expression::Binary {
-        op: OpBinary::Sub(Default::default()),
+        op: OpBinary::Sub,
         lhs: Arc::new(eq.lhs.clone()),
         rhs: Arc::new(eq.rhs.clone()),
+        span: eq.lhs.span(),
     }
 }
 
@@ -151,6 +157,7 @@ fn zero_real_expr() -> ast::Expression {
             text: std::sync::Arc::from("0.0"),
             ..Default::default()
         },
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -159,6 +166,7 @@ fn build_conditional_residual_from_simple(
     expanded_branches: &[(ast::Expression, Vec<SimpleEquation>)],
     else_simple_eqs: &[SimpleEquation],
     eq_idx: usize,
+    span: rumoca_core::Span,
 ) -> Result<ast::Expression, FlattenError> {
     // Collect (condition, residual) pairs.
     let branches: Vec<(ast::Expression, ast::Expression)> = expanded_branches
@@ -173,9 +181,10 @@ fn build_conditional_residual_from_simple(
         // Preserve prior lowering semantics for if-equations without else:
         // residual = lhs - (if cond then rhs else 0)  => else residual is lhs - 0.
         ast::Expression::Binary {
-            op: OpBinary::Sub(Default::default()),
+            op: OpBinary::Sub,
             lhs: Arc::new(expanded_branches[0].1[eq_idx].lhs.clone()),
             rhs: Arc::new(zero_real_expr()),
+            span,
         }
     };
 
@@ -183,6 +192,7 @@ fn build_conditional_residual_from_simple(
     Ok(ast::Expression::If {
         branches,
         else_branch: Arc::new(else_residual),
+        span,
     })
 }
 
@@ -206,7 +216,7 @@ fn flatten_simple_in_list(
     let lhs = expand_array_comprehensions_in_expression(ctx, lhs, prefix, span)?;
     let rhs = expand_array_comprehensions_in_expression(ctx, rhs, prefix, span)?;
 
-    let residual = make_residual(ctx, &lhs, &rhs, prefix, &ctx.current_imports, def_map);
+    let residual = make_residual(&lhs, &rhs, prefix, &ctx.current_imports, def_map)?;
     let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, prefix, ctx);
     if scalar_count == 0 {
         return Ok(vec![]);
@@ -263,17 +273,14 @@ pub(super) fn flatten_equations_list(
             } => {
                 let imports = &ctx.current_imports;
                 let assert_eq = AssertEquation::new(
-                    qualify_expression_imports_with_def_map_ctx(
-                        condition, prefix, imports, def_map, ctx,
-                    ),
-                    qualify_expression_imports_with_def_map_ctx(
-                        message, prefix, imports, def_map, ctx,
-                    ),
-                    level.as_ref().map(|expr| {
-                        qualify_expression_imports_with_def_map_ctx(
-                            expr, prefix, imports, def_map, ctx,
-                        )
-                    }),
+                    qualify_expression_imports_with_def_map(condition, prefix, imports, def_map)?,
+                    qualify_expression_imports_with_def_map(message, prefix, imports, def_map)?,
+                    level
+                        .as_ref()
+                        .map(|expr| {
+                            qualify_expression_imports_with_def_map(expr, prefix, imports, def_map)
+                        })
+                        .transpose()?,
                     span,
                 );
                 result.assert_equations.push(assert_eq);
@@ -290,7 +297,6 @@ pub(super) fn flatten_equations_list(
             }
             ast::Equation::FunctionCall { comp, args } => {
                 let flattened = flatten_function_call_equation(
-                    ctx,
                     comp,
                     args,
                     prefix,
@@ -339,7 +345,9 @@ pub(crate) fn expand_range_indices(
         }
     };
     match range_expr {
-        ast::Expression::Range { start, step, end } => {
+        ast::Expression::Range {
+            start, step, end, ..
+        } => {
             let start_val = try_eval_integer_with_ctx(ctx, start, prefix).ok_or_else(|| {
                 FlattenError::unsupported_equation(
                     format!(
@@ -421,6 +429,7 @@ fn try_eval_integer_with_ctx(
         ast::Expression::Terminal {
             terminal_type: TerminalType::UnsignedInteger,
             token,
+            ..
         } => token.text.parse().ok(),
 
         ast::Expression::ComponentReference(cr) => {
@@ -434,24 +443,26 @@ fn try_eval_integer_with_ctx(
             val
         }
 
-        ast::Expression::Unary { op, rhs } => {
+        ast::Expression::Unary { op, rhs, .. } => {
             let val = try_eval_integer_with_ctx(ctx, rhs, prefix)?;
             match op {
-                rumoca_ir_core::OpUnary::Minus(_) => Some(-val),
-                rumoca_ir_core::OpUnary::Plus(_) => Some(val),
+                rumoca_core::OpUnary::Minus => Some(-val),
+                rumoca_core::OpUnary::Plus => Some(val),
                 _ => None,
             }
         }
-        ast::Expression::Parenthesized { inner } => try_eval_integer_with_ctx(ctx, inner, prefix),
+        ast::Expression::Parenthesized { inner, .. } => {
+            try_eval_integer_with_ctx(ctx, inner, prefix)
+        }
 
-        ast::Expression::Binary { op, lhs, rhs } => {
+        ast::Expression::Binary { op, lhs, rhs, .. } => {
             // Support simple arithmetic for parameter expressions like n-1, n+1
             let l = try_eval_integer_with_ctx(ctx, lhs, prefix)?;
             let r = try_eval_integer_with_ctx(ctx, rhs, prefix)?;
-            eval_ast_integer_binary(op, l, r)
+            rumoca_core::eval_ast_integer_binary(op, l, r)
         }
 
-        ast::Expression::FunctionCall { comp, args } => {
+        ast::Expression::FunctionCall { comp, args, .. } => {
             try_eval_builtin_function(ctx, comp, args, prefix)
         }
 
@@ -479,17 +490,6 @@ fn try_eval_integer_with_ctx(
     }
 
     result
-}
-
-fn eval_ast_integer_binary(op: &rumoca_ir_core::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
-    let operator = match op {
-        rumoca_ir_core::OpBinary::Add(_) => rumoca_core::IntegerBinaryOperator::Add,
-        rumoca_ir_core::OpBinary::Sub(_) => rumoca_core::IntegerBinaryOperator::Sub,
-        rumoca_ir_core::OpBinary::Mul(_) => rumoca_core::IntegerBinaryOperator::Mul,
-        rumoca_ir_core::OpBinary::Div(_) => rumoca_core::IntegerBinaryOperator::Div,
-        _ => return None,
-    };
-    rumoca_core::eval_integer_binary(operator, lhs, rhs)
 }
 
 /// Evaluate a builtin function call to an integer value for for-loop ranges (MLS §3.7.2).
@@ -566,10 +566,13 @@ pub(super) fn has_empty_range_subscript(
             // patterns like der(x[2:1]) where the function is der.
             args.iter().any(|a| matches!(a, ast::Expression::ComponentReference(cr) if cr_has_empty_range_subscript(ctx, cr, prefix)))
         }
-        ast::Expression::Parenthesized { inner } => has_empty_range_subscript(ctx, inner, prefix),
+        ast::Expression::Parenthesized { inner, .. } => {
+            has_empty_range_subscript(ctx, inner, prefix)
+        }
         ast::Expression::If {
             branches,
             else_branch,
+            ..
         } => {
             // For if‐expressions, try to evaluate the condition.
             // Only check the branch that will actually be taken.
@@ -626,9 +629,9 @@ fn is_empty_range_subscript(
     prefix: &QualifiedName,
 ) -> bool {
     let (start, step, end) = match sub {
-        ast::Subscript::Expression(ast::Expression::Range { start, step, end }) => {
-            (start, step, end)
-        }
+        ast::Subscript::Expression(ast::Expression::Range {
+            start, step, end, ..
+        }) => (start, step, end),
         _ => return false,
     };
     let Some(s) = try_eval_integer_with_ctx(ctx, start, prefix) else {
@@ -662,21 +665,21 @@ fn lookup_array_dimensions_in_scope(
 ) -> Option<Vec<i64>> {
     // First try fully qualified
     let qualified = build_qualified_name(prefix, cr);
-    if let Some(dims) = ctx.get_array_dimensions(&qualified) {
+    if let Some(dims) = lookup_array_dims_with_unindexed_scope(ctx, &qualified) {
         #[cfg(feature = "tracing")]
         debug!(
             array = %qualified,
             dims = ?dims,
             "found array dimensions (fully qualified)"
         );
-        return Some(dims.clone());
+        return Some(dims);
     }
 
     // Try parent scopes
     let mut current_prefix = prefix.clone();
     while let Some(parent) = get_parent_prefix(&current_prefix) {
         let parent_qualified = build_qualified_name(&parent, cr);
-        if let Some(dims) = ctx.get_array_dimensions(&parent_qualified) {
+        if let Some(dims) = lookup_array_dims_with_unindexed_scope(ctx, &parent_qualified) {
             #[cfg(feature = "tracing")]
             debug!(
                 original = %qualified,
@@ -684,7 +687,7 @@ fn lookup_array_dimensions_in_scope(
                 dims = ?dims,
                 "array dimensions resolved in parent scope"
             );
-            return Some(dims.clone());
+            return Some(dims);
         }
         current_prefix = parent;
     }
@@ -696,7 +699,7 @@ fn lookup_array_dimensions_in_scope(
         .map(format_component_ref_part)
         .collect::<Vec<_>>()
         .join(".");
-    if let Some(dims) = ctx.get_array_dimensions(&unqualified) {
+    if let Some(dims) = lookup_array_dims_with_unindexed_scope(ctx, &unqualified) {
         #[cfg(feature = "tracing")]
         debug!(
             original = %qualified,
@@ -704,7 +707,7 @@ fn lookup_array_dimensions_in_scope(
             dims = ?dims,
             "array dimensions resolved at root scope"
         );
-        return Some(dims.clone());
+        return Some(dims);
     }
 
     #[cfg(feature = "tracing")]
@@ -973,6 +976,7 @@ fn substitute_index_in_component_ref(
             })
             .collect(),
         def_id: cr.def_id,
+        span: cr.span,
     }
 }
 
@@ -984,105 +988,383 @@ pub(crate) fn substitute_index_in_expression(
 ) -> ast::Expression {
     match expr {
         ast::Expression::ComponentReference(cr) => {
-            // Check if the first part matches the index variable (unsubscripted)
-            if cr.parts.len() == 1
-                && &*cr.parts[0].ident.text == var_name
-                && cr.parts[0].subs.is_none()
-            {
-                // Replace with the integer value
-                return ast::Expression::Terminal {
-                    terminal_type: TerminalType::UnsignedInteger,
-                    token: Token {
-                        text: std::sync::Arc::from(value.to_string()),
-                        ..Default::default()
-                    },
-                };
-            }
-
-            // Check subscripts for index variable references
-            let new_parts: Vec<ComponentRefPart> = cr
-                .parts
-                .iter()
-                .map(|part| {
-                    let new_subs = part.subs.as_ref().map(|subs| {
-                        subs.iter()
-                            .map(|sub| substitute_index_in_subscript(sub, var_name, value))
-                            .collect()
-                    });
-                    ComponentRefPart {
-                        ident: part.ident.clone(),
-                        subs: new_subs,
-                    }
-                })
-                .collect();
-
-            ast::Expression::ComponentReference(ComponentReference {
-                local: cr.local,
-                parts: new_parts,
-                def_id: cr.def_id,
-            })
+            substitute_index_component_reference_expression(cr, var_name, value)
         }
 
-        ast::Expression::Binary { op, lhs, rhs } => ast::Expression::Binary {
+        ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
             op: op.clone(),
             lhs: Arc::new(substitute_index_in_expression(lhs, var_name, value)),
             rhs: Arc::new(substitute_index_in_expression(rhs, var_name, value)),
+            span: *span,
         },
 
-        ast::Expression::Unary { op, rhs } => ast::Expression::Unary {
+        ast::Expression::Unary { op, rhs, span } => ast::Expression::Unary {
             op: op.clone(),
             rhs: Arc::new(substitute_index_in_expression(rhs, var_name, value)),
+            span: *span,
         },
 
-        ast::Expression::FunctionCall { comp, args } => ast::Expression::FunctionCall {
-            comp: comp.clone(),
-            args: args
-                .iter()
-                .map(|a| substitute_index_in_expression(a, var_name, value))
-                .collect(),
-        },
+        ast::Expression::FunctionCall { comp, args, span } => {
+            substitute_index_in_function_call_expression(comp, args, *span, var_name, value)
+        }
+
+        ast::Expression::ClassModification {
+            target,
+            modifications,
+            span,
+            ..
+        } => substitute_index_in_class_modification_expression(
+            target,
+            modifications,
+            *span,
+            var_name,
+            value,
+        ),
+
+        ast::Expression::NamedArgument {
+            name,
+            value: arg,
+            span,
+        } => substitute_index_in_named_argument_expression(name, arg, *span, var_name, value),
+
+        ast::Expression::Modification {
+            target,
+            value: modification,
+            span,
+        } => substitute_index_in_modification_expression(
+            target,
+            modification,
+            *span,
+            var_name,
+            value,
+        ),
 
         ast::Expression::Array {
             elements,
             is_matrix,
-        } => ast::Expression::Array {
-            elements: elements
-                .iter()
-                .map(|e| substitute_index_in_expression(e, var_name, value))
-                .collect(),
-            is_matrix: *is_matrix,
-        },
+            span,
+        } => substitute_index_in_array_expression(elements, *is_matrix, *span, var_name, value),
 
         ast::Expression::If {
             branches,
             else_branch,
-        } => ast::Expression::If {
-            branches: branches
-                .iter()
-                .map(|(cond, then_expr)| {
-                    (
-                        substitute_index_in_expression(cond, var_name, value),
-                        substitute_index_in_expression(then_expr, var_name, value),
-                    )
-                })
-                .collect(),
-            else_branch: Arc::new(substitute_index_in_expression(else_branch, var_name, value)),
-        },
+            span,
+        } => substitute_index_in_if_expression(branches, else_branch, *span, var_name, value),
 
-        ast::Expression::Parenthesized { inner } => ast::Expression::Parenthesized {
-            inner: Arc::new(substitute_index_in_expression(inner, var_name, value)),
-        },
+        ast::Expression::Parenthesized { inner, span } => {
+            substitute_index_in_parenthesized_expression(inner, *span, var_name, value)
+        }
 
-        ast::Expression::Range { start, step, end } => ast::Expression::Range {
-            start: Arc::new(substitute_index_in_expression(start, var_name, value)),
-            step: step
-                .as_ref()
-                .map(|s| Arc::new(substitute_index_in_expression(s, var_name, value))),
-            end: Arc::new(substitute_index_in_expression(end, var_name, value)),
-        },
+        ast::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            span,
+        } => substitute_index_in_array_comprehension(
+            expr,
+            indices,
+            filter.as_deref(),
+            *span,
+            var_name,
+            value,
+        ),
 
-        // Terminal and other expressions don't need substitution
+        ast::Expression::ArrayIndex {
+            base,
+            subscripts,
+            span,
+        } => substitute_index_in_array_index_expression(base, subscripts, *span, var_name, value),
+
+        ast::Expression::FieldAccess { base, field, span } => {
+            substitute_index_in_field_access_expression(base, field, *span, var_name, value)
+        }
+
+        ast::Expression::Range {
+            start,
+            step,
+            end,
+            span,
+        } => substitute_index_in_range_expression(
+            start,
+            step.as_deref(),
+            end,
+            *span,
+            var_name,
+            value,
+        ),
+
+        ast::Expression::Tuple { elements, span } => {
+            substitute_index_in_tuple_expression(elements, *span, var_name, value)
+        }
+
+        // Terminal and empty expressions don't need substitution.
         _ => expr.clone(),
+    }
+}
+
+fn substitute_index_in_function_call_expression(
+    comp: &ComponentReference,
+    args: &[ast::Expression],
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::FunctionCall {
+        comp: substitute_index_in_component_ref(comp, var_name, value),
+        args: substitute_index_in_expression_list(args, var_name, value),
+        span,
+    }
+}
+
+fn substitute_index_in_class_modification_expression(
+    target: &ComponentReference,
+    modifications: &[ast::Expression],
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::ClassModification {
+        target: substitute_index_in_component_ref(target, var_name, value),
+        modifications: substitute_index_in_expression_list(modifications, var_name, value),
+        each_flags: Vec::new(),
+        final_flags: Vec::new(),
+        redeclare_flags: Vec::new(),
+        span,
+    }
+}
+
+fn substitute_index_in_named_argument_expression(
+    name: &rumoca_core::Token,
+    arg: &ast::Expression,
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::NamedArgument {
+        name: name.clone(),
+        value: Arc::new(substitute_index_in_expression(arg, var_name, value)),
+        span,
+    }
+}
+
+fn substitute_index_in_modification_expression(
+    target: &ComponentReference,
+    modification: &ast::Expression,
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::Modification {
+        target: substitute_index_in_component_ref(target, var_name, value),
+        value: Arc::new(substitute_index_in_expression(
+            modification,
+            var_name,
+            value,
+        )),
+        span,
+    }
+}
+
+fn substitute_index_in_tuple_expression(
+    elements: &[ast::Expression],
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::Tuple {
+        elements: substitute_index_in_expression_list(elements, var_name, value),
+        span,
+    }
+}
+
+fn substitute_index_in_parenthesized_expression(
+    inner: &ast::Expression,
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::Parenthesized {
+        inner: Arc::new(substitute_index_in_expression(inner, var_name, value)),
+        span,
+    }
+}
+
+fn substitute_index_in_array_expression(
+    elements: &[ast::Expression],
+    is_matrix: bool,
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::Array {
+        elements: substitute_index_in_expression_list(elements, var_name, value),
+        is_matrix,
+        span,
+    }
+}
+
+fn substitute_index_in_array_index_expression(
+    base: &ast::Expression,
+    subscripts: &[ast::Subscript],
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::ArrayIndex {
+        base: Arc::new(substitute_index_in_expression(base, var_name, value)),
+        subscripts: subscripts
+            .iter()
+            .map(|sub| substitute_index_in_subscript(sub, var_name, value))
+            .collect(),
+        span,
+    }
+}
+
+fn substitute_index_in_field_access_expression(
+    base: &ast::Expression,
+    field: &str,
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::FieldAccess {
+        base: Arc::new(substitute_index_in_expression(base, var_name, value)),
+        field: field.to_string(),
+        span,
+    }
+}
+
+fn substitute_index_component_reference_expression(
+    cr: &ast::ComponentReference,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    if cr.parts.len() == 1 && &*cr.parts[0].ident.text == var_name && cr.parts[0].subs.is_none() {
+        return ast::Expression::Terminal {
+            terminal_type: TerminalType::UnsignedInteger,
+            token: Token {
+                text: std::sync::Arc::from(value.to_string()),
+                ..Default::default()
+            },
+            span: cr.span,
+        };
+    }
+    ast::Expression::ComponentReference(substitute_index_in_component_ref(cr, var_name, value))
+}
+
+fn substitute_index_in_expression_list(
+    expressions: &[ast::Expression],
+    var_name: &str,
+    value: i64,
+) -> Vec<ast::Expression> {
+    expressions
+        .iter()
+        .map(|expr| substitute_index_in_expression(expr, var_name, value))
+        .collect()
+}
+
+fn substitute_index_in_if_expression(
+    branches: &[(ast::Expression, ast::Expression)],
+    else_branch: &ast::Expression,
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::If {
+        branches: branches
+            .iter()
+            .map(|(cond, then_expr)| {
+                (
+                    substitute_index_in_expression(cond, var_name, value),
+                    substitute_index_in_expression(then_expr, var_name, value),
+                )
+            })
+            .collect(),
+        else_branch: Arc::new(substitute_index_in_expression(else_branch, var_name, value)),
+        span,
+    }
+}
+
+fn substitute_index_in_array_comprehension(
+    expr: &Arc<ast::Expression>,
+    indices: &[ForIndex],
+    filter: Option<&ast::Expression>,
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    let mut shadowed = false;
+    let indices = indices
+        .iter()
+        .map(|idx| substitute_index_in_for_index(idx, &mut shadowed, var_name, value))
+        .collect();
+    ast::Expression::ArrayComprehension {
+        expr: substitute_index_in_comprehension_body(expr, shadowed, var_name, value),
+        indices,
+        filter: substitute_index_in_comprehension_filter(filter, shadowed, var_name, value),
+        span,
+    }
+}
+
+fn substitute_index_in_for_index(
+    idx: &ForIndex,
+    shadowed: &mut bool,
+    var_name: &str,
+    value: i64,
+) -> ForIndex {
+    let range = if *shadowed {
+        idx.range.clone()
+    } else {
+        substitute_index_in_expression(&idx.range, var_name, value)
+    };
+    if idx.ident.text.as_ref() == var_name {
+        *shadowed = true;
+    }
+    ForIndex {
+        ident: idx.ident.clone(),
+        range,
+    }
+}
+
+fn substitute_index_in_comprehension_body(
+    expr: &Arc<ast::Expression>,
+    shadowed: bool,
+    var_name: &str,
+    value: i64,
+) -> Arc<ast::Expression> {
+    if shadowed {
+        expr.clone()
+    } else {
+        Arc::new(substitute_index_in_expression(expr, var_name, value))
+    }
+}
+
+fn substitute_index_in_comprehension_filter(
+    filter: Option<&ast::Expression>,
+    shadowed: bool,
+    var_name: &str,
+    value: i64,
+) -> Option<Arc<ast::Expression>> {
+    if shadowed {
+        filter.cloned().map(Arc::new)
+    } else {
+        filter.map(|f| Arc::new(substitute_index_in_expression(f, var_name, value)))
+    }
+}
+
+fn substitute_index_in_range_expression(
+    start: &ast::Expression,
+    step: Option<&ast::Expression>,
+    end: &ast::Expression,
+    span: rumoca_core::Span,
+    var_name: &str,
+    value: i64,
+) -> ast::Expression {
+    ast::Expression::Range {
+        start: Arc::new(substitute_index_in_expression(start, var_name, value)),
+        step: step.map(|s| Arc::new(substitute_index_in_expression(s, var_name, value))),
+        end: Arc::new(substitute_index_in_expression(end, var_name, value)),
+        span,
     }
 }
 
@@ -1110,7 +1392,11 @@ fn substitute_index_in_subscript(
 ///
 /// If a ClassTree is provided, functions will be looked up on-demand during evaluation.
 pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> EvalContext {
-    let mut eval_ctx = EvalContext::new();
+    let parameter_capacity = ctx.parameter_values.len()
+        + ctx.boolean_parameter_values.len()
+        + ctx.enum_parameter_values.len()
+        + ctx.array_dimensions.len();
+    let mut eval_ctx = EvalContext::with_capacity(parameter_capacity, 0, ctx.functions.len() * 2);
 
     // Add integer parameters
     for (name, value) in &ctx.parameter_values {
@@ -1126,7 +1412,7 @@ pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> Eva
     for (name, value) in &ctx.enum_parameter_values {
         // The value is a qualified enum literal like "Type.Literal"
         // Parse it into type and literal parts
-        if let Some((type_name, literal)) = value.rsplit_once('.') {
+        if let Some((type_name, literal)) = split_last_top_level(value) {
             eval_ctx.add_parameter(
                 name.clone(),
                 Value::Enum(type_name.to_string(), literal.to_string()),
@@ -1179,8 +1465,11 @@ fn try_eval_with_rumoca_eval_const(
 ) -> Option<i64> {
     let fallback_start = crate::maybe_start_timer();
     // Convert AST expression to qualified ast::Expression
-    let flat_expr =
-        qualify_expression_imports_with_def_map_ctx(expr, prefix, &ctx.current_imports, None, ctx);
+    let Ok(flat_expr) =
+        qualify_expression_imports_with_def_map(expr, prefix, &ctx.current_imports, None)
+    else {
+        return None;
+    };
 
     // Reuse the per-flatten base evaluation context to avoid rebuilding
     // parameter/function maps on every complex-expression fallback.
@@ -1211,6 +1500,7 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -1222,6 +1512,7 @@ mod tests {
                 text: Arc::from(index.to_string()),
                 ..Token::default()
             },
+            span: rumoca_core::Span::DUMMY,
         });
         if let Some(first) = cr.parts.first_mut() {
             first.subs = Some(vec![sub]);
@@ -1236,6 +1527,7 @@ mod tests {
                 text: Arc::from(value.to_string()),
                 ..Token::default()
             },
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -1243,6 +1535,7 @@ mod tests {
         ast::Expression::FunctionCall {
             comp: make_comp_ref(name),
             args,
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -1256,6 +1549,7 @@ mod tests {
                 start: Arc::new(make_int(start)),
                 step: None,
                 end: Arc::new(make_int(end)),
+                span: rumoca_core::Span::DUMMY,
             },
         }
     }
@@ -1264,9 +1558,10 @@ mod tests {
     fn test_try_eval_integer_with_ctx_div_operator_requires_exact_quotient() {
         let ctx = Context::new();
         let expr = ast::Expression::Binary {
-            op: OpBinary::Div(Token::default()),
+            op: OpBinary::Div,
             lhs: Arc::new(make_int(7)),
             rhs: Arc::new(make_int(2)),
+            span: rumoca_core::Span::DUMMY,
         };
 
         assert_eq!(
@@ -1293,9 +1588,10 @@ mod tests {
         ctx.array_dimensions.insert("b".to_string(), vec![3]);
 
         let lhs = ast::Expression::Binary {
-            op: OpBinary::Mul(Token::default()),
+            op: OpBinary::Mul,
             lhs: Arc::new(ast::Expression::ComponentReference(make_comp_ref("a"))),
             rhs: Arc::new(ast::Expression::ComponentReference(make_comp_ref("b"))),
+            span: rumoca_core::Span::DUMMY,
         };
         let rhs = make_int(0);
 
@@ -1313,9 +1609,10 @@ mod tests {
 
         let lhs = ast::Expression::ComponentReference(make_comp_ref("y"));
         let rhs = ast::Expression::Binary {
-            op: OpBinary::Mul(Token::default()),
+            op: OpBinary::Mul,
             lhs: Arc::new(ast::Expression::ComponentReference(make_comp_ref("A"))),
             rhs: Arc::new(ast::Expression::ComponentReference(make_comp_ref("x"))),
+            span: rumoca_core::Span::DUMMY,
         };
 
         let scalar_count =
@@ -1420,33 +1717,47 @@ mod tests {
     }
 
     #[test]
-    fn test_try_lowercase_type_ref_suffix_requires_unique_value() {
+    fn test_lookup_parameter_in_scope_uses_unindexed_array_element_scope() {
         let mut ctx = Context::new();
         ctx.parameter_values
-            .insert("a.medium.nXi".to_string(), 1_i64);
-        ctx.parameter_values
-            .insert("b.medium.nXi".to_string(), 2_i64);
+            .insert("adaptor.filter.transferFunction[1].nx".to_string(), 1_i64);
 
-        let cref = make_comp_ref("Medium.nXi");
-        assert_eq!(try_lowercase_type_ref_suffix(&ctx, &cref), None);
-
-        ctx.parameter_values.remove("b.medium.nXi");
-        assert_eq!(try_lowercase_type_ref_suffix(&ctx, &cref), Some(1_i64));
+        let prefix = QualifiedName::from_dotted("adaptor.filter[1].transferFunction[1]");
+        let cref = make_comp_ref("nx");
+        assert_eq!(lookup_parameter_in_scope(&ctx, &cref, &prefix), Some(1_i64));
     }
 
     #[test]
-    fn test_try_uppercase_instance_ref_suffix_requires_unique_value() {
+    fn test_lookup_parameter_in_scope_prefers_indexed_scope_override() {
         let mut ctx = Context::new();
         ctx.parameter_values
-            .insert("a.Medium.nXi".to_string(), 1_i64);
-        ctx.parameter_values
-            .insert("b.Medium.nXi".to_string(), 2_i64);
+            .insert("adaptor.filter.transferFunction.nx".to_string(), 1_i64);
+        ctx.parameter_values.insert(
+            "adaptor.filter[1].transferFunction[1].nx".to_string(),
+            0_i64,
+        );
 
-        let cref = make_comp_ref("medium.nXi");
-        assert_eq!(try_uppercase_instance_ref_suffix(&ctx, &cref), None);
+        let prefix = QualifiedName::from_dotted("adaptor.filter[1].transferFunction[1]");
+        let cref = make_comp_ref("nx");
+        assert_eq!(lookup_parameter_in_scope(&ctx, &cref, &prefix), Some(0_i64));
+    }
 
-        ctx.parameter_values.remove("b.Medium.nXi");
-        assert_eq!(try_uppercase_instance_ref_suffix(&ctx, &cref), Some(1_i64));
+    #[test]
+    fn test_size_call_uses_unindexed_array_element_scope() {
+        let mut ctx = Context::new();
+        ctx.array_dimensions
+            .insert("adaptor.filter.transferFunction[1].a".to_string(), vec![2]);
+
+        let prefix = QualifiedName::from_dotted("adaptor.filter[1].transferFunction[1]");
+        let expr = make_call(
+            "size",
+            vec![
+                ast::Expression::ComponentReference(make_comp_ref("a")),
+                make_int(1),
+            ],
+        );
+
+        assert_eq!(try_eval_integer_with_ctx(&ctx, &expr, &prefix), Some(2_i64));
     }
 
     #[test]
@@ -1509,9 +1820,10 @@ mod tests {
                 equations: vec![ast::Equation::Simple {
                     lhs: ast::Expression::ComponentReference(make_comp_ref("y")),
                     rhs: ast::Expression::Binary {
-                        op: OpBinary::Add(Token::default()),
+                        op: OpBinary::Add,
                         lhs: Arc::new(ast::Expression::ComponentReference(make_comp_ref("i"))),
                         rhs: Arc::new(ast::Expression::ComponentReference(make_comp_ref("j"))),
+                        span: rumoca_core::Span::DUMMY,
                     },
                 }],
             },
@@ -1531,6 +1843,65 @@ mod tests {
             .map(|it| it.index_values.clone())
             .collect();
         assert_eq!(values, vec![vec![1, 1], vec![1, 2], vec![2, 1], vec![2, 2]]);
+    }
+
+    #[test]
+    fn test_substitute_index_descends_into_array_comprehension_body() {
+        let expr = ast::Expression::ArrayComprehension {
+            expr: Arc::new(ast::Expression::Binary {
+                op: OpBinary::Add,
+                lhs: Arc::new(ast::Expression::ComponentReference(make_comp_ref("j"))),
+                rhs: Arc::new(ast::Expression::ComponentReference(make_comp_ref("k"))),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            indices: vec![make_for_index("k", 1, 3)],
+            filter: None,
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let substituted = substitute_index_in_expression(&expr, "j", 2);
+
+        let ast::Expression::ArrayComprehension { expr, indices, .. } = substituted else {
+            panic!("expected array comprehension");
+        };
+        assert_eq!(indices[0].ident.text.as_ref(), "k");
+        let ast::Expression::Binary { lhs, rhs, .. } = expr.as_ref() else {
+            panic!("expected binary comprehension body");
+        };
+        assert_eq!(lhs.as_ref(), &make_int(2));
+        assert!(matches!(
+            rhs.as_ref(),
+            ast::Expression::ComponentReference(cr) if cr.parts[0].ident.text.as_ref() == "k"
+        ));
+    }
+
+    #[test]
+    fn test_substitute_index_respects_array_comprehension_shadowing() {
+        let expr = ast::Expression::ArrayComprehension {
+            expr: Arc::new(ast::Expression::ComponentReference(make_comp_ref("j"))),
+            indices: vec![make_for_index("j", 1, 3)],
+            filter: Some(Arc::new(ast::Expression::ComponentReference(
+                make_comp_ref("j"),
+            ))),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let substituted = substitute_index_in_expression(&expr, "j", 2);
+
+        let ast::Expression::ArrayComprehension { expr, filter, .. } = substituted else {
+            panic!("expected array comprehension");
+        };
+        assert!(matches!(
+            expr.as_ref(),
+            ast::Expression::ComponentReference(cr) if cr.parts[0].ident.text.as_ref() == "j"
+        ));
+        let Some(filter) = filter else {
+            panic!("expected filter");
+        };
+        assert!(matches!(
+            filter.as_ref(),
+            ast::Expression::ComponentReference(cr) if cr.parts[0].ident.text.as_ref() == "j"
+        ));
     }
 
     #[test]

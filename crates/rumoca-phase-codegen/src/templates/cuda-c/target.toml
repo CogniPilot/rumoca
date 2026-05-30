@@ -1,0 +1,32 @@
+version = 1
+ir = "solve"
+name = "cuda-c"
+description = "CUDA C/NVCC Solve target skeleton for future batched GPU deployment"
+execution_mode = "compiled"
+deployment_class = "gpu"
+readiness_level = 1
+completion_message = """CUDA C Solve target sources generated to: {{ out_dir }}
+Next readiness step: add NVCC smoke coverage before treating this target as executable."""
+
+[capabilities]
+scalar_fallback = true
+events = false
+runtime_events = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+[capabilities.tensor]
+matmul = "scalar"
+linsolve = "scalar"
+elementwise = "native"
+reductions = "native"
+layout = "row-major"
+supports_dynamic_shapes = false
+sparse = false
+dtypes = ["f64"]
+
+[[files]]
+path = "{{ model_name }}_solve.cu"
+template = "model_solve.cu.jinja"

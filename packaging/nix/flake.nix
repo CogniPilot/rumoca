@@ -18,7 +18,7 @@
   outputs = { self, nixpkgs, flake-utils, src, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs { inherit system; };
 
         # Read rust-toolchain.toml from the *project root*
         overrides =

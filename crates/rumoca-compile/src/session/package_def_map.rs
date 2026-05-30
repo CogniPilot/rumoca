@@ -161,7 +161,7 @@ impl PackageDefMap {
 
     fn insert_declared_class(&mut self, qualified_name: String, entry: PackageDefEntry) {
         self.nodes.entry(String::new()).or_default();
-        let segments = qualified_name.split('.').collect::<Vec<_>>();
+        let segments = rumoca_core::split_path_with_indices(&qualified_name);
         for index in 0..segments.len() {
             let parent = segments[..index].join(".");
             let current = segments[..=index].join(".");
@@ -172,6 +172,7 @@ impl PackageDefMap {
                 .insert(current.clone());
             self.nodes.entry(current).or_default();
         }
+        drop(segments);
         self.nodes
             .entry(qualified_name)
             .or_default()
@@ -182,13 +183,13 @@ impl PackageDefMap {
 
 #[derive(Serialize)]
 struct AggregateClassSummary<'a> {
-    class_type: &'a rumoca_ir_ast::ClassType,
+    class_type: &'a rumoca_core::ClassType,
     encapsulated: bool,
     partial: bool,
     expandable: bool,
     operator_record: bool,
     pure: bool,
-    causality: &'a rumoca_ir_ast::Causality,
+    causality: &'a rumoca_core::Causality,
     is_protected: bool,
     is_final: bool,
     is_replaceable: bool,
@@ -266,7 +267,7 @@ fn normalize_node_key(prefix: &str) -> String {
 }
 
 fn split_qualified_name(qualified_name: &str) -> (String, String) {
-    match qualified_name.rsplit_once('.') {
+    match rumoca_core::split_last_top_level(qualified_name) {
         Some((container_path, name)) => (container_path.to_string(), name.to_string()),
         None => (String::new(), qualified_name.to_string()),
     }

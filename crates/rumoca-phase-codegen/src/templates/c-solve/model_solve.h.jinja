@@ -1,0 +1,26 @@
+#ifndef RUMOCA_{{ model_name | upper | replace("-", "_") }}_SOLVE_H
+#define RUMOCA_{{ model_name | upper | replace("-", "_") }}_SOLVE_H
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+enum {
+    RUMOCA_{{ model_name | upper | replace("-", "_") }}_Y_LEN = {{ solve.layout.y_scalars }},
+    RUMOCA_{{ model_name | upper | replace("-", "_") }}_P_LEN = {{ solve.layout.p_scalars }},
+    RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN = {{ solve_blocks.continuous.derivative_rhs.output_count }}
+};
+
+void {{ model_name | sanitize }}_derivative_rhs(
+    double time,
+    const double *y,
+    const double *p,
+    double *out);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

@@ -1,0 +1,426 @@
+{
+  "schema_version": 6,
+  "layout": {
+    "bindings": {
+      "x": {
+        "Y": {
+          "index": 0,
+          "byte_offset": 0
+        }
+      },
+      "y": {
+        "Y": {
+          "index": 1,
+          "byte_offset": 8
+        }
+      },
+      "hold.y": {
+        "Y": {
+          "index": 2,
+          "byte_offset": 16
+        }
+      },
+      "p": {
+        "P": {
+          "index": 0,
+          "byte_offset": 0
+        }
+      },
+      "__pre__.hold.y": {
+        "P": {
+          "index": 1,
+          "byte_offset": 8
+        }
+      }
+    },
+    "shapes": {
+      "x": [
+        1
+      ],
+      "y": [
+        1
+      ],
+      "hold.y": [
+        1
+      ],
+      "p": [
+        1
+      ],
+      "__pre__.hold.y": [
+        1
+      ]
+    },
+    "y_scalars": 3,
+    "p_scalars": 2
+  },
+  "solve_layout": {
+    "solver_maps": {
+      "names": [
+        "x",
+        "y",
+        "hold.y"
+      ],
+      "name_to_idx": {
+        "x": 0,
+        "y": 1,
+        "hold.y": 2
+      },
+      "base_to_indices": {
+        "x": [
+          0
+        ],
+        "y": [
+          1
+        ],
+        "hold.y": [
+          2
+        ]
+      }
+    },
+    "state_scalar_count": 1,
+    "algebraic_scalar_count": 1,
+    "output_scalar_count": 1,
+    "parameter_count": 1,
+    "compiled_parameter_len": 2,
+    "input_scalar_names": [],
+    "discrete_real_scalar_names": [
+      "hold.y"
+    ],
+    "discrete_valued_scalar_names": [],
+    "relation_memory_parameter_indices": [
+      1
+    ],
+    "initial_event_parameter_index": 1,
+    "pre_param_bindings": [
+      {
+        "dest_p_index": 1,
+        "source": {
+          "Y": {
+            "index": 2
+          }
+        }
+      }
+    ]
+  },
+  "continuous": {
+    "implicit_rhs": {
+      "nodes": [
+        {
+          "ScalarPrograms": {
+            "programs": [
+              [
+                {
+                  "LoadY": {
+                    "dst": 0,
+                    "index": 0
+                  }
+                },
+                {
+                  "LoadP": {
+                    "dst": 1,
+                    "index": 0
+                  }
+                },
+                {
+                  "Binary": {
+                    "dst": 2,
+                    "op": "Sub",
+                    "lhs": 0,
+                    "rhs": 1
+                  }
+                },
+                {
+                  "StoreOutput": {
+                    "src": 2
+                  }
+                }
+              ]
+            ],
+            "program_spans": [
+              {
+                "source": 0,
+                "start": 0,
+                "end": 0
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "implicit_row_targets": [
+      {
+        "Y": {
+          "index": 1,
+          "byte_offset": 8
+        }
+      }
+    ],
+    "algebraic_projection_plan": {
+      "blocks": [
+        {
+          "rows": [
+            1
+          ],
+          "y_indices": [
+            1
+          ],
+          "causal_steps": []
+        }
+      ]
+    },
+    "residual": {
+      "programs": [
+        [
+          {
+            "LoadY": {
+              "dst": 0,
+              "index": 1
+            }
+          },
+          {
+            "StoreOutput": {
+              "src": 0
+            }
+          }
+        ]
+      ],
+      "program_spans": [
+        {
+          "source": 0,
+          "start": 0,
+          "end": 0
+        }
+      ]
+    },
+    "derivative_rhs": {
+      "nodes": [
+        {
+          "MatMul": {
+            "lhs_ops": [
+              {
+                "LoadP": {
+                  "dst": 0,
+                  "index": 0
+                }
+              }
+            ],
+            "lhs_start": 0,
+            "rhs_ops": [
+              {
+                "LoadY": {
+                  "dst": 1,
+                  "index": 0
+                }
+              }
+            ],
+            "rhs_start": 1,
+            "m": 1,
+            "k": 1,
+            "n": 1,
+            "lhs_sparsity": "Diagonal",
+            "rhs_sparsity": "Dense",
+            "metadata": {
+              "element_type": "Real64",
+              "layout": "RowMajorDense",
+              "scalar_fallback": "Exact"
+            },
+            "span": {
+              "source": 0,
+              "start": 0,
+              "end": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  "initialization": {
+    "residual": {
+      "programs": [
+        [
+          {
+            "Const": {
+              "dst": 0,
+              "value": 0.0
+            }
+          },
+          {
+            "StoreOutput": {
+              "src": 0
+            }
+          }
+        ]
+      ],
+      "program_spans": [
+        {
+          "source": 0,
+          "start": 0,
+          "end": 0
+        }
+      ]
+    },
+    "row_targets": [
+      {
+        "Y": {
+          "index": 1,
+          "byte_offset": 8
+        }
+      }
+    ],
+    "projection_plan": {
+      "blocks": []
+    },
+    "update_rhs": {
+      "programs": [],
+      "program_spans": []
+    },
+    "update_targets": []
+  },
+  "discrete": {
+    "runtime_assignment_rhs": {
+      "programs": [
+        [
+          {
+            "LoadY": {
+              "dst": 0,
+              "index": 2
+            }
+          },
+          {
+            "StoreOutput": {
+              "src": 0
+            }
+          }
+        ]
+      ],
+      "program_spans": [
+        {
+          "source": 0,
+          "start": 0,
+          "end": 0
+        }
+      ]
+    },
+    "runtime_assignment_targets": [
+      {
+        "P": {
+          "index": 1,
+          "byte_offset": 8
+        }
+      }
+    ],
+    "rhs": {
+      "programs": [
+        [
+          {
+            "LoadY": {
+              "dst": 0,
+              "index": 1
+            }
+          },
+          {
+            "Const": {
+              "dst": 1,
+              "value": 0.0
+            }
+          },
+          {
+            "Compare": {
+              "dst": 2,
+              "op": "Gt",
+              "lhs": 0,
+              "rhs": 1
+            }
+          },
+          {
+            "StoreOutput": {
+              "src": 2
+            }
+          }
+        ]
+      ],
+      "program_spans": [
+        {
+          "source": 0,
+          "start": 0,
+          "end": 0
+        }
+      ]
+    },
+    "update_targets": [
+      {
+        "Y": {
+          "index": 2,
+          "byte_offset": 16
+        }
+      }
+    ],
+    "pre_modes": [
+      "Fixed"
+    ],
+    "observation_refresh": [
+      true
+    ]
+  },
+  "events": {
+    "root_conditions": {
+      "programs": [
+        [
+          {
+            "LoadTime": {
+              "dst": 0
+            }
+          },
+          {
+            "LoadP": {
+              "dst": 1,
+              "index": 0
+            }
+          },
+          {
+            "Compare": {
+              "dst": 2,
+              "op": "Ge",
+              "lhs": 0,
+              "rhs": 1
+            }
+          },
+          {
+            "StoreOutput": {
+              "src": 2
+            }
+          }
+        ]
+      ],
+      "program_spans": [
+        {
+          "source": 0,
+          "start": 0,
+          "end": 0
+        }
+      ]
+    },
+    "scheduled_time_events": [
+      0.1
+    ],
+    "dynamic_time_event_names": [],
+    "dynamic_time_event_rhs": {
+      "programs": [],
+      "program_spans": []
+    },
+    "action_conditions": {
+      "programs": [],
+      "program_spans": []
+    },
+    "actions": [],
+    "root_relation_memory_targets": []
+  },
+  "clocks": {
+    "periodic_event_schedules": [
+      {
+        "period_seconds": 0.1,
+        "phase_seconds": 0.0
+      }
+    ]
+  }
+}

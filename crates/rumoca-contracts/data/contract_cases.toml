@@ -1,5 +1,5 @@
 # Contract test case manifest — source of truth for coverage checks.
-# Regenerate with: cargo run -p rumoca-tool-dev -- dump-contract-cases
+# Regenerate with: cargo run -p xtask -- dump-contract-cases
 
 [[cases]]
 contract_id = 'ALG-001'
@@ -1823,10 +1823,10 @@ outcome = 'Accept'
 
 [[cases]]
 contract_id = 'SIM-009'
-case_id = 'sim_009_strict_solver_dae_rejects_unlowered_sample_in_fx'
+case_id = 'sim_009_sample_in_fx_lowers_to_internal_runtime_operator'
 test_file = 'tests/sim_contracts.rs'
 kind = 'Compile'
-outcome = 'Reject'
+outcome = 'Accept'
 
 [[cases]]
 contract_id = 'SIM-009'
@@ -1845,6 +1845,13 @@ outcome = 'Reject'
 [[cases]]
 contract_id = 'SIM-009'
 case_id = 'sim_009_unresolved_reference_rejected_in_resolve'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_unresolved_reference_rejected_in_multi_document_resolve'
 test_file = 'tests/sim_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
@@ -2030,4 +2037,3 @@ case_id = 'type_034_integer_division_real'
 test_file = 'tests/type_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
-

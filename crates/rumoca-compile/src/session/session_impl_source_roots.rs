@@ -425,7 +425,7 @@ impl Session {
             .documents
             .values()
             .filter(|document| !document.content.is_empty())
-            .map(|document| (document.uri.clone(), document.content.clone()))
+            .map(|document| (document.uri.clone(), document.content.to_string()))
             .collect::<Vec<_>>();
         let next_state_epoch = self.source_root_state_epoch().saturating_add(1);
 

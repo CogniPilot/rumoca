@@ -4,9 +4,10 @@
 //! ensuring inheritance edges are complete before nested class resolution.
 
 use crate::Resolver;
-use indexmap::IndexMap;
-use rumoca_core::{DefId, Diagnostic, PrimaryLabel, ScopeId};
+use rumoca_core::{ComponentPath, DefId, ScopeId, parent_scope};
+use rumoca_core::{Diagnostic, PrimaryLabel};
 use rumoca_ir_ast as ast;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
 
 impl Resolver {
     /// Resolve all imports and extends clauses level-by-level (Phase 2a).
@@ -236,8 +237,7 @@ impl Resolver {
         let member_name = &base_name.name[0].text;
 
         // Get the containing class's qualified name (parent of current class)
-        let dot_pos = class_name.rfind('.')?;
-        let container_name = &class_name[..dot_pos];
+        let container_name = parent_scope(class_name)?;
 
         self.lookup_inherited_member(container_name, member_name)
     }
@@ -308,7 +308,7 @@ impl Resolver {
                     return None;
                 }
                 ast::scope::Import::Renamed {
-                    alias: alias.text.to_string(),
+                    alias: ComponentPath::from_flat_path(&alias.text),
                     path: path.name.iter().map(|t| t.text.to_string()).collect(),
                     def_id,
                 }
@@ -373,7 +373,8 @@ impl Resolver {
         }
 
         let first_part = &path.name[0].text;
-        let mut current_def_id = self.scope_tree.lookup_excluding(scope, first_part, None)?;
+        let first_path = ComponentPath::from_flat_path(first_part);
+        let mut current_def_id = self.scope_tree.lookup_excluding(scope, &first_path, None)?;
         let mut path_ids = vec![current_def_id];
 
         for part in path.name.iter().skip(1) {
@@ -410,7 +411,7 @@ impl Resolver {
     }
 
     fn is_package_def(&self, def_id: DefId) -> bool {
-        self.class_types.get(&def_id) == Some(&ast::ClassType::Package)
+        self.class_types.get(&def_id) == Some(&rumoca_core::ClassType::Package)
     }
 
     fn emit_unresolved_import(&mut self, import: &ast::Import) {
@@ -440,7 +441,7 @@ impl Resolver {
     fn emit_unresolved_selective_import_member(
         &mut self,
         import: &ast::Import,
-        name_token: &rumoca_ir_core::Token,
+        name_token: &rumoca_core::Token,
     ) {
         let span = crate::location_to_span(&name_token.location, &self.source_map);
         self.diagnostics.emit(Diagnostic::error(
@@ -458,14 +459,14 @@ impl Resolver {
         &mut self,
         import: &ast::Import,
         pkg_qualified: &str,
-        names: &[rumoca_ir_core::Token],
-    ) -> Option<IndexMap<String, DefId>> {
-        let mut resolved_names = IndexMap::new();
+        names: &[rumoca_core::Token],
+    ) -> Option<IndexMap<ComponentPath, DefId>> {
+        let mut resolved_names = IndexMap::default();
         let mut has_missing_name = false;
         for name_token in names {
             let full_name = format!("{pkg_qualified}.{}", name_token.text);
             if let Some(&def_id) = self.name_to_def.get(&full_name) {
-                resolved_names.insert(name_token.text.to_string(), def_id);
+                resolved_names.insert(ComponentPath::from_flat_path(&name_token.text), def_id);
             } else {
                 has_missing_name = true;
                 self.emit_unresolved_selective_import_member(import, name_token);
@@ -523,10 +524,15 @@ impl Resolver {
     /// Collect all direct children of a package.
     ///
     /// Uses O(1) lookup via pre-computed package_children map.
-    fn collect_package_children(&self, pkg_qualified: &str) -> IndexMap<String, DefId> {
+    fn collect_package_children(&self, pkg_qualified: &str) -> IndexMap<ComponentPath, DefId> {
         self.package_children
             .get(pkg_qualified)
-            .cloned()
+            .map(|children| {
+                children
+                    .iter()
+                    .map(|(name, def_id)| (ComponentPath::from_flat_path(name), *def_id))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }

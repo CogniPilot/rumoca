@@ -2,11 +2,110 @@ use super::find_class_in_tree;
 use super::traversal_adapter::{
     redeclare_target_value, walk_class_extends_modifications, walk_nested_classes,
 };
-use super::type_lookup::{find_member_type_in_class, find_member_type_path_in_class};
+use super::type_lookup::find_member_type_in_class;
 use crate::{InstantiateError, InstantiateResult, location_to_span};
-use indexmap::IndexMap;
-use rumoca_core::DefId;
+use rumoca_core::{DefId, parent_scope};
 use rumoca_ir_ast as ast;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct TypeOverrideMap {
+    targets_by_alias_def_id: IndexMap<DefId, DefId>,
+    targets_by_alias_path: IndexMap<ast::QualifiedName, DefId>,
+}
+
+impl TypeOverrideMap {
+    pub(super) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(super) fn insert_alias(
+        &mut self,
+        alias_path: ast::QualifiedName,
+        alias_def_id: Option<DefId>,
+        target_def_id: DefId,
+    ) {
+        if let Some(alias_def_id) = alias_def_id {
+            self.targets_by_alias_def_id
+                .insert(alias_def_id, target_def_id);
+        }
+        self.targets_by_alias_path.insert(alias_path, target_def_id);
+    }
+
+    fn insert_alias_if_absent(
+        &mut self,
+        alias_path: ast::QualifiedName,
+        alias_def_id: Option<DefId>,
+        target_def_id: DefId,
+    ) {
+        if let Some(alias_def_id) = alias_def_id {
+            self.targets_by_alias_def_id
+                .entry(alias_def_id)
+                .or_insert(target_def_id);
+        }
+        self.targets_by_alias_path
+            .entry(alias_path)
+            .or_insert(target_def_id);
+    }
+
+    pub(super) fn insert_class_override(&mut self, class_override: &ast::ClassOverride) {
+        self.insert_alias(
+            ast::QualifiedName::from_ident(&class_override.alias),
+            Some(class_override.alias_def_id),
+            class_override.target_def_id,
+        );
+    }
+
+    pub(super) fn extend_from(&mut self, other: &TypeOverrideMap) {
+        for (alias_def_id, target_def_id) in &other.targets_by_alias_def_id {
+            self.targets_by_alias_def_id
+                .insert(*alias_def_id, *target_def_id);
+        }
+        for (alias_path, target_def_id) in &other.targets_by_alias_path {
+            self.targets_by_alias_path
+                .insert(alias_path.clone(), *target_def_id);
+        }
+    }
+
+    pub(super) fn target_for_alias_def_id(&self, alias_def_id: DefId) -> Option<DefId> {
+        self.targets_by_alias_def_id.get(&alias_def_id).copied()
+    }
+
+    pub(super) fn target_for_alias_name(&self, alias: &str) -> Option<DefId> {
+        self.targets_by_alias_path
+            .get(&ast::QualifiedName::from_ident(alias))
+            .copied()
+    }
+
+    pub(super) fn target_for_reference(
+        &self,
+        reference: &ast::ComponentReference,
+    ) -> Option<DefId> {
+        let exact_def_id = (reference.parts.len() == 1)
+            .then_some(reference.def_id)
+            .flatten()
+            .and_then(|def_id| self.target_for_alias_def_id(def_id));
+        exact_def_id.or_else(|| {
+            let path = cref_to_qualified_name(reference)?;
+            self.targets_by_alias_path.get(&path).copied()
+        })
+    }
+
+    fn target_for_name(&self, name: &ast::Name) -> Option<DefId> {
+        let exact_def_id = (name.name.len() == 1)
+            .then_some(name.def_id)
+            .flatten()
+            .and_then(|def_id| self.target_for_alias_def_id(def_id));
+        exact_def_id.or_else(|| {
+            let path = qualified_name_from_name(name)?;
+            self.targets_by_alias_path.get(&path).copied()
+        })
+    }
+
+    fn target_for_path(&self, path: &ast::QualifiedName) -> Option<DefId> {
+        self.targets_by_alias_path.get(path).copied()
+    }
+}
 
 /// Build a type override map for replaceable type redeclarations (MLS §7.3).
 ///
@@ -23,13 +122,13 @@ pub(super) fn build_type_override_map(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
     mod_env: Option<&ast::ModificationEnvironment>,
-) -> IndexMap<String, DefId> {
-    let mut overrides = IndexMap::new();
+) -> TypeOverrideMap {
+    let mut overrides = TypeOverrideMap::new();
 
     // 1. Collect from the class's own nested classes
     walk_nested_classes(class, |name, nested| {
         if let Some(def_id) = nested.def_id {
-            overrides.insert(name.to_string(), def_id);
+            overrides.insert_alias(ast::QualifiedName::from_ident(name), Some(def_id), def_id);
         }
     });
 
@@ -53,7 +152,7 @@ fn collect_enclosing_type_overrides(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
     mod_env: Option<&ast::ModificationEnvironment>,
-    overrides: &mut IndexMap<String, DefId>,
+    overrides: &mut TypeOverrideMap,
 ) {
     let Some(class_def_id) = class.def_id else {
         return;
@@ -61,10 +160,9 @@ fn collect_enclosing_type_overrides(
     let Some(qualified_name) = tree.def_map.get(&class_def_id) else {
         return;
     };
-    let Some(dot_pos) = qualified_name.rfind('.') else {
+    let Some(parent_name) = parent_scope(qualified_name) else {
         return;
     };
-    let parent_name = &qualified_name[..dot_pos];
     let Some(parent_class) = tree.get_class_by_qualified_name(parent_name) else {
         return;
     };
@@ -80,7 +178,7 @@ fn collect_nested_overrides_in_extends_chain(
     tree: &ast::ClassTree,
     root: &ast::ClassDef,
     mod_env: Option<&ast::ModificationEnvironment>,
-    overrides: &mut IndexMap<String, DefId>,
+    overrides: &mut TypeOverrideMap,
 ) {
     const MAX_DEPTH: usize = 32;
 
@@ -111,7 +209,7 @@ fn insert_extends_redeclare_overrides(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
     mod_env: Option<&ast::ModificationEnvironment>,
-    overrides: &mut IndexMap<String, DefId>,
+    overrides: &mut TypeOverrideMap,
 ) {
     walk_class_extends_modifications(class, |_, ext_mod| {
         let Some((target_name, value_expr)) = redeclare_target_value(ext_mod) else {
@@ -120,7 +218,13 @@ fn insert_extends_redeclare_overrides(
         let Some(def_id) = resolve_redeclare_value_def_id(tree, value_expr, mod_env) else {
             return;
         };
-        overrides.entry(target_name.to_string()).or_insert(def_id);
+        let alias_def_id = find_nested_class_in_hierarchy(tree, class, target_name)
+            .and_then(|nested| nested.def_id);
+        overrides.insert_alias_if_absent(
+            ast::QualifiedName::from_ident(target_name),
+            alias_def_id,
+            def_id,
+        );
     });
 }
 
@@ -135,11 +239,12 @@ fn is_visited_class(
     }
 }
 
-fn insert_nested_class_overrides(class: &ast::ClassDef, overrides: &mut IndexMap<String, DefId>) {
+fn insert_nested_class_overrides(class: &ast::ClassDef, overrides: &mut TypeOverrideMap) {
     walk_nested_classes(class, |name, nested| {
         if let Some(def_id) = nested.def_id {
-            // Keep nearest declaration if names repeat in deeper bases.
-            overrides.entry(name.to_string()).or_insert(def_id);
+            let alias_path = ast::QualifiedName::from_ident(name);
+            let target_def_id = overrides.target_for_path(&alias_path).unwrap_or(def_id);
+            overrides.insert_alias_if_absent(alias_path, Some(def_id), target_def_id);
         }
     });
 }
@@ -168,14 +273,20 @@ fn collect_extends_redeclare_overrides(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
     mod_env: Option<&ast::ModificationEnvironment>,
-    overrides: &mut IndexMap<String, DefId>,
+    overrides: &mut TypeOverrideMap,
 ) {
     walk_class_extends_modifications(class, |_, ext_mod| {
         let Some((target_name, value_expr)) = redeclare_target_value(ext_mod) else {
             return;
         };
         if let Some(def_id) = resolve_redeclare_value_def_id(tree, value_expr, mod_env) {
-            overrides.insert(target_name.to_string(), def_id);
+            let alias_def_id = find_nested_class_in_hierarchy(tree, class, target_name)
+                .and_then(|nested| nested.def_id);
+            overrides.insert_alias(
+                ast::QualifiedName::from_ident(target_name),
+                alias_def_id,
+                def_id,
+            );
         }
     });
 }
@@ -280,8 +391,7 @@ pub(super) fn resolve_cref_def_id(
 pub(super) fn apply_type_override<'a>(
     tree: &ast::ClassTree,
     comp: &'a ast::Component,
-    type_overrides: &IndexMap<String, DefId>,
-    type_name: &str,
+    type_overrides: &TypeOverrideMap,
     mod_env: Option<&ast::ModificationEnvironment>,
 ) -> std::borrow::Cow<'a, ast::Component> {
     // MLS §7.3: Apply type redeclarations by exact type name first.
@@ -291,23 +401,25 @@ pub(super) fn apply_type_override<'a>(
     //
     // This must apply to package-member model types too (e.g.
     // `Medium.BaseProperties`), not only primitive/record members.
-    let exact_override = type_overrides.get(type_name).copied();
+    let exact_override = comp
+        .type_def_id
+        .and_then(|def_id| type_overrides.target_for_alias_def_id(def_id))
+        .or_else(|| type_overrides.target_for_name(&comp.type_name));
     // Instance-level package redeclarations in active mod_env are more specific
     // than enclosing-class defaults when resolving dotted member types.
-    let mod_env_override = resolve_dotted_type_from_mod_env(tree, type_name, mod_env);
+    let mod_env_override = resolve_dotted_type_from_mod_env(tree, &comp.type_name, mod_env);
     let prefix_override = (|| {
-        let (prefix, rest) = type_name.split_once('.')?;
-        let prefix_override = type_overrides.get(prefix).copied()?;
-        let member_name = rest.split('.').next().unwrap_or(rest);
+        let (prefix, rest) = name_prefix_and_rest(&comp.type_name)?;
+        let prefix_override = type_overrides.target_for_path(&prefix)?;
+        let member_name = *rest.first()?;
         let override_class = tree.get_class_by_def_id(prefix_override)?;
         find_member_type_in_class(tree, override_class, member_name)?;
-        find_member_type_path_in_class(tree, override_class, rest)
+        find_member_type_path_segments(tree, override_class, &rest)
             .and_then(|member| member.def_id)
             .or(Some(prefix_override))
     })();
 
     let override_def_id = exact_override.or(mod_env_override).or(prefix_override);
-
     if let Some(override_def_id) = override_def_id
         && comp.type_def_id != Some(override_def_id)
     {
@@ -320,18 +432,49 @@ pub(super) fn apply_type_override<'a>(
 
 fn resolve_dotted_type_from_mod_env(
     tree: &ast::ClassTree,
-    type_name: &str,
+    type_name: &ast::Name,
     mod_env: Option<&ast::ModificationEnvironment>,
 ) -> Option<DefId> {
     let mod_env = mod_env?;
-    let (prefix, rest) = type_name.split_once('.')?;
-    let qn = ast::QualifiedName::from_ident(prefix);
-    let mv = mod_env.get(&qn)?;
+    let (prefix, rest) = name_prefix_and_rest(type_name)?;
+    let mv = mod_env.get(&prefix)?;
     let pkg_def_id = resolve_redeclare_value_def_id(tree, &mv.value, Some(mod_env))?;
     let pkg_class = tree.get_class_by_def_id(pkg_def_id)?;
-    find_member_type_path_in_class(tree, pkg_class, rest)
+    find_member_type_path_segments(tree, pkg_class, &rest)
         .and_then(|member| member.def_id)
         .or(Some(pkg_def_id))
+}
+
+fn qualified_name_from_name(name: &ast::Name) -> Option<ast::QualifiedName> {
+    let mut parts = name.name.iter();
+    let first = parts.next()?;
+    let mut qn = ast::QualifiedName::from_ident(first.text.as_ref());
+    for part in parts {
+        qn.push(part.text.to_string(), Vec::new());
+    }
+    Some(qn)
+}
+
+fn name_prefix_and_rest(name: &ast::Name) -> Option<(ast::QualifiedName, Vec<&str>)> {
+    let mut parts = name.name.iter();
+    let first = parts.next()?;
+    let rest: Vec<&str> = parts.map(|part| part.text.as_ref()).collect();
+    if rest.is_empty() {
+        return None;
+    }
+    Some((ast::QualifiedName::from_ident(first.text.as_ref()), rest))
+}
+
+fn find_member_type_path_segments<'a>(
+    tree: &'a ast::ClassTree,
+    class: &'a ast::ClassDef,
+    member_path: &[&str],
+) -> Option<&'a ast::ClassDef> {
+    let mut current = class;
+    for segment in member_path {
+        current = find_member_type_in_class(tree, current, segment)?;
+    }
+    Some(current)
 }
 
 /// Find a nested class by name in a class and its extends chain.
@@ -429,8 +572,8 @@ pub(super) fn extract_component_class_overrides(
     comp: &ast::Component,
     target_class: Option<&ast::ClassDef>,
     mod_env: Option<&ast::ModificationEnvironment>,
-) -> InstantiateResult<IndexMap<String, DefId>> {
-    let mut overrides = IndexMap::new();
+) -> InstantiateResult<ast::ClassOverrideMap> {
+    let mut overrides = IndexMap::default();
     let Some(target_class) = target_class else {
         return Ok(overrides);
     };
@@ -445,27 +588,51 @@ pub(super) fn extract_component_class_overrides(
             continue;
         };
         validate_component_class_redeclare_target(tree, target_name, nested_class, mod_expr)?;
+        let Some(alias_def_id) = nested_class.def_id else {
+            return Err(Box::new(InstantiateError::redeclare_error(
+                target_name,
+                "resolved redeclare target has no DefId",
+                location_to_span(&nested_class.location, &tree.source_map),
+            )));
+        };
         let resolved_def_id = resolve_redeclare_value_def_id(tree, mod_expr, mod_env);
 
         if let Some(def_id) = resolved_def_id {
-            overrides.insert(target_name.clone(), def_id);
+            overrides.insert(
+                alias_def_id,
+                ast::ClassOverride::new(
+                    target_name.clone(),
+                    alias_def_id,
+                    def_id,
+                    class_redeclare_target_ref(mod_expr),
+                ),
+            );
         }
     }
 
     Ok(overrides)
 }
 
+fn class_redeclare_target_ref(mod_expr: &ast::Expression) -> Option<ast::ComponentReference> {
+    let ast::Expression::ClassModification { target, .. } = mod_expr else {
+        return None;
+    };
+    Some(target.clone())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{apply_type_override, resolve_cref_def_id};
+    use super::{
+        TypeOverrideMap, apply_type_override, build_type_override_map, resolve_cref_def_id,
+    };
     use rumoca_core::DefId;
     use rumoca_ir_ast as ast;
     use std::sync::Arc;
 
-    fn make_token(text: &str) -> rumoca_ir_core::Token {
-        rumoca_ir_core::Token {
+    fn make_token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
             text: Arc::from(text),
-            location: rumoca_ir_core::Location::default(),
+            location: rumoca_core::Location::default(),
             token_number: 0,
             token_type: 0,
         }
@@ -473,9 +640,106 @@ mod tests {
 
     fn make_name(text: &str) -> ast::Name {
         ast::Name {
-            name: text.split('.').map(make_token).collect(),
+            name: rumoca_core::split_path_with_indices(text)
+                .into_iter()
+                .map(make_token)
+                .collect(),
             def_id: None,
         }
+    }
+
+    #[test]
+    fn test_redeclared_nested_type_remaps_inherited_type_def_id() {
+        let base_package_id = DefId::new(1);
+        let base_state_id = DefId::new(2);
+        let derived_package_id = DefId::new(3);
+        let derived_state_id = DefId::new(4);
+        let base_properties_id = DefId::new(5);
+
+        let base_state = ast::ClassDef {
+            name: make_token("ThermodynamicState"),
+            def_id: Some(base_state_id),
+            class_type: rumoca_core::ClassType::Record,
+            is_replaceable: true,
+            ..Default::default()
+        };
+        let mut base_package = ast::ClassDef {
+            name: make_token("BaseMedium"),
+            def_id: Some(base_package_id),
+            class_type: rumoca_core::ClassType::Package,
+            ..Default::default()
+        };
+        base_package
+            .classes
+            .insert("ThermodynamicState".to_string(), base_state);
+
+        let derived_state = ast::ClassDef {
+            name: make_token("ThermodynamicState"),
+            def_id: Some(derived_state_id),
+            class_type: rumoca_core::ClassType::Record,
+            is_replaceable: true,
+            ..Default::default()
+        };
+        let base_properties = ast::ClassDef {
+            name: make_token("BaseProperties"),
+            def_id: Some(base_properties_id),
+            class_type: rumoca_core::ClassType::Model,
+            ..Default::default()
+        };
+        let mut derived_package = ast::ClassDef {
+            name: make_token("DerivedMedium"),
+            def_id: Some(derived_package_id),
+            class_type: rumoca_core::ClassType::Package,
+            extends: vec![ast::Extend {
+                base_name: make_name("BaseMedium"),
+                base_def_id: Some(base_package_id),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        derived_package
+            .classes
+            .insert("ThermodynamicState".to_string(), derived_state);
+        derived_package
+            .classes
+            .insert("BaseProperties".to_string(), base_properties);
+
+        let mut tree = ast::ClassTree::default();
+        tree.definitions
+            .classes
+            .insert("BaseMedium".to_string(), base_package);
+        tree.definitions
+            .classes
+            .insert("DerivedMedium".to_string(), derived_package);
+        for (name, def_id) in [
+            ("BaseMedium", base_package_id),
+            ("BaseMedium.ThermodynamicState", base_state_id),
+            ("DerivedMedium", derived_package_id),
+            ("DerivedMedium.ThermodynamicState", derived_state_id),
+            ("DerivedMedium.BaseProperties", base_properties_id),
+        ] {
+            tree.name_map.insert(name.to_string(), def_id);
+            tree.def_map.insert(def_id, name.to_string());
+        }
+
+        let base_properties = tree
+            .get_class_by_qualified_name("DerivedMedium.BaseProperties")
+            .expect("base properties class");
+        let overrides = build_type_override_map(&tree, base_properties, None);
+        let comp = ast::Component {
+            name: "state".to_string(),
+            type_name: make_name("ThermodynamicState"),
+            type_def_id: Some(base_state_id),
+            ..Default::default()
+        };
+
+        let overridden = apply_type_override(&tree, &comp, &overrides, None);
+
+        assert_eq!(
+            overridden.type_def_id,
+            Some(derived_state_id),
+            "inherited references resolved to the base nested DefId must use the active redeclared nested type"
+        );
     }
 
     #[test]
@@ -495,7 +759,7 @@ mod tests {
         };
         let mut water = ast::ClassDef {
             name: make_token("Water"),
-            class_type: ast::ClassType::Package,
+            class_type: rumoca_core::ClassType::Package,
             def_id: Some(water_id),
             ..Default::default()
         };
@@ -505,7 +769,7 @@ mod tests {
 
         let mut media = ast::ClassDef {
             name: make_token("Media"),
-            class_type: ast::ClassType::Package,
+            class_type: rumoca_core::ClassType::Package,
             def_id: Some(media_id),
             ..Default::default()
         };
@@ -513,7 +777,7 @@ mod tests {
 
         let mut modelica = ast::ClassDef {
             name: make_token("Modelica"),
-            class_type: ast::ClassType::Package,
+            class_type: rumoca_core::ClassType::Package,
             def_id: Some(modelica_id),
             ..Default::default()
         };
@@ -544,6 +808,7 @@ mod tests {
                 .collect(),
             // Simulate parser metadata that points to the first segment only.
             def_id: Some(modelica_id),
+            span: rumoca_core::Span::DUMMY,
         };
 
         assert_eq!(
@@ -564,14 +829,14 @@ mod tests {
 
         let base_properties = ast::ClassDef {
             name: make_token("BaseProperties"),
-            class_type: ast::ClassType::Model,
+            class_type: rumoca_core::ClassType::Model,
             def_id: Some(base_properties_id),
             ..Default::default()
         };
 
         let mut medium_b = ast::ClassDef {
             name: make_token("MediumB"),
-            class_type: ast::ClassType::Package,
+            class_type: rumoca_core::ClassType::Package,
             def_id: Some(medium_b_id),
             ..Default::default()
         };
@@ -581,7 +846,7 @@ mod tests {
 
         let medium_alias = ast::ClassDef {
             name: make_token("MediumAlias"),
-            class_type: ast::ClassType::Package,
+            class_type: rumoca_core::ClassType::Package,
             def_id: Some(medium_alias_id),
             extends: vec![ast::Extend {
                 base_name: make_name("MediumB"),
@@ -625,22 +890,80 @@ mod tests {
                         subs: None,
                     }],
                     def_id: Some(medium_alias_id),
+                    span: rumoca_core::Span::DUMMY,
                 },
             )),
         );
 
-        let overridden = apply_type_override(
-            &tree,
-            &comp,
-            &indexmap::IndexMap::new(),
-            "Medium.BaseProperties",
-            Some(&mod_env),
-        );
+        let overridden = apply_type_override(&tree, &comp, &TypeOverrideMap::new(), Some(&mod_env));
 
         assert_eq!(
             overridden.type_def_id,
             Some(base_properties_id),
             "dotted type should resolve through mod-env package alias chain"
+        );
+    }
+
+    #[test]
+    fn test_apply_type_override_uses_dotted_member_not_partial_name_def_id() {
+        let medium_alias_id = DefId::new(20);
+        let concrete_medium_id = DefId::new(21);
+        let base_properties_id = DefId::new(22);
+
+        let base_properties = ast::ClassDef {
+            name: make_token("BaseProperties"),
+            class_type: rumoca_core::ClassType::Model,
+            def_id: Some(base_properties_id),
+            ..Default::default()
+        };
+        let mut concrete_medium = ast::ClassDef {
+            name: make_token("ConcreteMedium"),
+            class_type: rumoca_core::ClassType::Package,
+            def_id: Some(concrete_medium_id),
+            ..Default::default()
+        };
+        concrete_medium
+            .classes
+            .insert("BaseProperties".to_string(), base_properties);
+
+        let mut tree = ast::ClassTree::default();
+        tree.definitions
+            .classes
+            .insert("ConcreteMedium".to_string(), concrete_medium);
+        tree.name_map
+            .insert("ConcreteMedium".to_string(), concrete_medium_id);
+        tree.name_map.insert(
+            "ConcreteMedium.BaseProperties".to_string(),
+            base_properties_id,
+        );
+        tree.def_map
+            .insert(concrete_medium_id, "ConcreteMedium".to_string());
+        tree.def_map.insert(
+            base_properties_id,
+            "ConcreteMedium.BaseProperties".to_string(),
+        );
+
+        let mut type_name = make_name("Medium.BaseProperties");
+        type_name.def_id = Some(medium_alias_id);
+        let comp = ast::Component {
+            name: "medium".to_string(),
+            type_name,
+            type_def_id: None,
+            ..Default::default()
+        };
+        let mut type_overrides = TypeOverrideMap::new();
+        type_overrides.insert_alias(
+            ast::QualifiedName::from_ident("Medium"),
+            Some(medium_alias_id),
+            concrete_medium_id,
+        );
+
+        let overridden = apply_type_override(&tree, &comp, &type_overrides, None);
+
+        assert_eq!(
+            overridden.type_def_id,
+            Some(base_properties_id),
+            "dotted type names with partial first-segment DefIds must resolve to the concrete member"
         );
     }
 }

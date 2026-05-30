@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
-use rumoca_core::{Diagnostic as CommonDiagnostic, Label, PrimaryLabel, SourceMap, Span};
-use rumoca_ir_ast::{ClassDef, Name, StoredDefinition, Token};
+use rumoca_core::{Diagnostic as CommonDiagnostic, Label, PrimaryLabel, SourceMap};
+use rumoca_core::{Span, Token};
+use rumoca_ir_ast::{ClassDef, Name, StoredDefinition};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -65,7 +66,7 @@ fn build_package_layout_source_map(docs: &[(String, StoredDefinition)]) -> Resul
     Ok(source_map)
 }
 
-fn location_has_valid_span(location: &rumoca_ir_ast::Location) -> bool {
+fn location_has_valid_span(location: &rumoca_core::Location) -> bool {
     !location.file_name.is_empty() && location.end > location.start
 }
 
@@ -236,7 +237,7 @@ fn root_package_name(
     let mut package_names: Vec<String> = definition
         .classes
         .iter()
-        .filter(|(_, class)| class.class_type == rumoca_ir_ast::ClassType::Package)
+        .filter(|(_, class)| class.class_type == rumoca_core::ClassType::Package)
         .map(|(name, _)| name.clone())
         .collect();
     package_names.sort();

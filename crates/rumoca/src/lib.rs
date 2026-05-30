@@ -21,12 +21,12 @@
 //!     .model("MyModel")
 //!     .compile_file("model.mo")?;
 //!
-//! // Export to JSON
-//! let json = result.dae.to_json()?;
+//! // Export DAE IR to JSON
+//! let json = result.to_ir_json(rumoca::TemplateIr::Dae)?;
 //! ```
 
 mod compiler;
 mod error;
 
-pub use compiler::{CompilationResult, Compiler};
+pub use compiler::{CompilationResult, Compiler, DaeCompilationResult, TemplateIr};
 pub use error::CompilerError;

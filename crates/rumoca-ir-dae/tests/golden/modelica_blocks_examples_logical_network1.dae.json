@@ -1,0 +1,394 @@
+{
+  "schema_version": 2,
+  "x": {},
+  "y": {},
+  "u": {},
+  "w": {},
+  "p": {
+    "samplePeriod": {
+      "name": "samplePeriod",
+      "source_span": {
+        "source": 0,
+        "start": 0,
+        "end": 0
+      },
+      "dims": [],
+      "start": {
+        "Literal": {
+          "value": {
+            "Real": 0.1
+          },
+          "span": {
+            "source": 1,
+            "start": 10,
+            "end": 20
+          }
+        }
+      },
+      "start_span": null,
+      "fixed": true,
+      "min": null,
+      "min_span": null,
+      "max": null,
+      "max_span": null,
+      "nominal": null,
+      "nominal_span": null,
+      "unit": "s",
+      "state_select": "Default",
+      "description": "Periodic Boolean sample interval",
+      "is_tunable": false
+    }
+  },
+  "constants": {},
+  "z": {
+    "hold.y": {
+      "name": "hold.y",
+      "source_span": {
+        "source": 0,
+        "start": 0,
+        "end": 0
+      },
+      "dims": [],
+      "start": {
+        "Literal": {
+          "value": {
+            "Real": 0.0
+          },
+          "span": {
+            "source": 1,
+            "start": 10,
+            "end": 20
+          }
+        }
+      },
+      "start_span": null,
+      "fixed": null,
+      "min": null,
+      "min_span": null,
+      "max": null,
+      "max_span": null,
+      "nominal": null,
+      "nominal_span": null,
+      "unit": null,
+      "state_select": "Default",
+      "description": "Latched numeric visualization of logical state",
+      "is_tunable": false
+    }
+  },
+  "m": {
+    "and1.y": {
+      "name": "and1.y",
+      "source_span": {
+        "source": 0,
+        "start": 0,
+        "end": 0
+      },
+      "dims": [],
+      "start": {
+        "Literal": {
+          "value": {
+            "Boolean": false
+          },
+          "span": {
+            "source": 1,
+            "start": 10,
+            "end": 20
+          }
+        }
+      },
+      "start_span": null,
+      "fixed": null,
+      "min": null,
+      "min_span": null,
+      "max": null,
+      "max_span": null,
+      "nominal": null,
+      "nominal_span": null,
+      "unit": null,
+      "state_select": "Default",
+      "description": "Logical block output",
+      "is_tunable": false
+    },
+    "not1.y": {
+      "name": "not1.y",
+      "source_span": {
+        "source": 0,
+        "start": 0,
+        "end": 0
+      },
+      "dims": [],
+      "start": {
+        "Literal": {
+          "value": {
+            "Boolean": true
+          },
+          "span": {
+            "source": 1,
+            "start": 10,
+            "end": 20
+          }
+        }
+      },
+      "start_span": null,
+      "fixed": null,
+      "min": null,
+      "min_span": null,
+      "max": null,
+      "max_span": null,
+      "nominal": null,
+      "nominal_span": null,
+      "unit": null,
+      "state_select": "Default",
+      "description": "Logical inversion output",
+      "is_tunable": false
+    }
+  },
+  "f_x": [],
+  "for_equations": [],
+  "initial_equations": [],
+  "initial_for_equations": [],
+  "f_z": [
+    {
+      "lhs": "hold.y",
+      "rhs": {
+        "If": {
+          "branches": [
+            [
+              {
+                "VarRef": {
+                  "name": "and1.y",
+                  "subscripts": [],
+                  "span": {
+                    "source": 1,
+                    "start": 10,
+                    "end": 20
+                  }
+                }
+              },
+              {
+                "Literal": {
+                  "value": {
+                    "Real": 1.0
+                  },
+                  "span": {
+                    "source": 1,
+                    "start": 10,
+                    "end": 20
+                  }
+                }
+              }
+            ]
+          ],
+          "else_branch": {
+            "Literal": {
+              "value": {
+                "Real": 0.0
+              },
+              "span": {
+                "source": 1,
+                "start": 10,
+                "end": 20
+              }
+            }
+          },
+          "span": {
+            "source": 1,
+            "start": 10,
+            "end": 20
+          }
+        }
+      },
+      "span": {
+        "source": 0,
+        "start": 0,
+        "end": 0
+      },
+      "origin": "when sample trigger then hold.y",
+      "scalar_count": 1
+    }
+  ],
+  "f_m": [
+    {
+      "lhs": "and1.y",
+      "rhs": {
+        "Binary": {
+          "op": "And",
+          "lhs": {
+            "VarRef": {
+              "name": "greater.y",
+              "subscripts": [],
+              "span": {
+                "source": 1,
+                "start": 10,
+                "end": 20
+              }
+            }
+          },
+          "rhs": {
+            "VarRef": {
+              "name": "pulse.y",
+              "subscripts": [],
+              "span": {
+                "source": 1,
+                "start": 10,
+                "end": 20
+              }
+            }
+          },
+          "span": {
+            "source": 1,
+            "start": 10,
+            "end": 20
+          }
+        }
+      },
+      "span": {
+        "source": 0,
+        "start": 0,
+        "end": 0
+      },
+      "origin": "when sample trigger then and1.y",
+      "scalar_count": 1
+    },
+    {
+      "lhs": "not1.y",
+      "rhs": {
+        "Unary": {
+          "op": "Not",
+          "rhs": {
+            "VarRef": {
+              "name": "and1.y",
+              "subscripts": [],
+              "span": {
+                "source": 1,
+                "start": 10,
+                "end": 20
+              }
+            }
+          },
+          "span": {
+            "source": 1,
+            "start": 10,
+            "end": 20
+          }
+        }
+      },
+      "span": {
+        "source": 0,
+        "start": 0,
+        "end": 0
+      },
+      "origin": "when sample trigger then not1.y",
+      "scalar_count": 1
+    }
+  ],
+  "f_c": [
+    {
+      "lhs": "c[1]",
+      "rhs": {
+        "Binary": {
+          "op": "Ge",
+          "lhs": {
+            "VarRef": {
+              "name": "time",
+              "subscripts": [],
+              "span": {
+                "source": 1,
+                "start": 10,
+                "end": 20
+              }
+            }
+          },
+          "rhs": {
+            "VarRef": {
+              "name": "samplePeriod",
+              "subscripts": [],
+              "span": {
+                "source": 1,
+                "start": 10,
+                "end": 20
+              }
+            }
+          },
+          "span": {
+            "source": 1,
+            "start": 10,
+            "end": 20
+          }
+        }
+      },
+      "span": {
+        "source": 0,
+        "start": 0,
+        "end": 0
+      },
+      "origin": "LogicalNetwork1 sample trigger",
+      "scalar_count": 1
+    }
+  ],
+  "relation": [
+    {
+      "Binary": {
+        "op": "Ge",
+        "lhs": {
+          "VarRef": {
+            "name": "time",
+            "subscripts": [],
+            "span": {
+              "source": 1,
+              "start": 10,
+              "end": 20
+            }
+          }
+        },
+        "rhs": {
+          "VarRef": {
+            "name": "samplePeriod",
+            "subscripts": [],
+            "span": {
+              "source": 1,
+              "start": 10,
+              "end": 20
+            }
+          }
+        },
+        "span": {
+          "source": 1,
+          "start": 10,
+          "end": 20
+        }
+      }
+    }
+  ],
+  "synthetic_root_conditions": [],
+  "scheduled_time_events": [
+    0.1
+  ],
+  "event_actions": [],
+  "constructor_exprs": [],
+  "schedules": [
+    {
+      "period_seconds": 0.1,
+      "phase_seconds": 0.0,
+      "source_span": {
+        "source": 0,
+        "start": 0,
+        "end": 0
+      }
+    }
+  ],
+  "triggered_conditions": [],
+  "intervals": {},
+  "timings": {},
+  "functions": {},
+  "enum_literal_ordinals": {},
+  "metadata": {
+    "is_partial": false,
+    "class_type": "Model",
+    "variable_starts": {},
+    "interface_flow_count": 0,
+    "overconstrained_interface_count": 0,
+    "oc_break_edge_scalar_count": 0,
+    "model_description": "Schema golden derived from Modelica.Blocks.Examples.LogicalNetwork1 surface: Boolean network with timed trigger"
+  }
+}

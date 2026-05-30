@@ -54,7 +54,7 @@ impl ItemKey {
 pub(crate) struct DeclarationIndexEntry {
     pub(crate) symbol_kind: WorkspaceSymbolKind,
     pub(crate) container_name: Option<String>,
-    pub(crate) location: ast::Location,
+    pub(crate) location: rumoca_core::Location,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,7 +64,7 @@ pub(crate) struct DeclarationIndex {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum PersistedWorkspaceSymbolKind {
-    Class(ast::ClassType),
+    Class(rumoca_core::ClassType),
     Component,
 }
 
@@ -91,7 +91,7 @@ pub(crate) struct PersistedDeclarationIndexEntry {
     name: String,
     symbol_kind: PersistedWorkspaceSymbolKind,
     container_name: Option<String>,
-    location: ast::Location,
+    location: rumoca_core::Location,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -162,7 +162,7 @@ impl DeclarationIndex {
         key: ItemKey,
         symbol_kind: WorkspaceSymbolKind,
         container_name: Option<String>,
-        location: ast::Location,
+        location: rumoca_core::Location,
     ) {
         self.items.insert(
             key,
@@ -252,12 +252,6 @@ fn join_path(prefix: &str, name: &str) -> String {
 }
 
 fn container_name_for_item_key(item_key: &ItemKey) -> Option<String> {
-    (!item_key.container_path.is_empty()).then(|| {
-        item_key
-            .container_path
-            .rsplit('.')
-            .next()
-            .unwrap_or(item_key.container_path.as_str())
-            .to_string()
-    })
+    (!item_key.container_path.is_empty())
+        .then(|| rumoca_core::top_level_last_segment(&item_key.container_path).to_string())
 }

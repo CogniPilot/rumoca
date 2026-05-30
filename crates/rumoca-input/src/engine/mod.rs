@@ -14,7 +14,7 @@ use anyhow::{Result, anyhow, bail};
 use crate::config::{DeriveSpec, InputConfig, LocalDef};
 #[allow(unused_imports)]
 use crate::device::{GamepadAxis, GamepadButton, KeyCode, KeyModifiers};
-pub use rumoca_input_types::{GamepadSnapshot, InputMode, KeyboardEvent};
+pub use crate::device::{GamepadSnapshot, InputMode, KeyboardEvent};
 
 pub use compile::{
     ButtonAction, CompiledDecay, CompiledDerive, CompiledGamepadAxis, CompiledGamepadButton,
@@ -64,15 +64,15 @@ pub struct InputEngine {
 
     /// Previous pressed/unpressed state of each bound button/key, keyed by binding id.
     /// Used for rising-edge detection. Populated by device polling (phase 2c/2d).
-    #[allow(dead_code)]
     edge_prev: HashMap<String, bool>,
 
     /// Last time a given state was toggled (for debounce), keyed by the state name.
     /// Populated by device polling (phase 2c/2d).
-    #[allow(dead_code)]
     debounce: HashMap<String, Instant>,
 
+    held_keyboard_keys: HashSet<String>,
     pending_signals: HashSet<String>,
+    last_message: Option<String>,
     last_poll: Instant,
 }
 
@@ -94,7 +94,9 @@ impl InputEngine {
             compiled,
             edge_prev: HashMap::new(),
             debounce: HashMap::new(),
+            held_keyboard_keys: HashSet::new(),
             pending_signals: HashSet::new(),
+            last_message: None,
             last_poll: Instant::now(),
         })
     }
@@ -112,6 +114,8 @@ impl InputEngine {
         self.locals = self.defaults.clone();
         self.pending_signals.clear();
         self.debounce.clear();
+        self.held_keyboard_keys.clear();
+        self.last_message = None;
         // edge_prev intentionally kept: we don't want a held button to
         // re-trigger after reset.
     }
@@ -154,6 +158,10 @@ impl InputEngine {
         self.pending_signals.remove(name)
     }
 
+    pub fn last_message(&self) -> Option<&str> {
+        self.last_message.as_deref()
+    }
+
     /// Write a scalar value to a local by path. Used by the receive path
     /// when the incoming codec routes a field to `local:<name>`. No-op if
     /// the target doesn't exist or the type/index doesn't fit.
@@ -165,6 +173,9 @@ impl InputEngine {
     // ── Gamepad snapshots ─────────────────────────────────────────────────
 
     fn process_gamepad(&mut self, snap: &GamepadSnapshot, dt: f64) {
+        if !snap.button_pressed.is_empty() {
+            self.last_message = None;
+        }
         // Axes: source axis value -> write local (with scale + optional invert).
         let axes = self.compiled.gamepad_axes.clone();
         for axis in &axes {
@@ -205,6 +216,9 @@ impl InputEngine {
     // ── Keyboard events ───────────────────────────────────────────────────
 
     fn process_keyboard(&mut self, events: &[KeyboardEvent], dt: f64) {
+        if !events.is_empty() {
+            self.last_message = None;
+        }
         // 1. Decay configured targets (applied every frame regardless of events).
         if let Some(decay) = self.compiled.keyboard_decay.clone() {
             let factor = decay.factor.powf(dt / decay.ref_dt);
@@ -218,7 +232,10 @@ impl InputEngine {
         //     translation, so the OS never delivers SIGINT — we have to
         //     recognize the keystroke ourselves or the user is stuck.
         for event in events {
-            if event.code == KeyCode::Char('c') && event.modifiers.contains(KeyModifiers::CONTROL) {
+            if event.pressed
+                && event.code == KeyCode::Char('c')
+                && event.modifiers.contains(KeyModifiers::CONTROL)
+            {
                 eprintln!("\r[input] Ctrl+C → quit                    \r");
                 self.pending_signals.insert("quit".to_string());
             }
@@ -231,11 +248,16 @@ impl InputEngine {
                 .iter()
                 .filter(|key| key.code == event.code && key.modifiers == event.modifiers)
             {
-                self.fire_key(key);
+                self.fire_key_event(key, event);
             }
         }
 
-        // 3. Run keyboard integrators (source is typically a local that decays).
+        // 3. Re-apply browser-held set controls once per input tick. This
+        // keeps held controls active without requiring the browser to stream
+        // repeated key packets.
+        self.apply_held_keyboard_sets(&keys);
+
+        // 4. Run keyboard integrators (source is typically a local that decays).
         let integrators = self.compiled.keyboard_integrators.clone();
         for integ in &integrators {
             let src = match &integ.source {
@@ -246,20 +268,24 @@ impl InputEngine {
         }
     }
 
-    fn fire_key(&mut self, key: &CompiledKey) {
+    fn fire_key_event(&mut self, key: &CompiledKey, event: &KeyboardEvent) {
         match &key.action {
             KeyAction::Set { target, value } => {
+                self.update_held_keyboard_key(key, event);
                 // Set: precondition (if any), no debounce.
                 if key
                     .precondition
                     .as_ref()
-                    .is_some_and(|pre| !self.passes_precondition(pre))
+                    .is_some_and(|pre| !self.passes_precondition_for("input rejected", pre))
                 {
                     return;
                 }
-                self.write_local(target, *value);
+                self.write_local(target, if event.pressed { *value } else { 0.0 });
             }
             KeyAction::Toggle { state } => {
+                if !event.pressed {
+                    return;
+                }
                 self.fire_button(
                     &ButtonAction::Toggle {
                         state: state.clone(),
@@ -269,12 +295,45 @@ impl InputEngine {
                 );
             }
             KeyAction::Signal { name } => {
+                if !event.pressed {
+                    return;
+                }
                 self.fire_button(
                     &ButtonAction::Signal { name: name.clone() },
                     key.debounce_ms,
                     key.precondition.as_ref(),
                 );
             }
+        }
+    }
+
+    fn update_held_keyboard_key(&mut self, key: &CompiledKey, event: &KeyboardEvent) {
+        if !event.holdable {
+            return;
+        }
+        if event.pressed {
+            self.held_keyboard_keys.insert(key.id.clone());
+            return;
+        }
+        self.held_keyboard_keys.remove(&key.id);
+    }
+
+    fn apply_held_keyboard_sets(&mut self, keys: &[CompiledKey]) {
+        for key in keys {
+            if !self.held_keyboard_keys.contains(&key.id) {
+                continue;
+            }
+            let KeyAction::Set { target, value } = &key.action else {
+                continue;
+            };
+            if key
+                .precondition
+                .as_ref()
+                .is_some_and(|pre| !self.passes_precondition_for("input rejected", pre))
+            {
+                continue;
+            }
+            self.write_local(target, *value);
         }
     }
 
@@ -302,6 +361,11 @@ impl InputEngine {
         if let Some(pre) = precondition {
             let lhs = self.read_path(&pre.var).unwrap_or(0.0);
             if !pre.eval(lhs) {
+                self.last_message = Some(format!(
+                    "{}: {}",
+                    rejected_action_name(action),
+                    pre.failure_summary(lhs)
+                ));
                 return;
             }
         }
@@ -330,9 +394,13 @@ impl InputEngine {
         self.locals.get(&p.name)?.as_bool_at(p.index)
     }
 
-    fn passes_precondition(&self, pre: &Precondition) -> bool {
+    fn passes_precondition_for(&mut self, action: &str, pre: &Precondition) -> bool {
         let lhs = self.read_path(&pre.var).unwrap_or(0.0);
-        pre.eval(lhs)
+        let passed = pre.eval(lhs);
+        if !passed {
+            self.last_message = Some(format!("{action}: {}", pre.failure_summary(lhs)));
+        }
+        passed
     }
 
     // ── Derive application ────────────────────────────────────────────────
@@ -421,7 +489,9 @@ impl InputEngine {
             compiled,
             edge_prev: HashMap::new(),
             debounce: HashMap::new(),
+            held_keyboard_keys: HashSet::new(),
             pending_signals: HashSet::new(),
+            last_message: None,
             last_poll: Instant::now(),
         }
     }
@@ -527,14 +597,21 @@ fn toml_to_i64(v: &toml::Value) -> Option<i64> {
     }
 }
 
+fn rejected_action_name(action: &ButtonAction) -> &'static str {
+    match action {
+        ButtonAction::Toggle { state } if state.name == "armed" => "arm rejected",
+        ButtonAction::Toggle { .. } => "toggle rejected",
+        ButtonAction::Signal { .. } => "signal rejected",
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DeriveSpec, InputConfig, LocalDef, SignalsConfig};
+    use crate::config::{DeriveSpec, InputConfig, LocalDef};
     use serde::Deserialize;
-    use std::path::PathBuf;
 
     /// Minimal subset of the full TOML config needed to exercise the input
     /// engine in tests — avoids depending on the orchestration-layer config.
@@ -545,21 +622,146 @@ mod tests {
         #[serde(default)]
         derive: HashMap<String, DeriveSpec>,
         input: Option<InputConfig>,
-        #[allow(dead_code)]
-        #[serde(default)]
-        signals: Option<SignalsConfig>,
     }
 
     fn load_quadrotor() -> InputSections {
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let root = manifest.parent().unwrap().parent().unwrap();
-        let path = root
-            .join("examples")
-            .join("quadrotor_sil")
-            .join("quadrotor_cerebri.toml");
-        let text = std::fs::read_to_string(&path).expect("read toml");
-        toml::from_str(&text).expect("parse input sections")
+        toml::from_str(TEST_INPUT_CONFIG).expect("parse input sections")
     }
+
+    const TEST_INPUT_CONFIG: &str = r#"
+[input]
+mode = "auto"
+
+[input.gamepad.axes.pitch]
+source = "RightStickY"
+write = "pitch_cmd"
+
+[input.gamepad.axes.roll]
+source = "RightStickX"
+write = "roll_cmd"
+
+[input.gamepad.axes.yaw]
+source = "LeftStickX"
+write = "yaw_cmd"
+
+[input.gamepad.buttons.arm]
+action = "toggle"
+debounce_ms = 500
+precondition = "rc.2 <= 1050"
+source = "Start"
+state = "armed"
+
+[input.gamepad.buttons.log]
+action = "signal"
+signal = "log"
+source = "North"
+
+[input.gamepad.buttons.reset]
+action = "signal"
+signal = "reset"
+source = "South"
+
+[input.gamepad.integrators.throttle]
+clamp = [0.0, 1.0]
+deadband = 0.1
+rate = 0.7
+source = "LeftStickY"
+write = "throttle"
+
+[input.keyboard.decay]
+factor = 0.85
+ref_dt = 0.016
+targets = ["roll_cmd", "pitch_cmd", "yaw_cmd", "throttle_input"]
+
+[input.keyboard.integrators.throttle]
+clamp = [0.0, 1.0]
+rate = 0.7
+source = "local:throttle_input"
+write = "throttle"
+
+[input.keyboard.keys.Space]
+action = "toggle"
+debounce_ms = 500
+precondition = "rc.2 <= 1050"
+state = "armed"
+
+[input.keyboard.keys.q]
+action = "signal"
+signal = "quit"
+
+[input.keyboard.keys.r]
+action = "signal"
+signal = "reset"
+
+[input.keyboard.keys.s]
+action = "set"
+target = "throttle_input"
+value = -1.0
+
+[input.keyboard.keys.w]
+action = "set"
+target = "throttle_input"
+value = 1.0
+
+[locals.armed]
+default = false
+type = "bool"
+
+[locals.pitch_cmd]
+default = 0.0
+type = "float"
+
+[locals.rc]
+default = 1500
+element = "int"
+len = 16
+type = "array"
+
+[locals.roll_cmd]
+default = 0.0
+type = "float"
+
+[locals.throttle]
+default = 0.0
+type = "float"
+
+[locals.throttle_input]
+default = 0.0
+type = "float"
+
+[locals.yaw_cmd]
+default = 0.0
+type = "float"
+
+[derive."rc.0"]
+clamp = [1000.0, 2000.0]
+from = "roll_cmd"
+offset = 1500.0
+scale = 500.0
+
+[derive."rc.1"]
+clamp = [1000.0, 2000.0]
+from = "pitch_cmd"
+offset = 1500.0
+scale = -500.0
+
+[derive."rc.2"]
+clamp = [1000.0, 2000.0]
+from = "throttle"
+offset = 1000.0
+scale = 1000.0
+
+[derive."rc.3"]
+clamp = [1000.0, 2000.0]
+from = "yaw_cmd"
+offset = 1500.0
+scale = 500.0
+
+[derive."rc.4"]
+from = "armed"
+when_false = 1000
+when_true = 2000
+"#;
 
     /// Build an engine from config without touching any input device.
     fn build_for_test(cfg: &InputSections) -> InputEngine {
@@ -573,7 +775,9 @@ mod tests {
             compiled,
             edge_prev: HashMap::new(),
             debounce: HashMap::new(),
+            held_keyboard_keys: HashSet::new(),
             pending_signals: HashSet::new(),
+            last_message: None,
             last_poll: Instant::now(),
         }
     }
@@ -754,20 +958,65 @@ mod tests {
         KeyboardEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
-    fn arrow(code: KeyCode) -> KeyboardEvent {
-        KeyboardEvent::new(code, KeyModifiers::NONE)
-    }
-
     #[test]
     fn keyboard_set_action_writes_target() {
         let cfg = load_quadrotor();
         let mut eng = build_for_test(&cfg);
-        // 'w' -> set pitch_cmd = -0.6
+        // 'w' -> set throttle_input = 1.0
         eng.process_keyboard(&[key('w')], 0.01);
-        assert_eq!(eng.get("pitch_cmd"), Some(-0.6));
-        // 's' -> set pitch_cmd = 0.6 (overwrites)
+        assert_eq!(eng.get("throttle_input"), Some(1.0));
+        // 's' -> set throttle_input = -1.0 (overwrites)
         eng.process_keyboard(&[key('s')], 0.01);
-        assert_eq!(eng.get("pitch_cmd"), Some(0.6));
+        assert_eq!(eng.get("throttle_input"), Some(-1.0));
+    }
+
+    #[test]
+    fn keyboard_set_release_clears_target() {
+        let cfg = load_quadrotor();
+        let mut eng = build_for_test(&cfg);
+
+        eng.process_keyboard(&[key('w')], 0.01);
+        assert_eq!(eng.get("throttle_input"), Some(1.0));
+
+        eng.process_keyboard(
+            &[KeyboardEvent::released(
+                KeyCode::Char('w'),
+                KeyModifiers::NONE,
+            )],
+            0.01,
+        );
+        assert_eq!(eng.get("throttle_input"), Some(0.0));
+    }
+
+    #[test]
+    fn browser_held_set_key_reapplies_without_repeated_events() {
+        let cfg = load_quadrotor();
+        let mut eng = build_for_test(&cfg);
+
+        eng.process_keyboard(
+            &[KeyboardEvent::holdable_press(
+                KeyCode::Char('w'),
+                KeyModifiers::NONE,
+            )],
+            0.01,
+        );
+        assert_eq!(eng.get("throttle_input"), Some(1.0));
+
+        eng.process_keyboard(&[], 0.016);
+        assert_eq!(
+            eng.get("throttle_input"),
+            Some(1.0),
+            "held browser key should defeat decay without repeated websocket packets"
+        );
+
+        eng.process_keyboard(
+            &[KeyboardEvent::released(
+                KeyCode::Char('w'),
+                KeyModifiers::NONE,
+            )],
+            0.01,
+        );
+        assert_eq!(eng.get("throttle_input"), Some(0.0));
     }
 
     #[test]
@@ -829,9 +1078,9 @@ mod tests {
     fn keyboard_integrator_accumulates_from_local_source() {
         let cfg = load_quadrotor();
         let mut eng = build_for_test(&cfg);
-        // Arrow Up sets throttle_input = 1.0 (with decay).
+        // 'w' sets throttle_input = 1.0 (with decay).
         // Keyboard integrator reads local:throttle_input, rate 0.7, clamp [0, 1] -> throttle.
-        eng.process_keyboard(&[arrow(KeyCode::Up)], 0.5);
+        eng.process_keyboard(&[key('w')], 0.5);
         // After this poll:
         //   decay runs first (throttle_input was 0, still 0)
         //   event fires: throttle_input = 1.0

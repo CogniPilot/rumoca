@@ -1,0 +1,10 @@
+version = 1
+ir = "dae"
+name = "onnx"
+description = "ONNX Python model builder export"
+execution_mode = "symbolic"
+deployment_class = "symbolic"
+
+[[files]]
+path = "{{ model_name }}_onnx.py"
+template = "onnx.py.jinja"

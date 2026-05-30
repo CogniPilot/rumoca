@@ -1,12 +1,29 @@
 //! Conversion for expressions.
 
-use super::helpers::{collect_array_elements, convert_for_indices, loc_info};
+use super::helpers::{
+    collect_array_elements, convert_for_indices, expression_list_span, loc_info, merge_spans,
+    token_span,
+};
 use crate::errors::semantic_error_from_token;
 use crate::generated::modelica_grammar_trait;
+use rumoca_core::Span;
 use std::sync::Arc;
 
 //-----------------------------------------------------------------------------
 // Helper functions to reduce nesting in operator conversions.
+
+fn empty_expr() -> rumoca_ir_ast::Expression {
+    rumoca_ir_ast::Expression::Empty { span: Span::DUMMY }
+}
+
+fn call_span(comp: &rumoca_ir_ast::ComponentReference, args: &[rumoca_ir_ast::Expression]) -> Span {
+    args.last()
+        .map_or(comp.span, |last| merge_spans(comp.span, last.span()))
+}
+
+fn binary_span(lhs: &rumoca_ir_ast::Expression, rhs: &rumoca_ir_ast::Expression) -> Span {
+    merge_spans(lhs.span(), rhs.span())
+}
 
 /// Create an ExpressionList from args with default flags.
 fn make_expr_list(args: Vec<rumoca_ir_ast::Expression>) -> ExpressionList {
@@ -27,6 +44,7 @@ fn process_for_comprehension(
 ) -> ExpressionList {
     let indices = convert_for_indices(&for_clause.for_indices);
     let comprehension = rumoca_ir_ast::Expression::ArrayComprehension {
+        span: base_expr.span(),
         expr: Arc::new(base_expr.clone()),
         indices,
         filter: None,
@@ -75,56 +93,32 @@ fn convert_expression_function_args(
 }
 
 /// Convert a MulOperator to OpBinary.
-fn mul_op_to_binary(op: &modelica_grammar_trait::MulOperator) -> rumoca_ir_core::OpBinary {
+fn mul_op_to_binary(op: &modelica_grammar_trait::MulOperator) -> rumoca_core::OpBinary {
     match op {
-        modelica_grammar_trait::MulOperator::Star(o) => {
-            rumoca_ir_core::OpBinary::Mul(o.star.clone().into())
-        }
-        modelica_grammar_trait::MulOperator::Slash(o) => {
-            rumoca_ir_core::OpBinary::Div(o.slash.clone().into())
-        }
-        modelica_grammar_trait::MulOperator::DotSlash(o) => {
-            rumoca_ir_core::OpBinary::DivElem(o.dot_slash.clone().into())
-        }
-        modelica_grammar_trait::MulOperator::DotStar(o) => {
-            rumoca_ir_core::OpBinary::MulElem(o.dot_star.clone().into())
-        }
+        modelica_grammar_trait::MulOperator::Star(_) => rumoca_core::OpBinary::Mul,
+        modelica_grammar_trait::MulOperator::Slash(_) => rumoca_core::OpBinary::Div,
+        modelica_grammar_trait::MulOperator::DotSlash(_) => rumoca_core::OpBinary::DivElem,
+        modelica_grammar_trait::MulOperator::DotStar(_) => rumoca_core::OpBinary::MulElem,
     }
 }
 
 /// Convert an AddOperator to OpBinary.
-fn add_op_to_binary(op: &modelica_grammar_trait::AddOperator) -> rumoca_ir_core::OpBinary {
+fn add_op_to_binary(op: &modelica_grammar_trait::AddOperator) -> rumoca_core::OpBinary {
     match op {
-        modelica_grammar_trait::AddOperator::Plus(t) => {
-            rumoca_ir_core::OpBinary::Add(t.plus.clone().into())
-        }
-        modelica_grammar_trait::AddOperator::Minus(t) => {
-            rumoca_ir_core::OpBinary::Sub(t.minus.clone().into())
-        }
-        modelica_grammar_trait::AddOperator::DotPlus(t) => {
-            rumoca_ir_core::OpBinary::AddElem(t.dot_plus.clone().into())
-        }
-        modelica_grammar_trait::AddOperator::DotMinus(t) => {
-            rumoca_ir_core::OpBinary::SubElem(t.dot_minus.clone().into())
-        }
+        modelica_grammar_trait::AddOperator::Plus(_) => rumoca_core::OpBinary::Add,
+        modelica_grammar_trait::AddOperator::Minus(_) => rumoca_core::OpBinary::Sub,
+        modelica_grammar_trait::AddOperator::DotPlus(_) => rumoca_core::OpBinary::AddElem,
+        modelica_grammar_trait::AddOperator::DotMinus(_) => rumoca_core::OpBinary::SubElem,
     }
 }
 
 /// Convert an AddOperator to OpUnary.
-fn add_op_to_unary(op: &modelica_grammar_trait::AddOperator) -> rumoca_ir_core::OpUnary {
+fn add_op_to_unary(op: &modelica_grammar_trait::AddOperator) -> rumoca_core::OpUnary {
     match op {
-        modelica_grammar_trait::AddOperator::Minus(t) => {
-            rumoca_ir_core::OpUnary::Minus(t.minus.clone().into())
-        }
-        modelica_grammar_trait::AddOperator::Plus(t) => {
-            rumoca_ir_core::OpUnary::Plus(t.plus.clone().into())
-        }
-        modelica_grammar_trait::AddOperator::DotMinus(t) => {
-            rumoca_ir_core::OpUnary::DotMinus(t.dot_minus.clone().into())
-        }
-        modelica_grammar_trait::AddOperator::DotPlus(t) => {
-            rumoca_ir_core::OpUnary::DotPlus(t.dot_plus.clone().into())
-        }
+        modelica_grammar_trait::AddOperator::Minus(_) => rumoca_core::OpUnary::Minus,
+        modelica_grammar_trait::AddOperator::Plus(_) => rumoca_core::OpUnary::Plus,
+        modelica_grammar_trait::AddOperator::DotMinus(_) => rumoca_core::OpUnary::DotMinus,
+        modelica_grammar_trait::AddOperator::DotPlus(_) => rumoca_core::OpUnary::DotPlus,
     }
 }
 
@@ -201,6 +195,7 @@ fn named_argument_to_expr(
 ) -> rumoca_ir_ast::Expression {
     // Create a NamedArgument expression that preserves the parameter name token
     rumoca_ir_ast::Expression::NamedArgument {
+        span: token_span(&named_arg.ident),
         name: named_arg.ident.clone(),
         value: Arc::new(named_arg.function_argument.clone()),
     }
@@ -250,6 +245,10 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgument> for rumoca_ir_ast::Expre
 
                 let comp = rumoca_ir_ast::ComponentReference {
                     local: partial_app.type_specifier.type_specifier_opt.is_some(),
+                    span: parts
+                        .first()
+                        .map(|part| token_span(&part.ident))
+                        .unwrap_or(Span::DUMMY),
                     parts,
                     ..Default::default()
                 };
@@ -261,7 +260,8 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgument> for rumoca_ir_ast::Expre
                     vec![]
                 };
 
-                Ok(rumoca_ir_ast::Expression::FunctionCall { comp, args })
+                let span = call_span(&comp, &args);
+                Ok(rumoca_ir_ast::Expression::FunctionCall { comp, args, span })
             }
         }
     }
@@ -295,6 +295,10 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
 
                 let comp = rumoca_ir_ast::ComponentReference {
                     local: partial_app.type_specifier.type_specifier_opt.is_some(),
+                    span: parts
+                        .first()
+                        .map(|part| token_span(&part.ident))
+                        .unwrap_or(Span::DUMMY),
                     parts,
                     ..Default::default()
                 };
@@ -306,7 +310,11 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
                     vec![]
                 };
 
-                let func_call_expr = rumoca_ir_ast::Expression::FunctionCall { comp, args: func_args };
+                let func_call_expr = rumoca_ir_ast::Expression::FunctionCall {
+                    span: call_span(&comp, &func_args),
+                    comp,
+                    args: func_args,
+                };
 
                 // Start with the partial application as the first arg
                 let mut args = vec![func_call_expr];
@@ -404,15 +412,20 @@ fn ast_name_to_comp_ref(name: &rumoca_ir_ast::Name) -> rumoca_ir_ast::ComponentR
         .collect();
     rumoca_ir_ast::ComponentReference {
         local: false,
+        span: parts
+            .first()
+            .map(|part| token_span(&part.ident))
+            .unwrap_or(Span::DUMMY),
         parts,
         ..Default::default()
     }
 }
 
 /// Build a single-part ComponentReference from an identifier token.
-fn ident_to_comp_ref(ident: &rumoca_ir_core::Token) -> rumoca_ir_ast::ComponentReference {
+fn ident_to_comp_ref(ident: &rumoca_core::Token) -> rumoca_ir_ast::ComponentReference {
     rumoca_ir_ast::ComponentReference {
         local: false,
+        span: token_span(ident),
         parts: vec![rumoca_ir_ast::ComponentRefPart {
             ident: ident.clone(),
             subs: None,
@@ -421,15 +434,21 @@ fn ident_to_comp_ref(ident: &rumoca_ir_core::Token) -> rumoca_ir_ast::ComponentR
     }
 }
 
+fn extract_class_mod_arg_list(
+    class_mod: &modelica_grammar_trait::ClassModification,
+) -> ExpressionList {
+    class_mod
+        .class_modification_opt
+        .as_ref()
+        .map(|opt| opt.argument_list.clone())
+        .unwrap_or_default()
+}
+
 /// Extract arguments from a class modification, if present.
 fn extract_class_mod_args(
     class_mod: &modelica_grammar_trait::ClassModification,
 ) -> Vec<rumoca_ir_ast::Expression> {
-    class_mod
-        .class_modification_opt
-        .as_ref()
-        .map(|opt| opt.argument_list.args.clone())
-        .unwrap_or_default()
+    extract_class_mod_arg_list(class_mod).args
 }
 
 /// Convert a TypeClassSpecifier (inner type) to a Modification expression.
@@ -438,18 +457,24 @@ fn convert_type_class_specifier_inner(
 ) -> rumoca_ir_ast::Expression {
     let name_ref = ident_to_comp_ref(&tcs.ident);
     let new_type_ref = ast_name_to_comp_ref(&tcs.type_specifier.name);
-    let args = tcs
+    let arg_list = tcs
         .type_class_specifier_opt0
         .as_ref()
-        .map(|class_mod| extract_class_mod_args(&class_mod.class_modification))
+        .map(|class_mod| extract_class_mod_arg_list(&class_mod.class_modification))
         .unwrap_or_default();
 
+    let class_mod = rumoca_ir_ast::Expression::ClassModification {
+        span: new_type_ref.span,
+        target: new_type_ref,
+        modifications: arg_list.args,
+        each_flags: arg_list.each_flags,
+        final_flags: arg_list.final_flags,
+        redeclare_flags: arg_list.redeclare_flags,
+    };
     rumoca_ir_ast::Expression::Modification {
+        span: merge_spans(name_ref.span, class_mod.span()),
         target: name_ref,
-        value: Arc::new(rumoca_ir_ast::Expression::ClassModification {
-            target: new_type_ref,
-            modifications: args,
-        }),
+        value: Arc::new(class_mod),
     }
 }
 
@@ -459,6 +484,7 @@ fn convert_enum_class_specifier_inner(
 ) -> rumoca_ir_ast::Expression {
     let name_ref = ident_to_comp_ref(&ecs.ident);
     rumoca_ir_ast::Expression::FunctionCall {
+        span: name_ref.span,
         comp: name_ref,
         args: vec![],
     }
@@ -469,6 +495,7 @@ fn collect_partial_app_args(
     named_args: &modelica_grammar_trait::NamedArguments,
 ) -> Vec<rumoca_ir_ast::Expression> {
     let mut args = vec![rumoca_ir_ast::Expression::NamedArgument {
+        span: token_span(&named_args.named_argument.ident),
         name: named_args.named_argument.ident.clone(),
         value: Arc::new(named_args.named_argument.function_argument.clone()),
     }];
@@ -493,12 +520,15 @@ fn convert_function_partial_specifier_inner(
         .map(|args_opt| collect_partial_app_args(&args_opt.named_arguments))
         .unwrap_or_default();
 
+    let function_call = rumoca_ir_ast::Expression::FunctionCall {
+        span: call_span(&base_func_ref, &args),
+        comp: base_func_ref,
+        args,
+    };
     rumoca_ir_ast::Expression::Modification {
+        span: merge_spans(name_ref.span, function_call.span()),
         target: name_ref,
-        value: Arc::new(rumoca_ir_ast::Expression::FunctionCall {
-            comp: base_func_ref,
-            args,
-        }),
+        value: Arc::new(function_call),
     }
 }
 
@@ -571,21 +601,33 @@ fn convert_component_clause_redecl_inner(
 
     // If there's a direct value assignment, return Modification with that value
     if let Some(value) = direct_value {
+        let class_mod = rumoca_ir_ast::Expression::ClassModification {
+            span: merge_spans(new_type_ref.span, value.span()),
+            target: new_type_ref,
+            modifications: vec![value],
+            each_flags: vec![false],
+            final_flags: vec![false],
+            redeclare_flags: vec![false],
+        };
         return Ok(rumoca_ir_ast::Expression::Modification {
+            span: merge_spans(name_ref.span, class_mod.span()),
             target: name_ref,
-            value: Arc::new(rumoca_ir_ast::Expression::ClassModification {
-                target: new_type_ref,
-                modifications: vec![value],
-            }),
+            value: Arc::new(class_mod),
         });
     }
 
+    let class_mod = rumoca_ir_ast::Expression::ClassModification {
+        span: merge_spans(new_type_ref.span, expression_list_span(&args)),
+        target: new_type_ref,
+        modifications: args,
+        each_flags: Vec::new(),
+        final_flags: Vec::new(),
+        redeclare_flags: Vec::new(),
+    };
     Ok(rumoca_ir_ast::Expression::Modification {
+        span: merge_spans(name_ref.span, class_mod.span()),
         target: name_ref,
-        value: Arc::new(rumoca_ir_ast::Expression::ClassModification {
-            target: new_type_ref,
-            modifications: args,
-        }),
+        value: Arc::new(class_mod),
     })
 }
 
@@ -631,6 +673,7 @@ fn convert_replaceable_component_clause_inner(
                 match &eq_mod.modification_expression {
                     modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                         return Ok(rumoca_ir_ast::Expression::Modification {
+                            span: merge_spans(name_ref.span, expr.expression.span()),
                             target: name_ref,
                             value: Arc::new(expr.expression.clone()),
                         });
@@ -639,24 +682,36 @@ fn convert_replaceable_component_clause_inner(
                 }
             }
             modelica_grammar_trait::Modification::ClassModificationModificationOpt(class_mod) => {
-                let args = extract_class_mod_args(&class_mod.class_modification);
+                let arg_list = extract_class_mod_arg_list(&class_mod.class_modification);
+                let class_mod = rumoca_ir_ast::Expression::ClassModification {
+                    span: merge_spans(new_type_ref.span, expression_list_span(&arg_list.args)),
+                    target: new_type_ref,
+                    modifications: arg_list.args,
+                    each_flags: arg_list.each_flags,
+                    final_flags: arg_list.final_flags,
+                    redeclare_flags: arg_list.redeclare_flags,
+                };
                 return Ok(rumoca_ir_ast::Expression::Modification {
+                    span: merge_spans(name_ref.span, class_mod.span()),
                     target: name_ref,
-                    value: Arc::new(rumoca_ir_ast::Expression::ClassModification {
-                        target: new_type_ref,
-                        modifications: args,
-                    }),
+                    value: Arc::new(class_mod),
                 });
             }
         }
     }
 
+    let class_mod = rumoca_ir_ast::Expression::ClassModification {
+        span: new_type_ref.span,
+        target: new_type_ref,
+        modifications: vec![],
+        each_flags: vec![],
+        final_flags: vec![],
+        redeclare_flags: vec![],
+    };
     Ok(rumoca_ir_ast::Expression::Modification {
+        span: merge_spans(name_ref.span, class_mod.span()),
         target: name_ref,
-        value: Arc::new(rumoca_ir_ast::Expression::ClassModification {
-            target: new_type_ref,
-            modifications: vec![],
-        }),
+        value: Arc::new(class_mod),
     })
 }
 
@@ -704,10 +759,14 @@ fn convert_element_modification(
     match &elem.element_modification_opt {
         Some(opt) => match &opt.modification {
             modelica_grammar_trait::Modification::ClassModificationModificationOpt(class_modif) => {
-                let args = extract_class_mod_args(&class_modif.class_modification);
+                let arg_list = extract_class_mod_arg_list(&class_modif.class_modification);
                 let mod_expr = rumoca_ir_ast::Expression::ClassModification {
+                    span: merge_spans(target.span, expression_list_span(&arg_list.args)),
                     target: target.clone(),
-                    modifications: args,
+                    modifications: arg_list.args,
+                    each_flags: arg_list.each_flags,
+                    final_flags: arg_list.final_flags,
+                    redeclare_flags: arg_list.redeclare_flags,
                 };
 
                 // If there's also a value assignment (name(mods) = value), wrap in binary
@@ -715,9 +774,8 @@ fn convert_element_modification(
                     match &mod_opt.modification_expression {
                         modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                             Ok(rumoca_ir_ast::Expression::Binary {
-                                op: rumoca_ir_core::OpBinary::Assign(
-                                    rumoca_ir_core::Token::default(),
-                                ),
+                                op: rumoca_core::OpBinary::Assign,
+                                span: binary_span(&mod_expr, &expr.expression),
                                 lhs: Arc::new(mod_expr),
                                 rhs: Arc::new(expr.expression.clone()),
                             })
@@ -730,11 +788,10 @@ fn convert_element_modification(
             }
             modelica_grammar_trait::Modification::EquModificationExpression(modif) => {
                 match &modif.modification_expression {
-                    modelica_grammar_trait::ModificationExpression::Break(_) => {
-                        Ok(rumoca_ir_ast::Expression::Empty)
-                    }
+                    modelica_grammar_trait::ModificationExpression::Break(_) => Ok(empty_expr()),
                     modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                         Ok(rumoca_ir_ast::Expression::Modification {
+                            span: merge_spans(target.span, expr.expression.span()),
                             target,
                             value: Arc::new(expr.expression.clone()),
                         })
@@ -742,7 +799,7 @@ fn convert_element_modification(
                 }
             }
         },
-        None => Ok(rumoca_ir_ast::Expression::Empty),
+        None => Ok(empty_expr()),
     }
 }
 
@@ -937,23 +994,27 @@ fn convert_range_primary(rp: &modelica_grammar_trait::RangePrimary) -> rumoca_ir
     if rp.range_primary_list.is_empty() {
         // Single row: [1, 2, 3] - just return as matrix Array
         rumoca_ir_ast::Expression::Array {
+            span: expression_list_span(&first_row),
             elements: first_row,
             is_matrix: true,
         }
     } else {
         // Multiple rows: [1, 2; 3, 4] - create array of row arrays
         let mut rows = vec![rumoca_ir_ast::Expression::Array {
+            span: expression_list_span(&first_row),
             elements: first_row,
             is_matrix: true,
         }];
         for row_item in &rp.range_primary_list {
             let row = expr_list_to_vec(&row_item.expression_list);
             rows.push(rumoca_ir_ast::Expression::Array {
+                span: expression_list_span(&row),
                 elements: row,
                 is_matrix: true,
             });
         }
         rumoca_ir_ast::Expression::Array {
+            span: expression_list_span(&rows),
             elements: rows,
             is_matrix: true,
         }
@@ -967,28 +1028,32 @@ fn convert_output_primary(
     let base = if primary.output_expression_list.args.len() > 1 {
         // Multiple outputs like (a, b) = func() - create a Tuple
         rumoca_ir_ast::Expression::Tuple {
+            span: expression_list_span(&primary.output_expression_list.args),
             elements: primary.output_expression_list.args.clone(),
         }
     } else if primary.output_expression_list.args.len() == 1 {
         // Single expression in parentheses - preserve with Parenthesized wrapper
         rumoca_ir_ast::Expression::Parenthesized {
+            span: primary.output_expression_list.args[0].span(),
             inner: Arc::new(primary.output_expression_list.args[0].clone()),
         }
     } else {
         // Empty parentheses - return Empty expression
-        rumoca_ir_ast::Expression::Empty
+        empty_expr()
     };
 
     if let Some(opt) = &primary.output_primary_opt {
         match &opt.output_primary_opt_group {
             modelica_grammar_trait::OutputPrimaryOptGroup::ArraySubscripts(subs) => {
                 Ok(rumoca_ir_ast::Expression::ArrayIndex {
+                    span: base.span(),
                     base: Arc::new(base),
                     subscripts: subs.array_subscripts.subscripts.clone(),
                 })
             }
             modelica_grammar_trait::OutputPrimaryOptGroup::DotIdent(field) => {
                 Ok(rumoca_ir_ast::Expression::FieldAccess {
+                    span: merge_spans(base.span(), token_span(&field.ident)),
                     base: Arc::new(base),
                     field: field.ident.text.to_string(),
                 })
@@ -1013,21 +1078,26 @@ fn convert_global_function_call(
         modelica_grammar_trait::GlobalFunctionCallGroup::Pure(expr) => expr.pure.pure.clone(),
     };
     let part = rumoca_ir_ast::ComponentRefPart {
-        ident: tok.into(),
+        ident: tok.clone().into(),
         subs: None,
     };
+    let comp = rumoca_ir_ast::ComponentReference {
+        local: false,
+        span: token_span(&tok.into()),
+        parts: vec![part],
+        ..Default::default()
+    };
+    let args = gfc.function_call_args.args.clone();
     let func_call = rumoca_ir_ast::Expression::FunctionCall {
-        comp: rumoca_ir_ast::ComponentReference {
-            local: false,
-            parts: vec![part],
-            ..Default::default()
-        },
-        args: gfc.function_call_args.args.clone(),
+        span: call_span(&comp, &args),
+        comp,
+        args,
     };
 
     // If there are subscripts, wrap in ArrayIndex
     match &gfc.global_function_call_opt {
         Some(opt) => rumoca_ir_ast::Expression::ArrayIndex {
+            span: func_call.span(),
             base: Arc::new(func_call),
             subscripts: opt.array_subscripts.subscripts.clone(),
         },
@@ -1045,13 +1115,17 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
                 match &comp.component_primary.component_primary_opt {
                     Some(args) => {
                         // Function call: f(x) or f(x)[i]
+                        let comp_ref = comp.component_primary.component_reference.clone();
+                        let args_vec = args.function_call_args.args.clone();
                         let func_call = rumoca_ir_ast::Expression::FunctionCall {
-                            comp: comp.component_primary.component_reference.clone(),
-                            args: args.function_call_args.args.clone(),
+                            span: call_span(&comp_ref, &args_vec),
+                            comp: comp_ref,
+                            args: args_vec,
                         };
                         // Check for optional subscripts: f(x)[i]
                         match &args.component_primary_opt0 {
                             Some(subs) => Ok(rumoca_ir_ast::Expression::ArrayIndex {
+                                span: func_call.span(),
                                 base: Arc::new(func_call),
                                 subscripts: subs.array_subscripts.subscripts.clone(),
                             }),
@@ -1069,12 +1143,14 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
                         Ok(rumoca_ir_ast::Expression::Terminal {
                             terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
                             token: unsigned_int.unsigned_integer.clone(),
+                            span: token_span(&unsigned_int.unsigned_integer),
                         })
                     }
                     modelica_grammar_trait::UnsignedNumber::UnsignedReal(unsigned_real) => {
                         Ok(rumoca_ir_ast::Expression::Terminal {
                             terminal_type: rumoca_ir_ast::TerminalType::UnsignedReal,
                             token: unsigned_real.unsigned_real.clone(),
+                            span: token_span(&unsigned_real.unsigned_real),
                         })
                     }
                 }
@@ -1083,28 +1159,33 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
                 Ok(rumoca_ir_ast::Expression::Terminal {
                     terminal_type: rumoca_ir_ast::TerminalType::String,
                     token: string.string.clone(),
+                    span: token_span(&string.string),
                 })
             }
             modelica_grammar_trait::Primary::True(bool) => {
                 Ok(rumoca_ir_ast::Expression::Terminal {
                     terminal_type: rumoca_ir_ast::TerminalType::Bool,
                     token: bool.r#true.r#true.clone().into(),
+                    span: token_span(&bool.r#true.r#true.clone().into()),
                 })
             }
             modelica_grammar_trait::Primary::False(bool) => {
                 Ok(rumoca_ir_ast::Expression::Terminal {
                     terminal_type: rumoca_ir_ast::TerminalType::Bool,
                     token: bool.r#false.r#false.clone().into(),
+                    span: token_span(&bool.r#false.r#false.clone().into()),
                 })
             }
             modelica_grammar_trait::Primary::End(end) => Ok(rumoca_ir_ast::Expression::Terminal {
                 terminal_type: rumoca_ir_ast::TerminalType::End,
                 token: end.end.end.clone().into(),
+                span: token_span(&end.end.end.clone().into()),
             }),
             modelica_grammar_trait::Primary::ArrayPrimary(arr) => {
                 match &arr.array_primary.array_primary_opt {
                     Some(opt) => collect_array_elements(&opt.array_arguments),
                     None => Ok(rumoca_ir_ast::Expression::Array {
+                        span: Span::DUMMY,
                         elements: vec![],
                         is_matrix: false,
                     }),
@@ -1131,17 +1212,19 @@ impl TryFrom<&modelica_grammar_trait::Factor> for rumoca_ir_ast::Expression {
             Ok(ast.primary.clone())
         } else {
             let op = match &ast.factor_list[0].factor_list_group {
-                modelica_grammar_trait::FactorListGroup::Circumflex(c) => {
-                    rumoca_ir_core::OpBinary::Exp(c.circumflex.clone().into())
+                modelica_grammar_trait::FactorListGroup::Circumflex(_) => {
+                    rumoca_core::OpBinary::Exp
                 }
-                modelica_grammar_trait::FactorListGroup::DotCircumflex(dc) => {
-                    rumoca_ir_core::OpBinary::ExpElem(dc.dot_circumflex.clone().into())
+                modelica_grammar_trait::FactorListGroup::DotCircumflex(_) => {
+                    rumoca_core::OpBinary::ExpElem
                 }
             };
+            let rhs = ast.factor_list[0].primary.clone();
             Ok(rumoca_ir_ast::Expression::Binary {
                 op,
+                span: binary_span(&ast.primary, &rhs),
                 lhs: Arc::new(ast.primary.clone()),
-                rhs: Arc::new(ast.factor_list[0].primary.clone()),
+                rhs: Arc::new(rhs),
             })
         }
     }
@@ -1156,10 +1239,13 @@ impl TryFrom<&modelica_grammar_trait::Term> for rumoca_ir_ast::Expression {
         }
         let mut lhs = ast.factor.clone();
         for factor in &ast.term_list {
+            let rhs = factor.factor.clone();
+            let span = binary_span(&lhs, &rhs);
             lhs = rumoca_ir_ast::Expression::Binary {
+                span,
                 lhs: Arc::new(lhs),
                 op: mul_op_to_binary(&factor.mul_operator),
-                rhs: Arc::new(factor.factor.clone()),
+                rhs: Arc::new(rhs),
             };
         }
         Ok(lhs)
@@ -1176,6 +1262,7 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for rumoca_ir_ast::E
         let mut lhs = match &ast.arithmetic_expression_opt {
             Some(opt) => rumoca_ir_ast::Expression::Unary {
                 op: add_op_to_unary(&opt.add_operator),
+                span: ast.term.span(),
                 rhs: Arc::new(ast.term.clone()),
             },
             None => ast.term.clone(),
@@ -1183,10 +1270,13 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for rumoca_ir_ast::E
 
         // if has term list, process expressions
         for term in &ast.arithmetic_expression_list {
+            let rhs = term.term.clone();
+            let span = binary_span(&lhs, &rhs);
             lhs = rumoca_ir_ast::Expression::Binary {
+                span,
                 lhs: Arc::new(lhs),
                 op: add_op_to_binary(&term.add_operator),
-                rhs: Arc::new(term.term.clone()),
+                rhs: Arc::new(rhs),
             };
         }
         Ok(lhs)
@@ -1198,30 +1288,34 @@ impl TryFrom<&modelica_grammar_trait::Relation> for rumoca_ir_ast::Expression {
 
     fn try_from(ast: &modelica_grammar_trait::Relation) -> std::result::Result<Self, Self::Error> {
         match &ast.relation_opt {
-            Some(relation) => Ok(rumoca_ir_ast::Expression::Binary {
-                lhs: Arc::new(ast.arithmetic_expression.clone()),
-                op: match &relation.relational_operator {
-                    modelica_grammar_trait::RelationalOperator::EquEqu(tok) => {
-                        rumoca_ir_core::OpBinary::Eq(tok.equ_equ.clone().into())
-                    }
-                    modelica_grammar_trait::RelationalOperator::GT(tok) => {
-                        rumoca_ir_core::OpBinary::Gt(tok.g_t.clone().into())
-                    }
-                    modelica_grammar_trait::RelationalOperator::LT(tok) => {
-                        rumoca_ir_core::OpBinary::Lt(tok.l_t.clone().into())
-                    }
-                    modelica_grammar_trait::RelationalOperator::GTEqu(tok) => {
-                        rumoca_ir_core::OpBinary::Ge(tok.g_t_equ.clone().into())
-                    }
-                    modelica_grammar_trait::RelationalOperator::LTEqu(tok) => {
-                        rumoca_ir_core::OpBinary::Le(tok.l_t_equ.clone().into())
-                    }
-                    modelica_grammar_trait::RelationalOperator::LTGT(tok) => {
-                        rumoca_ir_core::OpBinary::Neq(tok.l_t_g_t.clone().into())
-                    }
-                },
-                rhs: Arc::new(relation.arithmetic_expression.clone()),
-            }),
+            Some(relation) => {
+                let rhs = relation.arithmetic_expression.clone();
+                Ok(rumoca_ir_ast::Expression::Binary {
+                    span: binary_span(&ast.arithmetic_expression, &rhs),
+                    lhs: Arc::new(ast.arithmetic_expression.clone()),
+                    op: match &relation.relational_operator {
+                        modelica_grammar_trait::RelationalOperator::EquEqu(_) => {
+                            rumoca_core::OpBinary::Eq
+                        }
+                        modelica_grammar_trait::RelationalOperator::GT(_) => {
+                            rumoca_core::OpBinary::Gt
+                        }
+                        modelica_grammar_trait::RelationalOperator::LT(_) => {
+                            rumoca_core::OpBinary::Lt
+                        }
+                        modelica_grammar_trait::RelationalOperator::GTEqu(_) => {
+                            rumoca_core::OpBinary::Ge
+                        }
+                        modelica_grammar_trait::RelationalOperator::LTEqu(_) => {
+                            rumoca_core::OpBinary::Le
+                        }
+                        modelica_grammar_trait::RelationalOperator::LTGT(_) => {
+                            rumoca_core::OpBinary::Neq
+                        }
+                    },
+                    rhs: Arc::new(rhs),
+                })
+            }
             None => Ok(ast.arithmetic_expression.clone()),
         }
     }
@@ -1234,13 +1328,11 @@ impl TryFrom<&modelica_grammar_trait::LogicalFactor> for rumoca_ir_ast::Expressi
         ast: &modelica_grammar_trait::LogicalFactor,
     ) -> std::result::Result<Self, Self::Error> {
         match &ast.logical_factor_opt {
-            Some(opt) => {
-                let not_tok = opt.not.not.clone().into();
-                Ok(rumoca_ir_ast::Expression::Unary {
-                    op: rumoca_ir_core::OpUnary::Not(not_tok),
-                    rhs: Arc::new(ast.relation.clone()),
-                })
-            }
+            Some(_) => Ok(rumoca_ir_ast::Expression::Unary {
+                op: rumoca_core::OpUnary::Not,
+                span: ast.relation.span(),
+                rhs: Arc::new(ast.relation.clone()),
+            }),
             None => Ok(ast.relation.clone()),
         }
     }
@@ -1257,10 +1349,13 @@ impl TryFrom<&modelica_grammar_trait::LogicalTerm> for rumoca_ir_ast::Expression
         } else {
             let mut lhs = ast.logical_factor.clone();
             for term in &ast.logical_term_list {
+                let rhs = term.logical_factor.clone();
+                let span = binary_span(&lhs, &rhs);
                 lhs = rumoca_ir_ast::Expression::Binary {
+                    span,
                     lhs: Arc::new(lhs),
-                    op: rumoca_ir_core::OpBinary::And(rumoca_ir_core::Token::default()),
-                    rhs: Arc::new(term.logical_factor.clone()),
+                    op: rumoca_core::OpBinary::And,
+                    rhs: Arc::new(rhs),
                 };
             }
             Ok(lhs)
@@ -1279,10 +1374,13 @@ impl TryFrom<&modelica_grammar_trait::LogicalExpression> for rumoca_ir_ast::Expr
         } else {
             let mut lhs = ast.logical_term.clone();
             for term in &ast.logical_expression_list {
+                let rhs = term.logical_term.clone();
+                let span = binary_span(&lhs, &rhs);
                 lhs = rumoca_ir_ast::Expression::Binary {
+                    span,
                     lhs: Arc::new(lhs),
-                    op: rumoca_ir_core::OpBinary::Or(rumoca_ir_core::Token::default()),
-                    rhs: Arc::new(term.logical_term.clone()),
+                    op: rumoca_core::OpBinary::Or,
+                    rhs: Arc::new(rhs),
                 };
             }
             Ok(lhs)
@@ -1299,11 +1397,16 @@ impl TryFrom<&modelica_grammar_trait::SimpleExpression> for rumoca_ir_ast::Expre
         match &ast.simple_expression_opt {
             Some(opt) => match &opt.simple_expression_opt0 {
                 Some(opt0) => Ok(rumoca_ir_ast::Expression::Range {
+                    span: merge_spans(
+                        ast.logical_expression.span(),
+                        opt0.logical_expression.span(),
+                    ),
                     start: Arc::new(ast.logical_expression.clone()),
                     step: Some(Arc::new(opt.logical_expression.clone())),
                     end: Arc::new(opt0.logical_expression.clone()),
                 }),
                 None => Ok(rumoca_ir_ast::Expression::Range {
+                    span: merge_spans(ast.logical_expression.span(), opt.logical_expression.span()),
                     start: Arc::new(ast.logical_expression.clone()),
                     step: None,
                     end: Arc::new(opt.logical_expression.clone()),
@@ -1346,6 +1449,13 @@ impl TryFrom<&modelica_grammar_trait::Expression> for rumoca_ir_ast::Expression 
                 let else_branch = Arc::new(if_expr.expression1.clone());
 
                 Ok(rumoca_ir_ast::Expression::If {
+                    span: merge_spans(
+                        branches
+                            .first()
+                            .map(|(condition, _)| condition.span())
+                            .unwrap_or(Span::DUMMY),
+                        else_branch.span(),
+                    ),
                     branches,
                     else_branch,
                 })

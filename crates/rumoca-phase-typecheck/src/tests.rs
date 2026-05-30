@@ -1,7 +1,8 @@
 use super::*;
+use rumoca_core::Token;
 use rumoca_ir_ast::{
     ComponentRefPart, ComponentReference, Expression, InstanceData, InstanceId, ParsedTree,
-    QualifiedName, Subscript, TerminalType, Token,
+    QualifiedName, Subscript, TerminalType,
 };
 use rumoca_phase_parse::parse_to_ast;
 use rumoca_phase_resolve::resolve;
@@ -87,6 +88,20 @@ fn test_builtin_clock_type_resolution() {
     let c = test_class.components.get("c").expect("c should exist");
     assert!(c.type_id.is_some());
     assert_ne!(c.type_id.unwrap(), TypeId::UNKNOWN);
+}
+
+#[test]
+fn test_integer_builtin_accepts_integer_argument() {
+    let source = r#"
+        model Test
+            parameter Integer n = 3;
+            parameter Integer m = integer(n);
+        end Test;
+    "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    typecheck(resolved).expect("integer(Integer) should typecheck");
 }
 
 #[test]
@@ -396,7 +411,7 @@ fn test_parameter_colon_dimension_without_binding_is_allowed() {
 #[test]
 fn test_import_constant_prefixes_include_alias_and_full_path() {
     let import = ScopeImport::Renamed {
-        alias: "Medium".to_string(),
+        alias: rumoca_core::ComponentPath::from_flat_path("Medium"),
         path: vec![
             "Modelica".to_string(),
             "Media".to_string(),
@@ -1317,6 +1332,34 @@ fn test_user_defined_equation_compatibility() {
 }
 
 #[test]
+fn test_equation_shape_mismatch_detection() {
+    let source = r#"
+        model Test
+            Real lhs[2];
+            Real rhs[3];
+        equation
+            lhs = rhs;
+        end Test;
+    "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let result = typecheck(resolved);
+    assert!(
+        result.is_err(),
+        "same root type with different array dimensions should mismatch"
+    );
+
+    let diags = result.expect_err("expected diagnostics");
+    assert!(
+        diags.iter().any(|d| d.code.as_deref() == Some("ET002")
+            && d.message.contains("array dimension mismatch")),
+        "expected ET002 shape mismatch diagnostic, got: {:?}",
+        diags
+    );
+}
+
+#[test]
 fn test_user_defined_equation_mismatch_detection() {
     let source = r#"
         type ModeA = enumeration(Off, On);
@@ -1504,6 +1547,7 @@ fn test_extract_simple_path_preserves_subscripted_component_refs() {
                             token_number: 0,
                             token_type: 0,
                         },
+                        span: rumoca_core::Span::DUMMY,
                     }),
                     Subscript::Expression(Expression::Terminal {
                         terminal_type: TerminalType::UnsignedInteger,
@@ -1513,15 +1557,17 @@ fn test_extract_simple_path_preserves_subscripted_component_refs() {
                             token_number: 0,
                             token_type: 0,
                         },
+                        span: rumoca_core::Span::DUMMY,
                     }),
                 ]),
             },
         ],
         def_id: None,
+        span: rumoca_core::Span::DUMMY,
     });
 
     assert_eq!(
-        TypeChecker::extract_simple_path(&expr),
+        TypeChecker::extract_simple_path(&expr).map(|path| path.to_flat_string()),
         Some("stackData.cellData[1,2]".to_string())
     );
 }
@@ -1580,5 +1626,61 @@ fn test_build_instanced_component_type_scope_keeps_subscript_dot_single_segment(
         scope_map.get("plug[data.medium]"),
         Some(&TypeId::new(11)),
         "dot inside subscript content must not block top-level instanced scope aliases"
+    );
+}
+
+#[test]
+fn test_type_scope_hint_fallback_keeps_subscript_dot_single_segment() {
+    let mut overlay = InstanceOverlay::default();
+    overlay.components.insert(
+        InstanceId::new(1),
+        InstanceData {
+            qualified_name: QualifiedName {
+                parts: vec![
+                    ("sys".to_string(), vec![]),
+                    ("arr[data.medium]".to_string(), vec![]),
+                    ("state".to_string(), vec![]),
+                ],
+            },
+            type_name: "Medium.ThermodynamicState".to_string(),
+            ..Default::default()
+        },
+    );
+
+    let hints = TypeChecker::build_type_scope_hints(&overlay);
+    let state_path = rumoca_core::ComponentPath::from_parts(["sys", "arr[data.medium]", "state"]);
+    assert_eq!(
+        hints.get(&state_path),
+        Some(&vec![
+            "Medium.ThermodynamicState".to_string(),
+            "Medium".to_string(),
+        ])
+    );
+
+    let subscript = Subscript::Expression(Expression::ComponentReference(ComponentReference {
+        local: false,
+        parts: vec![ComponentRefPart {
+            ident: Token {
+                text: Arc::from("nX"),
+                location: Default::default(),
+                token_number: 0,
+                token_type: 0,
+            },
+            subs: None,
+        }],
+        def_id: None,
+        span: rumoca_core::Span::DUMMY,
+    }));
+    let mut ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
+    ctx.add_integer("Medium.nX", 4);
+
+    assert_eq!(
+        TypeChecker::eval_dimension_with_type_scope_fallback(
+            &subscript,
+            &rumoca_core::ComponentPath::from_parts(["sys", "arr[data.medium]", "state", "X",]),
+            &hints,
+            &ctx,
+        ),
+        Some(4)
     );
 }

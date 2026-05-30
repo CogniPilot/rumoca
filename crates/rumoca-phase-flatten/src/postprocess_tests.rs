@@ -38,8 +38,10 @@ fn canonicalize_varrefs_rewrites_alias_paths_to_existing_flat_vars() {
     ));
 
     let mut ctx = Context::new();
-    ctx.record_aliases
-        .insert("pipe.flowModel".to_string(), "pipe".to_string());
+    ctx.record_aliases.insert(
+        rumoca_core::ComponentPath::from_flat_path("pipe.flowModel"),
+        rumoca_core::ComponentPath::from_flat_path("pipe"),
+    );
 
     canonicalize_varrefs_via_record_aliases(&mut model, &ctx);
 

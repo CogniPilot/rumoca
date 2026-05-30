@@ -1,5 +1,8 @@
 use super::*;
+use indexmap::IndexSet;
 use rumoca_ir_ast as ast;
+
+type FlowVarSet = IndexSet<rumoca_core::VarName>;
 
 /// Compute scalar count from variable dimensions.
 ///
@@ -13,7 +16,7 @@ fn compute_var_scalar_count(var: &flat::Variable) -> usize {
     }
 }
 
-fn resolve_flow_var_scalar_count(flat: &flat::Model, var: &flat::VarName) -> Option<usize> {
+fn resolve_flow_var_scalar_count(flat: &flat::Model, var: &rumoca_core::VarName) -> Option<usize> {
     if let Some(v) = flat.variables.get(var) {
         return Some(compute_var_scalar_count(v));
     }
@@ -25,7 +28,7 @@ fn resolve_flow_var_scalar_count(flat: &flat::Model, var: &flat::VarName) -> Opt
             Some(1)
         } else {
             flat.variables
-                .get(&flat::VarName::new(base))
+                .get(&rumoca_core::VarName::new(base))
                 .map(compute_var_scalar_count)
         }
     })
@@ -45,7 +48,7 @@ pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
     )
 }
 
-fn mark_connected(flat: &mut flat::Model, var: &flat::VarName) {
+fn mark_connected(flat: &mut flat::Model, var: &rumoca_core::VarName) {
     if let Some(v) = flat.variables.get_mut(var) {
         v.connected = true;
         return;
@@ -57,6 +60,15 @@ fn mark_connected(flat: &mut flat::Model, var: &flat::VarName) {
     }
 }
 
+pub(super) fn mark_stream_connection_set(
+    flat: &mut flat::Model,
+    variables: &[rumoca_core::VarName],
+) {
+    for var in variables {
+        mark_connected(flat, var);
+    }
+}
+
 /// Generate equality equations for potential (non-flow) variables.
 ///
 /// For n variables in a connection set, generates n-1 equations:
@@ -65,7 +77,8 @@ fn mark_connected(flat: &mut flat::Model, var: &flat::VarName) {
 /// In residual form: `v1 - v2 = 0, v2 - v3 = 0, ...`
 pub(super) fn generate_equality_equations(
     flat: &mut flat::Model,
-    variables: &[flat::VarName],
+    variables: &[rumoca_core::VarName],
+    span: rumoca_core::Span,
 ) -> Result<(), FlattenError> {
     // Generate chain of equality equations: v1 - v2 = 0, v2 - v3 = 0, ...
     for window in variables.windows(2) {
@@ -106,7 +119,7 @@ pub(super) fn generate_equality_equations(
             lhs: var_a.as_str().to_string(),
             rhs: var_b.as_str().to_string(),
         };
-        let eq = flat::Equation::new_array(residual, Span::DUMMY, origin, scalar_count);
+        let eq = flat::Equation::new_array(residual, span, origin, scalar_count);
         flat.add_equation(eq);
     }
 
@@ -126,9 +139,10 @@ pub(super) fn generate_equality_equations(
 /// - Outside connectors (model boundary): sign = -1
 pub(super) fn generate_flow_equation(
     flat: &mut flat::Model,
-    variables: &[flat::VarName],
+    variables: &[rumoca_core::VarName],
     scope: &str,
-    interface_flow_vars_by_scope: &IndexMap<String, std::collections::HashSet<flat::VarName>>,
+    interface_flow_vars_by_scope: &IndexMap<String, FlowVarSet>,
+    span: rumoca_core::Span,
 ) -> Result<(), FlattenError> {
     if variables.is_empty() {
         return Ok(());
@@ -166,15 +180,16 @@ pub(super) fn generate_flow_equation(
 
     // Create sum expression with proper signs per MLS §9.2
     // Inside connectors: +f, Outside connectors: -f
-    let flow_exprs: Vec<flat::Expression> = variables
+    let flow_exprs: Vec<rumoca_core::Expression> = variables
         .iter()
         .map(|var| {
             let expr = var_to_expr(var);
             if is_outside_flow_var_for_scope(var, scope, interface_flow_vars_by_scope) {
                 // Outside connector: negate (sign = -1)
-                flat::Expression::Unary {
-                    op: flat::OpUnary::Minus(flat::Token::default()),
+                rumoca_core::Expression::Unary {
+                    op: rumoca_core::OpUnary::Minus,
                     rhs: Box::new(expr),
+                    span: rumoca_core::Span::DUMMY,
                 }
             } else {
                 // Inside connector: positive (sign = +1)
@@ -198,16 +213,16 @@ pub(super) fn generate_flow_equation(
     let origin = rumoca_ir_flat::EquationOrigin::FlowSum {
         description: format!("{} = 0", signed_vars.join(" + ")),
     };
-    let eq = flat::Equation::new_array(sum, Span::DUMMY, origin, scalar_count);
+    let eq = flat::Equation::new_array(sum, span, origin, scalar_count);
     flat.add_equation(eq);
 
     Ok(())
 }
 
 fn is_outside_flow_var_for_scope(
-    var_name: &flat::VarName,
+    var_name: &rumoca_core::VarName,
     scope: &str,
-    interface_flow_vars_by_scope: &IndexMap<String, std::collections::HashSet<flat::VarName>>,
+    interface_flow_vars_by_scope: &IndexMap<String, FlowVarSet>,
 ) -> bool {
     interface_flow_vars_by_scope
         .get(scope)
@@ -231,27 +246,13 @@ fn is_outside_flow_var_for_scope(
 /// MLS §4.8: Conditional components with false conditions are disabled.
 pub(crate) fn connection_involves_disabled(
     conn: &ast::InstanceConnection,
-    disabled_components: &std::collections::HashSet<String>,
+    disabled_components: &indexmap::IndexSet<rumoca_core::ComponentPath>,
 ) -> bool {
-    // Get the qualified names of both connection ends (first element of tuple is the name)
-    let a_parts: Vec<_> = conn.a.parts.iter().map(|(name, _)| name.as_str()).collect();
-    let b_parts: Vec<_> = conn.b.parts.iter().map(|(name, _)| name.as_str()).collect();
-
-    // Check if any prefix of the connection path matches a disabled component
     for disabled in disabled_components {
-        let disabled_parts = split_path_with_indices(disabled);
-
-        // Check if 'a' starts with this disabled component
-        if a_parts.len() >= disabled_parts.len()
-            && a_parts[..disabled_parts.len()] == disabled_parts[..]
-        {
+        if conn.a.starts_with_component_path(disabled) {
             return true;
         }
-
-        // Check if 'b' starts with this disabled component
-        if b_parts.len() >= disabled_parts.len()
-            && b_parts[..disabled_parts.len()] == disabled_parts[..]
-        {
+        if conn.b.starts_with_component_path(disabled) {
             return true;
         }
     }
@@ -265,8 +266,10 @@ pub(crate) fn connection_involves_disabled(
 /// For flat variables `["a.b.c", "a.b.d", "a.e"]`, produces:
 /// - `"a.b"` → `["a.b.c", "a.b.d"]`
 /// - `"a"` → `["a.b.c", "a.b.d", "a.e"]`
-pub(super) fn build_prefix_children(flat: &flat::Model) -> FxHashMap<String, Vec<flat::VarName>> {
-    let mut children: FxHashMap<String, Vec<flat::VarName>> = FxHashMap::default();
+pub(super) fn build_prefix_children(
+    flat: &flat::Model,
+) -> FxHashMap<String, Vec<rumoca_core::VarName>> {
+    let mut children: FxHashMap<String, Vec<rumoca_core::VarName>> = FxHashMap::default();
     for name in flat.variables.keys() {
         let s = name.as_str();
         for (i, ch) in s.char_indices() {
@@ -308,16 +311,14 @@ pub(crate) fn process_connections(
     let all_connections: Vec<&ast::InstanceConnection> = owned_connections.iter().collect();
     let var_index = ConnectionVarIndex::new(flat);
 
-    if std::env::var("RUMOCA_DEBUG_CONNECTIONS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    #[cfg(feature = "tracing")]
     {
-        eprintln!(
-            "-- process_connections debug: {} connections --",
-            all_connections.len()
+        tracing::debug!(
+            connection_count = all_connections.len(),
+            "processing flattened connections"
         );
         for conn in &all_connections {
-            eprintln!("  [{}] {} <-> {}", conn.scope, conn.a, conn.b);
+            tracing::debug!(scope = %conn.scope, a = %conn.a, b = %conn.b, "flattened connection");
         }
     }
 
@@ -352,10 +353,12 @@ pub(crate) fn process_connections(
                 &set.variables,
                 set.scope.as_str(),
                 &interface_flow_vars_by_scope,
+                set.span,
             )?,
-            ConnectionKind::Potential | ConnectionKind::Stream => {
-                generate_equality_equations(flat, &set.variables)?
+            ConnectionKind::Potential => {
+                generate_equality_equations(flat, &set.variables, set.span)?
             }
+            ConnectionKind::Stream => mark_stream_connection_set(flat, &set.variables),
         }
     }
 
@@ -383,7 +386,7 @@ pub(crate) fn process_connections(
 /// For a single unconnected flow variable, this means `flow_var = 0`.
 fn generate_unconnected_flow_equations(flat: &mut flat::Model) -> Result<(), FlattenError> {
     // Find all flow variables that are NOT marked as connected
-    let unconnected_flows: Vec<(flat::VarName, usize)> = flat
+    let unconnected_flows: Vec<(rumoca_core::VarName, usize)> = flat
         .variables
         .iter()
         .filter(|(_, var)| var.flow && !var.connected)
@@ -429,10 +432,10 @@ fn generate_unconnected_flow_equations(flat: &mut flat::Model) -> Result<(), Fla
 fn collect_flow_vars_by_scope(
     connections: &[&ast::InstanceConnection],
     flat: &flat::Model,
-    prefix_children: &FxHashMap<String, Vec<flat::VarName>>,
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) -> IndexMap<String, std::collections::HashSet<flat::VarName>> {
-    let mut result: IndexMap<String, std::collections::HashSet<flat::VarName>> = IndexMap::new();
+) -> IndexMap<String, FlowVarSet> {
+    let mut result: IndexMap<String, FlowVarSet> = IndexMap::default();
 
     for conn in connections {
         let path_a = conn.a.to_flat_string();
@@ -451,11 +454,11 @@ fn collect_flow_vars_by_scope(
 fn collect_flow_vars_from_conn_path(
     flat: &flat::Model,
     path: &str,
-    dest: &mut std::collections::HashSet<flat::VarName>,
-    prefix_children: &FxHashMap<String, Vec<flat::VarName>>,
+    dest: &mut FlowVarSet,
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
 ) {
-    let var_name = flat::VarName::new(path);
+    let var_name = rumoca_core::VarName::new(path);
 
     // Check if it's a direct flow variable
     if let Some(var) = flat.variables.get(&var_name) {
@@ -482,10 +485,10 @@ fn collect_flow_vars_from_conn_path(
 fn collect_interface_flow_vars_by_scope(
     connections: &[&ast::InstanceConnection],
     flat: &flat::Model,
-    prefix_children: &FxHashMap<String, Vec<flat::VarName>>,
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) -> IndexMap<String, std::collections::HashSet<flat::VarName>> {
-    let mut result: IndexMap<String, std::collections::HashSet<flat::VarName>> = IndexMap::new();
+) -> IndexMap<String, FlowVarSet> {
+    let mut result: IndexMap<String, FlowVarSet> = IndexMap::default();
 
     for conn in connections {
         let scope = &conn.scope;
@@ -493,19 +496,13 @@ fn collect_interface_flow_vars_by_scope(
         for path_qn in [&conn.a, &conn.b] {
             let path = path_qn.to_flat_string();
 
-            // Determine relative path by stripping scope prefix
-            let relative = if scope.is_empty() {
-                path.as_str()
-            } else {
-                match path.strip_prefix(&format!("{}.", scope)) {
-                    Some(rel) => rel,
-                    None => continue,
-                }
+            let Some(relative) = relative_component_path(&path, scope) else {
+                continue;
             };
 
             // Interface connector: single identifier (no top-level dots in relative path).
             // Dots inside bracketed subscripts are part of subscript expressions.
-            if is_single_identifier_relative_path(relative) {
+            if is_single_identifier_path(&relative) {
                 let scope_set = result.entry(scope.clone()).or_default();
                 collect_flow_vars_from_conn_path(
                     flat,
@@ -521,23 +518,60 @@ fn collect_interface_flow_vars_by_scope(
     result
 }
 
+#[cfg(test)]
 fn is_single_identifier_relative_path(relative: &str) -> bool {
-    !has_top_level_dot(relative)
+    is_single_identifier_path(&rumoca_core::ComponentPath::from_flat_path(relative))
+}
+
+fn is_single_identifier_path(path: &rumoca_core::ComponentPath) -> bool {
+    path.len() == 1
+}
+
+fn relative_component_path(path: &str, scope: &str) -> Option<rumoca_core::ComponentPath> {
+    let path = rumoca_core::ComponentPath::from_flat_path(path);
+    let scope = rumoca_core::ComponentPath::from_flat_path(scope);
+    if scope.is_root() {
+        return Some(path);
+    }
+    component_path_has_scope_prefix(&path, &scope)
+        .then(|| path.suffix_from(scope.len()))
+        .flatten()
+}
+
+fn component_path_has_scope_prefix(
+    path: &rumoca_core::ComponentPath,
+    scope: &rumoca_core::ComponentPath,
+) -> bool {
+    scope.len() <= path.len()
+        && path
+            .parts()
+            .iter()
+            .zip(scope.parts().iter())
+            .all(|(path_part, scope_part)| same_scope_segment(path_part, scope_part))
+}
+
+fn is_proper_component_path_ancestor(
+    candidate: &rumoca_core::ComponentPath,
+    scope: &rumoca_core::ComponentPath,
+) -> bool {
+    candidate.len() < scope.len() && component_path_has_scope_prefix(scope, candidate)
+}
+
+fn same_scope_segment(path_part: &str, scope_part: &str) -> bool {
+    strip_array_index(path_part) == strip_array_index(scope_part)
 }
 
 /// Check if a flow variable is connected at any scope that is a proper
 /// ancestor of the given scope (MLS §9.2).
 fn is_at_ancestor_scope(
-    var_name: &flat::VarName,
+    var_name: &rumoca_core::VarName,
     scope: &str,
-    flow_vars_at_scope: &IndexMap<String, std::collections::HashSet<flat::VarName>>,
+    flow_vars_at_scope: &IndexMap<String, FlowVarSet>,
 ) -> bool {
+    let scope_path = rumoca_core::ComponentPath::from_flat_path(scope);
     for (s, vars) in flow_vars_at_scope {
-        let is_ancestor = if s.is_empty() {
-            !scope.is_empty()
-        } else {
-            scope.starts_with(&format!("{}.", s))
-        };
+        let candidate = rumoca_core::ComponentPath::from_flat_path(s);
+        let is_ancestor = is_proper_component_path_ancestor(&candidate, &scope_path);
 
         if is_ancestor && vars.contains(var_name) {
             return true;
@@ -558,9 +592,9 @@ fn is_at_ancestor_scope(
 /// (e.g., Complex `Phi.re`/`Phi.im`) without dot-count heuristics.
 fn generate_external_unconnected_flow_equations(
     flat: &mut flat::Model,
-    flow_vars_at_scope: &IndexMap<String, std::collections::HashSet<flat::VarName>>,
+    flow_vars_at_scope: &IndexMap<String, FlowVarSet>,
     connections: &[&ast::InstanceConnection],
-    prefix_children: &FxHashMap<String, Vec<flat::VarName>>,
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
 ) -> Result<(), FlattenError> {
     let interface_flow_vars_by_scope =
@@ -586,11 +620,11 @@ fn generate_external_unconnected_flow_equations(
 
 /// Find interface flow variables that are not connected at any ancestor scope.
 fn find_unconnected_interface_flows(
-    interface_flows: &IndexMap<String, std::collections::HashSet<flat::VarName>>,
-    flow_vars_at_scope: &IndexMap<String, std::collections::HashSet<flat::VarName>>,
+    interface_flows: &IndexMap<String, FlowVarSet>,
+    flow_vars_at_scope: &IndexMap<String, FlowVarSet>,
     flat: &flat::Model,
-) -> IndexMap<flat::VarName, usize> {
-    let mut result: IndexMap<flat::VarName, usize> = IndexMap::new();
+) -> IndexMap<rumoca_core::VarName, usize> {
+    let mut result: IndexMap<rumoca_core::VarName, usize> = IndexMap::default();
 
     for (scope, interface_vars) in interface_flows {
         for var_name in interface_vars {
@@ -618,7 +652,7 @@ fn find_unconnected_interface_flows(
 /// `initialStep.stateGraphRoot.resume` must be redirected to `stateGraphRoot.resume`.
 fn redirect_qualified_name(
     qn: &mut ast::QualifiedName,
-    outer_to_inner: &indexmap::IndexMap<String, String>,
+    outer_to_inner: &ast::AstIndexMap<String, String>,
 ) {
     if outer_to_inner.is_empty() {
         return;

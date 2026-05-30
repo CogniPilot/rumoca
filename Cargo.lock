@@ -346,6 +346,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfg-expr"
+version = "0.15.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d067ad48b8650848b989a59a86c6c36a995d02d2bf778d45c3c5d57bc2718f02"
+dependencies = [
+ "smallvec",
+ "target-lexicon 0.12.16",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -460,6 +470,17 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
+
+[[package]]
+name = "core_affinity"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a034b3a7b624016c6e13f5df875747cc25f884156aad2abd12b6c46797971342"
+dependencies = [
+ "libc",
+ "num_cpus",
+ "winapi",
+]
 
 [[package]]
 name = "cpufeatures"
@@ -877,9 +898,9 @@ checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 
 [[package]]
 name = "diffsol"
-version = "0.10.3"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab86a4289bb7feb7b3f24d66a00368b1f737c75a19a9a0fa7bc67d134326e9d9"
+checksum = "5482e558767bf6795f1c151c0e05312529414e3652d027c1a2e619294c87d128"
 dependencies = [
  "faer",
  "faer-traits",
@@ -902,6 +923,17 @@ dependencies = [
  "block-buffer",
  "crypto-common",
  "subtle",
+]
+
+[[package]]
+name = "dircpy"
+version = "0.3.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebcbec2b9a580ddee352ac38523d2ecd4dcaad53532957034394556909e27f4b"
+dependencies = [
+ "jwalk",
+ "log",
+ "walkdir",
 ]
 
 [[package]]
@@ -1012,6 +1044,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "equator"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02da895aab06bbebefb6b2595f6d637b18c9ff629b4cd840965bb3164e4194b0"
+dependencies = [
+ "equator-macro 0.6.0",
+]
+
+[[package]]
 name = "equator-macro"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1034,6 +1075,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "equator-macro"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b14b339eb76d07f052cdbad76ca7c1310e56173a138095d3bf42a23c06ef5d8"
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1051,14 +1098,13 @@ dependencies = [
 
 [[package]]
 name = "faer"
-version = "0.23.2"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cb922206162d9405f9fc059052b3f997bdc92745da7bfd620645f5092df20d1"
+checksum = "02d2ecfb80b6f8b0c569e36988a052e64b14d8def9d372390b014e8bf79f299a"
 dependencies = [
  "bytemuck",
  "dyn-stack",
- "equator 0.4.2",
- "faer-macros",
+ "equator 0.6.0",
  "faer-traits",
  "gemm",
  "generativity",
@@ -1077,25 +1123,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "faer-macros"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cc4b8cd876795d3b19ddfd59b03faa303c0b8adb9af6e188e81fc647c485bb9"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.114",
-]
-
-[[package]]
 name = "faer-traits"
-version = "0.23.2"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24b69235b5f54416286c485fb047f2f499fc935a4eee2caadf4757f3c94c7b62"
+checksum = "b87d23ed7ab1f26c0cba0e5b9e061a796fbb7dc170fa8bee6970055a1308bb0f"
 dependencies = [
  "bytemuck",
  "dyn-stack",
- "faer-macros",
  "generativity",
  "libm",
  "num-complex",
@@ -1265,9 +1299,9 @@ dependencies = [
 
 [[package]]
 name = "gemm"
-version = "0.18.2"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab96b703d31950f1aeddded248bc95543c9efc7ac9c4a21fda8703a83ee35451"
+checksum = "aa0673db364b12263d103b68337a68fbecc541d6f6b61ba72fe438654709eacb"
 dependencies = [
  "dyn-stack",
  "gemm-c32",
@@ -1285,9 +1319,9 @@ dependencies = [
 
 [[package]]
 name = "gemm-c32"
-version = "0.18.2"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6db9fd9f40421d00eea9dd0770045a5603b8d684654816637732463f4073847"
+checksum = "086936dbdcb99e37aad81d320f98f670e53c1e55a98bee70573e83f95beb128c"
 dependencies = [
  "dyn-stack",
  "gemm-common",
@@ -1300,9 +1334,9 @@ dependencies = [
 
 [[package]]
 name = "gemm-c64"
-version = "0.18.2"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfcad8a3d35a43758330b635d02edad980c1e143dc2f21e6fd25f9e4eada8edf"
+checksum = "20c8aeeeec425959bda4d9827664029ba1501a90a0d1e6228e48bef741db3a3f"
 dependencies = [
  "dyn-stack",
  "gemm-common",
@@ -1315,9 +1349,9 @@ dependencies = [
 
 [[package]]
 name = "gemm-common"
-version = "0.18.2"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a352d4a69cbe938b9e2a9cb7a3a63b7e72f9349174a2752a558a8a563510d0f3"
+checksum = "88027625910cc9b1085aaaa1c4bc46bb3a36aad323452b33c25b5e4e7c8e2a3e"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -1336,9 +1370,9 @@ dependencies = [
 
 [[package]]
 name = "gemm-f16"
-version = "0.18.2"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cff95ae3259432f3c3410eaa919033cd03791d81cebd18018393dc147952e109"
+checksum = "e3df7a55202e6cd6739d82ae3399c8e0c7e1402859b30e4cb780e61525d9486e"
 dependencies = [
  "dyn-stack",
  "gemm-common",
@@ -1354,9 +1388,9 @@ dependencies = [
 
 [[package]]
 name = "gemm-f32"
-version = "0.18.2"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc8d3d4385393304f407392f754cd2dc4b315d05063f62cf09f47b58de276864"
+checksum = "02e0b8c9da1fbec6e3e3ab2ce6bc259ef18eb5f6f0d3e4edf54b75f9fd41a81c"
 dependencies = [
  "dyn-stack",
  "gemm-common",
@@ -1369,9 +1403,9 @@ dependencies = [
 
 [[package]]
 name = "gemm-f64"
-version = "0.18.2"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35b2a4f76ce4b8b16eadc11ccf2e083252d8237c1b589558a49b0183545015bd"
+checksum = "056131e8f2a521bfab322f804ccd652520c79700d81209e9d9275bbdecaadc6a"
 dependencies = [
  "dyn-stack",
  "gemm-common",
@@ -1462,7 +1496,7 @@ dependencies = [
  "libc",
  "libudev-sys",
  "log",
- "nix",
+ "nix 0.30.1",
  "objc2-core-foundation",
  "objc2-io-kit",
  "uuid",
@@ -1901,6 +1935,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "jwalk"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2735847566356cd2179a2a38264839308f7079fa96e6bd5a42d740460e003c56"
+dependencies = [
+ "crossbeam",
+ "rayon",
+]
+
+[[package]]
 name = "lalry"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1919,22 +1963,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
-name = "levenberg-marquardt"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8be7a65739a815308eef33a6d8c78e435a7317305d5b0af0c8c465a2d7ac6fc6"
-dependencies = [
- "cfg-if",
- "nalgebra",
- "num-traits",
- "rustc_version",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.180"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "libm"
@@ -2224,9 +2266,9 @@ dependencies = [
 
 [[package]]
 name = "nano-gemm"
-version = "0.1.3"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb5ba2bea1c00e53de11f6ab5bd0761ba87dc0045d63b0c87ee471d2d3061376"
+checksum = "9e04345dc84b498ff89fe0d38543d1f170da9e43a2c2bcee73a0f9069f72d081"
 dependencies = [
  "equator 0.2.2",
  "nano-gemm-c32",
@@ -2240,9 +2282,9 @@ dependencies = [
 
 [[package]]
 name = "nano-gemm-c32"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a40449e57a5713464c3a1208c4c3301c8d29ee1344711822cf022bc91373a91b"
+checksum = "0775b1e2520e64deee8fc78b7732e3091fb7585017c0b0f9f4b451757bbbc562"
 dependencies = [
  "nano-gemm-codegen",
  "nano-gemm-core",
@@ -2251,9 +2293,9 @@ dependencies = [
 
 [[package]]
 name = "nano-gemm-c64"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "743a6e6211358fba85d1009616751e4107da86f4c95b24e684ce85f25c25b3bf"
+checksum = "9af49a20d58816e6b5ee65f64142e50edb5eba152678d4bb7377fcbf63f8437a"
 dependencies = [
  "nano-gemm-codegen",
  "nano-gemm-core",
@@ -2262,21 +2304,21 @@ dependencies = [
 
 [[package]]
 name = "nano-gemm-codegen"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "963bf7c7110d55430169dc74c67096375491ed580cd2ef84842550ac72e781fa"
+checksum = "6cc8d495c791627779477a2cf5df60049f5b165342610eb0d76bee5ff5c5d74c"
 
 [[package]]
 name = "nano-gemm-core"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe3fc4f83ae8861bad79dc3c016bd6b0220da5f9de302e07d3112d16efc24aa6"
+checksum = "d998dfa644de87a0f8660e5ea511d7cb5c33b5a2d9847b7af57a2565105089f0"
 
 [[package]]
 name = "nano-gemm-f32"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e3681b7ce35658f79da94b7f62c60a005e29c373c7111ed070e3bf64546a8bb"
+checksum = "879d962e79bc8952e4ad21ca4845a21132540ed3f5e01184b2ff7f720e666523"
 dependencies = [
  "nano-gemm-codegen",
  "nano-gemm-core",
@@ -2284,12 +2326,24 @@ dependencies = [
 
 [[package]]
 name = "nano-gemm-f64"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc1e619ed04d801809e1f63e61b669d380c4119e8b0cdd6ed184c6b111f046d8"
+checksum = "b9a513473dce7dc00c7e7c318481ca4494034e76997218d8dad51bd9f007a815"
 dependencies = [
  "nano-gemm-codegen",
  "nano-gemm-core",
+]
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.10.0",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]
@@ -2782,17 +2836,26 @@ dependencies = [
 
 [[package]]
 name = "pulp"
-version = "0.21.5"
+version = "0.22.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96b86df24f0a7ddd5e4b95c94fc9ed8a98f1ca94d3b01bdce2824097e7835907"
+checksum = "2e205bb30d5b916c55e584c22201771bcf2bad9aabd5d4127f38387140c38632"
 dependencies = [
  "bytemuck",
  "cfg-if",
  "libm",
  "num-complex",
+ "paste",
+ "pulp-wasm-simd-flag",
+ "raw-cpuid",
  "reborrow",
  "version_check",
 ]
+
+[[package]]
+name = "pulp-wasm-simd-flag"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40e24eee682d89fb193496edf918a7f407d30175b2e785fe057e4392dfd182e0"
 
 [[package]]
 name = "py_literal"
@@ -2872,9 +2935,9 @@ dependencies = [
 
 [[package]]
 name = "qd"
-version = "0.7.7"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff8bb755b6008c3b41bf8a0866c8dd4e1245a2f011ceaa22a13ee55c538493e2"
+checksum = "15f1304a5aecdcfe9ee72fbba90aa37b3aa067a69d14cb7f3d9deada0be7c07c"
 dependencies = [
  "bytemuck",
  "libm",
@@ -3108,33 +3171,36 @@ version = "0.8.13"
 dependencies = [
  "anyhow",
  "clap",
+ "clap_complete",
  "crossterm",
  "dirs",
  "flate2",
  "miette",
  "mimalloc",
+ "minijinja",
  "ntest",
  "rayon",
- "rumoca-analysis-dae",
  "rumoca-compile",
  "rumoca-core",
+ "rumoca-eval-solve",
  "rumoca-ir-ast",
- "rumoca-ir-core",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
+ "rumoca-ir-solve",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
+ "rumoca-phase-solve",
  "rumoca-phase-typecheck",
  "rumoca-sim",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",
  "serde_json",
- "serde_yaml",
+ "sigpipe",
  "tar",
  "tempfile",
  "thiserror 2.0.17",
@@ -3148,15 +3214,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-analysis-dae"
-version = "0.8.13"
-dependencies = [
- "rumoca-core",
- "rumoca-ir-core",
- "rumoca-ir-dae",
-]
-
-[[package]]
 name = "rumoca-bind-python"
 version = "0.8.13"
 dependencies = [
@@ -3164,6 +3221,7 @@ dependencies = [
  "pyo3-build-config",
  "rumoca",
  "rumoca-compile",
+ "rumoca-core",
  "rumoca-sim",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
@@ -3180,6 +3238,8 @@ dependencies = [
  "js-sys",
  "lsp-types",
  "rumoca-compile",
+ "rumoca-core",
+ "rumoca-eval-ast",
  "rumoca-sim",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
@@ -3221,7 +3281,6 @@ dependencies = [
  "rayon",
  "rumoca-core",
  "rumoca-ir-ast",
- "rumoca-ir-core",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rumoca-phase-codegen",
@@ -3245,6 +3304,7 @@ version = "0.8.13"
 dependencies = [
  "indexmap",
  "rumoca-compile",
+ "rumoca-phase-dae",
  "rumoca-sim",
  "serde",
  "serde_json",
@@ -3256,6 +3316,7 @@ dependencies = [
 name = "rumoca-core"
 version = "0.8.13"
 dependencies = [
+ "indexmap",
  "miette",
  "serde",
 ]
@@ -3264,10 +3325,22 @@ dependencies = [
 name = "rumoca-eval-ast"
 version = "0.8.13"
 dependencies = [
+ "indexmap",
  "rumoca-core",
  "rumoca-ir-ast",
- "rumoca-ir-core",
  "rustc-hash",
+]
+
+[[package]]
+name = "rumoca-eval-dae"
+version = "0.8.13"
+dependencies = [
+ "blake3",
+ "indexmap",
+ "rumoca-core",
+ "rumoca-ir-dae",
+ "rustc-hash",
+ "tracing",
 ]
 
 [[package]]
@@ -3276,9 +3349,62 @@ version = "0.8.13"
 dependencies = [
  "indexmap",
  "rumoca-core",
- "rumoca-ir-core",
  "rumoca-ir-flat",
+ "rustc-hash",
  "thiserror 2.0.17",
+ "tracing",
+]
+
+[[package]]
+name = "rumoca-eval-solve"
+version = "0.8.13"
+dependencies = [
+ "rumoca-core",
+ "rumoca-eval-dae",
+ "rumoca-ir-dae",
+ "rumoca-ir-solve",
+ "rumoca-solver",
+ "tracing",
+]
+
+[[package]]
+name = "rumoca-exec-cranelift"
+version = "0.8.13"
+dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-jit",
+ "cranelift-module",
+ "rumoca-core",
+ "rumoca-eval-solve",
+ "rumoca-ir-solve",
+]
+
+[[package]]
+name = "rumoca-exec-mlir"
+version = "0.8.13"
+dependencies = [
+ "indexmap",
+ "libloading",
+ "rumoca-core",
+ "rumoca-eval-solve",
+ "rumoca-ir-dae",
+ "rumoca-ir-solve",
+ "rumoca-phase-codegen",
+ "rumoca-phase-solve",
+ "tempfile",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "rumoca-exec-wasm"
+version = "0.8.13"
+dependencies = [
+ "js-sys",
+ "rumoca-ir-solve",
+ "wasm-bindgen",
+ "wasm-encoder",
+ "wasmparser",
 ]
 
 [[package]]
@@ -3287,9 +3413,6 @@ version = "0.8.13"
 dependencies = [
  "anyhow",
  "indexmap",
- "rumoca-input-gamepad",
- "rumoca-input-keyboard",
- "rumoca-input-types",
  "rumoca-signal-frame",
  "serde",
  "serde_json",
@@ -3302,7 +3425,7 @@ version = "0.8.13"
 dependencies = [
  "anyhow",
  "gilrs",
- "rumoca-input-types",
+ "rumoca-input",
 ]
 
 [[package]]
@@ -3311,14 +3434,7 @@ version = "0.8.13"
 dependencies = [
  "anyhow",
  "crossterm",
- "rumoca-input-types",
-]
-
-[[package]]
-name = "rumoca-input-types"
-version = "0.8.13"
-dependencies = [
- "anyhow",
+ "rumoca-input",
 ]
 
 [[package]]
@@ -3327,15 +3443,7 @@ version = "0.8.13"
 dependencies = [
  "indexmap",
  "rumoca-core",
- "rumoca-ir-core",
  "rustc-hash",
- "serde",
-]
-
-[[package]]
-name = "rumoca-ir-core"
-version = "0.8.13"
-dependencies = [
  "serde",
 ]
 
@@ -3343,9 +3451,9 @@ dependencies = [
 name = "rumoca-ir-dae"
 version = "0.8.13"
 dependencies = [
+ "bincode",
  "indexmap",
  "rumoca-core",
- "rumoca-ir-core",
  "serde",
  "serde_json",
 ]
@@ -3357,7 +3465,7 @@ dependencies = [
  "indexmap",
  "rumoca-core",
  "rumoca-ir-ast",
- "rumoca-ir-core",
+ "rustc-hash",
  "serde",
 ]
 
@@ -3365,8 +3473,11 @@ dependencies = [
 name = "rumoca-ir-solve"
 version = "0.8.13"
 dependencies = [
+ "bincode",
  "indexmap",
+ "rumoca-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3375,10 +3486,12 @@ version = "0.8.13"
 dependencies = [
  "miette",
  "minijinja",
+ "rumoca-core",
+ "rumoca-eval-solve",
  "rumoca-ir-ast",
- "rumoca-ir-core",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
+ "rumoca-ir-solve",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -3389,13 +3502,14 @@ version = "0.8.13"
 dependencies = [
  "indexmap",
  "miette",
- "rumoca-analysis-dae",
  "rumoca-core",
- "rumoca-ir-core",
+ "rumoca-eval-dae",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rustc-hash",
+ "serde",
  "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
@@ -3405,9 +3519,9 @@ dependencies = [
  "indexmap",
  "miette",
  "rumoca-core",
+ "rumoca-eval-ast",
  "rumoca-eval-flat",
  "rumoca-ir-ast",
- "rumoca-ir-core",
  "rumoca-ir-flat",
  "rustc-hash",
  "thiserror 2.0.17",
@@ -3421,10 +3535,11 @@ dependencies = [
  "indexmap",
  "miette",
  "rumoca-core",
+ "rumoca-eval-ast",
  "rumoca-ir-ast",
- "rumoca-ir-core",
  "rustc-hash",
  "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
@@ -3438,7 +3553,6 @@ dependencies = [
  "parol_runtime",
  "rumoca-core",
  "rumoca-ir-ast",
- "rumoca-ir-core",
  "scnr2",
 ]
 
@@ -3451,28 +3565,22 @@ dependencies = [
  "miette",
  "rumoca-core",
  "rumoca-ir-ast",
- "rumoca-ir-core",
  "rumoca-phase-parse",
  "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
-name = "rumoca-phase-solve-lower"
+name = "rumoca-phase-solve"
 version = "0.8.13"
 dependencies = [
- "cranelift-codegen",
- "cranelift-frontend",
- "cranelift-jit",
- "cranelift-module",
  "indexmap",
- "js-sys",
  "rumoca-core",
- "rumoca-ir-core",
+ "rumoca-eval-dae",
+ "rumoca-eval-solve",
  "rumoca-ir-dae",
  "rumoca-ir-solve",
- "wasm-bindgen",
- "wasm-encoder",
- "wasmparser",
+ "rumoca-phase-structural",
 ]
 
 [[package]]
@@ -3480,11 +3588,10 @@ name = "rumoca-phase-structural"
 version = "0.8.13"
 dependencies = [
  "indexmap",
- "rumoca-analysis-dae",
  "rumoca-core",
- "rumoca-ir-core",
  "rumoca-ir-dae",
  "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
@@ -3495,7 +3602,6 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-ast",
  "rumoca-ir-ast",
- "rumoca-ir-core",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
  "rustc-hash",
@@ -3514,11 +3620,21 @@ name = "rumoca-sim"
 version = "0.8.13"
 dependencies = [
  "anyhow",
+ "indexmap",
  "libc",
  "rumoca-codec",
  "rumoca-compile",
+ "rumoca-core",
+ "rumoca-eval-solve",
  "rumoca-input",
- "rumoca-sim-core",
+ "rumoca-input-gamepad",
+ "rumoca-input-keyboard",
+ "rumoca-ir-dae",
+ "rumoca-ir-solve",
+ "rumoca-phase-dae",
+ "rumoca-phase-solve",
+ "rumoca-phase-structural",
+ "rumoca-solver",
  "rumoca-solver-diffsol",
  "rumoca-solver-rk45",
  "rumoca-transport-udp",
@@ -3527,28 +3643,23 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "thiserror 2.0.17",
  "toml",
+ "tracing",
 ]
 
 [[package]]
-name = "rumoca-sim-core"
+name = "rumoca-solver"
 version = "0.8.13"
 dependencies = [
- "getrandom 0.3.4",
- "indexmap",
  "instant",
- "levenberg-marquardt",
  "nalgebra",
- "rumoca-analysis-dae",
  "rumoca-core",
- "rumoca-ir-core",
- "rumoca-ir-dae",
  "rumoca-ir-solve",
- "rumoca-phase-solve-lower",
- "rumoca-phase-structural",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
@@ -3557,18 +3668,23 @@ version = "0.8.13"
 dependencies = [
  "diffsol",
  "indexmap",
- "levenberg-marquardt",
- "nalgebra",
- "rumoca-sim-core",
+ "rumoca-eval-solve",
+ "rumoca-ir-solve",
+ "rumoca-solver",
  "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
 name = "rumoca-solver-rk45"
 version = "0.8.13"
 dependencies = [
- "rumoca-sim-core",
+ "indexmap",
+ "rumoca-eval-solve",
+ "rumoca-ir-solve",
+ "rumoca-solver",
  "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
@@ -3576,18 +3692,17 @@ name = "rumoca-test-msl"
 version = "0.8.13"
 dependencies = [
  "anyhow",
- "bincode",
  "clap",
  "dirs",
  "flate2",
  "mimalloc",
  "ntest",
  "rayon",
- "rumoca-analysis-dae",
  "rumoca-compile",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
+ "rumoca-ir-solve",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
  "rumoca-phase-instantiate",
@@ -3596,36 +3711,11 @@ dependencies = [
  "rumoca-phase-structural",
  "rumoca-phase-typecheck",
  "rumoca-sim",
+ "rumoca-worker",
  "serde",
  "serde_json",
  "tar",
  "tempfile",
- "ureq",
- "walkdir",
- "zip",
-]
-
-[[package]]
-name = "rumoca-tool-dev"
-version = "0.8.13"
-dependencies = [
- "anyhow",
- "bincode",
- "clap",
- "clap_complete",
- "dirs",
- "flate2",
- "lsp-types",
- "mimalloc",
- "rayon",
- "rumoca-compile",
- "rumoca-sim",
- "serde",
- "serde_json",
- "syn 2.0.114",
- "tar",
- "tempfile",
- "toml",
  "ureq",
  "walkdir",
  "zip",
@@ -3658,17 +3748,21 @@ name = "rumoca-tool-lsp"
 version = "0.8.13"
 dependencies = [
  "anyhow",
+ "blake3",
  "clap",
  "futures-util",
  "lsp-types",
  "rumoca-compile",
+ "rumoca-phase-dae",
  "rumoca-sim",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",
  "serde_json",
  "tokio",
+ "toml",
  "tower-lsp",
+ "tracing",
 ]
 
 [[package]]
@@ -3685,6 +3779,7 @@ version = "0.8.13"
 dependencies = [
  "serde",
  "serde_json",
+ "tracing",
  "tungstenite",
 ]
 
@@ -3698,6 +3793,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-worker"
+version = "0.8.13"
+dependencies = [
+ "clap",
+ "core_affinity",
+ "mimalloc",
+ "rumoca-compile",
+ "rumoca-core",
+ "rumoca-sim",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3708,15 +3817,6 @@ name = "rustc-hash"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
-
-[[package]]
-name = "rustc_version"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
-dependencies = [
- "semver",
-]
 
 [[package]]
 name = "rustix"
@@ -3784,12 +3884,6 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
-name = "ryu"
-version = "1.0.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "safe_arch"
@@ -3942,19 +4036,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4019,6 +4100,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
+ "libc",
+]
+
+[[package]]
+name = "sigpipe"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5584bfb3e0d348139d8210285e39f6d2f8a1902ac06de343e06357d1d763d8e6"
+dependencies = [
  "libc",
 ]
 
@@ -4178,6 +4268,19 @@ dependencies = [
  "libc",
  "thiserror 1.0.69",
  "walkdir",
+]
+
+[[package]]
+name = "system-deps"
+version = "6.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3e535eb8dded36d55ec13eddacd30dec501792ff23a0b1682c38601b8cf2349"
+dependencies = [
+ "cfg-expr",
+ "heck",
+ "pkg-config",
+ "toml",
+ "version-compare",
 ]
 
 [[package]]
@@ -4662,12 +4765,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
 
 [[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4741,6 +4838,12 @@ name = "vec_map"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1bddf1187be692e79c5ffeab891132dfb0f236ed36a43c7ed39f1165ee20191"
+
+[[package]]
+name = "version-compare"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03c2856837ef78f57382f06b2b8563a2f512f7185d732608fd9176cb3b8edf0e"
 
 [[package]]
 name = "version_check"
@@ -5404,6 +5507,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a74a847d8392999f89e9668c4dd46283b91fd6fc1f34aa5ecf4ceaf8fa3258e"
 
 [[package]]
+name = "xtask"
+version = "0.8.13"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "clap",
+ "clap_complete",
+ "dirs",
+ "flate2",
+ "lsp-types",
+ "mimalloc",
+ "nix 0.29.0",
+ "rayon",
+ "regex",
+ "rumoca-compile",
+ "rumoca-sim",
+ "rumoca-worker",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syn 2.0.114",
+ "tar",
+ "tempfile",
+ "toml",
+ "ureq",
+ "walkdir",
+ "zip",
+ "zmq",
+]
+
+[[package]]
 name = "xz2"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5497,6 +5631,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeromq-src"
+version = "0.2.6+4.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc120b771270365d5ed0dfb4baf1005f2243ae1ae83703265cb3504070f4160b"
+dependencies = [
+ "cc",
+ "dircpy",
+]
+
+[[package]]
 name = "zerotrie"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5564,6 +5708,28 @@ name = "zmij"
 version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac93432f5b761b22864c774aac244fa5c0fd877678a4c37ebf6cf42208f9c9ec"
+
+[[package]]
+name = "zmq"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd3091dd571fb84a9b3e5e5c6a807d186c411c812c8618786c3c30e5349234e7"
+dependencies = [
+ "bitflags 1.3.2",
+ "libc",
+ "zmq-sys",
+]
+
+[[package]]
+name = "zmq-sys"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e8351dc72494b4d7f5652a681c33634063bbad58046c1689e75270908fdc864"
+dependencies = [
+ "libc",
+ "system-deps",
+ "zeromq-src",
+]
 
 [[package]]
 name = "zopfli"

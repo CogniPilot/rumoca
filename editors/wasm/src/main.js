@@ -42,6 +42,7 @@ const simulationSettingsModal = document.getElementById('simulationSettingsModal
 const simulationSettingsFrame = document.getElementById('simulationSettingsFrame');
 const simulationSettingsCloseBtn = document.getElementById('simulationSettingsCloseBtn');
 const codegenTemplateSummary = document.getElementById('codegenTemplateSummary');
+const codegenOutputSummary = document.getElementById('codegenOutputSummary');
 const simRunTabs = document.getElementById('simRunTabs');
 const outputTabsRoot = document.getElementById('outputTabs');
 const codegenRunTabs = document.getElementById('codegenRunTabs');
@@ -117,8 +118,7 @@ let outlineBranchKeys = [];
 let selectedExplorerPath = '';
 let sidebarContextAction = null;
 const EXPLORER_ROOT_SELECTION = '.';
-const DEFAULT_CODEGEN_TEMPLATE_ID = 'sympy.py.jinja';
-const LEGACY_CUSTOM_TEMPLATE_PATH = '.rumoca/templates/custom_codegen.jinja';
+const DEFAULT_CODEGEN_TARGET_ID = 'sympy';
 let builtInCodegenTemplates = [];
 let builtInCodegenTemplatesLoaded = false;
 let codegenSettings = defaultCodegenSettings();
@@ -132,31 +132,22 @@ function trimMaybeString(value) {
 
 function defaultCodegenSettings() {
     return {
-        mode: 'builtin',
-        builtinTemplateId: DEFAULT_CODEGEN_TEMPLATE_ID,
-        customTemplatePath: '',
+        mode: 'target',
+        builtinTargetId: DEFAULT_CODEGEN_TARGET_ID,
+        customTargetPath: '',
     };
 }
 
 function normalizeCodegenSettings(value) {
     const next = value && typeof value === 'object' ? value : {};
+    const mode = next.mode === 'custom-target'
+            ? 'custom-target'
+            : 'target';
     return {
-        mode: next.mode === 'custom' ? 'custom' : 'builtin',
-        builtinTemplateId: trimMaybeString(next.builtinTemplateId) || DEFAULT_CODEGEN_TEMPLATE_ID,
-        customTemplatePath: trimMaybeString(next.customTemplatePath),
+        mode,
+        builtinTargetId: trimMaybeString(next.builtinTargetId) || DEFAULT_CODEGEN_TARGET_ID,
+        customTargetPath: trimMaybeString(next.customTargetPath),
     };
-}
-
-function inferCodegenLanguage(templateId) {
-    const nextId = trimMaybeString(templateId).toLowerCase();
-    if (nextId.endsWith('.py.jinja')) return 'python';
-    if (nextId.endsWith('.jl.jinja')) return 'julia';
-    if (nextId.endsWith('.c.jinja') || nextId.endsWith('.h.jinja')) return 'c';
-    if (nextId.endsWith('.xml.jinja')) return 'xml';
-    if (nextId.endsWith('.mo.jinja')) return 'modelica';
-    if (nextId.endsWith('.json.jinja')) return 'json';
-    if (nextId.endsWith('.html.jinja')) return 'html';
-    return 'plaintext';
 }
 
 function findBuiltInCodegenTemplate(templateId) {
@@ -171,21 +162,20 @@ async function ensureBuiltInCodegenTemplatesLoaded() {
     if (builtInCodegenTemplatesLoaded) {
         return builtInCodegenTemplates;
     }
-    const raw = await sendWorkspaceCommand('rumoca.workspace.getBuiltinTemplates', {});
+    const raw = await sendWorkspaceCommand('rumoca.workspace.getBuiltinTargets', {});
     const templates = Array.isArray(raw) ? raw : [];
     builtInCodegenTemplates = templates
         .map((entry) => ({
             id: trimMaybeString(entry?.id),
             label: trimMaybeString(entry?.label),
-            language: trimMaybeString(entry?.language) || 'plaintext',
-            source: typeof entry?.source === 'string' ? entry.source : '',
+            manifest: typeof entry?.manifest === 'string' ? entry.manifest : '',
         }))
-        .filter((entry) => entry.id && entry.label && entry.source);
+        .filter((entry) => entry.id && entry.label);
     builtInCodegenTemplatesLoaded = true;
-    if (!findBuiltInCodegenTemplate(codegenSettings.builtinTemplateId) && builtInCodegenTemplates[0]) {
+    if (!findBuiltInCodegenTemplate(codegenSettings.builtinTargetId) && builtInCodegenTemplates[0]) {
         codegenSettings = {
             ...codegenSettings,
-            builtinTemplateId: builtInCodegenTemplates[0].id,
+            builtinTargetId: builtInCodegenTemplates[0].id,
         };
     }
     refreshCodegenTemplateSummary();
@@ -203,16 +193,16 @@ function refreshCodegenTemplateSummary() {
             : 'Rendered output snapshot';
         return;
     }
-    if (codegenSettings.mode === 'custom') {
-        codegenTemplateSummary.textContent = codegenSettings.customTemplatePath
-            ? `Custom template: ${codegenSettings.customTemplatePath}`
-            : 'Custom template: choose a workspace file';
+    if (codegenSettings.mode === 'custom-target') {
+        codegenTemplateSummary.textContent = codegenSettings.customTargetPath
+            ? `Custom target: ${codegenSettings.customTargetPath}`
+            : 'Custom target: choose a workspace directory';
         return;
     }
-    const selectedBuiltin = findBuiltInCodegenTemplate(codegenSettings.builtinTemplateId);
+    const selectedBuiltin = findBuiltInCodegenTemplate(codegenSettings.builtinTargetId);
     codegenTemplateSummary.textContent = selectedBuiltin
-        ? `Built-in template: ${selectedBuiltin.label}`
-        : 'Built-in template: loading...';
+        ? `Built-in target: ${selectedBuiltin.label}`
+        : 'Built-in target: loading...';
 }
 
 function currentCodegenModel() {
@@ -235,11 +225,14 @@ function activeCodegenRun() {
 function showActiveCodegenRun() {
     const run = activeCodegenRun();
     if (!run) {
-        setCodegenOutput('', 'plaintext');
+        setCodegenOutputSummary('No generated target files yet.');
         refreshCodegenTemplateSummary();
         return;
     }
-    setCodegenOutput(run.text || '', run.language || 'plaintext');
+    setCodegenOutputSummary(
+        `Generated ${run.paths.length} file(s) in ${run.outputRoot}.`,
+        run.paths,
+    );
     refreshCodegenTemplateSummary();
 }
 
@@ -283,8 +276,8 @@ function renderCodegenRunTabs() {
 
 async function applyCodegenSettings(nextSettings, { rerender = true } = {}) {
     if (codegenSettings.mode === nextSettings.mode
-        && codegenSettings.builtinTemplateId === nextSettings.builtinTemplateId
-        && codegenSettings.customTemplatePath === nextSettings.customTemplatePath) {
+        && codegenSettings.builtinTargetId === nextSettings.builtinTargetId
+        && codegenSettings.customTargetPath === nextSettings.customTargetPath) {
         refreshCodegenTemplateSummary();
         return;
     }
@@ -294,52 +287,107 @@ async function applyCodegenSettings(nextSettings, { rerender = true } = {}) {
     void rerender;
 }
 
-function migrateLegacyCodegenTemplateState(nextState) {
-    if (!nextState || typeof nextState !== 'object') {
-        return null;
+async function resolveCodegenTemplateSelection() {
+    if (codegenSettings.mode === 'custom-target') {
+        const targetPath = trimMaybeString(codegenSettings.customTargetPath);
+        if (!targetPath) {
+            throw new Error('Choose a custom target directory in Rumoca settings.');
+        }
+        return {
+            kind: 'target',
+            target: targetPath,
+            label: targetPath,
+            language: 'plaintext',
+        };
     }
-    if (nextState.codegenSettings && typeof nextState.codegenSettings === 'object') {
-        return null;
-    }
-    const legacyTemplate = typeof nextState.template === 'string' ? nextState.template : '';
-    if (!trimMaybeString(legacyTemplate)) {
-        return null;
-    }
-    if (projectFs.getFileContent(LEGACY_CUSTOM_TEMPLATE_PATH) !== legacyTemplate) {
-        projectFs.setFile(LEGACY_CUSTOM_TEMPLATE_PATH, legacyTemplate);
+    const selectedBuiltin = findBuiltInCodegenTemplate(codegenSettings.builtinTargetId);
+    if (!selectedBuiltin) {
+        throw new Error('No built-in codegen targets are available.');
     }
     return {
-        mode: 'custom',
-        builtinTemplateId: DEFAULT_CODEGEN_TEMPLATE_ID,
-        customTemplatePath: LEGACY_CUSTOM_TEMPLATE_PATH,
+        kind: 'target',
+        target: selectedBuiltin.id,
+        label: selectedBuiltin.label,
+        language: 'plaintext',
     };
 }
 
-async function resolveCodegenTemplateSelection() {
-    if (codegenSettings.mode === 'custom') {
-        const templatePath = trimMaybeString(codegenSettings.customTemplatePath);
-        if (!templatePath) {
-            throw new Error('Choose a custom template file in Rumoca settings.');
-        }
-        const templateSource = projectFs.getFileContent(templatePath);
-        if (typeof templateSource !== 'string') {
-            throw new Error(`Template file not found: ${templatePath}`);
-        }
-        return {
-            source: templateSource,
-            label: templatePath,
-            language: inferCodegenLanguage(templatePath),
-        };
+function collectCustomCodegenTarget(targetPath) {
+    const root = trimMaybeString(targetPath).replace(/^\/+|\/+$/g, '');
+    if (!root) {
+        throw new Error('Choose a custom target directory in Rumoca settings.');
     }
-    const selectedBuiltin = findBuiltInCodegenTemplate(codegenSettings.builtinTemplateId);
-    if (!selectedBuiltin) {
-        throw new Error('No built-in codegen templates are available.');
+    const manifestPath = `${root}/target.toml`;
+    const manifest = projectFs.getFileContent(manifestPath);
+    if (typeof manifest !== 'string') {
+        throw new Error(`Target manifest not found: ${manifestPath}`);
     }
-    return {
-        source: selectedBuiltin.source,
-        label: selectedBuiltin.label,
-        language: selectedBuiltin.language || inferCodegenLanguage(selectedBuiltin.id),
-    };
+    const prefix = `${root}/`;
+    const templates = {};
+    for (const file of projectFs.listFiles()) {
+        if (!file.path.startsWith(prefix) || file.path === manifestPath) {
+            continue;
+        }
+        templates[file.path.slice(prefix.length)] = file.content;
+    }
+    return { manifest, templates };
+}
+
+async function renderCodegenSelection(modelName, daeJson, templateSelection) {
+    let manifest = '';
+    let templates = {};
+    if (codegenSettings.mode === 'custom-target') {
+        ({ manifest, templates } = collectCustomCodegenTarget(templateSelection.target));
+    }
+    const rendered = await sendWorkspaceCommand('rumoca.workspace.renderTarget', {
+        daeJson,
+        modelName,
+        target: templateSelection.target,
+        manifest,
+        templates: JSON.stringify(templates),
+    });
+    if (!rendered || !Array.isArray(rendered.files)) {
+        throw new Error('Target renderer did not return files.');
+    }
+    return rendered.files;
+}
+
+function sanitizeGeneratedPathSegment(value) {
+    return trimMaybeString(value)
+        .replace(/[^A-Za-z0-9_.-]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        || 'output';
+}
+
+function defaultCodegenOutputRoot(modelName, templateSelection) {
+    const modelLeaf = trimMaybeString(modelName).split('.').filter(Boolean).pop() || 'model';
+    const targetLeaf = sanitizeGeneratedPathSegment(templateSelection.target || templateSelection.label || 'target');
+    return `${sanitizeGeneratedPathSegment(modelLeaf)}_${targetLeaf}_out`;
+}
+
+function resolveGeneratedTargetPath(outputRoot, targetPath) {
+    const root = trimMaybeString(outputRoot).replace(/^\/+|\/+$/g, '');
+    const relative = trimMaybeString(targetPath).replace(/\\/g, '/').replace(/^\/+/, '');
+    const parts = relative.split('/').filter(Boolean);
+    if (!root || parts.length === 0 || parts.some((part) => part === '..')) {
+        throw new Error(`Invalid target output path: ${targetPath}`);
+    }
+    return `${root}/${parts.join('/')}`;
+}
+
+function writeRenderedTargetFiles(files, outputRoot) {
+    if (!Array.isArray(files) || files.length === 0) {
+        throw new Error('Target renderer returned no files.');
+    }
+    const paths = [];
+    for (const file of files) {
+        const path = resolveGeneratedTargetPath(outputRoot, file?.path);
+        projectFs.setFile(path, typeof file?.content === 'string' ? file.content : '');
+        paths.push(path);
+    }
+    renderExplorerPane();
+    scheduleProjectPersistence();
+    return paths;
 }
 
 function normalizeStringMap(value) {
@@ -493,12 +541,12 @@ function emptySimResultsPanelState() {
 
 function normalizeSimResultsPanelState(value, fallbackActiveViewId = null) {
     const next = emptySimResultsPanelState();
-    const legacyActiveViewId = trimMaybeString(fallbackActiveViewId) || null;
+    const fallbackViewId = trimMaybeString(fallbackActiveViewId) || null;
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        next.activeViewId = legacyActiveViewId;
+        next.activeViewId = fallbackViewId;
         return next;
     }
-    next.activeViewId = trimMaybeString(value.activeViewId) || legacyActiveViewId;
+    next.activeViewId = trimMaybeString(value.activeViewId) || fallbackViewId;
     next.activeRunIdByModel = normalizeStringMap(value.activeRunIdByModel);
     next.activeViewIdByRun = normalizeStringMap(value.activeViewIdByRun);
     return next;
@@ -1091,7 +1139,7 @@ function closeCodegenRun(runId) {
         activeCodegenRunId = fallback?.id || '';
     }
     if (!activeCodegenRunId) {
-        setCodegenOutput('', 'plaintext');
+        setCodegenOutputSummary('No generated target files yet.');
     } else if (window.activeRightTab === 'codegen') {
         showActiveCodegenRun();
     }
@@ -1104,7 +1152,7 @@ function closeCodegenRun(runId) {
 function clearCodegenRuns() {
     codegenRuns = [];
     activeCodegenRunId = '';
-    setCodegenOutput('', 'plaintext');
+    setCodegenOutputSummary('No generated target files yet.');
     refreshCodegenTemplateSummary();
     refreshResultsWindowChrome();
 }
@@ -2296,7 +2344,7 @@ function inferSourceEditorLanguage(path) {
     if (nextPath.endsWith('.js') || nextPath.endsWith('.mjs') || nextPath.endsWith('.cjs')) {
         return 'javascript';
     }
-    if (nextPath.endsWith('.toml')) return 'toml';
+    if (nextPath.endsWith('.rum') || nextPath.endsWith('.toml')) return 'toml';
     if (nextPath.endsWith('.py')) return 'python';
     if (nextPath.endsWith('.jl')) return 'julia';
     if (nextPath.endsWith('.json')) return 'json';
@@ -2354,7 +2402,6 @@ const layoutAllEditors = () => {
     if (window.editor) window.editor.layout();
     if (editorPanes.secondary.editor) editorPanes.secondary.editor.layout();
     if (window.outputEditor) window.outputEditor.layout();
-    if (window.codegenOutputEditor) window.codegenOutputEditor.layout();
 };
 
 function syncResponsiveLayoutState() {
@@ -2540,6 +2587,57 @@ function setCompileStatusBadge(message, tone = 'loading') {
     if (!compileLabel) return;
     compileLabel.textContent = `Compile: ${String(message || '').trim() || 'Unknown'}`;
     compileLabel.dataset.tone = tone;
+}
+
+function yieldToBrowserPaint() {
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function compileProgressLabel(progress) {
+    const command = trimMaybeString(progress?.command);
+    const scope = trimMaybeString(progress?.scope);
+    if (progress?.kind === 'parse') {
+        const current = Number(progress.current) || 0;
+        const total = Number(progress.total) || 0;
+        const percent = Number(progress.percent) || 0;
+        const sourceLabel = scope === 'wasm::project'
+            ? 'workspace files'
+            : scope === 'wasm::bundled-source-roots'
+                ? 'package files'
+                : 'source files';
+        return `Parsing ${sourceLabel} ${current}/${total} (${percent}%)`;
+    }
+    if (progress?.kind !== 'request' || progress?.phase !== 'start') {
+        return '';
+    }
+    switch (command) {
+        case 'rumoca.language.diagnostics':
+            return 'Checking diagnostics...';
+        case 'rumoca.project.getSimulationModels':
+            return 'Discovering models...';
+        case 'rumoca.workspace.compileWithProjectSources':
+            return 'Compiling with workspace files...';
+        case 'rumoca.workspace.compileWithSourceRoots':
+            return 'Compiling with source roots...';
+        case 'rumoca.workspace.loadSourceRoots':
+            return 'Loading package files...';
+        case 'rumoca.workspace.mergeParsedSourceRootsBinary':
+            return 'Restoring parsed package cache...';
+        case 'rumoca.workspace.exportParsedSourceRootsBinary':
+            return 'Saving parsed package cache...';
+        default:
+            return '';
+    }
+}
+
+function handleWorkerProgress(progress) {
+    if (progress?.kind === 'parse') {
+        packageArchiveController.handleWorkerProgress(progress);
+    }
+    const label = compileProgressLabel(progress);
+    if (label) {
+        setCompileStatusBadge(label, 'loading');
+    }
 }
 
 setRuntimeStatusBar('Loading...', 'loading');
@@ -2995,9 +3093,7 @@ function applyProjectEditorState(editorState) {
     );
 
     codegenSettings = normalizeCodegenSettings(
-        migrateLegacyCodegenTemplateState(nextState)
-        || nextState.codegenSettings
-        || fallbackState.codegenSettings,
+        nextState.codegenSettings || fallbackState.codegenSettings,
     );
     refreshCodegenTemplateSummary();
 
@@ -3227,7 +3323,6 @@ function simulationSettingsFeatures() {
     return {
         addSourceRootPath: false,
         prepareModels: false,
-        resyncSidecars: false,
         workspaceSettings: false,
         userSettings: false,
         openViewScript: false,
@@ -3498,13 +3593,17 @@ window.runSimulation = async function() {
     status.style.color = '#9a6700';
 
     try {
-        const result = await projectInterface.execute('rumoca.project.startSimulation', {
+        const simulationPayload = {
             source,
             model: modelName,
             fallback: projectSimulationFallback(),
-            projectSources: collectWorkspaceModelicaSourcesJson(projectFs.getActiveDocumentPath()),
             timeoutMs: 60000,
-        });
+        };
+        if (!workspaceProjectSourcesSynced) {
+            simulationPayload.projectSources = collectWorkspaceModelicaSourcesJson(projectFs.getActiveDocumentPath());
+            workspaceProjectSourcesSynced = true;
+        }
+        const result = await projectInterface.execute('rumoca.project.startSimulation', simulationPayload);
         const simulateMs = Math.round((Number(result.metrics?.simulateSeconds) || 0) * 1000);
         status.textContent =
             `${result.metrics?.points ?? 0} pts, ${result.metrics?.variables ?? 0} vars (${simulateMs}ms)`;
@@ -3555,35 +3654,29 @@ function displayDaeOutput(modelName) {
     }
 }
 
-// Display codegen output (render template)
+// Display codegen output (render target)
 async function displayCodegenOutput(modelName) {
     if (!trimMaybeString(modelName)) {
-        setCodegenOutput('No model selected');
+        setCodegenOutputSummary('No model selected.');
         clearTemplateErrors();
         return;
     }
     const result = window.compiledModels[modelName];
     if (!result || result.error || !result.dae) {
-        setCodegenOutput(result?.error ? '' : 'No DAE available');
+        setCodegenOutputSummary(result?.error ? 'Compile failed.' : 'No DAE available.');
         return;
     }
     if (!result.dae_native) {
-        setCodegenOutput('Native DAE not available for template rendering.');
+        setCodegenOutputSummary('Native DAE not available for target rendering.');
         clearTemplateErrors();
         return;
     }
     try {
         await ensureBuiltInCodegenTemplatesLoaded();
-        const templateSelection = await resolveCodegenTemplateSelection();
-        const daeJson = JSON.stringify(result.dae_native);
-        const rendered = await sendWorkspaceCommand('rumoca.workspace.renderTemplate', {
-            daeJson,
-            template: templateSelection.source,
-        });
-        setCodegenOutput(rendered, templateSelection.language);
+        setCodegenOutputSummary('Use the lightning action to write target files into the workspace.');
         clearTemplateErrors();
     } catch (e) {
-        setCodegenOutput('');
+        setCodegenOutputSummary('');
         showTemplateError(e.message);
     }
 }
@@ -3603,20 +3696,21 @@ async function createCodegenRunForModel(modelName) {
         await ensureBuiltInCodegenTemplatesLoaded();
         const templateSelection = await resolveCodegenTemplateSelection();
         const daeJson = JSON.stringify(result.dae_native);
-        const rendered = await sendWorkspaceCommand('rumoca.workspace.renderTemplate', {
-            daeJson,
-            template: templateSelection.source,
-        });
+        const renderedFiles = await renderCodegenSelection(nextModel, daeJson, templateSelection);
+        const outputRoot = defaultCodegenOutputRoot(nextModel, templateSelection);
+        const paths = writeRenderedTargetFiles(renderedFiles, outputRoot);
         const createdAt = new Date().toISOString();
         addCodegenRun({
             id: `codegen_${Date.now()}_${++codegenRunSequence}`,
             label: formatCodegenRunLabel(nextModel, createdAt),
             createdAt,
             modelName: nextModel,
-            text: rendered,
-            language: templateSelection.language,
+            outputRoot,
+            paths,
             templateLabel: templateSelection.label,
         });
+        await openProjectDocument(paths[0], { forceReload: true });
+        revealExplorerPath(paths[0]);
         clearTemplateErrors();
         window.switchRightTab('codegen');
     } catch (e) {
@@ -3670,16 +3764,29 @@ function setDaeOutput(text, language) {
     }
 }
 
-// Set codegen output (Codegen tab) - uses Monaco editor
-function setCodegenOutput(text, language) {
-    if (window.codegenOutputEditor) {
-        const lang = language || 'plaintext';
-        const model = window.codegenOutputEditor.getModel();
-        if (model) {
-            monaco.editor.setModelLanguage(model, lang);
-        }
-        window.codegenOutputEditor.setValue(text || '');
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function setCodegenOutputSummary(message, paths = []) {
+    if (!codegenOutputSummary) {
+        return;
     }
+    const body = trimMaybeString(message) || 'No generated target files yet.';
+    const items = Array.isArray(paths) && paths.length > 0
+        ? `<ul>${paths.map((path) => `<li><button class="link-button" type="button" data-codegen-path="${escapeHtml(path)}">${escapeHtml(path)}</button></li>`).join('')}</ul>`
+        : '';
+    codegenOutputSummary.innerHTML = `<div>${escapeHtml(body)}</div>${items}`;
+    codegenOutputSummary.querySelectorAll('[data-codegen-path]').forEach((button) => {
+        button.addEventListener('click', () => {
+            void openProjectDocument(button.getAttribute('data-codegen-path') || '', { forceReload: true });
+        });
+    });
 }
 
 // Set terminal output (bottom panel Output tab)
@@ -3707,6 +3814,21 @@ function clearTemplateErrors() {
 function updateDiagnostics(diagnostics) {
     if (!diagnosticsController) return;
     diagnosticsController.updateModelicaDiagnostics(diagnostics);
+}
+
+async function refreshDiagnosticsAfterCompileFailure(source) {
+    try {
+        const diagJson = await sendLanguageCommand('rumoca.language.diagnostics', { source });
+        const diagnostics = normalizeDiagnosticsPayload(JSON.parse(diagJson), source);
+        updateDiagnostics(diagnostics);
+        return {
+            diagnostics,
+            hasErrorDiagnostics: diagnostics.some(diagnostic => diagnostic?.severity === 1),
+        };
+    } catch (error) {
+        console.warn('Compile-failure diagnostics refresh failed:', error);
+        return { diagnostics: [], hasErrorDiagnostics: false };
+    }
 }
 
 function normalizeDiagnosticsPayload(payload, sourceText) {
@@ -3764,11 +3886,6 @@ function formatExpr(expr) {
 // Format equation to string
 function formatEq(eq) {
     if (!eq) return '?';
-    // Handle Simple equation variant
-    if (eq.Simple) {
-        return `${formatExpr(eq.Simple.lhs)} = ${formatExpr(eq.Simple.rhs)}`;
-    }
-    // Handle direct lhs/rhs format
     if (eq.lhs !== undefined && eq.rhs !== undefined) {
         return `${formatExpr(eq.lhs)} = ${formatExpr(eq.rhs)}`;
     }
@@ -3974,10 +4091,12 @@ packageArchiveController.bindWindowApi();
 // Store compiled results for all models: { modelName: { dae, balance } }
 window.compiledModels = {};
 window.selectedModel = null;
+let workspaceProjectSourcesSynced = false;
 
 function resetCompiledWorkspaceState() {
     window.compiledModels = {};
     window.selectedModel = null;
+    workspaceProjectSourcesSynced = false;
     window.currentDaeForCompletions = null;
     simResultsPanelState = emptySimResultsPanelState();
     resultsPanelController.clear();
@@ -4030,8 +4149,6 @@ async function restorePersistedProjectIfAvailable() {
 
 installFileActions({
     getEditor: () => window.editor,
-    getCompiledModels: () => window.compiledModels,
-    getCodegenOutputEditor: () => window.codegenOutputEditor,
     projectFs,
     setTerminalOutput,
     beforeProjectExport: async () => {
@@ -4055,7 +4172,7 @@ window.updateSelectedModel = function() {
         const result = window.compiledModels[modelName];
         // Refresh the active tab's output
         if (window.activeRightTab === 'codegen') displayCodegenOutput(modelName);
-        // Update DAE for template autocompletion
+        // Update DAE for codegen completions
         if (result.dae_native) {
             window.currentDaeForCompletions = result.dae_native;
         }
@@ -4073,20 +4190,59 @@ function updateSourceBreadcrumbs() {
 
 // Web Worker setup (cache-busted to avoid stale JS/WASM bundles during local iteration)
 const workerCacheBust = String(Date.now());
-const smokePkgSubdir = new URLSearchParams(window.location.search).get('smoke_pkg_subdir') || 'release-full-web';
-const workerUrl = new URL(`../../pkg/${smokePkgSubdir}/rumoca_worker.js`, window.location.href);
+const wasmUrlParams = new URLSearchParams(window.location.search);
+const defaultWasmPkgBase = window.rumocaWasmPkgBase || '../../pkg';
+const defaultWasmPkgSubdir = window.rumocaWasmPkgSubdir || 'release-full-web';
+const wasmPkgSubdir = wasmUrlParams.get('smoke_pkg_subdir') || defaultWasmPkgSubdir;
+const workerUrl = new URL(`${defaultWasmPkgBase}/${wasmPkgSubdir}/rumoca_worker.js`, window.location.href);
 workerUrl.searchParams.set('v', workerCacheBust);
 const worker = new Worker(workerUrl, { type: 'module' });
 let requestId = 0;
 const pendingRequests = new Map();
 let workerReady = false;
+let workerInitError = null;
+const workerReadyWaiters = [];
+
+function settleWorkerReadyWaiters(error = null) {
+    while (workerReadyWaiters.length > 0) {
+        const waiter = workerReadyWaiters.shift();
+        clearTimeout(waiter.timeoutId);
+        if (error) {
+            waiter.reject(error);
+        } else {
+            waiter.resolve();
+        }
+    }
+}
+
+function waitForWorkerReady(timeout) {
+    if (workerReady) {
+        return Promise.resolve();
+    }
+    if (workerInitError) {
+        return Promise.reject(workerInitError);
+    }
+    return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+            const index = workerReadyWaiters.findIndex(waiter => waiter.timeoutId === timeoutId);
+            if (index >= 0) {
+                workerReadyWaiters.splice(index, 1);
+            }
+            reject(new Error('WASM worker initialization timed out'));
+        }, timeout);
+        workerReadyWaiters.push({ resolve, reject, timeoutId });
+    });
+}
 
 worker.onmessage = (e) => {
-    const { id, ready, success, result, error, progress, current, total, percent } = e.data;
+    const { id, ready, success, result, error, progress } = e.data;
 
-    // Handle progress updates for package-archive loading
     if (progress) {
-        packageArchiveController.handleWorkerProgress({ current, total, percent });
+        const resolver = id !== null && id !== undefined ? pendingRequests.get(id) : null;
+        if (resolver?.refreshTimeout) {
+            resolver.refreshTimeout();
+        }
+        handleWorkerProgress(e.data);
         return;
     }
 
@@ -4094,6 +4250,7 @@ worker.onmessage = (e) => {
         if (success) {
             setRuntimeStatusBar('Ready', 'ready');
             workerReady = true;
+            settleWorkerReadyWaiters();
             if (window.refreshModelicaSemanticTokens) {
                 window.refreshModelicaSemanticTokens();
             }
@@ -4107,6 +4264,8 @@ worker.onmessage = (e) => {
             });
         } else {
             setRuntimeStatusBar('Error', 'error');
+            workerInitError = new Error('WASM worker failed to initialize');
+            settleWorkerReadyWaiters(workerInitError);
             setTerminalOutput('Failed to initialize WASM worker.');
         }
         return;
@@ -4122,40 +4281,50 @@ worker.onmessage = (e) => {
 worker.onerror = (e) => {
     console.error('Worker error:', e);
     setRuntimeStatusBar('Worker Error', 'error');
+    workerInitError = new Error(e.message || 'WASM worker failed');
+    settleWorkerReadyWaiters(workerInitError);
 };
 
 function sendRequest(action, params = {}, timeout = 30000) {
     const id = ++requestId;
     return new Promise((resolve, reject) => {
-        const timeoutId = setTimeout(() => {
-            if (pendingRequests.has(id)) {
-                pendingRequests.delete(id);
-                console.error(`[sendRequest] timeout for action '${action}' (id=${id})`);
-                reject(new Error(`Request timeout for ${action}`));
-            }
-        }, timeout);
+        waitForWorkerReady(timeout)
+            .then(() => {
+                let timeoutId = null;
+                const onTimeout = () => {
+                    if (pendingRequests.has(id)) {
+                        pendingRequests.delete(id);
+                        console.error(`[sendRequest] timeout for action '${action}' (id=${id})`);
+                        reject(new Error(`Request timeout for ${action}`));
+                    }
+                };
+                const refreshTimeout = () => {
+                    if (timeoutId !== null) {
+                        clearTimeout(timeoutId);
+                    }
+                    timeoutId = setTimeout(onTimeout, timeout);
+                };
+                refreshTimeout();
 
-        pendingRequests.set(id, {
-            resolve: (result) => {
-                clearTimeout(timeoutId);
-                resolve(result);
-            },
-            reject: (error) => {
-                clearTimeout(timeoutId);
-                reject(error);
-            }
-        });
-        worker.postMessage({ id, action, ...params });
+                pendingRequests.set(id, {
+                    resolve: (result) => {
+                        clearTimeout(timeoutId);
+                        resolve(result);
+                    },
+                    reject: (requestError) => {
+                        clearTimeout(timeoutId);
+                        reject(requestError);
+                    },
+                    refreshTimeout,
+                });
+                worker.postMessage({ id, action, ...params });
+            })
+            .catch(reject);
     });
 }
 
 function languageCommandNeedsProjectSources(command) {
-    return command === 'rumoca.language.diagnostics'
-        || command === 'rumoca.language.hover'
-        || command === 'rumoca.language.completion'
-        || command === 'rumoca.language.completionWithTiming'
-        || command === 'rumoca.language.definition'
-        || command === 'rumoca.language.documentSymbols';
+    return command === 'rumoca.language.diagnostics';
 }
 
 function augmentLanguagePayload(command, payload = {}) {
@@ -4498,6 +4667,12 @@ async function runRumocaBrowserSmoke(config) {
                 },
                 config.readyTimeoutMs,
             );
+            if (typeof window.importLoadedPackageArchivesForSmoke !== 'function') {
+                throw new Error('source-root import unavailable for smoke archive load');
+            }
+            const imported = await window.importLoadedPackageArchivesForSmoke();
+            result.sourceRootImportMs = Math.max(0, Number(imported?.sourceRootImportMs) || 0);
+            rumocaSmokeSourceRootsImported = true;
         }
 
         let sourceText = window.editor.getValue();
@@ -4974,8 +5149,17 @@ require(['vs/editor/editor.main'], function() {
     window.renderAllDiagnostics = () => diagnosticsController.renderAllDiagnostics();
 
     let liveCheckGeneration = 0;
+    let liveCheckInFlight = false;
+    let liveCheckRerunRequested = false;
     const runLiveChecks = debounce(async () => {
+        if (isRumocaSmokeMode()) return;
         if (!workerReady) return;
+        if (liveCheckInFlight) {
+            liveCheckRerunRequested = true;
+            setCompileStatusBadge('Queued after current check...', 'loading');
+            return;
+        }
+        liveCheckInFlight = true;
         const runGeneration = ++liveCheckGeneration;
         const isStaleRun = () => runGeneration !== liveCheckGeneration;
 
@@ -4996,12 +5180,16 @@ require(['vs/editor/editor.main'], function() {
 
         setCompileStatus('Compiling...', '#9a6700');
         updateCompileErrors([]);
+        let workspaceSyncedByDiagnostics = false;
 
         try {
         let diagnostics = [];
         // Run diagnostics
         try {
+            setCompileStatus('Checking diagnostics...', '#9a6700');
             const diagJson = await sendLanguageCommand('rumoca.language.diagnostics', { source });
+            workspaceSyncedByDiagnostics = true;
+            workspaceProjectSourcesSynced = true;
             if (isStaleRun()) return;
             diagnostics = normalizeDiagnosticsPayload(JSON.parse(diagJson), source);
             if (isStaleRun()) return;
@@ -5014,6 +5202,7 @@ require(['vs/editor/editor.main'], function() {
             diagnostics = [];
         }
 
+        setCompileStatus('Discovering models...', '#9a6700');
         const previousSelection = modelSelect.value;
         const modelState = await getSimulationModelState(source, previousSelection);
         if (isStaleRun()) return;
@@ -5057,20 +5246,44 @@ require(['vs/editor/editor.main'], function() {
         }
 
         // Compile all models
-        const projectSources = collectWorkspaceModelicaSourcesJson(projectFs.getActiveDocumentPath());
+        let projectSourceCount = 0;
+        let projectSources = '{}';
+        if (workspaceSyncedByDiagnostics) {
+            setCompileStatus('Using synced workspace files...', '#9a6700');
+        } else {
+            setCompileStatus('Collecting workspace files...', '#9a6700');
+            await yieldToBrowserPaint();
+            const projectSourcesMap = collectWorkspaceModelicaSources(projectFs.getActiveDocumentPath());
+            projectSourceCount = Object.keys(projectSourcesMap).length;
+            projectSources = JSON.stringify(projectSourcesMap);
+        }
         let successCount = 0;
         const compileErrors = [];
 
-        for (const modelName of models) {
+        for (const [modelIndex, modelName] of models.entries()) {
             if (isStaleRun()) return;
             try {
                 let json;
                 console.log('[compile] compiling model:', modelName);
-                json = await sendWorkspaceCommand('rumoca.workspace.compileWithProjectSources', {
-                    source,
-                    modelName,
-                    projectSources,
-                });
+                const sourceCountLabel = projectSourceCount > 0
+                    ? `, ${projectSourceCount} workspace files`
+                    : '';
+                setCompileStatus(
+                    `Compiling ${modelName} ${modelIndex + 1}/${models.length}${sourceCountLabel}`,
+                    '#9a6700',
+                );
+                if (workspaceSyncedByDiagnostics) {
+                    json = await sendWorkspaceCommand('rumoca.workspace.compile', {
+                        source,
+                        modelName,
+                    });
+                } else {
+                    json = await sendWorkspaceCommand('rumoca.workspace.compileWithProjectSources', {
+                        source,
+                        modelName,
+                        projectSources,
+                    });
+                }
                 if (isStaleRun()) return;
                 const result = JSON.parse(json);
                 console.log('[compile] got result for', modelName, '- pretty length:', result.pretty?.length, 'dae keys:', Object.keys(result.dae || {}));
@@ -5080,7 +5293,7 @@ require(['vs/editor/editor.main'], function() {
                     balance: result.balance,
                     pretty: result.pretty
                 };
-                // Update DAE for template autocompletion (use dae_native for actual field names)
+                // Update DAE for codegen completions (use dae_native for actual field names)
                 if (result.dae_native && (modelName === modelSelect.value || modelSelect.value === '')) {
                     window.currentDaeForCompletions = result.dae_native;
                     console.log('[compile] updated currentDaeForCompletions for', modelName);
@@ -5089,6 +5302,12 @@ require(['vs/editor/editor.main'], function() {
             } catch (e) {
                 if (isStaleRun()) return;
                 console.log('[compile] error for', modelName, ':', e.message);
+                const refreshedDiagnostics = await refreshDiagnosticsAfterCompileFailure(source);
+                if (isStaleRun()) return;
+                if (refreshedDiagnostics.hasErrorDiagnostics) {
+                    diagnostics = refreshedDiagnostics.diagnostics;
+                    continue;
+                }
                 window.compiledModels[modelName] = {
                     dae: null,
                     balance: null,
@@ -5101,6 +5320,16 @@ require(['vs/editor/editor.main'], function() {
         const elapsed = (performance.now() - startTime).toFixed(0);
         if (isStaleRun()) return;
         updateCompileErrors(compileErrors);
+        if (diagnostics.some(diagnostic => diagnostic?.severity === 1)) {
+            setCompileStatus(`Error (${elapsed}ms)`, '#c9184a');
+            setDaeOutput('Compilation skipped due to diagnostics errors.');
+            window.switchBottomTab('errors');
+            if (window.refreshCodeLens) window.refreshCodeLens();
+            if (document.getElementById('classTreePanel')) {
+                packageArchiveController.refreshPackageViewer(true);
+            }
+            return;
+        }
 
         // Update display with selected model
         let selectedModel = modelSelect.value;
@@ -5158,6 +5387,12 @@ require(['vs/editor/editor.main'], function() {
             console.error('[runLiveChecks] Unexpected error:', unexpectedError);
             setCompileStatus('Error', '#c9184a');
             updateCompileErrors([{ model: 'live-check', message: String(unexpectedError?.message || unexpectedError) }]);
+        } finally {
+            liveCheckInFlight = false;
+            if (liveCheckRerunRequested) {
+                liveCheckRerunRequested = false;
+                runLiveChecks();
+            }
         }
     }, 1200);
     window.triggerCompileNow = () => {
@@ -5191,13 +5426,6 @@ require(['vs/editor/editor.main'], function() {
             scheduleSemanticTokenRefresh();
             if (projectFs.getActiveDocumentPath().endsWith('.mo')) {
                 scheduleTypingOutlineRefresh();
-            }
-            if (
-                window.activeRightTab === 'codegen'
-                && codegenSettings.mode === 'custom'
-                && projectFs.getActiveDocumentPath() === trimMaybeString(codegenSettings.customTemplatePath)
-            ) {
-                scheduleCodegenRefresh();
             }
             if (isRumocaSmokeMode()) return;
             if (!projectFs.getActiveDocumentPath().endsWith('.mo')) return;

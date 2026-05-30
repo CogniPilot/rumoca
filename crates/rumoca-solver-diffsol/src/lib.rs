@@ -1,107 +1,130 @@
-pub(crate) mod eliminate {
-    use rumoca_sim_core::ir_dae::Dae;
+//! Diffsol wiring for solver-facing IR.
+//!
+//! This crate intentionally does not depend on DAE-IR or compiler phases.
+//! DAE-to-Solve lowering must happen before a `SolveModel`
+//! reaches this backend.
 
-    pub(crate) type EliminationResult =
-        rumoca_sim_core::phase_structural::eliminate::EliminationResult;
+// Diffsol problem closures are single-threaded here but require cloneable shared
+// handles that live with the leaked solver problem.
+#![allow(clippy::arc_with_non_send_sync)]
 
-    pub(crate) fn eliminate_trivial(
-        dae: &mut Dae,
-    ) -> rumoca_sim_core::phase_structural::eliminate::EliminationResult {
-        rumoca_sim_core::phase_structural::eliminate::eliminate_trivial(dae)
-    }
-}
-pub(crate) mod integration;
-mod prepare;
-mod prepared_sim;
-pub mod problem;
+mod discrete_updates;
+mod initialization;
+mod no_state;
+mod ode;
+mod panic_capture;
+mod projection;
+mod root_search;
+mod solver_state;
+mod state_only_eligibility;
 pub mod stepper;
 
-use std::collections::{HashMap, HashSet};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use diffsol::{
-    FaerSparseLU, OdeEquations, OdeSolverMethod, OdeSolverProblem, OdeSolverStopReason, VectorHost,
+    BacktrackingLineSearch, BdfState, FaerSparseLU, FaerSparseMat, MatrixCommon,
+    NewtonNonlinearSolver, OdeEquations, OdeSolverMethod, OdeSolverState, OdeSolverStopReason,
+    VectorHost,
 };
-use indexmap::IndexMap;
-use rumoca_sim_core::ir_dae as dae;
+pub(crate) use discrete_updates::{
+    EventUpdateInput, apply_discrete_value, apply_event_updates,
+    apply_event_updates_with_event_pre, apply_initialization_updates,
+    apply_post_initial_event_updates, apply_runtime_assignments, seed_initial_discrete_values,
+    settle_algebraics_and_relation_memory,
+};
+pub(crate) use initialization::{bdf_derivative_guess, initial_bdf_state};
+use no_state::{
+    check_no_state_initialization, prepare_fixed_event_left_limit, simulate_no_state_solve_ir,
+};
+use rumoca_eval_solve::{
+    self as solve_eval, RowEvalContext, SolveRuntime, next_runtime_event_stop,
+    visible_values_with_context,
+};
+use rumoca_ir_solve as solve;
+use rumoca_solver::{
+    EventPreMode, RuntimeEventStop, RuntimeSolveError, SimBackend, SimOptions, SimResult,
+    SimTermination, SolveStopSchedule, build_sim_result_from_solve_model, discrete_row_pre_mode,
+    initial_static_event_pre_mode, push_visible_values, replace_last_visible_values,
+    timeline::{event_right_limit_time, sample_time_match_with_tol},
+    update_relation_memory_slots, write_pre_params_from_sources,
+};
+use solver_state::{reset_solver_state, write_state_to_solver};
+use state_only_eligibility::can_use_state_only_bdf;
 
-pub(crate) type Dae = dae::Dae;
-type BuiltinFunction = dae::BuiltinFunction;
-type Expression = dae::Expression;
-type Literal = dae::Literal;
-type Subscript = dae::Subscript;
-pub(crate) type VarName = dae::VarName;
-type Variable = dae::Variable;
+type Matrix = FaerSparseMat<f64>;
+type Vector = <Matrix as MatrixCommon>::V;
+type Scalar = <Matrix as MatrixCommon>::T;
+pub(crate) type LinearSolver = FaerSparseLU<f64>;
+pub(crate) type RuntimeParameters = Rc<RefCell<Vec<f64>>>;
+pub(crate) use ode::{
+    OdeModel, build_ode_problem_with_runtime_params_and_initial,
+    build_state_ode_problem_with_runtime_params_and_initial, new_bdf_eval_counters,
+    trace_bdf_eval_counter_snapshot, validate_model,
+};
+pub(crate) use panic_capture::{catch_solver_panic, solver_call};
+pub(crate) use projection::settle_initial_projection_context;
+use rumoca_solver::{project_algebraics, project_initial_variables_with_plan};
 
-use rumoca_sim_core::core::Span;
-use rumoca_sim_core::ir_core::OpBinary;
-pub use rumoca_sim_core::{SimBackend, SimOptions, SimResult, SimSolverMode, SimVariableMeta};
-use rumoca_sim_core::{
-    SolverDeadlineGuard, TimeoutBudget, TimeoutExceeded, build_variable_meta,
-    is_solver_timeout_panic, timeline,
-};
+const EVENT_UPDATE_MAX_ITERS: usize = 256;
 
-pub(crate) use rumoca_sim_core::core::{
-    maybe_elapsed_seconds as trace_timer_elapsed_seconds,
-    maybe_start_timer_if as trace_timer_start_if,
-};
-use rumoca_sim_core::phase_solve_lower::{self as eval};
-pub(crate) use rumoca_sim_core::simulation::dae_prepare::REGULARIZATION_LEVELS;
-#[cfg(test)]
-pub(crate) use rumoca_sim_core::simulation::dae_prepare::{
-    demote_alias_states_without_der, demote_coupled_derivative_states,
-    demote_direct_assigned_states, demote_orphan_states_without_equation_refs,
-    demote_states_without_assignable_derivative_rows, demote_states_without_derivative_refs,
-    index_reduce_missing_state_derivatives, promote_der_algebraics_to_states,
-};
+#[derive(Debug, thiserror::Error)]
+pub enum SimError {
+    #[error("empty system: no equations to simulate")]
+    EmptySystem,
 
-pub(crate) type LS = FaerSparseLU<f64>;
-use integration::map_solver_panic;
-use integration::*;
-use prepare::*;
-#[cfg(test)]
-pub(crate) use prepared_sim::collect_no_state_schedule_events;
-use prepared_sim::validate_parameter_override;
-pub use prepared_sim::{
-    build_simulation, run_prepared_simulation, simulate, simulate as simulate_dae,
-};
-#[cfg(test)]
-use rumoca_sim_core::phase_structural::projection_maps::{
-    build_component_index_projection_map, build_function_output_projection_map,
-};
-use rumoca_sim_core::phase_structural::scalarize::build_output_names;
-#[cfg(test)]
-use rumoca_sim_core::phase_structural::scalarize::{
-    build_complex_field_map, build_var_dims_map, index_into_expr,
-};
-pub use stepper::{SimStepper, StepperOptions, StepperState};
+    #[error("solver error: {0}")]
+    SolverError(String),
 
-fn validate_simulation_function_support(dae: &Dae) -> Result<(), SimError> {
-    rumoca_sim_core::function_validation::validate_simulation_function_support(dae).map_err(|err| {
-        SimError::UnsupportedFunction {
-            name: err.name,
-            reason: err.reason,
+    #[error("solve-IR evaluation failed: {0}")]
+    SolveIr(String),
+
+    #[error("Modelica assert failed at t={time:.9}: {message}")]
+    AssertionFailed { time: f64, message: String },
+
+    #[error("Modelica terminate requested at t={time:.9}: {message}")]
+    Terminated { time: f64, message: String },
+
+    #[error("timeout after {seconds:.3}s")]
+    Timeout { seconds: f64 },
+}
+
+impl SimError {
+    pub fn source_span(&self) -> Option<()> {
+        None
+    }
+}
+
+impl From<RuntimeSolveError> for SimError {
+    fn from(value: RuntimeSolveError) -> Self {
+        match value {
+            RuntimeSolveError::SolveIr(message) => Self::SolveIr(message),
+            RuntimeSolveError::UnsupportedModel { reason } => Self::SolveIr(reason),
+            RuntimeSolveError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
+                "non-finite derivative evaluation for state '{state_name}'"
+            )),
+            non_finite @ RuntimeSolveError::NonFiniteValue { .. } => {
+                Self::SolveIr(non_finite.to_string())
+            }
         }
-    })
+    }
 }
 
 pub struct PreparedSimulation {
-    dae: Dae,
-    elim: eliminate::EliminationResult,
+    model: solve::SolveModel,
     opts: SimOptions,
-    parameter_overrides: IndexMap<String, Vec<f64>>,
     state: PreparedSimulationState,
 }
 
 enum PreparedSimulationState {
-    Algebraic(PreparedAlgebraicSimulation),
-    Dynamic(PreparedDynamicSimulation),
-}
-
-struct PreparedAlgebraicSimulation {}
-
-struct PreparedDynamicSimulation {
-    mass_matrix: MassMatrix,
-    ic_blocks: Vec<rumoca_sim_core::phase_structural::IcBlock>,
+    NoState,
+    StateOnly {
+        equilibrium_model: Arc<OdeModel>,
+        runtime: Arc<SolveRuntime>,
+    },
+    General {
+        equilibrium_model: Arc<OdeModel>,
+        runtime: Arc<SolveRuntime>,
+    },
 }
 
 impl PreparedSimulation {
@@ -109,1313 +132,1835 @@ impl PreparedSimulation {
         SimBackend::Diffsol
     }
 
-    pub fn set_parameter_value(&mut self, name: &str, value: f64) -> Result<(), SimError> {
-        self.set_parameter_values(name, &[value])
-    }
-
-    pub fn set_parameter_values(&mut self, name: &str, values: &[f64]) -> Result<(), SimError> {
-        validate_parameter_override(self, name, values)?;
-        self.parameter_overrides
-            .insert(name.to_string(), values.to_vec());
-        Ok(())
-    }
-
-    pub fn clear_parameter_overrides(&mut self) {
-        self.parameter_overrides.clear();
-    }
-
     pub fn run(&self) -> Result<SimResult, SimError> {
         run_prepared_simulation(self)
     }
-}
 
-#[derive(Debug, thiserror::Error)]
-pub enum SimError {
-    #[error("empty system: no equations to simulate")]
-    EmptySystem,
+    pub fn check_initialization(&self) -> Result<(), SimError> {
+        check_initialization(&self.model, &self.opts)
+    }
 
-    #[error(
-        "equation/variable mismatch: {n_equations} equations but \
-         {n_states} states + {n_algebraics} algebraics = {} unknowns",
-        n_states + n_algebraics
-    )]
-    EquationMismatch {
-        n_equations: usize,
-        n_states: usize,
-        n_algebraics: usize,
-    },
-
-    #[error(
-        "no ODE equation found for state variable '{0}': \
-         every state needs an equation containing der({0})"
-    )]
-    MissingStateEquation(String),
-
-    #[error("solver error: {0}")]
-    SolverError(String),
-
-    #[error("unsupported function '{name}': {reason}")]
-    UnsupportedFunction { name: String, reason: String },
-
-    #[error("compiled evaluator build failed: {0}")]
-    CompiledEval(String),
-
-    #[error(
-        "mass matrix form could not be derived for DiffSol at row {row} (state '{state_name}', origin '{origin}'): {reason}"
-    )]
-    MassMatrixForm {
-        row: usize,
-        state_name: String,
-        origin: String,
-        reason: String,
-    },
-
-    #[error("timeout after {seconds:.3}s")]
-    Timeout { seconds: f64 },
-}
-
-impl From<TimeoutExceeded> for SimError {
-    fn from(value: TimeoutExceeded) -> Self {
-        Self::Timeout {
-            seconds: value.seconds,
-        }
+    pub fn model(&self) -> &solve::SolveModel {
+        &self.model
     }
 }
 
-impl From<rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError> for SimError {
-    fn from(value: rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError) -> Self {
-        match value {
-            rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError::Timeout {
-                seconds,
-            } => Self::Timeout { seconds },
-            rumoca_sim_core::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
-                row,
-                state_name,
-                origin,
-                reason,
-            } => Self::MassMatrixForm {
-                row,
-                state_name,
-                origin,
-                reason,
-            },
+pub fn build_simulation(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<PreparedSimulation, SimError> {
+    let runtime_context = solve_eval::SimulationContext::new();
+    runtime_context.hydrate_solve_model(model);
+    validate_model(model)?;
+    let state = if model.state_scalar_count() == 0 {
+        tracing::debug!(target: "rumoca_solver_diffsol::bdf_path", "no-state path");
+        PreparedSimulationState::NoState
+    } else if can_use_state_only_bdf(model) {
+        tracing::debug!(
+            target: "rumoca_solver_diffsol::bdf_path",
+            states = model.state_scalar_count(),
+            "state-only BDF path (pure ODE, AD state Jacobian)"
+        );
+        PreparedSimulationState::StateOnly {
+            equilibrium_model: Arc::new(OdeModel::new(model)?),
+            runtime: Arc::new(SolveRuntime::new(model)),
         }
-    }
-}
-
-pub(crate) struct OutputBuffers {
-    times: Vec<f64>,
-    data: Vec<Vec<f64>>,
-    n_total: usize,
-    runtime_names: Vec<String>,
-    runtime_data: Vec<Vec<f64>>,
-}
-
-impl OutputBuffers {
-    fn new(n_total: usize, capacity: usize) -> Self {
-        Self {
-            times: Vec::with_capacity(capacity),
-            data: (0..n_total).map(|_| Vec::with_capacity(capacity)).collect(),
-            n_total,
-            runtime_names: Vec::new(),
-            runtime_data: Vec::new(),
+    } else {
+        tracing::debug!(
+            target: "rumoca_solver_diffsol::bdf_path",
+            states = model.state_scalar_count(),
+            "general/implicit BDF path (AD implicit Jacobian)"
+        );
+        PreparedSimulationState::General {
+            equilibrium_model: Arc::new(OdeModel::new(model)?),
+            runtime: Arc::new(SolveRuntime::new(model)),
         }
-    }
-
-    fn record(&mut self, t: f64, y: &[f64]) {
-        self.times.push(t);
-        for (var_idx, val) in y[..self.n_total].iter().enumerate() {
-            self.data[var_idx].push(*val);
-        }
-    }
-
-    fn set_runtime_channels(&mut self, names: Vec<String>, capacity: usize) {
-        self.runtime_names = names;
-        self.runtime_data = self
-            .runtime_names
-            .iter()
-            .map(|_| Vec::with_capacity(capacity))
-            .collect();
-    }
-
-    fn record_runtime_values(&mut self, values: &[f64]) {
-        if self.runtime_data.is_empty() {
-            return;
-        }
-        for (idx, series) in self.runtime_data.iter_mut().enumerate() {
-            series.push(values.get(idx).copied().unwrap_or(0.0));
-        }
-    }
-
-    fn overwrite_runtime_values_at_time(&mut self, t: f64, values: &[f64]) -> bool {
-        if self.runtime_data.is_empty() || self.times.is_empty() {
-            return false;
-        }
-        let tol = 1.0e-9 * (1.0 + t.abs());
-        let Some((row_idx, _)) = self
-            .times
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, sample_t)| (**sample_t - t).abs() <= tol)
-        else {
-            return false;
-        };
-        for (idx, series) in self.runtime_data.iter_mut().enumerate() {
-            if let Some(slot) = series.get_mut(row_idx) {
-                *slot = values.get(idx).copied().unwrap_or(0.0);
-            }
-        }
-        true
-    }
-}
-
-pub(crate) fn interp_err(t: f64, e: impl std::fmt::Display) -> SimError {
-    SimError::SolverError(format!("Interpolation failed at t={t}: {e}"))
-}
-
-fn scalar_channel_names_from_vars<'a>(
-    vars: impl Iterator<Item = (&'a VarName, &'a Variable)>,
-) -> Vec<String> {
-    let mut names = Vec::new();
-    for (name, var) in vars {
-        let size = var.size();
-        if size <= 1 {
-            names.push(name.as_str().to_string());
-        } else {
-            for i in 1..=size {
-                names.push(format!("{}[{}]", name.as_str(), i));
-            }
-        }
-    }
-    names
-}
-
-fn build_visible_result_names(dae: &Dae) -> Vec<String> {
-    let mut names = build_output_names(dae);
-    names.extend(scalar_channel_names_from_vars(dae.discrete_reals.iter()));
-    names.extend(scalar_channel_names_from_vars(dae.discrete_valued.iter()));
-    names
-}
-
-pub(crate) fn run_timeout_step<F>(budget: &TimeoutBudget, step: F) -> Result<(), SimError>
-where
-    F: FnOnce(),
-{
-    rumoca_sim_core::run_timeout_step::<SimError, _>(budget, step)
-}
-
-pub(crate) fn run_timeout_step_result<F>(budget: &TimeoutBudget, step: F) -> Result<(), SimError>
-where
-    F: FnOnce() -> Result<(), SimError>,
-{
-    rumoca_sim_core::run_timeout_step_result::<SimError, _>(budget, step)
-}
-
-fn collect_discrete_channel_names(dae: &Dae) -> Vec<String> {
-    scalar_channel_names_from_vars(dae.discrete_reals.iter().chain(dae.discrete_valued.iter()))
-}
-
-fn expr_uses_event_dependent_discrete(expr: &Expression) -> bool {
-    match expr {
-        Expression::BuiltinCall { function, args } => {
-            matches!(
-                function,
-                BuiltinFunction::Pre
-                    | BuiltinFunction::Sample
-                    | BuiltinFunction::Edge
-                    | BuiltinFunction::Change
-                    | BuiltinFunction::Reinit
-                    | BuiltinFunction::Initial
-            ) || args.iter().any(expr_uses_event_dependent_discrete)
-        }
-        Expression::FunctionCall { name, args, .. } => {
-            let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-            matches!(
-                short,
-                "previous"
-                    | "hold"
-                    | "Clock"
-                    | "subSample"
-                    | "superSample"
-                    | "shiftSample"
-                    | "backSample"
-                    | "firstTick"
-            ) || args.iter().any(expr_uses_event_dependent_discrete)
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            expr_uses_event_dependent_discrete(lhs) || expr_uses_event_dependent_discrete(rhs)
-        }
-        Expression::Unary { rhs, .. } => expr_uses_event_dependent_discrete(rhs),
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches.iter().any(|(cond, value)| {
-                expr_uses_event_dependent_discrete(cond)
-                    || expr_uses_event_dependent_discrete(value)
-            }) || expr_uses_event_dependent_discrete(else_branch)
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            elements.iter().any(expr_uses_event_dependent_discrete)
-        }
-        Expression::Range { start, step, end } => {
-            expr_uses_event_dependent_discrete(start)
-                || step
-                    .as_ref()
-                    .is_some_and(|value| expr_uses_event_dependent_discrete(value))
-                || expr_uses_event_dependent_discrete(end)
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            expr_uses_event_dependent_discrete(expr)
-                || indices
-                    .iter()
-                    .any(|index| expr_uses_event_dependent_discrete(&index.range))
-                || filter
-                    .as_ref()
-                    .is_some_and(|value| expr_uses_event_dependent_discrete(value))
-        }
-        Expression::Index { base, subscripts } => {
-            expr_uses_event_dependent_discrete(base)
-                || subscripts.iter().any(|sub| match sub {
-                    Subscript::Expr(value) => expr_uses_event_dependent_discrete(value),
-                    _ => false,
-                })
-        }
-        Expression::FieldAccess { base, .. } => expr_uses_event_dependent_discrete(base),
-        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => false,
-    }
-}
-
-fn collect_recomputable_discrete_targets(dae: &Dae) -> HashSet<String> {
-    let mut targets = HashSet::new();
-    for eq in dae.f_z.iter().chain(dae.f_m.iter()) {
-        let Some(lhs) = eq.lhs.as_ref() else {
-            continue;
-        };
-        if expr_uses_event_dependent_discrete(&eq.rhs) {
-            continue;
-        }
-        targets.insert(lhs.as_str().to_string());
-    }
-    targets
-}
-
-fn evaluate_runtime_discrete_channels(
-    dae: &Dae,
-    n_x: usize,
-    param_values: &[f64],
-    times: &[f64],
-    solver_names: &[String],
-    solver_data: &[Vec<f64>],
-) -> (Vec<String>, Vec<Vec<f64>>) {
-    let recomputable_targets = collect_recomputable_discrete_targets(dae);
-    let discrete_names: Vec<String> = collect_discrete_channel_names(dae)
-        .into_iter()
-        .filter(|name| {
-            let base = rumoca_sim_core::ir_dae::component_base_name(name)
-                .unwrap_or_else(|| name.to_string());
-            recomputable_targets.contains(&base)
-        })
-        .collect();
-    if discrete_names.is_empty() || times.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-
-    let solver_name_to_idx: HashMap<&str, usize> = solver_names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| (name.as_str(), idx))
-        .collect();
-    let solver_len = solver_data.len().min(solver_names.len());
-    let mut discrete_data: Vec<Vec<f64>> = discrete_names
-        .iter()
-        .map(|_| Vec::with_capacity(times.len()))
-        .collect();
-    let use_frozen_pre =
-        rumoca_sim_core::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
-    eval::clear_pre_values();
-
-    for (sample_idx, &t_eval) in times.iter().enumerate() {
-        let mut y = vec![0.0; solver_len];
-        for (col_idx, series) in solver_data.iter().enumerate().take(solver_len) {
-            if let Some(value) = series.get(sample_idx).copied() {
-                y[col_idx] = value;
-            }
-        }
-        let settle_input = rumoca_sim_core::EventSettleInput {
-            dae,
-            y: &mut y,
-            p: param_values,
-            n_x,
-            t_eval,
-            is_initial: false,
-        };
-        let env = if use_frozen_pre {
-            rumoca_sim_core::runtime::event::settle_runtime_event_updates_default_frozen_pre(
-                settle_input,
-            )
-        } else {
-            rumoca_sim_core::runtime::event::settle_runtime_event_updates_default(settle_input)
-        };
-        for (channel_idx, name) in discrete_names.iter().enumerate() {
-            let value = env
-                .vars
-                .get(name.as_str())
-                .copied()
-                .or_else(|| {
-                    solver_name_to_idx
-                        .get(name.as_str())
-                        .and_then(|idx| y.get(*idx).copied())
-                })
-                .unwrap_or(0.0);
-            discrete_data[channel_idx].push(value);
-        }
-        eval::seed_pre_values_from_env(&env);
-    }
-
-    (discrete_names, discrete_data)
-}
-
-fn refresh_runtime_observed_solver_channels(
-    dae: &Dae,
-    n_x: usize,
-    param_values: &[f64],
-    times: &[f64],
-    solver_names: &[String],
-    solver_data: &mut [Vec<f64>],
-) {
-    if times.is_empty() || solver_names.is_empty() || solver_data.is_empty() {
-        return;
-    }
-
-    let solver_len = solver_data.len().min(solver_names.len());
-    if solver_len == 0 {
-        return;
-    }
-
-    let n_eq = dae.f_x.len();
-    let projection_masks = (n_eq > 0 && n_x < n_eq && solver_len >= n_eq)
-        .then(|| problem::build_runtime_projection_masks(dae, n_x, n_eq));
-    let projection_runtime_ctx = projection_masks
-        .as_ref()
-        .and_then(|_| problem::build_compiled_runtime_newton_context(dae, n_eq).ok());
-    let projection_direct_seed_ctx = projection_masks
-        .as_ref()
-        .map(|_| problem::build_runtime_direct_seed_context(dae, solver_len, n_x));
-    let projection_timeout = TimeoutBudget::new(None);
-    let mut projection_jacobian = None;
-    let mut projection_seed_env = None;
-    let mut projection_scratch = problem::RuntimeProjectionScratch::default();
-    let use_frozen_pre =
-        rumoca_sim_core::runtime::no_state::no_state_requires_frozen_event_pre_values(dae);
-
-    eval::clear_pre_values();
-    for (sample_idx, &t_eval) in times.iter().enumerate() {
-        let mut y = vec![0.0; solver_len];
-        for (col_idx, series) in solver_data.iter().enumerate().take(solver_len) {
-            if let Some(value) = series.get(sample_idx).copied() {
-                y[col_idx] = value;
-            }
-        }
-
-        // MLS §8 equations are equalities, and connector zero-sum equations
-        // are ordinary equations as well. Re-project continuous algebraics at
-        // the observation instant before refreshing runtime channels so traced
-        // connector/alias algebraics do not lag stale solver interpolation.
-        if let Some(masks) = projection_masks.as_ref() {
-            let y_seed = y.clone();
-            let _ = problem::project_algebraics_with_fixed_states_at_time_with_context_and_cache_in_place(
-                dae,
-                y.as_mut_slice(),
-                problem::RuntimeProjectionContext {
-                    p: param_values,
-                    compiled_runtime: projection_runtime_ctx.as_ref(),
-                    fixed_cols: &masks.fixed_cols,
-                    ignored_rows: &masks.ignored_rows,
-                    branch_local_analog_cols: &masks.branch_local_analog_cols,
-                    direct_seed_ctx: projection_direct_seed_ctx.as_ref(),
-                    direct_seed_env_cache: Some(&mut projection_seed_env),
-                },
-                problem::RuntimeProjectionStep {
-                    y_seed: y_seed.as_slice(),
-                    n_x,
-                    t_eval,
-                    tol: 1.0e-8,
-                    timeout: &projection_timeout,
-                },
-                Some(&mut projection_jacobian),
-                &mut projection_scratch,
-            );
-        }
-
-        // MLS §16.5.1 preserves sample/hold/pre semantics at observation
-        // instants. Refresh the runtime env before emitting traces so observed
-        // algebraic/output channels satisfy their defining equations instead
-        // of stale solver interpolation slots.
-        let settle_input = rumoca_sim_core::EventSettleInput {
-            dae,
-            y: &mut y,
-            p: param_values,
-            n_x,
-            t_eval,
-            is_initial: false,
-        };
-        let env = if use_frozen_pre {
-            rumoca_sim_core::runtime::event::settle_runtime_event_updates_default_frozen_pre(
-                settle_input,
-            )
-        } else {
-            rumoca_sim_core::runtime::event::settle_runtime_event_updates_default(settle_input)
-        };
-
-        for (col_idx, name) in solver_names.iter().enumerate().take(solver_len) {
-            if col_idx < n_x {
-                continue;
-            }
-            let Some(value) = env.vars.get(name.as_str()).copied() else {
-                continue;
-            };
-            if let Some(slot) = solver_data
-                .get_mut(col_idx)
-                .and_then(|series| series.get_mut(sample_idx))
-            {
-                *slot = value;
-            }
-        }
-
-        eval::seed_pre_values_from_env(&env);
-    }
-}
-
-fn merge_runtime_discrete_channels(
-    final_names: &mut Vec<String>,
-    final_data: &mut Vec<Vec<f64>>,
-    discrete_names: Vec<String>,
-    discrete_data: Vec<Vec<f64>>,
-) {
-    if discrete_names.is_empty() {
-        return;
-    }
-    let mut existing_idx: HashMap<String, usize> = final_names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| (name.clone(), idx))
-        .collect();
-
-    for (name, series) in discrete_names.into_iter().zip(discrete_data) {
-        if let Some(idx) = existing_idx.get(&name).copied() {
-            if idx < final_data.len() {
-                final_data[idx] = series;
-            }
-            continue;
-        }
-        let next = final_names.len();
-        existing_idx.insert(name.clone(), next);
-        final_names.push(name);
-        final_data.push(series);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SolverStartupProfile {
-    Default,
-    RobustTinyStep,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TimeoutSolverCaps {
-    max_nonlinear_iters: usize,
-    max_nonlinear_failures: usize,
-    max_error_failures: usize,
-    min_timestep: f64,
-}
-
-fn timeout_solver_caps(
-    max_wall_seconds: Option<f64>,
-    profile: SolverStartupProfile,
-) -> Option<TimeoutSolverCaps> {
-    let secs = max_wall_seconds.filter(|s| s.is_finite() && *s > 0.0)?;
-    if secs <= 1.0 {
-        return Some(match profile {
-            SolverStartupProfile::Default => TimeoutSolverCaps {
-                max_nonlinear_iters: 10,
-                max_nonlinear_failures: 30,
-                max_error_failures: 20,
-                min_timestep: 1e-14,
-            },
-            SolverStartupProfile::RobustTinyStep => TimeoutSolverCaps {
-                max_nonlinear_iters: 30,
-                max_nonlinear_failures: 180,
-                max_error_failures: 90,
-                min_timestep: 1e-16,
-            },
-        });
-    }
-    if secs <= 2.0 {
-        return Some(match profile {
-            SolverStartupProfile::Default => TimeoutSolverCaps {
-                max_nonlinear_iters: 12,
-                max_nonlinear_failures: 50,
-                max_error_failures: 30,
-                min_timestep: 1e-14,
-            },
-            SolverStartupProfile::RobustTinyStep => TimeoutSolverCaps {
-                max_nonlinear_iters: 40,
-                max_nonlinear_failures: 240,
-                max_error_failures: 120,
-                min_timestep: 1e-16,
-            },
-        });
-    }
-    if secs <= 10.0 {
-        return Some(match profile {
-            SolverStartupProfile::Default => TimeoutSolverCaps {
-                max_nonlinear_iters: 20,
-                max_nonlinear_failures: 120,
-                max_error_failures: 80,
-                min_timestep: 1e-14,
-            },
-            SolverStartupProfile::RobustTinyStep => TimeoutSolverCaps {
-                max_nonlinear_iters: 40,
-                max_nonlinear_failures: 800,
-                max_error_failures: 400,
-                min_timestep: 1e-16,
-            },
-        });
-    }
-
-    Some(match profile {
-        SolverStartupProfile::Default => TimeoutSolverCaps {
-            max_nonlinear_iters: 20,
-            max_nonlinear_failures: 1000,
-            max_error_failures: 600,
-            min_timestep: 1e-14,
-        },
-        SolverStartupProfile::RobustTinyStep => TimeoutSolverCaps {
-            max_nonlinear_iters: 40,
-            max_nonlinear_failures: 4000,
-            max_error_failures: 2000,
-            min_timestep: 1e-16,
-        },
+    };
+    Ok(PreparedSimulation {
+        model: model.clone(),
+        opts: opts.clone(),
+        state,
     })
 }
 
-fn apply_timeout_solver_caps<Eqn>(
-    problem: &mut OdeSolverProblem<Eqn>,
-    max_wall_seconds: Option<f64>,
-    profile: SolverStartupProfile,
-) where
-    Eqn: OdeEquations<T = f64>,
-{
-    let Some(caps) = timeout_solver_caps(max_wall_seconds, profile) else {
-        return;
-    };
-    problem.ode_options.max_nonlinear_solver_iterations = problem
-        .ode_options
-        .max_nonlinear_solver_iterations
-        .min(caps.max_nonlinear_iters);
-    problem.ode_options.max_nonlinear_solver_failures = problem
-        .ode_options
-        .max_nonlinear_solver_failures
-        .min(caps.max_nonlinear_failures);
-    problem.ode_options.max_error_test_failures = problem
-        .ode_options
-        .max_error_test_failures
-        .min(caps.max_error_failures);
-    if problem.ode_options.min_timestep < caps.min_timestep {
-        problem.ode_options.min_timestep = caps.min_timestep;
-    }
+pub fn run_prepared_simulation(prepared: &PreparedSimulation) -> Result<SimResult, SimError> {
+    simulate_prepared(prepared)
 }
 
-fn startup_interval_cap(opts: &SimOptions) -> Option<f64> {
-    let dt = opts.dt?;
-    if !dt.is_finite() || dt <= 0.0 {
-        return None;
+pub fn check_prepared_initialization(prepared: &PreparedSimulation) -> Result<(), SimError> {
+    prepared.check_initialization()
+}
+
+pub fn check_initialization(model: &solve::SolveModel, opts: &SimOptions) -> Result<(), SimError> {
+    let runtime_context = solve_eval::SimulationContext::new();
+    runtime_context.hydrate_solve_model(model);
+    validate_model(model)?;
+    if model.state_scalar_count() == 0 {
+        return check_no_state_initialization(model, opts);
     }
-    let span = (opts.t_end - opts.t_start).abs();
-    if span.is_finite() && span > 0.0 {
-        let tiny_interval_threshold = span / 5000.0;
-        if dt < tiny_interval_threshold {
-            return None;
+
+    let equilibrium_model = Arc::new(OdeModel::new(model)?);
+    let mut current_y = model.initial_y.clone();
+    let mut params = model.parameters.clone();
+    initialize_state_runtime_values(
+        model,
+        opts,
+        &equilibrium_model,
+        &mut current_y,
+        &mut params,
+        opts.t_start,
+    )?;
+    let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
+    let problem = build_ode_problem_with_runtime_params_and_initial(
+        model,
+        opts,
+        runtime_params,
+        opts.t_start,
+        current_y.clone(),
+        equilibrium_model.clone(),
+    )?;
+    initial_bdf_state(model, &equilibrium_model, &problem, &current_y, &params).map(|_| ())
+}
+
+pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResult, SimError> {
+    let prepared = build_simulation(model, opts)?;
+    run_prepared_simulation(&prepared)
+}
+
+fn simulate_prepared(prepared: &PreparedSimulation) -> Result<SimResult, SimError> {
+    let model = &prepared.model;
+    let opts = &prepared.opts;
+    solve_eval::reset_solve_row_eval_trace();
+    let result = match &prepared.state {
+        PreparedSimulationState::NoState => simulate_no_state_solve_ir(model, opts),
+        PreparedSimulationState::StateOnly {
+            equilibrium_model,
+            runtime,
+        } => {
+            let dt = opts.dt.unwrap_or((opts.t_end - opts.t_start).abs() / 500.0);
+            let times = rumoca_solver::timeline::build_output_times(opts.t_start, opts.t_end, dt);
+            simulate_state_only_bdf(model, opts, &times, equilibrium_model, runtime)
         }
-    }
-    Some((dt.abs() * 20.0).max(1e-10))
+        PreparedSimulationState::General {
+            equilibrium_model,
+            runtime,
+        } => {
+            let dt = opts.dt.unwrap_or((opts.t_end - opts.t_start).abs() / 500.0);
+            let times = rumoca_solver::timeline::build_output_times(opts.t_start, opts.t_end, dt);
+            simulate_with_states(model, opts, times, equilibrium_model, runtime)
+        }
+    };
+    solve_eval::trace_solve_row_eval_snapshot("bdf");
+    result
 }
 
-fn nonlinear_solver_tolerance(opts: &SimOptions, profile: SolverStartupProfile) -> f64 {
-    let base = opts.atol.max(opts.rtol).max(1.0e-12);
-    match profile {
-        SolverStartupProfile::Default => (base * 10.0).clamp(1.0e-8, 1.0e-3),
-        SolverStartupProfile::RobustTinyStep => (base * 100.0).clamp(1.0e-7, 1.0e-2),
-    }
-}
-
-fn configure_solver_problem_with_profile<Eqn>(
-    problem: &mut OdeSolverProblem<Eqn>,
+fn simulate_with_states(
+    model: &solve::SolveModel,
     opts: &SimOptions,
-    profile: SolverStartupProfile,
-) where
-    Eqn: OdeEquations<T = f64>,
+    times: Vec<f64>,
+    equilibrium_model: &Arc<OdeModel>,
+    runtime: &Arc<SolveRuntime>,
+) -> Result<SimResult, SimError> {
+    let mut params = model.parameters.clone();
+    let mut data = vec![Vec::with_capacity(times.len()); model.visible_names.len()];
+    let mut recorded_times = Vec::with_capacity(times.len());
+    let mut current_t = opts.t_start;
+    let mut current_y = model.initial_y.clone();
+    initialize_state_runtime_values(
+        model,
+        opts,
+        equilibrium_model,
+        &mut current_y,
+        &mut params,
+        current_t,
+    )?;
+    record_sample_if_new(
+        Some(runtime),
+        model,
+        &current_y,
+        &params,
+        &mut recorded_times,
+        &mut data,
+        current_t,
+    )?;
+
+    // Shared runtime params captured by ODE closures and updated by event handlers.
+    let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
+    // Build the ODE problem once — the persistent BDF solver borrows it for the
+    // full simulation lifetime.
+    let problem = build_ode_problem_with_runtime_params_and_initial(
+        model,
+        opts,
+        runtime_params.clone(),
+        current_t,
+        current_y.clone(),
+        equilibrium_model.clone(),
+    )?;
+    let state = initial_bdf_state(model, equilibrium_model, &problem, &current_y, &params)?;
+    let nl_solver =
+        NewtonNonlinearSolver::new(LinearSolver::default(), BacktrackingLineSearch::default());
+    // One BDF solver that lives for the whole simulation. After zero-crossing
+    // events we pin the state to root time (state_mut_back), apply Modelica
+    // event semantics, then write updated (t, y, params) back via state_mut()
+    // so BDF history is preserved when only params change and naturally
+    // reinitialised for state-jump events.
+    let mut solver = solver_call("BDF new", || {
+        diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
+    })?;
+
+    match simulate_state_targets(
+        model,
+        opts,
+        &times,
+        equilibrium_model,
+        &runtime_params,
+        &mut solver,
+        StateTrajectory {
+            params: &mut params,
+            data: &mut data,
+            recorded_times: &mut recorded_times,
+            current_t: &mut current_t,
+            current_y: &mut current_y,
+            runtime,
+        },
+    ) {
+        Ok(()) => Ok(build_sim_result_from_solve_model(
+            model,
+            recorded_times,
+            data,
+            None,
+        )),
+        Err(SimError::Terminated { time, message }) => {
+            current_t = time;
+            refresh_observation_discrete_rows(
+                model,
+                &equilibrium_model.runtime_state,
+                &mut current_y,
+                &mut params,
+                current_t,
+                opts.atol.max(1.0e-10),
+            )?;
+            runtime_params.borrow_mut().copy_from_slice(&params);
+            record_sample_if_new(
+                Some(runtime),
+                model,
+                &current_y,
+                &params,
+                &mut recorded_times,
+                &mut data,
+                current_t,
+            )?;
+            Ok(build_sim_result_from_solve_model(
+                model,
+                recorded_times,
+                data,
+                Some(SimTermination { time, message }),
+            ))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn simulate_state_only_bdf(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+    times: &[f64],
+    equilibrium_model: &Arc<OdeModel>,
+    runtime: &Arc<SolveRuntime>,
+) -> Result<SimResult, SimError> {
+    let mut params = model.parameters.clone();
+    let mut data = vec![Vec::with_capacity(times.len()); model.visible_names.len()];
+    let mut recorded_times = Vec::with_capacity(times.len());
+    let mut current_t = opts.t_start;
+    let mut current_y = model.initial_y.clone();
+    initialize_state_runtime_values(
+        model,
+        opts,
+        equilibrium_model,
+        &mut current_y,
+        &mut params,
+        current_t,
+    )?;
+    let mut current_state = current_y[..model.state_scalar_count()].to_vec();
+    record_sample_if_new(
+        Some(runtime),
+        model,
+        &current_y,
+        &params,
+        &mut recorded_times,
+        &mut data,
+        current_t,
+    )?;
+
+    let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
+    let eval_counters = new_bdf_eval_counters();
+    let problem = build_state_ode_problem_with_runtime_params_and_initial(
+        model,
+        opts,
+        runtime_params.clone(),
+        current_t,
+        current_state.clone(),
+        eval_counters.clone(),
+        runtime.clone(),
+    )?;
+    let state = initial_state_only_bdf_state(runtime, &problem, &current_state, &params, opts)?;
+    let nl_solver =
+        NewtonNonlinearSolver::new(LinearSolver::default(), BacktrackingLineSearch::default());
+    let mut solver = solver_call("BDF new", || {
+        diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
+    })?;
+    let mut stop_schedule = SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end);
+
+    run_state_only_bdf_samples(StateOnlyBdfLoop {
+        model,
+        opts,
+        runtime,
+        equilibrium_model,
+        runtime_params: &runtime_params,
+        solver: &mut solver,
+        current_state: &mut current_state,
+        current_y: &mut current_y,
+        params: &mut params,
+        current_t: &mut current_t,
+        stop_schedule: &mut stop_schedule,
+        recorded_times: &mut recorded_times,
+        data: &mut data,
+        times,
+    })?;
+
+    trace_bdf_eval_counter_snapshot("state-only-bdf", &eval_counters);
+
+    Ok(build_sim_result_from_solve_model(
+        model,
+        recorded_times,
+        data,
+        None,
+    ))
+}
+
+struct StateOnlyBdfLoop<'a, S> {
+    model: &'a solve::SolveModel,
+    opts: &'a SimOptions,
+    runtime: &'a SolveRuntime,
+    equilibrium_model: &'a OdeModel,
+    runtime_params: &'a RuntimeParameters,
+    solver: &'a mut S,
+    current_state: &'a mut Vec<f64>,
+    current_y: &'a mut Vec<f64>,
+    params: &'a mut Vec<f64>,
+    current_t: &'a mut f64,
+    stop_schedule: &'a mut SolveStopSchedule,
+    recorded_times: &'a mut Vec<f64>,
+    data: &'a mut Vec<Vec<f64>>,
+    times: &'a [f64],
+}
+
+fn run_state_only_bdf_samples<'a, Eqn, S>(mut ctx: StateOnlyBdfLoop<'_, S>) -> Result<(), SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
 {
-    problem.ode_options.max_nonlinear_solver_iterations = 20;
-    problem.ode_options.max_nonlinear_solver_failures = 1000;
-    problem.ode_options.max_error_test_failures = 600;
-    problem.ode_options.nonlinear_solver_tolerance = nonlinear_solver_tolerance(opts, profile);
-    problem.ode_options.min_timestep = 1e-16;
-    let span = (opts.t_end - opts.t_start).abs();
-    let interval_cap = startup_interval_cap(opts);
-    if span.is_finite() && span > 0.0 {
-        problem.h0 = (span / 500.0).max(1e-6);
-        if let Some(cap) = interval_cap {
-            problem.h0 = problem.h0.min(cap);
+    for &target in ctx.times {
+        if ctx
+            .recorded_times
+            .last()
+            .is_some_and(|last| sample_time_match_with_tol(*last, target))
+        {
+            continue;
         }
-    } else if let Some(cap) = interval_cap {
-        problem.h0 = cap;
-    }
-
-    if profile == SolverStartupProfile::RobustTinyStep {
-        problem.ode_options.max_nonlinear_solver_iterations = 40;
-        problem.ode_options.max_nonlinear_solver_failures = 4000;
-        problem.ode_options.max_error_test_failures = 2000;
-        problem.ode_options.nonlinear_solver_tolerance = nonlinear_solver_tolerance(opts, profile);
-        if span.is_finite() && span > 0.0 {
-            problem.h0 = (span / 5_000_000.0).max(1e-10);
-        }
-    }
-
-    apply_timeout_solver_caps(problem, opts.max_wall_seconds, profile);
-}
-
-pub(crate) fn build_parameter_values(
-    dae: &Dae,
-    budget: &TimeoutBudget,
-) -> Result<Vec<f64>, SimError> {
-    problem::default_params_with_budget(dae, budget)
-}
-
-fn parameter_slice_range(dae: &Dae, target: &str) -> Option<(usize, usize, usize)> {
-    let mut start = 0usize;
-    for (name, var) in &dae.parameters {
-        let size = var.size();
-        if name.as_str() == target {
-            return Some((start, start + size, size));
-        }
-        start += size;
-    }
-    None
-}
-
-fn apply_parameter_overrides(
-    dae: &Dae,
-    params: &mut [f64],
-    overrides: &IndexMap<String, Vec<f64>>,
-) -> Result<(), SimError> {
-    for (name, values) in overrides {
-        let Some((start, end, expected_len)) = parameter_slice_range(dae, name.as_str()) else {
-            return Err(SimError::SolverError(format!(
-                "unknown parameter override '{name}'"
-            )));
-        };
-        if values.len() != expected_len {
-            return Err(SimError::SolverError(format!(
-                "parameter override '{name}' expected {expected_len} value(s), got {}",
-                values.len()
-            )));
-        }
-        params[start..end].copy_from_slice(values);
+        advance_state_only_bdf_sample(&mut ctx, target)?;
     }
     Ok(())
 }
 
-fn build_parameter_values_with_overrides(
-    dae: &Dae,
-    budget: &TimeoutBudget,
-    overrides: &IndexMap<String, Vec<f64>>,
-) -> Result<Vec<f64>, SimError> {
-    let mut params = build_parameter_values(dae, budget)?;
-    apply_parameter_overrides(dae, params.as_mut_slice(), overrides)?;
-    Ok(params)
-}
-
-const DUMMY_STATE_NAME: &str = "_rumoca_dummy_state";
-
-pub(crate) fn inject_dummy_state(dae: &mut Dae) {
-    let var_name = VarName::new(DUMMY_STATE_NAME);
-    let mut var = dae::Variable::new(var_name.clone());
-    var.start = Some(Expression::Literal(Literal::Real(0.0)));
-    var.fixed = Some(true);
-    dae.states.insert(var_name, var);
-
-    let der_expr = Expression::BuiltinCall {
-        function: rumoca_sim_core::ir_dae::BuiltinFunction::Der,
-        args: vec![Expression::VarRef {
-            name: VarName::new(DUMMY_STATE_NAME),
-            subscripts: vec![],
-        }],
-    };
-    let eq = dae::Equation {
-        lhs: None,
-        rhs: der_expr,
-        span: Span::DUMMY,
-        scalar_count: 1,
-        origin: "dummy_state_injection".to_string(),
-    };
-    dae.f_x.push(eq);
-}
-
-pub(crate) type MassMatrix = rumoca_sim_core::simulation::pipeline::MassMatrix;
-
-pub(crate) fn debug_print_after_expand(dae: &Dae) {
-    if std::env::var("RUMOCA_DEBUG").is_err() {
-        return;
-    }
-    eprintln!("[after expand_compound_derivatives] equations:");
-    for (i, eq) in dae.f_x.iter().enumerate() {
-        eprintln!("  eq[{}]: {:?}", i, eq.rhs);
-    }
-    eprintln!(
-        "[after expand_compound_derivatives] algebraics: {:?}",
-        dae.algebraics
-            .keys()
-            .map(|n| n.as_str())
-            .collect::<Vec<_>>()
-    );
-    eprintln!(
-        "[after expand_compound_derivatives] states: {:?}",
-        dae.states.keys().map(|n| n.as_str()).collect::<Vec<_>>()
-    );
-}
-
-pub(crate) fn debug_print_prepare_counts(dae: &Dae) {
-    if std::env::var("RUMOCA_DEBUG").is_ok() {
-        eprintln!(
-            "[prepare_dae] states={}, algebraics={}, eqs={}",
-            dae.states.len(),
-            dae.algebraics.len(),
-            dae.f_x.len()
-        );
-    }
-}
-
-pub(crate) fn debug_print_mass_matrix(dae: &Dae, mass_matrix: &MassMatrix) {
-    if std::env::var("RUMOCA_DEBUG").is_err() {
-        return;
-    }
-    let state_names: Vec<_> = dae.states.keys().map(|n| n.as_str()).collect();
-    for (i, name) in state_names.iter().enumerate() {
-        let diag = mass_matrix
-            .get(i)
-            .and_then(|row| row.get(i))
-            .copied()
-            .unwrap_or(1.0);
-        if (diag - 1.0).abs() > 1e-10 {
-            eprintln!("[mass_matrix] state[{i}] {name:?} diag={diag}");
-        }
-        if let Some(row) = mass_matrix.get(i) {
-            for (j, coeff) in row
-                .iter()
-                .copied()
-                .enumerate()
-                .filter(|(j, coeff)| *j != i && coeff.abs() > 1e-10)
-            {
-                let other = state_names.get(j).copied().unwrap_or("<unknown>");
-                eprintln!("[mass_matrix] state[{i}] {name:?} offdiag[{j}] {other:?}={coeff}");
-            }
-        }
-    }
-}
-
-fn sim_introspect_enabled() -> bool {
-    rumoca_sim_core::simulation::diagnostics::sim_introspect_enabled()
-}
-
-pub(crate) fn sim_trace_enabled() -> bool {
-    rumoca_sim_core::simulation::diagnostics::sim_trace_enabled()
-}
-
-fn dump_hotpath_stats_if_enabled() {
-    let Some(stats) = rumoca_sim_core::runtime::hotpath_stats::snapshot() else {
-        return;
-    };
-    let per_step = |count: u64| {
-        if stats.solver_steps == 0 {
-            0.0
-        } else {
-            count as f64 / stats.solver_steps as f64
-        }
-    };
-    let per_eval = |count: u64| {
-        if stats.no_state_eval_points == 0 {
-            0.0
-        } else {
-            count as f64 / stats.no_state_eval_points as f64
-        }
-    };
-    eprintln!(
-        concat!(
-            "[sim-hotpath] solver_steps={} root_hits={} no_state_eval_points={} no_state_settles={} ",
-            "clock_edge_evals={} sample_active_checks={} sample_active_true={} ",
-            "held_value_reads={} left_limit_reads={} ",
-            "explicit_clock_inference={} clock_alias_source_scans={} ",
-            "per_step(clock_edge={:.2} sample_active={:.2} held={:.2} left_limit={:.2} infer={:.2} alias_scan={:.2}) ",
-            "per_eval(clock_edge={:.2} sample_active={:.2} held={:.2} left_limit={:.2} infer={:.2} alias_scan={:.2} settles={:.2})"
-        ),
-        stats.solver_steps,
-        stats.root_hits,
-        stats.no_state_eval_points,
-        stats.no_state_settles,
-        stats.clock_edge_evals,
-        stats.sample_active_checks,
-        stats.sample_active_true,
-        stats.held_value_reads,
-        stats.left_limit_reads,
-        stats.explicit_clock_inference,
-        stats.clock_alias_source_scans,
-        per_step(stats.clock_edge_evals),
-        per_step(stats.sample_active_checks),
-        per_step(stats.held_value_reads),
-        per_step(stats.left_limit_reads),
-        per_step(stats.explicit_clock_inference),
-        per_step(stats.clock_alias_source_scans),
-        per_eval(stats.clock_edge_evals),
-        per_eval(stats.sample_active_checks),
-        per_eval(stats.held_value_reads),
-        per_eval(stats.left_limit_reads),
-        per_eval(stats.explicit_clock_inference),
-        per_eval(stats.clock_alias_source_scans),
-        per_eval(stats.no_state_settles),
-    );
-}
-
-fn truncate_debug(s: &str, max_chars: usize) -> String {
-    rumoca_sim_core::simulation::diagnostics::truncate_debug(s, max_chars)
-}
-
-fn validate_no_initial_division_by_zero(
-    dae: &Dae,
-    param_values: &[f64],
-    t_start: f64,
-) -> Result<(), SimError> {
-    let mut y0 = vec![0.0; dae.f_x.len()];
-    problem::initialize_state_vector_with_params(dae, &mut y0, param_values);
-    let pre_snapshot = eval::snapshot_pre_values();
-    let env = rumoca_sim_core::runtime::startup::build_initial_section_env_strict(
-        dae,
-        y0.as_mut_slice(),
-        param_values,
-        t_start,
-    );
-    eval::restore_pre_values(pre_snapshot);
-    let env = env.map_err(SimError::SolverError)?;
-    // MLS §8.6: startup validation must evaluate `initial()` as true.
-    let eval_initial_scalar = |expr: &dae::Expression, env: &eval::VarEnv<f64>| match expr {
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Initial,
-            args,
-        } if args.is_empty() => Some(1.0),
-        _ => rumoca_sim_core::runtime::scalar_eval::eval_scalar_expr_fast(expr, env),
-    };
-    let eval_initial_bool = |expr: &dae::Expression, env: &eval::VarEnv<f64>| match expr {
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Initial,
-            args,
-        } if args.is_empty() => Some(true),
-        _ => rumoca_sim_core::runtime::scalar_eval::eval_scalar_bool_expr_fast(expr, env),
-    };
-    if let Some(site) =
-        rumoca_sim_core::simulation::diagnostics::find_initial_division_by_zero_site_with_callbacks(
-            dae,
-            &env,
-            eval_initial_scalar,
-            eval_initial_bool,
+fn advance_state_only_bdf_sample<'a, Eqn, S>(
+    ctx: &mut StateOnlyBdfLoop<'_, S>,
+    target: f64,
+) -> Result<(), SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let tol = ctx.opts.atol.max(1.0e-12);
+    while target > *ctx.current_t + tol {
+        let (stop_time, event_stop) = next_runtime_event_stop(
+            ctx.model,
+            &ctx.equilibrium_model.runtime_state,
+            ctx.current_y,
+            ctx.params,
+            ctx.stop_schedule,
+            *ctx.current_t,
+            target,
         )
-    {
-        let msg = format!(
-            "division by zero at initialization (t={}): (a={}) / (b={}), divisor expression is: {}, equation {}[{}] origin='{}' rhs={}",
-            t_start,
-            site.expr_site.numerator,
-            site.expr_site.denominator,
-            site.expr_site.divisor_expr,
-            site.equation_set,
-            site.equation_index,
-            site.origin,
-            site.rhs_expr,
-        );
-        return Err(SimError::SolverError(msg));
+        .map_err(|err| SimError::SolveIr(err.to_string()))?;
+        advance_state_only_to_target(StateOnlyAdvance {
+            model: ctx.model,
+            opts: ctx.opts,
+            runtime: ctx.runtime,
+            equilibrium_model: ctx.equilibrium_model,
+            runtime_params: ctx.runtime_params,
+            solver: ctx.solver,
+            current_state: ctx.current_state,
+            current_y: ctx.current_y,
+            params: ctx.params,
+            current_t: ctx.current_t,
+            target: stop_time,
+            recorded_times: ctx.recorded_times,
+            data: ctx.data,
+        })?;
+        if apply_state_only_bdf_event_if_due(ctx, event_stop, stop_time, target)? {
+            continue;
+        }
+        if event_stop.is_none() {
+            break;
+        }
     }
     Ok(())
 }
 
-pub(crate) fn dump_missing_state_equation_diagnostics(dae: &Dae, missing_state: &str) {
-    rumoca_sim_core::simulation::diagnostics::dump_missing_state_equation_diagnostics(
-        dae,
-        missing_state,
-    );
+fn apply_state_only_bdf_event_if_due<'a, Eqn, S>(
+    ctx: &mut StateOnlyBdfLoop<'_, S>,
+    event_stop: Option<RuntimeEventStop>,
+    stop_time: f64,
+    target: f64,
+) -> Result<bool, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let Some(event) = event_stop else {
+        return Ok(false);
+    };
+    if !sample_time_match_with_tol(*ctx.current_t, stop_time) {
+        return Ok(false);
+    }
+    apply_state_only_scheduled_time_event(
+        StateOnlyEventContext {
+            model: ctx.model,
+            opts: ctx.opts,
+            runtime: ctx.runtime,
+            equilibrium_model: ctx.equilibrium_model,
+            runtime_params: ctx.runtime_params,
+            solver: ctx.solver,
+            current_state: ctx.current_state,
+            current_y: ctx.current_y,
+            params: ctx.params,
+            current_t: ctx.current_t,
+        },
+        event,
+        target,
+        ObservationBuffers {
+            recorded_times: ctx.recorded_times,
+            data: ctx.data,
+        },
+    )?;
+    ctx.stop_schedule.advance_past(*ctx.current_t);
+    Ok(true)
 }
 
-fn dump_transformed_dae_for_diffsol(dae: &Dae, mass_matrix: &MassMatrix) {
-    rumoca_sim_core::simulation::diagnostics::dump_transformed_dae_for_solver(dae, mass_matrix);
+struct StateOnlyEventContext<'a, S> {
+    model: &'a solve::SolveModel,
+    opts: &'a SimOptions,
+    runtime: &'a SolveRuntime,
+    equilibrium_model: &'a OdeModel,
+    runtime_params: &'a RuntimeParameters,
+    solver: &'a mut S,
+    current_state: &'a mut Vec<f64>,
+    current_y: &'a mut Vec<f64>,
+    params: &'a mut Vec<f64>,
+    current_t: &'a mut f64,
 }
 
-fn dump_initial_vector_for_diffsol(dae: &Dae, param_values: &[f64]) {
-    let n_total = dae.f_x.len();
-    let mut y0 = vec![0.0; n_total];
-    problem::initialize_state_vector_with_params(dae, &mut y0, param_values);
-    let mut names = build_output_names(dae);
-    names.truncate(n_total);
-    rumoca_sim_core::simulation::diagnostics::dump_initial_vector_for_solver(&names, &y0);
+fn apply_state_only_scheduled_time_event<'a, Eqn, S>(
+    ctx: StateOnlyEventContext<'_, S>,
+    event: RuntimeEventStop,
+    target: f64,
+    observations: ObservationBuffers<'_>,
+) -> Result<(), SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let tol = ctx.opts.atol.max(1.0e-10);
+    prepare_fixed_event_left_limit(
+        ctx.model,
+        ctx.equilibrium_model,
+        ctx.current_y,
+        ctx.params,
+        *ctx.current_t,
+        tol,
+        event,
+    )?;
+    apply_event_updates(
+        ctx.model,
+        ctx.equilibrium_model,
+        ctx.current_y,
+        ctx.params,
+        *ctx.current_t,
+        tol,
+        event.pre_mode,
+    )?;
+    *ctx.current_t = EventObservation {
+        runtime: Some(ctx.runtime),
+        model: ctx.model,
+        equilibrium_model: ctx.equilibrium_model,
+        y: ctx.current_y,
+        params: ctx.params,
+        tol,
+        recorded_times: observations.recorded_times,
+        data: observations.data,
+    }
+    .record_time_event(
+        *ctx.current_t,
+        time_event_right_limit_cap(event, target, ctx.opts.t_end),
+        event,
+    )?;
+    let t_right = *ctx.current_t;
+    settle_algebraics_and_relation_memory(
+        ctx.equilibrium_model,
+        ctx.current_y,
+        ctx.params,
+        t_right,
+        ctx.model.state_scalar_count(),
+        &ctx.model
+            .problem
+            .solve_layout
+            .relation_memory_parameter_indices,
+        tol,
+    )?;
+    ctx.current_state
+        .copy_from_slice(&ctx.current_y[..ctx.model.state_scalar_count()]);
+    let dy = ctx.runtime.eval_state_derivatives(
+        t_right,
+        ctx.current_state,
+        ctx.params,
+        tol,
+        EVENT_UPDATE_MAX_ITERS,
+    )?;
+    reset_solver_state(
+        ctx.solver,
+        ctx.runtime_params,
+        ctx.current_state,
+        &dy,
+        ctx.params,
+        *ctx.current_t,
+        rumoca_solver::event_solver_step_cap(ctx.opts.dt),
+    )
 }
 
-fn dump_initial_residual_summary_for_diffsol(
-    dae: &Dae,
-    n_x: usize,
-    param_values: &[f64],
-) -> Result<(), SimError> {
-    if !sim_introspect_enabled() {
+fn initial_state_only_bdf_state<Eqn>(
+    runtime: &SolveRuntime,
+    problem: &diffsol::OdeSolverProblem<Eqn>,
+    state_y: &[f64],
+    params: &[f64],
+    opts: &SimOptions,
+) -> Result<BdfState<Vector>, SimError>
+where
+    Eqn: diffsol::OdeEquationsImplicit<
+            M = Matrix,
+            V = Vector,
+            T = Scalar,
+            C = <Matrix as MatrixCommon>::C,
+        >,
+{
+    let mut state = BdfState::<Vector>::new_without_initialise(problem)
+        .map_err(|err| SimError::SolverError(format!("BDF state init: {err}")))?;
+    let dy = runtime.eval_state_derivatives(problem.t0, state_y, params, opts.atol, 256)?;
+    {
+        let state_ref = state.as_mut();
+        state_ref.y.as_mut_slice().copy_from_slice(state_y);
+        state_ref.dy.as_mut_slice().copy_from_slice(&dy);
+        *state_ref.t = problem.t0;
+    }
+    state.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
+    Ok(state)
+}
+
+struct StateOnlyAdvance<'a, S> {
+    model: &'a solve::SolveModel,
+    opts: &'a SimOptions,
+    runtime: &'a SolveRuntime,
+    equilibrium_model: &'a OdeModel,
+    runtime_params: &'a RuntimeParameters,
+    solver: &'a mut S,
+    current_state: &'a mut Vec<f64>,
+    current_y: &'a mut Vec<f64>,
+    params: &'a mut Vec<f64>,
+    current_t: &'a mut f64,
+    target: f64,
+    recorded_times: &'a mut Vec<f64>,
+    data: &'a mut Vec<Vec<f64>>,
+}
+
+fn advance_state_only_to_target<'a, Eqn, S>(ctx: StateOnlyAdvance<'_, S>) -> Result<(), SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    if ctx.target <= *ctx.current_t {
         return Ok(());
     }
-    let n_total = dae.f_x.len();
-    let mut y0 = vec![0.0; n_total];
-    problem::initialize_state_vector_with_params(dae, &mut y0, param_values);
-    dump_parameter_vector_for_diffsol(dae, param_values);
-    let mut rhs = vec![0.0; n_total];
-    let compiled_runtime = problem::build_compiled_runtime_newton_context(dae, n_total)?;
-    problem::eval_compiled_runtime_residual(&compiled_runtime, &y0, param_values, 0.0, &mut rhs);
-    rumoca_sim_core::simulation::diagnostics::dump_initial_residual_summary(dae, &rhs, n_x);
+    set_solver_stop_time(ctx.solver, ctx.target)?;
+    loop {
+        match solver_call("BDF step", || ctx.solver.step()) {
+            Ok(OdeSolverStopReason::TstopReached) => {
+                ctx.current_state
+                    .copy_from_slice(ctx.solver.state().y.as_slice());
+                *ctx.current_t = ctx.solver.state().t;
+                *ctx.current_y = ctx.runtime.full_solver_y(
+                    *ctx.current_t,
+                    ctx.current_state,
+                    ctx.params,
+                    ctx.opts.atol.max(1.0e-10),
+                    256,
+                )?;
+                refresh_observation_discrete_rows(
+                    ctx.model,
+                    &ctx.equilibrium_model.runtime_state,
+                    ctx.current_y,
+                    ctx.params,
+                    *ctx.current_t,
+                    ctx.opts.atol.max(1.0e-10),
+                )?;
+                record_sample_if_new(
+                    Some(ctx.runtime),
+                    ctx.model,
+                    ctx.current_y,
+                    ctx.params,
+                    ctx.recorded_times,
+                    ctx.data,
+                    *ctx.current_t,
+                )?;
+                return Ok(());
+            }
+            Ok(OdeSolverStopReason::InternalTimestep) => continue,
+            Ok(OdeSolverStopReason::RootFound(t_root, root_idx)) => {
+                trace_bdf_state_root(ctx.runtime, ctx.current_state, ctx.params, t_root, root_idx);
+                handle_state_only_root(ctx, t_root)?;
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn handle_state_only_root<'a, Eqn, S>(
+    ctx: StateOnlyAdvance<'_, S>,
+    t_root: f64,
+) -> Result<(), SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    ctx.solver
+        .state_mut_back(t_root)
+        .map_err(|e| SimError::SolverError(format!("state_mut_back: {e}")))?;
+    ctx.current_state
+        .copy_from_slice(ctx.solver.state().y.as_slice());
+    *ctx.current_t = ctx.solver.state().t;
+    *ctx.current_y = ctx.runtime.full_solver_y(
+        *ctx.current_t,
+        ctx.current_state,
+        ctx.params,
+        ctx.opts.atol.max(1.0e-10),
+        256,
+    )?;
+    record_sample_if_new(
+        Some(ctx.runtime),
+        ctx.model,
+        ctx.current_y,
+        ctx.params,
+        ctx.recorded_times,
+        ctx.data,
+        *ctx.current_t,
+    )?;
+
+    let event_pre_y = ctx.current_y.clone();
+    let event_pre_p = ctx.params.clone();
+    let right_t = event_right_limit_time(*ctx.current_t).min(ctx.target);
+    let dt = right_t - *ctx.current_t;
+    if dt > 0.0 {
+        let dy = ctx.runtime.eval_state_derivatives(
+            *ctx.current_t,
+            ctx.current_state,
+            ctx.params,
+            ctx.opts.atol.max(1.0e-10),
+            256,
+        )?;
+        for (slot, derivative) in ctx.current_state.iter_mut().zip(dy) {
+            *slot += dt * derivative;
+        }
+        *ctx.current_t = right_t;
+    }
+    *ctx.current_y = ctx.runtime.full_solver_y(
+        *ctx.current_t,
+        ctx.current_state,
+        ctx.params,
+        ctx.opts.atol.max(1.0e-10),
+        256,
+    )?;
+    apply_event_updates_with_event_pre(EventUpdateInput {
+        model: ctx.model,
+        ode_model: ctx.equilibrium_model,
+        y: ctx.current_y,
+        p: ctx.params,
+        t: *ctx.current_t,
+        tol: ctx.opts.atol.max(1.0e-10),
+        event_pre_y: &event_pre_y,
+        event_pre_p: &event_pre_p,
+    })?;
+    settle_prepared_state(
+        ctx.model,
+        ctx.equilibrium_model,
+        ctx.current_y,
+        ctx.params,
+        *ctx.current_t,
+        ctx.opts,
+    )?;
+    ctx.current_state
+        .copy_from_slice(&ctx.current_y[..ctx.model.state_scalar_count()]);
+    let dy = ctx.runtime.eval_state_derivatives(
+        *ctx.current_t,
+        ctx.current_state,
+        ctx.params,
+        ctx.opts.atol.max(1.0e-10),
+        256,
+    )?;
+    reset_solver_state(
+        ctx.solver,
+        ctx.runtime_params,
+        ctx.current_state,
+        &dy,
+        ctx.params,
+        *ctx.current_t,
+        rumoca_solver::event_solver_step_cap(ctx.opts.dt),
+    )?;
+    record_sample_if_new(
+        Some(ctx.runtime),
+        ctx.model,
+        ctx.current_y,
+        ctx.params,
+        ctx.recorded_times,
+        ctx.data,
+        *ctx.current_t,
+    )
+}
+
+fn trace_bdf_state_root(
+    runtime: &SolveRuntime,
+    state: &[f64],
+    params: &[f64],
+    root_t: f64,
+    root_idx: usize,
+) {
+    if !tracing::enabled!(target: "rumoca_solver_diffsol::bdf", tracing::Level::DEBUG) {
+        return;
+    }
+    let roots = runtime
+        .eval_root_conditions(root_t, state, params, 1.0e-10, EVENT_UPDATE_MAX_ITERS)
+        .unwrap_or_default();
+    let near = roots
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| value.abs() <= 1.0e-5)
+        .map(|(idx, value)| format!("{idx}:{value:.3e}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    tracing::debug!(target: "rumoca_solver_diffsol::bdf", "state-root t={root_t:.12} root_idx={root_idx} near=[{near}]");
+}
+
+struct StateTrajectory<'a> {
+    params: &'a mut Vec<f64>,
+    data: &'a mut Vec<Vec<f64>>,
+    recorded_times: &'a mut Vec<f64>,
+    current_t: &'a mut f64,
+    current_y: &'a mut Vec<f64>,
+    runtime: &'a SolveRuntime,
+}
+
+// SPEC_0021: Exception - central BDF event loop keeps step advancement,
+// zero-crossing handling, and sample recording in a single ordered routine.
+#[allow(clippy::too_many_lines)]
+fn simulate_state_targets<'a, Eqn, S>(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+    times: &[f64],
+    equilibrium_model: &OdeModel,
+    runtime_params: &RuntimeParameters,
+    solver: &mut S,
+    state: StateTrajectory<'_>,
+) -> Result<(), SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let mut stop_schedule = SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end);
+    let mut pending_root_t: Option<f64> = None;
+
+    for &target in times {
+        if state
+            .recorded_times
+            .last()
+            .is_some_and(|last| sample_time_match_with_tol(*last, target))
+        {
+            continue;
+        }
+        let tol = opts.atol.max(1.0e-12);
+        while target > *state.current_t + tol {
+            match resolve_pending_root(
+                &mut pending_root_t,
+                advance_context(
+                    model,
+                    opts,
+                    equilibrium_model,
+                    runtime_params,
+                    state.runtime,
+                ),
+                AdvanceState {
+                    current_y: state.current_y,
+                    params: state.params,
+                    current_t: state.current_t,
+                },
+                target,
+                solver,
+                &mut stop_schedule,
+            )? {
+                PendingRootAction::Break => break,
+                PendingRootAction::Continue => continue,
+                PendingRootAction::None => {}
+            }
+
+            let (stop_time, event_stop) = next_runtime_event_stop(
+                model,
+                &equilibrium_model.runtime_state,
+                state.current_y,
+                state.params,
+                &mut stop_schedule,
+                *state.current_t,
+                target,
+            )?;
+            let mut deferred_root: Option<f64> = None;
+            let hit_root = advance_to_target_once(
+                advance_context(
+                    model,
+                    opts,
+                    equilibrium_model,
+                    runtime_params,
+                    state.runtime,
+                ),
+                AdvanceState {
+                    current_y: state.current_y,
+                    params: state.params,
+                    current_t: state.current_t,
+                },
+                stop_time,
+                event_stop,
+                solver,
+                &mut deferred_root,
+            )?;
+            if let Some(prt) = deferred_root {
+                pending_root_t = Some(prt);
+            }
+            if let Some(event) = event_stop
+                && sample_time_match_with_tol(*state.current_t, stop_time)
+            {
+                apply_scheduled_time_event(
+                    advance_context(
+                        model,
+                        opts,
+                        equilibrium_model,
+                        runtime_params,
+                        state.runtime,
+                    ),
+                    AdvanceState {
+                        current_y: state.current_y,
+                        params: state.params,
+                        current_t: state.current_t,
+                    },
+                    event,
+                    target,
+                    solver,
+                    ObservationBuffers {
+                        recorded_times: state.recorded_times,
+                        data: state.data,
+                    },
+                )?;
+                stop_schedule.advance_past(*state.current_t);
+            }
+            if !hit_root && event_stop.is_none() {
+                break;
+            }
+        }
+        refresh_observation_discrete_rows(
+            model,
+            &equilibrium_model.runtime_state,
+            state.current_y,
+            state.params,
+            *state.current_t,
+            opts.atol.max(1.0e-10),
+        )?;
+        runtime_params.borrow_mut().copy_from_slice(state.params);
+        record_sample_if_new(
+            Some(state.runtime),
+            model,
+            state.current_y,
+            state.params,
+            state.recorded_times,
+            state.data,
+            *state.current_t,
+        )?;
+    }
+
     Ok(())
 }
 
-pub(crate) fn dump_parameter_vector_for_diffsol(dae: &Dae, params: &[f64]) {
-    rumoca_sim_core::simulation::diagnostics::dump_parameter_vector(dae, params);
+fn initialize_state_runtime_values(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+    equilibrium_model: &OdeModel,
+    current_y: &mut [f64],
+    params: &mut [f64],
+    current_t: f64,
+) -> Result<(), SimError> {
+    set_initial_event_flag(model, params, true);
+    let mut initial_projection_params = params.to_vec();
+    seed_initial_discrete_values(
+        model,
+        equilibrium_model,
+        current_y,
+        &mut initial_projection_params,
+        current_t,
+        opts.atol.max(1.0e-10),
+    )?;
+    settle_initial_projection_context(
+        model,
+        equilibrium_model,
+        current_y,
+        &mut initial_projection_params,
+        current_t,
+        opts.atol.max(1.0e-10),
+    )?;
+    project_initial_unknowns(
+        model,
+        equilibrium_model,
+        current_y,
+        &initial_projection_params,
+        current_t,
+        opts.atol.max(1.0e-10),
+    )?;
+    seed_initial_discrete_values(
+        model,
+        equilibrium_model,
+        current_y,
+        &mut initial_projection_params,
+        current_t,
+        opts.atol.max(1.0e-10),
+    )?;
+    project_initial_algebraics_and_updates(
+        model,
+        equilibrium_model,
+        current_y,
+        &mut initial_projection_params,
+        current_t,
+        opts.atol.max(1.0e-10),
+    )?;
+    params.copy_from_slice(&initial_projection_params);
+    settle_algebraics_and_relation_memory(
+        equilibrium_model,
+        current_y,
+        params,
+        current_t,
+        model.state_scalar_count(),
+        &model.problem.solve_layout.relation_memory_parameter_indices,
+        opts.atol.max(1.0e-10),
+    )?;
+    let initial_event_mode = initial_static_event_pre_mode(&model.problem, current_t);
+    apply_event_updates(
+        model,
+        equilibrium_model,
+        current_y,
+        params,
+        current_t,
+        opts.atol.max(1.0e-10),
+        initial_event_mode.unwrap_or(EventPreMode::FollowCurrent),
+    )?;
+    set_initial_event_flag(model, params, false);
+    if initial_event_mode.is_some() {
+        apply_post_initial_event_updates(
+            model,
+            equilibrium_model,
+            current_y,
+            params,
+            current_t,
+            opts.atol.max(1.0e-10),
+        )?;
+    }
+    Ok(())
 }
 
-/// Build a [`stepper::SimStepper`] from a DAE and options.
-///
-/// Lives here to access `pub(super)` internals (prepare_dae, solver construction, etc.).
-#[allow(clippy::too_many_lines)]
-pub(crate) fn build_stepper(
-    dae: &Dae,
-    opts: stepper::StepperOptions,
-) -> Result<stepper::SimStepper, SimError> {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
-
-    use integration::{
-        SolverLoopContext, StartupSyncInput, apply_initial_sections_and_sync_startup_state,
-        build_compiled_discrete_event_context,
-    };
-    use rumoca_sim_core::phase_structural::scalarize::build_output_names;
-    use rumoca_sim_core::runtime::layout::SimulationContext;
-
-    eval::clear_pre_values();
-    rumoca_sim_core::runtime::clock::reset_runtime_clock_caches();
-    let budget = TimeoutBudget::new(Some(30.0));
-
-    validate_simulation_function_support(dae)?;
-    let prepared = prepare_dae(dae, opts.scalarize, &budget)?;
-    let mut dae = prepared.dae;
-    let elim = prepared.elimination;
-    let mass_matrix = prepared.mass_matrix;
-    let ic_blocks = prepared.ic_blocks;
-
-    if prepared.has_dummy_state {
-        return Err(SimError::EmptySystem);
-    }
-
-    validate_simulation_function_support(&dae)?;
-
-    let n_x: usize = dae.states.values().map(|v| v.size()).sum();
-    let n_total = dae.f_x.len();
-    let param_values = build_parameter_values(&dae, &budget)?;
-
-    solve_initial_conditions(&mut dae, &ic_blocks, n_x, &param_values, opts.atol, &budget)?;
-
-    let input_overrides: problem::SharedInputOverrides = Rc::new(RefCell::new(HashMap::new()));
-
-    let mut problem_obj = problem::build_problem_with_overrides_and_params(
-        &dae,
-        opts.rtol,
-        opts.atol,
-        1e-8,
-        &mass_matrix,
-        &param_values,
-        Some(input_overrides.clone()),
-    )?;
-
-    let sim_opts = SimOptions {
-        t_start: 0.0,
-        t_end: 1.0, // Initial horizon; overridden per-step
-        rtol: opts.rtol,
-        atol: opts.atol,
-        dt: None,
-        scalarize: opts.scalarize,
-        max_wall_seconds: opts.max_wall_seconds_per_step,
-        solver_mode: SimSolverMode::Bdf,
-    };
-
-    let startup_profile = SolverStartupProfile::Default;
-    configure_solver_problem_with_profile(&mut problem_obj, &sim_opts, startup_profile);
-
-    // Leak the problem to obtain a 'static reference. The solver borrows from
-    // the problem, but the stepper needs to own the solver for an unbounded
-    // lifetime.  The problem is allocated once per stepper and lives for the
-    // program's duration (or until the stepper is dropped — a future
-    // improvement could reclaim the memory via ManuallyDrop / raw pointers).
-    let problem_ref: &'static _ = Box::leak(Box::new(problem_obj));
-    let mut solver = problem_ref
-        .bdf::<LS>()
-        .map_err(|e| SimError::SolverError(format!("Failed to create BDF solver: {e}")))?;
-    let compiled_runtime = problem::build_compiled_runtime_newton_context(&dae, n_total)?;
-    let compiled_synthetic_root = problem::build_compiled_synthetic_root_context(&dae, n_total)?;
-
-    apply_initial_sections_and_sync_startup_state(
-        &mut solver,
-        StartupSyncInput {
-            dae: &dae,
-            opts: &sim_opts,
-            startup_profile,
-            compiled_runtime: &compiled_runtime,
-            param_values: &param_values,
-            n_x,
-            budget: &budget,
-        },
-    )?;
-
-    let mut solver_names = build_output_names(&dae);
-    solver_names.truncate(n_total);
-
-    let sim_context = SimulationContext::from_dae(&dae, n_total);
-
-    let compiled_discrete_event_ctx = build_compiled_discrete_event_context(&dae, n_total)?;
-    let dae_ref: &'static Dae = Box::leak(Box::new(dae.clone()));
-    let opts_ref: &'static SimOptions = Box::leak(Box::new(sim_opts.clone()));
-    let budget_ref: &'static TimeoutBudget = Box::leak(Box::new(budget));
-
-    let ctx = SolverLoopContext {
-        dae: dae_ref,
-        elim: elim.clone(),
-        opts: opts_ref,
-        startup_profile,
-        n_x,
-        param_values: param_values.clone(),
-        compiled_runtime,
-        compiled_synthetic_root,
-        discrete_event_ctx: compiled_discrete_event_ctx,
-        budget: budget_ref,
-    };
-
-    // Type-erased stepper inner
-    #[allow(dead_code)]
-    struct ConcreteInner<'a, Eqn, S>
-    where
-        Eqn: diffsol::OdeEquations<T = f64> + 'a,
-        Eqn::V: diffsol::VectorHost<T = f64>,
-        S: diffsol::OdeSolverMethod<'a, Eqn>,
-    {
-        solver: S,
-        ctx: SolverLoopContext<'static>,
-        _phantom: std::marker::PhantomData<&'a Eqn>,
-    }
-
-    #[allow(clippy::excessive_nesting)]
-    impl<'a, Eqn, S> stepper::StepperInner for ConcreteInner<'a, Eqn, S>
-    where
-        Eqn: diffsol::OdeEquations<T = f64> + 'a,
-        Eqn::V: diffsol::VectorHost<T = f64>,
-        S: diffsol::OdeSolverMethod<'a, Eqn>,
-    {
-        fn step(&mut self, dt: f64, _dae: &Dae, budget: &TimeoutBudget) -> Result<(), SimError> {
-            use diffsol::OdeSolverStopReason;
-
-            if dt <= 0.0 {
-                return Ok(());
-            }
-
-            let t_end = self.solver.state().t + dt;
-
-            // Guard: if t_end is not ahead of the solver's current time
-            // (due to floating point accumulation), skip this step.
-            if t_end <= self.solver.state().t {
-                return Ok(());
-            }
-
-            self.solver.set_stop_time(t_end).map_err(|e| {
-                SimError::SolverError(format!("Failed to set stop time at t_end={t_end}: {e}"))
-            })?;
-
-            loop {
-                budget.check()?;
-                match self.solver.step() {
-                    Ok(OdeSolverStopReason::TstopReached) => break,
-                    Ok(OdeSolverStopReason::InternalTimestep) => {
-                        if self.solver.state().t >= t_end {
-                            break;
-                        }
-                        continue;
-                    }
-                    Ok(OdeSolverStopReason::RootFound(t_root)) => {
-                        // SPEC_0003 / SPEC_0022 SIM-001/SIM-008:
-                        // settle event updates on the right limit before
-                        // continuous integration resumes after a root hit.
-                        let _ = integration::apply_event_updates_at_time::<Eqn, S>(
-                            &mut self.solver,
-                            t_root,
-                            &self.ctx,
-                        )?;
-                        if integration::stop_time_reached_with_tol(self.solver.state().t, t_end) {
-                            break;
-                        }
-                        let _ = self.solver.set_stop_time(t_end);
-                        continue;
-                    }
-                    Err(e) => {
-                        return Err(SimError::SolverError(format!("Step failed: {e}")));
-                    }
-                }
-            }
-            Ok(())
-        }
-
-        fn time(&self) -> f64 {
-            self.solver.state().t
-        }
-
-        fn solver_state_y(&self) -> Vec<f64> {
-            self.solver.state().y.as_slice().to_vec()
-        }
-
-        fn reset_solver_history(&mut self) {
-            let state = self.solver.state_mut();
-            // Clear BDF polynomial history so stale extrapolation
-            // from old inputs does not cause divergence.
-            for ds in state.ds.iter_mut() {
-                ds.as_mut_slice().fill(0.0);
-            }
-            for dsg in state.dsg.iter_mut() {
-                dsg.as_mut_slice().fill(0.0);
-            }
-            state.dg.as_mut_slice().fill(0.0);
-            // Shrink step size so the solver re-establishes stability
-            // with the new inputs.
-            let h = *state.h;
-            if h.abs() > 1e-10 {
-                *state.h = h.signum() * 1e-6;
-            }
+fn project_initial_algebraics_and_updates(
+    model: &solve::SolveModel,
+    equilibrium_model: &OdeModel,
+    current_y: &mut [f64],
+    params: &mut [f64],
+    current_t: f64,
+    tol: f64,
+) -> Result<(), SimError> {
+    for _ in 0..EVENT_UPDATE_MAX_ITERS {
+        project_initial_unknowns(model, equilibrium_model, current_y, params, current_t, tol)?;
+        let updates_changed = apply_initialization_updates(
+            model,
+            equilibrium_model,
+            current_y,
+            params,
+            current_t,
+            tol,
+        )?;
+        if !updates_changed {
+            return Ok(());
         }
     }
+    Err(SimError::SolveIr(format!(
+        "initial algebraic/update projection did not converge at t={current_t}"
+    )))
+}
 
-    /// Minimal SimulationBackend adapter for the stepper (no output recording).
-    #[allow(dead_code)]
-    struct BackendAdapter<'b, 'a, Eqn, S>
-    where
-        Eqn: diffsol::OdeEquations<T = f64> + 'a,
-        Eqn::V: diffsol::VectorHost<T = f64>,
-        S: diffsol::OdeSolverMethod<'a, Eqn>,
-    {
-        solver: &'b mut S,
-        ctx: &'b SolverLoopContext<'static>,
-        _phantom: std::marker::PhantomData<&'a Eqn>,
+fn project_initial_unknowns(
+    model: &solve::SolveModel,
+    equilibrium_model: &OdeModel,
+    current_y: &mut [f64],
+    params: &[f64],
+    current_t: f64,
+    tol: f64,
+) -> Result<(), SimError> {
+    let projection_indices = initial_projection_indices(model);
+    project_initial_variables_with_plan(
+        equilibrium_model,
+        current_y,
+        params,
+        current_t,
+        &projection_indices,
+        &model.problem.initialization.projection_plan,
+        tol,
+    )
+    .map_err(SimError::from)
+}
+
+fn initial_projection_indices(model: &solve::SolveModel) -> Vec<usize> {
+    let layout = &model.problem.solve_layout;
+    let state_count = layout.state_scalar_count();
+    let algebraic_end = state_count + layout.algebraic_scalar_count();
+    let meta_by_slot = solve_variable_meta_by_solver_slot(model);
+    (0..layout.solver_scalar_count())
+        .filter_map(|idx| {
+            if idx >= state_count && idx < algebraic_end {
+                return Some(idx);
+            }
+            let meta = meta_by_slot.get(idx).copied().flatten()?;
+            (idx < state_count && !meta.is_state && meta.fixed != Some(true)).then_some(idx)
+        })
+        .collect()
+}
+
+fn solve_variable_meta_by_solver_slot(
+    model: &solve::SolveModel,
+) -> Vec<Option<&solve::SolveVariableMeta>> {
+    let layout = &model.problem.solve_layout;
+    let mut meta_by_slot = vec![None; layout.solver_scalar_count()];
+    for meta in &model.variable_meta {
+        let Some(idx) = layout.solver_idx_for_target(&meta.name) else {
+            continue;
+        };
+        if let Some(slot) = meta_by_slot.get_mut(idx) {
+            *slot = Some(meta);
+        }
     }
+    meta_by_slot
+}
 
-    impl<'b, 'a, Eqn, S> rumoca_sim_core::SimulationBackend for BackendAdapter<'b, 'a, Eqn, S>
-    where
-        Eqn: diffsol::OdeEquations<T = f64> + 'a,
-        Eqn::V: diffsol::VectorHost<T = f64>,
-        S: diffsol::OdeSolverMethod<'a, Eqn>,
-    {
-        type Error = SimError;
+struct EventObservation<'a> {
+    runtime: Option<&'a SolveRuntime>,
+    model: &'a solve::SolveModel,
+    equilibrium_model: &'a OdeModel,
+    y: &'a mut [f64],
+    params: &'a mut [f64],
+    tol: f64,
+    recorded_times: &'a mut Vec<f64>,
+    data: &'a mut [Vec<f64>],
+}
 
-        fn init(&mut self) -> Result<(), SimError> {
-            Ok(())
-        }
-
-        fn step_until(
-            &mut self,
-            stop_time: f64,
-        ) -> Result<rumoca_sim_core::StepUntilOutcome, SimError> {
-            if integration::stop_time_reached_with_tol(self.solver.state().t, self.ctx.opts.t_end) {
-                return Ok(rumoca_sim_core::StepUntilOutcome::Finished);
-            }
-            self.ctx.budget.check()?;
-            integration::set_solver_stop_time::<Eqn, S>(
-                self.solver,
-                stop_time,
-                self.ctx.budget,
-                "stepper step_until",
-            )
-            .map_err(|e| SimError::SolverError(format!("Reset stop time: {e}")))?;
-
-            match integration::step_with_stop_recovery::<Eqn, S>(
-                self.solver,
-                stop_time,
-                self.ctx,
-                |_msg, _t, _y| {},
-            )? {
-                integration::StepAdvance::Advanced(reason) => match reason {
-                    diffsol::OdeSolverStopReason::RootFound(t_root) => {
-                        Ok(rumoca_sim_core::StepUntilOutcome::RootFound { t_root })
-                    }
-                    diffsol::OdeSolverStopReason::TstopReached => {
-                        Ok(rumoca_sim_core::StepUntilOutcome::StopReached)
-                    }
-                    diffsol::OdeSolverStopReason::InternalTimestep => {
-                        Ok(rumoca_sim_core::StepUntilOutcome::InternalStep)
-                    }
-                },
-                integration::StepAdvance::Recovered => {
-                    Ok(rumoca_sim_core::StepUntilOutcome::StopReached)
-                }
-                integration::StepAdvance::Finished => {
-                    Ok(rumoca_sim_core::StepUntilOutcome::Finished)
-                }
-            }
-        }
-
-        fn read_state(&self) -> rumoca_sim_core::BackendState {
-            rumoca_sim_core::BackendState {
-                t: self.solver.state().t,
-            }
-        }
-
-        fn apply_event_updates(&mut self, event_time: f64) -> Result<(), SimError> {
-            let _ = integration::apply_event_updates_at_time::<Eqn, S>(
-                self.solver,
-                event_time,
-                self.ctx,
+impl EventObservation<'_> {
+    fn record_time_event(
+        &mut self,
+        event_t: f64,
+        horizon_t: f64,
+        event: RuntimeEventStop,
+    ) -> Result<f64, SimError> {
+        refresh_observation_discrete_rows(
+            self.model,
+            &self.equilibrium_model.runtime_state,
+            self.y,
+            self.params,
+            event_t,
+            self.tol,
+        )?;
+        record_sample_if_new(
+            self.runtime,
+            self.model,
+            self.y,
+            self.params,
+            self.recorded_times,
+            self.data,
+            event_t,
+        )?;
+        let right_t = event_right_limit_time(event_t).min(horizon_t);
+        if event.observe_right_limit
+            && event.pre_mode == EventPreMode::FollowCurrent
+            && right_t > event_t
+            && !sample_time_match_with_tol(right_t, event_t)
+        {
+            apply_event_updates(
+                self.model,
+                self.equilibrium_model,
+                self.y,
+                self.params,
+                right_t,
+                self.tol,
+                event.pre_mode,
             )?;
-            Ok(())
+            refresh_observation_discrete_rows(
+                self.model,
+                &self.equilibrium_model.runtime_state,
+                self.y,
+                self.params,
+                right_t,
+                self.tol,
+            )?;
+            record_sample_if_new(
+                self.runtime,
+                self.model,
+                self.y,
+                self.params,
+                self.recorded_times,
+                self.data,
+                right_t,
+            )?;
+        }
+        if event.observe_right_limit {
+            Ok(right_t)
+        } else {
+            Ok(event_t)
         }
     }
-
-    let inner = ConcreteInner {
-        solver,
-        ctx,
-        _phantom: std::marker::PhantomData,
-    };
-
-    Ok(stepper::SimStepper {
-        inner: Box::new(inner),
-        dae,
-        sim_context,
-        param_values,
-        input_overrides,
-        n_x,
-        n_total,
-        solver_names,
-        max_wall_seconds_per_step: opts.max_wall_seconds_per_step,
-        elim,
-        inputs_dirty: false,
-    })
 }
 
-#[cfg(test)]
-pub(crate) mod test_support;
+fn time_event_right_limit_cap(event: RuntimeEventStop, target: f64, horizon: f64) -> f64 {
+    match (event.pre_mode, event.observe_right_limit) {
+        (EventPreMode::Fixed, _) => target,
+        (EventPreMode::FollowCurrent, true) => horizon,
+        (EventPreMode::FollowCurrent, false) => target,
+    }
+}
+
+fn record_sample_if_new(
+    runtime: Option<&SolveRuntime>,
+    model: &solve::SolveModel,
+    y: &[f64],
+    params: &[f64],
+    recorded_times: &mut Vec<f64>,
+    data: &mut [Vec<f64>],
+    t: f64,
+) -> Result<(), SimError> {
+    let values = if let Some(runtime) = runtime {
+        runtime
+            .visible_values(y, params, t)
+            .map_err(|err| SimError::SolveIr(err.to_string()))?
+    } else {
+        visible_values(model, y, params, t)?
+    };
+    if recorded_times
+        .last()
+        .is_some_and(|last| sample_time_match_with_tol(*last, t))
+    {
+        if let Some(last) = recorded_times.last_mut() {
+            *last = t;
+        }
+        replace_last_visible_values(data, &values)?;
+        return Ok(());
+    }
+    recorded_times.push(t);
+    push_visible_values(data, &values)?;
+    Ok(())
+}
+
+fn refresh_observation_discrete_rows(
+    model: &solve::SolveModel,
+    runtime_state: &solve_eval::SimulationRuntimeState,
+    y: &mut [f64],
+    p: &mut [f64],
+    t: f64,
+    tol: f64,
+) -> Result<bool, SimError> {
+    if model.problem.discrete.observation_refresh.is_empty() {
+        return Ok(false);
+    }
+    let mut changed_any = false;
+    let event_pre_y = y.to_vec();
+    let event_pre_p = p.to_vec();
+    for _ in 0..EVENT_UPDATE_MAX_ITERS {
+        let changed = apply_observation_discrete_refresh_pass(
+            model,
+            ObservationRefreshPass {
+                runtime_state,
+                event_pre_y: event_pre_y.as_slice(),
+                event_pre_p: event_pre_p.as_slice(),
+                tol,
+            },
+            y,
+            p,
+            t,
+        )?;
+        if !changed {
+            return Ok(changed_any);
+        }
+        changed_any = true;
+    }
+    Err(SimError::SolveIr(
+        "observation-time discrete refresh did not converge".to_string(),
+    ))
+}
+
+struct ObservationRefreshPass<'a> {
+    runtime_state: &'a solve_eval::SimulationRuntimeState,
+    event_pre_y: &'a [f64],
+    event_pre_p: &'a [f64],
+    tol: f64,
+}
+
+fn apply_observation_discrete_refresh_pass(
+    model: &solve::SolveModel,
+    ctx: ObservationRefreshPass<'_>,
+    y: &mut [f64],
+    p: &mut [f64],
+    t: f64,
+) -> Result<bool, SimError> {
+    if model.problem.discrete.observation_refresh.len() != model.problem.discrete.rhs.len() {
+        return Err(SimError::SolveIr(format!(
+            "discrete observation-refresh row count {} does not match discrete RHS row count {}",
+            model.problem.discrete.observation_refresh.len(),
+            model.problem.discrete.rhs.len()
+        )));
+    }
+    let mut changed = false;
+    for (row_idx, row) in model.problem.discrete.rhs.programs.iter().enumerate() {
+        if !model.problem.discrete.observation_refresh[row_idx] {
+            continue;
+        }
+        refresh_observation_pre_params(model, row_idx, &ctx, y, p);
+        let value = solve_eval::eval_row_with_context(
+            row,
+            y,
+            p,
+            t,
+            RowEvalContext {
+                external_tables: Some(model.external_tables.as_slice()),
+                runtime_state: Some(ctx.runtime_state),
+                ..Default::default()
+            },
+        )
+        .map_err(|err| SimError::SolveIr(err.to_string()))?;
+        changed |= apply_discrete_value(
+            model.problem.discrete.update_targets[row_idx],
+            value,
+            y,
+            p,
+            ctx.tol,
+        );
+    }
+    Ok(changed)
+}
+
+fn refresh_observation_pre_params(
+    model: &solve::SolveModel,
+    row_idx: usize,
+    ctx: &ObservationRefreshPass<'_>,
+    y: &[f64],
+    p: &mut [f64],
+) {
+    match discrete_row_pre_mode(model, row_idx) {
+        EventPreMode::Fixed => {
+            write_pre_params_from_sources(model, ctx.event_pre_y, ctx.event_pre_p, p, ctx.tol);
+        }
+        EventPreMode::FollowCurrent => {
+            let snapshot_p = p.to_vec();
+            write_pre_params_from_sources(model, y, snapshot_p.as_slice(), p, ctx.tol);
+        }
+    }
+}
+
+fn visible_values(
+    model: &solve::SolveModel,
+    y: &[f64],
+    params: &[f64],
+    t: f64,
+) -> Result<Vec<f64>, SimError> {
+    visible_values_with_context(
+        model,
+        y,
+        params,
+        t,
+        RowEvalContext {
+            external_tables: Some(model.external_tables.as_slice()),
+            ..Default::default()
+        },
+    )
+    .map_err(|err| SimError::SolveIr(err.to_string()))
+}
+
+fn set_initial_event_flag(model: &solve::SolveModel, params: &mut [f64], value: bool) {
+    let Some(index) = model.problem.solve_layout.initial_event_parameter_index else {
+        return;
+    };
+    if let Some(slot) = params.get_mut(index) {
+        *slot = f64::from(value);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AdvanceContext<'a> {
+    model: &'a solve::SolveModel,
+    opts: &'a SimOptions,
+    equilibrium_model: &'a OdeModel,
+    runtime_params: &'a RuntimeParameters,
+    runtime: &'a SolveRuntime,
+}
+
+struct AdvanceState<'a> {
+    current_y: &'a mut [f64],
+    params: &'a mut [f64],
+    current_t: &'a mut f64,
+}
+
+fn advance_context<'a>(
+    model: &'a solve::SolveModel,
+    opts: &'a SimOptions,
+    equilibrium_model: &'a OdeModel,
+    runtime_params: &'a RuntimeParameters,
+    runtime: &'a SolveRuntime,
+) -> AdvanceContext<'a> {
+    AdvanceContext {
+        model,
+        opts,
+        equilibrium_model,
+        runtime_params,
+        runtime,
+    }
+}
+
+struct ObservationBuffers<'a> {
+    recorded_times: &'a mut Vec<f64>,
+    data: &'a mut [Vec<f64>],
+}
+
+enum PendingRootAction {
+    None,
+    Break,
+    Continue,
+}
+
+fn resolve_pending_root<'a, Eqn, S>(
+    pending_root_t: &mut Option<f64>,
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    target: f64,
+    solver: &mut S,
+    stop_schedule: &mut SolveStopSchedule,
+) -> Result<PendingRootAction, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let Some(prt) = *pending_root_t else {
+        return Ok(PendingRootAction::None);
+    };
+    if !sample_time_match_with_tol(target, prt) && target < prt {
+        let y_at = solver
+            .interpolate(target)
+            .map_err(|e| SimError::SolverError(format!("interpolate: {e}")))?;
+        state.current_y.copy_from_slice(y_at.as_slice());
+        *state.current_t = target;
+        state
+            .params
+            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+        refresh_interpolated_sample_state(ctx, state, target)?;
+        return Ok(PendingRootAction::Break);
+    }
+
+    *pending_root_t = None;
+    handle_root_crossing(ctx, state, prt, target, solver)?;
+    stop_schedule.advance_past(solver.state().t);
+    Ok(PendingRootAction::Continue)
+}
+
+fn refresh_interpolated_sample_state(
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    target: f64,
+) -> Result<(), SimError> {
+    settle_prepared_state(
+        ctx.model,
+        ctx.equilibrium_model,
+        state.current_y,
+        state.params,
+        target,
+        ctx.opts,
+    )?;
+    refresh_observation_discrete_rows(
+        ctx.model,
+        &ctx.equilibrium_model.runtime_state,
+        state.current_y,
+        state.params,
+        target,
+        ctx.opts.atol.max(1.0e-10),
+    )?;
+    ctx.runtime_params
+        .borrow_mut()
+        .copy_from_slice(state.params);
+    Ok(())
+}
+
+fn apply_scheduled_time_event<'a, Eqn, S>(
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    event: RuntimeEventStop,
+    target: f64,
+    solver: &mut S,
+    observations: ObservationBuffers<'_>,
+) -> Result<(), SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let tol = ctx.opts.atol.max(1.0e-10);
+    prepare_fixed_event_left_limit(
+        ctx.model,
+        ctx.equilibrium_model,
+        state.current_y,
+        state.params,
+        *state.current_t,
+        tol,
+        event,
+    )?;
+    apply_event_updates(
+        ctx.model,
+        ctx.equilibrium_model,
+        state.current_y,
+        state.params,
+        *state.current_t,
+        tol,
+        event.pre_mode,
+    )?;
+    *state.current_t = EventObservation {
+        runtime: Some(ctx.runtime),
+        model: ctx.model,
+        equilibrium_model: ctx.equilibrium_model,
+        y: state.current_y,
+        params: state.params,
+        tol,
+        recorded_times: observations.recorded_times,
+        data: observations.data,
+    }
+    .record_time_event(
+        *state.current_t,
+        time_event_right_limit_cap(event, target, ctx.opts.t_end),
+        event,
+    )?;
+    reinitialize_solver_after_time_event(ctx, state, solver, tol)
+}
+
+fn reinitialize_solver_after_time_event<'a, Eqn, S>(
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    solver: &mut S,
+    tol: f64,
+) -> Result<(), SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let t_right = *state.current_t;
+    settle_algebraics_and_relation_memory(
+        ctx.equilibrium_model,
+        state.current_y,
+        state.params,
+        t_right,
+        ctx.model.state_scalar_count(),
+        &ctx.model
+            .problem
+            .solve_layout
+            .relation_memory_parameter_indices,
+        tol,
+    )?;
+    let dy_sched = bdf_derivative_guess(
+        ctx.model,
+        ctx.equilibrium_model,
+        state.current_y,
+        state.params,
+        t_right,
+    )?;
+    reset_solver_state(
+        solver,
+        ctx.runtime_params,
+        state.current_y,
+        &dy_sched,
+        state.params,
+        *state.current_t,
+        rumoca_solver::event_solver_step_cap(ctx.opts.dt),
+    )
+}
+
+fn advance_to_target_once<'a, Eqn, S>(
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    target: f64,
+    event_stop: Option<RuntimeEventStop>,
+    solver: &mut S,
+    deferred_root: &mut Option<f64>,
+) -> Result<bool, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    if event_stop.is_some() {
+        return advance_to_scheduled_stop(ctx, state, target, solver);
+    }
+
+    advance_output_interval(ctx, state, target, solver, deferred_root)
+}
+
+fn advance_to_scheduled_stop<'a, Eqn, S>(
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    target: f64,
+    solver: &mut S,
+) -> Result<bool, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    if solver.state().t > target {
+        solver
+            .state_mut_back(target)
+            .map_err(|e| SimError::SolverError(format!("state_mut_back: {e}")))?;
+    }
+    if sample_time_match_with_tol(solver.state().t, target) {
+        *state.current_t = target;
+        state.current_y.copy_from_slice(solver.state().y.as_slice());
+        state
+            .params
+            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+        return Ok(false);
+    }
+    set_solver_stop_time(solver, target)?;
+    loop {
+        match solver_call("BDF step", || solver.step()) {
+            Ok(OdeSolverStopReason::TstopReached) => {
+                *state.current_t = solver.state().t;
+                state.current_y.copy_from_slice(solver.state().y.as_slice());
+                state
+                    .params
+                    .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+                return Ok(false);
+            }
+            Ok(OdeSolverStopReason::InternalTimestep) => continue,
+            Ok(OdeSolverStopReason::RootFound(t_root, _)) => {
+                trace_bdf_step_event("scheduled-root", solver.state().t, Some(t_root));
+                return handle_root_crossing(ctx, state, t_root, target, solver);
+            }
+            Err(e) => {
+                trace_bdf_step_failure(ctx, state, solver.state().t, &e.to_string());
+                return Err(e);
+            }
+        }
+    }
+}
+
+fn advance_output_interval<'a, Eqn, S>(
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    target: f64,
+    solver: &mut S,
+    deferred_root: &mut Option<f64>,
+) -> Result<bool, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    loop {
+        if solver.state().t >= target {
+            let y_at_target = solver
+                .interpolate(target)
+                .map_err(|e| SimError::SolverError(format!("interpolate: {e}")))?;
+            state.current_y.copy_from_slice(y_at_target.as_slice());
+            *state.current_t = target;
+            state
+                .params
+                .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+            return Ok(false);
+        }
+
+        match solver_call("BDF step", || solver.step()) {
+            Ok(OdeSolverStopReason::TstopReached | OdeSolverStopReason::InternalTimestep) => {}
+            Ok(OdeSolverStopReason::RootFound(t_root, _)) => {
+                trace_bdf_step_event("output-root", solver.state().t, Some(t_root));
+                let root_after_target =
+                    t_root > target && !sample_time_match_with_tol(t_root, target);
+                if !root_after_target {
+                    return handle_root_crossing(ctx, state, t_root, target, solver);
+                }
+                let y_at_target = solver
+                    .interpolate(target)
+                    .map_err(|e| SimError::SolverError(format!("interpolate: {e}")))?;
+                state.current_y.copy_from_slice(y_at_target.as_slice());
+                *state.current_t = target;
+                state
+                    .params
+                    .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+                *deferred_root = Some(t_root);
+                return Ok(false);
+            }
+            Err(e) => {
+                trace_bdf_step_failure(ctx, state, solver.state().t, &e.to_string());
+                return Err(e);
+            }
+        }
+    }
+}
+
+fn trace_bdf_step_event(kind: &str, solver_t: f64, root_t: Option<f64>) {
+    if !tracing::enabled!(target: "rumoca_solver_diffsol::bdf", tracing::Level::DEBUG) {
+        return;
+    }
+    tracing::debug!(target: "rumoca_solver_diffsol::bdf", "{kind} solver_t={solver_t:.12} root_t={root_t:?}");
+}
+
+fn trace_bdf_step_failure(
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    solver_t: f64,
+    error: &str,
+) {
+    if !tracing::enabled!(target: "rumoca_solver_diffsol::bdf", tracing::Level::DEBUG) {
+        return;
+    }
+    let mut roots = vec![0.0; ctx.equilibrium_model.root_conditions.len().max(1)];
+    let root_summary = match ctx.equilibrium_model.eval_roots(
+        state.current_y,
+        state.params,
+        *state.current_t,
+        &mut roots,
+    ) {
+        Ok(()) => roots
+            .iter()
+            .copied()
+            .enumerate()
+            .min_by(|(_, lhs), (_, rhs)| lhs.abs().total_cmp(&rhs.abs()))
+            .map(|(idx, value)| format!("nearest_root[{idx}]={value:.12e}"))
+            .unwrap_or_else(|| "no roots".to_string()),
+        Err(err) => format!("root eval failed: {err}"),
+    };
+    tracing::debug!(
+        target: "rumoca_solver_diffsol::bdf",
+        "step-fail current_t={:.12} solver_t={solver_t:.12} {root_summary} err={error}",
+        *state.current_t
+    );
+}
+
+fn handle_root_crossing<'a, Eqn, S>(
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    t_root: f64,
+    target: f64,
+    solver: &mut S,
+) -> Result<bool, SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    solver
+        .state_mut_back(t_root)
+        .map_err(|e| SimError::SolverError(format!("state_mut_back: {e}")))?;
+    let mut event_pre_y = solver.state().y.as_slice().to_vec();
+    let event_pre_p = ctx.runtime_params.borrow().as_slice().to_vec();
+    let root_t = solver.state().t;
+    let right_t = event_right_limit_time(root_t).min(target);
+    *state.current_t = right_t;
+    state.current_y.copy_from_slice(solver.state().y.as_slice());
+    state
+        .params
+        .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+    advance_state_to_event_limits(
+        ctx.model,
+        ctx.equilibrium_model,
+        &mut event_pre_y,
+        state.current_y,
+        state.params,
+        root_t,
+        right_t,
+    )?;
+    apply_event_updates_with_event_pre(EventUpdateInput {
+        model: ctx.model,
+        ode_model: ctx.equilibrium_model,
+        y: state.current_y,
+        p: state.params,
+        t: *state.current_t,
+        tol: ctx.opts.atol.max(1.0e-10),
+        event_pre_y: &event_pre_y,
+        event_pre_p: &event_pre_p,
+    })?;
+    settle_prepared_state(
+        ctx.model,
+        ctx.equilibrium_model,
+        state.current_y,
+        state.params,
+        *state.current_t,
+        ctx.opts,
+    )?;
+    trace_bdf_post_event_state(ctx, &state);
+    let dy_post = bdf_derivative_guess(
+        ctx.model,
+        ctx.equilibrium_model,
+        state.current_y,
+        state.params,
+        *state.current_t,
+    )?;
+    reset_solver_state(
+        solver,
+        ctx.runtime_params,
+        state.current_y,
+        &dy_post,
+        state.params,
+        *state.current_t,
+        rumoca_solver::event_solver_step_cap(ctx.opts.dt),
+    )?;
+    Ok(true)
+}
+
+fn trace_bdf_post_event_state(ctx: AdvanceContext<'_>, state: &AdvanceState<'_>) {
+    if !tracing::enabled!(target: "rumoca_solver_diffsol::bdf", tracing::Level::DEBUG) {
+        return;
+    }
+    let mut rhs = vec![0.0; state.current_y.len()];
+    let summary = match ctx.equilibrium_model.eval_residual(
+        state.current_y,
+        state.params,
+        *state.current_t,
+        &mut rhs,
+    ) {
+        Ok(()) => {
+            let state_count = ctx.model.state_scalar_count().min(rhs.len());
+            let all = rhs.iter().copied().map(f64::abs).fold(0.0, f64::max);
+            let alg = rhs[state_count..]
+                .iter()
+                .copied()
+                .map(f64::abs)
+                .fold(0.0, f64::max);
+            format!("max_rhs={all:.6e} max_alg_residual={alg:.6e}")
+        }
+        Err(err) => format!("residual eval failed: {err}"),
+    };
+    tracing::debug!(
+        target: "rumoca_solver_diffsol::bdf",
+        "post-event current_t={:.12} {summary}",
+        *state.current_t
+    );
+}
+
+fn advance_state_to_event_limits(
+    solve_model: &solve::SolveModel,
+    model: &OdeModel,
+    event_pre_y: &mut [f64],
+    y: &mut [f64],
+    p: &[f64],
+    root_t: f64,
+    right_t: f64,
+) -> Result<(), SimError> {
+    let dt = right_t - root_t;
+    if dt <= 0.0 || sample_time_match_with_tol(root_t, right_t) {
+        return Ok(());
+    }
+    let dy = bdf_derivative_guess(solve_model, model, y, p, root_t)?;
+    for (slot, derivative) in event_pre_y.iter_mut().zip(dy.iter().copied()) {
+        *slot -= dt * derivative;
+    }
+    for (slot, derivative) in y.iter_mut().zip(dy) {
+        *slot += dt * derivative;
+    }
+    Ok(())
+}
+
+fn settle_prepared_state(
+    model: &solve::SolveModel,
+    equilibrium_model: &OdeModel,
+    current_y: &mut [f64],
+    params: &mut [f64],
+    current_t: f64,
+    opts: &SimOptions,
+) -> Result<(), SimError> {
+    settle_algebraics_and_relation_memory(
+        equilibrium_model,
+        current_y,
+        params,
+        current_t,
+        model.state_scalar_count(),
+        &model.problem.solve_layout.relation_memory_parameter_indices,
+        opts.atol.max(1.0e-10),
+    )
+}
+
+fn update_relation_memory_values(
+    model: &OdeModel,
+    y: &[f64],
+    p: &mut [f64],
+    t: f64,
+    relation_memory_indices: &[usize],
+) -> Result<bool, SimError> {
+    if relation_memory_indices.is_empty() {
+        return Ok(false);
+    }
+    let mut roots = vec![0.0; model.root_conditions.len().max(1)];
+    model.eval_roots(y, p, t, &mut roots)?;
+    Ok(update_relation_memory_slots(
+        roots.as_slice(),
+        p,
+        relation_memory_indices,
+    ))
+}
+
+fn set_solver_stop_time<'a, Eqn, S>(solver: &mut S, stop_time: f64) -> Result<(), SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    solver
+        .set_stop_time(stop_time)
+        .map_err(|err| SimError::SolverError(format!("Failed to set stop time: {err}")))
+}
 
 #[cfg(test)]
 mod tests;

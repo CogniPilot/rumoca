@@ -29,6 +29,30 @@ pub enum CodegenError {
         #[label("error here")]
         span: SourceSpan,
     },
+
+    /// IR serialization to JSON failed.
+    #[error("IR serialization failed: {message}")]
+    #[diagnostic(
+        code(rumoca::codegen::EC003),
+        help("the IR contains a type that cannot be serialized to JSON")
+    )]
+    SerializationFailed { message: String },
+
+    /// External functions cannot be emitted by the current simulation codegen.
+    #[error("external function `{function}` is not yet callable from simulation codegen")]
+    #[diagnostic(
+        code(rumoca::codegen::EC004),
+        help(
+            "replace the external function with a supported runtime intrinsic or disable simulation code generation for this model"
+        )
+    )]
+    ExternalFunctionNotCallable {
+        function: String,
+        #[source_code]
+        src: NamedSource<String>,
+        #[label("external function rejected here")]
+        span: SourceSpan,
+    },
 }
 
 impl CodegenError {
@@ -36,6 +60,18 @@ impl CodegenError {
     pub fn template(message: impl Into<String>) -> Self {
         Self::TemplateError {
             message: message.into(),
+        }
+    }
+
+    /// Create a stable simulation-codegen diagnostic for unsupported external calls.
+    pub fn external_function_not_callable(function: impl Into<String>) -> Self {
+        let function = function.into();
+        let src = NamedSource::new("external-function", function.clone());
+        let span = SourceSpan::new(0.into(), function.len());
+        Self::ExternalFunctionNotCallable {
+            function,
+            src,
+            span,
         }
     }
 }
@@ -124,6 +160,16 @@ mod tests {
             CodegenError::TemplateError { .. } => {
                 // Also acceptable if debug feature doesn't expose source
             }
+            CodegenError::SerializationFailed { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never serialization errors"
+                );
+            }
+            CodegenError::ExternalFunctionNotCallable { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never external-function errors"
+                );
+            }
         }
 
         use miette::Diagnostic;
@@ -132,5 +178,23 @@ mod tests {
             code == Some("rumoca::codegen::EC001".to_string())
                 || code == Some("rumoca::codegen::EC002".to_string())
         );
+    }
+
+    #[test]
+    fn test_external_function_not_callable_error_code_and_span() {
+        let err = CodegenError::external_function_not_callable("ExternalUser");
+
+        use miette::Diagnostic;
+        assert_eq!(
+            err.code().map(|c| c.to_string()),
+            Some("rumoca::codegen::EC004".to_string())
+        );
+        match err {
+            CodegenError::ExternalFunctionNotCallable { span, .. } => {
+                assert_eq!(span.offset(), 0);
+                assert!(!span.is_empty());
+            }
+            other => panic!("expected external-function diagnostic, got {other:?}"),
+        }
     }
 }

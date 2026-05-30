@@ -1,0 +1,10 @@
+version = 1
+ir = "dae"
+name = "dae-modelica"
+description = "Modelica source reconstructed from DAE IR"
+execution_mode = "source-transform"
+deployment_class = "modelica"
+
+[[files]]
+path = "{{ model_name }}_dae.mo"
+template = "dae_modelica.mo.jinja"

@@ -1,13 +1,28 @@
 use super::*;
 
-impl Context {
-    fn top_level_suffix_candidates(reference: &str) -> Vec<String> {
-        let parts = crate::path_utils::split_path_with_indices(reference);
-        (1..parts.len())
-            .map(|start| parts[start..].join("."))
-            .collect()
-    }
+#[derive(Clone, Copy)]
+struct ParamBinding<'a> {
+    name: &'a str,
+    binding: &'a Expression,
+    may_be_record_alias: bool,
+    binding_from_modification: bool,
+}
 
+fn insert_record_alias(
+    aliases: &mut rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
+    source_path: rumoca_core::ComponentPath,
+    alias_target: &rumoca_core::Reference,
+) {
+    aliases
+        .entry(source_path)
+        .or_insert_with(|| rumoca_core::ComponentPath::from_flat_path(alias_target.as_str()));
+}
+
+fn is_array_literal_binding(binding: &Expression) -> bool {
+    matches!(binding, Expression::Array { .. })
+}
+
+impl Context {
     /// Create a new flatten context.
     pub(crate) fn new() -> Self {
         Self {
@@ -16,6 +31,7 @@ impl Context {
             boolean_parameter_values: rustc_hash::FxHashMap::default(),
             enum_parameter_values: rustc_hash::FxHashMap::default(),
             constant_values: rustc_hash::FxHashMap::default(),
+            target_def_names: rustc_hash::FxHashMap::default(),
             modified_constant_keys: rustc_hash::FxHashSet::default(),
             flat_parameter_constant_keys: rustc_hash::FxHashSet::default(),
             array_dimensions: rustc_hash::FxHashMap::default(),
@@ -51,6 +67,7 @@ impl Context {
         self.seed_flat_parameter_constant_keys(flat);
         let params = self.collect_parameters(flat);
 
+        self.supplement_record_aliases(&params);
         self.init_array_dimensions(flat);
 
         let var_bindings = Self::collect_var_bindings(flat);
@@ -60,14 +77,189 @@ impl Context {
         self.run_multipass_evaluation(&params, &var_bindings);
     }
 
-    fn seed_flat_parameter_constant_keys(&mut self, flat: &Model) {
+    pub(crate) fn recompute_symbolic_component_dimensions(
+        &mut self,
+        flat: &mut Model,
+        overlay: &InstanceOverlay,
+        tree: &ClassTree,
+    ) -> Result<bool, FlattenError> {
+        let mut changed = false;
+        for instance_data in overlay.components.values() {
+            if !instance_data.is_primitive || instance_data.dims_expr.is_empty() {
+                continue;
+            }
+            let var_name = qualified_to_var_name(&instance_data.qualified_name);
+            let Some(flat_var) = flat.variables.get(&var_name) else {
+                continue;
+            };
+            let span = instance_source_span(instance_data, tree);
+            let resolved_dims = self.resolve_component_dims_expr(
+                var_name.as_str(),
+                &instance_data.dims_expr,
+                flat_var,
+                tree,
+                span,
+            )?;
+            let Some(flat_var) = flat.variables.get_mut(&var_name) else {
+                continue;
+            };
+            if flat_var.dims != resolved_dims {
+                flat_var.dims.clone_from(&resolved_dims);
+                changed = true;
+            }
+            if self.array_dimensions.get(var_name.as_str()) != Some(&resolved_dims) {
+                self.array_dimensions
+                    .insert(var_name.to_string(), resolved_dims);
+                changed = true;
+            }
+        }
+        Ok(changed)
+    }
+
+    fn resolve_component_dims_expr(
+        &self,
+        var_name: &str,
+        dims_expr: &[ast::Subscript],
+        flat_var: &flat::Variable,
+        tree: &ClassTree,
+        span: rumoca_core::Span,
+    ) -> Result<Vec<i64>, FlattenError> {
+        let mut dims = Vec::with_capacity(dims_expr.len());
+        for (index, subscript) in dims_expr.iter().enumerate() {
+            let dim = match subscript {
+                ast::Subscript::Expression(_) => {
+                    self.eval_component_dim_subscript(var_name, subscript, tree, span)?
+                }
+                ast::Subscript::Range { .. } | ast::Subscript::Empty => {
+                    self.resolve_colon_component_dimension(var_name, flat_var, index, tree, span)?
+                }
+            };
+            dims.push(dim);
+        }
+        Ok(dims)
+    }
+
+    fn resolve_colon_component_dimension(
+        &self,
+        var_name: &str,
+        flat_var: &flat::Variable,
+        index: usize,
+        tree: &ClassTree,
+        span: rumoca_core::Span,
+    ) -> Result<i64, FlattenError> {
+        let inferred_dims = flat_var
+            .binding
+            .as_ref()
+            .and_then(|binding| self.infer_binding_dimensions(var_name, binding, tree));
+        let resolved_dims = best_dims(self.array_dimensions.get(var_name), inferred_dims.as_ref());
+
+        if let Some(dim) = resolved_dims
+            .as_ref()
+            .and_then(|dims| dims.get(index).copied())
+            .filter(|dim| *dim > 0)
+        {
+            return Ok(dim);
+        }
+
+        if (flat_var.dims.len() > 1 || flat_var.dims.iter().any(|dim| *dim > 1))
+            && let Some(dim) = flat_var.dims.get(index).copied().filter(|dim| *dim > 0)
+        {
+            return Ok(dim);
+        }
+
+        let Some(dim) = resolved_dims.and_then(|dims| dims.get(index).copied()) else {
+            return Err(FlattenError::unresolved_component_dimension(
+                var_name,
+                ":".to_string(),
+                span,
+            ));
+        };
+        if dim <= 0 {
+            return Err(FlattenError::unresolved_component_dimension(
+                var_name,
+                ":".to_string(),
+                span,
+            ));
+        }
+        Ok(dim)
+    }
+
+    fn infer_binding_dimensions(
+        &self,
+        var_name: &str,
+        binding: &Expression,
+        tree: &ClassTree,
+    ) -> Option<Vec<i64>> {
+        infer_enum_range_dimensions(binding, tree).or_else(|| {
+            infer_array_dimensions_full_with_functions(
+                binding,
+                &ParamEvalContext::new(
+                    &self.parameter_values,
+                    &self.real_parameter_values,
+                    &self.boolean_parameter_values,
+                    &self.enum_parameter_values,
+                    &self.array_dimensions,
+                    &self.functions,
+                    Some(var_name),
+                ),
+            )
+        })
+    }
+
+    fn eval_component_dim_subscript(
+        &self,
+        var_name: &str,
+        subscript: &ast::Subscript,
+        tree: &ClassTree,
+        span: rumoca_core::Span,
+    ) -> Result<i64, FlattenError> {
+        let ast::Subscript::Expression(expr) = subscript else {
+            return Err(FlattenError::unresolved_component_dimension(
+                var_name,
+                subscript.to_string(),
+                span,
+            ));
+        };
+        if let Some(dim) = enum_type_dimension(expr, tree) {
+            return Ok(dim);
+        }
+        let lowered =
+            crate::ast_lower::expression_from_ast_with_def_map(expr, Some(&tree.def_map))?;
+        let eval_ctx = ParamEvalContext {
+            known_ints: &self.parameter_values,
+            known_reals: &self.real_parameter_values,
+            known_bools: &self.boolean_parameter_values,
+            known_enums: &self.enum_parameter_values,
+            array_dims: &self.array_dimensions,
+            functions: &self.functions,
+            var_context: Some(var_name),
+        };
+        let Some(dim) = try_eval_integer_with_context(&lowered, &eval_ctx) else {
+            return Err(FlattenError::unresolved_component_dimension(
+                var_name,
+                expr.to_string(),
+                span,
+            ));
+        };
+        if dim < 0 {
+            return Err(FlattenError::unresolved_component_dimension(
+                var_name,
+                expr.to_string(),
+                span,
+            ));
+        }
+        Ok(dim)
+    }
+
+    pub(crate) fn seed_flat_parameter_constant_keys(&mut self, flat: &Model) {
         self.flat_parameter_constant_keys.extend(
             flat.variables
                 .iter()
                 .filter(|(_, var)| {
                     matches!(
                         var.variability,
-                        flat::Variability::Parameter(_) | flat::Variability::Constant(_)
+                        rumoca_core::Variability::Parameter(_)
+                            | rumoca_core::Variability::Constant(_)
                     )
                 })
                 .map(|(name, _)| name.to_string()),
@@ -80,22 +272,22 @@ impl Context {
     /// enum parameter bindings, preserving previously inferred integer/array metadata.
     pub(crate) fn refresh_enum_parameter_lookup(&mut self, flat: &Model) {
         let params = self.collect_parameters(flat);
-        let _ = self.eval_enum_params(&params);
+        let _ = self.eval_enum_param_bindings(&params);
     }
 
-    /// Collect parameters with bindings or start values (MLS §8.6, §4.4.4).
+    /// Collect parameters with bindings (MLS §4.5, §8.6).
     ///
     /// Also collects non-parameter Integer/Boolean variables with bindings
     /// (e.g., `Integer nX = size(X_boundary, 1)`) so their values are available
     /// for for-equation range evaluation (MLS §8.3.3).
-    fn collect_parameters(&mut self, flat: &Model) -> Vec<(String, Expression)> {
+    fn collect_parameters<'a>(&mut self, flat: &'a Model) -> Vec<ParamBinding<'a>> {
         flat.variables
             .iter()
             .filter(|(_, var)| {
                 // Include parameters and constants
                 matches!(
                     var.variability,
-                    flat::Variability::Parameter(_) | flat::Variability::Constant(_)
+                    rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
                 )
                 // Also include non-parameter Integer/Boolean variables with bindings.
                 // These may define compile-time values like `Integer nX = size(arr, 1)`
@@ -103,37 +295,63 @@ impl Context {
                 || var.is_discrete_type
             })
             .filter_map(|(name, var)| {
-                if matches!(var.variability, flat::Variability::Parameter(_))
+                if matches!(var.variability, rumoca_core::Variability::Parameter(_))
                     && var.fixed == Some(false)
                     && !var.evaluate
                 {
                     self.non_structural_params.insert(name.to_string());
                 }
-                let is_fixed_parameter = matches!(var.variability, flat::Variability::Parameter(_))
-                    && var.fixed != Some(false);
+                let is_fixed_parameter =
+                    matches!(var.variability, rumoca_core::Variability::Parameter(_))
+                        && var.fixed != Some(false);
+                let may_be_record_alias = !var.is_primitive;
                 if var.evaluate
-                    || matches!(var.variability, flat::Variability::Constant(_))
+                    || matches!(var.variability, rumoca_core::Variability::Constant(_))
                     || is_fixed_parameter
                 {
                     self.structural_params.insert(name.to_string());
                 }
-                let is_param_or_const = matches!(
-                    var.variability,
-                    flat::Variability::Parameter(_) | flat::Variability::Constant(_)
-                );
-                // For parameters/constants: use binding or start value as default.
+                // For parameters/constants: use declaration bindings only.
+                // `start` is an initialization guess/default and must not drive
+                // structural branch selection; otherwise `p(start=a)=b` can
+                // flatten equations as if `p == a`.
                 // For non-parameter discrete types (Integer/Boolean variables):
                 // only use actual bindings. Start values are initial conditions,
                 // not compile-time constants (MLS §8.6). Using start values would
                 // incorrectly resolve if-equations with dynamic Boolean conditions.
-                let expr = if is_param_or_const {
-                    var.binding.as_ref().or(var.start.as_ref())
-                } else {
-                    var.binding.as_ref()
-                };
-                expr.map(|b| (name.to_string(), b.clone()))
+                var.binding.as_ref().map(|binding| ParamBinding {
+                    name: name.as_str(),
+                    binding,
+                    may_be_record_alias,
+                    binding_from_modification: var.binding_from_modification,
+                })
             })
             .collect()
+    }
+
+    /// Supplement record aliases from flat variable bindings (MLS §7.2.3).
+    fn supplement_record_aliases(&mut self, params: &[ParamBinding<'_>]) {
+        for ParamBinding {
+            name,
+            binding,
+            may_be_record_alias,
+            ..
+        } in params
+        {
+            if !may_be_record_alias {
+                continue;
+            }
+            if let Expression::VarRef {
+                name: alias_target,
+                subscripts,
+                span: rumoca_core::Span::DUMMY,
+            } = binding
+                && subscripts.is_empty()
+            {
+                let source_path = rumoca_core::ComponentPath::from_flat_path(name);
+                insert_record_alias(&mut self.record_aliases, source_path, alias_target);
+            }
+        }
     }
 
     /// Initialize array dimensions from declared dims (MLS §10.1).
@@ -148,10 +366,17 @@ impl Context {
     }
 
     /// Collect variable bindings for dimension inference.
-    fn collect_var_bindings(flat: &Model) -> Vec<(String, Expression)> {
+    fn collect_var_bindings(flat: &Model) -> Vec<ParamBinding<'_>> {
         flat.variables
             .iter()
-            .filter_map(|(name, var)| var.binding.as_ref().map(|b| (name.to_string(), b.clone())))
+            .filter_map(|(name, var)| {
+                var.binding.as_ref().map(|binding| ParamBinding {
+                    name: name.as_str(),
+                    binding,
+                    may_be_record_alias: !var.is_primitive,
+                    binding_from_modification: var.binding_from_modification,
+                })
+            })
             .collect()
     }
 
@@ -178,14 +403,14 @@ impl Context {
     /// Run multi-pass evaluation until fixpoint (MLS §10.4).
     fn run_multipass_evaluation(
         &mut self,
-        params: &[(String, Expression)],
-        var_bindings: &[(String, Expression)],
+        params: &[ParamBinding<'_>],
+        var_bindings: &[ParamBinding<'_>],
     ) {
         const MAX_PASSES: usize = 10;
         for _pass in 0..MAX_PASSES {
-            let enum_progress = self.eval_enum_params(params);
+            let enum_progress = self.eval_enum_param_bindings(params);
             let real_progress = self.eval_real_params(params);
-            let int_progress = self.eval_integer_params(params);
+            let int_progress = self.eval_integer_param_bindings(params);
             let bool_progress = self.eval_boolean_params(params);
             let dim_progress = self.eval_array_dimensions(var_bindings);
             let varref_dim_progress = self.propagate_varref_dimensions(var_bindings);
@@ -208,29 +433,30 @@ impl Context {
     /// For each record alias (e.g., "battery2.cellData" -> "cellData2"),
     /// propagate values from the alias target to the aliased prefix.
     /// This ensures that "battery2.cellData.nRC" has the same value as "cellData2.nRC".
-    fn propagate_through_aliases(&mut self, params: &[(String, Expression)]) -> bool {
+    fn propagate_through_aliases(&mut self, params: &[ParamBinding<'_>]) -> bool {
         let mut progress = false;
 
         // For each parameter, check if it can be resolved through an alias
-        for (name, _) in params {
+        for ParamBinding { name, .. } in params {
             let resolved = self.resolve_alias(name);
             if resolved == *name {
                 continue; // No alias applies
             }
 
             // Propagate integer value if available
-            if !self.parameter_values.contains_key(name)
+            if !self.parameter_values.contains_key(*name)
                 && let Some(val) = self.parameter_values.get(&resolved).copied()
             {
-                self.parameter_values.insert(name.clone(), val);
+                self.parameter_values.insert((*name).to_string(), val);
                 progress = true;
             }
 
             // Propagate boolean value if available
-            if !self.boolean_parameter_values.contains_key(name)
+            if !self.boolean_parameter_values.contains_key(*name)
                 && let Some(val) = self.boolean_parameter_values.get(&resolved).copied()
             {
-                self.boolean_parameter_values.insert(name.clone(), val);
+                self.boolean_parameter_values
+                    .insert((*name).to_string(), val);
                 progress = true;
             }
 
@@ -238,18 +464,18 @@ impl Context {
             // Skip when the name passes through an expanded array component element,
             // since alias resolution would point to the parent array's dims.
             if !has_embedded_array_subscript_in_parent(name)
-                && !self.array_dimensions.contains_key(name)
+                && !self.array_dimensions.contains_key(*name)
                 && let Some(dims) = self.array_dimensions.get(&resolved).cloned()
             {
-                self.array_dimensions.insert(name.clone(), dims);
+                self.array_dimensions.insert((*name).to_string(), dims);
                 progress = true;
             }
 
             // Propagate enum values if available
-            if !self.enum_parameter_values.contains_key(name)
+            if !self.enum_parameter_values.contains_key(*name)
                 && let Some(val) = self.enum_parameter_values.get(&resolved).cloned()
             {
-                self.enum_parameter_values.insert(name.clone(), val);
+                self.enum_parameter_values.insert((*name).to_string(), val);
                 progress = true;
             }
         }
@@ -267,31 +493,49 @@ impl Context {
     ///
     /// Also handles conditional expressions like `table = if cond then A else B`
     /// by evaluating conditions using known boolean and enum parameters.
-    fn eval_array_dimensions(&mut self, var_bindings: &[(String, Expression)]) -> bool {
+    fn eval_array_dimensions(&mut self, var_bindings: &[ParamBinding<'_>]) -> bool {
         let mut new_dims = false;
-        for (name, binding) in var_bindings {
-            new_dims |= self.try_infer_array_dims(name, binding);
+        for ParamBinding {
+            name,
+            binding,
+            binding_from_modification,
+            ..
+        } in var_bindings
+        {
+            new_dims |= self.try_infer_array_dims(name, binding, *binding_from_modification);
         }
         new_dims
     }
 
     /// Try to infer array dimensions for a single binding.
-    fn try_infer_array_dims(&mut self, name: &str, binding: &Expression) -> bool {
+    fn try_infer_array_dims(
+        &mut self,
+        name: &str,
+        binding: &Expression,
+        binding_from_modification: bool,
+    ) -> bool {
         // Skip when the variable is inside an expanded array component element.
         // During array expansion, sub-component modifications (e.g., `L=fill(L1sigma,m)`)
         // are NOT indexed for each element. So `inductor[1].L` gets the same unindexed
         // binding as the parent `inductor.L`, which infers to the parent's array dims.
         // Detect this by checking if any path segment (not the last) has embedded subscripts.
-        if has_embedded_array_subscript_in_parent(name) {
+        if has_embedded_array_subscript_in_parent(name)
+            && !(binding_from_modification && is_array_literal_binding(binding))
+        {
             return false;
         }
 
-        let inferred = infer_array_dimensions_full_with_conds(
+        let inferred = infer_array_dimensions_full_with_functions(
             binding,
-            &self.parameter_values,
-            &self.boolean_parameter_values,
-            &self.enum_parameter_values,
-            &self.array_dimensions,
+            &ParamEvalContext::new(
+                &self.parameter_values,
+                &self.real_parameter_values,
+                &self.boolean_parameter_values,
+                &self.enum_parameter_values,
+                &self.array_dimensions,
+                &self.functions,
+                Some(name),
+            ),
         );
         let inferred_dims = match inferred {
             Some(dims) => dims,
@@ -302,7 +546,7 @@ impl Context {
         let should_update = self
             .array_dimensions
             .get(name)
-            .is_none_or(|existing| inferred_dims.len() > existing.len());
+            .is_none_or(|existing| dims_are_better(&inferred_dims, existing));
 
         if should_update {
             #[cfg(feature = "tracing")]
@@ -322,10 +566,12 @@ impl Context {
     /// - Direct VarRef lookups
     /// - VarRef targets that need alias resolution
     /// - Better dimension propagation (more complete dims replace incomplete ones)
-    fn propagate_varref_dimensions(&mut self, var_bindings: &[(String, Expression)]) -> bool {
+    fn propagate_varref_dimensions(&mut self, var_bindings: &[ParamBinding<'_>]) -> bool {
         var_bindings
             .iter()
-            .filter_map(|(name, binding)| self.try_propagate_varref_dims(name, binding))
+            .filter_map(|ParamBinding { name, binding, .. }| {
+                self.try_propagate_varref_dims(name, binding)
+            })
             .count()
             > 0
     }
@@ -336,6 +582,7 @@ impl Context {
             Expression::VarRef {
                 name: target,
                 subscripts,
+                ..
             } if subscripts.is_empty() => target.to_string(),
             _ => return None,
         };
@@ -359,7 +606,7 @@ impl Context {
         let should_update = self
             .array_dimensions
             .get(name)
-            .is_none_or(|existing| target_dims.len() > existing.len());
+            .is_none_or(|existing| dims_are_better(&target_dims, existing));
 
         if should_update {
             self.array_dimensions.insert(name.to_string(), target_dims);
@@ -377,7 +624,35 @@ impl Context {
     /// Also passes variable context for modification binding resolution (MLS §7.2):
     /// When a binding like `G1(n=n)` has unqualified refs, they're resolved
     /// relative to the parent scope.
+    #[cfg(test)]
     pub(crate) fn eval_integer_params(&mut self, params: &[(String, Expression)]) -> bool {
+        let params = params
+            .iter()
+            .map(|(name, binding)| ParamBinding {
+                name: name.as_str(),
+                binding,
+                may_be_record_alias: false,
+                binding_from_modification: false,
+            })
+            .collect::<Vec<_>>();
+        self.eval_integer_param_bindings(&params)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn eval_modified_integer_params(&mut self, params: &[(String, Expression)]) -> bool {
+        let params = params
+            .iter()
+            .map(|(name, binding)| ParamBinding {
+                name: name.as_str(),
+                binding,
+                may_be_record_alias: false,
+                binding_from_modification: true,
+            })
+            .collect::<Vec<_>>();
+        self.eval_integer_param_bindings(&params)
+    }
+
+    fn eval_integer_param_bindings(&mut self, params: &[ParamBinding<'_>]) -> bool {
         // Keep seeded integer values consistent with already-evaluated reals.
         // This prevents stale defaults from shadowing the evaluated binding for
         // the same parameter name in structural integer contexts.
@@ -407,82 +682,131 @@ impl Context {
 
         let new_vals: Vec<(String, i64)> = params
             .iter()
-            .filter_map(|(name, binding)| {
-                // Try evaluation with full context including functions
-                let int_ctx = ParamEvalContext {
-                    known_ints: &self.parameter_values,
-                    known_reals: &self.real_parameter_values,
-                    known_bools: &self.boolean_parameter_values,
-                    known_enums: &self.enum_parameter_values,
-                    array_dims: &self.array_dimensions,
-                    functions: &self.functions,
-                    var_context: Some(name.as_str()),
-                };
-                if let Some(val) = try_eval_integer_with_context(binding, &int_ctx) {
-                    return Some((name.clone(), val));
-                }
+            .filter_map(
+                |ParamBinding {
+                     name,
+                     binding,
+                     binding_from_modification,
+                     ..
+                 }| {
+                    if let Some(val) = self.try_eval_modifier_scoped_integer_alias(
+                        name,
+                        binding,
+                        *binding_from_modification,
+                    ) {
+                        return Some(((*name).to_string(), val));
+                    }
 
-                // Fallback to rumoca_eval_const for complex expressions
-                rumoca_eval_flat::constant::try_eval_integer(binding, &eval_ctx)
-                    .map(|val| (name.clone(), val))
-            })
+                    // Try evaluation with full context including functions
+                    let int_ctx = ParamEvalContext {
+                        known_ints: &self.parameter_values,
+                        known_reals: &self.real_parameter_values,
+                        known_bools: &self.boolean_parameter_values,
+                        known_enums: &self.enum_parameter_values,
+                        array_dims: &self.array_dimensions,
+                        functions: &self.functions,
+                        var_context: Some(name),
+                    };
+                    if let Some(val) = try_eval_integer_with_context(binding, &int_ctx) {
+                        return Some(((*name).to_string(), val));
+                    }
+
+                    // Fallback to rumoca_eval_const for complex expressions
+                    rumoca_eval_flat::constant::try_eval_integer(binding, &eval_ctx)
+                        .map(|val| ((*name).to_string(), val))
+                },
+            )
             .collect();
 
         for (name, val) in new_vals {
             if self.parameter_values.get(&name).copied() != Some(val) {
-                self.parameter_values.insert(name, val);
+                self.parameter_values.insert(name.clone(), val);
+                progress = true;
+            }
+            if let Some(real_val) = self.real_parameter_values.get_mut(&name)
+                && (real_val.fract() == 0.0)
+                && (*real_val as i64 != val)
+            {
+                *real_val = val as f64;
                 progress = true;
             }
         }
         progress
     }
 
+    fn try_eval_modifier_scoped_integer_alias(
+        &self,
+        name: &str,
+        binding: &Expression,
+        binding_from_modification: bool,
+    ) -> Option<i64> {
+        if !binding_from_modification {
+            return None;
+        }
+        let target = unqualified_varref_name(binding)?;
+        let source_scope = modifier_source_scope(name)?;
+        rumoca_core::EvalLookup::lookup_integer(self, target, source_scope.as_str())
+    }
+
     /// Try to evaluate boolean parameters in one pass.
-    fn eval_boolean_params(&mut self, params: &[(String, Expression)]) -> bool {
+    fn eval_boolean_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
         let new_vals: Vec<(String, bool)> = params
             .iter()
-            .filter(|(name, _)| !self.boolean_parameter_values.contains_key(name))
-            .filter_map(|(name, binding)| {
-                try_eval_flat_expr_boolean(
-                    binding,
-                    &self.parameter_values,
-                    &self.boolean_parameter_values,
-                    &self.enum_parameter_values,
-                )
-                .map(|v| (name.clone(), v))
+            .filter_map(|ParamBinding { name, binding, .. }| {
+                let bool_ctx = ParamEvalContext {
+                    known_ints: &self.parameter_values,
+                    known_reals: &self.real_parameter_values,
+                    known_bools: &self.boolean_parameter_values,
+                    known_enums: &self.enum_parameter_values,
+                    array_dims: &self.array_dimensions,
+                    functions: &self.functions,
+                    var_context: Some(name),
+                };
+                try_eval_flat_expr_boolean_with_context(binding, &bool_ctx)
+                    .map(|v| ((*name).to_string(), v))
             })
             .collect();
 
-        let progress = !new_vals.is_empty();
+        let mut progress = false;
         for (name, val) in new_vals {
-            self.boolean_parameter_values.insert(name, val);
+            if self.boolean_parameter_values.get(&name).copied() != Some(val) {
+                self.boolean_parameter_values.insert(name, val);
+                progress = true;
+            }
         }
         progress
     }
 
     /// Try to evaluate real parameters in one pass.
-    fn eval_real_params(&mut self, params: &[(String, Expression)]) -> bool {
+    fn eval_real_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
         let new_vals: Vec<(String, f64)> = params
             .iter()
-            .filter(|(name, _)| !self.real_parameter_values.contains_key(name))
-            .filter_map(|(name, binding)| {
+            .filter_map(|ParamBinding { name, binding, .. }| {
                 // Try simple real evaluation first
                 if let Some(val) = try_eval_flat_expr_real(
                     binding,
                     &self.parameter_values,
                     &self.real_parameter_values,
                 ) {
-                    return Some((name.clone(), val));
+                    return Some(((*name).to_string(), val));
                 }
                 // Try user-defined function evaluation for function call bindings
                 self.try_eval_real_func_call(name, binding)
-                    .map(|val| (name.clone(), val))
+                    .map(|val| ((*name).to_string(), val))
             })
             .collect();
 
-        let progress = !new_vals.is_empty();
+        let mut progress = false;
         for (name, val) in new_vals {
-            self.real_parameter_values.insert(name, val);
+            if self
+                .real_parameter_values
+                .get(&name)
+                .copied()
+                .is_none_or(|existing| existing != val)
+            {
+                self.real_parameter_values.insert(name, val);
+                progress = true;
+            }
         }
         progress
     }
@@ -514,17 +838,35 @@ impl Context {
     /// Enumeration values are stored as qualified name strings (e.g., "Types.FilterType.LowPass").
     /// This handles both direct enum literals and references to other enum parameters.
     /// MLS §4.9.5: Enumeration types have literals that are constant values.
+    #[cfg(test)]
     pub(crate) fn eval_enum_params(&mut self, params: &[(String, Expression)]) -> bool {
+        let params = params
+            .iter()
+            .map(|(name, binding)| ParamBinding {
+                name: name.as_str(),
+                binding,
+                may_be_record_alias: false,
+                binding_from_modification: false,
+            })
+            .collect::<Vec<_>>();
+        self.eval_enum_param_bindings(&params)
+    }
+
+    fn eval_enum_param_bindings(&mut self, params: &[ParamBinding<'_>]) -> bool {
         let param_names: rustc_hash::FxHashSet<&str> =
-            params.iter().map(|(name, _)| name.as_str()).collect();
+            params.iter().map(|binding| binding.name).collect();
 
         let mut progress = false;
         loop {
-            let new_vals = self.collect_unresolved_enum_values(params, &param_names);
+            let new_vals = self.collect_enum_values(params, &param_names);
             if new_vals.is_empty() {
                 break;
             }
-            progress |= self.insert_enum_values(new_vals);
+            let pass_progress = self.insert_enum_values(new_vals);
+            progress |= pass_progress;
+            if !pass_progress {
+                break;
+            }
         }
 
         if progress {
@@ -533,17 +875,16 @@ impl Context {
         progress
     }
 
-    fn collect_unresolved_enum_values(
+    fn collect_enum_values(
         &self,
-        params: &[(String, Expression)],
+        params: &[ParamBinding<'_>],
         param_names: &rustc_hash::FxHashSet<&str>,
     ) -> Vec<(String, String)> {
         params
             .iter()
-            .filter(|(name, _)| !self.enum_parameter_values.contains_key(name))
-            .filter_map(|(name, binding)| {
+            .filter_map(|ParamBinding { name, binding, .. }| {
                 self.resolve_enum_binding_value(binding, param_names)
-                    .map(|enum_val| (name.clone(), enum_val))
+                    .map(|enum_val| ((*name).to_string(), enum_val))
             })
             .collect()
     }
@@ -598,19 +939,23 @@ impl Context {
     }
 
     fn resolve_varref_enum_reference(&self, binding: &Expression) -> Option<String> {
-        let Expression::VarRef { name, subscripts } = binding else {
+        let Expression::VarRef {
+            name, subscripts, ..
+        } = binding
+        else {
             return None;
         };
         if !subscripts.is_empty() {
             return None;
         }
-        self.resolve_enum_reference_value(&name.to_string())
+        self.resolve_enum_reference_value(name.as_str())
     }
 
     /// Returns true when `reference` points to another enum parameter name.
     ///
-    /// Uses direct lookup, alias lookup, and suffix lookup to cover outer-like
-    /// references (e.g. `pipe.system.energyDynamics` -> `system.energyDynamics`).
+    /// Uses direct lookup and structural alias lookup. Outer-like references must
+    /// be represented by aliases before this point; this lookup must not recover
+    /// structure by dropping leading path segments.
     pub(crate) fn enum_reference_matches_parameter(
         &self,
         reference: &str,
@@ -623,16 +968,6 @@ impl Context {
         let alias_resolved = self.resolve_alias(reference);
         if alias_resolved != reference && param_names.contains(alias_resolved.as_str()) {
             return true;
-        }
-
-        for suffix in Self::top_level_suffix_candidates(reference) {
-            if param_names.contains(suffix.as_str()) {
-                return true;
-            }
-            let suffix_resolved = self.resolve_alias(&suffix);
-            if suffix_resolved != suffix && param_names.contains(suffix_resolved.as_str()) {
-                return true;
-            }
         }
 
         false
@@ -648,20 +983,6 @@ impl Context {
             && let Some(enum_val) = self.enum_parameter_values.get(&alias_resolved)
         {
             return Some(enum_val.clone());
-        }
-
-        // Fallback for unresolved outer-like paths where only a shorter scoped
-        // key exists (e.g. `pipe1.system.energyDynamics` -> `system.energyDynamics`).
-        for suffix in Self::top_level_suffix_candidates(reference) {
-            if let Some(enum_val) = self.enum_parameter_values.get(&suffix) {
-                return Some(enum_val.clone());
-            }
-            let suffix_resolved = self.resolve_alias(&suffix);
-            if suffix_resolved != suffix
-                && let Some(enum_val) = self.enum_parameter_values.get(&suffix_resolved)
-            {
-                return Some(enum_val.clone());
-            }
         }
 
         None
@@ -743,41 +1064,33 @@ impl Context {
     /// - `stack.cell.stackData.cellData` -> `stack.stackData.cellData`
     ///
     /// Returns the original name if no alias applies.
-    pub(crate) fn resolve_alias(&self, name: &str) -> String {
+    fn resolve_alias(&self, name: &str) -> String {
         const MAX_DEPTH: usize = 10; // Prevent infinite loops
-        let mut current = name.to_string();
+        let mut current = rumoca_core::ComponentPath::from_flat_path(name);
         for _iteration in 0..MAX_DEPTH {
-            let resolved = self.resolve_alias_once(&current);
+            let resolved = self.resolve_alias_once_path(&current);
             if resolved == current {
                 // No alias applied, we're done
                 break;
             }
             current = resolved;
         }
-        current
+        current.to_flat_string()
     }
 
     /// Apply one level of alias resolution.
+    #[cfg(test)]
     pub(crate) fn resolve_alias_once(&self, name: &str) -> String {
-        // Check all possible prefixes from longest to shortest
-        // We prefer prefix-based resolution over exact matches because field-level
-        // exact matches may have incorrect targets (qualified with wrong parent).
-        let parts = crate::path_utils::split_path_with_indices(name);
-        for i in (1..parts.len()).rev() {
-            let prefix = parts[..i].join(".");
-            if let Some(alias_target) = self.record_aliases.get(&prefix) {
-                // Replace prefix with alias target
-                let suffix = parts[i..].join(".");
-                return format!("{}.{}", alias_target, suffix);
-            }
-        }
+        self.resolve_alias_once_path(&rumoca_core::ComponentPath::from_flat_path(name))
+            .to_flat_string()
+    }
 
-        // Fall back to exact match (for top-level aliases without fields)
-        if let Some(alias_target) = self.record_aliases.get(name) {
-            return alias_target.clone();
-        }
-
-        name.to_string()
+    fn resolve_alias_once_path(
+        &self,
+        path: &rumoca_core::ComponentPath,
+    ) -> rumoca_core::ComponentPath {
+        crate::alias_paths::resolve_component_alias_once(path, None, &self.record_aliases)
+            .unwrap_or_else(|| path.clone())
     }
 
     fn integral_real_param(&self, name: &str) -> Option<i64> {
@@ -864,18 +1177,28 @@ impl Context {
 }
 
 pub(crate) fn scoped_lookup_candidates(name: &str, scope: &str) -> Vec<String> {
+    scoped_lookup_candidates_with_scope(name, scope)
+        .into_iter()
+        .map(|(candidate, _candidate_scope)| candidate)
+        .collect()
+}
+
+pub(crate) fn scoped_lookup_candidates_with_scope(
+    name: &str,
+    scope: &str,
+) -> Vec<(String, String)> {
+    let name_path = rumoca_core::ComponentPath::from_flat_path(name);
     let mut candidates = Vec::new();
-    let mut current_scope = Some(scope);
-    while let Some(scope_name) = current_scope {
-        if scope_name.is_empty() {
-            candidates.push(name.to_string());
-            break;
-        }
-        candidates.push(format!("{scope_name}.{name}"));
-        current_scope = crate::path_utils::parent_scope(scope_name);
-        if current_scope.is_none() {
-            current_scope = Some("");
-        }
+    let mut current_scope = Some(rumoca_core::ComponentPath::from_flat_path(scope));
+    while let Some(scope_path) = current_scope {
+        candidates.push((
+            scope_path.join(&name_path).to_flat_string(),
+            scope_path.to_flat_string(),
+        ));
+        current_scope = scope_path.parent();
+    }
+    if !scope.is_empty() {
+        candidates.push((name_path.to_flat_string(), String::new()));
     }
     candidates
 }
@@ -966,6 +1289,27 @@ impl rumoca_core::EvalLookup for Context {
     }
 }
 
+fn unqualified_varref_name(expr: &Expression) -> Option<&str> {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    let path = rumoca_core::ComponentPath::from_flat_path(name.as_str());
+    (path.len() == 1).then_some(name.as_str())
+}
+
+fn modifier_source_scope(name: &str) -> Option<String> {
+    let variable_path = rumoca_core::ComponentPath::from_flat_path(name);
+    let component_scope = variable_path.parent()?;
+    let source_scope = component_scope.parent()?;
+    Some(source_scope.to_flat_string())
+}
+
 impl Default for Context {
     fn default() -> Self {
         Self::new()
@@ -980,186 +1324,217 @@ pub(crate) fn process_class_instance(
     class_def_id: Option<rumoca_core::DefId>,
     component_override_map: &ComponentOverrideMap,
     tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
 ) -> Result<(), FlattenError> {
     let previous_class_scope = ctx.current_class_scope_path.clone();
     ctx.current_class_scope_path = class_def_id.and_then(|id| tree.def_map.get(&id).cloned());
-    let result = process_class_instance_body(ctx, flat, class_data, component_override_map, tree);
+    let result = process_class_instance_body(
+        ctx,
+        flat,
+        class_data,
+        component_override_map,
+        tree,
+        class_index,
+    );
     ctx.current_class_scope_path = previous_class_scope;
     result
 }
 
+// SPEC_0021: Exception - top-level flatten phase entry point for a class instance.
+#[allow(clippy::too_many_lines)]
 fn process_class_instance_body(
     ctx: &mut Context,
     flat: &mut Model,
     class_data: &ClassInstanceData,
     component_override_map: &ComponentOverrideMap,
     tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
 ) -> Result<(), FlattenError> {
     let prefix = &class_data.qualified_name;
     let def_map = Some(&tree.def_map);
-    let scope = class_data.qualified_name.to_flat_string();
+    let class_scope = class_data.qualified_name.to_component_path();
     let (override_packages, override_functions) =
-        override_context_for_scope(&scope, component_override_map, tree);
-    set_class_imports(ctx, class_data, tree);
-    let params = ClassFlattenParams {
-        prefix,
-        def_map,
+        override_context_for_component_path(&class_scope, component_override_map);
+
+    // MLS §13.2: Set the import map for this class instance so that
+    // qualification resolves imported short names (e.g., `pi` → `Modelica.Constants.pi`)
+    // instead of incorrectly prefixing them with the component path.
+    set_class_instance_imports(
+        ctx,
+        class_data,
         tree,
-        override_packages: &override_packages,
-        override_functions: &override_functions,
-    };
-    flatten_class_equations(ctx, flat, class_data, &params)?;
-    flatten_class_algorithms(flat, class_data, &ctx.current_imports, &params)
-}
+        class_index,
+        &override_package_names(&override_packages),
+        &override_aliases_for_component_path(&class_scope, component_override_map),
+    );
 
-struct ClassFlattenParams<'a> {
-    prefix: &'a QualifiedName,
-    def_map: Option<&'a crate::ResolveDefMap>,
-    tree: &'a ClassTree,
-    override_packages: &'a [String],
-    override_functions: &'a rustc_hash::FxHashMap<String, String>,
-}
-
-fn set_class_imports(ctx: &mut Context, class_data: &ClassInstanceData, tree: &ClassTree) {
-    // MLS §13.2: Resolve imported short names instead of prefix-qualifying with component path.
-    let mut imports: crate::qualify::ImportMap =
-        class_data.resolved_imports.iter().cloned().collect();
-    if let Some(class_name) = class_scope_name_for_instance(class_data) {
-        crate::qualify::collect_lexical_package_aliases(tree, &class_name, &mut imports);
-    }
-    ctx.current_imports = imports;
-}
-
-fn flatten_class_equations(
-    ctx: &mut Context,
-    flat: &mut Model,
-    class_data: &ClassInstanceData,
-    params: &ClassFlattenParams<'_>,
-) -> Result<(), FlattenError> {
+    // Convert regular equations.
     for inst_eq in &class_data.equations {
-        flatten_regular_equation(ctx, flat, inst_eq, params)?;
-    }
-    for inst_eq in &class_data.initial_equations {
-        flatten_initial_equation(ctx, flat, inst_eq, params)?;
-    }
-    Ok(())
-}
-
-fn flatten_regular_equation(
-    ctx: &mut Context,
-    flat: &mut Model,
-    inst_eq: &rumoca_ir_ast::InstanceEquation,
-    params: &ClassFlattenParams<'_>,
-) -> Result<(), FlattenError> {
-    let mut clauses =
-        when_equations::flatten_when_equation(ctx, inst_eq, params.prefix, params.def_map)?;
-    for clause in &mut clauses {
-        rewrite_function_overrides_in_when_clause(
-            clause,
-            params.tree,
-            params.override_packages,
-            params.override_functions,
+        let inst_eq = mark_member_function_calls_in_instance_equation(
+            inst_eq,
+            tree,
+            class_index,
+            &override_functions,
         );
-    }
-    flat.when_clauses.extend(clauses);
+        // Handle when-equations separately (pass context for parameter evaluation).
+        let mut clauses = when_equations::flatten_when_equation(ctx, &inst_eq, prefix, def_map)?;
+        for clause in &mut clauses {
+            rewrite_function_overrides_in_when_clause(
+                clause,
+                tree,
+                class_index,
+                &override_packages,
+                &override_functions,
+            );
+        }
+        flat.when_clauses.extend(clauses);
 
-    let mut flattened =
-        equations::flatten_equation_with_def_map(ctx, inst_eq, params.prefix, params.def_map)?;
-    rewrite_function_overrides_in_flattened(
-        &mut flattened,
-        params.tree,
-        params.override_packages,
-        params.override_functions,
-    );
-    let equation_base = flat.equations.len();
-    for eq in flattened.equations {
-        flat.add_equation(eq);
-    }
-    for mut for_eq in flattened.for_equations {
-        for_eq.first_equation_index += equation_base;
-        flat.add_for_equation(for_eq);
-    }
-    flat.assert_equations.extend(flattened.assert_equations);
-    flat.when_clauses.extend(flattened.when_clauses);
-    flat.definite_roots.extend(flattened.definite_roots);
-    flat.branches.extend(flattened.branches);
-    flat.potential_roots.extend(flattened.potential_roots);
-    Ok(())
-}
-
-fn flatten_initial_equation(
-    ctx: &mut Context,
-    flat: &mut Model,
-    inst_eq: &rumoca_ir_ast::InstanceEquation,
-    params: &ClassFlattenParams<'_>,
-) -> Result<(), FlattenError> {
-    if matches!(&inst_eq.equation, rumoca_ir_ast::Equation::When(_)) {
-        return Err(FlattenError::unsupported_equation(
-            "when-equations are not allowed in initial equations (MLS §8.6)",
-            inst_eq.span,
-        ));
+        // Handle other equations (including for-loops that may contain when-equations).
+        let mut flattened =
+            equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
+        rewrite_function_overrides_in_flattened(
+            &mut flattened,
+            tree,
+            class_index,
+            &override_packages,
+            &override_functions,
+        );
+        let equation_base = flat.equations.len();
+        for eq in flattened.equations {
+            flat.add_equation(eq);
+        }
+        for mut for_eq in flattened.for_equations {
+            for_eq.first_equation_index += equation_base;
+            flat.add_for_equation(for_eq);
+        }
+        flat.assert_equations.extend(flattened.assert_equations);
+        flat.when_clauses.extend(flattened.when_clauses);
+        flat.definite_roots.extend(flattened.definite_roots);
+        flat.branches.extend(flattened.branches);
+        flat.potential_roots.extend(flattened.potential_roots);
     }
 
-    let mut flattened =
-        equations::flatten_equation_with_def_map(ctx, inst_eq, params.prefix, params.def_map)?;
-    rewrite_function_overrides_in_flattened(
-        &mut flattened,
-        params.tree,
-        params.override_packages,
-        params.override_functions,
-    );
-    let equation_base = flat.initial_equations.len();
-    for eq in flattened.equations {
-        flat.add_initial_equation(eq);
-    }
-    for mut for_eq in flattened.for_equations {
-        for_eq.first_equation_index += equation_base;
-        flat.add_initial_for_equation(for_eq);
-    }
-    flat.initial_assert_equations
-        .extend(flattened.assert_equations);
-    if !flattened.when_clauses.is_empty() {
-        return Err(FlattenError::unsupported_equation(
-            "when-equations are not allowed in initial equations (MLS §8.6)",
-            inst_eq.span,
-        ));
-    }
-    Ok(())
-}
+    // Convert initial equations (when-equations are rejected per EQN-006).
+    for inst_eq in &class_data.initial_equations {
+        let inst_eq = mark_member_function_calls_in_instance_equation(
+            inst_eq,
+            tree,
+            class_index,
+            &override_functions,
+        );
+        if matches!(&inst_eq.equation, rumoca_ir_ast::Equation::When(_)) {
+            return Err(FlattenError::unsupported_equation(
+                "when-equations are not allowed in initial equations (MLS §8.6)",
+                inst_eq.span,
+            ));
+        }
 
-fn flatten_class_algorithms(
-    flat: &mut Model,
-    class_data: &ClassInstanceData,
-    imports: &qualify::ImportMap,
-    params: &ClassFlattenParams<'_>,
-) -> Result<(), FlattenError> {
+        let mut flattened =
+            equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
+        rewrite_function_overrides_in_flattened(
+            &mut flattened,
+            tree,
+            class_index,
+            &override_packages,
+            &override_functions,
+        );
+        let equation_base = flat.initial_equations.len();
+        for eq in flattened.equations {
+            flat.add_initial_equation(eq);
+        }
+        for mut for_eq in flattened.for_equations {
+            for_eq.first_equation_index += equation_base;
+            flat.add_initial_for_equation(for_eq);
+        }
+        flat.initial_assert_equations
+            .extend(flattened.assert_equations);
+        if !flattened.when_clauses.is_empty() {
+            return Err(FlattenError::unsupported_equation(
+                "when-equations are not allowed in initial equations (MLS §8.6)",
+                inst_eq.span,
+            ));
+        }
+    }
+
+    // Convert algorithms (preserve structure per SPEC_0020)
+    let imports = &ctx.current_imports;
     for inst_algs in &class_data.algorithms {
+        let inst_algs = mark_member_function_calls_in_instance_statements(
+            inst_algs,
+            tree,
+            class_index,
+            &override_functions,
+        );
         let mut flat_alg =
-            flatten_algorithm_section(inst_algs, params.prefix, imports, params.def_map)?;
+            flatten_algorithm_section(&inst_algs, prefix, imports, def_map, &tree.source_map)?;
         rewrite_function_overrides_in_algorithm(
             &mut flat_alg,
-            params.tree,
-            params.override_packages,
-            params.override_functions,
+            tree,
+            class_index,
+            &override_packages,
+            &override_functions,
         );
         flat.algorithms.push(flat_alg);
     }
 
+    // Convert initial algorithms
     for inst_algs in &class_data.initial_algorithms {
+        let inst_algs = mark_member_function_calls_in_instance_statements(
+            inst_algs,
+            tree,
+            class_index,
+            &override_functions,
+        );
         let mut flat_alg =
-            flatten_algorithm_section(inst_algs, params.prefix, imports, params.def_map)?;
+            flatten_algorithm_section(&inst_algs, prefix, imports, def_map, &tree.source_map)?;
         rewrite_function_overrides_in_algorithm(
             &mut flat_alg,
-            params.tree,
-            params.override_packages,
-            params.override_functions,
+            tree,
+            class_index,
+            &override_packages,
+            &override_functions,
         );
         flat.initial_algorithms.push(flat_alg);
     }
+
     Ok(())
 }
 
+fn set_class_instance_imports(
+    ctx: &mut Context,
+    class_data: &ClassInstanceData,
+    tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    override_packages: &[String],
+    override_aliases: &[(String, String)],
+) {
+    let mut imports: crate::qualify::ImportMap =
+        class_data.resolved_imports.iter().cloned().collect();
+    add_package_override_aliases(class_index, override_aliases, &mut imports);
+    if let Some(class_name) = class_scope_name_for_instance(class_data) {
+        crate::qualify::collect_lexical_package_aliases(
+            tree,
+            class_index,
+            &class_name,
+            &mut imports,
+        );
+    }
+    if let Some(source_scope) = class_data.source_scope.as_ref() {
+        crate::qualify::collect_lexical_constant_aliases_for_source_scope_with_packages(
+            tree,
+            class_index,
+            source_scope,
+            override_packages,
+            &mut imports,
+        );
+    }
+    ctx.current_imports = imports;
+}
+
 fn class_scope_name_for_instance(class_data: &ClassInstanceData) -> Option<String> {
+    if let Some(source_scope) = &class_data.source_scope {
+        return Some(source_scope.to_flat_string());
+    }
     class_data
         .equations
         .first()
@@ -1193,6 +1568,7 @@ pub(crate) fn flatten_algorithm_section(
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
+    source_map: &rumoca_core::SourceMap,
 ) -> Result<Algorithm, FlattenError> {
     // Get span from first statement if available
     let span = statements.first().map(|s| s.span).unwrap_or(Span::DUMMY);
@@ -1206,12 +1582,14 @@ pub(crate) fn flatten_algorithm_section(
     // Use the algorithms module for qualification and output extraction
     algorithms::flatten_algorithm_section(
         &raw_statements,
-        prefix,
-        span,
-        origin,
-        imports,
-        def_map,
-        &no_locals,
+        algorithms::AlgorithmSectionContext {
+            prefix,
+            imports,
+            def_map,
+            initial_locals: &no_locals,
+            source_map: Some(source_map),
+        },
+        algorithms::AlgorithmSectionMetadata::new(span, origin),
     )
 }
 
@@ -1221,45 +1599,83 @@ use super::function_overrides_and_dims::*;
 ///
 /// Only primitive types (Real, Integer, Boolean, String) become flat variables.
 /// Class types (connectors, models, records) are containers and are skipped.
+pub(crate) struct ComponentInstanceProcess<'a, 'tree> {
+    pub(crate) flat: &'a mut Model,
+    pub(crate) instance_data: &'a rumoca_ir_ast::InstanceData,
+    pub(crate) component_override_map: &'a ComponentOverrideMap,
+    pub(crate) tree: &'a rumoca_ir_ast::ClassTree,
+    pub(crate) class_index: &'a rumoca_ir_ast::ClassDefIndex<'tree>,
+    pub(crate) import_cache: &'a mut ImportCaches<'tree>,
+    pub(crate) scope_index: &'a OverlayScopeIndex<'a>,
+}
+
 pub(crate) fn process_component_instance(
-    _ctx: &mut Context,
-    flat: &mut Model,
-    instance_data: &rumoca_ir_ast::InstanceData,
-    component_override_map: &ComponentOverrideMap,
-    tree: &rumoca_ir_ast::ClassTree,
-    global_imports: &qualify::ImportMap,
+    request: ComponentInstanceProcess<'_, '_>,
 ) -> Result<(), FlattenError> {
     // Skip if this is an empty path (root)
-    let var_name = qualified_to_var_name(&instance_data.qualified_name);
+    let var_name = qualified_to_var_name(&request.instance_data.qualified_name);
     if var_name.as_str().is_empty() {
         return Ok(());
     }
 
     // Skip non-primitive types (class types like connectors, models, records)
     // These are containers, not scalar variables
-    if !instance_data.is_primitive {
+    if !request.instance_data.is_primitive {
         return Ok(());
     }
 
-    let mut flat_var = variables::create_flat_variable(instance_data, tree, global_imports)?;
+    let import_context = variable_import_context_for_instance(
+        request.instance_data,
+        request.tree,
+        request.class_index,
+        request.import_cache,
+        request.scope_index,
+        request.component_override_map,
+    )?;
+    let mut flat_var = variables::create_flat_variable(
+        request.instance_data,
+        request.tree,
+        request.class_index,
+        &import_context,
+    )?;
+    let instance_scope = request.instance_data.qualified_name.to_component_path();
     let (override_packages, override_functions) =
-        override_context_for_scope(var_name.as_str(), component_override_map, tree);
+        override_context_for_component_path(&instance_scope, request.component_override_map);
+    let receiver_scope = instance_scope
+        .parent()
+        .unwrap_or_else(rumoca_core::ComponentPath::root);
     rewrite_function_overrides_in_flat_variable(
         &mut flat_var,
-        tree,
+        request.tree,
+        request.class_index,
         &override_packages,
         &override_functions,
+        &receiver_scope,
     );
-    flat.variable_type_names.insert(
+    request.flat.variable_type_names.insert(
         var_name.clone(),
-        variables::flat_output_type_name(instance_data, tree),
+        variables::flat_output_type_name(request.instance_data, request.tree),
     );
-    if instance_data.is_final {
-        flat.variable_final_flags.insert(var_name.clone(), true);
+    if request.instance_data.is_final {
+        request
+            .flat
+            .variable_final_flags
+            .insert(var_name.clone(), true);
     }
-    flat.add_variable(var_name, flat_var);
+    request.flat.add_variable(var_name, flat_var);
 
     Ok(())
+}
+
+fn instance_source_span(
+    instance_data: &rumoca_ir_ast::InstanceData,
+    tree: &rumoca_ir_ast::ClassTree,
+) -> rumoca_core::Span {
+    tree.source_map.location_to_span(
+        &instance_data.source_location.file_name,
+        instance_data.source_location.start as usize,
+        instance_data.source_location.end as usize,
+    )
 }
 
 /// Convert a QualifiedName to a flat VarName string.
@@ -1278,7 +1694,7 @@ pub(crate) fn qualified_to_var_name(qn: &QualifiedName) -> VarName {
 pub(crate) fn qualify_expression(
     expr: &ast::Expression,
     prefix: &QualifiedName,
-) -> rumoca_ir_flat::Expression {
+) -> Result<rumoca_core::Expression, FlattenError> {
     qualify_expression_imports(expr, prefix, &qualify::ImportMap::default())
 }
 
@@ -1292,7 +1708,7 @@ pub(crate) fn qualify_expression_imports(
     expr: &ast::Expression,
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
-) -> rumoca_ir_flat::Expression {
+) -> Result<rumoca_core::Expression, FlattenError> {
     qualify_expression_imports_with_def_map(expr, prefix, imports, None)
 }
 
@@ -1305,132 +1721,271 @@ pub(crate) fn qualify_expression_imports_with_def_map(
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
-) -> rumoca_ir_flat::Expression {
+) -> Result<rumoca_core::Expression, FlattenError> {
     // Use default options for equation qualification
     let opts = qualify::QualifyOptions {
         preserve_def_id: true,
         ..qualify::QualifyOptions::default()
     };
+    let filtered_imports;
+    let imports = if let Some(def_map) = def_map {
+        filtered_imports = imports_without_shadowed_aliases(expr, imports, def_map);
+        &filtered_imports
+    } else {
+        imports
+    };
     let qualified = qualify::qualify_expression_with_imports(expr, prefix, opts, imports);
     crate::ast_lower::expression_from_ast_with_def_map(&qualified, def_map)
 }
 
-/// Like `qualify_expression_imports_with_def_map`, but uses flatten context
-/// semantic metadata (class DefIds) to keep class/type references lexical.
+/// Like `qualify_expression_imports_with_def_map`, but receives flatten context
+/// semantic metadata. The context is currently used by class-reference
+/// canonicalization in qualification call sites; keeping this entry point
+/// prevents those call sites from falling back to context-free qualification.
 pub(crate) fn qualify_expression_imports_with_def_map_ctx(
     expr: &ast::Expression,
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
-    ctx: &Context,
-) -> rumoca_ir_flat::Expression {
-    let expr = canonicalize_class_reference_paths(
-        expr,
-        def_map,
-        &ctx.class_def_ids,
-        ctx.current_class_scope_path.as_deref(),
-    );
-    let opts = qualify::QualifyOptions {
-        preserve_def_id: true,
-        ..qualify::QualifyOptions::default()
-    };
-    let qualified = qualify::qualify_expression_with_imports(&expr, prefix, opts, imports);
-    crate::ast_lower::expression_from_ast_with_def_map(&qualified, def_map)
+    _ctx: &Context,
+) -> Result<rumoca_core::Expression, FlattenError> {
+    qualify_expression_imports_with_def_map(expr, prefix, imports, def_map)
 }
 
-fn canonicalize_class_reference_paths(
+fn imports_without_shadowed_aliases(
     expr: &ast::Expression,
-    def_map: Option<&crate::ResolveDefMap>,
-    class_def_ids: &rustc_hash::FxHashSet<rumoca_core::DefId>,
-    current_class_scope_path: Option<&str>,
-) -> ast::Expression {
+    imports: &qualify::ImportMap,
+    def_map: &crate::ResolveDefMap,
+) -> qualify::ImportMap {
+    let mut shadowed = std::collections::HashSet::new();
+    collect_shadowed_import_aliases(expr, imports, def_map, &mut shadowed);
+    if shadowed.is_empty() {
+        return imports.clone();
+    }
+
+    imports
+        .iter()
+        .filter(|(alias, _)| !shadowed.contains(alias.as_str()))
+        .map(|(alias, target)| (alias.clone(), target.clone()))
+        .collect()
+}
+
+fn collect_shadowed_import_aliases(
+    expr: &ast::Expression,
+    imports: &qualify::ImportMap,
+    def_map: &crate::ResolveDefMap,
+    shadowed: &mut std::collections::HashSet<String>,
+) {
     match expr {
-        ast::Expression::ComponentReference(cr) => ast::Expression::ComponentReference(
-            canonicalize_class_component_ref(cr, def_map, class_def_ids, current_class_scope_path),
-        ),
-        ast::Expression::Binary { op, lhs, rhs } => ast::Expression::Binary {
-            op: op.clone(),
-            lhs: std::sync::Arc::new(canonicalize_class_reference_paths(
-                lhs,
-                def_map,
-                class_def_ids,
-                current_class_scope_path,
-            )),
-            rhs: std::sync::Arc::new(canonicalize_class_reference_paths(
-                rhs,
-                def_map,
-                class_def_ids,
-                current_class_scope_path,
-            )),
-        },
-        ast::Expression::Unary { op, rhs } => ast::Expression::Unary {
-            op: op.clone(),
-            rhs: std::sync::Arc::new(canonicalize_class_reference_paths(
-                rhs,
-                def_map,
-                class_def_ids,
-                current_class_scope_path,
-            )),
-        },
-        ast::Expression::FunctionCall { comp, args } => ast::Expression::FunctionCall {
-            comp: canonicalize_class_component_ref(
-                comp,
-                def_map,
-                class_def_ids,
-                current_class_scope_path,
-            ),
-            args: args
-                .iter()
-                .map(|arg| {
-                    canonicalize_class_reference_paths(
-                        arg,
-                        def_map,
-                        class_def_ids,
-                        current_class_scope_path,
-                    )
-                })
-                .collect(),
-        },
-        _ => expr.clone(),
+        ast::Expression::ComponentReference(cr) => {
+            collect_component_shadowed_import_alias(cr, imports, def_map, shadowed);
+        }
+        ast::Expression::Binary { lhs, rhs, .. } => {
+            collect_shadowed_import_aliases(lhs, imports, def_map, shadowed);
+            collect_shadowed_import_aliases(rhs, imports, def_map, shadowed);
+        }
+        ast::Expression::Unary { rhs, .. } | ast::Expression::Parenthesized { inner: rhs, .. } => {
+            collect_shadowed_import_aliases(rhs, imports, def_map, shadowed);
+        }
+        ast::Expression::FunctionCall { comp, args, .. } => {
+            collect_component_shadowed_import_alias(comp, imports, def_map, shadowed);
+            for arg in args {
+                collect_shadowed_import_aliases(arg, imports, def_map, shadowed);
+            }
+        }
+        ast::Expression::ClassModification {
+            target,
+            modifications,
+            ..
+        } => {
+            collect_component_shadowed_import_alias(target, imports, def_map, shadowed);
+            for modification in modifications {
+                collect_shadowed_import_aliases(modification, imports, def_map, shadowed);
+            }
+        }
+        ast::Expression::NamedArgument { value, .. } => {
+            collect_shadowed_import_aliases(value, imports, def_map, shadowed);
+        }
+        ast::Expression::Modification { target, value, .. } => {
+            collect_component_shadowed_import_alias(target, imports, def_map, shadowed);
+            collect_shadowed_import_aliases(value, imports, def_map, shadowed);
+        }
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                collect_shadowed_import_aliases(condition, imports, def_map, shadowed);
+                collect_shadowed_import_aliases(value, imports, def_map, shadowed);
+            }
+            collect_shadowed_import_aliases(else_branch, imports, def_map, shadowed);
+        }
+        ast::Expression::Array { elements, .. } | ast::Expression::Tuple { elements, .. } => {
+            for element in elements {
+                collect_shadowed_import_aliases(element, imports, def_map, shadowed);
+            }
+        }
+        ast::Expression::Range {
+            start, step, end, ..
+        } => {
+            collect_shadowed_import_aliases(start, imports, def_map, shadowed);
+            if let Some(step) = step {
+                collect_shadowed_import_aliases(step, imports, def_map, shadowed);
+            }
+            collect_shadowed_import_aliases(end, imports, def_map, shadowed);
+        }
+        ast::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            collect_shadowed_import_aliases(expr, imports, def_map, shadowed);
+            for index in indices {
+                collect_shadowed_import_aliases(&index.range, imports, def_map, shadowed);
+            }
+            if let Some(filter) = filter {
+                collect_shadowed_import_aliases(filter, imports, def_map, shadowed);
+            }
+        }
+        ast::Expression::ArrayIndex {
+            base, subscripts, ..
+        } => {
+            collect_shadowed_import_aliases(base, imports, def_map, shadowed);
+            for subscript in subscripts {
+                collect_subscript_shadowed_import_aliases(subscript, imports, def_map, shadowed);
+            }
+        }
+        ast::Expression::FieldAccess { base, .. } => {
+            collect_shadowed_import_aliases(base, imports, def_map, shadowed);
+        }
+        ast::Expression::Terminal { .. } | ast::Expression::Empty { .. } => {}
     }
 }
 
-fn canonicalize_class_component_ref(
+fn collect_component_shadowed_import_alias(
     cr: &ast::ComponentReference,
-    def_map: Option<&crate::ResolveDefMap>,
-    class_def_ids: &rustc_hash::FxHashSet<rumoca_core::DefId>,
-    current_class_scope_path: Option<&str>,
-) -> ast::ComponentReference {
-    let Some(def_id) = cr.def_id else {
-        return cr.clone();
-    };
-    if !class_def_ids.contains(&def_id) {
-        return cr.clone();
+    imports: &qualify::ImportMap,
+    def_map: &crate::ResolveDefMap,
+    shadowed: &mut std::collections::HashSet<String>,
+) {
+    for part in &cr.parts {
+        if let Some(subscripts) = &part.subs {
+            for subscript in subscripts {
+                collect_subscript_shadowed_import_aliases(subscript, imports, def_map, shadowed);
+            }
+        }
     }
-    let Some(path) = def_map.and_then(|map| map.get(&def_id)) else {
-        return cr.clone();
+
+    let Some(first) = cr.parts.first() else {
+        return;
     };
-    let base_path = current_class_scope_path
-        .and_then(|class_scope| path.strip_prefix(class_scope))
-        .and_then(|suffix| suffix.strip_prefix('.'))
-        .filter(|suffix| !suffix.is_empty())
-        .unwrap_or(path.as_str());
-    let mut parts: Vec<ast::ComponentRefPart> = base_path
-        .split('.')
-        .map(|segment| ast::ComponentRefPart {
-            ident: rumoca_ir_ast::Token {
-                text: std::sync::Arc::from(segment),
-                ..Default::default()
-            },
-            subs: None,
-        })
-        .collect();
-    if cr.parts.len() > 1 {
-        parts.extend(cr.parts.iter().skip(1).cloned());
+    let alias = first.ident.text.as_ref();
+    let Some(imported_path) = imports.get(alias) else {
+        return;
+    };
+    let Some(resolved_path) = cr.def_id.and_then(|def_id| def_map.get(&def_id)) else {
+        return;
+    };
+    if rumoca_core::top_level_last_segment(resolved_path) != alias {
+        return;
     }
-    ast::ComponentReference {
-        local: false,
-        parts,
-        def_id: Some(def_id),
+    if resolved_path != imported_path {
+        shadowed.insert(alias.to_string());
     }
 }
+
+fn collect_subscript_shadowed_import_aliases(
+    subscript: &ast::Subscript,
+    imports: &qualify::ImportMap,
+    def_map: &crate::ResolveDefMap,
+    shadowed: &mut std::collections::HashSet<String>,
+) {
+    if let ast::Subscript::Expression(expr) = subscript {
+        collect_shadowed_import_aliases(expr, imports, def_map, shadowed);
+    }
+}
+
+fn enum_type_dimension(expr: &ast::Expression, tree: &ClassTree) -> Option<i64> {
+    let ast::Expression::ComponentReference(reference) = expr else {
+        return None;
+    };
+    enum_literal_count_for_reference(reference, tree).and_then(|count| i64::try_from(count).ok())
+}
+
+fn infer_enum_range_dimensions(expr: &Expression, tree: &ClassTree) -> Option<Vec<i64>> {
+    let Expression::Range {
+        start, step, end, ..
+    } = expr
+    else {
+        return None;
+    };
+    if step.is_some() {
+        return None;
+    }
+    let (start_type, start_ordinal) = enum_literal_ordinal(start, tree)?;
+    let (end_type, end_ordinal) = enum_literal_ordinal(end, tree)?;
+    if start_type != end_type {
+        return None;
+    }
+    let len = if end_ordinal >= start_ordinal {
+        end_ordinal - start_ordinal + 1
+    } else {
+        0
+    };
+    Some(vec![len])
+}
+
+fn enum_literal_ordinal(expr: &Expression, tree: &ClassTree) -> Option<(rumoca_core::DefId, i64)> {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    let reference = name.component_ref()?;
+    let literal = reference.parts.last()?.ident.as_str();
+    let enum_class = enum_class_for_literal_reference(reference, tree)?;
+    let enum_def_id = enum_class.def_id?;
+    let ordinal = enum_class
+        .enum_literals
+        .iter()
+        .position(|candidate| candidate.ident.text.as_ref() == literal)? as i64
+        + 1;
+    Some((enum_def_id, ordinal))
+}
+
+fn enum_class_for_literal_reference<'a>(
+    reference: &rumoca_core::ComponentReference,
+    tree: &'a ClassTree,
+) -> Option<&'a ast::ClassDef> {
+    if reference.parts.len() < 2 {
+        return None;
+    }
+    let first_def_id = reference.def_id?;
+    let mut class = tree.get_class_by_def_id(first_def_id)?;
+    if !class.enum_literals.is_empty() {
+        return Some(class);
+    }
+    for part in &reference.parts[1..reference.parts.len() - 1] {
+        class = class.classes.get(part.ident.as_str())?;
+    }
+    (!class.enum_literals.is_empty()).then_some(class)
+}
+
+fn enum_literal_count_for_reference(
+    reference: &ast::ComponentReference,
+    tree: &ClassTree,
+) -> Option<usize> {
+    let def_id = reference.def_id?;
+    tree.get_class_by_def_id(def_id)
+        .map(|class| class.enum_literals.len())
+        .filter(|count| *count > 0)
+}
+
+#[cfg(test)]
+mod import_shadow_tests;

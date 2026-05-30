@@ -1,4 +1,6 @@
+use crate::ToDaeError;
 use crate::path_utils::{normalized_top_level_names, path_is_in_top_level_set};
+use indexmap::IndexSet;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 use std::collections::HashSet;
@@ -20,8 +22,8 @@ use std::collections::HashSet;
 /// and have no root.
 pub(crate) fn count_overconstrained_interface(
     flat: &flat::Model,
-    state_vars: &HashSet<flat::VarName>,
-) -> i64 {
+    state_vars: &IndexSet<rumoca_core::VarName>,
+) -> Result<i64, ToDaeError> {
     let defined_lhs_paths = collect_nonconnection_lhs_paths(flat);
 
     // Step 1: Collect OC record groups from flat.variables.
@@ -38,15 +40,26 @@ pub(crate) fn count_overconstrained_interface(
         if !crate::is_continuous_unknown(flat, state_vars, name) {
             continue;
         }
-        let group = record_groups
-            .entry(rec_path.clone())
-            .or_insert_with(|| OcRecordGroup {
-                total_scalar_size: 0,
-                eq_constraint_size: var.oc_eq_constraint_size.unwrap_or(3),
-                has_internal_definition: defined_lhs_paths
-                    .iter()
-                    .any(|lhs| is_same_or_child(lhs, rec_path)),
-            });
+        let group = match record_groups.entry(rec_path.clone()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let eq_constraint_size = var.oc_eq_constraint_size.ok_or_else(|| {
+                    ToDaeError::RuntimeContractViolation {
+                        detail: format!(
+                            "overconstrained variable `{name}` is missing equalityConstraint size"
+                        ),
+                        span: rumoca_core::span_to_source_span(var.source_span),
+                    }
+                })?;
+                entry.insert(OcRecordGroup {
+                    total_scalar_size: 0,
+                    eq_constraint_size,
+                    has_internal_definition: defined_lhs_paths
+                        .iter()
+                        .any(|lhs| is_same_or_child(lhs, rec_path)),
+                })
+            }
+        };
         // Each variable contributes its scalar size (product of dims, min 1)
         let scalar_size = if var.dims.is_empty() {
             1usize
@@ -57,7 +70,7 @@ pub(crate) fn count_overconstrained_interface(
     }
 
     if record_groups.is_empty() {
-        return 0;
+        return Ok(0);
     }
 
     // Step 2: Identify which record paths are in top-level connectors.
@@ -70,7 +83,7 @@ pub(crate) fn count_overconstrained_interface(
         .collect();
 
     if top_level_records.is_empty() {
-        return 0;
+        return Ok(0);
     }
 
     // Step 3: Build VCG connected components from record paths, required branches,
@@ -109,7 +122,7 @@ pub(crate) fn count_overconstrained_interface(
         for (rec_path, &comp_id) in &comp_of {
             let matches = rec_path.starts_with(pot_root.as_str())
                 || pot_root.starts_with(*rec_path)
-                || crate::path_utils::top_level_segment(rec_path)
+                || crate::path_utils::rendered_top_level_segment(rec_path)
                     .is_some_and(|prefix| pot_root.starts_with(prefix));
             if matches && !has_root[comp_id] {
                 // Select this potential root (first one encountered per component)
@@ -140,7 +153,7 @@ pub(crate) fn count_overconstrained_interface(
         }
     }
 
-    correction
+    Ok(correction)
 }
 
 /// Build connected components from record paths using VCG branches.
@@ -202,13 +215,13 @@ fn collect_nonconnection_lhs_paths(flat: &flat::Model) -> HashSet<String> {
             continue;
         }
 
-        let flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
+        let rumoca_core::Expression::Binary { op, lhs, .. } = &eq.residual else {
             continue;
         };
-        if !matches!(op, rumoca_ir_flat::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_core::OpBinary::Sub) {
             continue;
         }
-        if let flat::Expression::VarRef { name, .. } = lhs.as_ref() {
+        if let rumoca_core::Expression::VarRef { name, .. } = lhs.as_ref() {
             lhs_paths.insert(name.as_str().to_string());
         }
     }
@@ -255,17 +268,16 @@ fn relabel_component_ids(comp_of: &mut FxHashMap<&str, usize>, keep: usize, repl
 mod tests {
     use super::*;
     use rumoca_ir_flat as flat;
-    use std::collections::HashSet;
 
     fn add_oc_record(flat: &mut flat::Model, rec_path: &str) {
         for (suffix, dims) in [("T", vec![3, 3]), ("w", vec![3])] {
             let name = format!("{rec_path}.{suffix}");
             flat.add_variable(
-                flat::VarName::new(&name),
+                rumoca_core::VarName::new(&name),
                 flat::Variable {
-                    name: flat::VarName::new(&name),
+                    name: rumoca_core::VarName::new(&name),
                     dims,
-                    variability: rumoca_ir_core::Variability::Empty,
+                    variability: rumoca_core::Variability::Empty,
                     is_primitive: true,
                     is_overconstrained: true,
                     oc_record_path: Some(rec_path.to_string()),
@@ -302,8 +314,8 @@ mod tests {
         flat.potential_roots
             .push(("bus[data.medium].anchor".to_string(), 0));
 
-        let state_vars: HashSet<flat::VarName> = HashSet::default();
-        let correction = count_overconstrained_interface(&flat, &state_vars);
+        let state_vars: IndexSet<rumoca_core::VarName> = IndexSet::new();
+        let correction = count_overconstrained_interface(&flat, &state_vars).unwrap();
         assert_eq!(
             correction, 9,
             "mismatched bracket expression must not be treated as a potential-root match"
@@ -319,8 +331,8 @@ mod tests {
         flat.potential_roots
             .push(("bus[data.medium].anchor".to_string(), 0));
 
-        let state_vars: HashSet<flat::VarName> = HashSet::default();
-        let correction = count_overconstrained_interface(&flat, &state_vars);
+        let state_vars: IndexSet<rumoca_core::VarName> = IndexSet::new();
+        let correction = count_overconstrained_interface(&flat, &state_vars).unwrap();
         assert_eq!(
             correction, 0,
             "matching bracket expression should mark component rooted"

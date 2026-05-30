@@ -106,7 +106,7 @@ pub struct FormatOptions {
 use rumoca_ir::cst::{Token, Trivia, lex_with_trivia};
 
 pub fn format(source: &str, options: &FormatOptions) -> String {
-    let source_id = rumoca_core::SourceId(0);
+    let source_id = rumoca_ir_core::SourceId(0);
     let tokens = lex_with_trivia(source, source_id);
     let formatted = reformat_tokens(&tokens, options);
     let output = tokens_to_string(&formatted);

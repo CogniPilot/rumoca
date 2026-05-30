@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 /* FMI3 types and function declarations (match fmi3/model.c.jinja) */
 typedef unsigned int fmi3ValueReference;
@@ -103,13 +104,11 @@ int main(int argc, char* argv[]) {
     fmi3EnterInitializationMode(inst, 0, 0.0, 0.0, 1, t_end);
     fmi3ExitInitializationMode(inst);
 
-    {
-        fmi3Boolean discreteStatesNeedUpdate, terminateSimulation;
-        fmi3Boolean nominalsChanged, valuesChanged, nextEventTimeDefined;
-        fmi3Float64 nextEventTime;
-        fmi3UpdateDiscreteStates(inst, &discreteStatesNeedUpdate, &terminateSimulation,
-            &nominalsChanged, &valuesChanged, &nextEventTimeDefined, &nextEventTime);
-    }
+    fmi3Boolean discreteStatesNeedUpdate, terminateSimulation;
+    fmi3Boolean nominalsChanged, valuesChanged, nextEventTimeDefined;
+    fmi3Float64 nextEventTime;
+    fmi3UpdateDiscreteStates(inst, &discreteStatesNeedUpdate, &terminateSimulation,
+        &nominalsChanged, &valuesChanged, &nextEventTimeDefined, &nextEventTime);
     fmi3EnterContinuousTimeMode(inst);
 
     /* CSV header */
@@ -138,6 +137,19 @@ int main(int argc, char* argv[]) {
         fmi3SetTime(inst, t);
 {% if n_x > 0 %}
         fmi3SetContinuousStates(inst, x, {{ n_x }});
+{% endif %}
+        if (nextEventTimeDefined && fabs(t - nextEventTime) <= fmax(1.0e-12, 0.5 * dt)) {
+            fmi3EnterEventMode(inst);
+            fmi3UpdateDiscreteStates(inst, &discreteStatesNeedUpdate, &terminateSimulation,
+                &nominalsChanged, &valuesChanged, &nextEventTimeDefined, &nextEventTime);
+            fmi3EnterContinuousTimeMode(inst);
+            if (terminateSimulation) break;
+{% if n_x > 0 %}
+            fmi3GetContinuousStates(inst, x, {{ n_x }});
+            fmi3SetContinuousStates(inst, x, {{ n_x }});
+{% endif %}
+        }
+{% if n_x > 0 %}
         fmi3GetContinuousStateDerivatives(inst, xdot, {{ n_x }});
 {% endif %}
 
@@ -153,6 +165,8 @@ int main(int argc, char* argv[]) {
         /* Euler step */
         for (int i = 0; i < {{ n_x }}; i++)
             x[i] += dt * xdot[i];
+        fmi3SetTime(inst, t + dt);
+        fmi3SetContinuousStates(inst, x, {{ n_x }});
 {% endif %}
 
         /* Check events */
@@ -183,13 +197,14 @@ int main(int argc, char* argv[]) {
 
             if (enterEvent) {
                 fmi3EnterEventMode(inst);
-                fmi3Boolean discreteStatesNeedUpdate, terminateSim;
-                fmi3Boolean nominalsChanged, valuesChanged, nextEventTimeDefined;
-                fmi3Float64 nextEventTime;
+                fmi3Boolean terminateSim;
                 fmi3UpdateDiscreteStates(inst, &discreteStatesNeedUpdate, &terminateSim,
                     &nominalsChanged, &valuesChanged, &nextEventTimeDefined, &nextEventTime);
                 fmi3EnterContinuousTimeMode(inst);
                 if (terminateSim) break;
+{% if n_x > 0 %}
+                fmi3GetContinuousStates(inst, x, {{ n_x }});
+{% endif %}
             }
         }
     }

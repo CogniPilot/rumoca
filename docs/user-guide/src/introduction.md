@@ -1,16 +1,15 @@
-# Rumoca Handbook
+# Rumoca User Guide
 
-Welcome to Rumoca, a modern Modelica compiler and simulation environment.
+Rumoca is a Rust Modelica compiler, simulator, and symbolic code generation
+toolkit.
 
-## What is Rumoca?
+The normal user workflow is:
 
-Rumoca compiles Modelica models - a declarative language for physical system modeling - into runnable simulations. It provides:
-
-- **Command-line tools** for parsing, checking, and simulating models
-- **IDE support** via VSCode with real-time diagnostics and completion
-- **Web playground** for trying Modelica in the browser
-- **Jupyter integration** for interactive modeling in notebooks
-- **Code generation** to Python and other backends
+1. Write or open a Modelica model.
+2. Configure any external Modelica package roots, such as MSL or CMM.
+3. Run either a direct command or a colocated `rum.toml` scenario.
+4. Inspect results in the CLI, VS Code, browser viewer, or generated target
+   output.
 
 ## What is Modelica?
 
@@ -30,13 +29,16 @@ end SpringMass;
 
 The compiler transforms these equations into a form suitable for numerical simulation.
 
+## Project Status
+
+Rumoca is in active development. It can compile and simulate a growing subset
+of Modelica, but it is not a full OpenModelica replacement. Expect better
+results with explicit examples and pinned packages than with arbitrary large
+libraries.
+
 ## Getting Started
 
-1. [Install Rumoca](./getting-started/installation.md)
-2. [Quick Start](./getting-started/quickstart.md) - simulate your first model
-3. [Your First Model](./getting-started/first-model.md) - write your own
-
-## Getting Help
-
-- GitHub Issues: [github.com/jgoppert/rumoca/issues](https://github.com/jgoppert/rumoca/issues)
-- Source Code: [github.com/jgoppert/rumoca](https://github.com/jgoppert/rumoca)
+Start with [Installation](./getting-started/installation.md), then run the
+[Quick Start](./getting-started/quickstart.md). The scenario pages explain
+the current preferred way to keep simulation, visualization, source-root, and
+code generation settings with an example model.

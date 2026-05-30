@@ -1,0 +1,10 @@
+version = 1
+ir = "ast"
+name = "modelica"
+description = "Modelica source reconstructed from parsed AST"
+execution_mode = "source-transform"
+deployment_class = "modelica"
+
+[[files]]
+path = "{{ model_name }}_ast.mo"
+template = "modelica.mo.jinja"

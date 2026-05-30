@@ -4,6 +4,8 @@
 //! compilation, enum values can appear with different qualification prefixes
 //! (for example, imported short names vs fully qualified names).
 
+use crate::{parent_scope, split_last_top_level, top_level_last_segment, top_level_path_ends_with};
+
 /// Compare two enum value paths with qualification-tolerant semantics.
 ///
 /// Accepted equal forms include:
@@ -15,7 +17,7 @@ pub fn enum_values_equal(lhs: &str, rhs: &str) -> bool {
         return true;
     }
 
-    if dotted_boundary_suffix_match(lhs, rhs) || dotted_boundary_suffix_match(rhs, lhs) {
+    if top_level_path_ends_with(lhs, rhs) || top_level_path_ends_with(rhs, lhs) {
         return true;
     }
 
@@ -29,18 +31,9 @@ pub fn enum_values_equal(lhs: &str, rhs: &str) -> bool {
     lhs_type == rhs_type && lhs_literal == rhs_literal
 }
 
-fn dotted_boundary_suffix_match(longer: &str, shorter: &str) -> bool {
-    if shorter.is_empty() || longer.len() <= shorter.len() {
-        return false;
-    }
-    longer
-        .strip_suffix(shorter)
-        .is_some_and(|prefix| prefix.ends_with('.'))
-}
-
 fn enum_type_and_literal_tail(path: &str) -> Option<(&str, &str)> {
-    let (prefix, literal) = path.rsplit_once('.')?;
-    let enum_type = prefix.rsplit_once('.').map_or(prefix, |(_, ty)| ty);
+    let (prefix, literal) = split_last_top_level(path)?;
+    let enum_type = parent_scope(prefix).map_or(prefix, |_| top_level_last_segment(prefix));
     Some((enum_type, literal))
 }
 
@@ -72,5 +65,21 @@ mod tests {
     fn enum_equal_rejects_different_type_or_literal() {
         assert!(!enum_values_equal("PkgA.Mode.On", "PkgB.Other.On"));
         assert!(!enum_values_equal("PkgA.Mode.On", "PkgA.Mode.Off"));
+    }
+
+    #[test]
+    fn enum_equal_suffix_match_requires_top_level_segment_boundary() {
+        assert!(enum_values_equal(
+            "a[index.with.dot].SimpleController.PI",
+            "SimpleController.PI"
+        ));
+        assert!(!enum_values_equal(
+            "Pkg.SimpleController.PI",
+            "Controller.PI"
+        ));
+        assert!(!enum_values_equal(
+            "Pkg.SimpleController.PI",
+            "Simple.Controller.PI"
+        ));
     }
 }

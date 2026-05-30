@@ -1,4 +1,5 @@
 use rumoca_ir_ast as ast;
+use rumoca_phase_flatten::ast_expression_to_string as extract_string_literal;
 
 fn component_ref_last_ident(comp_ref: &ast::ComponentReference) -> Option<&str> {
     comp_ref.parts.last().map(|part| part.ident.text.as_ref())
@@ -38,44 +39,19 @@ fn extract_numeric_literal(expr: &ast::Expression) -> Option<f64> {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedReal | ast::TerminalType::UnsignedInteger,
             token,
+            ..
         } => token.text.parse::<f64>().ok(),
         ast::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Minus(_),
+            op: rumoca_core::OpUnary::Minus,
             rhs,
+            ..
         } => extract_numeric_literal(rhs).map(|v| -v),
         ast::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Plus(_),
+            op: rumoca_core::OpUnary::Plus,
             rhs,
+            ..
         } => extract_numeric_literal(rhs),
-        ast::Expression::Parenthesized { inner } => extract_numeric_literal(inner),
-        _ => None,
-    }
-}
-
-fn extract_string_literal(expr: &ast::Expression) -> Option<String> {
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::String,
-            token,
-        } => {
-            let raw = token.text.as_ref().trim();
-            let unquoted = raw.trim_matches('"').trim();
-            if unquoted.is_empty() {
-                None
-            } else {
-                Some(unquoted.to_string())
-            }
-        }
-        ast::Expression::ComponentReference(comp_ref) => {
-            let value = comp_ref
-                .parts
-                .iter()
-                .map(|part| part.ident.text.as_ref())
-                .collect::<Vec<_>>()
-                .join(".");
-            if value.is_empty() { None } else { Some(value) }
-        }
-        ast::Expression::Parenthesized { inner } => extract_string_literal(inner),
+        ast::Expression::Parenthesized { inner, .. } => extract_numeric_literal(inner),
         _ => None,
     }
 }
@@ -84,7 +60,7 @@ fn apply_om_simulation_flags_solver(value: &ast::Expression, settings: &mut Expe
     let modifications = match value {
         ast::Expression::ClassModification { modifications, .. } => modifications.as_slice(),
         ast::Expression::FunctionCall { args, .. } => args.as_slice(),
-        ast::Expression::Parenthesized { inner } => {
+        ast::Expression::Parenthesized { inner, .. } => {
             apply_om_simulation_flags_solver(inner, settings);
             return;
         }
@@ -93,13 +69,13 @@ fn apply_om_simulation_flags_solver(value: &ast::Expression, settings: &mut Expe
 
     for entry in modifications {
         match entry {
-            ast::Expression::NamedArgument { name, value } => {
+            ast::Expression::NamedArgument { name, value, .. } => {
                 let key = name.text.as_ref();
                 if key.eq_ignore_ascii_case("s") || key.eq_ignore_ascii_case("solver") {
                     settings.solver = extract_string_literal(value);
                 }
             }
-            ast::Expression::Modification { target, value } => {
+            ast::Expression::Modification { target, value, .. } => {
                 if let Some(key) = component_ref_last_ident(target)
                     && (key.eq_ignore_ascii_case("s") || key.eq_ignore_ascii_case("solver"))
                 {
@@ -148,10 +124,10 @@ fn extract_experiment_settings_from_modifications(
     let mut settings = ExperimentSettings::default();
     for expr in modifications {
         match expr {
-            ast::Expression::NamedArgument { name, value } => {
+            ast::Expression::NamedArgument { name, value, .. } => {
                 apply_experiment_entry(name.text.as_ref(), value, &mut settings);
             }
-            ast::Expression::Modification { target, value } => {
+            ast::Expression::Modification { target, value, .. } => {
                 if let Some(key) = component_ref_last_ident(target) {
                     apply_experiment_entry(key, value, &mut settings);
                 }
@@ -183,18 +159,21 @@ fn extract_experiment_settings_from_annotation_expr(
         ast::Expression::ClassModification {
             target,
             modifications,
+            ..
         } if component_ref_last_ident(target) == Some("experiment") => Some(
             extract_experiment_settings_from_modifications(modifications),
         ),
-        ast::Expression::FunctionCall { comp, args }
+        ast::Expression::FunctionCall { comp, args, .. }
             if component_ref_last_ident(comp) == Some("experiment") =>
         {
             Some(extract_experiment_settings_from_modifications(args))
         }
-        ast::Expression::NamedArgument { name, value } if name.text.as_ref() == "experiment" => {
+        ast::Expression::NamedArgument { name, value, .. }
+            if name.text.as_ref() == "experiment" =>
+        {
             extract_experiment_settings_from_annotation_expr(value)
         }
-        ast::Expression::Modification { target, value }
+        ast::Expression::Modification { target, value, .. }
             if component_ref_last_ident(target) == Some("experiment") =>
         {
             extract_experiment_settings_from_annotation_expr(value)

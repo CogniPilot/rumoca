@@ -79,11 +79,18 @@ fn panic_message(payload: &Box<dyn Any + Send>) -> String {
 
 fn baseline_quality_template() -> MslQualityBaseline {
     MslQualityBaseline {
+        quality_gate_version: MSL_QUALITY_GATE_VERSION,
+        run_scope: MSL_QUALITY_RUN_SCOPE_FULL.to_string(),
         git_commit: "baseline".to_string(),
         msl_version: "v4.1.0".to_string(),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
         sim_timeout_seconds: 10.0,
         simulatable_attempted: 10,
+        parse_models: 10,
+        flatten_models: 10,
+        dae_models: 10,
         compiled_models: 10,
+        solve_models: 8,
         balanced_models: 10,
         unbalanced_models: 0,
         partial_models: 0,
@@ -92,6 +99,9 @@ fn baseline_quality_template() -> MslQualityBaseline {
         initial_unbalanced_models: 0,
         sim_target_models: 10,
         sim_attempted: 10,
+        ic_attempted: 10,
+        ic_ok: 8,
+        ic_solver_fail: 2,
         sim_ok: 8,
         sim_success_rate: 0.8,
         runtime_context: None,
@@ -100,10 +110,402 @@ fn baseline_quality_template() -> MslQualityBaseline {
     }
 }
 
+fn gate_input_with_sim_rate(sim_ok: usize, sim_attempted: usize) -> MslQualityGateInput<'static> {
+    MslQualityGateInput {
+        msl_version: "v4.1.0",
+        simulatable_attempted: 10,
+        parse_models: 10,
+        flatten_models: 10,
+        dae_models: 10,
+        compiled_models: 10,
+        solve_models: sim_ok,
+        balanced_models: 10,
+        unbalanced_models: 0,
+        partial_models: 0,
+        balance_denominator: 10,
+        initial_balanced_models: 10,
+        initial_unbalanced_models: 0,
+        sim_target_models: 10,
+        sim_attempted,
+        ic_attempted: sim_attempted,
+        ic_ok: sim_ok,
+        ic_solver_fail: sim_attempted.saturating_sub(sim_ok),
+        sim_ok,
+    }
+}
+
 fn valid_summary_template() -> MslSummary {
     let mut summary = super::super::empty_summary(1, 0);
     summary.total_models = 1;
     summary
+}
+
+#[test]
+fn current_quality_snapshot_marks_only_partial_runs() {
+    let summary = valid_summary_template();
+    let full = current_msl_quality_snapshot_json(&summary, None, false)
+        .expect("full snapshot should serialize");
+    assert_eq!(
+        full.get("quality_gate_version").and_then(Value::as_u64),
+        Some(MSL_QUALITY_GATE_VERSION as u64)
+    );
+    assert_eq!(
+        full.get("run_scope").and_then(Value::as_str),
+        Some(MSL_QUALITY_RUN_SCOPE_FULL)
+    );
+    assert!(
+        full.get("partial").is_none(),
+        "full baseline snapshots should omit the partial marker"
+    );
+
+    let partial = current_msl_quality_snapshot_json(&summary, None, true)
+        .expect("partial snapshot should serialize");
+    assert_eq!(
+        partial.get("run_scope").and_then(Value::as_str),
+        Some(MSL_QUALITY_RUN_SCOPE_PARTIAL)
+    );
+    assert_eq!(partial.get("partial").and_then(Value::as_bool), Some(true));
+}
+
+#[test]
+fn current_quality_snapshot_records_parity_omc_version() {
+    let summary = valid_summary_template();
+    let parity = MslParityGateInput {
+        total_models: Some(1),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
+        runtime_context: None,
+        runtime_ratio_stats: None,
+        trace_accuracy_stats: None,
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
+    };
+
+    let snapshot = current_msl_quality_snapshot_json(&summary, Some(&parity), false)
+        .expect("snapshot should serialize");
+    assert_eq!(
+        snapshot.get("omc_version").and_then(Value::as_str),
+        Some("OpenModelica 1.26.1")
+    );
+}
+
+#[test]
+fn quality_context_reports_omc_version_mismatch_for_pinned_baseline() {
+    let gate_input = gate_input_with_sim_rate(8, 10);
+    let baseline = baseline_quality_template();
+    let parity = MslParityGateInput {
+        total_models: Some(10),
+        omc_version: Some("OpenModelica 1.27.0".to_string()),
+        runtime_context: None,
+        runtime_ratio_stats: None,
+        trace_accuracy_stats: None,
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
+    };
+
+    let reason = msl_quality_context_mismatch_reason(gate_input, &baseline, Some(&parity))
+        .expect("pinned OMC version mismatch should be a context mismatch");
+    assert!(
+        reason.contains("omc_version differs"),
+        "unexpected mismatch reason: {reason}"
+    );
+}
+
+#[test]
+fn current_quality_snapshot_includes_pipeline_progression() {
+    let mut summary = valid_summary_template();
+    summary.total_models = 12;
+    summary.compiled_models = 10;
+    summary.balanced_models = 9;
+    summary.initial_balanced_models = 8;
+    summary.sim_target_models = vec!["A".to_string(), "B".to_string()];
+    summary.sim_attempted = 2;
+    summary.ic_attempted = 2;
+    summary.ic_ok = 1;
+    summary.ic_solver_fail = 1;
+    summary.sim_ok = 1;
+    summary
+        .error_code_counts
+        .insert("unsupported-feature:events".to_string(), 2);
+    summary
+        .unsupported_feature_counts
+        .insert("events".to_string(), 2);
+    summary
+        .unsupported_feature_counts_by_backend
+        .entry("embedded-c".to_string())
+        .or_default()
+        .insert("events".to_string(), 2);
+    summary.failures_by_phase.insert(
+        "Flatten".to_string(),
+        vec![
+            "Modelica.Bad.One".to_string(),
+            "Modelica.Bad.Two".to_string(),
+        ],
+    );
+    summary.failures_by_phase.insert(
+        "NeedsInner".to_string(),
+        vec!["Modelica.NotAStandaloneRoot".to_string()],
+    );
+
+    let snapshot = current_msl_quality_snapshot_json(&summary, None, false)
+        .expect("snapshot should serialize");
+    let pipeline = snapshot
+        .get("pipeline_progress")
+        .and_then(Value::as_object)
+        .expect("snapshot should include pipeline progress");
+    assert_eq!(
+        pipeline.get("compiled_models").and_then(Value::as_u64),
+        Some(10)
+    );
+    assert_eq!(
+        pipeline.get("balanced_models").and_then(Value::as_u64),
+        Some(9)
+    );
+    assert_eq!(
+        pipeline
+            .get("initial_balanced_models")
+            .and_then(Value::as_u64),
+        Some(8)
+    );
+    assert_eq!(pipeline.get("ic_ok").and_then(Value::as_u64), Some(1));
+    assert_eq!(pipeline.get("sim_ok").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        pipeline
+            .get("error_code_counts")
+            .and_then(|value| value.get("unsupported-feature:events"))
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        pipeline
+            .get("unsupported_feature_counts")
+            .and_then(|value| value.get("events"))
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        pipeline
+            .get("unsupported_feature_counts_by_backend")
+            .and_then(|value| value.get("embedded-c"))
+            .and_then(|value| value.get("events"))
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        pipeline
+            .get("phase_failure_counts")
+            .and_then(|value| value.get("Flatten"))
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert!(
+        pipeline
+            .get("phase_failure_counts")
+            .and_then(|value| value.get("NeedsInner"))
+            .is_none(),
+        "NeedsInner is not a blocking phase failure"
+    );
+    assert_eq!(
+        pipeline
+            .get("omc_assertion_failure_models")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+}
+
+#[test]
+fn current_quality_snapshot_includes_mls_contract_category_coverage() {
+    let mut summary = valid_summary_template();
+    let mut array_result = phase_error_result(
+        "Modelica.Blocks.Examples.MatrixGain".to_string(),
+        "Success",
+        None,
+        None,
+    );
+    array_result.is_balanced = Some(true);
+    array_result.ir_solve_file = Some("MatrixGain.solve.json".to_string());
+    array_result.sim_status = Some("sim_ok".to_string());
+    let connector_result = phase_error_result(
+        "Modelica.Blocks.Examples.BusUsage".to_string(),
+        "Flatten",
+        Some("connect equation failed".to_string()),
+        Some("ECONN001".to_string()),
+    );
+    summary.model_results = vec![array_result, connector_result];
+
+    let snapshot = current_msl_quality_snapshot_json(&summary, None, false)
+        .expect("snapshot should serialize");
+    let coverage = snapshot
+        .get("mls_contract_coverage")
+        .and_then(Value::as_object)
+        .expect("snapshot should include MLS category coverage");
+    assert_eq!(
+        coverage
+            .get("ARR")
+            .and_then(|category| category.get("sim_ok"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        coverage
+            .get("CONN_STRM")
+            .and_then(|category| category.pointer("/error_code_counts/ECONN001"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+}
+
+#[test]
+fn sim_stage_gate_allows_equal_cumulative_count() {
+    let baseline = MslQualityBaseline {
+        sim_ok: 800,
+        sim_attempted: 1000,
+        sim_target_models: 1000,
+        sim_success_rate: 0.8,
+        ..baseline_quality_template()
+    };
+    let mut gate_input = gate_input_with_sim_rate(800, 1000);
+    gate_input.sim_target_models = 1000;
+
+    let mut reasons = Vec::new();
+    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons.is_empty(),
+        "equal cumulative simulation count should pass, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn sim_stage_gate_rejects_one_model_drop() {
+    let baseline = MslQualityBaseline {
+        sim_ok: 800,
+        sim_attempted: 1000,
+        sim_target_models: 1000,
+        sim_success_rate: 0.8,
+        ..baseline_quality_template()
+    };
+    let mut gate_input = gate_input_with_sim_rate(799, 1000);
+    gate_input.sim_target_models = 1000;
+
+    let mut reasons = Vec::new();
+    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("Sim pass count regressed")),
+        "expected simulation-stage regression reason, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn ic_stage_gate_rejects_one_model_drop() {
+    let baseline = MslQualityBaseline {
+        sim_target_models: 1000,
+        ic_ok: 800,
+        sim_ok: 700,
+        sim_success_rate: 0.7,
+        ..baseline_quality_template()
+    };
+    let mut gate_input = gate_input_with_sim_rate(700, 1000);
+    gate_input.sim_target_models = 1000;
+    gate_input.ic_ok = 799;
+
+    let mut reasons = Vec::new();
+    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("IC pass count regressed")),
+        "expected IC-stage regression reason, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn cumulative_stage_gate_allows_early_stage_improvement() {
+    let baseline = MslQualityBaseline {
+        simulatable_attempted: 10,
+        parse_models: 10,
+        flatten_models: 8,
+        dae_models: 6,
+        compiled_models: 6,
+        solve_models: 4,
+        ..baseline_quality_template()
+    };
+    let gate_input = MslQualityGateInput {
+        simulatable_attempted: 10,
+        parse_models: 10,
+        flatten_models: 9,
+        dae_models: 6,
+        compiled_models: 6,
+        solve_models: 4,
+        ..gate_input_with_sim_rate(8, 10)
+    };
+
+    let mut reasons = Vec::new();
+    push_compile_balance_regression_reasons(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons.is_empty(),
+        "early-stage improvements with unchanged later stages should pass, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn cumulative_stage_gate_rejects_stage_count_drop() {
+    let baseline = MslQualityBaseline {
+        simulatable_attempted: 10,
+        parse_models: 10,
+        flatten_models: 8,
+        dae_models: 6,
+        compiled_models: 6,
+        solve_models: 4,
+        ..baseline_quality_template()
+    };
+    let gate_input = MslQualityGateInput {
+        simulatable_attempted: 10,
+        parse_models: 10,
+        flatten_models: 7,
+        dae_models: 6,
+        compiled_models: 6,
+        solve_models: 4,
+        ..gate_input_with_sim_rate(8, 10)
+    };
+
+    let mut reasons = Vec::new();
+    push_compile_balance_regression_reasons(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("Flatten pass count regressed")),
+        "expected flatten-stage regression reason, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn cumulative_stage_gate_rejects_balanced_count_drop() {
+    let baseline = MslQualityBaseline {
+        simulatable_attempted: 10,
+        compiled_models: 6,
+        balanced_models: 6,
+        balance_denominator: 6,
+        initial_balanced_models: 6,
+        ..baseline_quality_template()
+    };
+    let gate_input = MslQualityGateInput {
+        simulatable_attempted: 10,
+        compiled_models: 6,
+        balanced_models: 5,
+        balance_denominator: 5,
+        initial_balanced_models: 5,
+        ..gate_input_with_sim_rate(8, 10)
+    };
+
+    let mut reasons = Vec::new();
+    push_compile_balance_regression_reasons(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("Balanced pass count regressed")),
+        "expected balanced-count regression reason, got: {reasons:?}"
+    );
 }
 
 #[test]
@@ -150,6 +552,19 @@ fn valid_msl_summary_rejects_baseline_sim_run_below_hard_floor() {
     );
 }
 
+#[test]
+fn valid_msl_summary_accepts_transitional_architecture_reset_floor() {
+    let mut summary = valid_summary_template();
+    summary.total_models = SIM_SET_LIMIT_DEFAULT;
+    summary.sim_attempted = 166;
+    summary.sim_ok = 109;
+    summary.sim_target_models = (0..SIM_SET_LIMIT_DEFAULT)
+        .map(|idx| format!("Model{idx}"))
+        .collect();
+
+    assert_valid_msl_summary(&summary);
+}
+
 fn trace_accuracy_baseline() -> MslTraceAccuracyStatsBaseline {
     MslTraceAccuracyStatsBaseline {
         models_compared: 10,
@@ -179,6 +594,8 @@ fn trace_accuracy_baseline() -> MslTraceAccuracyStatsBaseline {
         max_model_max_channel_bounded_normalized_l1: Some(0.1),
         model_mean_channel_bounded_normalized_l1: Some(dist(10, 0.0, 0.002, 0.01, 0.03)),
         model_max_channel_bounded_normalized_l1: Some(dist(10, 0.0, 0.03, 0.05, 0.1)),
+        initial_condition: None,
+        state_selection: None,
     }
 }
 
@@ -243,34 +660,21 @@ fn trace_accuracy_acceptable_band_regressed() -> MslTraceAccuracyStatsBaseline {
     }
 }
 
-fn trace_accuracy_ci_channel_share_baseline() -> MslTraceAccuracyStatsBaseline {
+fn trace_accuracy_deviation_migrated_to_near() -> MslTraceAccuracyStatsBaseline {
     MslTraceAccuracyStatsBaseline {
-        models_compared: 107,
-        total_channels_compared: Some(2396),
-        bad_channels_total: Some(775),
-        severe_channels_total: Some(311),
-        bad_channels_percent: Some(32.35),
-        severe_channels_percent: Some(12.97),
-        models_with_bad_channel: Some(37),
-        models_with_severe_channel: Some(18),
-        bounded_normalized_l1: Some(dist(107, 0.0, 0.003, 0.10, 1.0)),
-        mean_model_mean_channel_bounded_normalized_l1: Some(0.10),
-        model_mean_channel_bounded_normalized_l1: Some(dist(107, 0.0, 0.003, 0.10, 0.9)),
-        model_max_channel_bounded_normalized_l1: Some(dist(107, 0.0, 0.03, 0.17, 1.0)),
-        ..trace_accuracy_baseline()
-    }
-}
-
-fn trace_accuracy_ci_channel_share_drift() -> MslTraceAccuracyStatsBaseline {
-    MslTraceAccuracyStatsBaseline {
-        bad_channels_total: Some(799),
-        severe_channels_total: Some(346),
-        bad_channels_percent: Some(33.35),
-        severe_channels_percent: Some(14.46),
-        models_with_bad_channel: Some(38),
-        models_with_severe_channel: Some(19),
-        violation_mass_total: Some(126.0),
-        violation_mass_mean_per_model: Some(1.18),
+        agreement_high: 8,
+        agreement_high_percent: Some(80.0),
+        agreement_minor: 2,
+        agreement_minor_percent: Some(20.0),
+        agreement_deviation: 0,
+        agreement_deviation_percent: Some(0.0),
+        bad_channels_total: Some(2),
+        severe_channels_total: Some(0),
+        bad_channels_percent: Some(4.0),
+        severe_channels_percent: Some(0.0),
+        models_with_any_channel_deviation: Some(0),
+        models_with_any_channel_deviation_percent: Some(0.0),
+        mean_model_mean_channel_bounded_normalized_l1: Some(0.005),
         ..trace_accuracy_baseline()
     }
 }
@@ -278,11 +682,18 @@ fn trace_accuracy_ci_channel_share_drift() -> MslTraceAccuracyStatsBaseline {
 #[test]
 fn runtime_ratio_regression_reason_triggers_on_large_drop() {
     let baseline = MslQualityBaseline {
+        quality_gate_version: MSL_QUALITY_GATE_VERSION,
+        run_scope: MSL_QUALITY_RUN_SCOPE_FULL.to_string(),
         git_commit: "baseline".to_string(),
         msl_version: "v4.1.0".to_string(),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
         sim_timeout_seconds: 10.0,
         simulatable_attempted: 10,
+        parse_models: 10,
+        flatten_models: 10,
+        dae_models: 10,
         compiled_models: 10,
+        solve_models: 8,
         balanced_models: 10,
         unbalanced_models: 0,
         partial_models: 0,
@@ -291,6 +702,9 @@ fn runtime_ratio_regression_reason_triggers_on_large_drop() {
         initial_unbalanced_models: 0,
         sim_target_models: 10,
         sim_attempted: 10,
+        ic_attempted: 10,
+        ic_ok: 8,
+        ic_solver_fail: 2,
         sim_ok: 8,
         sim_success_rate: 0.8,
         runtime_context: None,
@@ -314,6 +728,7 @@ fn runtime_ratio_regression_reason_triggers_on_large_drop() {
     };
     let parity = MslParityGateInput {
         total_models: Some(10),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: Some(MslRuntimeRatioStatsBaseline {
             system_ratio_both_success: MslDistributionStats {
@@ -332,6 +747,8 @@ fn runtime_ratio_regression_reason_triggers_on_large_drop() {
             },
         }),
         trace_accuracy_stats: None,
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
     };
 
     let mut reasons = Vec::new();
@@ -352,9 +769,12 @@ fn trace_bucket_and_channel_regression_reasons_trigger_when_thresholds_are_excee
     };
     let parity = MslParityGateInput {
         total_models: Some(10),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
         trace_accuracy_stats: Some(trace_accuracy_regressed()),
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
     };
 
     let mut reasons = Vec::new();
@@ -362,26 +782,14 @@ fn trace_bucket_and_channel_regression_reasons_trigger_when_thresholds_are_excee
     assert!(
         reasons
             .iter()
-            .any(|reason| reason.contains("trace high-agreement model share regressed")),
-        "expected high-bucket regression reason, got: {reasons:?}"
+            .any(|reason| reason.contains("Trace acceptable pass count regressed")),
+        "expected acceptable trace count regression reason, got: {reasons:?}"
     );
     assert!(
         reasons
             .iter()
-            .any(|reason| reason.contains("trace deviation model share regressed")),
-        "expected deviation-bucket regression reason, got: {reasons:?}"
-    );
-    assert!(
-        reasons
-            .iter()
-            .any(|reason| reason.contains("trace bad channel share regressed")),
-        "expected bad-channel share regression reason, got: {reasons:?}"
-    );
-    assert!(
-        reasons
-            .iter()
-            .any(|reason| reason.contains("trace severe channel share regressed")),
-        "expected severe-channel share regression reason, got: {reasons:?}"
+            .any(|reason| reason.contains("Trace no severe pass count regressed")),
+        "expected no-severe trace count regression reason, got: {reasons:?}"
     );
 }
 
@@ -393,9 +801,12 @@ fn trace_channel_share_tolerances_allow_small_runner_drift() {
     };
     let parity = MslParityGateInput {
         total_models: Some(10),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
         trace_accuracy_stats: Some(trace_accuracy_small_channel_drift()),
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
     };
 
     let mut reasons = Vec::new();
@@ -422,9 +833,12 @@ fn trace_near_to_high_promotion_does_not_trigger_regression() {
     };
     let parity = MslParityGateInput {
         total_models: Some(10),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
         trace_accuracy_stats: Some(trace_accuracy_near_promoted_to_high()),
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
     };
 
     let mut reasons = Vec::new();
@@ -432,8 +846,32 @@ fn trace_near_to_high_promotion_does_not_trigger_regression() {
     assert!(
         reasons
             .iter()
-            .all(|reason| !reason.contains("trace acceptable-agreement model share regressed")),
+            .all(|reason| !reason.contains("Trace acceptable pass count regressed")),
         "unexpected acceptable-band regression reason: {reasons:?}"
+    );
+}
+
+#[test]
+fn trace_deviation_to_near_migration_does_not_trigger_regression() {
+    let baseline = MslQualityBaseline {
+        trace_accuracy_stats: Some(trace_accuracy_baseline()),
+        ..baseline_quality_template()
+    };
+    let parity = MslParityGateInput {
+        total_models: Some(10),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
+        runtime_context: None,
+        runtime_ratio_stats: None,
+        trace_accuracy_stats: Some(trace_accuracy_deviation_migrated_to_near()),
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
+    };
+
+    let mut reasons = Vec::new();
+    push_trace_regression_reasons(&mut reasons, &baseline, Some(&parity));
+    assert!(
+        reasons.is_empty(),
+        "deviation-to-near migration should be accepted as improvement, got: {reasons:?}"
     );
 }
 
@@ -445,9 +883,12 @@ fn trace_acceptable_band_regression_reason_triggers_on_real_drop() {
     };
     let parity = MslParityGateInput {
         total_models: Some(10),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
         trace_accuracy_stats: Some(trace_accuracy_acceptable_band_regressed()),
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
     };
 
     let mut reasons = Vec::new();
@@ -455,32 +896,101 @@ fn trace_acceptable_band_regression_reason_triggers_on_real_drop() {
     assert!(
         reasons
             .iter()
-            .any(|reason| reason.contains("trace acceptable-agreement model share regressed")),
+            .any(|reason| reason.contains("Trace acceptable pass count regressed")),
         "expected acceptable-band regression reason, got: {reasons:?}"
     );
 }
 
 #[test]
-fn trace_severe_channel_tolerance_allows_current_ci_delta() {
+fn trace_fixed_denominator_gate_accepts_current_ci_delta() {
+    let baseline_trace = MslTraceAccuracyStatsBaseline {
+        models_compared: 115,
+        agreement_high: 64,
+        agreement_minor: 16,
+        agreement_deviation: 35,
+        models_with_severe_channel: Some(6),
+        bad_channels_percent: Some(36.38),
+        mean_model_mean_channel_bounded_normalized_l1: Some(0.069),
+        ..trace_accuracy_baseline()
+    };
+    let current_trace = MslTraceAccuracyStatsBaseline {
+        models_compared: 121,
+        agreement_high: 64,
+        agreement_minor: 17,
+        agreement_deviation: 40,
+        models_with_severe_channel: Some(8),
+        bad_channels_percent: Some(42.80),
+        mean_model_mean_channel_bounded_normalized_l1: Some(0.080),
+        ..trace_accuracy_baseline()
+    };
     let baseline = MslQualityBaseline {
-        trace_accuracy_stats: Some(trace_accuracy_ci_channel_share_baseline()),
+        sim_target_models: 566,
+        trace_accuracy_stats: Some(baseline_trace),
         ..baseline_quality_template()
     };
     let parity = MslParityGateInput {
-        total_models: Some(107),
+        total_models: Some(566),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
-        trace_accuracy_stats: Some(trace_accuracy_ci_channel_share_drift()),
+        trace_accuracy_stats: Some(current_trace),
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
     };
 
     let mut reasons = Vec::new();
     push_trace_regression_reasons(&mut reasons, &baseline, Some(&parity));
     assert!(
-        reasons
-            .iter()
-            .all(|reason| !reason.contains("trace severe channel share regressed")),
-        "unexpected severe-channel regression reason: {reasons:?}"
+        reasons.is_empty(),
+        "fixed-denominator trace counts improved, got regression reasons: {reasons:?}"
     );
+}
+
+fn valid_simulation_parity_payload() -> Value {
+    json!({
+        "total_models": 7,
+        "runtime_comparison": { "ratio_stats": {
+            "system_ratio_both_success": {
+                "sample_count": 5,
+                "min_ratio": 0.5,
+                "median_ratio": 0.9,
+                "mean_ratio": 1.0,
+                "max_ratio": 1.3
+            },
+            "wall_ratio_both_success": {
+                "sample_count": 5,
+                "min_ratio": 0.4,
+                "median_ratio": 0.8,
+                "mean_ratio": 0.9,
+                "max_ratio": 1.4
+            }
+        }},
+        "trace_comparison": {
+            "models_compared": 7,
+            "missing_trace_models": 0,
+            "skipped_models": 0,
+            "agreement_high": 5,
+            "agreement_minor": 1,
+            "agreement_deviation": 1,
+            "min_model_bounded_normalized_l1": 0.01,
+            "median_model_bounded_normalized_l1": 0.02,
+            "mean_model_bounded_normalized_l1": 0.03,
+            "max_model_bounded_normalized_l1": 0.08,
+            "state_selection": {
+                "models_compared": 7,
+                "exact_state_set_match_models": 7,
+                "state_count_match_models": 7,
+                "exact_state_set_match_percent": 100.0,
+                "state_count_match_percent": 100.0,
+                "total_rumoca_states": 7,
+                "total_omc_states": 7,
+                "total_matching_states": 7,
+                "total_rumoca_only_states": 0,
+                "total_omc_only_states": 0,
+                "max_model_state_set_difference": 0
+            }
+        }
+    })
 }
 
 #[test]
@@ -510,39 +1020,18 @@ fn simulation_parity_cache_requires_runtime_and_trace_metrics() {
         "trace_comparison": { "models_compared": 0 }
     });
     assert_cache_metric_check(&path, missing, false);
+    assert_cache_metric_check(&path, valid_simulation_parity_payload(), true);
 
-    let valid = json!({
-        "total_models": 7,
-        "runtime_comparison": { "ratio_stats": {
-            "system_ratio_both_success": {
-                "sample_count": 5,
-                "min_ratio": 0.5,
-                "median_ratio": 0.9,
-                "mean_ratio": 1.0,
-                "max_ratio": 1.3
-            },
-            "wall_ratio_both_success": {
-                "sample_count": 5,
-                "min_ratio": 0.4,
-                "median_ratio": 0.8,
-                "mean_ratio": 0.9,
-                "max_ratio": 1.4
-            }
-        }},
-        "trace_comparison": {
-            "models_compared": 7,
-            "missing_trace_models": 0,
-            "skipped_models": 0,
-            "agreement_high": 5,
-            "agreement_minor": 1,
-            "agreement_deviation": 1,
-            "min_model_bounded_normalized_l1": 0.01,
-            "median_model_bounded_normalized_l1": 0.02,
-            "mean_model_bounded_normalized_l1": 0.03,
-            "max_model_bounded_normalized_l1": 0.08
-        }
+    let mut assertion_failure = valid_simulation_parity_payload();
+    assertion_failure["pipeline_progress"] = json!({ "omc_assertion_failure_models": 1 });
+    assertion_failure["omc_assertion_failures"] = json!({
+        "model_count": 1,
+        "examples": [{
+            "model_name": "ModelicaTest.AssertDemo",
+            "assertions": ["assert | error | x > 0"]
+        }]
     });
-    assert_cache_metric_check(&path, valid, true);
+    assert_cache_metric_check(&path, assertion_failure, false);
 }
 
 #[test]
@@ -561,8 +1050,10 @@ fn sanitize_simulation_parity_cache_payload_strips_rumoca_metrics() {
             "A": {
                 "status": "success",
                 "trace_file": "sim_traces/omc/A.json",
-                "rumoca_status": "sim_ok",
-                "rumoca_sim_seconds": 1.0,
+                    "rumoca_status": "sim_ok",
+                    "rumoca_ic_status": "ic_ok",
+                    "rumoca_ic_seconds": 0.01,
+                    "rumoca_sim_seconds": 1.0,
                 "rumoca_sim_wall_seconds": 1.1,
                 "rumoca_trace_file": "sim_traces/rumoca/A.json",
                 "rumoca_trace_error": null
@@ -593,6 +1084,10 @@ fn sanitize_simulation_parity_cache_payload_strips_rumoca_metrics() {
     assert!(
         model.get("rumoca_status").is_none(),
         "cache should strip Rumoca status"
+    );
+    assert!(
+        model.get("rumoca_ic_status").is_none(),
+        "cache should strip Rumoca IC status"
     );
     assert!(
         model.get("rumoca_sim_seconds").is_none(),
@@ -634,6 +1129,7 @@ fn materialize_simulation_parity_cache_entry_strips_stale_rumoca_metrics() {
                     "status": "success",
                     "trace_file": "sim_traces/omc/A.json",
                     "rumoca_status": "sim_ok",
+                    "rumoca_ic_status": "ic_ok",
                     "rumoca_trace_file": "sim_traces/rumoca/A.json"
                 }
             }
@@ -667,6 +1163,10 @@ fn materialize_simulation_parity_cache_entry_strips_stale_rumoca_metrics() {
         "active simulation reference should drop cached Rumoca status"
     );
     assert!(
+        model.get("rumoca_ic_status").is_none(),
+        "active simulation reference should drop cached Rumoca IC status"
+    );
+    assert!(
         model.get("rumoca_trace_file").is_none(),
         "active simulation reference should drop cached Rumoca trace path"
     );
@@ -677,9 +1177,12 @@ fn parity_total_models_guard_checks_stale_and_matching_counts() {
     let path = PathBuf::from("/tmp/omc_simulation_reference.json");
     let stale = MslParityGateInput {
         total_models: Some(1),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
         trace_accuracy_stats: None,
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
     };
     let err = validate_parity_total_models(&path, &stale, 180).expect_err("must fail stale count");
     assert!(
@@ -688,9 +1191,12 @@ fn parity_total_models_guard_checks_stale_and_matching_counts() {
     );
     let matching = MslParityGateInput {
         total_models: Some(180),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
         trace_accuracy_stats: None,
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
     };
     validate_parity_total_models(&path, &matching, 180).expect("matching count should pass");
 }

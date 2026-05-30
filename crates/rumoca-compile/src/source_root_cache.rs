@@ -57,17 +57,6 @@ struct SourceRootInputHash {
     files: Vec<HashedSourceRootFile>,
 }
 
-fn env_flag_is_truthy(var: &str) -> bool {
-    std::env::var(var)
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
 fn cache_exe_fingerprint() -> String {
     std::env::current_exe()
         .ok()
@@ -162,23 +151,8 @@ fn compiler_source_fingerprint() -> Option<String> {
 pub(crate) fn source_root_cache_compiler_version() -> String {
     static CACHED: OnceLock<String> = OnceLock::new();
 
-    if let Some(explicit) = std::env::var_os("RUMOCA_LIBRARY_CACHE_COMPILER_FINGERPRINT") {
-        let explicit = explicit.to_string_lossy().trim().to_string();
-        if !explicit.is_empty() {
-            return format!("rumoca-compile/{}/{}", env!("CARGO_PKG_VERSION"), explicit);
-        }
-    }
-
     CACHED
         .get_or_init(|| {
-            if env_flag_is_truthy("RUMOCA_LIBRARY_CACHE_STRICT_EXE_FINGERPRINT") {
-                return format!(
-                    "rumoca-compile/{}/exe:{}",
-                    env!("CARGO_PKG_VERSION"),
-                    cache_exe_fingerprint()
-                );
-            }
-
             if let Some(source_fingerprint) = compiler_source_fingerprint() {
                 return format!(
                     "rumoca-compile/{}/src:{}",
@@ -355,19 +329,43 @@ fn default_cache_root_dir() -> PathBuf {
     std::env::temp_dir().join("rumoca")
 }
 
-fn resolve_source_root_cache_dir_from_override(override_dir: Option<PathBuf>) -> Option<PathBuf> {
+pub(crate) fn resolve_cache_root_dir_from_override(
+    override_dir: Option<PathBuf>,
+) -> Option<PathBuf> {
     if let Some(path) = override_dir {
         if path.as_os_str().is_empty() {
             return None;
         }
-        return Some(absolutize_cache_path(path).join("source-roots"));
+        return Some(absolutize_cache_path(path));
     }
-    Some(default_cache_root_dir().join("source-roots"))
+    Some(default_cache_root_dir())
+}
+
+/// Process-wide cache-root override, set once from the CLI (`--cache-dir`)
+/// instead of an environment variable. `None` (unset) means the platform default.
+static CACHE_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Set the cache-root override for this process. Call once at startup, before
+/// any compilation touches the cache. A later call is ignored.
+pub fn set_cache_root_override(dir: PathBuf) {
+    let _ = CACHE_ROOT_OVERRIDE.set(dir);
+}
+
+fn cache_root_override() -> Option<PathBuf> {
+    CACHE_ROOT_OVERRIDE.get().cloned()
+}
+
+pub(crate) fn resolve_cache_root_dir() -> PathBuf {
+    resolve_cache_root_dir_from_override(cache_root_override())
+        .unwrap_or_else(default_cache_root_dir)
+}
+
+fn resolve_source_root_cache_dir_from_override(override_dir: Option<PathBuf>) -> Option<PathBuf> {
+    resolve_cache_root_dir_from_override(override_dir).map(|root| root.join("source-roots"))
 }
 
 pub fn resolve_source_root_cache_dir() -> Option<PathBuf> {
-    let override_dir = std::env::var_os("RUMOCA_CACHE_DIR").map(PathBuf::from);
-    resolve_source_root_cache_dir_from_override(override_dir)
+    resolve_source_root_cache_dir_from_override(cache_root_override())
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -451,6 +449,10 @@ pub fn parse_source_root_with_cache_in(
             files.len()
         },
     );
+    if cache_status == SourceRootCacheStatus::Miss {
+        let prune_root = cache_dir.map(cache_prune_root_for_source_root_cache);
+        crate::cache::maybe_prune_cache_after_write(prune_root.as_deref());
+    }
     timing.total_ms = elapsed_ms(total_started);
     Ok(ParsedSourceRoot {
         documents: docs,
@@ -464,6 +466,16 @@ pub fn parse_source_root_with_cache_in(
 
 pub fn parse_source_root_with_cache(path: &Path) -> Result<ParsedSourceRoot> {
     parse_source_root_with_cache_in(path, resolve_source_root_cache_dir().as_deref())
+}
+
+fn cache_prune_root_for_source_root_cache(cache_dir: &Path) -> PathBuf {
+    if cache_dir.file_name().and_then(|name| name.to_str()) == Some("source-roots") {
+        return cache_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| cache_dir.to_path_buf());
+    }
+    cache_dir.to_path_buf()
 }
 
 #[cfg(test)]
@@ -540,6 +552,20 @@ mod tests {
                 .and_then(|parent| parent.file_name())
                 .and_then(|name| name.to_str()),
             Some("custom-cache-root")
+        );
+    }
+
+    #[test]
+    fn cache_prune_root_uses_shared_cache_root_for_source_roots_subdir() {
+        let root = PathBuf::from("/tmp/rumoca-cache-root");
+        assert_eq!(
+            cache_prune_root_for_source_root_cache(&root.join("source-roots")),
+            root
+        );
+        let explicit_source_root_cache = PathBuf::from("/tmp/standalone-source-root-cache");
+        assert_eq!(
+            cache_prune_root_for_source_root_cache(&explicit_source_root_cache),
+            explicit_source_root_cache
         );
     }
 

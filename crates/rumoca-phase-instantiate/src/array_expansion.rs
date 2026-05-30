@@ -1,8 +1,11 @@
+use super::inheritance::resolve_effective_components_for_eval;
+use super::instantiate_component;
+use super::source_scope::component_declaration_source_scope;
+use super::type_overrides::TypeOverrideMap;
 use super::{InstantiateContext, InstantiateResult, find_class_in_tree, get_effective_components};
-use super::{instantiate_component, try_eval_integer_expr};
-use indexmap::IndexMap;
-use rumoca_core::DefId;
+use rumoca_eval_ast::eval_instantiate::{InstantiateEvalCtx, try_eval_integer_expr};
 use rumoca_ir_ast as ast;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
 
 /// Expand an array component into individual indexed instances.
@@ -13,7 +16,8 @@ use std::sync::Arc;
 pub(super) struct ArrayExpansionScope<'a> {
     pub(super) tree: &'a ast::ClassTree,
     pub(super) effective_components: &'a IndexMap<String, ast::Component>,
-    pub(super) type_overrides: &'a IndexMap<String, DefId>,
+    pub(super) type_overrides: &'a TypeOverrideMap,
+    pub(super) imports: &'a [(String, String)],
 }
 
 pub(super) fn expand_array_component(
@@ -37,24 +41,31 @@ pub(super) fn expand_array_component(
     // Extract the original binding for indexing. Check active component modifier first,
     // then comp.binding, then fall back to comp.start for modification-only declarations.
     let binding_qn = ast::QualifiedName::from_ident(name);
-    let mod_env_binding = ctx.mod_env().get(&binding_qn).map(|mv| mv.value.clone());
+    let mod_env_binding = ctx.mod_env().get(&binding_qn).cloned();
 
     // Check comp.binding first,
     // then fall back to comp.start with has_explicit_binding (modification-only declarations).
     // We only READ the binding here - do not clear comp.start or has_explicit_binding,
     // since they may be needed for dimension inference in typecheck.
-    let original_binding = mod_env_binding.or_else(|| {
-        comp.binding.clone().or_else(|| {
-            if comp.has_explicit_binding
-                && !comp.start_is_modification
-                && !matches!(comp.start, ast::Expression::Empty)
-            {
-                Some(comp.start.clone())
-            } else {
-                None
-            }
-        })
-    });
+    let original_binding = mod_env_binding
+        .as_ref()
+        .map(|mv| mv.value.clone())
+        .or_else(|| {
+            comp.binding.clone().or_else(|| {
+                if comp.has_explicit_binding
+                    && !comp.start_is_modification
+                    && !matches!(comp.start, ast::Expression::Empty { .. })
+                {
+                    Some(comp.start.clone())
+                } else {
+                    None
+                }
+            })
+        });
+    let binding_source_scope = mod_env_binding
+        .as_ref()
+        .and_then(|mv| mv.source_scope.clone())
+        .or_else(|| component_declaration_source_scope(ctx, comp));
 
     // MLS §7.2.5: Pre-resolve non-`each` modifications that reference array values.
     // Resolve once so each element can be indexed from the resolved array.
@@ -81,7 +92,8 @@ pub(super) fn expand_array_component(
     scalar_comp.shape_expr = vec![];
 
     for idx in indices {
-        let indexed_name = format_indexed_name(name, &idx);
+        scalar_comp.start =
+            indexed_array_component_start(scope.tree, scope.effective_components, comp, &idx);
 
         // MLS §10.1: When an array component has a binding (e.g., `v1[m] = plug1.pin.v`),
         // each expanded element `v1[k]` gets the indexed binding `plug1.pin[k].v`.
@@ -111,25 +123,22 @@ pub(super) fn expand_array_component(
         // Without this scoped override, a parent unindexed modifier entry for this
         // component name would overwrite the per-element indexed binding.
         let previous_binding = ctx.mod_env().active.get(&binding_qn).cloned();
-        if let Some(binding_expr) = &scalar_comp.binding {
-            let preserved_source_scope = previous_binding
-                .as_ref()
-                .and_then(|value| value.source_scope.clone());
-            let preserved_source = previous_binding
-                .as_ref()
-                .and_then(|value| value.source.clone())
-                .or_else(|| Some(binding_expr.clone()));
+        if let Some(binding_expr) = &scalar_comp.binding
+            && mod_env_binding.is_some()
+        {
             ctx.mod_env_mut().active.insert(
                 binding_qn.clone(),
-                ast::ModificationValue::with_source_scope(
-                    binding_expr.clone(),
-                    preserved_source,
-                    preserved_source_scope,
+                array_element_binding_modification(
+                    scope,
+                    binding_expr,
+                    &idx,
+                    mod_env_binding.as_ref(),
+                    binding_source_scope.clone(),
                 ),
             );
         }
 
-        ctx.push_path(&indexed_name);
+        ctx.push_path_part(name, idx.clone());
         let inst_result = instantiate_component(
             scope.tree,
             &scalar_comp,
@@ -137,6 +146,7 @@ pub(super) fn expand_array_component(
             overlay,
             scope.effective_components,
             scope.type_overrides,
+            scope.imports,
         );
         ctx.pop_path();
 
@@ -154,6 +164,44 @@ pub(super) fn expand_array_component(
     }
 
     Ok(())
+}
+
+fn indexed_array_component_start(
+    tree: &ast::ClassTree,
+    parent_components: &IndexMap<String, ast::Component>,
+    comp: &ast::Component,
+    idx: &[i64],
+) -> ast::Expression {
+    if comp.start_has_each || matches!(comp.start, ast::Expression::Empty { .. }) {
+        return comp.start.clone();
+    }
+    index_array_expression_for_element(tree, parent_components, &comp.start, idx)
+        .unwrap_or_else(|| comp.start.clone())
+}
+
+fn array_element_binding_modification(
+    scope: &ArrayExpansionScope<'_>,
+    binding_expr: &ast::Expression,
+    idx: &[i64],
+    parent_mod: Option<&ast::ModificationValue>,
+    binding_source_scope: Option<ast::QualifiedName>,
+) -> ast::ModificationValue {
+    let Some(parent_mod) = parent_mod else {
+        return ast::ModificationValue::with_source_scope(
+            binding_expr.clone(),
+            Some(binding_expr.clone()),
+            binding_source_scope,
+        );
+    };
+    let source = parent_mod
+        .source
+        .as_ref()
+        .map(|source_expr| {
+            index_binding_for_element(scope.tree, scope.effective_components, source_expr, idx)
+        })
+        .or_else(|| Some(binding_expr.clone()));
+    let source_scope = parent_mod.source_scope.clone().or(binding_source_scope);
+    ast::ModificationValue::with_source_scope(binding_expr.clone(), source, source_scope)
 }
 
 /// Pre-resolve non-`each` modifications that have array values.
@@ -266,10 +314,11 @@ fn resolve_mod_to_array_depth(
     if let Some(array) = try_eval_array_comprehension(expr, mod_env, effective_components, tree) {
         return array;
     }
-    // Evaluate common array constructors used in non-`each` modifiers
-    // (e.g., k=fill(1, n) for component arrays). This allows per-element
-    // modifier distribution during array component expansion (MLS §7.2.5).
-    if let Some(array) = try_eval_array_constructor(expr, mod_env, effective_components, tree) {
+    // Evaluate structural array-valued expressions used in non-`each` modifiers
+    // (e.g., k=fill(1, n), phase=-symmetricOrientation(m)). This allows
+    // per-element modifier distribution during array component expansion
+    // (MLS §7.2.5).
+    if let Some(array) = try_eval_structural_array_expr(expr, mod_env, effective_components, tree) {
         return array;
     }
     expr.clone()
@@ -309,44 +358,67 @@ fn resolve_single_ref(
     None
 }
 
-/// Evaluate simple array constructors to concrete 1-D arrays.
+/// Evaluate simple structural array expressions to concrete 1-D arrays.
 ///
 /// Supports:
 /// - `fill(v, n)` -> `{v, v, ..., v}` (n elements)
 /// - `zeros(n)` -> `{0, ..., 0}` (n elements)
 /// - `ones(n)` -> `{1, ..., 1}` (n elements)
+/// - unary signs over structural arrays
+/// - MSL polyphase `symmetricOrientation(m)` structural phase vectors
 ///
 /// This is intentionally limited to 1-D constructors because modifier
 /// distribution currently indexes one dimension at a time.
-fn try_eval_array_constructor(
+fn try_eval_structural_array_expr(
     expr: &ast::Expression,
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
 ) -> Option<ast::Expression> {
-    let ast::Expression::FunctionCall { comp, args } = expr else {
-        return None;
-    };
-    if comp.parts.len() != 1 {
-        return None;
+    match expr {
+        ast::Expression::Unary { op, rhs, span } => {
+            let array = try_eval_structural_array_expr(rhs, mod_env, effective_components, tree)?;
+            return apply_unary_to_structural_array(op, &array, *span);
+        }
+        ast::Expression::Parenthesized { inner, .. } => {
+            return try_eval_structural_array_expr(inner, mod_env, effective_components, tree);
+        }
+        _ => {}
     }
 
-    let func = comp.parts[0].ident.text.as_ref();
+    let ast::Expression::FunctionCall { comp, args, .. } = expr else {
+        return None;
+    };
+
+    let call_span = expr.span();
+    let func = comp
+        .parts
+        .last()
+        .map(|part| part.ident.text.as_ref())
+        .unwrap_or("");
     let make_int_lit = |value: i64| ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
-        token: rumoca_ir_core::Token {
+        token: rumoca_core::Token {
             text: value.to_string().into(),
-            ..rumoca_ir_core::Token::default()
+            ..rumoca_core::Token::default()
         },
+        span: call_span,
     };
 
     let make_repeated =
         |value: ast::Expression, count_expr: &ast::Expression| -> Option<ast::Expression> {
-            let n = try_eval_integer_expr(count_expr, mod_env, effective_components, tree)?;
+            let eval_ctx = InstantiateEvalCtx {
+                tree,
+                mod_env,
+                effective_components,
+                resolve_class_components: resolve_effective_components_for_eval,
+            };
+            let n = try_eval_integer_expr(&eval_ctx, count_expr)?;
             let len = n.max(0) as usize;
             Some(ast::Expression::Array {
                 elements: std::iter::repeat_n(value, len).collect(),
                 is_matrix: false,
+                span: call_span,
             })
         };
 
@@ -374,17 +446,171 @@ fn try_eval_array_constructor(
         if let Some(binding) = &comp.binding {
             return binding.clone();
         }
-        if !matches!(comp.start, ast::Expression::Empty) {
+        if !matches!(comp.start, ast::Expression::Empty { .. }) {
             return comp.start.clone();
         }
         value.clone()
     };
 
     match func {
-        "fill" if args.len() == 2 => make_repeated(resolve_fill_value(&args[0]), &args[1]),
-        "zeros" if args.len() == 1 => make_repeated(make_int_lit(0), &args[0]),
-        "ones" if args.len() == 1 => make_repeated(make_int_lit(1), &args[0]),
+        "fill" if comp.parts.len() == 1 && args.len() == 2 => {
+            make_repeated(resolve_fill_value(&args[0]), &args[1])
+        }
+        "zeros" if comp.parts.len() == 1 && args.len() == 1 => {
+            make_repeated(make_int_lit(0), &args[0])
+        }
+        "ones" if comp.parts.len() == 1 && args.len() == 1 => {
+            make_repeated(make_int_lit(1), &args[0])
+        }
+        "symmetricOrientation"
+            if is_polyphase_symmetric_orientation_call(comp) && args.len() == 1 =>
+        {
+            let eval_ctx = InstantiateEvalCtx {
+                tree,
+                mod_env,
+                effective_components,
+                resolve_class_components: resolve_effective_components_for_eval,
+            };
+            let m = try_eval_integer_expr(&eval_ctx, &args[0])?;
+            let values = symmetric_orientation_values(m)?;
+            Some(ast::Expression::Array {
+                elements: values
+                    .into_iter()
+                    .map(|value| make_real_lit(value, call_span))
+                    .collect(),
+                is_matrix: false,
+                span: call_span,
+            })
+        }
         _ => None,
+    }
+}
+
+fn is_polyphase_symmetric_orientation_call(comp: &ast::ComponentReference) -> bool {
+    let path = comp
+        .parts
+        .iter()
+        .map(|part| part.ident.text.as_ref())
+        .collect::<Vec<_>>()
+        .join(".");
+    path == "Modelica.Electrical.Polyphase.Functions.symmetricOrientation"
+        || path == "Electrical.Polyphase.Functions.symmetricOrientation"
+        || path == "Polyphase.Functions.symmetricOrientation"
+}
+
+fn symmetric_orientation_values(m: i64) -> Option<Vec<f64>> {
+    if !(1..=1024).contains(&m) {
+        return None;
+    }
+    if m % 2 == 0 {
+        if m == 2 {
+            return Some(vec![0.0, std::f64::consts::FRAC_PI_2]);
+        }
+        let half = m / 2;
+        let base = symmetric_orientation_values(half)?;
+        let offset = std::f64::consts::PI / m as f64;
+        let mut values = Vec::with_capacity(m as usize);
+        values.extend(base.iter().copied());
+        values.extend(base.into_iter().map(|value| value - offset));
+        return Some(values);
+    }
+    Some(
+        (1..=m)
+            .map(|k| (k - 1) as f64 * 2.0 * std::f64::consts::PI / m as f64)
+            .collect(),
+    )
+}
+
+fn apply_unary_to_structural_array(
+    op: &rumoca_core::OpUnary,
+    array: &ast::Expression,
+    span: rumoca_core::Span,
+) -> Option<ast::Expression> {
+    let ast::Expression::Array {
+        elements,
+        is_matrix,
+        ..
+    } = array
+    else {
+        return None;
+    };
+    let mapped = elements
+        .iter()
+        .map(|elem| apply_unary_to_structural_array_element(op, elem, span))
+        .collect::<Option<Vec<_>>>()?;
+    Some(ast::Expression::Array {
+        elements: mapped,
+        is_matrix: *is_matrix,
+        span,
+    })
+}
+
+fn apply_unary_to_structural_array_element(
+    op: &rumoca_core::OpUnary,
+    elem: &ast::Expression,
+    span: rumoca_core::Span,
+) -> Option<ast::Expression> {
+    match op {
+        rumoca_core::OpUnary::Plus
+        | rumoca_core::OpUnary::DotPlus
+        | rumoca_core::OpUnary::Empty => Some(elem.clone()),
+        rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => {
+            Some(negate_structural_numeric_expr(elem, span))
+        }
+        rumoca_core::OpUnary::Not => None,
+    }
+}
+
+fn negate_structural_numeric_expr(
+    expr: &ast::Expression,
+    span: rumoca_core::Span,
+) -> ast::Expression {
+    match expr {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedReal,
+            token,
+            ..
+        } => token
+            .text
+            .parse::<f64>()
+            .ok()
+            .map(|value| make_real_lit(-value, span))
+            .unwrap_or_else(|| ast::Expression::Unary {
+                op: rumoca_core::OpUnary::Minus,
+                rhs: Arc::new(expr.clone()),
+                span,
+            }),
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token,
+            ..
+        } => token
+            .text
+            .parse::<i64>()
+            .ok()
+            .map(|value| make_real_lit(-(value as f64), span))
+            .unwrap_or_else(|| ast::Expression::Unary {
+                op: rumoca_core::OpUnary::Minus,
+                rhs: Arc::new(expr.clone()),
+                span,
+            }),
+        ast::Expression::Parenthesized { inner, .. } => negate_structural_numeric_expr(inner, span),
+        _ => ast::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
+            rhs: Arc::new(expr.clone()),
+            span,
+        },
+    }
+}
+
+fn make_real_lit(value: f64, span: rumoca_core::Span) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::UnsignedReal,
+        token: rumoca_core::Token {
+            text: format!("{value:.17}").into(),
+            ..rumoca_core::Token::default()
+        },
+        span,
     }
 }
 
@@ -402,6 +628,7 @@ fn try_eval_array_comprehension(
         expr: body,
         indices,
         filter,
+        span,
     } = expr
     else {
         return None;
@@ -425,6 +652,7 @@ fn try_eval_array_comprehension(
     Some(ast::Expression::Array {
         elements,
         is_matrix: false,
+        span: *span,
     })
 }
 
@@ -437,8 +665,14 @@ fn eval_range_bounds(
 ) -> Option<(i64, i64)> {
     match range {
         ast::Expression::Range { start, end, .. } => {
-            let s = try_eval_integer_expr(start, mod_env, effective_components, tree)?;
-            let e = try_eval_integer_expr(end, mod_env, effective_components, tree)?;
+            let eval_ctx = InstantiateEvalCtx {
+                tree,
+                mod_env,
+                effective_components,
+                resolve_class_components: resolve_effective_components_for_eval,
+            };
+            let s = try_eval_integer_expr(&eval_ctx, start)?;
+            let e = try_eval_integer_expr(&eval_ctx, end)?;
             Some((s, e))
         }
         _ => None,
@@ -455,32 +689,38 @@ fn substitute_var(expr: &ast::Expression, var_name: &str, value: i64) -> ast::Ex
         ast::Expression::Array {
             elements,
             is_matrix,
+            span,
         } => ast::Expression::Array {
             elements: elements
                 .iter()
                 .map(|elem| substitute_var(elem, var_name, value))
                 .collect(),
             is_matrix: *is_matrix,
+            span: *span,
         },
-        ast::Expression::Binary { op, lhs, rhs } => ast::Expression::Binary {
+        ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
             op: op.clone(),
             lhs: Arc::new(substitute_var(lhs, var_name, value)),
             rhs: Arc::new(substitute_var(rhs, var_name, value)),
+            span: *span,
         },
-        ast::Expression::Unary { op, rhs } => ast::Expression::Unary {
+        ast::Expression::Unary { op, rhs, span } => ast::Expression::Unary {
             op: op.clone(),
             rhs: Arc::new(substitute_var(rhs, var_name, value)),
+            span: *span,
         },
-        ast::Expression::FunctionCall { comp, args } => ast::Expression::FunctionCall {
+        ast::Expression::FunctionCall { comp, args, span } => ast::Expression::FunctionCall {
             comp: comp.clone(),
             args: args
                 .iter()
                 .map(|arg| substitute_var(arg, var_name, value))
                 .collect(),
+            span: *span,
         },
         ast::Expression::If {
             branches,
             else_branch,
+            span,
         } => ast::Expression::If {
             branches: branches
                 .iter()
@@ -492,34 +732,76 @@ fn substitute_var(expr: &ast::Expression, var_name: &str, value: i64) -> ast::Ex
                 })
                 .collect(),
             else_branch: Arc::new(substitute_var(else_branch, var_name, value)),
+            span: *span,
         },
-        ast::Expression::FieldAccess { base, field } => ast::Expression::FieldAccess {
+        ast::Expression::FieldAccess { base, field, span } => ast::Expression::FieldAccess {
             base: Arc::new(substitute_var(base, var_name, value)),
             field: field.clone(),
+            span: *span,
         },
-        ast::Expression::ArrayIndex { base, subscripts } => ast::Expression::ArrayIndex {
+        ast::Expression::ComponentReference(cref) => {
+            ast::Expression::ComponentReference(substitute_component_ref_var(cref, var_name, value))
+        }
+        ast::Expression::ArrayIndex {
+            base,
+            subscripts,
+            span,
+        } => ast::Expression::ArrayIndex {
             base: Arc::new(substitute_var(base, var_name, value)),
             subscripts: subscripts
                 .iter()
                 .map(|sub| substitute_subscript_var(sub, var_name, value))
                 .collect(),
+            span: *span,
         },
-        ast::Expression::Range { start, step, end } => ast::Expression::Range {
+        ast::Expression::Range {
+            start,
+            step,
+            end,
+            span,
+        } => ast::Expression::Range {
             start: Arc::new(substitute_var(start, var_name, value)),
             step: step
                 .as_ref()
                 .map(|inner| Arc::new(substitute_var(inner, var_name, value))),
             end: Arc::new(substitute_var(end, var_name, value)),
+            span: *span,
         },
         ast::Expression::ArrayComprehension {
             expr: inner_expr,
             indices,
             filter,
+            ..
         } => substitute_array_comprehension_var(expr, inner_expr, indices, filter, var_name, value),
-        ast::Expression::Parenthesized { inner } => ast::Expression::Parenthesized {
+        ast::Expression::Parenthesized { inner, span } => ast::Expression::Parenthesized {
             inner: Arc::new(substitute_var(inner, var_name, value)),
+            span: *span,
         },
         _ => expr.clone(),
+    }
+}
+
+fn substitute_component_ref_var(
+    cref: &ast::ComponentReference,
+    var_name: &str,
+    value: i64,
+) -> ast::ComponentReference {
+    ast::ComponentReference {
+        local: cref.local,
+        parts: cref
+            .parts
+            .iter()
+            .map(|part| ast::ComponentRefPart {
+                ident: part.ident.clone(),
+                subs: part.subs.as_ref().map(|subs| {
+                    subs.iter()
+                        .map(|sub| substitute_subscript_var(sub, var_name, value))
+                        .collect()
+                }),
+            })
+            .collect(),
+        def_id: cref.def_id,
+        span: cref.span,
     }
 }
 
@@ -537,10 +819,11 @@ fn replace_component_reference_with_integer(
 
     Some(ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
-        token: rumoca_ir_core::Token {
+        token: rumoca_core::Token {
             text: Arc::from(value.to_string().as_str()),
-            ..rumoca_ir_core::Token::default()
+            ..rumoca_core::Token::default()
         },
+        span: cref.span,
     })
 }
 
@@ -584,6 +867,7 @@ fn substitute_array_comprehension_var(
         filter: filter
             .as_ref()
             .map(|filter_expr| Arc::new(substitute_var(filter_expr, var_name, value))),
+        span: original_expr.span(),
     }
 }
 
@@ -603,7 +887,7 @@ fn index_array_modification(expr: &ast::Expression, indices: &[i64]) -> Option<a
                 index_array_modification(selected, remaining)
             }
         }
-        ast::Expression::Parenthesized { inner } => index_array_modification(inner, indices),
+        ast::Expression::Parenthesized { inner, .. } => index_array_modification(inner, indices),
         _ => None,
     }
 }
@@ -632,10 +916,11 @@ pub(super) fn index_binding_for_element(
             .map(|&i| {
                 ast::Subscript::Expression(ast::Expression::Terminal {
                     terminal_type: ast::TerminalType::UnsignedInteger,
-                    token: rumoca_ir_core::Token {
+                    token: rumoca_core::Token {
                         text: i.to_string().into(),
-                        ..rumoca_ir_core::Token::default()
+                        ..rumoca_core::Token::default()
                     },
+                    span: binding.span(),
                 })
             })
             .collect()
@@ -653,6 +938,7 @@ pub(super) fn index_binding_for_element(
             return ast::Expression::ArrayIndex {
                 base: Arc::new(binding.clone()),
                 subscripts: make_subscripts(),
+                span: binding.span(),
             };
         };
         let mut new_ref = cref.clone();
@@ -671,6 +957,7 @@ pub(super) fn index_binding_for_element(
     ast::Expression::ArrayIndex {
         base: Arc::new(binding.clone()),
         subscripts: make_subscripts(),
+        span: binding.span(),
     }
 }
 
@@ -683,11 +970,92 @@ fn index_non_component_reference_binding(
         ast::Expression::ArrayComprehension { .. } => {
             index_array_comprehension_for_element(binding, indices)
         }
-        ast::Expression::Parenthesized { inner } => {
+        ast::Expression::Parenthesized { inner, .. } => {
             index_non_component_reference_binding(inner, indices)
         }
         _ => None,
     }
+}
+
+fn index_array_expression_for_element(
+    tree: &ast::ClassTree,
+    parent_components: &IndexMap<String, ast::Component>,
+    expr: &ast::Expression,
+    indices: &[i64],
+) -> Option<ast::Expression> {
+    match expr {
+        ast::Expression::Array { .. } | ast::Expression::ArrayComprehension { .. } => {
+            index_non_component_reference_binding(expr, indices)
+        }
+        ast::Expression::ComponentReference(cref) => {
+            index_component_reference_array_part(tree, parent_components, cref, expr, indices)
+        }
+        ast::Expression::Binary { op, lhs, rhs, span } => {
+            let indexed_lhs =
+                index_array_expression_for_element(tree, parent_components, lhs, indices);
+            let indexed_rhs =
+                index_array_expression_for_element(tree, parent_components, rhs, indices);
+            if indexed_lhs.is_none() && indexed_rhs.is_none() {
+                return None;
+            }
+            Some(ast::Expression::Binary {
+                op: op.clone(),
+                lhs: Arc::new(indexed_lhs.unwrap_or_else(|| lhs.as_ref().clone())),
+                rhs: Arc::new(indexed_rhs.unwrap_or_else(|| rhs.as_ref().clone())),
+                span: *span,
+            })
+        }
+        ast::Expression::Unary { op, rhs, span } => {
+            index_array_expression_for_element(tree, parent_components, rhs, indices).map(
+                |indexed_rhs| ast::Expression::Unary {
+                    op: op.clone(),
+                    rhs: Arc::new(indexed_rhs),
+                    span: *span,
+                },
+            )
+        }
+        ast::Expression::Parenthesized { inner, span } => {
+            index_array_expression_for_element(tree, parent_components, inner, indices).map(
+                |indexed_inner| ast::Expression::Parenthesized {
+                    inner: Arc::new(indexed_inner),
+                    span: *span,
+                },
+            )
+        }
+        _ => None,
+    }
+}
+
+fn index_component_reference_array_part(
+    tree: &ast::ClassTree,
+    parent_components: &IndexMap<String, ast::Component>,
+    cref: &ast::ComponentReference,
+    expr: &ast::Expression,
+    indices: &[i64],
+) -> Option<ast::Expression> {
+    if cref.parts.is_empty() {
+        return None;
+    }
+    let pos = find_array_part(tree, parent_components, &cref.parts)?;
+    let subscripts = indices
+        .iter()
+        .map(|&i| {
+            ast::Subscript::Expression(ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::UnsignedInteger,
+                token: rumoca_core::Token {
+                    text: i.to_string().into(),
+                    ..rumoca_core::Token::default()
+                },
+                span: expr.span(),
+            })
+        })
+        .collect();
+    let mut indexed = cref.clone();
+    indexed.parts[pos] = ast::ComponentRefPart {
+        ident: indexed.parts[pos].ident.clone(),
+        subs: Some(subscripts),
+    };
+    Some(ast::Expression::ComponentReference(indexed))
 }
 
 fn index_array_comprehension_for_element(
@@ -698,6 +1066,7 @@ fn index_array_comprehension_for_element(
         expr: body,
         indices: for_indices,
         filter,
+        ..
     } = expr
     else {
         return None;
@@ -762,35 +1131,24 @@ fn lookup_class_def<'a>(
         .or_else(|| find_class_in_tree(tree, &comp.type_name.to_string()))
 }
 
-/// Format an indexed component name (e.g., "r[1]" or "m[1,2]").
-fn format_indexed_name(name: &str, indices: &[i64]) -> String {
-    if indices.len() == 1 {
-        format!("{}[{}]", name, indices[0])
-    } else {
-        let idx_str = indices
-            .iter()
-            .map(|i| i.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        format!("{}[{}]", name, idx_str)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
+        ArrayExpansionScope, array_element_binding_modification,
         distribute_component_ref_mods_for_element, distribute_mods_for_element,
-        index_binding_for_element, pre_resolve_array_modifications, resolve_mod_to_array,
+        index_array_expression_for_element, index_binding_for_element,
+        pre_resolve_array_modifications, resolve_mod_to_array,
     };
-    use indexmap::IndexMap;
+    use crate::type_overrides::TypeOverrideMap;
     use rumoca_core::DefId;
     use rumoca_ir_ast as ast;
+    use rumoca_ir_ast::AstIndexMap as IndexMap;
     use std::sync::Arc;
 
-    fn make_token(text: &str) -> rumoca_ir_core::Token {
-        rumoca_ir_core::Token {
+    fn make_token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
             text: Arc::from(text),
-            location: rumoca_ir_core::Location::default(),
+            location: rumoca_core::Location::default(),
             token_number: 0,
             token_type: 0,
         }
@@ -800,6 +1158,7 @@ mod tests {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token: make_token(&value.to_string()),
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -814,6 +1173,21 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
+        })
+    }
+
+    fn make_indexed_comp_ref_expr(name: &str, index_name: &str) -> ast::Expression {
+        ast::Expression::ComponentReference(ast::ComponentReference {
+            local: false,
+            parts: vec![ast::ComponentRefPart {
+                ident: make_token(name),
+                subs: Some(vec![ast::Subscript::Expression(make_comp_ref_expr(&[
+                    index_name,
+                ]))]),
+            }],
+            def_id: None,
+            span: rumoca_core::Span::DUMMY,
         })
     }
 
@@ -826,9 +1200,113 @@ mod tests {
                     subs: None,
                 }],
                 def_id: None,
+                span: rumoca_core::Span::DUMMY,
             },
             args,
+            span: rumoca_core::Span::DUMMY,
         }
+    }
+
+    fn make_qualified_function_call(names: &[&str], args: Vec<ast::Expression>) -> ast::Expression {
+        ast::Expression::FunctionCall {
+            comp: ast::ComponentReference {
+                local: false,
+                parts: names
+                    .iter()
+                    .map(|name| ast::ComponentRefPart {
+                        ident: make_token(name),
+                        subs: None,
+                    })
+                    .collect(),
+                def_id: None,
+                span: rumoca_core::Span::DUMMY,
+            },
+            args,
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn test_array_element_binding_preserves_modifier_source_scope() {
+        let tree = ast::ClassTree::new();
+        let effective_components = IndexMap::default();
+        let type_overrides = TypeOverrideMap::new();
+        let imports = Vec::new();
+        let scope = ArrayExpansionScope {
+            tree: &tree,
+            effective_components: &effective_components,
+            type_overrides: &type_overrides,
+            imports: &imports,
+        };
+        let source = make_comp_ref_expr(&["outer", "x"]);
+        let parent_mod = ast::ModificationValue::with_source_scope(
+            source.clone(),
+            Some(source),
+            Some(ast::QualifiedName::from_dotted("outerScope")),
+        );
+
+        let value = array_element_binding_modification(
+            &scope,
+            &make_comp_ref_expr(&["resolved", "x"]),
+            &[2],
+            Some(&parent_mod),
+            Some(ast::QualifiedName::from_dotted("declarationScope")),
+        );
+
+        assert_eq!(
+            value.source_scope.map(|scope| scope.to_flat_string()),
+            Some("outerScope".to_string())
+        );
+        let ast::Expression::ArrayIndex { base, .. } =
+            value.source.expect("indexed source should be preserved")
+        else {
+            panic!("expected indexed source");
+        };
+        let ast::Expression::ComponentReference(source_ref) = base.as_ref() else {
+            panic!("expected component reference base");
+        };
+        assert_eq!(source_ref.parts[0].ident.text.as_ref(), "outer");
+    }
+
+    #[test]
+    fn test_array_element_binding_preserves_declaration_source_scope() {
+        let tree = ast::ClassTree::new();
+        let effective_components = IndexMap::default();
+        let type_overrides = TypeOverrideMap::new();
+        let imports = Vec::new();
+        let scope = ArrayExpansionScope {
+            tree: &tree,
+            effective_components: &effective_components,
+            type_overrides: &type_overrides,
+            imports: &imports,
+        };
+        let binding = make_comp_ref_expr(&["plug", "pin"]);
+
+        let value = array_element_binding_modification(
+            &scope,
+            &binding,
+            &[1],
+            None,
+            Some(ast::QualifiedName::from_dotted("Model.Source")),
+        );
+
+        assert_eq!(
+            value.source_scope.map(|scope| scope.to_flat_string()),
+            Some("Model.Source".to_string())
+        );
+        assert_eq!(value.source, Some(binding));
+    }
+
+    fn real_lit_value(expr: &ast::Expression) -> f64 {
+        let ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedReal,
+            token,
+            ..
+        } = expr
+        else {
+            panic!("expected real literal");
+        };
+        token.text.parse().expect("real literal should parse")
     }
 
     fn make_range_expr(start: i64, end: i64) -> ast::Expression {
@@ -836,7 +1314,37 @@ mod tests {
             start: Arc::new(make_int_expr(start)),
             step: None,
             end: Arc::new(make_int_expr(end)),
+            span: rumoca_core::Span::DUMMY,
         }
+    }
+
+    #[test]
+    fn test_resolve_mod_to_array_symmetric_orientation_with_unary_minus() {
+        let call = make_qualified_function_call(
+            &["Polyphase", "Functions", "symmetricOrientation"],
+            vec![make_int_expr(3)],
+        );
+        let expr = ast::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
+            rhs: Arc::new(call),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let resolved = resolve_mod_to_array(
+            &expr,
+            &rumoca_ir_ast::ModificationEnvironment::default(),
+            &IndexMap::default(),
+            &ast::ClassTree::default(),
+        );
+
+        let ast::Expression::Array { elements, .. } = resolved else {
+            panic!("symmetricOrientation() should resolve to an array");
+        };
+        assert_eq!(elements.len(), 3);
+        let values = elements.iter().map(real_lit_value).collect::<Vec<_>>();
+        assert!(values[0].abs() <= 1e-14);
+        assert!((values[1] + 2.0 * std::f64::consts::PI / 3.0).abs() <= 1e-14);
+        assert!((values[2] + 4.0 * std::f64::consts::PI / 3.0).abs() <= 1e-14);
     }
 
     #[test]
@@ -845,7 +1353,7 @@ mod tests {
         let resolved = resolve_mod_to_array(
             &expr,
             &rumoca_ir_ast::ModificationEnvironment::default(),
-            &IndexMap::new(),
+            &IndexMap::default(),
             &ast::ClassTree::default(),
         );
 
@@ -863,7 +1371,7 @@ mod tests {
 
     #[test]
     fn test_index_binding_for_element_indexes_proven_array_part() {
-        let mut parent_components = IndexMap::new();
+        let mut parent_components = IndexMap::default();
         let array_comp = ast::Component {
             name: "arr".to_string(),
             shape: vec![3],
@@ -901,10 +1409,17 @@ mod tests {
     #[test]
     fn test_index_binding_for_element_no_array_part_uses_array_index_fallback() {
         let binding = make_comp_ref_expr(&["a", "b", "c"]);
-        let indexed =
-            index_binding_for_element(&ast::ClassTree::default(), &IndexMap::new(), &binding, &[1]);
+        let indexed = index_binding_for_element(
+            &ast::ClassTree::default(),
+            &IndexMap::default(),
+            &binding,
+            &[1],
+        );
 
-        let ast::Expression::ArrayIndex { base, subscripts } = indexed else {
+        let ast::Expression::ArrayIndex {
+            base, subscripts, ..
+        } = indexed
+        else {
             panic!("unproven array part should use ArrayIndex fallback");
         };
         assert_eq!(subscripts.len(), 1);
@@ -931,11 +1446,12 @@ mod tests {
                 },
             ],
             filter: None,
+            span: rumoca_core::Span::DUMMY,
         };
 
         let indexed = index_binding_for_element(
             &ast::ClassTree::default(),
-            &IndexMap::new(),
+            &IndexMap::default(),
             &binding,
             &[2, 1],
         );
@@ -943,6 +1459,91 @@ mod tests {
             panic!("multi-index comprehension should project to a concrete element expression");
         };
         assert_eq!(token.text.as_ref(), "2");
+    }
+
+    #[test]
+    fn test_index_binding_for_element_substitutes_comprehension_index_in_subscripts() {
+        let binding = ast::Expression::ArrayComprehension {
+            expr: Arc::new(ast::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Arc::new(make_comp_ref_expr(&["level"])),
+                rhs: Arc::new(make_indexed_comp_ref_expr("top_heights", "i")),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            indices: vec![ast::ForIndex {
+                ident: make_token("i"),
+                range: make_range_expr(1, 3),
+            }],
+            filter: None,
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let indexed = index_binding_for_element(
+            &ast::ClassTree::default(),
+            &IndexMap::default(),
+            &binding,
+            &[2],
+        );
+
+        let ast::Expression::Binary { rhs, .. } = indexed else {
+            panic!("array comprehension should project to expression body");
+        };
+        let ast::Expression::ComponentReference(cref) = rhs.as_ref() else {
+            panic!("expected indexed component reference");
+        };
+        let Some(subscripts) = cref.parts[0].subs.as_ref() else {
+            panic!("expected subscript");
+        };
+        let ast::Subscript::Expression(ast::Expression::Terminal { token, .. }) = &subscripts[0]
+        else {
+            panic!("expected literal subscript");
+        };
+        assert_eq!(token.text.as_ref(), "2");
+    }
+
+    #[test]
+    fn test_index_array_start_projects_vectorized_binary_comprehension() {
+        let start = ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Div,
+            lhs: Arc::new(ast::Expression::ArrayComprehension {
+                expr: Arc::new(make_indexed_comp_ref_expr("m_flows", "i")),
+                indices: vec![ast::ForIndex {
+                    ident: make_token("i"),
+                    range: make_range_expr(1, 3),
+                }],
+                filter: None,
+                span: rumoca_core::Span::DUMMY,
+            }),
+            rhs: Arc::new(make_comp_ref_expr(&["nParallel"])),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let indexed = index_array_expression_for_element(
+            &ast::ClassTree::default(),
+            &IndexMap::default(),
+            &start,
+            &[2],
+        )
+        .expect("array-valued start should project to one scalar element");
+
+        let ast::Expression::Binary { lhs, rhs, .. } = indexed else {
+            panic!("expected vectorized binary expression to stay binary");
+        };
+        let ast::Expression::ComponentReference(cref) = lhs.as_ref() else {
+            panic!("expected projected lhs component reference");
+        };
+        let Some(subscripts) = cref.parts[0].subs.as_ref() else {
+            panic!("expected projected subscript");
+        };
+        let ast::Subscript::Expression(ast::Expression::Terminal { token, .. }) = &subscripts[0]
+        else {
+            panic!("expected literal projected subscript");
+        };
+        assert_eq!(token.text.as_ref(), "2");
+        let ast::Expression::ComponentReference(rhs_ref) = rhs.as_ref() else {
+            panic!("scalar rhs should remain unchanged");
+        };
+        assert_eq!(rhs_ref.parts[0].ident.text.as_ref(), "nParallel");
     }
 
     #[test]
@@ -954,6 +1555,7 @@ mod tests {
                 range: make_range_expr(1, 2),
             }],
             filter: None,
+            span: rumoca_core::Span::DUMMY,
         };
         let binding = ast::Expression::ArrayComprehension {
             expr: Arc::new(inner),
@@ -962,11 +1564,12 @@ mod tests {
                 range: make_range_expr(1, 3),
             }],
             filter: None,
+            span: rumoca_core::Span::DUMMY,
         };
 
         let indexed = index_binding_for_element(
             &ast::ClassTree::default(),
-            &IndexMap::new(),
+            &IndexMap::default(),
             &binding,
             &[2, 1],
         );
@@ -1000,7 +1603,7 @@ mod tests {
         tree.def_map.insert(stack_data_id, "StackData".to_string());
         tree.name_map.insert("StackData".to_string(), stack_data_id);
 
-        let mut parent_components = IndexMap::new();
+        let mut parent_components = IndexMap::default();
         parent_components.insert(
             "stackData".to_string(),
             ast::Component {
@@ -1042,7 +1645,7 @@ mod tests {
         let resolved_mods = pre_resolve_array_modifications(
             &comp,
             &rumoca_ir_ast::ModificationEnvironment::default(),
-            &IndexMap::new(),
+            &IndexMap::default(),
             &ast::ClassTree::default(),
         );
         assert_eq!(
@@ -1073,7 +1676,7 @@ mod tests {
         comp.modifications
             .insert("cellData".to_string(), make_comp_ref_expr(&["arr", "v"]));
 
-        let mut parent_components = IndexMap::new();
+        let mut parent_components = IndexMap::default();
         parent_components.insert(
             "arr".to_string(),
             ast::Component {

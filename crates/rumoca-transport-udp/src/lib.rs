@@ -9,8 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-/// Configuration deserialized from `[transport.udp]` or the legacy flat
-/// `[udp]` TOML section.
+/// Configuration deserialized from `[transport.udp]`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UdpConfig {
     pub listen: String,

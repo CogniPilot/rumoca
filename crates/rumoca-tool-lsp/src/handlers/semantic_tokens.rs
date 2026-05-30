@@ -2,8 +2,7 @@
 //!
 //! Ported from the main branch's `src/lsp/handlers/semantic_tokens.rs`.
 
-use rumoca_compile::parsing::ast;
-use rumoca_compile::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::parsing::{self, ast};
 use std::ops::ControlFlow::{self, Continue};
 
 use lsp_types::{
@@ -14,13 +13,13 @@ use lsp_types::{
 use crate::traversal_adapter;
 
 type ClassDef = ast::ClassDef;
-type ClassType = ast::ClassType;
+type ClassType = rumoca_compile::parsing::ir_core::ClassType;
 type Component = ast::Component;
 type ComponentReference = ast::ComponentReference;
 type Expression = ast::Expression;
 type StoredDefinition = ast::StoredDefinition;
 type TerminalType = ast::TerminalType;
-type Variability = rumoca_ir_core::Variability;
+type Variability = parsing::Variability;
 
 // Token type indices (must match order in get_semantic_token_legend)
 const TYPE_NAMESPACE: u32 = 0;
@@ -258,6 +257,7 @@ impl ast::visitor::Visitor for SemanticTokenCollector {
         if let Expression::Terminal {
             terminal_type,
             token,
+            ..
         } = expr
         {
             let tt = match terminal_type {

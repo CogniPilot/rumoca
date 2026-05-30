@@ -18,8 +18,10 @@ concurrency:
 permissions:
   contents: write
   id-token: write
+  issues: write
   pages: write
   packages: read
+  pull-requests: write
 
 jobs:
   detect-release-tag:
@@ -70,6 +72,7 @@ jobs:
         with:
           token: ${{ github.token }}
           persist-credentials: true
+          fetch-depth: 0
 
       - name: Install system dependencies
         run: |
@@ -82,7 +85,40 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Run lint gate
-        run: cargo run --bin rum -- verify lint
+        run: cargo xtask verify lint
+
+      - name: Run architecture review scan
+        if: github.event_name == 'pull_request'
+        run: |
+          cargo xtask repo review-scan \
+            --base origin/${{ github.base_ref }} \
+            --head HEAD \
+            --out target/review/review-scan.json \
+            --fail-on-forbidden
+
+      - name: Upload architecture review scan
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: architecture-review-scan
+          path: target/review/review-scan.json
+          if-no-files-found: ignore
+
+      - name: Check generated Modelica parser is current
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- crates/rumoca-phase-parse/src/generated
+
+      - name: Generate crate DAG release artifact
+        run: cargo xtask repo graph crates --format dot
+
+      - name: Upload crate DAG artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: crate-dag
+          path: target/crate-dag/workspace-crate-dag.dot
+          if-no-files-found: error
 
   test:
     name: Test (${{ matrix.os }})
@@ -109,8 +145,7 @@ jobs:
           path: |
             ~/.rustup/toolchains
             ~/.rustup/update-hashes
-            ~/.cargo/bin
-          key: ${{ runner.os }}-rustup-test-v1-${{ hashFiles('rust-toolchain.toml') }}
+          key: ${{ runner.os }}-rustup-test-v2-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Install Rust
         run: |
@@ -139,7 +174,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache MSL
@@ -148,6 +182,13 @@ jobs:
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
           key: msl-v4.1.0-release-zip-layout-v2
+
+      - name: Cache CMM
+        uses: actions/cache@v5
+        id: cmm-cache
+        with:
+          path: target/cmm/CMM-v0.0.1
+          key: cmm-v0.0.1-bb7fb2033bf97e7d4e62f7e62097e0b206dfefac0562d0d0756922bb08f30469
 
       - name: Ensure MSL
         shell: bash
@@ -167,11 +208,14 @@ jobs:
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
+      - name: Run example build smoke
+        run: cargo xtask verify examples
+
       - name: Run tests
-        run: cargo run --bin rum -- verify workspace
+        run: cargo xtask verify workspace
 
       - name: Build all binaries
-        run: cargo run --bin rum -- verify binaries
+        run: cargo xtask verify binaries
 
   template-runtime-tests:
     name: Template Runtime Tests
@@ -198,19 +242,15 @@ jobs:
           path: |
             /opt/rumoca/cargo/registry
             /opt/rumoca/cargo/git
-            target
           key: template-runtime-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run template runtime checks
-        run: cargo run --bin rum -- verify template-runtimes
+        run: cargo xtask verify template-runtimes
 
   editor-msl-smoke:
     name: Full-MSL LSP/Editor Gate
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      RUMOCA_MSL_CACHE_DIR: target/msl
-      RUMOCA_REQUIRE_EDITOR_RUNTIMES: "1"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -248,7 +288,8 @@ jobs:
             echo "::error::Missing Chrome/Chromium for headless WASM smoke."
             exit 1
           fi
-          echo "RUMOCA_BROWSER_BINARY=$browser" >> "$GITHUB_ENV"
+          # xtask auto-detects the headless browser; this step only fails fast
+          # when none is installed.
           "$browser" --version
 
       - name: Cache cargo
@@ -257,7 +298,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-editor-msl-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache MSL
@@ -286,7 +326,7 @@ jobs:
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
       - name: Run unified full-MSL LSP/editor gate
-        run: cargo run --bin rum -- verify lsp-msl-completion-timings
+        run: cargo xtask verify lsp-msl-completion-timings --require-runtimes
 
       - name: Upload full-MSL LSP/editor report
         if: always()
@@ -327,7 +367,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cargo-llvm-cov
@@ -335,34 +374,23 @@ jobs:
 
       - name: Generate workspace coverage artifacts
         run: |
-          cargo run --bin rum -- coverage run
+          cargo xtask coverage run
 
       - name: Generate trim candidate inventory
         run: |
-          cargo run --bin rum -- coverage report
+          cargo xtask coverage report
 
       - name: Enforce coverage regression gate
         run: |
-          cargo run --bin rum -- coverage gate --allowed-workspace-line-coverage-drop 6.0
+          cargo xtask coverage gate --allowed-workspace-line-coverage-drop 3.0
 
   msl-quality-gate:
     name: MSL Quality Gate
     runs-on: ubuntu-24.04
-    # The full-MSL gate can consume nearly the full 45 minute budget on warm
-    # runs, leaving post-job cache upload/cleanup vulnerable to cancellation.
-    # Keep explicit slack so successful gate runs are not reported as timed out.
-    timeout-minutes: 60
-    env:
-      # Keep the 180-model parity run conservative on shared GitHub runners.
-      # This trades some throughput for lower peak memory pressure and fewer
-      # host-level cancellations during compile/sim worker fan-out.
-      RUMOCA_MSL_PARALLELISM: "3"
-      RUMOCA_MSL_SIM_PARALLELISM: "3"
-      RUMOCA_MSL_COMPILE_BATCH_SIZE: "2"
-      RUMOCA_MSL_SIM_WORKER_MEMORY_MB: "2048"
-      RUMOCA_MSL_SIM_TOTAL_MEMORY_MB: "6144"
-      RUMOCA_CI_RESOURCE_MONITOR_SECS: "10"
-      RUMOCA_CI_CLEAN_MSL_RESULTS: "1"
+    # The root-example MSL 4.1 baseline gate covers 575 models and also runs
+    # OMC parity. Keep enough slack for slower shared runners plus artifact
+    # upload/cleanup.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v5
         with:
@@ -385,7 +413,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache MSL
@@ -437,8 +464,134 @@ jobs:
           sudo apt-get install -y --no-install-recommends omc
           omc --version
 
+      - name: Clean stale MSL results
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/msl/results
+
       - name: Run full MSL quality gate
-        run: cargo run --bin rum -- verify msl-parity
+        # Keep the full parity run conservative on shared GitHub runners (lower
+        # peak memory pressure and fewer host-level cancellations during
+        # compile/sim worker fan-out).
+        run: >
+          cargo xtask verify msl-parity
+          --stage-parallelism 3
+          --sim-parallelism 3
+          --sim-worker-memory-mb 2048
+          --sim-total-memory-mb 6144
+          --monitor-interval-secs 10
+
+      - name: Generate MSL compatibility report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f target/msl/results/msl_results.json ]]; then
+            cargo xtask repo msl compatibility-report
+          else
+            echo "Skipping MSL compatibility report; target/msl/results/msl_results.json was not produced."
+          fi
+
+      - name: Prepare ModelicaTest sources
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/msl/modelicatest-source
+          git clone --depth 1 --branch v4.1.0 \
+            https://github.com/modelica/ModelicaStandardLibrary.git \
+            target/msl/modelicatest-source
+          rm -rf target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
+          cp -a \
+            target/msl/modelicatest-source/ModelicaTest \
+            target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
+
+      - name: Run ModelicaTest semantic gate
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          targets="crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json"
+          cargo xtask verify msl-parity \
+            --sim-targets-file "$targets" \
+            --include-modelica-test \
+            --require-selected-targets-success \
+            --sim-set full \
+            --stage-parallelism 3 \
+            --sim-parallelism 3 \
+            --sim-worker-memory-mb 2048 \
+            --sim-total-memory-mb 6144
+          cargo xtask repo msl modelica-test-catalog \
+            --results target/msl/results/msl_results.json \
+            --out target/msl/results/modelica_test_catalog.md \
+            --json-out target/msl/results/modelica_test_catalog.json
+
+      - name: Generate MSL PR summary comment
+        if: always()
+        shell: bash
+        run: cargo xtask repo msl pr-comment
+
+      - name: Upload MSL compatibility artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: msl-compatibility-report
+          path: |
+            target/msl/results/msl_quality_current.json
+            target/msl/results/msl_package_pass_rates.md
+            target/msl/results/msl_package_pass_rates.json
+            target/msl/results/msl_package_trace_accuracy.md
+            target/msl/results/msl_package_trace_accuracy.json
+            target/msl/results/mls_contract_coverage.md
+            target/msl/results/mls_contract_coverage.json
+            target/msl/results/mls_contract_coverage.txt
+            target/msl/results/msl_pr_comment.md
+            target/msl/results/msl_compatibility_report.md
+            target/msl/results/msl_compatibility_report.json
+            target/msl/results/modelica_test_catalog.md
+            target/msl/results/modelica_test_catalog.json
+          if-no-files-found: warn
+
+      - name: Publish MSL PR summary comment
+        if: github.event_name == 'pull_request' && always() && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'target/msl/results/msl_pr_comment.md';
+            if (!fs.existsSync(path)) {
+              core.info(`Skipping MSL PR summary comment; ${path} does not exist.`);
+              return;
+            }
+            const marker = '<!-- rumoca-msl-quality-summary -->';
+            const body = fs.readFileSync(path, 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const previous = comments.find(comment =>
+              comment.user?.type === 'Bot' && comment.body?.includes(marker)
+            );
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: previous.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
 
   # ============================================================================
   # Documentation
@@ -462,8 +615,11 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
+      - name: Install mdBook
+        run: cargo install mdbook --locked --version 0.5.2
+
       - name: Build documentation
-        run: cargo run --bin rum -- verify docs
+        run: cargo xtask verify docs
 
       - name: Upload documentation
         uses: actions/upload-artifact@v6
@@ -504,11 +660,10 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-vscode-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run VS Code extension CI gate
-        run: cargo run --bin rum -- vscode test
+        run: cargo xtask vscode test
 
   # ============================================================================
   # WebAssembly Build & GitHub Pages
@@ -545,15 +700,16 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run WASM CI gate
-        run: cargo run --bin rum -- wasm test
+        run: cargo xtask wasm test
+
+      - name: Install mdBook
+        run: cargo install mdbook --locked --version 0.5.2
 
       - name: Prepare GitHub Pages content
         run: |
-          mkdir -p gh-pages/pkg
           if [ -d pkg/release-full-web ]; then
             PKG_SUBDIR="release-full-web"
           elif [ -d pkg/release-full-web-rayon ]; then
@@ -565,20 +721,28 @@ jobs:
           fi
           echo "Using pkg subdir: $PKG_SUBDIR"
 
-          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm.js" gh-pages/pkg/
-          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_bg.wasm" gh-pages/pkg/
-          cp "pkg/$PKG_SUBDIR/rumoca_worker.js" gh-pages/pkg/
-          cp "pkg/$PKG_SUBDIR/parse_worker.js" gh-pages/pkg/
-          cp "pkg/$PKG_SUBDIR/package.json" gh-pages/pkg/
-          cp -r "pkg/$PKG_SUBDIR/snippets" gh-pages/pkg/ 2>/dev/null || true
+          mkdir -p "gh-pages/pkg/$PKG_SUBDIR"
+          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/rumoca_bind_wasm_bg.wasm" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/rumoca_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/parse_worker.js" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/package.json" "gh-pages/pkg/$PKG_SUBDIR/"
+          cp "pkg/$PKG_SUBDIR/rumoca_package_meta.json" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
+          cp -r "pkg/$PKG_SUBDIR/snippets" "gh-pages/pkg/$PKG_SUBDIR/" 2>/dev/null || true
 
           cp editors/wasm/rumoca.png gh-pages/
           cp editors/wasm/coi-serviceworker.js gh-pages/
           cp -r editors/wasm/src gh-pages/
           cp -r editors/wasm/vendor gh-pages/
 
-          sed 's|\.\./\.\./pkg/|./pkg/|g' \
+          sed \
+              -e "s|window.rumocaWasmPkgBase = '../../pkg';|window.rumocaWasmPkgBase = './pkg';|g" \
+              -e "s|window.rumocaWasmPkgSubdir = 'release-full-web';|window.rumocaWasmPkgSubdir = '$PKG_SUBDIR';|g" \
+              -e "s|window.rumocaWasmPkgSubdir = 'release-full-web-rayon';|window.rumocaWasmPkgSubdir = '$PKG_SUBDIR';|g" \
               editors/wasm/index.html > gh-pages/index.html
+
+          mdbook build docs/user-guide -d "$GITHUB_WORKSPACE/gh-pages/user-guide"
+          mdbook build docs/dev-guide -d "$GITHUB_WORKSPACE/gh-pages/dev-guide"
 
           echo "=== GitHub Pages content ==="
           find gh-pages -type f

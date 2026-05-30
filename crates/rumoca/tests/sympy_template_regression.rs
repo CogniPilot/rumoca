@@ -1,9 +1,12 @@
+#[cfg(feature = "template-runtime-tests")]
 use std::{fs, process::Command};
 
 use rumoca::Compiler;
 use rumoca_phase_codegen::templates;
+#[cfg(feature = "template-runtime-tests")]
 use tempfile::Builder;
 
+#[cfg(feature = "template-runtime-tests")]
 fn python_command() -> &'static str {
     for candidate in ["python3", "python"] {
         if Command::new(candidate).arg("--version").output().is_ok() {
@@ -19,10 +22,15 @@ fn render_template(source: &str, model_name: &str, file_name: &str) -> String {
         .compile_str(source, file_name)
         .expect("compile test model");
 
-    rumoca_phase_codegen::render_template_with_name(&compiled.dae, templates::SYMPY, model_name)
-        .expect("render sympy template")
+    rumoca_phase_codegen::render_template_with_name(
+        &compiled.dae,
+        templates::builtin_template_source("sympy", "sympy.py.jinja").unwrap(),
+        model_name,
+    )
+    .expect("render sympy template")
 }
 
+#[cfg(feature = "template-runtime-tests")]
 fn assert_python_executes(rendered: &str, assertion_script: &str) {
     let temp = Builder::new()
         .suffix(".py")
@@ -123,7 +131,7 @@ fn sympy_template_uses_indexed_symbols_for_array_states() {
 }
 
 #[test]
-#[ignore = "requires Python runtime with sympy; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn sympy_template_executes_against_current_dae_context() {
     let rendered = render_ball_template();
 
@@ -138,7 +146,7 @@ assert str(solution[model.explicit_targets[0]]) == "-x"
 }
 
 #[test]
-#[ignore = "requires Python runtime with sympy; run via `rum verify template-runtimes`"]
+#[cfg(feature = "template-runtime-tests")]
 fn sympy_template_executes_with_indexed_array_states() {
     let rendered = render_array_template();
 

@@ -6,14 +6,34 @@
 //! - AST expression variants used within statements
 
 use super::render_expr::{
-    get_binop_string, get_field, get_unop_string, is_exp_op, is_mul_elem_op, render_args,
-    render_expression,
+    get_binop_string, get_field, get_unop_string, is_exp_op, is_mul_elem_op, is_variant,
+    render_args, render_expression,
 };
 use super::{ExprConfig, IfStyle, RenderResult};
 use crate::errors::render_err;
 use minijinja::Value;
 
 // ── Equation rendering ───────────────────────────────────────────────
+
+fn no_statement_render_match<T>() -> Result<Option<T>, minijinja::Error> {
+    Ok(Option::None)
+}
+
+fn required_attr(
+    node: &Value,
+    attr: &'static str,
+    context: &'static str,
+) -> Result<Value, minijinja::Error> {
+    let value = node
+        .get_attr(attr)
+        .map_err(|err| render_err(format!("{context} missing required `{attr}` field: {err}")))?;
+    if value.is_none() || value.is_undefined() {
+        return Err(render_err(format!(
+            "{context} missing required `{attr}` field"
+        )));
+    }
+    Ok(value)
+}
 
 /// Render an equation to `lhs = rhs` form.
 pub(crate) fn render_equation(eq: &Value, cfg: &ExprConfig) -> RenderResult {
@@ -26,21 +46,21 @@ pub(crate) fn render_equation(eq: &Value, cfg: &ExprConfig) -> RenderResult {
         let rhs_str = eq
             .get_attr("rhs")
             .and_then(|v| render_expression(&v, cfg))
-            .unwrap_or_default();
+            .map_err(|err| render_err(format!("explicit equation RHS failed to render: {err}")))?;
         return Ok(format!("{lhs_str} = {rhs_str}"));
     }
 
     // Residual form: try to decompose top-level Binary Sub into lhs = rhs
-    let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
+    let rhs = required_attr(eq, "rhs", "equation")?;
     if let Ok(binary) = get_field(&rhs, "Binary")
         && is_sub_op(&binary)
     {
         let lhs_expr = get_field(&binary, "lhs")
             .and_then(|v| render_expression(&v, cfg))
-            .unwrap_or_default();
+            .map_err(|err| render_err(format!("residual equation LHS failed to render: {err}")))?;
         let rhs_expr = get_field(&binary, "rhs")
             .and_then(|v| render_expression(&v, cfg))
-            .unwrap_or_default();
+            .map_err(|err| render_err(format!("residual equation RHS failed to render: {err}")))?;
         return Ok(format!("{lhs_expr} = {rhs_expr}"));
     }
 
@@ -55,16 +75,24 @@ pub(crate) fn render_equation(eq: &Value, cfg: &ExprConfig) -> RenderResult {
 /// Decomposes top-level `Binary::Sub` into `lhs = rhs` form.
 /// Falls back to `0 = expr` if no subtraction.
 pub(crate) fn render_flat_equation(eq: &Value, cfg: &ExprConfig) -> RenderResult {
-    let residual = eq.get_attr("residual").unwrap_or(Value::UNDEFINED);
+    let residual = required_attr(eq, "residual", "flat equation")?;
     if let Ok(binary) = get_field(&residual, "Binary")
         && is_sub_op(&binary)
     {
         let lhs_expr = get_field(&binary, "lhs")
             .and_then(|v| render_expression(&v, cfg))
-            .unwrap_or_default();
+            .map_err(|err| {
+                render_err(format!(
+                    "flat residual equation LHS failed to render: {err}"
+                ))
+            })?;
         let rhs_expr = get_field(&binary, "rhs")
             .and_then(|v| render_expression(&v, cfg))
-            .unwrap_or_default();
+            .map_err(|err| {
+                render_err(format!(
+                    "flat residual equation RHS failed to render: {err}"
+                ))
+            })?;
         return Ok(format!("{lhs_expr} = {rhs_expr}"));
     }
 
@@ -75,21 +103,14 @@ pub(crate) fn render_flat_equation(eq: &Value, cfg: &ExprConfig) -> RenderResult
 
 /// Render the LHS of an explicit equation (VarName).
 fn render_explicit_lhs(lhs: &Value, cfg: &ExprConfig) -> String {
-    // VarName serializes as a string or {"0": "name"}
-    let raw = get_field(lhs, "0")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| lhs.to_string());
-    if cfg.sanitize_dots {
-        raw.replace('.', "_")
-    } else {
-        raw
-    }
+    let raw = super::render_expr::render_serialized_name(lhs);
+    super::emitted_symbol_or_fallback(&raw, cfg)
 }
 
 /// Check if a Binary expression's op is Sub or SubElem.
 fn is_sub_op(binary: &Value) -> bool {
     if let Ok(op) = get_field(binary, "op") {
-        return get_field(&op, "Sub").is_ok() || get_field(&op, "SubElem").is_ok();
+        return is_variant(&op, "Sub") || is_variant(&op, "SubElem");
     }
     false
 }
@@ -98,17 +119,21 @@ fn is_sub_op(binary: &Value) -> bool {
 
 /// Render a list of statements to a string.
 pub(crate) fn render_statements(stmts: &Value, cfg: &ExprConfig, indent: &str) -> RenderResult {
-    let Some(len) = stmts.len() else {
-        return Ok(String::new());
-    };
+    let len = stmts
+        .len()
+        .ok_or_else(|| render_err("statement list is not a sequence"))?;
 
     let mut stmt_strs = Vec::new();
     for i in 0..len {
-        if let Ok(stmt) = stmts.get_item(&Value::from(i)) {
-            let s = render_statement(&stmt, cfg, indent)?;
-            if !s.is_empty() {
-                stmt_strs.push(s);
-            }
+        let stmt = stmts
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("statement {i} is inaccessible: {err}")))?;
+        if stmt.is_undefined() || stmt.is_none() {
+            return Err(render_err(format!("statement {i} is missing")));
+        }
+        let s = render_statement(&stmt, cfg, indent)?;
+        if !s.is_empty() {
+            stmt_strs.push(s);
         }
     }
 
@@ -128,6 +153,11 @@ pub(crate) fn render_statement(stmt: &Value, cfg: &ExprConfig, indent: &str) -> 
     }
 
     // Struct variants serialize as {"VariantName": {fields...}}
+    if let Ok(spanned) = get_field(stmt, "Spanned") {
+        let inner = get_field(&spanned, "statement")
+            .map_err(|_| render_err(format!("Spanned statement missing 'statement': {stmt}")))?;
+        return render_statement(&inner, cfg, indent);
+    }
     if let Ok(assign) = get_field(stmt, "Assignment") {
         return render_assignment(&assign, cfg, indent);
     }
@@ -168,7 +198,7 @@ pub(crate) fn render_statement(stmt: &Value, cfg: &ExprConfig, indent: &str) -> 
 fn render_assignment(assign: &Value, cfg: &ExprConfig, indent: &str) -> RenderResult {
     let comp_val = get_field(assign, "comp")
         .map_err(|_| render_err(format!("Assignment missing 'comp' field: {assign}")))?;
-    let comp = render_component_ref(&comp_val);
+    let comp = render_component_ref(&comp_val, cfg)?;
     if comp.trim().is_empty() {
         return Err(render_err(format!(
             "Assignment target resolved to empty component reference: {assign}"
@@ -222,7 +252,7 @@ fn try_extract_array_elements(
         }
         return Ok(Some(strs));
     }
-    Ok(None)
+    no_statement_render_match()
 }
 
 /// Render a for loop statement.
@@ -458,7 +488,7 @@ fn render_while_statement(while_stmt: &Value, cfg: &ExprConfig, indent: &str) ->
         .get_attr("cond")
         .and_then(|c| render_ast_expression(&c, cfg))
         .unwrap_or_else(|_| "true".to_string());
-    let stmts = while_stmt.get_attr("statements").ok();
+    let stmts = statement_block_statements(while_stmt);
 
     match cfg.if_style {
         IfStyle::Ternary => {
@@ -517,15 +547,18 @@ fn render_if_cond_blocks(
     indent: &str,
     next_indent: &str,
 ) -> RenderResult {
-    let Some(len) = blocks.len() else {
-        return Ok(String::new());
-    };
+    let len = blocks
+        .len()
+        .ok_or_else(|| render_err("If condition blocks is not a sequence"))?;
 
     let mut result = String::new();
     for i in 0..len {
-        let Ok(block) = blocks.get_item(&Value::from(i)) else {
-            continue;
-        };
+        let block = blocks
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("If condition block {i} is inaccessible: {err}")))?;
+        if block.is_undefined() || block.is_none() {
+            return Err(render_err(format!("If condition block {i} is missing")));
+        }
         result.push_str(&render_if_branch(&block, i, cfg, indent, next_indent)?);
     }
     Ok(result)
@@ -545,7 +578,7 @@ fn render_if_branch(
         .get_attr("cond")
         .and_then(|c| render_ast_expression(&c, cfg))
         .unwrap_or_else(|_| "true".to_string());
-    let stmts = block.get_attr("statements").ok();
+    let stmts = statement_block_statements(block);
 
     match cfg.if_style {
         IfStyle::Ternary => {
@@ -579,6 +612,13 @@ fn render_if_branch(
     }
 
     Ok(result)
+}
+
+fn statement_block_statements(block: &Value) -> Option<Value> {
+    block
+        .get_attr("stmts")
+        .ok()
+        .or_else(|| block.get_attr("statements").ok())
 }
 
 /// Render the else block of an if statement.
@@ -620,12 +660,28 @@ fn render_function_call_statement(
     cfg: &ExprConfig,
     indent: &str,
 ) -> RenderResult {
-    let comp = func_call
-        .get_attr("comp")
-        .map(|c| render_component_ref(&c))
-        .unwrap_or_default();
+    let comp_val = func_call.get_attr("comp").map_err(|_| {
+        render_err(format!(
+            "FunctionCall statement missing 'comp': {func_call}"
+        ))
+    })?;
+    if comp_val.is_undefined() || comp_val.is_none() {
+        return Err(render_err(format!(
+            "FunctionCall statement missing 'comp': {func_call}"
+        )));
+    }
+    let comp = render_component_ref(&comp_val, cfg)?;
+    if comp.trim().is_empty() {
+        return Err(render_err(format!(
+            "FunctionCall statement target resolved to empty component reference: {func_call}"
+        )));
+    }
 
-    let args = render_args(func_call, cfg).unwrap_or_default();
+    let args = render_args(func_call, cfg).map_err(|err| {
+        render_err(format!(
+            "FunctionCall statement args failed to render: {err}"
+        ))
+    })?;
 
     // Check if there are output assignments: (a, b) := func(x)
     if let Some(out_strs) = extract_output_assignments(func_call, cfg)? {
@@ -644,13 +700,13 @@ fn extract_output_assignments(
     cfg: &ExprConfig,
 ) -> Result<Option<Vec<String>>, minijinja::Error> {
     let Some(outputs) = func_call.get_attr("outputs").ok() else {
-        return Ok(None);
+        return no_statement_render_match();
     };
     let Some(len) = outputs.len() else {
-        return Ok(None);
+        return no_statement_render_match();
     };
     if len == 0 {
-        return Ok(None);
+        return no_statement_render_match();
     }
 
     let mut out_strs = Vec::new();
@@ -679,14 +735,19 @@ fn format_func_call_with_outputs(
 
 /// Render a reinit statement.
 fn render_reinit_statement(reinit: &Value, cfg: &ExprConfig, indent: &str) -> RenderResult {
-    let var = reinit
+    let variable = reinit
         .get_attr("variable")
-        .map(|v| render_component_ref(&v))
-        .unwrap_or_default();
+        .map_err(|_| render_err(format!("Reinit statement missing 'variable': {reinit}")))?;
+    let var = render_component_ref(&variable, cfg)?;
+    if var.trim().is_empty() {
+        return Err(render_err(format!(
+            "Reinit target resolved to empty component reference: {reinit}"
+        )));
+    }
     let value = reinit
         .get_attr("value")
         .and_then(|v| render_ast_expression(&v, cfg))
-        .unwrap_or_default();
+        .map_err(|err| render_err(format!("Reinit value failed to render: {err}")))?;
     Ok(format!("{indent}/* reinit({var}, {value}) */"))
 }
 
@@ -695,11 +756,14 @@ fn render_assert_statement(assert: &Value, cfg: &ExprConfig, indent: &str) -> Re
     let cond = assert
         .get_attr("condition")
         .and_then(|c| render_ast_expression(&c, cfg))
-        .unwrap_or_default();
-    let msg = assert
-        .get_attr("message")
-        .and_then(|m| render_ast_expression(&m, cfg))
-        .unwrap_or_else(|_| "\"assertion failed\"".to_string());
+        .map_err(|err| render_err(format!("Assert condition failed to render: {err}")))?;
+    let msg = match assert.get_attr("message") {
+        Ok(message) if !message.is_undefined() && !message.is_none() => {
+            render_ast_expression(&message, cfg)
+                .map_err(|err| render_err(format!("Assert message failed to render: {err}")))?
+        }
+        _ => "\"assertion failed\"".to_string(),
+    };
 
     Ok(match cfg.if_style {
         IfStyle::Ternary => format!("{indent}assert({cond}); /* {msg} */"),
@@ -711,88 +775,120 @@ fn render_assert_statement(assert: &Value, cfg: &ExprConfig, indent: &str) -> Re
 // ── Component reference rendering ────────────────────────────────────
 
 /// Render an AST ComponentReference to a string.
-fn render_component_ref(comp: &Value) -> String {
+fn render_component_ref(comp: &Value, cfg: &ExprConfig) -> RenderResult {
     if let Some(s) = comp.as_str() {
-        return super::sanitize_name(s);
+        return Ok(super::emitted_symbol_or_fallback(s, cfg));
     }
 
-    let Some(parts_val) = get_field(comp, "parts").ok() else {
-        return String::new();
-    };
-    let Some(len) = parts_val.len() else {
-        return String::new();
-    };
+    let parts_val = get_field(comp, "parts")
+        .map_err(|_| render_err(format!("ComponentReference missing 'parts': {comp}")))?;
+    let len = parts_val.len().ok_or_else(|| {
+        render_err(format!(
+            "ComponentReference parts is not a sequence: {comp}"
+        ))
+    })?;
 
-    let part_strs: Vec<_> = (0..len)
-        .filter_map(|i| parts_val.get_item(&Value::from(i)).ok())
-        .map(|part| render_component_ref_part(&part))
-        .collect();
+    let mut part_strs = Vec::new();
+    for i in 0..len {
+        let part = parts_val
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("ComponentReference part {i} missing: {err}")))?;
+        if part.is_undefined() || part.is_none() {
+            return Err(render_err(format!("ComponentReference part {i} missing")));
+        }
+        part_strs.push(render_component_ref_part(&part, cfg)?);
+    }
 
-    let joined = part_strs.join("_");
-    super::sanitize_name(&joined)
+    let joined = part_strs.join(".");
+    let joined = joined.replace(' ', "");
+    if joined.trim().is_empty() {
+        return Err(render_err(format!(
+            "ComponentReference resolved to empty name: {comp}"
+        )));
+    }
+    Ok(super::emitted_symbol_or_fallback(&joined, cfg))
 }
 
 /// Render a single component reference part (identifier + optional subscripts).
-fn render_component_ref_part(part: &Value) -> String {
-    let ident = get_field(part, "ident")
-        .ok()
-        .map(|i| {
-            if let Ok(text) = i.get_attr("text")
-                && !text.is_undefined()
-                && !text.is_none()
-            {
-                return text.to_string();
-            }
-            i.as_str()
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| i.to_string())
-        })
-        .unwrap_or_default();
-
-    let sub_str = render_part_subscripts(part);
-    if sub_str.is_empty() {
-        ident
+fn render_component_ref_part(part: &Value, cfg: &ExprConfig) -> RenderResult {
+    let ident_value = get_field(part, "ident")
+        .map_err(|_| render_err(format!("ComponentReference part missing 'ident': {part}")))?;
+    let ident = if let Ok(text) = ident_value.get_attr("text")
+        && !text.is_undefined()
+        && !text.is_none()
+    {
+        text.to_string()
     } else {
-        format!("{}[{}]", ident, sub_str)
+        ident_value
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| ident_value.to_string())
+    };
+    if ident.trim().is_empty() {
+        return Err(render_err(format!(
+            "ComponentReference part resolved to empty ident: {part}"
+        )));
+    }
+
+    let sub_str = render_part_subscripts(part, cfg)?;
+    if sub_str.is_empty() {
+        Ok(ident)
+    } else {
+        Ok(format!("{}[{}]", ident, sub_str))
     }
 }
 
 /// Render subscripts for a component reference part.
-fn render_part_subscripts(part: &Value) -> String {
+fn render_part_subscripts(part: &Value, cfg: &ExprConfig) -> RenderResult {
     let subs_val = get_field(part, "subscripts")
         .ok()
         .or_else(|| get_field(part, "subs").ok());
     let Some(subs_val) = subs_val else {
-        return String::new();
+        return Ok(String::new());
     };
-    let Some(sub_len) = subs_val.len() else {
-        return String::new();
-    };
+    let sub_len = subs_val.len().ok_or_else(|| {
+        render_err(format!(
+            "ComponentReference subscripts is not a sequence: {part}"
+        ))
+    })?;
     if sub_len == 0 {
-        return String::new();
+        return Ok(String::new());
     }
 
-    let sub_strs: Vec<_> = (0..sub_len)
-        .filter_map(|j| subs_val.get_item(&Value::from(j)).ok())
-        .map(|s| render_ast_subscript(&s))
-        .collect();
+    let mut sub_strs = Vec::new();
+    for j in 0..sub_len {
+        let sub = subs_val.get_item(&Value::from(j)).map_err(|err| {
+            render_err(format!("ComponentReference subscript {j} missing: {err}"))
+        })?;
+        if sub.is_undefined() || sub.is_none() {
+            return Err(render_err(format!(
+                "ComponentReference subscript {j} missing"
+            )));
+        }
+        sub_strs.push(render_ast_subscript(&sub, cfg)?);
+    }
 
-    sub_strs.join(", ")
+    Ok(sub_strs.join(","))
 }
 
 /// Render an AST subscript.
-fn render_ast_subscript(sub: &Value) -> String {
+fn render_ast_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
     if let Ok(index) = get_field(sub, "Index") {
-        return index.to_string();
+        return Ok(index.to_string());
     }
     if let Ok(expr) = get_field(sub, "Expr") {
-        return render_expression(&expr, &ExprConfig::default()).unwrap_or_default();
+        return render_expression(&expr, cfg);
     }
     // Subscripts can be Expression, Range, or Empty (colon)
     if let Ok(expr) = get_field(sub, "Expression") {
-        return render_ast_expression(&expr, &ExprConfig::default()).unwrap_or_default();
+        return render_ast_expression(&expr, cfg);
     }
-    ":".to_string()
+    if sub.as_str() == Some("Empty") || get_field(sub, "Colon").is_ok() {
+        return Ok(":".to_string());
+    }
+    Err(render_err(format!(
+        "unhandled AST subscript variant: {sub}"
+    )))
 }
 
 // ── AST Expression rendering ─────────────────────────────────────────
@@ -821,10 +917,10 @@ pub(crate) fn render_ast_expression(expr: &Value, cfg: &ExprConfig) -> RenderRes
         return render_ast_unary(&unary, cfg);
     }
     if let Ok(terminal) = get_field(expr, "Terminal") {
-        return Ok(render_ast_terminal(&terminal, cfg));
+        return render_ast_terminal(&terminal, cfg);
     }
     if let Ok(comp_ref) = get_field(expr, "ComponentReference") {
-        return Ok(render_component_ref(&comp_ref));
+        return render_component_ref(&comp_ref, cfg);
     }
     if let Ok(if_expr) = get_field(expr, "If") {
         return render_ast_if_expr(&if_expr, cfg);
@@ -846,20 +942,9 @@ pub(crate) fn render_ast_expression(expr: &Value, cfg: &ExprConfig) -> RenderRes
     }
 
     // Fallback: try DAE IR expression renderer (function bodies may contain
-    // DAE-style expressions like VarRef, Literal, BuiltinCall, etc.)
-    if let Ok(result) = render_expression(expr, cfg) {
-        return Ok(result);
-    }
-
-    // Last resort: try to convert to string
-    let s = expr.to_string();
-    if s != "none" && !s.is_empty() {
-        return Ok(s);
-    }
-
-    Err(render_err(format!(
-        "unhandled AST expression variant: {expr}"
-    )))
+    // DAE-style expressions like VarRef, Literal, BuiltinCall, etc.).
+    render_expression(expr, cfg)
+        .map_err(|err| render_err(format!("unhandled AST expression variant {expr}: {err}")))
 }
 
 fn render_ast_binary(binary: &Value, cfg: &ExprConfig) -> RenderResult {
@@ -880,11 +965,11 @@ fn render_ast_binary(binary: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(format!("{func}({lhs}, {rhs})"));
     }
     // Use function-call form for logical operators when the op string
-    // looks like a function name (contains '.', e.g. "ca.logic_and").
-    if get_field(&op, "And").is_ok() && cfg.and_op.contains('.') {
+    // looks like a qualified function name (e.g. "ca.logic_and").
+    if is_variant(&op, "And") && rumoca_core::has_top_level_dot(&cfg.and_op) {
         return Ok(format!("{}({}, {})", cfg.and_op, lhs, rhs));
     }
-    if get_field(&op, "Or").is_ok() && cfg.or_op.contains('.') {
+    if is_variant(&op, "Or") && rumoca_core::has_top_level_dot(&cfg.or_op) {
         return Ok(format!("{}({}, {})", cfg.or_op, lhs, rhs));
     }
     if is_exp_op(&op) {
@@ -916,27 +1001,30 @@ fn render_ast_unary(unary: &Value, cfg: &ExprConfig) -> RenderResult {
     Ok(format!("({op}{rhs})"))
 }
 
-fn render_ast_terminal(terminal: &Value, cfg: &ExprConfig) -> String {
-    // Get terminal_type and token
-    let term_type = terminal
-        .get_attr("terminal_type")
-        .ok()
-        .map(|t| t.to_string())
-        .unwrap_or_default();
-    let token = terminal.get_attr("token").ok();
-
-    let text = token
-        .as_ref()
-        .and_then(|t| t.get_attr("text").ok())
-        .map(|t| t.to_string())
-        .unwrap_or_default();
+fn render_ast_terminal(terminal: &Value, cfg: &ExprConfig) -> RenderResult {
+    let term_type = get_field(terminal, "terminal_type")
+        .map(|t| super::value_to_string(&t))
+        .map_err(|err| render_err(format!("AST Terminal missing 'terminal_type': {err}")))?;
 
     match term_type.as_str() {
-        "UnsignedInteger" | "UnsignedReal" => text,
-        "\"True\"" | "True" => cfg.true_val.clone(),
-        "\"False\"" | "False" => cfg.false_val.clone(),
-        "String" => format!("\"{}\"", text),
-        _ => text.replace('.', "_"), // Identifier - sanitize dots
+        "\"True\"" | "True" => return Ok(cfg.true_val.clone()),
+        "\"False\"" | "False" => return Ok(cfg.false_val.clone()),
+        _ => {}
+    }
+
+    let token = get_field(terminal, "token")
+        .map_err(|err| render_err(format!("AST Terminal missing 'token': {err}")))?;
+    let text = get_field(&token, "text")
+        .map(|t| super::value_to_string(&t))
+        .map_err(|err| render_err(format!("AST Terminal missing token text: {err}")))?;
+    if text.is_empty() {
+        return Err(render_err("AST Terminal token text is empty"));
+    }
+
+    match term_type.as_str() {
+        "UnsignedInteger" | "UnsignedReal" => Ok(text),
+        "String" => Ok(format!("\"{}\"", text)),
+        _ => Ok(text.replace('.', "_")), // Identifier - sanitize dots
     }
 }
 
@@ -944,15 +1032,27 @@ fn render_ast_if_expr(if_expr: &Value, cfg: &ExprConfig) -> RenderResult {
     let cond = if_expr
         .get_attr("cond")
         .and_then(|c| render_ast_expression(&c, cfg))
-        .unwrap_or_else(|_| "true".to_string());
+        .map_err(|err| {
+            render_err(format!(
+                "AST If expression condition failed to render: {err}"
+            ))
+        })?;
     let then_expr = if_expr
         .get_attr("then_expr")
         .and_then(|t| render_ast_expression(&t, cfg))
-        .unwrap_or_else(|_| "0".to_string());
+        .map_err(|err| {
+            render_err(format!(
+                "AST If expression then branch failed to render: {err}"
+            ))
+        })?;
     let else_expr = if_expr
         .get_attr("else_expr")
         .and_then(|e| render_ast_expression(&e, cfg))
-        .unwrap_or_else(|_| "0".to_string());
+        .map_err(|err| {
+            render_err(format!(
+                "AST If expression else branch failed to render: {err}"
+            ))
+        })?;
 
     Ok(match cfg.if_style {
         IfStyle::Function => {
@@ -970,78 +1070,98 @@ fn render_ast_if_expr(if_expr: &Value, cfg: &ExprConfig) -> RenderResult {
 }
 
 fn render_ast_func_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
-    let name = func_call
+    let name_value = func_call
         .get_attr("name")
-        .map(|n| render_component_ref(&n))
-        .unwrap_or_default();
-    let args = func_call
-        .get_attr("args")
-        .and_then(|a| render_ast_args(&a, cfg))
-        .unwrap_or_default();
+        .map_err(|_| render_err(format!("AST FunctionCall missing 'name': {func_call}")))?;
+    if name_value.is_undefined() || name_value.is_none() {
+        return Err(render_err(format!(
+            "AST FunctionCall missing 'name': {func_call}"
+        )));
+    }
+    let name = render_component_ref(&name_value, cfg)?;
+    if name.trim().is_empty() {
+        return Err(render_err(format!(
+            "AST FunctionCall name resolved to empty component reference: {func_call}"
+        )));
+    }
+    let args = match func_call.get_attr("args") {
+        Ok(args) if !args.is_undefined() && !args.is_none() => render_ast_args(&args, cfg)?,
+        _ => String::new(),
+    };
     Ok(format!("{}({})", name, args))
 }
 
 fn render_ast_args(args: &Value, cfg: &ExprConfig) -> RenderResult {
-    let Some(len) = args.len() else {
-        return Ok(String::new());
-    };
+    let len = args
+        .len()
+        .ok_or_else(|| render_err(format!("AST function-call args is not a sequence: {args}")))?;
 
     let mut arg_strs = Vec::new();
     for i in 0..len {
-        if let Ok(arg) = args.get_item(&Value::from(i)) {
-            arg_strs.push(render_ast_expression(&arg, cfg)?);
+        let arg = args
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("AST function-call arg {i} missing: {err}")))?;
+        if arg.is_undefined() || arg.is_none() {
+            return Err(render_err(format!("AST function-call arg {i} missing")));
         }
+        arg_strs.push(render_ast_expression(&arg, cfg)?);
     }
 
     Ok(arg_strs.join(", "))
 }
 
 fn render_ast_array(array: &Value, cfg: &ExprConfig) -> RenderResult {
-    let elements = array.get_attr("elements").ok();
-    if let Some(ref elems) = elements
-        && let Some(len) = elems.len()
-    {
-        let mut elem_strs = Vec::new();
-        for i in 0..len {
-            if let Ok(e) = elems.get_item(&Value::from(i)) {
-                elem_strs.push(render_ast_expression(&e, cfg)?);
-            }
+    let elems = get_field(array, "elements")
+        .map_err(|_| render_err(format!("AST Array missing 'elements': {array}")))?;
+    let len = elems
+        .len()
+        .ok_or_else(|| render_err(format!("AST Array elements is not a sequence: {array}")))?;
+    let mut elem_strs = Vec::new();
+    for i in 0..len {
+        let elem = elems
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("AST Array element {i} missing: {err}")))?;
+        if elem.is_undefined() || elem.is_none() {
+            return Err(render_err(format!("AST Array element {i} missing")));
         }
-        return Ok(format!(
-            "{}{}{}",
-            cfg.array_start,
-            elem_strs.join(", "),
-            cfg.array_end
-        ));
+        elem_strs.push(render_ast_expression(&elem, cfg)?);
     }
-    Ok(format!("{}{}", cfg.array_start, cfg.array_end))
+    Ok(format!(
+        "{}{}{}",
+        cfg.array_start,
+        elem_strs.join(", "),
+        cfg.array_end
+    ))
 }
 
 fn render_ast_tuple(tuple: &Value, cfg: &ExprConfig) -> RenderResult {
-    let elements = tuple.get_attr("elements").ok();
-    if let Some(ref elems) = elements
-        && let Some(len) = elems.len()
-    {
-        let mut elem_strs = Vec::new();
-        for i in 0..len {
-            if let Ok(e) = elems.get_item(&Value::from(i)) {
-                elem_strs.push(render_ast_expression(&e, cfg)?);
-            }
+    let elems = get_field(tuple, "elements")
+        .map_err(|_| render_err(format!("AST Tuple missing 'elements': {tuple}")))?;
+    let len = elems
+        .len()
+        .ok_or_else(|| render_err(format!("AST Tuple elements is not a sequence: {tuple}")))?;
+    let mut elem_strs = Vec::new();
+    for i in 0..len {
+        let elem = elems
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("AST Tuple element {i} missing: {err}")))?;
+        if elem.is_undefined() || elem.is_none() {
+            return Err(render_err(format!("AST Tuple element {i} missing")));
         }
-        return Ok(format!("({})", elem_strs.join(", ")));
+        elem_strs.push(render_ast_expression(&elem, cfg)?);
     }
-    Ok("()".to_string())
+    Ok(format!("({})", elem_strs.join(", ")))
 }
 
 fn render_ast_range(range: &Value, cfg: &ExprConfig) -> RenderResult {
     let start = range
         .get_attr("start")
         .and_then(|s| render_ast_expression(&s, cfg))
-        .unwrap_or_else(|_| "1".to_string());
+        .map_err(|err| render_err(format!("AST Range start failed to render: {err}")))?;
     let end = range
         .get_attr("end")
         .and_then(|e| render_ast_expression(&e, cfg))
-        .unwrap_or_else(|_| "1".to_string());
+        .map_err(|err| render_err(format!("AST Range end failed to render: {err}")))?;
     let step = range.get_attr("step").ok();
 
     if cfg.python_range {
@@ -1077,13 +1197,22 @@ fn python_range_end(end: &str) -> String {
 fn render_ast_named_arg(named: &Value, cfg: &ExprConfig) -> RenderResult {
     let name = named
         .get_attr("name")
-        .ok()
-        .and_then(|n| n.get_attr("text").ok())
-        .map(|t| t.to_string())
-        .unwrap_or_default();
+        .map_err(|_| render_err(format!("AST named argument missing 'name': {named}")))?
+        .get_attr("text")
+        .map_err(|_| {
+            render_err(format!(
+                "AST named argument name missing token text: {named}"
+            ))
+        })?
+        .to_string();
+    if name.trim().is_empty() {
+        return Err(render_err(format!(
+            "AST named argument resolved to empty name: {named}"
+        )));
+    }
     let value = named
         .get_attr("value")
         .and_then(|v| render_ast_expression(&v, cfg))
-        .unwrap_or_default();
+        .map_err(|err| render_err(format!("AST named argument value failed to render: {err}")))?;
     Ok(format!("{name}={value}"))
 }

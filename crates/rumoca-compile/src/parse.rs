@@ -19,14 +19,11 @@ use crate::parsed_artifact_cache::{
 
 static RAYON_INIT: Once = Once::new();
 
-/// Initialize rayon thread pool with num_cpus - 2 threads and 16MB stack per thread.
-/// This leaves two CPUs free for system responsiveness and the main thread.
+/// Initialize rayon thread pool with shared compiler worker sizing and 16MB stack per thread.
 /// The large stack size is needed for deep MSL class hierarchies.
 fn init_rayon_pool() {
     RAYON_INIT.call_once(|| {
-        let num_threads = std::thread::available_parallelism()
-            .map(|n| n.get().saturating_sub(2).max(1))
-            .unwrap_or(1);
+        let num_threads = crate::parallelism::default_worker_threads();
         rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .stack_size(16 * 1024 * 1024) // 16 MB per thread for deep MSL class hierarchies

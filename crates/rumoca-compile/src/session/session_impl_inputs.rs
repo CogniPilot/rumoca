@@ -248,7 +248,7 @@ impl Session {
             FileInputChange::SetText { uri, text } => self
                 .documents
                 .get(uri)
-                .is_none_or(|doc| doc.content != *text),
+                .is_none_or(|doc| doc.content.as_ref() != text.as_str()),
             FileInputChange::Remove { uri } => {
                 self.documents.contains_key(uri) || self.uri_is_in_source_set(uri)
             }
@@ -388,7 +388,7 @@ fn accumulate_qualified_name_ancestors(
     let mut current = qualified_name.trim();
     while !current.is_empty() {
         dirty_class_prefixes.insert(current.to_string());
-        let Some((parent, _)) = current.rsplit_once('.') else {
+        let Some(parent) = rumoca_core::parent_scope(current) else {
             break;
         };
         current = parent;

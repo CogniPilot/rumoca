@@ -261,7 +261,7 @@ test("shared results app draft helpers normalize timeseries, scatter, and 3d vie
       x: "x",
       yText: "y, z, ignored",
       script: "ctx.onFrame = () => {};",
-      scriptPath: ".rumoca/models/by-id/uuid/viewer_3d.js",
+      scriptPath: "../shared/viewer_3d.js",
     },
   ]);
 
@@ -278,7 +278,7 @@ test("shared results app draft helpers normalize timeseries, scatter, and 3d vie
   assert.equal(normalized[2].x, undefined);
   assert.deepEqual(normalized[2].y, []);
   assert.equal(normalized[2].script, "ctx.onFrame = () => {};");
-  assert.equal(normalized[2].scriptPath, ".rumoca/models/by-id/uuid/viewer_3d.js");
+  assert.equal(normalized[2].scriptPath, "../shared/viewer_3d.js");
 });
 
 test("shared results app default views match the shared saved-view model", () => {

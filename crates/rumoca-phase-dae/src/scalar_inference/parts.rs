@@ -73,7 +73,7 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
 
         // Try progressively stripping embedded subscripts:
         // "a[1].b[2]" -> "a[1].b" -> "a.b"
-        let fallback_chain = subscript_fallback_chain(var_name);
+        let fallback_chain = subscript_fallback_chain(var_name.as_str());
         let per_elem = if fallback_chain
             .iter()
             .any(|candidate| flat.variables.contains_key(candidate))
@@ -129,10 +129,10 @@ impl<'a> VarRefCollectionVisitor<'a> {
     }
 }
 
-impl flat::ExpressionVisitor for VarRefCollectionVisitor<'_> {
-    fn visit_var_ref(&mut self, name: &VarName, subscripts: &[Subscript]) {
+impl rumoca_core::ExpressionVisitor for VarRefCollectionVisitor<'_> {
+    fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
         self.vars.push(CollectedVarRef {
-            name: name.clone(),
+            name: name.var_name().clone(),
             subscripts: subscripts.to_vec(),
         });
         self.walk_var_ref(name, subscripts);
@@ -146,12 +146,17 @@ impl flat::ExpressionVisitor for VarRefCollectionVisitor<'_> {
         self.walk_builtin_call(function, args);
     }
 
-    fn visit_function_call(&mut self, name: &VarName, args: &[Expression]) {
+    fn visit_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[Expression],
+        is_constructor: bool,
+    ) {
         if self.skip_function_args {
             // Function arguments are not shaped like function output.
             return;
         }
-        self.walk_function_call(name, args);
+        self.walk_function_call(name, args, is_constructor);
     }
 }
 
@@ -161,7 +166,7 @@ impl flat::ExpressionVisitor for VarRefCollectionVisitor<'_> {
 /// so their array arguments should not inflate the equation's scalar count.
 pub(crate) fn collect_var_refs_skip_reductions(expr: &Expression, vars: &mut Vec<CollectedVarRef>) {
     let mut collector = VarRefCollectionVisitor::new(vars, false);
-    flat::ExpressionVisitor::visit_expression(&mut collector, expr);
+    rumoca_core::ExpressionVisitor::visit_expression(&mut collector, expr);
 }
 
 /// Collect VarRefs from an expression while skipping function-call arguments.
@@ -174,7 +179,7 @@ pub(crate) fn collect_var_refs_skip_reductions_and_function_args(
     vars: &mut Vec<CollectedVarRef>,
 ) {
     let mut collector = VarRefCollectionVisitor::new(vars, true);
-    flat::ExpressionVisitor::visit_expression(&mut collector, expr);
+    rumoca_core::ExpressionVisitor::visit_expression(&mut collector, expr);
 }
 
 /// Check if a builtin function is an array reduction (MLS §10.3.4).
@@ -203,7 +208,7 @@ pub(crate) fn tuple_element_scalar_size(
 ) -> usize {
     if let Expression::VarRef { name, .. } = e {
         // Look up array dimensions in flat variables
-        if let Some(var) = flat.variables.get(name) {
+        if let Some(var) = flat.variables.get(name.var_name()) {
             return compute_var_size(&var.dims);
         }
         // Try prefix_counts for record types
@@ -231,8 +236,10 @@ pub(crate) fn count_array_lhs_scalar_elements(
         prefix_counts: &FxHashMap<String, usize>,
     ) -> usize {
         match expr {
-            Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
-                if let Some(var) = flat.variables.get(name) {
+            Expression::VarRef {
+                name, subscripts, ..
+            } if subscripts.is_empty() => {
+                if let Some(var) = flat.variables.get(name.var_name()) {
                     compute_var_size(&var.dims)
                 } else if let Some(&count) = prefix_counts.get(name.as_str()) {
                     count
@@ -244,6 +251,7 @@ pub(crate) fn count_array_lhs_scalar_elements(
             Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args,
+                ..
             } if args.len() == 1 => leaf_scalar_size(&args[0], flat, prefix_counts),
             _ => 1,
         }
@@ -317,10 +325,10 @@ pub(crate) fn extract_builtin_array_size(
 }
 
 /// Infer scalar output size of a function call expression.
-pub(crate) fn infer_function_output_dims(name: &VarName, flat: &Model) -> Option<Vec<i64>> {
+pub(crate) fn infer_function_output_dims(name: &str, flat: &Model) -> Option<Vec<i64>> {
     resolve_flat_function(name, flat).and_then(flat_function_output_dims)
 }
 
-pub(crate) fn infer_function_output_scalar_size(name: &VarName, flat: &Model) -> Option<usize> {
+pub(crate) fn infer_function_output_scalar_size(name: &str, flat: &Model) -> Option<usize> {
     resolve_flat_function(name, flat).map(flat_function_output_scalar_size)
 }

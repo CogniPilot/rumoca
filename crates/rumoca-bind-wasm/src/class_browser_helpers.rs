@@ -1,6 +1,5 @@
-use rumoca_compile::parsing::{
-    ClassType, ComponentReference, Expression, OpBinary, TerminalType, Token,
-};
+use rumoca_compile::parsing::{ClassType, ComponentReference, Expression, Token};
+use rumoca_eval_ast::eval_instantiate::expr_to_string;
 
 pub(crate) fn class_type_label(class_type: &ClassType) -> String {
     class_type.as_str().to_string()
@@ -31,32 +30,16 @@ pub(crate) fn component_reference_to_path(comp: &ComponentReference) -> String {
 pub(crate) fn expression_path(expr: &Expression) -> Option<String> {
     match expr {
         Expression::ComponentReference(comp) => Some(component_reference_to_path(comp)),
-        Expression::FieldAccess { base, field } => {
+        Expression::FieldAccess { base, field, .. } => {
             expression_path(base).map(|base_path| format!("{base_path}.{field}"))
         }
-        Expression::Parenthesized { inner } => expression_path(inner),
+        Expression::Parenthesized { inner, .. } => expression_path(inner),
         _ => None,
     }
 }
 
 pub(crate) fn extract_string_literal(expr: &Expression) -> Option<String> {
-    match expr {
-        Expression::Terminal {
-            terminal_type: TerminalType::String,
-            token,
-        } => Some(token.text.to_string()),
-        Expression::Parenthesized { inner } => extract_string_literal(inner),
-        Expression::Binary {
-            op: OpBinary::Add(_) | OpBinary::AddElem(_),
-            lhs,
-            rhs,
-        } => {
-            let lhs = extract_string_literal(lhs)?;
-            let rhs = extract_string_literal(rhs)?;
-            Some(format!("{lhs}{rhs}"))
-        }
-        _ => None,
-    }
+    expr_to_string(expr)
 }
 
 pub(crate) fn join_path(context: Option<&str>, tail: &str) -> String {

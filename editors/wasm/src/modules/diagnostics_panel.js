@@ -91,7 +91,7 @@ function extractBestLineColFromMessage(message, sourceText) {
     return { line: first.line, col: first.col };
 }
 
-function stripLegacyDiagnosticContext(message) {
+function stripDiagnosticContext(message) {
     const compact = String(message ?? '').replace(/\s+/g, ' ').trim();
     const pipeIdx = compact.indexOf(' | ');
     return pipeIdx >= 0 ? compact.slice(0, pipeIdx).trim() : compact;
@@ -101,8 +101,8 @@ function hasQuotedKeyword(lowerMessage, keyword) {
     return lowerMessage.includes(`\`${keyword}\``) || lowerMessage.includes(`'${keyword}'`);
 }
 
-function normalizeLegacyDiagnosticMessage(message) {
-    const compact = stripLegacyDiagnosticContext(message);
+function normalizeDiagnosticMessage(message) {
+    const compact = stripDiagnosticContext(message);
     const lowered = compact.toLowerCase();
     if (lowered.includes('is a reserved keyword in modelica')) {
         if (hasQuotedKeyword(lowered, 'equation')) {
@@ -156,12 +156,12 @@ function summarizeCompileError(message) {
         }
         return {
             code,
-            message: normalizeLegacyDiagnosticMessage(withoutMarker),
+            message: normalizeDiagnosticMessage(withoutMarker),
         };
     }
     return {
         code,
-        message: normalizeLegacyDiagnosticMessage(raw),
+        message: normalizeDiagnosticMessage(raw),
     };
 }
 
@@ -282,7 +282,7 @@ export function createDiagnosticsController({
         return '';
     }
 
-    function normalizeLegacyLspDiagnostic(diagnostic, sourceText) {
+    function normalizeLspDiagnostic(diagnostic, sourceText) {
         const normalized = { ...diagnostic };
         const originalCode = diagnosticCodeString(diagnostic);
         const extractedCode = extractRumocaCode(diagnostic.message);
@@ -290,7 +290,7 @@ export function createDiagnosticsController({
             normalized.code = extractedCode;
         }
 
-        normalized.message = normalizeLegacyDiagnosticMessage(diagnostic.message);
+        normalized.message = normalizeDiagnosticMessage(diagnostic.message);
 
         const startLine = Number(diagnostic?.range?.start?.line ?? 0) + 1;
         const startCol = Number(diagnostic?.range?.start?.character ?? 0) + 1;
@@ -314,40 +314,10 @@ export function createDiagnosticsController({
         if (!diagnostic || typeof diagnostic !== 'object') return null;
 
         if (diagnostic.range && diagnostic.range.start && diagnostic.range.end && diagnostic.message !== undefined) {
-            return normalizeLegacyLspDiagnostic(diagnostic, sourceText);
+            return normalizeLspDiagnostic(diagnostic, sourceText);
         }
 
-        const hasLegacyShape =
-            diagnostic.rule !== undefined
-            && diagnostic.level !== undefined
-            && diagnostic.message !== undefined;
-        if (!hasLegacyShape) return null;
-
-        const lineCol = extractBestLineColFromMessage(diagnostic.message, sourceText);
-        const baseLine = Number.isFinite(Number(diagnostic.line)) ? Number(diagnostic.line) : 1;
-        const baseCol = Number.isFinite(Number(diagnostic.column)) ? Number(diagnostic.column) : 1;
-        const line = lineCol?.line || Math.max(1, baseLine);
-        const col = lineCol?.col || Math.max(1, baseCol);
-        const codeFromMessage = extractRumocaCode(diagnostic.message);
-        const normalizedMessage = normalizeLegacyDiagnosticMessage(diagnostic.message);
-        const level = String(diagnostic.level || '').toLowerCase();
-        const severity = level === 'error'
-            ? 1
-            : (level === 'warning' ? 2 : (level === 'note' ? 3 : 4));
-
-        return {
-            range: {
-                start: { line: line - 1, character: col - 1 },
-                end: { line: line - 1, character: col },
-            },
-            severity,
-            code: codeFromMessage || String(diagnostic.rule || ''),
-            source: 'rumoca',
-            message: normalizedMessage,
-            data: { precise_range: !!lineCol || line > 1 || col > 1 },
-            _legacy_payload: true,
-            _source_len: sourceText ? sourceText.length : 0,
-        };
+        return null;
     }
 
     function normalizeDiagnosticsPayload(payload, sourceText) {

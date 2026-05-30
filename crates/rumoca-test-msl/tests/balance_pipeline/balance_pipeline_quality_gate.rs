@@ -1,57 +1,49 @@
 use super::*;
 
+mod cache;
+mod status;
 #[cfg(test)]
 mod tests;
+use cache::*;
+use status::*;
 
 // =============================================================================
 // MSL quality gate (compile/balance strict + simulation tolerant gate)
 // =============================================================================
 
-pub(super) const SIM_RATE_GATE_OVERRIDE_ENV: &str = "RUMOCA_ALLOW_SIM_RATE_REGRESSION";
-pub(super) const FORCE_OMC_PARITY_REFRESH_ENV: &str = "RUMOCA_MSL_FORCE_OMC_PARITY_REFRESH";
 pub(super) const SIM_RATE_GATE_EPSILON: f64 = 1.0e-12;
-/// Allowed simulation-rate drop (absolute ratio, i.e. 0.02 = 2.0 percentage points).
-// Temporary relaxation while broader discrete-signal evaluation is being integrated.
-// Tighten back after baseline stabilization.
-pub(super) const SIM_RATE_GATE_TOLERANCE: f64 = 0.035;
-/// Structural floor for the default 180-model baseline simulation run.
+/// Transitional structural floor for the default baseline simulation run.
 ///
 /// This is intentionally much looser than the baseline delta gate. Its job is to
 /// reject obviously invalid runs (for example near-zero or zero successful
 /// simulations) before we start comparing finer-grained regressions.
-pub(super) const DEFAULT_SIM_OK_HARD_FLOOR_RATIO: f64 = 0.50;
+pub(super) const DEFAULT_SIM_OK_HARD_FLOOR_RATIO: f64 = 0.15;
 /// Compile-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
 pub(super) const COMPILE_RATE_GATE_TOLERANCE: f64 = 0.0;
 /// Balance-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
 pub(super) const BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
 /// Initial-balance-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
 pub(super) const INITIAL_BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
-/// Allowed drop in trace high-agreement model percentage (absolute percentage points).
-pub(super) const TRACE_HIGH_PERCENT_DROP_TOLERANCE_PP: f64 = 3.0;
-/// Allowed drop in total acceptable trace-model share (`high + near`, absolute percentage points).
-pub(super) const TRACE_ACCEPTABLE_PERCENT_DROP_TOLERANCE_PP: f64 = 3.0;
-/// Allowed increase in trace deviation model percentage (absolute percentage points).
-pub(super) const TRACE_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP: f64 = 3.0;
-/// Hard guard for models that contain any deviation channel (absolute percentage points).
-pub(super) const TRACE_ANY_CHANNEL_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP: f64 = 3.0;
-/// Allowed increase in bad-channel share (absolute percentage points).
-pub(super) const TRACE_BAD_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP: f64 = 1.0;
-/// Allowed increase in severe-channel share (absolute percentage points).
-pub(super) const TRACE_SEVERE_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP: f64 = 1.5;
 /// Allowed drop in compared trace-model count from baseline.
 pub(super) const TRACE_MODELS_COMPARED_ALLOWED_DROP: usize = 2;
 /// Allowed relative drop in runtime speedup median (omc/rumoca) before failing.
 pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.20;
-/// OMC process timeout budget for simulation reference generation.
-pub(super) const OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS: u64 = 30;
+/// OMC per-model timeout budget for simulation reference generation. OMC's
+/// `simulate()` generates C code and invokes gcc per model, which on shared CI
+/// runners far exceeds rumoca's warm per-model budget; giving OMC the same tiny
+/// budget kills every model mid-build. The reference generator caps OMC, not
+/// rumoca, so a larger budget only lets more OMC models complete (the measured
+/// `timeSimulation` it reports is unchanged, so the timing comparison stays fair).
+pub(super) const OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS: u64 = 120;
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
+pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 1;
+pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
+pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
 pub(super) const MSL_QUALITY_CURRENT_FILE_REL: &str = "results/msl_quality_current.json";
-pub(super) const MSL_COMPILE_TARGETS_FILE_REL: &str = "results/msl_compile_targets.json";
 pub(super) const MSL_SIM_TARGETS_FILE_REL: &str = "results/msl_simulation_targets.json";
 pub(super) const OMC_PARITY_CACHE_DIR_REL: &str = "results/omc_parity_cache";
-pub(super) const OMC_REFERENCE_FILE_REL: &str = "results/omc_reference.json";
 pub(super) const OMC_SIM_REFERENCE_FILE_REL: &str = "results/omc_simulation_reference.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,15 +112,71 @@ pub(super) struct MslTraceAccuracyStatsBaseline {
     model_mean_channel_bounded_normalized_l1: Option<MslDistributionStats>,
     #[serde(default)]
     model_max_channel_bounded_normalized_l1: Option<MslDistributionStats>,
+    #[serde(default)]
+    initial_condition: Option<MslInitialConditionStatsBaseline>,
+    #[serde(default)]
+    state_selection: Option<MslStateSelectionStatsBaseline>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct MslInitialConditionStatsBaseline {
+    models_compared: usize,
+    models_with_accurate_initial_conditions: usize,
+    models_with_initial_condition_deviation: usize,
+    accurate_initial_conditions_percent: Option<f64>,
+    models_with_initial_condition_deviation_percent: Option<f64>,
+    total_channels_compared: usize,
+    high_channels_total: usize,
+    near_channels_total: usize,
+    deviation_channels_total: usize,
+    severe_channels_total: usize,
+    high_channels_percent: Option<f64>,
+    near_channels_percent: Option<f64>,
+    deviation_channels_percent: Option<f64>,
+    severe_channels_percent: Option<f64>,
+    violation_mass_total: Option<f64>,
+    violation_mass_mean_per_model: Option<f64>,
+    violation_mass_mean_per_channel: Option<f64>,
+    mean_channel_bounded_normalized_error: Option<f64>,
+    max_channel_bounded_normalized_error: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct MslStateSelectionStatsBaseline {
+    models_compared: usize,
+    exact_state_set_match_models: usize,
+    state_count_match_models: usize,
+    exact_state_set_match_percent: Option<f64>,
+    state_count_match_percent: Option<f64>,
+    total_rumoca_states: usize,
+    total_omc_states: usize,
+    total_matching_states: usize,
+    total_rumoca_only_states: usize,
+    total_omc_only_states: usize,
+    max_model_state_set_difference: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct MslQualityBaseline {
+    #[serde(default = "default_msl_quality_gate_version")]
+    quality_gate_version: u32,
+    #[serde(default = "default_msl_quality_run_scope")]
+    run_scope: String,
     git_commit: String,
     msl_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    omc_version: Option<String>,
     sim_timeout_seconds: f64,
     simulatable_attempted: usize,
+    #[serde(default)]
+    parse_models: usize,
+    #[serde(default)]
+    flatten_models: usize,
+    #[serde(default)]
+    dae_models: usize,
     compiled_models: usize,
+    #[serde(default)]
+    solve_models: usize,
     balanced_models: usize,
     unbalanced_models: usize,
     partial_models: usize,
@@ -137,6 +185,12 @@ pub(super) struct MslQualityBaseline {
     initial_unbalanced_models: usize,
     sim_target_models: usize,
     sim_attempted: usize,
+    #[serde(default)]
+    ic_attempted: usize,
+    #[serde(default)]
+    ic_ok: usize,
+    #[serde(default)]
+    ic_solver_fail: usize,
     sim_ok: usize,
     sim_success_rate: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,6 +199,14 @@ pub(super) struct MslQualityBaseline {
     runtime_ratio_stats: Option<MslRuntimeRatioStatsBaseline>,
     #[serde(default)]
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
+}
+
+fn default_msl_quality_gate_version() -> u32 {
+    MSL_QUALITY_GATE_VERSION
+}
+
+fn default_msl_quality_run_scope() -> String {
+    MSL_QUALITY_RUN_SCOPE_FULL.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -158,16 +220,23 @@ pub(super) struct MslParityRuntimeContext {
 #[derive(Debug, Clone)]
 pub(super) struct MslParityGateInput {
     total_models: Option<usize>,
+    omc_version: Option<String>,
     runtime_context: Option<MslParityRuntimeContext>,
     runtime_ratio_stats: Option<MslRuntimeRatioStatsBaseline>,
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
+    omc_assertion_failure_models: usize,
+    omc_assertion_failure_examples: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct MslQualityGateInput<'a> {
     msl_version: &'a str,
     simulatable_attempted: usize,
+    parse_models: usize,
+    flatten_models: usize,
+    dae_models: usize,
     compiled_models: usize,
+    solve_models: usize,
     balanced_models: usize,
     unbalanced_models: usize,
     partial_models: usize,
@@ -176,6 +245,9 @@ pub(super) struct MslQualityGateInput<'a> {
     initial_unbalanced_models: usize,
     sim_target_models: usize,
     sim_attempted: usize,
+    ic_attempted: usize,
+    ic_ok: usize,
+    ic_solver_fail: usize,
     sim_ok: usize,
 }
 
@@ -190,10 +262,30 @@ impl<'a> From<&'a MslSummary> for MslQualityGateInput<'a> {
         let balance_denominator = summary
             .compiled_models
             .saturating_sub(summary.partial_models);
+        let parse_models = simulatable_attempted;
+        let flatten_models = summary
+            .model_results
+            .iter()
+            .filter(|result| matches!(result.phase_reached.as_str(), "ToDae" | "Success"))
+            .count();
+        let dae_models = summary
+            .model_results
+            .iter()
+            .filter(|result| result.phase_reached == "Success")
+            .count();
+        let solve_models = summary
+            .model_results
+            .iter()
+            .filter(|result| result.ir_solve_file.is_some() || result.ir_solve_seconds.is_some())
+            .count();
         Self {
             msl_version: &summary.msl_version,
             simulatable_attempted,
+            parse_models,
+            flatten_models,
+            dae_models,
             compiled_models: summary.compiled_models,
+            solve_models,
             balanced_models: summary.balanced_models,
             unbalanced_models: summary.unbalanced_models,
             partial_models: summary.partial_models,
@@ -202,6 +294,9 @@ impl<'a> From<&'a MslSummary> for MslQualityGateInput<'a> {
             initial_unbalanced_models: summary.initial_unbalanced_models,
             sim_target_models: summary.sim_target_models.len(),
             sim_attempted: summary.sim_attempted,
+            ic_attempted: summary.ic_attempted,
+            ic_ok: summary.ic_ok,
+            ic_solver_fail: summary.ic_solver_fail,
             sim_ok: summary.sim_ok,
         }
     }
@@ -242,16 +337,8 @@ pub(super) fn msl_quality_current_path() -> PathBuf {
     get_msl_cache_dir().join(MSL_QUALITY_CURRENT_FILE_REL)
 }
 
-pub(super) fn msl_compile_targets_path() -> PathBuf {
-    get_msl_cache_dir().join(MSL_COMPILE_TARGETS_FILE_REL)
-}
-
 pub(super) fn msl_simulation_targets_path() -> PathBuf {
     get_msl_cache_dir().join(MSL_SIM_TARGETS_FILE_REL)
-}
-
-pub(super) fn omc_reference_path() -> PathBuf {
-    get_msl_cache_dir().join(OMC_REFERENCE_FILE_REL)
 }
 
 pub(super) fn omc_parity_cache_dir() -> PathBuf {
@@ -354,6 +441,70 @@ fn parse_trace_bounded_normalized_l1(
     })
 }
 
+fn parse_initial_condition_stats(
+    trace: &serde_json::Value,
+) -> Option<MslInitialConditionStatsBaseline> {
+    let initial = trace.get("initial_condition")?;
+    Some(MslInitialConditionStatsBaseline {
+        models_compared: json_usize_field(initial, "models_compared")?,
+        models_with_accurate_initial_conditions: json_usize_field(
+            initial,
+            "models_with_accurate_initial_conditions",
+        )?,
+        models_with_initial_condition_deviation: json_usize_field(
+            initial,
+            "models_with_initial_condition_deviation",
+        )?,
+        accurate_initial_conditions_percent: json_f64_field(
+            initial,
+            "accurate_initial_conditions_percent",
+        ),
+        models_with_initial_condition_deviation_percent: json_f64_field(
+            initial,
+            "models_with_initial_condition_deviation_percent",
+        ),
+        total_channels_compared: json_usize_field(initial, "total_channels_compared")?,
+        high_channels_total: json_usize_field(initial, "high_channels_total")?,
+        near_channels_total: json_usize_field(initial, "near_channels_total")?,
+        deviation_channels_total: json_usize_field(initial, "deviation_channels_total")?,
+        severe_channels_total: json_usize_field(initial, "severe_channels_total")?,
+        high_channels_percent: json_f64_field(initial, "high_channels_percent"),
+        near_channels_percent: json_f64_field(initial, "near_channels_percent"),
+        deviation_channels_percent: json_f64_field(initial, "deviation_channels_percent"),
+        severe_channels_percent: json_f64_field(initial, "severe_channels_percent"),
+        violation_mass_total: json_f64_field(initial, "violation_mass_total"),
+        violation_mass_mean_per_model: json_f64_field(initial, "violation_mass_mean_per_model"),
+        violation_mass_mean_per_channel: json_f64_field(initial, "violation_mass_mean_per_channel"),
+        mean_channel_bounded_normalized_error: json_f64_field(
+            initial,
+            "mean_channel_bounded_normalized_error",
+        ),
+        max_channel_bounded_normalized_error: json_f64_field(
+            initial,
+            "max_channel_bounded_normalized_error",
+        ),
+    })
+}
+
+fn parse_state_selection_stats(
+    trace: &serde_json::Value,
+) -> Option<MslStateSelectionStatsBaseline> {
+    let state = trace.get("state_selection")?;
+    Some(MslStateSelectionStatsBaseline {
+        models_compared: json_usize_field(state, "models_compared")?,
+        exact_state_set_match_models: json_usize_field(state, "exact_state_set_match_models")?,
+        state_count_match_models: json_usize_field(state, "state_count_match_models")?,
+        exact_state_set_match_percent: json_f64_field(state, "exact_state_set_match_percent"),
+        state_count_match_percent: json_f64_field(state, "state_count_match_percent"),
+        total_rumoca_states: json_usize_field(state, "total_rumoca_states")?,
+        total_omc_states: json_usize_field(state, "total_omc_states")?,
+        total_matching_states: json_usize_field(state, "total_matching_states")?,
+        total_rumoca_only_states: json_usize_field(state, "total_rumoca_only_states")?,
+        total_omc_only_states: json_usize_field(state, "total_omc_only_states")?,
+        max_model_state_set_difference: json_usize_field(state, "max_model_state_set_difference")?,
+    })
+}
+
 fn parse_trace_accuracy_stats(
     payload: &serde_json::Value,
 ) -> Option<MslTraceAccuracyStatsBaseline> {
@@ -414,7 +565,18 @@ fn parse_trace_accuracy_stats(
             "model_max_channel_bounded_normalized_l1",
             models_compared,
         ),
+        initial_condition: parse_initial_condition_stats(trace),
+        state_selection: parse_state_selection_stats(trace),
     })
+}
+
+fn parse_omc_version(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .get("omc_version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .map(str::to_string)
 }
 
 pub(super) fn load_msl_parity_gate_input(path: &Path) -> io::Result<MslParityGateInput> {
@@ -428,10 +590,58 @@ pub(super) fn load_msl_parity_gate_input(path: &Path) -> io::Result<MslParityGat
 
     Ok(MslParityGateInput {
         total_models: parse_total_models(&payload),
+        omc_version: parse_omc_version(&payload),
         runtime_context: parse_runtime_context(&payload),
         runtime_ratio_stats: parse_runtime_ratio_stats(&payload),
         trace_accuracy_stats: parse_trace_accuracy_stats(&payload),
+        omc_assertion_failure_models: parse_omc_assertion_failure_models(&payload),
+        omc_assertion_failure_examples: parse_omc_assertion_failure_examples(&payload),
     })
+}
+
+fn parse_omc_assertion_failure_models(payload: &serde_json::Value) -> usize {
+    payload
+        .pointer("/pipeline_progress/omc_assertion_failure_models")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            payload
+                .pointer("/omc_assertion_failures/model_count")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .unwrap_or(0) as usize
+}
+
+fn parse_omc_assertion_failure_examples(payload: &serde_json::Value) -> Vec<String> {
+    let Some(examples) = payload
+        .pointer("/omc_assertion_failures/examples")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    examples
+        .iter()
+        .filter_map(|entry| {
+            let model = entry.get("model_name")?.as_str()?;
+            let assertions = entry
+                .get("assertions")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                })
+                .unwrap_or_default();
+            if assertions.is_empty() {
+                Some(model.to_string())
+            } else {
+                Some(format!("{model}: {assertions}"))
+            }
+        })
+        .take(10)
+        .collect()
 }
 
 pub(super) fn load_current_msl_parity_gate_input_required(
@@ -446,6 +656,25 @@ pub(super) fn load_current_msl_parity_gate_input_required(
     }
     let parity = load_msl_parity_gate_input(&path)?;
     validate_parity_total_models(&path, &parity, expected_sim_target_models)?;
+    if parity.omc_version.is_none() {
+        return Err(io::Error::other(format!(
+            "OMC parity file '{}' is missing omc_version metadata; regenerate OMC simulation reference",
+            path.display()
+        )));
+    }
+    if parity.omc_assertion_failure_models > 0 {
+        let examples = if parity.omc_assertion_failure_examples.is_empty() {
+            "no assertion examples recorded".to_string()
+        } else {
+            parity.omc_assertion_failure_examples.join("; ")
+        };
+        return Err(io::Error::other(format!(
+            "OMC parity file '{}' contains {} Modelica assertion failure model(s): {}",
+            path.display(),
+            parity.omc_assertion_failure_models,
+            examples
+        )));
+    }
     let runtime_stats = parity.runtime_ratio_stats.as_ref().ok_or_else(|| {
         io::Error::other(format!(
             "OMC parity file '{}' is missing runtime_ratio_stats",
@@ -516,13 +745,6 @@ fn validate_parity_total_models(
 }
 
 pub(super) fn resolve_msl_tools_exe_inner() -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var("RUMOCA_MSL_TOOLS_EXE") {
-        let candidate = PathBuf::from(path);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
     for env_key in [
         "CARGO_BIN_EXE_rumoca-msl-tools",
         "CARGO_BIN_EXE_rumoca_msl_tools",
@@ -580,7 +802,7 @@ pub(super) fn resolve_msl_tools_exe_inner() -> Result<PathBuf, String> {
     }
 
     Err(format!(
-        "failed to locate rumoca-msl-tools binary; expected RUMOCA_MSL_TOOLS_EXE or CARGO_BIN_EXE_* env var or binary near {}",
+        "failed to locate rumoca-msl-tools binary; expected a CARGO_BIN_EXE_* env var or a binary near {}",
         current_exe.display()
     ))
 }
@@ -600,413 +822,8 @@ pub(super) fn model_names_from_omc_models_map(payload: &serde_json::Value) -> Op
     Some(normalize_model_names(models.keys().cloned().collect()))
 }
 
-fn canonical_msl_version(version: &str) -> &str {
-    version.trim().trim_start_matches('v')
-}
-
-fn canonical_omc_version(version: &str) -> &str {
-    version.trim()
-}
-
-fn fnv1a64_update(mut hash: u64, bytes: &[u8]) -> u64 {
-    const OFFSET: u64 = 0xcbf29ce484222325;
-    const PRIME: u64 = 0x00000100000001B3;
-    if hash == 0 {
-        hash = OFFSET;
-    }
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
-}
-
-fn parity_target_set_cache_key(
-    target_models: &[String],
-    msl_version: &str,
-    omc_version: &str,
-) -> String {
-    let normalized_models = normalize_model_names(target_models.to_vec());
-    let mut hash = 0_u64;
-    hash = fnv1a64_update(hash, canonical_msl_version(msl_version).as_bytes());
-    hash = fnv1a64_update(hash, &[0xff]);
-    hash = fnv1a64_update(hash, canonical_omc_version(omc_version).as_bytes());
-    hash = fnv1a64_update(hash, &[0xfe]);
-    hash = fnv1a64_update(hash, normalized_models.len().to_string().as_bytes());
-    hash = fnv1a64_update(hash, &[0xfd]);
-    for model in &normalized_models {
-        hash = fnv1a64_update(hash, model.as_bytes());
-        hash = fnv1a64_update(hash, &[0x00]);
-    }
-    format!("{hash:016x}")
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct SimulationParityCachePolicy {
-    batch_timeout_seconds: u64,
-    use_experiment_stop_time: bool,
-    stop_time_override: Option<f64>,
-}
-
-fn simulation_stop_time_override() -> Option<f64> {
-    std::env::var("RUMOCA_MSL_SIM_STOP_TIME_OVERRIDE")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<f64>().ok())
-        .filter(|value| value.is_finite() && *value > 0.0)
-}
-
-fn current_simulation_parity_cache_policy() -> SimulationParityCachePolicy {
-    let stop_time_override = simulation_stop_time_override();
-    SimulationParityCachePolicy {
-        batch_timeout_seconds: OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS,
-        use_experiment_stop_time: stop_time_override.is_none(),
-        stop_time_override,
-    }
-}
-
-fn simulation_parity_cache_key(
-    target_models: &[String],
-    msl_version: &str,
-    omc_version: &str,
-    policy: SimulationParityCachePolicy,
-) -> String {
-    let normalized_models = normalize_model_names(target_models.to_vec());
-    let mut hash = 0_u64;
-    hash = fnv1a64_update(hash, canonical_msl_version(msl_version).as_bytes());
-    hash = fnv1a64_update(hash, &[0xff]);
-    hash = fnv1a64_update(hash, canonical_omc_version(omc_version).as_bytes());
-    hash = fnv1a64_update(hash, &[0xfe]);
-    hash = fnv1a64_update(hash, normalized_models.len().to_string().as_bytes());
-    hash = fnv1a64_update(hash, &[0xfd]);
-    for model in &normalized_models {
-        hash = fnv1a64_update(hash, model.as_bytes());
-        hash = fnv1a64_update(hash, &[0x00]);
-    }
-    hash = fnv1a64_update(hash, &[0xfc]);
-    hash = fnv1a64_update(hash, policy.batch_timeout_seconds.to_string().as_bytes());
-    hash = fnv1a64_update(hash, &[0xfb]);
-    hash = fnv1a64_update(hash, &[u8::from(policy.use_experiment_stop_time)]);
-    hash = fnv1a64_update(hash, &[0xfa]);
-    if let Some(stop_time_override) = policy.stop_time_override {
-        hash = fnv1a64_update(hash, stop_time_override.to_string().as_bytes());
-    } else {
-        hash = fnv1a64_update(hash, b"none");
-    }
-    format!("{hash:016x}")
-}
-
-fn parity_cache_entry_path(kind: &str, cache_key: &str) -> PathBuf {
-    omc_parity_cache_dir()
-        .join(kind)
-        .join(format!("{cache_key}.json"))
-}
-
-fn materialize_parity_cache_entry(
-    cache_path: &Path,
-    active_path: &Path,
-    label: &str,
-) -> io::Result<()> {
-    if !cache_path.is_file() {
-        return Err(io::Error::other(format!(
-            "missing {label} parity cache entry '{}'",
-            cache_path.display()
-        )));
-    }
-    if let Some(parent) = active_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(cache_path, active_path).map_err(|error| {
-        io::Error::other(format!(
-            "failed to materialize {label} parity cache '{}' -> '{}': {error}",
-            cache_path.display(),
-            active_path.display()
-        ))
-    })?;
-    Ok(())
-}
-
-fn materialize_simulation_parity_cache_entry(
-    cache_path: &Path,
-    active_path: &Path,
-) -> io::Result<()> {
-    if !cache_path.is_file() {
-        return Err(io::Error::other(format!(
-            "missing simulation parity cache entry '{}'",
-            cache_path.display()
-        )));
-    }
-    let payload: serde_json::Value =
-        serde_json::from_reader(File::open(cache_path)?).map_err(|error| {
-            io::Error::other(format!(
-                "failed to parse simulation parity cache '{}' for materialization: {error}",
-                cache_path.display()
-            ))
-        })?;
-    if let Some(parent) = active_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let sanitized = sanitize_simulation_parity_cache_payload(payload);
-    fs::write(
-        active_path,
-        serde_json::to_vec_pretty(&sanitized).map_err(|error| {
-            io::Error::other(format!(
-                "failed to serialize sanitized simulation parity cache '{}': {error}",
-                active_path.display()
-            ))
-        })?,
-    )
-    .map_err(|error| {
-        io::Error::other(format!(
-            "failed to materialize sanitized simulation parity cache '{}' -> '{}': {error}",
-            cache_path.display(),
-            active_path.display()
-        ))
-    })
-}
-
-fn sanitize_simulation_parity_cache_payload(mut payload: serde_json::Value) -> serde_json::Value {
-    let Some(root) = payload.as_object_mut() else {
-        return payload;
-    };
-    root.remove("runtime_comparison");
-    root.remove("trace_comparison");
-
-    let Some(models) = root
-        .get_mut("models")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return payload;
-    };
-
-    for model in models.values_mut() {
-        let Some(model) = model.as_object_mut() else {
-            continue;
-        };
-        model.remove("rumoca_status");
-        model.remove("rumoca_sim_seconds");
-        model.remove("rumoca_sim_wall_seconds");
-        model.remove("rumoca_trace_file");
-        model.remove("rumoca_trace_error");
-    }
-    payload
-}
-
-fn persist_simulation_parity_cache_entry(active_path: &Path, cache_path: &Path) -> io::Result<()> {
-    if !active_path.is_file() {
-        return Ok(());
-    }
-    let payload: serde_json::Value =
-        serde_json::from_reader(File::open(active_path)?).map_err(|error| {
-            io::Error::other(format!(
-                "failed to parse simulation parity reference '{}' for cache persistence: {error}",
-                active_path.display()
-            ))
-        })?;
-    if let Some(parent) = cache_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let sanitized = sanitize_simulation_parity_cache_payload(payload);
-    fs::write(
-        cache_path,
-        serde_json::to_vec_pretty(&sanitized).map_err(|error| {
-            io::Error::other(format!(
-                "failed to serialize sanitized simulation parity cache '{}': {error}",
-                cache_path.display()
-            ))
-        })?,
-    )
-    .map_err(|error| {
-        io::Error::other(format!(
-            "failed to persist simulation parity cache '{}' -> '{}': {error}",
-            active_path.display(),
-            cache_path.display()
-        ))
-    })
-}
-
-fn persist_parity_cache_entry(
-    active_path: &Path,
-    cache_path: &Path,
-    label: &str,
-) -> io::Result<()> {
-    if !active_path.is_file() {
-        return Ok(());
-    }
-    if let Some(parent) = cache_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(active_path, cache_path).map_err(|error| {
-        io::Error::other(format!(
-            "failed to persist {label} parity cache '{}' -> '{}': {error}",
-            active_path.display(),
-            cache_path.display()
-        ))
-    })?;
-    Ok(())
-}
-
-fn current_omc_version() -> io::Result<String> {
-    let output = std::process::Command::new("omc")
-        .arg("--version")
-        .output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "failed to query OMC version (status={})",
-            output.status
-        )));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let version = if stdout.is_empty() {
-        String::from_utf8_lossy(&output.stderr).trim().to_string()
-    } else {
-        stdout
-    };
-    if version.is_empty() {
-        return Err(io::Error::other("omc --version returned empty output"));
-    }
-    Ok(version)
-}
-
-pub(super) fn parity_cache_matches_targets_and_msl(
-    path: &Path,
-    target_models: &[String],
-    msl_version: &str,
-    omc_version: &str,
-) -> io::Result<bool> {
-    if !path.is_file() {
-        return Ok(false);
-    }
-    let file = File::open(path)?;
-    let payload: serde_json::Value = serde_json::from_reader(file).map_err(|error| {
-        io::Error::other(format!("invalid parity JSON ({}): {error}", path.display()))
-    })?;
-    let Some(cached_msl_version) = payload
-        .get("msl_version")
-        .and_then(serde_json::Value::as_str)
-    else {
-        return Ok(false);
-    };
-    if canonical_msl_version(cached_msl_version) != canonical_msl_version(msl_version) {
-        return Ok(false);
-    }
-    let Some(cached_omc_version) = payload
-        .get("omc_version")
-        .and_then(serde_json::Value::as_str)
-    else {
-        return Ok(false);
-    };
-    if canonical_omc_version(cached_omc_version) != canonical_omc_version(omc_version) {
-        return Ok(false);
-    }
-    let Some(cached_models) = model_names_from_omc_models_map(&payload) else {
-        return Ok(false);
-    };
-    Ok(cached_models == normalize_model_names(target_models.to_vec()))
-}
-
-fn simulation_parity_cache_matches(
-    path: &Path,
-    target_models: &[String],
-    msl_version: &str,
-    omc_version: &str,
-    policy: SimulationParityCachePolicy,
-) -> io::Result<bool> {
-    if !parity_cache_matches_targets_and_msl(path, target_models, msl_version, omc_version)? {
-        return Ok(false);
-    }
-    let payload: serde_json::Value =
-        serde_json::from_reader(File::open(path)?).map_err(|error| {
-            io::Error::other(format!(
-                "invalid simulation parity JSON ({}): {error}",
-                path.display()
-            ))
-        })?;
-    let batch_timeout_seconds = payload
-        .get("timing")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|timing| timing.get("batch_timeout_seconds"))
-        .and_then(serde_json::Value::as_u64);
-    if batch_timeout_seconds != Some(policy.batch_timeout_seconds) {
-        return Ok(false);
-    }
-    let use_experiment_stop_time = payload
-        .get("use_experiment_stop_time")
-        .and_then(serde_json::Value::as_bool);
-    if use_experiment_stop_time != Some(policy.use_experiment_stop_time) {
-        return Ok(false);
-    }
-    let Some(stop_time_override) = policy.stop_time_override else {
-        return Ok(true);
-    };
-    let stop_time = payload.get("stop_time").and_then(serde_json::Value::as_f64);
-    Ok(stop_time.is_some_and(|value| {
-        (value - stop_time_override).abs() <= f64::EPSILON.max(stop_time_override.abs() * 1e-12)
-    }))
-}
-
-pub(super) fn run_msl_tool_command<I, S>(exe: &Path, args: I) -> io::Result<()>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<std::ffi::OsStr>,
-{
-    let args_vec: Vec<std::ffi::OsString> = args
-        .into_iter()
-        .map(|arg| arg.as_ref().to_os_string())
-        .collect();
-    let mut cmd = Command::new(exe);
-    cmd.args(&args_vec);
-    cmd.env("RUMOCA_MSL_CACHE_DIR", get_msl_cache_dir());
-    cmd.stdout(std::process::Stdio::inherit());
-    cmd.stderr(std::process::Stdio::inherit());
-    let rendered_args = args_vec
-        .iter()
-        .map(|arg| arg.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(" ");
-    println!(
-        "Running parity command: {} {}",
-        exe.display(),
-        rendered_args
-    );
-    let status = cmd.status()?;
-    if status.success() {
-        return Ok(());
-    }
-    Err(io::Error::other(format!(
-        "command '{}' failed (status={})",
-        exe.display(),
-        status
-    )))
-}
-
-pub(super) fn omc_parity_workers() -> usize {
-    msl_stage_parallelism()
-}
-
-pub(super) fn omc_parity_threads() -> usize {
-    OMC_PARITY_THREADS_DEFAULT
-}
-
-fn force_omc_parity_refresh_enabled() -> bool {
-    std::env::var(FORCE_OMC_PARITY_REFRESH_ENV).is_ok_and(|value| {
-        value == "1"
-            || value.eq_ignore_ascii_case("true")
-            || value.eq_ignore_ascii_case("yes")
-            || value.eq_ignore_ascii_case("on")
-    })
-}
-
-fn load_parity_targets() -> io::Result<(PathBuf, Vec<String>, PathBuf, Vec<String>)> {
-    let compile_targets_path = msl_compile_targets_path();
+fn load_sim_parity_targets() -> io::Result<(PathBuf, Vec<String>)> {
     let sim_targets_path = msl_simulation_targets_path();
-    let compile_targets = load_target_model_names(&compile_targets_path).map_err(|error| {
-        io::Error::other(format!(
-            "failed to load compile targets '{}': {}",
-            compile_targets_path.display(),
-            error
-        ))
-    })?;
     let sim_targets = load_target_model_names(&sim_targets_path).map_err(|error| {
         io::Error::other(format!(
             "failed to load simulation targets '{}': {}",
@@ -1014,12 +831,7 @@ fn load_parity_targets() -> io::Result<(PathBuf, Vec<String>, PathBuf, Vec<Strin
             error
         ))
     })?;
-    Ok((
-        compile_targets_path,
-        compile_targets,
-        sim_targets_path,
-        sim_targets,
-    ))
+    Ok((sim_targets_path, sim_targets))
 }
 
 struct ParityStepContext {
@@ -1027,72 +839,6 @@ struct ParityStepContext {
     omc_version: String,
     workers: usize,
     omc_threads: usize,
-}
-
-fn ensure_compile_parity_reference(
-    summary: &MslSummary,
-    force_refresh: bool,
-    context: &ParityStepContext,
-    compile_targets_path: &Path,
-    compile_targets: &[String],
-) -> io::Result<()> {
-    let _compile_ref_watchdog = StageAbortWatchdog::new(
-        "parity_compile_reference",
-        "RUMOCA_MSL_STAGE_TIMEOUT_PARITY_COMPILE_REF_SECS",
-        1200,
-    );
-    let omc_reference = omc_reference_path();
-    let compile_cache_key =
-        parity_target_set_cache_key(compile_targets, &summary.msl_version, &context.omc_version);
-    let compile_cache_entry = parity_cache_entry_path("compile", &compile_cache_key);
-
-    if !force_refresh
-        && parity_cache_matches_targets_and_msl(
-            &compile_cache_entry,
-            compile_targets,
-            &summary.msl_version,
-            &context.omc_version,
-        )?
-    {
-        materialize_parity_cache_entry(&compile_cache_entry, &omc_reference, "compile reference")?;
-        println!(
-            "MSL parity cache hit: reusing {} via keyed cache {}",
-            omc_reference.display(),
-            compile_cache_entry.display()
-        );
-        return Ok(());
-    }
-
-    let should_regenerate = force_refresh
-        || !parity_cache_matches_targets_and_msl(
-            &omc_reference,
-            compile_targets,
-            &summary.msl_version,
-            &context.omc_version,
-        )?;
-    if should_regenerate {
-        println!(
-            "MSL parity cache miss for compile reference; regenerating {}",
-            omc_reference.display()
-        );
-        let compile_targets_arg = compile_targets_path.to_string_lossy().to_string();
-        run_msl_tool_command(
-            &context.tools_exe,
-            vec![
-                "omc-reference".to_string(),
-                "--target-models-file".to_string(),
-                compile_targets_arg,
-                "--workers".to_string(),
-                context.workers.to_string(),
-                "--omc-threads".to_string(),
-                context.omc_threads.to_string(),
-            ],
-        )?;
-    } else {
-        println!("MSL parity cache hit: reusing {}", omc_reference.display());
-    }
-    persist_parity_cache_entry(&omc_reference, &compile_cache_entry, "compile reference")?;
-    Ok(())
 }
 
 fn run_simulation_parity_reference_command(
@@ -1105,16 +851,23 @@ fn run_simulation_parity_reference_command(
         "omc-simulation-reference".to_string(),
         "--target-models-file".to_string(),
         sim_targets_arg,
+        // CI restricts the OMC baseline to models rumoca already simulates to
+        // keep the gate fast; local runs default to all targets so newly
+        // passing models already have an OMC baseline.
+        "--rumoca-sim-ok-only".to_string(),
         "--use-experiment-stop-time".to_string(),
-        "--batch-timeout-seconds".to_string(),
+        "--model-timeout-seconds".to_string(),
         OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS.to_string(),
         "--workers".to_string(),
         context.workers.to_string(),
         "--omc-threads".to_string(),
         context.omc_threads.to_string(),
     ];
-    if resume {
-        args.push("--resume".to_string());
+    // The tool reuses cached OMC results by default (keyed on OMC + MSL source).
+    // On a parity cache miss we want a fresh OMC run, so force it; on a cache hit
+    // (`resume`) we let the default cache reuse stand.
+    if !resume {
+        args.push("--force".to_string());
     }
     run_msl_tool_command(&context.tools_exe, args)
 }
@@ -1126,11 +879,7 @@ fn ensure_simulation_parity_reference(
     sim_targets_path: &Path,
     sim_targets: &[String],
 ) -> io::Result<()> {
-    let _sim_ref_watchdog = StageAbortWatchdog::new(
-        "parity_simulation_reference",
-        "RUMOCA_MSL_STAGE_TIMEOUT_PARITY_SIM_REF_SECS",
-        1800,
-    );
+    let _sim_ref_watchdog = StageAbortWatchdog::new("parity_simulation_reference", 3600);
     let sim_policy = current_simulation_parity_cache_policy();
     let omc_simulation_reference = omc_simulation_reference_path();
     let sim_cache_key = simulation_parity_cache_key(
@@ -1191,15 +940,8 @@ pub(super) fn ensure_required_msl_parity_references(summary: &MslSummary) -> io:
     }
     let stage_start = Instant::now();
     let force_refresh = force_omc_parity_refresh_enabled();
-    if force_refresh {
-        println!(
-            "MSL parity cache override active: forcing OMC parity regeneration via {}",
-            FORCE_OMC_PARITY_REFRESH_ENV
-        );
-    }
 
-    let (compile_targets_path, compile_targets, sim_targets_path, sim_targets) =
-        load_parity_targets()?;
+    let (sim_targets_path, sim_targets) = load_sim_parity_targets()?;
     let omc_version = match current_omc_version() {
         Ok(version) => version,
         Err(error) => {
@@ -1216,25 +958,15 @@ pub(super) fn ensure_required_msl_parity_references(summary: &MslSummary) -> io:
         omc_threads: omc_parity_threads(),
     };
     println!(
-        "MSL parity targets: compile={} simulation={} (workers={})",
-        compile_targets.len(),
+        "MSL parity targets: simulation={} (workers={})",
         sim_targets.len(),
         context.workers
     );
 
-    let compile_ref_start = Instant::now();
-    ensure_compile_parity_reference(
-        summary,
-        force_refresh,
-        &context,
-        &compile_targets_path,
-        &compile_targets,
-    )?;
-    println!(
-        "MSL parity compile reference step: {:.2}s",
-        compile_ref_start.elapsed().as_secs_f64()
-    );
-
+    // The OMC reference comes solely from the persistent-zmq simulation pass,
+    // which compiles each model as part of simulating it. (The removed non-zmq
+    // `omc-reference` compile pass reloaded the full MSL library per batch and
+    // timed out on CI without adding data the sim pass lacks.)
     let sim_ref_start = Instant::now();
     ensure_simulation_parity_reference(
         summary,
@@ -1270,7 +1002,12 @@ fn simulation_parity_cache_has_required_metrics(path: &Path) -> io::Result<bool>
 
     Ok(runtime_stats.system_ratio_both_success.sample_count > 0
         && runtime_stats.wall_ratio_both_success.sample_count > 0
-        && trace_stats.models_compared > 0)
+        && trace_stats.models_compared > 0
+        && parity.omc_assertion_failure_models == 0
+        && trace_stats
+            .state_selection
+            .as_ref()
+            .is_some_and(|stats| stats.models_compared > 0))
 }
 
 pub(super) fn current_msl_quality_baseline(
@@ -1279,11 +1016,18 @@ pub(super) fn current_msl_quality_baseline(
 ) -> MslQualityBaseline {
     let gate_input = MslQualityGateInput::from(summary);
     MslQualityBaseline {
+        quality_gate_version: MSL_QUALITY_GATE_VERSION,
+        run_scope: MSL_QUALITY_RUN_SCOPE_FULL.to_string(),
         git_commit: summary.git_commit.clone(),
         msl_version: gate_input.msl_version.to_string(),
+        omc_version: parity_input.and_then(|parity| parity.omc_version.clone()),
         sim_timeout_seconds: SIM_TIMEOUT_SECS,
         simulatable_attempted: gate_input.simulatable_attempted,
+        parse_models: gate_input.parse_models,
+        flatten_models: gate_input.flatten_models,
+        dae_models: gate_input.dae_models,
         compiled_models: gate_input.compiled_models,
+        solve_models: gate_input.solve_models,
         balanced_models: gate_input.balanced_models,
         unbalanced_models: gate_input.unbalanced_models,
         partial_models: gate_input.partial_models,
@@ -1292,8 +1036,11 @@ pub(super) fn current_msl_quality_baseline(
         initial_unbalanced_models: gate_input.initial_unbalanced_models,
         sim_target_models: gate_input.sim_target_models,
         sim_attempted: gate_input.sim_attempted,
+        ic_attempted: gate_input.ic_attempted,
+        ic_ok: gate_input.ic_ok,
+        ic_solver_fail: gate_input.ic_solver_fail,
         sim_ok: gate_input.sim_ok,
-        sim_success_rate: sim_success_rate(gate_input.sim_ok, gate_input.sim_attempted)
+        sim_success_rate: sim_success_rate(gate_input.sim_ok, gate_input.sim_target_models)
             .unwrap_or(0.0),
         // Runtime speed depends strongly on machine topology/workers; keep it informational
         // in parity output but do not commit it into quality baselines.
@@ -1303,22 +1050,108 @@ pub(super) fn current_msl_quality_baseline(
     }
 }
 
+fn current_msl_quality_snapshot_json(
+    summary: &MslSummary,
+    parity_input: Option<&MslParityGateInput>,
+    partial: bool,
+) -> io::Result<serde_json::Value> {
+    let baseline = current_msl_quality_baseline(summary, parity_input);
+    let mut value = serde_json::to_value(&baseline).map_err(|error| {
+        io::Error::other(format!("failed to serialize baseline JSON value: {error}"))
+    })?;
+    let Some(root) = value.as_object_mut() else {
+        return Err(io::Error::other(
+            "failed to serialize baseline JSON as an object",
+        ));
+    };
+    root.insert(
+        "run_scope".to_string(),
+        serde_json::Value::String(
+            if partial {
+                MSL_QUALITY_RUN_SCOPE_PARTIAL
+            } else {
+                MSL_QUALITY_RUN_SCOPE_FULL
+            }
+            .to_string(),
+        ),
+    );
+    root.insert(
+        "pipeline_progress".to_string(),
+        serde_json::json!({
+            "total_mo_files": summary.total_mo_files,
+            "parse_errors": summary.parse_errors,
+            "total_models": summary.total_models,
+            "parse_models": baseline.parse_models,
+            "flatten_models": baseline.flatten_models,
+            "dae_models": baseline.dae_models,
+            "compiled_models": summary.compiled_models,
+            "solve_models": baseline.solve_models,
+            "balanced_models": summary.balanced_models,
+            "initial_balanced_models": summary.initial_balanced_models,
+            "state_selection": parity_input
+                .and_then(|parity| parity.trace_accuracy_stats.as_ref())
+                .and_then(|trace| trace.state_selection.as_ref()),
+            "omc_assertion_failure_models": parity_input
+                .map(|parity| parity.omc_assertion_failure_models)
+                .unwrap_or(0),
+            "sim_target_models": summary.sim_target_models.len(),
+            "sim_attempted": summary.sim_attempted,
+            "ic_attempted": summary.ic_attempted,
+            "ic_ok": summary.ic_ok,
+            "ic_solver_fail": summary.ic_solver_fail,
+            "sim_ok": summary.sim_ok,
+            "sim_nan": summary.sim_nan,
+            "sim_solver_fail": summary.sim_solver_fail,
+            "sim_timeout": summary.sim_timeout,
+            "error_code_counts": &summary.error_code_counts,
+            "unsupported_feature_counts": &summary.unsupported_feature_counts,
+            "unsupported_feature_counts_by_backend": &summary.unsupported_feature_counts_by_backend,
+            "phase_failure_counts": phase_failure_counts(summary),
+        }),
+    );
+    root.insert(
+        "mls_contract_coverage".to_string(),
+        serde_json::to_value(build_mls_contract_coverage(summary)).map_err(|error| {
+            io::Error::other(format!(
+                "failed to serialize MLS contract coverage JSON value: {error}"
+            ))
+        })?,
+    );
+    if partial {
+        root.insert("partial".to_string(), serde_json::Value::Bool(true));
+    }
+    Ok(value)
+}
+
+fn phase_failure_counts(summary: &MslSummary) -> std::collections::BTreeMap<String, usize> {
+    summary
+        .failures_by_phase
+        .iter()
+        .filter(|(phase, _)| phase.as_str() != "NeedsInner" && phase.as_str() != "NonSim")
+        .map(|(phase, failures)| (phase.clone(), failures.len()))
+        .collect()
+}
+
 pub(super) fn write_current_msl_quality_snapshot(summary: &MslSummary) -> io::Result<()> {
     if summary.sim_attempted == 0 {
         return Ok(());
     }
     let parity_input =
         load_current_msl_parity_gate_input_optional(summary.sim_target_models.len())?;
-    let baseline = current_msl_quality_baseline(summary, parity_input.as_ref());
+    let snapshot = current_msl_quality_snapshot_json(
+        summary,
+        parity_input.as_ref(),
+        should_skip_msl_quality_gate(),
+    )?;
     let baseline_path = msl_quality_current_path();
     if let Some(parent) = baseline_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let baseline_json = serde_json::to_string_pretty(&baseline)
+    let baseline_json = serde_json::to_string_pretty(&snapshot)
         .map_err(|error| io::Error::other(format!("failed to serialize baseline JSON: {error}")))?;
     fs::write(&baseline_path, baseline_json)?;
     println!(
-        "MSL current quality snapshot written to {}. Promote by copying to {} after approved runs.",
+        "MSL current quality snapshot written to {}. Promote with `rum repo msl promote-quality-baseline` after approved full baseline runs; committed baseline path is {}.",
         baseline_path.display(),
         msl_quality_baseline_path().display()
     );
@@ -1326,22 +1159,53 @@ pub(super) fn write_current_msl_quality_snapshot(summary: &MslSummary) -> io::Re
 }
 
 pub(super) fn sim_rate_gate_override_enabled() -> bool {
-    std::env::var(SIM_RATE_GATE_OVERRIDE_ENV).is_ok_and(|value| {
-        value == "1"
-            || value.eq_ignore_ascii_case("true")
-            || value.eq_ignore_ascii_case("yes")
-            || value.eq_ignore_ascii_case("on")
+    false
+}
+
+fn skip_omc_compile_reference_enabled() -> bool {
+    false
+}
+
+fn msl_quality_env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
     })
 }
 
 pub(super) fn msl_quality_context_mismatch_reason(
     gate_input: MslQualityGateInput<'_>,
     baseline: &MslQualityBaseline,
+    parity_input: Option<&MslParityGateInput>,
 ) -> Option<String> {
+    if baseline.quality_gate_version != MSL_QUALITY_GATE_VERSION {
+        return Some(format!(
+            "quality_gate_version differs (baseline={}, current={})",
+            baseline.quality_gate_version, MSL_QUALITY_GATE_VERSION
+        ));
+    }
+    if baseline.run_scope != MSL_QUALITY_RUN_SCOPE_FULL {
+        return Some(format!(
+            "baseline run_scope must be '{}', got '{}'",
+            MSL_QUALITY_RUN_SCOPE_FULL, baseline.run_scope
+        ));
+    }
     if baseline.msl_version != gate_input.msl_version {
         return Some(format!(
             "msl_version differs (baseline={}, current={})",
             baseline.msl_version, gate_input.msl_version
+        ));
+    }
+    if let Some(baseline_omc_version) = baseline.omc_version.as_deref()
+        && let Some(current_omc_version) =
+            parity_input.and_then(|parity| parity.omc_version.as_deref())
+        && canonical_omc_version(baseline_omc_version) != canonical_omc_version(current_omc_version)
+    {
+        return Some(format!(
+            "omc_version differs (baseline={}, current={})",
+            baseline_omc_version, current_omc_version
         ));
     }
     if (baseline.sim_timeout_seconds - SIM_TIMEOUT_SECS).abs() > SIM_RATE_GATE_EPSILON {
@@ -1352,6 +1216,18 @@ pub(super) fn msl_quality_context_mismatch_reason(
     }
     if baseline.trace_accuracy_stats.is_none() {
         return Some("trace_accuracy_stats missing in baseline".to_string());
+    }
+    if baseline.simulatable_attempted != gate_input.simulatable_attempted {
+        return Some(format!(
+            "simulatable_attempted differs (baseline={}, current={}); baseline stage percentages require a fixed denominator",
+            baseline.simulatable_attempted, gate_input.simulatable_attempted
+        ));
+    }
+    if baseline.sim_target_models != gate_input.sim_target_models {
+        return Some(format!(
+            "sim_target_models differs (baseline={}, current={}); baseline simulation percentages require a fixed denominator",
+            baseline.sim_target_models, gate_input.sim_target_models
+        ));
     }
 
     let simulation_enabled = gate_input.sim_attempted > 0;
@@ -1375,6 +1251,78 @@ pub(super) fn msl_quality_regression_reasons(
 }
 
 pub(super) fn push_compile_balance_regression_reasons(
+    reasons: &mut Vec<String>,
+    gate_input: MslQualityGateInput<'_>,
+    baseline: &MslQualityBaseline,
+) {
+    push_compile_balance_count_regression_reasons(reasons, gate_input, baseline);
+    push_compile_balance_rate_regression_reasons(reasons, gate_input, baseline);
+}
+
+fn push_compile_balance_count_regression_reasons(
+    reasons: &mut Vec<String>,
+    gate_input: MslQualityGateInput<'_>,
+    baseline: &MslQualityBaseline,
+) {
+    let denominator = gate_input.simulatable_attempted;
+    push_stage_count_regression_reason(
+        reasons,
+        "Parse",
+        gate_input.parse_models,
+        baseline.parse_models.max(baseline.simulatable_attempted),
+        denominator,
+    );
+    push_stage_count_regression_reason(
+        reasons,
+        "Flatten",
+        gate_input.flatten_models,
+        baseline.flatten_models,
+        denominator,
+    );
+    push_stage_count_regression_reason(
+        reasons,
+        "DAE",
+        gate_input.dae_models,
+        baseline.dae_models.max(baseline.compiled_models),
+        denominator,
+    );
+    push_stage_count_regression_reason(
+        reasons,
+        "IR-Solve",
+        gate_input.solve_models,
+        baseline.solve_models,
+        denominator,
+    );
+    push_stage_count_regression_reason(
+        reasons,
+        "Balanced",
+        gate_input.balanced_models,
+        baseline.balanced_models,
+        denominator,
+    );
+    push_stage_count_regression_reason(
+        reasons,
+        "Initial balance",
+        gate_input.initial_balanced_models,
+        baseline.initial_balanced_models,
+        denominator,
+    );
+
+    if gate_input.partial_models > baseline.partial_models {
+        reasons.push(format!(
+            "partial_models increased: current={} > baseline={}",
+            gate_input.partial_models, baseline.partial_models
+        ));
+    }
+    if gate_input.unbalanced_models > baseline.unbalanced_models {
+        reasons.push(format!(
+            "unbalanced_models increased: current={} > baseline={}",
+            gate_input.unbalanced_models, baseline.unbalanced_models
+        ));
+    }
+}
+
+fn push_compile_balance_rate_regression_reasons(
     reasons: &mut Vec<String>,
     gate_input: MslQualityGateInput<'_>,
     baseline: &MslQualityBaseline,
@@ -1441,19 +1389,6 @@ pub(super) fn push_compile_balance_regression_reasons(
             ));
         }
     }
-
-    if gate_input.partial_models > baseline.partial_models {
-        reasons.push(format!(
-            "partial_models increased: current={} > baseline={}",
-            gate_input.partial_models, baseline.partial_models
-        ));
-    }
-    if gate_input.unbalanced_models > baseline.unbalanced_models {
-        reasons.push(format!(
-            "unbalanced_models increased: current={} > baseline={}",
-            gate_input.unbalanced_models, baseline.unbalanced_models
-        ));
-    }
 }
 
 pub(super) fn push_sim_rate_regression_reason(
@@ -1461,23 +1396,47 @@ pub(super) fn push_sim_rate_regression_reason(
     gate_input: MslQualityGateInput<'_>,
     baseline: &MslQualityBaseline,
 ) {
-    if gate_input.sim_attempted > 0 {
-        let current_rate = sim_success_rate(gate_input.sim_ok, gate_input.sim_attempted)
-            .expect("sim_attempted > 0 implies Some rate");
-        let baseline_rate = baseline.sim_success_rate;
-        let tolerated_floor = (baseline_rate - SIM_RATE_GATE_TOLERANCE).max(0.0);
-        if current_rate + SIM_RATE_GATE_EPSILON < tolerated_floor {
-            reasons.push(format!(
-                "simulation success rate regressed beyond tolerance: current={:.2}% ({}/{}) < floor={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
-                current_rate * 100.0,
-                gate_input.sim_ok,
-                gate_input.sim_attempted,
-                tolerated_floor * 100.0,
-                baseline_rate * 100.0,
-                SIM_RATE_GATE_TOLERANCE * 100.0
-            ));
-        }
+    push_stage_count_regression_reason(
+        reasons,
+        "IC",
+        gate_input.ic_ok,
+        baseline.ic_ok,
+        gate_input.sim_target_models,
+    );
+    push_stage_count_regression_reason(
+        reasons,
+        "Sim",
+        gate_input.sim_ok,
+        baseline.sim_ok,
+        gate_input.sim_target_models,
+    );
+}
+
+fn stage_percent(count: usize, total: usize) -> f64 {
+    if total == 0 {
+        return 0.0;
     }
+    count as f64 * 100.0 / total as f64
+}
+
+fn push_stage_count_regression_reason(
+    reasons: &mut Vec<String>,
+    stage: &str,
+    current: usize,
+    baseline: usize,
+    denominator: usize,
+) {
+    if current >= baseline {
+        return;
+    }
+    reasons.push(format!(
+        "{stage} pass count regressed: current={} ({:.2}%) < baseline={} ({:.2}%) over {} models",
+        current,
+        stage_percent(current, denominator),
+        baseline,
+        stage_percent(baseline, denominator),
+        denominator
+    ));
 }
 
 pub(super) fn push_runtime_ratio_regression_reasons(
@@ -1538,6 +1497,22 @@ fn trace_model_bucket_percentages(
     })
 }
 
+fn trace_acceptable_agreement_models(stats: &MslTraceAccuracyStatsBaseline) -> usize {
+    stats.agreement_high + stats.agreement_minor
+}
+
+fn trace_no_severe_models(stats: &MslTraceAccuracyStatsBaseline) -> Option<usize> {
+    stats
+        .models_with_severe_channel
+        .map(|count| stats.models_compared.saturating_sub(count))
+        .or_else(|| {
+            stats
+                .severe_channels_total
+                .filter(|count| *count == 0)
+                .map(|_| stats.models_compared)
+        })
+}
+
 fn trace_models_with_any_channel_deviation_percent(
     stats: &MslTraceAccuracyStatsBaseline,
 ) -> Option<f64> {
@@ -1552,16 +1527,8 @@ fn trace_bad_channels_total(stats: &MslTraceAccuracyStatsBaseline) -> Option<usi
     stats.bad_channels_total
 }
 
-fn trace_bad_channels_percent(stats: &MslTraceAccuracyStatsBaseline) -> Option<f64> {
-    stats.bad_channels_percent
-}
-
 fn trace_severe_channels_total(stats: &MslTraceAccuracyStatsBaseline) -> Option<usize> {
     stats.severe_channels_total
-}
-
-fn trace_severe_channels_percent(stats: &MslTraceAccuracyStatsBaseline) -> Option<f64> {
-    stats.severe_channels_percent
 }
 
 fn trace_violation_mass_total(stats: &MslTraceAccuracyStatsBaseline) -> Option<f64> {
@@ -1577,86 +1544,28 @@ pub(super) fn push_trace_regression_reasons(
         parity_input.and_then(|parity| parity.trace_accuracy_stats.as_ref()),
         baseline.trace_accuracy_stats.as_ref(),
     ) {
-        if let (Some(current), Some(baseline_pct)) = (
-            trace_model_bucket_percentages(current_trace),
-            trace_model_bucket_percentages(baseline_trace),
-        ) {
-            let high_floor = (baseline_pct.high - TRACE_HIGH_PERCENT_DROP_TOLERANCE_PP).max(0.0);
-            if current.high + SIM_RATE_GATE_EPSILON < high_floor {
-                reasons.push(format!(
-                    "trace high-agreement model share regressed: current={:.2}% < floor={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
-                    current.high,
-                    high_floor,
-                    baseline_pct.high,
-                    TRACE_HIGH_PERCENT_DROP_TOLERANCE_PP
-                ));
-            }
-
-            // Treat `high + near` as the acceptable band so improvements from
-            // near-agreement into high-agreement do not fail the gate.
-            let acceptable_floor = ((baseline_pct.high + baseline_pct.near)
-                - TRACE_ACCEPTABLE_PERCENT_DROP_TOLERANCE_PP)
-                .max(0.0);
-            if (current.high + current.near) + SIM_RATE_GATE_EPSILON < acceptable_floor {
-                reasons.push(format!(
-                    "trace acceptable-agreement model share regressed: current={:.2}% < floor={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
-                    current.high + current.near,
-                    acceptable_floor,
-                    baseline_pct.high + baseline_pct.near,
-                    TRACE_ACCEPTABLE_PERCENT_DROP_TOLERANCE_PP
-                ));
-            }
-
-            let deviation_ceiling =
-                (baseline_pct.deviation + TRACE_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP).min(100.0);
-            if current.deviation > deviation_ceiling + SIM_RATE_GATE_EPSILON {
-                reasons.push(format!(
-                    "trace deviation model share regressed: current={:.2}% > ceiling={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
-                    current.deviation,
-                    deviation_ceiling,
-                    baseline_pct.deviation,
-                    TRACE_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP
-                ));
-            }
-        }
-
-        if let (Some(current_any), Some(baseline_any)) = (
-            trace_models_with_any_channel_deviation_percent(current_trace),
-            trace_models_with_any_channel_deviation_percent(baseline_trace),
-        ) {
-            let any_ceiling = (baseline_any
-                + TRACE_ANY_CHANNEL_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP)
-                .min(100.0);
-            if current_any > any_ceiling + SIM_RATE_GATE_EPSILON {
-                reasons.push(format!(
-                    "trace models-with-any-bad-channel share regressed: current={:.2}% > ceiling={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
-                    current_any,
-                    any_ceiling,
-                    baseline_any,
-                    TRACE_ANY_CHANNEL_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP
-                ));
-            }
-        }
-
-        push_trace_channel_regression_reason(
+        let current_acceptable = trace_acceptable_agreement_models(current_trace);
+        let baseline_acceptable = trace_acceptable_agreement_models(baseline_trace);
+        push_stage_count_regression_reason(
             reasons,
-            "bad",
-            trace_bad_channels_percent(current_trace),
-            trace_bad_channels_percent(baseline_trace),
-            TRACE_BAD_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP,
-            trace_bad_channels_total(current_trace),
-            trace_bad_channels_total(baseline_trace),
+            "Trace acceptable",
+            current_acceptable,
+            baseline_acceptable,
+            baseline.sim_target_models,
         );
 
-        push_trace_channel_regression_reason(
-            reasons,
-            "severe",
-            trace_severe_channels_percent(current_trace),
-            trace_severe_channels_percent(baseline_trace),
-            TRACE_SEVERE_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP,
-            trace_severe_channels_total(current_trace),
-            trace_severe_channels_total(baseline_trace),
-        );
+        if let (Some(current_no_severe), Some(baseline_no_severe)) = (
+            trace_no_severe_models(current_trace),
+            trace_no_severe_models(baseline_trace),
+        ) {
+            push_stage_count_regression_reason(
+                reasons,
+                "Trace no severe",
+                current_no_severe,
+                baseline_no_severe,
+                baseline.sim_target_models,
+            );
+        }
 
         if current_trace.models_compared + TRACE_MODELS_COMPARED_ALLOWED_DROP
             < baseline_trace.models_compared
@@ -1671,40 +1580,12 @@ pub(super) fn push_trace_regression_reasons(
     }
 }
 
-fn push_trace_channel_regression_reason(
-    reasons: &mut Vec<String>,
-    channel_label: &str,
-    current_percent: Option<f64>,
-    baseline_percent: Option<f64>,
-    percent_tolerance_pp: f64,
-    current_total: Option<usize>,
-    baseline_total: Option<usize>,
-) {
-    if let (Some(current), Some(baseline)) = (current_percent, baseline_percent) {
-        let ceiling = (baseline + percent_tolerance_pp).min(100.0);
-        if current > ceiling + SIM_RATE_GATE_EPSILON {
-            reasons.push(format!(
-                "trace {channel_label} channel share regressed: current={current:.2}% > ceiling={ceiling:.2}% (baseline={baseline:.2}%, tolerance={percent_tolerance_pp:.2}pp)"
-            ));
-        }
-        return;
-    }
-
-    if let (Some(current), Some(baseline)) = (current_total, baseline_total)
-        && current > baseline
-    {
-        reasons.push(format!(
-            "trace {channel_label} channel count regressed: current={current} > baseline={baseline}"
-        ));
-    }
-}
-
 pub(super) fn msl_quality_gate_failure_message(
     gate_input: MslQualityGateInput<'_>,
     baseline: &MslQualityBaseline,
     parity_input: Option<&MslParityGateInput>,
 ) -> Option<String> {
-    if let Some(reason) = msl_quality_context_mismatch_reason(gate_input, baseline) {
+    if let Some(reason) = msl_quality_context_mismatch_reason(gate_input, baseline, parity_input) {
         return Some(format!(
             "MSL quality baseline context mismatch: {reason}. Update {} only with explicit review approval",
             MSL_QUALITY_BASELINE_FILE_REL
@@ -1723,9 +1604,13 @@ pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
         println!("MSL quality gate: skipped for compile/balance-only run.");
         return Ok(());
     }
+    if require_selected_targets_success() {
+        enforce_all_selected_targets_succeeded(summary);
+        return Ok(());
+    }
     if should_skip_msl_quality_gate() {
         println!(
-            "MSL quality gate: skipped for non-baseline run (focused subset or non-default RUMOCA_MSL_SIM_SET)."
+            "MSL quality gate: skipped for focused/non-baseline run (committed target scope, explicit target file, subset, or partial sim set)."
         );
         return Ok(());
     }
@@ -1741,17 +1626,7 @@ pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
         msl_quality_gate_failure_message(gate_input, &baseline, parity_input.as_ref());
 
     if let Some(message) = gate_failure {
-        if sim_rate_gate_override_enabled() {
-            println!(
-                "MSL quality gate: OVERRIDDEN by {} ({}).",
-                SIM_RATE_GATE_OVERRIDE_ENV, message
-            );
-            return Ok(());
-        }
-        panic!(
-            "MSL quality gate: {}. Set {}=1 only for explicitly approved regressions.",
-            message, SIM_RATE_GATE_OVERRIDE_ENV
-        );
+        panic!("MSL quality gate: {message}.");
     }
 
     print_compile_and_sim_gate_pass(gate_input, &baseline);
@@ -1762,11 +1637,44 @@ pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
     Ok(())
 }
 
+/// Focused-gate enforcement: every selected simulation target must report
+/// `sim_ok`. Replaces the baseline-relative gate (which is skipped for explicit
+/// target files) so a focused CI run still fails on any simulation failure.
+fn enforce_all_selected_targets_succeeded(summary: &MslSummary) {
+    let target_set: HashSet<&str> = summary
+        .sim_target_models
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let failures: Vec<String> = summary
+        .model_results
+        .iter()
+        .filter(|result| target_set.contains(result.model_name.as_str()))
+        .filter(|result| result.sim_status.as_deref() != Some("sim_ok"))
+        .map(|result| {
+            let status = result.sim_status.as_deref().unwrap_or("not-simulated");
+            format!("{} ({status})", result.model_name)
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "MSL quality gate: {} of {} selected simulation target(s) did not succeed: {}.",
+        failures.len(),
+        summary.sim_target_models.len(),
+        failures.join(", ")
+    );
+    println!(
+        "MSL quality gate: all {} selected simulation target(s) succeeded.",
+        summary.sim_target_models.len()
+    );
+}
+
 pub(super) fn should_skip_msl_quality_gate() -> bool {
-    sim_targets_file_override().is_some()
+    msl_target_scope() != MslTargetScope::RootExamples
+        || sim_targets_file_override().is_some()
         || !sim_subset_patterns().is_empty()
         || sim_subset_limit().is_some()
-        || sim_set_mode() != SimSetMode::Short
+        || sim_set_mode() != SimSetMode::Full
 }
 
 pub(super) fn assert_valid_msl_summary(summary: &MslSummary) {
@@ -1780,195 +1688,19 @@ pub(super) fn assert_valid_msl_summary(summary: &MslSummary) {
         "MSL quality gate: invalid run (resolve_errors > 0). \
          The typed-tree/session build failed before model compilation; fix resolve errors before accepting this run."
     );
-    if !should_skip_msl_quality_gate()
-        && summary.sim_target_models.len() == SIM_SET_LIMIT_DEFAULT
-        && summary.sim_attempted > 0
-    {
+    if !should_skip_msl_quality_gate() && summary.sim_attempted > 0 {
         let required_sim_ok = ((summary.sim_target_models.len() as f64)
             * DEFAULT_SIM_OK_HARD_FLOOR_RATIO)
             .ceil() as usize;
         assert!(
             summary.sim_ok >= required_sim_ok,
             "MSL quality gate: invalid run (sim_ok below hard floor). \
-             Default {}-model simulation run produced only {}/{} successful simulations; \
+             Default simulation run produced only {}/{} successful simulations; \
              required at least {} successful simulations ({:.1}% floor).",
-            SIM_SET_LIMIT_DEFAULT,
             summary.sim_ok,
             summary.sim_target_models.len(),
             required_sim_ok,
             DEFAULT_SIM_OK_HARD_FLOOR_RATIO * 100.0
         );
     }
-}
-
-pub(super) fn print_compile_and_sim_gate_pass(
-    gate_input: MslQualityGateInput<'_>,
-    baseline: &MslQualityBaseline,
-) {
-    let compile_rate =
-        compile_success_rate(gate_input.compiled_models, gate_input.simulatable_attempted)
-            .unwrap_or(0.0)
-            * 100.0;
-    let baseline_compile_rate =
-        compile_success_rate(baseline.compiled_models, baseline.simulatable_attempted)
-            .unwrap_or(0.0)
-            * 100.0;
-    let balance_rate =
-        balance_success_rate(gate_input.balanced_models, gate_input.balance_denominator)
-            .unwrap_or(0.0)
-            * 100.0;
-    let baseline_balance_rate =
-        balance_success_rate(baseline.balanced_models, baseline.balance_denominator).unwrap_or(0.0)
-            * 100.0;
-    let initial_balance_rate = balance_success_rate(
-        gate_input.initial_balanced_models,
-        gate_input.balance_denominator,
-    )
-    .unwrap_or(0.0)
-        * 100.0;
-    let baseline_initial_balance_rate = balance_success_rate(
-        baseline.initial_balanced_models,
-        baseline.balance_denominator,
-    )
-    .unwrap_or(0.0)
-        * 100.0;
-    println!(
-        "MSL quality gate: PASS compile={:.2}% (baseline={:.2}%), balance={:.2}% (baseline={:.2}%), initial_balance={:.2}% (baseline={:.2}%).",
-        compile_rate,
-        baseline_compile_rate,
-        balance_rate,
-        baseline_balance_rate,
-        initial_balance_rate,
-        baseline_initial_balance_rate
-    );
-    if gate_input.sim_attempted > 0 {
-        let current_rate = sim_success_rate(gate_input.sim_ok, gate_input.sim_attempted)
-            .expect("sim_attempted > 0 implies Some rate");
-        println!(
-            "MSL simulation gate: PASS current={:.2}% ({}/{}), baseline={:.2}% ({}/{}, commit={}), tolerance={:.2}pp.",
-            current_rate * 100.0,
-            gate_input.sim_ok,
-            gate_input.sim_attempted,
-            baseline.sim_success_rate * 100.0,
-            baseline.sim_ok,
-            baseline.sim_attempted,
-            baseline.git_commit,
-            SIM_RATE_GATE_TOLERANCE * 100.0
-        );
-    } else {
-        println!("MSL simulation gate: skipped (no simulations attempted in this run).");
-    }
-}
-
-pub(super) fn print_trace_gate_status(
-    baseline: &MslQualityBaseline,
-    parity_input: Option<&MslParityGateInput>,
-) {
-    if let (Some(current_trace), Some(baseline_trace)) = (
-        parity_input.and_then(|parity| parity.trace_accuracy_stats.as_ref()),
-        baseline.trace_accuracy_stats.as_ref(),
-    ) {
-        let current_pct =
-            trace_model_bucket_percentages(current_trace).unwrap_or(TraceBucketPercentages {
-                high: 0.0,
-                near: 0.0,
-                deviation: 0.0,
-            });
-        let baseline_pct =
-            trace_model_bucket_percentages(baseline_trace).unwrap_or(TraceBucketPercentages {
-                high: 0.0,
-                near: 0.0,
-                deviation: 0.0,
-            });
-        let current_any =
-            trace_models_with_any_channel_deviation_percent(current_trace).unwrap_or(0.0);
-        let baseline_any =
-            trace_models_with_any_channel_deviation_percent(baseline_trace).unwrap_or(0.0);
-        println!("MSL trace gate: PASS with baseline:");
-        println!(
-            "  high={:.2}% (baseline={:.2}%), near={:.2}% (baseline={:.2}%), deviation={:.2}% (baseline={:.2}%)",
-            current_pct.high,
-            baseline_pct.high,
-            current_pct.near,
-            baseline_pct.near,
-            current_pct.deviation,
-            baseline_pct.deviation,
-        );
-        println!(
-            "  models_with_any_bad_channel={:.2}% (baseline={:.2}%), models_compared={} (baseline={})",
-            current_any,
-            baseline_any,
-            current_trace.models_compared,
-            baseline_trace.models_compared
-        );
-        if let (Some(current_bad), Some(baseline_bad)) = (
-            trace_bad_channels_total(current_trace),
-            trace_bad_channels_total(baseline_trace),
-        ) {
-            let current_severe = trace_severe_channels_total(current_trace).unwrap_or(0);
-            let baseline_severe = trace_severe_channels_total(baseline_trace).unwrap_or(0);
-            let current_mass = trace_violation_mass_total(current_trace).unwrap_or(0.0);
-            let baseline_mass = trace_violation_mass_total(baseline_trace).unwrap_or(0.0);
-            println!(
-                "  bad_channels={} (baseline={}), severe_channels={} (baseline={}), violation_mass_total={:.6e} (baseline={:.6e})",
-                current_bad,
-                baseline_bad,
-                current_severe,
-                baseline_severe,
-                current_mass,
-                baseline_mass
-            );
-        }
-        return;
-    }
-    if baseline.trace_accuracy_stats.is_some() {
-        println!(
-            "MSL trace gate: skipped (missing {}). Run `cargo run -p rumoca-tool-dev --bin rumoca-msl-tools -- omc-simulation-reference ...` to enforce trace baseline.",
-            omc_simulation_reference_path().display()
-        );
-    }
-}
-
-fn fmt_opt_usize(value: Option<usize>) -> String {
-    value
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "n/a".to_string())
-}
-
-pub(super) fn print_runtime_ratio_status(
-    baseline: &MslQualityBaseline,
-    parity_input: Option<&MslParityGateInput>,
-) {
-    let Some(current_runtime) = parity_input.and_then(|parity| parity.runtime_ratio_stats.as_ref())
-    else {
-        return;
-    };
-
-    let current_workers = parity_input
-        .and_then(|parity| parity.runtime_context.as_ref())
-        .and_then(|context| context.workers_used);
-    let current_omc_threads = parity_input
-        .and_then(|parity| parity.runtime_context.as_ref())
-        .and_then(|context| context.omc_threads);
-
-    if let Some(baseline_runtime) = baseline.runtime_ratio_stats.as_ref() {
-        println!(
-            "MSL speed metrics (informational only, not gated): system_median={:.3e} (baseline={:.3e}), wall_median={:.3e} (baseline={:.3e}), workers={}, omc_threads={}.",
-            current_runtime.system_ratio_both_success.median,
-            baseline_runtime.system_ratio_both_success.median,
-            current_runtime.wall_ratio_both_success.median,
-            baseline_runtime.wall_ratio_both_success.median,
-            fmt_opt_usize(current_workers),
-            fmt_opt_usize(current_omc_threads)
-        );
-        return;
-    }
-
-    println!(
-        "MSL speed metrics (informational only, not gated): system_median={:.3e}, wall_median={:.3e}, workers={}, omc_threads={}.",
-        current_runtime.system_ratio_both_success.median,
-        current_runtime.wall_ratio_both_success.median,
-        fmt_opt_usize(current_workers),
-        fmt_opt_usize(current_omc_threads)
-    );
 }

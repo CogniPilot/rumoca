@@ -812,6 +812,46 @@ Defines state-to-state transitions with priority and timing control.
 | SM-007 | activeState instance check | §17.3.1 | "Error if the instance is not a state of a state machine" |
 | SM-008 | Parallel assignment error | §17 | "Error if parallel state machines assign to same variable at same clock tick" |
 
+### 4.16.1 Rumoca Phase 5 Clock, StateGraph, Stream, Media, and MultiBody Scope
+
+This subsection records the current release-validation scope for the Phase 5
+semantic representatives. It is not a claim of full MLS coverage for these
+areas.
+
+- Clocked/synchronous support currently includes the MSL subset exercised by
+  `Modelica.Clocked.Examples.Elementary.RealSignals.Sample1`: scalar/vector
+  `Clock`, `sample`, `hold`, `previous`, and basic sub/super/shift/back-sample
+  lowering paths that reach Solve simulation. Full base-clock partition
+  inference, cross-subclock validation, and all CLK contracts above remain the
+  broader compliance target.
+- Static clock schedule inference currently supports `Clock(period)`,
+  `Clock(intervalCounter, resolution)`, aliases that resolve to those forms,
+  and `shiftSample`/`backSample` compositions over statically scheduled base
+  clocks. `Clock(condition)` is preserved as a dynamic event clock; unresolved
+  or unsupported constructor forms must report `ED009` before simulation.
+- State-machine support currently covers library-style `Modelica.StateGraph`
+  models that lower as ordinary discrete/event equations, with
+  `Modelica.StateGraph.Examples.ExecutionPaths` as the OMC-backed
+  representative. Full MLS section 17 state-machine operator semantics
+  (`transition`, `initialState`, `activeState`, same-clock checks, parallel
+  assignment checks) remain scoped by the SM contracts above.
+- Stream/Fluid support is not claimed for the Phase 5 representative. The
+  current `Modelica.Fluid.Examples.IncompressibleFluidNetwork` blocker is
+  classified as `unsupported-feature:replaceable_media_package_lookup`, which
+  fails before stream-equation parity can be validated.
+- Media property/function support is partial. The representative
+  `Modelica.Media.Examples.IdealGasH2O` reaches DAE/Solve lowering but currently
+  fails simulation with `unsupported-feature:media_property_initialization_singularity`.
+  Other explored Media examples expose constrained redeclare, partial-medium
+  function-body, nonlinear-solver callback, and vector-slice gaps.
+- Higher-index MultiBody support is not claimed for the Phase 5
+  representatives. `Modelica.Mechanics.MultiBody.Examples.Elementary.Pendulum`
+  and `DoublePendulum` are tracked as OMC-backed structural representatives but
+  currently fail because an `outer` component reference inside a nested
+  component is not bound/qualified through the matching enclosing `inner`
+  component consistently enough for DAE function lowering. The stable
+  classifier is `unsupported-feature:inner_outer_qualified_lookup`.
+
 ### 4.17 Annotation Contracts (ANN)
 
 | ID | Contract | MLS | Requirement |
@@ -899,7 +939,7 @@ Defines state-to-state transitions with priority and timing control.
 
 **Flattening** (§5.6, §9):
 - Resolves all name references to global paths
-- Expands for-equations/if-equations to individual equations (note: array variables preserved per SPEC_0019)
+- Expands for-equations/if-equations to individual equations (note: array variables are preserved per SPEC_0007)
 - Processes connect() to generate connection equations
 - Handles stream connectors (§15), clocks (§16), state machines (§17)
 
@@ -907,7 +947,7 @@ Defines state-to-state transitions with priority and timing control.
 - Classifies variables: p, x(t), y(t), z(tₑ), m(tₑ), c(tₑ)
 - Verifies local and global balance (counting algorithm contributions)
 - Lowers supported model algorithms to equations while preserving function
-  algorithm bodies for codegen readability (per SPEC_0020)
+  algorithm bodies for codegen readability (per SPEC_0007)
 
 **Simulation** (§8.6, App B):
 - Solves initialization problem
@@ -918,8 +958,8 @@ Defines state-to-state transitions with priority and timing control.
 
 The following design decisions extend MLS requirements for implementation:
 
-- **SPEC_0019**: Array variables preserved with dimension metadata; scalarization deferred to codegen
-- **SPEC_0020**: Model algorithms lower to equations when declarative; function
+- **SPEC_0007**: Array variables preserved with dimension metadata; scalarization deferred to backend-specific layers
+- **SPEC_0007**: Model algorithms lower to equations when declarative; function
   algorithms are preserved for codegen readability
 
 ---

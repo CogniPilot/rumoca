@@ -2,17 +2,21 @@
 
 use std::collections::{HashMap, HashSet};
 
+use indexmap::{IndexMap, IndexSet};
+
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 
+use crate::dae_lowering::record_constructor_fields_from_metadata;
 use crate::discrete_partition::{ResidualDiscreteBucket, classify_residual_discrete_bucket};
+use crate::errors::ToDaeError;
 use crate::name_resolution;
 use crate::path_utils::{
     get_top_level_prefix, normalized_top_level_names, path_is_in_top_level_set,
     subscript_fallback_chain,
 };
-use crate::{flat_to_dae_expression, flat_to_dae_var_name};
+use crate::{flat_to_dae_expression, flat_to_dae_var_name, remap_flat_for_equations};
 
 pub(super) fn is_input_input_connection(eq: &flat::Equation, dae: &dae::Dae) -> bool {
     // Only check connection equations
@@ -21,10 +25,10 @@ pub(super) fn is_input_input_connection(eq: &flat::Equation, dae: &dae::Dae) -> 
     }
 
     // Connection equations have form: lhs - rhs = 0
-    let flat::Expression::Binary { op, lhs, rhs } = &eq.residual else {
+    let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = &eq.residual else {
         return false;
     };
-    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_core::OpBinary::Sub) {
         return false;
     }
 
@@ -59,10 +63,10 @@ pub(super) fn is_input_default_equation(
     }
 
     // Equations have form: lhs - rhs = 0
-    let flat::Expression::Binary { op, lhs, rhs } = &eq.residual else {
+    let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = &eq.residual else {
         return false;
     };
-    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_core::OpBinary::Sub) {
         return false;
     }
 
@@ -109,15 +113,15 @@ pub(super) fn is_input_default_equation(
 pub(super) fn get_component_alias_connection_side(
     eq: &flat::Equation,
     dae: &dae::Dae,
-) -> Option<(flat::VarName, Option<flat::VarName>)> {
+) -> Option<(rumoca_core::VarName, Option<rumoca_core::VarName>)> {
     if !eq.origin.is_connection() {
         return None;
     }
 
-    let flat::Expression::Binary { op, lhs, rhs } = &eq.residual else {
+    let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = &eq.residual else {
         return None;
     };
-    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_core::OpBinary::Sub) {
         return None;
     }
 
@@ -141,7 +145,7 @@ pub(super) fn get_component_alias_connection_side(
 }
 
 fn is_top_level_interface_input_name(
-    name: &flat::VarName,
+    name: &rumoca_core::VarName,
     flat: &flat::Model,
     dae: &dae::Dae,
 ) -> bool {
@@ -156,7 +160,7 @@ fn output_alias_skip_reason(
     eq: &flat::Equation,
     ctx: &EqFilterContext<'_>,
     dae: &dae::Dae,
-) -> Option<flat::VarName> {
+) -> Option<rumoca_core::VarName> {
     let (output_name, peer_name) = get_component_alias_connection_side(eq, dae)?;
     if !output_has_component_equation(&output_name, ctx.outputs_with_component_eqs) {
         return None;
@@ -164,16 +168,18 @@ fn output_alias_skip_reason(
 
     // Preserve discrete output aliases (e.g. BooleanTable internal output ->
     // block output). Dropping these can disconnect runtime-discrete signal paths.
-    let is_discrete_signal = |name: &flat::VarName| {
+    let is_discrete_signal = |name: &rumoca_core::VarName| {
         name_resolution::resolve_var_name_with_subscript_fallback(name, |candidate| {
-            dae.discrete_valued
+            dae.variables
+                .discrete_valued
                 .contains_key(&flat_to_dae_var_name(candidate))
                 || dae
+                    .variables
                     .discrete_reals
                     .contains_key(&flat_to_dae_var_name(candidate))
                 || ctx.flat.variables.get(candidate).is_some_and(|var| {
                     var.is_discrete_type
-                        || matches!(var.variability, rumoca_ir_core::Variability::Discrete(_))
+                        || matches!(var.variability, rumoca_core::Variability::Discrete(_))
                 })
         })
         .is_some()
@@ -187,14 +193,16 @@ fn output_alias_skip_reason(
     let preserve_internal_input_alias = peer_name.as_ref().is_some_and(|peer| {
         let peer_is_discrete =
             name_resolution::resolve_var_name_with_subscript_fallback(peer, |candidate| {
-                dae.discrete_valued
+                dae.variables
+                    .discrete_valued
                     .contains_key(&flat_to_dae_var_name(candidate))
                     || dae
+                        .variables
                         .discrete_reals
                         .contains_key(&flat_to_dae_var_name(candidate))
                     || ctx.flat.variables.get(candidate).is_some_and(|var| {
                         var.is_discrete_type
-                            || matches!(var.variability, rumoca_ir_core::Variability::Discrete(_))
+                            || matches!(var.variability, rumoca_core::Variability::Discrete(_))
                     })
             })
             .is_some();
@@ -215,7 +223,7 @@ fn output_alias_skip_reason(
 /// Collect variables that have component equations (non-connection equations).
 ///
 /// This is used to determine when alias-style connections can be skipped.
-fn collect_vars_with_component_equations(flat: &flat::Model) -> HashSet<flat::VarName> {
+fn collect_vars_with_component_equations(flat: &flat::Model) -> HashSet<rumoca_core::VarName> {
     let mut outputs_with_equations = HashSet::default();
 
     for eq in &flat.equations {
@@ -225,10 +233,10 @@ fn collect_vars_with_component_equations(flat: &flat::Model) -> HashSet<flat::Va
         }
 
         // Check if this equation defines an output
-        let flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
+        let rumoca_core::Expression::Binary { op, lhs, .. } = &eq.residual else {
             continue;
         };
-        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_core::OpBinary::Sub) {
             continue;
         }
 
@@ -240,14 +248,14 @@ fn collect_vars_with_component_equations(flat: &flat::Model) -> HashSet<flat::Va
     // Algorithm output assignments also define component variables.
     for algorithm in &flat.algorithms {
         for output in &algorithm.outputs {
-            outputs_with_equations.insert(output.clone());
+            outputs_with_equations.insert(output.var_name().clone());
         }
     }
 
     outputs_with_equations
 }
 
-fn collect_non_connection_rhs_var_refs(flat: &flat::Model) -> HashSet<flat::VarName> {
+fn collect_non_connection_rhs_var_refs(flat: &flat::Model) -> HashSet<rumoca_core::VarName> {
     let mut rhs_var_refs = HashSet::default();
 
     for eq in &flat.equations {
@@ -256,8 +264,8 @@ fn collect_non_connection_rhs_var_refs(flat: &flat::Model) -> HashSet<flat::VarN
         }
 
         match &eq.residual {
-            flat::Expression::Binary {
-                op: rumoca_ir_core::OpBinary::Sub(_),
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
                 rhs,
                 ..
             } => {
@@ -277,18 +285,18 @@ fn collect_non_connection_rhs_var_refs(flat: &flat::Model) -> HashSet<flat::VarN
 }
 
 fn output_has_component_equation(
-    output_name: &flat::VarName,
-    outputs_with_component_eqs: &HashSet<flat::VarName>,
+    output_name: &rumoca_core::VarName,
+    outputs_with_component_eqs: &HashSet<rumoca_core::VarName>,
 ) -> bool {
     if outputs_with_component_eqs.contains(output_name) {
         return true;
     }
-    subscript_fallback_chain(output_name)
+    subscript_fallback_chain(output_name.as_str())
         .into_iter()
         .any(|candidate| outputs_with_component_eqs.contains(&candidate))
 }
 
-fn collect_top_level_overconstrained_connectors(flat: &flat::Model) -> HashSet<String> {
+fn collect_top_level_overconstrained_connectors(flat: &flat::Model) -> IndexSet<String> {
     // Normalize connector array names: `plug[1]` and `plug` should map to
     // the same top-level connector when applying interface-flow rules.
     let normalized_top_level_connectors =
@@ -304,7 +312,7 @@ fn collect_top_level_overconstrained_connectors(flat: &flat::Model) -> HashSet<S
 
 fn is_unconnected_flow_from_top_level_overconstrained_connector(
     eq: &flat::Equation,
-    top_level_oc_connectors: &HashSet<String>,
+    top_level_oc_connectors: &IndexSet<String>,
 ) -> bool {
     let flat::EquationOrigin::UnconnectedFlow { variable } = &eq.origin else {
         return false;
@@ -318,7 +326,6 @@ struct EqFilterStats {
     kept_flow_sum: usize,
     kept_unconnected_flow: usize,
     kept_other: usize,
-    skipped_duplicates: usize,
     skipped_top_level_oc: usize,
     skipped_input_input: usize,
     skipped_output_alias: usize,
@@ -338,20 +345,19 @@ impl EqFilterStats {
     }
 
     fn log(&self) {
-        eprintln!(
-            "eq-filter: kept(connection={}, flow_sum={}, unconnected_flow={}, other={}) skipped(dup={}, top_level_oc={}, input_input={}, output_alias={}, input_default={}, explicit_zero={}, inferred_zero={})",
+        crate::log_equation_filter_debug(format!(
+            "eq-filter: kept(connection={}, flow_sum={}, unconnected_flow={}, other={}) skipped(top_level_oc={}, input_input={}, output_alias={}, input_default={}, explicit_zero={}, inferred_zero={})",
             self.kept_connection,
             self.kept_flow_sum,
             self.kept_unconnected_flow,
             self.kept_other,
-            self.skipped_duplicates,
             self.skipped_top_level_oc,
             self.skipped_input_input,
             self.skipped_output_alias,
             self.skipped_input_default,
             self.skipped_explicit_zero,
             self.skipped_inferred_zero
-        );
+        ));
     }
 }
 
@@ -377,48 +383,32 @@ fn classify_equation_scalar_count(
 
 /// Convert flat equations to DAE form and add them to the unified f_x vector.
 ///
-/// All continuous equations go into `dae.f_x` (MLS B.1a) — no ODE/algebraic/output split.
+/// All continuous equations go into `dae.continuous.equations` (MLS B.1a) — no ODE/algebraic/output split.
 /// Equation classification (which equation solves which variable) is deferred to
 /// structural analysis.
 fn log_skip(debug_eq_filter: bool, reason: &str, eq: &flat::Equation) {
     if debug_eq_filter {
-        eprintln!(
+        crate::log_equation_filter_debug(format!(
             "eq-filter skip[{reason}] origin={} residual={:?}",
             eq.origin, eq.residual
-        );
+        ));
     }
 }
 
-fn log_kept_if_matches_patterns(eq: &flat::Equation, scalar_count: usize) {
-    let Ok(patterns) = std::env::var("RUMOCA_DEBUG_EQ_FILTER_PATTERNS") else {
-        return;
-    };
-    let patterns: Vec<_> = patterns
-        .split(',')
-        .map(str::trim)
-        .filter(|pattern| !pattern.is_empty())
-        .collect();
-    if patterns.is_empty() {
-        return;
-    }
-    let origin = eq.origin.to_string();
-    let residual = format!("{:?}", eq.residual);
-    if patterns
-        .iter()
-        .any(|pattern| origin.contains(pattern) || residual.contains(pattern))
-    {
-        eprintln!(
-            "eq-filter kept origin={} scalar_count={} residual={residual}",
-            eq.origin, scalar_count
-        );
+fn log_kept(debug_eq_filter: bool, eq: &flat::Equation, scalar_count: usize) {
+    if debug_eq_filter {
+        crate::log_equation_filter_debug(format!(
+            "eq-filter kept origin={} scalar_count={} residual={:?}",
+            eq.origin, scalar_count, eq.residual
+        ));
     }
 }
 
 struct EqFilterContext<'a> {
     flat: &'a flat::Model,
-    outputs_with_component_eqs: &'a HashSet<flat::VarName>,
-    non_connection_rhs_var_refs: &'a HashSet<flat::VarName>,
-    top_level_oc_connectors: &'a HashSet<String>,
+    outputs_with_component_eqs: &'a HashSet<rumoca_core::VarName>,
+    non_connection_rhs_var_refs: &'a HashSet<rumoca_core::VarName>,
+    top_level_oc_connectors: &'a IndexSet<String>,
     debug_eq_filter: bool,
 }
 
@@ -426,16 +416,8 @@ fn skip_equation_pre_classification(
     eq: &flat::Equation,
     ctx: &EqFilterContext<'_>,
     dae: &dae::Dae,
-    seen_residuals: &mut HashSet<String>,
     stats: &mut EqFilterStats,
 ) -> bool {
-    let residual_key = format!("{:?}", eq.residual);
-    if !seen_residuals.insert(residual_key) {
-        stats.skipped_duplicates += 1;
-        log_skip(ctx.debug_eq_filter, "duplicate", eq);
-        return true;
-    }
-
     if is_unconnected_flow_from_top_level_overconstrained_connector(eq, ctx.top_level_oc_connectors)
     {
         stats.skipped_top_level_oc += 1;
@@ -452,12 +434,12 @@ fn skip_equation_pre_classification(
     if let Some(output_name) = output_alias_skip_reason(eq, ctx, dae) {
         stats.skipped_output_alias += 1;
         if ctx.debug_eq_filter {
-            eprintln!(
+            crate::log_equation_filter_debug(format!(
                 "eq-filter skip[output_alias:{}] origin={} residual={:?}",
                 output_name.as_str(),
                 eq.origin,
                 eq.residual
-            );
+            ));
         }
         return true;
     }
@@ -481,7 +463,7 @@ fn compute_scalar_count(
     eq: &flat::Equation,
     flat: &flat::Model,
     prefix_counts: &FxHashMap<String, usize>,
-    linearized_embedded_lhs_bases: &HashSet<flat::VarName>,
+    linearized_embedded_lhs_bases: &HashSet<rumoca_core::VarName>,
     stats: &mut EqFilterStats,
     debug_eq_filter: bool,
 ) -> Option<usize> {
@@ -516,7 +498,429 @@ fn compute_scalar_count(
     Some(scalar_count)
 }
 
-fn route_classified_equation(dae: &mut dae::Dae, eq: &flat::Equation, dae_eq: dae::Equation) {
+fn record_field_specs_for_call(
+    name: &rumoca_core::Reference,
+    is_constructor: bool,
+    flat: &flat::Model,
+) -> Option<Vec<RecordFieldSpec>> {
+    let function = flat.functions.get(name.var_name())?;
+    let fields = if is_constructor || function.is_constructor {
+        function.inputs.clone()
+    } else {
+        let [output] = function.outputs.as_slice() else {
+            return None;
+        };
+        if output.type_class != Some(rumoca_core::ClassType::Record) {
+            return None;
+        }
+        record_constructor_fields_from_metadata(flat.functions.iter(), &output.type_name)?
+    };
+    RecordFieldSpec::from_params(fields)
+}
+
+#[derive(Debug, Clone)]
+struct RecordFieldSpec {
+    param: rumoca_core::FunctionParam,
+}
+
+impl RecordFieldSpec {
+    fn from_params(params: Vec<rumoca_core::FunctionParam>) -> Option<Vec<Self>> {
+        for param in &params {
+            assert!(
+                param.def_id.is_some(),
+                "record field `{}` has no DefId; record equation expansion requires resolved field identity",
+                param.name
+            );
+        }
+        (!params.is_empty()).then(|| {
+            params
+                .into_iter()
+                .map(|param| Self { param })
+                .collect::<Vec<_>>()
+        })
+    }
+
+    fn name(&self) -> &str {
+        self.param.name.as_str()
+    }
+
+    fn default(&self) -> Option<rumoca_core::Expression> {
+        self.param.default.clone()
+    }
+
+    fn field_access(
+        &self,
+        base: rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        rumoca_core::Expression::FieldAccess {
+            base: Box::new(base),
+            field: self.param.name.clone(),
+            span,
+        }
+    }
+
+    fn matches_component_ref(&self, field_ref: &rumoca_core::ComponentReference) -> bool {
+        self.param
+            .def_id
+            .is_some_and(|expected| field_ref.def_id == Some(expected))
+    }
+}
+
+fn record_field_specs_for_rhs(
+    rhs: &rumoca_core::Expression,
+    flat: &flat::Model,
+) -> Option<Vec<RecordFieldSpec>> {
+    match rhs {
+        rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor,
+            ..
+        } => record_field_specs_for_call(name, *is_constructor, flat),
+        _ => None,
+    }
+}
+
+fn named_constructor_arg<'a>(
+    args: &'a [rumoca_core::Expression],
+    field: &RecordFieldSpec,
+) -> Option<&'a rumoca_core::Expression> {
+    args.iter().find_map(|arg| {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: true,
+            ..
+        } = arg
+        else {
+            return None;
+        };
+        (name.as_str().strip_prefix("__rumoca_named_arg__.") == Some(field.name()))
+            .then(|| args.first())
+            .flatten()
+    })
+}
+
+fn constructor_field_arg(
+    args: &[rumoca_core::Expression],
+    field: &RecordFieldSpec,
+    index: usize,
+) -> Option<rumoca_core::Expression> {
+    if let Some(arg) = named_constructor_arg(args, field) {
+        return Some(arg.clone());
+    }
+    args.iter()
+        .filter(|arg| {
+            !matches!(arg, rumoca_core::Expression::FunctionCall { name, is_constructor: true, .. }
+                if name.as_str().starts_with("__rumoca_named_arg__."))
+        })
+        .nth(index)
+        .cloned()
+        .or_else(|| field.default())
+}
+
+fn rhs_field_expression(
+    rhs: &rumoca_core::Expression,
+    field: &RecordFieldSpec,
+    index: usize,
+    flat: &flat::Model,
+) -> rumoca_core::Expression {
+    if let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor,
+        ..
+    } = rhs
+        && flat
+            .functions
+            .get(name.var_name())
+            .is_some_and(|function| *is_constructor || function.is_constructor)
+        && let Some(arg) = constructor_field_arg(args, field, index)
+    {
+        return arg;
+    }
+
+    field.field_access(rhs.clone(), rhs.span().unwrap_or(rumoca_core::Span::DUMMY))
+}
+
+fn reference_for_variable(field_var: &flat::Variable) -> rumoca_core::Reference {
+    if let Some(component_ref) = field_var.component_ref.clone() {
+        return rumoca_core::Reference::with_component_reference(
+            field_var.name.as_str(),
+            component_ref,
+        );
+    }
+    rumoca_core::Reference::from_var_name(field_var.name.clone())
+}
+
+fn field_residual(
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn field_var_ref(field_var: &flat::Variable) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: reference_for_variable(field_var),
+        subscripts: Vec::new(),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn field_lhs_expression(field_vars: &[&flat::Variable]) -> rumoca_core::Expression {
+    if let [field_var] = field_vars {
+        return field_var_ref(field_var);
+    }
+    rumoca_core::Expression::Array {
+        elements: field_vars
+            .iter()
+            .map(|field_var| field_var_ref(field_var))
+            .collect(),
+        is_matrix: false,
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn field_scalar_count(field_vars: &[&flat::Variable]) -> usize {
+    field_vars
+        .iter()
+        .map(|field_var| super::compute_var_size(&field_var.dims).max(1))
+        .sum::<usize>()
+        .max(1)
+}
+
+fn component_ref_matches_record_field(
+    lhs_ref: &rumoca_core::ComponentReference,
+    field_ref: &rumoca_core::ComponentReference,
+    field: &RecordFieldSpec,
+) -> bool {
+    let lhs_parts = lhs_ref.parts.as_slice();
+    let field_parts = field_ref.parts.as_slice();
+    if field_parts.len() != lhs_parts.len() + 1 || !field.matches_component_ref(field_ref) {
+        return false;
+    }
+
+    let Some(lhs_leaf_index) = lhs_parts.len().checked_sub(1) else {
+        return false;
+    };
+    let field_leaf = &field_parts[field_parts.len() - 1];
+    for (lhs_index, lhs_part) in lhs_parts.iter().enumerate() {
+        let field_part = &field_parts[lhs_index];
+        if lhs_part.ident != field_part.ident {
+            return false;
+        }
+        if lhs_index != lhs_leaf_index {
+            if !subscripts_match_semantically(&lhs_part.subs, &field_part.subs) {
+                return false;
+            }
+            continue;
+        }
+        if record_owner_subscripts_match(lhs_part, field_part, field_leaf) {
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+fn record_owner_subscripts_match(
+    lhs_part: &rumoca_core::ComponentRefPart,
+    field_owner_part: &rumoca_core::ComponentRefPart,
+    field_leaf: &rumoca_core::ComponentRefPart,
+) -> bool {
+    if lhs_part.subs.is_empty() {
+        return true;
+    }
+    if subscripts_match_semantically(&lhs_part.subs, &field_owner_part.subs) {
+        return true;
+    }
+    field_owner_part.subs.is_empty() && subscript_prefix_matches(&field_leaf.subs, &lhs_part.subs)
+}
+
+fn subscripts_match_semantically(
+    lhs: &[rumoca_core::Subscript],
+    rhs: &[rumoca_core::Subscript],
+) -> bool {
+    lhs.len() == rhs.len()
+        && lhs
+            .iter()
+            .zip(rhs.iter())
+            .all(|(lhs, rhs)| subscript_matches_semantically(lhs, rhs))
+}
+
+fn subscript_matches_semantically(
+    lhs: &rumoca_core::Subscript,
+    rhs: &rumoca_core::Subscript,
+) -> bool {
+    match (lhs, rhs) {
+        (
+            rumoca_core::Subscript::Index { value: lhs, .. },
+            rumoca_core::Subscript::Index { value: rhs, .. },
+        ) => lhs == rhs,
+        (rumoca_core::Subscript::Colon { .. }, rumoca_core::Subscript::Colon { .. }) => true,
+        (
+            rumoca_core::Subscript::Expr { expr: lhs, .. },
+            rumoca_core::Subscript::Expr { expr: rhs, .. },
+        ) => rumoca_core::expressions_semantically_equal(lhs, rhs),
+        _ => false,
+    }
+}
+
+fn subscript_prefix_matches(
+    subscripts: &[rumoca_core::Subscript],
+    prefix: &[rumoca_core::Subscript],
+) -> bool {
+    subscripts.len() >= prefix.len()
+        && subscripts
+            .iter()
+            .zip(prefix.iter())
+            .all(|(subscript, expected)| subscript_matches_semantically(subscript, expected))
+}
+
+fn record_field_sort_key(
+    lhs_ref: &rumoca_core::ComponentReference,
+    field_ref: &rumoca_core::ComponentReference,
+) -> Vec<i64> {
+    let Some(lhs_leaf_index) = lhs_ref.parts.len().checked_sub(1) else {
+        return Vec::new();
+    };
+    let owner_subscripts = &field_ref.parts[lhs_leaf_index].subs;
+    let field_leaf_subscripts = field_ref
+        .parts
+        .last()
+        .map(|part| part.subs.as_slice())
+        .unwrap_or(&[]);
+    let sort_subscripts = if owner_subscripts.is_empty() {
+        field_leaf_subscripts
+    } else {
+        owner_subscripts
+    };
+    sort_subscripts
+        .iter()
+        .filter_map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => Some(*value),
+            _ => None,
+        })
+        .collect()
+}
+
+fn record_field_variables<'a>(
+    lhs_ref: &rumoca_core::Reference,
+    field: &RecordFieldSpec,
+    flat: &'a flat::Model,
+    span: rumoca_core::Span,
+) -> Result<Vec<&'a flat::Variable>, ToDaeError> {
+    let Some(lhs_component_ref) = lhs_ref.component_ref() else {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "record equation for `{}` has no structured component reference",
+                lhs_ref.as_str()
+            ),
+            span,
+        ));
+    };
+
+    let mut field_vars = flat
+        .variables
+        .values()
+        .filter(|field_var| {
+            field_var.component_ref.as_ref().is_some_and(|field_ref| {
+                component_ref_matches_record_field(lhs_component_ref, field_ref, field)
+            })
+        })
+        .collect::<Vec<_>>();
+
+    field_vars.sort_by_key(|field_var| {
+        field_var
+            .component_ref
+            .as_ref()
+            .map(|field_ref| record_field_sort_key(lhs_component_ref, field_ref))
+            .unwrap_or_default()
+    });
+    Ok(field_vars)
+}
+
+fn record_field_expansion_error(
+    lhs_name: &rumoca_core::Reference,
+    field: &RecordFieldSpec,
+    span: rumoca_core::Span,
+) -> ToDaeError {
+    ToDaeError::runtime_contract_violation_at(
+        format!(
+            "record equation for `{}` returned field `{}` but no matching flat field variable exists",
+            lhs_name.as_str(),
+            field.name()
+        ),
+        span,
+    )
+}
+
+pub(crate) fn expand_record_field_equation(
+    eq: &flat::Equation,
+    flat: &flat::Model,
+) -> Result<Option<Vec<flat::Equation>>, ToDaeError> {
+    let rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = &eq.residual
+    else {
+        return Ok(None);
+    };
+    let rumoca_core::Expression::VarRef {
+        name: lhs_name,
+        subscripts,
+        span: lhs_span,
+    } = lhs.as_ref()
+    else {
+        return Ok(None);
+    };
+    if !subscripts.is_empty()
+        || flat
+            .variables
+            .get(lhs_name.var_name())
+            .is_some_and(|var| var.is_primitive)
+    {
+        return Ok(None);
+    }
+
+    let Some(field_specs) = record_field_specs_for_rhs(rhs, flat) else {
+        return Ok(None);
+    };
+    let mut equations = Vec::new();
+    for (index, field) in field_specs.iter().enumerate() {
+        let field_vars = record_field_variables(lhs_name, field, flat, *lhs_span)?;
+        if field_vars.is_empty() {
+            return Err(record_field_expansion_error(lhs_name, field, eq.span));
+        }
+        let scalar_count = field_scalar_count(&field_vars);
+        equations.push(flat::Equation::new_array(
+            field_residual(
+                field_lhs_expression(&field_vars),
+                rhs_field_expression(rhs, field, index, flat),
+            ),
+            eq.span,
+            eq.origin.clone(),
+            scalar_count,
+        ));
+    }
+
+    Ok((!equations.is_empty()).then_some(equations))
+}
+
+fn route_classified_equation(
+    dae: &mut dae::Dae,
+    eq: &flat::Equation,
+    dae_eq: dae::Equation,
+    discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+) -> Result<(), ToDaeError> {
     let discrete_bucket = classify_residual_discrete_bucket(dae, &eq.residual);
 
     if eq.origin.is_connection() {
@@ -524,76 +928,99 @@ fn route_classified_equation(dae: &mut dae::Dae, eq: &flat::Equation, dae_eq: da
         // targeting discrete variables to the discrete partitions.
         match discrete_bucket {
             Some(ResidualDiscreteBucket::DiscreteValued) => {
-                if !push_explicit_discrete_assignments(dae, &dae_eq, true) {
-                    dae.f_m.push(dae_eq);
+                if !push_explicit_discrete_assignments(
+                    dae,
+                    &dae_eq,
+                    true,
+                    discrete_valued_lhs_counts,
+                )? {
+                    dae.discrete.valued_updates.push(dae_eq);
                 }
             }
             Some(ResidualDiscreteBucket::DiscreteReal | ResidualDiscreteBucket::Mixed) => {
-                dae.f_z.push(dae_eq);
+                dae.discrete.real_updates.push(dae_eq);
             }
             None => {
-                dae.f_x.push(dae_eq);
+                dae.continuous.equations.push(dae_eq);
             }
         }
-        return;
+        return Ok(());
     }
 
     match discrete_bucket {
         Some(ResidualDiscreteBucket::DiscreteValued) => {
-            if !push_explicit_discrete_assignments(dae, &dae_eq, true) {
-                dae.f_m.push(dae_eq);
+            if !push_explicit_discrete_assignments(dae, &dae_eq, true, discrete_valued_lhs_counts)?
+            {
+                dae.discrete.valued_updates.push(dae_eq);
             }
         }
         Some(ResidualDiscreteBucket::DiscreteReal | ResidualDiscreteBucket::Mixed) => {
             // Tuple equations can mix Real and discrete-valued targets
             // before scalarization. Keep them in the discrete update set
             // (f_z) so they are excluded from continuous residual solving.
-            dae.f_z.push(dae_eq);
+            dae.discrete.real_updates.push(dae_eq);
         }
         None => {
-            dae.f_x.push(dae_eq);
+            dae.continuous.equations.push(dae_eq);
         }
     }
+    Ok(())
 }
 
-fn is_numeric_zero(expr: &flat::Expression) -> bool {
+fn is_numeric_zero(expr: &rumoca_core::Expression) -> bool {
     match expr {
-        flat::Expression::Literal(flat::Literal::Integer(0)) => true,
-        flat::Expression::Literal(flat::Literal::Real(v)) => v.abs() <= f64::EPSILON,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(0),
+            ..
+        } => true,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(v),
+            ..
+        } => v.abs() <= f64::EPSILON,
         _ => false,
     }
 }
 
-fn pre_of_target(target: &flat::VarName) -> flat::Expression {
-    flat::Expression::BuiltinCall {
-        function: flat::BuiltinFunction::Pre,
-        args: vec![flat::Expression::VarRef {
-            name: target.clone(),
+fn pre_of_target(target: &rumoca_core::VarName) -> rumoca_core::Expression {
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Pre,
+        args: vec![rumoca_core::Expression::VarRef {
+            name: target.clone().into(),
             subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
         }],
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
-fn const_subscript_index_expr(expr: &flat::Expression) -> Option<i64> {
+fn const_subscript_index_expr(expr: &rumoca_core::Expression) -> Option<i64> {
     let value = match expr {
-        flat::Expression::Literal(flat::Literal::Integer(value)) => *value as f64,
-        flat::Expression::Literal(flat::Literal::Real(value)) => *value,
-        flat::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Minus(_),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => *value as f64,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } => *value,
+        rumoca_core::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
             rhs,
+            ..
         } => -const_subscript_index_expr(rhs)? as f64,
-        flat::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Plus(_),
+        rumoca_core::Expression::Unary {
+            op: rumoca_core::OpUnary::Plus,
             rhs,
+            ..
         } => const_subscript_index_expr(rhs)? as f64,
-        flat::Expression::Binary { op, lhs, rhs } => {
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
             let lhs = const_subscript_index_expr(lhs)? as f64;
             let rhs = const_subscript_index_expr(rhs)? as f64;
             match op {
-                rumoca_ir_core::OpBinary::Add(_) => lhs + rhs,
-                rumoca_ir_core::OpBinary::Sub(_) => lhs - rhs,
-                rumoca_ir_core::OpBinary::Mul(_) => lhs * rhs,
-                rumoca_ir_core::OpBinary::Div(_) => lhs / rhs,
+                rumoca_core::OpBinary::Add => lhs + rhs,
+                rumoca_core::OpBinary::Sub => lhs - rhs,
+                rumoca_core::OpBinary::Mul => lhs * rhs,
+                rumoca_core::OpBinary::Div => lhs / rhs,
                 _ => return None,
             }
         }
@@ -603,144 +1030,317 @@ fn const_subscript_index_expr(expr: &flat::Expression) -> Option<i64> {
     (value.is_finite() && value.fract() == 0.0).then_some(value as i64)
 }
 
-fn render_subscript(subscript: &flat::Subscript) -> String {
+fn render_subscript(subscript: &rumoca_core::Subscript) -> String {
     match subscript {
-        flat::Subscript::Index(index) => index.to_string(),
-        flat::Subscript::Colon => ":".to_string(),
+        rumoca_core::Subscript::Index { value: index, .. } => index.to_string(),
+        rumoca_core::Subscript::Colon { .. } => ":".to_string(),
         // MLS Chapter 10 indexing: explicit assignment targets must resolve
         // constant scalar subscripts to the concrete element name they define.
-        flat::Subscript::Expr(expr) => const_subscript_index_expr(expr)
+        rumoca_core::Subscript::Expr { expr, .. } => const_subscript_index_expr(expr)
             .map_or_else(|| format!("{expr:?}"), |index| index.to_string()),
     }
 }
 
 fn append_rendered_subscripts(
-    name: &flat::VarName,
-    subscripts: &[flat::Subscript],
-) -> flat::VarName {
+    name: &str,
+    subscripts: &[rumoca_core::Subscript],
+) -> rumoca_core::VarName {
     if subscripts.is_empty() {
-        return name.clone();
+        return rumoca_core::VarName::new(name);
     }
     let rendered = subscripts
         .iter()
         .map(render_subscript)
         .collect::<Vec<_>>()
         .join(",");
-    flat::VarName::new(format!("{}[{rendered}]", name.as_str()))
+    rumoca_core::VarName::new(format!("{name}[{rendered}]"))
 }
 
-fn explicit_assignment_target(expr: &flat::Expression) -> Option<flat::VarName> {
+fn explicit_assignment_target(expr: &rumoca_core::Expression) -> Option<rumoca_core::VarName> {
     match expr {
         // MLS Appendix B B.1c with MLS Chapter 10 indexing: explicit discrete
         // assignments must preserve the full indexed/field-qualified target.
-        flat::Expression::VarRef { name, subscripts } => {
-            Some(append_rendered_subscripts(name, subscripts))
-        }
-        flat::Expression::Index { base, subscripts } => {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => Some(append_rendered_subscripts(name.as_str(), subscripts)),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
             let base = explicit_assignment_target(base)?;
-            Some(append_rendered_subscripts(&base, subscripts))
+            Some(append_rendered_subscripts(base.as_str(), subscripts))
         }
-        flat::Expression::FieldAccess { base, field } => {
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
             let base = explicit_assignment_target(base)?;
-            Some(flat::VarName::new(format!("{}.{}", base.as_str(), field)))
+            Some(rumoca_core::VarName::new(format!(
+                "{}.{}",
+                base.as_str(),
+                field
+            )))
         }
         _ => None,
     }
 }
 
 fn collect_explicit_discrete_assignments(
-    expr: &flat::Expression,
-) -> Option<HashMap<flat::VarName, flat::Expression>> {
+    expr: &rumoca_core::Expression,
+    dae: &dae::Dae,
+    discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
     match expr {
-        flat::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(_),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
             lhs,
             rhs,
+            ..
         } => {
-            if is_numeric_zero(lhs) {
-                if let Some(assignments) = collect_explicit_discrete_assignments(rhs) {
-                    return Some(assignments);
-                }
-                let target = explicit_assignment_target(rhs)?;
-                let mut result = HashMap::new();
-                result.insert(target, flat::Expression::Literal(flat::Literal::Integer(0)));
-                return Some(result);
-            }
-            if is_numeric_zero(rhs) {
-                if let Some(assignments) = collect_explicit_discrete_assignments(lhs) {
-                    return Some(assignments);
-                }
-                let target = explicit_assignment_target(lhs)?;
-                let mut result = HashMap::new();
-                result.insert(target, flat::Expression::Literal(flat::Literal::Integer(0)));
-                return Some(result);
-            }
-            let name = explicit_assignment_target(lhs)?;
-            let mut result = HashMap::new();
-            result.insert(name, rhs.as_ref().clone());
-            Some(result)
+            collect_binary_explicit_discrete_assignments(lhs, rhs, dae, discrete_valued_lhs_counts)
         }
-        flat::Expression::If {
+        rumoca_core::Expression::If {
             branches,
             else_branch,
-        } => {
-            let mut branch_maps = Vec::new();
-            for (condition, value) in branches {
-                let assignments = collect_explicit_discrete_assignments(value)?;
-                branch_maps.push((condition.clone(), assignments));
-            }
-
-            let else_map = collect_explicit_discrete_assignments(else_branch)?;
-            let mut target_order = Vec::<flat::VarName>::new();
-            let mut seen = HashSet::new();
-            for (_, assignments) in &branch_maps {
-                for target in assignments.keys() {
-                    push_unique_target(&mut target_order, &mut seen, target);
-                }
-            }
-            for target in else_map.keys() {
-                push_unique_target(&mut target_order, &mut seen, target);
-            }
-
-            let mut result = HashMap::new();
-            for target in target_order {
-                let branch_values = branch_maps
-                    .iter()
-                    .map(|(condition, assignments)| {
-                        let rhs = assignments
-                            .get(&target)
-                            .cloned()
-                            .unwrap_or_else(|| pre_of_target(&target));
-                        (condition.clone(), rhs)
-                    })
-                    .collect();
-                let else_value = else_map
-                    .get(&target)
-                    .cloned()
-                    .unwrap_or_else(|| pre_of_target(&target));
-                result.insert(
-                    target,
-                    flat::Expression::If {
-                        branches: branch_values,
-                        else_branch: Box::new(else_value),
-                    },
-                );
-            }
-
-            Some(result)
-        }
-        flat::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Minus(_),
+            ..
+        } => collect_if_explicit_discrete_assignments(
+            branches,
+            else_branch,
+            dae,
+            discrete_valued_lhs_counts,
+        ),
+        rumoca_core::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
             rhs,
-        } => collect_explicit_discrete_assignments(rhs),
-        _ => None,
+            ..
+        } => collect_explicit_discrete_assignments(rhs, dae, discrete_valued_lhs_counts),
+        _ => Ok(None),
     }
 }
 
+fn collect_binary_explicit_discrete_assignments(
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    dae: &dae::Dae,
+    discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
+    if let Some(assignments) =
+        collect_oriented_discrete_alias_assignment(lhs, rhs, dae, discrete_valued_lhs_counts)?
+    {
+        return Ok(Some(assignments));
+    }
+    if is_numeric_zero(lhs) {
+        return collect_zero_rhs_discrete_assignment(rhs, dae, discrete_valued_lhs_counts);
+    }
+    if is_numeric_zero(rhs) {
+        return collect_zero_rhs_discrete_assignment(lhs, dae, discrete_valued_lhs_counts);
+    }
+    let Some(name) = explicit_assignment_target(lhs) else {
+        return Ok(None);
+    };
+    let mut result = HashMap::new();
+    result.insert(name, rhs.clone());
+    Ok(Some(result))
+}
+
+fn collect_zero_rhs_discrete_assignment(
+    expr: &rumoca_core::Expression,
+    dae: &dae::Dae,
+    discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
+    if let Some(assignments) =
+        collect_explicit_discrete_assignments(expr, dae, discrete_valued_lhs_counts)?
+    {
+        return Ok(Some(assignments));
+    }
+    let Some(target) = explicit_assignment_target(expr) else {
+        return Ok(None);
+    };
+    let mut result = HashMap::new();
+    result.insert(target, integer_zero_expr());
+    Ok(Some(result))
+}
+
+fn integer_zero_expr() -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Integer(0),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn collect_if_explicit_discrete_assignments(
+    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &rumoca_core::Expression,
+    dae: &dae::Dae,
+    discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
+    let Some((branch_maps, else_map)) = collect_discrete_assignment_branches(
+        branches,
+        else_branch,
+        dae,
+        discrete_valued_lhs_counts,
+    )?
+    else {
+        return Ok(None);
+    };
+    let target_order = ordered_discrete_assignment_targets(&branch_maps, &else_map);
+    Ok(Some(build_if_discrete_assignment_map(
+        target_order,
+        &branch_maps,
+        &else_map,
+    )))
+}
+
+type DiscreteAssignmentMap = HashMap<rumoca_core::VarName, rumoca_core::Expression>;
+type DiscreteBranchAssignments = Vec<(rumoca_core::Expression, DiscreteAssignmentMap)>;
+
+fn collect_discrete_assignment_branches(
+    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &rumoca_core::Expression,
+    dae: &dae::Dae,
+    discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+) -> Result<Option<(DiscreteBranchAssignments, DiscreteAssignmentMap)>, ToDaeError> {
+    let mut branch_maps = Vec::new();
+    for (condition, value) in branches {
+        let Some(assignments) =
+            collect_explicit_discrete_assignments(value, dae, discrete_valued_lhs_counts)?
+        else {
+            return Ok(None);
+        };
+        branch_maps.push((condition.clone(), assignments));
+    }
+    let Some(else_map) =
+        collect_explicit_discrete_assignments(else_branch, dae, discrete_valued_lhs_counts)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((branch_maps, else_map)))
+}
+
+fn ordered_discrete_assignment_targets(
+    branch_maps: &DiscreteBranchAssignments,
+    else_map: &DiscreteAssignmentMap,
+) -> Vec<rumoca_core::VarName> {
+    let mut target_order = Vec::<rumoca_core::VarName>::new();
+    let mut seen = HashSet::new();
+    for (_, assignments) in branch_maps {
+        for target in assignments.keys() {
+            push_unique_target(&mut target_order, &mut seen, target);
+        }
+    }
+    for target in else_map.keys() {
+        push_unique_target(&mut target_order, &mut seen, target);
+    }
+    target_order
+}
+
+fn build_if_discrete_assignment_map(
+    target_order: Vec<rumoca_core::VarName>,
+    branch_maps: &DiscreteBranchAssignments,
+    else_map: &DiscreteAssignmentMap,
+) -> DiscreteAssignmentMap {
+    let mut result = HashMap::new();
+    for target in target_order {
+        result.insert(
+            target.clone(),
+            build_if_discrete_assignment_expr(&target, branch_maps, else_map),
+        );
+    }
+    result
+}
+
+fn build_if_discrete_assignment_expr(
+    target: &rumoca_core::VarName,
+    branch_maps: &DiscreteBranchAssignments,
+    else_map: &DiscreteAssignmentMap,
+) -> rumoca_core::Expression {
+    let branch_values = branch_maps
+        .iter()
+        .map(|(condition, assignments)| {
+            let rhs = assignments
+                .get(target)
+                .cloned()
+                .unwrap_or_else(|| pre_of_target(target));
+            (condition.clone(), rhs)
+        })
+        .collect();
+    let else_value = else_map
+        .get(target)
+        .cloned()
+        .unwrap_or_else(|| pre_of_target(target));
+    rumoca_core::Expression::If {
+        branches: branch_values,
+        else_branch: Box::new(else_value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn collect_oriented_discrete_alias_assignment(
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    dae: &dae::Dae,
+    discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+) -> Result<Option<HashMap<rumoca_core::VarName, rumoca_core::Expression>>, ToDaeError> {
+    let Some(lhs_target) = explicit_assignment_target(lhs) else {
+        return Ok(None);
+    };
+    let Some(rhs_target) = explicit_assignment_target(rhs) else {
+        return Ok(None);
+    };
+    if lhs_target == rhs_target {
+        return Ok(None);
+    }
+    if lhs_target.as_str().contains('[') {
+        return Ok(None);
+    }
+    if !is_discrete_valued_target(dae, &lhs_target) || !is_discrete_valued_target(dae, &rhs_target)
+    {
+        return Ok(None);
+    }
+
+    let lhs_definitions = lookup_discrete_lhs_count(&lhs_target, discrete_valued_lhs_counts)
+        .ok_or_else(|| ToDaeError::RuntimeContractViolation {
+            detail: format!("missing discrete-valued LHS definition count for `{lhs_target}`"),
+            span: rumoca_core::span_to_source_span(lhs.span().unwrap_or(rumoca_core::Span::DUMMY)),
+        })?;
+    let rhs_definitions = lookup_discrete_lhs_count(&rhs_target, discrete_valued_lhs_counts)
+        .ok_or_else(|| ToDaeError::RuntimeContractViolation {
+            detail: format!("missing discrete-valued LHS definition count for `{rhs_target}`"),
+            span: rumoca_core::span_to_source_span(rhs.span().unwrap_or(rumoca_core::Span::DUMMY)),
+        })?;
+    if lhs_definitions <= 1 || rhs_definitions != 0 {
+        return Ok(None);
+    }
+
+    let mut result = HashMap::new();
+    result.insert(rhs_target, lhs.clone());
+    Ok(Some(result))
+}
+
+fn lookup_discrete_lhs_count(
+    target: &rumoca_core::VarName,
+    counts: &HashMap<rumoca_core::VarName, usize>,
+) -> Option<usize> {
+    counts.get(target).copied().or_else(|| {
+        subscript_fallback_chain(target.as_str())
+            .into_iter()
+            .find_map(|fallback| counts.get(&fallback).copied())
+    })
+}
+
+fn is_discrete_valued_target(dae: &dae::Dae, target: &rumoca_core::VarName) -> bool {
+    dae.variables
+        .discrete_valued
+        .contains_key(&flat_to_dae_var_name(target))
+        || subscript_fallback_chain(target.as_str())
+            .into_iter()
+            .any(|candidate| {
+                dae.variables
+                    .discrete_valued
+                    .contains_key(&flat_to_dae_var_name(&candidate))
+            })
+}
+
 fn push_unique_target(
-    target_order: &mut Vec<flat::VarName>,
-    seen: &mut HashSet<flat::VarName>,
-    target: &flat::VarName,
+    target_order: &mut Vec<rumoca_core::VarName>,
+    seen: &mut HashSet<rumoca_core::VarName>,
+    target: &rumoca_core::VarName,
 ) {
     if !seen.insert(target.clone()) {
         return;
@@ -750,16 +1350,21 @@ fn push_unique_target(
 
 fn discrete_target_scalar_count(
     dae: &dae::Dae,
-    target: &flat::VarName,
+    target: &rumoca_core::VarName,
     fallback_scalar_count: usize,
 ) -> usize {
-    if let Some(variable) = dae.discrete_valued.get(&flat_to_dae_var_name(target)) {
+    if let Some(variable) = dae
+        .variables
+        .discrete_valued
+        .get(&flat_to_dae_var_name(target))
+    {
         return variable.size().max(1);
     }
 
     // Subscripted assignments should count as scalar updates.
-    for candidate in subscript_fallback_chain(target) {
+    for candidate in subscript_fallback_chain(target.as_str()) {
         if dae
+            .variables
             .discrete_valued
             .contains_key(&flat_to_dae_var_name(&candidate))
         {
@@ -774,10 +1379,13 @@ fn push_explicit_discrete_assignments(
     dae: &mut dae::Dae,
     equation: &dae::Equation,
     discrete_valued: bool,
-) -> bool {
+    discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
+) -> Result<bool, ToDaeError> {
     let rhs = crate::dae_to_flat_expression(&equation.rhs);
-    let Some(assignments) = collect_explicit_discrete_assignments(&rhs) else {
-        return false;
+    let Some(assignments) =
+        collect_explicit_discrete_assignments(&rhs, dae, discrete_valued_lhs_counts)?
+    else {
+        return Ok(false);
     };
 
     let mut ordered: Vec<_> = assignments.into_iter().collect();
@@ -797,26 +1405,26 @@ fn push_explicit_discrete_assignments(
             scalar_count,
         );
         if discrete_valued {
-            dae.f_m.push(explicit);
+            dae.discrete.valued_updates.push(explicit);
         } else {
-            dae.f_z.push(explicit);
+            dae.discrete.real_updates.push(explicit);
         }
     }
 
-    true
+    Ok(true)
 }
 
 pub(super) fn classify_equations(
     dae: &mut dae::Dae,
     flat: &flat::Model,
     prefix_counts: &FxHashMap<String, usize>,
-) {
+) -> Result<(), ToDaeError> {
     let outputs_with_component_eqs = collect_vars_with_component_equations(flat);
     let non_connection_rhs_var_refs = collect_non_connection_rhs_var_refs(flat);
     let top_level_oc_connectors = collect_top_level_overconstrained_connectors(flat);
     let linearized_embedded_lhs_bases = super::collect_linearized_embedded_lhs_bases(flat);
-    let debug_eq_filter = std::env::var("RUMOCA_DEBUG_EQ_FILTER").is_ok();
-    let mut seen_residuals: HashSet<String> = HashSet::default();
+    let discrete_valued_lhs_counts = collect_discrete_valued_lhs_target_counts(dae, flat);
+    let debug_eq_filter = crate::equation_filter_debug_enabled();
     let mut stats = EqFilterStats::default();
     let filter_ctx = EqFilterContext {
         flat,
@@ -826,242 +1434,75 @@ pub(super) fn classify_equations(
         debug_eq_filter,
     };
 
-    for eq in &flat.equations {
-        if skip_equation_pre_classification(eq, &filter_ctx, dae, &mut seen_residuals, &mut stats) {
+    let mut flat_to_fx_index: IndexMap<usize, usize> = IndexMap::new();
+
+    for (flat_idx, eq) in flat.equations.iter().enumerate() {
+        if skip_equation_pre_classification(eq, &filter_ctx, dae, &mut stats) {
             continue;
         }
 
-        let Some(scalar_count) = compute_scalar_count(
-            eq,
-            flat,
-            prefix_counts,
-            &linearized_embedded_lhs_bases,
-            &mut stats,
-            debug_eq_filter,
-        ) else {
-            continue;
-        };
+        let fx_index_before = dae.continuous.equations.len();
+        let expanded_equations =
+            expand_record_field_equation(eq, flat)?.unwrap_or_else(|| vec![eq.clone()]);
+        for expanded_eq in &expanded_equations {
+            let Some(scalar_count) = compute_scalar_count(
+                expanded_eq,
+                flat,
+                prefix_counts,
+                &linearized_embedded_lhs_bases,
+                &mut stats,
+                debug_eq_filter,
+            ) else {
+                continue;
+            };
 
-        log_kept_if_matches_patterns(eq, scalar_count);
-        if debug_eq_filter {
-            stats.record_kept(&eq.origin);
+            log_kept(debug_eq_filter, expanded_eq, scalar_count);
+            if debug_eq_filter {
+                stats.record_kept(&expanded_eq.origin);
+            }
+            let dae_eq = dae::Equation::residual_array(
+                flat_to_dae_expression(&expanded_eq.residual),
+                expanded_eq.span,
+                expanded_eq.origin.to_string(),
+                scalar_count,
+            );
+            route_classified_equation(dae, expanded_eq, dae_eq, &discrete_valued_lhs_counts)?;
         }
-        let dae_eq = dae::Equation::residual_array(
-            flat_to_dae_expression(&eq.residual),
-            eq.span,
-            eq.origin.to_string(),
-            scalar_count,
-        );
-        route_classified_equation(dae, eq, dae_eq);
+        if dae.continuous.equations.len() == fx_index_before + 1 {
+            flat_to_fx_index.insert(flat_idx, fx_index_before);
+        }
     }
+
+    dae.continuous.for_equations = remap_flat_for_equations(&flat.for_equations, &flat_to_fx_index);
 
     if debug_eq_filter {
         stats.log();
     }
+    Ok(())
+}
+
+fn collect_discrete_valued_lhs_target_counts(
+    dae: &dae::Dae,
+    flat: &flat::Model,
+) -> HashMap<rumoca_core::VarName, usize> {
+    let mut counts = HashMap::new();
+    for target in dae.variables.discrete_valued.keys() {
+        counts.insert(crate::dae_to_flat_var_name(target), 0);
+    }
+    for equation in &flat.equations {
+        if classify_residual_discrete_bucket(dae, &equation.residual)
+            != Some(ResidualDiscreteBucket::DiscreteValued)
+        {
+            continue;
+        }
+        for target in crate::discrete_partition::residual_lhs_targets(&equation.residual) {
+            if is_discrete_valued_target(dae, &target) {
+                *counts.entry(target).or_insert(0) += 1;
+            }
+        }
+    }
+    counts
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use rumoca_core::Span;
-    use rumoca_ir_dae as dae;
-    use rumoca_ir_flat as flat;
-
-    use super::{EqFilterContext, output_alias_skip_reason, output_has_component_equation};
-
-    #[test]
-    fn test_output_has_component_equation_matches_unsubscripted_base() {
-        let outputs_with_component_eqs: HashSet<flat::VarName> =
-            [flat::VarName::new("y")].into_iter().collect();
-        assert!(output_has_component_equation(
-            &flat::VarName::new("y[2]"),
-            &outputs_with_component_eqs
-        ));
-    }
-
-    #[test]
-    fn test_output_has_component_equation_matches_multilayer_unsubscripted_base() {
-        let outputs_with_component_eqs: HashSet<flat::VarName> =
-            [flat::VarName::new("bus.signal")].into_iter().collect();
-        assert!(output_has_component_equation(
-            &flat::VarName::new("bus[1].signal[2]"),
-            &outputs_with_component_eqs
-        ));
-    }
-
-    #[test]
-    fn test_output_alias_skip_preserves_internal_input_alias_connection() {
-        let flat_model = flat::Model::new();
-        let outputs_with_component_eqs: HashSet<flat::VarName> =
-            [flat::VarName::new("booleanPulse1.y")]
-                .into_iter()
-                .collect();
-        let non_connection_rhs_var_refs: HashSet<flat::VarName> =
-            [flat::VarName::new("multiSwitch1.u")].into_iter().collect();
-        let top_level_oc_connectors: HashSet<String> = HashSet::default();
-        let ctx = EqFilterContext {
-            flat: &flat_model,
-            outputs_with_component_eqs: &outputs_with_component_eqs,
-            non_connection_rhs_var_refs: &non_connection_rhs_var_refs,
-            top_level_oc_connectors: &top_level_oc_connectors,
-            debug_eq_filter: false,
-        };
-
-        let mut dae_model = dae::Dae::new();
-        dae_model.inputs.insert(
-            dae::VarName::new("multiSwitch1.u"),
-            dae::Variable::new(dae::VarName::new("multiSwitch1.u")),
-        );
-        dae_model.discrete_valued.insert(
-            dae::VarName::new("multiSwitch1.u"),
-            dae::Variable::new(dae::VarName::new("multiSwitch1.u")),
-        );
-
-        let eq = flat::Equation::new(
-            flat::Expression::Binary {
-                op: flat::OpBinary::Sub(Default::default()),
-                lhs: Box::new(flat::Expression::VarRef {
-                    name: flat::VarName::new("booleanPulse1.y"),
-                    subscripts: vec![],
-                }),
-                rhs: Box::new(flat::Expression::VarRef {
-                    name: flat::VarName::new("multiSwitch1.u[1]"),
-                    subscripts: vec![],
-                }),
-            },
-            Span::DUMMY,
-            flat::EquationOrigin::Connection {
-                lhs: "booleanPulse1.y".to_string(),
-                rhs: "multiSwitch1.u[1]".to_string(),
-            },
-        );
-
-        assert!(
-            output_alias_skip_reason(&eq, &ctx, &dae_model).is_none(),
-            "internal input alias connections must be preserved"
-        );
-    }
-
-    #[test]
-    fn test_output_alias_skip_preserves_discrete_output_alias_connection() {
-        let mut flat_model = flat::Model::new();
-        flat_model.variables.insert(
-            flat::VarName::new("table1.y"),
-            flat::Variable {
-                name: flat::VarName::new("table1.y"),
-                is_discrete_type: true,
-                ..Default::default()
-            },
-        );
-        flat_model.variables.insert(
-            flat::VarName::new("table1.realToBoolean.y"),
-            flat::Variable {
-                name: flat::VarName::new("table1.realToBoolean.y"),
-                is_discrete_type: true,
-                ..Default::default()
-            },
-        );
-
-        let outputs_with_component_eqs: HashSet<flat::VarName> =
-            [flat::VarName::new("table1.realToBoolean.y")]
-                .into_iter()
-                .collect();
-        let non_connection_rhs_var_refs: HashSet<flat::VarName> = HashSet::default();
-        let top_level_oc_connectors: HashSet<String> = HashSet::default();
-        let ctx = EqFilterContext {
-            flat: &flat_model,
-            outputs_with_component_eqs: &outputs_with_component_eqs,
-            non_connection_rhs_var_refs: &non_connection_rhs_var_refs,
-            top_level_oc_connectors: &top_level_oc_connectors,
-            debug_eq_filter: false,
-        };
-
-        let mut dae_model = dae::Dae::new();
-        dae_model.outputs.insert(
-            dae::VarName::new("table1.y"),
-            dae::Variable::new(dae::VarName::new("table1.y")),
-        );
-        dae_model.outputs.insert(
-            dae::VarName::new("table1.realToBoolean.y"),
-            dae::Variable::new(dae::VarName::new("table1.realToBoolean.y")),
-        );
-        dae_model.discrete_valued.insert(
-            dae::VarName::new("table1.y"),
-            dae::Variable::new(dae::VarName::new("table1.y")),
-        );
-        dae_model.discrete_valued.insert(
-            dae::VarName::new("table1.realToBoolean.y"),
-            dae::Variable::new(dae::VarName::new("table1.realToBoolean.y")),
-        );
-
-        let eq = flat::Equation::new(
-            flat::Expression::Binary {
-                op: flat::OpBinary::Sub(Default::default()),
-                lhs: Box::new(flat::Expression::VarRef {
-                    name: flat::VarName::new("table1.realToBoolean.y"),
-                    subscripts: vec![],
-                }),
-                rhs: Box::new(flat::Expression::VarRef {
-                    name: flat::VarName::new("table1.y"),
-                    subscripts: vec![],
-                }),
-            },
-            Span::DUMMY,
-            flat::EquationOrigin::Connection {
-                lhs: "table1.realToBoolean.y".to_string(),
-                rhs: "table1.y".to_string(),
-            },
-        );
-
-        assert!(
-            output_alias_skip_reason(&eq, &ctx, &dae_model).is_none(),
-            "discrete output alias connections must be preserved"
-        );
-    }
-
-    #[test]
-    fn test_output_alias_skip_applies_when_both_sides_are_component_defined() {
-        let flat_model = flat::Model::new();
-        let outputs_with_component_eqs: HashSet<flat::VarName> =
-            [flat::VarName::new("source.y"), flat::VarName::new("sink.u")]
-                .into_iter()
-                .collect();
-        let non_connection_rhs_var_refs: HashSet<flat::VarName> = HashSet::default();
-        let top_level_oc_connectors: HashSet<String> = HashSet::default();
-        let ctx = EqFilterContext {
-            flat: &flat_model,
-            outputs_with_component_eqs: &outputs_with_component_eqs,
-            non_connection_rhs_var_refs: &non_connection_rhs_var_refs,
-            top_level_oc_connectors: &top_level_oc_connectors,
-            debug_eq_filter: false,
-        };
-
-        let dae_model = dae::Dae::new();
-
-        let eq = flat::Equation::new(
-            flat::Expression::Binary {
-                op: flat::OpBinary::Sub(Default::default()),
-                lhs: Box::new(flat::Expression::VarRef {
-                    name: flat::VarName::new("source.y"),
-                    subscripts: vec![],
-                }),
-                rhs: Box::new(flat::Expression::VarRef {
-                    name: flat::VarName::new("sink.u"),
-                    subscripts: vec![],
-                }),
-            },
-            Span::DUMMY,
-            flat::EquationOrigin::Connection {
-                lhs: "source.y".to_string(),
-                rhs: "sink.u".to_string(),
-            },
-        );
-
-        assert_eq!(
-            output_alias_skip_reason(&eq, &ctx, &dae_model).as_ref(),
-            Some(&flat::VarName::new("source.y")),
-            "alias skip should apply for non-preserved output aliases"
-        );
-    }
-}
+mod tests;

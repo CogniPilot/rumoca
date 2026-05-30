@@ -64,7 +64,7 @@ pub(crate) fn walk_component_fields<V: ast::visitor::Visitor>(
     for subscript in &component.shape_expr {
         visitor.visit_subscript_ctx(subscript, SubscriptContext::ComponentShape)?;
     }
-    if !matches!(component.start, ast::Expression::Empty) {
+    if !matches!(component.start, ast::Expression::Empty { .. }) {
         visitor.visit_expression_ctx(&component.start, ExpressionContext::ComponentStart)?;
     }
     if let Some(binding) = &component.binding {
@@ -87,8 +87,10 @@ pub(crate) fn walk_expression_default<V: ast::visitor::Visitor>(
     expression: &ast::Expression,
 ) -> ControlFlow<()> {
     match expression {
-        ast::Expression::Empty | ast::Expression::Terminal { .. } => Continue(()),
-        ast::Expression::Range { start, step, end } => {
+        ast::Expression::Empty { .. } | ast::Expression::Terminal { .. } => Continue(()),
+        ast::Expression::Range {
+            start, step, end, ..
+        } => {
             visitor.visit_expression(start)?;
             if let Some(s) = step {
                 visitor.visit_expression(s)?;
@@ -103,12 +105,13 @@ pub(crate) fn walk_expression_default<V: ast::visitor::Visitor>(
         ast::Expression::ComponentReference(cr) => {
             visitor.visit_component_reference_ctx(cr, ComponentReferenceContext::Expression)
         }
-        ast::Expression::FunctionCall { comp, args } => {
+        ast::Expression::FunctionCall { comp, args, .. } => {
             visitor.visit_expr_function_call_ctx(comp, args, FunctionCallContext::Expression)
         }
         ast::Expression::ClassModification {
             target,
             modifications,
+            ..
         } => {
             visitor.visit_component_reference_ctx(
                 target,
@@ -117,19 +120,20 @@ pub(crate) fn walk_expression_default<V: ast::visitor::Visitor>(
             visitor.visit_each(modifications, V::visit_expression)
         }
         ast::Expression::NamedArgument { value, .. } => visitor.visit_expression(value),
-        ast::Expression::Modification { target, value } => {
+        ast::Expression::Modification { target, value, .. } => {
             visitor.visit_component_reference_ctx(
                 target,
                 ComponentReferenceContext::ModificationTarget,
             )?;
             visitor.visit_expression(value)
         }
-        ast::Expression::Array { elements, .. } | ast::Expression::Tuple { elements } => {
+        ast::Expression::Array { elements, .. } | ast::Expression::Tuple { elements, .. } => {
             visitor.visit_each(elements, V::visit_expression)
         }
         ast::Expression::If {
             branches,
             else_branch,
+            ..
         } => {
             for (cond, then_expr) in branches {
                 visitor.visit_expression(cond)?;
@@ -137,11 +141,12 @@ pub(crate) fn walk_expression_default<V: ast::visitor::Visitor>(
             }
             visitor.visit_expression(else_branch)
         }
-        ast::Expression::Parenthesized { inner } => visitor.visit_expression(inner),
+        ast::Expression::Parenthesized { inner, .. } => visitor.visit_expression(inner),
         ast::Expression::ArrayComprehension {
             expr,
             indices,
             filter,
+            ..
         } => {
             visitor.visit_expression(expr)?;
             visitor.visit_each(indices, V::visit_for_index)?;
@@ -150,7 +155,9 @@ pub(crate) fn walk_expression_default<V: ast::visitor::Visitor>(
             }
             Continue(())
         }
-        ast::Expression::ArrayIndex { base, subscripts } => {
+        ast::Expression::ArrayIndex {
+            base, subscripts, ..
+        } => {
             visitor.visit_expression(base)?;
             for subscript in subscripts {
                 visitor.visit_subscript_ctx(subscript, SubscriptContext::ArrayIndex)?;
