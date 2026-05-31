@@ -1,4 +1,5 @@
-use rumoca_core::{Diagnostic as CommonDiagnostic, Label, PrimaryLabel, SourceId, SourceMap, Span};
+use rumoca_core::{Diagnostic as CommonDiagnostic, Label, PrimaryLabel, SourceMap};
+use rumoca_core::{SourceId, Span};
 
 use crate::merge::{MergeSemanticError, MergeSemanticLabel};
 

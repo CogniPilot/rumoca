@@ -5,8 +5,19 @@ import { downloadAndUnzipVSCode } from "@vscode/test-electron";
 
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const vscodeDir = path.resolve(thisDir, "..");
-const cachePath = process.env.RUMOCA_VSCODE_SMOKE_CACHE_PATH
-  ? path.resolve(process.env.RUMOCA_VSCODE_SMOKE_CACHE_PATH)
+
+// Read a `--flag value` argument passed by `cargo xtask` (the harness's argv
+// channel for the smoke executable path).
+function argValue(name) {
+  const idx = process.argv.indexOf(name);
+  return idx >= 0 && idx + 1 < process.argv.length
+    ? process.argv[idx + 1]
+    : undefined;
+}
+
+const cachePathArg = argValue("--cache-path");
+const cachePath = cachePathArg
+  ? path.resolve(cachePathArg)
   : path.resolve(vscodeDir, ".vscode-test");
 
 async function main() {

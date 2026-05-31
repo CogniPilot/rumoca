@@ -1,190 +1,220 @@
-//! Record parameter lowering and array size insertion for flattened functions.
+//! Record parameter lowering for flattened functions.
 //!
 //! This module handles post-collection passes that transform function signatures
 //! and call sites:
 //! - Decomposing record-typed parameters into scalar fields
-//! - Rewriting FieldAccess expressions on record params to direct VarRef
-//! - Inserting size arguments for variable-size array parameters
+//! - Normalizing structured record-field component references
+//! - Rewriting FieldAccess expressions on decomposed record params to direct VarRef
 
+use rumoca_core::{ExpressionRewriter, StatementRewriter};
 use rumoca_ir_flat as flat;
 use std::collections::{HashMap, HashSet};
 
-/// Known record types and their ordered scalar field names.
-/// These records are decomposed into scalar fields for backends that
-/// don't support record-typed function parameters natively.
-const KNOWN_RECORD_FIELDS: &[(&str, &[&str])] = &[
-    ("Complex", &["re", "im"]),
-    ("Modelica.Units.SI.ComplexVoltage", &["re", "im"]),
-    ("Modelica.Units.SI.ComplexCurrent", &["re", "im"]),
-];
-
-/// Get the field names for a known record type, checking both short and qualified names.
-pub(super) fn record_fields(type_name: &str) -> Option<&'static [&'static str]> {
-    for &(name, fields) in KNOWN_RECORD_FIELDS {
-        if type_name == name || type_name.ends_with(&format!(".{name}")) {
-            return Some(fields);
-        }
-    }
-    None
+fn record_fields_from_constructor_metadata(
+    functions: &flat::VarNameIndexMap<rumoca_core::Function>,
+    type_name: &str,
+) -> Option<Vec<rumoca_core::FunctionParam>> {
+    functions
+        .iter()
+        .find(|(name, function)| {
+            function.is_constructor
+                && rumoca_core::qualified_type_name_matches(name.as_str(), type_name)
+        })
+        .map(|(_, function)| function.inputs.to_vec())
+        .filter(|fields: &Vec<rumoca_core::FunctionParam>| !fields.is_empty())
 }
 
 /// Rewrite FieldAccess on decomposed record params to direct VarRef.
-fn rewrite_field_access_in_statement(stmt: &mut flat::Statement, params: &HashSet<String>) {
-    match stmt {
-        flat::Statement::Assignment { value, .. } => {
-            rewrite_field_access_in_expr(value, params);
+fn rewrite_field_access_in_statement(stmt: &mut rumoca_core::Statement, params: &HashSet<String>) {
+    *stmt = RecordFieldAccessRewriter { params }.rewrite_statement(stmt);
+}
+
+struct RecordFieldAccessRewriter<'a> {
+    params: &'a HashSet<String>,
+}
+
+impl ExpressionRewriter for RecordFieldAccessRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let Some(rewritten) = rewrite_component_ref_record_field(expr, self.params) {
+            return rewritten;
         }
-        flat::Statement::For { indices, equations } => {
-            for idx in indices {
-                rewrite_field_access_in_expr(&mut idx.range, params);
-            }
-            for inner in equations {
-                rewrite_field_access_in_statement(inner, params);
-            }
+
+        if let rumoca_core::Expression::FieldAccess { base, field, span } = expr
+            && let rumoca_core::Expression::Index {
+                base: indexed_base,
+                subscripts,
+                ..
+            } = base.as_ref()
+            && let rumoca_core::Expression::VarRef { name, .. } = indexed_base.as_ref()
+            && self.params.contains(name.as_str())
+        {
+            return rumoca_core::Expression::VarRef {
+                name: record_param_field_reference(name.as_str(), field, *span),
+                subscripts: subscripts.clone(),
+                span: *span,
+            };
         }
-        flat::Statement::While(block) => {
-            rewrite_field_access_in_expr(&mut block.cond, params);
-            for inner in &mut block.stmts {
-                rewrite_field_access_in_statement(inner, params);
-            }
+
+        if let rumoca_core::Expression::FieldAccess { base, field, span } = expr
+            && let rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } = base.as_ref()
+            && subscripts.is_empty()
+            && self.params.contains(name.as_str())
+        {
+            return rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(format!("{}_{}", name.as_str(), field)),
+                subscripts: vec![],
+                span: *span,
+            };
         }
-        flat::Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                rewrite_field_access_in_expr(&mut block.cond, params);
-                for inner in &mut block.stmts {
-                    rewrite_field_access_in_statement(inner, params);
-                }
-            }
-            if let Some(stmts) = else_block {
-                for inner in stmts {
-                    rewrite_field_access_in_statement(inner, params);
-                }
-            }
-        }
-        flat::Statement::FunctionCall { args, outputs, .. } => {
-            for arg in args {
-                rewrite_field_access_in_expr(arg, params);
-            }
-            for out in outputs {
-                rewrite_field_access_in_expr(out, params);
-            }
-        }
-        flat::Statement::Reinit { value, .. } => {
-            rewrite_field_access_in_expr(value, params);
-        }
-        flat::Statement::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            rewrite_field_access_in_expr(condition, params);
-            rewrite_field_access_in_expr(message, params);
-            if let Some(l) = level {
-                rewrite_field_access_in_expr(l, params);
-            }
-        }
-        flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
-        flat::Statement::When(blocks) => {
-            for block in blocks {
-                rewrite_field_access_in_expr(&mut block.cond, params);
-                for inner in &mut block.stmts {
-                    rewrite_field_access_in_statement(inner, params);
-                }
-            }
-        }
+        self.walk_expression(expr)
     }
 }
 
-fn rewrite_field_access_in_expr(expr: &mut flat::Expression, params: &HashSet<String>) {
-    // Check if this is a FieldAccess on a decomposed record param
-    if let flat::Expression::FieldAccess { base, field } = expr
-        && let flat::Expression::VarRef {
-            name, subscripts, ..
-        } = base.as_ref()
-        && subscripts.is_empty()
-        && params.contains(name.as_str())
-    {
-        let new_name = format!("{}_{}", name.as_str(), field);
-        *expr = flat::Expression::VarRef {
-            name: flat::VarName::new(new_name),
-            subscripts: vec![],
-        };
+impl StatementRewriter for RecordFieldAccessRewriter<'_> {}
+
+fn rewrite_record_param_size_refs_in_function(
+    func: &mut rumoca_core::Function,
+    shape_sources: &[(String, String)],
+) {
+    if shape_sources.is_empty() {
         return;
     }
-
-    // Recurse into sub-expressions
-    match expr {
-        flat::Expression::Binary { lhs, rhs, .. } => {
-            rewrite_field_access_in_expr(lhs, params);
-            rewrite_field_access_in_expr(rhs, params);
+    let mut rewriter = RecordParamSizeRewriter { shape_sources };
+    for param in func
+        .inputs
+        .iter_mut()
+        .chain(func.outputs.iter_mut())
+        .chain(func.locals.iter_mut())
+    {
+        if let Some(default) = &mut param.default {
+            *default = rewriter.rewrite_expression(default);
         }
-        flat::Expression::Unary { rhs, .. } => {
-            rewrite_field_access_in_expr(rhs, params);
-        }
-        flat::Expression::BuiltinCall { args, .. }
-        | flat::Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                rewrite_field_access_in_expr(arg, params);
-            }
-        }
-        flat::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                rewrite_field_access_in_expr(cond, params);
-                rewrite_field_access_in_expr(then_expr, params);
-            }
-            rewrite_field_access_in_expr(else_branch, params);
-        }
-        flat::Expression::Array { elements, .. } | flat::Expression::Tuple { elements } => {
-            for elem in elements {
-                rewrite_field_access_in_expr(elem, params);
-            }
-        }
-        flat::Expression::Range { start, step, end } => {
-            rewrite_field_access_in_expr(start, params);
-            if let Some(s) = step {
-                rewrite_field_access_in_expr(s, params);
-            }
-            rewrite_field_access_in_expr(end, params);
-        }
-        flat::Expression::Index { base, .. } => {
-            rewrite_field_access_in_expr(base, params);
-        }
-        flat::Expression::FieldAccess { base, .. } => {
-            rewrite_field_access_in_expr(base, params);
-        }
-        flat::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            rewrite_field_access_in_expr(expr, params);
-            for idx in indices {
-                rewrite_field_access_in_expr(&mut idx.range, params);
-            }
-            if let Some(f) = filter {
-                rewrite_field_access_in_expr(f, params);
-            }
-        }
-        flat::Expression::VarRef { .. }
-        | flat::Expression::Literal(_)
-        | flat::Expression::Empty => {}
+    }
+    for stmt in &mut func.body {
+        *stmt = rewriter.rewrite_statement(stmt);
     }
 }
 
-/// Rewrite FieldAccess expressions on record-typed params in a function body.
+struct RecordParamSizeRewriter<'a> {
+    shape_sources: &'a [(String, String)],
+}
+
+impl ExpressionRewriter for RecordParamSizeRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        let rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args,
+            span,
+        } = expr
+        else {
+            return self.walk_expression(expr);
+        };
+
+        let mut args = self.rewrite_expressions(args);
+        if let Some(first_arg) = args.first_mut()
+            && let rumoca_core::Expression::VarRef {
+                name,
+                subscripts,
+                span,
+            } = first_arg
+            && subscripts.is_empty()
+            && let Some((_, shape_source)) = self
+                .shape_sources
+                .iter()
+                .find(|(param_name, _)| param_name == name.as_str())
+        {
+            *first_arg = rumoca_core::Expression::VarRef {
+                name: record_param_reference(shape_source, *span),
+                subscripts: Vec::new(),
+                span: *span,
+            };
+        }
+
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args,
+            span: *span,
+        }
+    }
+}
+
+impl StatementRewriter for RecordParamSizeRewriter<'_> {}
+
+fn rewrite_component_ref_record_field(
+    expr: &rumoca_core::Expression,
+    params: &HashSet<String>,
+) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::VarRef {
+        name,
+        subscripts,
+        span,
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+
+    let reference = name.component_ref()?;
+    let [record, field] = reference.parts.as_slice() else {
+        return None;
+    };
+    if !record.subs.is_empty() || !field.subs.is_empty() || !params.contains(record.ident.as_str())
+    {
+        return None;
+    }
+
+    Some(record_param_field_var_ref(
+        record.ident.as_str(),
+        field.ident.as_str(),
+        *span,
+    ))
+}
+
+fn record_param_field_var_ref(
+    param: &str,
+    field: &str,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: record_param_field_reference(param, field, span),
+        subscripts: vec![],
+        span,
+    }
+}
+
+fn record_param_field_reference(
+    param: &str,
+    field: &str,
+    span: rumoca_core::Span,
+) -> rumoca_core::Reference {
+    let name = format!("{param}_{field}");
+    let component_ref = rumoca_core::ComponentReference {
+        local: false,
+        span,
+        parts: vec![rumoca_core::ComponentRefPart {
+            ident: name.clone(),
+            span,
+            subs: Vec::new(),
+        }],
+        def_id: None,
+    };
+    rumoca_core::Reference::with_component_reference(name, component_ref)
+}
+
+/// Normalize record-field component references in a function body.
 ///
-/// Converts `c.re` → `c_re` in the body without changing the function signature.
-/// This is safe for all backends since it only changes expression structure.
-pub(super) fn rewrite_record_field_access_in_body(func: &mut flat::Function) {
+/// Modelica record field syntax can arrive as a structured component reference
+/// (`state.x`) rather than an explicit `FieldAccess`. This pass preserves that
+/// structure as `FieldAccess` so later passes can either keep the record
+/// parameter intact or decompose both the signature and body together.
+pub(super) fn rewrite_record_field_access_in_body(func: &mut rumoca_core::Function) {
     let mut record_param_names: HashSet<String> = HashSet::new();
     for input in &func.inputs {
-        if record_fields(&input.type_name).is_some() {
+        if input.type_class == Some(rumoca_core::ClassType::Record) {
             record_param_names.insert(input.name.clone());
         }
     }
@@ -192,12 +222,84 @@ pub(super) fn rewrite_record_field_access_in_body(func: &mut flat::Function) {
         return;
     }
     for stmt in &mut func.body {
-        rewrite_field_access_in_statement(stmt, &record_param_names);
+        normalize_record_field_access_in_statement(stmt, &record_param_names);
     }
 }
 
+fn normalize_record_field_access_in_statement(
+    stmt: &mut rumoca_core::Statement,
+    params: &HashSet<String>,
+) {
+    *stmt = RecordFieldAccessNormalizer { params }.rewrite_statement(stmt);
+}
+
+struct RecordFieldAccessNormalizer<'a> {
+    params: &'a HashSet<String>,
+}
+
+impl ExpressionRewriter for RecordFieldAccessNormalizer<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let Some(rewritten) = component_ref_record_field_access(expr, self.params) {
+            return rewritten;
+        }
+        self.walk_expression(expr)
+    }
+}
+
+impl StatementRewriter for RecordFieldAccessNormalizer<'_> {}
+
+fn component_ref_record_field_access(
+    expr: &rumoca_core::Expression,
+    params: &HashSet<String>,
+) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::VarRef {
+        name,
+        subscripts,
+        span,
+    } = expr
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+
+    let reference = name.component_ref()?;
+    let [record, field] = reference.parts.as_slice() else {
+        return None;
+    };
+    if !record.subs.is_empty() || !field.subs.is_empty() || !params.contains(record.ident.as_str())
+    {
+        return None;
+    }
+
+    Some(rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::VarRef {
+            name: record_param_reference(record.ident.as_str(), record.span),
+            subscripts: vec![],
+            span: record.span,
+        }),
+        field: field.ident.clone(),
+        span: *span,
+    })
+}
+
+fn record_param_reference(param: &str, span: rumoca_core::Span) -> rumoca_core::Reference {
+    let component_ref = rumoca_core::ComponentReference {
+        local: false,
+        span,
+        parts: vec![rumoca_core::ComponentRefPart {
+            ident: param.to_string(),
+            span,
+            subs: Vec::new(),
+        }],
+        def_id: None,
+    };
+    rumoca_core::Reference::with_component_reference(param.to_string(), component_ref)
+}
+
 // =============================================================================
-// Post-collection passes: record decomposition and array size insertion
+// Post-collection passes: record decomposition
 // =============================================================================
 
 /// Decompose record-typed function parameters and rewrite call sites.
@@ -207,16 +309,28 @@ pub(super) fn rewrite_record_field_access_in_body(func: &mut flat::Function) {
 /// 2. Rewrite FieldAccess in the body to VarRef.
 /// 3. Walk all equations/functions and decompose call-site arguments.
 pub(crate) fn lower_record_function_params(flat: &mut flat::Model) {
+    let record_fields_by_type = flat
+        .functions
+        .values()
+        .flat_map(|function| function.inputs.iter())
+        .filter(|input| input.type_class == Some(rumoca_core::ClassType::Record))
+        .filter_map(|input| {
+            record_fields_from_constructor_metadata(&flat.functions, &input.type_name)
+                .map(|fields| (input.type_name.clone(), fields))
+        })
+        .collect::<HashMap<_, _>>();
+
     let mut decomposition_map: HashMap<String, Vec<DecomposedParam>> = HashMap::new();
+    let mut local_decomposed_params: HashMap<String, HashSet<String>> = HashMap::new();
 
     for (func_name, func) in flat.functions.iter_mut() {
         let mut decomposed: Vec<DecomposedParam> = Vec::new();
         for (idx, input) in func.inputs.iter().enumerate() {
-            if let Some(fields) = record_fields(&input.type_name) {
+            if let Some(fields) = record_fields_by_type.get(&input.type_name) {
                 decomposed.push(DecomposedParam {
                     original_index: idx,
                     param_name: input.name.clone(),
-                    fields: fields.to_vec(),
+                    fields: fields.clone(),
                 });
             }
         }
@@ -224,9 +338,21 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) {
             continue;
         }
 
+        local_decomposed_params.insert(
+            func_name.as_str().to_string(),
+            decomposed.iter().map(|d| d.param_name.clone()).collect(),
+        );
+
         // Rewrite FieldAccess in body
         let param_names: HashSet<String> =
             decomposed.iter().map(|d| d.param_name.clone()).collect();
+        let shape_sources = decomposed
+            .iter()
+            .filter_map(|d| {
+                record_param_shape_source(d).map(|source| (d.param_name.clone(), source))
+            })
+            .collect::<Vec<_>>();
+        rewrite_record_param_size_refs_in_function(func, &shape_sources);
         for stmt in &mut func.body {
             rewrite_field_access_in_statement(stmt, &param_names);
         }
@@ -239,10 +365,8 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) {
                 continue;
             };
             for field in &dp.fields {
-                func.inputs.push(flat::FunctionParam::new(
-                    format!("{}_{}", dp.param_name, field),
-                    "Real",
-                ));
+                func.inputs
+                    .push(decomposed_record_field_param(&dp.param_name, &input, field));
             }
         }
 
@@ -255,22 +379,23 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) {
 
     // Rewrite call sites in equations, variable bindings, and function bodies.
     for eq in &mut flat.equations {
-        decompose_record_call_args_in_expr(&mut eq.residual, &decomposition_map);
+        decompose_record_call_args_in_expr(&mut eq.residual, &decomposition_map, None);
     }
     for eq in &mut flat.initial_equations {
-        decompose_record_call_args_in_expr(&mut eq.residual, &decomposition_map);
+        decompose_record_call_args_in_expr(&mut eq.residual, &decomposition_map, None);
     }
     for var in flat.variables.values_mut() {
         if let Some(ref mut binding) = var.binding {
-            decompose_record_call_args_in_expr(binding, &decomposition_map);
+            decompose_record_call_args_in_expr(binding, &decomposition_map, None);
         }
         if let Some(ref mut start) = var.start {
-            decompose_record_call_args_in_expr(start, &decomposition_map);
+            decompose_record_call_args_in_expr(start, &decomposition_map, None);
         }
     }
-    for func in flat.functions.values_mut() {
+    for (func_name, func) in flat.functions.iter_mut() {
+        let local_record_params = local_decomposed_params.get(func_name.as_str());
         for stmt in &mut func.body {
-            decompose_record_call_args_in_stmt(stmt, &decomposition_map);
+            decompose_record_call_args_in_stmt(stmt, &decomposition_map, local_record_params);
         }
     }
 }
@@ -278,18 +403,50 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) {
 struct DecomposedParam {
     original_index: usize,
     param_name: String,
-    fields: Vec<&'static str>,
+    fields: Vec<rumoca_core::FunctionParam>,
+}
+
+fn record_param_shape_source(param: &DecomposedParam) -> Option<String> {
+    param
+        .fields
+        .iter()
+        .find(|field| field.dims.is_empty() && field.shape_expr.is_empty())
+        .or_else(|| param.fields.first())
+        .map(|field| format!("{}_{}", param.param_name, field.name))
+}
+
+fn decomposed_record_field_param(
+    param_name: &str,
+    original_param: &rumoca_core::FunctionParam,
+    field: &rumoca_core::FunctionParam,
+) -> rumoca_core::FunctionParam {
+    let mut param = field.clone();
+    param.name = format!("{}_{}", param_name, field.name);
+    param.dims = original_param
+        .dims
+        .iter()
+        .chain(field.dims.iter())
+        .copied()
+        .collect();
+    param.shape_expr = original_param
+        .shape_expr
+        .iter()
+        .chain(field.shape_expr.iter())
+        .cloned()
+        .collect();
+    param
 }
 
 fn named_constructor_arg<'a>(
-    ctor_args: &'a [flat::Expression],
+    ctor_args: &'a [rumoca_core::Expression],
     field: &str,
-) -> Option<&'a flat::Expression> {
+) -> Option<&'a rumoca_core::Expression> {
     for arg in ctor_args {
-        if let flat::Expression::FunctionCall {
+        if let rumoca_core::Expression::FunctionCall {
             name,
             args,
             is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
         } = arg
             && name.as_str().strip_prefix("__rumoca_named_arg__.") == Some(field)
         {
@@ -300,198 +457,147 @@ fn named_constructor_arg<'a>(
 }
 
 fn decompose_record_call_args_in_stmt(
-    stmt: &mut flat::Statement,
+    stmt: &mut rumoca_core::Statement,
     map: &HashMap<String, Vec<DecomposedParam>>,
+    local_record_params: Option<&HashSet<String>>,
 ) {
-    match stmt {
-        flat::Statement::Assignment { value, .. } => {
-            decompose_record_call_args_in_expr(value, map);
-        }
-        flat::Statement::For { indices, equations } => {
-            for idx in indices {
-                decompose_record_call_args_in_expr(&mut idx.range, map);
-            }
-            for inner in equations {
-                decompose_record_call_args_in_stmt(inner, map);
-            }
-        }
-        flat::Statement::While(block) => {
-            decompose_record_call_args_in_expr(&mut block.cond, map);
-            for inner in &mut block.stmts {
-                decompose_record_call_args_in_stmt(inner, map);
-            }
-        }
-        flat::Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                decompose_record_call_args_in_expr(&mut block.cond, map);
-                for inner in &mut block.stmts {
-                    decompose_record_call_args_in_stmt(inner, map);
-                }
-            }
-            if let Some(stmts) = else_block {
-                for inner in stmts {
-                    decompose_record_call_args_in_stmt(inner, map);
-                }
-            }
-        }
-        flat::Statement::FunctionCall { args, outputs, .. } => {
-            for arg in args {
-                decompose_record_call_args_in_expr(arg, map);
-            }
-            for out in outputs {
-                decompose_record_call_args_in_expr(out, map);
-            }
-        }
-        flat::Statement::Reinit { value, .. } => {
-            decompose_record_call_args_in_expr(value, map);
-        }
-        flat::Statement::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            decompose_record_call_args_in_expr(condition, map);
-            decompose_record_call_args_in_expr(message, map);
-            if let Some(l) = level {
-                decompose_record_call_args_in_expr(l, map);
-            }
-        }
-        flat::Statement::When(blocks) => {
-            for block in blocks {
-                decompose_record_call_args_in_expr(&mut block.cond, map);
-                for inner in &mut block.stmts {
-                    decompose_record_call_args_in_stmt(inner, map);
-                }
-            }
-        }
-        flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
+    *stmt = RecordCallArgDecomposer {
+        map,
+        local_record_params,
     }
+    .rewrite_statement(stmt);
 }
 
 fn decompose_record_call_args_in_expr(
-    expr: &mut flat::Expression,
+    expr: &mut rumoca_core::Expression,
     map: &HashMap<String, Vec<DecomposedParam>>,
+    local_record_params: Option<&HashSet<String>>,
 ) {
-    match expr {
-        flat::Expression::FunctionCall { name, args, .. } => {
-            for arg in args.iter_mut() {
-                decompose_record_call_args_in_expr(arg, map);
-            }
-            let Some(decomposed) = map.get(name.as_str()) else {
-                return;
+    *expr = RecordCallArgDecomposer {
+        map,
+        local_record_params,
+    }
+    .rewrite_expression(expr);
+}
+
+struct RecordCallArgDecomposer<'a> {
+    map: &'a HashMap<String, Vec<DecomposedParam>>,
+    local_record_params: Option<&'a HashSet<String>>,
+}
+
+impl ExpressionRewriter for RecordCallArgDecomposer<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            span,
+        } = expr
+        {
+            let rewritten_args = self.rewrite_expressions(args);
+            let args = if let Some(decomposed) = self.map.get(name.as_str()) {
+                decompose_record_call_args(&rewritten_args, decomposed, self.local_record_params)
+            } else {
+                rewritten_args
             };
-            let old_args = std::mem::take(args);
-            let mut old_idx = 0;
-            for dp in decomposed {
-                while old_idx < dp.original_index && old_idx < old_args.len() {
-                    args.push(old_args[old_idx].clone());
-                    old_idx += 1;
-                }
-                if old_idx < old_args.len() {
-                    expand_record_arg(&old_args[old_idx], &dp.fields, args);
-                    old_idx += 1;
-                }
-            }
-            while old_idx < old_args.len() {
-                args.push(old_args[old_idx].clone());
-                old_idx += 1;
-            }
+            return rumoca_core::Expression::FunctionCall {
+                name: name.clone(),
+                args,
+                is_constructor: *is_constructor,
+                span: *span,
+            };
         }
-        flat::Expression::Binary { lhs, rhs, .. } => {
-            decompose_record_call_args_in_expr(lhs, map);
-            decompose_record_call_args_in_expr(rhs, map);
-        }
-        flat::Expression::Unary { rhs, .. } => {
-            decompose_record_call_args_in_expr(rhs, map);
-        }
-        flat::Expression::BuiltinCall { args, .. } => {
-            for arg in args {
-                decompose_record_call_args_in_expr(arg, map);
-            }
-        }
-        flat::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                decompose_record_call_args_in_expr(cond, map);
-                decompose_record_call_args_in_expr(then_expr, map);
-            }
-            decompose_record_call_args_in_expr(else_branch, map);
-        }
-        flat::Expression::Array { elements, .. } | flat::Expression::Tuple { elements } => {
-            for elem in elements {
-                decompose_record_call_args_in_expr(elem, map);
-            }
-        }
-        flat::Expression::Range { start, step, end } => {
-            decompose_record_call_args_in_expr(start, map);
-            if let Some(s) = step {
-                decompose_record_call_args_in_expr(s, map);
-            }
-            decompose_record_call_args_in_expr(end, map);
-        }
-        flat::Expression::Index { base, .. } | flat::Expression::FieldAccess { base, .. } => {
-            decompose_record_call_args_in_expr(base, map);
-        }
-        flat::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            decompose_record_call_args_in_expr(expr, map);
-            for idx in indices {
-                decompose_record_call_args_in_expr(&mut idx.range, map);
-            }
-            if let Some(f) = filter {
-                decompose_record_call_args_in_expr(f, map);
-            }
-        }
-        flat::Expression::VarRef { .. }
-        | flat::Expression::Literal(_)
-        | flat::Expression::Empty => {}
+        self.walk_expression(expr)
     }
 }
 
+impl StatementRewriter for RecordCallArgDecomposer<'_> {}
+
+fn decompose_record_call_args(
+    old_args: &[rumoca_core::Expression],
+    decomposed: &[DecomposedParam],
+    local_record_params: Option<&HashSet<String>>,
+) -> Vec<rumoca_core::Expression> {
+    let mut args = Vec::new();
+    let mut old_idx = 0;
+    for dp in decomposed {
+        while old_idx < dp.original_index && old_idx < old_args.len() {
+            args.push(old_args[old_idx].clone());
+            old_idx += 1;
+        }
+        if old_idx < old_args.len() {
+            expand_record_arg(
+                &old_args[old_idx],
+                &dp.fields,
+                local_record_params,
+                &mut args,
+            );
+            old_idx += 1;
+        }
+    }
+    while old_idx < old_args.len() {
+        args.push(old_args[old_idx].clone());
+        old_idx += 1;
+    }
+    args
+}
+
 /// Expand a record argument into scalar field arguments.
-fn expand_record_arg(arg: &flat::Expression, fields: &[&str], out: &mut Vec<flat::Expression>) {
+fn expand_record_arg(
+    arg: &rumoca_core::Expression,
+    fields: &[rumoca_core::FunctionParam],
+    local_record_params: Option<&HashSet<String>>,
+    out: &mut Vec<rumoca_core::Expression>,
+) {
     // Constructor call Complex(re, im) → extract positional/named args
-    if let flat::Expression::FunctionCall {
+    if let rumoca_core::Expression::FunctionCall {
         args: ctor_args,
         is_constructor: true,
         ..
     } = arg
     {
-        let positional: Vec<&flat::Expression> = ctor_args
+        let positional: Vec<&rumoca_core::Expression> = ctor_args
             .iter()
             .filter(|a| {
-                !matches!(a, flat::Expression::FunctionCall { is_constructor: true, name, .. }
+                !matches!(a, rumoca_core::Expression::FunctionCall { is_constructor: true, name, .. }
                 if name.as_str().starts_with("__rumoca_named_arg__."))
             })
             .collect();
 
         for (i, field) in fields.iter().enumerate() {
-            let named = named_constructor_arg(ctor_args, field);
+            let named = named_constructor_arg(ctor_args, field.name.as_str());
             if let Some(val) = named {
                 out.push(val.clone());
             } else if i < positional.len() {
                 out.push(positional[i].clone());
             } else {
-                out.push(flat::Expression::Literal(flat::Literal::Real(0.0)));
+                out.push(rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(0.0),
+                    span: rumoca_core::Span::DUMMY,
+                });
             }
         }
         return;
     }
 
     // Variable reference → emit field VarRefs
-    if let flat::Expression::VarRef { name, .. } = arg {
+    if let rumoca_core::Expression::VarRef { name, span, .. } = arg {
+        if local_record_params.is_some_and(|params| params.contains(name.as_str())) {
+            for field in fields {
+                out.push(record_param_field_var_ref(
+                    name.as_str(),
+                    field.name.as_str(),
+                    *span,
+                ));
+            }
+            return;
+        }
+
         for field in fields {
-            out.push(flat::Expression::VarRef {
-                name: flat::VarName::new(format!("{}.{}", name.as_str(), field)),
+            out.push(rumoca_core::Expression::VarRef {
+                name: record_field_reference(name, field.name.as_str(), *span),
                 subscripts: vec![],
+                span: *span,
             });
         }
         return;
@@ -499,195 +605,386 @@ fn expand_record_arg(arg: &flat::Expression, fields: &[&str], out: &mut Vec<flat
 
     // General expression → emit FieldAccess
     for field in fields {
-        out.push(flat::Expression::FieldAccess {
+        out.push(rumoca_core::Expression::FieldAccess {
             base: Box::new(arg.clone()),
-            field: field.to_string(),
+            field: field.name.clone(),
+            span: rumoca_core::Span::DUMMY,
         });
     }
 }
 
-/// Insert size arguments for variable-size array parameters at call sites.
-pub(crate) fn insert_array_size_args(flat: &mut flat::Model) {
-    let array_param_map: HashMap<String, Vec<usize>> = flat
-        .functions
-        .iter()
-        .filter_map(|(name, func)| {
-            let indices: Vec<usize> = func
-                .inputs
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| !p.dims.is_empty())
-                .map(|(i, _)| i)
-                .collect();
-            if indices.is_empty() {
-                None
-            } else {
-                Some((name.as_str().to_string(), indices))
-            }
-        })
-        .collect();
-
-    if array_param_map.is_empty() {
-        return;
-    }
-
-    for eq in &mut flat.equations {
-        insert_size_args_in_expr(&mut eq.residual, &array_param_map);
-    }
-    for eq in &mut flat.initial_equations {
-        insert_size_args_in_expr(&mut eq.residual, &array_param_map);
-    }
-    for var in flat.variables.values_mut() {
-        if let Some(ref mut binding) = var.binding {
-            insert_size_args_in_expr(binding, &array_param_map);
-        }
-    }
-    for func in flat.functions.values_mut() {
-        for stmt in &mut func.body {
-            insert_size_args_in_stmt(stmt, &array_param_map);
-        }
-    }
+fn record_field_reference(
+    base: &rumoca_core::Reference,
+    field: &str,
+    span: rumoca_core::Span,
+) -> rumoca_core::Reference {
+    let name = format!("{}.{}", base.as_str(), field);
+    let Some(mut component_ref) = base.component_ref().cloned() else {
+        return rumoca_core::Reference::new(name);
+    };
+    component_ref.parts.push(rumoca_core::ComponentRefPart {
+        ident: field.to_string(),
+        span,
+        subs: Vec::new(),
+    });
+    rumoca_core::Reference::with_component_reference(name, component_ref)
 }
 
-fn insert_size_args_in_stmt(stmt: &mut flat::Statement, map: &HashMap<String, Vec<usize>>) {
-    match stmt {
-        flat::Statement::Assignment { value, .. } => insert_size_args_in_expr(value, map),
-        flat::Statement::For { indices, equations } => {
-            for idx in indices {
-                insert_size_args_in_expr(&mut idx.range, map);
-            }
-            for inner in equations {
-                insert_size_args_in_stmt(inner, map);
-            }
-        }
-        flat::Statement::While(block) => {
-            insert_size_args_in_expr(&mut block.cond, map);
-            for inner in &mut block.stmts {
-                insert_size_args_in_stmt(inner, map);
-            }
-        }
-        flat::Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                insert_size_args_in_expr(&mut block.cond, map);
-                for inner in &mut block.stmts {
-                    insert_size_args_in_stmt(inner, map);
-                }
-            }
-            if let Some(stmts) = else_block {
-                for inner in stmts {
-                    insert_size_args_in_stmt(inner, map);
-                }
-            }
-        }
-        flat::Statement::FunctionCall { args, outputs, .. } => {
-            for arg in args.iter_mut() {
-                insert_size_args_in_expr(arg, map);
-            }
-            for out in outputs {
-                insert_size_args_in_expr(out, map);
-            }
-        }
-        flat::Statement::Reinit { value, .. } => insert_size_args_in_expr(value, map),
-        flat::Statement::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            insert_size_args_in_expr(condition, map);
-            insert_size_args_in_expr(message, map);
-            if let Some(l) = level {
-                insert_size_args_in_expr(l, map);
-            }
-        }
-        flat::Statement::When(blocks) => {
-            for block in blocks {
-                insert_size_args_in_expr(&mut block.cond, map);
-                for inner in &mut block.stmts {
-                    insert_size_args_in_stmt(inner, map);
-                }
-            }
-        }
-        flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{ClassType, Literal, Span, VarName};
 
-fn insert_size_args_in_expr(expr: &mut flat::Expression, map: &HashMap<String, Vec<usize>>) {
-    match expr {
-        flat::Expression::FunctionCall { name, args, .. } => {
-            for arg in args.iter_mut() {
-                insert_size_args_in_expr(arg, map);
-            }
-            let Some(array_indices) = map.get(name.as_str()) else {
-                return;
-            };
-            let mut new_args = std::mem::take(args);
-            for &param_idx in array_indices.iter().rev() {
-                if param_idx < new_args.len() {
-                    let size_expr = flat::Expression::BuiltinCall {
-                        function: flat::BuiltinFunction::Size,
-                        args: vec![
-                            new_args[param_idx].clone(),
-                            flat::Expression::Literal(flat::Literal::Integer(1)),
-                        ],
-                    };
-                    new_args.insert(param_idx + 1, size_expr);
-                }
-            }
-            *args = new_args;
+    fn var_ref(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: vec![],
+            span: Span::DUMMY,
         }
-        flat::Expression::Binary { lhs, rhs, .. } => {
-            insert_size_args_in_expr(lhs, map);
-            insert_size_args_in_expr(rhs, map);
+    }
+
+    fn assignment_to(name: &str, value: rumoca_core::Expression) -> rumoca_core::Statement {
+        rumoca_core::Statement::Assignment {
+            comp: rumoca_core::ComponentReference {
+                local: false,
+                span: Span::DUMMY,
+                parts: vec![rumoca_core::ComponentRefPart {
+                    ident: name.to_string(),
+                    span: Span::DUMMY,
+                    subs: vec![],
+                }],
+                def_id: None,
+            },
+            value,
+            span: Span::DUMMY,
         }
-        flat::Expression::Unary { rhs, .. } => insert_size_args_in_expr(rhs, map),
-        flat::Expression::BuiltinCall { args, .. } => {
-            for arg in args {
-                insert_size_args_in_expr(arg, map);
-            }
+    }
+
+    fn component_ref_expr(parts: &[&str]) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                parts.join("."),
+                rumoca_core::ComponentReference {
+                    local: false,
+                    span: Span::DUMMY,
+                    parts: parts
+                        .iter()
+                        .map(|part| rumoca_core::ComponentRefPart {
+                            ident: (*part).to_string(),
+                            span: Span::DUMMY,
+                            subs: Vec::new(),
+                        })
+                        .collect(),
+                    def_id: None,
+                },
+            ),
+            subscripts: vec![],
+            span: Span::DUMMY,
         }
-        flat::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (c, t) in branches {
-                insert_size_args_in_expr(c, map);
-                insert_size_args_in_expr(t, map);
-            }
-            insert_size_args_in_expr(else_branch, map);
-        }
-        flat::Expression::Array { elements, .. } | flat::Expression::Tuple { elements } => {
-            for e in elements {
-                insert_size_args_in_expr(e, map);
-            }
-        }
-        flat::Expression::Range { start, step, end } => {
-            insert_size_args_in_expr(start, map);
-            if let Some(s) = step {
-                insert_size_args_in_expr(s, map);
-            }
-            insert_size_args_in_expr(end, map);
-        }
-        flat::Expression::Index { base, .. } | flat::Expression::FieldAccess { base, .. } => {
-            insert_size_args_in_expr(base, map);
-        }
-        flat::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            insert_size_args_in_expr(expr, map);
-            for idx in indices {
-                insert_size_args_in_expr(&mut idx.range, map);
-            }
-            if let Some(f) = filter {
-                insert_size_args_in_expr(f, map);
-            }
-        }
-        flat::Expression::VarRef { .. }
-        | flat::Expression::Literal(_)
-        | flat::Expression::Empty => {}
+    }
+
+    fn record_constructor() -> rumoca_core::Function {
+        let mut constructor = rumoca_core::Function::new("Pkg.Record", Span::DUMMY);
+        constructor.is_constructor = true;
+        constructor.add_input(rumoca_core::FunctionParam::new("a", "Real"));
+        constructor.add_input(rumoca_core::FunctionParam::new("b", "Real").with_dims(vec![3]));
+        constructor
+    }
+
+    fn function_with_record_input() -> rumoca_core::Function {
+        let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+        function.add_input(
+            rumoca_core::FunctionParam::new("r", "Pkg.Record").with_type_class(ClassType::Record),
+        );
+        function.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+        function.body.push(assignment_to(
+            "y",
+            rumoca_core::Expression::FieldAccess {
+                base: Box::new(var_ref("r")),
+                field: "a".to_string(),
+                span: Span::DUMMY,
+            },
+        ));
+        function
+    }
+
+    #[test]
+    fn record_param_lowering_uses_constructor_signature_metadata() {
+        let mut flat = flat::Model::new();
+        flat.add_function(record_constructor());
+        flat.add_function(function_with_record_input());
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.f"),
+                args: vec![var_ref("rec")],
+                is_constructor: false,
+                span: Span::DUMMY,
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat);
+
+        let function = flat
+            .functions
+            .get(&VarName::new("Pkg.f"))
+            .expect("function remains");
+        let input_names = function
+            .inputs
+            .iter()
+            .map(|input| input.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(input_names, vec!["r_a", "r_b"]);
+        assert_eq!(function.inputs[0].dims, Vec::<i64>::new());
+        assert_eq!(function.inputs[1].dims, vec![3]);
+        let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
+            panic!("expected assignment");
+        };
+        assert!(matches!(
+            value,
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "r_a"
+        ));
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(
+            &args[0],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.a"
+        ));
+        assert!(matches!(
+            &args[1],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.b"
+        ));
+    }
+
+    #[test]
+    fn record_array_param_lowering_rewrites_indexed_field_access() {
+        let mut flat = flat::Model::new();
+        flat.add_function(record_constructor());
+
+        let mut function = rumoca_core::Function::new("Pkg.sumA", Span::DUMMY);
+        function.add_input(
+            rumoca_core::FunctionParam::new("r", "Pkg.Record")
+                .with_type_class(ClassType::Record)
+                .with_dims(vec![0])
+                .with_shape_expr(vec![rumoca_core::Subscript::colon(Span::DUMMY)]),
+        );
+        function.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+        function.body.push(assignment_to(
+            "y",
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sum,
+                args: vec![rumoca_core::Expression::FieldAccess {
+                    base: Box::new(rumoca_core::Expression::Index {
+                        base: Box::new(var_ref("r")),
+                        subscripts: vec![rumoca_core::Subscript::colon(Span::DUMMY)],
+                        span: Span::DUMMY,
+                    }),
+                    field: "a".to_string(),
+                    span: Span::DUMMY,
+                }],
+                span: Span::DUMMY,
+            },
+        ));
+        flat.add_function(function);
+
+        lower_record_function_params(&mut flat);
+
+        let function = flat
+            .functions
+            .get(&VarName::new("Pkg.sumA"))
+            .expect("function remains");
+        let input_names = function
+            .inputs
+            .iter()
+            .map(|input| (input.name.as_str(), input.dims.as_slice()))
+            .collect::<Vec<_>>();
+        assert_eq!(input_names, vec![("r_a", &[0][..]), ("r_b", &[0, 3][..])]);
+        let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
+            panic!("expected assignment");
+        };
+        let rumoca_core::Expression::BuiltinCall { args, .. } = value else {
+            panic!("expected builtin call");
+        };
+        assert!(matches!(
+            &args[0],
+            rumoca_core::Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "r_a" && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Colon { .. }])
+        ));
+    }
+
+    #[test]
+    fn record_array_param_lowering_rewrites_size_of_original_record_param() {
+        let mut flat = flat::Model::new();
+        flat.add_function(record_constructor());
+
+        let mut function = rumoca_core::Function::new("Pkg.rms", Span::DUMMY);
+        function.add_input(
+            rumoca_core::FunctionParam::new("r", "Pkg.Record")
+                .with_type_class(ClassType::Record)
+                .with_dims(vec![0])
+                .with_shape_expr(vec![rumoca_core::Subscript::colon(Span::DUMMY)]),
+        );
+        function.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+        function.locals.push(rumoca_core::FunctionParam {
+            def_id: None,
+            name: "n".to_string(),
+            type_name: "Integer".to_string(),
+            default: Some(rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Size,
+                args: vec![
+                    var_ref("r"),
+                    rumoca_core::Expression::Literal {
+                        value: Literal::Integer(1),
+                        span: Span::DUMMY,
+                    },
+                ],
+                span: Span::DUMMY,
+            }),
+            ..rumoca_core::FunctionParam::new("n", "Integer")
+        });
+        flat.add_function(function);
+
+        lower_record_function_params(&mut flat);
+
+        let function = flat
+            .functions
+            .get(&VarName::new("Pkg.rms"))
+            .expect("function remains");
+        let Some(default) = function.locals[0].default.as_ref() else {
+            panic!("expected local default");
+        };
+        let rumoca_core::Expression::BuiltinCall { args, .. } = default else {
+            panic!("expected size builtin");
+        };
+        assert!(matches!(
+            &args[0],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "r_a"
+        ));
+    }
+
+    #[test]
+    fn record_param_lowering_leaves_unknown_record_metadata_unexpanded() {
+        let mut flat = flat::Model::new();
+        flat.add_function(function_with_record_input());
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.f"),
+                args: vec![rumoca_core::Expression::Literal {
+                    value: Literal::Real(1.0),
+                    span: Span::DUMMY,
+                }],
+                is_constructor: false,
+                span: Span::DUMMY,
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat);
+
+        let function = flat
+            .functions
+            .get(&VarName::new("Pkg.f"))
+            .expect("function remains");
+        assert_eq!(function.inputs.len(), 1);
+        assert_eq!(function.inputs[0].name, "r");
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn record_field_normalization_uses_structured_component_ref_parts() {
+        let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+        function.add_input(
+            rumoca_core::FunctionParam::new("state", "Pkg.State")
+                .with_type_class(ClassType::Record),
+        );
+        function.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+        function
+            .body
+            .push(assignment_to("y", component_ref_expr(&["state", "x"])));
+
+        rewrite_record_field_access_in_body(&mut function);
+
+        let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
+            panic!("expected assignment");
+        };
+        let rumoca_core::Expression::FieldAccess { base, field, .. } = value else {
+            panic!("expected normalized field access, got {value:?}");
+        };
+        assert_eq!(field, "x");
+        assert!(matches!(
+            base.as_ref(),
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "state"
+        ));
+    }
+
+    #[test]
+    fn nested_record_param_call_uses_decomposed_caller_locals() {
+        let mut flat = flat::Model::new();
+        flat.add_function(record_constructor());
+
+        let mut callee = rumoca_core::Function::new("Pkg.g", Span::DUMMY);
+        callee.add_input(
+            rumoca_core::FunctionParam::new("r", "Pkg.Record").with_type_class(ClassType::Record),
+        );
+        callee.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+        callee.body.push(assignment_to(
+            "y",
+            rumoca_core::Expression::FieldAccess {
+                base: Box::new(var_ref("r")),
+                field: "a".to_string(),
+                span: Span::DUMMY,
+            },
+        ));
+        flat.add_function(callee);
+
+        let mut caller = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+        caller.add_input(
+            rumoca_core::FunctionParam::new("state", "Pkg.Record")
+                .with_type_class(ClassType::Record),
+        );
+        caller.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+        caller.body.push(assignment_to(
+            "y",
+            rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.g"),
+                args: vec![var_ref("state")],
+                is_constructor: false,
+                span: Span::DUMMY,
+            },
+        ));
+        flat.add_function(caller);
+
+        lower_record_function_params(&mut flat);
+
+        let function = flat
+            .functions
+            .get(&VarName::new("Pkg.f"))
+            .expect("caller remains");
+        let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
+            panic!("expected assignment");
+        };
+        let rumoca_core::Expression::FunctionCall { args, .. } = value else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(
+            &args[0],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "state_a"
+        ));
+        assert!(matches!(
+            &args[1],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "state_b"
+        ));
     }
 }

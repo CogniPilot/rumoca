@@ -41,10 +41,17 @@ export function expandHomeDirectory(entry: string, homeDir: string = os.homedir(
 
 export function normalizeSourceRootPathEntry(
     entry: string,
-    homeDir: string = os.homedir()
+    homeDir: string = os.homedir(),
+    baseDir?: string,
 ): string {
     const expanded = expandHomeDirectory(entry, homeDir);
-    return expanded ? path.normalize(expanded) : '';
+    if (!expanded) {
+        return '';
+    }
+    if (baseDir && !path.isAbsolute(expanded)) {
+        return path.normalize(path.join(baseDir, expanded));
+    }
+    return path.normalize(expanded);
 }
 
 export function parsePathListEnvVar(
@@ -63,11 +70,12 @@ export function parsePathListEnvVar(
 export function resolveSourceRootPaths(
     configuredEntries: readonly string[],
     env: NodeJS.ProcessEnv = process.env,
-    homeDir: string = os.homedir()
+    homeDir: string = os.homedir(),
+    baseDir?: string,
 ): SourceRootPathSources {
     const configuredPaths = mergeSourceRootPathLists(
         configuredEntries
-            .map((entry) => normalizeSourceRootPathEntry(entry, homeDir))
+            .map((entry) => normalizeSourceRootPathEntry(entry, homeDir, baseDir))
             .filter(Boolean),
         [],
     );

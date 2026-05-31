@@ -2,7 +2,7 @@ use super::*;
 
 fn assert_needs_inner_result(result: PhaseResult, expected: &str) {
     match result {
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             assert_eq!(missing_inners, vec![expected.to_string()]);
         }
         other => panic!("expected needs-inner result, got {other:?}"),

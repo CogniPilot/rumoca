@@ -1,0 +1,31 @@
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+file = "../models/Ball.mo"
+name = "Ball"
+
+[[plot.views]]
+id = "states_time"
+title = "States vs Time"
+type = "timeseries"
+x = "time"
+y = [
+    "x",
+    "v",
+]
+
+[[plot.views]]
+id = "timeseries_2"
+script_path = "ball_visual.js"
+title = "3D"
+type = "3d"
+y = []
+
+[sim]
+solver = "rk-like"
+t_end = 10.0
+
+[viewer]
+mode = "results_panel"

@@ -1,0 +1,10 @@
+version = 1
+ir = "dae"
+name = "julia-mtk"
+description = "Julia ModelingToolkit DAE export"
+execution_mode = "symbolic"
+deployment_class = "symbolic"
+
+[[files]]
+path = "{{ model_name }}_mtk.jl"
+template = "julia_mtk.jl.jinja"

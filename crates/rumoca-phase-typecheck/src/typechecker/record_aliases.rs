@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_core::ComponentPath;
 
 impl TypeChecker {
     /// Collect record-parameter aliases from overlay bindings (MLS §7.2.3).
@@ -7,7 +8,7 @@ impl TypeChecker {
     /// `chain.cellData -> cellData2` so field references like
     /// `chain.cellData.nRC` can resolve through the modifier binding.
     pub(crate) fn collect_record_aliases(overlay: &InstanceOverlay) -> Vec<(String, String)> {
-        let mut aliases: HashMap<String, String> = HashMap::new();
+        let mut aliases: HashMap<ComponentPath, ComponentPath> = HashMap::new();
         let (known_paths, known_prefixes) = Self::collect_known_component_paths(overlay);
         for instance_data in overlay.components.values() {
             let Some(binding) = &instance_data.binding else {
@@ -16,7 +17,7 @@ impl TypeChecker {
             let Some(target_unqualified) = Self::extract_simple_path(binding) else {
                 continue;
             };
-            let source = instance_data.qualified_name.to_flat_string();
+            let source = instance_data.qualified_name.to_component_path();
             let target = Self::resolve_alias_target(
                 &source,
                 &target_unqualified,
@@ -29,18 +30,22 @@ impl TypeChecker {
             }
         }
         Self::collapse_alias_chains(&mut aliases);
-        let mut out: Vec<(String, String)> = aliases.into_iter().collect();
+        let mut out: Vec<(String, String)> = aliases
+            .into_iter()
+            .map(|(source, target)| (source.to_flat_string(), target.to_flat_string()))
+            .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
 
     /// Extract a simple dotted path from an expression if it is a plain reference.
-    pub(crate) fn extract_simple_path(expr: &Expression) -> Option<String> {
+    pub(crate) fn extract_simple_path(expr: &Expression) -> Option<ComponentPath> {
         match expr {
-            Expression::ComponentReference(cr) => (!cr.parts.is_empty()).then(|| cr.to_string()),
-            Expression::FieldAccess { base, field } => {
+            Expression::ComponentReference(cr) => (!cr.parts.is_empty())
+                .then(|| ComponentPath::from_parts(cr.parts.iter().map(ToString::to_string))),
+            Expression::FieldAccess { base, field, .. } => {
                 let base_path = Self::extract_simple_path(base)?;
-                Some(format!("{base_path}.{field}"))
+                Some(base_path.join(&ComponentPath::from_flat_path(field)))
             }
             _ => None,
         }
@@ -49,16 +54,14 @@ impl TypeChecker {
     /// Collect full component paths and all dotted prefixes from the overlay.
     fn collect_known_component_paths(
         overlay: &InstanceOverlay,
-    ) -> (HashSet<String>, HashSet<String>) {
-        let mut known_paths: HashSet<String> = HashSet::new();
-        let mut known_prefixes: HashSet<String> = HashSet::new();
+    ) -> (HashSet<ComponentPath>, HashSet<ComponentPath>) {
+        let mut known_paths: HashSet<ComponentPath> = HashSet::new();
+        let mut known_prefixes: HashSet<ComponentPath> = HashSet::new();
         for instance_data in overlay.components.values() {
-            let full = instance_data.qualified_name.to_flat_string();
-            known_paths.insert(full.clone());
-            let mut scope = full.as_str();
-            while let Some((prefix, _)) = scope.rsplit_once('.') {
-                known_prefixes.insert(prefix.to_string());
-                scope = prefix;
+            let path = instance_data.qualified_name.to_component_path();
+            known_paths.insert(path.clone());
+            for idx in 1..path.len() {
+                known_prefixes.insert(path.prefix(idx).expect("prefix index is in range"));
             }
         }
         (known_paths, known_prefixes)
@@ -69,56 +72,58 @@ impl TypeChecker {
     /// Applies lexical scope traversal and picks the first candidate that maps
     /// to an existing overlay path or a known parent prefix.
     fn resolve_alias_target(
-        source: &str,
-        target_unqualified: &str,
+        source: &ComponentPath,
+        target_unqualified: &ComponentPath,
         from_modification: bool,
-        known_paths: &HashSet<String>,
-        known_prefixes: &HashSet<String>,
-    ) -> String {
+        known_paths: &HashSet<ComponentPath>,
+        known_prefixes: &HashSet<ComponentPath>,
+    ) -> ComponentPath {
         let mut scope = if from_modification {
-            Self::grandparent_scope(source)
+            Self::grandparent_path(source)
         } else {
-            Self::parent_scope(source)
+            Self::parent_path(source)
         };
         loop {
-            let candidate = if scope.is_empty() {
-                target_unqualified.to_string()
-            } else {
-                format!("{scope}.{target_unqualified}")
-            };
+            let candidate = scope.join(target_unqualified);
             if Self::is_known_component_or_prefix(&candidate, known_paths, known_prefixes) {
                 return candidate;
             }
-            if scope.is_empty() {
+            if scope.is_root() {
                 break;
             }
-            scope = Self::parent_scope(scope);
+            scope = scope.parent().unwrap_or_else(ComponentPath::root);
         }
-        target_unqualified.to_string()
+        target_unqualified.clone()
     }
 
     fn is_known_component_or_prefix(
-        candidate: &str,
-        known_paths: &HashSet<String>,
-        known_prefixes: &HashSet<String>,
+        candidate: &ComponentPath,
+        known_paths: &HashSet<ComponentPath>,
+        known_prefixes: &HashSet<ComponentPath>,
     ) -> bool {
         known_paths.contains(candidate) || known_prefixes.contains(candidate)
     }
 
     pub(crate) fn parent_scope(path: &str) -> &str {
-        path.rsplit_once('.').map_or("", |(prefix, _)| prefix)
+        rumoca_core::parent_scope(path).unwrap_or("")
     }
 
-    fn grandparent_scope(path: &str) -> &str {
-        Self::parent_scope(Self::parent_scope(path))
+    fn parent_path(path: &ComponentPath) -> ComponentPath {
+        path.parent().unwrap_or_else(ComponentPath::root)
+    }
+
+    fn grandparent_path(path: &ComponentPath) -> ComponentPath {
+        Self::parent_path(path)
+            .parent()
+            .unwrap_or_else(ComponentPath::root)
     }
 
     /// Collapse `A->B->C` alias chains to direct `A->C` mappings.
-    fn collapse_alias_chains(aliases: &mut HashMap<String, String>) {
+    fn collapse_alias_chains(aliases: &mut HashMap<ComponentPath, ComponentPath>) {
         const MAX_PASSES: usize = 20;
         for _ in 0..MAX_PASSES {
             let mut changed = false;
-            let keys: Vec<String> = aliases.keys().cloned().collect();
+            let keys: Vec<ComponentPath> = aliases.keys().cloned().collect();
             for key in keys {
                 changed |= Self::collapse_alias_for_key(aliases, &key);
             }
@@ -128,18 +133,24 @@ impl TypeChecker {
         }
     }
 
-    fn collapse_alias_for_key(aliases: &mut HashMap<String, String>, key: &str) -> bool {
+    fn collapse_alias_for_key(
+        aliases: &mut HashMap<ComponentPath, ComponentPath>,
+        key: &ComponentPath,
+    ) -> bool {
         let Some(target) = Self::resolve_alias_terminal(aliases, key) else {
             return false;
         };
         if aliases.get(key) == Some(&target) {
             return false;
         }
-        aliases.insert(key.to_string(), target);
+        aliases.insert(key.clone(), target);
         true
     }
 
-    fn resolve_alias_terminal(aliases: &HashMap<String, String>, key: &str) -> Option<String> {
+    fn resolve_alias_terminal(
+        aliases: &HashMap<ComponentPath, ComponentPath>,
+        key: &ComponentPath,
+    ) -> Option<ComponentPath> {
         let mut target = aliases.get(key)?.clone();
         let mut seen = std::collections::HashSet::new();
         while seen.insert(target.clone()) {

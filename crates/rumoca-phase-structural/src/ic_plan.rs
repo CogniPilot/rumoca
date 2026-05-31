@@ -8,16 +8,20 @@ use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_dae as dae;
 
-use crate::eliminate::{expr_contains_var, try_solve_for_unknown};
-use crate::incidence::{Incidence, ScalarUnknownResolver, collect_expression_unknowns};
+use rumoca_ir_dae::expr_contains_var;
+
+use crate::eliminate::try_solve_for_unknown;
+use crate::incidence::{
+    Incidence, ScalarUnknownResolver, collect_equation_lhs_unknown, collect_expression_unknowns,
+};
 use crate::tearing::tear_algebraic_loop;
 use crate::types::{BltBlock, EquationRef, UnknownId};
 use crate::{StructuralError, build_blt_from_incidence};
 
 type Dae = dae::Dae;
-type VarName = dae::VarName;
+type VarName = rumoca_core::VarName;
 
-fn clone_solution_expr(expr: &dae::Expression) -> dae::Expression {
+fn clone_solution_expr(expr: &rumoca_core::Expression) -> rumoca_core::Expression {
     expr.clone()
 }
 
@@ -31,11 +35,11 @@ pub enum IcBlock {
         /// Environment key for updating the variable.
         var_name: String,
         /// Symbolic solution expression.
-        solution_expr: dae::Expression,
+        solution_expr: rumoca_core::Expression,
     },
     /// Single-variable Newton: solve `f_x[eq_idx]` for `y[var_idx]`.
     ScalarNewton {
-        /// Index of the equation in `dae.f_x`.
+        /// Index of the equation in `dae.continuous.equations`.
         eq_idx: usize,
         /// Index of this variable in the solver y-vector.
         var_idx: usize,
@@ -55,7 +59,7 @@ pub enum IcBlock {
     },
     /// Untearable coupled block: full small Newton/LM.
     CoupledLM {
-        /// dae::Equation indices in `dae.f_x`.
+        /// dae::Equation indices in `dae.continuous.equations`.
         eq_indices: Vec<usize>,
         /// dae::Variable indices in the solver y-vector.
         var_indices: Vec<usize>,
@@ -71,7 +75,7 @@ pub enum IcBlock {
 /// same number of unmatched unknowns.
 #[derive(Debug, Clone)]
 pub struct IcRelaxationHint {
-    /// Global equation indices in `dae.f_x` to drop.
+    /// Global equation indices in `dae.continuous.equations` to drop.
     pub dropped_eq_global: Vec<usize>,
     /// Scalar unknown names to pin after dropping equations.
     pub dropped_unknown_names: Vec<String>,
@@ -85,7 +89,7 @@ pub struct CausalStep {
     /// Environment key for updating the variable.
     pub var_name: String,
     /// `Some` = direct symbolic eval, `None` = scalar Newton.
-    pub solution_expr: Option<dae::Expression>,
+    pub solution_expr: Option<rumoca_core::Expression>,
     /// dae::Equation used for Newton if `solution_expr` is `None`.
     pub eq_idx: usize,
 }
@@ -100,13 +104,13 @@ pub struct CausalStep {
 /// Returns `Ok(vec![])` if there are no algebraic equations.
 /// Returns `Err` if the algebraic subsystem is structurally singular.
 pub fn build_ic_plan(dae: &Dae, n_x: usize) -> Result<Vec<IcBlock>, StructuralError> {
-    let n_eq = dae.f_x.len();
+    let n_eq = dae.continuous.equations.len();
     if n_eq <= n_x {
         return Ok(Vec::new());
     }
 
     // Build variable name → solver y-vector index mapping
-    let (var_name_to_idx, _var_idx_to_name) = build_var_index_maps(dae);
+    let (var_name_to_idx, _var_idx_to_name) = build_var_index_maps(dae, n_eq);
 
     // Build incidence for algebraic equations only (indices n_x..n_eq),
     // with only algebraic+output variables as unknowns (states are known).
@@ -154,7 +158,8 @@ pub fn build_ic_plan(dae: &Dae, n_x: usize) -> Result<Vec<IcBlock>, StructuralEr
             .iter()
             .map(|local_idx| {
                 let global_eq_idx = alg_eq_offset + local_idx;
-                dae.f_x
+                dae.continuous
+                    .equations
                     .get(global_eq_idx)
                     .map(|eq| eq.origin.clone())
                     .unwrap_or_else(|| format!("f_x[{global_eq_idx}]"))
@@ -169,25 +174,36 @@ pub fn build_ic_plan(dae: &Dae, n_x: usize) -> Result<Vec<IcBlock>, StructuralEr
                     .unwrap_or_else(|| format!("z[{local_idx}]"))
             })
             .collect();
+        let unmatched_unknown_spans: Vec<rumoca_core::Span> = unmatched_unknown_indices
+            .iter()
+            .map(|local_idx| {
+                incidence
+                    .unknown_spans
+                    .get(*local_idx)
+                    .copied()
+                    .unwrap_or(rumoca_core::Span::DUMMY)
+            })
+            .collect();
         return Err(StructuralError::Singular {
             n_equations: incidence.n_eq,
             n_unknowns: incidence.n_var,
             n_matched: matching_size,
             unmatched_equations,
             unmatched_unknowns,
+            unmatched_unknown_spans,
         });
     }
 
     // BLT decomposition
     let blt_blocks = build_blt_from_incidence(&incidence)?;
-    Ok(convert_blt_blocks_to_ic(
+    convert_blt_blocks_to_ic(
         dae,
         &blt_blocks,
         alg_eq_offset,
         &var_name_to_idx,
         &alg_var_indices,
         &alg_var_names,
-    ))
+    )
 }
 
 /// Build a structural relaxation hint for singular algebraic IC subsystems.
@@ -195,12 +211,12 @@ pub fn build_ic_plan(dae: &Dae, n_x: usize) -> Result<Vec<IcBlock>, StructuralEr
 /// Returns `Some` only when the algebraic subsystem is square and singular in a
 /// way that can be reduced by dropping a balanced subset of rows/unknowns.
 pub fn build_ic_relaxation_hint(dae: &Dae, n_x: usize) -> Option<IcRelaxationHint> {
-    let n_eq = dae.f_x.len();
+    let n_eq = dae.continuous.equations.len();
     if n_eq <= n_x {
         return None;
     }
 
-    let (var_name_to_idx, _) = build_var_index_maps(dae);
+    let (var_name_to_idx, _) = build_var_index_maps(dae, n_eq);
     let (incidence, alg_eq_offset, _alg_var_indices, alg_var_names) =
         build_algebraic_incidence(dae, n_x, &var_name_to_idx);
     let (match_eq, match_var) =
@@ -251,7 +267,7 @@ pub fn build_ic_relaxation_hint(dae: &Dae, n_x: usize) -> Option<IcRelaxationHin
 }
 
 fn ic_plan_trace_enabled() -> bool {
-    std::env::var("RUMOCA_SIM_TRACE").is_ok() || std::env::var("RUMOCA_SIM_INTROSPECT").is_ok()
+    crate::structural_trace_enabled()
 }
 
 fn convert_blt_blocks_to_ic(
@@ -261,17 +277,17 @@ fn convert_blt_blocks_to_ic(
     var_name_to_idx: &HashMap<String, usize>,
     alg_var_indices: &[usize],
     alg_var_names: &[String],
-) -> Vec<IcBlock> {
+) -> Result<Vec<IcBlock>, StructuralError> {
     let mut ic_blocks = Vec::new();
     for block in blt_blocks {
         match block {
             BltBlock::Scalar { equation, unknown } => {
                 let eq_idx = equation_ref_to_global(equation, alg_eq_offset);
                 let (var_idx, var_name) =
-                    resolve_unknown(unknown, var_name_to_idx, alg_var_indices, alg_var_names);
+                    resolve_unknown(unknown, var_name_to_idx, alg_var_indices, alg_var_names)?;
 
                 let var_vn = VarName::new(&var_name);
-                match try_solve_for_unknown(&dae.f_x[eq_idx].rhs, &var_vn) {
+                match try_solve_for_unknown(&dae.continuous.equations[eq_idx].rhs, &var_vn) {
                     Some(solution) if !expr_contains_var(&solution, &var_vn) => {
                         ic_blocks.push(IcBlock::ScalarDirect {
                             var_idx,
@@ -299,14 +315,14 @@ fn convert_blt_blocks_to_ic(
                 let var_info: Vec<(usize, String)> = unknowns
                     .iter()
                     .map(|u| resolve_unknown(u, var_name_to_idx, alg_var_indices, alg_var_names))
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 let block = build_loop_block(dae, &eq_indices, &var_info, var_name_to_idx);
                 ic_blocks.push(block);
             }
         }
     }
-    ic_blocks
+    Ok(ic_blocks)
 }
 
 struct RelaxedIcReduction {
@@ -445,7 +461,8 @@ fn score_relaxed_drop_candidate(
         .is_some_and(|cols| cols.iter().any(|col| dropped_var.contains(col)));
     let global_idx = alg_eq_offset + row_idx;
     let origin = dae
-        .f_x
+        .continuous
+        .equations
         .get(global_idx)
         .map(|eq| eq.origin.as_str())
         .unwrap_or("");
@@ -617,11 +634,12 @@ fn select_relaxed_drop_rows(
         if ic_plan_trace_enabled() {
             let global_idx = alg_eq_offset + row_idx;
             let origin = dae
-                .f_x
+                .continuous
+                .equations
                 .get(global_idx)
                 .map(|eq| eq.origin.as_str())
                 .unwrap_or("<missing-eq>");
-            eprintln!(
+            crate::structural_trace!(
                 "[sim-trace] IC relaxed drop select: row_local={} row_global=f_x[{}] tier={} matched={} full={} touches_dropped_unknown={} priority={} origin='{}'",
                 row_idx,
                 global_idx,
@@ -633,7 +651,7 @@ fn select_relaxed_drop_rows(
                 origin
             );
             if single_drop && best_score.full_match && !best_score.touches_dropped_unknown {
-                eprintln!(
+                crate::structural_trace!(
                     "[sim-trace] IC relaxed drop note: selected disjoint full-match row; realign_full_candidate={}",
                     best_score.single_drop_realign_full_match
                 );
@@ -693,9 +711,10 @@ fn maybe_realign_single_relaxed_drop_unknown(
         let Some(reduced) = project_relaxed_ic_incidence(incidence, dropped_eq, &candidate_set)
         else {
             if ic_plan_trace_enabled() {
-                eprintln!(
+                crate::structural_trace!(
                     "[sim-trace] IC relaxed drop unknown candidate={} reduced=none dropped_eq_local={:?}",
-                    candidate, dropped_eq
+                    candidate,
+                    dropped_eq
                 );
             }
             continue;
@@ -703,9 +722,10 @@ fn maybe_realign_single_relaxed_drop_unknown(
         let full_match = reduction_is_fully_matched(&reduced);
         if !full_match {
             if ic_plan_trace_enabled() {
-                eprintln!(
+                crate::structural_trace!(
                     "[sim-trace] IC relaxed drop unknown candidate={} full_match=false dropped_eq_local={:?}",
-                    candidate, dropped_eq
+                    candidate,
+                    dropped_eq
                 );
             }
             continue;
@@ -714,9 +734,11 @@ fn maybe_realign_single_relaxed_drop_unknown(
         let preferred = preferred_unknowns.contains(&candidate);
         let refs = ref_counts.get(candidate).copied().unwrap_or(usize::MAX);
         if ic_plan_trace_enabled() {
-            eprintln!(
+            crate::structural_trace!(
                 "[sim-trace] IC relaxed drop unknown candidate={} full_match=true preferred={} refs={}",
-                candidate, preferred, refs
+                candidate,
+                preferred,
+                refs
             );
         }
         let replace = match best {
@@ -737,9 +759,11 @@ fn maybe_realign_single_relaxed_drop_unknown(
     };
 
     if ic_plan_trace_enabled() {
-        eprintln!(
+        crate::structural_trace!(
             "[sim-trace] IC relaxed drop unknown realign: {} -> {} for dropped_eq_local={:?}",
-            current_unknown, candidate, dropped_eq
+            current_unknown,
+            candidate,
+            dropped_eq
         );
     }
     HashSet::from([candidate])
@@ -757,14 +781,16 @@ fn trace_relaxed_drop_selection(
         return;
     }
 
-    eprintln!(
+    crate::structural_trace!(
         "[sim-trace] IC relaxed drop detail: dropped_eq_local={:?} dropped_unknown_local={:?}",
-        dropped_eq_local, dropped_unknown_local
+        dropped_eq_local,
+        dropped_unknown_local
     );
     for local_idx in dropped_eq_local {
         let global_idx = alg_eq_offset + *local_idx;
         let origin = dae
-            .f_x
+            .continuous
+            .equations
             .get(global_idx)
             .map(|eq| eq.origin.as_str())
             .unwrap_or("<missing-eq>");
@@ -785,7 +811,7 @@ fn trace_relaxed_drop_selection(
             row_unknowns.truncate(6);
             row_unknowns.push("...".to_string());
         }
-        eprintln!(
+        crate::structural_trace!(
             "[sim-trace]   dropped_eq f_x[{global_idx}] origin='{}' unknowns={}",
             origin,
             row_unknowns.join(", ")
@@ -796,7 +822,7 @@ fn trace_relaxed_drop_selection(
             .get(*local_idx)
             .cloned()
             .unwrap_or_else(|| format!("z[{local_idx}]"));
-        eprintln!("[sim-trace]   dropped_unknown '{}'", name);
+        crate::structural_trace!("[sim-trace]   dropped_unknown '{}'", name);
     }
 }
 
@@ -928,9 +954,10 @@ fn try_build_relaxed_ic_plan_for_singular(
         ctx.var_name_to_idx,
         ctx.alg_var_indices,
         ctx.alg_var_names,
-    );
+    )
+    .ok()?;
     if ic_plan_trace_enabled() {
-        eprintln!(
+        crate::structural_trace!(
             "[sim-trace] IC plan relaxed fallback applied: dropped_eq={} dropped_unknowns={} kept_eq={} kept_unknowns={} blocks={}",
             reduction.dropped_eq_local.len(),
             reduction.dropped_unknown_local.len(),
@@ -954,7 +981,7 @@ fn trace_ic_plan_singularity(
         return;
     }
 
-    eprintln!(
+    crate::structural_trace!(
         "[sim-trace] IC plan singular detail: unmatched_eq={} unmatched_unknowns={}",
         unmatched_equation_indices.len(),
         unmatched_unknown_indices.len()
@@ -974,7 +1001,7 @@ fn trace_ic_plan_singularity(
         referencing_rows.sort_unstable();
 
         if referencing_rows.is_empty() {
-            eprintln!(
+            crate::structural_trace!(
                 "[sim-trace]   unmatched_unknown '{}' has no referencing algebraic rows",
                 name
             );
@@ -985,7 +1012,8 @@ fn trace_ic_plan_singularity(
         for local_row in referencing_rows.iter().copied().take(4) {
             let global_row = alg_eq_offset + local_row;
             let origin = dae
-                .f_x
+                .continuous
+                .equations
                 .get(global_row)
                 .map(|eq| eq.origin.as_str())
                 .unwrap_or("<missing-eq>");
@@ -1012,7 +1040,7 @@ fn trace_ic_plan_singularity(
                 row_unknowns.join(", ")
             ));
         }
-        eprintln!(
+        crate::structural_trace!(
             "[sim-trace]   unmatched_unknown '{}' referenced_by={} sample={}",
             name,
             referencing_rows.len(),
@@ -1023,7 +1051,8 @@ fn trace_ic_plan_singularity(
     for local_eq_idx in unmatched_equation_indices.iter().copied().take(8) {
         let global_eq_idx = alg_eq_offset + local_eq_idx;
         let origin = dae
-            .f_x
+            .continuous
+            .equations
             .get(global_eq_idx)
             .map(|eq| eq.origin.as_str())
             .unwrap_or("<missing-eq>");
@@ -1045,7 +1074,7 @@ fn trace_ic_plan_singularity(
             unknown_names.truncate(6);
             unknown_names.push("...".to_string());
         }
-        eprintln!(
+        crate::structural_trace!(
             "[sim-trace]   unmatched_eq f_x[{global_eq_idx}] origin='{}' unknowns={}",
             origin,
             unknown_names.join(", ")
@@ -1054,37 +1083,69 @@ fn trace_ic_plan_singularity(
 }
 
 /// Map variable names to solver y-vector indices and back.
-fn build_var_index_maps(dae: &Dae) -> (std::collections::HashMap<String, usize>, Vec<String>) {
+fn build_var_index_maps(
+    dae: &Dae,
+    solver_len: usize,
+) -> (std::collections::HashMap<String, usize>, Vec<String>) {
     let mut name_to_idx = std::collections::HashMap::new();
     let mut idx_to_name = Vec::new();
     let mut idx = 0;
     for (name, var) in dae
+        .variables
         .states
         .iter()
-        .chain(dae.algebraics.iter())
-        .chain(dae.outputs.iter())
+        .chain(dae.variables.algebraics.iter())
+        .chain(dae.variables.outputs.iter())
     {
+        if idx >= solver_len {
+            break;
+        }
         let sz = var.size();
         if sz <= 1 {
             name_to_idx.insert(name.as_str().to_string(), idx);
             idx_to_name.push(name.as_str().to_string());
             idx += 1;
         } else {
-            for i in 0..sz {
-                let key = format!("{}[{}]", name.as_str(), i + 1);
+            let visible_size = sz.min(solver_len - idx);
+            if visible_size > 0 {
+                name_to_idx.entry(name.as_str().to_string()).or_insert(idx);
+            }
+            for i in 0..visible_size {
+                let key = dae::scalar_name_text_for_flat_index(name.as_str(), &var.dims, i);
+                name_to_idx.insert(format!("{}[{}]", name.as_str(), i + 1), idx);
                 name_to_idx.insert(key.clone(), idx);
+                insert_multi_subscript_key(&mut name_to_idx, name.as_str(), &var.dims, i, idx);
                 idx_to_name.push(key);
                 idx += 1;
+            }
+            if visible_size < sz {
+                break;
             }
         }
     }
     (name_to_idx, idx_to_name)
 }
 
+fn insert_multi_subscript_key(
+    name_to_idx: &mut std::collections::HashMap<String, usize>,
+    name: &str,
+    dims: &[i64],
+    flat_index: usize,
+    idx: usize,
+) {
+    let Some(subs) = dae::flat_index_to_subscripts(dims, flat_index).filter(|subs| subs.len() > 1)
+    else {
+        return;
+    };
+    name_to_idx
+        .entry(dae::format_subscript_key(name, &subs))
+        .or_insert(idx);
+}
+
 /// Build incidence matrix for the algebraic subsystem only.
 ///
 /// Returns (incidence, alg_eq_offset, alg_var_indices, alg_var_names) where:
-/// - `alg_eq_offset` maps local eq index → global `dae.f_x` index
+/// - `alg_eq_offset` maps local eq index → global `dae.continuous.equations` index
 /// - `alg_var_indices[local]` is the global y-vector index
 /// - `alg_var_names[local]` is the variable name string
 fn build_algebraic_incidence(
@@ -1096,32 +1157,47 @@ fn build_algebraic_incidence(
     let mut alg_var_names: Vec<String> = Vec::new();
     let mut alg_var_indices: Vec<usize> = Vec::new();
     let mut unknown_names: Vec<UnknownId> = Vec::new();
-    for (name, var) in dae.algebraics.iter().chain(dae.outputs.iter()) {
+    let mut resolver_entries: Vec<(String, usize)> = Vec::new();
+    for (name, var) in dae
+        .variables
+        .algebraics
+        .iter()
+        .chain(dae.variables.outputs.iter())
+    {
         let sz = var.size();
         let keys: Vec<(String, UnknownId)> = if sz <= 1 {
             vec![(name.as_str().to_string(), UnknownId::Variable(name.clone()))]
         } else {
             (0..sz)
                 .map(|i| {
-                    let key = format!("{}[{}]", name.as_str(), i + 1);
+                    let key = dae::scalar_name_text_for_flat_index(name.as_str(), &var.dims, i);
                     let uid = UnknownId::Variable(VarName::new(&key));
                     (key, uid)
                 })
                 .collect()
         };
-        for (key, uid) in keys {
-            let global_idx = var_name_to_idx.get(&key).copied().unwrap_or(0);
+        for (scalar_idx, (key, uid)) in keys.into_iter().enumerate() {
+            let Some(global_idx) = var_name_to_idx.get(&key).copied() else {
+                continue;
+            };
+            let local_idx = alg_var_names.len();
             alg_var_indices.push(global_idx);
+            resolver_entries.push((key.clone(), local_idx));
+            if sz > 1 {
+                resolver_entries
+                    .push((format!("{}[{}]", name.as_str(), scalar_idx + 1), local_idx));
+            }
+            if sz > 1
+                && let Some(subs) = dae::flat_index_to_subscripts(&var.dims, scalar_idx)
+                && subs.len() > 1
+            {
+                resolver_entries.push((dae::format_subscript_key(name.as_str(), &subs), local_idx));
+            }
             alg_var_names.push(key);
             unknown_names.push(uid);
         }
     }
-    let local_resolver = ScalarUnknownResolver::from_entries(
-        alg_var_names
-            .iter()
-            .enumerate()
-            .map(|(local_idx, name)| (name.clone(), local_idx)),
-    );
+    let local_resolver = ScalarUnknownResolver::from_entries(resolver_entries);
 
     // Build incidence for algebraic equations (n_x..n_eq)
     let alg_eq_offset = n_x;
@@ -1129,10 +1205,11 @@ fn build_algebraic_incidence(
     let mut eq_unknowns_list: Vec<HashSet<usize>> = Vec::new();
 
     // Collect algebraic/output unknowns referenced by each algebraic equation.
-    for (local_eq, eq) in dae.f_x[n_x..].iter().enumerate() {
-        equation_refs.push(EquationRef::Continuous(n_x + local_eq));
+    for (local_eq, eq) in dae.continuous.equations[n_x..].iter().enumerate() {
+        equation_refs.push(EquationRef(n_x + local_eq));
 
         let mut unknown_indices = HashSet::new();
+        collect_equation_lhs_unknown(eq.lhs.as_ref(), &local_resolver, &mut unknown_indices);
         collect_expression_unknowns(&eq.rhs, &local_resolver, &mut unknown_indices);
         eq_unknowns_list.push(unknown_indices);
     }
@@ -1142,11 +1219,9 @@ fn build_algebraic_incidence(
     (incidence, alg_eq_offset, alg_var_indices, alg_var_names)
 }
 
-/// Convert an `EquationRef` back to its global `dae.f_x` index.
+/// Convert an `EquationRef` back to its global `dae.continuous.equations` index.
 fn equation_ref_to_global(eq_ref: &EquationRef, _alg_eq_offset: usize) -> usize {
-    match eq_ref {
-        EquationRef::Continuous(i) => *i,
-    }
+    eq_ref.0
 }
 
 /// Resolve an `UnknownId` to (y-vector index, env name).
@@ -1155,26 +1230,26 @@ fn resolve_unknown(
     var_name_to_idx: &std::collections::HashMap<String, usize>,
     alg_var_indices: &[usize],
     alg_var_names: &[String],
-) -> (usize, String) {
+) -> Result<(usize, String), StructuralError> {
     let name = match unknown {
         UnknownId::Variable(vn) => vn.as_str().to_string(),
         UnknownId::DerState(vn) => format!("der({})", vn.as_str()),
+        UnknownId::SolverY(index) => format!("y[{index}]"),
     };
 
     // Try direct lookup first
     if let Some(&idx) = var_name_to_idx.get(&name) {
-        return (idx, name);
+        return Ok((idx, name));
     }
 
     // Fall back to searching alg_var_names
     for (i, n) in alg_var_names.iter().enumerate() {
         if *n == name {
-            return (alg_var_indices[i], name);
+            return Ok((alg_var_indices[i], name));
         }
     }
 
-    // Last resort
-    (0, name)
+    Err(StructuralError::InvalidIcPlanUnknown { name })
 }
 
 /// Build an IcBlock for an algebraic loop: attempt tearing, fall back to CoupledLM.
@@ -1199,7 +1274,11 @@ fn build_loop_block(
         .iter()
         .map(|&eq_idx| {
             let mut local_unknowns = HashSet::new();
-            collect_expression_unknowns(&dae.f_x[eq_idx].rhs, &local_resolver, &mut local_unknowns);
+            collect_expression_unknowns(
+                &dae.continuous.equations[eq_idx].rhs,
+                &local_resolver,
+                &mut local_unknowns,
+            );
             local_unknowns
         })
         .collect();
@@ -1231,8 +1310,9 @@ fn build_loop_block(
 
                 // Try symbolic solve for the causal step
                 let var_vn = VarName::new(&var_name);
-                let solution = try_solve_for_unknown(&dae.f_x[eq_idx].rhs, &var_vn)
-                    .filter(|s| !expr_contains_var(s, &var_vn));
+                let solution =
+                    try_solve_for_unknown(&dae.continuous.equations[eq_idx].rhs, &var_vn)
+                        .filter(|s| !expr_contains_var(s, &var_vn));
 
                 CausalStep {
                     var_idx,
@@ -1290,11 +1370,12 @@ fn improve_causal_assignment(
 
         for (res_idx, &res_eq_idx) in residual_eq_indices.iter().enumerate() {
             // Check if the residual equation references this variable
-            if !expr_contains_var(&dae.f_x[res_eq_idx].rhs, &var_vn) {
+            if !expr_contains_var(&dae.continuous.equations[res_eq_idx].rhs, &var_vn) {
                 continue;
             }
             // Check if we can solve the residual equation for this variable
-            if let Some(solution) = try_solve_for_unknown(&dae.f_x[res_eq_idx].rhs, &var_vn)
+            if let Some(solution) =
+                try_solve_for_unknown(&dae.continuous.equations[res_eq_idx].rhs, &var_vn)
                 && !expr_contains_var(&solution, &var_vn)
             {
                 best_swap = Some((res_idx, res_eq_idx, solution));
@@ -1318,41 +1399,65 @@ mod tests {
     use rumoca_core::Span;
     use rumoca_ir_dae as dae;
 
-    fn var_ref(name: &str) -> dae::Expression {
-        dae::Expression::VarRef {
-            name: VarName::new(name),
+    fn var_ref(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
             subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
-    fn lit(v: f64) -> dae::Expression {
-        dae::Expression::Literal(dae::Literal::Real(v))
+    fn var_ref_idx(name: &str, indices: &[i64]) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: indices
+                .iter()
+                .copied()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+        }
     }
 
-    fn sub(l: dae::Expression, r: dae::Expression) -> dae::Expression {
-        dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+    fn lit(v: f64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(v),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn sub(l: rumoca_core::Expression, r: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
             lhs: Box::new(l),
             rhs: Box::new(r),
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
-    fn mul(l: dae::Expression, r: dae::Expression) -> dae::Expression {
-        dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Mul(Default::default()),
+    fn mul(l: rumoca_core::Expression, r: rumoca_core::Expression) -> rumoca_core::Expression {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
             lhs: Box::new(l),
             rhs: Box::new(r),
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
-    fn index(base: &str, idx: i64) -> dae::Expression {
-        dae::Expression::Index {
+    fn index(base: &str, idx: i64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Index {
             base: Box::new(var_ref(base)),
-            subscripts: vec![dae::Subscript::Index(idx)],
+            subscripts: vec![rumoca_core::Subscript::generated_index(
+                idx,
+                rumoca_core::Span::DUMMY,
+            )],
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
-    fn eq_from(rhs: dae::Expression) -> dae::Equation {
+    fn eq_from(rhs: rumoca_core::Expression) -> dae::Equation {
         dae::Equation {
             lhs: None,
             rhs,
@@ -1370,32 +1475,50 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_unknown_rejects_missing_solver_slot() {
+        let err = resolve_unknown(
+            &UnknownId::Variable(VarName::new("missing")),
+            &HashMap::new(),
+            &[],
+            &[],
+        )
+        .expect_err("unresolved IC-plan unknown must not fall back to solver slot 0");
+
+        assert!(matches!(
+            err,
+            StructuralError::InvalidIcPlanUnknown { name } if name == "missing"
+        ));
+    }
+
+    #[test]
     fn test_build_ic_plan_scalar_chain() {
         // R_actual = R * factor  (scalar direct)
         // v = R_actual * i       (scalar — depends on R_actual)
         // Two algebraic variables, two algebraic equations, zero states.
         let mut dae = Dae::new();
 
-        dae.algebraics.insert(
+        dae.variables.algebraics.insert(
             VarName::new("R_actual"),
             dae::Variable::new(VarName::new("R_actual")),
         );
-        dae.algebraics
+        dae.variables
+            .algebraics
             .insert(VarName::new("v"), dae::Variable::new(VarName::new("v")));
-        dae.parameters
+        dae.variables
+            .parameters
             .insert(VarName::new("R"), dae::Variable::new(VarName::new("R")));
-        dae.parameters.insert(
+        dae.variables.parameters.insert(
             VarName::new("factor"),
             dae::Variable::new(VarName::new("factor")),
         );
 
         // 0 = R_actual - R * factor
-        dae.f_x.push(eq_from(sub(
+        dae.continuous.equations.push(eq_from(sub(
             var_ref("R_actual"),
             mul(var_ref("R"), var_ref("factor")),
         )));
         // 0 = v - R_actual * i  (but i is a parameter for simplicity)
-        dae.f_x.push(eq_from(sub(
+        dae.continuous.equations.push(eq_from(sub(
             var_ref("v"),
             mul(var_ref("R_actual"), var_ref("i")),
         )));
@@ -1415,16 +1538,20 @@ mod tests {
         // Two coupled equations: 0 = y - 2*z, 0 = z - 3*y
         let mut dae = Dae::new();
 
-        dae.algebraics
+        dae.variables
+            .algebraics
             .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
-        dae.algebraics
+        dae.variables
+            .algebraics
             .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
 
         // 0 = y - 2*z
-        dae.f_x
+        dae.continuous
+            .equations
             .push(eq_from(sub(var_ref("y"), mul(lit(2.0), var_ref("z")))));
         // 0 = z - 3*y
-        dae.f_x
+        dae.continuous
+            .equations
             .push(eq_from(sub(var_ref("z"), mul(lit(3.0), var_ref("y")))));
 
         let plan = build_ic_plan(&dae, 0).unwrap();
@@ -1459,17 +1586,23 @@ mod tests {
 
         let mut u = dae::Variable::new(VarName::new("u"));
         u.dims = vec![2];
-        dae.algebraics.insert(VarName::new("u"), u);
-        dae.algebraics
+        dae.variables.algebraics.insert(VarName::new("u"), u);
+        dae.variables
+            .algebraics
             .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
 
-        dae.f_x.push(eq_from(sub(index("u", 1), lit(2.0))));
-        dae.f_x.push(eq_from(sub(index("u", 2), lit(3.0))));
-        dae.f_x.push(eq_from(sub(
+        dae.continuous
+            .equations
+            .push(eq_from(sub(index("u", 1), lit(2.0))));
+        dae.continuous
+            .equations
+            .push(eq_from(sub(index("u", 2), lit(3.0))));
+        dae.continuous.equations.push(eq_from(sub(
             var_ref("y"),
-            dae::Expression::BuiltinCall {
-                function: dae::BuiltinFunction::Product,
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Product,
                 args: vec![var_ref("u")],
+                span: rumoca_core::Span::DUMMY,
             },
         )));
 
@@ -1504,51 +1637,139 @@ mod tests {
     }
 
     #[test]
-    fn test_build_ic_plan_flags_rectangular_algebraic_subsystem() {
+    fn test_ic_incidence_maps_matrix_subscripts_to_flat_slots() {
         let mut dae = Dae::new();
-        dae.algebraics
-            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
-        dae.algebraics
-            .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
-        dae.f_x.push(eq_from(sub(var_ref("y"), lit(1.0))));
 
-        let err =
-            build_ic_plan(&dae, 0).expect_err("rectangular algebraic subsystem must be singular");
-        match err {
-            StructuralError::Singular {
-                n_equations,
-                n_unknowns,
-                n_matched,
-                unmatched_unknowns,
-                ..
-            } => {
-                assert_eq!(n_equations, 1);
-                assert_eq!(n_unknowns, 2);
-                assert_eq!(n_matched, 1);
-                assert!(
-                    unmatched_unknowns.iter().any(|name| name == "z"),
-                    "expected unmatched unknown list to include z, got: {unmatched_unknowns:?}"
-                );
+        let mut m = dae::Variable::new(VarName::new("M"));
+        m.dims = vec![3, 4];
+        dae.variables.algebraics.insert(VarName::new("M"), m);
+
+        dae.continuous
+            .equations
+            .push(eq_from(sub(var_ref_idx("M", &[1, 2]), lit(1.0))));
+        dae.continuous
+            .equations
+            .push(eq_from(sub(var_ref_idx("M", &[2, 2]), lit(2.0))));
+        dae.continuous
+            .equations
+            .push(eq_from(sub(var_ref_idx("M", &[3, 2]), lit(3.0))));
+
+        let (var_name_to_idx, _) = build_var_index_maps(&dae, 12);
+        let (incidence, _, _, alg_var_names) = build_algebraic_incidence(&dae, 0, &var_name_to_idx);
+        let local_idx = |name: &str| {
+            alg_var_names
+                .iter()
+                .position(|candidate| candidate == name)
+                .unwrap_or_else(|| panic!("missing algebraic slot {name}"))
+        };
+
+        assert_eq!(
+            incidence.eq_unknowns[0],
+            HashSet::from([local_idx("M[1,2]")])
+        );
+        assert_eq!(
+            incidence.eq_unknowns[1],
+            HashSet::from([local_idx("M[2,2]")])
+        );
+        assert_eq!(
+            incidence.eq_unknowns[2],
+            HashSet::from([local_idx("M[3,2]")])
+        );
+    }
+
+    #[test]
+    fn test_ic_incidence_counts_explicit_lhs_unknowns() {
+        let mut dae = Dae::new();
+
+        let mut m = dae::Variable::new(VarName::new("M"));
+        m.dims = vec![3, 4];
+        dae.variables.algebraics.insert(VarName::new("M"), m);
+        dae.continuous.equations.push(dae::Equation {
+            lhs: Some(VarName::new("M[1,2]")),
+            rhs: lit(2.0),
+            span: Span::DUMMY,
+            origin: "explicit matrix scalar assignment".to_string(),
+            scalar_count: 1,
+        });
+
+        let (var_name_to_idx, _) = build_var_index_maps(&dae, 12);
+        let (incidence, _, _, alg_var_names) = build_algebraic_incidence(&dae, 0, &var_name_to_idx);
+        let local_idx = |name: &str| {
+            alg_var_names
+                .iter()
+                .position(|candidate| candidate == name)
+                .unwrap_or_else(|| panic!("missing algebraic slot {name}"))
+        };
+
+        assert_eq!(
+            incidence.eq_unknowns[0],
+            HashSet::from([local_idx("M[1,2]")])
+        );
+    }
+
+    #[test]
+    fn test_build_ic_plan_ignores_non_solver_backed_tail_unknowns() {
+        let mut dae = Dae::new();
+        dae.variables
+            .algebraics
+            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        dae.variables
+            .algebraics
+            .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        dae.continuous
+            .equations
+            .push(eq_from(sub(var_ref("y"), lit(1.0))));
+
+        let plan = build_ic_plan(&dae, 0)
+            .expect("tail variables without solver slots should not make IC singular");
+        let mut referenced = std::collections::BTreeSet::new();
+        for block in &plan {
+            match block {
+                IcBlock::ScalarDirect { var_name, .. } | IcBlock::ScalarNewton { var_name, .. } => {
+                    referenced.insert(var_name.clone());
+                }
+                IcBlock::TornBlock {
+                    tear_var_names,
+                    causal_sequence,
+                    ..
+                } => {
+                    referenced.extend(tear_var_names.iter().cloned());
+                    referenced.extend(causal_sequence.iter().map(|step| step.var_name.clone()));
+                }
+                IcBlock::CoupledLM { var_names, .. } => {
+                    referenced.extend(var_names.iter().cloned());
+                }
             }
-            other => panic!("expected singular error, got {other:?}"),
         }
+
+        assert!(referenced.contains("y"));
+        assert!(!referenced.contains("z"));
     }
 
     #[test]
     fn test_build_ic_plan_relaxes_square_singular_subsystem() {
         let mut dae = Dae::new();
-        dae.algebraics
+        dae.variables
+            .algebraics
             .insert(VarName::new("v1"), dae::Variable::new(VarName::new("v1")));
-        dae.algebraics
+        dae.variables
+            .algebraics
             .insert(VarName::new("v2"), dae::Variable::new(VarName::new("v2")));
-        dae.algebraics
+        dae.variables
+            .algebraics
             .insert(VarName::new("i"), dae::Variable::new(VarName::new("i")));
 
         // One voltage equality plus two conflicting current equations creates a
         // square but structurally deficient system (1 unmatched eq + 1 unmatched unknown).
-        dae.f_x.push(eq_from(sub(var_ref("v1"), var_ref("v2"))));
-        dae.f_x.push(eq_from(sub(var_ref("i"), lit(1.0))));
-        dae.f_x.push(eq_from(sub(var_ref("i"), lit(2.0))));
+        dae.continuous
+            .equations
+            .push(eq_from(sub(var_ref("v1"), var_ref("v2"))));
+        dae.continuous
+            .equations
+            .push(eq_from(sub(var_ref("i"), lit(1.0))));
+        dae.continuous
+            .equations
+            .push(eq_from(sub(var_ref("i"), lit(2.0))));
 
         let plan =
             build_ic_plan(&dae, 0).expect("relaxed IC fallback should keep the matched subsystem");
@@ -1581,15 +1802,24 @@ mod tests {
     #[test]
     fn test_build_ic_relaxation_hint_reports_drop_set_for_square_singular_subsystem() {
         let mut dae = Dae::new();
-        dae.algebraics
+        dae.variables
+            .algebraics
             .insert(VarName::new("v1"), dae::Variable::new(VarName::new("v1")));
-        dae.algebraics
+        dae.variables
+            .algebraics
             .insert(VarName::new("v2"), dae::Variable::new(VarName::new("v2")));
-        dae.algebraics
+        dae.variables
+            .algebraics
             .insert(VarName::new("i"), dae::Variable::new(VarName::new("i")));
-        dae.f_x.push(eq_from(sub(var_ref("v1"), var_ref("v2"))));
-        dae.f_x.push(eq_from(sub(var_ref("i"), lit(1.0))));
-        dae.f_x.push(eq_from(sub(var_ref("i"), lit(2.0))));
+        dae.continuous
+            .equations
+            .push(eq_from(sub(var_ref("v1"), var_ref("v2"))));
+        dae.continuous
+            .equations
+            .push(eq_from(sub(var_ref("i"), lit(1.0))));
+        dae.continuous
+            .equations
+            .push(eq_from(sub(var_ref("i"), lit(2.0))));
 
         let hint = build_ic_relaxation_hint(&dae, 0)
             .expect("square singular subsystem should produce hint");

@@ -1,6 +1,11 @@
 //! Type checking phase for the Rumoca compiler.
 //!
-//! This phase walks the resolved Class Tree and:
+//! This phase has two entry points. `typecheck` walks a resolved `ClassTree`
+//! and returns a `TypedTree`. The production compiled-model pipeline uses
+//! `typecheck_instanced` after instantiation so modifier-dependent dimensions
+//! and structural parameters are available in the instance overlay.
+//!
+//! Type checking:
 //! 1. Resolves type specifiers to TypeIds
 //! 2. Populates the type_id fields on components
 //! 3. **Evaluates dimension expressions** (MLS §10.1)
@@ -9,24 +14,27 @@
 //! 6. Performs type checking on expressions
 //! 7. Validates type constraints (variability, causality, etc.)
 //!
-//! The input is a `ResolvedTree` and the output is a `TypedTree`.
-//! Both wrap the same underlying `ClassTree`, but the newtype wrappers
-//! provide compile-time guarantees about which phase has been completed.
+//! The standalone API input is a `ResolvedTree` and the output is a
+//! `TypedTree`. The production API input is a resolved `ClassTree` plus an
+//! `InstanceOverlay`, and it annotates the overlay in place before flattening.
 //!
 //! ## Dimension Evaluation (MLS §10.1)
 //!
-//! Dimensions are evaluated during typing, not flattening. This ensures:
-//! - Concrete dimensions are available before instantiation
-//! - Structural parameters are identified early
+//! Production model dimensions are evaluated after instantiation, not during
+//! flattening. This ensures:
+//! - Modifier-dependent dimensions use final instantiated values
+//! - Structural parameters are identified before Flat is produced
 //! - Array sizes for for-loops can be computed at compile time
 
+mod instanced;
 mod modifier_targets;
 mod typechecker;
 
-use miette::{Diagnostic, SourceSpan};
+use rumoca_core::{DefId, ScopeId, Span, TypeId};
 use rumoca_core::{
-    DefId, Diagnostic as CommonDiagnostic, Diagnostics, PrimaryLabel, ScopeId, SourceMap, Span,
-    TypeId, find_last_top_level_dot, has_top_level_dot, parent_scope, top_level_last_segment,
+    Diagnostic as CommonDiagnostic, Diagnostics, PhaseError, PrimaryLabel, SourceMap,
+    find_last_top_level_dot, has_top_level_dot, parent_scope, split_first_top_level,
+    top_level_last_segment,
 };
 use rumoca_ir_ast::{
     ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceOverlay,
@@ -47,54 +55,37 @@ pub use typechecker::api::{typecheck, typecheck_instanced};
 pub type TypeCheckResult<T> = Result<T, Box<TypeCheckError>>;
 
 /// Errors that can occur during type checking.
-#[derive(Debug, Clone, Error, Diagnostic)]
+#[derive(Debug, Clone, Error)]
 pub enum TypeCheckError {
     /// A type was referenced but not found.
     #[error("undefined type: `{name}` not found")]
-    #[diagnostic(
-        code(rumoca::typecheck::ET001),
-        help("check that the type name is spelled correctly")
-    )]
-    UndefinedType {
-        name: String,
-        #[label("type not found")]
-        span: SourceSpan,
-    },
+    UndefinedType { name: String, span: Span },
 
     /// A type mismatch in an expression or equation.
     #[error("type mismatch: expected `{expected}`, found `{found}`")]
-    #[diagnostic(
-        code(rumoca::typecheck::ET002),
-        help("MLS §4: types must be compatible for this operation")
-    )]
     TypeMismatch {
         expected: String,
         found: String,
-        #[label("type mismatch here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Invalid variability constraint.
     #[error("variability error: {message}")]
-    #[diagnostic(
-        code(rumoca::typecheck::ET003),
-        help("MLS §4.5: variability must be respected in assignments")
-    )]
-    VariabilityError {
-        message: String,
-        #[label("variability error here")]
-        span: SourceSpan,
-    },
+    VariabilityError { message: String, span: Span },
 
     /// Array dimensions could not be evaluated.
     #[error("unevaluable array dimensions for '{name}': {reason}")]
-    #[diagnostic(
-        code(rumoca::typecheck::ET004),
-        help(
-            "MLS §10.1: array dimensions must be parameter expressions evaluable at translation time"
-        )
-    )]
     UnevaluableDimensions { name: String, reason: String },
+
+    /// Phase-local diagnostic emitted during recoverable type checking.
+    #[error("{message}")]
+    PhaseDiagnostic {
+        code: String,
+        message: String,
+        label: String,
+        span: Span,
+        note: Option<String>,
+    },
 }
 
 impl TypeCheckError {
@@ -102,7 +93,7 @@ impl TypeCheckError {
     pub fn undefined_type(name: impl Into<String>, span: Span) -> Self {
         Self::UndefinedType {
             name: name.into(),
-            span: span.to_source_span(),
+            span,
         }
     }
 
@@ -115,7 +106,7 @@ impl TypeCheckError {
         Self::TypeMismatch {
             expected: expected.into(),
             found: found.into(),
-            span: span.to_source_span(),
+            span,
         }
     }
 
@@ -123,7 +114,7 @@ impl TypeCheckError {
     pub fn variability_error(message: impl Into<String>, span: Span) -> Self {
         Self::VariabilityError {
             message: message.into(),
-            span: span.to_source_span(),
+            span,
         }
     }
 
@@ -132,6 +123,94 @@ impl TypeCheckError {
         Self::UnevaluableDimensions {
             name: name.into(),
             reason: reason.into(),
+        }
+    }
+
+    pub fn phase_diagnostic(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        label: impl Into<String>,
+        span: Span,
+    ) -> Self {
+        Self::PhaseDiagnostic {
+            code: code.into(),
+            message: message.into(),
+            label: label.into(),
+            span,
+            note: None,
+        }
+    }
+
+    pub fn with_note(self, note: impl Into<String>) -> Self {
+        match self {
+            Self::PhaseDiagnostic {
+                code,
+                message,
+                label,
+                span,
+                ..
+            } => Self::PhaseDiagnostic {
+                code,
+                message,
+                label,
+                span,
+                note: Some(note.into()),
+            },
+            other => other,
+        }
+    }
+}
+
+impl PhaseError for TypeCheckError {
+    fn to_diagnostic(&self) -> CommonDiagnostic {
+        match self {
+            Self::UndefinedType { name, span } => CommonDiagnostic::error(
+                "ET001",
+                format!("undefined type: `{name}` not found"),
+                PrimaryLabel::new(*span).with_message("type not found"),
+            )
+            .with_note("check that the type name is spelled correctly"),
+            Self::TypeMismatch {
+                expected,
+                found,
+                span,
+            } => CommonDiagnostic::error(
+                "ET002",
+                format!("type mismatch: expected `{expected}`, found `{found}`"),
+                PrimaryLabel::new(*span).with_message("type mismatch here"),
+            )
+            .with_note("MLS §4: types must be compatible for this operation"),
+            Self::VariabilityError { message, span } => CommonDiagnostic::error(
+                "ET003",
+                format!("variability error: {message}"),
+                PrimaryLabel::new(*span).with_message("variability error here"),
+            )
+            .with_note("MLS §4.5: variability must be respected in assignments"),
+            Self::UnevaluableDimensions { name, reason } => CommonDiagnostic::global_error(
+                "ET004",
+                format!("unevaluable array dimensions for '{name}': {reason}"),
+            )
+            .with_note(
+                "MLS §10.1: array dimensions must be parameter expressions evaluable at translation time",
+            ),
+            Self::PhaseDiagnostic {
+                code,
+                message,
+                label,
+                span,
+                note,
+            } => {
+                let diagnostic = CommonDiagnostic::error(
+                    code.clone(),
+                    message.clone(),
+                    PrimaryLabel::new(*span).with_message(label.clone()),
+                );
+                if let Some(note) = note {
+                    diagnostic.with_note(note.clone())
+                } else {
+                    diagnostic
+                }
+            }
         }
     }
 }
@@ -193,6 +272,10 @@ impl TypeChecker {
         }
     }
 
+    pub(crate) fn emit_typecheck_error(&mut self, error: TypeCheckError) {
+        self.diagnostics.emit(error.to_diagnostic());
+    }
+
     /// Type check a ClassTree.
     pub fn check(&mut self, tree: &mut ClassTree) {
         self.source_map = tree.source_map.clone();
@@ -215,234 +298,6 @@ impl TypeChecker {
                 &self.type_suffix_index,
             );
         self.check_stored_definition(&mut tree.definitions, &mut tree.type_table);
-    }
-
-    /// Type check an instanced model using the overlay for modification context.
-    ///
-    /// This builds an evaluation context from the overlay's parameter values
-    /// and evaluates dimensions for components that have unevaluated dimensions.
-    pub fn check_instanced(
-        &mut self,
-        tree: &ClassTree,
-        overlay: &mut InstanceOverlay,
-        model_name: &str,
-    ) {
-        self.source_map = tree.source_map.clone();
-        self.def_qualified_names = tree
-            .def_map
-            .iter()
-            .map(|(def_id, name)| (*def_id, name.clone()))
-            .collect();
-        // Build evaluation context from overlay's parameter values
-        self.eval_ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
-        let (type_table, type_ids_by_def_id) = Self::build_type_context(tree);
-        self.type_ids_by_def_id = type_ids_by_def_id;
-        self.type_suffix_index = Self::build_type_suffix_index(&type_table);
-        self.rebuild_type_roots(tree, &type_table);
-        self.component_modifier_targets = modifier_targets::build_component_modifier_targets(tree);
-        self.component_modifier_member_types =
-            modifier_targets::build_component_modifier_member_types(
-                tree,
-                &type_table,
-                &self.type_ids_by_def_id,
-                &self.type_suffix_index,
-            );
-        self.populate_overlay_type_roots(tree, overlay, &type_table);
-        self.resolve_overlay_component_types(overlay, &type_table);
-
-        // Extract parameter values from the overlay (integers, booleans, reals)
-        // Uses scope-aware evaluation so `nout = max(size(deltaq,1))` in component
-        // `kinematicPTP` can resolve `deltaq` as `kinematicPTP.deltaq`.
-        for (_def_id, instance_data) in &overlay.components {
-            let name = instance_data.qualified_name.to_flat_string();
-            let scope = parent_scope(&name).unwrap_or("");
-
-            // Try integer first (binding then start)
-            if let Some(ref binding) = instance_data.binding
-                && let Some(value) =
-                    rumoca_eval_ast::eval::eval_integer_with_scope(binding, &self.eval_ctx, scope)
-            {
-                self.eval_ctx.add_integer(&name, value);
-            } else if let Some(ref start) = instance_data.start
-                && let Some(value) =
-                    rumoca_eval_ast::eval::eval_integer_with_scope(start, &self.eval_ctx, scope)
-            {
-                self.eval_ctx.add_integer(&name, value);
-            }
-
-            // Try boolean (binding then start)
-            if let Some(ref binding) = instance_data.binding
-                && let Some(value) =
-                    rumoca_eval_ast::eval::eval_boolean_with_scope(binding, &self.eval_ctx, scope)
-            {
-                self.eval_ctx.booleans.insert(name.clone(), value);
-            } else if let Some(ref start) = instance_data.start
-                && let Some(value) =
-                    rumoca_eval_ast::eval::eval_boolean_with_scope(start, &self.eval_ctx, scope)
-            {
-                self.eval_ctx.booleans.insert(name.clone(), value);
-            }
-
-            // Try real (binding then start)
-            if let Some(ref binding) = instance_data.binding
-                && let Some(value) =
-                    rumoca_eval_ast::eval::eval_real_with_scope(binding, &self.eval_ctx, scope)
-            {
-                self.eval_ctx.reals.insert(name.clone(), value);
-            } else if let Some(ref start) = instance_data.start
-                && let Some(value) =
-                    rumoca_eval_ast::eval::eval_real_with_scope(start, &self.eval_ctx, scope)
-            {
-                self.eval_ctx.reals.insert(name.clone(), value);
-            }
-
-            // Try enumeration (binding then start)
-            // Enum values are ComponentReferences with qualified paths (>= 2 parts)
-            if let Some(ref binding) = instance_data.binding
-                && let Some(value) = rumoca_eval_ast::eval::extract_enum_value(binding)
-            {
-                self.eval_ctx.enums.insert(name.clone(), value);
-            } else if let Some(ref start) = instance_data.start
-                && let Some(value) = rumoca_eval_ast::eval::extract_enum_value(start)
-            {
-                self.eval_ctx.enums.insert(name.clone(), value);
-            }
-
-            // Pre-populate dimensions from overlay if already known
-            if !instance_data.dims.is_empty() {
-                self.eval_ctx.add_dimensions(
-                    &name,
-                    instance_data.dims.iter().map(|&d| d as usize).collect(),
-                );
-            }
-        }
-
-        // Collect enumeration type sizes from the class tree (MLS §10.5).
-        // When an enumeration type is used as a dimension (e.g., `Real x[Logic]`),
-        // the size of that dimension is the number of enumeration literals.
-        Self::collect_enum_sizes(tree, &mut self.eval_ctx);
-
-        // Collect integer/real constants from imported classes (MLS §13.2).
-        // This handles patterns like `import generator = ...Xorshift128plus;`
-        // where `generator.nState` is used as a dimension expression.
-        Self::collect_import_constants(tree, &mut self.eval_ctx);
-
-        // Collect constants from direct model-level extends redeclare overrides
-        // (e.g., `extends Base(redeclare package Medium = ...);`).
-        // MLS §7.3: redeclare overrides are active in the derived class scope.
-        Self::collect_model_extends_redeclare_constants(tree, model_name, &mut self.eval_ctx);
-
-        // Collect constants from nested package classes (MLS §7.3).
-        // When a model has `replaceable package Medium = PartialMedium`, the
-        // package-level constants (nX, nXi, etc.) need to be available for
-        // dimension evaluation. Extract them from the ClassTree.
-        Self::collect_nested_class_constants(tree, model_name, &mut self.eval_ctx);
-
-        // Re-apply direct model-level extends redeclare overrides after nested
-        // class extraction so redeclared package/type constants take precedence
-        // over inherited replaceable defaults (MLS §7.3).
-        Self::collect_model_extends_redeclare_constants(tree, model_name, &mut self.eval_ctx);
-
-        // Collect nested/redeclare constants from component *type* hierarchies
-        // into each instance scope (e.g. `voltage.term.PhaseSystem.n`).
-        Self::collect_component_type_nested_constants(tree, overlay, &mut self.eval_ctx);
-
-        // Collect constants from the enclosing class (MLS §5.3).
-        // When compiling `Package.BaseProperties`, constants like nX, nXi
-        // defined in `Package` need to be available for dimension evaluation.
-        Self::collect_enclosing_class_constants(tree, model_name, &mut self.eval_ctx);
-
-        // Collect function definitions for compile-time evaluation (MLS §12.4).
-        // When a dimension depends on a user-defined function call (e.g.,
-        // `Integer ind[:] = indexPositiveSequence(m)`), the function definition
-        // must be available so the output dimensions can be inferred.
-        Self::collect_function_defs(tree, &mut self.eval_ctx);
-
-        // MLS §7.3: apply instance-specific class/package redeclare overrides
-        // from instantiation (e.g., `a(redeclare package Medium=...)`) so
-        // `a.Medium.*` and `b.Medium.*` constants are scoped per instance.
-        Self::collect_instance_class_override_constants(tree, overlay, &mut self.eval_ctx);
-        let record_aliases = Self::collect_record_aliases(overlay);
-
-        // Multi-pass dimension evaluation (MLS §10.1)
-        //
-        // Both explicit dimensions (e.g., `x[size(a,1)-1]`) and colon dimensions
-        // (e.g., `a[:]={1,2,3}`) are evaluated in the same loop because they can
-        // depend on each other. For example:
-        //   parameter Real a[:] = {1};           // colon → inferred as [1]
-        //   Real x[size(a, 1) - 1];              // explicit → depends on a's dims
-        //   parameter Integer nx = size(a, 1);    // integer → depends on a's dims
-        //   Real x_scaled[size(x, 1)];            // explicit → depends on x's dims
-        self.evaluate_all_dimensions_multi_pass(overlay, &record_aliases);
-
-        // Validate that all array dimensions have been evaluated
-        // This is MLS §10.1 compliance - dimensions must be evaluable at translation time
-        self.validate_dimensions(overlay);
-
-        // Validate component modifiers in the target model scope.
-        // This catches misspelled builtin modifiers like `startd=...`.
-        self.check_instanced_component_modifiers(tree, model_name, &type_table);
-
-        // Type-check model equations with instanced type identities from the overlay.
-        self.check_instanced_equations(tree, overlay, model_name, &type_table);
-    }
-
-    fn check_instanced_component_modifiers(
-        &mut self,
-        tree: &ClassTree,
-        model_name: &str,
-        type_table: &TypeTable,
-    ) {
-        let model_class = tree
-            .get_class_by_qualified_name(model_name)
-            .or_else(|| tree.get_class_by_qualified_name(top_level_last_segment(model_name)));
-        let Some(model_class) = model_class else {
-            return;
-        };
-        self.check_instanced_component_modifiers_in_class(model_class, type_table);
-    }
-
-    fn check_instanced_component_modifiers_in_class(
-        &mut self,
-        class: &ClassDef,
-        type_table: &TypeTable,
-    ) {
-        for (comp_name, comp) in &class.components {
-            let type_name = comp.type_name.to_string();
-            let type_id = self.resolve_type_name(&type_name, comp.type_def_id, type_table);
-            self.validate_component_modifier_names(comp_name, comp, type_table, type_id);
-        }
-        for nested in class.classes.values() {
-            self.check_instanced_component_modifiers_in_class(nested, type_table);
-        }
-    }
-
-    /// Check equation compatibility for a specific instanced model.
-    fn check_instanced_equations(
-        &mut self,
-        tree: &ClassTree,
-        overlay: &InstanceOverlay,
-        model_name: &str,
-        type_table: &TypeTable,
-    ) {
-        let model_class = tree
-            .get_class_by_qualified_name(model_name)
-            .or_else(|| tree.get_class_by_qualified_name(top_level_last_segment(model_name)));
-        let Some(model_class) = model_class else {
-            return;
-        };
-
-        let prev_scope_types = std::mem::take(&mut self.current_component_types);
-        self.current_component_types =
-            Self::build_instanced_component_type_scope(overlay, model_name);
-
-        // Validate builtin modifier value types with instanced component scope.
-        self.check_component_modifier_types_in_class(model_class, type_table);
-
-        walk_equations(self, &model_class.equations, type_table);
-        walk_equations(self, &model_class.initial_equations, type_table);
-
-        self.current_component_types = prev_scope_types;
     }
 
     /// Collect constants from instance-level class/package redeclare overrides.
@@ -497,14 +352,14 @@ impl TypeChecker {
         }
 
         let active_alias = Self::component_active_alias(data);
-        for (alias, def_id) in &data.class_overrides {
+        for class_override in data.class_overrides.values() {
             Self::apply_class_override_alias(
                 tree,
                 component_index,
                 &comp_scope,
                 active_alias.as_deref(),
-                alias,
-                *def_id,
+                &class_override.alias,
+                class_override.target_def_id,
                 ctx,
             );
         }
@@ -532,15 +387,6 @@ impl TypeChecker {
         }
 
         let is_active_alias = active_alias == Some(alias);
-        if is_active_alias {
-            // MLS §7.3: active alias redeclare owns the unqualified
-            // component-local projection (e.g., `medium.nX`), so stale values
-            // from inherited/default aliases must be replaced.
-            //
-            // Important: clear this before writing `comp_scope.alias.*` so we
-            // do not erase freshly extracted alias constants.
-            Self::clear_alias_scope_values(ctx, comp_scope);
-        }
 
         let alias_scope = format!("{comp_scope}.{alias}");
         // MLS §7.3: instance-level redeclare overrides must replace inherited/default
@@ -578,7 +424,7 @@ impl TypeChecker {
         let Some(parent_data) = component_index.get(parent_scope) else {
             return false;
         };
-        if !parent_data.class_overrides.contains_key(alias) {
+        if Self::class_override_by_alias(parent_data, alias).is_none() {
             return false;
         }
 
@@ -609,19 +455,36 @@ impl TypeChecker {
     }
 
     fn component_active_alias(data: &rumoca_ir_ast::InstanceData) -> Option<String> {
-        if let Some((head, _tail)) = data.type_name.split_once('.')
-            && data.class_overrides.contains_key(head)
+        if let Some(type_def_id) = data.type_def_id
+            && let Some(class_override) = data.class_overrides.get(&type_def_id)
+        {
+            return Some(class_override.alias.clone());
+        }
+
+        if let Some((head, _tail)) = split_first_top_level(&data.type_name)
+            && Self::class_override_by_alias(data, head).is_some()
         {
             return Some(head.to_string());
         }
 
-        // If this instance has exactly one class/package override, that alias is
-        // the active lexical source for unqualified constants in nested members.
         if data.class_overrides.len() == 1 {
-            return data.class_overrides.keys().next().cloned();
+            return data
+                .class_overrides
+                .values()
+                .next()
+                .map(|class_override| class_override.alias.clone());
         }
 
         None
+    }
+
+    fn class_override_by_alias<'a>(
+        data: &'a rumoca_ir_ast::InstanceData,
+        alias: &str,
+    ) -> Option<&'a rumoca_ir_ast::ClassOverride> {
+        data.class_overrides
+            .values()
+            .find(|class_override| class_override.alias == alias)
     }
 
     /// Build lookup keys for top-level model components from instanced overlay data.
@@ -641,13 +504,12 @@ impl TypeChecker {
                 .get(&data.type_id)
                 .copied()
                 .unwrap_or(data.type_id);
+            out.insert(qn.clone(), canonical_type);
             if let Some(rest) = qn.strip_prefix(&full_prefix) {
-                out.insert(qn.clone(), canonical_type);
                 Self::insert_instanced_aliases(&mut out, rest, canonical_type, Some(short_model));
                 continue;
             }
             if let Some(rest) = qn.strip_prefix(&short_prefix) {
-                out.insert(qn.clone(), canonical_type);
                 Self::insert_instanced_aliases(&mut out, rest, canonical_type, None);
                 continue;
             }
@@ -691,7 +553,7 @@ impl TypeChecker {
                 continue;
             }
 
-            if matches!(class.class_type, rumoca_ir_ast::ClassType::Type) {
+            if matches!(class.class_type, rumoca_core::ClassType::Type) {
                 continue;
             }
 
@@ -709,7 +571,7 @@ impl TypeChecker {
             let Some(class) = tree.get_class_by_def_id(def_id) else {
                 continue;
             };
-            if !matches!(class.class_type, rumoca_ir_ast::ClassType::Type)
+            if !matches!(class.class_type, rumoca_core::ClassType::Type)
                 || !class.enum_literals.is_empty()
             {
                 continue;
@@ -731,7 +593,7 @@ impl TypeChecker {
             let Some(class) = tree.get_class_by_def_id(def_id) else {
                 continue;
             };
-            if !matches!(class.class_type, rumoca_ir_ast::ClassType::Type)
+            if !matches!(class.class_type, rumoca_core::ClassType::Type)
                 || !class.enum_literals.is_empty()
             {
                 continue;
@@ -820,22 +682,22 @@ impl TypeChecker {
         type_table: &mut TypeTable,
         qualified_name: &str,
         def_id: DefId,
-        class_type: &rumoca_ir_ast::ClassType,
+        class_type: &rumoca_core::ClassType,
     ) -> TypeId {
         if let Some(existing) = type_table.lookup(qualified_name) {
             return existing;
         }
 
         let kind = match class_type {
-            rumoca_ir_ast::ClassType::Class => ClassKind::Class,
-            rumoca_ir_ast::ClassType::Model => ClassKind::Model,
-            rumoca_ir_ast::ClassType::Block => ClassKind::Block,
-            rumoca_ir_ast::ClassType::Record => ClassKind::Record,
-            rumoca_ir_ast::ClassType::Connector => ClassKind::Connector,
-            rumoca_ir_ast::ClassType::Type => ClassKind::Type,
-            rumoca_ir_ast::ClassType::Package => ClassKind::Package,
-            rumoca_ir_ast::ClassType::Function => ClassKind::Function,
-            rumoca_ir_ast::ClassType::Operator => ClassKind::Operator,
+            rumoca_core::ClassType::Class => ClassKind::Class,
+            rumoca_core::ClassType::Model => ClassKind::Model,
+            rumoca_core::ClassType::Block => ClassKind::Block,
+            rumoca_core::ClassType::Record => ClassKind::Record,
+            rumoca_core::ClassType::Connector => ClassKind::Connector,
+            rumoca_core::ClassType::Type => ClassKind::Type,
+            rumoca_core::ClassType::Package => ClassKind::Package,
+            rumoca_core::ClassType::Function => ClassKind::Function,
+            rumoca_core::ClassType::Operator => ClassKind::Operator,
         };
 
         type_table.add_type(Type::Class(TypeClassType {
@@ -884,13 +746,14 @@ impl TypeChecker {
                     data.source_location.start as usize,
                     data.source_location.end as usize,
                 );
-                self.diagnostics.emit(CommonDiagnostic::error(
+                self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
                     "ET001",
                     format!(
                         "undefined type '{}' for instance '{}'",
                         data.type_name, instance_name
                     ),
-                    PrimaryLabel::new(span).with_message("type declaration here"),
+                    "type declaration here",
+                    span,
                 ));
             }
             data.type_id = resolved;
@@ -978,7 +841,7 @@ impl TypeChecker {
     }
 
     fn is_connector_alias_wrapper(class: &ClassDef) -> bool {
-        matches!(class.class_type, rumoca_ir_ast::ClassType::Connector)
+        matches!(class.class_type, rumoca_core::ClassType::Connector)
             && class.extends.len() == 1
             && class.classes.is_empty()
             && class.components.is_empty()
@@ -1083,9 +946,10 @@ impl TypeChecker {
             ScopeImport::Renamed { .. } | ScopeImport::Qualified { .. } => {
                 Self::import_constant_prefixes(import)
             }
-            ScopeImport::Unqualified { names, .. } => {
-                names.iter().map(|(n, &d)| (n.clone(), d)).collect()
-            }
+            ScopeImport::Unqualified { names, .. } => names
+                .iter()
+                .map(|(n, &d)| (n.as_str().to_string(), d))
+                .collect(),
         };
         for (name, def_id) in pairs {
             let size = Self::enum_literal_count(tree, def_id);
@@ -1211,7 +1075,7 @@ impl TypeChecker {
             return None;
         }
 
-        let Expression::Modification { target, value } = &ext_mod.expr else {
+        let Expression::Modification { target, value, .. } = &ext_mod.expr else {
             return None;
         };
         let alias = target.parts.first()?.ident.text.to_string();
@@ -1346,7 +1210,7 @@ impl TypeChecker {
                 def_id,
                 ..
             } => {
-                push_unique(alias.clone(), *def_id);
+                push_unique(alias.as_str().to_string(), *def_id);
                 push_unique(path.join("."), *def_id);
                 if let Some(last) = path.last() {
                     push_unique(last.clone(), *def_id);
@@ -1427,7 +1291,7 @@ impl TypeChecker {
         expr: &Expression,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        if let Expression::Modification { target, value } = expr {
+        if let Expression::Modification { target, value, .. } = expr {
             let target_name = target.to_string();
             let full_name = if alias.is_empty() {
                 target_name
@@ -1467,7 +1331,7 @@ impl TypeChecker {
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         for (name, comp) in &class.components {
-            if !matches!(comp.variability, rumoca_ir_core::Variability::Constant(_)) {
+            if !matches!(comp.variability, rumoca_core::Variability::Constant(_)) {
                 continue;
             }
             let full_name = if prefix.is_empty() {
@@ -1476,10 +1340,10 @@ impl TypeChecker {
                 format!("{}.{}", prefix, name)
             };
             let type_name = comp.type_name.to_string();
-            let binding = comp
-                .binding
-                .as_ref()
-                .or((!matches!(comp.start, Expression::Empty)).then_some(&comp.start));
+            let binding =
+                comp.binding
+                    .as_ref()
+                    .or((!matches!(comp.start, Expression::Empty { .. })).then_some(&comp.start));
             let Some(expr) = binding else { continue };
             Self::insert_constant_value(&full_name, &type_name, expr, prefix, ctx);
             // Also extract array dimensions from bindings (e.g., substanceNames = {mediumName})
@@ -1740,7 +1604,7 @@ impl TypeChecker {
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         for ext_mod in &ext.modifications {
-            let Expression::Modification { target, value } = &ext_mod.expr else {
+            let Expression::Modification { target, value, .. } = &ext_mod.expr else {
                 continue;
             };
             let looks_like_class_or_package_rebind = matches!(
@@ -1822,7 +1686,7 @@ impl TypeChecker {
         tree: &ClassTree,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        ctx.functions = std::sync::Arc::clone(tree.function_defs_for_eval());
+        ctx.functions = build_function_defs_for_eval(tree);
     }
 
     /// Collect the enclosing class and all its ancestors via extends chains.
@@ -1912,9 +1776,6 @@ impl TypeChecker {
         record_aliases: &[(String, String)],
     ) {
         const MAX_INFERENCE_PASSES: usize = 10;
-        // Build once up front, then rebuild only after a pass makes progress.
-        self.eval_ctx.build_suffix_index();
-
         for _pass in 0..MAX_INFERENCE_PASSES {
             let alias_progress = self.propagate_record_alias_values(record_aliases);
 
@@ -1940,9 +1801,85 @@ impl TypeChecker {
             if !made_progress {
                 break;
             }
-
-            self.eval_ctx.build_suffix_index();
         }
+    }
+}
+
+fn build_function_defs_for_eval(
+    tree: &ClassTree,
+) -> std::sync::Arc<rustc_hash::FxHashMap<String, ClassDef>> {
+    let mut functions = rustc_hash::FxHashMap::default();
+    for (name, &def_id) in &tree.name_map {
+        let Some(class) = tree.get_class_by_def_id(def_id) else {
+            continue;
+        };
+        insert_function_def(&mut functions, name, class);
+    }
+    insert_import_function_aliases(tree, &mut functions);
+    std::sync::Arc::new(functions)
+}
+
+fn insert_import_function_aliases(
+    tree: &ClassTree,
+    functions: &mut rustc_hash::FxHashMap<String, ClassDef>,
+) {
+    for idx in 0..tree.scope_tree.len() {
+        let scope_id = ScopeId::new(idx as u32);
+        let Some(scope) = tree.scope_tree.get(scope_id) else {
+            continue;
+        };
+        for import in &scope.imports {
+            insert_import_function_alias(tree, import, functions);
+        }
+    }
+}
+
+fn insert_import_function_alias(
+    tree: &ClassTree,
+    import: &ScopeImport,
+    functions: &mut rustc_hash::FxHashMap<String, ClassDef>,
+) {
+    match import {
+        ScopeImport::Renamed { .. } | ScopeImport::Qualified { .. } => {
+            for (alias, def_id) in TypeChecker::import_constant_prefixes(import) {
+                let Some(class) = tree.get_class_by_def_id(def_id) else {
+                    continue;
+                };
+                insert_function_alias_tree(functions, &alias, class);
+            }
+        }
+        ScopeImport::Unqualified { names, .. } => {
+            for (alias, &def_id) in names {
+                let Some(class) = tree.get_class_by_def_id(def_id) else {
+                    continue;
+                };
+                insert_function_alias_tree(functions, alias.as_str(), class);
+            }
+        }
+    }
+}
+
+fn insert_function_alias_tree(
+    functions: &mut rustc_hash::FxHashMap<String, ClassDef>,
+    prefix: &str,
+    class: &ClassDef,
+) {
+    insert_function_def(functions, prefix, class);
+    for (name, nested) in &class.classes {
+        let nested_prefix = format!("{prefix}.{name}");
+        insert_function_alias_tree(functions, &nested_prefix, nested);
+    }
+}
+
+fn insert_function_def(
+    functions: &mut rustc_hash::FxHashMap<String, ClassDef>,
+    name: &str,
+    class: &ClassDef,
+) {
+    if class.class_type == rumoca_core::ClassType::Function && !class.algorithms.is_empty() {
+        functions
+            .entry(name.to_string())
+            .or_insert_with(|| class.clone());
     }
 }
 

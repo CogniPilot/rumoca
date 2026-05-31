@@ -30,9 +30,12 @@ end Parent;
         .compile_model("Parent")
         .expect("compile should succeed");
 
-    let flat_code =
-        render_flat_template_with_name(&result.flat, templates::FLAT_MODELICA, "Parent")
-            .expect("flat rendering should succeed");
+    let flat_code = render_flat_template_with_name(
+        &result.flat,
+        templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
+        "Parent",
+    )
+    .expect("flat rendering should succeed");
 
     assert!(
         flat_code.contains("parameter Real gain.g") && flat_code.contains("= k;"),
@@ -68,9 +71,12 @@ end TypeIdentity;
         .compile_model("TypeIdentity")
         .expect("compile should succeed");
 
-    let flat_code =
-        render_flat_template_with_name(&result.flat, templates::FLAT_MODELICA, "TypeIdentity")
-            .expect("flat rendering should succeed");
+    let flat_code = render_flat_template_with_name(
+        &result.flat,
+        templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
+        "TypeIdentity",
+    )
+    .expect("flat rendering should succeed");
 
     assert!(
         flat_code.contains("parameter Boolean use_reset"),
@@ -119,7 +125,7 @@ end EnumRefQualification;
 
     let flat_code = render_flat_template_with_name(
         &result.flat,
-        templates::FLAT_MODELICA,
+        templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
         "EnumRefQualification",
     )
     .expect("flat rendering should succeed");
@@ -162,7 +168,7 @@ end QualifierPreservation;
 
     let flat_code = render_flat_template_with_name(
         &result.flat,
-        templates::FLAT_MODELICA,
+        templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
         "QualifierPreservation",
     )
     .expect("flat rendering should succeed");
@@ -209,9 +215,12 @@ end AssertEmission;
         .compile_model("AssertEmission")
         .expect("compile should succeed");
 
-    let flat_code =
-        render_flat_template_with_name(&result.flat, templates::FLAT_MODELICA, "AssertEmission")
-            .expect("flat rendering should succeed");
+    let flat_code = render_flat_template_with_name(
+        &result.flat,
+        templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
+        "AssertEmission",
+    )
+    .expect("flat rendering should succeed");
 
     assert!(
         flat_code.contains(r#"assert((k > 0), "k must stay positive");"#),
@@ -244,7 +253,7 @@ end UnitQuantityDisplayUnit;
 
     let flat_code = render_flat_template_with_name(
         &result.flat,
-        templates::FLAT_MODELICA,
+        templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
         "UnitQuantityDisplayUnit",
     )
     .expect("flat rendering should succeed");
@@ -284,7 +293,7 @@ end DescriptionPreservation;
 
     let flat_code = render_flat_template_with_name(
         &result.flat,
-        templates::FLAT_MODELICA,
+        templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
         "DescriptionPreservation",
     )
     .expect("flat rendering should succeed");
@@ -330,9 +339,12 @@ end StartPromotion;
         .compile_model("StartPromotion")
         .expect("compile should succeed");
 
-    let flat_code =
-        render_flat_template_with_name(&result.flat, templates::FLAT_MODELICA, "StartPromotion")
-            .expect("flat rendering should succeed");
+    let flat_code = render_flat_template_with_name(
+        &result.flat,
+        templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
+        "StartPromotion",
+    )
+    .expect("flat rendering should succeed");
 
     assert!(
         flat_code.contains("parameter Real gainTrack.k(start = 1)")

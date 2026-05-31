@@ -6,409 +6,1107 @@
 //! that the simulation driver updates at each event boundary.
 
 use indexmap::IndexMap;
-use rumoca_ir_dae as dae;
-use std::collections::HashMap;
+use rumoca_core::{ExpressionRewriter, ExpressionVisitor};
+use rumoca_ir_dae::{self as dae, DaeVisitor};
 
-/// Lower all `pre()` calls in f_x, f_z, and f_m equations to parameter references.
+use crate::ToDaeError;
+
+/// Lower every `pre()` call in any DAE equation partition to a parameter
+/// reference. SPEC_0007 Stage 3 Contract: no `pre()` survives into f_x, f_z,
+/// f_m, or f_c — every `pre(v)` becomes a reference to a `__pre__.v` parameter
+/// slot before the DAE stage exits. The runtime writes those slots at event
+/// entry via `SolveLayout::pre_param_bindings` (see SPEC_0007 Stage 4).
 ///
 /// For each unique `pre(x)` reference:
 /// 1. Creates a parameter `__pre__.x` with the same dimensions and start value as `x`
 /// 2. Replaces the `BuiltinCall { Pre, [VarRef(x)] }` with `VarRef("__pre__.x")`
-pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) {
-    // Collect pre() targets only from continuous equations (f_x).
-    // Discrete update equations (f_z, f_m) and conditions (f_c) keep pre()
-    // as-is because:
-    // - f_z/f_m: pre() is semantically correct for event update rules
-    // - f_c: conditions are paired with relation[] and must be preserved
-    // IndexMap for deterministic parameter insertion order (SPEC_0017).
-    let mut pre_targets: IndexMap<dae::VarName, PreTarget> = IndexMap::new();
-    collect_pre_targets_from_equations(&dae.f_x, &mut pre_targets);
-
-    if pre_targets.is_empty() {
-        return;
+pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
+    // Collect pre() targets across every equation partition uniformly.
+    // SPEC_0007 §Stage 3 Contract: applies to f_x, f_z, f_m, f_c without
+    // exception. MLS Appendix B canonical vector v := [p; t; ẋ; x; y; z; m;
+    // pre(z); pre(m)] treats pre(z) and pre(m) as parameter slots in p, not
+    // as runtime operators. Eliminating pre() uniformly converts the DAE
+    // into a system of pure mathematical functions over v.
+    // IndexMap for deterministic parameter insertion order (SPEC_0021).
+    let mut pre_targets: IndexMap<rumoca_core::VarName, PreTarget> = IndexMap::new();
+    collect_pre_targets_from_equations(&dae.continuous.equations, &mut pre_targets, false);
+    collect_pre_targets_from_equations(&dae.discrete.real_updates, &mut pre_targets, true);
+    collect_pre_targets_from_equations(&dae.discrete.valued_updates, &mut pre_targets, true);
+    collect_pre_targets_from_equations(&dae.conditions.equations, &mut pre_targets, true);
+    for expr in &dae.conditions.relations {
+        collect_pre_targets_from_expr(expr, &mut pre_targets, false);
     }
+    for expr in &dae.clocks.triggered_conditions {
+        collect_pre_targets_from_expr(expr, &mut pre_targets, true);
+    }
+    collect_pre_targets_from_event_actions(&dae.events.event_actions, &mut pre_targets);
+    collect_pre_targets_from_equations(&dae.initialization.equations, &mut pre_targets, true);
 
-    // Look up variable info for each target to get dims and start values
-    let all_vars = collect_all_variables(dae);
-    let mut pre_params: IndexMap<dae::VarName, dae::Variable> = IndexMap::new();
+    resolve_pre_targets(dae, &mut pre_targets)?;
+    let mut pre_params: IndexMap<rumoca_core::VarName, dae::Variable> = IndexMap::new();
 
-    for target_name in pre_targets.keys() {
-        let pre_param_name = dae::VarName::new(format!("__pre__.{}", target_name.as_str()));
-        let (dims, start) = if let Some(var) = all_vars.get(target_name) {
-            (var.dims.clone(), var.start.clone())
-        } else {
-            (vec![], None)
+    for (target_name, target) in &pre_targets {
+        let pre_param_name =
+            rumoca_core::VarName::new(format!("__pre__.{}", target.source_name.as_str()));
+        let Some(var) = find_variable(dae, &target.source_name) else {
+            return Err(ToDaeError::runtime_contract_violation_at(
+                format!(
+                    "pre() target `{}` was not declared in DAE variables",
+                    target_name.as_str()
+                ),
+                target.span,
+            ));
         };
+        let (source_span, dims, start, start_span) = (
+            var.source_span,
+            var.dims.clone(),
+            var.start.clone(),
+            var.start_attribute_span(),
+        );
 
         let pre_var = dae::Variable {
             name: pre_param_name.clone(),
+            component_ref: None,
+            source_span,
             dims,
             start,
+            start_span,
             fixed: Some(true),
             min: None,
+            min_span: None,
             max: None,
+            max_span: None,
             nominal: None,
+            nominal_span: None,
             unit: None,
-            state_select: rumoca_ir_core::StateSelect::Default,
-            description: Some(format!("pre() of {}", target_name.as_str())),
+            state_select: rumoca_core::StateSelect::Default,
+            description: Some(format!("pre() of {}", target.source_name.as_str())),
             is_tunable: false,
         };
         pre_params.insert(pre_param_name, pre_var);
     }
 
-    // Add pre-parameters to the DAE
+    // Add pre-parameters to the DAE. This pass intentionally runs twice: once
+    // before temporal-finalization and once after canonical condition variables
+    // may have introduced new pre() references. Existing __pre__ variables keep
+    // their first-pass metadata instead of being silently re-snapshotted.
     for (name, var) in pre_params {
-        dae.parameters.insert(name, var);
+        if !dae.variables.parameters.contains_key(&name) {
+            dae.variables.parameters.insert(name, var);
+        }
     }
 
-    // Rewrite only continuous equations to replace pre() calls.
-    rewrite_equations(&mut dae.f_x, &pre_targets);
+    let relation_memories = relation_memory_exprs(dae);
+
+    rewrite_equations(
+        &mut dae.continuous.equations,
+        &pre_targets,
+        &relation_memories,
+    );
+    rewrite_equations(
+        &mut dae.discrete.real_updates,
+        &pre_targets,
+        &relation_memories,
+    );
+    rewrite_equations(
+        &mut dae.discrete.valued_updates,
+        &pre_targets,
+        &relation_memories,
+    );
+    rewrite_equations(
+        &mut dae.conditions.equations,
+        &pre_targets,
+        &relation_memories,
+    );
+    for expr in &mut dae.conditions.relations {
+        *expr = rewrite_pre_expr(expr, &pre_targets, &relation_memories);
+    }
+    for expr in &mut dae.clocks.triggered_conditions {
+        *expr = rewrite_pre_expr(expr, &pre_targets, &relation_memories);
+    }
+    rewrite_event_actions(
+        &mut dae.events.event_actions,
+        &pre_targets,
+        &relation_memories,
+    );
+    rewrite_equations(
+        &mut dae.initialization.equations,
+        &pre_targets,
+        &relation_memories,
+    );
+    Ok(())
 }
 
-struct PreTarget;
+struct PreTarget {
+    span: rumoca_core::Span,
+    source_name: rumoca_core::VarName,
+    require_discrete: bool,
+    allow_continuous_target: bool,
+}
 
 fn collect_pre_targets_from_equations(
     equations: &[dae::Equation],
-    targets: &mut IndexMap<dae::VarName, PreTarget>,
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+    allow_continuous_target: bool,
 ) {
     for eq in equations {
-        collect_pre_targets_from_expr(&eq.rhs, targets);
+        collect_pre_targets_from_expr(&eq.rhs, targets, allow_continuous_target);
     }
 }
 
 fn collect_pre_targets_from_expr(
-    expr: &dae::Expression,
-    targets: &mut IndexMap<dae::VarName, PreTarget>,
+    expr: &rumoca_core::Expression,
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+    allow_continuous_target: bool,
 ) {
-    match expr {
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Pre,
-            args,
-        } => {
-            if let Some(dae::Expression::VarRef { name, .. }) = args.first() {
-                targets.entry(name.clone()).or_insert(PreTarget);
-            }
-            // Also recurse into args in case of nested pre() (unlikely but safe)
-            for arg in args {
-                collect_pre_targets_from_expr(arg, targets);
-            }
-        }
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            collect_pre_targets_from_expr(lhs, targets);
-            collect_pre_targets_from_expr(rhs, targets);
-        }
-        dae::Expression::Unary { rhs, .. } => {
-            collect_pre_targets_from_expr(rhs, targets);
-        }
-        dae::Expression::BuiltinCall { args, .. } | dae::Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_pre_targets_from_expr(arg, targets);
-            }
-        }
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                collect_pre_targets_from_expr(cond, targets);
-                collect_pre_targets_from_expr(then_expr, targets);
-            }
-            collect_pre_targets_from_expr(else_branch, targets);
-        }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            for elem in elements {
-                collect_pre_targets_from_expr(elem, targets);
-            }
-        }
-        dae::Expression::Range { start, step, end } => {
-            collect_pre_targets_from_expr(start, targets);
-            if let Some(s) = step {
-                collect_pre_targets_from_expr(s, targets);
-            }
-            collect_pre_targets_from_expr(end, targets);
-        }
-        dae::Expression::Index { base, .. } | dae::Expression::FieldAccess { base, .. } => {
-            collect_pre_targets_from_expr(base, targets);
-        }
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            collect_pre_targets_from_expr(expr, targets);
-            for idx in indices {
-                collect_pre_targets_from_expr(&idx.range, targets);
-            }
-            if let Some(f) = filter {
-                collect_pre_targets_from_expr(f, targets);
-            }
-        }
-        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {}
-    }
-}
-
-fn collect_all_variables(dae: &dae::Dae) -> HashMap<dae::VarName, &dae::Variable> {
-    let mut all = HashMap::new();
-    for (name, var) in &dae.states {
-        all.insert(name.clone(), var);
-    }
-    for (name, var) in &dae.algebraics {
-        all.insert(name.clone(), var);
-    }
-    for (name, var) in &dae.inputs {
-        all.insert(name.clone(), var);
-    }
-    for (name, var) in &dae.outputs {
-        all.insert(name.clone(), var);
-    }
-    for (name, var) in &dae.parameters {
-        all.insert(name.clone(), var);
-    }
-    for (name, var) in &dae.constants {
-        all.insert(name.clone(), var);
-    }
-    for (name, var) in &dae.discrete_reals {
-        all.insert(name.clone(), var);
-    }
-    for (name, var) in &dae.discrete_valued {
-        all.insert(name.clone(), var);
-    }
-    all
-}
-
-fn rewrite_equations(equations: &mut [dae::Equation], targets: &IndexMap<dae::VarName, PreTarget>) {
-    for eq in equations {
-        eq.rhs = rewrite_pre_expr(
-            std::mem::replace(&mut eq.rhs, dae::Expression::Empty),
+    ExpressionVisitor::visit_expression(
+        &mut PreTargetCollector {
             targets,
-        );
+            allow_continuous_target,
+        },
+        expr,
+    );
+}
+
+fn collect_pre_targets_from_event_actions(
+    actions: &[dae::DaeEventAction],
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+) {
+    for action in actions {
+        collect_pre_targets_from_expr(&action.condition, targets, true);
+    }
+}
+
+struct PreTargetCollector<'a> {
+    targets: &'a mut IndexMap<rumoca_core::VarName, PreTarget>,
+    allow_continuous_target: bool,
+}
+
+impl ExpressionVisitor for PreTargetCollector<'_> {
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        match function {
+            rumoca_core::BuiltinFunction::Pre => {
+                if let Some(arg) = args.first()
+                    && let Some((name, _)) = pre_target_parts(arg)
+                {
+                    let span = arg.span().unwrap_or(rumoca_core::Span::DUMMY);
+                    insert_pre_target(self.targets, name, span, true, self.allow_continuous_target);
+                } else {
+                    collect_args_as_pre_values(args, self.targets);
+                }
+            }
+            rumoca_core::BuiltinFunction::Edge | rumoca_core::BuiltinFunction::Change => {
+                collect_first_arg_as_pre_value(args, self.targets);
+            }
+            rumoca_core::BuiltinFunction::Sample => {
+                collect_sample_value_as_pre_value(args, self.targets);
+            }
+            _ => {}
+        }
+        self.walk_builtin_call(function, args);
+    }
+
+    fn visit_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+    ) {
+        match rumoca_core::source_temporal_function_short_name(name.as_str()) {
+            Some("pre") => {
+                if let Some(arg) = args.first()
+                    && let Some((name, _)) = pre_target_parts(arg)
+                {
+                    let span = arg.span().unwrap_or(rumoca_core::Span::DUMMY);
+                    insert_pre_target(self.targets, name, span, true, self.allow_continuous_target);
+                } else {
+                    collect_args_as_pre_values(args, self.targets);
+                }
+            }
+            Some("edge" | "change" | "previous") => {
+                collect_first_arg_as_pre_value(args, self.targets);
+            }
+            Some("sample") => {
+                collect_sample_value_as_pre_value(args, self.targets);
+            }
+            _ => {}
+        }
+        self.walk_function_call(name, args, is_constructor);
+    }
+}
+
+fn collect_args_as_pre_values(
+    args: &[rumoca_core::Expression],
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+) {
+    for arg in args {
+        collect_pre_targets_from_pre_expr(arg, targets);
+    }
+}
+
+fn collect_first_arg_as_pre_value(
+    args: &[rumoca_core::Expression],
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+) {
+    if let Some(arg) = args.first() {
+        collect_pre_targets_from_pre_expr(arg, targets);
+    }
+}
+
+fn collect_sample_value_as_pre_value(
+    args: &[rumoca_core::Expression],
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+) {
+    if matches!(args.len(), 1 | 2) && !args.first().is_some_and(is_time_var_ref) {
+        collect_first_arg_as_pre_value(args, targets);
+    }
+}
+
+fn is_time_var_ref(expr: &rumoca_core::Expression) -> bool {
+    matches!(
+        expr,
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            ..
+        } if name.as_str() == "time" && subscripts.is_empty()
+    )
+}
+
+fn collect_pre_targets_from_pre_expr(
+    expr: &rumoca_core::Expression,
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+) {
+    ExpressionVisitor::visit_expression(&mut PreValueCollector { targets }, expr);
+}
+
+struct PreValueCollector<'a> {
+    targets: &'a mut IndexMap<rumoca_core::VarName, PreTarget>,
+}
+
+impl ExpressionVisitor for PreValueCollector<'_> {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        if let Some((name, _)) = pre_target_parts(expr) {
+            let span = expr.span().unwrap_or(rumoca_core::Span::DUMMY);
+            insert_pre_target(self.targets, name, span, false, true);
+            return;
+        }
+        self.walk_expression(expr);
+    }
+
+    fn visit_if(
+        &mut self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        else_branch: &rumoca_core::Expression,
+    ) {
+        if let Some(selected_branch) = selected_static_if_branch(branches, else_branch) {
+            self.visit_expression(selected_branch);
+            return;
+        }
+        for (condition, value) in branches {
+            self.visit_expression(condition);
+            self.visit_expression(value);
+        }
+        self.visit_expression(else_branch);
+    }
+}
+
+fn insert_pre_target(
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+    name: rumoca_core::VarName,
+    span: rumoca_core::Span,
+    require_discrete: bool,
+    allow_continuous_target: bool,
+) {
+    if name.as_str() == "time" {
+        return;
+    }
+    targets
+        .entry(name.clone())
+        .and_modify(|target| {
+            target.require_discrete |= require_discrete;
+            target.allow_continuous_target &= allow_continuous_target;
+        })
+        .or_insert_with(|| PreTarget {
+            span,
+            source_name: name,
+            require_discrete,
+            allow_continuous_target,
+        });
+}
+
+fn resolve_pre_targets(
+    dae: &dae::Dae,
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+) -> Result<(), ToDaeError> {
+    for (target_name, target) in targets {
+        if let Some((partition, _)) = find_variable_partition(dae, target_name) {
+            if target.require_discrete {
+                validate_pre_target_partition(
+                    partition,
+                    target_name,
+                    target.span,
+                    target.allow_continuous_target,
+                )?;
+            }
+            target.source_name = target_name.clone();
+            continue;
+        }
+        if let Some(source_name) =
+            singleton_scalarized_field_name(dae, target_name, target.require_discrete)
+        {
+            target.source_name = source_name;
+            continue;
+        }
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "pre() target `{}` was not declared in DAE variables",
+                target_name.as_str()
+            ),
+            target.span,
+        ));
+    }
+    Ok(())
+}
+
+fn singleton_scalarized_field_name(
+    dae: &dae::Dae,
+    target_name: &rumoca_core::VarName,
+    require_discrete: bool,
+) -> Option<rumoca_core::VarName> {
+    let (prefix, field) = rumoca_core::split_last_top_level(target_name.as_str())?;
+    let mut collector = ScalarizedFieldCandidateCollector {
+        prefix,
+        field,
+        require_discrete,
+        candidates: Vec::new(),
+    };
+    collector.visit_variables(&dae.variables);
+    match collector.candidates.as_slice() {
+        [name] => Some(name.clone()),
+        _ => None,
+    }
+}
+
+struct ScalarizedFieldCandidateCollector<'a> {
+    prefix: &'a str,
+    field: &'a str,
+    require_discrete: bool,
+    candidates: Vec<rumoca_core::VarName>,
+}
+
+impl DaeVisitor for ScalarizedFieldCandidateCollector<'_> {
+    fn visit_variable(
+        &mut self,
+        partition: dae::DaeVariablePartition,
+        name: &rumoca_core::VarName,
+        _variable: &dae::Variable,
+    ) {
+        if (!self.require_discrete || is_pre_target_partition(partition))
+            && scalarized_field_name_matches(name.as_str(), self.prefix, self.field)
+        {
+            self.candidates.push(name.clone());
+        }
+    }
+}
+
+fn scalarized_field_name_matches(candidate: &str, prefix: &str, field: &str) -> bool {
+    let Some(rest) = candidate.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix('[') else {
+        return false;
+    };
+    let Some(subscripts) = rest.strip_suffix(&format!(".{field}")) else {
+        return false;
+    };
+    subscripts.ends_with(']')
+}
+
+fn find_variable<'a>(dae: &'a dae::Dae, name: &rumoca_core::VarName) -> Option<&'a dae::Variable> {
+    find_variable_partition(dae, name).map(|(_, variable)| variable)
+}
+
+fn find_variable_partition<'a>(
+    dae: &'a dae::Dae,
+    name: &rumoca_core::VarName,
+) -> Option<(dae::DaeVariablePartition, &'a dae::Variable)> {
+    dae.variables
+        .states
+        .get(name)
+        .map(|variable| (dae::DaeVariablePartition::State, variable))
+        .or_else(|| {
+            dae.variables
+                .algebraics
+                .get(name)
+                .map(|variable| (dae::DaeVariablePartition::Algebraic, variable))
+        })
+        .or_else(|| {
+            dae.variables
+                .inputs
+                .get(name)
+                .map(|variable| (dae::DaeVariablePartition::Input, variable))
+        })
+        .or_else(|| {
+            dae.variables
+                .outputs
+                .get(name)
+                .map(|variable| (dae::DaeVariablePartition::Output, variable))
+        })
+        .or_else(|| {
+            dae.variables
+                .parameters
+                .get(name)
+                .map(|variable| (dae::DaeVariablePartition::Parameter, variable))
+        })
+        .or_else(|| {
+            dae.variables
+                .constants
+                .get(name)
+                .map(|variable| (dae::DaeVariablePartition::Constant, variable))
+        })
+        .or_else(|| {
+            dae.variables
+                .discrete_reals
+                .get(name)
+                .map(|variable| (dae::DaeVariablePartition::DiscreteReal, variable))
+        })
+        .or_else(|| {
+            dae.variables
+                .discrete_valued
+                .get(name)
+                .map(|variable| (dae::DaeVariablePartition::DiscreteValued, variable))
+        })
+}
+
+fn validate_pre_target_partition(
+    partition: dae::DaeVariablePartition,
+    name: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+    allow_continuous_target: bool,
+) -> Result<(), ToDaeError> {
+    if is_allowed_explicit_pre_target_partition(partition, name, allow_continuous_target) {
+        return Ok(());
+    }
+    Err(ToDaeError::runtime_contract_violation_at(
+        format!(
+            "pre() target `{}` is not a discrete-time variable",
+            name.as_str()
+        ),
+        span,
+    ))
+}
+
+fn is_allowed_explicit_pre_target_partition(
+    partition: dae::DaeVariablePartition,
+    name: &rumoca_core::VarName,
+    allow_continuous_target: bool,
+) -> bool {
+    if is_pre_target_partition(partition) || name.as_str().starts_with("__pre__.") {
+        return true;
+    }
+
+    allow_continuous_target || !matches!(partition, dae::DaeVariablePartition::State)
+}
+
+fn is_pre_target_partition(partition: dae::DaeVariablePartition) -> bool {
+    matches!(
+        partition,
+        dae::DaeVariablePartition::DiscreteReal | dae::DaeVariablePartition::DiscreteValued
+    )
+}
+
+fn rewrite_equations(
+    equations: &mut [dae::Equation],
+    targets: &IndexMap<rumoca_core::VarName, PreTarget>,
+    relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
+) {
+    for eq in equations {
+        eq.rhs = rewrite_pre_expr(&eq.rhs, targets, relation_memories);
+    }
+}
+
+fn relation_memory_exprs(
+    dae_model: &dae::Dae,
+) -> Vec<(rumoca_core::Expression, rumoca_core::Expression)> {
+    let mut memories = Vec::new();
+    let mut relation_offset = 0usize;
+    for equation in &dae_model.conditions.equations {
+        let scalar_count = equation.scalar_count.max(1);
+        let Some(lhs) = equation.lhs.as_ref() else {
+            relation_offset += scalar_count;
+            continue;
+        };
+        for scalar_index in 0..scalar_count {
+            let Some(relation) = dae_model
+                .conditions
+                .relations
+                .get(relation_offset + scalar_index)
+            else {
+                continue;
+            };
+            memories.push((
+                relation.clone(),
+                relation_memory_scalar_expr(
+                    dae_model,
+                    lhs,
+                    scalar_index,
+                    scalar_count,
+                    equation.span,
+                ),
+            ));
+        }
+        relation_offset += scalar_count;
+    }
+    memories
+}
+
+fn relation_memory_scalar_expr(
+    dae_model: &dae::Dae,
+    lhs: &rumoca_core::VarName,
+    flat_index: usize,
+    scalar_count: usize,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    if scalar_count <= 1 {
+        return rumoca_core::Expression::VarRef {
+            name: lhs.clone().into(),
+            subscripts: Vec::new(),
+            span,
+        };
+    }
+    let dims = dae_model
+        .variables
+        .discrete_valued
+        .get(lhs)
+        .or_else(|| dae_model.variables.discrete_reals.get(lhs))
+        .map(|var| var.dims.as_slice())
+        .unwrap_or(&[]);
+    let subscripts = dae::flat_index_to_subscripts(dims, flat_index)
+        .unwrap_or_else(|| vec![flat_index.saturating_add(1)])
+        .into_iter()
+        .map(|index| rumoca_core::Subscript::generated_index(index as i64, span))
+        .collect();
+    rumoca_core::Expression::VarRef {
+        name: lhs.clone().into(),
+        subscripts,
+        span,
+    }
+}
+
+fn relation_memory_expr_for_condition(
+    relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    condition: &rumoca_core::Expression,
+) -> Option<rumoca_core::Expression> {
+    relation_memories
+        .iter()
+        .find_map(|(relation, memory)| (relation == condition).then(|| memory.clone()))
+}
+
+fn rewrite_event_actions(
+    actions: &mut [dae::DaeEventAction],
+    targets: &IndexMap<rumoca_core::VarName, PreTarget>,
+    relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
+) {
+    for action in actions {
+        action.condition = rewrite_pre_expr(&action.condition, targets, relation_memories);
     }
 }
 
 fn rewrite_pre_expr(
-    expr: dae::Expression,
-    targets: &IndexMap<dae::VarName, PreTarget>,
-) -> dae::Expression {
-    match expr {
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Pre,
-            args,
-        } => rewrite_pre_builtin(args, targets),
-        other => rewrite_non_pre_expr(other, targets),
+    expr: &rumoca_core::Expression,
+    targets: &IndexMap<rumoca_core::VarName, PreTarget>,
+    relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
+) -> rumoca_core::Expression {
+    PreExpressionRewriter {
+        targets,
+        relation_memories,
+    }
+    .rewrite_expression(expr)
+}
+
+struct PreExpressionRewriter<'a> {
+    targets: &'a IndexMap<rumoca_core::VarName, PreTarget>,
+    relation_memories: &'a [(rumoca_core::Expression, rumoca_core::Expression)],
+}
+
+impl ExpressionRewriter for PreExpressionRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        match expr {
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Pre,
+                args,
+                span,
+            } => self.rewrite_pre_builtin(args, *span),
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Edge,
+                args,
+                span,
+            } => self.rewrite_edge_builtin(args, *span),
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Change,
+                args,
+                span,
+            } => self.rewrite_change_builtin(args, *span),
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sample,
+                args,
+                span,
+            } => self.rewrite_sample_builtin(args, *span),
+            rumoca_core::Expression::FunctionCall {
+                name,
+                args,
+                is_constructor,
+                span,
+            } => match rumoca_core::source_temporal_function_short_name(name.as_str()) {
+                Some("pre") => self.rewrite_pre_builtin(args, *span),
+                Some("edge") => self.rewrite_edge_builtin(args, *span),
+                Some("change") => self.rewrite_change_builtin(args, *span),
+                Some("sample") => self.rewrite_sample_builtin(args, *span),
+                Some("previous") => self.rewrite_previous_function(args, *is_constructor, *span),
+                _ => self.walk_expression(expr),
+            },
+            rumoca_core::Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                span,
+            } => rumoca_core::Expression::ArrayComprehension {
+                expr: Box::new(self.rewrite_expression(expr)),
+                indices: indices.clone(),
+                filter: filter
+                    .as_deref()
+                    .map(|filter| Box::new(self.rewrite_expression(filter))),
+                span: *span,
+            },
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                span,
+            } => {
+                if let Some(selected_branch) = selected_static_if_branch(branches, else_branch) {
+                    return self.rewrite_expression(selected_branch);
+                }
+                self.walk_if_expression(branches, else_branch, *span)
+            }
+            _ => self.walk_expression(expr),
+        }
     }
 }
 
-fn rewrite_pre_builtin(
-    args: Vec<dae::Expression>,
-    targets: &IndexMap<dae::VarName, PreTarget>,
-) -> dae::Expression {
-    let rewritten_args: Vec<dae::Expression> = args
-        .into_iter()
-        .map(|a| rewrite_pre_expr(a, targets))
-        .collect();
-    if let Some(dae::Expression::VarRef { name, subscripts }) = rewritten_args.first()
-        && targets.contains_key(name)
-    {
-        let pre_name = dae::VarName::new(format!("__pre__.{}", name.as_str()));
-        return dae::Expression::VarRef {
-            name: pre_name,
-            subscripts: subscripts.clone(),
+impl PreExpressionRewriter<'_> {
+    fn rewrite_pre_builtin(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        if let Some(arg) = args.first()
+            && let Some(memory) = relation_memory_expr_for_condition(self.relation_memories, arg)
+        {
+            return relation_memory_pre_expr(&memory, span);
+        }
+        let rewritten_args = self.rewrite_expressions(args);
+        if let Some((name, subscripts)) = rewritten_args.first().and_then(pre_target_parts)
+            && let Some(target) = self.targets.get(&name)
+        {
+            return pre_var_ref(&target.source_name, &subscripts, span);
+        }
+        if let [arg] = rewritten_args.as_slice() {
+            return rewrite_pre_expr_value(arg, self.targets);
+        }
+        // Preserve unsupported pre(...) shapes so validation/errors can surface
+        // instead of silently dropping expression structure.
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Pre,
+            args: rewritten_args,
+            span,
+        }
+    }
+
+    fn rewrite_edge_builtin(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        let Some(arg) = args.first() else {
+            return rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Boolean(false),
+                span,
+            };
         };
+        if is_time_only_event_condition(arg, self.targets) {
+            return self.rewrite_expression(arg);
+        }
+        if let Some(memory) = relation_memory_expr_for_condition(self.relation_memories, arg) {
+            return rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::And,
+                lhs: Box::new(memory.clone()),
+                rhs: Box::new(rumoca_core::Expression::Unary {
+                    op: rumoca_core::OpUnary::Not,
+                    rhs: Box::new(relation_memory_pre_expr(&memory, span)),
+                    span,
+                }),
+                span,
+            };
+        }
+        let current = self.rewrite_expression(arg);
+        let previous = rewrite_pre_expr_value(arg, self.targets);
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::And,
+            lhs: Box::new(current),
+            rhs: Box::new(rumoca_core::Expression::Unary {
+                op: rumoca_core::OpUnary::Not,
+                rhs: Box::new(previous),
+                span,
+            }),
+            span,
+        }
     }
-    // Preserve unsupported pre(...) shapes so validation/errors can surface
-    // instead of silently dropping expression structure.
-    dae::Expression::BuiltinCall {
-        function: dae::BuiltinFunction::Pre,
-        args: rewritten_args,
+
+    fn rewrite_change_builtin(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        let Some(arg) = args.first() else {
+            return rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Boolean(false),
+                span,
+            };
+        };
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Neq,
+            lhs: Box::new(self.rewrite_expression(arg)),
+            rhs: Box::new(rewrite_pre_expr_value(arg, self.targets)),
+            span,
+        }
+    }
+
+    fn rewrite_sample_builtin(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new(rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME),
+            args: self.rewrite_expressions(args),
+            is_constructor: false,
+            span,
+        }
+    }
+
+    fn rewrite_previous_function(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        if let Some(arg) = args.first() {
+            return rewrite_pre_expr_value(arg, self.targets);
+        }
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("previous"),
+            args: Vec::new(),
+            is_constructor,
+            span,
+        }
     }
 }
 
-fn rewrite_non_pre_expr(
-    expr: dae::Expression,
-    targets: &IndexMap<dae::VarName, PreTarget>,
-) -> dae::Expression {
-    match expr {
-        dae::Expression::Binary { op, lhs, rhs } => dae::Expression::Binary {
-            op,
-            lhs: Box::new(rewrite_pre_expr(*lhs, targets)),
-            rhs: Box::new(rewrite_pre_expr(*rhs, targets)),
-        },
-        dae::Expression::Unary { op, rhs } => dae::Expression::Unary {
-            op,
-            rhs: Box::new(rewrite_pre_expr(*rhs, targets)),
-        },
-        dae::Expression::BuiltinCall { function, args } => dae::Expression::BuiltinCall {
-            function,
-            args: args
-                .into_iter()
-                .map(|a| rewrite_pre_expr(a, targets))
-                .collect(),
-        },
-        dae::Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-        } => dae::Expression::FunctionCall {
-            name,
-            args: args
-                .into_iter()
-                .map(|a| rewrite_pre_expr(a, targets))
-                .collect(),
-            is_constructor,
-        },
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => dae::Expression::If {
-            branches: branches
-                .into_iter()
-                .map(|(c, t)| (rewrite_pre_expr(c, targets), rewrite_pre_expr(t, targets)))
-                .collect(),
-            else_branch: Box::new(rewrite_pre_expr(*else_branch, targets)),
-        },
-        dae::Expression::Array {
-            elements,
-            is_matrix,
-        } => dae::Expression::Array {
-            elements: elements
-                .into_iter()
-                .map(|e| rewrite_pre_expr(e, targets))
-                .collect(),
-            is_matrix,
-        },
-        dae::Expression::Tuple { elements } => dae::Expression::Tuple {
-            elements: elements
-                .into_iter()
-                .map(|e| rewrite_pre_expr(e, targets))
-                .collect(),
-        },
-        dae::Expression::Range { start, step, end } => dae::Expression::Range {
-            start: Box::new(rewrite_pre_expr(*start, targets)),
-            step: step.map(|s| Box::new(rewrite_pre_expr(*s, targets))),
-            end: Box::new(rewrite_pre_expr(*end, targets)),
-        },
-        dae::Expression::Index { base, subscripts } => dae::Expression::Index {
-            base: Box::new(rewrite_pre_expr(*base, targets)),
-            subscripts,
-        },
-        dae::Expression::FieldAccess { base, field } => dae::Expression::FieldAccess {
-            base: Box::new(rewrite_pre_expr(*base, targets)),
-            field,
-        },
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => dae::Expression::ArrayComprehension {
-            expr: Box::new(rewrite_pre_expr(*expr, targets)),
-            indices,
-            filter: filter.map(|f| Box::new(rewrite_pre_expr(*f, targets))),
-        },
-        other @ (dae::Expression::VarRef { .. }
-        | dae::Expression::Literal(_)
-        | dae::Expression::Empty) => other,
+fn relation_memory_pre_expr(
+    memory: &rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    if let Some((name, subscripts)) = pre_target_parts(memory) {
+        return pre_var_ref(&name, &subscripts, span);
     }
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Pre,
+        args: vec![memory.clone()],
+        span,
+    }
+}
+
+fn is_time_only_event_condition(
+    expr: &rumoca_core::Expression,
+    targets: &IndexMap<rumoca_core::VarName, PreTarget>,
+) -> bool {
+    expression_contains_time_relation(expr) && !expression_has_pre_target(expr, targets)
+}
+
+fn expression_contains_time_relation(expr: &rumoca_core::Expression) -> bool {
+    let mut checker = TimeRelationChecker {
+        contains_time_relation: false,
+    };
+    checker.visit_expression(expr);
+    checker.contains_time_relation
+}
+
+struct TimeRelationChecker {
+    contains_time_relation: bool,
+}
+
+impl ExpressionVisitor for TimeRelationChecker {
+    fn visit_binary(
+        &mut self,
+        op: &rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+    ) {
+        if op.is_relational()
+            && (expression_contains_time_ref(lhs) || expression_contains_time_ref(rhs))
+        {
+            self.contains_time_relation = true;
+            return;
+        }
+        self.visit_expression(lhs);
+        self.visit_expression(rhs);
+    }
+}
+
+fn expression_contains_time_ref(expr: &rumoca_core::Expression) -> bool {
+    let mut checker = TimeRefChecker {
+        contains_time: false,
+    };
+    checker.visit_expression(expr);
+    checker.contains_time
+}
+
+struct TimeRefChecker {
+    contains_time: bool,
+}
+
+impl ExpressionVisitor for TimeRefChecker {
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        if name.as_str() == "time" && subscripts.is_empty() {
+            self.contains_time = true;
+        }
+    }
+}
+
+fn expression_has_pre_target(
+    expr: &rumoca_core::Expression,
+    targets: &IndexMap<rumoca_core::VarName, PreTarget>,
+) -> bool {
+    let mut checker = PreTargetUseChecker {
+        targets,
+        has_pre_target: false,
+    };
+    checker.visit_expression(expr);
+    checker.has_pre_target
+}
+
+struct PreTargetUseChecker<'a> {
+    targets: &'a IndexMap<rumoca_core::VarName, PreTarget>,
+    has_pre_target: bool,
+}
+
+impl ExpressionVisitor for PreTargetUseChecker<'_> {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        if let Some((name, _)) = pre_target_parts(expr)
+            && self.targets.contains_key(&name)
+        {
+            self.has_pre_target = true;
+            return;
+        }
+        self.walk_expression(expr);
+    }
+}
+
+fn rewrite_pre_expr_value(
+    expr: &rumoca_core::Expression,
+    targets: &IndexMap<rumoca_core::VarName, PreTarget>,
+) -> rumoca_core::Expression {
+    PreValueRewriter { targets }.rewrite_expression(expr)
+}
+
+struct PreValueRewriter<'a> {
+    targets: &'a IndexMap<rumoca_core::VarName, PreTarget>,
+}
+
+impl ExpressionRewriter for PreValueRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let Some((name, subscripts)) = pre_target_parts(expr)
+            && let Some(target) = self.targets.get(&name)
+        {
+            return pre_var_ref(
+                &target.source_name,
+                &subscripts,
+                expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+            );
+        }
+        match expr {
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sample,
+                span,
+                ..
+            } => rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Boolean(false),
+                span: *span,
+            },
+            rumoca_core::Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+                span,
+            } => rumoca_core::Expression::ArrayComprehension {
+                expr: Box::new(self.rewrite_expression(expr)),
+                indices: indices.clone(),
+                filter: filter
+                    .as_deref()
+                    .map(|filter| Box::new(self.rewrite_expression(filter))),
+                span: *span,
+            },
+            _ => self.walk_expression(expr),
+        }
+    }
+}
+
+fn pre_var_ref(
+    name: &rumoca_core::VarName,
+    subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new(format!("__pre__.{}", name.as_str())),
+        subscripts: subscripts.to_vec(),
+        span,
+    }
+}
+
+fn pre_target_parts(
+    expr: &rumoca_core::Expression,
+) -> Option<(rumoca_core::VarName, Vec<rumoca_core::Subscript>)> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => Some(pre_target_parts_from_name(name.var_name(), subscripts)),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            let (name, mut target_subscripts) = pre_target_parts(base)?;
+            target_subscripts.extend(subscripts.clone());
+            Some((name, target_subscripts))
+        }
+        rumoca_core::Expression::FieldAccess { base, field, .. } => {
+            let (base_name, subscripts) = pre_target_parts(base)?;
+            if subscripts.is_empty() {
+                Some((
+                    rumoca_core::VarName::new(format!("{}.{}", base_name.as_str(), field)),
+                    Vec::new(),
+                ))
+            } else {
+                Some((
+                    indexed_field_target_name(&base_name, &subscripts, field)?,
+                    Vec::new(),
+                ))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn indexed_field_target_name(
+    base_name: &rumoca_core::VarName,
+    subscripts: &[rumoca_core::Subscript],
+    field: &str,
+) -> Option<rumoca_core::VarName> {
+    let rendered = render_static_subscripts(subscripts)?;
+    Some(rumoca_core::VarName::new(format!(
+        "{}[{rendered}].{field}",
+        base_name.as_str()
+    )))
+}
+
+fn render_static_subscripts(subscripts: &[rumoca_core::Subscript]) -> Option<String> {
+    let mut rendered = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        rendered.push(static_subscript_index(subscript)?.to_string());
+    }
+    Some(rendered.join(","))
+}
+
+fn static_subscript_index(subscript: &rumoca_core::Subscript) -> Option<i64> {
+    match subscript {
+        rumoca_core::Subscript::Index { value, .. } => Some(*value),
+        rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(value),
+                ..
+            } => Some(*value),
+            _ => None,
+        },
+        rumoca_core::Subscript::Colon { .. } => None,
+    }
+}
+
+fn selected_static_if_branch<'a>(
+    branches: &'a [(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &'a rumoca_core::Expression,
+) -> Option<&'a rumoca_core::Expression> {
+    for (condition, value) in branches {
+        if static_bool_expr(condition)? {
+            return Some(value);
+        }
+    }
+    Some(else_branch)
+}
+
+fn static_bool_expr(expr: &rumoca_core::Expression) -> Option<bool> {
+    rumoca_eval_dae::constant::eval_const_expr_with(expr, &|_, _| None)?.as_bool()
+}
+
+fn pre_target_parts_from_name(
+    name: &rumoca_core::VarName,
+    subscripts: &[rumoca_core::Subscript],
+) -> (rumoca_core::VarName, Vec<rumoca_core::Subscript>) {
+    let (base_name, mut encoded_subscripts) = split_encoded_integer_subscripts(name.as_str());
+    encoded_subscripts.extend_from_slice(subscripts);
+    (rumoca_core::VarName::new(base_name), encoded_subscripts)
+}
+
+fn split_encoded_integer_subscripts(path: &str) -> (String, Vec<rumoca_core::Subscript>) {
+    let mut base = path;
+    let mut reversed_groups = Vec::new();
+    while let Some(stripped) = base.strip_suffix(']') {
+        let Some(open_idx) = stripped.rfind('[') else {
+            break;
+        };
+        let index_text = &stripped[open_idx + 1..];
+        let Some(group) = parse_encoded_integer_subscript_group(index_text) else {
+            break;
+        };
+        reversed_groups.push(group);
+        base = &stripped[..open_idx];
+    }
+    reversed_groups.reverse();
+    (
+        base.to_string(),
+        reversed_groups.into_iter().flatten().collect(),
+    )
+}
+
+fn parse_encoded_integer_subscript_group(index_text: &str) -> Option<Vec<rumoca_core::Subscript>> {
+    index_text
+        .split(',')
+        .map(|part| {
+            let index = part.trim().parse::<i64>().ok()?;
+            Some(rumoca_core::Subscript::generated_index(
+                index,
+                rumoca_core::Span::DUMMY,
+            ))
+        })
+        .collect()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn var_ref(name: &str) -> dae::Expression {
-        dae::Expression::VarRef {
-            name: dae::VarName::new(name),
-            subscripts: vec![],
-        }
-    }
-
-    fn pre_call(name: &str) -> dae::Expression {
-        dae::Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Pre,
-            args: vec![var_ref(name)],
-        }
-    }
-
-    #[test]
-    fn test_lower_pre_creates_parameter() {
-        let mut dae = dae::Dae::new();
-        dae.discrete_reals.insert(
-            dae::VarName::new("pulse_count"),
-            dae::Variable {
-                name: dae::VarName::new("pulse_count"),
-                dims: vec![],
-                start: Some(dae::Expression::Literal(dae::Literal::Real(0.0))),
-                fixed: None,
-                min: None,
-                max: None,
-                nominal: None,
-                unit: None,
-                state_select: rumoca_ir_core::StateSelect::Default,
-                description: None,
-                is_tunable: false,
-            },
-        );
-        dae.f_x.push(dae::Equation::residual(
-            pre_call("pulse_count"),
-            rumoca_core::Span::default(),
-            "test".to_string(),
-        ));
-
-        lower_pre_operator(&mut dae);
-
-        // Should have created a parameter __pre__.pulse_count
-        assert!(
-            dae.parameters
-                .contains_key(&dae::VarName::new("__pre__.pulse_count"))
-        );
-        let pre_param = &dae.parameters[&dae::VarName::new("__pre__.pulse_count")];
-        assert_eq!(
-            pre_param.start,
-            Some(dae::Expression::Literal(dae::Literal::Real(0.0)))
-        );
-
-        // The equation should now reference __pre__.pulse_count
-        match &dae.f_x[0].rhs {
-            dae::Expression::VarRef { name, .. } => {
-                assert_eq!(name.as_str(), "__pre__.pulse_count");
-            }
-            other => panic!("Expected VarRef, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_lower_pre_no_pre_calls_is_noop() {
-        let mut dae = dae::Dae::new();
-        dae.f_x.push(dae::Equation::residual(
-            var_ref("x"),
-            rumoca_core::Span::default(),
-            "test".to_string(),
-        ));
-
-        lower_pre_operator(&mut dae);
-
-        assert!(dae.parameters.is_empty());
-    }
-
-    #[test]
-    fn test_lower_pre_preserves_unhandled_pre_shape() {
-        let mut dae = dae::Dae::new();
-        dae.f_x.push(dae::Equation::residual(
-            dae::Expression::BuiltinCall {
-                function: dae::BuiltinFunction::Pre,
-                args: vec![dae::Expression::Literal(dae::Literal::Integer(1))],
-            },
-            rumoca_core::Span::default(),
-            "test".to_string(),
-        ));
-
-        lower_pre_operator(&mut dae);
-
-        assert!(matches!(
-            &dae.f_x[0].rhs,
-            dae::Expression::BuiltinCall {
-                function: dae::BuiltinFunction::Pre,
-                ..
-            }
-        ));
-    }
-}
+#[cfg(test)]
+mod tests;

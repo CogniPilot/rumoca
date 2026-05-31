@@ -87,6 +87,73 @@ fn test_needs_inner_diagnostic_has_source_label() {
 }
 
 #[test]
+fn test_typecheck_diagnostic_preserves_source_file_in_multi_document_session() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "library.mo",
+            r#"
+                package Library
+                  model Helper
+                    Real x;
+                  equation
+                    x = 1.0;
+                  end Helper;
+                end Library;
+                "#,
+        )
+        .unwrap();
+    session
+        .add_document(
+            "target.mo",
+            r#"
+                model Target
+                  Real x(startd = 1.0);
+                equation
+                  der(x) = -x;
+                end Target;
+                "#,
+        )
+        .unwrap();
+
+    let diagnostics = session.compile_model_diagnostics("Target");
+    let type_error = diagnostics
+        .diagnostics
+        .iter()
+        .find(|diag| diag.code.as_deref() == Some("ET001"))
+        .unwrap_or_else(|| panic!("expected ET001 diagnostic, got: {diagnostics:?}"));
+    let primary = type_error
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .unwrap_or_else(|| panic!("expected primary label, got: {type_error:?}"));
+    let source_map = diagnostics
+        .source_map
+        .as_ref()
+        .expect("model diagnostics should include source map");
+    let (file_name, _) = source_map
+        .get_source(primary.span.source)
+        .unwrap_or_else(|| panic!("missing source for span: {:?}", primary.span));
+
+    assert_eq!(file_name, "target.mo");
+    let diagnostic_snapshot = serde_json::json!({
+        "code": type_error.code.as_deref(),
+        "message": type_error.message.as_str(),
+        "primary_file": file_name,
+        "primary_label": primary.message.as_deref(),
+    });
+    assert_eq!(
+        diagnostic_snapshot,
+        serde_json::json!({
+            "code": "ET001",
+            "message": "unknown modifier `startd` for builtin component `x` of type `Real`",
+            "primary_file": "target.mo",
+            "primary_label": "unknown modifier"
+        })
+    );
+}
+
+#[test]
 fn test_synthesized_inner_warning_is_emitted() {
     let mut session = Session::default();
     session
@@ -167,6 +234,148 @@ fn test_instantiate_error_code_preserves_ei012_for_partial_component_instantiati
 }
 
 #[test]
+fn test_configured_instantiation_depth_limit_reports_ei030_with_span() {
+    let mut session = Session::new(SessionConfig {
+        instantiation_depth_limit: 1,
+        ..SessionConfig::default()
+    });
+    session
+        .add_document(
+            "depth.mo",
+            r#"
+                model A
+                  B b;
+                end A;
+
+                model B
+                  C c;
+                end B;
+
+                model C
+                  Real x;
+                equation
+                  x = 1;
+                end C;
+                "#,
+        )
+        .unwrap();
+
+    let diagnostics = session.compile_model_diagnostics("A");
+    let depth = diagnostics
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.code
+                .as_deref()
+                .is_some_and(|code| code.ends_with("EI030"))
+        })
+        .unwrap_or_else(|| panic!("expected EI030 depth diagnostic, got: {diagnostics:?}"));
+
+    assert!(
+        depth.message.contains("depth 2") && depth.message.contains("limit 1"),
+        "expected configured depth in diagnostic message, got: {}",
+        depth.message
+    );
+    let primary = depth.labels.iter().find(|label| label.primary);
+    assert!(
+        primary.is_some(),
+        "expected primary label on depth diagnostic: {depth:?}"
+    );
+    let span = primary.expect("checked above").span;
+    assert!(
+        span.start.0 > 0 && span.end.0 > span.start.0,
+        "expected non-dummy depth diagnostic span, got {span:?}"
+    );
+}
+
+#[test]
+fn test_recursive_class_instantiation_reports_ei031_with_span() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "cycle.mo",
+            r#"
+                model SelfCycle
+                  SelfCycle child;
+                end SelfCycle;
+                "#,
+        )
+        .unwrap();
+
+    let diagnostics = session.compile_model_diagnostics("SelfCycle");
+    let cycle = diagnostics
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.code
+                .as_deref()
+                .is_some_and(|code| code.ends_with("EI031"))
+        })
+        .unwrap_or_else(|| panic!("expected EI031 cycle diagnostic, got: {diagnostics:?}"));
+
+    assert!(
+        cycle.message.contains("SelfCycle"),
+        "expected cycle message to name the recursive class, got: {}",
+        cycle.message
+    );
+    let primary = cycle.labels.iter().find(|label| label.primary);
+    assert!(
+        primary.is_some(),
+        "expected primary label on cycle diagnostic: {cycle:?}"
+    );
+    let span = primary.expect("checked above").span;
+    assert!(
+        span.start.0 > 0 && span.end.0 > span.start.0,
+        "expected non-dummy cycle diagnostic span, got {span:?}"
+    );
+}
+
+#[test]
+fn test_array_expansion_is_not_disabled_near_depth_limit() {
+    let mut session = Session::new(SessionConfig {
+        instantiation_depth_limit: 2,
+        ..SessionConfig::default()
+    });
+    session
+        .add_document(
+            "array_depth.mo",
+            r#"
+                model Leaf
+                  Real x;
+                equation
+                  x = 1;
+                end Leaf;
+
+                model Holder
+                  Leaf leaf[2];
+                end Holder;
+
+                model Root
+                  Holder holder;
+                end Root;
+                "#,
+        )
+        .unwrap();
+
+    let compiled = session
+        .compile_model("Root")
+        .unwrap_or_else(|error| panic!("array expansion near depth limit should compile: {error}"));
+    let variables = compiled
+        .dae
+        .variables
+        .algebraics
+        .keys()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    assert!(
+        variables.iter().any(|name| name == "holder.leaf[1].x")
+            && variables.iter().any(|name| name == "holder.leaf[2].x"),
+        "expected structured array elements to expand near depth limit, got {variables:?}"
+    );
+}
+
+#[test]
 fn test_strict_reachable_ignores_unreachable_failures_when_requested_succeeds() {
     let mut session = Session::default();
     let source = r#"
@@ -197,6 +406,91 @@ fn test_strict_reachable_ignores_unreachable_failures_when_requested_succeeds() 
     assert!(
         report.failures.is_empty(),
         "unreachable package siblings must not affect strict compile targets"
+    );
+}
+
+#[test]
+fn test_dae_strict_compile_projects_flat_derived_metadata() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "M.mo",
+            r#"
+                model M
+                  parameter Real p;
+                  discrete Real z;
+                  Real x(start = 0);
+                equation
+                  der(x) = p;
+                  z = time;
+                end M;
+                "#,
+        )
+        .unwrap();
+
+    let result = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("M")
+        .expect("DAE strict compile should succeed");
+
+    assert!(result.has_unbound_fixed_parameters);
+    assert_eq!(result.active_discrete_scalar_count, 1);
+    assert_eq!(result.balance_detail.state_unknowns, 1);
+}
+
+#[test]
+fn test_dae_expression_spans_use_target_source_file_in_multi_document_session() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "library_first.mo",
+            r#"
+                model LibraryFirst
+                end LibraryFirst;
+                "#,
+        )
+        .unwrap();
+    session
+        .add_document(
+            "target_second.mo",
+            r#"
+                model TargetSecond
+                  Real x;
+                  Real y;
+                equation
+                  x = y + 1;
+                  y = 2;
+                end TargetSecond;
+                "#,
+        )
+        .unwrap();
+
+    let result = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("TargetSecond")
+        .expect("DAE strict compile should succeed");
+    let source_map = result
+        .source_map
+        .as_ref()
+        .expect("DAE result should carry source map");
+    let target_source_id = source_map
+        .get_id("target_second.mo")
+        .expect("target document should be in source map");
+
+    let rhs_span = result
+        .dae
+        .continuous
+        .equations
+        .iter()
+        .find_map(|equation| equation.rhs.span())
+        .expect("expected a source span on a DAE equation RHS");
+
+    assert_eq!(rhs_span.source, target_source_id);
+    let (file_name, source) = source_map
+        .get_source(rhs_span.source)
+        .expect("RHS span source id should resolve");
+    assert_eq!(file_name, "target_second.mo");
+    assert!(
+        rhs_span.end.0 <= source.len(),
+        "RHS span must be in bounds for target source: {rhs_span:?}"
     );
 }
 
@@ -408,6 +702,43 @@ fn test_strict_reachable_keeps_collecting_when_requested_fails() {
         .collect();
     assert!(failed_models.contains("P.BadNeedsInner"));
     assert!(!failed_models.contains("P.BadNeedsInner2"));
+    let requested_span = match &report.requested_result {
+        Some(PhaseResult::NeedsInner {
+            missing_inners,
+            missing_spans,
+        }) => {
+            assert_eq!(missing_inners, &vec!["shared".to_string()]);
+            missing_spans
+                .first()
+                .copied()
+                .expect("NeedsInner result should retain the outer declaration span")
+        }
+        other => panic!("expected NeedsInner requested result, got {other:?}"),
+    };
+    let source_map = report
+        .source_map
+        .as_ref()
+        .expect("strict report should carry the source map");
+    let (_, source) = source_map
+        .get_source(requested_span.source)
+        .expect("NeedsInner span should resolve through the report source map");
+    let requested_snippet = &source[requested_span.start.0..requested_span.end.0];
+    assert!(
+        requested_snippet.contains("shared"),
+        "NeedsInner span should point at the outer declaration, got {requested_snippet:?}"
+    );
+
+    let failure = report
+        .failures
+        .iter()
+        .find(|failure| failure.model_name == "P.BadNeedsInner")
+        .expect("requested failure should be reported");
+    let primary = failure
+        .primary_label
+        .as_ref()
+        .expect("NeedsInner failure should have a primary outer declaration label");
+    assert_eq!(primary.span, requested_span);
+    assert_eq!(primary.message.as_deref(), Some("missing matching `inner`"));
     assert!(report.summary.total() >= 1);
 }
 

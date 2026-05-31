@@ -22,11 +22,14 @@
 //! | EI027 | RedeclareConstraintViolation | §7.3.2 |
 //! | EI028 | RedeclareFinal | §7.2.6 |
 //! | EI029 | InvalidBreakName | §7.4 |
+//! | EI030 | InstantiationDepthLimit | implementation limit |
+//! | EI031 | InstantiationCycle | recursive class/type graph |
 //!
 //! Uses miette for rich diagnostic output with error codes and help text.
 
 use miette::Diagnostic;
-use rumoca_core::{BoxedResult, SourceSpan, Span, error_constructor};
+use rumoca_core::Span;
+use rumoca_core::{BoxedResult, SourceSpan, error_constructor};
 use thiserror::Error;
 
 /// Type alias for instantiation results with boxed errors.
@@ -236,6 +239,38 @@ pub enum InstantiateError {
         #[label("partial class instantiation")]
         span: SourceSpan,
     },
+
+    /// Instantiation exceeded the configured implementation depth limit.
+    #[error(
+        "instantiation depth limit exceeded at `{path}`: depth {depth} is greater than configured limit {limit}"
+    )]
+    #[diagnostic(
+        code(rumoca::instantiate::EI030),
+        help(
+            "increase SessionConfig::instantiation_depth_limit for deep acyclic models; cyclic class graphs should be fixed instead"
+        )
+    )]
+    InstantiationDepthLimit {
+        path: String,
+        depth: usize,
+        limit: usize,
+        #[label("depth limit reached while instantiating this class")]
+        span: SourceSpan,
+    },
+
+    /// Recursive class/type instantiation cycle.
+    #[error("cyclic class instantiation detected: {cycle}")]
+    #[diagnostic(
+        code(rumoca::instantiate::EI031),
+        help(
+            "replace the recursive concrete component graph with an acyclic structure or an allowed reference-like representation"
+        )
+    )]
+    InstantiationCycle {
+        cycle: String,
+        #[label("recursive instantiation re-enters this class")]
+        span: SourceSpan,
+    },
 }
 
 impl InstantiateError {
@@ -330,6 +365,21 @@ impl InstantiateError {
             class_name: String
         }
     );
+    error_constructor!(instantiation_cycle, InstantiationCycle { cycle: String });
+
+    pub fn instantiation_depth_limit(
+        path: impl Into<String>,
+        depth: usize,
+        limit: usize,
+        span: Span,
+    ) -> Self {
+        Self::InstantiationDepthLimit {
+            path: path.into(),
+            depth,
+            limit,
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
 }
 
 /// Outcome of model instantiation.

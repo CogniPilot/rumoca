@@ -7,6 +7,7 @@
 //! - Clock inference data
 
 use indexmap::{IndexMap, IndexSet};
+use rumoca_core::Span;
 use serde::{Deserialize, Serialize};
 
 use crate::{Equation, VarName};
@@ -140,6 +141,8 @@ pub struct ContinuousPartition {
 pub struct BaseClock {
     /// The kind of clock.
     pub kind: ClockKind,
+    /// Source span for the clock expression that introduced this base clock.
+    pub source_span: Span,
     /// Inferred base interval (for rational clocks).
     pub base_interval: Option<ClockInterval>,
 }
@@ -148,6 +151,7 @@ impl Default for BaseClock {
     fn default() -> Self {
         Self {
             kind: ClockKind::Inferred,
+            source_span: Span::DUMMY,
             base_interval: None,
         }
     }
@@ -163,6 +167,7 @@ impl BaseClock {
     pub fn periodic(interval: f64) -> Self {
         Self {
             kind: ClockKind::Periodic { interval },
+            source_span: Span::DUMMY,
             base_interval: Some(ClockInterval::Seconds(interval)),
         }
     }
@@ -207,6 +212,8 @@ pub enum ClockKind {
 /// Defines the relationship between a sub-clock and its base clock.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SubClock {
+    /// Source span for the sub-clock expression.
+    pub source_span: Span,
     /// Sub-sampling factor (subSample).
     /// The sub-clock ticks every `sub_factor` ticks of the base clock.
     pub sub_factor: Option<i64>,

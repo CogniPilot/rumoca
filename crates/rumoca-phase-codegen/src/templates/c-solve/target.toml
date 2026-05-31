@@ -1,0 +1,34 @@
+version = 1
+ir = "solve"
+name = "c-solve"
+description = "Portable C Solve-IR derivative kernel using scalar fallback"
+execution_mode = "compiled"
+deployment_class = "cpu"
+readiness_level = 2
+completion_message = """C Solve kernel sources compiled to: {{ out_dir }}
+Compile: cc -O2 -Wall -c {{ out_dir }}/{{ model_name }}_solve.c"""
+
+[capabilities]
+scalar_fallback = true
+events = false
+runtime_events = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+[capabilities.tensor]
+matmul = "scalar"
+linsolve = "scalar"
+layout = "row-major"
+supports_dynamic_shapes = false
+sparse = false
+dtypes = ["f64"]
+
+[[files]]
+path = "{{ model_name }}_solve.h"
+template = "model_solve.h.jinja"
+
+[[files]]
+path = "{{ model_name }}_solve.c"
+template = "model_solve.c.jinja"

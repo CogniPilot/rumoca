@@ -200,6 +200,73 @@ end Outer;
 }
 
 #[test]
+fn class_components_query_returns_ast_direct_components_only() {
+    let mut session = Session::default();
+    let source = r#"
+model Plant
+  model Motor
+    output Real thrust;
+  equation
+    thrust = 1;
+  end Motor;
+
+  input Real omega_cmd[4];
+  output Real position[3];
+  Real public_state;
+  parameter Real mass = 1;
+protected
+  Real hidden;
+equation
+  public_state = mass;
+end Plant;
+"#;
+
+    session
+        .add_document("plant.mo", source)
+        .expect("test source should parse");
+
+    let components = session
+        .class_components_in_class_query("Plant")
+        .expect("Plant components should exist");
+    let names = components
+        .iter()
+        .map(|component| component.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec!["omega_cmd", "position", "public_state", "mass", "hidden"],
+        "query should expose direct AST components and exclude nested class members"
+    );
+    assert!(components.iter().any(|component| {
+        component.name == "omega_cmd"
+            && matches!(component.causality, rumoca_core::Causality::Input(_))
+    }));
+    assert!(components.iter().any(|component| {
+        component.name == "position"
+            && matches!(component.causality, rumoca_core::Causality::Output(_))
+            && component.shape == vec![3]
+    }));
+    assert!(components.iter().any(|component| {
+        component.name == "mass"
+            && matches!(
+                component.variability,
+                rumoca_core::Variability::Parameter(_)
+            )
+    }));
+    assert!(
+        components
+            .iter()
+            .any(|component| component.name == "hidden" && component.is_protected)
+    );
+    assert!(
+        !components
+            .iter()
+            .any(|component| component.name == "thrust"),
+        "nested Motor.thrust must not be reported as a Plant component"
+    );
+}
+
+#[test]
 fn class_interface_item_keys_survive_body_edits() {
     let mut session = Session::default();
     let source_v1 = r#"

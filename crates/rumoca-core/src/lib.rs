@@ -13,7 +13,8 @@
 //! ## Example Usage
 //!
 //! ```ignore
-//! use rumoca_core::{BoxedResult, Span, SourceSpan, error_constructor};
+//! use rumoca_core::{BoxedResult, SourceSpan, error_constructor};
+//! use rumoca_core::Span;
 //!
 //! pub type FlattenResult<T> = BoxedResult<T, FlattenError>;
 //!
@@ -29,17 +30,87 @@
 //! }
 //! ```
 
+use indexmap::IndexSet;
 use miette::{Diagnostic as MietteDiagnostic, LabeledSpan, NamedSource, Severity};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+// IR vocabulary and foundation primitives (DefId, Span, Expression, ...).
+// Previously lived in `rumoca-ir-core`; merged here per SPEC_0029 §3a.
+mod expression_rewriter;
+mod expression_visitor;
+mod ir_primitives;
+mod modelica_builtins;
+mod statement_rewriter;
+mod subscript;
+pub use expression_rewriter::ExpressionRewriter;
+pub use expression_visitor::{ExpressionScope, ExpressionVisitor, FallibleExpressionVisitor};
+pub use ir_primitives::*;
+pub use modelica_builtins::*;
+pub use statement_rewriter::StatementRewriter;
+pub use subscript::Subscript;
+
+/// Internal DAE-level sample tick callable emitted after source `sample(...)`
+/// has been lowered out of the DAE expression language.
+pub const INTERNAL_SAMPLE_FUNCTION_NAME: &str = "__rumoca_sample";
+
+/// Return the canonical name for source temporal function-call operators that
+/// must be lowered before DAE/Solve exits.
+pub fn source_temporal_function_name(name: &str) -> Option<&'static str> {
+    match name {
+        "pre" => Some("pre"),
+        "edge" => Some("edge"),
+        "change" => Some("change"),
+        "sample" => Some("sample"),
+        "previous" => Some("previous"),
+        "reinit" => Some("reinit"),
+        _ => None,
+    }
+}
+
+/// Return the canonical name for source temporal function-call operators after
+/// removing a qualified package prefix.
+pub fn source_temporal_function_short_name(name: &str) -> Option<&'static str> {
+    source_temporal_function_name(top_level_last_segment(name))
+}
+
+/// Return the canonical name for source-level runtime flow actions.
+pub fn runtime_flow_action_function_name(name: &str) -> Option<&'static str> {
+    match name {
+        "assert" => Some("assert"),
+        "terminate" => Some("terminate"),
+        "reinit" => Some("reinit"),
+        _ => None,
+    }
+}
+
+/// Return the canonical runtime flow action name after removing a qualified
+/// package prefix.
+pub fn runtime_flow_action_function_short_name(name: &str) -> Option<&'static str> {
+    runtime_flow_action_function_name(top_level_last_segment(name))
+}
+
+/// Return the canonical name for source temporal builtin operators that must
+/// be lowered before DAE/Solve exits.
+pub fn source_temporal_builtin_name(function: BuiltinFunction) -> Option<&'static str> {
+    match function {
+        BuiltinFunction::Pre => Some("pre"),
+        BuiltinFunction::Edge => Some("edge"),
+        BuiltinFunction::Change => Some("change"),
+        BuiltinFunction::Sample => Some("sample"),
+        BuiltinFunction::Reinit => Some("reinit"),
+        _ => None,
+    }
+}
 
 pub mod eval_lookup;
 pub use eval_lookup::EvalLookup;
 pub mod enum_compare;
 pub use enum_compare::enum_values_equal;
 pub mod integer_binary;
-pub use integer_binary::{IntegerBinaryOperator, eval_integer_binary};
+pub use integer_binary::{IntegerBinaryOperator, eval_ast_integer_binary, eval_integer_binary};
 pub mod integer_division;
 pub use integer_division::{eval_integer_div_builtin, eval_integer_slash};
 pub mod timing;
@@ -55,24 +126,9 @@ pub fn workspace_root_from_manifest_dir(manifest_dir: &str) -> PathBuf {
     PathBuf::from(manifest_dir).join("../..")
 }
 
-/// Resolve the MSL cache directory with workspace-root semantics.
-///
-/// Rules:
-/// - If `RUMOCA_MSL_CACHE_DIR` is absolute, use it as-is.
-/// - If `RUMOCA_MSL_CACHE_DIR` is relative, resolve it against workspace root.
-/// - If unset, default to `<workspace>/target/msl`.
+/// Resolve the MSL cache directory: `<workspace>/target/msl`.
 pub fn msl_cache_dir_from_manifest(manifest_dir: &str) -> PathBuf {
-    let workspace_root = workspace_root_from_manifest_dir(manifest_dir);
-    std::env::var_os("RUMOCA_MSL_CACHE_DIR")
-        .map(PathBuf::from)
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                workspace_root.join(path)
-            }
-        })
-        .unwrap_or_else(|| workspace_root.join("target/msl"))
+    workspace_root_from_manifest_dir(manifest_dir).join("target/msl")
 }
 
 // =============================================================================
@@ -83,16 +139,23 @@ pub fn msl_cache_dir_from_manifest(manifest_dir: &str) -> PathBuf {
 ///
 /// For `bus[data.medium].pin.v`, returns `["bus[data.medium]", "pin", "v"]`.
 pub fn split_path_with_indices(path: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
+    let mut parts = Vec::with_capacity(4);
+    visit_top_level_path_segments(path, |segment| parts.push(segment));
+    parts
+}
+
+/// Visit non-empty top-level dotted path segments while preserving dots inside
+/// bracket expressions.
+pub fn visit_top_level_path_segments<'a>(path: &'a str, mut visit: impl FnMut(&'a str)) {
     let mut start = 0;
     let mut bracket_depth = 0usize;
-    for (idx, ch) in path.char_indices() {
-        match ch {
-            '[' => bracket_depth += 1,
-            ']' => bracket_depth = bracket_depth.saturating_sub(1),
-            '.' if bracket_depth == 0 => {
+    for (idx, byte) in path.bytes().enumerate() {
+        match byte {
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'.' if bracket_depth == 0 => {
                 if start < idx {
-                    parts.push(&path[start..idx]);
+                    visit(&path[start..idx]);
                 }
                 start = idx + 1;
             }
@@ -100,26 +163,54 @@ pub fn split_path_with_indices(path: &str) -> Vec<&str> {
         }
     }
     if start < path.len() {
-        parts.push(&path[start..]);
+        visit(&path[start..]);
     }
-    parts
 }
 
 /// Return the byte index of the last top-level `.` in `path`.
 ///
 /// Dots inside bracketed subscripts (e.g. `a[b.c]`) are ignored.
 pub fn find_last_top_level_dot(path: &str) -> Option<usize> {
+    let bytes = path.as_bytes();
+    let mut idx = bytes.len();
+    while idx > 0 {
+        idx -= 1;
+        match bytes[idx] {
+            b'.' => return Some(idx),
+            b']' => break,
+            _ => {}
+        }
+    }
+    if idx == 0 && bytes.first().copied() != Some(b']') {
+        return None;
+    }
+
     let mut bracket_depth = 0usize;
-    let mut last_dot = None;
+    for (idx, byte) in path.bytes().enumerate().rev() {
+        match byte {
+            b']' => bracket_depth += 1,
+            b'[' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'.' if bracket_depth == 0 => return Some(idx),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Return the byte index of the first top-level `.` in `path`.
+///
+/// Dots inside bracketed subscripts (e.g. `a[b.c]`) are ignored.
+pub fn find_first_top_level_dot(path: &str) -> Option<usize> {
+    let mut bracket_depth = 0usize;
     for (idx, byte) in path.bytes().enumerate() {
         match byte {
             b'[' => bracket_depth += 1,
             b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b'.' if bracket_depth == 0 => last_dot = Some(idx),
+            b'.' if bracket_depth == 0 => return Some(idx),
             _ => {}
         }
     }
-    last_dot
+    None
 }
 
 /// True when `path` has at least one top-level `.`.
@@ -139,152 +230,248 @@ pub fn parent_scope(path: &str) -> Option<&str> {
     find_last_top_level_dot(path).map(|dot_idx| &path[..dot_idx])
 }
 
-/// A unique identifier for a definition (class, component, etc.).
+/// Split `path` at the first top-level `.`.
+pub fn split_first_top_level(path: &str) -> Option<(&str, &str)> {
+    find_first_top_level_dot(path).map(|dot_idx| (&path[..dot_idx], &path[dot_idx + 1..]))
+}
+
+/// Split `path` at the last top-level `.`.
+pub fn split_last_top_level(path: &str) -> Option<(&str, &str)> {
+    find_last_top_level_dot(path).map(|dot_idx| (&path[..dot_idx], &path[dot_idx + 1..]))
+}
+
+/// Visit top-level dotted split points from right to left and return the first
+/// value produced by `f`.
 ///
-/// DefIds are assigned during semantic analysis to enable efficient
-/// lookup and cross-referencing between compiler phases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct DefId(pub u32);
-
-impl DefId {
-    /// Create a new DefId from an index.
-    pub fn new(index: u32) -> Self {
-        Self(index)
+/// For `a.b.c`, calls `f("a.b", "c")` and then `f("a", "b.c")`.
+/// Dots inside bracketed subscripts are ignored.
+pub fn find_map_top_level_splits_rev<'a, T>(
+    path: &'a str,
+    mut f: impl FnMut(&'a str, &'a str) -> Option<T>,
+) -> Option<T> {
+    let mut end = path.len();
+    while let Some(dot_idx) = find_last_top_level_dot(&path[..end]) {
+        let base = &path[..dot_idx];
+        let suffix = &path[dot_idx + 1..];
+        if let Some(value) = f(base, suffix) {
+            return Some(value);
+        }
+        end = dot_idx;
     }
-
-    /// Get the underlying index.
-    pub fn index(&self) -> u32 {
-        self.0
-    }
+    None
 }
 
-impl std::fmt::Display for DefId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DefId({})", self.0)
-    }
-}
-
-/// A unique identifier for a type.
+/// Return true when `candidate` ends with `suffix` at whole top-level path
+/// segment boundaries.
 ///
-/// TypeIds reference entries in the TypeTable and are used throughout
-/// the compiler to refer to types without copying type information.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct TypeId(pub u32);
-
-impl TypeId {
-    /// A sentinel value representing an unknown/unresolved type.
-    pub const UNKNOWN: TypeId = TypeId(u32::MAX);
-
-    /// Create a new TypeId from an index.
-    pub fn new(index: u32) -> Self {
-        Self(index)
+/// The suffix may be supplied with or without a leading top-level dot. Dots
+/// inside bracketed subscripts are ignored when segmenting either path.
+pub fn top_level_path_ends_with(candidate: &str, suffix: &str) -> bool {
+    let suffix = suffix.strip_prefix('.').unwrap_or(suffix);
+    if suffix.is_empty() {
+        return false;
     }
-
-    /// Get the underlying index.
-    pub fn index(&self) -> u32 {
-        self.0
-    }
-
-    /// Check if this is the unknown type sentinel.
-    pub fn is_unknown(&self) -> bool {
-        *self == Self::UNKNOWN
-    }
-}
-
-impl std::fmt::Display for TypeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_unknown() {
-            write!(f, "TypeId(UNKNOWN)")
-        } else {
-            write!(f, "TypeId({})", self.0)
+    let mut candidate_end = candidate.len();
+    let mut suffix_end = suffix.len();
+    loop {
+        match (
+            previous_top_level_path_segment(candidate, &mut candidate_end),
+            previous_top_level_path_segment(suffix, &mut suffix_end),
+        ) {
+            (_, None) => return true,
+            (Some(candidate_part), Some(suffix_part)) if candidate_part == suffix_part => {}
+            _ => return false,
         }
     }
 }
 
-/// A unique identifier for a scope in the scope tree.
+fn previous_top_level_path_segment<'a>(path: &'a str, end: &mut usize) -> Option<&'a str> {
+    while *end > 0 {
+        let segment_end = *end;
+        let Some(dot_idx) = find_last_top_level_dot(&path[..segment_end]) else {
+            *end = 0;
+            return (segment_end > 0).then_some(&path[..segment_end]);
+        };
+        *end = dot_idx;
+        if dot_idx + 1 < segment_end {
+            return Some(&path[dot_idx + 1..segment_end]);
+        }
+    }
+    None
+}
+
+/// Return true when two qualified type names refer to the same leaf type.
 ///
-/// ScopeIds are used for name lookup during semantic analysis (MLS §5.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct ScopeId(pub u32);
+/// This is a compatibility helper for phase boundaries that still carry type
+/// names as strings. It requires whole top-level path segment matches, so
+/// `A.B.Record` matches `Record`, but `MyRecord` does not match `Record`.
+pub fn qualified_type_name_matches(candidate: &str, expected: &str) -> bool {
+    top_level_path_ends_with(candidate, expected)
+}
 
-impl ScopeId {
-    /// The global scope (root of scope tree).
-    pub const GLOBAL: ScopeId = ScopeId(0);
+/// True when any top-level path segment equals `segment`.
+pub fn top_level_path_contains_segment(path: &str, segment: &str) -> bool {
+    let mut found = false;
+    visit_top_level_path_segments(path, |part| found |= part == segment);
+    found
+}
 
-    /// Create a new ScopeId from an index.
-    pub fn new(index: u32) -> Self {
-        Self(index)
-    }
-
-    /// Get the underlying index.
-    pub fn index(&self) -> u32 {
-        self.0
-    }
-
-    /// Check if this is the global scope.
-    pub fn is_global(&self) -> bool {
-        *self == Self::GLOBAL
+/// Strip array indexing from one path segment.
+///
+/// Examples:
+/// - `resistor[1]` -> `resistor`
+/// - `p` -> `p`
+pub fn strip_array_index(segment: &str) -> &str {
+    if let Some(bracket_pos) = segment.find('[') {
+        &segment[..bracket_pos]
+    } else {
+        segment
     }
 }
 
-impl std::fmt::Display for ScopeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_global() {
-            write!(f, "ScopeId(GLOBAL)")
-        } else {
-            write!(f, "ScopeId({})", self.0)
+/// Return the first top-level path segment with array indices removed.
+pub fn first_path_segment_without_index(path: &str) -> Option<&str> {
+    rendered_top_level_segment(path).map(strip_array_index)
+}
+
+/// Return the top-level segment of an already-rendered path, preserving any
+/// index expression.
+///
+/// For `bus[data.medium].pin.v`, returns `bus[data.medium]`.
+pub fn rendered_top_level_segment(path: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (idx, ch) in path.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth = depth.checked_sub(1)?,
+            '.' if depth == 0 => return Some(&path[..idx]),
+            _ => {}
         }
     }
+    (depth == 0 && !path.is_empty()).then_some(path)
 }
 
-/// A source file identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct SourceId(pub u32);
-
-/// A byte position in source code.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
-)]
-pub struct BytePos(pub usize);
-
-/// A span in source code (source, start, end).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct Span {
-    pub source: SourceId,
-    pub start: BytePos,
-    pub end: BytePos,
+/// Strip array indexing from a top-level path segment.
+///
+/// For `plug[1]` returns `plug`.
+pub fn normalize_top_level_segment(segment: &str) -> &str {
+    strip_array_index(segment)
 }
 
-impl Span {
-    /// A dummy span for errors without location info.
-    pub const DUMMY: Span = Span {
-        source: SourceId(0),
-        start: BytePos(0),
-        end: BytePos(0),
-    };
+/// Extract the normalized top-level prefix from a variable path.
+pub fn get_top_level_prefix(path: &str) -> Option<String> {
+    rendered_top_level_segment(path).map(|segment| normalize_top_level_segment(segment).to_string())
+}
 
-    /// Create a new span.
-    pub fn new(source: SourceId, start: BytePos, end: BytePos) -> Self {
-        Self { source, start, end }
+/// Strip all bracketed subscript groups from a path while preserving dots and identifiers.
+///
+/// Examples:
+/// - `pc[2*i-1].i` -> `pc.i`
+/// - `pin_n[1].v` -> `pin_n.v`
+/// - `R[1].w` -> `R.w`
+pub fn strip_all_subscripts(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut depth = 0usize;
+    for ch in path.chars() {
+        match ch {
+            '[' => depth += 1,
+            ']' if depth > 0 => depth -= 1,
+            ']' => {}
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Normalize top-level names by stripping array indexing from each entry.
+pub fn normalized_top_level_names<'a>(names: impl Iterator<Item = &'a String>) -> IndexSet<String> {
+    names
+        .map(|name| normalize_top_level_segment(name).to_string())
+        .collect()
+}
+
+/// Check whether a path belongs to a known top-level component set.
+///
+/// The provided set is expected to contain normalized top-level names.
+pub fn path_is_in_top_level_set(path: &str, normalized_top_level_names: &IndexSet<String>) -> bool {
+    get_top_level_prefix(path)
+        .is_some_and(|prefix| normalized_top_level_names.contains(prefix.as_str()))
+}
+
+/// Check whether a variable belongs to a top-level member path.
+pub fn is_top_level_member(name: &VarName, normalized_top_level_names: &IndexSet<String>) -> bool {
+    has_top_level_dot(name.as_str())
+        && path_is_in_top_level_set(name.as_str(), normalized_top_level_names)
+}
+
+/// Strip the last top-level array subscript group from a variable name.
+pub fn strip_subscript(name: &str) -> Option<VarName> {
+    let s = name;
+    let (start, end) = last_top_level_subscript_span(s)?;
+    let mut out = String::with_capacity(s.len());
+    out.push_str(&s[..start]);
+    out.push_str(&s[end + 1..]);
+    Some(VarName::new(out))
+}
+
+/// Build a fallback chain by repeatedly stripping one top-level subscript group.
+pub fn subscript_fallback_chain(name: &str) -> Vec<VarName> {
+    let mut chain = Vec::new();
+    let mut current = VarName::new(name);
+
+    while let Some(stripped) = strip_subscript(current.as_str()) {
+        if stripped == current {
+            break;
+        }
+        chain.push(stripped.clone());
+        current = stripped;
     }
 
-    /// Create a span from byte offsets.
-    pub fn from_offsets(source: SourceId, start: usize, end: usize) -> Self {
-        Self {
-            source,
-            start: BytePos(start),
-            end: BytePos(end),
+    chain
+}
+
+/// Return the byte-span of the last top-level `[ ... ]` group in a name.
+pub fn last_top_level_subscript_span(name: &str) -> Option<(usize, usize)> {
+    let mut depth = 0usize;
+    let mut group_start = None;
+    let mut last_group = None;
+
+    for (idx, ch) in name.char_indices() {
+        match ch {
+            '[' => {
+                if depth == 0 {
+                    group_start = Some(idx);
+                }
+                depth += 1;
+            }
+            ']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    let start = group_start?;
+                    last_group = Some((start, idx));
+                }
+            }
+            _ => {}
         }
     }
 
-    /// Convert to miette's SourceSpan for error reporting.
-    ///
-    /// This is used by phase-specific error types to create miette diagnostics.
-    pub fn to_source_span(&self) -> SourceSpan {
-        let start = self.start.0;
-        let len = self.end.0.saturating_sub(self.start.0);
-        (start, len).into()
-    }
+    (depth == 0).then_some(last_group).flatten()
+}
+
+/// True when `name` contains a balanced top-level subscript group.
+pub fn has_top_level_subscript(name: &str) -> bool {
+    last_top_level_subscript_span(name).is_some()
+}
+
+/// Convert an IR source span to miette's SourceSpan for error reporting.
+///
+/// This is used by phase-specific error types to create miette diagnostics
+/// without making `rumoca-ir-core` depend on `miette`.
+pub fn span_to_source_span(span: Span) -> SourceSpan {
+    let start = span.start.0;
+    let len = span.end.0.saturating_sub(span.start.0);
+    (start, len).into()
 }
 
 // =============================================================================
@@ -408,17 +595,108 @@ pub const BUILTIN_VARIABLES: &[&str] = &["time", "Connections"];
 
 /// Check if a type name is a built-in primitive type.
 pub fn is_builtin_type(name: &str) -> bool {
-    BUILTIN_TYPES.contains(&name)
+    matches!(
+        name,
+        "Real"
+            | "Integer"
+            | "Boolean"
+            | "String"
+            | "ExternalObject"
+            | "Clock"
+            | "StateSelect"
+            | "AssertionLevel"
+    )
 }
 
 /// Check if a name is a built-in function.
 pub fn is_builtin_function(name: &str) -> bool {
-    BUILTIN_FUNCTIONS.contains(&name)
+    matches!(
+        name,
+        "Real"
+            | "Integer"
+            | "Boolean"
+            | "String"
+            | "Clock"
+            | "der"
+            | "pre"
+            | "previous"
+            | "edge"
+            | "change"
+            | "initial"
+            | "terminal"
+            | "sample"
+            | "hold"
+            | "subSample"
+            | "superSample"
+            | "shiftSample"
+            | "backSample"
+            | "noClock"
+            | "firstTick"
+            | "interval"
+            | "smooth"
+            | "delay"
+            | "cardinality"
+            | "homotopy"
+            | "semiLinear"
+            | "inStream"
+            | "actualStream"
+            | "getInstanceName"
+            | "spatialDistribution"
+            | "reinit"
+            | "assert"
+            | "terminate"
+            | "abs"
+            | "sign"
+            | "sqrt"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "atan2"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "exp"
+            | "log"
+            | "log10"
+            | "floor"
+            | "ceil"
+            | "mod"
+            | "rem"
+            | "div"
+            | "integer"
+            | "size"
+            | "ndims"
+            | "scalar"
+            | "vector"
+            | "matrix"
+            | "transpose"
+            | "outerProduct"
+            | "symmetric"
+            | "cross"
+            | "skew"
+            | "identity"
+            | "diagonal"
+            | "zeros"
+            | "ones"
+            | "fill"
+            | "linspace"
+            | "min"
+            | "max"
+            | "sum"
+            | "product"
+            | "cat"
+            | "array"
+            | "noEvent"
+            | "connect"
+    )
 }
 
 /// Check if a name is a built-in variable.
 pub fn is_builtin_variable(name: &str) -> bool {
-    BUILTIN_VARIABLES.contains(&name)
+    matches!(name, "time" | "Connections")
 }
 
 // =============================================================================
@@ -431,11 +709,14 @@ pub fn is_builtin_variable(name: &str) -> bool {
 /// compiling models that span multiple files.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SourceMap {
-    /// (name, content) indexed by SourceId.
-    files: Vec<(String, String)>,
+    /// (stable source id, name, content) in deterministic insertion order.
+    files: Vec<(SourceId, String, Arc<str>)>,
     /// Reverse lookup from file name to SourceId.
     #[serde(skip)]
     name_to_id: HashMap<String, SourceId>,
+    /// Reverse lookup from SourceId to `files` index.
+    #[serde(skip)]
+    id_to_index: HashMap<SourceId, usize>,
 }
 
 impl SourceMap {
@@ -448,56 +729,126 @@ impl SourceMap {
     ///
     /// If the file was already added, returns the existing SourceId.
     pub fn add(&mut self, name: &str, content: &str) -> SourceId {
+        self.add_shared(name, Arc::<str>::from(content))
+    }
+
+    /// Add a source file using shared source content and return its SourceId.
+    ///
+    /// This lets LSP/session caches share source text with diagnostics instead
+    /// of copying whole files into every `SourceMap`.
+    pub fn add_shared(&mut self, name: &str, content: Arc<str>) -> SourceId {
         if let Some(&id) = self.name_to_id.get(name) {
             return id;
         }
-        let id = SourceId(self.files.len() as u32);
-        self.files.push((name.to_string(), content.to_string()));
+        if let Some((id, _, _)) = self
+            .files
+            .iter()
+            .find(|(_, file_name, _)| file_name == name)
+        {
+            self.name_to_id.insert(name.to_string(), *id);
+            return *id;
+        }
+        let id = SourceId::from_source_name(name);
+        if self.id_to_index.contains_key(&id)
+            || self.files.iter().any(|(source_id, _, _)| *source_id == id)
+        {
+            self.name_to_id.insert(name.to_string(), id);
+            return id;
+        }
+        let index = self.files.len();
+        self.files.push((id, name.to_string(), content));
         self.name_to_id.insert(name.to_string(), id);
+        self.id_to_index.insert(id, index);
         id
     }
 
     /// Look up a SourceId by file name.
     pub fn get_id(&self, name: &str) -> Option<SourceId> {
-        self.name_to_id.get(name).copied()
+        self.name_to_id.get(name).copied().or_else(|| {
+            self.files
+                .iter()
+                .find(|(_, file_name, _)| file_name == name)
+                .map(|(id, _, _)| *id)
+                .or_else(|| {
+                    let id = SourceId::from_source_name(name);
+                    self.get_source(id).map(|_| id)
+                })
+        })
     }
 
     /// Get (name, content) for a SourceId.
     pub fn get_source(&self, id: SourceId) -> Option<(&str, &str)> {
-        self.files
-            .get(id.0 as usize)
-            .map(|(name, content)| (name.as_str(), content.as_str()))
+        self.id_to_index
+            .get(&id)
+            .and_then(|&index| self.files.get(index))
+            .or_else(|| self.files.iter().find(|(source_id, _, _)| *source_id == id))
+            .map(|(_, name, content)| (name.as_str(), content.as_ref()))
+    }
+
+    /// Get the first source id in deterministic map order.
+    pub fn first_source_id(&self) -> Option<SourceId> {
+        self.files.first().map(|(id, _, _)| *id)
     }
 
     /// Create a Span from a file name and byte offsets.
     ///
-    /// Looks up the SourceId from the file name. Falls back to SourceId(0)
-    /// if the file is not found in the source map.
+    /// Looks up the SourceId from the file name. Returns `Span::DUMMY` when
+    /// the file is not found so diagnostics do not get misattributed to the
+    /// first source file in the map.
     pub fn location_to_span(&self, file_name: &str, start: usize, end: usize) -> Span {
-        let source_id = self
-            .name_to_id
-            .get(file_name)
-            .copied()
-            .unwrap_or(SourceId(0));
-        Span::from_offsets(source_id, start, end)
+        self.try_location_to_span(file_name, start, end)
+            .unwrap_or(Span::DUMMY)
+    }
+
+    /// Try to create a Span from a file name and byte offsets.
+    pub fn try_location_to_span(&self, file_name: &str, start: usize, end: usize) -> Option<Span> {
+        let source_id = self.name_to_id.get(file_name).copied().or_else(|| {
+            self.get_source(SourceId::from_source_name(file_name))
+                .map(|_| SourceId::from_source_name(file_name))
+        })?;
+        Some(Span::from_offsets(source_id, start, end))
     }
 
     /// Rebuild the name_to_id index after deserialization.
     pub fn rebuild_index(&mut self) {
         self.name_to_id.clear();
-        for (i, (name, _)) in self.files.iter().enumerate() {
-            self.name_to_id.insert(name.clone(), SourceId(i as u32));
+        self.id_to_index.clear();
+        for (i, (id, name, _)) in self.files.iter().enumerate() {
+            self.name_to_id.insert(name.clone(), *id);
+            self.id_to_index.insert(*id, i);
         }
     }
 
     /// Snapshot file-name to source-id mappings.
     pub fn source_ids(&self) -> HashMap<String, SourceId> {
-        self.name_to_id.clone()
+        if !self.name_to_id.is_empty() {
+            return self.name_to_id.clone();
+        }
+        self.files
+            .iter()
+            .map(|(id, name, _)| (name.clone(), *id))
+            .collect()
+    }
+
+    /// Return a copy that preserves source-id/name mappings but omits source text.
+    pub fn without_source_contents(&self) -> Self {
+        let files = self
+            .files
+            .iter()
+            .map(|(id, name, _)| (*id, name.clone(), Arc::<str>::from("")))
+            .collect();
+        let mut source_map = Self {
+            files,
+            name_to_id: HashMap::new(),
+            id_to_index: HashMap::new(),
+        };
+        source_map.rebuild_index();
+        source_map
     }
 }
 
 /// Severity level for diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiagnosticSeverity {
     Error,
     Warning,
@@ -505,7 +856,7 @@ pub enum DiagnosticSeverity {
 }
 
 /// A label pointing to a span in source code.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Label {
     pub span: Span,
     pub message: Option<String>,
@@ -539,7 +890,7 @@ impl Label {
 }
 
 /// A required primary label for source-backed diagnostics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrimaryLabel {
     span: Span,
     message: Option<String>,
@@ -572,7 +923,7 @@ impl From<PrimaryLabel> for Label {
 }
 
 /// A diagnostic message (error, warning, or note).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
     pub code: Option<String>,
@@ -662,22 +1013,40 @@ impl Diagnostic {
         matches!(self.severity, DiagnosticSeverity::Error)
     }
 
-    /// Convert to a miette report for pretty display.
     /// Convert to a miette report using the source map for automatic source lookup.
     ///
-    /// Looks up the source file from the first label's SourceId. Falls back to
-    /// empty source if the SourceId is not found in the source map.
+    /// Looks up the source file from the primary label's SourceId. Falls back
+    /// to the first label, then to empty source if no label source is found.
     pub fn to_miette_with_source_map(&self, source_map: &SourceMap) -> MietteReport {
         let source_id = self
             .labels
-            .first()
+            .iter()
+            .find(|label| label.primary)
+            .or_else(|| self.labels.first())
             .map(|l| l.span.source)
-            .unwrap_or(SourceId(0));
-        let (name, content) = source_map.get_source(source_id).unwrap_or(("unknown", ""));
-        self.to_miette(name, content)
+            .and_then(|source_id| {
+                source_map
+                    .get_source(source_id)
+                    .map(|source| (source_id, source))
+            });
+        match source_id {
+            Some((source_id, (name, content))) => {
+                self.to_miette_filtered(name, content, Some(source_id))
+            }
+            None => self.to_miette_filtered("unknown", "", None),
+        }
     }
 
     pub fn to_miette(&self, source_name: &str, source: &str) -> MietteReport {
+        self.to_miette_filtered(source_name, source, None)
+    }
+
+    fn to_miette_filtered(
+        &self,
+        source_name: &str,
+        source: &str,
+        source_id: Option<SourceId>,
+    ) -> MietteReport {
         MietteReport {
             message: self.message.clone(),
             code: self.code.clone(),
@@ -689,6 +1058,7 @@ impl Diagnostic {
             labels: self
                 .labels
                 .iter()
+                .filter(|label| source_id.is_none_or(|source_id| label.span.source == source_id))
                 .map(|l| {
                     LabeledSpan::new(
                         l.message.clone(),
@@ -757,10 +1127,9 @@ pub trait PhaseError {
 }
 
 /// A collection of diagnostics.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Diagnostics {
     diags: Vec<Diagnostic>,
-    error_count: usize,
 }
 
 impl Diagnostics {
@@ -771,20 +1140,17 @@ impl Diagnostics {
 
     /// Emit a diagnostic.
     pub fn emit(&mut self, diag: Diagnostic) {
-        if diag.is_error() {
-            self.error_count += 1;
-        }
         self.diags.push(diag);
     }
 
     /// Check if any errors were emitted.
     pub fn has_errors(&self) -> bool {
-        self.error_count > 0
+        self.diags.iter().any(Diagnostic::is_error)
     }
 
     /// Get the number of errors emitted.
     pub fn error_count(&self) -> usize {
-        self.error_count
+        self.diags.iter().filter(|diag| diag.is_error()).count()
     }
 
     /// Get the total number of diagnostics (errors + warnings).
@@ -862,7 +1228,7 @@ macro_rules! error_constructor {
         pub fn $fn_name($field: impl Into<String>, span: $crate::Span) -> Self {
             Self::$variant {
                 $field: $field.into(),
-                span: span.to_source_span(),
+                span: $crate::span_to_source_span(span),
             }
         }
     };
@@ -878,7 +1244,7 @@ macro_rules! error_constructor {
             Self::$variant {
                 $f1: $f1.into(),
                 $f2: $f2.into(),
-                span: span.to_source_span(),
+                span: $crate::span_to_source_span(span),
             }
         }
     };
@@ -896,7 +1262,7 @@ macro_rules! error_constructor {
                 $f1: $f1.into(),
                 $f2: $f2.into(),
                 $f3: $f3.into(),
-                span: span.to_source_span(),
+                span: $crate::span_to_source_span(span),
             }
         }
     };
@@ -916,7 +1282,7 @@ macro_rules! error_constructor {
                 $f2: $f2.into(),
                 $f3: $f3.into(),
                 $f4: $f4.into(),
-                span: span.to_source_span(),
+                span: $crate::span_to_source_span(span),
             }
         }
     };
@@ -938,7 +1304,7 @@ macro_rules! error_constructor {
                 $f3: $f3.into(),
                 $f4: $f4.into(),
                 $f5: $f5.into(),
-                span: span.to_source_span(),
+                span: $crate::span_to_source_span(span),
             }
         }
     };
@@ -948,7 +1314,7 @@ macro_rules! error_constructor {
         /// Create an error with the given span.
         pub fn $fn_name(span: $crate::Span) -> Self {
             Self::$variant {
-                span: span.to_source_span(),
+                span: $crate::span_to_source_span(span),
             }
         }
     };
@@ -960,6 +1326,184 @@ macro_rules! error_constructor {
             Self::$variant($field.into())
         }
     };
+}
+
+#[cfg(test)]
+mod path_utils_tests {
+    use super::*;
+
+    #[test]
+    fn rendered_top_level_segment_preserves_dots_inside_subscripts() {
+        assert_eq!(
+            rendered_top_level_segment("bus[data.medium].pin.v"),
+            Some("bus[data.medium]")
+        );
+        assert_eq!(
+            first_path_segment_without_index("plug_p[a.b].pin[2].i"),
+            Some("plug_p")
+        );
+    }
+
+    #[test]
+    fn rendered_top_level_segment_rejects_unbalanced_brackets() {
+        assert_eq!(rendered_top_level_segment("arr[record.value.field"), None);
+        assert_eq!(rendered_top_level_segment("arr].field"), None);
+        assert_eq!(get_top_level_prefix("arr[record.value.field"), None);
+    }
+
+    #[test]
+    fn normalized_top_level_names_deduplicates_indices() {
+        let names = [
+            "plug".to_string(),
+            "plug[1]".to_string(),
+            "frame_a[2]".to_string(),
+        ];
+        let normalized = normalized_top_level_names(names.iter());
+        assert!(normalized.contains("plug"));
+        assert!(normalized.contains("frame_a"));
+        assert_eq!(normalized.len(), 2);
+    }
+
+    #[test]
+    fn qualified_type_name_matching_requires_segment_boundaries() {
+        assert!(qualified_type_name_matches("Modelica.Complex", "Complex"));
+        assert!(qualified_type_name_matches(
+            "Modelica.Units.SI.ComplexVoltage",
+            "Units.SI.ComplexVoltage"
+        ));
+        assert!(qualified_type_name_matches(
+            "recordArray[1].Nested.Type",
+            "Nested.Type"
+        ));
+        assert!(!qualified_type_name_matches("MyComplex", "Complex"));
+        assert!(!qualified_type_name_matches("A.B", "A.B.C"));
+    }
+
+    #[test]
+    fn top_level_path_suffix_matching_requires_segment_boundaries() {
+        assert!(top_level_path_ends_with("source.medium.nXi", ".medium.nXi"));
+        assert!(top_level_path_ends_with("source.medium.nXi", "medium.nXi"));
+        assert!(top_level_path_ends_with("a[index.with.dot].b.c", "b.c"));
+        assert!(top_level_path_ends_with("source..medium.nXi", "medium.nXi"));
+        assert!(!top_level_path_ends_with(
+            "source.amediumnXi",
+            ".medium.nXi"
+        ));
+        assert!(!top_level_path_ends_with("source.medium.nXi", "ium.nXi"));
+        assert!(!top_level_path_ends_with("source.medium.nXi", ""));
+    }
+
+    #[test]
+    fn split_last_top_level_ignores_dots_inside_brackets() {
+        assert_eq!(
+            split_last_top_level("a[index.with.dot].b.c"),
+            Some(("a[index.with.dot].b", "c"))
+        );
+        assert_eq!(
+            split_last_top_level("a.b[index.with.dot]"),
+            Some(("a", "b[index.with.dot]"))
+        );
+        assert_eq!(split_last_top_level("a[index.with.dot]"), None);
+    }
+
+    #[test]
+    fn find_map_top_level_splits_rev_ignores_dots_inside_brackets() {
+        let mut splits = Vec::new();
+        let found = find_map_top_level_splits_rev("a[index.with.dot].b.c", |base, suffix| {
+            splits.push((base.to_string(), suffix.to_string()));
+            (base == "a[index.with.dot]").then_some((base.to_string(), suffix.to_string()))
+        });
+        assert_eq!(
+            splits,
+            vec![
+                ("a[index.with.dot].b".to_string(), "c".to_string()),
+                ("a[index.with.dot]".to_string(), "b.c".to_string()),
+            ]
+        );
+        assert_eq!(
+            found,
+            Some(("a[index.with.dot]".to_string(), "b.c".to_string()))
+        );
+    }
+
+    #[test]
+    fn subscript_fallback_chain_peels_all_subscript_layers() {
+        let chain = subscript_fallback_chain("a[1].b[2].c[3]");
+        assert_eq!(
+            chain,
+            vec![
+                VarName::new("a[1].b[2].c"),
+                VarName::new("a[1].b.c"),
+                VarName::new("a.b.c")
+            ]
+        );
+    }
+
+    #[test]
+    fn top_level_subscript_detection_requires_balanced_brackets() {
+        assert!(has_top_level_subscript("a[index.with.dot]"));
+        assert!(has_top_level_subscript("a[1].b"));
+        assert!(!has_top_level_subscript("a"));
+        assert!(!has_top_level_subscript("a[1"));
+        assert!(!has_top_level_subscript("a]"));
+    }
+
+    #[test]
+    fn strip_all_subscripts_normalizes_embedded_indices() {
+        assert_eq!(strip_all_subscripts("pc[((2*1)-1)].i"), "pc.i");
+        assert_eq!(strip_all_subscripts("pin_n[1].v"), "pin_n.v");
+        assert_eq!(strip_all_subscripts("R[1].w"), "R.w");
+    }
+}
+
+#[cfg(test)]
+mod source_map_tests {
+    use super::*;
+
+    #[test]
+    fn location_to_span_does_not_misattribute_unknown_files_to_source_zero() {
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("known.mo", "model Known end Known;");
+
+        assert_eq!(
+            source_map.location_to_span("known.mo", 1, 5),
+            Span::from_offsets(source, 1, 5)
+        );
+        assert_eq!(source_map.location_to_span("missing.mo", 1, 5), Span::DUMMY);
+        assert_eq!(source_map.try_location_to_span("missing.mo", 1, 5), None);
+    }
+
+    #[test]
+    fn source_ids_are_stable_across_source_map_insertion_order() {
+        let mut first_order = SourceMap::new();
+        let first_known = first_order.add("known.mo", "model Known end Known;");
+        first_order.add("other.mo", "model Other end Other;");
+
+        let mut second_order = SourceMap::new();
+        second_order.add("other.mo", "model Other end Other;");
+        let second_known = second_order.add("known.mo", "model Known end Known;");
+
+        assert_eq!(first_known, second_known);
+        assert_eq!(first_known, SourceId::from_source_name("known.mo"));
+    }
+
+    #[test]
+    fn miette_report_uses_primary_label_source_before_first_label() {
+        let mut source_map = SourceMap::new();
+        let first = source_map.add("first.mo", "model First end First;");
+        let second = source_map.add("second.mo", "model Second end Second;");
+        let diagnostic = Diagnostic::error(
+            "E000",
+            "primary source selection",
+            PrimaryLabel::new(Span::from_offsets(second, 6, 12)).with_message("primary source"),
+        )
+        .with_label(Label::secondary(Span::from_offsets(first, 0, 5)).with_message("secondary"));
+
+        let report = diagnostic.to_miette_with_source_map(&source_map);
+        assert_eq!(report.labels.len(), 1);
+        assert_eq!(report.labels[0].label(), Some("primary source"));
+        assert_eq!(report.labels[0].offset(), 6);
+    }
 }
 
 #[cfg(test)]
@@ -1033,6 +1577,22 @@ pub mod error_macro_tests {
                 assert_eq!(s.len(), 10);
             }
             _ => panic!("Wrong variant"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod builtin_registry_tests {
+    use super::BUILTIN_FUNCTIONS;
+
+    #[test]
+    fn builtin_registry_covers_ir_builtin_call_variants() {
+        for builtin in crate::BuiltinFunction::ALL {
+            assert!(
+                BUILTIN_FUNCTIONS.contains(&builtin.name()),
+                "{} is an IR builtin but is missing from rumoca-core::BUILTIN_FUNCTIONS",
+                builtin.name()
+            );
         }
     }
 }

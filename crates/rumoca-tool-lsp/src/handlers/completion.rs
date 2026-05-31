@@ -6,14 +6,14 @@ use rumoca_compile::compile::ClassLocalCompletionKind;
 #[cfg(feature = "server")]
 use rumoca_compile::compile::SessionSnapshot;
 use rumoca_compile::compile::core as rumoca_core;
-use rumoca_compile::parsing::ast;
 use rumoca_compile::parsing::ast::Visitor;
-use rumoca_compile::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::parsing::{self, ast};
 use std::collections::{BTreeMap, HashSet};
 use std::ops::ControlFlow;
 
 use crate::helpers::{
     find_enclosing_class, find_enclosing_class_qualified_name, get_text_before_cursor,
+    trailing_qualified_identifier_token,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -292,7 +292,7 @@ fn handle_completion_with_context(
     };
 
     // Check for dot-completion (e.g., "Modelica.Blocks." or "pid.")
-    if prefix.ends_with('.') || prefix.contains('.') {
+    if trailing_qualified_identifier_token(&prefix).is_some() {
         // Try local AST dot-completion first
         if let Some(dot_items) = dot_completion(
             source,
@@ -427,7 +427,7 @@ fn namespace_dot_completion(class_names: &[&str], prefix: &str) -> Vec<Completio
         let Some(rest) = name.strip_prefix(&search_prefix) else {
             continue;
         };
-        let child = rest.split('.').next().unwrap_or(rest);
+        let child = rumoca_core::rendered_top_level_segment(rest).unwrap_or(rest);
         if child.is_empty() {
             continue;
         }
@@ -483,23 +483,13 @@ fn namespace_dot_completion_from_namespace(
 /// - "Modelica.Blocks.Con" -> ("Modelica.Blocks.", "Con")
 /// - "Modelica." -> ("Modelica.", "")
 fn extract_qualified_prefix(prefix: &str) -> (String, String) {
-    // Find the qualified name being typed (walk back from end through dots and idents)
-    let qualified: String = prefix
-        .chars()
-        .rev()
-        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-
-    if let Some(last_dot) = qualified.rfind('.') {
-        let base = &qualified[..=last_dot]; // includes trailing dot
-        let partial = &qualified[last_dot + 1..];
-        (base.to_string(), partial.to_string())
-    } else {
-        (String::new(), qualified)
-    }
+    let Some(qualified) = trailing_qualified_identifier_token(prefix) else {
+        return (String::new(), String::new());
+    };
+    let Some((base, partial)) = rumoca_core::split_last_top_level(qualified) else {
+        return (String::new(), qualified.to_string());
+    };
+    (format!("{base}."), partial.to_string())
 }
 
 /// Top-level namespace class prefix completion.
@@ -512,7 +502,7 @@ fn namespace_prefix_completions(class_names: &[&str], partial: &str) -> Vec<Comp
 
     for name in class_names {
         // Get the top-level name (before first dot)
-        let top_level = name.split('.').next().unwrap_or(name);
+        let top_level = rumoca_core::rendered_top_level_segment(name).unwrap_or(name);
         if top_level.to_lowercase().starts_with(&partial_lower)
             && seen.insert(top_level.to_string())
         {
@@ -559,7 +549,8 @@ fn namespace_children_from_class_names(
             };
             rest.to_string()
         };
-        let child = candidate.split('.').next().unwrap_or(candidate.as_str());
+        let child =
+            rumoca_core::rendered_top_level_segment(&candidate).unwrap_or(candidate.as_str());
         if child.is_empty() {
             continue;
         }
@@ -627,18 +618,9 @@ fn dot_completion(
 }
 
 fn text_dot_completion_target(prefix: &str) -> Option<DotCompletionTarget> {
-    let dot_pos = prefix.rfind('.')?;
-    let member_partial = prefix[dot_pos + 1..].trim();
-    let base = prefix[..dot_pos].trim();
-    let base_path: String = base
-        .chars()
-        .rev()
-        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    let base_segments = dotted_identifier_segments(&base_path)?;
+    let qualified = trailing_qualified_identifier_token(prefix)?;
+    let (base_path, member_partial) = rumoca_core::split_last_top_level(qualified)?;
+    let base_segments = dotted_identifier_segments(base_path)?;
     Some(DotCompletionTarget {
         base_segments,
         member_partial: member_partial.to_string(),
@@ -728,8 +710,8 @@ impl ast::Visitor for DotCompletionTargetFinder<'_> {
 }
 
 fn dotted_identifier_segments(path: &str) -> Option<Vec<String>> {
-    let segments = path
-        .split('.')
+    let segments = rumoca_core::split_path_with_indices(path)
+        .into_iter()
         .filter(|segment| !segment.is_empty())
         .map(ToString::to_string)
         .collect::<Vec<_>>();
@@ -791,9 +773,10 @@ fn dot_completion_items(
 
 fn component_completion_kind(comp: &ast::Component) -> CompletionItemKind {
     match (&comp.variability, &comp.causality) {
-        (rumoca_ir_core::Variability::Parameter(_), _)
-        | (rumoca_ir_core::Variability::Constant(_), _) => CompletionItemKind::CONSTANT,
-        (_, rumoca_ir_core::Causality::Input(_)) | (_, rumoca_ir_core::Causality::Output(_)) => {
+        (parsing::Variability::Parameter(_), _) | (parsing::Variability::Constant(_), _) => {
+            CompletionItemKind::CONSTANT
+        }
+        (_, parsing::Causality::Input(_)) | (_, parsing::Causality::Output(_)) => {
             CompletionItemKind::PROPERTY
         }
         _ => CompletionItemKind::VARIABLE,
@@ -997,7 +980,7 @@ fn resolve_parsed_class_candidate<'a>(
     ast: &'a ast::StoredDefinition,
     class_name: &str,
 ) -> Option<(String, &'a ast::ClassDef)> {
-    if class_name.contains('.') {
+    if rumoca_core::has_top_level_dot(class_name) {
         return find_parsed_class_by_qualified_name(ast, class_name);
     }
     find_unique_parsed_class_by_simple_name(ast, class_name)
@@ -1016,7 +999,7 @@ fn find_parsed_class_by_qualified_name<'a>(
         .as_ref()
         .and_then(|prefix| class_name.strip_prefix(&format!("{prefix}.")))
         .unwrap_or(class_name);
-    let mut parts = relative_name.split('.');
+    let mut parts = rumoca_core::split_path_with_indices(relative_name).into_iter();
     let first = parts.next()?;
     let mut class = ast.classes.get(first)?;
     let mut qualified_name = within_prefix
@@ -1382,7 +1365,7 @@ fn parsed_class_type_resolution_candidates_in_class(
         }
     };
 
-    if raw_type_name.contains('.') {
+    if rumoca_core::has_top_level_dot(raw_type_name) {
         push(raw_type_name.to_string(), &mut seen, &mut candidates);
         return candidates;
     }
@@ -1458,7 +1441,7 @@ fn scoped_component_type(
 }
 
 fn import_simple_name(path: &str) -> &str {
-    path.rsplit('.').next().unwrap_or(path)
+    rumoca_core::top_level_last_segment(path)
 }
 
 fn modifier_completions(partial: &str) -> Vec<CompletionItem> {

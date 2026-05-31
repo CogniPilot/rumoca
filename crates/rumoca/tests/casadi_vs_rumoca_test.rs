@@ -1,9 +1,9 @@
 //! Cross-validation tests: compare CasADi backend simulation traces against
-//! rumoca's built-in diffsol simulator.
+//! rumoca's built-in simulator.
 //!
 //! For each model we:
 //! 1. Compile the Modelica source with `Compiler`
-//! 2. Run the built-in simulator (`simulate_dae`) to get the reference trace
+//! 2. Run the built-in simulator to get the reference trace
 //! 3. Render CasADi Python code (MX, SX), run via `python3`
 //! 4. Compare the traces using `compare_model_traces` and assert agreement
 //!
@@ -20,8 +20,7 @@ use std::f64::consts::TAU;
 /// High-agreement threshold for max channel bounded-normalized L1 error.
 /// Matches `HIGH_AGREEMENT_THRESHOLD` from `sim_trace_compare`.
 const HIGH_AGREEMENT_THRESHOLD: f64 = 0.05;
-use rumoca_sim::simulate_dae;
-use rumoca_sim::{SimOptions, SimResult};
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
 use std::collections::HashMap;
 use std::fs;
 use std::process::Command;
@@ -45,7 +44,7 @@ dt = float(sys.argv[1])
 tf = float(sys.argv[2])
 tgrid = np.arange(0, tf + dt * 0.5, dt)
 integrator = model['build_integrator'](tgrid)
-p_full = np.concatenate([model['p0'], np.array([])])
+p_full = model['p_full0']
 result = integrator(x0=model['x0'], p=p_full)
 xf = np.array(result['xf'])
 trace = {'times': tgrid.tolist(), 'names': model['state_names'], 'data': {}}
@@ -75,8 +74,12 @@ enum CasadiBackend {
 impl CasadiBackend {
     fn template(self) -> &'static str {
         match self {
-            CasadiBackend::Mx => templates::CASADI_MX,
-            CasadiBackend::Sx => templates::CASADI_SX,
+            CasadiBackend::Mx => {
+                templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap()
+            }
+            CasadiBackend::Sx => {
+                templates::builtin_template_source("casadi-sx", "casadi_sx.py.jinja").unwrap()
+            }
         }
     }
 
@@ -572,11 +575,7 @@ fn cross_validate_model(model: &TestModel) {
         .unwrap_or_else(|e| panic!("{} compilation failed: {e}", model.name));
 
     // 2. Run rumoca built-in simulator (reference)
-    let opts = SimOptions {
-        t_end: model.t_end,
-        ..SimOptions::default()
-    };
-    let sim = simulate_dae(&result.dae, &opts)
+    let sim = rumoca_reference_sim(&result.dae, model.t_end)
         .unwrap_or_else(|e| panic!("{} rumoca simulation failed: {e}", model.name));
 
     let rumoca_trace = sim_result_to_trace(&sim, model.name);
@@ -790,12 +789,8 @@ fn prepare_summary_model_data(
         }
     };
 
-    let opts = SimOptions {
-        t_end: model.t_end,
-        ..SimOptions::default()
-    };
     let dae = compile_result.dae;
-    let sim = match simulate_dae(&dae, &opts) {
+    let sim = match rumoca_reference_sim(&dae, model.t_end) {
         Ok(s) => s,
         Err(e) => {
             failures.push(format!("{}: rumoca simulation error: {e}", model.name));
@@ -804,6 +799,18 @@ fn prepare_summary_model_data(
     };
 
     Some((dae, sim_result_to_trace(&sim, model.name)))
+}
+
+fn rumoca_reference_sim(
+    dae: &rumoca_ir_dae::Dae,
+    t_end: f64,
+) -> Result<SimResult, rumoca_sim::SimulationDiagnosticError> {
+    let opts = SimOptions {
+        t_end,
+        solver_mode: SimSolverMode::RkLike,
+        ..SimOptions::default()
+    };
+    simulate_dae_with_diagnostics(dae, &opts)
 }
 
 fn push_backend_summary_result(

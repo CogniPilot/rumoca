@@ -4,6 +4,7 @@ use super::{collect_continuous_equation_lhs, is_internal_input};
 use crate::path_utils::{
     is_top_level_member, normalized_top_level_names, subscript_fallback_chain,
 };
+use indexmap::IndexSet;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 use std::collections::{HashSet, VecDeque};
@@ -12,30 +13,31 @@ use std::collections::{HashSet, VecDeque};
 ///
 /// Connection equations may use element names (e.g. `bus.ref[1]`) while the flat
 /// variable map stores the base (`bus.ref`). This maps to the base when available.
-fn normalize_connection_var_name(name: &flat::VarName, flat: &flat::Model) -> flat::VarName {
-    if flat.variables.contains_key(name) {
-        return name.clone();
+fn normalize_connection_var_name(name: &str, flat: &flat::Model) -> rumoca_core::VarName {
+    let lookup_name = rumoca_core::VarName::new(name);
+    if let Some((key, _)) = flat.variables.get_key_value(&lookup_name) {
+        return key.clone();
     }
     for candidate in subscript_fallback_chain(name) {
-        if flat.variables.contains_key(&candidate) {
-            return candidate;
+        if let Some((key, _)) = flat.variables.get_key_value(&candidate) {
+            return key.clone();
         }
     }
-    name.clone()
+    lookup_name
 }
 
-fn peer_is_internal_input_with_fallback(peer: &flat::VarName, flat: &flat::Model) -> bool {
+fn peer_is_internal_input_with_fallback(peer: &rumoca_core::VarName, flat: &flat::Model) -> bool {
     is_internal_input(peer, flat)
-        || subscript_fallback_chain(peer)
+        || subscript_fallback_chain(peer.as_str())
             .into_iter()
             .any(|candidate| is_internal_input(&candidate, flat))
 }
 
 /// Build connected components for the graph induced by connection equations.
 fn build_connection_components(
-    peers: &FxHashMap<flat::VarName, HashSet<flat::VarName>>,
-) -> FxHashMap<flat::VarName, usize> {
-    let mut comp_of: FxHashMap<flat::VarName, usize> = FxHashMap::default();
+    peers: &FxHashMap<rumoca_core::VarName, HashSet<rumoca_core::VarName>>,
+) -> FxHashMap<rumoca_core::VarName, usize> {
+    let mut comp_of: FxHashMap<rumoca_core::VarName, usize> = FxHashMap::default();
     let mut queue = VecDeque::new();
     let mut next_comp = 0usize;
 
@@ -48,7 +50,7 @@ fn build_connection_components(
         queue.push_back(node.clone());
 
         while let Some(curr) = queue.pop_front() {
-            let new_neighbors: Vec<flat::VarName> = peers
+            let new_neighbors: Vec<rumoca_core::VarName> = peers
                 .get(&curr)
                 .into_iter()
                 .flat_map(|neighbors| neighbors.iter())
@@ -74,29 +76,30 @@ fn build_connection_components(
 /// be treated as an algebraic unknown.
 pub(super) fn find_top_level_connector_input_members(
     flat: &flat::Model,
-    state_vars: &HashSet<flat::VarName>,
-) -> HashSet<flat::VarName> {
+    state_vars: &IndexSet<rumoca_core::VarName>,
+) -> HashSet<rumoca_core::VarName> {
     let normalized_top_level_connectors =
         normalized_top_level_names(flat.top_level_connectors.iter());
-    let mut peers: FxHashMap<flat::VarName, HashSet<flat::VarName>> = FxHashMap::default();
+    let mut peers: FxHashMap<rumoca_core::VarName, HashSet<rumoca_core::VarName>> =
+        FxHashMap::default();
 
     for eq in flat.equations.iter().filter(|eq| eq.origin.is_connection()) {
-        let flat::Expression::Binary { op, lhs, rhs } = &eq.residual else {
+        let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = &eq.residual else {
             continue;
         };
-        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_core::OpBinary::Sub) {
             continue;
         }
         let (
-            flat::Expression::VarRef { name: lhs_name, .. },
-            flat::Expression::VarRef { name: rhs_name, .. },
+            rumoca_core::Expression::VarRef { name: lhs_name, .. },
+            rumoca_core::Expression::VarRef { name: rhs_name, .. },
         ) = (lhs.as_ref(), rhs.as_ref())
         else {
             continue;
         };
 
-        let lhs_n = normalize_connection_var_name(lhs_name, flat);
-        let rhs_n = normalize_connection_var_name(rhs_name, flat);
+        let lhs_n = normalize_connection_var_name(lhs_name.as_str(), flat);
+        let rhs_n = normalize_connection_var_name(rhs_name.as_str(), flat);
         peers
             .entry(lhs_n.clone())
             .or_default()
@@ -123,7 +126,7 @@ pub(super) fn find_top_level_connector_input_members(
         let has_anchor = directly_defined.contains(name)
             || var.binding.is_some()
             || state_vars.contains(name)
-            || matches!(&var.causality, rumoca_ir_core::Causality::Output(_));
+            || matches!(&var.causality, rumoca_core::Causality::Output(_));
         if has_anchor {
             component_has_internal_anchor[*comp_id] = true;
         }
@@ -148,7 +151,7 @@ pub(super) fn find_top_level_connector_input_members(
         // connection component, it behaves as an external interface value and should
         // not be treated as an unknown.
         let is_unanchored_expandable_interface = var.from_expandable_connector
-            && matches!(&var.causality, rumoca_ir_core::Causality::Empty)
+            && matches!(&var.causality, rumoca_core::Causality::Empty)
             && !component_has_internal_anchor[comp_id];
         if is_unanchored_expandable_interface {
             result.insert(name.clone());
@@ -189,12 +192,13 @@ mod tests {
 
     #[test]
     fn test_build_connection_components_groups_disconnected_subgraphs() {
-        let a = flat::VarName::new("a");
-        let b = flat::VarName::new("b");
-        let c = flat::VarName::new("c");
-        let d = flat::VarName::new("d");
+        let a = rumoca_core::VarName::new("a");
+        let b = rumoca_core::VarName::new("b");
+        let c = rumoca_core::VarName::new("c");
+        let d = rumoca_core::VarName::new("d");
 
-        let mut peers: FxHashMap<flat::VarName, HashSet<flat::VarName>> = FxHashMap::default();
+        let mut peers: FxHashMap<rumoca_core::VarName, HashSet<rumoca_core::VarName>> =
+            FxHashMap::default();
         peers.entry(a.clone()).or_default().insert(b.clone());
         peers.entry(b.clone()).or_default().insert(a.clone());
         peers.entry(c.clone()).or_default().insert(d.clone());
@@ -211,35 +215,34 @@ mod tests {
     fn test_normalize_connection_var_name_peels_multiple_subscript_layers() {
         let mut flat = flat::Model::new();
         flat.add_variable(
-            flat::VarName::new("a.b.c"),
+            rumoca_core::VarName::new("a.b.c"),
             flat::Variable {
-                name: flat::VarName::new("a.b.c"),
-                variability: rumoca_ir_core::Variability::Empty,
-                causality: rumoca_ir_core::Causality::Input(Default::default()),
+                name: rumoca_core::VarName::new("a.b.c"),
+                variability: rumoca_core::Variability::Empty,
+                causality: rumoca_core::Causality::Input(Default::default()),
                 ..Default::default()
             },
         );
 
-        let normalized =
-            normalize_connection_var_name(&flat::VarName::new("a[1].b[2].c[3]"), &flat);
-        assert_eq!(normalized, flat::VarName::new("a.b.c"));
+        let normalized = normalize_connection_var_name("a[1].b[2].c[3]", &flat);
+        assert_eq!(normalized, rumoca_core::VarName::new("a.b.c"));
     }
 
     #[test]
     fn test_peer_is_internal_input_with_fallback_handles_multiple_layers() {
         let mut flat = flat::Model::new();
         flat.add_variable(
-            flat::VarName::new("bus.signal"),
+            rumoca_core::VarName::new("bus.signal"),
             flat::Variable {
-                name: flat::VarName::new("bus.signal"),
-                variability: rumoca_ir_core::Variability::Empty,
-                causality: rumoca_ir_core::Causality::Input(Default::default()),
+                name: rumoca_core::VarName::new("bus.signal"),
+                variability: rumoca_core::Variability::Empty,
+                causality: rumoca_core::Causality::Input(Default::default()),
                 ..Default::default()
             },
         );
 
         assert!(peer_is_internal_input_with_fallback(
-            &flat::VarName::new("bus[1].signal[2]"),
+            &rumoca_core::VarName::new("bus[1].signal[2]"),
             &flat
         ));
     }

@@ -3,9 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use lsp_types::{GotoDefinitionResponse, Location, Position, Range, Url};
-use rumoca_compile::compile::core::DefId;
-use rumoca_compile::parsing::ast;
-use rumoca_compile::parsing::ir_core as rumoca_ir_core;
+use rumoca_compile::parsing::{self, DefId, ast};
 
 use crate::helpers::{
     get_qualified_class_name_at_position, get_word_at_position, imported_def_id,
@@ -125,7 +123,7 @@ fn goto_response_for_def_id(
     }))
 }
 
-fn target_uri_for_location(loc: &rumoca_ir_core::Location, fallback_uri: &Url) -> Url {
+fn target_uri_for_location(loc: &parsing::Location, fallback_uri: &Url) -> Url {
     if loc.file_name.is_empty() {
         return fallback_uri.clone();
     }

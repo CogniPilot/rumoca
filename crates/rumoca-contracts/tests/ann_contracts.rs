@@ -87,6 +87,29 @@ fn ann_008_variable_evaluate_rejected() {
 }
 
 #[test]
+fn ann_008_function_local_evaluate_ignored() {
+    expect_success(
+        r#"
+        function ToVector
+            input Real x[:];
+            output Real y[size(x, 1)];
+        protected
+            Integer n = size(x, 1) annotation(Evaluate = true);
+        algorithm
+            for i in 1:n loop
+                y[i] := x[i];
+            end for;
+        end ToVector;
+
+        model Test
+            Real x[2] = ToVector({1.0, 2.0});
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
 fn ann_008_class_annotation_evaluate_rejected() {
     expect_resolve_failure_with_code(
         r#"

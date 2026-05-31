@@ -97,14 +97,14 @@ pub(crate) fn summary_fingerprint(definition: &ast::StoredDefinition) -> super::
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ClassSummary {
-    pub(crate) name_location: ast::Location,
-    pub(crate) class_type: ast::ClassType,
+    pub(crate) name_location: rumoca_core::Location,
+    pub(crate) class_type: rumoca_core::ClassType,
     pub(crate) encapsulated: bool,
     pub(crate) partial: bool,
     pub(crate) expandable: bool,
     pub(crate) operator_record: bool,
     pub(crate) pure: bool,
-    pub(crate) causality: ast::Causality,
+    pub(crate) causality: rumoca_core::Causality,
     pub(crate) is_protected: bool,
     pub(crate) is_final: bool,
     pub(crate) is_replaceable: bool,
@@ -148,10 +148,10 @@ pub(crate) struct ExtendSummary {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ComponentSummary {
-    pub(crate) name_location: ast::Location,
+    pub(crate) name_location: rumoca_core::Location,
     pub(crate) type_name: String,
-    pub(crate) variability: ast::Variability,
-    pub(crate) causality: ast::Causality,
+    pub(crate) variability: rumoca_core::Variability,
+    pub(crate) causality: rumoca_core::Causality,
     pub(crate) connection: ast::Connection,
     pub(crate) is_protected: bool,
     pub(crate) is_final: bool,
@@ -164,7 +164,7 @@ pub(crate) struct ComponentSummary {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NestedClassSummary {
-    pub(crate) class_type: ast::ClassType,
+    pub(crate) class_type: rumoca_core::ClassType,
     pub(crate) partial: bool,
     pub(crate) is_replaceable: bool,
 }
@@ -302,7 +302,7 @@ impl ComponentSummary {
 }
 
 fn split_qualified_name(qualified_name: &str) -> (String, String) {
-    match qualified_name.rsplit_once('.') {
+    match rumoca_core::split_last_top_level(qualified_name) {
         Some((container_path, name)) => (container_path.to_string(), name.to_string()),
         None => (String::new(), qualified_name.to_string()),
     }

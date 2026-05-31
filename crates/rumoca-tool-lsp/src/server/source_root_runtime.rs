@@ -429,7 +429,7 @@ impl ModelicaLanguageServer {
                     self.client
                         .log_message(
                             MessageType::WARNING,
-                            format!("[rumoca] failed to load .rumoca/project.toml: {error}"),
+                            format!("[rumoca] failed to load colocated model configs: {error}"),
                         )
                         .await;
                 }

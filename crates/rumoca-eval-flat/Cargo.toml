@@ -9,10 +9,15 @@ homepage.workspace = true
 
 [dependencies]
 rumoca-core = { workspace = true }
-rumoca-ir-core = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 indexmap = { workspace = true }
+rustc-hash = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true, optional = true }
+
+[features]
+default = []
+tracing = ["dep:tracing"]
 
 [lints]
 workspace = true

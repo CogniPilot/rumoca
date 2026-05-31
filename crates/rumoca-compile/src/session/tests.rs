@@ -1,5 +1,6 @@
 use super::*;
-use crate::compile::core::{Diagnostic as CommonDiagnostic, PrimaryLabel, Span};
+use crate::compile::core::{Diagnostic as CommonDiagnostic, PrimaryLabel};
+use rumoca_core::Span;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 mod cache_behavior_source_root_tests;
@@ -23,6 +24,7 @@ mod source_root_tests;
 mod typed_model_query_tests;
 mod workspace_symbol_snapshot_tests;
 
+mod semantic_cache_tests;
 static SESSION_STATS_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 pub(super) fn session_stats_test_guard() -> MutexGuard<'static, ()> {
@@ -63,6 +65,24 @@ fn get_lru_cache_entry<T: Clone>(cache: &mut IndexMap<String, T>, key: &str) -> 
     let cloned = entry.clone();
     cache.insert(key.to_string(), entry);
     Some(cloned)
+}
+
+#[test]
+fn lru_map_refresh_and_trim_preserves_recent_entries() {
+    let mut cache = LruMap::default();
+    cache.insert("a".to_string(), 1);
+    cache.insert("b".to_string(), 2);
+
+    let refreshed = cache
+        .shift_remove("a")
+        .expect("entry should be removable for recency refresh");
+    cache.insert("a".to_string(), refreshed);
+    cache.insert("c".to_string(), 3);
+    cache.trim_to(2);
+
+    assert_eq!(cache.get("a"), Some(&1));
+    assert_eq!(cache.get("b"), None);
+    assert_eq!(cache.get("c"), Some(&3));
 }
 
 fn model_stage_semantic_diagnostics_artifact_mut<'a>(
@@ -197,8 +217,8 @@ fn session_snapshot_keeps_document_and_query_view_after_host_edit() {
     let host_doc = session
         .get_document("test.mo")
         .expect("host should expose updated document");
-    assert_eq!(snapshot_doc.content, source_v1);
-    assert_eq!(host_doc.content, source_v2);
+    assert_eq!(&*snapshot_doc.content, source_v1);
+    assert_eq!(&*host_doc.content, source_v2);
 
     let snapshot_items = snapshot.class_local_completion_items_query("test.mo", "M");
     let host_items = session.class_local_completion_items_query("test.mo", "M");
@@ -1009,6 +1029,40 @@ fn test_session_compile() {
 }
 
 #[test]
+fn test_compile_recomputes_member_dims_after_final_parameter_modification() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+package P
+model Inner
+  parameter Integer m = 3;
+  parameter Real a[m];
+end Inner;
+
+model Holder
+  Inner inst(final m = 2, final a = {1, 2});
+end Holder;
+
+model Top
+  Holder holder;
+end Top;
+end P;
+"#,
+        )
+        .unwrap();
+
+    let result = session.compile_model("P.Top").unwrap();
+    let a = result
+        .flat
+        .variables
+        .get(&rumoca_core::VarName::new("holder.inst.a"))
+        .expect("flattened array parameter should exist");
+    assert_eq!(a.dims, vec![2]);
+}
+
+#[test]
 fn test_compile_extracts_experiment_stop_time() {
     let mut session = Session::default();
     session
@@ -1164,29 +1218,43 @@ fn test_record_forwarding_rebinds_dependent_record_fields() {
     let result = session.compile_model("P.Top").unwrap();
     let mid_rb = result
         .dae
+        .variables
         .parameters
-        .get(&dae::VarName::new("mid.r.b"))
+        .get(&rumoca_core::VarName::new("mid.r.b"))
         .expect("mid.r.b must exist in DAE parameters");
     let mid_irb = result
         .dae
+        .variables
         .parameters
-        .get(&dae::VarName::new("mid.i.r.b"))
+        .get(&rumoca_core::VarName::new("mid.i.r.b"))
         .expect("mid.i.r.b must exist in DAE parameters");
 
     let mid_rb_start = mid_rb.start.as_ref().expect("mid.r.b start expected");
     let mid_irb_start = mid_irb.start.as_ref().expect("mid.i.r.b start expected");
 
     match mid_rb_start {
-        dae::Expression::Literal(dae::Literal::Integer(5)) => {}
-        dae::Expression::Literal(dae::Literal::Real(v)) if (v - 5.0).abs() <= f64::EPSILON => {}
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(5),
+            ..
+        } => {}
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(v),
+            ..
+        } if (v - 5.0).abs() <= f64::EPSILON => {}
         other => panic!(
             "record forwarding must propagate dependent field b via overridden a, got {:?}",
             other
         ),
     }
     match mid_irb_start {
-        dae::Expression::Literal(dae::Literal::Integer(5)) => {}
-        dae::Expression::Literal(dae::Literal::Real(v)) if (v - 5.0).abs() <= f64::EPSILON => {}
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(5),
+            ..
+        } => {}
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(v),
+            ..
+        } if (v - 5.0).abs() <= f64::EPSILON => {}
         other => panic!(
             "nested forwarding must preserve dependent record field values, got {:?}",
             other
@@ -1195,7 +1263,7 @@ fn test_record_forwarding_rebinds_dependent_record_fields() {
 }
 
 #[test]
-fn test_compile_model_surfaces_todae_unresolved_reference_code() {
+fn test_compile_model_rejects_unresolved_reference_before_todae() {
     let mut session = Session::default();
     session
         .add_document(
@@ -1216,8 +1284,7 @@ fn test_compile_model_surfaces_todae_unresolved_reference_code() {
                 "#,
         )
         .unwrap();
-    // Add a second document so resolve runs in multi-document mode; unresolved
-    // refs are then checked by downstream phases.
+    // Add a second document to keep coverage for multi-document sessions.
     session
         .add_document(
             "helper.mo",
@@ -1233,23 +1300,21 @@ fn test_compile_model_surfaces_todae_unresolved_reference_code() {
 
     let err = session
         .compile_model("M")
-        .expect_err("compile_model should fail on unresolved ToDae reference");
+        .expect_err("compile_model should fail on unresolved reference");
     let err_text = err.to_string();
     assert!(
-        err_text.contains("rumoca::todae::ED008"),
-        "expected ToDae ED008 in compile_model error, got: {err_text}"
+        err_text.contains("unresolved component reference: 'missingRef'"),
+        "expected resolve failure in compile_model error, got: {err_text}"
     );
 
-    let phase_result = session.compile_model_phases("M").unwrap();
-    match phase_result {
-        PhaseResult::Failed {
-            phase, error_code, ..
-        } => {
-            assert_eq!(phase, FailedPhase::ToDae);
-            assert_eq!(error_code.as_deref(), Some("rumoca::todae::ED008"));
-        }
-        other => panic!("expected ToDae failure, got {other:?}"),
-    }
+    let phase_err = session
+        .compile_model_phases("M")
+        .expect_err("compile_model_phases should fail during resolve");
+    let phase_err_text = phase_err.to_string();
+    assert!(
+        phase_err_text.contains("unresolved component reference: 'missingRef'"),
+        "expected resolve failure before phase compilation, got: {phase_err_text}"
+    );
 }
 
 #[test]
@@ -1686,266 +1751,4 @@ end Child;
         !third.0.definitions.classes.is_empty(),
         "rebuilt navigation tree must not reuse the sentinel cache entry"
     );
-}
-
-#[test]
-fn compile_model_diagnostics_reuses_semantic_closure_cache() {
-    let source = r#"model M
-  Real x(start=0);
-equation
-  der(x) = 1;
-end M;
-"#;
-
-    let mut session = Session::default();
-    session
-        .add_document("test.mo", source)
-        .expect("document should parse");
-
-    let first = session.compile_model_diagnostics("M");
-    assert!(
-        first.diagnostics.is_empty(),
-        "test model should be clean before cache mutation"
-    );
-    let cached = model_stage_semantic_diagnostics_artifact_mut(
-        &mut session,
-        "M",
-        SemanticDiagnosticsMode::Standard,
-    );
-    cached
-        .diagnostics
-        .diagnostics
-        .push(CommonDiagnostic::warning(
-            "ETEST",
-            "cached semantic diagnostics reused",
-            PrimaryLabel::new(Span::DUMMY).with_message("cache sentinel"),
-        ));
-
-    let second = session.compile_model_diagnostics("M");
-    assert!(
-        second
-            .diagnostics
-            .iter()
-            .any(|diag| diag.code.as_deref() == Some("ETEST")),
-        "second diagnostics request must reuse the cached artifact"
-    );
-}
-
-#[test]
-fn semantic_diagnostics_cache_invalidates_after_document_edit() {
-    let source = r#"model M
-  Real x(start=0);
-equation
-  der(x) = 1;
-end M;
-"#;
-    let updated = r#"model M
-  Real x(start=0);
-equation
-  der(x) = 2;
-end M;
-"#;
-
-    let mut session = Session::default();
-    session
-        .add_document("test.mo", source)
-        .expect("document should parse");
-
-    let first = session.compile_model_diagnostics("M");
-    assert!(
-        first.diagnostics.is_empty(),
-        "test model should be clean before cache mutation"
-    );
-    let cached = model_stage_semantic_diagnostics_artifact_mut(
-        &mut session,
-        "M",
-        SemanticDiagnosticsMode::Standard,
-    );
-    cached
-        .diagnostics
-        .diagnostics
-        .push(CommonDiagnostic::warning(
-            "ETEST",
-            "cached semantic diagnostics reused",
-            PrimaryLabel::new(Span::DUMMY).with_message("cache sentinel"),
-        ));
-
-    let parse_err = session.update_document("test.mo", updated);
-    assert!(parse_err.is_none(), "edited document should remain valid");
-
-    let second = session.compile_model_diagnostics("M");
-    assert!(
-        second
-            .diagnostics
-            .iter()
-            .all(|diag| diag.code.as_deref() != Some("ETEST")),
-        "document edits must rebuild diagnostics instead of reusing stale cache"
-    );
-}
-
-#[test]
-fn semantic_diagnostics_cache_survives_unrelated_edits_but_rebuilds_after_dependency_changes() {
-    let base_v1 = r#"model Base
-  Real y(start=0);
-equation
-  der(y) = 1;
-end Base;
-"#;
-    let base_v2 = r#"model Base
-  Real y(start=0);
-equation
-  der(y) = 3;
-end Base;
-"#;
-    let child = r#"model Child
-  Base base;
-  Real x(start=0);
-equation
-  der(x) = base.y;
-end Child;
-"#;
-    let other_v1 = "model Other\n  Real z(start=0);\nequation\n  der(z) = 0;\nend Other;\n";
-    let other_v2 = "model Other\n  Real z(start=0);\nequation\n  der(z) = 4;\nend Other;\n";
-
-    let mut session = Session::default();
-    session
-        .add_document("base.mo", base_v1)
-        .expect("Base should parse");
-    session
-        .add_document("child.mo", child)
-        .expect("Child should parse");
-    session
-        .add_document("other.mo", other_v1)
-        .expect("Other should parse");
-
-    let first = session.compile_model_diagnostics("Child");
-    assert!(
-        first.diagnostics.is_empty(),
-        "Child should be clean before cache mutation"
-    );
-    model_stage_semantic_diagnostics_artifact_mut(
-        &mut session,
-        "Child",
-        SemanticDiagnosticsMode::Standard,
-    )
-    .diagnostics
-    .diagnostics
-    .push(CommonDiagnostic::warning(
-        "ETEST",
-        "cached semantic diagnostics reused",
-        PrimaryLabel::new(Span::DUMMY).with_message("cache sentinel"),
-    ));
-
-    session.update_document("other.mo", other_v2);
-    let second = session.compile_model_diagnostics("Child");
-    assert!(
-        second
-            .diagnostics
-            .iter()
-            .any(|diag| diag.code.as_deref() == Some("ETEST")),
-        "unrelated edits should keep the cached semantic diagnostics artifact"
-    );
-
-    session.update_document("base.mo", base_v2);
-    let third = session.compile_model_diagnostics("Child");
-    assert!(
-        third
-            .diagnostics
-            .iter()
-            .all(|diag| diag.code.as_deref() != Some("ETEST")),
-        "dependency edits must rebuild semantic diagnostics instead of reusing stale cache"
-    );
-}
-
-fn set_child_compile_cache_marker(session: &mut Session, marker: String) {
-    session
-        .query_state
-        .dae
-        .compile_results
-        .get_mut("Child")
-        .expect("Child should have a compile cache entry")
-        .result = PhaseResult::NeedsInner {
-        missing_inners: vec![marker],
-    };
-}
-
-fn expect_cached_child_compile(session: &mut Session, marker: &str) {
-    match session
-        .compile_model_phases("Child")
-        .expect("Child should compile after unrelated edit")
-    {
-        PhaseResult::NeedsInner { missing_inners } => {
-            assert_eq!(missing_inners, vec![marker.to_string()]);
-        }
-        other => panic!("expected cached Child compile marker, got {other:?}"),
-    }
-}
-
-fn set_child_navigation_cache_sentinel(session: &mut Session) {
-    session
-        .query_state
-        .resolved
-        .semantic_navigation
-        .get_mut("Child")
-        .expect("Child semantic navigation should be cached")
-        .resolved = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
-}
-
-fn expect_warm_child_navigation(session: &mut Session) {
-    set_child_navigation_cache_sentinel(session);
-    let resolved = session
-        .resolved_for_semantic_navigation("Child")
-        .expect("Child semantic navigation should succeed");
-    assert!(
-        resolved.0.definitions.classes.is_empty(),
-        "unrelated edits should not rebuild Child semantic navigation"
-    );
-}
-
-fn expect_cold_child_navigation(session: &mut Session) {
-    let resolved = session
-        .resolved_for_semantic_navigation("Child")
-        .expect("Child semantic navigation should rebuild after dependency edit");
-    assert!(
-        resolved.0.get_class_by_qualified_name("Child").is_some(),
-        "rebuilt semantic navigation should still resolve Child"
-    );
-    assert!(
-        !resolved.0.definitions.classes.is_empty(),
-        "dependency edits should rebuild Child semantic navigation"
-    );
-}
-
-fn set_child_diagnostics_cache_sentinel(session: &mut Session) {
-    let cached = model_stage_semantic_diagnostics_artifact_mut(
-        session,
-        "Child",
-        SemanticDiagnosticsMode::Standard,
-    );
-    cached.diagnostics.diagnostics = vec![CommonDiagnostic::warning(
-        "ETEST",
-        "cached semantic diagnostics reused",
-        PrimaryLabel::new(Span::DUMMY).with_message("cache sentinel"),
-    )];
-}
-
-#[test]
-fn lru_cache_helpers_bound_size_and_refresh_recent_entries() {
-    let mut cache = IndexMap::new();
-    insert_lru_cache_entry(&mut cache, "A".to_string(), 1_u8, 2);
-    insert_lru_cache_entry(&mut cache, "B".to_string(), 2_u8, 2);
-
-    assert_eq!(get_lru_cache_entry(&mut cache, "A"), Some(1));
-
-    insert_lru_cache_entry(&mut cache, "C".to_string(), 3_u8, 2);
-
-    assert!(
-        cache.contains_key("A"),
-        "recently touched entry should stay cached"
-    );
-    assert!(
-        !cache.contains_key("B"),
-        "least-recently-used entry should be evicted first"
-    );
-    assert!(cache.contains_key("C"), "new entry should be inserted");
 }

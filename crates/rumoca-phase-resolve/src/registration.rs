@@ -4,7 +4,7 @@
 //! for the scope tree. All names are registered before resolution begins.
 
 use crate::Resolver;
-use rumoca_core::ScopeId;
+use rumoca_core::{ComponentPath, ScopeId};
 use rumoca_ir_ast as ast;
 
 impl Resolver {
@@ -20,7 +20,8 @@ impl Resolver {
             let def_id = self.alloc_def_id(format!("{}{}", prefix, name));
             class.def_id = Some(def_id);
             self.class_types.insert(def_id, class.class_type.clone());
-            self.scope_tree.add_member(scope, name.clone(), def_id);
+            self.scope_tree
+                .add_member(scope, ComponentPath::from_flat_path(name), def_id);
             if class.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
             }
@@ -52,6 +53,10 @@ impl Resolver {
         };
         let class_scope = self.scope_tree.create_scope(parent_scope, scope_kind);
         class.scope_id = Some(class_scope);
+        if class.encapsulated {
+            self.encapsulated_class_names
+                .insert(qualified_name.to_string());
+        }
         if let Some(class_def_id) = class.def_id {
             self.scope_to_class_def.insert(class_scope, class_def_id);
         }
@@ -61,7 +66,7 @@ impl Resolver {
             let def_id = self.alloc_def_id(format!("{}.{}", qualified_name, name));
             comp.def_id = Some(def_id);
             self.scope_tree
-                .add_member(class_scope, name.clone(), def_id);
+                .add_member(class_scope, ComponentPath::from_flat_path(name), def_id);
             if comp.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
             }
@@ -73,7 +78,7 @@ impl Resolver {
             nested.def_id = Some(def_id);
             self.class_types.insert(def_id, nested.class_type.clone());
             self.scope_tree
-                .add_member(class_scope, name.clone(), def_id);
+                .add_member(class_scope, ComponentPath::from_flat_path(name), def_id);
             if nested.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
             }

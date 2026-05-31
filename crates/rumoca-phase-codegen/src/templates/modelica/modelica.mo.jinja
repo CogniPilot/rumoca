@@ -1,0 +1,144 @@
+{#- Standard Modelica pretty-printer from parsed AST (ClassTree).
+    Context: `ast` (ClassTree), `model_name` (optional top-level class to render).
+
+    Walks ast.definitions.classes and emits Modelica source syntax.
+    Expressions are rendered via Jinja macros since AST uses ComponentReference
+    (not VarRef) and so cannot use the render_expr() Rust helper directly.
+
+    Limitations of this initial version:
+    - When/If equations rendered as block-level stubs (body not recursed)
+    - Annotations not emitted
+    - Only public sections emitted
+-#}
+
+{#- ── Helpers ────────────────────────────────────────────────────────────────#}
+
+{%- macro cr_text(cr) -%}
+{%- for part in cr.parts -%}
+{%- if not loop.first -%}.{%- endif -%}
+{{ part.ident.text }}
+{%- if part.subs is defined and part.subs is not none and part.subs | length > 0 -%}[{%- for s in part.subs -%}
+{%- if not loop.first -%},{%- endif -%}
+{%- if s.Expression is defined -%}{{ ast_expr(s.Expression) }}{%- elif s.Range is defined -%}:{%- else -%}:{%- endif -%}
+{%- endfor -%}]{%- endif -%}
+{%- endfor -%}
+{%- endmacro %}
+
+{%- macro name_text(name) -%}
+{%- for part in name.name -%}{%- if not loop.first -%}.{%- endif -%}{{ part.text }}{%- endfor -%}
+{%- endmacro %}
+
+{%- macro binop_str(op) -%}
+{%- if op == "Add" or op.Add is defined -%}+{%- elif op == "Sub" or op.Sub is defined -%}-{%- elif op == "Mul" or op.Mul is defined -%}*{%- elif op == "Div" or op.Div is defined -%}/{%- elif op == "Pow" or op.Pow is defined -%}^
+{%- elif op == "And" or op.And is defined -%} and {%- elif op == "Or" or op.Or is defined -%} or
+{%- elif op == "Lt" or op.Lt is defined -%}<{%- elif op == "Le" or op.Le is defined -%}<={%- elif op == "Gt" or op.Gt is defined -%}>{%- elif op == "Ge" or op.Ge is defined -%}>=
+{%- elif op == "Eq" or op.Eq is defined -%}=={%- elif op == "Ne" or op.Ne is defined -%}<>
+{%- elif op == "ElMul" or op.ElMul is defined -%}.*{%- elif op == "ElDiv" or op.ElDiv is defined -%}./{%- elif op == "ElPow" or op.ElPow is defined -%}.^
+{%- else -%}?{%- endif -%}
+{%- endmacro %}
+
+{%- macro unop_str(op) -%}
+{%- if op == "Minus" or op == "Neg" or op.Neg is defined -%}-{%- elif op == "Not" or op.Not is defined -%}not {%- elif op == "Plus" or op.Plus is defined -%}+{%- endif -%}
+{%- endmacro %}
+
+{%- macro ast_args(args) -%}
+{%- for a in args -%}{%- if not loop.first -%}, {%- endif -%}{{ ast_expr(a) }}{%- endfor -%}
+{%- endmacro %}
+
+{%- macro ast_expr(e) -%}
+{%- if e is string -%}{{ e }}
+{%- elif e.Real is defined -%}{{ e.Real.text }}
+{%- elif e.Integer is defined -%}{{ e.Integer.text }}
+{%- elif e.Boolean is defined -%}{{ e.Boolean.text }}
+{%- elif e.String is defined -%}"{{ e.String.text }}"
+{%- elif e.Terminal is defined -%}{{ e.Terminal.token.text }}
+{%- elif e.ComponentReference is defined -%}{{ cr_text(e.ComponentReference) }}
+{%- elif e.Binary is defined -%}({{ ast_expr(e.Binary.lhs) }}{{ binop_str(e.Binary.op) }}{{ ast_expr(e.Binary.rhs) }})
+{%- elif e.Unary is defined -%}{{ unop_str(e.Unary.op) }}{{ ast_expr(e.Unary.rhs) }}
+{%- elif e.FunctionCall is defined -%}{{ cr_text(e.FunctionCall.comp) }}({{ ast_args(e.FunctionCall.args) }})
+{%- elif e.If is defined -%}if {{ ast_expr(e.If.cond) }} then {{ ast_expr(e.If.then_expr) }} else {{ ast_expr(e.If.else_expr) }}
+{%- elif e.Array is defined -%}{ {{ ast_args(e.Array.elements) }} }
+{%- elif e.Range is defined -%}{{ ast_expr(e.Range.start) }}{{ ":" ~ ast_expr(e.Range.step) if e.Range.step is defined and e.Range.step is not none else "" }}:{{ ast_expr(e.Range.end) }}
+{%- elif e.Der is defined -%}der({{ ast_expr(e.Der.expr) }})
+{%- elif e.Pre is defined -%}pre({{ ast_expr(e.Pre.expr) }})
+{%- elif e.End is defined -%}end
+{%- else -%}/* expr */{%- endif -%}
+{%- endmacro %}
+
+{%- macro eq_text(eq) %}
+{% if eq.Simple is defined %}  {{ ast_expr(eq.Simple.lhs) }} = {{ ast_expr(eq.Simple.rhs) }};
+{%- elif eq.Connect is defined %}  connect({{ cr_text(eq.Connect.lhs) }}, {{ cr_text(eq.Connect.rhs) }});
+{%- elif eq.For is defined %}  for {% for idx in eq.For.indices %}{% if not loop.first %}, {% endif %}{{ idx.ident.text }} in {{ ast_expr(idx.range) }}{% endfor %} loop
+{%- for sub in eq.For.equations %}{{ eq_text(sub) | indent(2) }}{% endfor %}
+  end for;
+{%- elif eq.FunctionCall is defined %}  {{ cr_text(eq.FunctionCall.comp) }}({{ ast_args(eq.FunctionCall.args) }});
+{%- elif eq.Assert is defined %}  assert({{ ast_expr(eq.Assert.condition) }}, {{ ast_expr(eq.Assert.message) }});
+{%- elif eq.If is defined %}  if {{ ast_expr(eq.If.cond_blocks[0].cond) }} then
+{%- for sub in eq.If.cond_blocks[0].eqs %}{{ eq_text(sub) | indent(2) }}{% endfor %}
+  end if;
+{%- elif eq.When is defined %}  when {{ ast_expr(eq.When[0].cond) }} then
+{%- for sub in eq.When[0].eqs %}{{ eq_text(sub) | indent(2) }}{% endfor %}
+  end when;
+{%- endif %}
+{%- endmacro %}
+
+{%- macro variability_prefix(v) -%}
+{% if v == "Constant" or v.Constant is defined %}constant {% elif v == "Parameter" or v.Parameter is defined %}parameter {% elif v == "Discrete" or v.Discrete is defined %}discrete {% endif -%}
+{%- endmacro %}
+
+{%- macro causality_prefix(c) -%}
+{% if c == "Input" or c.Input is defined %}input {% elif c == "Output" or c.Output is defined %}output {% endif -%}
+{%- endmacro %}
+
+{%- macro class_keyword(ct) -%}
+{%- if ct == "Model" -%}model
+{%- elif ct == "Package" -%}package
+{%- elif ct == "Record" -%}record
+{%- elif ct == "Block" -%}block
+{%- elif ct == "Connector" -%}connector
+{%- elif ct == "Function" -%}function
+{%- elif ct == "Type" -%}type
+{%- else -%}class
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro render_class(name, cls) -%}
+{{ class_keyword(cls.class_type) }} {{ name }}
+{%- for ext in cls.extends %}
+  extends {{ name_text(ext.base_name) }};
+{%- endfor %}
+{%- for cname, comp in cls.components | items %}
+{%- if not comp.is_protected %}
+  {{ variability_prefix(comp.variability) }}{{ causality_prefix(comp.causality) }}{{ name_text(comp.type_name) }}{% if comp.shape | length > 0 %}[{{ comp.shape | join(", ") }}]{% endif %} {{ comp.name }}{% if comp.start_is_modification and comp.start is defined and comp.start is not none and comp.start is not string %}(start = {{ ast_expr(comp.start) }}){% endif %}{% if comp.binding is defined and comp.binding is not none %} = {{ ast_expr(comp.binding) }}{% endif %};
+{%- endif %}
+{%- endfor %}
+{%- for cname, nested in cls.classes | items %}
+{%- if not nested.is_protected %}
+{{ render_class(cname, nested) | indent(2, true) }}
+{%- endif %}
+{%- endfor %}
+{%- if cls.equations | length > 0 or cls.initial_equations | length > 0 %}
+equation
+{%- for eq in cls.equations %}{{ eq_text(eq) }}{% endfor %}
+{%- if cls.initial_equations | length > 0 %}
+initial equation
+{%- for eq in cls.initial_equations %}{{ eq_text(eq) }}{% endfor %}
+{%- endif %}
+{%- endif %}
+end {{ name }};
+{%- endmacro %}
+
+{#- ── Top-level output ────────────────────────────────────────────────────────#}
+{%- if model_name is defined and model_name %}
+{%- if ast.definitions.classes[model_name] is defined %}
+{{- render_class(model_name, ast.definitions.classes[model_name]) }}
+{%- else %}
+{%- for cname, cls in ast.definitions.classes | items %}
+{{- render_class(cname, cls) }}
+{% endfor %}
+{%- endif %}
+{%- else %}
+{%- for cname, cls in ast.definitions.classes | items %}
+{{- render_class(cname, cls) }}
+{% endfor %}
+{%- endif %}

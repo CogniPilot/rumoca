@@ -1,10 +1,12 @@
 //! Array-comprehension and component-array-dimension expansion helpers (MLS §10.4/§10.5).
 
 use crate::equations::{expand_range_indices, substitute_index_in_expression};
-use crate::flat_eval::infer_array_dimensions;
-use crate::qualify::{QualifyOptions, qualify_expression};
-use crate::{Context, ast_lower, variables};
-use rumoca_core::Span;
+use crate::pipeline::{
+    ComponentOverrideMap, ImportCaches, OverlayScopeIndex, variable_import_context_for_instance,
+};
+use crate::qualify::{ImportMap, QualifyOptions, qualify_expression_with_imports};
+use crate::{Context, FlattenError, ast_lower, variables};
+use rumoca_eval_flat::phase_constant::infer_array_dimensions;
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
@@ -47,6 +49,15 @@ pub(crate) fn extract_component_array_dimensions(
     }
 }
 
+pub(crate) fn has_expandable_array_comprehension_bindings(overlay: &ast::InstanceOverlay) -> bool {
+    overlay.components.values().any(|instance_data| {
+        matches!(
+            instance_data.binding,
+            Some(ast::Expression::ArrayComprehension { filter: None, .. })
+        )
+    })
+}
+
 /// Reconcile array-comprehension bindings once parameter context is available.
 ///
 /// Policy:
@@ -60,8 +71,13 @@ pub(crate) fn expand_array_comprehension_bindings(
     flat: &mut flat::Model,
     overlay: &ast::InstanceOverlay,
     tree: &ast::ClassTree,
-) {
+    class_index: &ast::ClassDefIndex<'_>,
+    component_override_map: &ComponentOverrideMap,
+) -> Result<bool, FlattenError> {
     let def_map = &tree.def_map;
+    let scope_index = OverlayScopeIndex::new(overlay);
+    let mut import_cache = ImportCaches::default();
+    let mut changed_binding = false;
 
     for (_def_id, instance_data) in &overlay.components {
         let Some(binding) = &instance_data.binding else {
@@ -71,6 +87,7 @@ pub(crate) fn expand_array_comprehension_bindings(
             expr,
             indices,
             filter,
+            span,
         } = binding
         else {
             continue;
@@ -80,11 +97,24 @@ pub(crate) fn expand_array_comprehension_bindings(
             continue;
         }
 
-        let var_name = flat::VarName::new(instance_data.qualified_name.to_flat_string());
+        let var_name = rumoca_core::VarName::new(instance_data.qualified_name.to_flat_string());
         let prefix = if instance_data.binding_from_modification {
-            variables::modification_binding_prefix_pub(instance_data)
+            variables::modification_binding_prefix_pub(instance_data, tree)?
         } else {
             variables::parent_prefix_pub(&instance_data.qualified_name)
+        };
+        let imports = variable_import_context_for_instance(
+            instance_data,
+            tree,
+            class_index,
+            &mut import_cache,
+            &scope_index,
+            component_override_map,
+        )?;
+        let binding_imports = if instance_data.binding_from_modification {
+            &imports.binding
+        } else {
+            &imports.declaration
         };
 
         let Some(flat_var) = flat.variables.get_mut(&var_name) else {
@@ -104,7 +134,7 @@ pub(crate) fn expand_array_comprehension_bindings(
             continue;
         }
 
-        let Some(index_ranges) = try_expand_index_ranges(ctx, indices, &prefix) else {
+        let Some(index_ranges) = try_expand_index_ranges(ctx, indices, &prefix)? else {
             continue;
         };
 
@@ -117,13 +147,18 @@ pub(crate) fn expand_array_comprehension_bindings(
         let expanded_array = ast::Expression::Array {
             elements: expanded_elements,
             is_matrix,
+            span: *span,
         };
 
-        let opts = QualifyOptions::default();
-        let qualified = qualify_expression(&expanded_array, &prefix, opts);
-        let flat_binding = ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map));
+        let flat_binding = lower_expanded_comprehension_binding(
+            &expanded_array,
+            &prefix,
+            binding_imports,
+            def_map,
+        )?;
 
         flat_var.binding = Some(flat_binding.clone());
+        changed_binding = true;
 
         if let Some(inferred_dims) = infer_array_dimensions(&flat_binding) {
             flat_var.dims = inferred_dims.clone();
@@ -137,28 +172,29 @@ pub(crate) fn expand_array_comprehension_bindings(
             );
         }
     }
+    Ok(changed_binding)
 }
 
 /// Try to evaluate all index ranges for a comprehension. Returns None if any range
 /// cannot be expanded or there are no indices.
+type ExpandedIndexRanges<'a> = Vec<(&'a str, Vec<i64>)>;
+
 fn try_expand_index_ranges<'a>(
     ctx: &Context,
     indices: &'a [ast::ForIndex],
     prefix: &ast::QualifiedName,
-) -> Option<Vec<(&'a str, Vec<i64>)>> {
+) -> Result<Option<ExpandedIndexRanges<'a>>, FlattenError> {
     if indices.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let mut ranges = Vec::new();
     for idx in indices {
         let idx_name = idx.ident.text.as_ref();
-        match expand_range_indices(ctx, &idx.range, prefix, Span::DUMMY) {
-            Ok(values) => ranges.push((idx_name, values)),
-            Err(_) => return None,
-        }
+        let values = expand_range_indices(ctx, &idx.range, prefix, idx.range.span())?;
+        ranges.push((idx_name, values));
     }
-    Some(ranges)
+    Ok(Some(ranges))
 }
 
 /// Expand an array comprehension expression by substituting all index combinations.
@@ -192,10 +228,22 @@ fn expand_comprehension(
     result
 }
 
+fn lower_expanded_comprehension_binding(
+    expanded_array: &ast::Expression,
+    prefix: &ast::QualifiedName,
+    imports: &ImportMap,
+    def_map: &crate::ResolveDefMap,
+) -> Result<rumoca_core::Expression, FlattenError> {
+    let opts = QualifyOptions::default();
+    let qualified = qualify_expression_with_imports(expanded_array, prefix, opts, imports);
+    ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_ir_ast::{ComponentRefPart, ComponentReference, Location, TerminalType, Token};
+    use rumoca_core::{Location, Token};
+    use rumoca_ir_ast::{ComponentRefPart, ComponentReference, TerminalType};
     use std::sync::Arc;
 
     fn cref(name: &str) -> ast::Expression {
@@ -215,6 +263,7 @@ mod tests {
             local: false,
             parts,
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
         })
     }
 
@@ -227,6 +276,7 @@ mod tests {
                 token_number: 0,
                 token_type: 0,
             },
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -245,6 +295,7 @@ mod tests {
         let expr = ast::Expression::Array {
             elements: vec![cref("i"), cref("j")],
             is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
         };
         let expanded = expand_comprehension(&expr, &[("i", vec![1, 2]), ("j", vec![10, 20])]);
         assert_eq!(expanded.len(), 4);
@@ -255,5 +306,30 @@ mod tests {
         let expr = int_lit(42);
         let expanded = expand_comprehension(&expr, &[]);
         assert_eq!(expanded, vec![expr]);
+    }
+
+    #[test]
+    fn test_lower_expanded_comprehension_preserves_imported_constant_aliases() {
+        let expanded_array = ast::Expression::Array {
+            elements: vec![cref("pi")],
+            is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
+        };
+        let prefix = ast::QualifiedName::from_dotted("machine.spacePhasorS");
+        let mut imports = ImportMap::default();
+        imports.insert("pi".to_string(), "Modelica.Constants.pi".to_string());
+        let def_map = crate::ResolveDefMap::default();
+
+        let lowered =
+            lower_expanded_comprehension_binding(&expanded_array, &prefix, &imports, &def_map)
+                .unwrap();
+
+        let rumoca_core::Expression::Array { elements, .. } = lowered else {
+            panic!("expected lowered array");
+        };
+        let rumoca_core::Expression::VarRef { name, .. } = &elements[0] else {
+            panic!("expected imported constant var ref");
+        };
+        assert_eq!(name.as_str(), "Modelica.Constants.pi");
     }
 }

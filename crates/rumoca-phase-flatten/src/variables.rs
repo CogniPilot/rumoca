@@ -12,7 +12,29 @@ use rumoca_ir_flat as flat;
 
 use crate::ast_lower;
 use crate::errors::FlattenError;
+use crate::functions;
 use crate::qualify::{ImportMap, QualifyOptions, qualify_expression_with_imports};
+use rustc_hash::FxHashMap;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct VariableImportContext {
+    pub(crate) declaration: ImportMap,
+    pub(crate) binding: ImportMap,
+    pub(crate) attributes: FxHashMap<String, ImportMap>,
+    pub(crate) declaration_function_scope: Option<String>,
+    pub(crate) binding_function_scope: Option<String>,
+    pub(crate) attribute_function_scopes: FxHashMap<String, String>,
+}
+
+impl VariableImportContext {
+    fn binding_imports(&self) -> &ImportMap {
+        &self.binding
+    }
+
+    fn attribute_imports(&self, attr_name: &str) -> &ImportMap {
+        self.attributes.get(attr_name).unwrap_or(&self.declaration)
+    }
+}
 
 /// Get the parent prefix from a qualified name.
 ///
@@ -33,57 +55,24 @@ pub(crate) fn parent_prefix_pub(qn: &ast::QualifiedName) -> ast::QualifiedName {
     parent_prefix(qn)
 }
 
-/// Get the grandparent prefix of a qualified name.
-/// For "a.b.c" returns "a".
-/// For "a.b" returns "".
-/// Used for modification bindings that reference the outer scope.
-fn grandparent_prefix(qn: &ast::QualifiedName) -> ast::QualifiedName {
-    if qn.parts.len() <= 2 {
-        ast::QualifiedName::new()
-    } else {
-        ast::QualifiedName {
-            parts: qn.parts[..qn.parts.len() - 2].to_vec(),
-        }
-    }
-}
-
 /// Resolve the lexical scope prefix for a modification-derived binding.
 ///
-/// Preferred source is `binding_source_scope` captured during instantiation.
-/// Falls back to historical `grandparent` derivation when no source scope is present.
-fn modification_binding_prefix(instance: &ast::InstanceData) -> ast::QualifiedName {
-    let fallback = grandparent_prefix(&instance.qualified_name);
-    scoped_prefix_or_fallback(
-        instance.binding_source_scope.as_ref(),
-        instance,
-        fallback,
-        parent_prefix(&instance.qualified_name),
-    )
-}
-
-fn scoped_prefix_or_fallback(
-    scope: Option<&ast::QualifiedName>,
+/// Source is `binding_source_scope` captured during instantiation.
+fn modification_binding_prefix(
     instance: &ast::InstanceData,
-    fallback: ast::QualifiedName,
-    self_scope_fallback: ast::QualifiedName,
-) -> ast::QualifiedName {
-    match scope.cloned() {
-        Some(scope) => {
-            let scope_flat = scope.to_flat_string();
-            let source_flat = instance.qualified_name.to_flat_string();
-            // Defensive normalization for malformed scope metadata:
-            // if the captured scope points at (or inside) the bound component itself,
-            // qualifying a sibling reference like `cellData2` would incorrectly become
-            // `battery2.cellData.cellData2`. In that case, fall back to the lexical
-            // grandparent scope.
-            if scope_flat == source_flat || scope_flat.starts_with(&(source_flat + ".")) {
-                self_scope_fallback
-            } else {
-                scope
-            }
-        }
-        None => fallback,
-    }
+    tree: &ast::ClassTree,
+) -> Result<ast::QualifiedName, FlattenError> {
+    instance.binding_source_scope.clone().ok_or_else(|| {
+        FlattenError::missing_source_scope(
+            instance.qualified_name.to_flat_string(),
+            "modifier binding",
+            tree.source_map.location_to_span(
+                &instance.source_location.file_name,
+                instance.source_location.start as usize,
+                instance.source_location.end as usize,
+            ),
+        )
+    })
 }
 
 fn attribute_prefix(
@@ -91,17 +80,19 @@ fn attribute_prefix(
     attr_name: &str,
     fallback: ast::QualifiedName,
 ) -> ast::QualifiedName {
-    scoped_prefix_or_fallback(
-        instance.attribute_source_scopes.get(attr_name),
-        instance,
-        fallback.clone(),
-        fallback,
-    )
+    instance
+        .attribute_source_scopes
+        .get(attr_name)
+        .cloned()
+        .unwrap_or(fallback)
 }
 
 /// Public wrapper for modification_binding_prefix.
-pub(crate) fn modification_binding_prefix_pub(instance: &ast::InstanceData) -> ast::QualifiedName {
-    modification_binding_prefix(instance)
+pub(crate) fn modification_binding_prefix_pub(
+    instance: &ast::InstanceData,
+    tree: &ast::ClassTree,
+) -> Result<ast::QualifiedName, FlattenError> {
+    modification_binding_prefix(instance, tree)
 }
 
 const MAX_TYPE_RESOLVE_DEPTH: usize = 16;
@@ -157,45 +148,37 @@ pub(crate) fn flat_output_type_name(instance: &ast::InstanceData, tree: &ast::Cl
 pub(crate) fn create_flat_variable(
     instance: &ast::InstanceData,
     tree: &ast::ClassTree,
-    imports: &ImportMap,
+    class_index: &ast::ClassDefIndex<'_>,
+    imports: &VariableImportContext,
 ) -> Result<flat::Variable, FlattenError> {
-    let name = flat::VarName::new(instance.qualified_name.to_flat_string());
+    let name = rumoca_core::VarName::new(instance.qualified_name.to_flat_string());
+    let source_span = tree.source_map.location_to_span(
+        &instance.source_location.file_name,
+        instance.source_location.start as usize,
+        instance.source_location.end as usize,
+    );
 
     // Get the parent prefix for qualifying attribute expressions.
     // For "filter.m", the prefix is "filter" so that references like "n"
     // become "filter.n".
     let prefix = parent_prefix(&instance.qualified_name);
-    let opts = QualifyOptions::default();
+    let opts = QualifyOptions {
+        preserve_def_id: true,
+        ..QualifyOptions::default()
+    };
 
     // Get def_map for resolving function call def_ids to qualified names
     let def_map = &tree.def_map;
 
-    // Helper to qualify and convert an expression, using def_map for function resolution.
-    // MLS §13.2: Uses global import map so short names like `pi` resolve to FQN
-    // instead of being incorrectly prefixed with the component path.
-    let qualify_and_convert = |expr: &ast::Expression| {
-        let qualified = qualify_expression_with_imports(expr, &prefix, opts, imports);
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
-    };
-
-    // Convert attributes with qualification
-    // Attribute expressions (start, min, max, nominal) reference sibling variables
-    // and need qualification with the parent prefix.
-    let qualify_attr = |attr_name: &str, expr: &ast::Expression| {
-        let attr_prefix = attribute_prefix(instance, attr_name, prefix.clone());
-        let qualified = qualify_expression_with_imports(expr, &attr_prefix, opts, imports);
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
-    };
-    let start = instance
-        .start
-        .as_ref()
-        .map(|expr| qualify_attr("start", expr));
-    let min = instance.min.as_ref().map(|expr| qualify_attr("min", expr));
-    let max = instance.max.as_ref().map(|expr| qualify_attr("max", expr));
-    let nominal = instance
-        .nominal
-        .as_ref()
-        .map(|expr| qualify_attr("nominal", expr));
+    let attrs = qualify_variable_attributes(VariableQualifyContext {
+        instance,
+        tree,
+        class_index,
+        imports,
+        prefix: &prefix,
+        opts,
+        def_map,
+    })?;
 
     // Binding expressions need careful handling:
     // - Declaration bindings (e.g., `parameter Integer m = integer(n/2)`) reference
@@ -203,38 +186,42 @@ pub(crate) fn create_flat_variable(
     // - Modification bindings (e.g., `body(useQuaternions=useQuaternions)`) reference
     //   variables in the lexical scope where the modification is written.
     //   This scope is tracked during instantiation (MLS §7.2.4).
-    // Both use the same global import map since imports are unambiguous.
-    let binding_expr = instance
-        .binding_source
-        .as_ref()
-        .or(instance.binding.as_ref());
-    let binding = binding_expr.map(|e| {
-        if instance.binding_from_modification {
-            // Modification bindings: qualify using captured modifier source scope.
-            let mod_prefix = modification_binding_prefix(instance);
-            let qualified = qualify_expression_with_imports(e, &mod_prefix, opts, imports);
-            ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
-        } else {
-            // Declaration bindings: qualify to resolve sibling references
-            qualify_and_convert(e)
-        }
-    });
+    let binding = qualify_variable_binding(VariableQualifyContext {
+        instance,
+        tree,
+        class_index,
+        imports,
+        prefix: &prefix,
+        opts,
+        def_map,
+    })?;
+
+    let component_ref = Some(ast::instance::component_reference_for_instance(
+        &instance.qualified_name,
+        source_span,
+        instance
+            .component_ref
+            .as_ref()
+            .and_then(|reference| reference.def_id),
+    ));
 
     Ok(flat::Variable {
         name,
+        component_ref,
+        source_span,
         type_id: instance.type_id,
         // Type prefixes from component declaration (MLS §4.4.2)
-        variability: flat::variability_from_ast(&instance.variability),
-        causality: flat::causality_from_ast(&instance.causality),
+        variability: instance.variability.clone(),
+        causality: instance.causality.clone(),
         flow: instance.flow,
         stream: instance.stream,
         dims: instance.dims.clone(),
         connected: false, // Will be set during connection processing
-        start,
+        start: attrs.start,
         fixed: instance.fixed,
-        min,
-        max,
-        nominal,
+        min: attrs.min,
+        max: attrs.max,
+        nominal: attrs.nominal,
         quantity: instance.quantity.clone(),
         unit: instance.unit.clone(),
         display_unit: instance.display_unit.clone(),
@@ -253,11 +240,134 @@ pub(crate) fn create_flat_variable(
     })
 }
 
+fn canonicalize_function_calls(
+    mut expr: rumoca_core::Expression,
+    source_scope: Option<&str>,
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+) -> rumoca_core::Expression {
+    functions::canonicalize_function_calls_in_expression_with_scope(
+        &mut expr,
+        tree,
+        class_index,
+        source_scope,
+    );
+    expr
+}
+
+#[derive(Clone, Copy)]
+struct VariableQualifyContext<'a, 'tree> {
+    instance: &'a ast::InstanceData,
+    tree: &'a ast::ClassTree,
+    class_index: &'a ast::ClassDefIndex<'tree>,
+    imports: &'a VariableImportContext,
+    prefix: &'a ast::QualifiedName,
+    opts: QualifyOptions,
+    def_map: &'a crate::ResolveDefMap,
+}
+
+struct QualifiedVariableAttributes {
+    start: Option<rumoca_core::Expression>,
+    min: Option<rumoca_core::Expression>,
+    max: Option<rumoca_core::Expression>,
+    nominal: Option<rumoca_core::Expression>,
+}
+
+fn qualify_variable_attributes(
+    ctx: VariableQualifyContext<'_, '_>,
+) -> Result<QualifiedVariableAttributes, FlattenError> {
+    Ok(QualifiedVariableAttributes {
+        start: qualify_variable_attribute(ctx, "start", ctx.instance.start.as_ref())?,
+        min: qualify_variable_attribute(ctx, "min", ctx.instance.min.as_ref())?,
+        max: qualify_variable_attribute(ctx, "max", ctx.instance.max.as_ref())?,
+        nominal: qualify_variable_attribute(ctx, "nominal", ctx.instance.nominal.as_ref())?,
+    })
+}
+
+fn qualify_variable_attribute(
+    ctx: VariableQualifyContext<'_, '_>,
+    attr_name: &str,
+    expr: Option<&ast::Expression>,
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    let Some(expr) = expr else {
+        return Ok(None);
+    };
+    let attr_prefix = attribute_prefix(ctx.instance, attr_name, ctx.prefix.clone());
+    let qualified = qualify_expression_with_imports(
+        expr,
+        &attr_prefix,
+        ctx.opts,
+        ctx.imports.attribute_imports(attr_name),
+    );
+    let source_scope = ctx
+        .imports
+        .attribute_function_scopes
+        .get(attr_name)
+        .map(String::as_str)
+        .or(ctx.imports.declaration_function_scope.as_deref());
+    Ok(Some(canonicalize_function_calls(
+        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        source_scope,
+        ctx.tree,
+        ctx.class_index,
+    )))
+}
+
+fn qualify_variable_binding(
+    ctx: VariableQualifyContext<'_, '_>,
+) -> Result<Option<rumoca_core::Expression>, FlattenError> {
+    let Some(expr) = ctx
+        .instance
+        .binding_source
+        .as_ref()
+        .or(ctx.instance.binding.as_ref())
+    else {
+        return Ok(None);
+    };
+    if ctx.instance.binding_from_modification {
+        return qualify_modification_binding(ctx, expr).map(Some);
+    }
+    qualify_declaration_binding(ctx, expr).map(Some)
+}
+
+fn qualify_modification_binding(
+    ctx: VariableQualifyContext<'_, '_>,
+    expr: &ast::Expression,
+) -> Result<rumoca_core::Expression, FlattenError> {
+    let mod_prefix = modification_binding_prefix(ctx.instance, ctx.tree)?;
+    let qualified =
+        qualify_expression_with_imports(expr, &mod_prefix, ctx.opts, ctx.imports.binding_imports());
+    Ok(canonicalize_function_calls(
+        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        ctx.imports.binding_function_scope.as_deref(),
+        ctx.tree,
+        ctx.class_index,
+    ))
+}
+
+fn qualify_declaration_binding(
+    ctx: VariableQualifyContext<'_, '_>,
+    expr: &ast::Expression,
+) -> Result<rumoca_core::Expression, FlattenError> {
+    let qualified =
+        qualify_expression_with_imports(expr, ctx.prefix, ctx.opts, &ctx.imports.declaration);
+    let source_scope = ctx
+        .imports
+        .binding_function_scope
+        .as_deref()
+        .or(ctx.imports.declaration_function_scope.as_deref());
+    Ok(canonicalize_function_calls(
+        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        source_scope,
+        ctx.tree,
+        ctx.class_index,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rumoca_ir_ast as ast;
-    use rumoca_ir_flat as flat;
     use std::sync::Arc;
 
     fn comp_ref(path: &[&str]) -> ast::Expression {
@@ -266,21 +376,29 @@ mod tests {
             parts: path
                 .iter()
                 .map(|segment| ast::ComponentRefPart {
-                    ident: rumoca_ir_core::Token {
+                    ident: rumoca_core::Token {
                         text: Arc::from(*segment),
-                        ..rumoca_ir_core::Token::default()
+                        ..rumoca_core::Token::default()
                     },
                     subs: None,
                 })
                 .collect(),
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
         })
     }
 
     #[test]
     fn test_create_flat_variable_uses_modifier_source_scope_for_nested_field_binding() {
+        let component_def_id = rumoca_core::DefId::new(42);
+        let qualified_name = ast::QualifiedName::from_dotted("aimc.airGap.L0.d");
         let instance = ast::InstanceData {
-            qualified_name: ast::QualifiedName::from_dotted("aimc.airGap.L0.d"),
+            component_ref: Some(ast::instance::component_reference_for_instance(
+                &qualified_name,
+                rumoca_core::Span::DUMMY,
+                Some(component_def_id),
+            )),
+            qualified_name,
             binding_source: Some(comp_ref(&["L0", "d"])),
             binding_from_modification: true,
             binding_source_scope: Some(ast::QualifiedName::from_dotted("aimc")),
@@ -288,11 +406,21 @@ mod tests {
             ..ast::InstanceData::default()
         };
         let tree = ast::ClassTree::default();
-        let imports = ImportMap::default();
-        let flat = create_flat_variable(&instance, &tree, &imports).expect("flat variable");
+        let imports = VariableImportContext::default();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let flat =
+            create_flat_variable(&instance, &tree, &class_index, &imports).expect("flat variable");
+        assert_eq!(
+            flat.component_ref
+                .as_ref()
+                .and_then(|reference| reference.def_id),
+            Some(component_def_id)
+        );
         let binding = flat.binding.expect("binding");
         match binding {
-            flat::Expression::VarRef { name, subscripts } => {
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } => {
                 assert_eq!(name.as_str(), "aimc.L0.d");
                 assert!(subscripts.is_empty());
             }
@@ -301,34 +429,8 @@ mod tests {
     }
 
     #[test]
-    fn test_create_flat_variable_sanitizes_self_scoped_modifier_binding_prefix() {
-        let instance = ast::InstanceData {
-            qualified_name: ast::QualifiedName::from_dotted("battery2.cellData"),
-            binding_source: Some(comp_ref(&["cellData2"])),
-            binding_from_modification: true,
-            // Malformed scope metadata: points at the source component itself.
-            // We should fall back to grandparent scope ("battery2"), yielding
-            // "battery2.cellData2" instead of "battery2.cellData.cellData2".
-            binding_source_scope: Some(ast::QualifiedName::from_dotted("battery2.cellData")),
-            is_primitive: true,
-            ..ast::InstanceData::default()
-        };
-        let tree = ast::ClassTree::default();
-        let imports = ImportMap::default();
-        let flat = create_flat_variable(&instance, &tree, &imports).expect("flat variable");
-        let binding = flat.binding.expect("binding");
-        match binding {
-            flat::Expression::VarRef { name, subscripts } => {
-                assert_eq!(name.as_str(), "battery2.cellData2");
-                assert!(subscripts.is_empty());
-            }
-            _ => panic!("expected binding to become a qualified VarRef"),
-        }
-    }
-
-    #[test]
     fn test_create_flat_variable_uses_modifier_source_scope_for_attribute() {
-        let mut attribute_source_scopes = indexmap::IndexMap::new();
+        let mut attribute_source_scopes = ast::AstIndexMap::default();
         attribute_source_scopes.insert(
             "max".to_string(),
             ast::QualifiedName::from_dotted("leftBoundary1"),
@@ -341,11 +443,15 @@ mod tests {
             ..ast::InstanceData::default()
         };
         let tree = ast::ClassTree::default();
-        let imports = ImportMap::default();
-        let flat = create_flat_variable(&instance, &tree, &imports).expect("flat variable");
+        let imports = VariableImportContext::default();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let flat =
+            create_flat_variable(&instance, &tree, &class_index, &imports).expect("flat variable");
         let max = flat.max.expect("max");
         match max {
-            flat::Expression::VarRef { name, subscripts } => {
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } => {
                 assert_eq!(name.as_str(), "leftBoundary1.flowDirection");
                 assert!(subscripts.is_empty());
             }

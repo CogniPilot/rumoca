@@ -1,22 +1,29 @@
 use super::ToDaeError;
+use super::expression_identity::UniqueExpressions;
 use super::{eval_scalar_const_expr, extract_time_event_instant};
 use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
+use rumoca_core::ExpressionVisitor;
 use rumoca_ir_dae as dae;
-use rumoca_ir_dae::{ExpressionVisitor, ImplicitSampleChecker, VarRefWithSubscriptsCollector};
+use rumoca_ir_dae::{ImplicitSampleChecker, VarRefWithSubscriptsCollector};
+
+mod event_clock;
+mod timing_inference;
+
+use timing_inference::*;
 
 struct SourceMap<'a> {
-    forward: HashMap<String, Vec<&'a dae::Expression>>,
+    forward: HashMap<String, Vec<&'a rumoca_core::Expression>>,
     reverse_alias: HashMap<String, Vec<String>>,
     timing_cache: RefCell<HashMap<String, Option<(f64, f64)>>>,
     scalar_cache: RefCell<HashMap<String, Option<f64>>>,
 }
 
 impl<'a> SourceMap<'a> {
-    fn new(forward: HashMap<String, Vec<&'a dae::Expression>>) -> Self {
+    fn new(forward: HashMap<String, Vec<&'a rumoca_core::Expression>>) -> Self {
         Self {
             forward,
             reverse_alias: HashMap::new(),
@@ -25,7 +32,7 @@ impl<'a> SourceMap<'a> {
         }
     }
 
-    fn get(&self, key: &str) -> Option<&Vec<&'a dae::Expression>> {
+    fn get(&self, key: &str) -> Option<&Vec<&'a rumoca_core::Expression>> {
         self.forward.get(key)
     }
 
@@ -34,15 +41,18 @@ impl<'a> SourceMap<'a> {
     }
 }
 type ClockRuntimeMetadata = (
-    Vec<dae::Expression>,
+    Vec<rumoca_core::Expression>,
     Vec<dae::ClockSchedule>,
     IndexMap<String, f64>,
-    Vec<dae::Expression>,
+    IndexMap<String, dae::ClockSchedule>,
+    Vec<rumoca_core::Expression>,
 );
 
 /// Extract the condition expression from `Clock(condition)` event-clock constructors.
-fn extract_event_clock_condition(expr: &dae::Expression) -> Option<dae::Expression> {
-    if let dae::Expression::FunctionCall { args, .. } = expr {
+fn extract_event_clock_condition(
+    expr: &rumoca_core::Expression,
+) -> Option<rumoca_core::Expression> {
+    if let rumoca_core::Expression::FunctionCall { args, .. } = expr {
         args.first().cloned()
     } else {
         None
@@ -53,15 +63,21 @@ pub(super) fn compute_clock_runtime_metadata(
     dae_model: &dae::Dae,
     compile_time_scalars: &HashMap<String, f64>,
 ) -> Result<ClockRuntimeMetadata, ToDaeError> {
-    let mut clock_constructor_exprs = Vec::new();
-    for eq in dae_model.f_z.iter().chain(dae_model.f_m.iter()) {
-        collect_clock_constructor_exprs(
-            &eq.rhs,
-            compile_time_scalars,
-            &mut clock_constructor_exprs,
-        );
+    if !contains_clock_runtime_constructs(dae_model, compile_time_scalars) {
+        return Ok(empty_clock_runtime_metadata());
     }
-    dedupe_expressions_in_place(&mut clock_constructor_exprs);
+
+    let mut clock_constructor_exprs = Vec::new();
+    for eq in dae_model
+        .discrete
+        .real_updates
+        .iter()
+        .chain(dae_model.discrete.valued_updates.iter())
+    {
+        let mut equation_constructors = Vec::new();
+        collect_clock_constructor_exprs(&eq.rhs, compile_time_scalars, &mut equation_constructors);
+        extend_unique_expressions(&mut clock_constructor_exprs, equation_constructors);
+    }
     let clock_sources = build_clock_source_map(dae_model, compile_time_scalars);
     let mut clock_schedules = Vec::new();
     let mut unresolved_clock_exprs = Vec::new();
@@ -79,7 +95,7 @@ pub(super) fn compute_clock_runtime_metadata(
             24,
             &mut HashSet::new(),
         ) else {
-            if is_non_static_event_clock_constructor(
+            if event_clock::is_non_static_event_clock_constructor(
                 expr,
                 dae_model,
                 compile_time_scalars,
@@ -98,12 +114,13 @@ pub(super) fn compute_clock_runtime_metadata(
                 dae_model,
                 compile_time_scalars,
                 &clock_sources,
-            ));
+            )?);
             continue;
         };
         clock_schedules.push(dae::ClockSchedule {
             period_seconds: period,
             phase_seconds: phase,
+            source_span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
         });
     }
     clock_schedules.sort_by(|lhs, rhs| {
@@ -132,43 +149,92 @@ pub(super) fn compute_clock_runtime_metadata(
             examples,
         ));
     }
-    let clock_intervals =
-        infer_clock_intervals_by_variable(dae_model, compile_time_scalars, &clock_schedules);
+    let event_clock_variables =
+        event_clock::event_clock_variable_names(dae_model, compile_time_scalars, &clock_sources);
+    let mut clock_timings =
+        infer_clock_timings_by_variable(dae_model, compile_time_scalars, &clock_schedules);
+    clock_timings.retain(|name, _| !event_clock_variables.contains(name));
+    let clock_intervals = clock_timings
+        .iter()
+        .map(|(name, timing)| (name.clone(), timing.period_seconds))
+        .collect();
 
     Ok((
         clock_constructor_exprs,
         clock_schedules,
         clock_intervals,
+        clock_timings,
         triggered_clock_conditions,
     ))
 }
 
+fn empty_clock_runtime_metadata() -> ClockRuntimeMetadata {
+    (
+        Vec::new(),
+        Vec::new(),
+        IndexMap::new(),
+        IndexMap::new(),
+        Vec::new(),
+    )
+}
+
+fn contains_clock_runtime_constructs(
+    dae_model: &dae::Dae,
+    constants: &HashMap<String, f64>,
+) -> bool {
+    dae_model
+        .continuous
+        .equations
+        .iter()
+        .chain(dae_model.initialization.equations.iter())
+        .chain(dae_model.discrete.real_updates.iter())
+        .chain(dae_model.discrete.valued_updates.iter())
+        .chain(dae_model.conditions.equations.iter())
+        .any(|eq| expression_contains_clock_runtime_construct(&eq.rhs, constants))
+}
+
+fn expression_contains_clock_runtime_construct(
+    expr: &rumoca_core::Expression,
+    constants: &HashMap<String, f64>,
+) -> bool {
+    let mut constructors = Vec::new();
+    collect_clock_constructor_exprs(expr, constants, &mut constructors);
+    !constructors.is_empty()
+}
+
 fn unresolved_clock_debug_enabled() -> bool {
-    std::env::var("RUMOCA_DAE_CLOCK_DEBUG").is_ok()
+    #[cfg(feature = "tracing")]
+    {
+        tracing::enabled!(target: "rumoca_phase_dae::clock", tracing::Level::DEBUG)
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        false
+    }
 }
 
 fn format_unresolved_clock_expr(
-    expr: &dae::Expression,
+    expr: &rumoca_core::Expression,
     dae_model: &dae::Dae,
     constants: &HashMap<String, f64>,
     sources: &SourceMap<'_>,
-) -> String {
+) -> Result<String, ToDaeError> {
     if !unresolved_clock_debug_enabled() {
-        return format!("{expr:?}");
+        return Ok(format!("{expr:?}"));
     }
-    let context = summarize_unresolved_clock_context(expr, dae_model, constants, sources);
-    format!("{expr:?} [{context}]")
+    let context = summarize_unresolved_clock_context(expr, dae_model, constants, sources)?;
+    Ok(format!("{expr:?} [{context}]"))
 }
 
 fn summarize_unresolved_clock_context(
-    expr: &dae::Expression,
+    expr: &rumoca_core::Expression,
     dae_model: &dae::Dae,
     constants: &HashMap<String, f64>,
     sources: &SourceMap<'_>,
-) -> String {
+) -> Result<String, ToDaeError> {
     let refs = collect_unique_clock_var_refs(expr, constants);
     if refs.is_empty() {
-        return "no_var_refs".to_string();
+        return Ok("no_var_refs".to_string());
     }
     refs.into_iter()
         .take(6)
@@ -183,17 +249,27 @@ fn summarize_unresolved_clock_context(
             });
             let source_count = sources.get(&key).map_or(0usize, Vec::len);
             let value = eval_clock_scalar_with_sources(
-                &dae::Expression::VarRef {
-                    name: name.clone(),
+                &rumoca_core::Expression::VarRef {
+                    name: name.clone().into(),
                     subscripts: subscripts.clone(),
+                    span: rumoca_core::Span::DUMMY,
                 },
                 constants,
                 sources,
                 24,
                 &mut HashSet::new(),
             );
-            let (kind, start) = dae_var_kind_and_start(dae_model, name.as_str());
-            format!(
+            let (kind, start) =
+                dae_var_kind_and_start(dae_model, name.as_str()).ok_or_else(|| {
+                    ToDaeError::runtime_contract_violation_at(
+                        format!(
+                            "clock expression references missing DAE variable `{}`",
+                            name.as_str()
+                        ),
+                        expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+                    )
+                })?;
+            Ok(format!(
                 "{}{{kind={},const={},start={},source={},value={}}}",
                 key,
                 kind,
@@ -210,13 +286,13 @@ fn summarize_unresolved_clock_context(
                 value
                     .map(|v| format!("{v:.6e}"))
                     .unwrap_or_else(|| "?".to_string())
-            )
+            ))
         })
-        .collect::<Vec<_>>()
-        .join("; ")
+        .collect::<Result<Vec<_>, ToDaeError>>()
+        .map(|parts| parts.join("; "))
 }
 
-fn short_expr(expr: &dae::Expression, max_len: usize) -> String {
+fn short_expr(expr: &rumoca_core::Expression, max_len: usize) -> String {
     let rendered = format!("{expr:?}");
     if rendered.len() <= max_len {
         return rendered;
@@ -224,37 +300,38 @@ fn short_expr(expr: &dae::Expression, max_len: usize) -> String {
     format!("{}...", &rendered[..max_len])
 }
 
-fn dae_var_kind_and_start(dae_model: &dae::Dae, name: &str) -> (&'static str, Option<String>) {
+fn dae_var_kind_and_start(
+    dae_model: &dae::Dae,
+    name: &str,
+) -> Option<(&'static str, Option<String>)> {
     let lookup = |kind: &'static str,
-                  vars: &indexmap::IndexMap<dae::VarName, dae::Variable>|
+                  vars: &indexmap::IndexMap<rumoca_core::VarName, dae::Variable>|
      -> Option<(&'static str, Option<String>)> {
-        vars.get(&dae::VarName::new(name))
+        vars.get(&rumoca_core::VarName::new(name))
             .map(|var| (kind, var.start.as_ref().map(|expr| short_expr(expr, 320))))
     };
 
-    lookup("parameter", &dae_model.parameters)
-        .or_else(|| lookup("constant", &dae_model.constants))
-        .or_else(|| lookup("input", &dae_model.inputs))
-        .or_else(|| lookup("discrete_real", &dae_model.discrete_reals))
-        .or_else(|| lookup("discrete_valued", &dae_model.discrete_valued))
-        .or_else(|| lookup("state", &dae_model.states))
-        .or_else(|| lookup("algebraic", &dae_model.algebraics))
-        .or_else(|| lookup("output", &dae_model.outputs))
-        .unwrap_or(("missing", None))
+    lookup("parameter", &dae_model.variables.parameters)
+        .or_else(|| lookup("constant", &dae_model.variables.constants))
+        .or_else(|| lookup("input", &dae_model.variables.inputs))
+        .or_else(|| lookup("discrete_real", &dae_model.variables.discrete_reals))
+        .or_else(|| lookup("discrete_valued", &dae_model.variables.discrete_valued))
+        .or_else(|| lookup("state", &dae_model.variables.states))
+        .or_else(|| lookup("algebraic", &dae_model.variables.algebraics))
+        .or_else(|| lookup("output", &dae_model.variables.outputs))
 }
 
 fn collect_unique_clock_var_refs(
-    expr: &dae::Expression,
+    expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,
-) -> Vec<(dae::VarName, Vec<dae::Subscript>, String)> {
+) -> Vec<(rumoca_core::VarName, Vec<rumoca_core::Subscript>, String)> {
     let mut collector = VarRefWithSubscriptsCollector::new();
     collector.visit_expression(expr);
     let refs = collector.into_refs();
     let mut seen = HashSet::new();
     refs.into_iter()
         .filter_map(|(name, subscripts)| {
-            let key = canonical_var_ref_key(&name, &subscripts, constants)
-                .unwrap_or_else(|| name.to_string());
+            let key = canonical_var_name_key(&name, &subscripts, constants)?;
             if seen.insert(key.clone()) {
                 Some((name, subscripts, key))
             } else {
@@ -264,133 +341,134 @@ fn collect_unique_clock_var_refs(
         .collect()
 }
 
-pub(super) fn dedupe_expressions_in_place(expressions: &mut Vec<dae::Expression>) {
-    let mut deduped = Vec::with_capacity(expressions.len());
-    for expr in expressions.drain(..) {
-        if deduped.contains(&expr) {
-            continue;
-        }
-        deduped.push(expr);
+pub(super) fn extend_unique_expressions(
+    expressions: &mut Vec<rumoca_core::Expression>,
+    candidates: impl IntoIterator<Item = rumoca_core::Expression>,
+) {
+    let existing = std::mem::take(expressions);
+    let mut unique = UniqueExpressions::default();
+    for expr in existing {
+        unique.push(expr);
     }
-    *expressions = deduped;
-}
-
-fn is_relational_condition(expr: &dae::Expression) -> bool {
-    matches!(
-        expr,
-        dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Lt(_)
-                | rumoca_ir_core::OpBinary::Le(_)
-                | rumoca_ir_core::OpBinary::Gt(_)
-                | rumoca_ir_core::OpBinary::Ge(_),
-            ..
-        }
-    )
+    for candidate in candidates {
+        unique.push(candidate);
+    }
+    *expressions = unique.into_vec();
 }
 
 pub(super) fn collect_synthetic_root_conditions_expr(
-    expr: &dae::Expression,
+    expr: &rumoca_core::Expression,
     suppress_events: bool,
     constants: &HashMap<String, f64>,
-    out: &mut Vec<dae::Expression>,
+    out: &mut UniqueExpressions,
 ) {
-    match expr {
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, value) in branches {
-                if !suppress_events
-                    && is_relational_condition(cond)
-                    && extract_time_event_instant(cond, constants).is_none()
-                {
-                    out.push(cond.clone());
-                }
-                collect_synthetic_root_conditions_expr(cond, suppress_events, constants, out);
-                collect_synthetic_root_conditions_expr(value, suppress_events, constants, out);
-            }
-            collect_synthetic_root_conditions_expr(else_branch, suppress_events, constants, out);
+    let mut collector = SyntheticRootConditionCollector {
+        suppress_events,
+        constants,
+        out,
+    };
+    collector.visit_expression(expr);
+}
+
+struct SyntheticRootConditionCollector<'a> {
+    suppress_events: bool,
+    constants: &'a HashMap<String, f64>,
+    out: &'a mut UniqueExpressions,
+}
+
+impl SyntheticRootConditionCollector<'_> {
+    fn visit_with_event_suppression(&mut self, args: &[rumoca_core::Expression]) {
+        let previous = self.suppress_events;
+        self.suppress_events = true;
+        for arg in args {
+            self.visit_expression(arg);
         }
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            if !suppress_events
-                && is_relational_condition(expr)
-                && extract_time_event_instant(expr, constants).is_none()
-            {
-                out.push(expr.clone());
-            }
-            collect_synthetic_root_conditions_expr(lhs, suppress_events, constants, out);
-            collect_synthetic_root_conditions_expr(rhs, suppress_events, constants, out);
-        }
-        dae::Expression::Unary { rhs, .. } => {
-            collect_synthetic_root_conditions_expr(rhs, suppress_events, constants, out);
-        }
-        dae::Expression::BuiltinCall { function, args } => {
-            let suppressed = suppress_events
-                || matches!(
-                    function,
-                    dae::BuiltinFunction::NoEvent | dae::BuiltinFunction::Smooth
-                );
-            if !suppressed
-                && matches!(
-                    function,
-                    dae::BuiltinFunction::Abs | dae::BuiltinFunction::Sign
-                )
-                && let Some(arg) = args.first()
-            {
-                out.push(arg.clone());
-            }
-            for arg in args {
-                collect_synthetic_root_conditions_expr(arg, suppressed, constants, out);
-            }
-        }
-        dae::Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_synthetic_root_conditions_expr(arg, suppress_events, constants, out);
-            }
-        }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            for element in elements {
-                collect_synthetic_root_conditions_expr(element, suppress_events, constants, out);
-            }
-        }
-        dae::Expression::Range { start, step, end } => {
-            collect_synthetic_root_conditions_expr(start, suppress_events, constants, out);
-            if let Some(step_expr) = step {
-                collect_synthetic_root_conditions_expr(step_expr, suppress_events, constants, out);
-            }
-            collect_synthetic_root_conditions_expr(end, suppress_events, constants, out);
-        }
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            collect_synthetic_root_conditions_expr(expr, suppress_events, constants, out);
-            for idx in indices {
-                collect_synthetic_root_conditions_expr(&idx.range, suppress_events, constants, out);
-            }
-            if let Some(filter_expr) = filter {
-                collect_synthetic_root_conditions_expr(
-                    filter_expr,
-                    suppress_events,
-                    constants,
-                    out,
-                );
-            }
-        }
-        dae::Expression::Index { base, subscripts } => {
-            collect_synthetic_root_conditions_expr(base, suppress_events, constants, out);
-            for subscript in subscripts {
-                if let dae::Subscript::Expr(expr) = subscript {
-                    collect_synthetic_root_conditions_expr(expr, suppress_events, constants, out);
-                }
-            }
-        }
-        dae::Expression::FieldAccess { base, .. } => {
-            collect_synthetic_root_conditions_expr(base, suppress_events, constants, out);
-        }
-        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {}
+        self.suppress_events = previous;
     }
+}
+
+impl ExpressionVisitor for SyntheticRootConditionCollector<'_> {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        match expr {
+            rumoca_core::Expression::If { branches, .. } => {
+                for (cond, _) in branches {
+                    push_relation_root_if_event_condition(
+                        cond,
+                        self.suppress_events,
+                        self.constants,
+                        self.out,
+                    );
+                }
+                self.walk_expression(expr);
+            }
+            rumoca_core::Expression::Binary { .. } => {
+                push_relation_root_if_event_condition(
+                    expr,
+                    self.suppress_events,
+                    self.constants,
+                    self.out,
+                );
+                self.walk_expression(expr);
+            }
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::NoEvent,
+                args,
+                ..
+            } => {
+                self.visit_with_event_suppression(args);
+            }
+            rumoca_core::Expression::BuiltinCall { function, args, .. }
+                if !self.suppress_events
+                    && matches!(
+                        function,
+                        rumoca_core::BuiltinFunction::Abs | rumoca_core::BuiltinFunction::Sign
+                    ) =>
+            {
+                if let Some(arg) = args.first() {
+                    self.out.push(arg.clone());
+                }
+                self.walk_expression(expr);
+            }
+            _ => self.walk_expression(expr),
+        }
+    }
+}
+
+fn push_relation_root_if_event_condition(
+    expr: &rumoca_core::Expression,
+    suppress_events: bool,
+    constants: &HashMap<String, f64>,
+    out: &mut UniqueExpressions,
+) {
+    if suppress_events || extract_time_event_instant(expr, constants).is_some() {
+        return;
+    }
+    if let Some(root) = relation_root_expression(expr) {
+        out.push(root);
+    }
+}
+
+pub(super) fn relation_root_expression(
+    expr: &rumoca_core::Expression,
+) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = expr else {
+        return None;
+    };
+    if !matches!(
+        op,
+        rumoca_core::OpBinary::Lt
+            | rumoca_core::OpBinary::Le
+            | rumoca_core::OpBinary::Gt
+            | rumoca_core::OpBinary::Ge
+    ) {
+        return None;
+    }
+    Some(rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: lhs.clone(),
+        rhs: rhs.clone(),
+        span: expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+    })
 }
 
 fn is_clock_constructor_function_name(short: &str) -> bool {
@@ -400,11 +478,17 @@ fn is_clock_constructor_function_name(short: &str) -> bool {
     )
 }
 
-fn requires_static_clock_schedule(expr: &dae::Expression) -> bool {
-    let dae::Expression::FunctionCall { name, args, .. } = expr else {
+fn requires_static_clock_schedule(expr: &rumoca_core::Expression) -> bool {
+    if let rumoca_core::Expression::BuiltinCall { function, args, .. } = expr {
+        return matches!(function, rumoca_core::BuiltinFunction::Sample) && args.len() >= 2;
+    }
+    let rumoca_core::Expression::FunctionCall { name, args, .. } = expr else {
         return false;
     };
-    let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+    let short = name.last_segment();
+    if short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
+        return args.len() >= 2;
+    }
     match short {
         "Clock" => !args.is_empty(),
         "subSample" | "superSample" | "shiftSample" | "backSample" => true,
@@ -412,81 +496,23 @@ fn requires_static_clock_schedule(expr: &dae::Expression) -> bool {
     }
 }
 
-fn expression_is_event_clock_condition(expr: &dae::Expression, dae_model: &dae::Dae) -> bool {
-    match expr {
-        dae::Expression::Literal(dae::Literal::Boolean(_)) => true,
-        dae::Expression::VarRef { name, .. } => {
-            dae_model.discrete_valued.contains_key(name)
-                || dae_model.enum_literal_ordinals.contains_key(name.as_str())
-        }
-        dae::Expression::Unary { op, rhs } => {
-            matches!(op, rumoca_ir_core::OpUnary::Not(_))
-                || expression_is_event_clock_condition(rhs, dae_model)
-        }
-        dae::Expression::Binary { op, lhs, rhs } => {
-            matches!(
-                op,
-                rumoca_ir_core::OpBinary::And(_)
-                    | rumoca_ir_core::OpBinary::Or(_)
-                    | rumoca_ir_core::OpBinary::Lt(_)
-                    | rumoca_ir_core::OpBinary::Le(_)
-                    | rumoca_ir_core::OpBinary::Gt(_)
-                    | rumoca_ir_core::OpBinary::Ge(_)
-                    | rumoca_ir_core::OpBinary::Eq(_)
-                    | rumoca_ir_core::OpBinary::Neq(_)
-            ) || expression_is_event_clock_condition(lhs, dae_model)
-                || expression_is_event_clock_condition(rhs, dae_model)
-        }
-        dae::Expression::BuiltinCall { function, args } => {
-            matches!(function, dae::BuiltinFunction::Pre)
-                && args
-                    .first()
-                    .is_some_and(|arg| expression_is_event_clock_condition(arg, dae_model))
-        }
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches.iter().any(|(cond, value)| {
-                expression_is_event_clock_condition(cond, dae_model)
-                    || expression_is_event_clock_condition(value, dae_model)
-            }) || expression_is_event_clock_condition(else_branch, dae_model)
-        }
-        _ => false,
-    }
-}
-
-fn is_non_static_event_clock_constructor(
-    expr: &dae::Expression,
-    dae_model: &dae::Dae,
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-) -> bool {
-    let dae::Expression::FunctionCall { name, args, .. } = expr else {
-        return false;
-    };
-    let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-    if short != "Clock" || args.is_empty() {
-        return false;
-    }
-    infer_clock_constructor_timing(args, constants, sources, 24, &mut HashSet::new()).is_none()
-        && expression_is_event_clock_condition(&args[0], dae_model)
-}
-
 fn is_non_static_inferred_clock_composition(
-    expr: &dae::Expression,
+    expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,
     sources: &SourceMap<'_>,
 ) -> bool {
-    let dae::Expression::FunctionCall { name, args, .. } = expr else {
+    let rumoca_core::Expression::FunctionCall { name, args, .. } = expr else {
         return false;
     };
-    let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+    let short = name.last_segment();
     if !matches!(
         short,
         "subSample" | "superSample" | "shiftSample" | "backSample"
     ) {
         return false;
+    }
+    if matches!(short, "subSample" | "superSample") && args.len() == 1 {
+        return true;
     }
     let Some(source_expr) = args.first() else {
         return false;
@@ -499,7 +525,7 @@ fn valid_positive_period(period: f64) -> Option<f64> {
 }
 
 fn eval_clock_scalar_child(
-    expr: &dae::Expression,
+    expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,
     sources: &SourceMap<'_>,
     remaining_depth: usize,
@@ -515,8 +541,8 @@ fn eval_clock_scalar_child(
 }
 
 fn eval_clock_scalar_from_var_ref(
-    name: &dae::VarName,
-    subscripts: &[dae::Subscript],
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
     constants: &HashMap<String, f64>,
     sources: &SourceMap<'_>,
     remaining_depth: usize,
@@ -541,7 +567,7 @@ fn eval_clock_scalar_from_var_ref(
 }
 
 fn eval_clock_scalar_with_sources(
-    expr: &dae::Expression,
+    expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,
     sources: &SourceMap<'_>,
     remaining_depth: usize,
@@ -555,7 +581,9 @@ fn eval_clock_scalar_with_sources(
     }
 
     match expr {
-        dae::Expression::VarRef { name, subscripts } => eval_clock_scalar_from_var_ref(
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => eval_clock_scalar_from_var_ref(
             name,
             subscripts,
             constants,
@@ -563,39 +591,44 @@ fn eval_clock_scalar_with_sources(
             remaining_depth,
             visiting,
         ),
-        dae::Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Minus(_),
+        rumoca_core::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
             rhs,
+            ..
         } => eval_clock_scalar_child(rhs, constants, sources, remaining_depth, visiting)
             .map(|value| -value),
-        dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Add(_),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
             lhs,
             rhs,
+            ..
         } => Some(
             eval_clock_scalar_child(lhs, constants, sources, remaining_depth, visiting)?
                 + eval_clock_scalar_child(rhs, constants, sources, remaining_depth, visiting)?,
         ),
-        dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Sub(_),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
             lhs,
             rhs,
+            ..
         } => Some(
             eval_clock_scalar_child(lhs, constants, sources, remaining_depth, visiting)?
                 - eval_clock_scalar_child(rhs, constants, sources, remaining_depth, visiting)?,
         ),
-        dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Mul(_),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
             lhs,
             rhs,
+            ..
         } => Some(
             eval_clock_scalar_child(lhs, constants, sources, remaining_depth, visiting)?
                 * eval_clock_scalar_child(rhs, constants, sources, remaining_depth, visiting)?,
         ),
-        dae::Expression::Binary {
-            op: rumoca_ir_core::OpBinary::Div(_),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Div,
             lhs,
             rhs,
+            ..
         } => {
             let denominator =
                 eval_clock_scalar_child(rhs, constants, sources, remaining_depth, visiting)?;
@@ -611,7 +644,7 @@ fn eval_clock_scalar_with_sources(
 }
 
 fn eval_positive_factor(
-    expr: Option<&dae::Expression>,
+    expr: Option<&rumoca_core::Expression>,
     constants: &HashMap<String, f64>,
     sources: &SourceMap<'_>,
     remaining_depth: usize,
@@ -623,8 +656,16 @@ fn eval_positive_factor(
 }
 
 pub(super) fn canonical_var_ref_key(
-    name: &dae::VarName,
-    subscripts: &[dae::Subscript],
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+    constants: &HashMap<String, f64>,
+) -> Option<String> {
+    canonical_var_name_key(name.var_name(), subscripts, constants)
+}
+
+pub(super) fn canonical_var_name_key(
+    name: &rumoca_core::VarName,
+    subscripts: &[rumoca_core::Subscript],
     constants: &HashMap<String, f64>,
 ) -> Option<String> {
     if subscripts.is_empty() {
@@ -634,12 +675,12 @@ pub(super) fn canonical_var_ref_key(
     let mut key = name.as_str().to_string();
     for subscript in subscripts {
         match subscript {
-            dae::Subscript::Index(index) => {
+            rumoca_core::Subscript::Index { value: index, .. } => {
                 key.push('[');
                 let _ = write!(&mut key, "{index}");
                 key.push(']');
             }
-            dae::Subscript::Expr(expr) => {
+            rumoca_core::Subscript::Expr { expr, .. } => {
                 let raw = eval_scalar_const_expr(expr, constants)?;
                 let rounded = raw.round();
                 if !rounded.is_finite() {
@@ -649,21 +690,22 @@ pub(super) fn canonical_var_ref_key(
                 let _ = write!(&mut key, "{}", rounded as i64);
                 key.push(']');
             }
-            dae::Subscript::Colon => return None,
+            rumoca_core::Subscript::Colon { .. } => return None,
         }
     }
     Some(key)
 }
 
 fn collect_assignments_from_residual<'a>(
-    expr: &'a dae::Expression,
+    expr: &'a rumoca_core::Expression,
     constants: &HashMap<String, f64>,
-    out: &mut Vec<(String, &'a dae::Expression)>,
+    out: &mut Vec<(String, &'a rumoca_core::Expression)>,
 ) {
     match expr {
-        dae::Expression::If {
+        rumoca_core::Expression::If {
             branches,
             else_branch,
+            ..
         } => {
             for (_, value) in branches {
                 collect_assignments_from_residual(value, constants, out);
@@ -671,21 +713,28 @@ fn collect_assignments_from_residual<'a>(
             collect_assignments_from_residual(else_branch, constants, out);
         }
         _ => {
-            let dae::Expression::Binary {
-                op: rumoca_ir_core::OpBinary::Sub(_),
+            let rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
                 lhs,
                 rhs,
+                span: _,
             } = expr
             else {
                 return;
             };
 
-            let lhs_key = if let dae::Expression::VarRef { name, subscripts } = lhs.as_ref() {
+            let lhs_key = if let rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } = lhs.as_ref()
+            {
                 canonical_var_ref_key(name, subscripts, constants)
             } else {
                 None
             };
-            let rhs_key = if let dae::Expression::VarRef { name, subscripts } = rhs.as_ref() {
+            let rhs_key = if let rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } = rhs.as_ref()
+            {
                 canonical_var_ref_key(name, subscripts, constants)
             } else {
                 None
@@ -707,10 +756,10 @@ fn collect_assignments_from_residual<'a>(
 fn collect_assignment_sources<'a>(
     eq: &'a dae::Equation,
     constants: &HashMap<String, f64>,
-    out: &mut Vec<(String, &'a dae::Expression)>,
+    out: &mut Vec<(String, &'a rumoca_core::Expression)>,
 ) {
     if let Some(lhs) = eq.lhs.as_ref()
-        && let Some(key) = canonical_var_ref_key(lhs, &[], constants)
+        && let Some(key) = canonical_var_name_key(lhs, &[], constants)
     {
         out.push((key, &eq.rhs));
         return;
@@ -725,10 +774,11 @@ fn build_clock_source_map<'a>(
     let mut forward = HashMap::new();
     let mut assignment_sources = Vec::new();
     for eq in dae_model
-        .f_z
+        .discrete
+        .real_updates
         .iter()
-        .chain(dae_model.f_m.iter())
-        .chain(dae_model.f_x.iter())
+        .chain(dae_model.discrete.valued_updates.iter())
+        .chain(dae_model.continuous.equations.iter())
     {
         assignment_sources.clear();
         collect_assignment_sources(eq, constants, &mut assignment_sources);
@@ -745,16 +795,19 @@ fn build_clock_source_map<'a>(
 }
 
 fn build_reverse_alias_index(
-    forward: &HashMap<String, Vec<&dae::Expression>>,
+    forward: &HashMap<String, Vec<&rumoca_core::Expression>>,
     constants: &HashMap<String, f64>,
 ) -> HashMap<String, Vec<String>> {
     let mut reverse = HashMap::new();
     for (target, source_exprs) in forward {
-        if target.contains('[') {
+        if rumoca_core::has_top_level_subscript(target) {
             continue;
         }
         for expr in source_exprs {
-            let dae::Expression::VarRef { name, subscripts } = expr else {
+            let rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } = expr
+            else {
                 continue;
             };
             let Some(source_key) = canonical_var_ref_key(name, subscripts, constants) else {
@@ -769,37 +822,303 @@ fn build_reverse_alias_index(
     reverse
 }
 
-fn infer_clock_intervals_by_variable(
+fn propagate_clock_timings_across_equations(
+    dae_model: &dae::Dae,
+    constants: &HashMap<String, f64>,
+    timings: &mut IndexMap<String, dae::ClockSchedule>,
+) {
+    let candidates = clock_interval_candidate_names(dae_model)
+        .into_iter()
+        .filter_map(|name| canonical_var_name_key(name, &[], constants))
+        .collect::<HashSet<_>>();
+    let graph = build_clock_equivalence_graph(dae_model, constants, &candidates);
+    let mut seen = HashSet::new();
+    for key in candidates {
+        if seen.contains(&key) {
+            continue;
+        }
+        let component = collect_clock_equivalence_component(&key, &graph, &mut seen);
+        let Some(timing) = unique_component_clock_timing(&component, timings) else {
+            continue;
+        };
+        for item in component {
+            if let Some(existing) = timings.get(&item) {
+                assert_compatible_clock_schedule(&item, existing, &timing);
+            } else {
+                timings.insert(item, timing.clone());
+            }
+        }
+    }
+}
+
+fn assert_compatible_clock_schedule(
+    item: &str,
+    existing: &dae::ClockSchedule,
+    timing: &dae::ClockSchedule,
+) {
+    assert!(
+        existing.period_seconds == timing.period_seconds
+            && existing.phase_seconds == timing.phase_seconds,
+        "conflicting clock schedules for `{item}`: \
+         existing period={}/phase={} vs new period={}/phase={} — \
+         check that all clock sources are consistent",
+        existing.period_seconds,
+        existing.phase_seconds,
+        timing.period_seconds,
+        timing.phase_seconds,
+    );
+}
+
+fn build_clock_equivalence_graph(
+    dae_model: &dae::Dae,
+    constants: &HashMap<String, f64>,
+    candidates: &HashSet<String>,
+) -> HashMap<String, Vec<String>> {
+    let mut graph = HashMap::new();
+    let mut assignment_sources = Vec::new();
+    for eq in dae_model
+        .continuous
+        .equations
+        .iter()
+        .chain(dae_model.discrete.real_updates.iter())
+        .chain(dae_model.discrete.valued_updates.iter())
+    {
+        assignment_sources.clear();
+        collect_assignment_sources(eq, constants, &mut assignment_sources);
+        for (target, source) in assignment_sources.iter() {
+            add_clock_equivalence_edges(target, source, constants, candidates, &mut graph);
+        }
+    }
+    graph
+}
+
+fn add_clock_equivalence_edges(
+    target: &str,
+    source: &rumoca_core::Expression,
+    constants: &HashMap<String, f64>,
+    candidates: &HashSet<String>,
+    graph: &mut HashMap<String, Vec<String>>,
+) {
+    if !candidates.contains(target) {
+        return;
+    }
+    let mut refs = Vec::new();
+    collect_same_clock_var_refs(source, constants, candidates, &mut refs);
+    for rhs in refs {
+        insert_clock_equivalence_edge(graph, target, rhs.as_str());
+        insert_clock_equivalence_edge(graph, rhs.as_str(), target);
+    }
+}
+
+fn insert_clock_equivalence_edge(graph: &mut HashMap<String, Vec<String>>, lhs: &str, rhs: &str) {
+    let edges = graph.entry(lhs.to_string()).or_default();
+    if !edges.iter().any(|existing| existing == rhs) {
+        edges.push(rhs.to_string());
+    }
+}
+
+fn collect_same_clock_var_refs(
+    expr: &rumoca_core::Expression,
+    constants: &HashMap<String, f64>,
+    candidates: &HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    let mut collector = SameClockVarRefCollector {
+        constants,
+        candidates,
+        out,
+    };
+    collector.visit_expression(expr);
+}
+
+struct SameClockVarRefCollector<'a> {
+    constants: &'a HashMap<String, f64>,
+    candidates: &'a HashSet<String>,
+    out: &'a mut Vec<String>,
+}
+
+impl ExpressionVisitor for SameClockVarRefCollector<'_> {
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        collect_same_clock_var_ref(
+            name.var_name(),
+            subscripts,
+            self.constants,
+            self.candidates,
+            self.out,
+        );
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
+
+    fn visit_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        _is_constructor: bool,
+    ) {
+        collect_same_clock_function_refs(
+            name.var_name(),
+            args,
+            self.constants,
+            self.candidates,
+            self.out,
+        );
+    }
+
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        collect_same_clock_builtin_refs(*function, args, self.constants, self.candidates, self.out);
+    }
+}
+
+fn collect_same_clock_var_ref(
+    name: &rumoca_core::VarName,
+    subscripts: &[rumoca_core::Subscript],
+    constants: &HashMap<String, f64>,
+    candidates: &HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    let Some(key) = canonical_var_name_key(name, subscripts, constants) else {
+        return;
+    };
+    if candidates.contains(&key) && !out.iter().any(|existing| existing == &key) {
+        out.push(key);
+    }
+}
+
+fn collect_same_clock_function_refs(
+    name: &rumoca_core::VarName,
+    args: &[rumoca_core::Expression],
+    constants: &HashMap<String, f64>,
+    candidates: &HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    let short = name.last_segment();
+    let first_arg_is_different_clock = matches!(
+        short,
+        "superSample" | "subSample" | "shiftSample" | "backSample"
+    );
+    let skip_value_arg =
+        first_arg_is_different_clock || short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME;
+    for (index, arg) in args.iter().enumerate() {
+        if skip_value_arg && index == 0 {
+            continue;
+        }
+        collect_same_clock_var_refs(arg, constants, candidates, out);
+    }
+}
+
+fn collect_same_clock_builtin_refs(
+    function: rumoca_core::BuiltinFunction,
+    args: &[rumoca_core::Expression],
+    constants: &HashMap<String, f64>,
+    candidates: &HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    let skip_value_arg = matches!(function, rumoca_core::BuiltinFunction::Sample);
+    for (index, arg) in args.iter().enumerate() {
+        if skip_value_arg && index == 0 {
+            continue;
+        }
+        collect_same_clock_var_refs(arg, constants, candidates, out);
+    }
+}
+
+fn collect_clock_equivalence_component(
+    key: &str,
+    graph: &HashMap<String, Vec<String>>,
+    seen: &mut HashSet<String>,
+) -> Vec<String> {
+    let mut component = Vec::new();
+    let mut stack = vec![key.to_string()];
+    while let Some(item) = stack.pop() {
+        if !seen.insert(item.clone()) {
+            continue;
+        }
+        if let Some(edges) = graph.get(&item) {
+            stack.extend(edges.iter().cloned());
+        }
+        component.push(item);
+    }
+    component
+}
+
+fn unique_component_clock_timing(
+    component: &[String],
+    timings: &IndexMap<String, dae::ClockSchedule>,
+) -> Option<dae::ClockSchedule> {
+    let mut unique = None;
+    for key in component {
+        let Some(timing) = timings.get(key) else {
+            continue;
+        };
+        if let Some(existing) = unique.as_ref()
+            && !clock_schedules_equivalent(existing, timing)
+        {
+            return None;
+        }
+        unique = Some(timing.clone());
+    }
+    unique
+}
+
+fn clock_schedules_equivalent(lhs: &dae::ClockSchedule, rhs: &dae::ClockSchedule) -> bool {
+    (lhs.period_seconds - rhs.period_seconds).abs() <= 1.0e-12
+        && (lhs.phase_seconds - rhs.phase_seconds).abs() <= 1.0e-12
+}
+
+fn infer_clock_timings_by_variable(
     dae_model: &dae::Dae,
     constants: &HashMap<String, f64>,
     clock_schedules: &[dae::ClockSchedule],
-) -> IndexMap<String, f64> {
+) -> IndexMap<String, dae::ClockSchedule> {
     let sources = build_clock_source_map(dae_model, constants);
-    let mut intervals = IndexMap::new();
+    let mut timings = IndexMap::new();
     let mut visiting = HashSet::new();
 
     for name in clock_interval_candidate_names(dae_model) {
         visiting.clear();
-        if let Some((period, _phase)) =
-            infer_clock_timing_from_var_ref(name, &[], constants, &sources, 24, &mut visiting)
+        if let Some((period, phase)) =
+            infer_clock_timing_from_var_name(name, &[], constants, &sources, 24, &mut visiting)
             && period.is_finite()
             && period > 0.0
         {
-            intervals.insert(name.as_str().to_string(), period);
+            timings.insert(
+                name.as_str().to_string(),
+                dae::ClockSchedule {
+                    period_seconds: period,
+                    phase_seconds: phase,
+                    source_span: sources
+                        .get(name.as_str())
+                        .and_then(|exprs| exprs.first().and_then(|expr| expr.span()))
+                        .unwrap_or(rumoca_core::Span::DUMMY),
+                },
+            );
         }
     }
 
+    propagate_clock_timings_across_equations(dae_model, constants, &mut timings);
+
     if let Some(fallback_period) = unique_static_clock_period(clock_schedules) {
-        add_implicit_sample_fallback_intervals(
+        add_implicit_sample_fallback_timings(
             dae_model,
             constants,
             &sources,
             fallback_period,
-            &mut intervals,
+            &mut timings,
         );
+        propagate_clock_timings_across_equations(dae_model, constants, &mut timings);
     }
 
-    intervals
+    timings
 }
 
 fn unique_static_clock_period(clock_schedules: &[dae::ClockSchedule]) -> Option<f64> {
@@ -813,665 +1132,115 @@ fn unique_static_clock_period(clock_schedules: &[dae::ClockSchedule]) -> Option<
     }
 }
 
-fn add_implicit_sample_fallback_intervals(
+fn add_implicit_sample_fallback_timings(
     dae_model: &dae::Dae,
     constants: &HashMap<String, f64>,
     sources: &SourceMap<'_>,
     fallback_period: f64,
-    intervals: &mut IndexMap<String, f64>,
+    timings: &mut IndexMap<String, dae::ClockSchedule>,
 ) {
     // MLS §16 (synchronous language elements): sample(u) may use an implicit
     // clock. If a model has one unique static periodic schedule, apply that
     // period only for unresolved variables whose defining expression contains
     // an implicit one-argument sample(..) form.
     for name in clock_interval_candidate_names(dae_model) {
-        if intervals.contains_key(name.as_str()) {
+        if timings.contains_key(name.as_str()) {
             continue;
         }
-        if !variable_has_implicit_clock_source(name, constants, sources) {
+        if !variable_has_unique_static_clock_fallback_source(name, constants, sources) {
             continue;
         }
-        intervals.insert(name.as_str().to_string(), fallback_period);
+        timings.insert(
+            name.as_str().to_string(),
+            dae::ClockSchedule {
+                period_seconds: fallback_period,
+                phase_seconds: 0.0,
+                source_span: sources
+                    .get(name.as_str())
+                    .and_then(|exprs| exprs.first().and_then(|expr| expr.span()))
+                    .unwrap_or(rumoca_core::Span::DUMMY),
+            },
+        );
     }
 }
 
-fn clock_interval_candidate_names(dae_model: &dae::Dae) -> Vec<&dae::VarName> {
-    dae_model
-        .states
-        .keys()
-        .chain(dae_model.algebraics.keys())
-        .chain(dae_model.outputs.keys())
-        .chain(dae_model.inputs.keys())
-        .chain(dae_model.discrete_reals.keys())
-        .chain(dae_model.discrete_valued.keys())
-        .collect()
-}
-
-fn variable_has_implicit_clock_source(
-    name: &dae::VarName,
+fn variable_has_unique_static_clock_fallback_source(
+    name: &rumoca_core::VarName,
     constants: &HashMap<String, f64>,
     sources: &SourceMap<'_>,
 ) -> bool {
-    let by_key = canonical_var_ref_key(name, &[], constants)
+    variable_source_matches(
+        name,
+        constants,
+        sources,
+        expression_uses_unique_static_clock_fallback,
+    )
+}
+
+fn clock_interval_candidate_names(dae_model: &dae::Dae) -> Vec<&rumoca_core::VarName> {
+    dae_model
+        .variables
+        .states
+        .keys()
+        .chain(dae_model.variables.algebraics.keys())
+        .chain(dae_model.variables.outputs.keys())
+        .chain(dae_model.variables.inputs.keys())
+        .chain(dae_model.variables.discrete_reals.keys())
+        .chain(dae_model.variables.discrete_valued.keys())
+        .collect()
+}
+
+fn variable_source_matches(
+    name: &rumoca_core::VarName,
+    constants: &HashMap<String, f64>,
+    sources: &SourceMap<'_>,
+    predicate: fn(&rumoca_core::Expression) -> bool,
+) -> bool {
+    let by_key = canonical_var_name_key(name, &[], constants)
         .and_then(|key| sources.get(&key))
-        .is_some_and(|exprs| {
-            exprs
-                .iter()
-                .any(|expr| expression_uses_implicit_clock_sample(expr))
-        });
+        .is_some_and(|exprs| exprs.iter().any(|expr| predicate(expr)));
     if by_key {
         return true;
     }
-    sources.get(name.as_str()).is_some_and(|exprs| {
-        exprs
-            .iter()
-            .any(|expr| expression_uses_implicit_clock_sample(expr))
-    })
+    sources
+        .get(name.as_str())
+        .is_some_and(|exprs| exprs.iter().any(|expr| predicate(expr)))
 }
 
-fn expression_uses_implicit_clock_sample(expr: &dae::Expression) -> bool {
-    ImplicitSampleChecker::check(expr)
+fn expression_uses_unique_static_clock_fallback(expr: &rumoca_core::Expression) -> bool {
+    ImplicitSampleChecker::check(expr) || expression_uses_no_argument_clock(expr)
 }
 
-fn infer_clock_timing_next(
-    expr: &dae::Expression,
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    if remaining_depth == 0 {
-        return None;
+fn expression_uses_no_argument_clock(expr: &rumoca_core::Expression) -> bool {
+    struct Checker {
+        found: bool,
     }
-    infer_clock_timing_from_expr(
-        expr,
-        constants,
-        sources,
-        remaining_depth.saturating_sub(1),
-        visiting,
-    )
-}
 
-fn infer_clock_counter_form(
-    expr: &dae::Expression,
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<f64> {
-    if remaining_depth == 0 {
-        return None;
-    }
-    match expr {
-        dae::Expression::FunctionCall { name, args, .. } => {
-            let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-            if short != "Clock" || args.len() != 1 {
-                return None;
+    impl ExpressionVisitor for Checker {
+        fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+            if !self.found {
+                self.walk_expression(expr);
             }
-            let raw = eval_clock_scalar_with_sources(
-                args.first()?,
-                constants,
-                sources,
-                remaining_depth.saturating_sub(1),
-                visiting,
-            )?;
-            let rounded = raw.round();
-            let tol = 1.0e-9 * rounded.abs().max(1.0);
-            if !rounded.is_finite() || rounded <= 0.0 || (raw - rounded).abs() > tol {
-                return None;
-            }
-            Some(rounded)
         }
-        dae::Expression::VarRef { name, subscripts } => {
-            let key = canonical_var_ref_key(name, subscripts, constants)?;
-            if !visiting.insert(key.clone()) {
-                return None;
-            }
-            let inferred = sources.get(&key).and_then(|source_exprs| {
-                source_exprs.iter().find_map(|source| {
-                    infer_clock_counter_form(
-                        source,
-                        constants,
-                        sources,
-                        remaining_depth.saturating_sub(1),
-                        visiting,
-                    )
-                })
-            });
-            visiting.remove(&key);
-            inferred
-        }
-        _ => None,
-    }
-}
 
-fn infer_clock_constructor_timing(
-    args: &[dae::Expression],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    let first = args.first()?;
-    if let Some(base) =
-        infer_clock_timing_next(first, constants, sources, remaining_depth, visiting)
-    {
-        return Some(base);
-    }
-    if args.len() >= 2 {
-        let count =
-            eval_clock_scalar_with_sources(first, constants, sources, remaining_depth, visiting)?;
-        let resolution = eval_clock_scalar_with_sources(
-            &args[1],
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        )?;
-        if resolution.is_finite() && resolution > 0.0 {
-            return valid_positive_period(count / resolution).map(|period| (period, 0.0));
-        }
-    }
-    let period =
-        eval_clock_scalar_with_sources(first, constants, sources, remaining_depth, visiting)?;
-    valid_positive_period(period).map(|period| (period, 0.0))
-}
-
-fn infer_subsample_timing(
-    args: &[dae::Expression],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    if let Some(counter) =
-        infer_clock_counter_form(args.first()?, constants, sources, remaining_depth, visiting)
-    {
-        let resolution =
-            eval_positive_factor(args.get(1), constants, sources, remaining_depth, visiting)
-                .unwrap_or(1.0);
-        return valid_positive_period(counter / resolution).map(|period| (period, 0.0));
-    }
-    let base =
-        infer_clock_timing_next(args.first()?, constants, sources, remaining_depth, visiting)?;
-    let factor = eval_positive_factor(args.get(1), constants, sources, remaining_depth, visiting)
-        .unwrap_or(1.0);
-    valid_positive_period(base.0 * factor).map(|period| (period, base.1))
-}
-
-fn infer_supersample_timing(
-    args: &[dae::Expression],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    let base =
-        infer_clock_timing_next(args.first()?, constants, sources, remaining_depth, visiting)?;
-    let factor = eval_positive_factor(args.get(1), constants, sources, remaining_depth, visiting)
-        .unwrap_or(1.0);
-    valid_positive_period(base.0 / factor).map(|period| (period, base.1))
-}
-
-fn infer_shift_like_timing(
-    short: &str,
-    args: &[dae::Expression],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    let base =
-        infer_clock_timing_next(args.first()?, constants, sources, remaining_depth, visiting)?;
-    let shift = eval_clock_scalar_with_sources(
-        args.get(1).unwrap_or(args.first()?),
-        constants,
-        sources,
-        remaining_depth,
-        visiting,
-    )?;
-    let offset = if args.len() >= 3 {
-        let resolution = eval_clock_scalar_with_sources(
-            &args[2],
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        )?;
-        if resolution.is_finite() && resolution != 0.0 {
-            // MLS §16.5.2: shiftSample/backSample shift by a fraction of the
-            // source clock interval, not by an absolute number of seconds.
-            (shift / resolution) * base.0
-        } else {
-            shift * base.0
-        }
-    } else {
-        shift * base.0
-    };
-    let phase = if short == "shiftSample" {
-        base.1 + offset
-    } else {
-        base.1 - offset
-    };
-    valid_positive_period(base.0).map(|period| (period, phase))
-}
-
-fn infer_clock_timing_from_clock_function(
-    short: &str,
-    args: &[dae::Expression],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    match short {
-        "Clock" => {
-            infer_clock_constructor_timing(args, constants, sources, remaining_depth, visiting)
-        }
-        "subSample" => infer_subsample_timing(args, constants, sources, remaining_depth, visiting),
-        "superSample" => {
-            infer_supersample_timing(args, constants, sources, remaining_depth, visiting)
-        }
-        "shiftSample" | "backSample" => {
-            infer_shift_like_timing(short, args, constants, sources, remaining_depth, visiting)
-        }
-        _ => None,
-    }
-}
-
-fn infer_clock_timing_from_expr_list(
-    exprs: &[dae::Expression],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    exprs.iter().find_map(|expr| {
-        infer_clock_timing_next(expr, constants, sources, remaining_depth, visiting)
-    })
-}
-
-fn infer_clock_timing_from_builtin_call(
-    function: dae::BuiltinFunction,
-    args: &[dae::Expression],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    match function {
-        dae::BuiltinFunction::Sample if args.len() >= 2 => {
-            infer_clock_timing_next(&args[1], constants, sources, remaining_depth, visiting)
-        }
-        dae::BuiltinFunction::Pre if !args.is_empty() => {
-            infer_clock_timing_next(&args[0], constants, sources, remaining_depth, visiting)
-        }
-        _ => infer_clock_timing_from_expr_list(args, constants, sources, remaining_depth, visiting),
-    }
-}
-
-fn infer_clock_timing_from_var_ref(
-    name: &dae::VarName,
-    subscripts: &[dae::Subscript],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    let key = canonical_var_ref_key(name, subscripts, constants)?;
-    if let Some(cached) = sources.timing_cache.borrow().get(&key).cloned() {
-        return cached;
-    }
-    if !visiting.insert(key.clone()) {
-        return None;
-    }
-    let inferred = infer_clock_timing_from_source_entries(
-        sources.get(&key),
-        constants,
-        sources,
-        remaining_depth,
-        visiting,
-    )
-    .or_else(|| {
-        (!subscripts.is_empty()).then(|| {
-            infer_clock_timing_from_source_entries(
-                sources.get(name.as_str()),
-                constants,
-                sources,
-                remaining_depth,
-                visiting,
-            )
-        })?
-    })
-    .or_else(|| {
-        infer_clock_timing_from_reverse_alias_sources(
-            &key,
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        )
-    });
-    visiting.remove(&key);
-    sources.timing_cache.borrow_mut().insert(key, inferred);
-    inferred
-}
-
-fn infer_clock_timing_from_source_entries(
-    source_exprs: Option<&Vec<&dae::Expression>>,
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    source_exprs.and_then(|exprs| {
-        exprs.iter().find_map(|expr| {
-            infer_clock_timing_next(expr, constants, sources, remaining_depth, visiting)
-        })
-    })
-}
-
-fn infer_clock_timing_from_reverse_alias_sources(
-    key: &str,
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    sources.reverse_targets_for(key)?.iter().find_map(|target| {
-        infer_clock_timing_next(
-            &dae::Expression::VarRef {
-                name: dae::VarName::new(target.as_str()),
-                subscripts: vec![],
-            },
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        )
-    })
-}
-
-fn infer_clock_timing_from_if_expr(
-    branches: &[(dae::Expression, dae::Expression)],
-    else_branch: &dae::Expression,
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    for (condition, value) in branches {
-        if eval_scalar_const_expr(condition, constants).is_some_and(|flag| flag != 0.0) {
-            return infer_clock_timing_next(value, constants, sources, remaining_depth, visiting);
-        }
-    }
-    branches
-        .iter()
-        .find_map(|(_, value)| {
-            infer_clock_timing_next(value, constants, sources, remaining_depth, visiting)
-        })
-        .or_else(|| {
-            infer_clock_timing_next(else_branch, constants, sources, remaining_depth, visiting)
-        })
-}
-
-fn infer_clock_timing_from_subscripts(
-    subscripts: &[dae::Subscript],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    subscripts.iter().find_map(|sub| {
-        if let dae::Subscript::Expr(value) = sub {
-            infer_clock_timing_next(value, constants, sources, remaining_depth, visiting)
-        } else {
-            None
-        }
-    })
-}
-
-fn infer_clock_timing_from_range(
-    start: &dae::Expression,
-    step: Option<&dae::Expression>,
-    end: &dae::Expression,
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    infer_clock_timing_next(start, constants, sources, remaining_depth, visiting)
-        .or_else(|| {
-            step.and_then(|value| {
-                infer_clock_timing_next(value, constants, sources, remaining_depth, visiting)
-            })
-        })
-        .or_else(|| infer_clock_timing_next(end, constants, sources, remaining_depth, visiting))
-}
-
-fn infer_clock_timing_from_comprehension(
-    expr: &dae::Expression,
-    indices: &[dae::ComprehensionIndex],
-    filter: Option<&dae::Expression>,
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    infer_clock_timing_next(expr, constants, sources, remaining_depth, visiting)
-        .or_else(|| {
-            indices.iter().find_map(|idx| {
-                infer_clock_timing_next(&idx.range, constants, sources, remaining_depth, visiting)
-            })
-        })
-        .or_else(|| {
-            filter.and_then(|value| {
-                infer_clock_timing_next(value, constants, sources, remaining_depth, visiting)
-            })
-        })
-}
-
-fn infer_clock_timing_from_expr(
-    expr: &dae::Expression,
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    if remaining_depth == 0 {
-        return None;
-    }
-    infer_clock_timing_from_expr_inner(expr, constants, sources, remaining_depth, visiting)
-}
-
-fn infer_clock_timing_from_function_call_expr(
-    name: &dae::VarName,
-    args: &[dae::Expression],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-    infer_clock_timing_from_clock_function(
-        short,
-        args,
-        constants,
-        sources,
-        remaining_depth,
-        visiting,
-    )
-    .or_else(|| {
-        infer_clock_timing_from_expr_list(args, constants, sources, remaining_depth, visiting)
-    })
-}
-
-fn infer_clock_timing_from_index_expr(
-    base: &dae::Expression,
-    subscripts: &[dae::Subscript],
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    infer_clock_timing_next(base, constants, sources, remaining_depth, visiting).or_else(|| {
-        infer_clock_timing_from_subscripts(
-            subscripts,
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        )
-    })
-}
-
-fn infer_clock_timing_from_expr_inner(
-    expr: &dae::Expression,
-    constants: &HashMap<String, f64>,
-    sources: &SourceMap<'_>,
-    remaining_depth: usize,
-    visiting: &mut HashSet<String>,
-) -> Option<(f64, f64)> {
-    match expr {
-        dae::Expression::FunctionCall { name, args, .. } => {
-            infer_clock_timing_from_function_call_expr(
-                name,
-                args,
-                constants,
-                sources,
-                remaining_depth,
-                visiting,
-            )
-        }
-        dae::Expression::BuiltinCall { function, args } => infer_clock_timing_from_builtin_call(
-            *function,
-            args,
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        ),
-        dae::Expression::VarRef { name, subscripts } => infer_clock_timing_from_var_ref(
-            name,
-            subscripts,
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        ),
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => infer_clock_timing_from_if_expr(
-            branches,
-            else_branch,
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        ),
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            infer_clock_timing_next(lhs, constants, sources, remaining_depth, visiting).or_else(
-                || infer_clock_timing_next(rhs, constants, sources, remaining_depth, visiting),
-            )
-        }
-        dae::Expression::Unary { rhs, .. } | dae::Expression::FieldAccess { base: rhs, .. } => {
-            infer_clock_timing_next(rhs, constants, sources, remaining_depth, visiting)
-        }
-        dae::Expression::Index { base, subscripts } => infer_clock_timing_from_index_expr(
-            base,
-            subscripts,
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        ),
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            infer_clock_timing_from_expr_list(
-                elements,
-                constants,
-                sources,
-                remaining_depth,
-                visiting,
-            )
-        }
-        dae::Expression::Range { start, step, end } => infer_clock_timing_from_range(
-            start,
-            step.as_deref(),
-            end,
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        ),
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => infer_clock_timing_from_comprehension(
-            expr,
-            indices,
-            filter.as_deref(),
-            constants,
-            sources,
-            remaining_depth,
-            visiting,
-        ),
-        dae::Expression::Literal(_) | dae::Expression::Empty => None,
-    }
-}
-
-struct ClockConstructorExprCollector<'a> {
-    constants: &'a HashMap<String, f64>,
-    out: &'a mut Vec<dae::Expression>,
-}
-
-impl ExpressionVisitor for ClockConstructorExprCollector<'_> {
-    fn visit_function_call(
-        &mut self,
-        name: &dae::VarName,
-        args: &[dae::Expression],
-        is_constructor: bool,
-    ) {
-        let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-        if is_clock_constructor_function_name(short) {
-            self.out.push(dae::Expression::FunctionCall {
-                name: name.clone(),
-                args: args.to_vec(),
-                is_constructor,
-            });
-        }
-        for arg in args {
-            self.visit_expression(arg);
-        }
-    }
-
-    fn visit_if(
-        &mut self,
-        branches: &[(dae::Expression, dae::Expression)],
-        else_branch: &dae::Expression,
-    ) {
-        for (cond, value) in branches {
-            let cond_value = eval_scalar_const_expr(cond, self.constants);
-            if cond_value == Some(0.0) {
-                continue;
-            }
-            if cond_value.is_some() {
-                self.visit_expression(value);
+        fn visit_function_call(
+            &mut self,
+            name: &rumoca_core::Reference,
+            args: &[rumoca_core::Expression],
+            _is_constructor: bool,
+        ) {
+            let short = name.last_segment();
+            self.found = short == "Clock" && args.is_empty();
+            if self.found {
                 return;
             }
-            self.visit_expression(cond);
-            self.visit_expression(value);
+            for arg in args {
+                self.visit_expression(arg);
+            }
         }
-        self.visit_expression(else_branch);
     }
-}
 
-fn collect_clock_constructor_exprs(
-    expr: &dae::Expression,
-    constants: &HashMap<String, f64>,
-    out: &mut Vec<dae::Expression>,
-) {
-    let mut collector = ClockConstructorExprCollector { constants, out };
-    collector.visit_expression(expr);
+    let mut checker = Checker { found: false };
+    checker.visit_expression(expr);
+    checker.found
 }

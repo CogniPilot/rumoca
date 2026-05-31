@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Aggregate timing for a compilation phase across all model compiles.
@@ -23,6 +24,47 @@ pub struct CompilePhaseTimingSnapshot {
     pub typecheck: CompilePhaseTimingStat,
     pub flatten: CompilePhaseTimingStat,
     pub todae: CompilePhaseTimingStat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilePhaseEvent {
+    Started,
+    Completed,
+}
+
+type CompilePhaseObserver = Box<dyn FnMut(FailedPhase, CompilePhaseEvent)>;
+
+thread_local! {
+    static COMPILE_PHASE_OBSERVER: RefCell<Option<CompilePhaseObserver>> = RefCell::new(None);
+}
+
+pub struct CompilePhaseObserverGuard {
+    previous: Option<CompilePhaseObserver>,
+}
+
+impl Drop for CompilePhaseObserverGuard {
+    fn drop(&mut self) {
+        COMPILE_PHASE_OBSERVER.with(|observer| {
+            *observer.borrow_mut() = self.previous.take();
+        });
+    }
+}
+
+pub fn install_compile_phase_observer(
+    observer: impl FnMut(FailedPhase, CompilePhaseEvent) + 'static,
+) -> CompilePhaseObserverGuard {
+    let previous =
+        COMPILE_PHASE_OBSERVER.with(|slot| slot.borrow_mut().replace(Box::new(observer)));
+    CompilePhaseObserverGuard { previous }
+}
+
+#[inline]
+pub(super) fn notify_compile_phase(phase: FailedPhase, event: CompilePhaseEvent) {
+    COMPILE_PHASE_OBSERVER.with(|observer| {
+        if let Some(observer) = observer.borrow_mut().as_mut() {
+            observer(phase, event);
+        }
+    });
 }
 
 static INSTANTIATE_TOTAL_NANOS: AtomicU64 = AtomicU64::new(0);

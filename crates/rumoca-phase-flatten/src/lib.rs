@@ -7,7 +7,7 @@
 //!
 //! Flattening is responsible for:
 //! - Converting hierarchical instance tree to flat variables
-//! - Generating globally unique variable names (e.g., "body.position.x")
+//! - Generating globally unique variable names from resolved instance paths
 //! - Expanding connection equations per MLS §9
 //! - Converting equations to residual form (0 = residual)
 //! - Preserving algorithm sections per SPEC_0020
@@ -16,7 +16,7 @@
 //!
 //! Enable the `tracing` feature for detailed diagnostic output:
 //! ```bash
-//! RUST_LOG=rumoca_phase_flatten=debug cargo test test_model -- --nocapture
+//! cargo run -p rumoca --features tracing -- check model.mo --trace-filter rumoca_phase_flatten=debug
 //! ```
 //!
 //! # Example
@@ -29,23 +29,29 @@
 //! ```
 
 mod algorithms;
+mod alias_paths;
 mod array_comprehension;
 mod ast_lower;
 mod boolean_eval;
 mod connections;
+mod connections_builtin;
+mod constant_extraction;
 #[cfg(test)]
 mod context_suffix_tests;
 mod enum_literals;
 mod equations;
 mod errors;
-mod flat_eval;
 mod function_lowering;
+mod function_precollect;
 mod functions;
+mod name_simplify;
 mod outer_refs;
 mod path_utils;
 mod pipeline;
 mod postprocess;
 pub mod qualify;
+pub(crate) mod record_constant_arrays;
+mod static_subscripts;
 mod variables;
 mod vcg;
 mod when_equations;
@@ -55,50 +61,71 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use indexmap::IndexMap;
-use rumoca_core::{OptionalTimer, Span, maybe_elapsed_duration, maybe_start_timer};
+use rumoca_core::{ExpressionVisitor, Reference, Span};
+use rumoca_core::{OptionalTimer, maybe_elapsed_duration, maybe_start_timer};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
+use constant_extraction::*;
+
 pub use errors::{FlattenError, FlattenResult};
+
+pub fn ast_expression_to_string(expr: &ast::Expression) -> Option<String> {
+    rumoca_eval_ast::eval_instantiate::expr_to_string(expr)
+}
 
 type ClassDef = ast::ClassDef;
 type ClassInstanceData = ast::ClassInstanceData;
 type ClassTree = ast::ClassTree;
 type InstanceOverlay = ast::InstanceOverlay;
 type InstanceStatement = ast::InstanceStatement;
-type OpBinary = rumoca_ir_core::OpBinary;
-type OpUnary = rumoca_ir_core::OpUnary;
+type OpBinary = rumoca_core::OpBinary;
+type OpUnary = rumoca_core::OpUnary;
 type QualifiedName = ast::QualifiedName;
 type Algorithm = flat::Algorithm;
-type Expression = flat::Expression;
-type Function = flat::Function;
-type Literal = flat::Literal;
+type Expression = rumoca_core::Expression;
+type Function = rumoca_core::Function;
+type Literal = rumoca_core::Literal;
 type Model = flat::Model;
-type Subscript = flat::Subscript;
-type VarName = flat::VarName;
+type Subscript = rumoca_core::Subscript;
+type VarName = rumoca_core::VarName;
 
-pub(crate) type ResolveDefMap = indexmap::IndexMap<rumoca_core::DefId, String>;
+pub(crate) type ResolveDefMap = rumoca_ir_ast::AstIndexMap<rumoca_core::DefId, String>;
 
-use flat_eval::{
-    ParamEvalContext, build_eval_context, eval_user_func_real, infer_array_dimensions,
-    infer_array_dimensions_full_with_conds, looks_like_enum_literal_path,
-    try_eval_flat_expr_boolean, try_eval_flat_expr_enum, try_eval_flat_expr_real,
-    try_eval_integer_with_context, try_infer_better_dims,
+pub(crate) use function_precollect::{
+    compute_cardinality_counts, extract_simple_path, pre_collect_functions,
 };
 use pipeline::*;
 use postprocess::*;
+use record_constant_arrays::{
+    is_record_like_type, synthesize_component_modification_binding,
+    try_extract_record_array_constructor_constant,
+};
+use rumoca_eval_flat::phase_constant::{
+    ParamEvalContext, build_eval_context, eval_user_func_real, infer_array_dimensions,
+    infer_array_dimensions_full_with_functions, looks_like_enum_literal_path,
+    try_eval_flat_expr_boolean_with_context, try_eval_flat_expr_enum, try_eval_flat_expr_real,
+    try_eval_integer_with_context, try_infer_better_dims,
+};
 
 /// Options controlling flatten strictness.
 #[derive(Debug, Clone, Copy)]
 pub struct FlattenOptions {
     /// Whether to enforce connection type/dimension validation.
     pub strict_connection_validation: bool,
+    /// Whether to shorten flat variable names after flattening.
+    ///
+    /// MLS §5.6 requires globally unique names but does not require shortening.
+    /// The default keeps source-like instance paths for diagnostics, simulation
+    /// results, and stable public compiler output.
+    pub simplify_variable_names: bool,
 }
 
 impl Default for FlattenOptions {
     fn default() -> Self {
         Self {
             strict_connection_validation: true,
+            simplify_variable_names: false,
         }
     }
 }
@@ -182,23 +209,21 @@ pub fn reset_flatten_phase_timing_stats() {
 
 /// Snapshot global flatten subpass timing accumulators.
 pub fn flatten_phase_timing_stats() -> FlattenPhaseTimingSnapshot {
+    let connections = timing_stat(&CONNECTIONS_TOTAL_NANOS, &CONNECTIONS_CALLS);
+    let eval_fallback = timing_stat(&EVAL_FALLBACK_TOTAL_NANOS, &EVAL_FALLBACK_CALLS);
     FlattenPhaseTimingSnapshot {
-        connections: timing_stat(&CONNECTIONS_TOTAL_NANOS, &CONNECTIONS_CALLS),
-        eval_fallback: timing_stat(&EVAL_FALLBACK_TOTAL_NANOS, &EVAL_FALLBACK_CALLS),
+        connections,
+        eval_fallback,
     }
 }
 
 /// Check if a qualified name belongs to a disabled conditional component (MLS §4.8).
 fn is_in_disabled_component(
     qn: &ast::QualifiedName,
-    disabled_components: &std::collections::HashSet<String>,
+    disabled_components: &indexmap::IndexSet<rumoca_core::ComponentPath>,
 ) -> bool {
-    let parts: Vec<&str> = qn.parts.iter().map(|(name, _)| name.as_str()).collect();
     for disabled in disabled_components {
-        let disabled_parts = crate::path_utils::split_path_with_indices(disabled);
-        if parts.len() >= disabled_parts.len()
-            && parts[..disabled_parts.len()] == disabled_parts[..]
-        {
+        if qn.starts_with_component_path(disabled) {
             return true;
         }
     }
@@ -208,7 +233,7 @@ fn is_in_disabled_component(
 /// Choose the better (more complete) of two optional dimension vectors.
 fn best_dims(a: Option<&Vec<i64>>, b: Option<&Vec<i64>>) -> Option<Vec<i64>> {
     match (a, b) {
-        (Some(av), Some(bv)) => Some(if bv.len() > av.len() {
+        (Some(av), Some(bv)) => Some(if dims_are_better(bv, av) {
             bv.clone()
         } else {
             av.clone()
@@ -217,6 +242,35 @@ fn best_dims(a: Option<&Vec<i64>>, b: Option<&Vec<i64>>) -> Option<Vec<i64>> {
         (None, Some(bv)) => Some(bv.clone()),
         (None, None) => None,
     }
+}
+
+fn dims_are_better(candidate: &[i64], existing: &[i64]) -> bool {
+    if candidate.len() > existing.len() {
+        return true;
+    }
+    if candidate.len() != existing.len() {
+        return false;
+    }
+
+    let candidate_specificity = dimension_specificity(candidate);
+    let existing_specificity = dimension_specificity(existing);
+    if candidate_specificity != existing_specificity {
+        return candidate_specificity > existing_specificity;
+    }
+
+    concrete_dim_product(candidate).is_some_and(|candidate_size| {
+        concrete_dim_product(existing).is_some_and(|existing_size| candidate_size > existing_size)
+    })
+}
+
+fn dimension_specificity(dims: &[i64]) -> usize {
+    dims.iter().filter(|dim| **dim > 0).count()
+}
+
+fn concrete_dim_product(dims: &[i64]) -> Option<i64> {
+    dims.iter().try_fold(1i64, |acc, dim| {
+        (*dim > 0).then(|| acc.saturating_mul(*dim))
+    })
 }
 
 /// Flatten an ast::InstancedTree into a flat::Model.
@@ -268,44 +322,53 @@ pub fn flatten_ref_with_options(
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
-    ctx.class_def_ids = std::sync::Arc::new(
-        tree.def_map
-            .keys()
-            .filter(|def_id| tree.get_class_by_def_id(**def_id).is_some())
-            .copied()
-            .collect(),
-    );
+    let class_index = ast::ClassDefIndex::from_tree(tree);
+    ctx.class_def_ids = std::sync::Arc::new(class_index.def_ids().collect());
+    ctx.target_def_names = tree
+        .def_map
+        .iter()
+        .map(|(id, name)| (*id, name.clone()))
+        .collect();
     let mut flat = flat::Model::new();
-    let global_imports = collect_global_imports(overlay);
-    let component_override_map = build_component_override_map(overlay, tree);
+    let component_override_map =
+        build_component_override_map(overlay, tree, &class_index, model_name);
 
     initialize_flat_metadata(&mut flat, overlay);
     process_component_instances_for_flatten(
-        &mut ctx,
         &mut flat,
         overlay,
         &component_override_map,
         tree,
-        &global_imports,
+        &class_index,
     )?;
-    let flatten_graph =
-        prepare_context_for_equation_flattening(&mut ctx, &mut flat, overlay, tree, model_name);
+    let flatten_graph = prepare_context_for_equation_flattening(
+        &mut ctx,
+        &mut flat,
+        overlay,
+        tree,
+        &class_index,
+        model_name,
+        &component_override_map,
+    )?;
     process_class_instances_for_flatten(
         &mut ctx,
         &mut flat,
         overlay,
         &component_override_map,
         tree,
+        &class_index,
     )?;
-    finalize_flat_model(
-        &mut ctx,
-        &mut flat,
+    finalize_flat_model(FinalizeFlatModelInput {
+        ctx: &mut ctx,
+        flat: &mut flat,
         overlay,
         tree,
+        class_index: &class_index,
         model_name,
         options,
-        &flatten_graph,
-    )?;
+        flatten_graph: &flatten_graph,
+        component_override_map: &component_override_map,
+    })?;
 
     Ok(flat)
 }
@@ -338,7 +401,7 @@ fn collect_enum_literal_ordinals(tree: &ast::ClassTree) -> IndexMap<String, i64>
         if class_def.enum_literals.is_empty() {
             continue;
         }
-        let short_name = qualified_name.rsplit('.').next().unwrap_or(qualified_name);
+        let short_name = crate::path_utils::top_level_last_segment(qualified_name);
         for (idx, literal) in class_def.enum_literals.iter().enumerate() {
             let ordinal = (idx + 1) as i64;
             let ident = literal.ident.text.clone();
@@ -349,131 +412,6 @@ fn collect_enum_literal_ordinals(tree: &ast::ClassTree) -> IndexMap<String, i64>
         }
     }
     ordinals
-}
-
-/// if-equation conditions can be evaluated at compile time.
-fn compute_cardinality_counts(ctx: &mut Context, overlay: &ast::InstanceOverlay) {
-    for (_def_id, class_data) in &overlay.classes {
-        for conn in &class_data.connections {
-            if connections::connection_involves_disabled(conn, &overlay.disabled_components) {
-                continue;
-            }
-            let a_path = conn.a.to_flat_string();
-            let b_path = conn.b.to_flat_string();
-            *ctx.cardinality_counts.entry(a_path).or_insert(0) += 1;
-            *ctx.cardinality_counts.entry(b_path).or_insert(0) += 1;
-        }
-    }
-}
-
-/// Pre-collect functions from equations and component bindings for constant evaluation.
-///
-/// This scans all equations and component bindings in the overlay for function calls
-/// and looks up their definitions from the ast::ClassTree. This is needed for evaluating
-/// constant expressions like for-loop ranges and parameter bindings that may contain
-/// function calls.
-fn pre_collect_functions(ctx: &mut Context, overlay: &ast::InstanceOverlay, tree: &ast::ClassTree) {
-    use std::collections::HashSet;
-
-    let mut function_names: HashSet<String> = HashSet::new();
-
-    // Scan all class instances for function calls in equations
-    for (_def_id, class_data) in &overlay.classes {
-        for eq in &class_data.equations {
-            collect_function_calls_from_equation(&eq.equation, &mut function_names, tree);
-        }
-    }
-
-    // Scan all component instances for function calls in bindings
-    // This is needed for parameters like `mBasic = numberOfSymmetricBaseSystems(m)`
-    for (_def_id, instance_data) in &overlay.components {
-        if let Some(binding) = &instance_data.binding {
-            collect_function_calls_from_expression(binding, &mut function_names, tree);
-        }
-        // Also scan start, min, max expressions which may contain function calls
-        if let Some(start) = &instance_data.start {
-            collect_function_calls_from_expression(start, &mut function_names, tree);
-        }
-        if let Some(min) = &instance_data.min {
-            collect_function_calls_from_expression(min, &mut function_names, tree);
-        }
-        if let Some(max) = &instance_data.max {
-            collect_function_calls_from_expression(max, &mut function_names, tree);
-        }
-        // Scan dims_expr for function calls (e.g., Real buf[realFFTsamplePoints(...)])
-        // These are array dimension expressions that may contain user-defined functions
-        for sub in &instance_data.dims_expr {
-            if let ast::Subscript::Expression(expr) = sub {
-                collect_function_calls_from_expression(expr, &mut function_names, tree);
-            }
-        }
-    }
-
-    // Look up each function and add to context
-    // We add both the fully qualified name and the short name (last part)
-    // because flat::Expression::FunctionCall uses the textual name from the AST
-    // which may be short (imported) or fully qualified
-    for func_name in function_names {
-        add_function_to_context(&func_name, ctx, tree);
-    }
-}
-
-/// Add a function to the context if it exists and isn't already present.
-fn add_function_to_context(func_name: &str, ctx: &mut Context, tree: &ast::ClassTree) {
-    let Some(func) = functions::lookup_function(tree, func_name) else {
-        return;
-    };
-    let qualified_name = func.name.to_string();
-
-    // Add canonical qualified key used by flattened function table.
-    if !ctx.functions.contains_key(&qualified_name) {
-        ctx.functions.insert(qualified_name.clone(), func.clone());
-    }
-    // Preserve textual alias key for compile-time eval expressions.
-    if !ctx.functions.contains_key(func_name) {
-        ctx.functions.insert(func_name.to_string(), func.clone());
-    }
-    // Also add short-name aliases (from both textual and canonical paths).
-    add_function_short_name(func_name, &func, ctx);
-    add_function_short_name(&qualified_name, &func, ctx);
-}
-
-/// Add function with short name if applicable.
-fn add_function_short_name(func_name: &str, func: &flat::Function, ctx: &mut Context) {
-    let short_name = crate::path_utils::top_level_last_segment(func_name);
-    if short_name != func_name && !ctx.functions.contains_key(short_name) {
-        ctx.functions.insert(short_name.to_string(), func.clone());
-    }
-}
-
-/// Extract a path from an expression, if it's a simple variable reference.
-/// Returns None if the expression contains subscripts or is not a simple path.
-fn extract_simple_path(expr: &ast::Expression) -> Option<String> {
-    match expr {
-        ast::Expression::ComponentReference(cr) => {
-            // Check for subscripts
-            let has_subscripts = cr
-                .parts
-                .iter()
-                .any(|p| p.subs.as_ref().is_some_and(|s| !s.is_empty()));
-            if has_subscripts || cr.parts.is_empty() {
-                return None;
-            }
-            Some(
-                cr.parts
-                    .iter()
-                    .map(|p| p.ident.text.as_ref())
-                    .collect::<Vec<_>>()
-                    .join("."),
-            )
-        }
-        ast::Expression::FieldAccess { base, field } => {
-            // Recursively extract base path and append field
-            let base_path = extract_simple_path(base)?;
-            Some(format!("{}.{}", base_path, field))
-        }
-        _ => None,
-    }
 }
 
 /// Extract record aliases from the instance overlay (MLS §7.2.3).
@@ -489,7 +427,11 @@ fn extract_simple_path(expr: &ast::Expression) -> Option<String> {
 /// modification (e.g., `cellData=stackData.cellData`), the target path is relative
 /// to the scope where the modification was written, which is the grandparent scope
 /// of the component (MLS §7.2.4).
-fn extract_record_aliases(ctx: &mut Context, overlay: &ast::InstanceOverlay) {
+fn extract_record_aliases(
+    ctx: &mut Context,
+    overlay: &ast::InstanceOverlay,
+    tree: &ast::ClassTree,
+) -> Result<(), FlattenError> {
     for (_def_id, instance_data) in &overlay.components {
         // Record-alias canonicalization is only valid for non-primitive component
         // containers (records/connectors/classes). Primitive scalar bindings like
@@ -507,7 +449,9 @@ fn extract_record_aliases(ctx: &mut Context, overlay: &ast::InstanceOverlay) {
             continue;
         };
 
-        let alias_source = instance_data.qualified_name.to_flat_string();
+        let alias_source = instance_data.qualified_name.to_component_path();
+        let alias_target_unqualified =
+            rumoca_core::ComponentPath::from_flat_path(&alias_target_unqualified);
 
         // Qualify the alias target based on whether it's from a modification binding.
         // For modification bindings, the target is relative to the grandparent scope
@@ -515,15 +459,13 @@ fn extract_record_aliases(ctx: &mut Context, overlay: &ast::InstanceOverlay) {
         // to the parent scope (sibling variables).
         let alias_target = if instance_data.binding_from_modification {
             // Modification bindings: qualify from modifier lexical scope.
-            let source_scope = variables::modification_binding_prefix_pub(instance_data);
+            let source_scope = variables::modification_binding_prefix_pub(instance_data, tree)?;
             if source_scope.is_empty() {
                 alias_target_unqualified
             } else {
-                format!(
-                    "{}.{}",
-                    source_scope.to_flat_string(),
-                    alias_target_unqualified
-                )
+                source_scope
+                    .to_component_path()
+                    .join(&alias_target_unqualified)
             }
         } else {
             // Declaration bindings: qualify with parent prefix (sibling scope)
@@ -531,7 +473,7 @@ fn extract_record_aliases(ctx: &mut Context, overlay: &ast::InstanceOverlay) {
             if parent.is_empty() {
                 alias_target_unqualified
             } else {
-                format!("{}.{}", parent.to_flat_string(), alias_target_unqualified)
+                parent.to_component_path().join(&alias_target_unqualified)
             }
         };
 
@@ -544,6 +486,7 @@ fn extract_record_aliases(ctx: &mut Context, overlay: &ast::InstanceOverlay) {
     // Compute transitive closure of aliases (MLS §7.2.3)
     // If A -> B and B -> C, we should have A -> C for efficient resolution.
     compute_transitive_alias_closure(&mut ctx.record_aliases);
+    Ok(())
 }
 
 /// Compute transitive closure of record aliases (MLS §7.2.3).
@@ -561,28 +504,30 @@ fn extract_record_aliases(ctx: &mut Context, overlay: &ast::InstanceOverlay) {
 /// - stack.stackData -> stackData
 ///
 /// Then we infer: stack.cell.stackData -> stack.stackData
-fn compute_transitive_alias_closure(aliases: &mut rustc_hash::FxHashMap<String, String>) {
+fn compute_transitive_alias_closure(
+    aliases: &mut rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
+) {
     synthesize_intermediate_aliases(aliases);
     compute_closure_iterations(aliases, 20);
 }
 
 /// Find parent path alias for a prefix (e.g., "stack.cell.stackData" -> "stack.stackData").
 fn find_parent_alias(
-    prefix_parts: &[&str],
-    aliases: &rustc_hash::FxHashMap<String, String>,
-) -> Option<String> {
+    prefix: &rumoca_core::ComponentPath,
+    aliases: &rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
+) -> Option<rumoca_core::ComponentPath> {
+    let prefix_parts = prefix.parts();
     if prefix_parts.len() < 3 {
         return None;
     }
     let component_name = prefix_parts.last()?;
     for skip in 1..prefix_parts.len() - 1 {
-        let parent: Vec<&str> = prefix_parts
+        let parent = prefix_parts
             .iter()
             .take(prefix_parts.len() - 1 - skip)
             .chain(std::iter::once(component_name))
-            .copied()
-            .collect();
-        let parent_path = parent.join(".");
+            .cloned();
+        let parent_path = rumoca_core::ComponentPath::from_parts(parent);
         if aliases.contains_key(&parent_path) {
             return Some(parent_path);
         }
@@ -592,20 +537,20 @@ fn find_parent_alias(
 
 /// Try to find a synthetic alias for a single prefix.
 fn find_synthetic_alias(
-    prefix: &str,
-    aliases: &rustc_hash::FxHashMap<String, String>,
-) -> Option<String> {
-    let prefix_parts = crate::path_utils::split_path_with_indices(prefix);
-    find_parent_alias(&prefix_parts, aliases)
+    prefix: &rumoca_core::ComponentPath,
+    aliases: &rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
+) -> Option<rumoca_core::ComponentPath> {
+    find_parent_alias(prefix, aliases)
 }
 
 /// Synthesize missing intermediate aliases for unresolvable prefixes.
-fn synthesize_intermediate_aliases(aliases: &mut rustc_hash::FxHashMap<String, String>) {
-    let mut synthetic: Vec<(String, String)> = Vec::new();
+fn synthesize_intermediate_aliases(
+    aliases: &mut rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
+) {
+    let mut synthetic: Vec<(rumoca_core::ComponentPath, rumoca_core::ComponentPath)> = Vec::new();
     for target in aliases.values() {
-        let parts = crate::path_utils::split_path_with_indices(target);
-        for i in (2..parts.len()).rev() {
-            let prefix = parts[..i].join(".");
+        for i in (2..target.len()).rev() {
+            let prefix = target.prefix(i).expect("prefix index is in range");
             let already_exists =
                 aliases.contains_key(&prefix) || synthetic.iter().any(|(s, _)| s == &prefix);
             if already_exists {
@@ -620,59 +565,32 @@ fn synthesize_intermediate_aliases(aliases: &mut rustc_hash::FxHashMap<String, S
     aliases.extend(synthetic);
 }
 
-/// Try to resolve a path through prefix-based alias resolution.
-fn resolve_through_prefix(
-    current: &str,
-    source: &str,
-    aliases: &rustc_hash::FxHashMap<String, String>,
-) -> Option<String> {
-    let parts = crate::path_utils::split_path_with_indices(current);
-    for i in (1..parts.len()).rev() {
-        let prefix = parts[..i].join(".");
-        if let Some(alias_target) = aliases.get(&prefix) {
-            let suffix = parts[i..].join(".");
-            let resolved = format!("{}.{}", alias_target, suffix);
-            if resolved != current && resolved != source {
-                return Some(resolved);
-            }
-        }
-    }
-    None
-}
-
 /// Resolve an alias target through the chain of aliases.
 fn resolve_alias_chain(
-    target: &str,
-    source: &str,
-    aliases: &rustc_hash::FxHashMap<String, String>,
-) -> Option<String> {
-    let mut current = target.to_string();
+    target: &rumoca_core::ComponentPath,
+    source: &rumoca_core::ComponentPath,
+    aliases: &rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
+) -> Option<rumoca_core::ComponentPath> {
+    let mut current = target.clone();
     for _ in 0..10 {
-        // Try exact match
-        if let Some(next) = aliases.get(&current)
-            && next != &current
-            && next != source
+        if let Some(resolved) =
+            alias_paths::resolve_component_alias_once(&current, Some(source), aliases)
         {
-            current = next.clone();
-            continue;
-        }
-        // Try prefix resolution
-        if let Some(resolved) = resolve_through_prefix(&current, source, aliases) {
             current = resolved;
             continue;
         }
         break;
     }
-    (current != target && current != source).then_some(current)
+    (&current != target && &current != source).then_some(current)
 }
 
 /// Compute transitive closure through iterative resolution.
 fn compute_closure_iterations(
-    aliases: &mut rustc_hash::FxHashMap<String, String>,
+    aliases: &mut rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
     max_iter: usize,
 ) {
     for _ in 0..max_iter {
-        let updates: Vec<(String, String)> = aliases
+        let updates: Vec<(rumoca_core::ComponentPath, rumoca_core::ComponentPath)> = aliases
             .iter()
             .filter_map(|(source, target)| {
                 resolve_alias_chain(target, source, aliases).map(|new| (source.clone(), new))
@@ -692,1010 +610,6 @@ fn compute_closure_iterations(
 /// each component with a literal binding is extracted and added to the eval context.
 ///
 /// This replaces hardcoded constant values with values from the actual parsed library.
-fn resolve_constants_from_tree(
-    tree: &ast::ClassTree,
-    eval_ctx: &mut rumoca_eval_flat::constant::EvalContext,
-) {
-    // Well-known constant packages to resolve.
-    // ModelicaServices.Machine must come first since Modelica.Constants.eps
-    // references ModelicaServices.Machine.eps.
-    const CONSTANT_PACKAGES: &[&str] = &["ModelicaServices.Machine", "Modelica.Constants"];
-
-    for &pkg_name in CONSTANT_PACKAGES {
-        let Some(class_def) = tree.get_class_by_qualified_name(pkg_name) else {
-            continue;
-        };
-        for (comp_name, component) in &class_def.components {
-            let qualified = format!("{}.{}", pkg_name, comp_name);
-            if eval_ctx.get(&qualified).is_some() {
-                continue;
-            }
-            let Some(binding) = &component.binding else {
-                continue;
-            };
-            let flat_binding = qualify_expression(binding, &ast::QualifiedName::new());
-            let Ok(val) = rumoca_eval_flat::constant::eval_expr(&flat_binding, eval_ctx) else {
-                continue;
-            };
-            eval_ctx.add_parameter(qualified, val);
-        }
-    }
-}
-
-fn inject_referenced_qualified_class_constants(
-    tree: &ClassTree,
-    model_name: &str,
-    flat: &Model,
-    ctx: &mut Context,
-) {
-    const WELL_KNOWN_CONSTANT_PACKAGES: &[&str] =
-        &["ModelicaServices.Machine", "Modelica.Constants"];
-    const MAX_PASSES: usize = 4;
-    let live_vars: HashSet<String> = flat
-        .variables
-        .keys()
-        .map(|name| name.as_str().to_string())
-        .collect();
-
-    for _ in 0..MAX_PASSES {
-        let prev = context_constant_footprint(ctx);
-        let mut scopes = HashSet::new();
-        collect_referenced_class_scopes(flat, &live_vars, &mut scopes);
-        collect_context_constant_class_scopes(ctx, &live_vars, &mut scopes);
-        for package in WELL_KNOWN_CONSTANT_PACKAGES {
-            scopes.insert((*package).to_string());
-        }
-
-        for scope in scopes {
-            let resolved = resolve_referenced_scope_class(tree, &scope, model_name);
-            let Some((resolved_scope, class_def)) = resolved else {
-                continue;
-            };
-            inject_class_import_enum_aliases(tree, &scope, class_def, ctx);
-            extract_constants_from_class_with_prefix(&scope, class_def, ctx);
-            let resolve_context = class_def
-                .def_id
-                .and_then(|id| tree.def_map.get(&id).cloned())
-                .unwrap_or(resolved_scope);
-            for ext in &class_def.extends {
-                apply_extends_constants_for_scope(tree, &scope, ext, &resolve_context, ctx);
-            }
-        }
-
-        if context_constant_footprint(ctx) == prev {
-            break;
-        }
-    }
-}
-
-fn resolve_referenced_scope_class<'a>(
-    tree: &'a ClassTree,
-    scope: &str,
-    model_name: &str,
-) -> Option<(String, &'a ClassDef)> {
-    if let Some(class_def) = tree.get_class_by_qualified_name(scope) {
-        return Some((scope.to_string(), class_def));
-    }
-
-    let (class_def, resolved_name) = resolve_class_in_scope(tree, scope, model_name);
-    let class_def = class_def?;
-    Some((
-        resolved_name.unwrap_or_else(|| scope.to_string()),
-        class_def,
-    ))
-}
-
-fn collect_context_constant_class_scopes(
-    ctx: &Context,
-    live_vars: &HashSet<String>,
-    scopes: &mut HashSet<String>,
-) {
-    for value in ctx.constant_values.values() {
-        collect_expression_class_scopes(value, live_vars, scopes);
-    }
-    for value in ctx.enum_parameter_values.values() {
-        maybe_add_referenced_class_scope(value, live_vars, scopes);
-    }
-}
-
-fn inject_class_import_enum_aliases(
-    tree: &ClassTree,
-    scope: &str,
-    class_def: &ClassDef,
-    ctx: &mut Context,
-) {
-    for import in &class_def.imports {
-        let ast::Import::Renamed { alias, path, .. } = import else {
-            continue;
-        };
-        let target_path = path.to_string();
-        let Some(enum_class) = tree.get_class_by_qualified_name(&target_path) else {
-            continue;
-        };
-        if enum_class.enum_literals.is_empty() {
-            continue;
-        }
-        for literal in &enum_class.enum_literals {
-            let lit = literal.ident.text.as_ref();
-            let key = format!("{scope}.{}.{}", alias.text, lit);
-            let value = format!("{target_path}.{lit}");
-            ctx.enum_parameter_values
-                .entry(key)
-                .or_insert_with(|| value.clone());
-        }
-    }
-}
-
-fn context_constant_footprint(ctx: &Context) -> usize {
-    ctx.parameter_values.len()
-        + ctx.real_parameter_values.len()
-        + ctx.boolean_parameter_values.len()
-        + ctx.enum_parameter_values.len()
-        + ctx.constant_values.len()
-        + ctx.array_dimensions.len()
-}
-
-fn collect_referenced_class_scopes(
-    flat: &Model,
-    live_vars: &HashSet<String>,
-    scopes: &mut HashSet<String>,
-) {
-    for eq in &flat.equations {
-        collect_expression_class_scopes(&eq.residual, live_vars, scopes);
-    }
-    for eq in &flat.initial_equations {
-        collect_expression_class_scopes(&eq.residual, live_vars, scopes);
-    }
-
-    for when in &flat.when_clauses {
-        collect_expression_class_scopes(&when.condition, live_vars, scopes);
-        for eq in &when.equations {
-            collect_when_equation_class_scopes(eq, live_vars, scopes);
-        }
-    }
-
-    for alg in &flat.algorithms {
-        for stmt in &alg.statements {
-            collect_statement_class_scopes(stmt, live_vars, scopes);
-        }
-    }
-
-    for var in flat.variables.values() {
-        if let Some(binding) = &var.binding {
-            collect_expression_class_scopes(binding, live_vars, scopes);
-        }
-        if let Some(start) = &var.start {
-            collect_expression_class_scopes(start, live_vars, scopes);
-        }
-        if let Some(min) = &var.min {
-            collect_expression_class_scopes(min, live_vars, scopes);
-        }
-        if let Some(max) = &var.max {
-            collect_expression_class_scopes(max, live_vars, scopes);
-        }
-        if let Some(nominal) = &var.nominal {
-            collect_expression_class_scopes(nominal, live_vars, scopes);
-        }
-    }
-
-    for function in flat.functions.values() {
-        for param in function
-            .inputs
-            .iter()
-            .chain(function.outputs.iter())
-            .chain(function.locals.iter())
-        {
-            if let Some(default_expr) = &param.default {
-                collect_expression_class_scopes(default_expr, live_vars, scopes);
-            }
-        }
-        for statement in &function.body {
-            collect_statement_class_scopes(statement, live_vars, scopes);
-        }
-    }
-}
-
-fn collect_expression_class_scopes(
-    expr: &Expression,
-    live_vars: &HashSet<String>,
-    scopes: &mut HashSet<String>,
-) {
-    let mut refs = HashSet::new();
-    expr.collect_var_refs(&mut refs);
-    for name in refs {
-        maybe_add_referenced_class_scope(name.as_str(), live_vars, scopes);
-    }
-    collect_constructor_class_scopes(expr, live_vars, scopes);
-}
-
-fn collect_constructor_class_scopes(
-    expr: &Expression,
-    live_vars: &HashSet<String>,
-    scopes: &mut HashSet<String>,
-) {
-    match expr {
-        Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-        } => {
-            if *is_constructor {
-                let constructor_name = name.as_str();
-                if constructor_name != "time" && !live_vars.contains(constructor_name) {
-                    scopes.insert(constructor_name.to_string());
-                }
-            }
-            for arg in args {
-                collect_constructor_class_scopes(arg, live_vars, scopes);
-            }
-        }
-        Expression::BuiltinCall { args, .. } => {
-            for arg in args {
-                collect_constructor_class_scopes(arg, live_vars, scopes);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_constructor_class_scopes(lhs, live_vars, scopes);
-            collect_constructor_class_scopes(rhs, live_vars, scopes);
-        }
-        Expression::Unary { rhs, .. } => {
-            collect_constructor_class_scopes(rhs, live_vars, scopes);
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, value) in branches {
-                collect_constructor_class_scopes(cond, live_vars, scopes);
-                collect_constructor_class_scopes(value, live_vars, scopes);
-            }
-            collect_constructor_class_scopes(else_branch, live_vars, scopes);
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            for element in elements {
-                collect_constructor_class_scopes(element, live_vars, scopes);
-            }
-        }
-        Expression::Range { start, step, end } => {
-            collect_constructor_class_scopes(start, live_vars, scopes);
-            if let Some(step) = step {
-                collect_constructor_class_scopes(step, live_vars, scopes);
-            }
-            collect_constructor_class_scopes(end, live_vars, scopes);
-        }
-        Expression::Index { base, subscripts } => {
-            collect_constructor_class_scopes(base, live_vars, scopes);
-            for subscript in subscripts {
-                if let Subscript::Expr(expr) = subscript {
-                    collect_constructor_class_scopes(expr, live_vars, scopes);
-                }
-            }
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            collect_constructor_class_scopes(expr, live_vars, scopes);
-            for index in indices {
-                collect_constructor_class_scopes(&index.range, live_vars, scopes);
-            }
-            if let Some(filter_expr) = filter {
-                collect_constructor_class_scopes(filter_expr, live_vars, scopes);
-            }
-        }
-        Expression::FieldAccess { base, .. } => {
-            collect_constructor_class_scopes(base, live_vars, scopes);
-        }
-        _ => {}
-    }
-}
-
-fn collect_when_equation_class_scopes(
-    eq: &flat::WhenEquation,
-    live_vars: &HashSet<String>,
-    scopes: &mut HashSet<String>,
-) {
-    match eq {
-        flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
-            collect_expression_class_scopes(value, live_vars, scopes)
-        }
-        flat::WhenEquation::Assert { condition, .. } => {
-            collect_expression_class_scopes(condition, live_vars, scopes)
-        }
-        flat::WhenEquation::Terminate { .. } => {}
-        flat::WhenEquation::Conditional {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, eqs) in branches {
-                collect_expression_class_scopes(cond, live_vars, scopes);
-                for nested in eqs {
-                    collect_when_equation_class_scopes(nested, live_vars, scopes);
-                }
-            }
-            for nested in else_branch {
-                collect_when_equation_class_scopes(nested, live_vars, scopes);
-            }
-        }
-        flat::WhenEquation::FunctionCallOutputs { function, .. } => {
-            collect_expression_class_scopes(function, live_vars, scopes)
-        }
-    }
-}
-
-fn collect_statement_class_scopes(
-    stmt: &flat::Statement,
-    live_vars: &HashSet<String>,
-    scopes: &mut HashSet<String>,
-) {
-    match stmt {
-        flat::Statement::Assignment { value, .. } => {
-            collect_expression_class_scopes(value, live_vars, scopes)
-        }
-        flat::Statement::For { indices, equations } => {
-            for idx in indices {
-                collect_expression_class_scopes(&idx.range, live_vars, scopes);
-            }
-            for nested in equations {
-                collect_statement_class_scopes(nested, live_vars, scopes);
-            }
-        }
-        flat::Statement::While(block) => {
-            collect_expression_class_scopes(&block.cond, live_vars, scopes);
-            for nested in &block.stmts {
-                collect_statement_class_scopes(nested, live_vars, scopes);
-            }
-        }
-        flat::Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_expression_class_scopes(&block.cond, live_vars, scopes);
-                for nested in &block.stmts {
-                    collect_statement_class_scopes(nested, live_vars, scopes);
-                }
-            }
-            if let Some(else_block) = else_block {
-                for nested in else_block {
-                    collect_statement_class_scopes(nested, live_vars, scopes);
-                }
-            }
-        }
-        flat::Statement::When(blocks) => {
-            for block in blocks {
-                collect_expression_class_scopes(&block.cond, live_vars, scopes);
-                for nested in &block.stmts {
-                    collect_statement_class_scopes(nested, live_vars, scopes);
-                }
-            }
-        }
-        flat::Statement::FunctionCall { args, outputs, .. } => {
-            for arg in args {
-                collect_expression_class_scopes(arg, live_vars, scopes);
-            }
-            for output in outputs {
-                collect_expression_class_scopes(output, live_vars, scopes);
-            }
-        }
-        flat::Statement::Reinit { value, .. } => {
-            collect_expression_class_scopes(value, live_vars, scopes)
-        }
-        flat::Statement::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            collect_expression_class_scopes(condition, live_vars, scopes);
-            collect_expression_class_scopes(message, live_vars, scopes);
-            if let Some(level) = level {
-                collect_expression_class_scopes(level, live_vars, scopes);
-            }
-        }
-        flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
-    }
-}
-
-fn maybe_add_referenced_class_scope(
-    name: &str,
-    live_vars: &HashSet<String>,
-    scopes: &mut HashSet<String>,
-) {
-    if name == "time" || live_vars.contains(name) {
-        return;
-    }
-
-    let Some(scope) = path_utils::parent_scope(name) else {
-        return;
-    };
-    let last = path_utils::top_level_last_segment(name);
-    let base_last = path_utils::strip_array_index(last);
-    if base_last.is_empty() {
-        return;
-    }
-
-    let normalized_name = format!("{scope}.{base_last}");
-    if live_vars.contains(&normalized_name) {
-        return;
-    }
-
-    scopes.insert(scope.to_string());
-}
-
-/// Inject constants from the enclosing class into the flatten context (MLS §7.3).
-///
-/// When compiling a nested model like `Modelica.Media.Air.MoistAir.BaseProperties`,
-/// constants from the enclosing package (e.g., `nX`, `nXi`, `nS`) must be available
-/// for for-equation range evaluation. This walks the enclosing class's extends chain
-/// to collect all inherited constants.
-/// Inject constants from nested class declarations in the model being compiled (MLS §7.3).
-///
-/// When a model has `package Medium = SomeMedium`, constants like nX, nXi, nS
-/// from that package need to be available for for-equation range evaluation.
-/// Walks the model's ancestor chain and extracts constants from each ancestor's
-/// nested class declarations (following extends chains to concrete types).
-fn inject_model_nested_class_constants(tree: &ast::ClassTree, model_name: &str, ctx: &mut Context) {
-    let model_ancestors = collect_ancestor_classes(tree, model_name);
-    if model_ancestors.is_empty() {
-        return;
-    }
-    const MAX_PASSES: usize = 5;
-    for _pass in 0..MAX_PASSES {
-        let prev = ctx.parameter_values.len()
-            + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
-        for ancestor in &model_ancestors {
-            extract_nested_class_constants(tree, ancestor, model_name, ctx);
-        }
-        let new = ctx.parameter_values.len()
-            + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
-        if new == prev {
-            break;
-        }
-    }
-}
-
-/// Inject constants from direct model-level extends redeclare package overrides.
-///
-/// MLS §7.3: `extends(... redeclare package Alias = Pkg)` defines the effective
-/// package alias in the derived model scope. Flatten-time constant lookup for
-/// expressions like `Alias.nXi` must observe this effective package.
-fn inject_model_extends_redeclare_constants(
-    tree: &ast::ClassTree,
-    model_name: &str,
-    ctx: &mut Context,
-) {
-    let model_class = tree.get_class_by_qualified_name(model_name).or_else(|| {
-        tree.get_class_by_qualified_name(crate::path_utils::top_level_last_segment(model_name))
-    });
-    let Some(model_class) = model_class else {
-        return;
-    };
-
-    let resolve_context = model_class
-        .def_id
-        .and_then(|id| tree.def_map.get(&id).map(String::as_str))
-        .unwrap_or(model_name);
-    let redeclare_packages = collect_model_redeclare_packages(tree, model_class, resolve_context);
-    if redeclare_packages.is_empty() {
-        return;
-    }
-
-    const MAX_PASSES: usize = 5;
-    for _pass in 0..MAX_PASSES {
-        let prev = ctx.parameter_values.len()
-            + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len()
-            + ctx.enum_parameter_values.len();
-
-        for (alias_name, package_class, package_context) in &redeclare_packages {
-            extract_constants_from_class_with_prefix(alias_name, package_class, ctx);
-            for pkg_ext in &package_class.extends {
-                apply_extends_constants_for_scope(tree, alias_name, pkg_ext, package_context, ctx);
-            }
-        }
-
-        let new = ctx.parameter_values.len()
-            + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len()
-            + ctx.enum_parameter_values.len();
-        if new == prev {
-            break;
-        }
-    }
-}
-
-/// Collect direct model-level `extends(... redeclare package Alias = Pkg)` entries.
-fn collect_model_redeclare_packages<'a>(
-    tree: &'a ast::ClassTree,
-    model_class: &'a ast::ClassDef,
-    resolve_context: &str,
-) -> Vec<(String, &'a ast::ClassDef, String)> {
-    let mut entries = Vec::new();
-    for ext in &model_class.extends {
-        for ext_mod in &ext.modifications {
-            if let Some(entry) =
-                resolve_model_redeclare_package_entry(tree, resolve_context, ext_mod)
-            {
-                entries.push(entry);
-            }
-        }
-    }
-    entries
-}
-
-/// Resolve one model-level redeclare modifier to `(alias, package_class, package_context)`.
-fn resolve_model_redeclare_package_entry<'a>(
-    tree: &'a ast::ClassTree,
-    resolve_context: &str,
-    ext_mod: &rumoca_ir_ast::ExtendModification,
-) -> Option<(String, &'a ast::ClassDef, String)> {
-    if !ext_mod.redeclare {
-        return None;
-    }
-
-    let ast::Expression::Modification { target, value } = &ext_mod.expr else {
-        return None;
-    };
-    if target.parts.len() != 1 {
-        return None;
-    }
-
-    let alias_name = target.parts[0].ident.text.to_string();
-    if !alias_name.starts_with(char::is_uppercase) {
-        return None;
-    }
-
-    let package_name = redeclare_package_name(value)?;
-    let package_class = resolve_class_in_scope(tree, &package_name, resolve_context)
-        .0
-        .or_else(|| tree.get_class_by_qualified_name(&package_name))?;
-    if !matches!(package_class.class_type, rumoca_ir_ast::ClassType::Package) {
-        return None;
-    }
-
-    let package_context = package_class
-        .def_id
-        .and_then(|id| tree.def_map.get(&id).cloned())
-        .unwrap_or(package_name);
-    Some((alias_name, package_class, package_context))
-}
-
-/// Extract the replacement package name from a redeclare modifier expression.
-fn redeclare_package_name(value: &ast::Expression) -> Option<String> {
-    match value {
-        ast::Expression::ClassModification { target, .. } => Some(target.to_string()),
-        ast::Expression::ComponentReference(cr) => Some(cr.to_string()),
-        _ => None,
-    }
-}
-
-/// Extract constants from nested class declarations of a class definition.
-/// For each nested class (e.g., `package Medium = ...`), follow extends chains
-/// and extract integer constants and array dimensions.
-fn extract_nested_class_constants(
-    tree: &ast::ClassTree,
-    class_def: &ast::ClassDef,
-    resolve_context: &str,
-    ctx: &mut Context,
-) {
-    for (nested_name, nested_class) in &class_def.classes {
-        // MLS §7.3 alias constants come from package aliases; nested models/records
-        // are not visible as unqualified constant scopes for this model context.
-        if !matches!(nested_class.class_type, ast::ClassType::Package) {
-            continue;
-        }
-        extract_constants_from_class_with_prefix(nested_name, nested_class, ctx);
-        let nested_context = nested_class
-            .def_id
-            .and_then(|id| tree.def_map.get(&id).map(String::as_str))
-            .unwrap_or(resolve_context);
-        for ext in &nested_class.extends {
-            apply_extends_constants_for_scope(tree, nested_name, ext, nested_context, ctx);
-        }
-    }
-}
-
-/// Recursively extract constants from an extends chain, using a prefix alias.
-/// Uses scope-based resolution for relative extends names.
-fn extract_extends_chain_constants(
-    tree: &ast::ClassTree,
-    alias: &str,
-    base_name: &str,
-    resolve_context: &str,
-    ctx: &mut Context,
-) {
-    let mut visited = std::collections::HashSet::new();
-    extract_extends_chain_constants_inner(
-        tree,
-        alias,
-        base_name,
-        resolve_context,
-        ctx,
-        &mut visited,
-    );
-}
-
-fn extract_extends_chain_constants_inner(
-    tree: &ast::ClassTree,
-    alias: &str,
-    base_name: &str,
-    resolve_context: &str,
-    ctx: &mut Context,
-    visited: &mut std::collections::HashSet<String>,
-) {
-    let (base_class, resolved_qname) = resolve_class_in_scope(tree, base_name, resolve_context);
-    let Some(base_class) = base_class else {
-        return;
-    };
-    let qname = resolved_qname.unwrap_or_else(|| base_name.to_string());
-    if !visited.insert(qname.clone()) {
-        return;
-    }
-    extract_constants_from_class_with_prefix(alias, base_class, ctx);
-    for ext in &base_class.extends {
-        extract_extends_modification_constants(tree, alias, ext, &qname, ctx);
-        if let Some(base_qname) =
-            resolve_extends_base_qname(tree, &ext.base_name.to_string(), &qname)
-            && base_qname != alias
-        {
-            extract_extends_modification_constants(tree, &base_qname, ext, &base_qname, ctx);
-        }
-        extract_extends_chain_constants_inner(
-            tree,
-            alias,
-            &ext.base_name.to_string(),
-            &qname,
-            ctx,
-            visited,
-        );
-    }
-}
-
-/// Extract constant-affecting extends modifiers into the flatten context.
-///
-/// MLS §7.2/§7.3: extends modifiers override inherited constants and must be
-/// applied before evaluating dependent constants such as nS/nX/nXi.
-fn extract_extends_modification_constants(
-    tree: &ast::ClassTree,
-    prefix: &str,
-    ext: &rumoca_ir_ast::Extend,
-    resolve_context: &str,
-    ctx: &mut Context,
-) {
-    for ext_mod in &ext.modifications {
-        if ext_mod.redeclare {
-            continue;
-        }
-        extract_extends_modification_expr(tree, prefix, &ext_mod.expr, resolve_context, ctx);
-    }
-}
-
-/// Apply `redeclare package Alias = SomePackage` extends modifiers by injecting
-/// constants from the redeclared package into the current scope.
-fn extract_extends_redeclare_package_constants(
-    tree: &ast::ClassTree,
-    prefix: &str,
-    ext: &rumoca_ir_ast::Extend,
-    resolve_context: &str,
-    ctx: &mut Context,
-) {
-    for ext_mod in &ext.modifications {
-        if !ext_mod.redeclare {
-            continue;
-        }
-        let ast::Expression::Modification { target, value } = &ext_mod.expr else {
-            continue;
-        };
-        if target.parts.len() != 1 {
-            continue;
-        }
-
-        let alias_name = target.parts[0].ident.text.as_ref();
-        if !alias_name.starts_with(char::is_uppercase) {
-            continue;
-        }
-
-        let package_name = match value.as_ref() {
-            ast::Expression::ClassModification { target, .. } => target.to_string(),
-            ast::Expression::ComponentReference(cr) => cr.to_string(),
-            _ => continue,
-        };
-
-        let package_class = resolve_class_in_scope(tree, &package_name, resolve_context)
-            .0
-            .or_else(|| tree.get_class_by_qualified_name(&package_name));
-        let Some(package_class) = package_class else {
-            continue;
-        };
-        if !matches!(package_class.class_type, rumoca_ir_ast::ClassType::Package) {
-            continue;
-        }
-
-        let alias_scope = make_prefixed_name(prefix, alias_name);
-        extract_constants_from_class_with_prefix(&alias_scope, package_class, ctx);
-        extract_constants_from_class_with_prefix(prefix, package_class, ctx);
-
-        for pkg_ext in &package_class.extends {
-            extract_extends_modification_constants(
-                tree,
-                &alias_scope,
-                pkg_ext,
-                resolve_context,
-                ctx,
-            );
-            extract_extends_chain_constants(
-                tree,
-                &alias_scope,
-                &pkg_ext.base_name.to_string(),
-                resolve_context,
-                ctx,
-            );
-
-            extract_extends_modification_constants(tree, prefix, pkg_ext, resolve_context, ctx);
-            extract_extends_chain_constants(
-                tree,
-                prefix,
-                &pkg_ext.base_name.to_string(),
-                resolve_context,
-                ctx,
-            );
-        }
-    }
-}
-
-/// Walk an extends-modification expression and record scalar/dimension overrides.
-fn extract_extends_modification_expr(
-    tree: &ast::ClassTree,
-    prefix: &str,
-    expr: &ast::Expression,
-    resolve_context: &str,
-    ctx: &mut Context,
-) {
-    if let ast::Expression::Modification { target, value } = expr {
-        let target_name = target.to_string();
-        let full_name = make_prefixed_name(prefix, &target_name);
-        let mut imports = crate::qualify::ImportMap::default();
-        crate::qualify::collect_lexical_package_aliases(tree, resolve_context, &mut imports);
-        let qualified_value = crate::qualify::qualify_expression_with_imports(
-            value,
-            &ast::QualifiedName::new(),
-            crate::qualify::QualifyOptions::default(),
-            &imports,
-        );
-        // MLS §7.2: extends modifiers override inherited declarations.
-        // Preserve explicitly modified keys from later default-constant extraction.
-        ctx.modified_constant_keys.insert(full_name.clone());
-        if let Some(val) = try_eval_const_integer_with_scope(&qualified_value, ctx, prefix) {
-            insert_with_prefix(
-                &mut ctx.parameter_values,
-                prefix,
-                &target_name,
-                &full_name,
-                val,
-            );
-        }
-        if let Some(val) = try_eval_const_boolean_with_scope(&qualified_value, ctx, prefix) {
-            insert_with_prefix(
-                &mut ctx.boolean_parameter_values,
-                prefix,
-                &target_name,
-                &full_name,
-                val,
-            );
-        }
-        if let Some(val) = try_eval_const_real_with_scope(&qualified_value, ctx, prefix)
-            && val.is_finite()
-        {
-            insert_with_prefix(
-                &mut ctx.real_parameter_values,
-                prefix,
-                &target_name,
-                &full_name,
-                val,
-            );
-        }
-        if let Some(val) = try_eval_const_flat_expr_with_scope(&qualified_value, ctx, prefix) {
-            insert_with_prefix(
-                &mut ctx.constant_values,
-                prefix,
-                &target_name,
-                &full_name,
-                val,
-            );
-        } else if let Some(val) =
-            try_extract_named_record_constructor_constant(&qualified_value, ctx, prefix, &full_name)
-        {
-            insert_with_prefix(
-                &mut ctx.constant_values,
-                prefix,
-                &target_name,
-                &full_name,
-                val,
-            );
-        } else if let ast::Expression::ComponentReference(_) = &qualified_value {
-            let symbolic =
-                crate::ast_lower::expression_from_ast_with_def_map(&qualified_value, None);
-            insert_with_prefix(
-                &mut ctx.constant_values,
-                prefix,
-                &target_name,
-                &full_name,
-                symbolic,
-            );
-        }
-        if let Some(val) = try_eval_const_enum_with_scope(&qualified_value, ctx, prefix) {
-            insert_with_prefix(
-                &mut ctx.enum_parameter_values,
-                prefix,
-                &target_name,
-                &full_name,
-                val,
-            );
-        }
-        if let Some(dims) = infer_dims_from_expr(&qualified_value, ctx, prefix) {
-            insert_with_prefix(
-                &mut ctx.array_dimensions,
-                prefix,
-                &target_name,
-                &full_name,
-                dims,
-            );
-        }
-    }
-}
-
-/// Extract integer constants and array dimensions from a class, using a prefix for names.
-/// Constants are stored as both `prefix.name` (e.g., `Medium.nX`) and unprefixed `name`.
-fn extract_constants_from_class_with_prefix(
-    prefix: &str,
-    class_def: &ast::ClassDef,
-    ctx: &mut Context,
-) {
-    for (name, comp) in &class_def.components {
-        if !matches!(
-            comp.variability,
-            rumoca_ir_core::Variability::Constant(_) | rumoca_ir_core::Variability::Parameter(_)
-        ) {
-            continue;
-        }
-        let binding = comp
-            .binding
-            .as_ref()
-            .or(if !matches!(comp.start, ast::Expression::Empty) {
-                Some(&comp.start)
-            } else {
-                None
-            });
-        let synthesized = if binding.is_none() {
-            synthesize_component_modification_binding(comp)
-        } else {
-            None
-        };
-        let expr = binding.or(synthesized.as_ref());
-        let Some(expr) = expr else { continue };
-        let full_name = make_prefixed_name(prefix, name);
-        extract_single_constant_with_prefix(prefix, name, &full_name, comp, expr, ctx);
-    }
-}
-
-/// Extract a single constant value (integer or array dims) into the context.
-fn extract_single_constant_with_prefix(
-    prefix: &str,
-    name: &str,
-    full_name: &str,
-    comp: &rumoca_ir_ast::Component,
-    expr: &ast::Expression,
-    ctx: &mut Context,
-) {
-    // Flat model variables are the authoritative source for instantiated
-    // parameter/constant values. Do not inject declaration defaults for names
-    // that already exist in flat output; those defaults can override modifier-
-    // derived bindings (MLS §7.2.4).
-    if ctx.flat_parameter_constant_keys.contains(full_name) {
-        return;
-    }
-
-    let type_name = comp.type_name.to_string();
-    let preserve_existing = ctx.modified_constant_keys.contains(full_name)
-        || ctx.flat_parameter_constant_keys.contains(full_name);
-    if let Some(val) = try_extract_named_record_constructor_constant(expr, ctx, prefix, full_name)
-        && (!preserve_existing || !ctx.constant_values.contains_key(full_name))
-    {
-        insert_with_prefix(&mut ctx.constant_values, prefix, name, full_name, val);
-    }
-    // Integer constants
-    if type_name == "Integer"
-        && let Some(val) = try_eval_const_integer_with_scope(expr, ctx, prefix)
-        && (!preserve_existing || !ctx.parameter_values.contains_key(full_name))
-    {
-        insert_with_prefix(&mut ctx.parameter_values, prefix, name, full_name, val);
-    }
-    // Boolean constants (needed for evaluating conditional integer constants like
-    // `nXi = if fixedX then 0 else nS - 1` in replaceable packages)
-    if type_name == "Boolean"
-        && let Some(val) = try_eval_const_boolean_with_scope(expr, ctx, prefix)
-        && (!preserve_existing || !ctx.boolean_parameter_values.contains_key(full_name))
-    {
-        insert_with_prefix(
-            &mut ctx.boolean_parameter_values,
-            prefix,
-            name,
-            full_name,
-            val,
-        );
-    }
-    // Real constants (and constants of aliased Real-derived units).
-    if let Some(val) = try_eval_const_real_with_scope(expr, ctx, prefix)
-        && val.is_finite()
-        && (!preserve_existing || !ctx.real_parameter_values.contains_key(full_name))
-    {
-        insert_with_prefix(&mut ctx.real_parameter_values, prefix, name, full_name, val);
-    }
-    if let Some(val) = try_eval_const_flat_expr_with_scope(expr, ctx, prefix)
-        && (!preserve_existing || !ctx.constant_values.contains_key(full_name))
-    {
-        insert_with_prefix(&mut ctx.constant_values, prefix, name, full_name, val);
-    }
-    // Enumeration constants (e.g., `ThermoStates = IndependentVariables.ph`)
-    if (!preserve_existing || !ctx.enum_parameter_values.contains_key(full_name))
-        && let Some(val) = try_eval_const_enum_with_scope(expr, ctx, prefix)
-    {
-        insert_with_prefix(&mut ctx.enum_parameter_values, prefix, name, full_name, val);
-    }
-    // Array dimensions from shape
-    if (!preserve_existing || !ctx.array_dimensions.contains_key(full_name))
-        && !comp.shape.is_empty()
-    {
-        let dims: Vec<i64> = comp.shape.iter().map(|&d| d as i64).collect();
-        insert_with_prefix(&mut ctx.array_dimensions, prefix, name, full_name, dims);
-    }
-    // Array dimensions from binding (array literal length)
-    if (!preserve_existing || !ctx.array_dimensions.contains_key(full_name))
-        && let Some(dims) = infer_dims_from_expr(expr, ctx, prefix)
-    {
-        insert_with_prefix(&mut ctx.array_dimensions, prefix, name, full_name, dims);
-    }
-}
-
-/// Check if a dotted variable name passes through an expanded array component.
-///
-/// Returns true if any parent segment (NOT the last segment) contains embedded
-/// array subscripts. For example:
-/// - `l1sigma.inductor[1].L` → true (parent `inductor[1]` has subscripts)
-/// - `plug_p.pin[1]` → false (only the last segment has subscripts)
-/// - `l1sigma.inductor[1].v[2]` → true (parent has subscripts)
-fn has_embedded_array_subscript_in_parent(name: &str) -> bool {
-    let segments = crate::path_utils::split_path_with_indices(name);
-    // Check all segments EXCEPT the last one
-    segments[..segments.len().saturating_sub(1)]
-        .iter()
-        .any(|seg| seg.contains('['))
-}
-
-#[cfg(test)]
-mod parent_subscript_tests {
-    use super::has_embedded_array_subscript_in_parent;
-
-    #[test]
-    fn ignores_dot_inside_top_level_subscript() {
-        assert!(!has_embedded_array_subscript_in_parent("bus[data.medium]"));
-    }
-
-    #[test]
-    fn detects_actual_parent_subscript_only() {
-        assert!(has_embedded_array_subscript_in_parent(
-            "stack.cell[data.medium].x"
-        ));
-        assert!(!has_embedded_array_subscript_in_parent(
-            "stack.cell.x[data.medium]"
-        ));
-    }
-}
-
 /// Build a prefixed name: `prefix.name` or just `name` if prefix is empty.
 fn make_prefixed_name(prefix: &str, name: &str) -> String {
     if prefix.is_empty() {
@@ -1703,43 +617,6 @@ fn make_prefixed_name(prefix: &str, name: &str) -> String {
     } else {
         format!("{}.{}", prefix, name)
     }
-}
-
-fn synthesize_component_modification_binding(comp: &ast::Component) -> Option<ast::Expression> {
-    if comp.modifications.is_empty() {
-        return None;
-    }
-    let target = ast::ComponentReference {
-        local: false,
-        parts: comp
-            .type_name
-            .to_string()
-            .split('.')
-            .map(|part| ast::ComponentRefPart {
-                ident: rumoca_ir_core::Token {
-                    text: std::sync::Arc::from(part),
-                    ..Default::default()
-                },
-                subs: None,
-            })
-            .collect(),
-        def_id: comp.type_name.def_id,
-    };
-    let modifications = comp
-        .modifications
-        .iter()
-        .map(|(field, value)| ast::Expression::NamedArgument {
-            name: rumoca_ir_core::Token {
-                text: std::sync::Arc::from(field.as_str()),
-                ..Default::default()
-            },
-            value: std::sync::Arc::new(value.clone()),
-        })
-        .collect();
-    Some(ast::Expression::ClassModification {
-        target,
-        modifications,
-    })
 }
 
 /// Insert a value under both the full_name and the unprefixed name.
@@ -1750,10 +627,29 @@ fn insert_with_prefix<V: Clone>(
     full_name: &str,
     value: V,
 ) {
-    map.insert(full_name.to_string(), value.clone());
-    let expose_unprefixed = !prefix.is_empty()
+    insert_with_prefix_exposure(
+        map,
+        exposes_unprefixed_prefix(prefix),
+        name,
+        full_name,
+        value,
+    );
+}
+
+fn exposes_unprefixed_prefix(prefix: &str) -> bool {
+    !prefix.is_empty()
         && !crate::path_utils::has_top_level_dot(prefix)
-        && prefix.chars().next().is_some_and(char::is_uppercase);
+        && prefix.chars().next().is_some_and(char::is_uppercase)
+}
+
+fn insert_with_prefix_exposure<V: Clone>(
+    map: &mut rustc_hash::FxHashMap<String, V>,
+    expose_unprefixed: bool,
+    name: &str,
+    full_name: &str,
+    value: V,
+) {
+    map.insert(full_name.to_string(), value.clone());
     if expose_unprefixed {
         map.entry(name.to_string()).or_insert(value);
     }
@@ -1797,10 +693,10 @@ mod nested_class_constant_scope_tests {
     use super::*;
     use std::sync::Arc;
 
-    fn token(text: &str) -> rumoca_ir_core::Token {
-        rumoca_ir_core::Token {
+    fn token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
             text: Arc::from(text.to_string()),
-            ..rumoca_ir_core::Token::default()
+            ..rumoca_core::Token::default()
         }
     }
 
@@ -1808,23 +704,66 @@ mod nested_class_constant_scope_tests {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token: token(text),
+            span: rumoca_core::Span::DUMMY,
         }
+    }
+
+    fn component_ref_expr(path: &[&str], def_id: rumoca_core::DefId) -> ast::Expression {
+        ast::Expression::ComponentReference(ast::ComponentReference {
+            local: false,
+            parts: path
+                .iter()
+                .map(|part| ast::ComponentRefPart {
+                    ident: token(part),
+                    subs: None,
+                })
+                .collect(),
+            span: rumoca_core::Span::DUMMY,
+            def_id: Some(def_id),
+        })
+    }
+
+    #[test]
+    fn component_dimension_refs_collect_package_constant_scopes_by_def_id() {
+        let nstate_def = rumoca_core::DefId::new(42);
+        let mut def_map = crate::ResolveDefMap::default();
+        def_map.insert(
+            nstate_def,
+            "Modelica.Math.Random.Generators.Xorshift128plus.nState".to_string(),
+        );
+        let mut overlay = ast::InstanceOverlay::default();
+        overlay.components.insert(
+            ast::InstanceId::new(1),
+            ast::InstanceData {
+                dims_expr: vec![ast::Subscript::Expression(component_ref_expr(
+                    &["generator", "nState"],
+                    nstate_def,
+                ))],
+                ..Default::default()
+            },
+        );
+        let mut scopes = HashSet::new();
+        collect_dimension_referenced_class_scopes(&overlay, &HashSet::new(), &def_map, &mut scopes)
+            .expect("dimension references should lower for class-scope collection");
+
+        assert!(scopes.contains("Modelica.Math.Random.Generators.Xorshift128plus"));
     }
 
     #[test]
     fn extract_nested_class_constants_skips_non_package_nested_classes() {
         let tree = ast::ClassTree::new();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
         let mut ctx = Context::new();
 
         let mut outer = ast::ClassDef {
             name: token("Outer"),
-            class_type: ast::ClassType::Model,
+            class_type: rumoca_core::ClassType::Model,
             ..Default::default()
         };
 
         let mut package_alias = ast::ClassDef {
             name: token("PkgAlias"),
-            class_type: ast::ClassType::Package,
+            class_type: rumoca_core::ClassType::Package,
             ..Default::default()
         };
         package_alias.components.insert(
@@ -1832,9 +771,7 @@ mod nested_class_constant_scope_tests {
             ast::Component {
                 name: "nX".to_string(),
                 type_name: ast::Name::from_string("Integer"),
-                variability: rumoca_ir_core::Variability::Parameter(
-                    rumoca_ir_core::Token::default(),
-                ),
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
                 binding: Some(unsigned_integer("2")),
                 has_explicit_binding: true,
                 ..Default::default()
@@ -1844,7 +781,7 @@ mod nested_class_constant_scope_tests {
 
         let mut non_package_class = ast::ClassDef {
             name: token("CCCV_Cell"),
-            class_type: ast::ClassType::Model,
+            class_type: rumoca_core::ClassType::Model,
             ..Default::default()
         };
         let mut leaked_component = ast::Component {
@@ -1852,7 +789,7 @@ mod nested_class_constant_scope_tests {
             type_name: ast::Name::from_string(
                 "Modelica.Electrical.Batteries.ParameterRecords.ExampleData",
             ),
-            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_core::Token::default()),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             ..Default::default()
         };
         leaked_component
@@ -1865,7 +802,7 @@ mod nested_class_constant_scope_tests {
             .classes
             .insert("CCCV_Cell".to_string(), non_package_class);
 
-        extract_nested_class_constants(&tree, &outer, "Outer", &mut ctx);
+        extract_nested_class_constants(&tree, &class_index, &outer, "Outer", &mut ctx);
 
         assert_eq!(ctx.parameter_values.get("PkgAlias.nX"), Some(&2));
         assert_eq!(ctx.parameter_values.get("nX"), Some(&2));
@@ -1879,18 +816,222 @@ mod nested_class_constant_scope_tests {
             ctx.constant_values.keys().collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn extract_nested_class_constants_includes_nested_records_with_qualified_prefix() {
+        let tree = ast::ClassTree::new();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let mut ctx = Context::new();
+
+        let mut outer = ast::ClassDef {
+            name: token("BaseIF97"),
+            class_type: rumoca_core::ClassType::Package,
+            ..Default::default()
+        };
+
+        let mut data = ast::ClassDef {
+            name: token("data"),
+            class_type: rumoca_core::ClassType::Record,
+            ..Default::default()
+        };
+        data.components.insert(
+            "n".to_string(),
+            ast::Component {
+                name: "n".to_string(),
+                type_name: ast::Name::from_string("Real"),
+                variability: rumoca_core::Variability::Constant(rumoca_core::Token::default()),
+                binding: Some(ast::Expression::Array {
+                    elements: vec![
+                        unsigned_integer("1"),
+                        unsigned_integer("2"),
+                        unsigned_integer("3"),
+                        unsigned_integer("4"),
+                        unsigned_integer("5"),
+                    ],
+                    is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                has_explicit_binding: true,
+                ..Default::default()
+            },
+        );
+        outer.classes.insert("data".to_string(), data);
+
+        extract_nested_class_constants_with_prefix(
+            &tree,
+            &class_index,
+            &outer,
+            "Modelica.Media.Water.IF97_Utilities.BaseIF97",
+            "Modelica.Media.Water.IF97_Utilities.BaseIF97",
+            &mut ctx,
+        );
+
+        assert!(
+            ctx.constant_values
+                .contains_key("Modelica.Media.Water.IF97_Utilities.BaseIF97.data.n")
+        );
+        assert!(ctx.constant_values.contains_key("data.n"));
+    }
+
+    #[test]
+    fn extract_referenced_nested_class_constants_includes_nested_models_with_qualified_prefix() {
+        let tree = ast::ClassTree::new();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let mut ctx = Context::new();
+
+        let mut outer = ast::ClassDef {
+            name: token("Glycol47"),
+            class_type: rumoca_core::ClassType::Package,
+            ..Default::default()
+        };
+
+        let mut base_properties = ast::ClassDef {
+            name: token("BaseProperties"),
+            class_type: rumoca_core::ClassType::Model,
+            ..Default::default()
+        };
+        base_properties.components.insert(
+            "T_start".to_string(),
+            ast::Component {
+                name: "T_start".to_string(),
+                type_name: ast::Name::from_string("Real"),
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(unsigned_integer("298")),
+                has_explicit_binding: true,
+                ..Default::default()
+            },
+        );
+        outer
+            .classes
+            .insert("BaseProperties".to_string(), base_properties);
+        let mut internal = ast::ClassDef {
+            name: token("Internal"),
+            class_type: rumoca_core::ClassType::Model,
+            ..Default::default()
+        };
+        internal.components.insert(
+            "leaked".to_string(),
+            ast::Component {
+                name: "leaked".to_string(),
+                type_name: ast::Name::from_string("Real"),
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(unsigned_integer("1")),
+                has_explicit_binding: true,
+                ..Default::default()
+            },
+        );
+        outer.classes.insert("Internal".to_string(), internal);
+
+        extract_referenced_nested_class_constants_with_prefix(
+            &tree,
+            &class_index,
+            &outer,
+            "Modelica.Media.Incompressible.Examples.Glycol47",
+            "Modelica.Media.Incompressible.Examples.Glycol47",
+            &HashSet::from([
+                ("Modelica.Media.Incompressible.Examples.Glycol47.BaseProperties".to_string()),
+            ]),
+            &mut ctx,
+        );
+
+        assert!(ctx.constant_values.contains_key(
+            "Modelica.Media.Incompressible.Examples.Glycol47.BaseProperties.T_start"
+        ));
+        assert!(
+            !ctx.constant_values.contains_key("BaseProperties.T_start"),
+            "referenced nested classes should not leak bare names into the global context"
+        );
+        assert!(
+            !ctx.constant_values
+                .contains_key("Modelica.Media.Incompressible.Examples.Glycol47.Internal.leaked"),
+            "unreferenced nested classes should not be walked from referenced package scopes"
+        );
+    }
+
+    #[test]
+    fn extract_referenced_nested_class_constants_uses_inherited_nested_models() {
+        let table_based_def = rumoca_core::DefId::new(1);
+        let mut table_based = ast::ClassDef {
+            name: token("TableBased"),
+            class_type: rumoca_core::ClassType::Package,
+            def_id: Some(table_based_def),
+            ..Default::default()
+        };
+        let mut base_properties = ast::ClassDef {
+            name: token("BaseProperties"),
+            class_type: rumoca_core::ClassType::Model,
+            ..Default::default()
+        };
+        base_properties.components.insert(
+            "T_start".to_string(),
+            ast::Component {
+                name: "T_start".to_string(),
+                type_name: ast::Name::from_string("Real"),
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(unsigned_integer("298")),
+                has_explicit_binding: true,
+                ..Default::default()
+            },
+        );
+        table_based
+            .classes
+            .insert("BaseProperties".to_string(), base_properties);
+
+        let mut glycol = ast::ClassDef {
+            name: token("Glycol47"),
+            class_type: rumoca_core::ClassType::Package,
+            ..Default::default()
+        };
+        glycol.extends.push(ast::Extend {
+            base_name: ast::Name::from_string("TableBased"),
+            base_def_id: Some(table_based_def),
+            location: rumoca_core::Location::default(),
+            modifications: vec![],
+            break_names: vec![],
+            is_protected: false,
+            annotation: vec![],
+        });
+
+        let mut tree = ast::ClassTree::new();
+        tree.definitions
+            .classes
+            .insert("TableBased".to_string(), table_based);
+        tree.def_map
+            .insert(table_based_def, "TableBased".to_string());
+        tree.name_map
+            .insert("TableBased".to_string(), table_based_def);
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let mut ctx = Context::new();
+
+        extract_referenced_nested_class_constants_with_prefix(
+            &tree,
+            &class_index,
+            &glycol,
+            "Modelica.Media.Incompressible.Examples.Glycol47",
+            "Modelica.Media.Incompressible.Examples.Glycol47",
+            &HashSet::from([
+                ("Modelica.Media.Incompressible.Examples.Glycol47.BaseProperties".to_string()),
+            ]),
+            &mut ctx,
+        );
+
+        assert!(ctx.constant_values.contains_key(
+            "Modelica.Media.Incompressible.Examples.Glycol47.BaseProperties.T_start"
+        ));
+    }
 }
 
 fn inject_enclosing_class_constants(tree: &ast::ClassTree, model_name: &str, ctx: &mut Context) {
     let Some(enclosing_name) = crate::path_utils::parent_scope(model_name) else {
         return;
     };
-    let ancestors = collect_ancestor_classes(tree, enclosing_name);
+    let class_index = ast::ClassDefIndex::from_tree(tree);
+    let ancestors = collect_ancestor_classes_with_index(tree, &class_index, enclosing_name);
     if ancestors.is_empty() {
         return;
     }
     for ancestor in &ancestors {
-        extract_nested_class_constants(tree, ancestor, enclosing_name, ctx);
+        extract_nested_class_constants(tree, &class_index, ancestor, enclosing_name, ctx);
     }
-    extract_ancestor_constants_multi_pass(tree, enclosing_name, &ancestors, ctx);
+    extract_ancestor_constants_multi_pass(tree, &class_index, enclosing_name, &ancestors, ctx);
 }

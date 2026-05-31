@@ -236,7 +236,7 @@ fn compile_unpack_path(
     field_path: &str,
     route: &RouteEntry,
 ) -> anyhow::Result<UnpackOp> {
-    let parts: Vec<&str> = field_path.split('.').collect();
+    let parts = split_field_path(field_path);
 
     if parts.is_empty() {
         anyhow::bail!("empty field path");
@@ -598,7 +598,7 @@ fn compile_pack_path(
     table_off: usize,
     field_positions: &[(u16, usize, &Field)],
 ) -> anyhow::Result<PackOp> {
-    let parts: Vec<&str> = field_path.split('.').collect();
+    let parts = split_field_path(field_path);
     if parts.is_empty() {
         anyhow::bail!("empty field path");
     }
@@ -677,6 +677,19 @@ fn compile_pack_path(
         buf_offset: field_abs + byte_offset,
         scalar_type: leaf_field.field_type.base_type,
     })
+}
+
+fn split_field_path(field_path: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for (idx, ch) in field_path.char_indices() {
+        if ch == '.' {
+            parts.push(&field_path[start..idx]);
+            start = idx + 1;
+        }
+    }
+    parts.push(&field_path[start..]);
+    parts
 }
 
 #[cfg(test)]

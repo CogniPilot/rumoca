@@ -378,7 +378,7 @@ end StartValue;
 "#;
         let r = assert_compiles(source, "StartValue");
         // Verify start value is captured
-        assert!(r.dae.states.values().any(|v| v.start.is_some()));
+        assert!(r.dae.variables.states.values().any(|v| v.start.is_some()));
     }
 
     #[test]
@@ -553,7 +553,7 @@ equation
 end FixedAttr;
 "#;
         let r = assert_compiles(source, "FixedAttr");
-        if let Some(state) = r.dae.states.values().next() {
+        if let Some(state) = r.dae.variables.states.values().next() {
             println!("FixedAttr: fixed = {:?}", state.fixed);
         }
     }
@@ -1019,7 +1019,7 @@ mod tier_5_conditionals {
     use super::*;
 
     fn condition_observer_count(dae: &rumoca_ir_dae::Dae) -> usize {
-        dae.relation.len() + dae.synthetic_root_conditions.len()
+        dae.conditions.relations.len() + dae.events.synthetic_root_conditions.len()
     }
 
     #[test]
@@ -1126,7 +1126,11 @@ end WhenEq;
         assert_eq!(r.states, 1, "Should have 1 state (x)");
         assert_eq!(r.discrete_reals, 1, "Should have 1 discrete (y)");
         assert_eq!(r.f_x_count, 1, "Should have 1 ODE equation");
-        assert_eq!(r.dae.relation.len(), 1, "Should have 1 when condition");
+        assert_eq!(
+            r.dae.conditions.relations.len(),
+            1,
+            "Should have 1 when condition"
+        );
     }
 
     #[test]
@@ -1145,9 +1149,13 @@ end WhenSimple;
         let r = assert_compiles(source, "WhenSimple");
         assert_eq!(r.states, 1, "Should have 1 state (x)");
         assert_eq!(r.discrete_reals, 1, "Should have 1 discrete (d)");
-        assert_eq!(r.dae.relation.len(), 1, "Should have 1 when condition");
         assert_eq!(
-            r.dae.f_z.len() + r.dae.f_m.len(),
+            r.dae.conditions.relations.len(),
+            1,
+            "Should have 1 when condition"
+        );
+        assert_eq!(
+            r.dae.discrete.real_updates.len() + r.dae.discrete.valued_updates.len(),
             1,
             "when condition should lower to one event-partition equation"
         );
@@ -1225,11 +1233,125 @@ end BouncingBall;
         let r = assert_compiles(source, "BouncingBall");
         assert_eq!(r.states, 2, "Should have 2 states (h, v)");
         assert_eq!(r.f_x_count, 2, "Should have 2 ODE equations");
-        assert_eq!(r.dae.relation.len(), 1, "Should have 1 when condition");
         assert_eq!(
-            r.dae.f_z.len() + r.dae.f_m.len(),
+            r.dae.conditions.relations.len(),
+            1,
+            "Should have 1 when condition"
+        );
+        assert_eq!(
+            r.dae.discrete.real_updates.len() + r.dae.discrete.valued_updates.len(),
             1,
             "reinit when should lower to one event-partition equation"
+        );
+    }
+
+    #[test]
+    fn t5_09_when_with_reinit_simulates_event_path() {
+        let source = r#"
+model ReinitOnTime
+    Real x(start = 0);
+equation
+    der(x) = 1;
+    when time > 0.5 then
+        reinit(x, -1);
+    end when;
+end ReinitOnTime;
+"#;
+        let r = assert_compiles(source, "ReinitOnTime");
+        let opts = rumoca_sim::SimOptions {
+            t_end: 0.75,
+            dt: Some(0.01),
+            solver_mode: rumoca_sim::SimSolverMode::RkLike,
+            ..rumoca_sim::SimOptions::default()
+        };
+        let sim = rumoca_sim::simulate_dae_with_diagnostics(&r.dae, &opts)
+            .expect("reinit event model should simulate");
+        let x_idx = sim
+            .names
+            .iter()
+            .position(|name| name == "x")
+            .expect("simulation result should include state x");
+        let x_final = *sim.data[x_idx]
+            .last()
+            .expect("simulation result should include final x sample");
+        assert!(
+            x_final < -0.6 && x_final > -0.9,
+            "expected reinit at t=0.5 followed by der(x)=1, got final x={x_final}"
+        );
+    }
+
+    #[test]
+    fn t5_09_right_continuous_time_event_matches_strict_event_limit() {
+        let strict_source = r#"
+model StrictStepRLC
+    parameter Real Vb = 24;
+    parameter Real L = 1;
+    parameter Real R = 100;
+    parameter Real C = 1e-3;
+    Real Vs;
+    Real V(start = 0);
+    Real i_L(start = 0);
+    Real i_R;
+    Real i_C;
+equation
+    Vs = if time > 0.5 then Vb else 0;
+    i_R = V/R;
+    i_C = C*der(V);
+    i_L = i_R + i_C;
+    L*der(i_L) = Vs - V;
+end StrictStepRLC;
+"#;
+        let right_continuous_source = r#"
+model RightContinuousStepRLC
+    parameter Real Vb = 24;
+    parameter Real L = 1;
+    parameter Real R = 100;
+    parameter Real C = 1e-3;
+    Real Vs;
+    Real V(start = 0);
+    Real i_L(start = 0);
+    Real i_R;
+    Real i_C;
+equation
+    Vs = if time < 0.5 then 0 else Vb;
+    i_R = V/R;
+    i_C = C*der(V);
+    i_L = i_R + i_C;
+    L*der(i_L) = Vs - V;
+end RightContinuousStepRLC;
+"#;
+        let strict = assert_compiles(strict_source, "StrictStepRLC");
+        let right_continuous = assert_compiles(right_continuous_source, "RightContinuousStepRLC");
+        let opts = rumoca_sim::SimOptions {
+            t_end: 0.75,
+            solver_mode: rumoca_sim::SimSolverMode::RkLike,
+            ..rumoca_sim::SimOptions::default()
+        };
+        let strict_sim = rumoca_sim::simulate_dae_with_diagnostics(&strict.dae, &opts)
+            .expect("strict step RLC should simulate");
+        let right_sim = rumoca_sim::simulate_dae_with_diagnostics(&right_continuous.dae, &opts)
+            .expect("right-continuous step RLC should simulate");
+        let strict_v_idx = strict_sim
+            .names
+            .iter()
+            .position(|candidate| candidate == "V")
+            .expect("strict simulation result should include V");
+        let right_v_idx = right_sim
+            .names
+            .iter()
+            .position(|candidate| candidate == "V")
+            .expect("right-continuous simulation result should include V");
+        let strict_v = strict_sim.data[strict_v_idx].as_slice();
+        let right_v = right_sim.data[right_v_idx].as_slice();
+        let max_delta = strict_v
+            .iter()
+            .zip(right_v)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+
+        assert!(
+            max_delta <= 1.0e-9,
+            "right-continuous source should not affect left-limit integration, max delta={max_delta}"
         );
     }
 
@@ -1248,9 +1370,13 @@ end PreInWhen;
 "#;
         let r = assert_compiles(source, "PreInWhen");
         assert_eq!(r.states, 1, "Should have 1 state (x)");
-        assert_eq!(r.dae.relation.len(), 1, "Should have 1 when condition");
         assert_eq!(
-            r.dae.f_z.len() + r.dae.f_m.len(),
+            r.dae.conditions.relations.len(),
+            1,
+            "Should have 1 when condition"
+        );
+        assert_eq!(
+            r.dae.discrete.real_updates.len() + r.dae.discrete.valued_updates.len(),
             1,
             "when condition should lower to one event-partition equation"
         );
@@ -1277,8 +1403,20 @@ end PreDiscreteInContinuous;
             "Integer discrete should not be counted as z"
         );
         assert_eq!(
-            r.discrete_valued, 1,
-            "Integer discrete should be counted as m"
+            r.discrete_valued, 2,
+            "integer discrete plus canonical condition memory should be counted as m"
+        );
+        assert!(
+            r.dae
+                .variables
+                .discrete_valued
+                .contains_key(&rumoca_core::VarName::new("mode"))
+        );
+        assert!(
+            r.dae
+                .variables
+                .discrete_valued
+                .contains_key(&rumoca_core::VarName::new("c"))
         );
     }
 
@@ -1426,7 +1564,7 @@ end WhenForParam;
             "Should have at least one condition observer for when/change"
         );
         assert_eq!(
-            r.dae.f_z.len() + r.dae.f_m.len(),
+            r.dae.discrete.real_updates.len() + r.dae.discrete.valued_updates.len(),
             2,
             "when loop should lower to two event-partition equations"
         );
@@ -1463,7 +1601,7 @@ end Extractor;
             "Should have at least one condition observer for when"
         );
         assert_eq!(
-            r.dae.f_z.len() + r.dae.f_m.len(),
+            r.dae.discrete.real_updates.len() + r.dae.discrete.valued_updates.len(),
             1,
             "when loop should lower to one event-partition equation (nin=1)"
         );
@@ -1502,7 +1640,12 @@ end DynamicBoolIf;
         // The if-equation must be preserved as a conditional equation, NOT resolved
         // at compile time using the start value (false). Check that at least one
         // equation in f_x contains an If expression (may be nested inside Binary residual).
-        let has_conditional = r.dae.f_x.iter().any(|eq| contains_if_expr(&eq.rhs));
+        let has_conditional = r
+            .dae
+            .continuous
+            .equations
+            .iter()
+            .any(|eq| contains_if_expr(&eq.rhs));
         assert!(
             has_conditional,
             "If-equation with dynamic Boolean condition must be preserved, not resolved using start value"
@@ -1556,7 +1699,12 @@ end TestCardinality;
             "cardinality() should be evaluated at compile time for branch selection"
         );
         // Verify the if-equation was resolved at compile time (no If in DAE equations)
-        let has_conditional = r.dae.f_x.iter().any(|eq| contains_if_expr(&eq.rhs));
+        let has_conditional = r
+            .dae
+            .continuous
+            .equations
+            .iter()
+            .any(|eq| contains_if_expr(&eq.rhs));
         assert!(
             !has_conditional,
             "cardinality() if-equations should be resolved at compile time, not left as conditionals"
@@ -1623,32 +1771,35 @@ end WhenIfPreserved;
             "Should have at least one condition observer for when/sample"
         );
         assert_eq!(
-            r.dae.f_z.len() + r.dae.f_m.len(),
+            r.dae.discrete.real_updates.len() + r.dae.discrete.valued_updates.len(),
             2,
             "conditional when-equation should produce one preserved assignment per target"
         );
 
         let mut targets = r
             .dae
-            .f_z
+            .discrete
+            .real_updates
             .iter()
-            .chain(r.dae.f_m.iter())
+            .chain(r.dae.discrete.valued_updates.iter())
             .filter_map(|eq| eq.lhs.as_ref().map(|name| name.as_str().to_string()))
             .collect::<Vec<_>>();
         targets.sort();
         assert_eq!(targets, vec!["a", "b"]);
         assert!(
             r.dae
-                .f_z
+                .discrete
+                .real_updates
                 .iter()
-                .chain(r.dae.f_m.iter())
+                .chain(r.dae.discrete.valued_updates.iter())
                 .all(|eq| contains_if_expr(&eq.rhs)),
             "When conditional assignments should be lowered to If expressions in DAE RHS"
         );
     }
 
     /// If-equations without an else branch in when-clauses must keep previous
-    /// value semantics for non-taken branches (`pre(x)` fallback).
+    /// value semantics for non-taken branches via the lowered `__pre__.*`
+    /// parameter slot.
     #[test]
     fn t5_24_when_if_without_else_uses_pre_fallback() {
         let source = r#"
@@ -1670,15 +1821,16 @@ end WhenIfNoElse;
             "Should have at least one condition observer for when/sample"
         );
         assert_eq!(
-            r.dae.f_z.len() + r.dae.f_m.len(),
+            r.dae.discrete.real_updates.len() + r.dae.discrete.valued_updates.len(),
             1,
             "single-target when-if should produce one preserved assignment"
         );
         let eq = r
             .dae
-            .f_z
+            .discrete
+            .real_updates
             .iter()
-            .chain(r.dae.f_m.iter())
+            .chain(r.dae.discrete.valued_updates.iter())
             .next()
             .expect("expected one event equation");
         assert!(
@@ -1686,8 +1838,8 @@ end WhenIfNoElse;
             "when-if must remain conditional in DAE"
         );
         assert!(
-            contains_pre_expr(&eq.rhs),
-            "when-if without else must include pre() fallback for non-taken branch"
+            contains_pre_param_ref(&eq.rhs),
+            "when-if without else must include lowered pre fallback for non-taken branch"
         );
     }
 }

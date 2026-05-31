@@ -220,6 +220,31 @@ fn type_005_class_component_mismatch() {
 }
 
 #[test]
+fn type_005_unrelated_nested_class_does_not_shadow_outer_value() {
+    expect_success(
+        r#"
+        package Other
+            record data
+                Real x;
+            end data;
+        end Other;
+
+        model Base
+            constant Real data = 2.0;
+        end Base;
+
+        model Test
+            extends Base;
+            Real y;
+        equation
+            y = data;
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
 fn type_028_record_mismatch_fails() {
     expect_failure_in_phase_with_code(
         r#"

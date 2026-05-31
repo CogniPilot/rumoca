@@ -1,11 +1,11 @@
 //! Conversion for class definitions and composition structures.
 
 use super::expressions::ExpressionList;
-use super::helpers::span_location;
+use super::helpers::{merge_spans, span_location, token_span};
 use super::sections::{AlgorithmSection, EquationSection};
 use crate::errors::semantic_error_from_token;
 use crate::generated::modelica_grammar_trait;
-use indexmap::IndexMap;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
 
 //-----------------------------------------------------------------------------
@@ -27,11 +27,13 @@ fn extract_extends_modifiers(
         .args
         .iter()
         .zip(arg_list.argument_list.each_flags.iter())
+        .zip(arg_list.argument_list.final_flags.iter())
         .zip(arg_list.argument_list.redeclare_flags.iter())
         .map(
-            |((expr, &each), &redeclare)| rumoca_ir_ast::ExtendModification {
+            |(((expr, &each), &final_), &redeclare)| rumoca_ir_ast::ExtendModification {
                 expr: expr.clone(),
                 each,
+                final_,
                 redeclare,
             },
         )
@@ -70,16 +72,16 @@ fn make_enum_literal(
 /// Extract causality from a BasePrefix.
 fn extract_causality_from_base_prefix(
     base_prefix: &modelica_grammar_trait::BasePrefix,
-) -> rumoca_ir_core::Causality {
+) -> rumoca_core::Causality {
     let Some(opt) = &base_prefix.base_prefix_opt else {
-        return rumoca_ir_core::Causality::Empty;
+        return rumoca_core::Causality::Empty;
     };
     match &opt.base_prefix_opt_group {
         modelica_grammar_trait::BasePrefixOptGroup::Input(inp) => {
-            rumoca_ir_core::Causality::Input(inp.input.input.clone().into())
+            rumoca_core::Causality::Input(inp.input.input.clone().into())
         }
         modelica_grammar_trait::BasePrefixOptGroup::Output(out) => {
-            rumoca_ir_core::Causality::Output(out.output.output.clone().into())
+            rumoca_core::Causality::Output(out.output.output.clone().into())
         }
     }
 }
@@ -109,11 +111,13 @@ fn extract_type_class_mods(
         .args
         .iter()
         .zip(arg_list.argument_list.each_flags.iter())
+        .zip(arg_list.argument_list.final_flags.iter())
         .zip(arg_list.argument_list.redeclare_flags.iter())
         .map(
-            |((expr, &each), &redeclare)| rumoca_ir_ast::ExtendModification {
+            |(((expr, &each), &final_), &redeclare)| rumoca_ir_ast::ExtendModification {
                 expr: expr.clone(),
                 each,
+                final_,
                 redeclare,
             },
         )
@@ -132,11 +136,13 @@ fn collect_named_args(
             subs: None,
         }],
         local: false,
+        span: token_span(&arg.ident),
         ..Default::default()
     });
     let rhs = arg.function_argument.clone();
     mods.push(rumoca_ir_ast::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Assign(arg.ident.clone()),
+        op: rumoca_core::OpBinary::Assign,
+        span: merge_spans(lhs.span(), rhs.span()),
         lhs: Arc::new(lhs),
         rhs: Arc::new(rhs),
     });
@@ -256,7 +262,7 @@ fn process_algorithm_section(comp: &mut Composition, sec: &AlgorithmSection) {
 /// Validate annotation modifiers per MLS §18.2.
 pub(crate) fn validate_annotation_modifiers(
     arg_list: &ExpressionList,
-    annotation_token: &rumoca_ir_core::Token,
+    annotation_token: &rumoca_core::Token,
 ) -> Result<(), anyhow::Error> {
     for each in &arg_list.each_flags {
         if *each {
@@ -301,18 +307,15 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for rumoca_ir_ast::Store
         ast: &modelica_grammar_trait::StoredDefinition,
     ) -> std::result::Result<Self, Self::Error> {
         let mut def = rumoca_ir_ast::StoredDefinition {
-            classes: IndexMap::new(),
+            classes: IndexMap::default(),
             ..Default::default()
         };
-
-        // Predefined types that cannot be redeclared (MLS §4.8)
-        const PREDEFINED_TYPES: &[&str] = &["Real", "Integer", "Boolean", "String"];
 
         for class in &ast.stored_definition_list {
             let class_name = &class.class_definition.name.text;
 
             // Check for redeclaration of predefined types
-            if PREDEFINED_TYPES.contains(&&**class_name) {
+            if rumoca_core::is_predefined_user_redeclaration(class_name) {
                 return Err(semantic_error_from_token(
                     format!("Cannot redeclare predefined type '{class_name}'"),
                     &class.class_definition.name,
@@ -345,10 +348,10 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for rumoca_ir_ast::Store
 /// - Functions cannot have equation sections (only algorithm sections)
 fn validate_class_restrictions(class_def: &rumoca_ir_ast::ClassDef) -> anyhow::Result<()> {
     match class_def.class_type {
-        rumoca_ir_ast::ClassType::Connector => validate_connector_restrictions(class_def)?,
-        rumoca_ir_ast::ClassType::Package => validate_package_restrictions(class_def)?,
-        rumoca_ir_ast::ClassType::Record => validate_record_restrictions(class_def)?,
-        rumoca_ir_ast::ClassType::Function => validate_function_restrictions(class_def)?,
+        rumoca_core::ClassType::Connector => validate_connector_restrictions(class_def)?,
+        rumoca_core::ClassType::Package => validate_package_restrictions(class_def)?,
+        rumoca_core::ClassType::Record => validate_record_restrictions(class_def)?,
+        rumoca_core::ClassType::Function => validate_function_restrictions(class_def)?,
         _ => {}
     }
 
@@ -423,7 +426,7 @@ fn validate_package_restrictions(class_def: &rumoca_ir_ast::ClassDef) -> anyhow:
         ));
     }
     for (name, comp) in &class_def.components {
-        if !matches!(comp.variability, rumoca_ir_core::Variability::Constant(_)) {
+        if !matches!(comp.variability, rumoca_core::Variability::Constant(_)) {
             return Err(class_restriction_error(
                 class_def,
                 format!(
@@ -481,23 +484,21 @@ fn validate_function_restrictions(class_def: &rumoca_ir_ast::ClassDef) -> anyhow
 }
 
 /// Convert grammar ClassType to IR ClassType
-fn convert_class_type(class_type: &modelica_grammar_trait::ClassType) -> rumoca_ir_ast::ClassType {
+fn convert_class_type(class_type: &modelica_grammar_trait::ClassType) -> rumoca_core::ClassType {
     match class_type {
-        modelica_grammar_trait::ClassType::Class(_) => rumoca_ir_ast::ClassType::Class,
-        modelica_grammar_trait::ClassType::Model(_) => rumoca_ir_ast::ClassType::Model,
-        modelica_grammar_trait::ClassType::ClassTypeOptRecord(_) => {
-            rumoca_ir_ast::ClassType::Record
-        }
-        modelica_grammar_trait::ClassType::Block(_) => rumoca_ir_ast::ClassType::Block,
+        modelica_grammar_trait::ClassType::Class(_) => rumoca_core::ClassType::Class,
+        modelica_grammar_trait::ClassType::Model(_) => rumoca_core::ClassType::Model,
+        modelica_grammar_trait::ClassType::ClassTypeOptRecord(_) => rumoca_core::ClassType::Record,
+        modelica_grammar_trait::ClassType::Block(_) => rumoca_core::ClassType::Block,
         modelica_grammar_trait::ClassType::ClassTypeOpt0Connector(_) => {
-            rumoca_ir_ast::ClassType::Connector
+            rumoca_core::ClassType::Connector
         }
-        modelica_grammar_trait::ClassType::Type(_) => rumoca_ir_ast::ClassType::Type,
-        modelica_grammar_trait::ClassType::Package(_) => rumoca_ir_ast::ClassType::Package,
+        modelica_grammar_trait::ClassType::Type(_) => rumoca_core::ClassType::Type,
+        modelica_grammar_trait::ClassType::Package(_) => rumoca_core::ClassType::Package,
         modelica_grammar_trait::ClassType::ClassTypeOpt1ClassTypeOpt2Function(_) => {
-            rumoca_ir_ast::ClassType::Function
+            rumoca_core::ClassType::Function
         }
-        modelica_grammar_trait::ClassType::Operator(_) => rumoca_ir_ast::ClassType::Operator,
+        modelica_grammar_trait::ClassType::Operator(_) => rumoca_core::ClassType::Operator,
     }
 }
 
@@ -541,7 +542,7 @@ fn is_pure_function(class_type: &modelica_grammar_trait::ClassType) -> bool {
 }
 
 /// Extract the keyword token from grammar ClassType for semantic highlighting
-fn get_class_type_token(class_type: &modelica_grammar_trait::ClassType) -> rumoca_ir_core::Token {
+fn get_class_type_token(class_type: &modelica_grammar_trait::ClassType) -> rumoca_core::Token {
     match class_type {
         modelica_grammar_trait::ClassType::Class(c) => c.class.class.clone().into(),
         modelica_grammar_trait::ClassType::Model(m) => m.model.model.clone().into(),
@@ -564,8 +565,8 @@ fn get_class_type_token(class_type: &modelica_grammar_trait::ClassType) -> rumoc
 
 /// Context for class conversion - common fields from ClassDefinition
 struct ClassConversionContext {
-    class_type: rumoca_ir_ast::ClassType,
-    class_type_token: rumoca_ir_core::Token,
+    class_type: rumoca_core::ClassType,
+    class_type_token: rumoca_core::Token,
     encapsulated: bool,
     partial: bool,
     expandable: bool,
@@ -614,7 +615,7 @@ fn convert_standard_class_specifier(
         expandable: ctx.expandable,
         operator_record: ctx.operator_record,
         pure: ctx.pure,
-        causality: rumoca_ir_core::Causality::Empty,
+        causality: rumoca_core::Causality::Empty,
         equation_keyword: spec.composition.equation_keyword.clone(),
         initial_equation_keyword: spec.composition.initial_equation_keyword.clone(),
         algorithm_keyword: spec.composition.algorithm_keyword.clone(),
@@ -624,7 +625,10 @@ fn convert_standard_class_specifier(
         annotation: spec.composition.annotation.clone(),
         is_protected: false,
         is_final: false,
+        is_inner: false,
+        is_outer: false,
         is_replaceable: false,
+        is_redeclare: false,
         constrainedby: None,
         array_subscripts: vec![],
         external: spec.composition.external.clone(),
@@ -679,7 +683,7 @@ fn convert_extends_class_specifier(
         expandable: ctx.expandable,
         operator_record: ctx.operator_record,
         pure: ctx.pure,
-        causality: rumoca_ir_core::Causality::Empty,
+        causality: rumoca_core::Causality::Empty,
         equation_keyword: spec.composition.equation_keyword.clone(),
         initial_equation_keyword: spec.composition.initial_equation_keyword.clone(),
         algorithm_keyword: spec.composition.algorithm_keyword.clone(),
@@ -689,7 +693,10 @@ fn convert_extends_class_specifier(
         annotation: spec.composition.annotation.clone(),
         is_protected: false,
         is_final: false,
+        is_inner: false,
+        is_outer: false,
         is_replaceable: false,
+        is_redeclare: false,
         constrainedby: None,
         array_subscripts: vec![],
         external: spec.composition.external.clone(),
@@ -708,24 +715,24 @@ fn convert_enum_class_specifier(
         def_id: None,
         scope_id: None,
         name: enum_spec.ident.clone(),
-        class_type: rumoca_ir_ast::ClassType::Type,
+        class_type: rumoca_core::ClassType::Type,
         class_type_token: ctx.class_type_token.clone(),
         description: vec![],
         location: enum_spec.ident.location.clone(),
         extends: vec![],
         imports: vec![],
-        classes: IndexMap::new(),
+        classes: IndexMap::default(),
         equations: vec![],
         algorithms: vec![],
         initial_equations: vec![],
         initial_algorithms: vec![],
-        components: IndexMap::new(),
+        components: IndexMap::default(),
         encapsulated: ctx.encapsulated,
         partial: ctx.partial,
         expandable: false,
         operator_record: false,
         pure: true, // Enums are not functions
-        causality: rumoca_ir_core::Causality::Empty,
+        causality: rumoca_core::Causality::Empty,
         equation_keyword: None,
         initial_equation_keyword: None,
         algorithm_keyword: None,
@@ -735,7 +742,10 @@ fn convert_enum_class_specifier(
         annotation: vec![],
         is_protected: false,
         is_final: false,
+        is_inner: false,
+        is_outer: false,
         is_replaceable: false,
+        is_redeclare: false,
         constrainedby: None,
         array_subscripts: vec![],
         external: None, // Enums don't have external declarations
@@ -772,12 +782,12 @@ fn convert_type_class_specifier(
         location: type_spec.ident.location.clone(),
         extends: vec![extend],
         imports: vec![],
-        classes: IndexMap::new(),
+        classes: IndexMap::default(),
         equations: vec![],
         algorithms: vec![],
         initial_equations: vec![],
         initial_algorithms: vec![],
-        components: IndexMap::new(),
+        components: IndexMap::default(),
         encapsulated: ctx.encapsulated,
         partial: ctx.partial,
         expandable: ctx.expandable,
@@ -793,7 +803,10 @@ fn convert_type_class_specifier(
         annotation: vec![],
         is_protected: false,
         is_final: false,
+        is_inner: false,
+        is_outer: false,
         is_replaceable: false,
+        is_redeclare: false,
         constrainedby: None,
         array_subscripts,
         external: None, // Type aliases don't have external declarations
@@ -822,6 +835,7 @@ fn convert_function_partial_class_specifier(
         .map(|expr| rumoca_ir_ast::ExtendModification {
             expr,
             each: false,
+            final_: false,
             redeclare: false,
         })
         .collect();
@@ -846,18 +860,18 @@ fn convert_function_partial_class_specifier(
         location: partial_spec.ident.location.clone(),
         extends: vec![extend],
         imports: vec![],
-        classes: IndexMap::new(),
+        classes: IndexMap::default(),
         equations: vec![],
         algorithms: vec![],
         initial_equations: vec![],
         initial_algorithms: vec![],
-        components: IndexMap::new(),
+        components: IndexMap::default(),
         encapsulated: ctx.encapsulated,
         partial: ctx.partial,
         expandable: false,
         operator_record: false,
         pure: ctx.pure,
-        causality: rumoca_ir_core::Causality::Empty,
+        causality: rumoca_core::Causality::Empty,
         equation_keyword: None,
         initial_equation_keyword: None,
         algorithm_keyword: None,
@@ -867,7 +881,10 @@ fn convert_function_partial_class_specifier(
         annotation: vec![],
         is_protected: false,
         is_final: false,
+        is_inner: false,
+        is_outer: false,
         is_replaceable: false,
+        is_redeclare: false,
         constrainedby: None,
         array_subscripts: vec![],
         external: None, // Function partial applications don't have external declarations
@@ -906,18 +923,18 @@ fn convert_der_class_specifier(
         location: der_spec.ident.location.clone(),
         extends: vec![extend],
         imports: vec![],
-        classes: IndexMap::new(),
+        classes: IndexMap::default(),
         equations: vec![],
         algorithms: vec![],
         initial_equations: vec![],
         initial_algorithms: vec![],
-        components: IndexMap::new(),
+        components: IndexMap::default(),
         encapsulated: ctx.encapsulated,
         partial: ctx.partial,
         expandable: false,
         operator_record: false,
         pure: ctx.pure,
-        causality: rumoca_ir_core::Causality::Empty,
+        causality: rumoca_core::Causality::Empty,
         equation_keyword: None,
         initial_equation_keyword: None,
         algorithm_keyword: None,
@@ -927,7 +944,10 @@ fn convert_der_class_specifier(
         annotation: vec![],
         is_protected: false,
         is_final: false,
+        is_inner: false,
+        is_outer: false,
         is_replaceable: false,
+        is_redeclare: false,
         constrainedby: None,
         array_subscripts: vec![],
         external: None,
@@ -990,13 +1010,13 @@ pub struct Composition {
     pub algorithms: Vec<Vec<rumoca_ir_ast::Statement>>,
     pub initial_algorithms: Vec<Vec<rumoca_ir_ast::Statement>>,
     /// Token for "equation" keyword (if present)
-    pub equation_keyword: Option<rumoca_ir_core::Token>,
+    pub equation_keyword: Option<rumoca_core::Token>,
     /// Token for "initial equation" keyword (if present)
-    pub initial_equation_keyword: Option<rumoca_ir_core::Token>,
+    pub initial_equation_keyword: Option<rumoca_core::Token>,
     /// Token for "algorithm" keyword (if present)
-    pub algorithm_keyword: Option<rumoca_ir_core::Token>,
+    pub algorithm_keyword: Option<rumoca_core::Token>,
     /// Token for "initial algorithm" keyword (if present)
-    pub initial_algorithm_keyword: Option<rumoca_ir_core::Token>,
+    pub initial_algorithm_keyword: Option<rumoca_core::Token>,
     /// Annotation clause for this class
     pub annotation: Vec<rumoca_ir_ast::Expression>,
     /// External function declaration (MLS §12.9)

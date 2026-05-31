@@ -34,6 +34,22 @@ test("resolveSourceRootPaths expands home paths and preserves relative entries",
   ]);
 });
 
+test("resolveSourceRootPaths resolves configured relative entries against a workspace base", () => {
+  const homeDir = path.join(path.sep, "tmp", "rumoca-home");
+  const workspaceDir = path.join(path.sep, "tmp", "rumoca-workspace");
+  const sources = resolveSourceRootPaths(
+    ["target/msl/Modelica", "target/cmm/CMM-v0.0.1"],
+    {},
+    homeDir,
+    workspaceDir,
+  );
+
+  assert.deepEqual(sources.configuredPaths, [
+    path.join(workspaceDir, "target", "msl", "Modelica"),
+    path.join(workspaceDir, "target", "cmm", "CMM-v0.0.1"),
+  ]);
+});
+
 test("changedRumocaRestartKeys only returns restart-relevant settings", () => {
   const changed = new Set(["rumoca.sourceRootPaths", "rumoca.debug", "rumoca.simulation.dt"]);
   const keys = changedRumocaRestartKeys((section) => changed.has(section));

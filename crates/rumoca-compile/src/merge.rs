@@ -4,7 +4,6 @@
 //! handling within clauses and package hierarchies.
 
 use anyhow::{Context, Result};
-use indexmap::IndexMap;
 use rumoca_ir_ast as ast;
 use serde::Serialize;
 use serde_json::Value;
@@ -27,7 +26,7 @@ pub(crate) struct MergeSemanticLabel {
 
 impl MergeSemanticError {
     fn label_from_token(
-        token: &rumoca_ir_core::Token,
+        token: &rumoca_core::Token,
         primary: bool,
         message: &'static str,
     ) -> MergeSemanticLabel {
@@ -47,8 +46,8 @@ impl MergeSemanticError {
 
     fn from_primary_with_related(
         message: impl Into<String>,
-        primary: &rumoca_ir_core::Token,
-        related: &rumoca_ir_core::Token,
+        primary: &rumoca_core::Token,
+        related: &rumoca_core::Token,
     ) -> Self {
         Self {
             message: message.into(),
@@ -70,8 +69,8 @@ impl std::error::Error for MergeSemanticError {}
 
 fn merge_error_from_primary_with_related(
     message: impl Into<String>,
-    primary: &rumoca_ir_core::Token,
-    related: &rumoca_ir_core::Token,
+    primary: &rumoca_core::Token,
+    related: &rumoca_core::Token,
 ) -> anyhow::Error {
     anyhow::Error::new(MergeSemanticError::from_primary_with_related(
         message, primary, related,
@@ -144,8 +143,8 @@ fn merge_class_at_top_level(
     };
 
     // Check if both are packages that can be merged
-    let both_packages = matches!(existing.class_type, ast::ClassType::Package)
-        && matches!(class_def.class_type, ast::ClassType::Package);
+    let both_packages = matches!(existing.class_type, rumoca_core::ClassType::Package)
+        && matches!(class_def.class_type, rumoca_core::ClassType::Package);
 
     if both_packages {
         merge_package_contents(existing, class_def, &class_name, file_path)?;
@@ -172,7 +171,7 @@ fn place_class_in_hierarchy(
     class_def: ast::ClassDef,
     file_path: &str,
 ) -> Result<()> {
-    let parts: Vec<&str> = prefix.split('.').collect();
+    let parts: Vec<&str> = rumoca_core::split_path_with_indices(prefix);
 
     // Ensure the package hierarchy exists
     let mut current_map = &mut merged.classes;
@@ -189,11 +188,11 @@ fn place_class_in_hierarchy(
             if !current_map.contains_key(*part) {
                 // Create the package
                 let pkg = ast::ClassDef {
-                    name: rumoca_ir_core::Token {
+                    name: rumoca_core::Token {
                         text: std::sync::Arc::from(*part),
                         ..Default::default()
                     },
-                    class_type: ast::ClassType::Package,
+                    class_type: rumoca_core::ClassType::Package,
                     ..Default::default()
                 };
                 current_map.insert(part.to_string(), pkg);
@@ -211,11 +210,11 @@ fn place_class_in_hierarchy(
             // Nested package
             if !current_map.contains_key(*part) {
                 let pkg = ast::ClassDef {
-                    name: rumoca_ir_core::Token {
+                    name: rumoca_core::Token {
                         text: std::sync::Arc::from(*part),
                         ..Default::default()
                     },
-                    class_type: ast::ClassType::Package,
+                    class_type: rumoca_core::ClassType::Package,
                     ..Default::default()
                 };
                 current_map.insert(part.to_string(), pkg);
@@ -235,8 +234,8 @@ fn place_class_in_hierarchy(
     // Now add the class to the final package
     if let Some(existing) = current_map.get_mut(&class_name) {
         // Check if it's a package that can be merged
-        if matches!(existing.class_type, ast::ClassType::Package)
-            && matches!(class_def.class_type, ast::ClassType::Package)
+        if matches!(existing.class_type, rumoca_core::ClassType::Package)
+            && matches!(class_def.class_type, rumoca_core::ClassType::Package)
         {
             let qualified = format!("{}.{}", prefix, class_name);
             merge_package_contents(existing, class_def, &qualified, file_path)?;
@@ -269,8 +268,8 @@ fn merge_package_contents(
     // Merge nested classes
     for (name, class) in new.classes {
         if let Some(existing_class) = existing.classes.get_mut(&name) {
-            if matches!(existing_class.class_type, ast::ClassType::Package)
-                && matches!(class.class_type, ast::ClassType::Package)
+            if matches!(existing_class.class_type, rumoca_core::ClassType::Package)
+                && matches!(class.class_type, rumoca_core::ClassType::Package)
             {
                 // Recursively merge packages
                 let nested_name = format!("{}.{}", package_name, name);
@@ -368,8 +367,27 @@ fn strip_nonsemantic_fields(value: &mut Value) {
 /// Returns names of models, blocks, and classes suitable for compilation.
 pub fn collect_model_names(def: &ast::StoredDefinition) -> Vec<String> {
     let mut names = Vec::new();
-    collect_models_from_classes(&def.classes, "", &mut names);
+    let prefix = stored_definition_within_prefix(def);
+    collect_models_from_classes(&def.classes, &prefix, &mut names);
     names
+}
+
+/// Qualify a top-level class name by the stored definition's `within` clause.
+pub fn qualify_stored_definition_class_name(def: &ast::StoredDefinition, name: &str) -> String {
+    let prefix = stored_definition_within_prefix(def);
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}.{name}")
+    }
+}
+
+fn stored_definition_within_prefix(def: &ast::StoredDefinition) -> String {
+    def.within
+        .as_ref()
+        .map(ToString::to_string)
+        .filter(|path| !path.is_empty())
+        .unwrap_or_default()
 }
 
 /// Check if a model name refers to a built-in operator (MLS §3.7.2).
@@ -382,7 +400,7 @@ fn is_builtin_operator(name: &str) -> bool {
 }
 
 fn collect_models_from_classes(
-    classes: &IndexMap<String, ast::ClassDef>,
+    classes: &ast::AstIndexMap<String, ast::ClassDef>,
     prefix: &str,
     names: &mut Vec<String>,
 ) {
@@ -395,7 +413,9 @@ fn collect_models_from_classes(
 
         // Add if it's a model, block, or class (not package, connector, record, function, type)
         match class.class_type {
-            ast::ClassType::Model | ast::ClassType::Block | ast::ClassType::Class
+            rumoca_core::ClassType::Model
+            | rumoca_core::ClassType::Block
+            | rumoca_core::ClassType::Class
                 if !is_builtin_operator(&full_name) =>
             {
                 names.push(full_name.clone());
@@ -421,7 +441,7 @@ pub fn collect_class_type_counts(def: &ast::StoredDefinition) -> HashMap<String,
 }
 
 fn count_class_types_recursive(
-    classes: &IndexMap<String, ast::ClassDef>,
+    classes: &ast::AstIndexMap<String, ast::ClassDef>,
     prefix: &str,
     counts: &mut HashMap<String, usize>,
 ) {
@@ -448,8 +468,8 @@ fn count_class_types_recursive(
 mod tests {
     use super::*;
 
-    fn token(text: &str) -> rumoca_ir_core::Token {
-        rumoca_ir_core::Token {
+    fn token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
             text: std::sync::Arc::from(text),
             ..Default::default()
         }
@@ -458,7 +478,7 @@ mod tests {
     fn model_with_real(name: &str, component: &str) -> ast::ClassDef {
         let mut class = ast::ClassDef {
             name: token(name),
-            class_type: ast::ClassType::Model,
+            class_type: rumoca_core::ClassType::Model,
             ..Default::default()
         };
         class.components.insert(
@@ -508,7 +528,7 @@ mod tests {
         // Should have created MyPackage at top level
         assert!(merged.classes.contains_key("MyPackage"));
         let pkg = merged.classes.get("MyPackage").unwrap();
-        assert!(matches!(pkg.class_type, ast::ClassType::Package));
+        assert!(matches!(pkg.class_type, rumoca_core::ClassType::Package));
 
         // Should have SubPackage inside
         assert!(pkg.classes.contains_key("SubPackage"));
@@ -516,6 +536,22 @@ mod tests {
 
         // Should have MyModel inside SubPackage
         assert!(subpkg.classes.contains_key("MyModel"));
+    }
+
+    #[test]
+    fn test_collect_model_names_includes_within_prefix() {
+        let mut def = ast::StoredDefinition {
+            within: Some(ast::Name::from_string("Examples")),
+            ..Default::default()
+        };
+        def.classes
+            .insert("Ball".to_string(), model_with_real("Ball", "x"));
+
+        assert_eq!(collect_model_names(&def), vec!["Examples.Ball"]);
+        assert_eq!(
+            qualify_stored_definition_class_name(&def, "Ball"),
+            "Examples.Ball"
+        );
     }
 
     #[test]

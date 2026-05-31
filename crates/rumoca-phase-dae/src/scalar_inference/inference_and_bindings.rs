@@ -1,10 +1,11 @@
 use super::*;
+use rumoca_core::ExpressionRewriter;
 
 /// Infer output dimensions for single-output functions.
 ///
 /// Multi-output functions are represented as tuples and are not treated as a
 /// simple expression shape here.
-pub(crate) fn flat_function_output_dims(func: &rumoca_ir_flat::Function) -> Option<Vec<i64>> {
+pub(crate) fn flat_function_output_dims(func: &rumoca_core::Function) -> Option<Vec<i64>> {
     let output = func.outputs.first()?;
     if func.outputs.len() == 1 {
         Some(output.dims.clone())
@@ -14,8 +15,16 @@ pub(crate) fn flat_function_output_dims(func: &rumoca_ir_flat::Function) -> Opti
 }
 
 /// Compute total scalar size of a function's outputs.
-pub(crate) fn flat_function_output_scalar_size(func: &rumoca_ir_flat::Function) -> usize {
+pub(crate) fn flat_function_output_scalar_size(func: &rumoca_core::Function) -> usize {
     if func.outputs.is_empty() {
+        if func.is_constructor && !func.inputs.is_empty() {
+            return func
+                .inputs
+                .iter()
+                .map(|input| compute_var_size(&input.dims).max(1))
+                .sum::<usize>()
+                .max(1);
+        }
         return 1;
     }
     func.outputs
@@ -32,9 +41,9 @@ pub(crate) fn flat_function_output_scalar_size(func: &rumoca_ir_flat::Function) 
 /// a single element, not a full array.
 pub(crate) fn is_subscripted_element(expr: &Expression) -> bool {
     match expr {
-        Expression::VarRef { name, subscripts } => {
-            !subscripts.is_empty() || name.as_str().contains('[')
-        }
+        Expression::VarRef {
+            name, subscripts, ..
+        } => !subscripts.is_empty() || rumoca_core::has_top_level_subscript(name.as_str()),
         _ => false,
     }
 }
@@ -42,8 +51,14 @@ pub(crate) fn is_subscripted_element(expr: &Expression) -> bool {
 /// Extract an integer value from a flat expression literal.
 pub(crate) fn extract_integer_from_flat_expr(expr: &Expression) -> Option<usize> {
     match expr {
-        Expression::Literal(Literal::Integer(n)) => usize::try_from(*n).ok(),
-        Expression::Literal(Literal::Real(f)) => {
+        Expression::Literal {
+            value: Literal::Integer(n),
+            ..
+        } => usize::try_from(*n).ok(),
+        Expression::Literal {
+            value: Literal::Real(f),
+            ..
+        } => {
             let n = *f as usize;
             if (n as f64 - *f).abs() < 0.001 {
                 Some(n)
@@ -116,15 +131,19 @@ pub(crate) fn build_prefix_children(flat: &Model) -> FxHashMap<String, Vec<VarNa
         let s = name.as_str();
         for (i, ch) in s.char_indices() {
             if ch == '.' {
-                let prefix = &s[..i];
-                children
-                    .entry(prefix.to_string())
-                    .or_default()
-                    .push(name.clone());
+                push_prefix_child(&mut children, &s[..i], name);
             }
         }
     }
     children
+}
+
+fn push_prefix_child(children: &mut FxHashMap<String, Vec<VarName>>, prefix: &str, name: &VarName) {
+    if let Some(existing) = children.get_mut(prefix) {
+        existing.push(name.clone());
+        return;
+    }
+    children.insert(prefix.to_string(), vec![name.clone()]);
 }
 
 /// Extract the size of the LHS variable from a residual expression.
@@ -189,8 +208,16 @@ fn extract_lhs_var_size_from_var_name(
     // Try to extract the variable name from the LHS (no subscripts)
     let var_name = extract_var_from_lhs(lhs)?;
 
-    // Look up the variable and return its size
+    // Non-primitive records may exist as a flat prefix with scalarized child
+    // variables. MLS record equations count by their primitive components, not
+    // by the record prefix's own empty dimensions.
     if let Some(var) = flat.variables.get(&var_name) {
+        if !var.is_primitive
+            && let Some(&count) = prefix_counts.get(var_name.as_str())
+            && count > 0
+        {
+            return Some(count);
+        }
         return Some(compute_var_size(&var.dims));
     }
 
@@ -229,7 +256,7 @@ fn extract_lhs_var_size_from_var_name(
 
     // Also try progressively stripping subscripts:
     // "port_a[1].T[1]" -> "port_a[1].T" -> "port_a.T"
-    for base in subscript_fallback_chain(&var_name) {
+    for base in subscript_fallback_chain(var_name.as_str()) {
         if let Some(var) = flat.variables.get(&base) {
             // Subscripted element of a plain variable -> scalar element
             if var.dims.iter().any(|&d| d <= 0) {
@@ -272,6 +299,7 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
     if let Expression::If {
         branches,
         else_branch,
+        ..
     } = residual
     {
         return extract_conditional_residual_lhs_size(
@@ -289,7 +317,7 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
     };
 
     // Must be a subtraction
-    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_core::OpBinary::Sub) {
         return None;
     }
 
@@ -297,7 +325,7 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
     // MLS §8.4: tuple equations count as the sum of scalar sizes of all elements.
     // For (b, a) where b is Real[2] and a is Real[2], that's 2+2=4 scalar equations.
     // Skip discrete variables — they don't contribute to the continuous balance.
-    if let Expression::Tuple { elements } = lhs.as_ref() {
+    if let Expression::Tuple { elements, .. } = lhs.as_ref() {
         let continuous_scalar_count: usize = elements
             .iter()
             .filter(|e| {
@@ -306,7 +334,7 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
                 };
                 !flat
                     .variables
-                    .get(name)
+                    .get(name.var_name())
                     .is_some_and(|v| matches!(v.variability, Variability::Discrete(_)))
             })
             .map(|e| tuple_element_scalar_size(e, flat, prefix_counts))
@@ -323,8 +351,16 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
     }
 
     // Handle array-construction builtins on LHS: zeros(3), ones(3), fill(v,N), etc.
-    if let Expression::BuiltinCall { function, args } = lhs.as_ref()
+    if let Expression::BuiltinCall { function, args, .. } = lhs.as_ref()
         && let Some(size) = extract_builtin_array_size(function, args)
+    {
+        return Some(size);
+    }
+
+    if let Expression::Index {
+        base, subscripts, ..
+    } = lhs.as_ref()
+        && let Some(size) = indexed_lhs_scalar_size(base, subscripts, flat, prefix_counts)
     {
         return Some(size);
     }
@@ -333,16 +369,19 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
     // Example: angularVelocity2(R_b) = w_rel_b should count as 3 scalars,
     // not by the size of record-typed argument R_b (12 scalars).
     if let Expression::FunctionCall { name, .. } = lhs.as_ref()
-        && let Some(size) = infer_function_output_scalar_size(name, flat)
+        && let Some(size) = infer_function_output_scalar_size(name.as_str(), flat)
     {
         return Some(size);
     }
 
     // Handle subscripted VarRef: var[i] where var is a multi-dimensional array.
-    if let Expression::VarRef { name, subscripts } = lhs.as_ref() {
+    if let Expression::VarRef {
+        name, subscripts, ..
+    } = lhs.as_ref()
+    {
         // Explicit subscripts in the subscripts field
         if !subscripts.is_empty()
-            && let Some(var) = flat.variables.get(name)
+            && let Some(var) = flat.variables.get(name.var_name())
         {
             return Some(compute_subscripted_size(&var.dims, subscripts));
         }
@@ -357,6 +396,52 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
     extract_lhs_var_size_from_var_name(lhs, flat, prefix_counts)
 }
 
+fn indexed_lhs_scalar_size(
+    base: &Expression,
+    subscripts: &[Subscript],
+    flat: &Model,
+    prefix_counts: &FxHashMap<String, usize>,
+) -> Option<usize> {
+    let base_name = extract_var_from_lhs(base)?;
+    if let Some(var) = flat.variables.get(&base_name) {
+        return Some(compute_subscripted_size(&var.dims, subscripts));
+    }
+
+    let total = *prefix_counts.get(base_name.as_str())?;
+    let full_name = format!(
+        "{}{}",
+        base_name.as_str(),
+        render_subscript_suffix(subscripts)?
+    );
+    Some(record_subscript_scalar_size(
+        &full_name,
+        base_name.as_str(),
+        total,
+        flat,
+    ))
+}
+
+fn render_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
+    let mut out = String::new();
+    for subscript in subscripts {
+        match subscript {
+            Subscript::Index { value, .. } => out.push_str(&format!("[{value}]")),
+            Subscript::Expr { expr, .. } => {
+                let Expression::Literal {
+                    value: Literal::Integer(value),
+                    ..
+                } = expr.as_ref()
+                else {
+                    return None;
+                };
+                out.push_str(&format!("[{value}]"));
+            }
+            Subscript::Colon { .. } => out.push_str("[:]"),
+        }
+    }
+    Some(out)
+}
+
 /// Extract a variable name from an LHS expression.
 ///
 /// Handles:
@@ -367,35 +452,43 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
 pub(crate) fn extract_var_from_lhs(lhs: &Expression) -> Option<VarName> {
     match lhs {
         // Direct variable reference without subscripts
-        Expression::VarRef { name, subscripts } if subscripts.is_empty() => Some(name.clone()),
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => Some(name.var_name().clone()),
         // der(x) - extract the variable from inside the derivative
-        Expression::BuiltinCall { function, args }
-            if matches!(function, rumoca_ir_flat::BuiltinFunction::Der) && args.len() == 1 =>
+        Expression::BuiltinCall { function, args, .. }
+            if matches!(function, rumoca_core::BuiltinFunction::Der) && args.len() == 1 =>
         {
-            if let Expression::VarRef { name, subscripts } = &args[0]
+            if let Expression::VarRef {
+                name, subscripts, ..
+            } = &args[0]
                 && subscripts.is_empty()
             {
-                return Some(name.clone());
+                return Some(name.var_name().clone());
             }
             None
         }
         // Array containing a single variable reference: [y]
         // This pattern appears in equations like `[y] = [[u1], [u2], ...]`
         Expression::Array { elements, .. } if elements.len() == 1 => {
-            if let Expression::VarRef { name, subscripts } = &elements[0]
+            if let Expression::VarRef {
+                name, subscripts, ..
+            } = &elements[0]
                 && subscripts.is_empty()
             {
-                return Some(name.clone());
+                return Some(name.var_name().clone());
             }
             None
         }
         // Unary minus wrapping a variable reference: -y
         // This pattern appears in equations like `-spacePhasor.i_ = TransformationMatrix * i`
         Expression::Unary { rhs, .. } => {
-            if let Expression::VarRef { name, subscripts } = rhs.as_ref()
+            if let Expression::VarRef {
+                name, subscripts, ..
+            } = rhs.as_ref()
                 && subscripts.is_empty()
             {
-                return Some(name.clone());
+                return Some(name.var_name().clone());
             }
             None
         }
@@ -412,10 +505,9 @@ pub(crate) fn resolve_missing_start_ref(
         return name.clone();
     }
 
-    let mut segments: Vec<&str> = name.as_str().split('.').collect();
-    while segments.len() > 1 {
-        segments.remove(0);
-        let candidate = segments.join(".");
+    let path = rumoca_core::ComponentPath::from_flat_path(name.as_str());
+    for suffix in path.suffixes_excluding_self() {
+        let candidate = suffix.to_flat_string();
         if known_var_names.contains(candidate.as_str()) {
             return VarName::new(candidate);
         }
@@ -423,123 +515,32 @@ pub(crate) fn resolve_missing_start_ref(
     name.clone()
 }
 
-pub(crate) fn rewrite_start_subscripts(
-    subscripts: &[Subscript],
-    known_var_names: &HashSet<String>,
-) -> Vec<Subscript> {
-    subscripts
-        .iter()
-        .map(|sub| match sub {
-            Subscript::Expr(sub_expr) => Subscript::Expr(Box::new(
-                rewrite_start_expr_missing_refs(sub_expr, known_var_names),
-            )),
-            _ => sub.clone(),
-        })
-        .collect()
-}
-
-pub(crate) fn rewrite_start_expr_list(
-    elements: &[Expression],
-    known_var_names: &HashSet<String>,
-) -> Vec<Expression> {
-    elements
-        .iter()
-        .map(|elem| rewrite_start_expr_missing_refs(elem, known_var_names))
-        .collect()
-}
-
 pub(crate) fn rewrite_start_expr_missing_refs(
     expr: &Expression,
     known_var_names: &HashSet<String>,
 ) -> Expression {
-    match expr {
-        Expression::VarRef { name, subscripts } => Expression::VarRef {
-            name: resolve_missing_start_ref(name, known_var_names),
-            subscripts: rewrite_start_subscripts(subscripts, known_var_names),
-        },
-        Expression::Binary { op, lhs, rhs } => Expression::Binary {
-            op: op.clone(),
-            lhs: Box::new(rewrite_start_expr_missing_refs(lhs, known_var_names)),
-            rhs: Box::new(rewrite_start_expr_missing_refs(rhs, known_var_names)),
-        },
-        Expression::Unary { op, rhs } => Expression::Unary {
-            op: op.clone(),
-            rhs: Box::new(rewrite_start_expr_missing_refs(rhs, known_var_names)),
-        },
-        Expression::BuiltinCall { function, args } => Expression::BuiltinCall {
-            function: *function,
-            args: rewrite_start_expr_list(args, known_var_names),
-        },
-        Expression::FunctionCall {
+    StartRefRewriter { known_var_names }.rewrite_expression(expr)
+}
+
+struct StartRefRewriter<'a> {
+    known_var_names: &'a HashSet<String>,
+}
+
+impl ExpressionRewriter for StartRefRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
+        let Expression::VarRef {
             name,
-            args,
-            is_constructor,
-        } => Expression::FunctionCall {
-            name: name.clone(),
-            args: rewrite_start_expr_list(args, known_var_names),
-            is_constructor: *is_constructor,
-        },
-        Expression::If {
-            branches,
-            else_branch,
-        } => Expression::If {
-            branches: branches
-                .iter()
-                .map(|(cond, value)| {
-                    (
-                        rewrite_start_expr_missing_refs(cond, known_var_names),
-                        rewrite_start_expr_missing_refs(value, known_var_names),
-                    )
-                })
-                .collect(),
-            else_branch: Box::new(rewrite_start_expr_missing_refs(
-                else_branch,
-                known_var_names,
-            )),
-        },
-        Expression::Array {
-            elements,
-            is_matrix,
-        } => Expression::Array {
-            elements: rewrite_start_expr_list(elements, known_var_names),
-            is_matrix: *is_matrix,
-        },
-        Expression::Tuple { elements } => Expression::Tuple {
-            elements: rewrite_start_expr_list(elements, known_var_names),
-        },
-        Expression::Range { start, step, end } => Expression::Range {
-            start: Box::new(rewrite_start_expr_missing_refs(start, known_var_names)),
-            step: step
-                .as_ref()
-                .map(|s| Box::new(rewrite_start_expr_missing_refs(s, known_var_names))),
-            end: Box::new(rewrite_start_expr_missing_refs(end, known_var_names)),
-        },
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => Expression::ArrayComprehension {
-            expr: Box::new(rewrite_start_expr_missing_refs(expr, known_var_names)),
-            indices: indices
-                .iter()
-                .map(|index| ComprehensionIndex {
-                    name: index.name.clone(),
-                    range: rewrite_start_expr_missing_refs(&index.range, known_var_names),
-                })
-                .collect(),
-            filter: filter
-                .as_ref()
-                .map(|f| Box::new(rewrite_start_expr_missing_refs(f, known_var_names))),
-        },
-        Expression::Index { base, subscripts } => Expression::Index {
-            base: Box::new(rewrite_start_expr_missing_refs(base, known_var_names)),
-            subscripts: rewrite_start_subscripts(subscripts, known_var_names),
-        },
-        Expression::FieldAccess { base, field } => Expression::FieldAccess {
-            base: Box::new(rewrite_start_expr_missing_refs(base, known_var_names)),
-            field: field.clone(),
-        },
-        _ => expr.clone(),
+            subscripts,
+            span,
+        } = expr
+        else {
+            return self.walk_expression(expr);
+        };
+        Expression::VarRef {
+            name: resolve_missing_start_ref(name.var_name(), self.known_var_names).into(),
+            subscripts: self.rewrite_subscripts(subscripts),
+            span: *span,
+        }
     }
 }
 
@@ -551,15 +552,17 @@ pub(crate) fn create_dae_variable(
     // MLS §4.4.1: declaration/modification bindings define parameter/constant values.
     // Start remains an initialization attribute and should not be used as the
     // primary value when a binding exists.
-    let start = match var.variability {
+    let start_source = match var.variability {
         Variability::Parameter(_) | Variability::Constant(_) => {
-            var.binding.clone().or_else(|| var.start.clone())
+            var.binding.as_ref().or(var.start.as_ref())
         }
-        _ => var.start.clone(),
-    }
-    .map(|expr| project_scalar_start_record_alias(name, &expr, known_var_names))
-    .map(|expr| rewrite_start_expr_missing_refs(&expr, known_var_names))
-    .map(|expr| flat_to_dae_expression(&expr));
+        _ => var.start.as_ref(),
+    };
+    let start_span = start_source.and_then(Expression::span);
+    let start = start_source
+        .map(|expr| select_scalar_start_record_alias(name, expr, known_var_names))
+        .map(|expr| rewrite_start_expr_missing_refs(&expr, known_var_names))
+        .map(|expr| flat_to_dae_expression(&expr));
 
     // A parameter is tunable (changeable at runtime in FMI 3.0 ConfigurationMode)
     // unless it is structural: evaluate=true or discrete-typed (Integer/Boolean
@@ -570,12 +573,18 @@ pub(crate) fn create_dae_variable(
 
     Variable {
         name: flat_to_dae_var_name(name),
+        component_ref: var.component_ref.clone(),
+        source_span: var.source_span,
         dims: var.dims.clone(),
         start,
+        start_span,
         fixed: var.fixed,
         min: var.min.as_ref().map(flat_to_dae_expression),
+        min_span: var.min.as_ref().and_then(Expression::span),
         max: var.max.as_ref().map(flat_to_dae_expression),
+        max_span: var.max.as_ref().and_then(Expression::span),
         nominal: var.nominal.as_ref().map(flat_to_dae_expression),
+        nominal_span: var.nominal.as_ref().and_then(Expression::span),
         unit: var.unit.clone(),
         state_select: var.state_select,
         description: None,
@@ -583,7 +592,7 @@ pub(crate) fn create_dae_variable(
     }
 }
 
-fn project_scalar_start_record_alias(
+fn select_scalar_start_record_alias(
     lhs_name: &VarName,
     expr: &Expression,
     known_var_names: &HashSet<String>,
@@ -605,20 +614,23 @@ fn project_scalar_start_record_alias(
         Expression::VarRef {
             name: rhs_name,
             subscripts,
+            span,
         } if subscripts.is_empty() => {
-            let projected = format!("{}{}", rhs_name.as_str(), field_suffix);
-            if known_var_names.contains(projected.as_str()) {
+            let selected = format!("{}{}", rhs_name.as_str(), field_suffix);
+            if known_var_names.contains(selected.as_str()) {
                 return Expression::VarRef {
-                    name: VarName::new(projected),
+                    name: VarName::new(selected).into(),
                     subscripts: vec![],
+                    span: *span,
                 };
             }
             expr.clone()
         }
-        Expression::FieldAccess { base, field } => {
+        Expression::FieldAccess { base, field, span } => {
             let Expression::VarRef {
                 name: rhs_name,
                 subscripts,
+                ..
             } = base.as_ref()
             else {
                 return expr.clone();
@@ -626,15 +638,53 @@ fn project_scalar_start_record_alias(
             if !subscripts.is_empty() {
                 return expr.clone();
             }
-            let projected = format!("{}.{}{}", rhs_name.as_str(), field, field_suffix);
-            if known_var_names.contains(projected.as_str()) {
+            let selected = format!("{}.{}{}", rhs_name.as_str(), field, field_suffix);
+            if known_var_names.contains(selected.as_str()) {
                 return Expression::VarRef {
-                    name: VarName::new(projected),
+                    name: VarName::new(selected).into(),
                     subscripts: vec![],
+                    span: *span,
                 };
             }
             expr.clone()
         }
         _ => expr.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_dae_variable_preserves_component_reference() {
+        let component_def_id = rumoca_core::DefId::new(17);
+        let name = VarName::new("x");
+        let flat_var = flat::Variable {
+            name: name.clone(),
+            component_ref: Some(rumoca_core::ComponentReference {
+                local: false,
+                span: rumoca_core::Span::DUMMY,
+                parts: vec![rumoca_core::ComponentRefPart {
+                    ident: "x".to_string(),
+                    span: rumoca_core::Span::DUMMY,
+                    subs: vec![],
+                }],
+                def_id: Some(component_def_id),
+            }),
+            is_primitive: true,
+            ..Default::default()
+        };
+        let known_var_names = HashSet::from([name.as_str().to_string()]);
+
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+
+        assert_eq!(
+            dae_var
+                .component_ref
+                .as_ref()
+                .and_then(|reference| reference.def_id),
+            Some(component_def_id)
+        );
     }
 }

@@ -10,7 +10,7 @@ const withCacheBust = (path) =>
 let init;
 let wasm_init;
 let get_version;
-let get_builtin_templates;
+let get_builtin_targets;
 let compile_to_json;
 let compile_with_project_sources;
 let sync_project_sources;
@@ -33,10 +33,11 @@ let lsp_semantic_tokens;
 let lsp_semantic_token_legend;
 let list_classes;
 let get_class_info;
-let render_template;
+let render_target;
 let simulate_model = null;
 let simulate_model_with_project_sources = null;
 let wasmModuleLoaded = false;
+let activeRequestId = null;
 
 function canUseSharedWasmThreads() {
     return typeof self.crossOriginIsolated === 'boolean'
@@ -50,7 +51,7 @@ async function loadWasmModule() {
     init = mod.default;
     wasm_init = mod.wasm_init;
     get_version = mod.get_version;
-    get_builtin_templates = mod.get_builtin_templates;
+    get_builtin_targets = mod.get_builtin_targets;
     compile_to_json = mod.compile_to_json;
     compile_with_project_sources = mod.compile_with_project_sources;
     sync_project_sources = mod.sync_project_sources;
@@ -73,7 +74,7 @@ async function loadWasmModule() {
     lsp_semantic_token_legend = mod.lsp_semantic_token_legend;
     list_classes = mod.list_classes;
     get_class_info = mod.get_class_info;
-    render_template = mod.render_template;
+    render_target = mod.render_target;
     if (typeof mod.simulate_model === 'function') {
         simulate_model = mod.simulate_model;
     }
@@ -91,12 +92,17 @@ console.log = function(...args) {
     originalLog.apply(console, args);
     // Forward WASM progress messages to main thread
     const message = args.join(' ');
-    if (message.includes('[WASM] load_source_roots: parsing')) {
-        // Extract progress info: "[WASM] load_source_roots: parsing 50/500 (10%)"
+    if (message.includes('[WASM]') && message.includes('parsing')) {
+        // Extract progress info: "[WASM] wasm::project: parsing 50/500 (10%)"
+        const scopeMatch = message.match(/\[WASM\]\s+([^:]+(?:::[^:]+)*):\s+/);
         const match = message.match(/parsing (\d+)\/(\d+) \((\d+)%\)/);
         if (match) {
             self.postMessage({
+                id: activeRequestId,
                 progress: true,
+                kind: 'parse',
+                scope: scopeMatch ? scopeMatch[1] : '',
+                message,
                 current: parseInt(match[1]),
                 total: parseInt(match[2]),
                 percent: parseInt(match[3])
@@ -139,7 +145,7 @@ initialize().then(success => {
 
 // Handle messages from main thread
 self.onmessage = async (e) => {
-    const { id, action, source, modelName, line, character, daeJson, template, tEnd, dt } = e.data;
+    const { id, action, source, modelName, line, character, daeJson, tEnd, dt } = e.data;
 
     if (!initialized) {
         self.postMessage({ id, error: 'Worker not initialized' });
@@ -148,9 +154,18 @@ self.onmessage = async (e) => {
 
     try {
         let result;
+        activeRequestId = id;
+        const command = e.data.command || '';
+        self.postMessage({
+            id,
+            progress: true,
+            kind: 'request',
+            phase: 'start',
+            action,
+            command,
+        });
         switch (action) {
             case 'languageCommand': {
-                const command = e.data.command;
                 const payload = e.data.payload || {};
                 if (typeof sync_project_sources === 'function' && typeof payload.projectSources === 'string') {
                     sync_project_sources(payload.projectSources);
@@ -205,7 +220,6 @@ self.onmessage = async (e) => {
                 break;
             }
             case 'projectCommand': {
-                const command = e.data.command;
                 const payload = e.data.payload || {};
                 switch (command) {
                     case 'rumoca.project.getSimulationModels':
@@ -215,11 +229,16 @@ self.onmessage = async (e) => {
                         if (!simulate_model) {
                             throw new Error('Simulation not available in this WASM build. Rebuild with rumoca-sim (diffsol feature enabled).');
                         }
-                        if (simulate_model_with_project_sources) {
+                        if (
+                            simulate_model_with_project_sources
+                            && typeof payload.projectSources === 'string'
+                            && payload.projectSources.trim()
+                            && payload.projectSources.trim() !== '{}'
+                        ) {
                             result = simulate_model_with_project_sources(
                                 payload.source || '',
                                 payload.modelName || 'Model',
-                                payload.projectSources || '{}',
+                                payload.projectSources,
                                 payload.tEnd || 1.0,
                                 payload.dt || 0,
                                 payload.solver || 'auto',
@@ -240,14 +259,13 @@ self.onmessage = async (e) => {
                 break;
             }
             case 'workspaceCommand': {
-                const command = e.data.command;
                 const payload = e.data.payload || {};
                 switch (command) {
                     case 'rumoca.workspace.getVersion':
                         result = get_version();
                         break;
-                    case 'rumoca.workspace.getBuiltinTemplates':
-                        result = get_builtin_templates();
+                    case 'rumoca.workspace.getBuiltinTargets':
+                        result = get_builtin_targets();
                         break;
                     case 'rumoca.workspace.compile':
                         result = compile_to_json(payload.source || '', payload.modelName || 'Model');
@@ -282,8 +300,14 @@ self.onmessage = async (e) => {
                         clear_source_root_cache();
                         result = 'OK';
                         break;
-                    case 'rumoca.workspace.renderTemplate':
-                        result = render_template(payload.daeJson, payload.template);
+                    case 'rumoca.workspace.renderTarget':
+                        result = render_target(
+                            payload.daeJson,
+                            payload.modelName || 'Model',
+                            payload.target || '',
+                            payload.manifest || '',
+                            payload.templates || '{}',
+                        );
                         break;
                     default:
                         throw new Error(`Unknown workspace command: ${command}`);
@@ -293,12 +317,22 @@ self.onmessage = async (e) => {
             default:
                 throw new Error(`Unknown action: ${action}`);
         }
+        self.postMessage({
+            id,
+            progress: true,
+            kind: 'request',
+            phase: 'finish',
+            action,
+            command,
+        });
+        activeRequestId = null;
         if (result instanceof Uint8Array) {
             self.postMessage({ id, success: true, result }, [result.buffer]);
             return;
         }
         self.postMessage({ id, success: true, result });
     } catch (e) {
+        activeRequestId = null;
         console.error('[Worker] Error:', e);
         self.postMessage({ id, error: e.message || String(e) });
     }

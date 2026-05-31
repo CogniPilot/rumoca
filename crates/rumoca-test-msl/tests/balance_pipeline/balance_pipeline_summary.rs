@@ -7,6 +7,7 @@ use super::*;
 pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounters {
     let mut counters = ResultCounters::default();
     for result in results {
+        process_result_error_taxonomy(result, &mut counters);
         match result.phase_reached.as_str() {
             "Resolve" => process_phase_failure(result, "Resolve", &mut counters),
             "Success" => process_success_result(result, &mut counters),
@@ -34,6 +35,14 @@ pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounter
                 _ => {}
             }
         }
+        if let Some(ref status) = result.ic_status {
+            counters.ic_attempted += 1;
+            match status.as_str() {
+                "ic_ok" => counters.ic_ok += 1,
+                "ic_solver_fail" => counters.ic_solver_fail += 1,
+                _ => {}
+            }
+        }
     }
     counters
 }
@@ -49,6 +58,7 @@ pub(super) fn finalize_msl_summary_from_results(
     let counters = summarize_msl_results(&model_results);
     timings.summarize_seconds = summarize_start.elapsed().as_secs_f64();
     timings.core_pipeline_seconds = core_start.elapsed().as_secs_f64();
+    capture_process_peak_rss(&mut timings);
     println!(
         "Aggregated summary stats in {:.2}s",
         timings.summarize_seconds
@@ -59,6 +69,26 @@ pub(super) fn finalize_msl_summary_from_results(
     );
 
     build_summary_from_counters(inputs, timings, counters, model_results, sim_target_models)
+}
+
+fn parse_status_kb_field(status: &str, field: &str) -> Option<usize> {
+    status.lines().find_map(|line| {
+        let rest = line.strip_prefix(field)?;
+        let kb = rest.split_whitespace().next()?.parse::<usize>().ok()?;
+        Some(kb)
+    })
+}
+
+fn current_process_peak_rss_mb() -> Option<usize> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    parse_status_kb_field(&status, "VmHWM:").map(|kb| kb.div_ceil(1024))
+}
+
+pub(super) fn capture_process_peak_rss(timings: &mut MslPhaseTimings) {
+    timings.process_peak_rss_mb = current_process_peak_rss_mb();
+    if let Some(peak_mb) = timings.process_peak_rss_mb {
+        println!("Process peak RSS: {peak_mb} MB");
+    }
 }
 
 fn build_summary_from_counters(
@@ -95,6 +125,9 @@ fn build_summary_from_counters(
         initial_unbalanced_list: counters.initial_unbalanced_list,
         non_sim_list: counters.non_sim_list,
         error_categories: counters.error_categories,
+        error_code_counts: counters.error_code_counts,
+        unsupported_feature_counts: counters.unsupported_feature_counts,
+        unsupported_feature_counts_by_backend: counters.unsupported_feature_counts_by_backend,
         undefined_vars: counters.undefined_vars,
         balance_distribution: counters.balance_distribution,
         model_results,
@@ -105,6 +138,9 @@ fn build_summary_from_counters(
         sim_timeout: counters.sim_timeout,
         sim_balance_fail: counters.sim_balance_fail,
         sim_attempted: counters.sim_attempted,
+        ic_attempted: counters.ic_attempted,
+        ic_ok: counters.ic_ok,
+        ic_solver_fail: counters.ic_solver_fail,
         total_sim_seconds: counters.total_sim_seconds,
         total_sim_build_seconds: counters.total_sim_build_seconds,
         total_sim_run_seconds: counters.total_sim_run_seconds,
@@ -166,12 +202,108 @@ pub(super) fn prepare_sim_trace_dirs(run_simulation: bool) {
     if !run_simulation {
         return;
     }
-    let rumoca_trace_dir = get_msl_cache_dir()
-        .join("results")
-        .join("sim_traces")
-        .join("rumoca");
-    if rumoca_trace_dir.exists() {
-        let _ = fs::remove_dir_all(&rumoca_trace_dir);
+    for dir in [
+        get_msl_cache_dir()
+            .join("results")
+            .join("sim_traces")
+            .join("rumoca"),
+        get_msl_cache_dir().join("results").join("ir_dae"),
+        get_msl_cache_dir().join("results").join("ir_solve"),
+    ] {
+        if dir.exists() {
+            let _ = fs::remove_dir_all(&dir);
+        }
+        let _ = fs::create_dir_all(&dir);
     }
-    let _ = fs::create_dir_all(&rumoca_trace_dir);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_status_kb_field_reads_vmhwm() {
+        let status = "\
+Name:\trumoca-test-msl
+VmRSS:\t  204800 kB
+VmHWM:\t  524288 kB
+";
+        assert_eq!(parse_status_kb_field(status, "VmHWM:"), Some(524_288));
+    }
+
+    #[test]
+    fn summarize_msl_results_counts_error_codes_and_unsupported_features() {
+        let results = vec![
+            phase_error_result(
+                "Modelica.Test.External".to_string(),
+                "ToDae",
+                Some(
+                    "unsupported-feature:external_tables: Target 'custom' does not support feature 'external_tables'"
+                        .to_string(),
+                ),
+                Some("unsupported-feature:external_tables".to_string()),
+            ),
+            phase_error_result(
+                "Modelica.Test.Random".to_string(),
+                "Flatten",
+                Some("Target 'custom' does not support feature 'random': random runtime calls present".to_string()),
+                None,
+            ),
+            phase_error_result(
+                "Modelica.Fluid.Examples.IncompressibleFluidNetwork".to_string(),
+                "Resolve",
+                Some("unresolved function call: 'Medium'".to_string()),
+                None,
+            ),
+            phase_error_result(
+                "Modelica.Mechanics.MultiBody.Examples.Elementary.Pendulum".to_string(),
+                "ToDae",
+                Some(
+                    "unresolved function call: Modelica.Mechanics.MultiBody.Parts.Body.world"
+                        .to_string(),
+                ),
+                None,
+            ),
+        ];
+
+        let counters = summarize_msl_results(&results);
+
+        assert_eq!(
+            counters
+                .error_code_counts
+                .get("unsupported-feature:external_tables"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters.unsupported_feature_counts.get("external_tables"),
+            Some(&1)
+        );
+        assert_eq!(counters.unsupported_feature_counts.get("random"), Some(&1));
+        assert_eq!(
+            counters
+                .unsupported_feature_counts
+                .get("replaceable_media_package_lookup"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .unsupported_feature_counts
+                .get("inner_outer_qualified_lookup"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .unsupported_feature_counts_by_backend
+                .get("custom")
+                .and_then(|counts| counts.get("external_tables")),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .unsupported_feature_counts_by_backend
+                .get("custom")
+                .and_then(|counts| counts.get("random")),
+            Some(&1)
+        );
+    }
 }

@@ -2,7 +2,6 @@ use super::class_body::{FileClassBodyIndex, ModifierClassTarget};
 use super::declaration_index::{ItemKey, ItemKind};
 use super::file_summary::FileSummary;
 use indexmap::IndexMap;
-use rumoca_ir_ast as ast;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FileClassBodySemantics {
@@ -13,14 +12,14 @@ pub(crate) struct FileClassBodySemantics {
 
 #[derive(Debug, Clone)]
 struct ComponentOccurrence {
-    location: ast::Location,
+    location: rumoca_core::Location,
     is_declaration: bool,
 }
 
 #[derive(Debug, Clone)]
 struct ComponentLookupEntry {
     item_key: ItemKey,
-    location: ast::Location,
+    location: rumoca_core::Location,
 }
 
 impl FileClassBodySemantics {
@@ -37,7 +36,7 @@ impl FileClassBodySemantics {
         line: u32,
         character: u32,
         include_declaration: bool,
-    ) -> Option<Vec<ast::Location>> {
+    ) -> Option<Vec<rumoca_core::Location>> {
         let item_key = self.lookup_component_target(line, character)?;
         let locations = self
             .component_occurrences
@@ -49,7 +48,11 @@ impl FileClassBodySemantics {
         (!locations.is_empty()).then_some(locations)
     }
 
-    pub(crate) fn rename_span_at(&self, line: u32, character: u32) -> Option<ast::Location> {
+    pub(crate) fn rename_span_at(
+        &self,
+        line: u32,
+        character: u32,
+    ) -> Option<rumoca_core::Location> {
         self.lookup_entry(line, character)
             .map(|entry| entry.location.clone())
     }
@@ -58,7 +61,7 @@ impl FileClassBodySemantics {
         &self,
         line: u32,
         character: u32,
-    ) -> Option<Vec<ast::Location>> {
+    ) -> Option<Vec<rumoca_core::Location>> {
         let item_key = self.lookup_component_target(line, character)?;
         let locations = self
             .component_occurrences
@@ -97,7 +100,7 @@ impl FileClassBodySemantics {
     fn record_component_occurrence(
         &mut self,
         item_key: ItemKey,
-        location: ast::Location,
+        location: rumoca_core::Location,
         is_declaration: bool,
     ) {
         self.component_occurrences
@@ -154,7 +157,7 @@ fn collect_class_body_semantics(
     }
 }
 
-fn location_contains_position(location: &ast::Location, line: u32, character: u32) -> bool {
+fn location_contains_position(location: &rumoca_core::Location, line: u32, character: u32) -> bool {
     let start_line = location.start_line.saturating_sub(1);
     let end_line = location.end_line.saturating_sub(1);
     if line < start_line || line > end_line {

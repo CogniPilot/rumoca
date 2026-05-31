@@ -19,29 +19,32 @@ pub use function_eval::{EvalLimits, eval_function};
 pub use value::Value;
 
 use indexmap::IndexMap;
-use rumoca_core::{EvalLookup, Span};
-use rumoca_ir_flat as flat;
+use rumoca_core::Span;
+use rumoca_core::{ComponentPath, EvalLookup, scoped_component_path_candidates};
+use rustc_hash::FxBuildHasher;
 use std::borrow::Cow;
+use std::hash::BuildHasher;
 
-type BuiltinFunction = flat::BuiltinFunction;
-type Expression = flat::Expression;
-type Function = flat::Function;
-type Literal = flat::Literal;
-type OpBinary = flat::OpBinary;
-type OpUnary = flat::OpUnary;
-type Subscript = flat::Subscript;
-type VarName = flat::VarName;
+type BuiltinFunction = rumoca_core::BuiltinFunction;
+type Expression = rumoca_core::Expression;
+type Function = rumoca_core::Function;
+type Literal = rumoca_core::Literal;
+type OpBinary = rumoca_core::OpBinary;
+type OpUnary = rumoca_core::OpUnary;
+type Subscript = rumoca_core::Subscript;
+type VarName = rumoca_core::VarName;
+type EvalIndexMap<V> = IndexMap<String, V, FxBuildHasher>;
 
 /// Evaluation context providing variable/parameter values.
 pub struct EvalContext {
     /// Parameter values by name (e.g., "component.subcomponent.param" -> value)
-    pub parameters: IndexMap<String, Value>,
+    pub parameters: EvalIndexMap<Value>,
 
     /// Enum values: "TypeName.LiteralName" -> (TypeName, LiteralName)
-    pub enum_literals: IndexMap<String, (String, String)>,
+    pub enum_literals: EvalIndexMap<(String, String)>,
 
     /// User-defined function definitions for constant evaluation (MLS §12).
-    pub functions: IndexMap<String, Function>,
+    pub functions: EvalIndexMap<Function>,
 }
 
 impl Default for EvalContext {
@@ -53,10 +56,15 @@ impl Default for EvalContext {
 impl EvalContext {
     /// Create an empty evaluation context.
     pub fn new() -> Self {
+        Self::with_capacity(0, 0, 0)
+    }
+
+    /// Create an evaluation context sized for the expected contents.
+    pub fn with_capacity(parameters: usize, enum_literals: usize, functions: usize) -> Self {
         Self {
-            parameters: IndexMap::new(),
-            enum_literals: IndexMap::new(),
-            functions: IndexMap::new(),
+            parameters: IndexMap::with_capacity_and_hasher(parameters, FxBuildHasher),
+            enum_literals: IndexMap::with_capacity_and_hasher(enum_literals, FxBuildHasher),
+            functions: IndexMap::with_capacity_and_hasher(functions, FxBuildHasher),
         }
     }
 
@@ -67,10 +75,8 @@ impl EvalContext {
         self.functions.insert(full_name.clone(), func.clone());
         // Also add with short name (last component) for function body lookups
         // This enables recursive calls inside function bodies that use unqualified names
-        if let Some(short_name) = full_name.rsplit('.').next()
-            && short_name != full_name
-            && !self.functions.contains_key(short_name)
-        {
+        let short_name = rumoca_core::top_level_last_segment(&full_name);
+        if short_name != full_name && !self.functions.contains_key(short_name) {
             let mut short_func = func;
             short_func.name = VarName::new(short_name);
             self.functions.insert(short_name.to_string(), short_func);
@@ -93,21 +99,19 @@ impl EvalContext {
     }
 }
 
-fn lookup_scoped<'a, T>(map: &'a IndexMap<String, T>, name: &str, scope: &str) -> Option<&'a T> {
-    let mut current_scope = Some(scope);
-    while let Some(scope_name) = current_scope {
-        let candidate = if scope_name.is_empty() {
-            name.to_string()
-        } else {
-            format!("{scope_name}.{name}")
-        };
+fn lookup_scoped<'a, T, S>(
+    map: &'a IndexMap<String, T, S>,
+    name: &str,
+    scope: &str,
+) -> Option<&'a T>
+where
+    S: BuildHasher,
+{
+    let name_path = ComponentPath::from_flat_path(name);
+    let scope_path = ComponentPath::from_flat_path(scope);
+    for candidate in scoped_component_path_candidates(&name_path, &scope_path) {
         if let Some(value) = map.get(&candidate) {
             return Some(value);
-        }
-
-        current_scope = scope_name.rsplit_once('.').map(|(parent, _)| parent);
-        if current_scope.is_none() && !scope_name.is_empty() {
-            current_scope = Some("");
         }
     }
     None
@@ -150,36 +154,42 @@ pub fn eval_expr_with_span(
     ctx: &EvalContext,
     span: Span,
 ) -> Result<Value, EvalError> {
+    let span = expr.span().unwrap_or(span);
     match expr {
-        Expression::Literal(lit) => Ok(eval_literal(lit)),
-        Expression::VarRef { name, subscripts } => {
-            eval_var_ref(name.as_str(), subscripts, ctx, span)
+        Expression::Literal { value: lit, .. } => Ok(eval_literal(lit)),
+        Expression::VarRef {
+            name, subscripts, ..
+        } => eval_var_ref(name.as_str(), subscripts, ctx, span),
+        Expression::Binary { op, lhs, rhs, .. } => eval_flat_binary(op, lhs, rhs, ctx, span),
+        Expression::Unary { op, rhs, .. } => eval_flat_unary(op, rhs, ctx, span),
+        Expression::BuiltinCall { function, args, .. } => {
+            eval_builtin_call(function, args, ctx, span)
         }
-        Expression::Binary { op, lhs, rhs } => eval_flat_binary(op, lhs, rhs, ctx, span),
-        Expression::Unary { op, rhs } => eval_flat_unary(op, rhs, ctx, span),
-        Expression::BuiltinCall { function, args } => eval_builtin_call(function, args, ctx, span),
         Expression::FunctionCall { name, args, .. } => eval_fn_call(name.as_str(), args, ctx, span),
         Expression::If {
             branches,
             else_branch,
+            ..
         } => eval_flat_if(branches, else_branch, ctx, span),
         Expression::Array { elements, .. } => eval_flat_array(elements, ctx, span),
-        Expression::Range { start, step, end } => {
-            eval_range(start, step.as_deref(), end, ctx, span)
-        }
+        Expression::Range {
+            start, step, end, ..
+        } => eval_range(start, step.as_deref(), end, ctx, span),
         Expression::ArrayComprehension { .. } => Err(EvalError::UnsupportedExpression {
             kind: "ArrayComprehension".to_string(),
             span,
         }),
-        Expression::Index { base, subscripts } => eval_flat_index(base, subscripts, ctx, span),
-        Expression::Tuple { elements } => eval_flat_array(elements, ctx, span),
-        Expression::FieldAccess { base, field } => {
+        Expression::Index {
+            base, subscripts, ..
+        } => eval_flat_index(base, subscripts, ctx, span),
+        Expression::Tuple { elements, .. } => eval_flat_array(elements, ctx, span),
+        Expression::FieldAccess { base, field, .. } => {
             // Field access on complex expressions (e.g., func().field)
             // requires evaluating the base and then extracting the field
             let base_val = eval_expr_with_span(base, ctx, span)?;
             eval_field_access(&base_val, field, span)
         }
-        Expression::Empty => Ok(Value::Integer(0)),
+        Expression::Empty { .. } => Ok(Value::Integer(0)),
     }
 }
 
@@ -495,22 +505,22 @@ fn eval_literal(lit: &Literal) -> Value {
 /// Evaluate a binary operation.
 fn eval_binary_op(op: &OpBinary, lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     match op {
-        OpBinary::Add(_) | OpBinary::AddElem(_) => eval_add(lhs, rhs, span),
-        OpBinary::Sub(_) | OpBinary::SubElem(_) => eval_sub(lhs, rhs, span),
+        OpBinary::Add | OpBinary::AddElem => eval_add(lhs, rhs, span),
+        OpBinary::Sub | OpBinary::SubElem => eval_sub(lhs, rhs, span),
         // MLS array semantics: `*` is linear algebra multiply; `.*` is element-wise.
-        OpBinary::Mul(_) => eval_mul(lhs, rhs, span),
-        OpBinary::MulElem(_) => eval_mul_elem(lhs, rhs, span),
-        OpBinary::Div(_) | OpBinary::DivElem(_) => eval_div(lhs, rhs, span),
-        OpBinary::Exp(_) | OpBinary::ExpElem(_) => eval_exp(lhs, rhs, span),
-        OpBinary::Eq(_) => eval_eq(lhs, rhs),
-        OpBinary::Neq(_) => eval_neq(lhs, rhs),
-        OpBinary::Lt(_) => eval_lt(lhs, rhs, span),
-        OpBinary::Le(_) => eval_le(lhs, rhs, span),
-        OpBinary::Gt(_) => eval_gt(lhs, rhs, span),
-        OpBinary::Ge(_) => eval_ge(lhs, rhs, span),
-        OpBinary::And(_) => eval_and(lhs, rhs, span),
-        OpBinary::Or(_) => eval_or(lhs, rhs, span),
-        OpBinary::Empty | OpBinary::Assign(_) => Err(EvalError::UnsupportedExpression {
+        OpBinary::Mul => eval_mul(lhs, rhs, span),
+        OpBinary::MulElem => eval_mul_elem(lhs, rhs, span),
+        OpBinary::Div | OpBinary::DivElem => eval_div(lhs, rhs, span),
+        OpBinary::Exp | OpBinary::ExpElem => eval_exp(lhs, rhs, span),
+        OpBinary::Eq => eval_eq(lhs, rhs),
+        OpBinary::Neq => eval_neq(lhs, rhs),
+        OpBinary::Lt => eval_lt(lhs, rhs, span),
+        OpBinary::Le => eval_le(lhs, rhs, span),
+        OpBinary::Gt => eval_gt(lhs, rhs, span),
+        OpBinary::Ge => eval_ge(lhs, rhs, span),
+        OpBinary::And => eval_and(lhs, rhs, span),
+        OpBinary::Or => eval_or(lhs, rhs, span),
+        OpBinary::Empty | OpBinary::Assign => Err(EvalError::UnsupportedExpression {
             kind: format!("binary operator: {:?}", op),
             span,
         }),
@@ -520,9 +530,9 @@ fn eval_binary_op(op: &OpBinary, lhs: &Value, rhs: &Value, span: Span) -> Result
 /// Evaluate a unary operation.
 fn eval_unary_op(op: &OpUnary, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     match op {
-        OpUnary::Minus(_) | OpUnary::DotMinus(_) => eval_negate(rhs, span),
-        OpUnary::Plus(_) | OpUnary::DotPlus(_) => Ok(rhs.clone()),
-        OpUnary::Not(_) => eval_not(rhs, span),
+        OpUnary::Minus | OpUnary::DotMinus => eval_negate(rhs, span),
+        OpUnary::Plus | OpUnary::DotPlus => Ok(rhs.clone()),
+        OpUnary::Not => eval_not(rhs, span),
         OpUnary::Empty => Ok(rhs.clone()),
     }
 }
@@ -1154,7 +1164,7 @@ fn apply_subscripts(
 
     for subscript in subscripts {
         match subscript {
-            Subscript::Index(idx) => {
+            Subscript::Index { value: idx, .. } => {
                 let idx = *idx as usize;
 
                 let arr = current
@@ -1171,11 +1181,11 @@ fn apply_subscripts(
                 }
                 current = arr[idx - 1].clone();
             }
-            Subscript::Colon => {
+            Subscript::Colon { .. } => {
                 // Colon means "all elements" - just pass through
                 // (this is a simplification; real slicing would need more work)
             }
-            Subscript::Expr(expr) => {
+            Subscript::Expr { expr, .. } => {
                 // Evaluate the expression to get the index
                 let idx_val = eval_expr_with_span(expr, ctx, span)?;
                 let idx = idx_val
@@ -1226,21 +1236,31 @@ mod tests {
     use super::*;
 
     fn make_int(v: i64) -> Expression {
-        Expression::Literal(Literal::Integer(v))
+        Expression::Literal {
+            value: Literal::Integer(v),
+            span: rumoca_core::Span::DUMMY,
+        }
     }
 
     fn make_real(v: f64) -> Expression {
-        Expression::Literal(Literal::Real(v))
+        Expression::Literal {
+            value: Literal::Real(v),
+            span: rumoca_core::Span::DUMMY,
+        }
     }
 
     fn make_bool(v: bool) -> Expression {
-        Expression::Literal(Literal::Boolean(v))
+        Expression::Literal {
+            value: Literal::Boolean(v),
+            span: rumoca_core::Span::DUMMY,
+        }
     }
 
     fn make_vector(values: &[i64]) -> Expression {
         Expression::Array {
             elements: values.iter().map(|v| make_int(*v)).collect(),
             is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -1251,9 +1271,11 @@ mod tests {
                 .map(|row| Expression::Array {
                     elements: row.iter().map(|v| make_int(*v)).collect(),
                     is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
                 })
                 .collect(),
             is_matrix: true,
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -1280,36 +1302,40 @@ mod tests {
 
         // 3 + 4 = 7
         let expr = Expression::Binary {
-            op: OpBinary::Add(Default::default()),
+            op: OpBinary::Add,
             lhs: Box::new(make_int(3)),
             rhs: Box::new(make_int(4)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(7));
 
         // 10 - 3 = 7
         let expr = Expression::Binary {
-            op: OpBinary::Sub(Default::default()),
+            op: OpBinary::Sub,
             lhs: Box::new(make_int(10)),
             rhs: Box::new(make_int(3)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(7));
 
         // 3 * 4 = 12
         let expr = Expression::Binary {
-            op: OpBinary::Mul(Default::default()),
+            op: OpBinary::Mul,
             lhs: Box::new(make_int(3)),
             rhs: Box::new(make_int(4)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(12));
 
         // 10 / 4 = 2.5 (Real result in Modelica)
         let expr = Expression::Binary {
-            op: OpBinary::Div(Default::default()),
+            op: OpBinary::Div,
             lhs: Box::new(make_int(10)),
             rhs: Box::new(make_int(4)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert!((result.as_real().unwrap() - 2.5).abs() < 1e-10);
@@ -1323,18 +1349,20 @@ mod tests {
 
         // `*` performs dot-product on vectors.
         let mul_expr = Expression::Binary {
-            op: OpBinary::Mul(Default::default()),
+            op: OpBinary::Mul,
             lhs: Box::new(lhs.clone()),
             rhs: Box::new(rhs.clone()),
+            span: rumoca_core::Span::DUMMY,
         };
         let mul_result = eval_expr(&mul_expr, &ctx).unwrap();
         assert_eq!(mul_result, Value::Integer(32));
 
         // `.*` keeps element-wise vector semantics.
         let mul_elem_expr = Expression::Binary {
-            op: OpBinary::MulElem(Default::default()),
+            op: OpBinary::MulElem,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
         };
         let mul_elem_result = eval_expr(&mul_elem_expr, &ctx).unwrap();
         assert_eq!(
@@ -1355,9 +1383,10 @@ mod tests {
         let lhs_matrix = make_matrix(&[&[1, 2], &[3, 4]]);
         let rhs_matrix = make_matrix(&[&[5, 6], &[7, 8]]);
         let matrix_mul_expr = Expression::Binary {
-            op: OpBinary::Mul(Default::default()),
+            op: OpBinary::Mul,
             lhs: Box::new(lhs_matrix.clone()),
             rhs: Box::new(rhs_matrix.clone()),
+            span: rumoca_core::Span::DUMMY,
         };
         let matrix_mul_result = eval_expr(&matrix_mul_expr, &ctx).unwrap();
         assert_eq!(
@@ -1370,9 +1399,10 @@ mod tests {
 
         // Element-wise matrix multiply remains shape-preserving.
         let matrix_mul_elem_expr = Expression::Binary {
-            op: OpBinary::MulElem(Default::default()),
+            op: OpBinary::MulElem,
             lhs: Box::new(lhs_matrix),
             rhs: Box::new(rhs_matrix),
+            span: rumoca_core::Span::DUMMY,
         };
         let matrix_mul_elem_result = eval_expr(&matrix_mul_elem_expr, &ctx).unwrap();
         assert_eq!(
@@ -1390,18 +1420,20 @@ mod tests {
 
         // 3 < 4 = true
         let expr = Expression::Binary {
-            op: OpBinary::Lt(Default::default()),
+            op: OpBinary::Lt,
             lhs: Box::new(make_int(3)),
             rhs: Box::new(make_int(4)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_bool(), Some(true));
 
         // 3 == 3 = true
         let expr = Expression::Binary {
-            op: OpBinary::Eq(Default::default()),
+            op: OpBinary::Eq,
             lhs: Box::new(make_int(3)),
             rhs: Box::new(make_int(3)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_bool(), Some(true));
@@ -1413,16 +1445,18 @@ mod tests {
 
         // -5
         let expr = Expression::Unary {
-            op: OpUnary::Minus(Default::default()),
+            op: OpUnary::Minus,
             rhs: Box::new(make_int(5)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(-5));
 
         // not true = false
         let expr = Expression::Unary {
-            op: OpUnary::Not(Default::default()),
+            op: OpUnary::Not,
             rhs: Box::new(make_bool(true)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_bool(), Some(false));
@@ -1435,6 +1469,7 @@ mod tests {
         let expr = Expression::Array {
             elements: vec![make_int(1), make_int(2), make_int(3)],
             is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         let arr = result.as_array().unwrap();
@@ -1452,6 +1487,7 @@ mod tests {
             start: Box::new(make_int(1)),
             step: None,
             end: Box::new(make_int(5)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         let arr = result.as_array().unwrap();
@@ -1464,6 +1500,7 @@ mod tests {
             start: Box::new(make_int(1)),
             step: Some(Box::new(make_int(2))),
             end: Box::new(make_int(5)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         let arr = result.as_array().unwrap();
@@ -1481,6 +1518,7 @@ mod tests {
         let expr = Expression::If {
             branches: vec![(make_bool(true), make_int(1))],
             else_branch: Box::new(make_int(2)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(1));
@@ -1489,6 +1527,7 @@ mod tests {
         let expr = Expression::If {
             branches: vec![(make_bool(false), make_int(1))],
             else_branch: Box::new(make_int(2)),
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(2));
@@ -1503,6 +1542,7 @@ mod tests {
         let expr = Expression::VarRef {
             name: "n".into(),
             subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(10));
@@ -1510,6 +1550,7 @@ mod tests {
         let expr = Expression::VarRef {
             name: "x".into(),
             subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert!((result.as_real().unwrap() - 2.5).abs() < 1e-10);
@@ -1523,6 +1564,7 @@ mod tests {
         let expr = Expression::BuiltinCall {
             function: BuiltinFunction::Abs,
             args: vec![make_int(-5)],
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert_eq!(result.as_integer(), Some(5));
@@ -1531,6 +1573,7 @@ mod tests {
         let expr = Expression::BuiltinCall {
             function: BuiltinFunction::Sqrt,
             args: vec![make_real(4.0)],
+            span: rumoca_core::Span::DUMMY,
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert!((result.as_real().unwrap() - 2.0).abs() < 1e-10);
@@ -1544,6 +1587,7 @@ mod tests {
         let expr = Expression::VarRef {
             name: "n".into(),
             subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
         };
 
         assert_eq!(try_eval_integer(&expr, &ctx), Some(5));

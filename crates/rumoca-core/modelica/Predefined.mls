@@ -1,0 +1,39 @@
+type Real
+  RealType value;
+  parameter StringType quantity = "";
+  parameter StringType unit = "";
+  parameter StringType displayUnit = "";
+  parameter RealType min;
+  parameter RealType max;
+  parameter RealType start;
+  parameter BooleanType fixed;
+  parameter RealType nominal;
+  parameter BooleanType unbounded = false;
+  parameter StateSelect stateSelect = StateSelect.default;
+end Real;
+
+type Integer
+  IntegerType value;
+  parameter StringType quantity = "";
+  parameter IntegerType min;
+  parameter IntegerType max;
+  parameter IntegerType start;
+  parameter BooleanType fixed;
+end Integer;
+
+type Boolean
+  BooleanType value;
+  parameter StringType quantity = "";
+  parameter BooleanType start;
+  parameter BooleanType fixed;
+end Boolean;
+
+type String
+  StringType value;
+  parameter StringType quantity = "";
+  parameter StringType start;
+  parameter BooleanType fixed;
+end String;
+
+type StateSelect = enumeration(never, avoid, default, prefer, always);
+type AssertionLevel = enumeration(warning, error);

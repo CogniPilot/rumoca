@@ -18,9 +18,12 @@ end Integrator;
         .model("Integrator")
         .compile_str(modelica_code, "Integrator.mo")?;
 
-    println!("States (x): {}", result.dae.states.len());
-    println!("Algebraics (y): {}", result.dae.algebraics.len());
-    println!("Continuous equations (f_x): {}", result.dae.f_x.len());
+    println!("States (x): {}", result.dae.variables.states.len());
+    println!("Algebraics (y): {}", result.dae.variables.algebraics.len());
+    println!(
+        "Continuous equations (f_x): {}",
+        result.dae.continuous.equations.len()
+    );
     println!("Balance (eq - unknown): {}", result.balance());
     println!("DAE JSON bytes: {}", result.to_json()?.len());
 

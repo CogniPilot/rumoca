@@ -1,4 +1,7 @@
+use std::ops::ControlFlow;
+
 use rumoca_ir_ast as ast;
+use rumoca_ir_ast::Visitor;
 
 type ComponentReference = ast::ComponentReference;
 type Equation = ast::Equation;
@@ -8,8 +11,8 @@ type TypeTable = ast::TypeTable;
 
 /// Callback contract for typecheck traversal.
 ///
-/// Traversal is centralized here while typecheck-specific semantic actions
-/// are injected via callbacks.
+/// AST recursion is delegated to `rumoca-ir-ast`; this adapter only injects
+/// typecheck-specific semantic callbacks at the points the type checker needs.
 pub(crate) trait TypeCheckTraversalCallbacks {
     /// Called when a component reference appears in an equation/statement/expression.
     fn on_component_reference(&mut self, _comp: &ComponentReference, _type_table: &TypeTable) {}
@@ -30,69 +33,69 @@ pub(crate) trait TypeCheckTraversalCallbacks {
     }
 }
 
+struct TypeCheckTraversal<'a, C> {
+    callbacks: &'a mut C,
+    type_table: &'a TypeTable,
+}
+
+impl<C: TypeCheckTraversalCallbacks> TypeCheckTraversal<'_, C> {
+    fn new<'a>(callbacks: &'a mut C, type_table: &'a TypeTable) -> TypeCheckTraversal<'a, C> {
+        TypeCheckTraversal {
+            callbacks,
+            type_table,
+        }
+    }
+}
+
+impl<C: TypeCheckTraversalCallbacks> Visitor for TypeCheckTraversal<'_, C> {
+    fn visit_component_reference_ctx(
+        &mut self,
+        comp: &ComponentReference,
+        _ctx: ast::ComponentReferenceContext,
+    ) -> ControlFlow<()> {
+        self.callbacks.on_component_reference(comp, self.type_table);
+        self.visit_component_reference(comp)
+    }
+
+    fn visit_simple_equation(&mut self, lhs: &Expression, rhs: &Expression) -> ControlFlow<()> {
+        self.visit_expression(lhs)?;
+        self.visit_expression(rhs)?;
+        self.callbacks.on_simple_equation(lhs, rhs, self.type_table);
+        ControlFlow::Continue(())
+    }
+
+    fn visit_expr_function_call_ctx(
+        &mut self,
+        comp: &ComponentReference,
+        args: &[Expression],
+        ctx: ast::FunctionCallContext,
+    ) -> ControlFlow<()> {
+        if matches!(ctx, ast::FunctionCallContext::Expression) {
+            self.visit_each(args, Self::visit_expression)?;
+            self.callbacks
+                .on_expression_function_call(comp, args, self.type_table);
+            return ControlFlow::Continue(());
+        }
+        ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
+    }
+
+    fn visit_expression(&mut self, expression: &Expression) -> ControlFlow<()> {
+        if let Expression::FieldAccess { base, field, .. } = expression {
+            self.visit_expression(base)?;
+            self.callbacks.on_field_access(base, field, self.type_table);
+            return ControlFlow::Continue(());
+        }
+        ast::visitor::walk_expression_default(self, expression)
+    }
+}
+
 pub(crate) fn walk_equations<C: TypeCheckTraversalCallbacks>(
     callbacks: &mut C,
     equations: &[Equation],
     type_table: &TypeTable,
 ) {
-    for equation in equations {
-        walk_equation(callbacks, equation, type_table);
-    }
-}
-
-pub(crate) fn walk_equation<C: TypeCheckTraversalCallbacks>(
-    callbacks: &mut C,
-    equation: &Equation,
-    type_table: &TypeTable,
-) {
-    match equation {
-        Equation::Empty => {}
-        Equation::Connect { lhs, rhs } => {
-            callbacks.on_component_reference(lhs, type_table);
-            callbacks.on_component_reference(rhs, type_table);
-        }
-        Equation::Simple { lhs, rhs } => {
-            walk_expression(callbacks, lhs, type_table);
-            walk_expression(callbacks, rhs, type_table);
-            callbacks.on_simple_equation(lhs, rhs, type_table);
-        }
-        Equation::For {
-            indices: _,
-            equations,
-        } => {
-            walk_equations(callbacks, equations, type_table);
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                walk_expression(callbacks, &block.cond, type_table);
-                walk_equations(callbacks, &block.eqs, type_table);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                walk_expression(callbacks, &block.cond, type_table);
-                walk_equations(callbacks, &block.eqs, type_table);
-            }
-            if let Some(else_equations) = else_block {
-                walk_equations(callbacks, else_equations, type_table);
-            }
-        }
-        Equation::FunctionCall { comp: _, args } => walk_expressions(callbacks, args, type_table),
-        Equation::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            walk_expression(callbacks, condition, type_table);
-            walk_expression(callbacks, message, type_table);
-            if let Some(level_expression) = level {
-                walk_expression(callbacks, level_expression, type_table);
-            }
-        }
-    }
+    let mut visitor = TypeCheckTraversal::new(callbacks, type_table);
+    let _ = visitor.visit_each(equations, TypeCheckTraversal::visit_equation);
 }
 
 pub(crate) fn walk_statements<C: TypeCheckTraversalCallbacks>(
@@ -100,84 +103,8 @@ pub(crate) fn walk_statements<C: TypeCheckTraversalCallbacks>(
     statements: &[Statement],
     type_table: &TypeTable,
 ) {
-    for statement in statements {
-        walk_statement(callbacks, statement, type_table);
-    }
-}
-
-pub(crate) fn walk_statement<C: TypeCheckTraversalCallbacks>(
-    callbacks: &mut C,
-    statement: &Statement,
-    type_table: &TypeTable,
-) {
-    match statement {
-        Statement::Empty | Statement::Return { .. } | Statement::Break { .. } => {}
-        Statement::Assignment { comp, value } => {
-            walk_expression(callbacks, value, type_table);
-            callbacks.on_component_reference(comp, type_table);
-        }
-        Statement::FunctionCall {
-            comp: _,
-            args,
-            outputs,
-        } => {
-            walk_expressions(callbacks, args, type_table);
-            walk_expressions(callbacks, outputs, type_table);
-        }
-        Statement::For {
-            indices: _,
-            equations,
-        } => {
-            walk_statements(callbacks, equations, type_table);
-        }
-        Statement::While(block) => {
-            walk_expression(callbacks, &block.cond, type_table);
-            walk_statements(callbacks, &block.stmts, type_table);
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                walk_expression(callbacks, &block.cond, type_table);
-                walk_statements(callbacks, &block.stmts, type_table);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                walk_expression(callbacks, &block.cond, type_table);
-                walk_statements(callbacks, &block.stmts, type_table);
-            }
-            if let Some(else_statements) = else_block {
-                walk_statements(callbacks, else_statements, type_table);
-            }
-        }
-        Statement::Reinit { variable, value } => {
-            walk_expression(callbacks, value, type_table);
-            callbacks.on_component_reference(variable, type_table);
-        }
-        Statement::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            walk_expression(callbacks, condition, type_table);
-            walk_expression(callbacks, message, type_table);
-            if let Some(level_expression) = level {
-                walk_expression(callbacks, level_expression, type_table);
-            }
-        }
-    }
-}
-
-pub(crate) fn walk_expressions<C: TypeCheckTraversalCallbacks>(
-    callbacks: &mut C,
-    expressions: &[Expression],
-    type_table: &TypeTable,
-) {
-    for expression in expressions {
-        walk_expression(callbacks, expression, type_table);
-    }
+    let mut visitor = TypeCheckTraversal::new(callbacks, type_table);
+    let _ = visitor.visit_each(statements, TypeCheckTraversal::visit_statement);
 }
 
 pub(crate) fn walk_expression<C: TypeCheckTraversalCallbacks>(
@@ -185,78 +112,6 @@ pub(crate) fn walk_expression<C: TypeCheckTraversalCallbacks>(
     expression: &Expression,
     type_table: &TypeTable,
 ) {
-    match expression {
-        Expression::Empty | Expression::Terminal { .. } => {}
-        Expression::ComponentReference(cr) => callbacks.on_component_reference(cr, type_table),
-        Expression::Range { start, step, end } => {
-            walk_expression(callbacks, start, type_table);
-            if let Some(step_expression) = step {
-                walk_expression(callbacks, step_expression, type_table);
-            }
-            walk_expression(callbacks, end, type_table);
-        }
-        Expression::Unary { op: _, rhs } => walk_expression(callbacks, rhs, type_table),
-        Expression::Binary { op: _, lhs, rhs } => {
-            walk_expression(callbacks, lhs, type_table);
-            walk_expression(callbacks, rhs, type_table);
-        }
-        Expression::FunctionCall { comp, args } => {
-            walk_expressions(callbacks, args, type_table);
-            callbacks.on_expression_function_call(comp, args, type_table);
-        }
-        Expression::ClassModification {
-            target: _,
-            modifications,
-        } => walk_expressions(callbacks, modifications, type_table),
-        Expression::NamedArgument { name: _, value } => {
-            walk_expression(callbacks, value, type_table);
-        }
-        Expression::Modification { target: _, value } => {
-            walk_expression(callbacks, value, type_table);
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            walk_expressions(callbacks, elements, type_table);
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (condition, then_expression) in branches {
-                walk_expression(callbacks, condition, type_table);
-                walk_expression(callbacks, then_expression, type_table);
-            }
-            walk_expression(callbacks, else_branch, type_table);
-        }
-        Expression::Parenthesized { inner } => walk_expression(callbacks, inner, type_table),
-        Expression::ArrayComprehension {
-            expr,
-            indices: _,
-            filter,
-        } => {
-            walk_expression(callbacks, expr, type_table);
-            if let Some(filter_expression) = filter {
-                walk_expression(callbacks, filter_expression, type_table);
-            }
-        }
-        Expression::ArrayIndex { base, subscripts } => {
-            walk_expression(callbacks, base, type_table);
-            walk_subscripts(callbacks, subscripts, type_table);
-        }
-        Expression::FieldAccess { base, field } => {
-            walk_expression(callbacks, base, type_table);
-            callbacks.on_field_access(base, field, type_table);
-        }
-    }
-}
-
-pub(crate) fn walk_subscripts<C: TypeCheckTraversalCallbacks>(
-    callbacks: &mut C,
-    subscripts: &[ast::Subscript],
-    type_table: &TypeTable,
-) {
-    for subscript in subscripts {
-        if let ast::Subscript::Expression(expression) = subscript {
-            walk_expression(callbacks, expression, type_table);
-        }
-    }
+    let mut visitor = TypeCheckTraversal::new(callbacks, type_table);
+    let _ = visitor.visit_expression(expression);
 }

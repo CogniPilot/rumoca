@@ -59,31 +59,22 @@ end ArrayTest;
     typecheck_instanced(tree, &mut overlay, model).expect("typecheck should succeed");
     let flat = flatten_ref(tree, &overlay, model).expect("flatten should succeed");
 
-    // Check that array-subscripted variables exist with [index] in name
-    let has_r1_p_v = flat.variables.iter().any(|(n, _)| n.as_str() == "r[1].p.v");
-    let has_r2_p_v = flat.variables.iter().any(|(n, _)| n.as_str() == "r[2].p.v");
-    let has_r3_p_v = flat.variables.iter().any(|(n, _)| n.as_str() == "r[3].p.v");
+    let variable_names = flat
+        .variables
+        .keys()
+        .map(|name| name.as_str())
+        .collect::<Vec<_>>();
 
-    println!("Variables with array subscripts:");
-    for (name, _) in flat.variables.iter() {
-        if name.as_str().contains('[') {
-            println!("  {}", name);
-        }
-    }
-
-    println!("\nVariable checks:");
-    println!("  r[1].p.v exists: {}", has_r1_p_v);
-    println!("  r[2].p.v exists: {}", has_r2_p_v);
-    println!("  r[3].p.v exists: {}", has_r3_p_v);
-
-    // Check that equations reference indexed variables properly
-    println!("\nEquations:");
-    for eq in flat.equations.iter() {
-        println!("  {} (scalar_count={})", eq.origin, eq.scalar_count);
-    }
-
-    // Assert variables have proper array subscripts
-    assert!(has_r1_p_v, "Should have r[1].p.v variable");
-    assert!(has_r2_p_v, "Should have r[2].p.v variable");
-    assert!(has_r3_p_v, "Should have r[3].p.v variable");
+    assert!(
+        variable_names.contains(&"r[1].p.v"),
+        "Should preserve r[1].p.v as a unique flat variable"
+    );
+    assert!(
+        variable_names.contains(&"r[2].p.v"),
+        "Should preserve r[2].p.v as a unique flat variable"
+    );
+    assert!(
+        variable_names.contains(&"r[3].p.v"),
+        "Should preserve r[3].p.v as a unique flat variable"
+    );
 }

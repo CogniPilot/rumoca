@@ -34,8 +34,8 @@ fn test_lookup_enum_reference_candidate_ignores_fake_suffix_from_subscript_dot()
 fn test_resolve_alias_once_ignores_fake_prefix_from_subscript_dot() {
     let mut ctx = Context::new();
     ctx.record_aliases.insert(
-        "pipe1.system[data".to_string(),
-        "badAliasTarget".to_string(),
+        rumoca_core::ComponentPath::from_flat_path("pipe1.system[data"),
+        rumoca_core::ComponentPath::from_flat_path("badAliasTarget"),
     );
 
     assert_eq!(

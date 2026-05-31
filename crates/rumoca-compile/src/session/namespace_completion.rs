@@ -174,7 +174,7 @@ fn collect_namespace_entries_from_definition(
 
 #[cfg(test)]
 fn collect_namespace_entries_recursive(
-    classes: &IndexMap<String, ast::ClassDef>,
+    classes: &ast::AstIndexMap<String, ast::ClassDef>,
     prefix: &str,
     collector: &mut NamespaceCacheCollector,
 ) {
@@ -201,7 +201,7 @@ fn add_namespace_edges(
     qualified_name: &str,
     namespace_edges: &mut IndexMap<String, IndexSet<String>>,
 ) {
-    let segments: Vec<_> = qualified_name.split('.').collect();
+    let segments: Vec<_> = rumoca_core::split_path_with_indices(qualified_name);
     for index in 0..segments.len() {
         let prefix = namespace_prefix_for_segments(&segments[..index]);
         let full_name = segments[..=index].join(".");
@@ -231,11 +231,7 @@ fn build_children_by_prefix(
             .into_iter()
             .flat_map(|set| set.iter())
             .map(|full_name| {
-                let child = full_name
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(full_name)
-                    .to_string();
+                let child = rumoca_core::top_level_last_segment(full_name).to_string();
                 let child_prefix = format!("{full_name}.");
                 let has_children = namespace_edges.contains_key(&child_prefix);
                 (child, full_name.clone(), has_children)

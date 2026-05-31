@@ -33,35 +33,31 @@ fn source_set_workspace_symbol_cache(
     snapshot: &SessionSnapshot,
     source_set_id: SourceSetId,
 ) -> Arc<SourceSetWorkspaceSymbolCache> {
-    let snapshot_session = snapshot
-        .session
-        .lock()
-        .expect("workspace-symbol snapshot lock should not be poisoned");
-    snapshot_session
-        .query_state
-        .ast
-        .workspace_symbol_query_cache
-        .as_ref()
-        .and_then(|cache| cache.source_set_caches.get(&source_set_id))
-        .cloned()
-        .expect("workspace-symbol source-set cache should exist")
+    snapshot.inspect_detached_session(|snapshot_session| {
+        snapshot_session
+            .query_state
+            .ast
+            .workspace_symbol_query_cache
+            .as_ref()
+            .and_then(|cache| cache.source_set_caches.get(&source_set_id))
+            .cloned()
+            .expect("workspace-symbol source-set cache should exist")
+    })
 }
 
 fn detached_workspace_symbol_cache(
     snapshot: &SessionSnapshot,
 ) -> Arc<DetachedWorkspaceSymbolCache> {
-    let snapshot_session = snapshot
-        .session
-        .lock()
-        .expect("workspace-symbol snapshot lock should not be poisoned");
-    snapshot_session
-        .query_state
-        .ast
-        .workspace_symbol_query_cache
-        .as_ref()
-        .and_then(|cache| cache.detached_cache.as_ref())
-        .cloned()
-        .expect("workspace-symbol detached cache should exist")
+    snapshot.inspect_detached_session(|snapshot_session| {
+        snapshot_session
+            .query_state
+            .ast
+            .workspace_symbol_query_cache
+            .as_ref()
+            .and_then(|cache| cache.detached_cache.as_ref())
+            .cloned()
+            .expect("workspace-symbol detached cache should exist")
+    })
 }
 
 fn session_detached_workspace_symbol_cache(session: &Session) -> Arc<DetachedWorkspaceSymbolCache> {
@@ -76,68 +72,64 @@ fn session_detached_workspace_symbol_cache(session: &Session) -> Arc<DetachedWor
 }
 
 fn assert_workspace_symbol_snapshot_is_narrow(snapshot: &SessionSnapshot) {
-    let snapshot_session = snapshot
-        .session
-        .lock()
-        .expect("workspace-symbol snapshot lock should not be poisoned");
-    assert!(
-        snapshot_session.source_sets.is_empty(),
-        "warm workspace-symbol snapshots should not clone durable source-set records"
-    );
-    assert_eq!(
-        snapshot_session.source_set_keys.len(),
-        0,
-        "warm workspace-symbol snapshots should not carry source-root key maps"
-    );
-    assert_eq!(
-        snapshot_session.source_set_signature_overrides.len(),
-        1,
-        "warm workspace-symbol snapshots should retain only source-set signatures"
-    );
-    assert!(
-        snapshot_session.file_path_keys.is_empty(),
-        "warm workspace-symbol snapshots should not rebuild canonical path-key maps"
-    );
-    assert!(
-        snapshot_session.file_uris.is_empty(),
-        "warm workspace-symbol snapshots should not carry file-id uri reverse maps"
-    );
-    assert!(
-        snapshot_session.file_revisions.is_empty(),
-        "warm workspace-symbol snapshots should not clone per-file revision tables"
-    );
+    snapshot.inspect_detached_session(|snapshot_session| {
+        assert!(
+            snapshot_session.source_sets.is_empty(),
+            "warm workspace-symbol snapshots should not clone durable source-set records"
+        );
+        assert_eq!(
+            snapshot_session.source_set_keys.len(),
+            0,
+            "warm workspace-symbol snapshots should not carry source-root key maps"
+        );
+        assert_eq!(
+            snapshot_session.source_set_signature_overrides.len(),
+            1,
+            "warm workspace-symbol snapshots should retain only source-set signatures"
+        );
+        assert!(
+            snapshot_session.file_path_keys.is_empty(),
+            "warm workspace-symbol snapshots should not rebuild canonical path-key maps"
+        );
+        assert!(
+            snapshot_session.file_uris.is_empty(),
+            "warm workspace-symbol snapshots should not carry file-id uri reverse maps"
+        );
+        assert!(
+            snapshot_session.file_revisions.is_empty(),
+            "warm workspace-symbol snapshots should not clone per-file revision tables"
+        );
+    });
 }
 
 fn assert_workspace_symbol_rebuild_snapshot_is_trimmed(snapshot: &SessionSnapshot) {
-    let snapshot_session = snapshot
-        .session
-        .lock()
-        .expect("workspace-symbol rebuild snapshot lock should not be poisoned");
-    assert!(
-        !snapshot_session.source_sets.is_empty(),
-        "source-set rebuild snapshots should retain source-root membership"
-    );
-    assert_eq!(
-        snapshot_session.source_set_keys.len(),
-        0,
-        "source-set rebuild snapshots should not carry source-root key maps"
-    );
-    assert!(
-        !snapshot_session.source_set_signature_overrides.is_empty(),
-        "source-set rebuild snapshots should retain source-set signatures"
-    );
-    assert!(
-        snapshot_session.file_path_keys.is_empty(),
-        "source-set rebuild snapshots should not rebuild canonical path-key maps"
-    );
-    assert!(
-        snapshot_session.file_uris.is_empty(),
-        "source-set rebuild snapshots should not carry file-id uri reverse maps"
-    );
-    assert!(
-        snapshot_session.file_revisions.is_empty(),
-        "source-set rebuild snapshots should not clone per-file revision tables"
-    );
+    snapshot.inspect_detached_session(|snapshot_session| {
+        assert!(
+            !snapshot_session.source_sets.is_empty(),
+            "source-set rebuild snapshots should retain source-root membership"
+        );
+        assert_eq!(
+            snapshot_session.source_set_keys.len(),
+            0,
+            "source-set rebuild snapshots should not carry source-root key maps"
+        );
+        assert!(
+            !snapshot_session.source_set_signature_overrides.is_empty(),
+            "source-set rebuild snapshots should retain source-set signatures"
+        );
+        assert!(
+            snapshot_session.file_path_keys.is_empty(),
+            "source-set rebuild snapshots should not rebuild canonical path-key maps"
+        );
+        assert!(
+            snapshot_session.file_uris.is_empty(),
+            "source-set rebuild snapshots should not carry file-id uri reverse maps"
+        );
+        assert!(
+            snapshot_session.file_revisions.is_empty(),
+            "source-set rebuild snapshots should not clone per-file revision tables"
+        );
+    });
 }
 
 #[test]

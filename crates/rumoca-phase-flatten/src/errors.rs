@@ -64,6 +64,85 @@ pub enum FlattenError {
     // allows edge()/change() in discrete equations. Code reserved for future use.
     // Note: EF007 (UnevaluableDimensions) removed - typecheck phase (ET004) now handles this
     // per SPEC_0027 which moved dimension evaluation to typecheck phase.
+    /// Source-scope metadata required for Modelica name lookup was missing.
+    #[error("missing source scope for {context}: {name}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF008),
+        help(
+            "instantiate must preserve the lexical source scope used for flatten-time name lookup"
+        )
+    )]
+    MissingSourceScope {
+        name: String,
+        context: String,
+        #[label("instance created here")]
+        span: SourceSpan,
+    },
+
+    /// Flat IR contains a callable definition that is not executable.
+    #[error("invalid flat IR function binding: {name}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF009),
+        help(
+            "flatten must resolve replaceable package/function bindings to executable concrete functions before producing Flat IR"
+        )
+    )]
+    FunctionWithoutBody {
+        name: String,
+        #[label("non-executable function reached the flat IR boundary")]
+        span: SourceSpan,
+    },
+
+    /// A primitive component reached Flat IR with a symbolic dimension that could not be resolved.
+    #[error("unresolved component dimension for {name}: {expression}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF010),
+        help("flatten must resolve primitive component array dimensions before emitting Flat IR")
+    )]
+    UnresolvedComponentDimension {
+        name: String,
+        expression: String,
+        #[label("dimension declared here")]
+        span: SourceSpan,
+    },
+
+    /// A numeric token accepted by the parser could not be converted to a number.
+    #[error("malformed numeric literal: {text}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF011),
+        help("the lexer produced a numeric token that flatten could not parse")
+    )]
+    MalformedNumericLiteral {
+        text: String,
+        #[label("malformed numeric literal")]
+        span: SourceSpan,
+    },
+
+    /// Function-override rewriting did not converge within the configured fixed-point cap.
+    #[error(
+        "function override rewriting did not converge after {iterations} iterations ({function_count} functions collected)"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF012),
+        help("flatten must reach a stable rewritten function table before emitting Flat IR")
+    )]
+    FunctionRewriteNoConverge {
+        iterations: usize,
+        function_count: usize,
+    },
+
+    /// A function output can be returned without an assignment.
+    #[error("function output '{output}' is not definitely assigned in function '{function}'")]
+    #[diagnostic(
+        code(rumoca::flatten::EF013),
+        help("MLS §12.4.4 requires every function output variable to be assigned before return")
+    )]
+    FunctionOutputUnassigned {
+        function: String,
+        output: String,
+        #[label("function output may be unassigned here")]
+        span: SourceSpan,
+    },
 }
 
 impl FlattenError {
@@ -97,6 +176,69 @@ impl FlattenError {
     /// Create an Internal error (no span).
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal(message.into())
+    }
+
+    /// Create a MissingSourceScope error.
+    pub fn missing_source_scope(
+        name: impl Into<String>,
+        context: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::MissingSourceScope {
+            name: name.into(),
+            context: context.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create a FunctionWithoutBody error.
+    pub fn function_without_body(name: impl Into<String>, span: rumoca_core::Span) -> Self {
+        Self::FunctionWithoutBody {
+            name: name.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create an UnresolvedComponentDimension error.
+    pub fn unresolved_component_dimension(
+        name: impl Into<String>,
+        expression: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::UnresolvedComponentDimension {
+            name: name.into(),
+            expression: expression.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create a MalformedNumericLiteral error.
+    pub fn malformed_numeric_literal(text: impl Into<String>, span: rumoca_core::Span) -> Self {
+        Self::MalformedNumericLiteral {
+            text: text.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create a FunctionRewriteNoConverge error.
+    pub fn function_rewrite_no_converge(iterations: usize, function_count: usize) -> Self {
+        Self::FunctionRewriteNoConverge {
+            iterations,
+            function_count,
+        }
+    }
+
+    /// Create a FunctionOutputUnassigned error.
+    pub fn function_output_unassigned(
+        function: impl Into<String>,
+        output: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::FunctionOutputUnassigned {
+            function: function.into(),
+            output: output.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
     }
 }
 

@@ -1,4 +1,6 @@
-//! FMU target discovery — determines which of the 180 MSL simulation targets
+#![cfg(feature = "msl-external-tests")]
+
+//! FMU target discovery — determines which committed MSL simulation targets
 //! can successfully pass through the FMI2 and FMI3 C template pipelines.
 //!
 //! For each model, tests: compile → has states → render template → compile C.
@@ -6,7 +8,7 @@
 //!
 //! Run with:
 //! ```text
-//! cargo test --release --package rumoca-test-msl --test fmu_target_discovery -- --ignored --nocapture
+//! cargo test --release --package rumoca-test-msl --features msl-external-tests --test fmu_target_discovery discover_fmu_targets -- --nocapture
 //! ```
 
 use flate2::read::GzDecoder;
@@ -101,8 +103,8 @@ fn find_mo_files(msl_dir: &Path) -> Vec<PathBuf> {
 }
 
 fn load_target_models() -> Vec<String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/msl_tests/msl_simulation_targets_180.json");
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/msl_tests/msl_simulation_targets.json");
     let raw = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read target list {}: {e}", path.display()));
     let value: serde_json::Value =
@@ -224,7 +226,7 @@ fn probe_model(
     let dae = &result.dae;
 
     // 2. Must have states for forward Euler integration
-    if dae.states.is_empty() {
+    if dae.variables.states.is_empty() {
         return Stage::NoStates;
     }
 
@@ -294,12 +296,11 @@ fn write_discovery_results(
 }
 
 #[test]
-#[ignore]
 fn discover_fmu_targets() {
     if cfg!(debug_assertions) {
         panic!(
             "\n\nERROR: must be run in RELEASE mode!\n\
-             cargo test --release --package rumoca-test-msl --test fmu_target_discovery -- --ignored --nocapture\n"
+             cargo test --release --package rumoca-test-msl --features msl-external-tests --test fmu_target_discovery discover_fmu_targets -- --nocapture\n"
         );
     }
 
@@ -326,14 +327,14 @@ fn discover_fmu_targets() {
         let fmi2_stage = probe_model(
             &source_root,
             model_name,
-            templates::FMI2_MODEL,
-            templates::FMI2_TEST_DRIVER,
+            templates::builtin_template_source("fmi2", "model.c.jinja").unwrap(),
+            templates::builtin_template_source("fmi2", "test_driver.c.jinja").unwrap(),
         );
         let fmi3_stage = probe_model(
             &source_root,
             model_name,
-            templates::FMI3_MODEL,
-            templates::FMI3_TEST_DRIVER,
+            templates::builtin_template_source("fmi3", "model.c.jinja").unwrap(),
+            templates::builtin_template_source("fmi3", "test_driver.c.jinja").unwrap(),
         );
 
         let idx = |s: &Stage| match s {

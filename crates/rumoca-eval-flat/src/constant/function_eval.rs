@@ -13,10 +13,9 @@
 //! - Recursion and iteration limits for safety
 
 use indexmap::IndexMap;
-use rumoca_core::Span;
-use rumoca_ir_flat::{
-    ComponentReference, ComprehensionIndex, Expression, ForIndex, Function, Literal, Statement,
-    StatementBlock, Subscript,
+use rumoca_core::{
+    ComponentReference, ComprehensionIndex, Expression, ForIndex, Function, Literal, Span,
+    Statement, StatementBlock, Subscript, split_last_top_level,
 };
 
 use super::EvalContext;
@@ -42,6 +41,7 @@ impl Default for EvalLimits {
 }
 
 /// Evaluation state bundling common parameters to reduce argument count.
+#[derive(Clone, Copy)]
 pub struct EvalState<'a> {
     pub ctx: &'a EvalContext,
     pub limits: &'a EvalLimits,
@@ -70,9 +70,32 @@ struct FunctionEnv {
     locals: IndexMap<String, Value>,
 }
 
+/// Function-call argument after expression evaluation.
+#[derive(Debug, Clone)]
+pub struct FunctionCallArg {
+    pub name: Option<String>,
+    pub value: Value,
+}
+
+impl FunctionCallArg {
+    pub fn positional(value: Value) -> Self {
+        Self { name: None, value }
+    }
+
+    pub fn named(name: String, value: Value) -> Self {
+        Self {
+            name: Some(name),
+            value,
+        }
+    }
+}
+
 impl FunctionEnv {
-    /// Create a new environment with parameters bound from arguments.
-    fn new(func: &Function, args: Vec<Value>, span: Span) -> Result<Self, EvalError> {
+    fn new_with_call_args(
+        func: &Function,
+        args: Vec<FunctionCallArg>,
+        span: Span,
+    ) -> Result<Self, EvalError> {
         let inputs = Self::bind_inputs(func, args, span)?;
         let outputs = Self::init_params(&func.outputs);
         let locals = Self::init_params(&func.locals);
@@ -86,55 +109,113 @@ impl FunctionEnv {
     /// Bind input arguments to parameters.
     fn bind_inputs(
         func: &Function,
-        args: Vec<Value>,
+        args: Vec<FunctionCallArg>,
         span: Span,
     ) -> Result<IndexMap<String, Value>, EvalError> {
         let mut inputs = IndexMap::new();
-        if args.len() >= func.inputs.len() {
-            for (param, arg) in func.inputs.iter().zip(args) {
-                inputs.insert(param.name.clone(), arg);
-            }
-            return Ok(inputs);
-        }
-        // Handle case where we have fewer args than inputs
-        for (i, param) in func.inputs.iter().enumerate() {
-            let value = Self::get_input_value(func, &args, i, param, span)?;
-            inputs.insert(param.name.clone(), value);
-        }
-        Ok(inputs)
-    }
+        let mut next_positional = 0;
+        let mut seen_named = false;
 
-    /// Get input value for a parameter at index i.
-    fn get_input_value(
-        func: &Function,
-        args: &[Value],
-        i: usize,
-        param: &rumoca_ir_flat::FunctionParam,
-        span: Span,
-    ) -> Result<Value, EvalError> {
-        if i < args.len() {
-            return Ok(args[i].clone());
+        for arg in args {
+            match arg.name {
+                Some(name) => {
+                    seen_named = true;
+                    Self::bind_named_input(func, &mut inputs, name, arg.value, span)?;
+                }
+                None => {
+                    Self::bind_positional_input(
+                        func,
+                        &mut inputs,
+                        next_positional,
+                        seen_named,
+                        arg.value,
+                        span,
+                    )?;
+                    next_positional += 1;
+                }
+            }
         }
-        if param.default.is_some() {
+
+        for param in &func.inputs {
+            if inputs.contains_key(&param.name) {
+                continue;
+            }
+            if param.default.is_some() {
+                return Err(EvalError::function_error(
+                    format!(
+                        "missing argument {} for function {} (defaults not yet supported)",
+                        param.name, func.name
+                    ),
+                    span,
+                ));
+            }
             return Err(EvalError::function_error(
                 format!(
-                    "missing argument {} for function {} (defaults not yet supported)",
+                    "missing required argument {} for function {}",
                     param.name, func.name
                 ),
                 span,
             ));
         }
-        Err(EvalError::function_error(
-            format!(
-                "missing required argument {} for function {}",
-                param.name, func.name
-            ),
-            span,
-        ))
+        Ok(inputs)
+    }
+
+    fn bind_named_input(
+        func: &Function,
+        inputs: &mut IndexMap<String, Value>,
+        name: String,
+        value: Value,
+        span: Span,
+    ) -> Result<(), EvalError> {
+        if !func.inputs.iter().any(|param| param.name == name) {
+            return Err(EvalError::function_error(
+                format!("unknown named argument {name} for function {}", func.name),
+                span,
+            ));
+        }
+        if inputs.insert(name.clone(), value).is_some() {
+            return Err(EvalError::function_error(
+                format!("duplicate argument {name} for function {}", func.name),
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn bind_positional_input(
+        func: &Function,
+        inputs: &mut IndexMap<String, Value>,
+        next_positional: usize,
+        seen_named: bool,
+        value: Value,
+        span: Span,
+    ) -> Result<(), EvalError> {
+        if seen_named {
+            return Err(EvalError::function_error(
+                format!("positional argument after named argument in {}", func.name),
+                span,
+            ));
+        }
+        let Some(param) = func.inputs.get(next_positional) else {
+            return Err(EvalError::function_error(
+                format!("too many arguments for function {}", func.name),
+                span,
+            ));
+        };
+        if inputs.insert(param.name.clone(), value).is_some() {
+            return Err(EvalError::function_error(
+                format!(
+                    "duplicate argument {} for function {}",
+                    param.name, func.name
+                ),
+                span,
+            ));
+        }
+        Ok(())
     }
 
     /// Initialize parameters with default values.
-    fn init_params(params: &[rumoca_ir_flat::FunctionParam]) -> IndexMap<String, Value> {
+    fn init_params(params: &[rumoca_core::FunctionParam]) -> IndexMap<String, Value> {
         params
             .iter()
             .map(|p| (p.name.clone(), type_default_value(&p.type_name, &p.dims)))
@@ -217,7 +298,19 @@ pub fn eval_function(
     depth: usize,
     span: Span,
 ) -> Result<Value, EvalError> {
-    // Check recursion limit
+    let args = args.into_iter().map(FunctionCallArg::positional).collect();
+    eval_function_with_call_args(func, args, ctx, limits, depth, span)
+}
+
+/// Evaluate a user-defined function with already evaluated positional/named arguments.
+pub fn eval_function_with_call_args(
+    func: &Function,
+    args: Vec<FunctionCallArg>,
+    ctx: &EvalContext,
+    limits: &EvalLimits,
+    depth: usize,
+    span: Span,
+) -> Result<Value, EvalError> {
     if depth > limits.recursion_depth {
         return Err(EvalError::function_error(
             format!(
@@ -228,8 +321,7 @@ pub fn eval_function(
         ));
     }
 
-    // Create function environment and evaluation state
-    let mut env = FunctionEnv::new(func, args, span)?;
+    let mut env = FunctionEnv::new_with_call_args(func, args, span)?;
     let mut iteration_count = 0;
     let eval = EvalState {
         ctx,
@@ -242,7 +334,6 @@ pub fn eval_function(
         iteration_count: &mut iteration_count,
     };
 
-    // Execute function body (algorithm statements)
     for stmt in func.body.iter() {
         let flow = eval_statement(stmt, &mut state, &eval)?;
         match flow {
@@ -257,8 +348,7 @@ pub fn eval_function(
         }
     }
 
-    let result = env.return_value();
-    Ok(result)
+    Ok(env.return_value())
 }
 
 /// Mutable state during statement evaluation.
@@ -274,24 +364,26 @@ fn eval_statement(
     eval: &EvalState<'_>,
 ) -> Result<FlowControl, EvalError> {
     match stmt {
-        Statement::Empty => Ok(FlowControl::Continue),
-        Statement::Assignment { comp, value } => eval_assignment(comp, value, state.env, eval),
-        Statement::Return => Ok(FlowControl::Return),
-        Statement::Break => Ok(FlowControl::Break),
+        Statement::Empty { .. } => Ok(FlowControl::Continue),
+        Statement::Assignment { comp, value, .. } => eval_assignment(comp, value, state.env, eval),
+        Statement::Return { .. } => Ok(FlowControl::Return),
+        Statement::Break { .. } => Ok(FlowControl::Break),
         Statement::If {
             cond_blocks,
             else_block,
+            ..
         } => eval_if_statement(cond_blocks, else_block, state, eval),
-        Statement::For { indices, equations } => {
-            eval_for_statement(indices, equations, state, eval)
-        }
-        Statement::While(block) => eval_while_statement(block, state, eval),
+        Statement::For {
+            indices, equations, ..
+        } => eval_for_statement(indices, equations, state, eval),
+        Statement::While { block, .. } => eval_while_statement(block, state, eval),
         Statement::FunctionCall {
             comp,
             args,
             outputs,
+            ..
         } => eval_fn_call_stmt(comp, args, outputs, state.env, eval),
-        Statement::When(_) => Err(EvalError::not_constant(
+        Statement::When { .. } => Err(EvalError::not_constant(
             "when statement in function",
             eval.span,
         )),
@@ -321,7 +413,7 @@ fn eval_assignment(
         let indices: Vec<Expression> = subscripts
             .into_iter()
             .filter_map(|s| {
-                if let Subscript::Expr(e) = s {
+                if let Subscript::Expr { expr: e, .. } = s {
                     Some(*e)
                 } else {
                     None
@@ -381,7 +473,7 @@ fn eval_stmt_list(
 fn eval_fn_call_stmt(
     comp: &ComponentReference,
     args: &[Expression],
-    outputs: &[Expression],
+    outputs: &[ComponentReference],
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<FlowControl, EvalError> {
@@ -409,7 +501,7 @@ fn eval_fn_call_stmt(
 
 /// Assign function outputs to variables.
 fn assign_fn_outputs(
-    outputs: &[Expression],
+    outputs: &[ComponentReference],
     result: Value,
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
@@ -432,23 +524,18 @@ fn assign_fn_outputs(
 
 /// Assign multiple outputs from array result.
 fn assign_multiple_outputs(
-    outputs: &[Expression],
+    outputs: &[ComponentReference],
     arr: &[Value],
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<(), EvalError> {
-    for (output_expr, val) in outputs.iter().zip(arr.iter()) {
-        if let Expression::VarRef { name, subscripts } = output_expr {
-            if !subscripts.is_empty() {
-                continue;
-            }
-            let name = name.as_str().to_string();
-            if !env.set(&name, val.clone()) {
-                return Err(EvalError::function_error(
-                    format!("cannot assign to output variable: {}", name),
-                    eval.span,
-                ));
-            }
+    for (output, val) in outputs.iter().zip(arr.iter()) {
+        let name = component_ref_to_name(output);
+        if !env.set(&name, val.clone()) {
+            return Err(EvalError::function_error(
+                format!("cannot assign to output variable: {}", name),
+                eval.span,
+            ));
         }
     }
     Ok(())
@@ -456,22 +543,17 @@ fn assign_multiple_outputs(
 
 /// Assign single output from result.
 fn assign_single_output(
-    output: &Expression,
+    output: &ComponentReference,
     result: Value,
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<(), EvalError> {
-    if let Expression::VarRef { name, subscripts } = output {
-        if !subscripts.is_empty() {
-            return Ok(());
-        }
-        let name = name.as_str().to_string();
-        if !env.set(&name, result) {
-            return Err(EvalError::function_error(
-                format!("cannot assign to output variable: {}", name),
-                eval.span,
-            ));
-        }
+    let name = component_ref_to_name(output);
+    if !env.set(&name, result) {
+        return Err(EvalError::function_error(
+            format!("cannot assign to output variable: {}", name),
+            eval.span,
+        ));
     }
     Ok(())
 }
@@ -599,14 +681,21 @@ fn eval_expr_in_function(
     env: &FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
+    let eval_state = EvalState {
+        span: expr.span().unwrap_or(eval.span),
+        ..*eval
+    };
+    let eval = &eval_state;
     match expr {
-        Expression::Empty => Ok(Value::Integer(0)),
-        Expression::Literal(literal) => eval_literal(literal),
-        Expression::VarRef { name, subscripts } => eval_var_ref(name, subscripts, env, eval),
-        Expression::Binary { op, lhs, rhs } => eval_binary(op, lhs, rhs, env, eval),
-        Expression::Unary { op, rhs } => eval_unary(op, rhs, env, eval),
+        Expression::Empty { .. } => Ok(Value::Integer(0)),
+        Expression::Literal { value: literal, .. } => eval_literal(literal),
+        Expression::VarRef {
+            name, subscripts, ..
+        } => eval_var_ref(name, subscripts, env, eval),
+        Expression::Binary { op, lhs, rhs, .. } => eval_binary(op, lhs, rhs, env, eval),
+        Expression::Unary { op, rhs, .. } => eval_unary(op, rhs, env, eval),
         Expression::FunctionCall { name, args, .. } => eval_fn_call_expr(name, args, env, eval),
-        Expression::BuiltinCall { function, args } => {
+        Expression::BuiltinCall { function, args, .. } => {
             let arg_values: Vec<Value> = args
                 .iter()
                 .map(|arg| eval_expr_in_function(arg, env, eval))
@@ -614,21 +703,25 @@ fn eval_expr_in_function(
             super::eval_builtin(function.name(), &arg_values, eval.span)
         }
         Expression::Array { elements, .. } => eval_array_expr(elements, env, eval),
-        Expression::Range { start, step, end } => {
-            eval_range_expr_inline(start, step, end, env, eval)
-        }
+        Expression::Range {
+            start, step, end, ..
+        } => eval_range_expr_inline(start, step, end, env, eval),
         Expression::If {
             branches,
             else_branch,
+            ..
         } => eval_if_expr(branches, else_branch, env, eval),
-        Expression::Index { base, subscripts } => eval_array_index(base, subscripts, env, eval),
+        Expression::Index {
+            base, subscripts, ..
+        } => eval_array_index(base, subscripts, env, eval),
         Expression::ArrayComprehension {
             expr,
             indices,
             filter,
+            ..
         } => eval_array_comprehension(expr, indices, filter, env, eval),
-        Expression::Tuple { elements } => eval_array_expr(elements, env, eval),
-        Expression::FieldAccess { base, field } => {
+        Expression::Tuple { elements, .. } => eval_array_expr(elements, env, eval),
+        Expression::FieldAccess { base, field, .. } => {
             let base_val = eval_expr_in_function(base, env, eval)?;
             let record = base_val.as_record().ok_or_else(|| {
                 EvalError::type_mismatch("Record", base_val.type_name(), eval.span)
@@ -653,8 +746,8 @@ fn eval_literal(literal: &Literal) -> Result<Value, EvalError> {
 
 /// Evaluate a variable reference.
 fn eval_var_ref(
-    name: &rumoca_ir_flat::VarName,
-    subscripts: &[rumoca_ir_flat::Subscript],
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
     env: &FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
@@ -671,19 +764,16 @@ fn eval_var_ref(
     if let Some((type_name, literal)) = eval.ctx.get_enum(name) {
         return Ok(Value::Enum(type_name.clone(), literal.clone()));
     }
-    // Try parsing as qualified enum
-    if name.contains('.') {
-        let parts: Vec<&str> = name.rsplitn(2, '.').collect();
-        if parts.len() == 2 {
-            return Ok(Value::Enum(parts[1].to_string(), parts[0].to_string()));
-        }
+    // Try parsing as qualified enum.
+    if let Some((type_name, literal)) = split_last_top_level(name) {
+        return Ok(Value::Enum(type_name.to_string(), literal.to_string()));
     }
     Err(EvalError::unknown_variable(name, eval.span))
 }
 
 /// Evaluate a binary expression.
 fn eval_binary(
-    op: &rumoca_ir_flat::OpBinary,
+    op: &rumoca_core::OpBinary,
     lhs: &Expression,
     rhs: &Expression,
     env: &FunctionEnv,
@@ -696,7 +786,7 @@ fn eval_binary(
 
 /// Evaluate a unary expression.
 fn eval_unary(
-    op: &rumoca_ir_flat::OpUnary,
+    op: &rumoca_core::OpUnary,
     rhs: &Expression,
     env: &FunctionEnv,
     eval: &EvalState<'_>,
@@ -707,7 +797,7 @@ fn eval_unary(
 
 /// Evaluate a function call expression.
 fn eval_fn_call_expr(
-    name: &rumoca_ir_flat::VarName,
+    name: &rumoca_core::Reference,
     args: &[Expression],
     env: &FunctionEnv,
     eval: &EvalState<'_>,
@@ -896,7 +986,9 @@ fn eval_range_expr(
     eval: &EvalState<'_>,
 ) -> Result<Vec<Value>, EvalError> {
     match expr {
-        Expression::Range { start, step, end } => {
+        Expression::Range {
+            start, step, end, ..
+        } => {
             let start_val = eval_expr_in_function(start, env, eval)?;
             let end_val = eval_expr_in_function(end, env, eval)?;
             let step_val = step
@@ -1021,9 +1113,9 @@ fn parse_subscripted_assignment(comp: &ComponentReference) -> Option<(String, Ve
 /// Check if any subscript contains a range expression.
 fn has_range_subscript(subscripts: &[Subscript]) -> bool {
     subscripts.iter().any(|s| match s {
-        Subscript::Expr(e) => matches!(e.as_ref(), Expression::Range { .. }),
-        Subscript::Colon => true,
-        Subscript::Index(_) => false,
+        Subscript::Expr { expr: e, .. } => matches!(e.as_ref(), Expression::Range { .. }),
+        Subscript::Colon { .. } => true,
+        Subscript::Index { .. } => false,
     })
 }
 
@@ -1049,8 +1141,11 @@ fn assign_array_slice(
     }
 
     let new_arr = match &subscripts[0] {
-        Subscript::Expr(expr) => {
-            if let Expression::Range { start, step, end } = expr.as_ref() {
+        Subscript::Expr { expr, .. } => {
+            if let Expression::Range {
+                start, step, end, ..
+            } = expr.as_ref()
+            {
                 let start_val = eval_expr_in_function(start, env, eval)?;
                 let end_val = eval_expr_in_function(end, env, eval)?;
                 let step_val = step
@@ -1074,12 +1169,12 @@ fn assign_array_slice(
                 ));
             }
         }
-        Subscript::Colon => {
+        Subscript::Colon { .. } => {
             // Full slice assignment x[:] := values
             // Replace entire array with values
             value
         }
-        Subscript::Index(_) => {
+        Subscript::Index { .. } => {
             return Err(EvalError::function_error(
                 "expected range subscript for slice assignment".to_string(),
                 eval.span,
@@ -1259,7 +1354,7 @@ fn apply_single_subscript(
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
     match sub {
-        Subscript::Expr(expr) => {
+        Subscript::Expr { expr, .. } => {
             let idx_val = eval_expr_in_function(expr, env, eval)?;
             let idx = idx_val.as_integer().ok_or_else(|| {
                 EvalError::type_mismatch("Integer", idx_val.type_name(), eval.span)
@@ -1276,8 +1371,8 @@ fn apply_single_subscript(
             }
             Ok(arr[idx - 1].clone())
         }
-        Subscript::Colon => Ok(current),
-        Subscript::Index(idx) => {
+        Subscript::Colon { .. } => Ok(current),
+        Subscript::Index { value: idx, .. } => {
             let arr = current
                 .as_array()
                 .ok_or_else(|| EvalError::type_mismatch("Array", current.type_name(), eval.span))?;
@@ -1298,33 +1393,40 @@ fn apply_single_subscript(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_ir_flat as flat;
 
     fn make_simple_function() -> Function {
         // function f(input Real x) output Real y; algorithm y := x * 2; end f;
         let mut func = Function::new("test.f", Span::DUMMY);
-        func.add_input(flat::FunctionParam::new("x", "Real"));
-        func.add_output(flat::FunctionParam::new("y", "Real"));
+        func.add_input(rumoca_core::FunctionParam::new("x", "Real"));
+        func.add_output(rumoca_core::FunctionParam::new("y", "Real"));
         func.pure = true;
 
         // y := x * 2
-        func.body = vec![flat::Statement::Assignment {
-            comp: flat::ComponentReference {
+        func.body = vec![rumoca_core::Statement::Assignment {
+            comp: rumoca_core::ComponentReference {
                 local: false,
-                parts: vec![flat::ComponentRefPart {
+                span: rumoca_core::Span::DUMMY,
+                parts: vec![rumoca_core::ComponentRefPart {
                     ident: "y".to_string(),
+                    span: rumoca_core::Span::DUMMY,
                     subs: Vec::new(),
                 }],
                 def_id: None,
             },
-            value: flat::Expression::Binary {
-                op: flat::OpBinary::Mul(flat::Token::default()),
-                lhs: Box::new(flat::Expression::VarRef {
-                    name: flat::VarName::new("x"),
+            value: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs: Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("x"),
                     subscripts: Vec::new(),
+                    span: rumoca_core::Span::DUMMY,
                 }),
-                rhs: Box::new(flat::Expression::Literal(flat::Literal::Integer(2))),
+                rhs: Box::new(rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(2),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                span: rumoca_core::Span::DUMMY,
             },
+            span: rumoca_core::Span::DUMMY,
         }];
 
         func
@@ -1350,24 +1452,113 @@ mod tests {
     }
 
     #[test]
-    fn test_recursion_limit() {
-        // Create a recursive function that will exceed the limit
-        let mut func = Function::new("test.recurse", Span::DUMMY);
-        func.add_input(flat::FunctionParam::new("n", "Integer"));
-        func.add_output(flat::FunctionParam::new("y", "Integer"));
+    fn test_named_argument_binding() {
+        let mut func = Function::new("test.third", Span::DUMMY);
+        func.add_input(rumoca_core::FunctionParam::new("x", "Integer"));
+        func.add_input(rumoca_core::FunctionParam::new("y", "Integer"));
+        func.add_input(rumoca_core::FunctionParam::new("z", "Integer"));
+        func.add_output(rumoca_core::FunctionParam::new("result", "Integer"));
         func.pure = true;
-
-        // Simple function that always returns 0 (to test limit checking)
-        func.body = vec![flat::Statement::Assignment {
-            comp: flat::ComponentReference {
+        func.body = vec![rumoca_core::Statement::Assignment {
+            comp: rumoca_core::ComponentReference {
                 local: false,
-                parts: vec![flat::ComponentRefPart {
-                    ident: "y".to_string(),
+                span: Span::DUMMY,
+                parts: vec![rumoca_core::ComponentRefPart {
+                    ident: "result".to_string(),
+                    span: Span::DUMMY,
                     subs: Vec::new(),
                 }],
                 def_id: None,
             },
-            value: flat::Expression::Literal(flat::Literal::Integer(0)),
+            value: rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("z"),
+                subscripts: Vec::new(),
+                span: Span::DUMMY,
+            },
+            span: Span::DUMMY,
+        }];
+
+        let result = eval_function_with_call_args(
+            &func,
+            vec![
+                FunctionCallArg::positional(Value::Integer(1)),
+                FunctionCallArg::positional(Value::Integer(2)),
+                FunctionCallArg::named("z".to_string(), Value::Integer(7)),
+            ],
+            &EvalContext::new(),
+            &EvalLimits::default(),
+            0,
+            Span::DUMMY,
+        )
+        .unwrap();
+
+        assert_eq!(result.as_integer(), Some(7));
+    }
+
+    #[test]
+    fn eval_var_ref_qualified_enum_split_ignores_dots_inside_indices() {
+        let env = FunctionEnv {
+            inputs: IndexMap::new(),
+            outputs: IndexMap::new(),
+            locals: IndexMap::new(),
+        };
+        let ctx = EvalContext::new();
+        let limits = EvalLimits::default();
+        let eval = EvalState {
+            ctx: &ctx,
+            limits: &limits,
+            depth: 0,
+            span: Span::DUMMY,
+        };
+
+        let enum_value = eval_var_ref(
+            &rumoca_core::Reference::new("Modelica.Types.Color.red"),
+            &[],
+            &env,
+            &eval,
+        )
+        .expect("qualified enum fallback");
+        assert_eq!(
+            enum_value,
+            Value::Enum("Modelica.Types.Color".to_string(), "red".to_string())
+        );
+
+        assert!(
+            eval_var_ref(
+                &rumoca_core::Reference::new("data[index.with.dot]"),
+                &[],
+                &env,
+                &eval
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_recursion_limit() {
+        // Create a recursive function that will exceed the limit
+        let mut func = Function::new("test.recurse", Span::DUMMY);
+        func.add_input(rumoca_core::FunctionParam::new("n", "Integer"));
+        func.add_output(rumoca_core::FunctionParam::new("y", "Integer"));
+        func.pure = true;
+
+        // Simple function that always returns 0 (to test limit checking)
+        func.body = vec![rumoca_core::Statement::Assignment {
+            comp: rumoca_core::ComponentReference {
+                local: false,
+                span: rumoca_core::Span::DUMMY,
+                parts: vec![rumoca_core::ComponentRefPart {
+                    ident: "y".to_string(),
+                    span: rumoca_core::Span::DUMMY,
+                    subs: Vec::new(),
+                }],
+                def_id: None,
+            },
+            value: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: rumoca_core::Span::DUMMY,
         }];
 
         let ctx = EvalContext::new();
@@ -1403,51 +1594,73 @@ mod tests {
     fn test_while_loop() {
         // Test: function countTo4() output Integer count; algorithm count := 0; while count < 4 loop count := count + 1; end while; end countTo4;
         let mut func = Function::new("test.countTo4", Span::DUMMY);
-        func.add_output(flat::FunctionParam::new("count", "Integer"));
+        func.add_output(rumoca_core::FunctionParam::new("count", "Integer"));
         func.pure = true;
 
         // count := 0
-        let init_stmt = flat::Statement::Assignment {
-            comp: flat::ComponentReference {
+        let init_stmt = rumoca_core::Statement::Assignment {
+            comp: rumoca_core::ComponentReference {
                 local: false,
-                parts: vec![flat::ComponentRefPart {
+                span: rumoca_core::Span::DUMMY,
+                parts: vec![rumoca_core::ComponentRefPart {
                     ident: "count".to_string(),
+                    span: rumoca_core::Span::DUMMY,
                     subs: Vec::new(),
                 }],
                 def_id: None,
             },
-            value: flat::Expression::Literal(flat::Literal::Integer(0)),
+            value: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: rumoca_core::Span::DUMMY,
         };
 
         // while count < 4 loop count := count + 1; end while
-        let while_stmt = flat::Statement::While(flat::StatementBlock {
-            cond: flat::Expression::Binary {
-                op: flat::OpBinary::Lt(flat::Token::default()),
-                lhs: Box::new(flat::Expression::VarRef {
-                    name: flat::VarName::new("count"),
-                    subscripts: Vec::new(),
-                }),
-                rhs: Box::new(flat::Expression::Literal(flat::Literal::Integer(4))),
-            },
-            stmts: vec![flat::Statement::Assignment {
-                comp: flat::ComponentReference {
-                    local: false,
-                    parts: vec![flat::ComponentRefPart {
-                        ident: "count".to_string(),
-                        subs: Vec::new(),
-                    }],
-                    def_id: None,
-                },
-                value: flat::Expression::Binary {
-                    op: flat::OpBinary::Add(flat::Token::default()),
-                    lhs: Box::new(flat::Expression::VarRef {
-                        name: flat::VarName::new("count"),
+        let while_stmt = rumoca_core::Statement::While {
+            block: rumoca_core::StatementBlock {
+                cond: rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Lt,
+                    lhs: Box::new(rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::new("count"),
                         subscripts: Vec::new(),
+                        span: rumoca_core::Span::DUMMY,
                     }),
-                    rhs: Box::new(flat::Expression::Literal(flat::Literal::Integer(1))),
+                    rhs: Box::new(rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(4),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    span: rumoca_core::Span::DUMMY,
                 },
-            }],
-        });
+                stmts: vec![rumoca_core::Statement::Assignment {
+                    comp: rumoca_core::ComponentReference {
+                        local: false,
+                        span: rumoca_core::Span::DUMMY,
+                        parts: vec![rumoca_core::ComponentRefPart {
+                            ident: "count".to_string(),
+                            span: rumoca_core::Span::DUMMY,
+                            subs: Vec::new(),
+                        }],
+                        def_id: None,
+                    },
+                    value: rumoca_core::Expression::Binary {
+                        op: rumoca_core::OpBinary::Add,
+                        lhs: Box::new(rumoca_core::Expression::VarRef {
+                            name: rumoca_core::Reference::new("count"),
+                            subscripts: Vec::new(),
+                            span: rumoca_core::Span::DUMMY,
+                        }),
+                        rhs: Box::new(rumoca_core::Expression::Literal {
+                            value: rumoca_core::Literal::Integer(1),
+                            span: rumoca_core::Span::DUMMY,
+                        }),
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                    span: rumoca_core::Span::DUMMY,
+                }],
+            },
+            span: rumoca_core::Span::DUMMY,
+        };
 
         func.body = vec![init_stmt, while_stmt];
 

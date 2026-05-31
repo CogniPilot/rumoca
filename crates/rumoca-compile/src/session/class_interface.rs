@@ -41,17 +41,33 @@ impl ImportMap {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ComponentInterface {
-    name_location: ast::Location,
+    name_location: rumoca_core::Location,
     type_name: String,
-    variability: ast::Variability,
-    causality: ast::Causality,
+    variability: rumoca_core::Variability,
+    causality: rumoca_core::Causality,
     connection: ast::Connection,
     is_final: bool,
     is_replaceable: bool,
     constrainedby: Option<String>,
     shape: Vec<usize>,
+}
+
+impl Default for ComponentInterface {
+    fn default() -> Self {
+        Self {
+            name_location: rumoca_core::Location::default(),
+            type_name: String::new(),
+            variability: rumoca_core::Variability::Empty,
+            causality: rumoca_core::Causality::Empty,
+            connection: ast::Connection::default(),
+            is_final: false,
+            is_replaceable: false,
+            constrainedby: None,
+            shape: Vec::new(),
+        }
+    }
 }
 
 impl ComponentInterface {
@@ -71,10 +87,9 @@ impl ComponentInterface {
 
     fn completion_kind(&self) -> ClassLocalCompletionKind {
         match (&self.variability, &self.causality) {
-            (ast::Variability::Parameter(_), _) | (ast::Variability::Constant(_), _) => {
-                ClassLocalCompletionKind::Constant
-            }
-            (_, ast::Causality::Input(_)) | (_, ast::Causality::Output(_)) => {
+            (rumoca_core::Variability::Parameter(_), _)
+            | (rumoca_core::Variability::Constant(_), _) => ClassLocalCompletionKind::Constant,
+            (_, rumoca_core::Causality::Input(_)) | (_, rumoca_core::Causality::Output(_)) => {
                 ClassLocalCompletionKind::Property
             }
             _ => ClassLocalCompletionKind::Variable,
@@ -83,8 +98,8 @@ impl ComponentInterface {
 
     fn hover_keyword(&self) -> Option<&'static str> {
         match self.variability {
-            ast::Variability::Parameter(_) => Some("parameter"),
-            ast::Variability::Constant(_) => Some("constant"),
+            rumoca_core::Variability::Parameter(_) => Some("parameter"),
+            rumoca_core::Variability::Constant(_) => Some("constant"),
             _ => None,
         }
     }
@@ -103,7 +118,7 @@ impl ComponentInterface {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct NestedClassInterface {
     name: String,
-    class_type: ast::ClassType,
+    class_type: rumoca_core::ClassType,
     is_partial: bool,
     is_replaceable: bool,
 }
@@ -138,7 +153,7 @@ impl ExtendInterface {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ClassInterface {
-    class_type: ast::ClassType,
+    class_type: rumoca_core::ClassType,
     import_map: ImportMap,
     components: IndexMap<String, ComponentInterface>,
     nested_classes: Vec<NestedClassInterface>,
@@ -147,7 +162,7 @@ pub(crate) struct ClassInterface {
 }
 
 impl ClassInterface {
-    pub(crate) fn class_type(&self) -> &ast::ClassType {
+    pub(crate) fn class_type(&self) -> &rumoca_core::ClassType {
         &self.class_type
     }
 
@@ -202,7 +217,7 @@ impl ClassInterface {
             }
         };
 
-        if raw_type_name.contains('.') {
+        if rumoca_core::has_top_level_dot(raw_type_name) {
             push(raw_type_name.to_string());
             return candidates;
         }
@@ -354,7 +369,7 @@ pub(crate) fn resolve_import_candidates(
     };
 
     push(raw_type_name.to_string());
-    if raw_type_name.contains('.') {
+    if rumoca_core::has_top_level_dot(raw_type_name) {
         return candidates;
     }
 
@@ -397,5 +412,5 @@ fn import_map_from_summary(class: &super::file_summary::ClassSummary) -> ImportM
 }
 
 fn import_simple_name(path: &str) -> &str {
-    path.rsplit('.').next().unwrap_or(path)
+    rumoca_core::top_level_last_segment(path)
 }

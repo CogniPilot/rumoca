@@ -17,7 +17,12 @@ function trimMaybeString(value) {
 function captureHostedProjectSnapshot(projectFs) {
     return {
         files: projectFs.listFiles()
-            .filter((file) => String(file.path || '').startsWith('.rumoca/') && typeof file.content === 'string')
+            .filter((file) => {
+                const filePath = String(file.path || '');
+                return typeof file.content === 'string'
+                    && filePath.endsWith('.rum')
+                    && !filePath.startsWith('.rumoca/');
+            })
             .map((file) => ({
                 path: file.path,
                 content: file.content,
@@ -115,7 +120,7 @@ export function createProjectInterface({ projectFs, runtimeBridge = null, onProj
         };
     }
 
-    async function startSimulation({ source, model, fallback, timeoutMs, projectSources = '{}' }) {
+    async function startSimulation({ source, model, fallback, timeoutMs, projectSources = null }) {
         const selectedModel = trimMaybeString(model) || readSelectedSimulationModel();
         if (!selectedModel) {
             throw new Error('No simulation model selected');
@@ -131,16 +136,19 @@ export function createProjectInterface({ projectFs, runtimeBridge = null, onProj
             },
         );
         const effective = simulationConfig?.effective || sharedVisualization().normalizeHostedSimulationSettingsCurrent(fallback);
+        const requestPayload = {
+            source,
+            modelName: selectedModel,
+            solver: trimMaybeString(effective?.solver) || 'auto',
+            tEnd: Number(effective?.tEnd) || 1.0,
+            dt: Number(effective?.dt) || 0,
+        };
+        if (typeof projectSources === 'string') {
+            requestPayload.projectSources = projectSources;
+        }
         const raw = await requestProjectCommand(
             'rumoca.project.startSimulation',
-            {
-                source,
-                modelName: selectedModel,
-                projectSources,
-                solver: trimMaybeString(effective?.solver) || 'auto',
-                tEnd: Number(effective?.tEnd) || 1.0,
-                dt: Number(effective?.dt) || 0,
-            },
+            requestPayload,
             timeoutMs,
         );
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -161,6 +169,7 @@ export function createProjectInterface({ projectFs, runtimeBridge = null, onProj
     function execute(command, payload = {}) {
         switch (command) {
             case 'rumoca.project.getSimulationConfig':
+            case 'rumoca.project.getScenarioConfig':
             case 'rumoca.project.setSimulationPreset':
             case 'rumoca.project.resetSimulationPreset':
             case 'rumoca.project.getVisualizationConfig':

@@ -33,7 +33,7 @@ pub struct ScopeTree {
 pub struct Scope {
     pub kind: ScopeKind,
     pub parent: Option<ScopeId>,
-    pub members: IndexMap<String, DefId>,
+    pub members: IndexMap<ComponentPath, DefId>,
     pub imports: Vec<Import>,
 }
 
@@ -76,6 +76,20 @@ let def_id = scope_tree.lookup_excluding(scope_id, name, Some(self_def_id));
 **PROHIBITED:**
 - Bypassing the ScopeTree to do manual name lookup
 - Assuming scope IDs are sequential (use `ScopeId` opaque type)
+- Keying scope members by raw strings, `VarName`, or rendered flat names
+- Hashing display text, `String`, `&str`, `VarName`, rendered
+  `ComponentPath`, or rendered `ComponentReference` to stand in for
+  declaration identity
+
+Scope lookup keys are structured component-reference paths while resolution is
+in progress. Once a declaration has been resolved, downstream semantic maps use
+`DefId` as specified by SPEC_0001. Post-resolution string hashing is
+prohibited for compiler identity. Rendered names may be cached for diagnostics,
+serialization, and display, but they are not scope identity.
+
+If a downstream phase needs scope-like lookup, the scope entries must carry and
+return `DefId` values. A phase must not rebuild semantic identity by formatting,
+splitting, or hashing names that were already resolved earlier in the pipeline.
 
 ### Lookup Semantics (MLS §5.3)
 
@@ -88,7 +102,7 @@ Encapsulated scopes (`ScopeKind::Encapsulated`) block upward lookup — names mu
 
 ## Rationale
 - Tree structure handles Modelica's extends semantics
-- IndexMap for members preserves insertion order (SPEC_0017)
+- IndexMap for members preserves insertion order (SPEC_0021)
 - ScopeId is an opaque index into the tree, not a raw u32
 
 ## References

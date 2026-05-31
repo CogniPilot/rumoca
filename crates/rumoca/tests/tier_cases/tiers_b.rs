@@ -134,7 +134,13 @@ end Outer;
 "#;
         let r = assert_compiles(source, "Outer");
         assert_eq!(r.states, 1, "Expected 1 state variable (sub.x)");
-        let state = r.dae.states.values().next().expect("Should have a state");
+        let state = r
+            .dae
+            .variables
+            .states
+            .values()
+            .next()
+            .expect("Should have a state");
         assert!(state.start.is_some(), "State should have a start value");
         if let Some(ref start_expr) = state.start {
             let start_str = format!("{:?}", start_expr);
@@ -165,7 +171,13 @@ end Top;
 "#;
         let r = assert_compiles(source, "Top");
         assert_eq!(r.states, 1, "Expected 1 state variable");
-        let state = r.dae.states.values().next().expect("Should have a state");
+        let state = r
+            .dae
+            .variables
+            .states
+            .values()
+            .next()
+            .expect("Should have a state");
         if let Some(ref start_expr) = state.start {
             let start_str = format!("{:?}", start_expr);
             assert!(
@@ -195,6 +207,7 @@ end UseParameterized;
         assert_eq!(r.parameters, 1, "Expected 1 parameter");
         let param = r
             .dae
+            .variables
             .parameters
             .values()
             .next()
@@ -227,7 +240,13 @@ model Top
 end Top;
 "#;
         let r = assert_compiles(source, "Top");
-        let state = r.dae.states.values().next().expect("Should have a state");
+        let state = r
+            .dae
+            .variables
+            .states
+            .values()
+            .next()
+            .expect("Should have a state");
         if let Some(ref start_expr) = state.start {
             let start_str = format!("{:?}", start_expr);
             assert!(
@@ -389,7 +408,7 @@ equation
 end SumReduction;
 "#;
         let r = assert_compiles(source, "SumReduction");
-        for (idx, eq) in r.dae.f_x.iter().enumerate() {
+        for (idx, eq) in r.dae.continuous.equations.iter().enumerate() {
             println!(
                 "  f_x[{}] scalar_count={}: {}",
                 idx, eq.scalar_count, eq.origin
@@ -418,7 +437,7 @@ equation
 end MatrixTransform;
 "#;
         let r = assert_compiles(source, "MatrixTransform");
-        for (idx, eq) in r.dae.f_x.iter().enumerate() {
+        for (idx, eq) in r.dae.continuous.equations.iter().enumerate() {
             println!(
                 "  f_x[{}] scalar_count={}: {}",
                 idx, eq.scalar_count, eq.origin
@@ -612,7 +631,7 @@ end FillModifierDistribution;
         );
 
         let mut gain_eq_counts = Vec::new();
-        for eq in &r.dae.f_x {
+        for eq in &r.dae.continuous.equations {
             if eq.origin.contains("equation from g[") {
                 gain_eq_counts.push(eq.scalar_count);
             }
@@ -907,7 +926,7 @@ end SeriesLoop;
 "#;
         let r = assert_compiles(source, "SeriesLoop");
         assert_eq!(
-            r.dae.oc_break_edge_scalar_count, 1,
+            r.dae.metadata.oc_break_edge_scalar_count, 1,
             "Should detect 1 break edge with 1 scalar (reference.gamma)"
         );
         assert_eq!(
@@ -962,7 +981,7 @@ end Wrapper;
 "#;
         let r = assert_compiles(source, "Wrapper");
         assert_eq!(
-            r.dae.oc_break_edge_scalar_count, 1,
+            r.dae.metadata.oc_break_edge_scalar_count, 1,
             "Should detect 1 break edge when root class and sub-component both have VCG branches"
         );
         // balance=2 because the wrapper has open external connectors that generate
@@ -1020,7 +1039,7 @@ end ArrayLoop;
 
         let r = assert_compiles(source, "ArrayLoop");
         assert_eq!(
-            r.dae.oc_break_edge_scalar_count, 2,
+            r.dae.metadata.oc_break_edge_scalar_count, 2,
             "Two array-indexed VCG loops should produce 2 break-edge scalars"
         );
         assert_eq!(
@@ -1167,7 +1186,7 @@ algorithm
 end AlgArrayOutput;
 "#;
         let r = assert_compiles(source, "AlgArrayOutput");
-        let detail = rumoca_analysis_dae::balance_detail(&r.dae);
+        let detail = rumoca_phase_dae::balance::balance_detail(&r.dae);
         assert_eq!(
             detail.algorithm_outputs, 0,
             "Lowered model algorithms should not contribute algorithm_outputs directly"
@@ -1323,23 +1342,39 @@ mod tier_10h4_subscripted_record_scalar_count {
     use rumoca_phase_dae::to_dae;
     type Equation = flat::Equation;
     type EquationOrigin = flat::EquationOrigin;
-    type Expression = flat::Expression;
+    type Expression = rumoca_core::Expression;
     type Model = flat::Model;
-    type VarName = flat::VarName;
+    type VarName = rumoca_core::VarName;
 
     /// Helper to create a residual equation: lhs - rhs = 0
     fn make_residual_eq(lhs: Expression, rhs: Expression) -> Equation {
         Equation {
             residual: Expression::Binary {
-                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
+                span: rumoca_core::Span::DUMMY,
             },
             span: Default::default(),
             origin: EquationOrigin::ComponentEquation {
                 component: String::new(),
             },
             scalar_count: 1,
+        }
+    }
+
+    fn var(name: &str) -> Expression {
+        Expression::VarRef {
+            name: VarName::new(name).into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn int(value: i64) -> Expression {
+        Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -1385,7 +1420,7 @@ mod tier_10h4_subscripted_record_scalar_count {
             VarName::new("y.re"),
             flat::Variable {
                 name: VarName::new("y.re"),
-                causality: rumoca_ir_core::Causality::Output(Default::default()),
+                causality: rumoca_core::Causality::Output(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -1394,70 +1429,51 @@ mod tier_10h4_subscripted_record_scalar_count {
             VarName::new("y.im"),
             flat::Variable {
                 name: VarName::new("y.im"),
-                causality: rumoca_ir_core::Causality::Output(Default::default()),
+                causality: rumoca_core::Causality::Output(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
         );
 
         // Record-level subscripted equation: bw[1] = 0 → should count as 2 scalars
-        flat.add_equation(make_residual_eq(
-            Expression::VarRef {
-                name: VarName::new("bw[1]"),
-                subscripts: vec![],
-            },
-            Expression::Literal(rumoca_ir_flat::Literal::Integer(0)),
-        ));
+        flat.add_equation(make_residual_eq(var("bw[1]"), int(0)));
         // Output equations referencing bw fields
-        flat.add_equation(make_residual_eq(
-            Expression::VarRef {
-                name: VarName::new("y.re"),
-                subscripts: vec![],
-            },
-            Expression::VarRef {
-                name: VarName::new("bw.re"),
-                subscripts: vec![],
-            },
-        ));
-        flat.add_equation(make_residual_eq(
-            Expression::VarRef {
-                name: VarName::new("y.im"),
-                subscripts: vec![],
-            },
-            Expression::VarRef {
-                name: VarName::new("bw.im"),
-                subscripts: vec![],
-            },
-        ));
+        flat.add_equation(make_residual_eq(var("y.re"), var("bw.re")));
+        flat.add_equation(make_residual_eq(var("y.im"), var("bw.im")));
 
         let dae = to_dae(&flat).unwrap();
         // 4 unknowns: bw.re, bw.im (algebraics) + y.re, y.im (outputs)
         // 4 scalar equations: bw[1]=0 (2 scalars) + y.re=bw.re (1) + y.im=bw.im (1)
         assert_eq!(
-            dae.algebraics.len(),
+            dae.variables.algebraics.len(),
             2,
             "should have 2 algebraic vars (bw.re, bw.im)"
         );
         assert_eq!(
-            dae.outputs.len(),
+            dae.variables.outputs.len(),
             2,
             "should have 2 output vars (y.re, y.im)"
         );
-        assert_eq!(dae.f_x.len(), 3, "should have 3 equations");
+        assert_eq!(dae.continuous.equations.len(), 3, "should have 3 equations");
 
         // The key assertion: bw[1] = 0 must count as 2 scalars
         let bw_eq = dae
-            .f_x
+            .continuous
+            .equations
             .iter()
             .find(|eq| eq.origin.contains("bw[1]") || eq.scalar_count == 2);
         assert!(
             bw_eq.is_some_and(|eq| eq.scalar_count == 2),
             "bw[1] = 0 should count as 2 scalars (record has .re + .im); \
              f_x scalar counts: {:?}",
-            dae.f_x.iter().map(|eq| eq.scalar_count).collect::<Vec<_>>()
+            dae.continuous
+                .equations
+                .iter()
+                .map(|eq| eq.scalar_count)
+                .collect::<Vec<_>>()
         );
         assert_eq!(
-            rumoca_analysis_dae::balance(&dae),
+            rumoca_phase_dae::balance::balance(&dae),
             0,
             "balance should be 0 (4 scalars = 4 unknowns)"
         );
@@ -1475,22 +1491,25 @@ mod tier_10h5_connected_toplevel_input {
     use rumoca_phase_dae::to_dae;
     type Equation = flat::Equation;
     type EquationOrigin = flat::EquationOrigin;
-    type Expression = flat::Expression;
+    type Expression = rumoca_core::Expression;
     type Model = flat::Model;
-    type VarName = flat::VarName;
+    type VarName = rumoca_core::VarName;
 
     fn make_connection_eq(lhs_name: &str, rhs_name: &str) -> Equation {
         Equation {
             residual: Expression::Binary {
-                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(Expression::VarRef {
-                    name: VarName::new(lhs_name),
+                    name: VarName::new(lhs_name).into(),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 }),
                 rhs: Box::new(Expression::VarRef {
-                    name: VarName::new(rhs_name),
+                    name: VarName::new(rhs_name).into(),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 }),
+                span: rumoca_core::Span::DUMMY,
             },
             span: Default::default(),
             origin: EquationOrigin::Connection {
@@ -1504,15 +1523,18 @@ mod tier_10h5_connected_toplevel_input {
     fn make_component_eq(lhs_name: &str, rhs_name: &str) -> Equation {
         Equation {
             residual: Expression::Binary {
-                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+                op: rumoca_core::OpBinary::Sub,
                 lhs: Box::new(Expression::VarRef {
-                    name: VarName::new(lhs_name),
+                    name: VarName::new(lhs_name).into(),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 }),
                 rhs: Box::new(Expression::VarRef {
-                    name: VarName::new(rhs_name),
+                    name: VarName::new(rhs_name).into(),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 }),
+                span: rumoca_core::Span::DUMMY,
             },
             span: Default::default(),
             origin: EquationOrigin::ComponentEquation {
@@ -1542,7 +1564,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("u.re"),
             flat::Variable {
                 name: VarName::new("u.re"),
-                causality: rumoca_ir_core::Causality::Input(Default::default()),
+                causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
@@ -1552,7 +1574,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("u.im"),
             flat::Variable {
                 name: VarName::new("u.im"),
-                causality: rumoca_ir_core::Causality::Input(Default::default()),
+                causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
@@ -1564,7 +1586,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("division.u1.re"),
             flat::Variable {
                 name: VarName::new("division.u1.re"),
-                causality: rumoca_ir_core::Causality::Input(Default::default()),
+                causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
@@ -1574,7 +1596,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("division.u1.im"),
             flat::Variable {
                 name: VarName::new("division.u1.im"),
-                causality: rumoca_ir_core::Causality::Input(Default::default()),
+                causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
@@ -1586,7 +1608,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("y.re"),
             flat::Variable {
                 name: VarName::new("y.re"),
-                causality: rumoca_ir_core::Causality::Output(Default::default()),
+                causality: rumoca_core::Causality::Output(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -1595,7 +1617,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("y.im"),
             flat::Variable {
                 name: VarName::new("y.im"),
-                causality: rumoca_ir_core::Causality::Output(Default::default()),
+                causality: rumoca_core::Causality::Output(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -1616,34 +1638,44 @@ mod tier_10h5_connected_toplevel_input {
 
         // u.re, u.im must be inputs (external), NOT algebraics
         assert_eq!(
-            dae.inputs.len(),
+            dae.variables.inputs.len(),
             2,
             "u.re, u.im should be inputs; got inputs={:?}, algebraics={:?}",
-            dae.inputs.keys().collect::<Vec<_>>(),
-            dae.algebraics.keys().collect::<Vec<_>>()
+            dae.variables.inputs.keys().collect::<Vec<_>>(),
+            dae.variables.algebraics.keys().collect::<Vec<_>>()
         );
         assert!(
-            dae.inputs
-                .contains_key(&rumoca_ir_dae::VarName::new("u.re")),
+            dae.variables
+                .inputs
+                .contains_key(&rumoca_core::VarName::new("u.re")),
             "u.re should be input"
         );
         assert!(
-            dae.inputs
-                .contains_key(&rumoca_ir_dae::VarName::new("u.im")),
+            dae.variables
+                .inputs
+                .contains_key(&rumoca_core::VarName::new("u.im")),
             "u.im should be input"
         );
 
         // division.u1.re, division.u1.im should be algebraics (connected internal)
         assert_eq!(
-            dae.algebraics.len(),
+            dae.variables.algebraics.len(),
             2,
             "division.u1.re, division.u1.im should be algebraics"
         );
-        assert_eq!(dae.outputs.len(), 2, "y.re, y.im should be outputs");
+        assert_eq!(
+            dae.variables.outputs.len(),
+            2,
+            "y.re, y.im should be outputs"
+        );
 
         // Balance: 4 equations, 4 unknowns (2 algebraics + 2 outputs)
-        assert_eq!(dae.f_x.len(), 4);
-        assert_eq!(rumoca_analysis_dae::balance(&dae), 0, "balance should be 0");
+        assert_eq!(dae.continuous.equations.len(), 4);
+        assert_eq!(
+            rumoca_phase_dae::balance::balance(&dae),
+            0,
+            "balance should be 0"
+        );
     }
 }
 
@@ -1717,7 +1749,11 @@ end TupleRender;
         // Render DAE to Modelica and verify tuple is rendered properly
         let rendered = rumoca_phase_codegen::render_template_with_name(
             &r.dae,
-            rumoca_phase_codegen::templates::DAE_MODELICA,
+            rumoca_phase_codegen::templates::builtin_template_source(
+                "dae-modelica",
+                "dae_modelica.mo.jinja",
+            )
+            .unwrap(),
             "TupleRender",
         )
         .expect("codegen should succeed");
@@ -1790,13 +1826,15 @@ end RecordArrayDimTest;
         // accounting in the overall balance metric.
         let z_re = r
             .dae
+            .variables
             .algebraics
-            .get(&rumoca_ir_dae::VarName::new("tf.z.re"))
+            .get(&rumoca_core::VarName::new("tf.z.re"))
             .expect("expected tf.z.re algebraic field");
         let z_im = r
             .dae
+            .variables
             .algebraics
-            .get(&rumoca_ir_dae::VarName::new("tf.z.im"))
+            .get(&rumoca_core::VarName::new("tf.z.im"))
             .expect("expected tf.z.im algebraic field");
         assert_eq!(
             z_re.dims,
@@ -1857,6 +1895,7 @@ end RecordFieldFunctionDimension;
 
         let dims = r
             .dae
+            .variables
             .algebraics
             .iter()
             .find_map(|(name, var)| (name.as_str() == "x").then_some(var.dims.clone()))

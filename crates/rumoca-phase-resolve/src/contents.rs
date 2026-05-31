@@ -8,11 +8,10 @@ use crate::traversal_adapter::{
     ResolveTraversalCallbacks, walk_equations, walk_expression, walk_expressions, walk_statements,
     walk_subscripts,
 };
-use rumoca_core::{DefId, ScopeId};
+use rumoca_core::{ComponentPath, DefId, ScopeId, parent_scope};
 use rumoca_ir_ast as ast;
 
 type ClassDef = ast::ClassDef;
-type ComponentRefPart = ast::ComponentRefPart;
 type ComponentReference = ast::ComponentReference;
 type Expression = ast::Expression;
 type ScopeKind = ast::ScopeKind;
@@ -26,8 +25,11 @@ impl ResolveTraversalCallbacks for Resolver {
 
     fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str) {
         let def_id = self.alloc_def_id(index_name.to_string());
-        self.scope_tree
-            .add_member(loop_scope, index_name.to_string(), def_id);
+        self.scope_tree.add_member(
+            loop_scope,
+            ComponentPath::from_flat_path(index_name),
+            def_id,
+        );
     }
 
     fn on_component_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId) {
@@ -165,7 +167,9 @@ impl Resolver {
         let first_part = &comp.type_name.name[0].text;
 
         // First check direct scope lookup
-        if let Some(first_def_id) = self.scope_tree.lookup(class_scope, first_part)
+        if let Some(first_def_id) = self
+            .scope_tree
+            .lookup(class_scope, &ComponentPath::from_flat_path(first_part))
             && self.partial_type_root_ids.contains(&first_def_id)
         {
             comp.type_name.def_id = Some(first_def_id);
@@ -203,8 +207,8 @@ impl Resolver {
 
         // Walk up the enclosing class hierarchy
         let mut container = qualified_name;
-        while let Some(dot_pos) = container.rfind('.') {
-            container = &container[..dot_pos];
+        while let Some(parent) = parent_scope(container) {
+            container = parent;
             if let Some(def_id) = self.lookup_inherited_member(container, type_name) {
                 return Some(def_id);
             }
@@ -242,7 +246,10 @@ impl Resolver {
         let first_name = &comp.parts[0].ident.text;
 
         // Look up the name in the scope tree
-        if let Some(def_id) = self.scope_tree.lookup(scope, first_name) {
+        if let Some(def_id) = self
+            .scope_tree
+            .lookup(scope, &ComponentPath::from_flat_path(first_name))
+        {
             comp.def_id = Some(def_id);
             self.stats.comp_refs_resolved += 1;
         } else {
@@ -262,7 +269,8 @@ impl Resolver {
         }
     }
 
-    /// Resolve a function reference to its canonical fully-qualified path.
+    /// Resolve a function reference to its callable DefId while preserving the
+    /// source component-reference parts for later scope-sensitive phases.
     ///
     /// Unlike generic component references, function calls should resolve the
     /// entire path (including inherited package members) at resolve time so
@@ -270,14 +278,13 @@ impl Resolver {
     fn resolve_function_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId) {
         self.resolve_component_reference(comp, scope);
 
-        let Some((resolved_def_id, qualified_name)) =
+        let Some((resolved_def_id, _qualified_name)) =
             self.resolve_component_reference_full_path(comp, scope)
         else {
             return;
         };
 
         comp.def_id = Some(resolved_def_id);
-        rewrite_component_reference(comp, &qualified_name);
     }
 
     fn enclosing_class_qualified_name(&self, scope: ScopeId) -> Option<&str> {
@@ -294,7 +301,10 @@ impl Resolver {
     }
 
     fn resolve_function_first_part(&self, first_part: &str, scope: ScopeId) -> Option<DefId> {
-        if let Some(def_id) = self.scope_tree.lookup(scope, first_part) {
+        if let Some(def_id) = self
+            .scope_tree
+            .lookup(scope, &ComponentPath::from_flat_path(first_part))
+        {
             return Some(def_id);
         }
 
@@ -303,7 +313,7 @@ impl Resolver {
             if let Some(def_id) = self.lookup_inherited_member(container_name, first_part) {
                 return Some(def_id);
             }
-            container = container_name.rsplit_once('.').map(|(parent, _)| parent);
+            container = parent_scope(container_name);
         }
         None
     }
@@ -345,7 +355,7 @@ impl Resolver {
         let first_part = name.name.first()?.text.as_ref();
         let mut current_def_id = self
             .scope_tree
-            .lookup(scope, first_part)
+            .lookup(scope, &ComponentPath::from_flat_path(first_part))
             .or_else(|| self.resolve_function_first_part(first_part, scope))
             // MLS §7.3: inherited class/type elements are visible as members of
             // the extending class, including simple type names in nested records.
@@ -373,38 +383,4 @@ impl Resolver {
     fn resolve_subscripts(&mut self, subs: &mut [rumoca_ir_ast::Subscript], scope: ScopeId) {
         walk_subscripts(self, subs, scope);
     }
-}
-
-fn rewrite_component_reference(comp: &mut ComponentReference, qualified_name: &str) {
-    if comp.parts.is_empty() {
-        return;
-    }
-
-    let original_parts = std::mem::take(&mut comp.parts);
-    let old_len = original_parts.len();
-    let new_parts: Vec<&str> = qualified_name.split('.').collect();
-    let new_len = new_parts.len();
-
-    comp.parts = new_parts
-        .into_iter()
-        .enumerate()
-        .map(|(idx, part_name)| {
-            // Right-align canonical segments against original segments so the
-            // final identifier keeps the original source span.
-            let aligned = idx + old_len >= new_len;
-            let source_idx = if aligned {
-                idx + old_len - new_len
-            } else {
-                old_len - 1
-            };
-            let source = &original_parts[source_idx];
-            let mut ident = source.ident.clone();
-            ident.text = std::sync::Arc::from(part_name);
-
-            ComponentRefPart {
-                ident,
-                subs: if aligned { source.subs.clone() } else { None },
-            }
-        })
-        .collect();
 }

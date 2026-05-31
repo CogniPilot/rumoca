@@ -13,8 +13,13 @@ _native.cpython*
 *.so
 .claude/
 .vscode/
+!.vscode/
+!.vscode/settings.json
 dev/
 pkg/
+gh-pages/
+docs/*/book/
+*.fmu
 # Staged temporarily by `rum wasm build` so wasm-pack can include crate-local license metadata.
 crates/rumoca-bind-wasm/LICENSE
 perf.data*
@@ -34,7 +39,10 @@ msl
 # Viz-web ships the viewer shell as a bundled asset; unignore it specifically.
 !crates/rumoca-viz-web/web/*.html
 .rumoca
-examples/.rumoca/results
+!examples/.rumoca/
+!examples/.rumoca/**
+examples/.rumoca/results/
+rumoca_trace*.csv
 
 # Working notes (not for commit)
 crates/rumoca/tests/CASADI_UPSTREAM_*.md

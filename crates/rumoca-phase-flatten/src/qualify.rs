@@ -3,20 +3,95 @@
 //! This module provides functions for qualifying variable names with instance prefixes,
 //! used by both equation flattening and algorithm processing.
 
+use rumoca_core::Token;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::{
     ComponentRefPart, ComponentReference, Expression, ForIndex, QualifiedName, Subscript,
-    TerminalType, Token,
+    TerminalType,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashSet;
 use std::sync::Arc;
+
+use crate::path_utils::split_path_with_indices;
 
 /// Resolved import map: short name → fully-qualified name.
 ///
 /// Built from `ClassDef.imports` during instantiation. For example,
 /// `import Modelica.Constants.pi;` produces `("pi", "Modelica.Constants.pi")`.
 pub type ImportMap = FxHashMap<String, String>;
+
+type MemberDefIdMap<'tree> = Arc<FxHashMap<&'tree str, rumoca_core::DefId>>;
+
+#[derive(Default)]
+pub(crate) struct MemberDefIdCache<'tree> {
+    maps: FxHashMap<rumoca_core::DefId, MemberDefIdMap<'tree>>,
+}
+
+/// Add imports visible from a lexical class scope.
+///
+/// The scope is structured, so callers do not recover hierarchy by splitting a
+/// flattened variable name. Ancestor imports are added first and the current
+/// class imports last, matching normal lexical shadowing.
+pub(crate) fn collect_imports_for_source_scope(
+    class_index: &ast::ClassDefIndex<'_>,
+    source_scope: &QualifiedName,
+    imports: &mut ImportMap,
+) {
+    let Some(source_def_id) = class_index.def_id_by_qualified_name(&source_scope.to_flat_string())
+    else {
+        return;
+    };
+    let mut chain = Vec::new();
+    let mut current = Some(source_def_id);
+    while let Some(def_id) = current {
+        chain.push(def_id);
+        current = class_index.parent_def_id(def_id);
+    }
+    for def_id in chain.into_iter().rev() {
+        if let Some(class_def) = class_index.get(def_id) {
+            resolve_import_pairs(&class_def.imports, class_index, imports);
+        }
+    }
+}
+
+fn resolve_import_pairs(
+    imports: &[ast::Import],
+    class_index: &ast::ClassDefIndex<'_>,
+    map: &mut ImportMap,
+) {
+    for import in imports {
+        match import {
+            ast::Import::Qualified { path, .. } => {
+                let Some(alias) = path.name.last() else {
+                    continue;
+                };
+                map.insert(alias.text.to_string(), path.to_string());
+            }
+            ast::Import::Renamed { alias, path, .. } => {
+                map.insert(alias.text.to_string(), path.to_string());
+            }
+            ast::Import::Unqualified { path, .. } => {
+                let pkg_name = path.to_string();
+                let Some(class_def) = class_index.get_by_qualified_name(&pkg_name) else {
+                    continue;
+                };
+                for name in class_def.components.keys() {
+                    map.insert(name.clone(), format!("{pkg_name}.{name}"));
+                }
+                for name in class_def.classes.keys() {
+                    map.insert(name.clone(), format!("{pkg_name}.{name}"));
+                }
+            }
+            ast::Import::Selective { path, names, .. } => {
+                let pkg_name = path.to_string();
+                for name in names {
+                    map.insert(name.text.to_string(), format!("{pkg_name}.{}", name.text));
+                }
+            }
+        }
+    }
+}
 
 /// Add lexical package aliases visible from `class_name` into the import map.
 ///
@@ -26,28 +101,414 @@ pub type ImportMap = FxHashMap<String, String>;
 /// qualified to their fully qualified names without heuristics.
 pub(crate) fn collect_lexical_package_aliases(
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
     class_name: &str,
     imports: &mut ImportMap,
 ) {
-    let mut ancestors = Vec::new();
-    let mut scope = class_name;
-    while let Some((parent, _)) = scope.rsplit_once('.') {
-        ancestors.push(parent.to_string());
-        scope = parent;
+    let Some(source_def_id) = class_index.def_id_by_qualified_name(class_name) else {
+        return;
+    };
+    collect_lexical_package_aliases_for_def_id(tree, class_index, source_def_id, imports);
+}
+
+pub(crate) fn collect_lexical_package_aliases_for_def_id(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    source_def_id: rumoca_core::DefId,
+    imports: &mut ImportMap,
+) {
+    collect_lexical_package_aliases_for_def_id_with_member_cache(
+        tree,
+        class_index,
+        source_def_id,
+        imports,
+        None,
+    );
+}
+
+pub(crate) fn collect_lexical_package_aliases_for_def_id_with_member_cache<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    source_def_id: rumoca_core::DefId,
+    imports: &mut ImportMap,
+    mut member_cache: Option<&mut MemberDefIdCache<'tree>>,
+) {
+    let Some(source_class) = class_index.get(source_def_id) else {
+        return;
+    };
+    let lookup_scope = source_class.scope_id;
+    let mut source_member_def_ids = None;
+
+    let mut ancestor_def_ids = Vec::new();
+    let mut current = class_index.parent_def_id(source_def_id);
+    while let Some(def_id) = current {
+        ancestor_def_ids.push(def_id);
+        current = class_index.parent_def_id(def_id);
     }
 
-    for ancestor in ancestors {
-        let Some(ancestor_class) = tree.get_class_by_qualified_name(&ancestor) else {
+    for ancestor_def_id in ancestor_def_ids.into_iter().rev() {
+        if !class_has_child_package(class_index, ancestor_def_id) {
             continue;
-        };
-        for (name, nested) in &ancestor_class.classes {
-            if !matches!(nested.class_type, ast::ClassType::Package) {
+        }
+        let source_member_def_ids = source_member_def_ids.get_or_insert_with(|| {
+            collect_class_or_base_member_def_ids(
+                class_index,
+                source_class,
+                member_cache.as_deref_mut(),
+            )
+        });
+        collect_class_child_package_aliases(
+            tree,
+            class_index,
+            lookup_scope,
+            source_member_def_ids,
+            ancestor_def_id,
+            imports,
+        );
+    }
+}
+
+/// Add lexical class aliases visible from `class_name` into the import map.
+///
+/// MLS §5.3 lookup makes nested classes visible through enclosing scopes. This
+/// is broader than package aliases: short class definitions such as
+/// `record iter = Inverses.accuracy` can be used as qualified class scopes
+/// (`iter.delp`) inside sibling functions.
+pub(crate) fn collect_lexical_class_aliases(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    class_name: &str,
+    imports: &mut ImportMap,
+) {
+    let Some(source_def_id) = class_index.def_id_by_qualified_name(class_name) else {
+        return;
+    };
+    collect_lexical_class_aliases_for_def_id(tree, class_index, source_def_id, imports);
+}
+
+pub(crate) fn collect_lexical_class_aliases_for_def_id(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    source_def_id: rumoca_core::DefId,
+    imports: &mut ImportMap,
+) {
+    collect_lexical_class_aliases_for_def_id_with_member_cache(
+        tree,
+        class_index,
+        source_def_id,
+        imports,
+        None,
+    );
+}
+
+pub(crate) fn collect_lexical_class_aliases_for_def_id_with_member_cache<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    source_def_id: rumoca_core::DefId,
+    imports: &mut ImportMap,
+    member_cache: Option<&mut MemberDefIdCache<'tree>>,
+) {
+    let Some(source_class) = class_index.get(source_def_id) else {
+        return;
+    };
+    let lookup_scope = source_class.scope_id;
+    let Some(original_lookup_scope) = lookup_scope else {
+        return;
+    };
+    let source_member_def_ids =
+        collect_class_or_base_member_def_ids(class_index, source_class, member_cache);
+    let mut scope_id = original_lookup_scope;
+
+    while let Some(scope) = tree.scope_tree.get(scope_id) {
+        for (alias, def_id) in &scope.members {
+            let Some(class_def) = class_index.get(*def_id) else {
+                continue;
+            };
+            if !is_expression_visible_class_type(&class_def.class_type) {
                 continue;
             }
-            imports
-                .entry(name.clone())
-                .or_insert_with(|| format!("{ancestor}.{name}"));
+            let Some(qualified_name) = tree.def_map.get(def_id) else {
+                continue;
+            };
+            let alias_name = alias.as_str();
+            if member_map_declares_different_def_id(&source_member_def_ids, alias_name, *def_id) {
+                continue;
+            }
+            if let Some(visible_def_id) = tree.scope_tree.lookup(original_lookup_scope, alias)
+                && visible_def_id != *def_id
+            {
+                continue;
+            }
+            imports.insert(alias_name.to_string(), qualified_name.clone());
         }
+
+        let Some(parent) = tree.scope_tree.parent(scope_id) else {
+            break;
+        };
+        scope_id = parent;
+    }
+}
+
+fn is_expression_visible_class_type(class_type: &rumoca_core::ClassType) -> bool {
+    matches!(
+        class_type,
+        rumoca_core::ClassType::Package
+            | rumoca_core::ClassType::Function
+            | rumoca_core::ClassType::Record
+            | rumoca_core::ClassType::Model
+            | rumoca_core::ClassType::Block
+            | rumoca_core::ClassType::Class
+            | rumoca_core::ClassType::Connector
+            | rumoca_core::ClassType::Type
+            | rumoca_core::ClassType::Operator
+    )
+}
+
+pub(crate) fn collect_lexical_constant_aliases_for_source_scope_with_packages(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    source_scope: &QualifiedName,
+    active_packages: &[String],
+    imports: &mut ImportMap,
+) {
+    let source_name = source_scope.to_flat_string();
+    let Some(source_def_id) = class_index.def_id_by_qualified_name(&source_name) else {
+        return;
+    };
+    collect_lexical_constant_aliases_for_def_id_with_packages(
+        tree,
+        class_index,
+        source_def_id,
+        active_packages,
+        imports,
+    );
+}
+
+pub(crate) fn collect_lexical_constant_aliases_for_def_id_with_packages(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    source_def_id: rumoca_core::DefId,
+    active_packages: &[String],
+    imports: &mut ImportMap,
+) {
+    collect_lexical_constant_aliases_for_def_id_with_packages_and_member_cache(
+        tree,
+        class_index,
+        source_def_id,
+        active_packages,
+        imports,
+        None,
+    );
+}
+
+pub(crate) fn collect_lexical_constant_aliases_for_def_id_with_packages_and_member_cache<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    source_def_id: rumoca_core::DefId,
+    active_packages: &[String],
+    imports: &mut ImportMap,
+    member_cache: Option<&mut MemberDefIdCache<'tree>>,
+) {
+    let Some(source_class) = class_index.get(source_def_id) else {
+        return;
+    };
+
+    let source_member_def_ids =
+        collect_class_or_base_member_def_ids(class_index, source_class, member_cache);
+    let mut ancestor_def_ids = Vec::new();
+    let mut current = class_index.parent_def_id(source_def_id);
+    while let Some(def_id) = current {
+        ancestor_def_ids.push(def_id);
+        current = class_index.parent_def_id(def_id);
+    }
+
+    for ancestor_def_id in ancestor_def_ids.into_iter().rev() {
+        let Some(ancestor_class) = class_index.get(ancestor_def_id) else {
+            continue;
+        };
+        let ancestor_name = class_index
+            .qualified_name(ancestor_def_id)
+            .expect("class index ancestor must have a canonical qualified name");
+        let target_scope =
+            lexical_constant_target_scope(tree, class_index, ancestor_name, active_packages);
+        for (name, component) in &ancestor_class.components {
+            if !matches!(
+                component.variability,
+                rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
+            ) {
+                continue;
+            }
+            if source_member_def_ids.contains_key(name.as_str()) {
+                continue;
+            }
+            imports.insert(name.clone(), format!("{target_scope}.{name}"));
+        }
+    }
+}
+
+fn lexical_constant_target_scope<'a>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    canonical_scope: &'a str,
+    active_packages: &'a [String],
+) -> &'a str {
+    for package_name in active_packages {
+        if crate::pipeline::package_chain_contains(tree, class_index, package_name, canonical_scope)
+        {
+            return package_name;
+        }
+    }
+    canonical_scope
+}
+
+fn collect_class_child_package_aliases(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    lookup_scope: Option<rumoca_core::ScopeId>,
+    source_member_def_ids: &FxHashMap<&str, rumoca_core::DefId>,
+    ancestor_def_id: rumoca_core::DefId,
+    imports: &mut ImportMap,
+) {
+    let Some(ancestor_class) = class_index.get(ancestor_def_id) else {
+        return;
+    };
+    for (child_name, child_class) in &ancestor_class.classes {
+        if !matches!(child_class.class_type, rumoca_core::ClassType::Package) {
+            continue;
+        }
+        let Some(def_id) = child_class.def_id else {
+            continue;
+        };
+        let qualified_name = class_index
+            .qualified_name(def_id)
+            .expect("class index package child must have a canonical qualified name");
+        insert_visible_lexical_package_alias(
+            tree,
+            lookup_scope,
+            source_member_def_ids,
+            child_name,
+            def_id,
+            qualified_name,
+            imports,
+        );
+    }
+}
+
+fn class_has_child_package(
+    class_index: &ast::ClassDefIndex<'_>,
+    ancestor_def_id: rumoca_core::DefId,
+) -> bool {
+    class_index.get(ancestor_def_id).is_some_and(|class_def| {
+        class_def
+            .classes
+            .values()
+            .any(|child| matches!(child.class_type, rumoca_core::ClassType::Package))
+    })
+}
+
+fn insert_visible_lexical_package_alias(
+    tree: &ast::ClassTree,
+    lookup_scope: Option<rumoca_core::ScopeId>,
+    source_member_def_ids: &FxHashMap<&str, rumoca_core::DefId>,
+    alias: &str,
+    def_id: rumoca_core::DefId,
+    qualified_name: &str,
+    imports: &mut ImportMap,
+) {
+    if imports.contains_key(alias) {
+        return;
+    }
+    if member_map_declares_different_def_id(source_member_def_ids, alias, def_id) {
+        return;
+    }
+    if let Some(scope_id) = lookup_scope
+        && let Some(visible_def_id) = tree
+            .scope_tree
+            .lookup(scope_id, &rumoca_core::ComponentPath::from_flat_path(alias))
+        && visible_def_id != def_id
+    {
+        return;
+    }
+    imports.insert(alias.to_string(), qualified_name.to_string());
+}
+
+fn member_map_declares_different_def_id(
+    source_member_def_ids: &FxHashMap<&str, rumoca_core::DefId>,
+    alias: &str,
+    lexical_def_id: rumoca_core::DefId,
+) -> bool {
+    source_member_def_ids
+        .get(alias)
+        .is_some_and(|member_def_id| *member_def_id != lexical_def_id)
+}
+
+fn collect_class_or_base_member_def_ids<'tree>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
+    member_cache: Option<&mut MemberDefIdCache<'tree>>,
+) -> MemberDefIdMap<'tree> {
+    if let Some(cache) = member_cache {
+        return collect_class_or_base_member_def_ids_cached(class_index, class_def, cache);
+    }
+    let mut members = FxHashMap::default();
+    let mut visited = FxHashSet::default();
+    collect_class_or_base_member_def_ids_recursive(
+        class_index,
+        class_def,
+        &mut visited,
+        &mut members,
+    );
+    Arc::new(members)
+}
+
+fn collect_class_or_base_member_def_ids_cached<'tree>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
+    member_cache: &mut MemberDefIdCache<'tree>,
+) -> MemberDefIdMap<'tree> {
+    let Some(def_id) = class_def.def_id else {
+        return collect_class_or_base_member_def_ids(class_index, class_def, None);
+    };
+    if let Some(cached) = member_cache.maps.get(&def_id) {
+        return Arc::clone(cached);
+    }
+    let members = collect_class_or_base_member_def_ids(class_index, class_def, None);
+    member_cache.maps.insert(def_id, Arc::clone(&members));
+    members
+}
+
+fn collect_class_or_base_member_def_ids_recursive<'tree>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
+    visited: &mut FxHashSet<rumoca_core::DefId>,
+    members: &mut FxHashMap<&'tree str, rumoca_core::DefId>,
+) {
+    members.reserve(class_def.components.len() + class_def.classes.len());
+    for (name, component) in &class_def.components {
+        if let Some(def_id) = component
+            .def_id
+            .or(component.type_def_id)
+            .or(component.type_name.def_id)
+        {
+            members.entry(name.as_str()).or_insert(def_id);
+        }
+    }
+    for (name, class_def) in &class_def.classes {
+        if let Some(def_id) = class_def.def_id {
+            members.entry(name.as_str()).or_insert(def_id);
+        }
+    }
+    for ext in &class_def.extends {
+        let Some(base_def_id) = ext.base_def_id.or(ext.base_name.def_id) else {
+            continue;
+        };
+        if !visited.insert(base_def_id) {
+            continue;
+        }
+        let Some(base_class) = class_index.get(base_def_id) else {
+            continue;
+        };
+        collect_class_or_base_member_def_ids_recursive(class_index, base_class, visited, members);
     }
 }
 
@@ -60,7 +521,7 @@ pub struct QualifyOptions {
     pub preserve_def_id: bool,
 }
 
-// ── Public API (backward-compatible, no imports) ────────────────────────────
+// ── Public API ──────────────────────────────────────────────────────────────
 
 /// Qualify a component reference by prepending prefix parts.
 pub fn qualify_component_ref(
@@ -162,13 +623,16 @@ pub fn int_expr(value: i64) -> Expression {
             text: std::sync::Arc::from(value.to_string()),
             ..Default::default()
         },
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
 // ── Internal implementation ─────────────────────────────────────────────────
 
-fn is_local_iterator_ref(cr: &ComponentReference, locals: &HashSet<String>) -> bool {
-    cr.parts.len() == 1 && locals.contains(cr.parts[0].ident.text.as_ref())
+fn is_local_root_ref(cr: &ComponentReference, locals: &HashSet<String>) -> bool {
+    cr.parts
+        .first()
+        .is_some_and(|part| locals.contains(part.ident.text.as_ref()))
 }
 
 /// Check if a component reference appears to be already fully-qualified.
@@ -220,8 +684,8 @@ fn is_builtin_enum_literal_ref(cr: &ComponentReference) -> bool {
 fn make_fqn_component_ref(fqn: &str) -> ComponentReference {
     ComponentReference {
         local: false,
-        parts: fqn
-            .split('.')
+        parts: split_path_with_indices(fqn)
+            .into_iter()
             .map(|seg| ComponentRefPart {
                 ident: Token {
                     text: std::sync::Arc::from(seg),
@@ -231,6 +695,7 @@ fn make_fqn_component_ref(fqn: &str) -> ComponentReference {
             })
             .collect(),
         def_id: None,
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -260,20 +725,22 @@ fn resolve_import_alias_ref(
 ) -> Option<ComponentReference> {
     let first_part = cr.parts.first()?;
     let alias = first_part.ident.text.as_ref();
+    if locals.contains(alias) {
+        return None;
+    }
     let fqn = imports.get(alias)?;
 
     let mut imported_parts = make_fqn_component_ref(fqn).parts;
-    if cr.parts.len() == 1 {
-        let non_empty_subs = first_part.subs.as_ref().filter(|subs| !subs.is_empty());
-        if let Some(subs) = non_empty_subs {
-            let last_part = imported_parts.last_mut()?;
-            last_part.subs = Some(
-                subs.iter()
-                    .map(|sub| qualify_sub_inner(sub, prefix, opts, locals, imports))
-                    .collect(),
-            );
-        }
-    } else {
+    let non_empty_subs = first_part.subs.as_ref().filter(|subs| !subs.is_empty());
+    if let Some(subs) = non_empty_subs {
+        let last_part = imported_parts.last_mut()?;
+        last_part.subs = Some(
+            subs.iter()
+                .map(|sub| qualify_sub_inner(sub, prefix, opts, locals, imports))
+                .collect(),
+        );
+    }
+    if cr.parts.len() > 1 {
         imported_parts.extend(
             cr.parts
                 .iter()
@@ -290,6 +757,7 @@ fn resolve_import_alias_ref(
         } else {
             None
         },
+        span: cr.span,
     })
 }
 
@@ -303,9 +771,12 @@ fn qualify_cr_inner(
     let qualify_part_subs =
         |part: &ComponentRefPart| qualify_component_part_subs(part, prefix, opts, locals, imports);
 
-    if is_local_iterator_ref(cr, locals) {
+    if is_local_root_ref(cr, locals) {
         let mut local = cr.clone();
         local.parts = local.parts.iter().map(qualify_part_subs).collect();
+        if !opts.preserve_def_id {
+            local.def_id = None;
+        }
         return local;
     }
 
@@ -324,6 +795,7 @@ fn qualify_cr_inner(
             } else {
                 None
             },
+            span: cr.span,
         };
     }
 
@@ -336,6 +808,7 @@ fn qualify_cr_inner(
             } else {
                 None
             },
+            span: cr.span,
         };
     }
 
@@ -381,12 +854,78 @@ fn qualify_cr_inner(
     ComponentReference {
         local: if opts.skip_local { false } else { cr.local },
         parts,
+        // Single-part references carry the resolved declaration for that
+        // reference. Keep it when adding an instance prefix so later semantic
+        // passes can still distinguish package-owned constants/functions from
+        // ordinary instance fields.
+        def_id: if opts.preserve_def_id || cr.parts.len() == 1 {
+            cr.def_id
+        } else {
+            None
+        },
+        span: cr.span,
+    }
+}
+
+fn qualify_function_call_ref(
+    cr: &ComponentReference,
+    prefix: &QualifiedName,
+    opts: QualifyOptions,
+    locals: &HashSet<String>,
+    imports: &ImportMap,
+) -> ComponentReference {
+    let qualify_part_subs =
+        |part: &ComponentRefPart| qualify_component_part_subs(part, prefix, opts, locals, imports);
+
+    if cr.local && is_unqualified_builtin_function_ref(cr) {
+        return ComponentReference {
+            local: cr.local,
+            parts: cr.parts.iter().map(qualify_part_subs).collect(),
+            def_id: if opts.preserve_def_id {
+                cr.def_id
+            } else {
+                None
+            },
+            span: cr.span,
+        };
+    }
+
+    if let Some(imported_ref) = resolve_import_alias_ref(cr, prefix, opts, locals, imports) {
+        return imported_ref;
+    }
+
+    if is_unqualified_builtin_function_ref(cr) {
+        return ComponentReference {
+            local: cr.local,
+            parts: cr.parts.iter().map(qualify_part_subs).collect(),
+            def_id: if opts.preserve_def_id {
+                cr.def_id
+            } else {
+                None
+            },
+            span: cr.span,
+        };
+    }
+
+    ComponentReference {
+        local: cr.local,
+        parts: cr.parts.iter().map(qualify_part_subs).collect(),
         def_id: if opts.preserve_def_id {
             cr.def_id
         } else {
             None
         },
+        span: cr.span,
     }
+}
+
+fn is_unqualified_builtin_function_ref(cr: &ComponentReference) -> bool {
+    let Some(part) = cr.parts.first() else {
+        return false;
+    };
+    cr.parts.len() == 1
+        && (rumoca_core::BuiltinFunction::from_name(part.ident.text.as_ref()).is_some()
+            || rumoca_core::is_builtin_function(part.ident.text.as_ref()))
 }
 
 fn qualify_vec_inner(
@@ -431,6 +970,7 @@ fn locals_with_indices(locals: &HashSet<String>, indices: &[ForIndex]) -> HashSe
 fn qualify_if_inner(
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
+    span: rumoca_core::Span,
     prefix: &QualifiedName,
     opts: QualifyOptions,
     locals: &HashSet<String>,
@@ -453,29 +993,43 @@ fn qualify_if_inner(
             locals,
             imports,
         )),
+        span,
     }
+}
+
+#[derive(Clone, Copy)]
+struct QualifyExprEnv<'a> {
+    prefix: &'a QualifiedName,
+    opts: QualifyOptions,
+    locals: &'a HashSet<String>,
+    imports: &'a ImportMap,
 }
 
 fn qualify_array_comprehension_inner(
     inner_expr: &Expression,
     indices: &[ForIndex],
     filter: &Option<Arc<Expression>>,
-    prefix: &QualifiedName,
-    opts: QualifyOptions,
-    locals: &HashSet<String>,
-    imports: &ImportMap,
+    span: rumoca_core::Span,
+    env: QualifyExprEnv<'_>,
 ) -> Expression {
-    let comprehension_locals = locals_with_indices(locals, indices);
+    let comprehension_locals = locals_with_indices(env.locals, indices);
     Expression::ArrayComprehension {
         expr: Arc::new(qualify_expr_inner(
             inner_expr,
-            prefix,
-            opts,
+            env.prefix,
+            env.opts,
             &comprehension_locals,
-            imports,
+            env.imports,
         )),
-        indices: qualify_for_indices_inner(indices, prefix, opts, locals, imports),
-        filter: qualify_opt_inner(filter, prefix, opts, &comprehension_locals, imports),
+        indices: qualify_for_indices_inner(indices, env.prefix, env.opts, env.locals, env.imports),
+        filter: qualify_opt_inner(
+            filter,
+            env.prefix,
+            env.opts,
+            &comprehension_locals,
+            env.imports,
+        ),
+        span,
     }
 }
 
@@ -490,75 +1044,129 @@ fn qualify_expr_inner(
         Expression::ComponentReference(cr) => {
             Expression::ComponentReference(qualify_cr_inner(cr, prefix, opts, locals, imports))
         }
-        Expression::Binary { op, lhs, rhs } => Expression::Binary {
+        Expression::Binary { op, lhs, rhs, span } => Expression::Binary {
             op: op.clone(),
             lhs: Arc::new(qualify_expr_inner(lhs, prefix, opts, locals, imports)),
             rhs: Arc::new(qualify_expr_inner(rhs, prefix, opts, locals, imports)),
+            span: *span,
         },
-        Expression::Unary { op, rhs } => Expression::Unary {
+        Expression::Unary { op, rhs, span } => Expression::Unary {
             op: op.clone(),
             rhs: Arc::new(qualify_expr_inner(rhs, prefix, opts, locals, imports)),
+            span: *span,
         },
-        Expression::FunctionCall { comp, args } => Expression::FunctionCall {
-            comp: comp.clone(),
+        Expression::FunctionCall { comp, args, span } => Expression::FunctionCall {
+            comp: qualify_function_call_ref(comp, prefix, opts, locals, imports),
             args: qualify_vec_inner(args, prefix, opts, locals, imports),
+            span: *span,
         },
         Expression::If {
             branches,
             else_branch,
-        } => qualify_if_inner(branches, else_branch, prefix, opts, locals, imports),
+            span,
+        } => qualify_if_inner(branches, else_branch, *span, prefix, opts, locals, imports),
         Expression::Array {
             elements,
             is_matrix,
+            span,
         } => Expression::Array {
             elements: qualify_vec_inner(elements, prefix, opts, locals, imports),
             is_matrix: *is_matrix,
+            span: *span,
         },
-        Expression::Range { start, step, end } => Expression::Range {
+        Expression::Range {
+            start, step, end, ..
+        } => Expression::Range {
             start: Arc::new(qualify_expr_inner(start, prefix, opts, locals, imports)),
             step: qualify_opt_inner(step, prefix, opts, locals, imports),
             end: Arc::new(qualify_expr_inner(end, prefix, opts, locals, imports)),
+            span: expr.span(),
         },
-        Expression::Tuple { elements } => Expression::Tuple {
+        Expression::Tuple { elements, span } => Expression::Tuple {
             elements: qualify_vec_inner(elements, prefix, opts, locals, imports),
+            span: *span,
         },
-        Expression::Parenthesized { inner } => Expression::Parenthesized {
+        Expression::Parenthesized { inner, span } => Expression::Parenthesized {
             inner: Arc::new(qualify_expr_inner(inner, prefix, opts, locals, imports)),
+            span: *span,
         },
-        Expression::Terminal { .. } | Expression::Empty => expr.clone(),
+        Expression::Terminal { .. } | Expression::Empty { .. } => expr.clone(),
+        _ => qualify_expr_inner_tail(expr, prefix, opts, locals, imports),
+    }
+}
+
+fn qualify_expr_inner_tail(
+    expr: &Expression,
+    prefix: &QualifiedName,
+    opts: QualifyOptions,
+    locals: &HashSet<String>,
+    imports: &ImportMap,
+) -> Expression {
+    match expr {
         Expression::ClassModification {
             target,
             modifications,
+            span,
+            each_flags,
+            final_flags,
+            redeclare_flags,
         } => Expression::ClassModification {
             target: target.clone(),
             modifications: qualify_vec_inner(modifications, prefix, opts, locals, imports),
+            each_flags: each_flags.clone(),
+            final_flags: final_flags.clone(),
+            redeclare_flags: redeclare_flags.clone(),
+            span: *span,
         },
-        Expression::NamedArgument { name, value } => Expression::NamedArgument {
+        Expression::NamedArgument { name, value, span } => Expression::NamedArgument {
             name: name.clone(),
             value: Arc::new(qualify_expr_inner(value, prefix, opts, locals, imports)),
+            span: *span,
         },
-        Expression::Modification { target, value } => Expression::Modification {
+        Expression::Modification {
+            target,
+            value,
+            span,
+        } => Expression::Modification {
             target: target.clone(),
             value: Arc::new(qualify_expr_inner(value, prefix, opts, locals, imports)),
+            span: *span,
         },
         Expression::ArrayComprehension {
             expr: inner_expr,
             indices,
             filter,
+            span,
         } => qualify_array_comprehension_inner(
-            inner_expr, indices, filter, prefix, opts, locals, imports,
+            inner_expr,
+            indices,
+            filter,
+            *span,
+            QualifyExprEnv {
+                prefix,
+                opts,
+                locals,
+                imports,
+            },
         ),
-        Expression::ArrayIndex { base, subscripts } => Expression::ArrayIndex {
+        Expression::ArrayIndex {
+            base,
+            subscripts,
+            span,
+        } => Expression::ArrayIndex {
             base: Arc::new(qualify_expr_inner(base, prefix, opts, locals, imports)),
             subscripts: subscripts
                 .iter()
                 .map(|s| qualify_sub_inner(s, prefix, opts, locals, imports))
                 .collect(),
+            span: *span,
         },
-        Expression::FieldAccess { base, field } => Expression::FieldAccess {
+        Expression::FieldAccess { base, field, span } => Expression::FieldAccess {
             base: Arc::new(qualify_expr_inner(base, prefix, opts, locals, imports)),
             field: field.clone(),
+            span: *span,
         },
+        _ => expr.clone(),
     }
 }
 
@@ -606,429 +1214,4 @@ fn qualify_sub_inner(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    fn make_comp_ref(names: &[&str]) -> ComponentReference {
-        ComponentReference {
-            local: false,
-            parts: names
-                .iter()
-                .map(|n| ComponentRefPart {
-                    ident: Token {
-                        text: std::sync::Arc::from(*n),
-                        ..Default::default()
-                    },
-                    subs: None,
-                })
-                .collect(),
-            def_id: None,
-        }
-    }
-
-    fn make_int(value: i64) -> Expression {
-        Expression::Terminal {
-            terminal_type: TerminalType::UnsignedInteger,
-            token: Token {
-                text: Arc::from(value.to_string()),
-                ..Default::default()
-            },
-        }
-    }
-
-    fn make_for_index(name: &str, range: Expression) -> ForIndex {
-        ForIndex {
-            ident: Token {
-                text: Arc::from(name.to_string()),
-                ..Default::default()
-            },
-            range,
-        }
-    }
-
-    #[test]
-    fn test_qualify_component_ref_empty_prefix() {
-        let cr = make_comp_ref(&["x"]);
-        let prefix = QualifiedName::new();
-        let result = qualify_component_ref(&cr, &prefix, QualifyOptions::default());
-        assert_eq!(result.parts.len(), 1);
-        assert_eq!(&*result.parts[0].ident.text, "x");
-    }
-
-    #[test]
-    fn test_qualify_component_ref_with_prefix() {
-        let cr = make_comp_ref(&["x"]);
-        let mut prefix = QualifiedName::new();
-        prefix.push("comp".to_string(), vec![]);
-
-        let result = qualify_component_ref(&cr, &prefix, QualifyOptions::default());
-        assert_eq!(result.parts.len(), 2);
-        assert_eq!(&*result.parts[0].ident.text, "comp");
-        assert_eq!(&*result.parts[1].ident.text, "x");
-    }
-
-    #[test]
-    fn test_qualify_local_ref_skipped() {
-        let mut cr = make_comp_ref(&["x"]);
-        cr.local = true;
-
-        let mut prefix = QualifiedName::new();
-        prefix.push("comp".to_string(), vec![]);
-
-        let opts = QualifyOptions {
-            skip_local: true,
-            preserve_def_id: false,
-        };
-        let result = qualify_component_ref(&cr, &prefix, opts);
-
-        // Local ref should not be qualified
-        assert_eq!(result.parts.len(), 1);
-        assert_eq!(&*result.parts[0].ident.text, "x");
-    }
-
-    #[test]
-    fn test_int_expr() {
-        let expr = int_expr(42);
-        if let Expression::Terminal {
-            terminal_type,
-            token,
-        } = expr
-        {
-            assert_eq!(terminal_type, TerminalType::UnsignedInteger);
-            assert_eq!(&*token.text, "42");
-        } else {
-            panic!("Expected Terminal expression");
-        }
-    }
-
-    #[test]
-    fn test_qualify_array_comprehension_keeps_iterator_local() {
-        let mut prefix = QualifiedName::new();
-        prefix.push("comp".to_string(), vec![]);
-
-        let expr = Expression::ArrayComprehension {
-            expr: Arc::new(Expression::ComponentReference(make_comp_ref(&["i"]))),
-            indices: vec![make_for_index(
-                "i",
-                Expression::Range {
-                    start: Arc::new(make_int(1)),
-                    step: None,
-                    end: Arc::new(Expression::ComponentReference(make_comp_ref(&["n"]))),
-                },
-            )],
-            filter: None,
-        };
-
-        let qualified = qualify_expression(&expr, &prefix, QualifyOptions::default());
-        let Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } = qualified
-        else {
-            panic!("Expected ArrayComprehension");
-        };
-        assert!(filter.is_none());
-
-        let Expression::ComponentReference(body_ref) = expr.as_ref() else {
-            panic!("Expected comprehension body ComponentReference");
-        };
-        assert_eq!(body_ref.parts.len(), 1);
-        assert_eq!(body_ref.parts[0].ident.text.as_ref(), "i");
-
-        let Expression::Range { end, .. } = &indices[0].range else {
-            panic!("Expected range in comprehension index");
-        };
-        let Expression::ComponentReference(end_ref) = end.as_ref() else {
-            panic!("Expected qualified range end component reference");
-        };
-        assert_eq!(end_ref.parts.len(), 2);
-        assert_eq!(end_ref.parts[0].ident.text.as_ref(), "comp");
-        assert_eq!(end_ref.parts[1].ident.text.as_ref(), "n");
-    }
-
-    #[test]
-    fn test_qualify_array_comprehension_range_sees_prior_indices() {
-        let mut prefix = QualifiedName::new();
-        prefix.push("comp".to_string(), vec![]);
-
-        let expr = Expression::ArrayComprehension {
-            expr: Arc::new(Expression::Binary {
-                op: rumoca_ir_core::OpBinary::Add(Token::default()),
-                lhs: Arc::new(Expression::ComponentReference(make_comp_ref(&["i"]))),
-                rhs: Arc::new(Expression::ComponentReference(make_comp_ref(&["j"]))),
-            }),
-            indices: vec![
-                make_for_index(
-                    "i",
-                    Expression::Range {
-                        start: Arc::new(make_int(1)),
-                        step: None,
-                        end: Arc::new(Expression::ComponentReference(make_comp_ref(&["n"]))),
-                    },
-                ),
-                make_for_index(
-                    "j",
-                    Expression::Range {
-                        start: Arc::new(make_int(1)),
-                        step: None,
-                        end: Arc::new(Expression::ComponentReference(make_comp_ref(&["i"]))),
-                    },
-                ),
-            ],
-            filter: None,
-        };
-
-        let qualified = qualify_expression(&expr, &prefix, QualifyOptions::default());
-        let Expression::ArrayComprehension { indices, .. } = qualified else {
-            panic!("Expected ArrayComprehension");
-        };
-        let Expression::Range { end, .. } = &indices[1].range else {
-            panic!("Expected range in second comprehension index");
-        };
-        let Expression::ComponentReference(end_ref) = end.as_ref() else {
-            panic!("Expected component reference in second range end");
-        };
-        assert_eq!(end_ref.parts.len(), 1);
-        assert_eq!(end_ref.parts[0].ident.text.as_ref(), "i");
-    }
-
-    #[test]
-    fn test_import_resolves_short_name_to_fqn() {
-        let mut prefix = QualifiedName::new();
-        prefix.push("comp".to_string(), vec![]);
-
-        let mut imports = ImportMap::default();
-        imports.insert("pi".to_string(), "Modelica.Constants.pi".to_string());
-
-        let expr = Expression::ComponentReference(make_comp_ref(&["pi"]));
-        let qualified =
-            qualify_expression_with_imports(&expr, &prefix, QualifyOptions::default(), &imports);
-
-        let Expression::ComponentReference(cr) = qualified else {
-            panic!("Expected ComponentReference");
-        };
-        assert_eq!(cr.parts.len(), 3);
-        assert_eq!(cr.parts[0].ident.text.as_ref(), "Modelica");
-        assert_eq!(cr.parts[1].ident.text.as_ref(), "Constants");
-        assert_eq!(cr.parts[2].ident.text.as_ref(), "pi");
-    }
-
-    #[test]
-    fn test_time_builtin_not_qualified() {
-        let mut prefix = QualifiedName::new();
-        prefix.push("source".to_string(), vec![]);
-
-        let expr = Expression::ComponentReference(make_comp_ref(&["time"]));
-        let qualified = qualify_expression(&expr, &prefix, QualifyOptions::default());
-
-        let Expression::ComponentReference(cr) = qualified else {
-            panic!("Expected ComponentReference");
-        };
-        assert_eq!(cr.parts.len(), 1);
-        assert_eq!(cr.parts[0].ident.text.as_ref(), "time");
-    }
-
-    #[test]
-    fn test_builtin_enum_literals_not_qualified() {
-        let mut prefix = QualifiedName::new();
-        prefix.push("source".to_string(), vec![]);
-
-        let state_select =
-            Expression::ComponentReference(make_comp_ref(&["StateSelect", "default"]));
-        let qualified_state = qualify_expression(&state_select, &prefix, QualifyOptions::default());
-        let Expression::ComponentReference(state_cr) = qualified_state else {
-            panic!("Expected ComponentReference for StateSelect literal");
-        };
-        assert_eq!(state_cr.parts.len(), 2);
-        assert_eq!(state_cr.parts[0].ident.text.as_ref(), "StateSelect");
-        assert_eq!(state_cr.parts[1].ident.text.as_ref(), "default");
-
-        let assertion = Expression::ComponentReference(make_comp_ref(&["AssertionLevel", "error"]));
-        let qualified_assertion =
-            qualify_expression(&assertion, &prefix, QualifyOptions::default());
-        let Expression::ComponentReference(assert_cr) = qualified_assertion else {
-            panic!("Expected ComponentReference for AssertionLevel literal");
-        };
-        assert_eq!(assert_cr.parts.len(), 2);
-        assert_eq!(assert_cr.parts[0].ident.text.as_ref(), "AssertionLevel");
-        assert_eq!(assert_cr.parts[1].ident.text.as_ref(), "error");
-    }
-
-    #[test]
-    fn test_non_imported_name_still_qualified() {
-        let mut prefix = QualifiedName::new();
-        prefix.push("comp".to_string(), vec![]);
-
-        let mut imports = ImportMap::default();
-        imports.insert("pi".to_string(), "Modelica.Constants.pi".to_string());
-
-        // "f" is not in imports, so it should be qualified normally
-        let expr = Expression::ComponentReference(make_comp_ref(&["f"]));
-        let qualified =
-            qualify_expression_with_imports(&expr, &prefix, QualifyOptions::default(), &imports);
-
-        let Expression::ComponentReference(cr) = qualified else {
-            panic!("Expected ComponentReference");
-        };
-        assert_eq!(cr.parts.len(), 2);
-        assert_eq!(cr.parts[0].ident.text.as_ref(), "comp");
-        assert_eq!(cr.parts[1].ident.text.as_ref(), "f");
-    }
-
-    #[test]
-    fn test_import_alias_resolves_prefixed_component_reference() {
-        let mut prefix = QualifiedName::new();
-        prefix.push("inst".to_string(), vec![]);
-
-        let mut imports = ImportMap::default();
-        imports.insert(
-            "L".to_string(),
-            "Modelica.Electrical.Digital.Interfaces.Logic".to_string(),
-        );
-
-        let expr = Expression::ComponentReference(ComponentReference {
-            local: false,
-            parts: vec![
-                ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("L"),
-                        ..Default::default()
-                    },
-                    subs: None,
-                },
-                ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("'1'"),
-                        ..Default::default()
-                    },
-                    subs: None,
-                },
-            ],
-            def_id: None,
-        });
-
-        let qualified =
-            qualify_expression_with_imports(&expr, &prefix, QualifyOptions::default(), &imports);
-        let Expression::ComponentReference(cr) = qualified else {
-            panic!("Expected ComponentReference");
-        };
-        let parts: Vec<&str> = cr
-            .parts
-            .iter()
-            .map(|part| part.ident.text.as_ref())
-            .collect();
-        assert_eq!(
-            parts,
-            vec![
-                "Modelica",
-                "Electrical",
-                "Digital",
-                "Interfaces",
-                "Logic",
-                "'1'"
-            ]
-        );
-    }
-
-    #[test]
-    fn test_fully_qualified_ref_qualifies_subscript_expressions() {
-        let mut prefix = QualifiedName::new();
-        prefix.push("MUX".to_string(), vec![]);
-        prefix.push("And1".to_string(), vec![]);
-
-        let ref_with_subscripts = ComponentReference {
-            local: false,
-            parts: vec![
-                ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("Modelica"),
-                        ..Default::default()
-                    },
-                    subs: None,
-                },
-                ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("Electrical"),
-                        ..Default::default()
-                    },
-                    subs: None,
-                },
-                ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("Digital"),
-                        ..Default::default()
-                    },
-                    subs: None,
-                },
-                ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("Tables"),
-                        ..Default::default()
-                    },
-                    subs: None,
-                },
-                ComponentRefPart {
-                    ident: Token {
-                        text: Arc::from("AndTable"),
-                        ..Default::default()
-                    },
-                    subs: Some(vec![
-                        Subscript::Expression(Expression::ComponentReference(ComponentReference {
-                            local: false,
-                            parts: vec![ComponentRefPart {
-                                ident: Token {
-                                    text: Arc::from("auxiliary"),
-                                    ..Default::default()
-                                },
-                                subs: Some(vec![Subscript::Expression(make_int(1))]),
-                            }],
-                            def_id: None,
-                        })),
-                        Subscript::Expression(Expression::ComponentReference(ComponentReference {
-                            local: false,
-                            parts: vec![ComponentRefPart {
-                                ident: Token {
-                                    text: Arc::from("x"),
-                                    ..Default::default()
-                                },
-                                subs: Some(vec![Subscript::Expression(make_int(2))]),
-                            }],
-                            def_id: None,
-                        })),
-                    ]),
-                },
-            ],
-            def_id: None,
-        };
-
-        let expr = Expression::ComponentReference(ref_with_subscripts);
-        let qualified = qualify_expression(&expr, &prefix, QualifyOptions::default());
-        let Expression::ComponentReference(qualified_ref) = qualified else {
-            panic!("Expected ComponentReference");
-        };
-        assert_eq!(qualified_ref.parts.len(), 5);
-        assert_eq!(qualified_ref.parts[0].ident.text.as_ref(), "Modelica");
-        let Some(subscripts) = qualified_ref.parts[4].subs.as_ref() else {
-            panic!("expected AndTable subscripts");
-        };
-        assert_eq!(subscripts.len(), 2);
-
-        let Subscript::Expression(Expression::ComponentReference(aux_ref)) = &subscripts[0] else {
-            panic!("expected auxiliary ref in first subscript");
-        };
-        assert_eq!(aux_ref.parts.len(), 3);
-        assert_eq!(aux_ref.parts[0].ident.text.as_ref(), "MUX");
-        assert_eq!(aux_ref.parts[1].ident.text.as_ref(), "And1");
-        assert_eq!(aux_ref.parts[2].ident.text.as_ref(), "auxiliary");
-
-        let Subscript::Expression(Expression::ComponentReference(x_ref)) = &subscripts[1] else {
-            panic!("expected x ref in second subscript");
-        };
-        assert_eq!(x_ref.parts.len(), 3);
-        assert_eq!(x_ref.parts[0].ident.text.as_ref(), "MUX");
-        assert_eq!(x_ref.parts[1].ident.text.as_ref(), "And1");
-        assert_eq!(x_ref.parts[2].ident.text.as_ref(), "x");
-    }
-}
+mod tests;

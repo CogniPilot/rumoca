@@ -15,10 +15,11 @@ impl Session {
     /// resets snapshot-cache handles so the clone cannot alias host snapshots.
     pub fn clone_for_isolated_work(&self) -> Session {
         let mut clone = self.clone();
-        clone.snapshot_cache = Arc::new(Mutex::new(SharedSessionSnapshot::default()));
-        clone.lightweight_snapshot_cache = Arc::new(Mutex::new(SharedSessionSnapshot::default()));
-        clone.workspace_symbol_snapshot_cache =
-            Arc::new(Mutex::new(SharedSessionSnapshot::default()));
+        (
+            clone.snapshot_cache,
+            clone.lightweight_snapshot_cache,
+            clone.workspace_symbol_snapshot_cache,
+        ) = fresh_session_snapshot_caches();
         clone
     }
 
@@ -78,7 +79,10 @@ impl Session {
             }
         }
 
+        let (snapshot_cache, lightweight_snapshot_cache, workspace_symbol_snapshot_cache) =
+            fresh_session_snapshot_caches();
         Session {
+            instantiation_options: self.instantiation_options,
             documents,
             detached_document_uris,
             detached_source_root_documents,
@@ -101,9 +105,9 @@ impl Session {
                 flat: self.query_state.flat.clone(),
                 dae: self.query_state.dae.clone(),
             },
-            snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
-            lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
-            workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
+            snapshot_cache,
+            lightweight_snapshot_cache,
+            workspace_symbol_snapshot_cache,
             evaluate_scope_is_error: self.evaluate_scope_is_error,
             when_single_assign_is_error: self.when_single_assign_is_error,
         }
@@ -211,10 +215,8 @@ impl Session {
     pub fn workspace_symbol_snapshot_with_timing(
         &self,
     ) -> (SessionSnapshot, WorkspaceSymbolSnapshotTiming) {
-        let Ok(mut shared_snapshot) = self.workspace_symbol_snapshot_cache.lock() else {
-            return self.build_workspace_symbol_snapshot_with_timing();
-        };
-        if shared_snapshot.revision == self.current_revision
+        if let Ok(shared_snapshot) = self.workspace_symbol_snapshot_cache.read()
+            && shared_snapshot.revision == self.current_revision
             && let Some(snapshot) = shared_snapshot.snapshot.as_ref()
         {
             return (
@@ -226,13 +228,16 @@ impl Session {
             );
         }
         let (snapshot, timing) = self.build_workspace_symbol_snapshot_with_timing();
+        let Ok(mut shared_snapshot) = self.workspace_symbol_snapshot_cache.write() else {
+            return (snapshot, timing);
+        };
         shared_snapshot.revision = self.current_revision;
         shared_snapshot.snapshot = Some(snapshot.clone());
         (snapshot, timing)
     }
 
-    fn sync_ast_query_state_from_snapshot(&mut self, cache: Arc<Mutex<SharedSessionSnapshot>>) {
-        let Ok(shared_snapshot) = cache.lock() else {
+    fn sync_ast_query_state_from_snapshot(&mut self, cache: SharedSessionSnapshotCache) {
+        let Ok(shared_snapshot) = cache.read() else {
             return;
         };
         if shared_snapshot.revision != self.current_revision {
@@ -241,37 +246,41 @@ impl Session {
         let Some(snapshot) = shared_snapshot.snapshot.as_ref() else {
             return;
         };
-        let Ok(snapshot_session) = snapshot.session.lock() else {
+        let Ok(snapshot_state) = snapshot.detached_state.read() else {
             return;
         };
         // Host mutations only need the AST-tier warmth discovered by read snapshots.
         // Resolved/model artifacts remain owned by the host mutation/compile path.
         self.query_state
             .ast
-            .merge_from(&snapshot_session.query_state.ast);
+            .merge_from(&snapshot_state.session.query_state.ast);
     }
 
     fn cached_snapshot(
         &self,
-        cache: &Arc<Mutex<SharedSessionSnapshot>>,
+        cache: &SharedSessionSnapshotCache,
         build: impl FnOnce() -> SessionSnapshot,
     ) -> SessionSnapshot {
-        let Ok(mut shared_snapshot) = cache.lock() else {
-            return build();
-        };
-        if shared_snapshot.revision == self.current_revision
+        if let Ok(shared_snapshot) = cache.read()
+            && shared_snapshot.revision == self.current_revision
             && let Some(snapshot) = shared_snapshot.snapshot.as_ref()
         {
             return snapshot.clone();
         }
         let snapshot = build();
+        let Ok(mut shared_snapshot) = cache.write() else {
+            return snapshot;
+        };
         shared_snapshot.revision = self.current_revision;
         shared_snapshot.snapshot = Some(snapshot.clone());
         snapshot
     }
 
     fn build_snapshot(&self, ast_query_state: AstQueryState) -> SessionSnapshot {
+        let (snapshot_cache, lightweight_snapshot_cache, workspace_symbol_snapshot_cache) =
+            fresh_session_snapshot_caches();
         let snapshot = Session {
+            instantiation_options: self.instantiation_options,
             documents: self.documents.clone(),
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: self.detached_source_root_documents.clone(),
@@ -292,15 +301,13 @@ impl Session {
                 ast: ast_query_state,
                 ..SessionQueryState::default()
             },
-            snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
-            lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
-            workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
+            snapshot_cache,
+            lightweight_snapshot_cache,
+            workspace_symbol_snapshot_cache,
             evaluate_scope_is_error: self.evaluate_scope_is_error,
             when_single_assign_is_error: self.when_single_assign_is_error,
         };
-        SessionSnapshot {
-            session: Arc::new(Mutex::new(snapshot)),
-        }
+        SessionSnapshot::from_detached_session(snapshot)
     }
 
     fn build_workspace_symbol_snapshot_with_timing(
@@ -360,7 +367,10 @@ impl Session {
         timing.ast_state_ms = ast_state_started.elapsed().as_millis() as u64;
 
         let session_assemble_started = Instant::now();
+        let (snapshot_cache, lightweight_snapshot_cache, workspace_symbol_snapshot_cache) =
+            fresh_session_snapshot_caches();
         let snapshot = Session {
+            instantiation_options: self.instantiation_options,
             documents: detached_documents,
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: IndexMap::new(),
@@ -381,19 +391,14 @@ impl Session {
                 ast: ast_query_state,
                 ..SessionQueryState::default()
             },
-            snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
+            snapshot_cache,
+            lightweight_snapshot_cache,
+            workspace_symbol_snapshot_cache,
             evaluate_scope_is_error: self.evaluate_scope_is_error,
             when_single_assign_is_error: self.when_single_assign_is_error,
-            lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
-            workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
         };
         timing.session_assemble_ms = session_assemble_started.elapsed().as_millis() as u64;
-        (
-            SessionSnapshot {
-                session: Arc::new(Mutex::new(snapshot)),
-            },
-            timing,
-        )
+        (SessionSnapshot::from_detached_session(snapshot), timing)
     }
 
     fn build_workspace_symbol_rebuild_snapshot_with_timing(
@@ -431,7 +436,10 @@ impl Session {
         timing.ast_state_ms = ast_state_started.elapsed().as_millis() as u64;
 
         let session_assemble_started = Instant::now();
+        let (snapshot_cache, lightweight_snapshot_cache, workspace_symbol_snapshot_cache) =
+            fresh_session_snapshot_caches();
         let snapshot = Session {
+            instantiation_options: self.instantiation_options,
             documents,
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: IndexMap::new(),
@@ -452,19 +460,14 @@ impl Session {
                 ast: ast_query_state,
                 ..SessionQueryState::default()
             },
-            snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
+            snapshot_cache,
+            lightweight_snapshot_cache,
+            workspace_symbol_snapshot_cache,
             evaluate_scope_is_error: self.evaluate_scope_is_error,
             when_single_assign_is_error: self.when_single_assign_is_error,
-            lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
-            workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
         };
         timing.session_assemble_ms = session_assemble_started.elapsed().as_millis() as u64;
-        (
-            SessionSnapshot {
-                session: Arc::new(Mutex::new(snapshot)),
-            },
-            timing,
-        )
+        (SessionSnapshot::from_detached_session(snapshot), timing)
     }
 
     fn workspace_symbol_source_set_caches_are_current(&self) -> bool {
@@ -484,20 +487,31 @@ impl Session {
 }
 
 impl SessionSnapshot {
+    fn from_detached_session(session: Session) -> Self {
+        Self {
+            detached_state: Arc::new(RwLock::new(DetachedSessionSnapshotState { session })),
+        }
+    }
+
     fn with_session<T>(&self, f: impl FnOnce(&mut Session) -> T) -> T {
-        let mut session = self
-            .session
-            .lock()
+        let mut detached_state = self
+            .detached_state
+            .write()
             .expect("session snapshot lock should not be poisoned");
-        f(&mut session)
+        f(&mut detached_state.session)
     }
 
     fn with_session_ref<T>(&self, f: impl FnOnce(&Session) -> T) -> T {
-        let session = self
-            .session
-            .lock()
+        let detached_state = self
+            .detached_state
+            .read()
             .expect("session snapshot lock should not be poisoned");
-        f(&session)
+        f(&detached_state.session)
+    }
+
+    #[cfg(test)]
+    pub(super) fn inspect_detached_session<T>(&self, f: impl FnOnce(&Session) -> T) -> T {
+        self.with_session_ref(f)
     }
 
     pub fn get_document(&self, uri: &str) -> Option<Document> {
@@ -576,7 +590,7 @@ impl SessionSnapshot {
         line: u32,
         character: u32,
         include_declaration: bool,
-    ) -> Option<Vec<(String, ast::Location)>> {
+    ) -> Option<Vec<(String, rumoca_core::Location)>> {
         self.with_session(|session| {
             session.navigation_references_query(uri, line, character, include_declaration)
         })
@@ -587,7 +601,7 @@ impl SessionSnapshot {
         uri: &str,
         line: u32,
         character: u32,
-    ) -> Option<ast::Location> {
+    ) -> Option<rumoca_core::Location> {
         self.with_session(|session| session.navigation_prepare_rename_query(uri, line, character))
     }
 
@@ -596,7 +610,7 @@ impl SessionSnapshot {
         uri: &str,
         line: u32,
         character: u32,
-    ) -> Option<Vec<(String, ast::Location)>> {
+    ) -> Option<Vec<(String, rumoca_core::Location)>> {
         self.with_session(|session| session.navigation_rename_locations_query(uri, line, character))
     }
 

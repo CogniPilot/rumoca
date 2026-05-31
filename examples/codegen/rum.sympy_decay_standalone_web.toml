@@ -1,0 +1,11 @@
+[rumoca]
+version = "1"
+task = "codegen"
+
+[model]
+file = "../models/SympyDecay.mo"
+name = "SympyDecay"
+
+[codegen]
+target = "standalone_web"
+output_dir = "gen/sympy_decay_standalone_web"

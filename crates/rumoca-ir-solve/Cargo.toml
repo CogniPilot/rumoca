@@ -1,14 +1,22 @@
 [package]
 name = "rumoca-ir-solve"
-description = "Solver-facing prepared IR for Rumoca simulation backends"
+description = "Solver-facing Solve IR for Rumoca simulation backends"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+strict-ir-validation = []
+
 [dependencies]
+rumoca-core = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
+
+[dev-dependencies]
+bincode = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

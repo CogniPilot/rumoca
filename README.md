@@ -136,17 +136,21 @@ cargo build --workspace
 # lint a model
 cargo run -p rumoca -- lint path/to/model.mo
 
-# compile a model to JSON
+# compile a model to solve IR JSON or a built-in target
 cargo run -p rumoca -- \
   compile path/to/model.mo \
   --model MyModel \
-  --json
+  --target solve-ir
 
-# simulate a model
+# simulate a model directly
 cargo run -p rumoca -- \
-  simulate path/to/model.mo \
+  sim path/to/model.mo \
   --model MyModel \
   --t-end 1.0
+
+# run a colocated scenario TOML
+cargo run -p rumoca --release -- \
+  sim -c examples/simulation/ball_sim.toml
 
 # run the LSP server
 cargo run -p rumoca-tool-lsp --bin rumoca-lsp
@@ -154,26 +158,77 @@ cargo run -p rumoca-tool-lsp --bin rumoca-lsp
 
 `--model` is optional when the file has a single unambiguous model candidate.
 
-### Generate a self-contained HTML simulator
+### External Modelica Packages
 
-Assuming you have a template such as `examples/templates/standalone_html.jinja`:
-
-```bash
-cargo run -p rumoca -- compile path/to/model.mo --model MyModel --template-file examples/templates/standalone_html.jinja > MyModel_standalone.html
-```
-
-MSL Electrical resistor example (downloads MSL 4.1.0, compiles `Modelica.Electrical.Analog.Examples.Resistor` via a tiny wrapper model, and writes standalone HTML):
+The examples use pinned Modelica package archives for MSL and CMM. Fetch them
+with the developer helper:
 
 ```bash
-# download msl
-curl -L -o /tmp/ModelicaStandardLibrary-4.1.0.zip https://github.com/modelica/ModelicaStandardLibrary/archive/refs/tags/v4.1.0.zip && unzip -q -o /tmp/ModelicaStandardLibrary-4.1.0.zip -d /tmp
-
-# add our model
-printf 'model MslResistorExample\n  import Complex;\n  import ModelicaServices;\n  extends Modelica.Electrical.Analog.Examples.Resistor;\nend MslResistorExample;\n' > /tmp/MslResistorExample.mo
-
-# convert into standalone html
-cargo run -p rumoca -- compile /tmp/MslResistorExample.mo --model MslResistorExample --source-root /tmp/ModelicaStandardLibrary-4.1.0/Modelica --source-root /tmp/ModelicaStandardLibrary-4.1.0/ModelicaServices --source-root /tmp/ModelicaStandardLibrary-4.1.0/Complex.mo --template-file examples/templates/standalone_html.jinja > MslResistorExample_standalone.html
+cargo xtask repo modelica-deps ensure
 ```
+
+The repository includes VS Code workspace settings for common open modes:
+
+- `.vscode/settings.json` when opening the repository root
+- `examples/.vscode/settings.json` when opening `examples/`
+- `examples/interactive/quadrotor/.vscode/settings.json` when opening the quadrotor
+  example directly
+
+These settings use repository-relative `rumoca.sourceRootPaths` entries such
+as `target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0` and
+`target/cmm/CMM-v0.0.1`. The extension resolves those paths against the
+workspace root before sending them to the LSP.
+
+Scenario TOMLs may also declare top-level `source_roots` for dependencies that
+belong only to that run.
+
+### Scenario TOMLs
+
+Runnable examples are configured by colocated TOML files:
+
+```bash
+# batch/results-panel simulation
+cargo run -p rumoca --release -- sim -c examples/simulation/ball_sim.toml
+
+# interactive quadrotor SIL viewer
+cargo run -p rumoca --release -- sim -c examples/interactive/quadrotor/quadrotor_acro.toml
+
+# validate a scenario without running it
+cargo run -p rumoca -- sim check -c examples/interactive/quadrotor/quadrotor_acro.toml
+```
+
+Each scenario declares one task:
+
+- `task = "simulate"` for simulation and visualization
+- `task = "codegen"` for target rendering into an output directory
+
+Generate a commented starting point with:
+
+```bash
+cargo run -p rumoca -- sim init > my_model_sim.toml
+```
+
+### Code Generation
+
+Codegen uses built-in targets or custom target directories containing
+`target.toml` and Jinja templates. List available targets:
+
+```bash
+cargo run -p rumoca -- targets
+```
+
+Render a codegen scenario:
+
+```bash
+cargo run -p rumoca -- \
+  compile examples/models/SympyDecay.mo \
+  --model SympyDecay \
+  --target examples/codegen/standalone_web \
+  --output examples/codegen/gen/sympy_decay_standalone_web
+```
+
+Codegen scenarios write generated files under `examples/codegen/gen/`, which is
+ignored by git.
 
 ### Installation
 
@@ -217,38 +272,67 @@ Contributor workflows are standardized through the `rum` developer CLI.
 Bootstrap it once from the repository root:
 
 ```bash
-cargo run --bin rum -- repo cli install
+cargo xtask repo cli install
 ```
 
 If you want the main Modelica parity gate right away:
 
 ```bash
-rum verify msl-parity
+cargo xtask verify msl-parity
+```
+
+To fetch the cached MSL and CogniPilot Modelica Models (CMM) libraries used by the examples and CI smoke tests, use the pins in `examples/modelica_dependencies.toml`:
+
+```bash
+cargo xtask repo modelica-deps ensure
+cargo xtask verify examples
 ```
 
 After that, the main command groups are:
 
-- `rum verify full` for the full GitHub CI verification suite
-- `rum verify ...` for repo-wide verification and CI-facing gates
-- `rum vscode ...` for VS Code extension build, test, and edit workflows
-- `rum wasm ...` for wasm editor build, test, and edit workflows
-- `rum coverage ...` for coverage generation, reporting, and gating
-- `rum repo ...` for hooks, releases, completions, graphs, and MSL reference-data maintenance
+- `cargo xtask verify full` for the full GitHub CI verification suite
+- `cargo xtask verify ...` for repo-wide verification and CI-facing gates
+- `cargo xtask vscode ...` for VS Code extension build, test, and edit workflows
+- `cargo xtask wasm ...` for wasm editor build, test, and edit workflows
+- `cargo xtask coverage ...` for coverage generation, reporting, and gating
+- `cargo xtask repo ...` for hooks, releases, completions, graphs, cached Modelica dependencies, and MSL reference-data maintenance
+
+## Documentation
+
+- Playground: <https://cognipilot.github.io/rumoca/>
+- User book: <https://cognipilot.github.io/rumoca/user-guide/> (`docs/user-guide/`)
+- Developer book: <https://cognipilot.github.io/rumoca/dev-guide/> (`docs/dev-guide/`)
+- Normative design rules: `spec/`
+
+The books explain how to use Rumoca and how the implementation is organized.
+The specs are the source of truth for architecture and contribution rules.
+The user book can host native WASM example components: focused Monaco editors
+that call Rumoca on book-local files and render the relevant simulation views.
+
+GitHub Pages deploys the WASM playground at the site root and both mdBook
+books as subdirectories from the same CI artifact. Locally, build the same
+pieces with:
+
+```bash
+cargo xtask wasm build --variant full-web
+mdbook build docs/user-guide
+mdbook build docs/dev-guide
+```
 
 Common examples:
 
 ```bash
-rum verify full
-rum verify quick
-rum verify template-runtimes
-rum verify msl-parity
-rum vscode test
-rum wasm test
-rum wasm build --variant core
-rum wasm build --dev --variant sim-diffsol
-rum wasm build --variant full-web --rayon --pack
-rum repo msl promote-quality-baseline
-rum help verify
+cargo xtask verify full
+cargo xtask verify quick
+cargo xtask verify template-runtimes
+cargo xtask verify msl-parity
+cargo xtask vscode test
+cargo xtask wasm test
+cargo xtask wasm build --variant core
+cargo xtask wasm build --dev --variant sim-diffsol
+cargo xtask wasm build --variant full-web --rayon --pack
+cargo xtask repo msl promote-quality-baseline
+cargo xtask help verify
 ```
 
 For npm-package workflows, use:
@@ -260,13 +344,14 @@ npm run build:release:core
 npm run build:release:sim-diffsol:pack
 ```
 
-`rum verify quick` runs the fast local gates: lint, workspace tests, and binary
-builds. `rum verify full` mirrors the main CI verification suite, including
-coverage, docs, editor/WASM gates, and the slow 180-model MSL parity gate. The
-full suite assumes the local coverage/editor prerequisites are installed
-(`cargo-llvm-cov`, Node/npm, and wasm Rust tooling).
-`rum verify template-runtimes` runs ignored example-template runtime checks
-that depend on optional backend environments such as Python with SymPy.
+`cargo xtask verify quick` runs the fast local gates: lint, workspace tests, binary
+builds, and template runtime checks. `cargo xtask verify full` mirrors the main CI
+verification suite, including example smoke tests, coverage, docs,
+editor/WASM gates, and the slow full MSL parity gate. The full suite assumes
+the local coverage/editor prerequisites are installed (`cargo-llvm-cov`,
+Node/npm, and wasm Rust tooling). `cargo xtask verify template-runtimes` wraps the
+equivalent Cargo command for opt-in example-template runtime checks:
+`cargo test -p rumoca --features template-runtime-tests --test backend_template_runtime_regression -- --nocapture`.
 
 ## Compiler Pipeline
 
@@ -285,7 +370,8 @@ that depend on optional backend environments such as Python with SymPy.
 ## Code Generation Targets
 
 Use explicit template files you own and version with your project.
-Template files in `examples/templates` are works in progress and need cleanup. Treat them as editable starting points, not stable production artifacts.
+The raw template example in `examples/codegen/custom_casadi.jinja` is a
+starting point, not a stable production artifact.
 
 ## VS Code Extension
 
@@ -298,14 +384,14 @@ example over Remote/SSH).
 Maintainer reproduction commands for Linux release artifacts:
 
 ```bash
-rum vscode package --target linux-x64
-rum vscode package --target linux-arm64
+cargo xtask vscode package --target linux-x64
+cargo xtask vscode package --target linux-arm64
 ```
 
 On Debian/Ubuntu, the first run can install `musl-tools` for you:
 
 ```bash
-rum vscode package --target linux-x64 --install-musl-tools
+cargo xtask vscode package --target linux-x64 --install-musl-tools
 ```
 
 - Extension docs: `editors/vscode/README.md`

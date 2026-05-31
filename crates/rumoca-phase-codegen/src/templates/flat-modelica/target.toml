@@ -1,0 +1,10 @@
+version = 1
+ir = "flat"
+name = "flat-modelica"
+description = "Modelica source reconstructed from flat IR"
+execution_mode = "source-transform"
+deployment_class = "modelica"
+
+[[files]]
+path = "{{ model_name }}_flat.mo"
+template = "flat_modelica.mo.jinja"

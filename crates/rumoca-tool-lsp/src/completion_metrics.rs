@@ -1,8 +1,9 @@
 use lsp_types::Position;
 use rumoca_compile::compile::SessionCacheStatsSnapshot;
+use rumoca_compile::compile::core as rumoca_core;
 use serde::{Deserialize, Serialize};
 
-use crate::helpers::get_text_before_cursor;
+use crate::helpers::{get_text_before_cursor, trailing_dotted_identifier_token};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,21 +76,14 @@ pub fn extract_namespace_completion_prefix(source: &str, position: Position) -> 
     }
 
     let prefix = get_text_before_cursor(source, position).unwrap_or_default();
-    let token: String = prefix
-        .chars()
-        .rev()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    if !token.contains('.') {
+    let token = trailing_dotted_identifier_token(&prefix)?;
+    if !rumoca_core::has_top_level_dot(token) {
         return None;
     }
 
-    let head = token.split('.').next().unwrap_or(token.as_str());
+    let head = rumoca_core::rendered_top_level_segment(token).unwrap_or(token);
     head.chars()
         .next()
         .filter(|c| c.is_ascii_uppercase())
-        .map(|_| token)
+        .map(|_| token.to_string())
 }

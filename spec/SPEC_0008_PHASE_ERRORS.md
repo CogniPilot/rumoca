@@ -1,10 +1,13 @@
-# SPEC_0008: Phase-Local Error Types
+# SPEC_0008: Diagnostics, Traceability, and Phase-Local Errors
 
 ## Status
 ACCEPTED
 
 ## Summary
-Each compiler phase defines its own error enum with phase-specific error codes. Errors are defined close to the code that produces them, not in a central location.
+Each compiler phase defines its own error enum with phase-specific error codes.
+Diagnostics, source spans, and optional tracing are owned by the phase that
+emits them. Errors are defined close to the code that produces them, not in a
+central location.
 
 ## Motivation
 A monolithic error enum has problems:
@@ -20,6 +23,73 @@ Phase-local errors provide:
 - Consistent error code ranges
 
 ## Specification
+
+### Source Identity
+
+`Span.source` is a stable source identity derived from the source name, not a
+`SourceMap` insertion index. The parser must assign this identity when it
+creates AST spans from lexer locations, and the same identity must be used when
+the source text is added to a `SourceMap`.
+
+`SourceMap` is a rendering/lookup table for diagnostics. It must not be relied
+on to repair parser spans after parse, merge, or source-root collection. Phase
+code may use `Span::DUMMY` only for compiler-generated constructs or genuinely
+source-free diagnostics; source-backed diagnostics must carry the original span
+through AST -> Flat -> DAE -> Solve.
+
+### Fail-Fast Error Semantics
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Unexpected compiler state MUST return a phase error | All compiler phases | Wrong IR must not propagate |
+| Unresolved references MUST be hard errors | Resolve/Flat/DAE/Solve | Later defaults hide root causes |
+| Default values on error are prohibited | All semantic passes | A guessed value is wrong compiler output |
+| Missing semantic data MUST NOT be synthesized | All semantic passes | Garbage in produces garbage out |
+| MLS-defined defaults are allowed only when explicitly modeled | Type/instantiate/sim semantics | Language defaults are not recovery |
+| Optional serialization defaults require valid absent-field meaning | IR serde boundaries | Compatibility must stay semantic |
+
+Compiler phases MUST fail immediately when required semantic data is missing,
+malformed, or unresolved. The phase MUST return a phase-local error carrying
+the best available span and diagnostic context. CLIs, workers, and tests MUST
+surface that phase error as a failed compilation/model result and MUST NOT
+continue the pipeline with invented data.
+
+Recovery by substituting `0`, `1`, `false`, an empty shape, an empty
+collection, `Span::DUMMY`, a first enum variant, an arbitrary component, or any
+other default is forbidden unless the Modelica Language Specification or an
+accepted Rumoca spec defines that value as the actual semantics of the source
+construct. Defaults used only to keep the compiler running are bugs.
+
+Defaulting is permitted only for source semantics that genuinely default, for
+schema fields whose absence has the same semantic meaning as the default, or
+for non-semantic operational configuration. Those cases MUST be documented at
+the use site or by the owning spec. They MUST NOT mask errors, unresolved
+references, malformed IR, shape/type mismatches, or missing compiler analysis
+results.
+
+### Error Propagation Mechanism
+
+Three mechanisms are used; choosing the wrong one defeats the fail-fast contract.
+
+| Mechanism | When to use | Phase scope |
+|---|---|---|
+| `emit()` on `&mut Diagnostics` | User errors in early phases — multiple independent errors exist; collecting all at once gives better IDE diagnostics | parse, resolve, flatten, instantiate |
+| `?` (bubble up `Result`) | User errors in late phases, or intra-phase propagation — input is already validated; one error aborts the phase | DAE, structural, solve lowering |
+| `panic!` / `expect("invariant")` | Internal compiler invariant violations — a bug in rumoca, not in the user's Modelica; earlier phases must have guaranteed this cannot happen | any phase, any location |
+| `debug_assert!` | Hot-loop invariants guaranteed by construction where an always-on check would add measurable overhead | tight loops in structural/solve |
+
+**Classifying an error:**
+
+| Question | Answer → Mechanism |
+|---|---|
+| Could the user have written Modelica that triggers this? | Yes → `emit()` (early) or `?` (late) |
+| Would this only occur if an earlier phase produced wrong output? | Yes → `panic!` / `expect` |
+| Is this in a tight loop and the invariant is set up by construction above the loop? | Yes → `debug_assert!` |
+
+**PROHIBITED:**
+- `unwrap_or(default)` / `unwrap_or_default()` / `unwrap_or_else(|| fallback)` that substitutes a plausible value when the real value is missing
+- Silently skipping work in an `if let … { } // else nothing` when the else branch represents a compiler contract violation
+- `or_insert(default)` on a map when a duplicate key is a contract violation
 
 ### Error Code Ranges
 
@@ -209,13 +279,31 @@ impl std::error::Error for CodegenError {}
 impl From<minijinja::Error> for CodegenError { ... }
 ```
 
+### Source Traceability
+
+| Rule | Where | Why |
+|---|---|---|
+| Preserve spans through AST → Flat → DAE → Solve | every transformation | Values originating in source must remain clickable in diagnostics |
+| Never silently drop spans | every transformation | Drop = lost user-facing location |
+| `Span::DUMMY` only for true compiler-generated constructs | synthetic equations / generated code | Source-free placeholders MUST be justified inline |
+| Diagnostics include primary + secondary labels when useful | error sites | Primary points at the issue; secondary at the related context |
+| Source-free constructs explain why no span exists | comment near the synthesis site | Future contributors can't tell intent from absence |
+
+### Diagnostic Instrumentation
+
+| Rule | Why |
+|---|---|
+| Gate `tracing` imports/calls behind the project's tracing convention | Tracing MUST NOT add production overhead |
+| Use explicit tracing levels (no default `#[instrument]`) | Default levels surprise consumers |
+| `skip(...)` large context parameters in instrumented functions | Avoid heavy debug formatting |
+| Instrument phase entry/exit, eval failures, connection processing, for-range eval | These are the high-value debug points |
+| CLI debug/dump syntax is non-normative until `rum` implements it | No spec drift ahead of implementation |
+
 ## Rationale
-- Follows Rust compiler pattern (each pass has local errors)
-- Error codes are discoverable (grep for ER001, ET001, etc.)
-- Mnemonic prefixes make phase origin obvious (ER = Resolve, ET = Type, etc.)
-- Phases can add errors without touching other code
-- Clear phase ownership prevents "who produces this?" confusion
-- `PhaseError` trait enables polymorphic error handling across phases
+
+Follows the Rust compiler pattern: each pass owns local errors with
+mnemonic-prefixed codes (ER/ET/EI/EF/ED/EC). Codes are grep-discoverable;
+phases evolve independently; `PhaseError` enables polymorphic handling.
 
 ## References
 - Rust compiler error index: https://doc.rust-lang.org/error_codes/

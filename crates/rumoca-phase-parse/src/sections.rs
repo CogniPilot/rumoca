@@ -9,9 +9,9 @@ pub struct EquationSection {
     pub initial: bool,
     pub equations: Vec<rumoca_ir_ast::Equation>,
     /// Token for "equation" keyword
-    pub equation_keyword: rumoca_ir_core::Token,
+    pub equation_keyword: rumoca_core::Token,
     /// Token for "initial" keyword (if present)
-    pub initial_keyword: Option<rumoca_ir_core::Token>,
+    pub initial_keyword: Option<rumoca_core::Token>,
 }
 
 impl TryFrom<&modelica_grammar_trait::EquationSection> for EquationSection {
@@ -44,9 +44,9 @@ pub struct AlgorithmSection {
     pub initial: bool,
     pub statements: Vec<rumoca_ir_ast::Statement>,
     /// Token for "algorithm" keyword
-    pub algorithm_keyword: rumoca_ir_core::Token,
+    pub algorithm_keyword: rumoca_core::Token,
     /// Token for "initial" keyword (if present)
-    pub initial_keyword: Option<rumoca_ir_core::Token>,
+    pub initial_keyword: Option<rumoca_core::Token>,
 }
 
 impl TryFrom<&modelica_grammar_trait::AlgorithmSection> for AlgorithmSection {

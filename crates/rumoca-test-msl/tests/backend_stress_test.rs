@@ -1,16 +1,18 @@
+#![cfg(feature = "backend-stress-tests")]
+
 //! Backend stress test — 30 models across all backends.
 //!
 //! Tests ~24 MSL models (from backend_stress_targets.json) plus 6 inline
 //! synthetic models covering targeted math ops (sin, cos, exp, sqrt, division,
-//! pow). Each backend gets its own `#[test] #[ignore]` function.
+//! pow). Each backend gets its own opt-in test function.
 //!
 //! Run with:
 //! ```text
 //! # One backend:
-//! cargo test --release --package rumoca-test-msl --test backend_stress_test stress_test_onnx -- --ignored --nocapture
+//! cargo test --release --package rumoca-test-msl --features backend-stress-tests --test backend_stress_test stress_test_onnx -- --nocapture
 //!
 //! # All backends:
-//! cargo test --release --package rumoca-test-msl --test backend_stress_test -- --ignored --nocapture
+//! cargo test --release --package rumoca-test-msl --features backend-stress-tests --test backend_stress_test -- --nocapture
 //! ```
 //!
 //! Environment variables:
@@ -234,13 +236,11 @@ fn build_model_list() -> Vec<ModelDef> {
     // Synthetic models
     let synthetics = synthetic_models();
 
-    // Apply env filters to combined name list for matching
-    let mut all_names: Vec<String> = msl_names
+    let all_names: Vec<String> = msl_names
         .iter()
         .chain(synthetics.iter().map(|(n, _)| n))
         .cloned()
         .collect();
-    apply_env_filters(&mut all_names);
 
     // Rebuild filtered lists
     msl_names.retain(|n| all_names.contains(n));
@@ -265,23 +265,6 @@ fn build_model_list() -> Vec<ModelDef> {
     models
 }
 
-fn apply_env_filters(names: &mut Vec<String>) {
-    if let Ok(pattern) = std::env::var("RUMOCA_STRESS_MATCH") {
-        let pattern = pattern.trim().to_string();
-        if !pattern.is_empty() {
-            names.retain(|n| n.contains(&pattern));
-            println!("RUMOCA_STRESS_MATCH={pattern} → {} models", names.len());
-        }
-    }
-    if let Ok(raw) = std::env::var("RUMOCA_STRESS_LIMIT")
-        && let Ok(limit) = raw.trim().parse::<usize>()
-        && names.len() > limit
-    {
-        names.truncate(limit);
-        println!("RUMOCA_STRESS_LIMIT={limit} → {} models", names.len());
-    }
-}
-
 // =============================================================================
 // Release mode check
 // =============================================================================
@@ -291,7 +274,7 @@ fn check_release_mode() {
     {
         panic!(
             "\n\nERROR: Backend stress tests must be run in RELEASE mode!\n\
-             cargo test --release --package rumoca-test-msl --test backend_stress_test -- --ignored --nocapture\n"
+             cargo test --release --package rumoca-test-msl --features backend-stress-tests --test backend_stress_test -- --nocapture\n"
         );
     }
 }
@@ -745,12 +728,20 @@ fn embedded_c_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    let header = render_dae_template_with_name(dae, templates::EMBEDDED_C_H, model_name)
-        .map_err(|e| format!("render header: {e}"))?;
-    let impl_c = render_dae_template_with_name(dae, templates::EMBEDDED_C_IMPL, model_name)
-        .map_err(|e| format!("render impl: {e}"))?;
+    let header = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("embedded-c", "model.h.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render header: {e}"))?;
+    let impl_c = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("embedded-c", "model.c.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render impl: {e}"))?;
 
-    let mut state_names: Vec<&str> = dae.states.keys().map(|k| k.as_str()).collect();
+    let mut state_names: Vec<&str> = dae.variables.states.keys().map(|k| k.as_str()).collect();
     state_names.sort();
     let steps = (t_end / dt).round() as usize;
 
@@ -817,11 +808,19 @@ fn fmi2_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    let model_c = render_dae_template_with_name(dae, templates::FMI2_MODEL, model_name)
-        .map_err(|e| format!("render model: {e}"))?;
+    let model_c = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("fmi2", "model.c.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render model: {e}"))?;
 
-    let driver_c = render_dae_template_with_name(dae, templates::FMI2_TEST_DRIVER, model_name)
-        .map_err(|e| format!("render driver: {e}"))?;
+    let driver_c = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("fmi2", "test_driver.c.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render driver: {e}"))?;
 
     compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],
@@ -837,11 +836,19 @@ fn fmi3_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    let model_c = render_dae_template_with_name(dae, templates::FMI3_MODEL, model_name)
-        .map_err(|e| format!("render model: {e}"))?;
+    let model_c = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("fmi3", "model.c.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render model: {e}"))?;
 
-    let driver_c = render_dae_template_with_name(dae, templates::FMI3_TEST_DRIVER, model_name)
-        .map_err(|e| format!("render driver: {e}"))?;
+    let driver_c = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("fmi3", "test_driver.c.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render driver: {e}"))?;
 
     compile_and_run_c(
         &[("model.c", &model_c), ("driver.c", &driver_c)],
@@ -897,8 +904,12 @@ print(json.dumps({"state_names": state_names, "derivs_at_t0": deriv_vals}))
 "#;
 
 fn sympy_simulate(dae: &rumoca_ir_dae::Dae, model_name: &str) -> Result<String, String> {
-    let code = render_dae_template_with_name(dae, templates::SYMPY, model_name)
-        .map_err(|e| format!("render: {e}"))?;
+    let code = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("sympy", "sympy.py.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render: {e}"))?;
     run_python_script(&code, SYMPY_EVAL_DRIVER, &[])
 }
 
@@ -915,8 +926,12 @@ print(mod.simulate())
 "#;
 
 fn onnx_simulate(dae: &rumoca_ir_dae::Dae, model_name: &str) -> Result<String, String> {
-    let code = render_dae_template_with_name(dae, templates::ONNX, model_name)
-        .map_err(|e| format!("render: {e}"))?;
+    let code = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("onnx", "onnx.py.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render: {e}"))?;
     run_python_script(&code, ONNX_CSV_DRIVER, &[])
 }
 
@@ -933,8 +948,12 @@ print(mod.simulate_csv())
 "#;
 
 fn jax_simulate(dae: &rumoca_ir_dae::Dae, model_name: &str) -> Result<String, String> {
-    let code = render_dae_template_with_name(dae, templates::JAX, model_name)
-        .map_err(|e| format!("render: {e}"))?;
+    let code = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("jax", "jax.py.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render: {e}"))?;
     run_python_script(&code, JAX_CSV_DRIVER, &[])
 }
 
@@ -978,8 +997,12 @@ fn julia_mtk_simulate(
     model_name: &str,
     t_end: f64,
 ) -> Result<String, String> {
-    let code = render_dae_template_with_name(dae, templates::JULIA_MTK, model_name)
-        .map_err(|e| format!("render: {e}"))?;
+    let code = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("julia-mtk", "julia_mtk.jl.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render: {e}"))?;
     let dt = t_end / 100.0;
     run_julia_script(
         &code,
@@ -1002,7 +1025,7 @@ fn compare_csv_traces(
     let mut worst_deviation = 0.0f64;
     let mut worst_var = String::new();
 
-    for name in dae.states.keys() {
+    for name in dae.variables.states.keys() {
         let name_str = name.as_str();
         let Some(backend_trace) = backend_traces.get(name_str) else {
             continue;
@@ -1140,7 +1163,7 @@ fn run_single_model(
         Err(e) => return ModelOutcome::CompileFail(e),
     };
 
-    if dae.states.is_empty() {
+    if dae.variables.states.is_empty() {
         return ModelOutcome::NoStates;
     }
 
@@ -1165,14 +1188,24 @@ fn run_single_model(
 
     match backend {
         BackendKind::CasadiMx => {
-            match casadi_simulate(&dae, &model.name, templates::CASADI_MX, t_end) {
+            match casadi_simulate(
+                &dae,
+                &model.name,
+                templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap(),
+                t_end,
+            ) {
                 Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
                 Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
                 Err(e) => ModelOutcome::BackendFail(e),
             }
         }
         BackendKind::CasadiSx => {
-            match casadi_simulate(&dae, &model.name, templates::CASADI_SX, t_end) {
+            match casadi_simulate(
+                &dae,
+                &model.name,
+                templates::builtin_template_source("casadi-sx", "casadi_sx.py.jinja").unwrap(),
+                t_end,
+            ) {
                 Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
                 Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
                 Err(e) => ModelOutcome::BackendFail(e),
@@ -1300,7 +1333,6 @@ fn run_stress_test(backend: BackendKind) {
 // =============================================================================
 
 #[test]
-#[ignore]
 fn stress_test_casadi_mx() {
     if !python_has_casadi() {
         panic!("python3 with casadi/numpy not available");
@@ -1309,7 +1341,6 @@ fn stress_test_casadi_mx() {
 }
 
 #[test]
-#[ignore]
 fn stress_test_casadi_sx() {
     if !python_has_casadi() {
         panic!("python3 with casadi/numpy not available");
@@ -1318,7 +1349,6 @@ fn stress_test_casadi_sx() {
 }
 
 #[test]
-#[ignore]
 fn stress_test_embedded_c() {
     if !cc_available() {
         panic!("C compiler not available");
@@ -1327,7 +1357,6 @@ fn stress_test_embedded_c() {
 }
 
 #[test]
-#[ignore]
 fn stress_test_fmi2() {
     if !cc_available() {
         panic!("C compiler not available");
@@ -1336,7 +1365,6 @@ fn stress_test_fmi2() {
 }
 
 #[test]
-#[ignore]
 fn stress_test_fmi3() {
     if !cc_available() {
         panic!("C compiler not available");
@@ -1345,7 +1373,6 @@ fn stress_test_fmi3() {
 }
 
 #[test]
-#[ignore]
 fn stress_test_sympy() {
     if !python_has_sympy() {
         panic!("python3 with sympy not available");
@@ -1354,7 +1381,6 @@ fn stress_test_sympy() {
 }
 
 #[test]
-#[ignore]
 fn stress_test_onnx() {
     if !python_has_onnx() {
         panic!("python3 with onnx/onnxruntime/numpy not available");
@@ -1363,7 +1389,6 @@ fn stress_test_onnx() {
 }
 
 #[test]
-#[ignore]
 fn stress_test_jax() {
     if !python_has_jax() {
         panic!("python3 with jax/diffrax/numpy not available");
@@ -1372,7 +1397,6 @@ fn stress_test_jax() {
 }
 
 #[test]
-#[ignore]
 fn stress_test_julia_mtk() {
     if !julia_has_mtk() {
         panic!("julia with ModelingToolkit/DifferentialEquations not available");

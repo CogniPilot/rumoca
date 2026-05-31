@@ -21,7 +21,7 @@ pub(crate) fn all_branches_consistent_with_scope(
 fn get_binding_or_start(comp: &rumoca_ir_ast::Component) -> Option<&Expression> {
     comp.binding
         .as_ref()
-        .or_else(|| (!matches!(comp.start, Expression::Empty)).then_some(&comp.start))
+        .or_else(|| (!matches!(comp.start, Expression::Empty { .. })).then_some(&comp.start))
 }
 
 /// Check if shape_expr contains colon dimensions.
@@ -127,53 +127,15 @@ pub fn collect_constants(class: &ClassDef, prefix: &str) -> TypeCheckEvalContext
 /// Returns a set of variable names referenced in the expression.
 /// Used to identify structural parameters (those used in dimension expressions).
 pub fn collect_variable_refs(expr: &Expression) -> std::collections::HashSet<String> {
-    let mut refs = std::collections::HashSet::new();
-    collect_refs_recursive(expr, &mut refs);
-    refs
-}
-
-fn collect_refs_recursive(expr: &Expression, refs: &mut std::collections::HashSet<String>) {
-    match expr {
-        Expression::ComponentReference(cr) if !cr.parts.is_empty() => {
-            // Just collect the first part (the variable name)
-            refs.insert(cr.parts[0].ident.text.to_string());
-        }
-        Expression::ComponentReference(_) => {}
-        Expression::Unary { rhs, .. } => collect_refs_recursive(rhs, refs),
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_refs_recursive(lhs, refs);
-            collect_refs_recursive(rhs, refs);
-        }
-        Expression::Parenthesized { inner } => collect_refs_recursive(inner, refs),
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_refs_recursive(arg, refs);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                collect_refs_recursive(cond, refs);
-                collect_refs_recursive(then_expr, refs);
-            }
-            collect_refs_recursive(else_branch, refs);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                collect_refs_recursive(elem, refs);
-            }
-        }
-        Expression::Range { start, step, end } => {
-            collect_refs_recursive(start, refs);
-            if let Some(s) = step {
-                collect_refs_recursive(s, refs);
-            }
-            collect_refs_recursive(end, refs);
-        }
-        _ => {}
-    }
+    rumoca_ir_ast::visitor::collect_component_refs(expr)
+        .into_iter()
+        .filter_map(|component_ref| {
+            component_ref
+                .parts
+                .first()
+                .map(|part| part.ident.text.to_string())
+        })
+        .collect()
 }
 
 /// Collect variable references from a subscript.
@@ -207,12 +169,13 @@ pub enum VariabilityLevel {
 
 impl VariabilityLevel {
     /// Convert from AST Variability to VariabilityLevel.
-    pub fn from_variability(v: &rumoca_ir_core::Variability) -> Self {
+    pub fn from_variability(v: &rumoca_core::Variability) -> Self {
         match v {
-            rumoca_ir_core::Variability::Constant(_) => Self::Constant,
-            rumoca_ir_core::Variability::Parameter(_) => Self::Parameter,
-            rumoca_ir_core::Variability::Discrete(_) => Self::Discrete,
-            rumoca_ir_core::Variability::Empty => Self::Continuous,
+            rumoca_core::Variability::Constant(_) => Self::Constant,
+            rumoca_core::Variability::Parameter(_) => Self::Parameter,
+            rumoca_core::Variability::Discrete(_) => Self::Discrete,
+            rumoca_core::Variability::Continuous(_) => Self::Continuous,
+            rumoca_core::Variability::Empty => Self::Continuous,
         }
     }
 
@@ -251,7 +214,8 @@ pub fn max_variability_in_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_ir_ast::{ComponentRefPart, ComponentReference, OpBinary, Token};
+    use rumoca_core::{OpBinary, Token};
+    use rumoca_ir_ast::{ComponentRefPart, ComponentReference};
     use std::sync::Arc;
 
     fn make_token(text: &str) -> Token {
@@ -267,6 +231,8 @@ mod tests {
         Expression::Terminal {
             terminal_type: TerminalType::UnsignedInteger,
             token: make_token(&n.to_string()),
+
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -274,6 +240,8 @@ mod tests {
         Expression::Terminal {
             terminal_type: TerminalType::UnsignedReal,
             token: make_token(&x.to_string()),
+
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -285,6 +253,8 @@ mod tests {
                 subs: None,
             }],
             def_id: None,
+
+            span: rumoca_core::Span::DUMMY,
         })
     }
 
@@ -299,6 +269,8 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
+
+            span: rumoca_core::Span::DUMMY,
         })
     }
 
@@ -310,7 +282,26 @@ mod tests {
                 subs: Some(vec![Subscript::Expression(make_int_literal(idx))]),
             }],
             def_id: None,
+
+            span: rumoca_core::Span::DUMMY,
         })
+    }
+
+    fn make_call(name: &str, args: Vec<Expression>) -> Expression {
+        Expression::FunctionCall {
+            comp: ComponentReference {
+                local: false,
+                parts: vec![ComponentRefPart {
+                    ident: make_token(name),
+                    subs: None,
+                }],
+                def_id: None,
+
+                span: rumoca_core::Span::DUMMY,
+            },
+            args,
+            span: rumoca_core::Span::DUMMY,
+        }
     }
 
     #[test]
@@ -329,55 +320,49 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_with_scope_dotted_name_uses_full_suffix() {
+    fn test_lookup_with_scope_uses_structured_scope() {
         let mut map = FxHashMap::default();
         map.insert("sys.Medium.nX".to_string(), 4_i64);
-        assert_eq!(lookup_with_scope("Medium.nX", "", &map, None), Some(&4_i64));
+        assert_eq!(lookup_with_scope("Medium.nX", "sys", &map), Some(&4_i64));
     }
 
     #[test]
-    fn test_lookup_with_scope_dotted_name_falls_back_to_leaf_when_full_suffix_missing() {
+    fn test_lookup_with_scope_dotted_name_does_not_leaf_fallback() {
         let mut map = FxHashMap::default();
         map.insert("sys.nX".to_string(), 7_i64);
-        assert_eq!(lookup_with_scope("Medium.nX", "", &map, None), Some(&7_i64));
+        assert_eq!(lookup_with_scope("Medium.nX", "", &map), None);
     }
 
     #[test]
-    fn test_lookup_with_scope_dotted_name_leaf_fallback_requires_unique_key() {
+    fn test_lookup_with_scope_dotted_name_requires_matching_scoped_name() {
         let mut map = FxHashMap::default();
         map.insert("a.nX".to_string(), 7_i64);
         map.insert("b.nX".to_string(), 7_i64);
-        assert_eq!(lookup_with_scope("Medium.nX", "", &map, None), None);
+        assert_eq!(lookup_with_scope("Medium.nX", "", &map), None);
     }
 
     #[test]
-    fn test_lookup_with_scope_dotted_name_does_not_fallback_when_full_suffix_is_ambiguous() {
+    fn test_lookup_with_scope_dotted_name_ignores_ambiguous_suffixes() {
         let mut map = FxHashMap::default();
         map.insert("a.Medium.nX".to_string(), 1_i64);
         map.insert("b.Medium.nX".to_string(), 2_i64);
-        assert_eq!(lookup_with_scope("Medium.nX", "", &map, None), None);
+        assert_eq!(lookup_with_scope("Medium.nX", "", &map), None);
     }
 
     #[test]
-    fn test_lookup_with_scope_simple_name_still_uses_suffix_fallback() {
+    fn test_lookup_with_scope_simple_name_does_not_suffix_fallback() {
         let mut map = FxHashMap::default();
         map.insert("sys.nX".to_string(), 7_i64);
-        assert_eq!(lookup_with_scope("nX", "", &map, None), Some(&7_i64));
+        assert_eq!(lookup_with_scope("nX", "", &map), None);
     }
 
     #[test]
-    fn test_lookup_with_scope_treats_dot_inside_subscript_as_single_segment() {
+    fn test_lookup_with_scope_resolves_indexed_name_with_scope() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_integer("sys.arr[data.medium]", 7_i64);
-        ctx.build_suffix_index();
 
         assert_eq!(
-            lookup_with_scope(
-                "arr[data.medium]",
-                "",
-                &ctx.integers,
-                ctx.suffix_index.as_ref()
-            ),
+            lookup_with_scope("arr[data.medium]", "sys", &ctx.integers),
             Some(&7_i64)
         );
     }
@@ -386,41 +371,32 @@ mod tests {
     fn test_lookup_with_scope_does_not_index_fake_suffix_from_subscript_dot() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_integer("sys.arr[data.medium]", 7_i64);
-        ctx.build_suffix_index();
 
-        assert_eq!(
-            lookup_with_scope("medium]", "", &ctx.integers, ctx.suffix_index.as_ref()),
-            None
-        );
+        assert_eq!(lookup_with_scope("medium]", "", &ctx.integers), None);
     }
 
     #[test]
-    fn test_lookup_with_scope_linear_suffix_match_ignores_subscript_dot_boundary() {
+    fn test_lookup_with_scope_does_not_scan_suffixes() {
         let mut map = FxHashMap::default();
         map.insert("sys.arr[data.medium].x".to_string(), 7_i64);
         map.insert("other.scope.x".to_string(), 9_i64);
 
-        assert_eq!(lookup_with_scope("medium].x", "", &map, None), None);
+        assert_eq!(lookup_with_scope("medium].x", "", &map), None);
     }
 
     #[test]
-    fn test_lookup_with_scope_leaf_fallback_checks_uniqueness_per_target_map() {
+    fn test_lookup_with_scope_no_cross_map_suffix_fallback() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_integer("a.nX", 7_i64);
         ctx.add_real("b.nX", 3.0);
-        ctx.build_suffix_index();
 
-        assert_eq!(
-            lookup_with_scope("Medium.nX", "", &ctx.integers, ctx.suffix_index.as_ref()),
-            Some(&7_i64)
-        );
+        assert_eq!(lookup_with_scope("Medium.nX", "", &ctx.integers), None);
     }
 
     #[test]
     fn test_infer_dims_component_ref_dotted_does_not_leaf_fallback() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_dimensions("sys.arr", vec![7]);
-        ctx.build_suffix_index();
 
         let expr = make_dotted_comp_ref("Medium.arr");
         assert_eq!(
@@ -434,10 +410,10 @@ mod tests {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_dimensions("cellData1.OCV_SOC", vec![2, 2]);
         ctx.add_dimensions("cellData2.OCV_SOC", vec![17, 2]);
-        ctx.build_suffix_index();
         let expr = Expression::FieldAccess {
             base: Arc::new(make_comp_ref("cellData1")),
             field: "OCV_SOC".to_string(),
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(
             infer_dimensions_from_binding_with_scope(&expr, &ctx, "battery1.cellData"),
@@ -449,11 +425,11 @@ mod tests {
     fn test_infer_dims_field_access_does_not_leaf_fallback_for_dotted_path() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_dimensions("scope.OCV_SOC_internal", vec![17, 2]);
-        ctx.build_suffix_index();
 
         let expr = Expression::FieldAccess {
             base: Arc::new(make_comp_ref("cellData1")),
             field: "OCV_SOC_internal".to_string(),
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(
             infer_dimensions_from_binding_with_scope(&expr, &ctx, "battery1.cellData"),
@@ -466,10 +442,10 @@ mod tests {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_dimensions("cellData1.OCV_SOC_internal", vec![2, 2]);
         ctx.add_dimensions("cellData2.OCV_SOC_internal", vec![17, 2]);
-        ctx.build_suffix_index();
         let expr = Expression::FieldAccess {
             base: Arc::new(make_dotted_comp_ref("cellData1")),
             field: "OCV_SOC_internal".to_string(),
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(
             infer_dimensions_from_binding_with_scope(&expr, &ctx, "battery1.cellData"),
@@ -481,20 +457,24 @@ mod tests {
     fn test_infer_dims_field_access_with_indexed_base_uses_exact_lookup() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_dimensions("stackData.cellData[1,1].OCV_SOC", vec![29, 2]);
-        ctx.build_suffix_index();
 
         let expr = Expression::FieldAccess {
             base: Arc::new(Expression::ArrayIndex {
                 base: Arc::new(Expression::FieldAccess {
                     base: Arc::new(make_comp_ref("stackData")),
                     field: "cellData".to_string(),
+
+                    span: rumoca_core::Span::DUMMY,
                 }),
                 subscripts: vec![
                     Subscript::Expression(make_int_literal(1)),
                     Subscript::Expression(make_int_literal(1)),
                 ],
+
+                span: rumoca_core::Span::DUMMY,
             }),
             field: "OCV_SOC".to_string(),
+            span: rumoca_core::Span::DUMMY,
         };
 
         assert_eq!(
@@ -507,20 +487,24 @@ mod tests {
     fn test_infer_dims_field_access_with_indexed_base_respects_scope() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_dimensions("stack.stackData.cellData[1,1].OCV_SOC", vec![29, 2]);
-        ctx.build_suffix_index();
 
         let expr = Expression::FieldAccess {
             base: Arc::new(Expression::ArrayIndex {
                 base: Arc::new(Expression::FieldAccess {
                     base: Arc::new(make_comp_ref("stackData")),
                     field: "cellData".to_string(),
+
+                    span: rumoca_core::Span::DUMMY,
                 }),
                 subscripts: vec![
                     Subscript::Expression(make_int_literal(1)),
                     Subscript::Expression(make_int_literal(1)),
                 ],
+
+                span: rumoca_core::Span::DUMMY,
             }),
             field: "OCV_SOC".to_string(),
+            span: rumoca_core::Span::DUMMY,
         };
 
         assert_eq!(
@@ -533,9 +517,10 @@ mod tests {
     fn test_eval_binary_add() {
         let ctx = TypeCheckEvalContext::new();
         let expr = Expression::Binary {
-            op: OpBinary::Add(make_token("+")),
+            op: OpBinary::Add,
             lhs: Arc::new(make_int_literal(3)),
             rhs: Arc::new(make_int_literal(4)),
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(eval_integer(&expr, &ctx), Some(7));
     }
@@ -553,8 +538,11 @@ mod tests {
                     subs: None,
                 }],
                 def_id: None,
+
+                span: rumoca_core::Span::DUMMY,
             },
             args: vec![make_comp_ref("arr"), make_int_literal(1)],
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(eval_integer(&expr, &ctx), Some(10));
     }
@@ -563,8 +551,16 @@ mod tests {
     fn test_infer_dims_single_row_matrix_literal() {
         let ctx = TypeCheckEvalContext::new();
         let expr = Expression::Array {
-            elements: vec![Expression::Empty, Expression::Empty],
+            elements: vec![
+                Expression::Empty {
+                    span: rumoca_core::Span::DUMMY,
+                },
+                Expression::Empty {
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ],
             is_matrix: true,
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_dimensions_from_binding(&expr, &ctx), Some(vec![1, 2]));
     }
@@ -575,17 +571,98 @@ mod tests {
         let expr = Expression::Array {
             elements: vec![
                 Expression::Array {
-                    elements: vec![Expression::Empty, Expression::Empty],
+                    elements: vec![
+                        Expression::Empty {
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        Expression::Empty {
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                    ],
                     is_matrix: true,
+
+                    span: rumoca_core::Span::DUMMY,
                 },
                 Expression::Array {
-                    elements: vec![Expression::Empty, Expression::Empty],
+                    elements: vec![
+                        Expression::Empty {
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        Expression::Empty {
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                    ],
                     is_matrix: true,
+
+                    span: rumoca_core::Span::DUMMY,
                 },
             ],
             is_matrix: true,
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_dimensions_from_binding(&expr, &ctx), Some(vec![2, 2]));
+    }
+
+    #[test]
+    fn test_infer_dims_vector_of_vertical_matrix_concat_uses_operand_shapes() {
+        let mut ctx = TypeCheckEvalContext::new();
+        ctx.add_integer("na", 3);
+        ctx.add_integer("nb", 2);
+        ctx.add_dimensions("b", vec![2]);
+
+        let zero_rows = make_call(
+            "zeros",
+            vec![
+                make_call(
+                    "max",
+                    vec![
+                        make_int_literal(0),
+                        Expression::Binary {
+                            op: OpBinary::Sub,
+                            lhs: Arc::new(make_comp_ref("na")),
+                            rhs: Arc::new(make_comp_ref("nb")),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                    ],
+                ),
+                make_int_literal(1),
+            ],
+        );
+        let matrix = Expression::Array {
+            elements: vec![
+                Expression::Array {
+                    elements: vec![zero_rows],
+                    is_matrix: true,
+
+                    span: rumoca_core::Span::DUMMY,
+                },
+                Expression::Array {
+                    elements: vec![make_comp_ref("b")],
+                    is_matrix: true,
+
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ],
+            is_matrix: true,
+            span: rumoca_core::Span::DUMMY,
+        };
+        let expr = make_call("vector", vec![matrix]);
+
+        assert_eq!(
+            infer_dimensions_from_binding(&expr, &ctx),
+            Some(vec![3]),
+            "MLS §10.4.2 matrix constructors concatenate array operands before vector() flattens them"
+        );
+
+        let mut scoped_ctx = TypeCheckEvalContext::new();
+        scoped_ctx.add_integer("Hw.na", 3);
+        scoped_ctx.add_integer("Hw.nb", 2);
+        scoped_ctx.add_dimensions("Hw.b", vec![2]);
+        assert_eq!(
+            infer_dimensions_from_binding_with_scope(&expr, &scoped_ctx, "Hw"),
+            Some(vec![3]),
+            "MLS §5.1 scoped lookup applies while inferring matrix-constructor operand shapes"
+        );
     }
 
     #[test]
@@ -604,7 +681,6 @@ mod tests {
     fn test_infer_dims_component_ref_with_indexed_prefix_uses_exact_lookup() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_dimensions("stackData.cellData[1,1].OCV_SOC", vec![29, 2]);
-        ctx.build_suffix_index();
 
         let expr = Expression::ComponentReference(ComponentReference {
             local: false,
@@ -626,6 +702,8 @@ mod tests {
                 },
             ],
             def_id: None,
+
+            span: rumoca_core::Span::DUMMY,
         });
 
         assert_eq!(
@@ -638,7 +716,6 @@ mod tests {
     fn test_eval_size_with_indexed_component_ref_uses_exact_lookup() {
         let mut ctx = TypeCheckEvalContext::new();
         ctx.add_dimensions("stackData.cellData[1,1].OCV_SOC", vec![29, 2]);
-        ctx.build_suffix_index();
 
         let indexed_ref = Expression::ComponentReference(ComponentReference {
             local: false,
@@ -660,6 +737,8 @@ mod tests {
                 },
             ],
             def_id: None,
+
+            span: rumoca_core::Span::DUMMY,
         });
 
         let size_expr = Expression::FunctionCall {
@@ -670,8 +749,11 @@ mod tests {
                     subs: None,
                 }],
                 def_id: None,
+
+                span: rumoca_core::Span::DUMMY,
             },
             args: vec![indexed_ref, make_int_literal(1)],
+            span: rumoca_core::Span::DUMMY,
         };
 
         assert_eq!(eval_integer(&size_expr, &ctx), Some(29));
@@ -688,6 +770,7 @@ mod tests {
                 make_comp_ref_with_sub("eta", 3),
             ],
             is_matrix: false,
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(
             infer_dimensions_from_binding(&expr, &ctx),
@@ -710,6 +793,7 @@ mod tests {
             start: Arc::new(start),
             step: Some(Arc::new(step)),
             end: Arc::new(end),
+            span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_dimensions_from_binding(&expr, &ctx), Some(vec![51]));
     }

@@ -3,55 +3,90 @@ use crate::when_guard::when_guard_activation_expr;
 use crate::{
     dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression, flat_to_dae_var_name,
 };
-mod canonicalize_discrete_assignments;
+mod current_value_rewrite;
+mod for_lowering;
+mod guarded_expr;
+mod overlapping_array_assignments;
 mod rewrite_discrete;
 mod slice_lowering;
 mod substitution;
 mod target_names;
-use rewrite_discrete::rewrite_discrete_self_refs_to_pre;
+use current_value_rewrite::{
+    algorithm_variable_dims, current_value_subscript_expr, rewrite_algorithm_current_refs,
+};
+use for_lowering::lower_for_statement_assignments;
+use guarded_expr::{
+    MAX_GUARDED_ALGORITHM_EXPR_NODES, expression_exceeds_node_budget, expression_node_count,
+    guarded_expr,
+};
+use overlapping_array_assignments::collapse_overlapping_array_assignments;
+use rewrite_discrete::{discrete_assignment_rhs_var_name, rewrite_discrete_self_refs_to_pre};
 use slice_lowering::lower_assignment_statement;
 use substitution::*;
 use target_names::{
     algorithm_assignment_base_with_subscripts, algorithm_assignment_target_name,
-    algorithm_output_target_name, varref_with_subscripts,
+    algorithm_output_target_name, varname_with_subscripts, varref_with_subscripts,
 };
 
-pub(super) enum DiscreteEquationBucket {
+enum DiscreteEquationBucket {
     DiscreteReal,
     DiscreteValued,
 }
 
-pub(super) fn discrete_equation_bucket_for_lhs(
+fn discrete_variable_equation_bucket_for_lhs(
     dae: &Dae,
     lhs: &VarName,
 ) -> Option<DiscreteEquationBucket> {
-    // MLS Appendix B notes reinit as a special case outside B.1b/B.1c.
-    // Solver-facing DAE stores state resets in the event partition (`f_z`) so
-    // runtime event updates can apply them without high-level when clauses.
-    if dae.states.contains_key(&flat_to_dae_var_name(lhs))
-        || subscript_fallback_chain(lhs)
+    if dae
+        .variables
+        .discrete_valued
+        .contains_key(&flat_to_dae_var_name(lhs))
+        || subscript_fallback_chain(lhs.as_str())
             .into_iter()
-            .any(|candidate| dae.states.contains_key(&flat_to_dae_var_name(&candidate)))
-    {
-        return Some(DiscreteEquationBucket::DiscreteReal);
-    }
-    if dae.discrete_valued.contains_key(&flat_to_dae_var_name(lhs))
-        || subscript_fallback_chain(lhs).into_iter().any(|candidate| {
-            dae.discrete_valued
-                .contains_key(&flat_to_dae_var_name(&candidate))
-        })
+            .any(|candidate| {
+                dae.variables
+                    .discrete_valued
+                    .contains_key(&flat_to_dae_var_name(&candidate))
+            })
     {
         return Some(DiscreteEquationBucket::DiscreteValued);
     }
-    if dae.discrete_reals.contains_key(&flat_to_dae_var_name(lhs))
-        || subscript_fallback_chain(lhs).into_iter().any(|candidate| {
-            dae.discrete_reals
-                .contains_key(&flat_to_dae_var_name(&candidate))
-        })
+    if dae
+        .variables
+        .discrete_reals
+        .contains_key(&flat_to_dae_var_name(lhs))
+        || subscript_fallback_chain(lhs.as_str())
+            .into_iter()
+            .any(|candidate| {
+                dae.variables
+                    .discrete_reals
+                    .contains_key(&flat_to_dae_var_name(&candidate))
+            })
     {
         return Some(DiscreteEquationBucket::DiscreteReal);
     }
     None
+}
+
+fn discrete_equation_bucket_for_lhs(dae: &Dae, lhs: &VarName) -> Option<DiscreteEquationBucket> {
+    // MLS Appendix B notes reinit as a special case outside B.1b/B.1c.
+    // Solver-facing DAE stores state resets in the event partition (`f_z`) so
+    // runtime event updates can apply them without high-level when clauses.
+    if dae
+        .variables
+        .states
+        .contains_key(&flat_to_dae_var_name(lhs))
+        || subscript_fallback_chain(lhs.as_str())
+            .into_iter()
+            .any(|candidate| {
+                dae.variables
+                    .states
+                    .contains_key(&flat_to_dae_var_name(&candidate))
+            })
+    {
+        return Some(DiscreteEquationBucket::DiscreteReal);
+    }
+    discrete_variable_equation_bucket_for_lhs(dae, lhs)
 }
 
 fn guarded_when_rhs(
@@ -66,6 +101,7 @@ fn guarded_when_rhs(
     Expression::If {
         branches: vec![(guard, rhs.clone())],
         else_branch: Box::new(else_expr),
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -80,25 +116,31 @@ fn when_inactive_rhs(lhs: &VarName, use_pre_else: bool) -> Expression {
                 Expression::BuiltinCall {
                     function: BuiltinFunction::Initial,
                     args: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
                 Expression::VarRef {
-                    name: lhs.clone(),
+                    name: lhs.clone().into(),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 },
             )],
             else_branch: Box::new(Expression::BuiltinCall {
                 function: BuiltinFunction::Pre,
                 args: vec![Expression::VarRef {
-                    name: lhs.clone(),
+                    name: lhs.clone().into(),
                     subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
                 }],
+                span: rumoca_core::Span::DUMMY,
             }),
+            span: rumoca_core::Span::DUMMY,
         };
     }
 
     Expression::VarRef {
-        name: lhs.clone(),
+        name: lhs.clone().into(),
         subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -106,6 +148,9 @@ pub(super) fn route_discrete_event_equations(
     dae: &mut Dae,
     when_clause: &rumoca_ir_dae::WhenClause,
 ) {
+    dae.events
+        .event_actions
+        .extend(when_clause.actions.iter().cloned());
     let when_condition = dae_to_flat_expression(&when_clause.condition);
     for eq in &when_clause.equations {
         let Some(lhs) = &eq.lhs else {
@@ -128,197 +173,579 @@ pub(super) fn route_discrete_event_equations(
             eq.scalar_count,
         );
         match discrete_equation_bucket_for_lhs(dae, &lhs) {
-            Some(DiscreteEquationBucket::DiscreteValued) => dae.f_m.push(guarded),
-            Some(DiscreteEquationBucket::DiscreteReal) => dae.f_z.push(guarded),
+            Some(DiscreteEquationBucket::DiscreteValued) => {
+                dae.discrete.valued_updates.push(guarded)
+            }
+            Some(DiscreteEquationBucket::DiscreteReal) => dae.discrete.real_updates.push(guarded),
             None => {}
         }
     }
 }
 
-#[cfg(test)]
 fn is_connection_equation_origin(origin: &str) -> bool {
     origin.contains("connection equation:")
 }
 
-pub(super) fn canonicalize_discrete_assignment_equations(dae: &mut Dae) {
-    canonicalize_discrete_assignments::canonicalize_discrete_assignment_equations(dae);
+fn anchored_collision_targets(
+    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+) -> std::collections::HashSet<VarName> {
+    grouped
+        .iter()
+        .filter(|(_, equations)| {
+            equations
+                .iter()
+                .any(|equation| !is_connection_equation_origin(&equation.origin))
+        })
+        .map(|(lhs, _)| lhs.clone())
+        .collect()
 }
 
-fn lookup_algorithm_target_scalar_count(dae: &Dae, target: &VarName) -> usize {
+fn flip_edge_key(origin: &str, lhs: &VarName, rhs: &VarName) -> (String, String, String) {
+    (
+        origin.to_string(),
+        lhs.as_str().to_string(),
+        rhs.as_str().to_string(),
+    )
+}
+
+fn choose_collision_keep_index(
+    equations: &[rumoca_ir_dae::Equation],
+    lhs: &VarName,
+    anchored_targets: &std::collections::HashSet<VarName>,
+    flipped_once: &std::collections::HashSet<(String, String, String)>,
+) -> Option<usize> {
+    for (idx, equation) in equations.iter().enumerate() {
+        let rhs_expr = dae_to_flat_expression(&equation.rhs);
+        let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
+            continue;
+        };
+        let reverse_key = flip_edge_key(&equation.origin, &rhs_target, lhs);
+        if flipped_once.contains(&reverse_key) {
+            return Some(idx);
+        }
+    }
+
+    for (idx, equation) in equations.iter().enumerate() {
+        let rhs_expr = dae_to_flat_expression(&equation.rhs);
+        let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
+            continue;
+        };
+        if anchored_targets.contains(&rhs_target) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn has_reverse_connection_alias(
+    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    lhs: &VarName,
+    rhs_target: &VarName,
+) -> bool {
+    grouped.get(rhs_target).is_some_and(|rhs_equations| {
+        rhs_equations.iter().any(|rhs_equation| {
+            if !is_connection_equation_origin(&rhs_equation.origin) {
+                return false;
+            }
+            let rhs_expr = dae_to_flat_expression(&rhs_equation.rhs);
+            discrete_assignment_rhs_var_name(&rhs_expr)
+                .as_ref()
+                .is_some_and(|candidate| candidate == lhs)
+        })
+    })
+}
+
+fn keep_collision_equation_without_flip(dae: &Dae, lhs: &VarName, rhs_target: &VarName) -> bool {
+    rhs_target == lhs || discrete_equation_bucket_for_lhs(dae, rhs_target).is_none()
+}
+
+fn resolve_collision_equation(
+    dae: &Dae,
+    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    lhs: &VarName,
+    equation: &rumoca_ir_dae::Equation,
+    rhs_target: &VarName,
+    flipped_once: &std::collections::HashSet<(String, String, String)>,
+) -> Option<VarName> {
+    if keep_collision_equation_without_flip(dae, lhs, rhs_target) {
+        return None;
+    }
+    if has_reverse_connection_alias(grouped, lhs, rhs_target) {
+        return Some(lhs.clone());
+    }
+    let reverse_flip_key = flip_edge_key(&equation.origin, rhs_target, lhs);
+    if flipped_once.contains(&reverse_flip_key) {
+        return Some(lhs.clone());
+    }
+    Some(rhs_target.clone())
+}
+
+fn process_collision_equation(
+    dae: &Dae,
+    grouped: &mut IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    lhs: &VarName,
+    equation: rumoca_ir_dae::Equation,
+    flipped_once: &mut std::collections::HashSet<(String, String, String)>,
+    debug_canonicalize: bool,
+) -> bool {
+    let rhs_expr = dae_to_flat_expression(&equation.rhs);
+    let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
+        if debug_canonicalize {
+            crate::log_fm_canon_debug(format!(
+                "f_m canonicalize no-rhs-var lhs={} origin={}",
+                lhs, equation.origin
+            ));
+        }
+        grouped.entry(lhs.clone()).or_default().push(equation);
+        return false;
+    };
+
+    let Some(resolved_target) =
+        resolve_collision_equation(dae, grouped, lhs, &equation, &rhs_target, flipped_once)
+    else {
+        if debug_canonicalize {
+            crate::log_fm_canon_debug(format!(
+                "f_m canonicalize keep-collision lhs={} rhs={} origin={}",
+                lhs, rhs_target, equation.origin
+            ));
+        }
+        grouped.entry(lhs.clone()).or_default().push(equation);
+        return false;
+    };
+
+    if resolved_target == *lhs {
+        if debug_canonicalize {
+            crate::log_fm_canon_debug(format!(
+                "f_m canonicalize drop-redundant-edge lhs={} rhs={} origin={}",
+                lhs, rhs_target, equation.origin
+            ));
+        }
+        return true;
+    }
+
+    flipped_once.insert(flip_edge_key(&equation.origin, lhs, &rhs_target));
+    let mut flipped = equation;
+    flipped.lhs = Some(flat_to_dae_var_name(&resolved_target));
+    flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
+        name: lhs.clone().into(),
+        subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
+    });
+    if debug_canonicalize {
+        crate::log_fm_canon_debug(format!(
+            "f_m canonicalize flip lhs={} -> lhs={} origin={}",
+            lhs, resolved_target, flipped.origin
+        ));
+    }
+    grouped.entry(resolved_target).or_default().push(flipped);
+    true
+}
+
+fn resolve_connection_alias_target_collisions(
+    grouped: &mut IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    dae: &Dae,
+) -> Result<(), ToDaeError> {
+    let debug_canonicalize = crate::fm_canon_debug_enabled();
+    let anchored_targets = anchored_collision_targets(grouped);
+
+    let mut iteration = 0usize;
+    let max_iterations = 16usize;
+    let mut flipped_once: std::collections::HashSet<(String, String, String)> =
+        std::collections::HashSet::new();
+    loop {
+        iteration += 1;
+        if iteration > max_iterations {
+            return Err(ToDaeError::internal(format!(
+                "f_m canonicalize collision-pass exceeded {max_iterations} iterations; \
+                 this indicates unresolved discrete assignment target collisions"
+            )));
+        }
+
+        let mut changed = false;
+        let keys: Vec<VarName> = grouped.keys().cloned().collect();
+
+        for lhs in keys {
+            let Some(equations) = grouped.get(&lhs) else {
+                continue;
+            };
+            if equations.len() <= 1 {
+                continue;
+            }
+            if equations
+                .iter()
+                .any(|equation| !is_connection_equation_origin(&equation.origin))
+            {
+                continue;
+            }
+
+            let candidate_keep_idx =
+                choose_collision_keep_index(equations, &lhs, &anchored_targets, &flipped_once);
+
+            let Some(mut current_equations) = grouped.swap_remove(&lhs) else {
+                continue;
+            };
+            if current_equations.len() <= 1 {
+                grouped.insert(lhs.clone(), current_equations);
+                continue;
+            }
+
+            let Some(keep_idx) = candidate_keep_idx else {
+                return Err(ToDaeError::discrete_solved_form_violation(
+                    format!("cannot resolve discrete connection assignment collision for `{lhs}`"),
+                    current_equations
+                        .first()
+                        .map(|equation| equation.span)
+                        .unwrap_or(rumoca_core::Span::DUMMY),
+                ));
+            };
+            let keep_idx = keep_idx.min(current_equations.len() - 1);
+            let keep_equation = current_equations.remove(keep_idx);
+            grouped.insert(lhs.clone(), vec![keep_equation]);
+
+            for equation in current_equations {
+                changed |= process_collision_equation(
+                    dae,
+                    grouped,
+                    &lhs,
+                    equation,
+                    &mut flipped_once,
+                    debug_canonicalize,
+                );
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn canonicalize_discrete_assignment_equations(dae: &mut Dae) -> Result<(), ToDaeError> {
+    let debug_canonicalize = crate::fm_canon_debug_enabled();
+    let (mut grouped, passthrough) = drain_grouped_discrete_assignments(dae);
+    reroute_connection_aliases_for_defined_targets(&mut grouped, dae);
+    resolve_connection_alias_target_collisions(&mut grouped, dae)?;
+    debug_log_grouped_target_collisions(debug_canonicalize, &grouped);
+
+    let mut rebuilt = Vec::with_capacity(passthrough.len() + grouped.len());
+    rebuilt.extend(passthrough);
+    for (lhs, equations) in grouped {
+        rebuilt.extend(canonicalize_assignment_group(lhs, equations));
+    }
+    dae.discrete.valued_updates = rebuilt;
+    debug_log_final_target_collisions(debug_canonicalize, &dae.discrete.valued_updates);
+    Ok(())
+}
+
+fn drain_grouped_discrete_assignments(
+    dae: &mut Dae,
+) -> (
+    IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    Vec<rumoca_ir_dae::Equation>,
+) {
+    let mut grouped: IndexMap<VarName, Vec<rumoca_ir_dae::Equation>> = IndexMap::new();
+    let mut passthrough = Vec::new();
+    for equation in dae.discrete.valued_updates.drain(..) {
+        if let Some(lhs) = equation.lhs.as_ref() {
+            grouped
+                .entry(dae_to_flat_var_name(lhs))
+                .or_default()
+                .push(equation);
+        } else {
+            passthrough.push(equation);
+        }
+    }
+    (grouped, passthrough)
+}
+
+fn reroute_connection_aliases_for_defined_targets(
+    grouped: &mut IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    dae: &Dae,
+) {
+    let mut rerouted: IndexMap<VarName, Vec<rumoca_ir_dae::Equation>> = IndexMap::new();
+    for (lhs, equations) in grouped.iter_mut() {
+        if equations.len() <= 1
+            || !equations
+                .iter()
+                .any(|equation| !is_connection_equation_origin(&equation.origin))
+        {
+            continue;
+        }
+
+        for equation in equations
+            .iter()
+            .filter(|equation| is_connection_equation_origin(&equation.origin))
+        {
+            let rhs_expr = dae_to_flat_expression(&equation.rhs);
+            let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
+                continue;
+            };
+            if keep_collision_equation_without_flip(dae, lhs, &rhs_target) {
+                continue;
+            }
+            let mut flipped = equation.clone();
+            flipped.lhs = Some(flat_to_dae_var_name(&rhs_target));
+            flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
+                name: lhs.clone().into(),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            });
+            rerouted.entry(rhs_target).or_default().push(flipped);
+        }
+    }
+    for (lhs, aliases) in rerouted {
+        grouped.entry(lhs).or_default().extend(aliases);
+    }
+}
+
+fn canonicalize_assignment_group(
+    lhs: VarName,
+    mut equations: Vec<rumoca_ir_dae::Equation>,
+) -> Vec<rumoca_ir_dae::Equation> {
+    if equations.len() == 1 {
+        let mut equation = equations.remove(0);
+        let rewritten =
+            rewrite_discrete_self_refs_to_pre(&dae_to_flat_expression(&equation.rhs), &lhs);
+        equation.rhs = flat_to_dae_expression(&rewritten);
+        return vec![equation];
+    }
+
+    if let Some(merged) = merge_branch_split_discrete_assignments(&lhs, &equations) {
+        return vec![merged];
+    }
+
+    if equations
+        .iter()
+        .any(|equation| !is_connection_equation_origin(&equation.origin))
+    {
+        equations.retain(|equation| !is_connection_equation_origin(&equation.origin));
+    }
+
+    let mut rewritten_equations = Vec::with_capacity(equations.len());
+    for mut equation in equations {
+        let rewritten =
+            rewrite_discrete_self_refs_to_pre(&dae_to_flat_expression(&equation.rhs), &lhs);
+        equation.rhs = flat_to_dae_expression(&rewritten);
+        rewritten_equations.push(equation);
+    }
+    rewritten_equations
+}
+
+fn merge_branch_split_discrete_assignments(
+    lhs: &VarName,
+    equations: &[rumoca_ir_dae::Equation],
+) -> Option<rumoca_ir_dae::Equation> {
+    let first = equations.first()?;
+    if equations
+        .iter()
+        .any(|equation| is_connection_equation_origin(&equation.origin))
+        || equations
+            .iter()
+            .any(|equation| equation.origin != first.origin)
+    {
+        return None;
+    }
+
+    let inactive = pre_target_expr(lhs);
+    let mut merged_branches = Vec::new();
+    for equation in equations {
+        let rhs = dae_to_flat_expression(&equation.rhs);
+        let Expression::If {
+            branches,
+            else_branch,
+            ..
+        } = rhs
+        else {
+            return None;
+        };
+        let else_guard = negated_branch_guard(&branches);
+        merged_branches.extend(
+            branches
+                .into_iter()
+                .filter(|(_, value)| !is_pre_target_expr(value, lhs)),
+        );
+        if !is_pre_target_expr(&else_branch, lhs) {
+            merged_branches.push((else_guard, *else_branch));
+        }
+    }
+    if merged_branches.is_empty() {
+        return None;
+    }
+
+    let mut merged = first.clone();
+    // MLS §8.3.4: if-equation branches contribute one equation for each
+    // branch-local equation. After flattening, branch-split discrete updates
+    // for the same target are the same Appendix B assignment with guarded RHSs.
+    merged.rhs = flat_to_dae_expression(&Expression::If {
+        branches: merged_branches,
+        else_branch: Box::new(inactive),
+        span: rumoca_core::Span::DUMMY,
+    });
+    Some(merged)
+}
+
+fn is_pre_target_expr(expr: &Expression, target: &VarName) -> bool {
+    matches!(
+        expr,
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Pre,
+            args, ..
+        } if matches!(
+            args.as_slice(),
+            [Expression::VarRef { name, subscripts, .. }]
+                if name.var_name() == target && subscripts.is_empty()
+        )
+    )
+}
+
+fn negated_branch_guard(branches: &[(Expression, Expression)]) -> Expression {
+    let active_guard = branches
+        .iter()
+        .map(|(condition, _)| condition.clone())
+        .reduce(or_expr)
+        .unwrap_or_else(|| bool_expr(false));
+    not_expr(active_guard)
+}
+
+fn debug_log_grouped_target_collisions(
+    debug_canonicalize: bool,
+    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+) {
+    if !debug_canonicalize {
+        return;
+    }
+    for (lhs, equations) in grouped.iter().filter(|(_, eqs)| eqs.len() > 1) {
+        crate::log_fm_canon_debug(format!(
+            "f_m canonicalize grouped-collision lhs={} count={} origins={:?}",
+            lhs,
+            equations.len(),
+            equations
+                .iter()
+                .map(|eq| eq.origin.clone())
+                .collect::<Vec<_>>()
+        ));
+    }
+}
+
+fn debug_log_final_target_collisions(
+    debug_canonicalize: bool,
+    equations: &[rumoca_ir_dae::Equation],
+) {
+    if !debug_canonicalize {
+        return;
+    }
+    let mut counts: IndexMap<String, usize> = IndexMap::new();
+    for equation in equations {
+        if let Some(lhs) = equation.lhs.as_ref() {
+            *counts.entry(lhs.as_str().to_string()).or_default() += 1;
+        }
+    }
+    for (lhs, count) in counts.into_iter().filter(|(_, count)| *count > 1) {
+        crate::log_fm_canon_debug(format!(
+            "f_m canonicalize final-target-collision lhs={} count={}",
+            lhs, count
+        ));
+    }
+}
+
+fn lookup_algorithm_target_scalar_count(
+    dae: &Dae,
+    target: &VarName,
+    span: Span,
+) -> Result<usize, String> {
     let target_key = flat_to_dae_var_name(target);
-    dae.states
+    if let Some(var) = dae
+        .variables
+        .states
         .get(&target_key)
-        .or_else(|| dae.algebraics.get(&target_key))
-        .or_else(|| dae.outputs.get(&target_key))
-        .or_else(|| dae.inputs.get(&target_key))
-        .or_else(|| dae.discrete_reals.get(&target_key))
-        .or_else(|| dae.discrete_valued.get(&target_key))
-        .or_else(|| dae.derivative_aliases.get(&target_key))
-        .map(|var| var.size())
-        .unwrap_or(1)
-        .max(1)
+        .or_else(|| dae.variables.algebraics.get(&target_key))
+        .or_else(|| dae.variables.outputs.get(&target_key))
+        .or_else(|| dae.variables.inputs.get(&target_key))
+        .or_else(|| dae.variables.discrete_reals.get(&target_key))
+        .or_else(|| dae.variables.discrete_valued.get(&target_key))
+    {
+        return Ok(var.size().max(1));
+    }
+
+    for candidate in subscript_fallback_chain(target.as_str()) {
+        let candidate_key = flat_to_dae_var_name(&candidate);
+        if dae.variables.states.contains_key(&candidate_key)
+            || dae.variables.algebraics.contains_key(&candidate_key)
+            || dae.variables.outputs.contains_key(&candidate_key)
+            || dae.variables.inputs.contains_key(&candidate_key)
+            || dae.variables.discrete_reals.contains_key(&candidate_key)
+            || dae.variables.discrete_valued.contains_key(&candidate_key)
+        {
+            return Ok(1);
+        }
+    }
+
+    Err(format!(
+        "algorithm assignment target `{target}` is missing from DAE variables at {:?}",
+        rumoca_core::span_to_source_span(span)
+    ))
 }
 
 fn bool_expr(value: bool) -> Expression {
-    Expression::Literal(Literal::Boolean(value))
+    Expression::Literal {
+        value: Literal::Boolean(value),
+        span: rumoca_core::Span::DUMMY,
+    }
 }
 
 fn is_bool_expr(expr: &Expression, expected: bool) -> bool {
-    matches!(expr, Expression::Literal(Literal::Boolean(v)) if *v == expected)
+    matches!(expr, Expression::Literal { value: Literal::Boolean(v), .. } if *v == expected)
 }
 
 fn not_expr(expr: Expression) -> Expression {
-    if let Expression::Literal(Literal::Boolean(flag)) = expr {
-        return bool_expr(!flag);
-    }
-    if let Expression::Unary {
-        op: rumoca_ir_core::OpUnary::Not(_),
-        rhs,
+    if let Expression::Literal {
+        value: Literal::Boolean(flag),
+        span: _,
     } = expr
     {
-        return *rhs;
+        return bool_expr(!flag);
     }
     Expression::Unary {
-        op: rumoca_ir_core::OpUnary::Not(Default::default()),
+        op: rumoca_core::OpUnary::Not,
         rhs: Box::new(expr),
-    }
-}
-
-fn expr_structural_key(expr: &Expression) -> String {
-    format!("{expr:?}")
-}
-
-fn collect_bool_terms_for_op(expr: Expression, is_and: bool, terms: &mut Vec<Expression>) {
-    match expr {
-        Expression::Binary { op, lhs, rhs }
-            if (is_and && matches!(op, rumoca_ir_core::OpBinary::And(_)))
-                || (!is_and && matches!(op, rumoca_ir_core::OpBinary::Or(_))) =>
-        {
-            collect_bool_terms_for_op(*lhs, is_and, terms);
-            collect_bool_terms_for_op(*rhs, is_and, terms);
-        }
-        other => terms.push(other),
-    }
-}
-
-fn not_inner_key(expr: &Expression) -> Option<String> {
-    match expr {
-        Expression::Unary {
-            op: rumoca_ir_core::OpUnary::Not(_),
-            rhs,
-        } => Some(expr_structural_key(rhs)),
-        _ => None,
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
 fn and_expr(lhs: Expression, rhs: Expression) -> Expression {
-    let mut raw_terms = Vec::new();
-    collect_bool_terms_for_op(lhs, true, &mut raw_terms);
-    collect_bool_terms_for_op(rhs, true, &mut raw_terms);
-
-    let mut terms = Vec::new();
-    let mut seen = HashSet::new();
-    let mut negated = HashSet::new();
-    for term in raw_terms {
-        if is_bool_expr(&term, false) {
-            return bool_expr(false);
-        }
-        if is_bool_expr(&term, true) {
-            continue;
-        }
-        let term_key = expr_structural_key(&term);
-        if seen.contains(&term_key) {
-            continue;
-        }
-        if let Some(inner_key) = not_inner_key(&term) {
-            if seen.contains(&inner_key) {
-                return bool_expr(false);
-            }
-            negated.insert(inner_key);
-        } else if negated.contains(&term_key) {
-            return bool_expr(false);
-        }
-        seen.insert(term_key);
-        terms.push(term);
+    if is_bool_expr(&lhs, false) || is_bool_expr(&rhs, false) {
+        return bool_expr(false);
     }
-
-    match terms.len() {
-        0 => bool_expr(true),
-        1 => terms.remove(0),
-        _ => {
-            let mut iter = terms.into_iter();
-            let mut acc = iter.next().expect("non-empty terms");
-            for term in iter {
-                acc = Expression::Binary {
-                    op: rumoca_ir_core::OpBinary::And(Default::default()),
-                    lhs: Box::new(acc),
-                    rhs: Box::new(term),
-                };
-            }
-            acc
-        }
+    if is_bool_expr(&lhs, true) {
+        return rhs;
+    }
+    if is_bool_expr(&rhs, true) {
+        return lhs;
+    }
+    Expression::Binary {
+        op: rumoca_core::OpBinary::And,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
 fn or_expr(lhs: Expression, rhs: Expression) -> Expression {
-    let mut raw_terms = Vec::new();
-    collect_bool_terms_for_op(lhs, false, &mut raw_terms);
-    collect_bool_terms_for_op(rhs, false, &mut raw_terms);
-
-    let mut terms = Vec::new();
-    let mut seen = HashSet::new();
-    let mut negated = HashSet::new();
-    for term in raw_terms {
-        if is_bool_expr(&term, true) {
-            return bool_expr(true);
-        }
-        if is_bool_expr(&term, false) {
-            continue;
-        }
-        let term_key = expr_structural_key(&term);
-        if seen.contains(&term_key) {
-            continue;
-        }
-        if let Some(inner_key) = not_inner_key(&term) {
-            if seen.contains(&inner_key) {
-                return bool_expr(true);
-            }
-            negated.insert(inner_key);
-        } else if negated.contains(&term_key) {
-            return bool_expr(true);
-        }
-        seen.insert(term_key);
-        terms.push(term);
+    if is_bool_expr(&lhs, true) || is_bool_expr(&rhs, true) {
+        return bool_expr(true);
     }
-
-    match terms.len() {
-        0 => bool_expr(false),
-        1 => terms.remove(0),
-        _ => {
-            let mut iter = terms.into_iter();
-            let mut acc = iter.next().expect("non-empty terms");
-            for term in iter {
-                acc = Expression::Binary {
-                    op: rumoca_ir_core::OpBinary::Or(Default::default()),
-                    lhs: Box::new(acc),
-                    rhs: Box::new(term),
-                };
-            }
-            acc
-        }
+    if is_bool_expr(&lhs, false) {
+        return rhs;
     }
-}
-
-fn guarded_expr(guard: Expression, value: Expression, fallback: Expression) -> Expression {
-    if is_bool_expr(&guard, true) {
-        return value;
+    if is_bool_expr(&rhs, false) {
+        return lhs;
     }
-    if is_bool_expr(&guard, false) {
-        return fallback;
-    }
-    Expression::If {
-        branches: vec![(guard, value)],
-        else_branch: Box::new(fallback),
+    Expression::Binary {
+        op: rumoca_core::OpBinary::Or,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -334,12 +761,13 @@ fn eval_integer_array_expr(expr: &Expression, flat: &Model, depth: u8) -> Option
         Expression::Array {
             elements,
             is_matrix: false,
+            ..
         } => elements
             .iter()
             .map(|element| scalar_size::try_eval_flat_expr_i64(element, flat, depth + 1))
             .collect(),
         Expression::VarRef { name, .. } => {
-            let var = flat.variables.get(name)?;
+            let var = flat.variables.get(name.var_name())?;
             let binding = var.binding.as_ref()?;
             eval_integer_array_expr(binding, flat, depth + 1)
         }
@@ -350,7 +778,9 @@ fn eval_integer_array_expr(expr: &Expression, flat: &Model, depth: u8) -> Option
 fn eval_for_range_values(range: &Expression, flat: &Model) -> Result<Vec<i64>, String> {
     const MAX_LOOP_EXPANSION: usize = 100_000;
     let (start, step, end) = match range {
-        Expression::Range { start, step, end } => {
+        Expression::Range {
+            start, step, end, ..
+        } => {
             let start_value = eval_integer_expr(start, flat)
                 .ok_or_else(|| format!("ForRangeStartNotConstant({start:?})"))?;
             let end_value = eval_integer_expr(end, flat)
@@ -400,7 +830,7 @@ fn eval_for_range_values(range: &Expression, flat: &Model) -> Result<Vec<i64>, S
 }
 
 fn expand_for_bindings(
-    indices: &[flat::ForIndex],
+    indices: &[rumoca_core::ForIndex],
     flat: &Model,
     bindings: &HashMap<String, i64>,
 ) -> Result<Vec<HashMap<String, i64>>, String> {
@@ -420,12 +850,12 @@ fn expand_for_bindings(
     Ok(expanded)
 }
 
-fn resolve_multi_output_projection_names(
+fn resolve_multi_output_selection_names(
     flat: &Model,
     function_name: &VarName,
     requested_outputs: usize,
 ) -> Result<Vec<VarName>, String> {
-    let Some(function) = resolve_flat_function(function_name, flat) else {
+    let Some(function) = resolve_flat_function(function_name.as_str(), flat) else {
         return Err("FunctionCallMultiOutputUnresolved".to_string());
     };
     if function.outputs.len() < requested_outputs {
@@ -449,420 +879,19 @@ fn pre_target_expr(target: &VarName) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Pre,
         args: vec![Expression::VarRef {
-            name: target.clone(),
+            name: target.clone().into(),
             subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
         }],
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
 fn current_target_expr(target: &VarName) -> Expression {
     Expression::VarRef {
-        name: target.clone(),
+        name: target.clone().into(),
         subscripts: vec![],
-    }
-}
-
-struct AlgorithmRewriteContext {
-    target_prefixes: HashSet<String>,
-    contains_known_target_cache: HashMap<String, bool>,
-    rewrite_skipped_subtrees: usize,
-}
-
-impl AlgorithmRewriteContext {
-    fn new(known_targets: &HashSet<VarName>) -> Self {
-        let target_prefixes = known_targets
-            .iter()
-            .filter_map(|target| path_utils::get_top_level_prefix(target.as_str()))
-            .collect();
-        Self {
-            target_prefixes,
-            contains_known_target_cache: HashMap::new(),
-            rewrite_skipped_subtrees: 0,
-        }
-    }
-
-    fn refresh_known_targets(&mut self, known_targets: &HashSet<VarName>) {
-        self.target_prefixes = known_targets
-            .iter()
-            .filter_map(|target| path_utils::get_top_level_prefix(target.as_str()))
-            .collect();
-        self.contains_known_target_cache.clear();
-    }
-
-    fn record_skip(&mut self) {
-        self.rewrite_skipped_subtrees += 1;
-    }
-
-    fn skipped_subtrees(&self) -> usize {
-        self.rewrite_skipped_subtrees
-    }
-}
-
-fn expr_var_ref_may_hit_known_target(
-    name: &VarName,
-    subscripts: &[Subscript],
-    known_targets: &HashSet<VarName>,
-    target_prefixes: &HashSet<String>,
-) -> bool {
-    let target = varref_with_subscripts(name, subscripts);
-    known_targets.contains(&target)
-        || path_utils::get_top_level_prefix(target.as_str())
-            .is_some_and(|prefix| target_prefixes.contains(prefix.as_str()))
-}
-
-fn expr_contains_known_target(
-    ctx: &mut AlgorithmRewriteContext,
-    expr: &Expression,
-    known_targets: &HashSet<VarName>,
-) -> bool {
-    let cache_key = expr_structural_key(expr);
-    if let Some(cached) = ctx.contains_known_target_cache.get(&cache_key) {
-        return *cached;
-    }
-
-    let contains = match expr {
-        Expression::VarRef { name, subscripts } => {
-            expr_var_ref_may_hit_known_target(name, subscripts, known_targets, &ctx.target_prefixes)
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            expr_contains_known_target(ctx, lhs, known_targets)
-                || expr_contains_known_target(ctx, rhs, known_targets)
-        }
-        Expression::Unary { rhs, .. } => expr_contains_known_target(ctx, rhs, known_targets),
-        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => args
-            .iter()
-            .any(|arg| expr_contains_known_target(ctx, arg, known_targets)),
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches
-                .iter()
-                .any(|(cond, value)| {
-                    expr_contains_known_target(ctx, cond, known_targets)
-                        || expr_contains_known_target(ctx, value, known_targets)
-                })
-                || expr_contains_known_target(ctx, else_branch, known_targets)
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => elements
-            .iter()
-            .any(|element| expr_contains_known_target(ctx, element, known_targets)),
-        Expression::Range { start, step, end } => {
-            expr_contains_known_target(ctx, start, known_targets)
-                || step
-                    .as_deref()
-                    .is_some_and(|value| expr_contains_known_target(ctx, value, known_targets))
-                || expr_contains_known_target(ctx, end, known_targets)
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            expr_contains_known_target(ctx, expr, known_targets)
-                || indices.iter().any(|index| {
-                    expr_contains_known_target(ctx, &index.range, known_targets)
-                })
-                || filter
-                    .as_deref()
-                    .is_some_and(|value| expr_contains_known_target(ctx, value, known_targets))
-        }
-        Expression::Index { base, subscripts } => {
-            expr_contains_known_target(ctx, base, known_targets)
-                || subscripts.iter().any(|subscript| {
-                    matches!(subscript, Subscript::Expr(value) if expr_contains_known_target(ctx, value, known_targets))
-                })
-        }
-        Expression::FieldAccess { base, .. } => expr_contains_known_target(ctx, base, known_targets),
-        Expression::Literal(_) | Expression::Empty => false,
-    };
-
-    ctx.contains_known_target_cache.insert(cache_key, contains);
-    contains
-}
-
-fn rewrite_algorithm_current_refs(
-    ctx: &mut AlgorithmRewriteContext,
-    dae: &Dae,
-    expr: &Expression,
-    current_values: &IndexMap<VarName, Expression>,
-    known_targets: &HashSet<VarName>,
-) -> Expression {
-    if !expr_has_known_target(ctx, expr, known_targets) {
-        ctx.record_skip();
-        return expr.clone();
-    }
-    rewrite_algorithm_current_refs_inner(ctx, dae, expr, current_values, known_targets)
-}
-
-fn rewrite_algorithm_current_refs_inner(
-    ctx: &mut AlgorithmRewriteContext,
-    dae: &Dae,
-    expr: &Expression,
-    current_values: &IndexMap<VarName, Expression>,
-    known_targets: &HashSet<VarName>,
-) -> Expression {
-    match expr {
-        Expression::VarRef { name, subscripts } => {
-            rewrite_algorithm_current_var_ref(dae, name, subscripts, current_values, known_targets)
-        }
-        Expression::Binary { op, lhs, rhs } => Expression::Binary {
-            op: op.clone(),
-            lhs: rewrite_algorithm_current_box(ctx, dae, lhs, current_values, known_targets),
-            rhs: rewrite_algorithm_current_box(ctx, dae, rhs, current_values, known_targets),
-        },
-        Expression::Unary { op, rhs } => Expression::Unary {
-            op: op.clone(),
-            rhs: rewrite_algorithm_current_box(ctx, dae, rhs, current_values, known_targets),
-        },
-        Expression::BuiltinCall { function, args } => {
-            if matches!(function, BuiltinFunction::Pre) {
-                Expression::BuiltinCall {
-                    function: *function,
-                    args: args.clone(),
-                }
-            } else {
-                Expression::BuiltinCall {
-                    function: *function,
-                    args: rewrite_algorithm_expr_vec(ctx, dae, args, current_values, known_targets),
-                }
-            }
-        }
-        Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-        } => Expression::FunctionCall {
-            name: name.clone(),
-            args: rewrite_algorithm_expr_vec(ctx, dae, args, current_values, known_targets),
-            is_constructor: *is_constructor,
-        },
-        Expression::If {
-            branches,
-            else_branch,
-        } => rewrite_algorithm_current_if_expr(
-            ctx,
-            dae,
-            branches,
-            else_branch,
-            current_values,
-            known_targets,
-        ),
-        Expression::Array {
-            elements,
-            is_matrix,
-        } => Expression::Array {
-            elements: rewrite_algorithm_expr_vec(ctx, dae, elements, current_values, known_targets),
-            is_matrix: *is_matrix,
-        },
-        Expression::Tuple { elements } => Expression::Tuple {
-            elements: rewrite_algorithm_expr_vec(ctx, dae, elements, current_values, known_targets),
-        },
-        Expression::Range { start, step, end } => rewrite_algorithm_current_range_expr(
-            ctx,
-            dae,
-            start,
-            step.as_deref(),
-            end,
-            current_values,
-            known_targets,
-        ),
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => rewrite_algorithm_current_comprehension_expr(
-            ctx,
-            dae,
-            expr,
-            indices,
-            filter.as_deref(),
-            current_values,
-            known_targets,
-        ),
-        Expression::Index { base, subscripts } => Expression::Index {
-            base: rewrite_algorithm_current_box(ctx, dae, base, current_values, known_targets),
-            subscripts: subscripts.to_vec(),
-        },
-        Expression::FieldAccess { base, field } => Expression::FieldAccess {
-            base: rewrite_algorithm_current_box(ctx, dae, base, current_values, known_targets),
-            field: field.clone(),
-        },
-        Expression::Literal(literal) => Expression::Literal(literal.clone()),
-        Expression::Empty => Expression::Empty,
-    }
-}
-
-fn expr_has_known_target(
-    ctx: &mut AlgorithmRewriteContext,
-    expr: &Expression,
-    known_targets: &HashSet<VarName>,
-) -> bool {
-    let cache_key = expr_structural_key(expr);
-    if let Some(cached) = ctx.contains_known_target_cache.get(&cache_key) {
-        return *cached;
-    }
-    expr_contains_known_target(ctx, expr, known_targets)
-}
-
-fn rewrite_algorithm_current_box(
-    ctx: &mut AlgorithmRewriteContext,
-    dae: &Dae,
-    expr: &Expression,
-    current_values: &IndexMap<VarName, Expression>,
-    known_targets: &HashSet<VarName>,
-) -> Box<Expression> {
-    Box::new(rewrite_algorithm_current_refs(
-        ctx,
-        dae,
-        expr,
-        current_values,
-        known_targets,
-    ))
-}
-
-fn rewrite_algorithm_current_var_ref(
-    dae: &Dae,
-    name: &VarName,
-    subscripts: &[Subscript],
-    current_values: &IndexMap<VarName, Expression>,
-    known_targets: &HashSet<VarName>,
-) -> Expression {
-    let target = varref_with_subscripts(name, subscripts);
-    current_values.get(&target).cloned().unwrap_or_else(|| {
-        if known_targets.contains(&target) {
-            algorithm_if_fallback_expr(dae, &target)
-        } else {
-            Expression::VarRef {
-                name: name.clone(),
-                subscripts: subscripts.to_vec(),
-            }
-        }
-    })
-}
-
-fn rewrite_algorithm_expr_vec(
-    ctx: &mut AlgorithmRewriteContext,
-    dae: &Dae,
-    exprs: &[Expression],
-    current_values: &IndexMap<VarName, Expression>,
-    known_targets: &HashSet<VarName>,
-) -> Vec<Expression> {
-    exprs
-        .iter()
-        .map(|expr| rewrite_algorithm_current_refs(ctx, dae, expr, current_values, known_targets))
-        .collect()
-}
-
-fn rewrite_algorithm_current_if_expr(
-    ctx: &mut AlgorithmRewriteContext,
-    dae: &Dae,
-    branches: &[(Expression, Expression)],
-    else_branch: &Expression,
-    current_values: &IndexMap<VarName, Expression>,
-    known_targets: &HashSet<VarName>,
-) -> Expression {
-    Expression::If {
-        branches: branches
-            .iter()
-            .map(|(condition, value)| {
-                (
-                    rewrite_algorithm_current_refs(
-                        ctx,
-                        dae,
-                        condition,
-                        current_values,
-                        known_targets,
-                    ),
-                    rewrite_algorithm_current_refs(ctx, dae, value, current_values, known_targets),
-                )
-            })
-            .collect(),
-        else_branch: Box::new(rewrite_algorithm_current_refs(
-            ctx,
-            dae,
-            else_branch,
-            current_values,
-            known_targets,
-        )),
-    }
-}
-
-fn rewrite_algorithm_current_range_expr(
-    ctx: &mut AlgorithmRewriteContext,
-    dae: &Dae,
-    start: &Expression,
-    step: Option<&Expression>,
-    end: &Expression,
-    current_values: &IndexMap<VarName, Expression>,
-    known_targets: &HashSet<VarName>,
-) -> Expression {
-    Expression::Range {
-        start: Box::new(rewrite_algorithm_current_refs(
-            ctx,
-            dae,
-            start,
-            current_values,
-            known_targets,
-        )),
-        step: step.map(|value| {
-            Box::new(rewrite_algorithm_current_refs(
-                ctx,
-                dae,
-                value,
-                current_values,
-                known_targets,
-            ))
-        }),
-        end: Box::new(rewrite_algorithm_current_refs(
-            ctx,
-            dae,
-            end,
-            current_values,
-            known_targets,
-        )),
-    }
-}
-
-fn rewrite_algorithm_current_comprehension_expr(
-    ctx: &mut AlgorithmRewriteContext,
-    dae: &Dae,
-    expr: &Expression,
-    indices: &[ComprehensionIndex],
-    filter: Option<&Expression>,
-    current_values: &IndexMap<VarName, Expression>,
-    known_targets: &HashSet<VarName>,
-) -> Expression {
-    Expression::ArrayComprehension {
-        expr: Box::new(rewrite_algorithm_current_refs(
-            ctx,
-            dae,
-            expr,
-            current_values,
-            known_targets,
-        )),
-        indices: indices
-            .iter()
-            .map(|index| ComprehensionIndex {
-                name: index.name.clone(),
-                range: rewrite_algorithm_current_refs(
-                    ctx,
-                    dae,
-                    &index.range,
-                    current_values,
-                    known_targets,
-                ),
-            })
-            .collect(),
-        filter: filter.map(|value| {
-            Box::new(rewrite_algorithm_current_refs(
-                ctx,
-                dae,
-                value,
-                current_values,
-                known_targets,
-            ))
-        }),
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -880,17 +909,21 @@ fn normalize_algorithm_current_value(
 
 fn algorithm_if_fallback_expr(dae: &Dae, target: &VarName) -> Expression {
     let is_discrete_target = dae
+        .variables
         .discrete_reals
         .contains_key(&flat_to_dae_var_name(target))
         || dae
+            .variables
             .discrete_valued
             .contains_key(&flat_to_dae_var_name(target))
-        || subscript_fallback_chain(target)
+        || subscript_fallback_chain(target.as_str())
             .into_iter()
             .any(|candidate| {
-                dae.discrete_reals
+                dae.variables
+                    .discrete_reals
                     .contains_key(&flat_to_dae_var_name(&candidate))
                     || dae
+                        .variables
                         .discrete_valued
                         .contains_key(&flat_to_dae_var_name(&candidate))
             });
@@ -906,16 +939,17 @@ fn algorithm_assignment_to_target_expr(
     statement: &Statement,
 ) -> Option<(VarName, Expression, Span, String)> {
     match statement {
-        Statement::Assignment { comp, value } => Some((
+        Statement::Assignment { comp, value, span } => Some((
             algorithm_assignment_target_name(comp)?,
             value.clone(),
-            Span::DUMMY,
+            *span,
             "algorithm assignment".to_string(),
         )),
         Statement::FunctionCall {
             comp,
             args,
             outputs,
+            span,
         } => {
             let [output] = outputs.as_slice() else {
                 return None;
@@ -924,78 +958,95 @@ fn algorithm_assignment_to_target_expr(
             Some((
                 target,
                 Expression::FunctionCall {
-                    name: component_reference_to_var_name(comp),
+                    name: comp.to_var_name().into(),
                     args: args.clone(),
                     is_constructor: false,
+                    span: *span,
                 },
-                Span::DUMMY,
+                *span,
                 "algorithm function call assignment".to_string(),
             ))
         }
         Statement::If {
             cond_blocks,
             else_block,
-        } => {
-            let mut branches = Vec::new();
-            let mut target: Option<VarName> = None;
-            for block in cond_blocks {
-                let [single] = block.stmts.as_slice() else {
-                    return None;
-                };
-                let (block_target, block_value, _, _) =
-                    algorithm_assignment_to_target_expr(dae, single)?;
-                if target
-                    .as_ref()
-                    .is_some_and(|existing| existing != &block_target)
-                {
-                    return None;
-                }
-                if target.is_none() {
-                    target = Some(block_target);
-                }
-                branches.push((block.cond.clone(), block_value));
-            }
-            let else_value = if let Some(else_stmts) = else_block.as_ref() {
-                let [else_single] = else_stmts.as_slice() else {
-                    return None;
-                };
-                let (else_target, else_value, _, _) =
-                    algorithm_assignment_to_target_expr(dae, else_single)?;
-                if target.as_ref() != Some(&else_target) {
-                    return None;
-                }
-                else_value
-            } else {
-                let target_name = target.as_ref()?;
-                if !dae
-                    .discrete_reals
-                    .contains_key(&flat_to_dae_var_name(target_name))
-                    && !dae
-                        .discrete_valued
-                        .contains_key(&flat_to_dae_var_name(target_name))
-                {
-                    return None;
-                }
-                pre_target_expr(target_name)
-            };
-            Some((
-                target?,
-                Expression::If {
-                    branches,
-                    else_branch: Box::new(else_value),
-                },
-                Span::DUMMY,
-                "algorithm if-assignment".to_string(),
-            ))
-        }
-        Statement::Empty => None,
+            ..
+        } => algorithm_if_assignment_to_target_expr(dae, cond_blocks, else_block),
+        Statement::Empty { .. } => None,
         Statement::For { .. }
-        | Statement::While(_)
-        | Statement::When(_)
+        | Statement::While { .. }
+        | Statement::When { .. }
         | Statement::Reinit { .. }
         | Statement::Assert { .. }
-        | Statement::Return
-        | Statement::Break => None,
+        | Statement::Return { .. }
+        | Statement::Break { .. } => None,
+    }
+}
+
+fn algorithm_if_assignment_to_target_expr(
+    dae: &Dae,
+    cond_blocks: &[StatementBlock],
+    else_block: &Option<Vec<Statement>>,
+) -> Option<AlgorithmAssignment> {
+    let mut branches = Vec::new();
+    let mut target: Option<VarName> = None;
+    for block in cond_blocks {
+        let [single] = block.stmts.as_slice() else {
+            return None;
+        };
+        let (block_target, block_value, _, _) = algorithm_assignment_to_target_expr(dae, single)?;
+        if target
+            .as_ref()
+            .is_some_and(|existing| existing != &block_target)
+        {
+            return None;
+        }
+        if target.is_none() {
+            target = Some(block_target);
+        }
+        branches.push((block.cond.clone(), block_value));
+    }
+
+    let else_value = algorithm_if_else_assignment_expr(dae, target.as_ref(), else_block)?;
+    Some((
+        target?,
+        Expression::If {
+            branches,
+            else_branch: Box::new(else_value),
+            span: rumoca_core::Span::DUMMY,
+        },
+        Span::DUMMY,
+        "algorithm if-assignment".to_string(),
+    ))
+}
+
+fn algorithm_if_else_assignment_expr(
+    dae: &Dae,
+    target: Option<&VarName>,
+    else_block: &Option<Vec<Statement>>,
+) -> Option<Expression> {
+    if let Some(else_stmts) = else_block.as_ref() {
+        let [else_single] = else_stmts.as_slice() else {
+            return None;
+        };
+        let (else_target, else_value, _, _) =
+            algorithm_assignment_to_target_expr(dae, else_single)?;
+        return (target == Some(&else_target)).then_some(else_value);
+    }
+
+    let target_name = target?;
+    if dae
+        .variables
+        .discrete_reals
+        .contains_key(&flat_to_dae_var_name(target_name))
+        || dae
+            .variables
+            .discrete_valued
+            .contains_key(&flat_to_dae_var_name(target_name))
+    {
+        Some(pre_target_expr(target_name))
+    } else {
+        None
     }
 }
 
@@ -1003,12 +1054,16 @@ type AlgorithmAssignment = (VarName, Expression, Span, String);
 
 fn is_noop_algorithm_statement(statement: &Statement) -> bool {
     match statement {
-        Statement::Empty | Statement::Assert { .. } | Statement::Return | Statement::Break => true,
+        Statement::Empty { .. }
+        | Statement::Assert { .. }
+        | Statement::Return { .. }
+        | Statement::Break { .. } => true,
         Statement::FunctionCall { outputs, .. } => outputs.is_empty(),
         Statement::For { equations, .. } => equations.iter().all(is_noop_algorithm_statement),
         Statement::If {
             cond_blocks,
             else_block,
+            ..
         } => {
             cond_blocks
                 .iter()
@@ -1017,10 +1072,10 @@ fn is_noop_algorithm_statement(statement: &Statement) -> bool {
                     .as_ref()
                     .is_none_or(|stmts| stmts.iter().all(is_noop_algorithm_statement))
         }
-        Statement::When(blocks) => blocks
+        Statement::When { blocks, .. } => blocks
             .iter()
             .all(|block| block.stmts.iter().all(is_noop_algorithm_statement)),
-        Statement::Assignment { .. } | Statement::While(_) | Statement::Reinit { .. } => false,
+        Statement::Assignment { .. } | Statement::While { .. } | Statement::Reinit { .. } => false,
     }
 }
 
@@ -1034,13 +1089,16 @@ fn collect_statement_targets(
     }
 
     match statement {
-        Statement::Assignment { comp, value } => Ok(lower_assignment_statement(flat, comp, value)?
-            .into_iter()
-            .map(|(target, _, _, _)| target)
-            .collect()),
+        Statement::Assignment { comp, value, span } => {
+            Ok(lower_assignment_statement(flat, comp, value, *span)?
+                .into_iter()
+                .map(|(target, _, _, _)| target)
+                .collect())
+        }
         Statement::If {
             cond_blocks,
             else_block,
+            ..
         } => {
             let mut targets = IndexSet::new();
             for block in cond_blocks {
@@ -1051,7 +1109,9 @@ fn collect_statement_targets(
             }
             Ok(targets.into_iter().collect())
         }
-        Statement::For { indices, equations } => {
+        Statement::For {
+            indices, equations, ..
+        } => {
             let mut targets = IndexSet::new();
             let bindings = HashMap::new();
             let iteration_bindings = expand_for_bindings(indices, flat, &bindings)?;
@@ -1072,6 +1132,7 @@ fn collect_statement_targets(
             comp,
             args: _,
             outputs,
+            ..
         } if outputs.len() > 1 => outputs
             .iter()
             .map(|output| {
@@ -1120,7 +1181,6 @@ fn collect_algorithm_block_assignments(
             known_targets.insert(target);
         }
     }
-    let mut rewrite_ctx = AlgorithmRewriteContext::new(&known_targets);
     for statement in statements {
         for (target, value, span, origin) in lower_statement_assignments_with_context(
             dae,
@@ -1129,25 +1189,14 @@ fn collect_algorithm_block_assignments(
             &current_values,
             &known_targets,
         )? {
-            let rewritten = rewrite_algorithm_current_refs(
-                &mut rewrite_ctx,
-                dae,
-                &value,
-                &current_values,
-                &known_targets,
-            );
+            let rewritten =
+                rewrite_algorithm_current_refs(dae, &value, &current_values, &known_targets);
             let normalized = normalize_algorithm_current_value(dae, &target, &rewritten);
             current_values.insert(target.clone(), normalized.clone());
             assignments.insert(target.clone(), (target, normalized, span, origin));
         }
     }
-    if std::env::var("RUMOCA_DEBUG_TODAE").is_ok() {
-        eprintln!(
-            "DEBUG TODAE algorithm_rewrite skipped_subtrees={}",
-            rewrite_ctx.skipped_subtrees()
-        );
-    }
-    Ok(assignments)
+    Ok(collapse_overlapping_array_assignments(dae, assignments))
 }
 
 fn lower_if_statement_assignments(
@@ -1170,19 +1219,16 @@ fn lower_if_statement_assignments(
         branch_maps.push((block.cond.clone(), assignments));
     }
 
-    let else_assignments = else_block
-        .as_ref()
-        .map(|statements| {
-            collect_algorithm_block_assignments(
-                dae,
-                flat,
-                statements,
-                outer_current_values,
-                outer_known_targets,
-            )
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let else_assignments = match else_block.as_ref() {
+        Some(statements) => collect_algorithm_block_assignments(
+            dae,
+            flat,
+            statements,
+            outer_current_values,
+            outer_known_targets,
+        )?,
+        None => IndexMap::new(),
+    };
 
     let mut targets: IndexSet<VarName> = IndexSet::new();
     for (_, assignments) in &branch_maps {
@@ -1202,6 +1248,8 @@ fn lower_if_statement_assignments(
                 let rhs = assignments
                     .get(&target)
                     .map(|(_, value, _, _)| value.clone())
+                    // MLS §11.1.3: if an if-branch does not assign a target variable,
+                    // the variable retains its value — pre(x) for discrete, x for continuous.
                     .unwrap_or_else(|| algorithm_if_fallback_expr(dae, &target));
                 (condition.clone(), rhs)
             })
@@ -1209,12 +1257,15 @@ fn lower_if_statement_assignments(
         let else_rhs = else_assignments
             .get(&target)
             .map(|(_, value, _, _)| value.clone())
+            // MLS §11.1.3: unassigned target in else-branch falls back to pre(x) for discrete,
+            // x for continuous.
             .unwrap_or_else(|| algorithm_if_fallback_expr(dae, &target));
         lowered.push((
             target,
             Expression::If {
                 branches,
                 else_branch: Box::new(else_rhs),
+                span: rumoca_core::Span::DUMMY,
             },
             Span::DUMMY,
             "algorithm if-assignment".to_string(),
@@ -1222,240 +1273,6 @@ fn lower_if_statement_assignments(
     }
 
     Ok(lowered)
-}
-
-struct ForLoopLowerState {
-    assignments: IndexMap<VarName, Expression>,
-    known_targets: HashSet<VarName>,
-    break_condition: Option<Expression>,
-    rewrite_ctx: AlgorithmRewriteContext,
-}
-
-fn loop_active_guard(base_guard: Expression, break_condition: &Option<Expression>) -> Expression {
-    if let Some(break_expr) = break_condition {
-        and_expr(base_guard, not_expr(break_expr.clone()))
-    } else {
-        base_guard
-    }
-}
-
-fn apply_guarded_loop_assignment(
-    dae: &Dae,
-    state: &mut ForLoopLowerState,
-    target: VarName,
-    value: Expression,
-    guard: Expression,
-) {
-    let rewritten = rewrite_algorithm_current_refs(
-        &mut state.rewrite_ctx,
-        dae,
-        &value,
-        &state.assignments,
-        &state.known_targets,
-    );
-    let fallback = state
-        .assignments
-        .get(&target)
-        .cloned()
-        .unwrap_or_else(|| algorithm_if_fallback_expr(dae, &target));
-    let merged = guarded_expr(guard, rewritten, fallback);
-    let normalized = normalize_algorithm_current_value(dae, &target, &merged);
-    state.assignments.insert(target, normalized);
-}
-
-fn mark_loop_break(state: &mut ForLoopLowerState, guard: Expression) {
-    state.break_condition = Some(match state.break_condition.take() {
-        Some(existing) => or_expr(existing, guard),
-        None => guard,
-    });
-}
-
-fn lower_for_statement_sequence_with_guard(
-    dae: &Dae,
-    flat: &Model,
-    statements: &[Statement],
-    guard: Expression,
-    bindings: &HashMap<String, i64>,
-    state: &mut ForLoopLowerState,
-) -> Result<(), String> {
-    for statement in statements {
-        lower_for_statement_with_guard(dae, flat, statement, guard.clone(), bindings, state)?;
-    }
-    Ok(())
-}
-
-fn lower_for_if_with_guard(
-    dae: &Dae,
-    flat: &Model,
-    cond_blocks: &[StatementBlock],
-    else_block: &Option<Vec<Statement>>,
-    guard: Expression,
-    bindings: &HashMap<String, i64>,
-    state: &mut ForLoopLowerState,
-) -> Result<(), String> {
-    let mut taken = bool_expr(false);
-    for block in cond_blocks {
-        let cond = substitute_expr_with_bindings(&block.cond, bindings);
-        let branch_guard = and_expr(
-            guard.clone(),
-            and_expr(not_expr(taken.clone()), cond.clone()),
-        );
-        lower_for_statement_sequence_with_guard(
-            dae,
-            flat,
-            &block.stmts,
-            branch_guard,
-            bindings,
-            state,
-        )?;
-        taken = or_expr(taken, cond);
-    }
-
-    if let Some(stmts) = else_block {
-        let else_guard = and_expr(guard, not_expr(taken));
-        lower_for_statement_sequence_with_guard(dae, flat, stmts, else_guard, bindings, state)?;
-    }
-    Ok(())
-}
-
-fn lower_nested_for_with_guard(
-    dae: &Dae,
-    flat: &Model,
-    indices: &[flat::ForIndex],
-    equations: &[Statement],
-    guard: Expression,
-    bindings: &HashMap<String, i64>,
-    state: &mut ForLoopLowerState,
-) -> Result<(), String> {
-    let mut merged_bindings = bindings.clone();
-    let iteration_bindings = expand_for_bindings(indices, flat, &merged_bindings)?;
-    for iteration in iteration_bindings {
-        merged_bindings = iteration;
-        let iteration_guard = loop_active_guard(guard.clone(), &state.break_condition);
-        lower_for_statement_sequence_with_guard(
-            dae,
-            flat,
-            equations,
-            iteration_guard,
-            &merged_bindings,
-            state,
-        )?;
-    }
-    Ok(())
-}
-
-fn lower_for_statement_with_guard(
-    dae: &Dae,
-    flat: &Model,
-    statement: &Statement,
-    guard: Expression,
-    bindings: &HashMap<String, i64>,
-    state: &mut ForLoopLowerState,
-) -> Result<(), String> {
-    let active_guard = loop_active_guard(guard, &state.break_condition);
-    if is_bool_expr(&active_guard, false) {
-        return Ok(());
-    }
-
-    let substituted = substitute_statement_with_bindings(statement, bindings);
-    match &substituted {
-        Statement::Break => {
-            mark_loop_break(state, active_guard);
-            Ok(())
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-        } => lower_for_if_with_guard(
-            dae,
-            flat,
-            cond_blocks,
-            else_block,
-            active_guard,
-            bindings,
-            state,
-        ),
-        Statement::For { indices, equations } => lower_nested_for_with_guard(
-            dae,
-            flat,
-            indices,
-            equations,
-            active_guard,
-            bindings,
-            state,
-        ),
-        Statement::While(_) => Err("ForContainsWhile".to_string()),
-        Statement::When(_) => Err("ForContainsWhen".to_string()),
-        _ => {
-            let lowered = lower_statement_assignments(dae, flat, &substituted)?;
-            for (target, value, _, _) in lowered {
-                apply_guarded_loop_assignment(dae, state, target, value, active_guard.clone());
-            }
-            Ok(())
-        }
-    }
-}
-
-fn lower_for_statement_assignments(
-    dae: &Dae,
-    flat: &Model,
-    indices: &[flat::ForIndex],
-    equations: &[Statement],
-    outer_current_values: &IndexMap<VarName, Expression>,
-    outer_known_targets: &HashSet<VarName>,
-) -> Result<Vec<AlgorithmAssignment>, String> {
-    // MLS §11.1 / §11.2: loop bodies execute in sequence within the enclosing
-    // algorithm state, so they must observe earlier assignments in the same
-    // algorithm block instead of restarting from the event-entry values.
-    let mut state = ForLoopLowerState {
-        assignments: outer_current_values.clone(),
-        known_targets: outer_known_targets.clone(),
-        break_condition: None,
-        rewrite_ctx: AlgorithmRewriteContext::new(outer_known_targets),
-    };
-    let mut loop_targets = HashSet::new();
-    let bindings = HashMap::new();
-    let iteration_bindings = expand_for_bindings(indices, flat, &bindings)?;
-    for iteration in &iteration_bindings {
-        for statement in equations {
-            let substituted = substitute_statement_with_bindings(statement, iteration);
-            // Target discovery only needs assignment LHS names. Avoid full
-            // contextual lowering here because the actual lowering pass runs
-            // immediately after and performs the expensive rewrites once.
-            for target in collect_statement_targets(dae, flat, &substituted)? {
-                state.known_targets.insert(target.clone());
-                loop_targets.insert(target);
-            }
-        }
-    }
-    state
-        .rewrite_ctx
-        .refresh_known_targets(&state.known_targets);
-    for iteration in iteration_bindings {
-        let iteration_guard = loop_active_guard(bool_expr(true), &state.break_condition);
-        lower_for_statement_sequence_with_guard(
-            dae,
-            flat,
-            equations,
-            iteration_guard,
-            &iteration,
-            &mut state,
-        )?;
-    }
-
-    Ok(state
-        .assignments
-        .into_iter()
-        .filter(|(target, _)| loop_targets.contains(target))
-        .map(|(target, value)| {
-            (
-                target,
-                value,
-                Span::DUMMY,
-                "algorithm for-assignment".to_string(),
-            )
-        })
-        .collect())
 }
 
 fn lower_statement_assignments_with_context(
@@ -1470,11 +1287,14 @@ fn lower_statement_assignments_with_context(
     }
 
     match statement {
-        Statement::Assignment { comp, value } => lower_assignment_statement(flat, comp, value),
-        Statement::When(_) => Err("When".to_string()),
+        Statement::Assignment { comp, value, span } => {
+            lower_assignment_statement(flat, comp, value, *span)
+        }
+        Statement::When { .. } => Err("When".to_string()),
         Statement::If {
             cond_blocks,
             else_block,
+            ..
         } => lower_if_statement_assignments(
             dae,
             flat,
@@ -1483,7 +1303,9 @@ fn lower_statement_assignments_with_context(
             current_values,
             known_targets,
         ),
-        Statement::For { indices, equations } => lower_for_statement_assignments(
+        Statement::For {
+            indices, equations, ..
+        } => lower_for_statement_assignments(
             dae,
             flat,
             indices,
@@ -1495,23 +1317,25 @@ fn lower_statement_assignments_with_context(
             comp,
             args,
             outputs,
+            span,
         } if outputs.len() > 1 => {
-            let function_name = component_reference_to_var_name(comp);
-            let projection_names =
-                resolve_multi_output_projection_names(flat, &function_name, outputs.len())?;
+            let function_name = comp.to_var_name();
+            let selection_names =
+                resolve_multi_output_selection_names(flat, &function_name, outputs.len())?;
             let mut lowered = Vec::with_capacity(outputs.len());
-            for (output_expr, projection_name) in outputs.iter().zip(projection_names.iter()) {
+            for (output_expr, selection_name) in outputs.iter().zip(selection_names.iter()) {
                 let Some(target) = algorithm_output_target_name(output_expr) else {
                     return Err("FunctionCallMultiOutputTarget".to_string());
                 };
                 lowered.push((
                     target,
                     Expression::FunctionCall {
-                        name: projection_name.clone(),
+                        name: selection_name.clone().into(),
                         args: args.clone(),
                         is_constructor: false,
+                        span: *span,
                     },
-                    Span::DUMMY,
+                    *span,
                     "algorithm function call assignment".to_string(),
                 ));
             }
@@ -1544,14 +1368,14 @@ fn unsupported_algorithm_statement_tag(statement: &Statement) -> &'static str {
         Statement::Assignment { .. } => "Assignment",
         Statement::If { .. } => "If",
         Statement::For { .. } => "For",
-        Statement::While(_) => "While",
-        Statement::When(_) => "When",
+        Statement::While { .. } => "While",
+        Statement::When { .. } => "When",
         Statement::FunctionCall { .. } => "FunctionCall",
         Statement::Reinit { .. } => "Reinit",
         Statement::Assert { .. } => "Assert",
-        Statement::Return => "Return",
-        Statement::Break => "Break",
-        Statement::Empty => "Empty",
+        Statement::Return { .. } => "Return",
+        Statement::Break { .. } => "Break",
+        Statement::Empty { .. } => "Empty",
     }
 }
 
@@ -1562,12 +1386,18 @@ struct LoweredAlgorithmPartitions {
     f_m: Vec<rumoca_ir_dae::Equation>,
 }
 
-type WhenAssignmentBranches = IndexMap<VarName, Vec<(Expression, Expression)>>;
+struct WhenAssignmentTarget {
+    span: Span,
+    branches: Vec<(Expression, Expression)>,
+}
+
+type WhenAssignmentBranches = IndexMap<VarName, WhenAssignmentTarget>;
 
 fn collect_when_statement_target_branches(
     dae: &Dae,
     flat: &Model,
     blocks: &[StatementBlock],
+    statement_span: Span,
 ) -> Result<WhenAssignmentBranches, String> {
     let mut targets: WhenAssignmentBranches = IndexMap::new();
     let empty_values = IndexMap::new();
@@ -1583,7 +1413,11 @@ fn collect_when_statement_target_branches(
         for (_, (target, value, _, _)) in block_assignments {
             targets
                 .entry(target)
-                .or_default()
+                .or_insert_with(|| WhenAssignmentTarget {
+                    span: statement_span,
+                    branches: Vec::new(),
+                })
+                .branches
                 .push((when_guard_activation_expr(dae, &block.cond), value));
         }
     }
@@ -1595,15 +1429,17 @@ fn merge_algorithm_when_statement_branches(
     merged_targets: &mut WhenAssignmentBranches,
     statement_targets: WhenAssignmentBranches,
 ) {
-    for (target, mut new_branches) in statement_targets {
+    for (target, mut new_target) in statement_targets {
         if let Some(existing) = merged_targets.get_mut(&target) {
             // MLS §11.1 / §11.2: algorithm statements execute in source order,
             // so later when-statements must override earlier assignments to the
             // same target when both fire at the same event instant.
-            new_branches.extend(std::mem::take(existing));
-            *existing = new_branches;
+            new_target
+                .branches
+                .extend(std::mem::take(&mut existing.branches));
+            *existing = new_target;
         } else {
-            merged_targets.insert(target, new_branches);
+            merged_targets.insert(target, new_target);
         }
     }
 }
@@ -1611,24 +1447,31 @@ fn merge_algorithm_when_statement_branches(
 fn lower_when_target_branches_to_event_equations(
     dae: &Dae,
     targets: WhenAssignmentBranches,
+    algorithm_span: Span,
     algorithm_origin: &str,
-) -> Vec<rumoca_ir_dae::Equation> {
+) -> Result<Vec<rumoca_ir_dae::Equation>, String> {
     let mut lowered = Vec::with_capacity(targets.len());
-    for (target, branches) in targets {
+    for (target, assignment) in targets {
+        let span = if assignment.span == Span::DUMMY {
+            algorithm_span
+        } else {
+            assignment.span
+        };
         let eq = rumoca_ir_dae::Equation::explicit_with_scalar_count(
             flat_to_dae_var_name(&target),
             flat_to_dae_expression(&Expression::If {
-                branches,
+                branches: assignment.branches,
                 else_branch: Box::new(when_inactive_rhs(&target, true)),
+                span: rumoca_core::Span::DUMMY,
             }),
-            Span::DUMMY,
+            span,
             format!("algorithm when-assignment ({algorithm_origin})"),
-            lookup_algorithm_target_scalar_count(dae, &target),
+            lookup_algorithm_target_scalar_count(dae, &target, span)?,
         );
         lowered.push(eq);
     }
 
-    lowered
+    Ok(lowered)
 }
 
 fn lower_algorithm_to_equations(
@@ -1645,17 +1488,26 @@ fn lower_algorithm_to_equations(
     let mut main_statements = Vec::new();
 
     for statement in &algorithm.statements {
-        if let Statement::When(blocks) = statement {
-            let statement_targets = collect_when_statement_target_branches(dae, flat, blocks)?;
+        let bare_statement = statement.as_unspanned();
+        if let Statement::When { blocks, .. } = bare_statement {
+            let statement_targets = collect_when_statement_target_branches(
+                dae,
+                flat,
+                blocks,
+                statement.source_span().unwrap_or(algorithm.span),
+            )?;
             merge_algorithm_when_statement_branches(&mut when_assignments, statement_targets);
             continue;
         }
         main_statements.push(statement.clone());
     }
 
-    for eq in
-        lower_when_target_branches_to_event_equations(dae, when_assignments, &algorithm.origin)
-    {
+    for eq in lower_when_target_branches_to_event_equations(
+        dae,
+        when_assignments,
+        algorithm.span,
+        &algorithm.origin,
+    )? {
         route_lowered_when_equation(dae, &mut lowered, eq);
     }
 
@@ -1668,22 +1520,23 @@ fn lower_algorithm_to_equations(
     )?;
 
     for (target, (_, value, span, origin)) in main_assignments {
-        let lhs = Expression::VarRef {
-            name: target.clone(),
-            subscripts: vec![],
+        // Flat statements currently do not carry their own spans. Use the
+        // enclosing algorithm span for generated DAE equations so diagnostics
+        // remain anchored to source instead of Span::DUMMY (SPEC_0008).
+        let span = if span == Span::DUMMY {
+            algorithm.span
+        } else {
+            span
         };
-        let residual = Expression::Binary {
-            op: rumoca_ir_flat::OpBinary::Sub(Default::default()),
-            lhs: Box::new(lhs),
-            rhs: Box::new(value),
-        };
-
-        lowered.main.push(rumoca_ir_dae::Equation::residual_array(
-            flat_to_dae_expression(&residual),
+        route_lowered_main_algorithm_assignment(
+            dae,
+            &mut lowered,
+            target,
+            value,
             span,
-            format!("{} ({})", origin, algorithm.origin),
-            lookup_algorithm_target_scalar_count(dae, &target),
-        ));
+            origin,
+            &algorithm.origin,
+        )?;
     }
 
     Ok(lowered)
@@ -1705,13 +1558,61 @@ fn route_lowered_when_equation(
     }
 }
 
+fn route_lowered_main_algorithm_assignment(
+    dae: &Dae,
+    lowered: &mut LoweredAlgorithmPartitions,
+    target: VarName,
+    value: Expression,
+    span: Span,
+    origin: String,
+    algorithm_origin: &str,
+) -> Result<(), String> {
+    if let Some(bucket) = discrete_variable_equation_bucket_for_lhs(dae, &target) {
+        // MLS §11.1 algorithm assignments are equation-like model behavior.
+        // MLS Appendix B stores discrete Real and discrete-valued variables in
+        // B.1b/B.1c update partitions, so keep these out of continuous f_x.
+        let eq = rumoca_ir_dae::Equation::explicit_with_scalar_count(
+            flat_to_dae_var_name(&target),
+            flat_to_dae_expression(&value),
+            span,
+            format!("{} ({})", origin, algorithm_origin),
+            lookup_algorithm_target_scalar_count(dae, &target, span)?,
+        );
+        match bucket {
+            DiscreteEquationBucket::DiscreteValued => lowered.f_m.push(eq),
+            DiscreteEquationBucket::DiscreteReal => lowered.f_z.push(eq),
+        }
+        return Ok(());
+    }
+
+    let lhs = Expression::VarRef {
+        name: target.clone().into(),
+        subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
+    };
+    let residual = Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(lhs),
+        rhs: Box::new(value),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    lowered.main.push(rumoca_ir_dae::Equation::residual_array(
+        flat_to_dae_expression(&residual),
+        span,
+        format!("{} ({})", origin, algorithm_origin),
+        lookup_algorithm_target_scalar_count(dae, &target, span)?,
+    ));
+    Ok(())
+}
+
 pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Result<(), ToDaeError> {
     for algorithm in &flat.algorithms {
         match lower_algorithm_to_equations(dae, flat, algorithm) {
             Ok(lowered) => {
-                dae.f_x.extend(lowered.main);
-                dae.f_z.extend(lowered.f_z);
-                dae.f_m.extend(lowered.f_m);
+                dae.continuous.equations.extend(lowered.main);
+                dae.discrete.real_updates.extend(lowered.f_z);
+                dae.discrete.valued_updates.extend(lowered.f_m);
             }
             Err(kind) => {
                 return Err(ToDaeError::unsupported_algorithm(
@@ -1726,14 +1627,14 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
     for algorithm in &flat.initial_algorithms {
         match lower_algorithm_to_equations(dae, flat, algorithm) {
             Ok(lowered) => {
-                if !lowered.f_z.is_empty() || !lowered.f_m.is_empty() {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "initial".to_string(),
-                        format!("{} (statement=WhenInInitial)", algorithm.origin),
-                        algorithm.span,
-                    ));
-                }
-                dae.initial_equations.extend(lowered.main);
+                dae.initialization.equations.extend(lowered.main);
+                // MLS §8.6 and §11.1: initial algorithms contribute equations
+                // to the initialization problem. Discrete targets still use
+                // the same Appendix B solved forms as model algorithms, but
+                // they must initialize here rather than populate runtime event
+                // update partitions.
+                dae.initialization.equations.extend(lowered.f_z);
+                dae.initialization.equations.extend(lowered.f_m);
             }
             Err(kind) => {
                 return Err(ToDaeError::unsupported_algorithm(

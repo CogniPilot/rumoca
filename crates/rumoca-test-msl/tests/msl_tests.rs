@@ -1,10 +1,12 @@
+#![cfg(feature = "msl-full-test")]
+
 //! Canonical MSL regression test harness.
 //!
 //! This integration test exposes a single MSL test entrypoint:
 //! `test_msl_all` from `tests/msl_tests/balance_pipeline_core.rs`.
 //!
 //! Run with:
-//! `cargo test --release --package rumoca-test-msl --test msl_tests test_msl_all -- --ignored --nocapture`
+//! `cargo test --release --package rumoca-test-msl --features msl-full-test --test msl_tests balance_pipeline::balance_pipeline_core::test_msl_all -- --nocapture`
 
 use rayon::prelude::*;
 use rumoca_compile::{
@@ -13,7 +15,7 @@ use rumoca_compile::{
         CompiledSourceRoot, Dae, FailedPhase, PhaseResult, StrictCompileReport,
         compile_phase_timing_stats, reset_compile_phase_timing_stats,
     },
-    parsing::parse_files_parallel_lenient,
+    parsing::{LenientParseResult, parse_files_parallel_lenient},
 };
 use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timing_stats};
 use serde::{Deserialize, Serialize};
@@ -38,7 +40,10 @@ fn check_release_mode() {
             ║  Debug mode is 10x+ slower and will take forever.                ║\n\
             ║                                                                  ║\n\
             ║  Please run with --release flag:                                 ║\n\
-            ║  cargo test --release --package rumoca-test-msl --test msl_tests -- --ignored --nocapture\n\
+            ║  cargo test --release --package rumoca-test-msl --features   ║\n\
+            ║  msl-full-test --test msl_tests                              ║\n\
+            ║  balance_pipeline::balance_pipeline_core::test_msl_all       ║\n\
+            ║  -- --nocapture                                              ║\n\
             ╚══════════════════════════════════════════════════════════════════╝\n\n"
         );
     }
@@ -163,6 +168,8 @@ fn find_mo_files(msl_dir: &Path) -> Vec<PathBuf> {
     let has_modelica_versioned = msl_dir.join(MSL_MODELICA_DIR_NAME).is_dir();
     let has_modelica_services_versioned = msl_dir.join("ModelicaServices 4.1.0").is_dir();
     let has_modelica_reference_versioned = msl_dir.join("ModelicaReference 4.1.0").is_dir();
+    let has_modelica_test_versioned = msl_dir.join("ModelicaTest 4.1.0").is_dir();
+    let include_modelica_test = include_modelica_test_sources();
 
     WalkDir::new(msl_dir)
         .into_iter()
@@ -170,6 +177,12 @@ fn find_mo_files(msl_dir: &Path) -> Vec<PathBuf> {
         .filter(|e| {
             let path = e.path();
             let path_str = path.to_string_lossy();
+            let top_package = path
+                .strip_prefix(msl_dir)
+                .ok()
+                .and_then(|relative| relative.components().next())
+                .and_then(|component| component.as_os_str().to_str());
+            let is_modelica_test = top_package.is_some_and(is_modelica_test_package_dir);
             let is_unversioned_alias = path
                 .strip_prefix(msl_dir)
                 .ok()
@@ -179,16 +192,27 @@ fn find_mo_files(msl_dir: &Path) -> Vec<PathBuf> {
                     (top == "Modelica" && has_modelica_versioned)
                         || (top == "ModelicaServices" && has_modelica_services_versioned)
                         || (top == "ModelicaReference" && has_modelica_reference_versioned)
+                        || (top == "ModelicaTest" && has_modelica_test_versioned)
                 });
             path.is_file()
                 && path.extension().is_some_and(|ext| ext == "mo")
                 && !path_str.contains("Obsolete")
                 && !path_str.contains("ModelicaTestConversion")
-                && !path_str.contains("ModelicaTest/")
+                && (include_modelica_test || !is_modelica_test)
                 && !is_unversioned_alias
         })
         .map(|e| e.path().to_path_buf())
         .collect()
+}
+
+fn include_modelica_test_sources() -> bool {
+    balance_pipeline::parity_config()
+        .include_modelica_test
+        .unwrap_or(false)
+}
+
+fn is_modelica_test_package_dir(top_package: &str) -> bool {
+    top_package == "ModelicaTest" || top_package.starts_with("ModelicaTest ")
 }
 
 fn has_component_boundary_prefix(candidate: &str, prefix: &str) -> bool {
@@ -205,7 +229,7 @@ fn names_match_via_component_prefix(active_name: &str, discrete_name: &str) -> b
 }
 
 fn collect_active_refs_from_dae(dae: &Dae, active: &mut HashSet<String>) {
-    for eq in &dae.f_x {
+    for eq in &dae.continuous.equations {
         if let Some(lhs) = &eq.lhs {
             active.insert(lhs.as_str().to_string());
         }
@@ -213,7 +237,7 @@ fn collect_active_refs_from_dae(dae: &Dae, active: &mut HashSet<String>) {
         eq.rhs.collect_var_refs(&mut refs);
         active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
-    for eq in &dae.initial_equations {
+    for eq in &dae.initialization.equations {
         if let Some(lhs) = &eq.lhs {
             active.insert(lhs.as_str().to_string());
         }
@@ -221,7 +245,7 @@ fn collect_active_refs_from_dae(dae: &Dae, active: &mut HashSet<String>) {
         eq.rhs.collect_var_refs(&mut refs);
         active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
-    for eq in &dae.f_z {
+    for eq in &dae.discrete.real_updates {
         if let Some(lhs) = &eq.lhs {
             active.insert(lhs.as_str().to_string());
         }
@@ -229,7 +253,7 @@ fn collect_active_refs_from_dae(dae: &Dae, active: &mut HashSet<String>) {
         eq.rhs.collect_var_refs(&mut refs);
         active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
-    for eq in &dae.f_m {
+    for eq in &dae.discrete.valued_updates {
         if let Some(lhs) = &eq.lhs {
             active.insert(lhs.as_str().to_string());
         }
@@ -237,7 +261,7 @@ fn collect_active_refs_from_dae(dae: &Dae, active: &mut HashSet<String>) {
         eq.rhs.collect_var_refs(&mut refs);
         active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
-    for eq in &dae.f_c {
+    for eq in &dae.conditions.equations {
         if let Some(lhs) = &eq.lhs {
             active.insert(lhs.as_str().to_string());
         }
@@ -245,7 +269,7 @@ fn collect_active_refs_from_dae(dae: &Dae, active: &mut HashSet<String>) {
         eq.rhs.collect_var_refs(&mut refs);
         active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
-    for relation in &dae.relation {
+    for relation in &dae.conditions.relations {
         let mut refs = HashSet::new();
         relation.collect_var_refs(&mut refs);
         active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
@@ -322,6 +346,7 @@ fn active_discrete_scalar_count(flat: &rumoca_ir_flat::Model, dae: &Dae) -> i64 
     collect_active_refs_from_flat(flat, &mut active);
 
     let active_discrete = dae
+        .variables
         .discrete_reals
         .iter()
         .filter(|(name, _)| {
@@ -332,6 +357,7 @@ fn active_discrete_scalar_count(flat: &rumoca_ir_flat::Model, dae: &Dae) -> i64 
         .map(|(_, v)| v.size())
         .sum::<usize>()
         + dae
+            .variables
             .discrete_valued
             .iter()
             .filter(|(name, _)| {
@@ -367,7 +393,8 @@ fn initialization_balance_check(
 ) -> InitializationBalanceCheck {
     let deficit_before = (scalar_unknowns - scalar_equations).max(0);
     let initial_equation_scalars = dae
-        .initial_equations
+        .initialization
+        .equations
         .iter()
         .map(|eq| eq.scalar_count as i64)
         .sum::<i64>();
@@ -454,13 +481,45 @@ struct MslModelResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     compile_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    instantiate_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    typecheck_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    flatten_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dae_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compile_perf_profile_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ir_ast_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ir_flat_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    sim_error_span: Option<rumoca_compile::compile::core::Span>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ic_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ic_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ic_error_span: Option<rumoca_compile::compile::core::Span>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ic_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_build_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ir_solve_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ir_solve_structural_dae_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ir_solve_lower_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sim_backend_build_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_run_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -468,7 +527,19 @@ struct MslModelResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_trace_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    sim_perf_profile_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_trace_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ir_dae_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ir_solve_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ir_solve_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeout_phase: Option<rumoca_worker::WorkerProgressPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeout_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -507,6 +578,8 @@ struct MslPhaseTimings {
     flatten_eval_fallback_seconds: f64,
     #[serde(default)]
     flatten_eval_fallback_calls: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    process_peak_rss_mb: Option<usize>,
     render_and_write_seconds: f64,
     summarize_seconds: f64,
     core_pipeline_seconds: f64,

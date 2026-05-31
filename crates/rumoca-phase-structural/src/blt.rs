@@ -27,7 +27,7 @@ fn scc_to_block(scc: &[usize], incidence: &Incidence, match_eq: &[Option<usize>]
         let eq_ref = incidence.equation_refs[eq_idx].clone();
         let unknown = match match_eq[eq_idx] {
             Some(var_idx) => incidence.unknown_names[var_idx].clone(),
-            None => UnknownId::Variable(rumoca_ir_dae::VarName::from("???")),
+            None => UnknownId::Variable(rumoca_core::VarName::from("???")),
         };
         BltBlock::Scalar {
             equation: eq_ref,
@@ -66,6 +66,7 @@ mod tests {
             n_var,
             eq_unknowns,
             unknown_names,
+            unknown_spans: vec![rumoca_core::Span::DUMMY; n_var],
             equation_refs: eq_refs,
         }
     }
@@ -79,15 +80,11 @@ mod tests {
             HashSet::from([0, 1]),
             HashSet::from([1, 2]),
         ];
-        let eq_refs = vec![
-            EquationRef::Continuous(0),
-            EquationRef::Continuous(1),
-            EquationRef::Continuous(2),
-        ];
+        let eq_refs = vec![EquationRef(0), EquationRef(1), EquationRef(2)];
         let unknown_names = vec![
-            UnknownId::Variable(rumoca_ir_dae::VarName::from("a")),
-            UnknownId::Variable(rumoca_ir_dae::VarName::from("b")),
-            UnknownId::Variable(rumoca_ir_dae::VarName::from("c")),
+            UnknownId::Variable(rumoca_core::VarName::from("a")),
+            UnknownId::Variable(rumoca_core::VarName::from("b")),
+            UnknownId::Variable(rumoca_core::VarName::from("c")),
         ];
         let incidence = make_incidence(3, 3, eq_unknowns, eq_refs, unknown_names);
 
@@ -109,10 +106,10 @@ mod tests {
     fn test_blt_single_algebraic_loop() {
         // 2 equations forming a cycle: eq0↔eq1
         let eq_unknowns = vec![HashSet::from([0, 1]), HashSet::from([0, 1])];
-        let eq_refs = vec![EquationRef::Continuous(0), EquationRef::Continuous(1)];
+        let eq_refs = vec![EquationRef(0), EquationRef(1)];
         let unknown_names = vec![
-            UnknownId::Variable(rumoca_ir_dae::VarName::from("y")),
-            UnknownId::Variable(rumoca_ir_dae::VarName::from("z")),
+            UnknownId::Variable(rumoca_core::VarName::from("y")),
+            UnknownId::Variable(rumoca_core::VarName::from("z")),
         ];
         let incidence = make_incidence(2, 2, eq_unknowns, eq_refs, unknown_names);
 
@@ -143,15 +140,11 @@ mod tests {
             HashSet::from([0, 1, 2]),
             HashSet::from([1, 2]),
         ];
-        let eq_refs = vec![
-            EquationRef::Continuous(0),
-            EquationRef::Continuous(1),
-            EquationRef::Continuous(2),
-        ];
+        let eq_refs = vec![EquationRef(0), EquationRef(1), EquationRef(2)];
         let unknown_names = vec![
-            UnknownId::Variable(rumoca_ir_dae::VarName::from("a")),
-            UnknownId::Variable(rumoca_ir_dae::VarName::from("b")),
-            UnknownId::Variable(rumoca_ir_dae::VarName::from("c")),
+            UnknownId::Variable(rumoca_core::VarName::from("a")),
+            UnknownId::Variable(rumoca_core::VarName::from("b")),
+            UnknownId::Variable(rumoca_core::VarName::from("c")),
         ];
         let incidence = make_incidence(3, 3, eq_unknowns, eq_refs, unknown_names);
 

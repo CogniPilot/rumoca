@@ -182,6 +182,8 @@ fn pkg_005_import_element_of_package() {
         model Test
             import P.A;
             A a;
+        equation
+            a.x = 0;
         end Test;
     "#,
         "Test",

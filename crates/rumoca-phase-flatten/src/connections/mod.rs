@@ -7,23 +7,27 @@
 //! ## MLS §9.2 Connection Semantics
 //!
 //! For each connection set:
-//! - Potential (non-flow) variables: equality equations `v1 = v2 = ... = vn` (n-1 equations)
+//! - Potential (non-flow, non-stream) variables: equality equations
+//!   `v1 = v2 = ... = vn` (n-1 equations)
 //! - Flow variables: sum equation `f1 + f2 + ... + fn = 0` (1 equation)
+//! - Stream variables: no ordinary equality equation for inside connectors;
+//!   stream values are consumed through `inStream`/`actualStream` semantics
+//!   (MLS §15).
 //!
 //! The sign convention for flow variables depends on whether the connector
 //! is an inside or outside connector (MLS §9.2):
 //! - Inside connector (component port): sign = +1
 //! - Outside connector (model boundary): sign = -1
 
-use indexmap::IndexMap;
 use rumoca_core::{Span, TypeId};
 use rumoca_ir_ast as ast;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 
 use crate::errors::FlattenError;
 use crate::path_utils::{
-    first_path_segment_without_index, has_top_level_dot, split_path_with_indices, strip_array_index,
+    first_path_segment_without_index, split_path_with_indices, strip_array_index,
 };
 
 mod equation_generation;
@@ -37,8 +41,8 @@ use path_index::*;
 struct ArrayConnCtx<'a> {
     path_a: &'a str,
     path_b: &'a str,
-    var_a: &'a flat::VarName,
-    var_b: &'a flat::VarName,
+    var_a: &'a rumoca_core::VarName,
+    var_b: &'a rumoca_core::VarName,
     a_is_primitive: bool,
     b_is_primitive: bool,
 }
@@ -46,7 +50,7 @@ struct ArrayConnCtx<'a> {
 struct ConnectionBuildCtx<'a> {
     flat: &'a flat::Model,
     var_index: &'a ConnectionVarIndex,
-    flow_pairs: &'a mut Vec<(flat::VarName, flat::VarName)>,
+    flow_pairs: &'a mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &'a mut UnionFind,
     stream_uf: &'a mut UnionFind,
 }
@@ -58,12 +62,12 @@ struct ConnectionBuildCtx<'a> {
 struct ConnectionVarIndex {
     /// Variables indexed by normalized base prefix (indices stripped), for
     /// connector-subvariable expansion lookups.
-    subvars_by_base_prefix: FxHashMap<String, Vec<flat::VarName>>,
+    subvars_by_base_prefix: FxHashMap<String, Vec<rumoca_core::VarName>>,
     /// Variables indexed by normalized full path (indices stripped), for exact
     /// path matching with array expansion.
-    exact_by_base_path: FxHashMap<String, Vec<flat::VarName>>,
+    exact_by_base_path: FxHashMap<String, Vec<rumoca_core::VarName>>,
     /// Parsed path parts per variable name.
-    parsed_parts_by_var: FxHashMap<flat::VarName, Vec<String>>,
+    parsed_parts_by_var: FxHashMap<rumoca_core::VarName, Vec<String>>,
 }
 
 impl ConnectionVarIndex {
@@ -73,12 +77,14 @@ impl ConnectionVarIndex {
 
     fn from_var_names<'a, I>(var_names: I) -> Self
     where
-        I: IntoIterator<Item = &'a flat::VarName>,
+        I: IntoIterator<Item = &'a rumoca_core::VarName>,
     {
-        let mut subvars_by_base_prefix: FxHashMap<String, Vec<flat::VarName>> =
+        let mut subvars_by_base_prefix: FxHashMap<String, Vec<rumoca_core::VarName>> =
             FxHashMap::default();
-        let mut exact_by_base_path: FxHashMap<String, Vec<flat::VarName>> = FxHashMap::default();
-        let mut parsed_parts_by_var: FxHashMap<flat::VarName, Vec<String>> = FxHashMap::default();
+        let mut exact_by_base_path: FxHashMap<String, Vec<rumoca_core::VarName>> =
+            FxHashMap::default();
+        let mut parsed_parts_by_var: FxHashMap<rumoca_core::VarName, Vec<String>> =
+            FxHashMap::default();
 
         for var_name in var_names {
             let parsed_parts: Vec<String> = split_path_with_indices(var_name.as_str())
@@ -113,17 +119,17 @@ impl ConnectionVarIndex {
         }
     }
 
-    fn parsed_parts(&self, var_name: &flat::VarName) -> Option<&[String]> {
+    fn parsed_parts(&self, var_name: &rumoca_core::VarName) -> Option<&[String]> {
         self.parsed_parts_by_var.get(var_name).map(Vec::as_slice)
     }
 
-    fn subvar_candidates(&self, normalized_prefix: &str) -> Option<&[flat::VarName]> {
+    fn subvar_candidates(&self, normalized_prefix: &str) -> Option<&[rumoca_core::VarName]> {
         self.subvars_by_base_prefix
             .get(normalized_prefix)
             .map(Vec::as_slice)
     }
 
-    fn exact_candidates(&self, normalized_path: &str) -> Option<&[flat::VarName]> {
+    fn exact_candidates(&self, normalized_path: &str) -> Option<&[rumoca_core::VarName]> {
         self.exact_by_base_path
             .get(normalized_path)
             .map(Vec::as_slice)
@@ -136,20 +142,21 @@ impl ConnectionVarIndex {
 /// opposite connector to avoid repeated scans in hot loops.
 struct ConnectionSubMatchIndex {
     path_explicit_index_count: usize,
-    exact_by_suffix: FxHashMap<String, flat::VarName>,
-    by_suffix_and_indices: FxHashMap<String, flat::VarName>,
+    exact_by_suffix: FxHashMap<String, rumoca_core::VarName>,
+    by_suffix_and_indices: FxHashMap<String, rumoca_core::VarName>,
 }
 
 impl ConnectionSubMatchIndex {
-    fn new(path: &str, subs: &[flat::VarName], var_index: &ConnectionVarIndex) -> Self {
+    fn new(path: &str, subs: &[rumoca_core::VarName], var_index: &ConnectionVarIndex) -> Self {
         let path_segments = split_path_with_indices(path);
         let path_explicit_index_count = path_segments
             .iter()
             .filter(|segment| extract_array_index(segment).is_some())
             .count();
 
-        let mut exact_by_suffix: FxHashMap<String, flat::VarName> = FxHashMap::default();
-        let mut by_suffix_and_indices: FxHashMap<String, flat::VarName> = FxHashMap::default();
+        let mut exact_by_suffix: FxHashMap<String, rumoca_core::VarName> = FxHashMap::default();
+        let mut by_suffix_and_indices: FxHashMap<String, rumoca_core::VarName> =
+            FxHashMap::default();
 
         for var in subs {
             if let Some(remainder) = var.as_str().strip_prefix(path)
@@ -191,7 +198,7 @@ impl ConnectionSubMatchIndex {
         }
     }
 
-    fn find_match(&self, suffix: &str, normalized_indices_a: &str) -> Option<flat::VarName> {
+    fn find_match(&self, suffix: &str, normalized_indices_a: &str) -> Option<rumoca_core::VarName> {
         if let Some(var) = self.exact_by_suffix.get(suffix) {
             return Some(var.clone());
         }
@@ -225,7 +232,7 @@ impl ConnectionSubMatchIndex {
 ///     flow Real i;    // Flow variable
 /// end Pin;
 /// ```
-pub(crate) fn is_flow_variable(flat: &flat::Model, var_name: &flat::VarName) -> bool {
+pub(crate) fn is_flow_variable(flat: &flat::Model, var_name: &rumoca_core::VarName) -> bool {
     if let Some(v) = flat.variables.get(var_name) {
         return v.flow;
     }
@@ -240,7 +247,7 @@ pub(crate) fn is_flow_variable(flat: &flat::Model, var_name: &flat::VarName) -> 
 /// Per MLS §15.2, stream connectors are handled by stream-specific equations
 /// (`inStream`/`actualStream`) and must not be turned into direct potential
 /// equality equations by `connect()`.
-fn is_stream_variable(flat: &flat::Model, var_name: &flat::VarName) -> bool {
+fn is_stream_variable(flat: &flat::Model, var_name: &rumoca_core::VarName) -> bool {
     if let Some(v) = flat.variables.get(var_name) {
         return v.stream;
     }
@@ -259,60 +266,16 @@ fn is_stream_variable(flat: &flat::Model, var_name: &flat::VarName) -> bool {
 ///
 /// This occurs when the instantiation phase resolves array dimension parameters
 /// (e.g., `m=1`) and produces subscripted connection paths like `twoPulse.v[1]`.
-fn is_subscripted_variable(var: &flat::VarName, flat: &flat::Model) -> bool {
+fn is_subscripted_variable(var: &rumoca_core::VarName, flat: &flat::Model) -> bool {
     is_subscripted_variable_inner(var, flat).unwrap_or(false)
 }
 
-fn split_trailing_index_groups(path: &str) -> Option<(String, Vec<String>)> {
-    if !path.ends_with(']') {
-        return None;
-    }
-
-    let bytes = path.as_bytes();
-    let mut end = bytes.len();
-    let mut groups_rev: Vec<String> = Vec::new();
-
-    while end > 0 && bytes[end - 1] == b']' {
-        let start = find_trailing_group_start(bytes, end)?;
-        groups_rev.push(path[start..end].to_string());
-        end = start;
-    }
-
-    if groups_rev.is_empty() || end == 0 {
-        return None;
-    }
-
-    let mut groups = groups_rev;
-    groups.reverse();
-    Some((path[..end].to_string(), groups))
-}
-
-fn find_trailing_group_start(bytes: &[u8], end: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for i in (0..end - 1).rev() {
-        match bytes[i] {
-            b']' => depth += 1,
-            b'[' if depth == 0 => return Some(i),
-            b'[' => depth -= 1,
-            _ => {}
-        }
-    }
-    None
-}
-
-fn parse_subscript_index(group: &str) -> Option<i64> {
-    if group.len() < 3 || !group.starts_with('[') || !group.ends_with(']') {
-        return None;
-    }
-    group[1..group.len() - 1].trim().parse().ok()
-}
-
 fn subscripted_base_var_with_rank(
-    var: &flat::VarName,
+    var: &rumoca_core::VarName,
     flat: &flat::Model,
-) -> Option<(flat::VarName, usize)> {
+) -> Option<(rumoca_core::VarName, usize)> {
     let (base_name, groups) = split_trailing_index_groups(var.as_str())?;
-    let base = flat::VarName::new(&base_name);
+    let base = rumoca_core::VarName::new(&base_name);
     let base_var = flat.variables.get(&base)?;
 
     if base_var.dims.is_empty() {
@@ -320,7 +283,7 @@ fn subscripted_base_var_with_rank(
         // Accept positive scalar indices and map to the base variable.
         if groups
             .iter()
-            .all(|group| parse_subscript_index(group).is_some_and(|idx| idx >= 1))
+            .all(|group| parse_single_index_group_value(group).is_some_and(|idx| idx >= 1))
         {
             return Some((base, groups.len()));
         }
@@ -332,7 +295,8 @@ fn subscripted_base_var_with_rank(
     }
 
     let in_bounds = groups.iter().zip(base_var.dims.iter()).all(|(group, dim)| {
-        parse_subscript_index(group).is_some_and(|idx| *dim >= 1 && idx >= 1 && idx <= *dim)
+        parse_single_index_group_value(group)
+            .is_some_and(|idx| *dim >= 1 && idx >= 1 && idx <= *dim)
     });
 
     if in_bounds {
@@ -342,11 +306,14 @@ fn subscripted_base_var_with_rank(
     }
 }
 
-fn subscripted_base_var(var: &flat::VarName, flat: &flat::Model) -> Option<flat::VarName> {
+fn subscripted_base_var(
+    var: &rumoca_core::VarName,
+    flat: &flat::Model,
+) -> Option<rumoca_core::VarName> {
     subscripted_base_var_with_rank(var, flat).map(|(base, _)| base)
 }
 
-fn is_subscripted_variable_inner(var: &flat::VarName, flat: &flat::Model) -> Option<bool> {
+fn is_subscripted_variable_inner(var: &rumoca_core::VarName, flat: &flat::Model) -> Option<bool> {
     subscripted_base_var(var, flat).map(|_| true)
 }
 
@@ -358,13 +325,19 @@ fn is_subscripted_variable_inner(var: &flat::VarName, flat: &flat::Model) -> Opt
 #[derive(Debug)]
 struct ConnectionSet {
     /// All variables in this connection set.
-    variables: Vec<flat::VarName>,
+    variables: Vec<rumoca_core::VarName>,
     /// Connection equation kind to generate for this set.
     kind: ConnectionKind,
     /// Scope where the connect() equation was declared.
     ///
     /// Empty string means root scope.
     scope: String,
+    /// Representative source span for downstream diagnostics on generated
+    /// connection equations. Points at the originating connect() statement
+    /// (the first connection that contributed an endpoint to this set, in
+    /// the order connections were processed). SPEC_0008: generated
+    /// equations carry the originating connect() span, not Span::DUMMY.
+    span: rumoca_core::Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,10 +350,10 @@ enum ConnectionKind {
 /// Union-Find data structure for building connection sets.
 ///
 /// Uses index-based internal representation to minimize allocations.
-/// flat::VarName strings are stored once and referenced by index.
+/// rumoca_core::VarName strings are stored once and referenced by index.
 struct UnionFind {
-    /// Maps flat::VarName to its index.
-    var_to_idx: IndexMap<flat::VarName, usize>,
+    /// Maps rumoca_core::VarName to its index.
+    var_to_idx: IndexMap<rumoca_core::VarName, usize>,
     /// Parent array using indices (self-referential = root).
     parent: Vec<usize>,
     /// Rank for union-by-rank optimization.
@@ -390,14 +363,14 @@ struct UnionFind {
 impl UnionFind {
     fn new() -> Self {
         Self {
-            var_to_idx: IndexMap::new(),
+            var_to_idx: IndexMap::default(),
             parent: Vec::new(),
             rank: Vec::new(),
         }
     }
 
     /// Get or create the index for a variable.
-    fn get_or_insert_idx(&mut self, var: &flat::VarName) -> usize {
+    fn get_or_insert_idx(&mut self, var: &rumoca_core::VarName) -> usize {
         if let Some(&idx) = self.var_to_idx.get(var) {
             idx
         } else {
@@ -425,12 +398,12 @@ impl UnionFind {
         root
     }
 
-    /// Find the root flat::VarName for a variable.
+    /// Find the root rumoca_core::VarName for a variable.
     #[cfg(test)]
-    fn find(&mut self, var: &flat::VarName) -> flat::VarName {
+    fn find(&mut self, var: &rumoca_core::VarName) -> rumoca_core::VarName {
         let idx = self.get_or_insert_idx(var);
         let root_idx = self.find_idx(idx);
-        // Get the flat::VarName at root_idx
+        // Get the rumoca_core::VarName at root_idx
         self.var_to_idx
             .get_index(root_idx)
             .map(|(name, _)| name.clone())
@@ -438,7 +411,7 @@ impl UnionFind {
     }
 
     /// Union two variables into the same set using union-by-rank.
-    fn union(&mut self, a: &flat::VarName, b: &flat::VarName) {
+    fn union(&mut self, a: &rumoca_core::VarName, b: &rumoca_core::VarName) {
         let idx_a = self.get_or_insert_idx(a);
         let idx_b = self.get_or_insert_idx(b);
         let root_a = self.find_idx(idx_a);
@@ -458,15 +431,23 @@ impl UnionFind {
     }
 
     /// Get all connection sets.
-    fn get_sets(&mut self) -> IndexMap<flat::VarName, Vec<flat::VarName>> {
-        let mut sets: IndexMap<flat::VarName, Vec<flat::VarName>> = IndexMap::new();
+    fn get_sets(&mut self) -> IndexMap<rumoca_core::VarName, Vec<rumoca_core::VarName>> {
+        let mut sets: IndexMap<rumoca_core::VarName, Vec<rumoca_core::VarName>> =
+            IndexMap::default();
 
         // Group variables by their root index
-        // SAFETY: idx iterates 0..n where n = parent.len() = var_to_idx.len(),
-        // and find_idx always returns an index within [0, n). get_index is safe.
+        // idx iterates 0..n where n = parent.len() = var_to_idx.len(), so
+        // get_index(idx) is always in-bounds. find_idx(idx) returns an index
+        // within [0, n) by the union-find path-compression invariant.
         let n = self.parent.len();
+        debug_assert_eq!(
+            n,
+            self.var_to_idx.len(),
+            "parent and var_to_idx must be co-sized"
+        );
         for idx in 0..n {
             let root_idx = self.find_idx(idx);
+            debug_assert!(root_idx < n, "find_idx must stay within bounds");
             let var = self
                 .var_to_idx
                 .get_index(idx)
@@ -505,20 +486,20 @@ fn validate_connections(
     connections: &[&ast::InstanceConnection],
     flat: &flat::Model,
     type_roots: &IndexMap<TypeId, TypeId>,
-    prefix_children: &FxHashMap<String, Vec<flat::VarName>>,
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
 ) -> Result<(), FlattenError> {
     for conn in connections {
         let path_a = conn.a.to_flat_string();
         let path_b = conn.b.to_flat_string();
-        let var_a = flat::VarName::new(&path_a);
-        let var_b = flat::VarName::new(&path_b);
+        let var_a = rumoca_core::VarName::new(&path_a);
+        let var_b = rumoca_core::VarName::new(&path_b);
         let span = conn.span;
 
         // Only validate primitive-to-primitive connections directly
         // Connector-level connections are validated when expanded to sub-variables
-        let a_is_primitive = flat.variables.contains_key(&var_a);
-        let b_is_primitive = flat.variables.contains_key(&var_b);
+        let a_is_primitive = is_primitive_flat_var(flat, &var_a);
+        let b_is_primitive = is_primitive_flat_var(flat, &var_b);
         let a_subscript_prim = !a_is_primitive && is_subscripted_variable(&var_a, flat);
         let b_subscript_prim = !b_is_primitive && is_subscripted_variable(&var_b, flat);
 
@@ -568,7 +549,10 @@ struct ExpandedValidationCtx<'a> {
     var_index: &'a ConnectionVarIndex,
 }
 
-fn get_validation_var_info(flat: &flat::Model, var: &flat::VarName) -> Option<ValidationVarInfo> {
+fn get_validation_var_info(
+    flat: &flat::Model,
+    var: &rumoca_core::VarName,
+) -> Option<ValidationVarInfo> {
     if let Some(v) = flat.variables.get(var) {
         return Some(ValidationVarInfo {
             flow: v.flow,
@@ -605,8 +589,8 @@ fn get_validation_var_info(flat: &flat::Model, var: &flat::VarName) -> Option<Va
 /// Both must be flow or both must be non-flow.
 fn validate_flow_consistency(
     flat: &flat::Model,
-    var_a: &flat::VarName,
-    var_b: &flat::VarName,
+    var_a: &rumoca_core::VarName,
+    var_b: &rumoca_core::VarName,
     span: Span,
 ) -> Result<(), FlattenError> {
     let Some(info_a) = get_validation_var_info(flat, var_a) else {
@@ -643,8 +627,8 @@ fn validate_flow_consistency(
 fn validate_type_compatibility(
     flat: &flat::Model,
     type_roots: &IndexMap<TypeId, TypeId>,
-    var_a: &flat::VarName,
-    var_b: &flat::VarName,
+    var_a: &rumoca_core::VarName,
+    var_b: &rumoca_core::VarName,
     span: Span,
 ) -> Result<(), FlattenError> {
     let type_a =
@@ -668,6 +652,7 @@ fn validate_type_compatibility(
 }
 
 fn canonical_type_id(type_id: TypeId, type_roots: &IndexMap<TypeId, TypeId>) -> TypeId {
+    // identity: a type with no recorded root in the union-find map is its own root.
     type_roots.get(&type_id).copied().unwrap_or(type_id)
 }
 
@@ -680,8 +665,8 @@ fn canonical_type_id(type_id: TypeId, type_roots: &IndexMap<TypeId, TypeId>) -> 
 /// Scalars must connect to scalars; arrays must connect to same-dimension arrays.
 fn validate_dimension_compatibility(
     flat: &flat::Model,
-    var_a: &flat::VarName,
-    var_b: &flat::VarName,
+    var_a: &rumoca_core::VarName,
+    var_b: &rumoca_core::VarName,
     span: Span,
 ) -> Result<(), FlattenError> {
     let Some(info_a) = get_validation_var_info(flat, var_a) else {
@@ -704,8 +689,8 @@ fn validate_dimension_compatibility(
 }
 
 fn validate_expanded_connector_connection(
-    subs_a: &[flat::VarName],
-    subs_b: &[flat::VarName],
+    subs_a: &[rumoca_core::VarName],
+    subs_b: &[rumoca_core::VarName],
     ctx: &ExpandedValidationCtx<'_>,
 ) -> Result<(), FlattenError> {
     let sub_match_index = ConnectionSubMatchIndex::new(ctx.path_b, subs_b, ctx.var_index);
@@ -743,9 +728,9 @@ fn validate_expanded_connector_connection(
 ///   the function matches by allowing optional array indices after each path segment.
 fn find_sub_variables_indexed(
     prefix: &str,
-    prefix_children: &FxHashMap<String, Vec<flat::VarName>>,
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) -> Vec<flat::VarName> {
+) -> Vec<rumoca_core::VarName> {
     // First try O(1) prefix index lookup
     if let Some(children) = prefix_children.get(prefix) {
         return children.clone();
@@ -766,7 +751,7 @@ fn find_sub_variables_indexed(
 fn find_exact_match_with_array_expansion(
     path: &str,
     var_index: &ConnectionVarIndex,
-) -> Vec<flat::VarName> {
+) -> Vec<rumoca_core::VarName> {
     let segments = split_path_with_indices(path);
     if segments.is_empty() {
         return Vec::new();
@@ -808,7 +793,7 @@ fn matches_exactly_with_array_indices_cached(name_parts: &[String], segments: &[
 fn find_sub_variables_with_array_expansion_indexed(
     prefix: &str,
     var_index: &ConnectionVarIndex,
-) -> Vec<flat::VarName> {
+) -> Vec<rumoca_core::VarName> {
     let segments = split_path_with_indices(prefix);
     if segments.is_empty() {
         return Vec::new();
@@ -863,8 +848,14 @@ fn find_matching_var_b_indexed(
     suffix: &str,
     normalized_indices_a: &str,
     sub_match_index: &ConnectionSubMatchIndex,
-) -> Option<flat::VarName> {
+) -> Option<rumoca_core::VarName> {
     sub_match_index.find_match(suffix, normalized_indices_a)
+}
+
+fn is_primitive_flat_var(flat: &flat::Model, var: &rumoca_core::VarName) -> bool {
+    flat.variables
+        .get(var)
+        .is_some_and(|info| info.is_primitive)
 }
 
 /// Connect array output variables.
@@ -878,7 +869,7 @@ fn connect_array_output_variables(
     ctx: &ArrayConnCtx,
     flat: &flat::Model,
     var_index: &ConnectionVarIndex,
-    flow_pairs: &mut Vec<(flat::VarName, flat::VarName)>,
+    flow_pairs: &mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &mut UnionFind,
     stream_uf: &mut UnionFind,
 ) {
@@ -889,8 +880,8 @@ fn connect_array_output_variables(
         let mut expanded_a = find_exact_match_with_array_expansion(ctx.path_a, var_index);
         let mut expanded_b = find_exact_match_with_array_expansion(ctx.path_b, var_index);
         if !expanded_a.is_empty() && expanded_a.len() == expanded_b.len() {
-            expanded_a.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-            expanded_b.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+            expanded_a.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
+            expanded_b.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
             for (va, vb) in expanded_a.iter().zip(expanded_b.iter()) {
                 connect_primitive_vars(va, vb, flat, flow_pairs, potential_uf, stream_uf);
             }
@@ -972,15 +963,15 @@ fn connect_array_output_variables(
 fn connect_output_to_array_element(
     ctx: &ArrayConnCtx,
     flat: &flat::Model,
-) -> Option<Vec<flat::VarName>> {
+) -> Option<Vec<rumoca_core::VarName>> {
     let a_array_info = parse_array_element_ref(ctx.path_a, flat);
     let b_array_info = parse_array_element_ref(ctx.path_b, flat);
 
     // Helper to check if base is an output array
-    let is_output_array = |base: &flat::VarName| -> bool {
+    let is_output_array = |base: &rumoca_core::VarName| -> bool {
         flat.variables
             .get(base)
-            .is_some_and(|v| matches!(v.causality, flat::Causality::Output(_)))
+            .is_some_and(|v| matches!(v.causality, rumoca_core::Causality::Output(_)))
     };
 
     match (
@@ -991,20 +982,24 @@ fn connect_output_to_array_element(
     ) {
         // A is primitive, B is array[idx] where array is output
         (true, false, _, Some((base_b, idx_b))) if is_output_array(&base_b) => {
-            let subscripted_b = flat::VarName::new(format!("{}[{}]", base_b.as_str(), idx_b));
+            let subscripted_b =
+                rumoca_core::VarName::new(format!("{}[{}]", base_b.as_str(), idx_b));
             Some(vec![ctx.var_a.clone(), subscripted_b])
         }
         // B is primitive, A is array[idx] where array is output
         (false, true, Some((base_a, idx_a)), _) if is_output_array(&base_a) => {
-            let subscripted_a = flat::VarName::new(format!("{}[{}]", base_a.as_str(), idx_a));
+            let subscripted_a =
+                rumoca_core::VarName::new(format!("{}[{}]", base_a.as_str(), idx_a));
             Some(vec![subscripted_a, ctx.var_b.clone()])
         }
         // Both are array element references for output arrays
         (false, false, Some((base_a, idx_a)), Some((base_b, idx_b)))
             if is_output_array(&base_a) || is_output_array(&base_b) =>
         {
-            let subscripted_a = flat::VarName::new(format!("{}[{}]", base_a.as_str(), idx_a));
-            let subscripted_b = flat::VarName::new(format!("{}[{}]", base_b.as_str(), idx_b));
+            let subscripted_a =
+                rumoca_core::VarName::new(format!("{}[{}]", base_a.as_str(), idx_a));
+            let subscripted_b =
+                rumoca_core::VarName::new(format!("{}[{}]", base_b.as_str(), idx_b));
             Some(vec![subscripted_a, subscripted_b])
         }
         _ => None,
@@ -1015,26 +1010,18 @@ fn connect_output_to_array_element(
 ///
 /// Returns Some((base_var_name, index)) if path ends with [n] and the base is
 /// an array variable in the flat model.
-fn parse_array_element_ref(path: &str, flat: &flat::Model) -> Option<(flat::VarName, i64)> {
+fn parse_array_element_ref(path: &str, flat: &flat::Model) -> Option<(rumoca_core::VarName, i64)> {
     let parts = split_path_with_indices(path);
     let last = parts.last()?;
     let idx_group = extract_array_index(last)?;
-    if !(idx_group.starts_with('[') && idx_group.ends_with(']')) {
-        return None;
-    }
-
-    let idx_text = &idx_group[1..idx_group.len() - 1];
-    if idx_text.contains(['[', ']', ',', ':']) {
-        return None;
-    }
-    let idx: i64 = idx_text.parse().ok()?;
+    let idx = parse_single_index_group_value(&idx_group)?;
 
     let mut base_parts: Vec<String> = parts[..parts.len() - 1]
         .iter()
         .map(std::string::ToString::to_string)
         .collect();
     base_parts.push(strip_array_index(last).to_string());
-    let base_var = flat::VarName::new(base_parts.join("."));
+    let base_var = rumoca_core::VarName::new(base_parts.join("."));
 
     let var = flat.variables.get(&base_var)?;
     if var.dims.is_empty() {
@@ -1057,10 +1044,10 @@ fn parse_array_element_ref(path: &str, flat: &flat::Model) -> Option<(flat::VarN
 /// Since the array variable is a single variable with multiple scalars, we create
 /// synthetic subscripted variable names for the connection sets.
 fn connect_array_to_expanded(
-    array_var: &flat::VarName,
-    expanded_vars: &[flat::VarName],
+    array_var: &rumoca_core::VarName,
+    expanded_vars: &[rumoca_core::VarName],
     flat: &flat::Model,
-    flow_pairs: &mut Vec<(flat::VarName, flat::VarName)>,
+    flow_pairs: &mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &mut UnionFind,
     stream_uf: &mut UnionFind,
 ) {
@@ -1070,12 +1057,13 @@ fn connect_array_to_expanded(
     for expanded_var in expanded_vars {
         // Extract the index from the expanded variable name
         // e.g., "voltageSensor[1].v" -> extract "[1]"
-        let Some(idx_str) = extract_first_array_index(expanded_var.as_str()) else {
+        let Some(idx_str) = first_array_index_group(expanded_var.as_str()) else {
             continue;
         };
 
         // Create synthetic subscripted name: "v" + "[1]" -> "v[1]"
-        let subscripted_name = flat::VarName::new(format!("{}{}", array_var.as_str(), idx_str));
+        let subscripted_name =
+            rumoca_core::VarName::new(format!("{}{}", array_var.as_str(), idx_str));
 
         // Determine flow/non-flow based on the array variable
         let is_flow = is_flow_variable(flat, array_var);
@@ -1091,18 +1079,6 @@ fn connect_array_to_expanded(
     }
 }
 
-/// Extract the first array index from a variable path.
-///
-/// "voltageSensor[1].v" -> Some("[1]")
-/// "plug_p.pin[2].i" -> Some("[2]") (from pin[2])
-/// "r1.n.v" -> None
-fn extract_first_array_index(path: &str) -> Option<String> {
-    // Find the first '[' and its matching ']'
-    let start = path.find('[')?;
-    let end = path[start..].find(']')?;
-    Some(path[start..start + end + 1].to_string())
-}
-
 /// Connect a single sub-variable from connector A to matching sub-variable in connector B.
 ///
 /// This helper reduces nesting in `build_connection_sets` by extracting the
@@ -1112,7 +1088,7 @@ fn extract_first_array_index(path: &str) -> Option<String> {
 /// - For "resistor[1].p.v" with prefix "resistor.p", extracts suffix "v" and indices "[1]"
 /// - Finds matching "plug_p.pin[1].v" in B's sub-variables
 fn connect_sub_variable(
-    sub_a: &flat::VarName,
+    sub_a: &rumoca_core::VarName,
     path_a: &str,
     path_b: &str,
     sub_match_index: &ConnectionSubMatchIndex,
@@ -1124,7 +1100,7 @@ fn connect_sub_variable(
     if let Some(var_info) = ctx.flat.variables.get(sub_a)
         && matches!(
             var_info.variability,
-            flat::Variability::Parameter(_) | flat::Variability::Constant(_)
+            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
         )
     {
         return;
@@ -1192,7 +1168,7 @@ fn connect_sub_variable(
                 .filter_map(|part| extract_array_index(part))
                 .any(|idx| idx == idx_suffix);
             if index_in_bounds && !idx_already_present {
-                conn_b = flat::VarName::new(format!("{}{}", conn_b.as_str(), idx_suffix));
+                conn_b = rumoca_core::VarName::new(format!("{}{}", conn_b.as_str(), idx_suffix));
             }
         }
     }
@@ -1213,18 +1189,18 @@ fn process_connection(
     conn: &ast::InstanceConnection,
     flat: &flat::Model,
     var_index: &ConnectionVarIndex,
-    flow_pairs: &mut Vec<(flat::VarName, flat::VarName)>,
+    flow_pairs: &mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &mut UnionFind,
     stream_uf: &mut UnionFind,
-    prefix_children: &FxHashMap<String, Vec<flat::VarName>>,
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
 ) {
     let path_a = conn.a.to_flat_string();
     let path_b = conn.b.to_flat_string();
-    let var_a = flat::VarName::new(&path_a);
-    let var_b = flat::VarName::new(&path_b);
+    let var_a = rumoca_core::VarName::new(&path_a);
+    let var_b = rumoca_core::VarName::new(&path_b);
 
-    let a_is_primitive = flat.variables.contains_key(&var_a);
-    let b_is_primitive = flat.variables.contains_key(&var_b);
+    let a_is_primitive = is_primitive_flat_var(flat, &var_a);
+    let b_is_primitive = is_primitive_flat_var(flat, &var_b);
 
     if a_is_primitive && b_is_primitive {
         connect_primitive_vars(&var_a, &var_b, flat, flow_pairs, potential_uf, stream_uf);
@@ -1273,10 +1249,10 @@ fn process_connection(
 /// Connect two primitive variables directly based on flow type.
 /// Skips parameters and constants — they don't need connection equations.
 fn connect_primitive_vars(
-    var_a: &flat::VarName,
-    var_b: &flat::VarName,
+    var_a: &rumoca_core::VarName,
+    var_b: &rumoca_core::VarName,
     flat: &flat::Model,
-    flow_pairs: &mut Vec<(flat::VarName, flat::VarName)>,
+    flow_pairs: &mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &mut UnionFind,
     stream_uf: &mut UnionFind,
 ) {
@@ -1285,7 +1261,7 @@ fn connect_primitive_vars(
         if let Some(info) = flat.variables.get(var)
             && matches!(
                 info.variability,
-                flat::Variability::Parameter(_) | flat::Variability::Constant(_)
+                rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
             )
         {
             return;
@@ -1312,10 +1288,10 @@ fn connect_primitive_vars(
 
 /// Expand a connector connection to its sub-variables.
 fn expand_connector_connection(
-    subs_a: &[flat::VarName],
+    subs_a: &[rumoca_core::VarName],
     path_a: &str,
     path_b: &str,
-    subs_b: &[flat::VarName],
+    subs_b: &[rumoca_core::VarName],
     ctx: &mut ConnectionBuildCtx<'_>,
 ) {
     let sub_match_index = ConnectionSubMatchIndex::new(path_b, subs_b, ctx.var_index);
@@ -1324,23 +1300,27 @@ fn expand_connector_connection(
     }
 }
 
-fn collect_existing_lhs_vars(flat: &flat::Model) -> std::collections::HashSet<flat::VarName> {
+fn collect_existing_lhs_vars(
+    flat: &flat::Model,
+) -> std::collections::HashSet<rumoca_core::VarName> {
     let mut lhs_vars = std::collections::HashSet::new();
     for eq in &flat.equations {
-        let flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
+        let rumoca_core::Expression::Binary { op, lhs, .. } = &eq.residual else {
             continue;
         };
-        if !matches!(op, flat::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_core::OpBinary::Sub) {
             continue;
         }
-        if let flat::Expression::VarRef { name, .. } = lhs.as_ref() {
-            lhs_vars.insert(name.clone());
+        if let rumoca_core::Expression::VarRef { name, .. } = lhs.as_ref() {
+            lhs_vars.insert(name.var_name().clone());
         }
     }
     lhs_vars
 }
 
-fn collect_existing_var_refs(flat: &flat::Model) -> std::collections::HashSet<flat::VarName> {
+fn collect_existing_var_refs(
+    flat: &flat::Model,
+) -> std::collections::HashSet<rumoca_core::VarName> {
     let mut refs = std::collections::HashSet::new();
     for eq in &flat.equations {
         eq.residual.collect_var_refs(&mut refs);
@@ -1350,8 +1330,8 @@ fn collect_existing_var_refs(flat: &flat::Model) -> std::collections::HashSet<fl
 
 fn stream_var_present_in_set(
     flat: &flat::Model,
-    var: &flat::VarName,
-    vars: &std::collections::HashSet<flat::VarName>,
+    var: &rumoca_core::VarName,
+    vars: &std::collections::HashSet<rumoca_core::VarName>,
 ) -> bool {
     if vars.contains(var) {
         return true;
@@ -1362,14 +1342,17 @@ fn stream_var_present_in_set(
         return true;
     }
     if let Some(stripped) = strip_embedded_array_indices(var.as_str())
-        && vars.contains(&flat::VarName::new(stripped))
+        && vars.contains(&rumoca_core::VarName::new(stripped))
     {
         return true;
     }
     false
 }
 
-fn stream_set_touches_top_level_connector(flat: &flat::Model, vars: &[flat::VarName]) -> bool {
+fn stream_set_touches_top_level_connector(
+    flat: &flat::Model,
+    vars: &[rumoca_core::VarName],
+) -> bool {
     vars.iter().any(|var| {
         first_path_segment_without_index(var.as_str())
             .is_some_and(|prefix| flat.top_level_connectors.contains(prefix))
@@ -1378,9 +1361,9 @@ fn stream_set_touches_top_level_connector(flat: &flat::Model, vars: &[flat::VarN
 
 fn classify_stream_vars_by_presence(
     flat: &flat::Model,
-    vars: Vec<flat::VarName>,
-    present: &std::collections::HashSet<flat::VarName>,
-) -> (Vec<flat::VarName>, Vec<flat::VarName>) {
+    vars: Vec<rumoca_core::VarName>,
+    present: &std::collections::HashSet<rumoca_core::VarName>,
+) -> (Vec<rumoca_core::VarName>, Vec<rumoca_core::VarName>) {
     let mut defined = Vec::new();
     let mut undefined = Vec::new();
     for var in vars {
@@ -1395,10 +1378,11 @@ fn classify_stream_vars_by_presence(
 
 fn append_stream_connection_sets_for_group(
     flat: &flat::Model,
-    vars: Vec<flat::VarName>,
-    existing_lhs_vars: &std::collections::HashSet<flat::VarName>,
-    existing_var_refs: &mut Option<std::collections::HashSet<flat::VarName>>,
+    vars: Vec<rumoca_core::VarName>,
+    existing_lhs_vars: &std::collections::HashSet<rumoca_core::VarName>,
+    existing_var_refs: &mut Option<std::collections::HashSet<rumoca_core::VarName>>,
     result: &mut Vec<ConnectionSet>,
+    span: rumoca_core::Span,
 ) {
     if vars.len() < 2 {
         return;
@@ -1411,8 +1395,8 @@ fn append_stream_connection_sets_for_group(
         return;
     }
 
-    undefined_streams.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    defined_streams.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    undefined_streams.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
+    defined_streams.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
 
     if touches_top_level {
         if undefined_streams.len() >= 2 {
@@ -1420,6 +1404,7 @@ fn append_stream_connection_sets_for_group(
                 variables: undefined_streams,
                 kind: ConnectionKind::Stream,
                 scope: String::new(),
+                span,
             });
         }
         return;
@@ -1433,8 +1418,8 @@ fn append_stream_connection_sets_for_group(
     }
 
     defined_streams.extend(referenced_streams);
-    defined_streams.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    still_undefined.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    defined_streams.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
+    still_undefined.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
 
     if let Some(anchor) = defined_streams.first().cloned() {
         for missing in still_undefined {
@@ -1442,6 +1427,7 @@ fn append_stream_connection_sets_for_group(
                 variables: vec![missing, anchor.clone()],
                 kind: ConnectionKind::Stream,
                 scope: String::new(),
+                span,
             });
         }
         return;
@@ -1452,6 +1438,7 @@ fn append_stream_connection_sets_for_group(
             variables: still_undefined,
             kind: ConnectionKind::Stream,
             scope: String::new(),
+            span,
         });
     }
 }
@@ -1476,15 +1463,48 @@ fn append_stream_connection_sets_for_group(
 fn build_connection_sets(
     connections: &[&ast::InstanceConnection],
     flat: &flat::Model,
-    prefix_children: &FxHashMap<String, Vec<flat::VarName>>,
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
 ) -> Vec<ConnectionSet> {
     let mut potential_uf = UnionFind::new();
     let mut stream_uf = UnionFind::new();
     let mut result = Vec::new();
 
+    // SPEC_0008: every generated connection equation carries the originating
+    // connect() span. Track the first connect() span seen for each variable
+    // (in input order) — this gives a deterministic representative span per
+    // set, computed as the min over each set's members.
+    let mut var_first_span: FxHashMap<rumoca_core::VarName, rumoca_core::Span> =
+        FxHashMap::default();
+    let record_var_span = |map: &mut FxHashMap<rumoca_core::VarName, rumoca_core::Span>,
+                           var: rumoca_core::VarName,
+                           span: rumoca_core::Span| {
+        map.entry(var).or_insert(span);
+    };
+    for conn in connections {
+        record_var_span(
+            &mut var_first_span,
+            rumoca_core::VarName::new(conn.a.to_flat_string()),
+            conn.span,
+        );
+        record_var_span(
+            &mut var_first_span,
+            rumoca_core::VarName::new(conn.b.to_flat_string()),
+            conn.span,
+        );
+    }
+    let representative_span =
+        |vars: &[rumoca_core::VarName],
+         var_first_span: &FxHashMap<rumoca_core::VarName, rumoca_core::Span>| {
+            vars.iter()
+                .filter_map(|v| var_first_span.get(v).copied())
+                .min_by_key(|s| (s.start.0, s.end.0))
+                .unwrap_or(rumoca_core::Span::DUMMY)
+        };
+
     // Group connections by scope (hierarchy level where connect was declared).
-    let mut connections_by_scope: IndexMap<&str, Vec<&ast::InstanceConnection>> = IndexMap::new();
+    let mut connections_by_scope: IndexMap<&str, Vec<&ast::InstanceConnection>> =
+        IndexMap::default();
     for conn in connections {
         connections_by_scope
             .entry(&conn.scope)
@@ -1494,7 +1514,7 @@ fn build_connection_sets(
 
     // Process each scope separately for flow pairs, globally for potential
     for (scope, scope_conns) in &connections_by_scope {
-        let mut flow_pairs: Vec<(flat::VarName, flat::VarName)> = Vec::new();
+        let mut flow_pairs: Vec<(rumoca_core::VarName, rumoca_core::VarName)> = Vec::new();
         for conn in scope_conns {
             process_connection(
                 conn,
@@ -1514,10 +1534,12 @@ fn build_connection_sets(
         }
         for (_root, vars) in scope_uf.get_sets() {
             if vars.len() >= 2 {
+                let span = representative_span(&vars, &var_first_span);
                 result.push(ConnectionSet {
                     variables: vars,
                     kind: ConnectionKind::Flow,
                     scope: (*scope).to_string(),
+                    span,
                 });
             }
         }
@@ -1527,10 +1549,12 @@ fn build_connection_sets(
     // is the same whether merged or split: N-1 for N variables either way)
     for (_root, vars) in potential_uf.get_sets() {
         if vars.len() >= 2 {
+            let span = representative_span(&vars, &var_first_span);
             result.push(ConnectionSet {
                 variables: vars,
                 kind: ConnectionKind::Potential,
                 scope: String::new(),
+                span,
             });
         }
     }
@@ -1538,14 +1562,16 @@ fn build_connection_sets(
     let stream_sets = stream_uf.get_sets();
     if !stream_sets.is_empty() {
         let existing_lhs_vars = collect_existing_lhs_vars(flat);
-        let mut existing_var_refs: Option<std::collections::HashSet<flat::VarName>> = None;
+        let mut existing_var_refs: Option<std::collections::HashSet<rumoca_core::VarName>> = None;
         for (_root, vars) in stream_sets {
+            let span = representative_span(&vars, &var_first_span);
             append_stream_connection_sets_for_group(
                 flat,
                 vars,
                 &existing_lhs_vars,
                 &mut existing_var_refs,
                 &mut result,
+                span,
             );
         }
     }
@@ -1558,26 +1584,34 @@ fn build_connection_sets(
 // =============================================================================
 
 /// Create a component reference expression for a variable name.
-fn var_to_expr(var_name: &flat::VarName) -> flat::Expression {
-    flat::Expression::VarRef {
-        name: var_name.clone(),
+fn var_to_expr(var_name: &rumoca_core::VarName) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: var_name.clone().into(),
         subscripts: Vec::new(),
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
 /// Create a residual expression: lhs - rhs (for equation lhs = rhs).
-fn create_equality_residual(lhs: flat::Expression, rhs: flat::Expression) -> flat::Expression {
-    flat::Expression::Binary {
-        op: flat::OpBinary::Sub(flat::Token::default()),
+fn create_equality_residual(
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
 /// Create a sum expression: a + b + c + ...
-fn create_sum(exprs: Vec<flat::Expression>) -> flat::Expression {
+fn create_sum(exprs: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
     if exprs.is_empty() {
-        return flat::Expression::Literal(flat::Literal::Integer(0));
+        return rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(0),
+            span: rumoca_core::Span::DUMMY,
+        };
     }
 
     // SAFETY: is_empty() check above guarantees at least one element
@@ -1585,10 +1619,11 @@ fn create_sum(exprs: Vec<flat::Expression>) -> flat::Expression {
     let mut result = iter.next().unwrap();
 
     for expr in iter {
-        result = flat::Expression::Binary {
-            op: flat::OpBinary::Add(flat::Token::default()),
+        result = rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
             lhs: Box::new(result),
             rhs: Box::new(expr),
+            span: rumoca_core::Span::DUMMY,
         };
     }
 

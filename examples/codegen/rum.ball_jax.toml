@@ -1,0 +1,11 @@
+[rumoca]
+version = "1"
+task = "codegen"
+
+[model]
+file = "../models/Ball.mo"
+name = "Ball"
+
+[codegen]
+target = "jax"
+output_dir = "gen/ball_jax"

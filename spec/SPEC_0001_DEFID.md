@@ -40,6 +40,43 @@ impl DefId {
 - Statements
 - Annotations
 
+### Semantic Identity Keys
+
+**Hard rule:** compiler semantic identity is `DefId` based. Compiler data
+structures that identify declarations MUST key by `DefId`, or by a small
+structured key whose semantic identity fields are all `DefId` values. After name
+resolution, string hashing is not permitted for compiler semantic identity.
+Rendered strings, `VarName`, flat names, component-reference display text, and
+other textual names are display/source/protocol data, not semantic identity.
+
+Hashing rendered text for compiler identity is prohibited. This includes
+hashing a `String`, `&str`, `VarName`, cached display name, rendered
+`ComponentPath`, or rendered `ComponentReference` in any semantic map. Hashing a
+wrapper around those textual values is also prohibited. If code wants such a key
+after resolution, that is a phase-boundary bug: move the `DefId` to that point
+and key by `DefId`.
+
+Allowed semantic keys after resolution:
+- `DefId`
+- Tuples or structs whose identity fields are `DefId` values
+- Opaque local indices that are allocated from `DefId`-keyed tables and cannot
+  be reconstructed from rendered text
+
+Allowed exceptions:
+- Name-resolution scopes before a declaration has been resolved. These must use
+  structured component-reference keys, not raw string keys, and must produce
+  `DefId` results. They must not escape the resolution phase or be reused as
+  downstream semantic identity.
+- Serialized JSON, diagnostics, user-facing output, and source text boundaries.
+- Builtin registries or protocol/config maps where the external contract is a
+  textual name.
+
+If a phase needs to look up metadata for a resolved class, component, iterator,
+or function parameter, the lookup key is the declaration's `DefId`. Re-parsing
+or hashing a rendered name to recover identity is prohibited. If the code only
+has a textual name at that point, carry the `DefId` forward instead of
+recreating identity from text.
+
 ## Rationale
 - Inspired by Rust compiler's `DefId` which provides stable cross-crate references
 - u32 is sufficient for any realistic model (4B declarations)

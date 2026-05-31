@@ -5,15 +5,14 @@
 //! - enum/integer/boolean conditions in guarded expressions
 //! - shape inference before flattening produces Expression forms
 
+use rumoca_core::{Causality, ClassType, OpBinary, OpUnary};
 use rumoca_core::{
     IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
-    eval_integer_div_builtin, find_last_top_level_dot, has_top_level_dot, top_level_last_segment,
+    eval_integer_div_builtin, find_last_top_level_dot,
 };
-use rumoca_ir_ast::{
-    ClassDef, ClassType, Expression, Statement, StatementBlock, Subscript, TerminalType,
-};
-use rumoca_ir_core::{Causality, OpBinary, OpUnary};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rumoca_ir_ast::{ClassDef, Expression, Statement, StatementBlock, Subscript, TerminalType};
+use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 pub use dimension_inference::{
@@ -54,284 +53,36 @@ fn lookup_by_scope<'a, T>(name: &str, scope: &str, map: &'a FxHashMap<String, T>
 }
 
 /// General lookup for constant/scalar evaluation.
-///
-/// Unlike `lookup_structural_with_scope`, this permits guarded leaf fallback
-/// so package constants referenced through aliases still resolve.
 fn lookup_with_scope<'a, T: PartialEq>(
     name: &str,
     scope: &str,
     map: &'a FxHashMap<String, T>,
-    suffix_index: Option<&SuffixIndex>,
 ) -> Option<&'a T> {
-    if let Some(val) = lookup_by_scope(name, scope, map) {
-        return Some(val);
-    }
-
-    // For dotted names (e.g. PhaseSystem.n), first prefer the nearest scoped
-    // suffix match before falling back to global suffix matching.
-    if has_top_level_dot(name)
-        && let Some(val) = lookup_dotted_by_nearest_scope(name, scope, map, suffix_index)
-    {
-        return Some(val);
-    }
-
-    // Suffix fallback for package constants (MLS §7.3).
-    // For bare names like "nX", look for any entry ending in ".nX".
-    // For dotted names like "Medium.nX", prefer full dotted suffix
-    // ".Medium.nX". If no full-dotted match exists, allow a guarded leaf
-    // fallback only when the leaf suffix resolves to exactly one key.
-    if has_top_level_dot(name) {
-        match lookup_by_suffix_state(name, map, suffix_index) {
-            SuffixLookup::Found(val) => return Some(val),
-            SuffixLookup::Ambiguous => return None,
-            SuffixLookup::Missing => {}
-        }
-        return lookup_by_suffix_unique_key(top_level_last_segment(name), map, suffix_index);
-    }
-
-    lookup_by_suffix(name, map, suffix_index)
-}
-
-fn lookup_dotted_by_nearest_scope<'a, T>(
-    name: &str,
-    scope: &str,
-    map: &'a FxHashMap<String, T>,
-    suffix_index: Option<&SuffixIndex>,
-) -> Option<&'a T> {
-    if scope.is_empty() {
-        return None;
-    }
-
-    let mut best_key: Option<String> = None;
-    let mut best_prefix_len = 0usize;
-    let mut ambiguous = false;
-
-    let mut consider_key = |key: &str| {
-        if !has_top_level_suffix_match(key, name) || !map.contains_key(key) {
-            return;
-        }
-        let candidate_scope = key
-            .strip_suffix(name)
-            .and_then(|prefix| prefix.strip_suffix('.'))
-            .unwrap_or_default();
-        let prefix_len = common_scope_prefix_len(scope, candidate_scope);
-        if prefix_len == 0 {
-            return;
-        }
-        if prefix_len > best_prefix_len {
-            best_prefix_len = prefix_len;
-            best_key = Some(key.to_string());
-            ambiguous = false;
-            return;
-        }
-        if prefix_len == best_prefix_len && best_key.as_deref() != Some(key) {
-            ambiguous = true;
-        }
-    };
-
-    if let Some(index) = suffix_index {
-        if let Some(candidates) = index.keys_by_dotted_suffix.get(name) {
-            for idx in candidates {
-                consider_key(index.key(*idx));
-            }
-        }
-    } else {
-        for key in map.keys() {
-            consider_key(key.as_str());
-        }
-    }
-
-    if ambiguous {
-        return None;
-    }
-    best_key.and_then(|k| map.get(k.as_str()))
-}
-
-fn common_scope_prefix_len(a: &str, b: &str) -> usize {
-    let mut len = 0usize;
-    let mut last_boundary = 0usize;
-    let bytes_a = a.as_bytes();
-    let bytes_b = b.as_bytes();
-    while len < bytes_a.len() && len < bytes_b.len() && bytes_a[len] == bytes_b[len] {
-        if bytes_a[len] == b'.' {
-            last_boundary = len + 1;
-        }
-        len += 1;
-    }
-
-    if len == bytes_a.len() && len == bytes_b.len() {
-        return len;
-    }
-    if len == bytes_a.len() && bytes_b.get(len) == Some(&b'.') {
-        return len;
-    }
-    if len == bytes_b.len() && bytes_a.get(len) == Some(&b'.') {
-        return len;
-    }
-
-    last_boundary
+    lookup_by_scope(name, scope, map)
 }
 
 /// Structural lookup used by shape inference and strict dimension resolution.
-///
-/// Dotted names intentionally avoid leaf fallback to prevent cross-scope
-/// accidental matches (for example `Medium.nX` resolving to unrelated `*.nX`).
 fn lookup_structural_with_scope<'a, T: PartialEq>(
     name: &str,
     scope: &str,
     map: &'a FxHashMap<String, T>,
-    suffix_index: Option<&SuffixIndex>,
 ) -> Option<&'a T> {
-    if let Some(value) = lookup_by_scope(name, scope, map) {
-        return Some(value);
-    }
-
-    if has_top_level_dot(name) {
-        return match lookup_by_suffix_state(name, map, suffix_index) {
-            SuffixLookup::Found(value) => Some(value),
-            SuffixLookup::Missing | SuffixLookup::Ambiguous => None,
-        };
-    }
-
-    lookup_by_suffix(name, map, suffix_index)
+    lookup_by_scope(name, scope, map)
 }
 
-fn find_unique_value<'a, T: PartialEq>(
-    candidates: &[usize],
-    map: &'a FxHashMap<String, T>,
-    suffix_index: &SuffixIndex,
-) -> SuffixLookup<'a, T> {
-    let mut found: Option<&T> = None;
-    for candidate_idx in candidates {
-        let key = suffix_index.key(*candidate_idx);
-        if let Some(val) = map.get(key) {
-            if found.is_some_and(|prev| prev != val) {
-                return SuffixLookup::Ambiguous;
-            }
-            found = Some(val);
-        }
-    }
-    found.map_or(SuffixLookup::Missing, SuffixLookup::Found)
-}
-
-enum SuffixLookup<'a, T> {
-    Found(&'a T),
-    Missing,
-    Ambiguous,
-}
-
-fn lookup_by_suffix_state<'a, T: PartialEq>(
-    name: &str,
-    map: &'a FxHashMap<String, T>,
-    suffix_index: Option<&SuffixIndex>,
-) -> SuffixLookup<'a, T> {
-    if has_top_level_dot(name) {
-        if let Some(index) = suffix_index {
-            let Some(candidates) = index.keys_by_dotted_suffix.get(name) else {
-                return SuffixLookup::Missing;
-            };
-            return find_unique_value(candidates, map, index);
-        }
-
-        let mut found: Option<&T> = None;
-        for (key, val) in map {
-            if !has_top_level_suffix_match(key, name) {
-                continue;
-            }
-            if found.is_some_and(|prev| prev != val) {
-                return SuffixLookup::Ambiguous;
-            }
-            found = Some(val);
-        }
-        return found.map_or(SuffixLookup::Missing, SuffixLookup::Found);
+fn component_reference_path(cr: &rumoca_ir_ast::ComponentReference) -> Cow<'_, str> {
+    if cr.parts.len() == 1 {
+        return Cow::Borrowed(cr.parts[0].ident.text.as_ref());
     }
 
-    if let Some(index) = suffix_index {
-        // O(1) lookup using pre-built suffix index
-        let Some(candidates) = index.keys_by_suffix.get(name) else {
-            return SuffixLookup::Missing;
-        };
-        find_unique_value(candidates, map, index)
-    } else {
-        // Fallback: linear scan
-        let mut found: Option<&T> = None;
-        for (key, val) in map {
-            if !has_top_level_suffix_match(key, name) {
-                continue;
-            }
-            if found.is_some_and(|prev| prev != val) {
-                return SuffixLookup::Ambiguous; // Ambiguous: different values
-            }
-            found = Some(val);
+    let mut path = String::new();
+    for part in &cr.parts {
+        if !path.is_empty() {
+            path.push('.');
         }
-        found.map_or(SuffixLookup::Missing, SuffixLookup::Found)
+        path.push_str(part.ident.text.as_ref());
     }
-}
-
-fn lookup_by_suffix<'a, T: PartialEq>(
-    name: &str,
-    map: &'a FxHashMap<String, T>,
-    suffix_index: Option<&SuffixIndex>,
-) -> Option<&'a T> {
-    match lookup_by_suffix_state(name, map, suffix_index) {
-        SuffixLookup::Found(val) => Some(val),
-        SuffixLookup::Missing | SuffixLookup::Ambiguous => None,
-    }
-}
-
-/// Dotted lookup leaf fallback that requires a unique target-map key.
-fn lookup_by_suffix_unique_key<'a, T>(
-    name: &str,
-    map: &'a FxHashMap<String, T>,
-    suffix_index: Option<&SuffixIndex>,
-) -> Option<&'a T> {
-    if let Some(index) = suffix_index {
-        let candidates = index.keys_by_suffix.get(name)?;
-        let mut matched_idx: Option<usize> = None;
-        for candidate_idx in candidates {
-            let key = index.key(*candidate_idx);
-            if !map.contains_key(key) {
-                continue;
-            }
-            if matched_idx.replace(*candidate_idx).is_some() {
-                return None;
-            }
-        }
-        return matched_idx.and_then(|idx| map.get(index.key(idx)));
-    }
-
-    let mut matched_key: Option<&str> = None;
-    for key in map.keys() {
-        if !has_top_level_suffix_match(key, name) {
-            continue;
-        }
-        if matched_key.replace(key.as_str()).is_some() {
-            return None;
-        }
-    }
-    matched_key.and_then(|key| map.get(key))
-}
-
-fn has_top_level_suffix_match(key: &str, suffix: &str) -> bool {
-    if key.len() <= suffix.len() || !key.ends_with(suffix) {
-        return false;
-    }
-
-    let boundary_idx = key.len() - suffix.len() - 1;
-    matches!(key.as_bytes().get(boundary_idx), Some(b'.')) && is_top_level_dot_at(key, boundary_idx)
-}
-
-fn is_top_level_dot_at(path: &str, dot_index: usize) -> bool {
-    let mut bracket_depth = 0usize;
-    for (idx, byte) in path.bytes().enumerate().take(dot_index + 1) {
-        match byte {
-            b'[' => bracket_depth += 1,
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b'.' if idx == dot_index => return bracket_depth == 0,
-            _ => {}
-        }
-    }
-    false
+    Cow::Owned(path)
 }
 
 pub struct TypeCheckEvalContext {
@@ -345,56 +96,6 @@ pub struct TypeCheckEvalContext {
     pub func_eval_depth: usize,
     pub enum_sizes: FxHashMap<String, usize>,
     pub enum_ordinals: FxHashMap<String, i64>,
-    suffix_index: Option<SuffixIndex>,
-}
-
-struct SuffixIndex {
-    keys: Vec<String>,
-    keys_by_suffix: FxHashMap<String, Vec<usize>>,
-    keys_by_dotted_suffix: FxHashMap<String, Vec<usize>>,
-}
-
-impl SuffixIndex {
-    fn key(&self, idx: usize) -> &str {
-        self.keys[idx].as_str()
-    }
-}
-
-fn index_key_suffixes(
-    key: &str,
-    key_idx: usize,
-    keys_by_suffix: &mut FxHashMap<String, Vec<usize>>,
-    keys_by_dotted_suffix: &mut FxHashMap<String, Vec<usize>>,
-) {
-    let mut bracket_depth = 0usize;
-    let mut top_level_dots: Vec<usize> = Vec::new();
-    for (idx, byte) in key.bytes().enumerate() {
-        match byte {
-            b'[' => bracket_depth += 1,
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b'.' if bracket_depth == 0 => top_level_dots.push(idx),
-            _ => {}
-        }
-    }
-
-    let Some(&last_dot) = top_level_dots.last() else {
-        return;
-    };
-
-    keys_by_suffix
-        .entry(key[last_dot + 1..].to_string())
-        .or_default()
-        .push(key_idx);
-
-    for dot_idx in top_level_dots
-        .iter()
-        .take(top_level_dots.len().saturating_sub(1))
-    {
-        keys_by_dotted_suffix
-            .entry(key[*dot_idx + 1..].to_string())
-            .or_default()
-            .push(key_idx);
-    }
 }
 
 impl Default for TypeCheckEvalContext {
@@ -415,48 +116,7 @@ impl TypeCheckEvalContext {
             func_eval_depth: 0,
             enum_sizes: FxHashMap::default(),
             enum_ordinals: FxHashMap::default(),
-            suffix_index: None,
         }
-    }
-
-    pub fn build_suffix_index(&mut self) {
-        let mut keys_by_suffix: FxHashMap<String, Vec<usize>> = FxHashMap::default();
-        let mut keys_by_dotted_suffix: FxHashMap<String, Vec<usize>> = FxHashMap::default();
-        let mut seen: FxHashSet<String> = FxHashSet::default();
-        let mut keys: Vec<String> = Vec::new();
-
-        // Collect suffixes from all value maps and function names
-        for key in self
-            .integers
-            .keys()
-            .chain(self.reals.keys())
-            .chain(self.booleans.keys())
-            .chain(self.enums.keys())
-            .chain(self.dimensions.keys())
-            .chain(self.functions.keys())
-            .chain(self.enum_ordinals.keys())
-            .chain(self.enum_sizes.keys())
-        {
-            let owned = key.clone();
-            if seen.insert(owned.clone()) {
-                keys.push(owned);
-            }
-        }
-
-        for (key_idx, key) in keys.iter().enumerate() {
-            index_key_suffixes(
-                key,
-                key_idx,
-                &mut keys_by_suffix,
-                &mut keys_by_dotted_suffix,
-            );
-        }
-
-        self.suffix_index = Some(SuffixIndex {
-            keys,
-            keys_by_suffix,
-            keys_by_dotted_suffix,
-        });
     }
 
     pub fn add_integer(&mut self, name: impl Into<String>, value: i64) {
@@ -576,58 +236,7 @@ fn eval_integer_func_with_scope(
 const MAX_FUNC_EVAL_DEPTH: usize = 10;
 
 fn lookup_function<'a>(func_name: &str, ctx: &'a TypeCheckEvalContext) -> Option<&'a ClassDef> {
-    if let Some(def) = ctx.functions.get(func_name) {
-        return Some(def);
-    }
-    // Use suffix index for function name lookup if available
-    if let Some(index) = &ctx.suffix_index {
-        if let Some(keys) = index.keys_by_suffix.get(func_name)
-            && let Some(def) = keys
-                .iter()
-                .find_map(|key_idx| ctx.functions.get(index.key(*key_idx)))
-        {
-            return Some(def);
-        }
-
-        if has_top_level_dot(func_name)
-            && let Some(keys) = index.keys_by_dotted_suffix.get(func_name)
-            && let Some(def) = keys
-                .iter()
-                .find_map(|key_idx| ctx.functions.get(index.key(*key_idx)))
-        {
-            return Some(def);
-        }
-
-        // For multi-segment relative names like "A.B.Func", try the last segment
-        let last_seg = top_level_last_segment(func_name);
-        if let Some(keys) = index.keys_by_suffix.get(last_seg) {
-            // If only one function with this name exists, use it
-            // (handles import aliases like Cv.from_deg → Conversions.from_deg)
-            if let Some(key_idx) = unique_function_key_idx(keys, index, &ctx.functions)
-                && let Some(def) = ctx.functions.get(index.key(key_idx))
-            {
-                return Some(def);
-            }
-        }
-    }
-    // Fallback: linear scan
-    ctx.functions
-        .iter()
-        .find(|(key, _)| has_top_level_suffix_match(key, func_name))
-        .map(|(_, def)| def)
-}
-
-fn unique_function_key_idx(
-    keys: &[usize],
-    index: &SuffixIndex,
-    functions: &FxHashMap<String, ClassDef>,
-) -> Option<usize> {
-    let mut candidates = keys
-        .iter()
-        .copied()
-        .filter(|key_idx| functions.contains_key(index.key(*key_idx)));
-    let first = candidates.next()?;
-    candidates.next().is_none().then_some(first)
+    ctx.functions.get(func_name)
 }
 
 fn find_func_output_name(func_def: &ClassDef) -> Option<String> {
@@ -708,7 +317,7 @@ fn build_func_eval_context(
     }
     // Pass 2: match named arguments by name
     for arg in args {
-        if let Expression::NamedArgument { name, value } = arg
+        if let Expression::NamedArgument { name, value, .. } = arg
             && let Some((param_name, _)) = inputs
                 .iter()
                 .find(|(n, _)| n.as_str() == name.text.as_ref())
@@ -724,7 +333,9 @@ fn build_func_eval_context(
         if let Some(binding) = &param_comp.binding {
             bind_local_scalar_value(&mut local, param_name, binding, ctx, scope);
         }
-        if !local_has_scalar(&local, param_name) && !matches!(param_comp.start, Expression::Empty) {
+        if !local_has_scalar(&local, param_name)
+            && !matches!(param_comp.start, Expression::Empty { .. })
+        {
             bind_local_scalar_value(&mut local, param_name, &param_comp.start, ctx, scope);
         }
     }
@@ -821,7 +432,7 @@ fn interpret_stmt(stmt: &Statement, ctx: &mut TypeCheckEvalContext) -> Option<Fu
         Statement::Break { .. } => Some(FunctionStmtFlow::Break),
         Statement::Return { .. } => Some(FunctionStmtFlow::Return),
         Statement::Empty => Some(FunctionStmtFlow::Continue),
-        _ => Some(FunctionStmtFlow::Continue), // Skip unsupported statements
+        _ => None,
     }
 }
 
@@ -852,7 +463,7 @@ fn interpret_for_stmt(
     ctx: &mut TypeCheckEvalContext,
 ) -> Option<FunctionStmtFlow> {
     if indices.len() != 1 {
-        return Some(FunctionStmtFlow::Continue); // Only single-index for loops
+        return None;
     }
     let idx = &indices[0];
     let var_name = idx.ident.text.to_string();
@@ -917,12 +528,7 @@ fn lookup_dims_with_scope<'a>(
     ctx: &'a TypeCheckEvalContext,
     scope: &str,
 ) -> Option<&'a Vec<usize>> {
-    lookup_with_scope(
-        array_name,
-        scope,
-        &ctx.dimensions,
-        ctx.suffix_index.as_ref(),
-    )
+    lookup_with_scope(array_name, scope, &ctx.dimensions)
 }
 
 /// Flatten a matrix row element into integer values.
@@ -955,6 +561,7 @@ fn eval_integer_array_with_scope(
         Expression::Array {
             elements,
             is_matrix,
+            ..
         } if *is_matrix => {
             // Matrix syntax [a; b; c] - flatten row arrays to scalar elements
             let mut result = Vec::new();
@@ -970,7 +577,7 @@ fn eval_integer_array_with_scope(
                 .map(|e| eval_integer_with_scope(e, ctx, scope))
                 .collect()
         }
-        Expression::Parenthesized { inner } => eval_integer_array_with_scope(inner, ctx, scope),
+        Expression::Parenthesized { inner, .. } => eval_integer_array_with_scope(inner, ctx, scope),
         _ => None,
     }
 }
@@ -978,11 +585,11 @@ fn eval_integer_array_with_scope(
 /// Evaluate integer binary operations.
 fn eval_integer_binary(op: &OpBinary, l: i64, r: i64) -> Option<i64> {
     let operator = match op {
-        OpBinary::Add(_) | OpBinary::AddElem(_) => IntegerBinaryOperator::Add,
-        OpBinary::Sub(_) | OpBinary::SubElem(_) => IntegerBinaryOperator::Sub,
-        OpBinary::Mul(_) | OpBinary::MulElem(_) => IntegerBinaryOperator::Mul,
-        OpBinary::Div(_) | OpBinary::DivElem(_) => IntegerBinaryOperator::Div,
-        OpBinary::Exp(_) | OpBinary::ExpElem(_) => IntegerBinaryOperator::Exp,
+        OpBinary::Add | OpBinary::AddElem => IntegerBinaryOperator::Add,
+        OpBinary::Sub | OpBinary::SubElem => IntegerBinaryOperator::Sub,
+        OpBinary::Mul | OpBinary::MulElem => IntegerBinaryOperator::Mul,
+        OpBinary::Div | OpBinary::DivElem => IntegerBinaryOperator::Div,
+        OpBinary::Exp | OpBinary::ExpElem => IntegerBinaryOperator::Exp,
         _ => return None,
     };
     eval_common_integer_binary(operator, l, r)
@@ -1008,6 +615,7 @@ pub fn eval_real_with_scope(
         Expression::Terminal {
             terminal_type,
             token,
+            ..
         } => match terminal_type {
             TerminalType::UnsignedReal => token.text.parse().ok(),
             TerminalType::UnsignedInteger => token.text.parse::<i64>().ok().map(|i| i as f64),
@@ -1018,52 +626,44 @@ pub fn eval_real_with_scope(
             if cr.parts.is_empty() {
                 return None;
             }
-            let ref_path = cr
-                .parts
-                .iter()
-                .map(|p| p.ident.text.as_ref())
-                .collect::<Vec<_>>()
-                .join(".");
+            let ref_path = component_reference_path(cr);
 
-            lookup_with_scope(&ref_path, scope, &ctx.reals, ctx.suffix_index.as_ref())
+            lookup_by_scope(&ref_path, scope, &ctx.reals)
                 .copied()
-                .or_else(|| {
-                    lookup_with_scope(&ref_path, scope, &ctx.integers, ctx.suffix_index.as_ref())
-                        .map(|&i| i as f64)
-                })
+                .or_else(|| lookup_by_scope(&ref_path, scope, &ctx.integers).map(|&i| i as f64))
         }
 
-        Expression::Unary { op, rhs } => {
+        Expression::Unary { op, rhs, .. } => {
             let val = eval_real_with_scope(rhs, ctx, scope)?;
             match op {
-                OpUnary::Plus(_) | OpUnary::DotPlus(_) | OpUnary::Empty => Some(val),
-                OpUnary::Minus(_) | OpUnary::DotMinus(_) => Some(-val),
+                OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(val),
+                OpUnary::Minus | OpUnary::DotMinus => Some(-val),
                 _ => None,
             }
         }
 
-        Expression::Binary { op, lhs, rhs } => {
+        Expression::Binary { op, lhs, rhs, .. } => {
             let l = eval_real_with_scope(lhs, ctx, scope)?;
             let r = eval_real_with_scope(rhs, ctx, scope)?;
             match op {
-                OpBinary::Add(_) | OpBinary::AddElem(_) => Some(l + r),
-                OpBinary::Sub(_) | OpBinary::SubElem(_) => Some(l - r),
-                OpBinary::Mul(_) | OpBinary::MulElem(_) => Some(l * r),
-                OpBinary::Div(_) | OpBinary::DivElem(_) => {
+                OpBinary::Add | OpBinary::AddElem => Some(l + r),
+                OpBinary::Sub | OpBinary::SubElem => Some(l - r),
+                OpBinary::Mul | OpBinary::MulElem => Some(l * r),
+                OpBinary::Div | OpBinary::DivElem => {
                     if r != 0.0 {
                         Some(l / r)
                     } else {
                         None
                     }
                 }
-                OpBinary::Exp(_) | OpBinary::ExpElem(_) => Some(l.powf(r)),
+                OpBinary::Exp | OpBinary::ExpElem => Some(l.powf(r)),
                 _ => None,
             }
         }
 
-        Expression::Parenthesized { inner } => eval_real_with_scope(inner, ctx, scope),
+        Expression::Parenthesized { inner, .. } => eval_real_with_scope(inner, ctx, scope),
 
-        Expression::FunctionCall { comp, args } => {
+        Expression::FunctionCall { comp, args, .. } => {
             let func_name = comp
                 .parts
                 .iter()
@@ -1076,6 +676,7 @@ pub fn eval_real_with_scope(
         Expression::If {
             branches,
             else_branch,
+            ..
         } => {
             for (cond, then_expr) in branches {
                 match eval_boolean_with_scope(cond, ctx, scope) {
@@ -1123,7 +724,7 @@ fn lookup_boolean_with_scope(
     ctx: &TypeCheckEvalContext,
     scope: &str,
 ) -> Option<bool> {
-    lookup_with_scope(ref_path, scope, &ctx.booleans, ctx.suffix_index.as_ref()).copied()
+    lookup_with_scope(ref_path, scope, &ctx.booleans).copied()
 }
 
 /// Evaluate a numeric comparison (integer then real) with scope-aware lookup.
@@ -1160,6 +761,7 @@ pub fn eval_boolean_with_scope(
         Expression::Terminal {
             terminal_type: TerminalType::Bool,
             token,
+            ..
         } => match token.text.as_ref() {
             "true" => Some(true),
             "false" => Some(false),
@@ -1168,34 +770,30 @@ pub fn eval_boolean_with_scope(
         Expression::Terminal { .. } => None,
 
         Expression::ComponentReference(cr) if !cr.parts.is_empty() => {
-            let ref_path = cr
-                .parts
-                .iter()
-                .map(|p| p.ident.text.as_ref())
-                .collect::<Vec<_>>()
-                .join(".");
+            let ref_path = component_reference_path(cr);
             lookup_boolean_with_scope(&ref_path, ctx, scope)
         }
         Expression::ComponentReference(_) => None,
 
         Expression::Unary {
-            op: OpUnary::Not(_),
+            op: OpUnary::Not,
             rhs,
+            ..
         } => eval_boolean_with_scope(rhs, ctx, scope).map(|b| !b),
         Expression::Unary { .. } => None,
 
-        Expression::Binary { op, lhs, rhs } => match op {
-            OpBinary::And(_) => {
+        Expression::Binary { op, lhs, rhs, .. } => match op {
+            OpBinary::And => {
                 let l = eval_boolean_with_scope(lhs, ctx, scope)?;
                 let r = eval_boolean_with_scope(rhs, ctx, scope)?;
                 Some(l && r)
             }
-            OpBinary::Or(_) => {
+            OpBinary::Or => {
                 let l = eval_boolean_with_scope(lhs, ctx, scope)?;
                 let r = eval_boolean_with_scope(rhs, ctx, scope)?;
                 Some(l || r)
             }
-            OpBinary::Eq(_) => eval_numeric_comparison_with_scope(
+            OpBinary::Eq => eval_numeric_comparison_with_scope(
                 lhs,
                 rhs,
                 ctx,
@@ -1204,7 +802,7 @@ pub fn eval_boolean_with_scope(
                 |l, r| (l - r).abs() < REAL_COMPARISON_EPSILON,
             )
             .or_else(|| eval_enum_comparison(lhs, rhs, ctx, scope)),
-            OpBinary::Neq(_) => eval_numeric_comparison_with_scope(
+            OpBinary::Neq => eval_numeric_comparison_with_scope(
                 lhs,
                 rhs,
                 ctx,
@@ -1213,10 +811,10 @@ pub fn eval_boolean_with_scope(
                 |l, r| (l - r).abs() >= REAL_COMPARISON_EPSILON,
             )
             .or_else(|| eval_enum_comparison(lhs, rhs, ctx, scope).map(|v| !v)),
-            OpBinary::Lt(_) => {
+            OpBinary::Lt => {
                 eval_numeric_comparison_with_scope(lhs, rhs, ctx, scope, |l, r| l < r, |l, r| l < r)
             }
-            OpBinary::Le(_) => eval_numeric_comparison_with_scope(
+            OpBinary::Le => eval_numeric_comparison_with_scope(
                 lhs,
                 rhs,
                 ctx,
@@ -1224,10 +822,10 @@ pub fn eval_boolean_with_scope(
                 |l, r| l <= r,
                 |l, r| l <= r,
             ),
-            OpBinary::Gt(_) => {
+            OpBinary::Gt => {
                 eval_numeric_comparison_with_scope(lhs, rhs, ctx, scope, |l, r| l > r, |l, r| l > r)
             }
-            OpBinary::Ge(_) => eval_numeric_comparison_with_scope(
+            OpBinary::Ge => eval_numeric_comparison_with_scope(
                 lhs,
                 rhs,
                 ctx,
@@ -1238,7 +836,7 @@ pub fn eval_boolean_with_scope(
             _ => None,
         },
 
-        Expression::Parenthesized { inner } => eval_boolean_with_scope(inner, ctx, scope),
+        Expression::Parenthesized { inner, .. } => eval_boolean_with_scope(inner, ctx, scope),
 
         _ => None,
     }
@@ -1258,7 +856,7 @@ fn extract_component_path(expr: &Expression) -> Option<String> {
             }
             Some(cr.to_string())
         }
-        Expression::Parenthesized { inner } => extract_component_path(inner),
+        Expression::Parenthesized { inner, .. } => extract_component_path(inner),
         _ => None,
     }
 }
@@ -1286,7 +884,7 @@ pub fn extract_enum_value(expr: &Expression) -> Option<String> {
                 None
             }
         }
-        Expression::Parenthesized { inner } => extract_enum_value(inner),
+        Expression::Parenthesized { inner, .. } => extract_enum_value(inner),
         _ => None,
     }
 }
@@ -1301,7 +899,7 @@ fn lookup_enum_with_scope<'a>(
     ctx: &'a TypeCheckEvalContext,
     scope: &str,
 ) -> Option<&'a str> {
-    lookup_with_scope(ref_path, scope, &ctx.enums, ctx.suffix_index.as_ref()).map(|s| s.as_str())
+    lookup_with_scope(ref_path, scope, &ctx.enums).map(|s| s.as_str())
 }
 
 /// Compare two enumeration values using suffix matching.
@@ -1359,7 +957,7 @@ fn get_enum_expr_value(
             // Single-part reference: look up as a variable
             lookup_enum_with_scope(&path, ctx, scope).map(|s| s.to_string())
         }
-        Expression::Parenthesized { inner } => get_enum_expr_value(inner, ctx, scope),
+        Expression::Parenthesized { inner, .. } => get_enum_expr_value(inner, ctx, scope),
         _ => None,
     }
 }
@@ -1407,13 +1005,8 @@ pub fn eval_dimension_with_scope(
 /// the size of that dimension is the number of enumeration literals.
 fn eval_enum_dimension(expr: &Expression, ctx: &TypeCheckEvalContext) -> Option<usize> {
     if let Expression::ComponentReference(cr) = expr {
-        let ref_path = cr
-            .parts
-            .iter()
-            .map(|p| p.ident.text.as_ref())
-            .collect::<Vec<_>>()
-            .join(".");
-        ctx.enum_sizes.get(&ref_path).copied()
+        let ref_path = component_reference_path(cr);
+        ctx.enum_sizes.get(ref_path.as_ref()).copied()
     } else {
         None
     }
@@ -1426,13 +1019,8 @@ fn eval_enum_dimension_with_scope(
     scope: &str,
 ) -> Option<usize> {
     if let Expression::ComponentReference(cr) = expr {
-        let ref_path = cr
-            .parts
-            .iter()
-            .map(|p| p.ident.text.as_ref())
-            .collect::<Vec<_>>()
-            .join(".");
-        lookup_with_scope(&ref_path, scope, &ctx.enum_sizes, ctx.suffix_index.as_ref()).copied()
+        let ref_path = component_reference_path(cr);
+        lookup_with_scope(&ref_path, scope, &ctx.enum_sizes).copied()
     } else {
         None
     }
@@ -1450,10 +1038,12 @@ pub fn eval_integer_with_scope(
         Expression::Terminal {
             terminal_type: TerminalType::UnsignedInteger,
             token,
+            ..
         } => token.text.parse().ok(),
         Expression::Terminal {
             terminal_type: TerminalType::UnsignedReal,
             token,
+            ..
         } => {
             let f: f64 = token.text.parse().ok()?;
             (f.fract() == 0.0).then_some(f as i64)
@@ -1461,56 +1051,32 @@ pub fn eval_integer_with_scope(
         Expression::Terminal { .. } => None,
 
         Expression::ComponentReference(cr) if !cr.parts.is_empty() => {
-            let ref_path = cr
-                .parts
-                .iter()
-                .map(|p| p.ident.text.as_ref())
-                .collect::<Vec<_>>()
-                .join(".");
+            let ref_path = component_reference_path(cr);
 
-            // Try integer lookup first, then enum ordinal lookup
-            lookup_with_scope(&ref_path, scope, &ctx.integers, ctx.suffix_index.as_ref())
+            lookup_with_scope(&ref_path, scope, &ctx.integers)
                 .copied()
-                .or_else(|| {
-                    // Compatibility bridge: some models expose phase-system
-                    // structural constants through local alias `PS.*` while
-                    // dimensions reference `PhaseSystem.*`.
-                    ref_path.strip_prefix("PhaseSystem.").and_then(|tail| {
-                        let alt = format!("PS.{tail}");
-                        lookup_with_scope(&alt, scope, &ctx.integers, ctx.suffix_index.as_ref())
-                            .copied()
-                    })
-                })
-                .or_else(|| {
-                    lookup_with_scope(
-                        &ref_path,
-                        scope,
-                        &ctx.enum_ordinals,
-                        ctx.suffix_index.as_ref(),
-                    )
-                    .copied()
-                })
+                .or_else(|| lookup_with_scope(&ref_path, scope, &ctx.enum_ordinals).copied())
         }
         Expression::ComponentReference(_) => None,
 
-        Expression::Unary { op, rhs } => {
+        Expression::Unary { op, rhs, .. } => {
             let val = eval_integer_with_scope(rhs, ctx, scope)?;
             match op {
-                OpUnary::Not(_) => None,
-                OpUnary::Plus(_) | OpUnary::DotPlus(_) | OpUnary::Empty => Some(val),
-                OpUnary::Minus(_) | OpUnary::DotMinus(_) => Some(-val),
+                OpUnary::Not => None,
+                OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(val),
+                OpUnary::Minus | OpUnary::DotMinus => Some(-val),
             }
         }
 
-        Expression::Binary { op, lhs, rhs } => {
+        Expression::Binary { op, lhs, rhs, .. } => {
             let l = eval_integer_with_scope(lhs, ctx, scope)?;
             let r = eval_integer_with_scope(rhs, ctx, scope)?;
             eval_integer_binary(op, l, r)
         }
 
-        Expression::Parenthesized { inner } => eval_integer_with_scope(inner, ctx, scope),
+        Expression::Parenthesized { inner, .. } => eval_integer_with_scope(inner, ctx, scope),
 
-        Expression::FunctionCall { comp, args } => {
+        Expression::FunctionCall { comp, args, .. } => {
             let func_name = comp
                 .parts
                 .iter()
@@ -1523,6 +1089,7 @@ pub fn eval_integer_with_scope(
         Expression::If {
             branches,
             else_branch,
+            ..
         } => {
             for (cond, then_expr) in branches {
                 match eval_boolean_with_scope(cond, ctx, scope) {
@@ -1543,30 +1110,88 @@ fn infer_array_dims(
     elements: &[Expression],
     is_matrix: bool,
     ctx: &TypeCheckEvalContext,
+    scope: &str,
 ) -> Option<Vec<usize>> {
     if elements.is_empty() {
         return Some(vec![0]);
     }
     if is_matrix {
-        let num_rows = elements.len();
-        // Parser encodes single-row matrix literals like `[1, 2, 3]` as
-        // `Array { is_matrix: true, elements: [1,2,3] }` (not nested rows).
-        // Treat those as 2D `[1, n]`, not 1D `[n]`.
-        return match elements.first() {
-            Some(Expression::Array { elements: row, .. }) => Some(vec![num_rows, row.len()]),
-            _ => Some(vec![1, num_rows]),
-        };
+        return infer_matrix_constructor_dims(elements, ctx, scope);
     }
     // Check for nested arrays
     if let Some(inner) = elements
         .first()
-        .and_then(|f| infer_dimensions_from_binding(f, ctx))
+        .and_then(|f| infer_dimensions_from_binding_with_scope(f, ctx, scope))
     {
         let mut dims = vec![elements.len()];
         dims.extend(inner);
         return Some(dims);
     }
     Some(vec![elements.len()])
+}
+
+fn infer_matrix_constructor_dims(
+    elements: &[Expression],
+    ctx: &TypeCheckEvalContext,
+    scope: &str,
+) -> Option<Vec<usize>> {
+    let has_nested_rows = matches!(elements.first(), Some(Expression::Array { .. }));
+    if !has_nested_rows {
+        return infer_matrix_row_dims(elements, ctx, scope).map(|(_, cols)| vec![1, cols]);
+    }
+
+    let mut rows = 0usize;
+    let mut expected_cols = None;
+    for row in elements {
+        let Expression::Array {
+            elements: row_elements,
+            ..
+        } = row
+        else {
+            return None;
+        };
+        let (row_count, col_count) = infer_matrix_row_dims(row_elements, ctx, scope)?;
+        match expected_cols {
+            Some(expected) if expected != col_count => return None,
+            None => expected_cols = Some(col_count),
+            _ => {}
+        }
+        rows += row_count;
+    }
+
+    Some(vec![rows, expected_cols.unwrap_or(0)])
+}
+
+fn infer_matrix_row_dims(
+    elements: &[Expression],
+    ctx: &TypeCheckEvalContext,
+    scope: &str,
+) -> Option<(usize, usize)> {
+    let single_entry = elements.len() == 1;
+    let mut expected_rows = None;
+    let mut cols = 0usize;
+    for element in elements {
+        let dims =
+            infer_dimensions_from_binding_with_scope(element, ctx, scope).unwrap_or_default();
+        let (entry_rows, entry_cols) = matrix_entry_dims(&dims, single_entry)?;
+        match expected_rows {
+            Some(expected) if expected != entry_rows => return None,
+            None => expected_rows = Some(entry_rows),
+            _ => {}
+        }
+        cols += entry_cols;
+    }
+    Some((expected_rows.unwrap_or(0), cols))
+}
+
+fn matrix_entry_dims(dims: &[usize], single_entry: bool) -> Option<(usize, usize)> {
+    match dims {
+        [] => Some((1, 1)),
+        [len] if single_entry => Some((*len, 1)),
+        [len] => Some((1, *len)),
+        [rows, cols] => Some((*rows, *cols)),
+        _ => None,
+    }
 }
 
 /// Infer dimensions for `cat(dim, A, B, ...)` concatenation.
@@ -1824,4 +1449,8 @@ mod eval_lookup_impl;
 mod function_eval_tests;
 
 mod late_inference;
-pub use late_inference::*;
+pub(crate) use late_inference::all_branches_consistent_with_scope;
+pub use late_inference::{
+    VariabilityLevel, collect_constants, collect_subscript_refs, collect_variable_refs,
+    max_variability_in_expr,
+};

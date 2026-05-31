@@ -7,16 +7,21 @@
 //! and keyed by DefId, rather than bloating the core AST types with
 //! optional instance fields.
 
-use indexmap::IndexMap;
-use rumoca_core::{DefId, Span, TypeId};
-use rustc_hash::FxBuildHasher;
+use crate::AstIndexMap as IndexMap;
+use indexmap::IndexSet;
+use rumoca_core::{
+    ComponentPath, ComponentRefPart as CoreComponentRefPart,
+    ComponentReference as CoreComponentReference, DefId, Span, Subscript as CoreSubscript, TypeId,
+    split_path_with_indices,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Causality, ClassTree, ClassType, Equation, Expression, StateSelect, Statement, Variability,
+    Causality, ClassTree, ClassType, ComponentReference, Equation, Expression, StateSelect,
+    Statement, Variability,
 };
 
-type FastIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
+type FastIndexMap<K, V> = IndexMap<K, V>;
 
 // =============================================================================
 // Core Instance Types
@@ -67,6 +72,17 @@ impl QualifiedName {
         }
     }
 
+    /// Create a qualified name from a structured component reference.
+    pub fn from_component_reference(reference: &ComponentReference) -> Self {
+        Self {
+            parts: reference
+                .parts
+                .iter()
+                .map(|part| (part.to_string(), Vec::new()))
+                .collect(),
+        }
+    }
+
     /// Create a qualified name from a dot-separated string.
     ///
     /// Example: "x.start" becomes `[("x", []), ("start", [])]`
@@ -74,8 +90,8 @@ impl QualifiedName {
     /// Note: This does not handle array subscripts in the string format.
     /// For paths with subscripts, use the structured API instead.
     pub fn from_dotted(s: &str) -> Self {
-        let parts: Vec<(String, Vec<i64>)> = s
-            .split('.')
+        let parts: Vec<(String, Vec<i64>)> = split_path_with_indices(s)
+            .into_iter()
             .filter(|p| !p.is_empty())
             .map(|p| (p.to_string(), Vec::new()))
             .collect();
@@ -127,6 +143,77 @@ impl QualifiedName {
         self.parts.first().map(|(name, _)| name.as_str())
     }
 
+    /// Get the last component name, if any.
+    pub fn last_name(&self) -> Option<&str> {
+        self.parts.last().map(|(name, _)| name.as_str())
+    }
+
+    /// Return this path's parent scope.
+    pub fn parent(&self) -> Option<Self> {
+        if self.parts.is_empty() {
+            return None;
+        }
+        Some(Self {
+            parts: self.parts[..self.parts.len() - 1].to_vec(),
+        })
+    }
+
+    /// Return true when this path contains more than one top-level segment.
+    pub fn is_dotted(&self) -> bool {
+        self.parts.len() > 1
+    }
+
+    /// Append a relative path to this path.
+    pub fn join(&self, relative: &Self) -> Self {
+        if self.is_empty() {
+            return relative.clone();
+        }
+        if relative.is_empty() {
+            return self.clone();
+        }
+        let mut parts = self.parts.clone();
+        parts.extend(relative.parts.iter().cloned());
+        Self { parts }
+    }
+
+    /// Return true when this path ends with the supplied top-level path.
+    pub fn ends_with_path(&self, suffix: &Self) -> bool {
+        if suffix.parts.is_empty() || suffix.parts.len() > self.parts.len() {
+            return false;
+        }
+        self.parts[self.parts.len() - suffix.parts.len()..]
+            .iter()
+            .zip(&suffix.parts)
+            .all(|((lhs_name, lhs_subs), (rhs_name, rhs_subs))| {
+                lhs_name == rhs_name && lhs_subs == rhs_subs
+            })
+    }
+
+    /// Return true when this path starts with a structured component path.
+    pub fn starts_with_component_path(&self, prefix: &ComponentPath) -> bool {
+        if prefix.is_root() || prefix.len() > self.parts.len() {
+            return false;
+        }
+        self.parts
+            .iter()
+            .zip(prefix.parts())
+            .all(|((name, subs), prefix_part)| {
+                if subs.is_empty() {
+                    name == prefix_part
+                } else {
+                    subscripted_part_matches_rendered(name, subs, prefix_part)
+                }
+            })
+    }
+
+    fn render_part(&self, name: &str, subs: &[i64]) -> String {
+        let mut rendered = name.to_string();
+        if !subs.is_empty() {
+            write_subscripts(&mut rendered, subs);
+        }
+        rendered
+    }
+
     /// Append a part to this qualified name.
     pub fn push(&mut self, name: String, subscripts: Vec<i64>) {
         self.parts.push((name, subscripts));
@@ -144,27 +231,98 @@ impl QualifiedName {
         self.parts.is_empty()
     }
 
+    /// Convert to a segmented component path without flattening and reparsing.
+    pub fn to_component_path(&self) -> ComponentPath {
+        ComponentPath::from_parts(
+            self.parts
+                .iter()
+                .map(|(name, subs)| self.render_part(name, subs)),
+        )
+    }
+
     /// Convert to a flat string representation (e.g., "body.position.x").
     pub fn to_flat_string(&self) -> String {
-        self.parts
-            .iter()
-            .map(|(name, subs)| {
-                if subs.is_empty() {
-                    name.clone()
-                } else {
-                    format!(
-                        "{}[{}]",
-                        name,
-                        subs.iter()
-                            .map(|s| s.to_string())
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    )
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(".")
+        let mut out = String::new();
+        for (part_index, (name, subs)) in self.parts.iter().enumerate() {
+            if part_index > 0 {
+                out.push('.');
+            }
+            out.push_str(name);
+            if subs.is_empty() {
+                continue;
+            }
+            write_subscripts(&mut out, subs);
+        }
+        out
     }
+}
+
+fn write_subscripts(out: &mut String, subs: &[i64]) {
+    use std::fmt::Write as _;
+
+    out.push('[');
+    for (sub_index, subscript) in subs.iter().enumerate() {
+        if sub_index > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{subscript}");
+    }
+    out.push(']');
+}
+
+fn subscripted_part_matches_rendered(name: &str, subs: &[i64], rendered: &str) -> bool {
+    let Some(rest) = rendered.strip_prefix(name) else {
+        return false;
+    };
+    let Some(inner) = rest
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    else {
+        return false;
+    };
+    let mut rendered_subs = inner.split(',');
+    for expected in subs {
+        let Some(rendered_sub) = rendered_subs.next() else {
+            return false;
+        };
+        if !rendered_subscript_matches(rendered_sub, *expected) {
+            return false;
+        }
+    }
+    rendered_subs.next().is_none()
+}
+
+fn rendered_subscript_matches(rendered: &str, expected: i64) -> bool {
+    let (negative, digits) = if expected.is_negative() {
+        let Some(digits) = rendered.strip_prefix('-') else {
+            return false;
+        };
+        (true, digits.as_bytes())
+    } else {
+        if rendered.starts_with('-') {
+            return false;
+        }
+        (false, rendered.as_bytes())
+    };
+    if digits.is_empty() {
+        return false;
+    }
+    let mut magnitude = expected.unsigned_abs();
+    if magnitude == 0 {
+        return !negative && digits == b"0";
+    }
+    let mut index = digits.len();
+    while magnitude > 0 {
+        if index == 0 {
+            return false;
+        }
+        index -= 1;
+        if digits[index] != b'0' + (magnitude % 10) as u8 {
+            return false;
+        }
+        magnitude /= 10;
+    }
+    index == 0
 }
 
 impl std::fmt::Display for QualifiedName {
@@ -327,12 +485,23 @@ impl ModificationValue {
         source: Option<Expression>,
         source_scope: Option<QualifiedName>,
     ) -> Self {
+        Self::with_source_scope_and_prefixes(value, source, source_scope, false, false)
+    }
+
+    /// Create a modification value with source metadata and modifier prefixes.
+    pub fn with_source_scope_and_prefixes(
+        value: Expression,
+        source: Option<Expression>,
+        source_scope: Option<QualifiedName>,
+        each: bool,
+        final_: bool,
+    ) -> Self {
         Self {
             value,
             source,
             source_scope,
-            each: false,
-            final_: false,
+            each,
+            final_,
         }
     }
 }
@@ -341,18 +510,52 @@ impl ModificationValue {
 // Instance Data (Overlay)
 // =============================================================================
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClassOverride {
+    pub alias: String,
+    pub alias_def_id: DefId,
+    pub target_def_id: DefId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ref: Option<ComponentReference>,
+}
+
+pub type ClassOverrideMap = FastIndexMap<DefId, ClassOverride>;
+
+impl ClassOverride {
+    pub fn new(
+        alias: impl Into<String>,
+        alias_def_id: DefId,
+        target_def_id: DefId,
+        target_ref: Option<ComponentReference>,
+    ) -> Self {
+        Self {
+            alias: alias.into(),
+            alias_def_id,
+            target_def_id,
+            target_ref,
+        }
+    }
+}
+
 /// Instance-specific data for a component.
 ///
 /// This is stored in an overlay map keyed by DefId, rather than
 /// being embedded in Component directly.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceData {
     /// Unique identifier for this instance.
     pub instance_id: InstanceId,
+    /// Structured resolved component reference for this concrete instance.
+    ///
+    /// This is the semantic carrier for downstream Flat/DAE phases. The
+    /// rendered `qualified_name` remains useful for stable output spelling, but
+    /// compiler logic should prefer this structured reference when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_ref: Option<CoreComponentReference>,
     /// Fully qualified name in the instance tree.
     pub qualified_name: QualifiedName,
     /// Source location of the component declaration that created this instance.
-    pub source_location: rumoca_ir_core::Location,
+    pub source_location: rumoca_core::Location,
     /// Resolved array dimensions.
     pub dims: Vec<i64>,
     /// Unevaluated dimension expressions for parameter-dependent sizes.
@@ -367,12 +570,17 @@ pub struct InstanceData {
     /// DefId of the declared component type when available from resolve phase.
     /// Builtin types typically do not have a DefId.
     pub type_def_id: Option<DefId>,
+    /// Lexical scope where this component declaration was written.
+    #[serde(default)]
+    pub declaration_source_scope: Option<QualifiedName>,
     /// Active replaceable class/package redeclare overrides for this component instance.
     ///
-    /// Keys are local class names (e.g., `Medium`) and values are resolved target DefIds.
+    /// Keys are the DefIds of the redeclared local classes (e.g., `Medium`).
+    /// Values retain the source alias text, effective target DefId, and the
+    /// redeclare value component reference.
     /// Populated during instantiation so downstream phases can apply instance-specific
     /// package/class constants consistently (MLS §7.3).
-    pub class_overrides: IndexMap<String, DefId>,
+    pub class_overrides: ClassOverrideMap,
     /// True when this component applies a self-forwarding class/package redeclare
     /// (e.g., `redeclare package Medium = Medium`) that is remapped to an active
     /// enclosing override during instantiation (MLS §7.3).
@@ -467,6 +675,78 @@ pub struct InstanceData {
     pub oc_eq_constraint_size: Option<usize>,
 }
 
+impl Default for InstanceData {
+    fn default() -> Self {
+        Self {
+            instance_id: InstanceId::default(),
+            component_ref: None,
+            qualified_name: QualifiedName::default(),
+            source_location: rumoca_core::Location::default(),
+            dims: Vec::new(),
+            dims_expr: Vec::new(),
+            type_id: TypeId::default(),
+            type_name: String::new(),
+            type_def_id: None,
+            declaration_source_scope: None,
+            class_overrides: IndexMap::default(),
+            has_forwarding_class_redeclare: false,
+            variability: Variability::Empty,
+            causality: Causality::Empty,
+            flow: false,
+            stream: false,
+            start: None,
+            fixed: None,
+            min: None,
+            max: None,
+            nominal: None,
+            quantity: None,
+            unit: None,
+            display_unit: None,
+            description: None,
+            state_select: StateSelect::default(),
+            binding: None,
+            binding_source: None,
+            binding_source_scope: None,
+            attribute_source_scopes: IndexMap::default(),
+            binding_from_modification: false,
+            is_primitive: false,
+            is_discrete_type: false,
+            from_expandable_connector: false,
+            evaluate: false,
+            is_final: false,
+            is_overconstrained: false,
+            is_protected: false,
+            is_connector_type: false,
+            oc_record_path: None,
+            oc_eq_constraint_size: None,
+        }
+    }
+}
+
+pub fn component_reference_for_instance(
+    qualified_name: &QualifiedName,
+    span: Span,
+    def_id: Option<DefId>,
+) -> CoreComponentReference {
+    CoreComponentReference {
+        local: false,
+        span,
+        parts: qualified_name
+            .parts
+            .iter()
+            .map(|(ident, subs)| CoreComponentRefPart {
+                ident: ident.clone(),
+                span,
+                subs: subs
+                    .iter()
+                    .map(|sub| CoreSubscript::generated_index(*sub, span))
+                    .collect(),
+            })
+            .collect(),
+        def_id,
+    }
+}
+
 /// Instance data for a class/model.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClassInstanceData {
@@ -476,6 +756,9 @@ pub struct ClassInstanceData {
     pub class_def_id: Option<DefId>,
     /// Fully qualified name in the instance tree.
     pub qualified_name: QualifiedName,
+    /// Lexical scope of the class declaration that produced this instance.
+    #[serde(default)]
+    pub source_scope: Option<QualifiedName>,
     /// Equations from this instance (not inherited).
     pub equations: Vec<InstanceEquation>,
     /// Initial equations from this instance.
@@ -563,9 +846,9 @@ pub struct InstanceOverlay {
     /// Optional description string from the root class declaration.
     pub root_description: Option<String>,
     /// Disabled conditional components (MLS §4.8).
-    /// Contains qualified names of components whose conditions evaluated to false.
+    /// Contains structured instance component paths whose conditions evaluated to false.
     /// These components and their sub-components should be excluded from flattening.
-    pub disabled_components: std::collections::HashSet<String>,
+    pub disabled_components: IndexSet<ComponentPath>,
     /// Array parent dimensions for expanded array components.
     /// When an array component like `plug_p.pin[3]` is expanded to indexed instances
     /// (`plug_p.pin[1]`, `plug_p.pin[2]`, `plug_p.pin[3]`), this map stores the parent
@@ -814,6 +1097,79 @@ mod tests {
     }
 
     #[test]
+    fn test_to_component_path_preserves_structured_subscripts() {
+        let mut qn = QualifiedName::new();
+        qn.push("sys".to_string(), vec![]);
+        qn.push("arr".to_string(), vec![1, 2]);
+        qn.push("state".to_string(), vec![]);
+
+        let path = qn.to_component_path();
+        assert_eq!(
+            path.parts(),
+            &[
+                "sys".to_string(),
+                "arr[1,2]".to_string(),
+                "state".to_string(),
+            ]
+        );
+        assert_eq!(path.to_flat_string(), "sys.arr[1,2].state");
+    }
+
+    #[test]
+    fn test_starts_with_component_path_matches_structured_subscripts() {
+        let mut qn = QualifiedName::new();
+        qn.push("sys".to_string(), vec![]);
+        qn.push("arr".to_string(), vec![1, 2]);
+        qn.push("state".to_string(), vec![]);
+
+        let prefix = ComponentPath::from_flat_path("sys.arr[1,2]");
+
+        assert!(qn.starts_with_component_path(&prefix));
+    }
+
+    #[test]
+    fn component_reference_for_instance_preserves_parts_subscripts_and_def_id() {
+        let def_id = DefId::new(9);
+        let span = Span::DUMMY;
+        let mut qn = QualifiedName::new();
+        qn.push("body".to_string(), vec![]);
+        qn.push("frame".to_string(), vec![2]);
+        qn.push("r_0".to_string(), vec![]);
+
+        let reference = component_reference_for_instance(&qn, span, Some(def_id));
+
+        assert_eq!(reference.def_id, Some(def_id));
+        assert_eq!(reference.parts.len(), 3);
+        assert_eq!(reference.parts[0].ident, "body");
+        assert_eq!(reference.parts[1].ident, "frame");
+        assert_eq!(
+            reference.parts[1].subs,
+            vec![CoreSubscript::generated_index(2, span)]
+        );
+        assert_eq!(reference.parts[2].ident, "r_0");
+    }
+
+    #[test]
+    fn test_starts_with_component_path_rejects_subscript_mismatch() {
+        let mut qn = QualifiedName::new();
+        qn.push("sys".to_string(), vec![]);
+        qn.push("arr".to_string(), vec![1, 2]);
+        qn.push("state".to_string(), vec![]);
+
+        let prefix = ComponentPath::from_flat_path("sys.arr[1,3]");
+
+        assert!(!qn.starts_with_component_path(&prefix));
+    }
+
+    #[test]
+    fn test_subscripted_part_match_uses_canonical_integer_text() {
+        assert!(subscripted_part_matches_rendered("arr", &[0], "arr[0]"));
+        assert!(subscripted_part_matches_rendered("arr", &[-2], "arr[-2]"));
+        assert!(!subscripted_part_matches_rendered("arr", &[1], "arr[01]"));
+        assert!(!subscripted_part_matches_rendered("arr", &[0], "arr[-0]"));
+    }
+
+    #[test]
     fn test_first_name() {
         let qn = QualifiedName::from_dotted("a.b.c");
         assert_eq!(qn.first_name(), Some("a"));
@@ -827,6 +1183,16 @@ mod tests {
         let qn = QualifiedName::from_ident("x");
         let child = qn.child("start");
         assert_eq!(child.to_flat_string(), "x.start");
+    }
+
+    #[test]
+    fn test_parent_join_use_structured_parts() {
+        let qn = QualifiedName::from_dotted("system.medium.nXi");
+        assert_eq!(qn.parent().unwrap().to_flat_string(), "system.medium");
+        assert_eq!(
+            QualifiedName::from_dotted("system").join(&QualifiedName::from_dotted("medium.nXi")),
+            qn
+        );
     }
 
     #[test]
@@ -847,6 +1213,7 @@ mod tests {
         Expression::ComponentReference(ComponentReference {
             local: false,
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
             parts: vec![ComponentRefPart {
                 ident: Token {
                     text: std::sync::Arc::from(marker),
@@ -960,10 +1327,12 @@ mod tests {
 
     #[test]
     fn test_modification_value_simple() {
-        let value = ModificationValue::simple(Expression::Empty);
+        let value = ModificationValue::simple(Expression::Empty {
+            span: rumoca_core::Span::DUMMY,
+        });
         assert!(!value.each);
         assert!(!value.final_);
-        assert!(matches!(value.value, Expression::Empty));
+        assert!(matches!(value.value, Expression::Empty { .. }));
     }
 
     #[test]

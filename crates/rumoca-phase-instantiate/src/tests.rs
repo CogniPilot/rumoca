@@ -2,10 +2,28 @@ use super::*;
 use rumoca_ir_ast as ast;
 
 /// Helper to create a token with text for testing.
-fn make_token(text: &str) -> rumoca_ir_core::Token {
-    rumoca_ir_core::Token {
+fn make_token(text: &str) -> rumoca_core::Token {
+    rumoca_core::Token {
         text: std::sync::Arc::from(text),
-        location: rumoca_ir_core::Location::default(),
+        location: rumoca_core::Location::default(),
+        token_number: 0,
+        token_type: 0,
+    }
+}
+
+fn make_location(file_name: &str, start: u32, end: u32) -> rumoca_core::Location {
+    rumoca_core::Location {
+        file_name: file_name.to_string(),
+        start,
+        end,
+        ..Default::default()
+    }
+}
+
+fn make_token_at(text: &str, file_name: &str, start: u32, end: u32) -> rumoca_core::Token {
+    rumoca_core::Token {
+        text: std::sync::Arc::from(text),
+        location: make_location(file_name, start, end),
         token_number: 0,
         token_type: 0,
     }
@@ -23,6 +41,30 @@ fn make_int_expr(value: i64) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
         token: make_token(&value.to_string()),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn terminal_text(expr: &ast::Expression) -> &str {
+    match expr {
+        ast::Expression::Terminal { token, .. } => token.text.as_ref(),
+        other => panic!("expected terminal expression, got {other:?}"),
+    }
+}
+
+fn make_bool_expr(value: bool) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::Bool,
+        token: make_token(if value { "true" } else { "false" }),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn make_string_expr(value: &str) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::String,
+        token: make_token(&format!("\"{value}\"")),
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
@@ -37,7 +79,210 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
             })
             .collect(),
         def_id: None,
+        span: rumoca_core::Span::DUMMY,
     })
+}
+
+fn make_comp_ref_expr_at(names: &[&str], file_name: &str, start: u32, end: u32) -> ast::Expression {
+    ast::Expression::ComponentReference(ast::ComponentReference {
+        local: false,
+        parts: names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| ast::ComponentRefPart {
+                ident: make_token_at(
+                    name,
+                    file_name,
+                    start + u32::try_from(index).unwrap(),
+                    end + u32::try_from(index).unwrap(),
+                ),
+                subs: None,
+            })
+            .collect(),
+        def_id: None,
+        span: rumoca_core::Span::DUMMY,
+    })
+}
+
+fn make_component(name: &str, type_name: &str, type_def_id: Option<DefId>) -> ast::Component {
+    ast::Component {
+        name: name.to_string(),
+        name_token: make_token(name),
+        type_name: make_name(type_name),
+        type_def_id,
+        ..Default::default()
+    }
+}
+
+fn class_with_component(
+    class_name: &str,
+    class_def_id: DefId,
+    class_range: (u32, u32),
+    component: ast::Component,
+) -> ast::ClassDef {
+    let mut class = ast::ClassDef {
+        def_id: Some(class_def_id),
+        name: make_token_at(class_name, "scope.mo", class_range.0, class_range.0 + 1),
+        location: make_location("scope.mo", class_range.0, class_range.1),
+        ..Default::default()
+    };
+    class.components.insert(component.name.clone(), component);
+    class
+}
+
+fn context_with_source_scope_tree(classes: Vec<ast::ClassDef>) -> InstantiateContext {
+    let mut tree = ast::ClassTree::new();
+    for class in classes {
+        tree.definitions
+            .classes
+            .insert(class.name.text.to_string(), class);
+    }
+    let mut ctx = InstantiateContext::new();
+    ctx.index_source_scopes(&tree);
+    ctx
+}
+
+fn make_simple_equation(lhs: &str, rhs: i64) -> ast::Equation {
+    ast::Equation::Simple {
+        lhs: make_comp_ref_expr(&[lhs]),
+        rhs: make_int_expr(rhs),
+    }
+}
+
+#[test]
+fn test_extract_attributes_preserves_local_fixed_with_local_start() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications
+        .insert("start".to_string(), make_int_expr(1));
+    comp.modifications
+        .insert("fixed".to_string(), make_bool_expr(true));
+
+    let attrs = extract_attributes(&comp, &ast::ModificationEnvironment::new(), "x");
+
+    assert!(attrs.start.is_some());
+    assert_eq!(attrs.fixed, Some(true));
+}
+
+#[test]
+fn test_extract_attributes_preserves_local_fixed_with_outer_start() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications
+        .insert("fixed".to_string(), make_bool_expr(true));
+
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_dotted("x.start"),
+        ast::ModificationValue::simple(make_int_expr(2)),
+    );
+
+    let attrs = extract_attributes(&comp, &mod_env, "x");
+
+    assert!(attrs.start.is_some());
+    assert_eq!(attrs.fixed, Some(true));
+}
+
+#[test]
+fn test_extract_attributes_outer_state_select_overrides_local() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications
+        .insert("stateSelect".to_string(), make_comp_ref_expr(&["prefer"]));
+
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_dotted("x.stateSelect"),
+        ast::ModificationValue::simple(make_comp_ref_expr(&["never"])),
+    );
+
+    let attrs = extract_attributes(&comp, &mod_env, "x");
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Never);
+}
+
+#[test]
+fn test_validate_final_type_attribute_rejects_outer_override() {
+    let real_def = DefId::new(1);
+    let voltage_def = DefId::new(2);
+    let mut tree = ast::ClassTree::default();
+    let real = ast::ClassDef {
+        name: make_token("Real"),
+        def_id: Some(real_def),
+        ..Default::default()
+    };
+    let voltage = ast::ClassDef {
+        name: make_token("Voltage"),
+        def_id: Some(voltage_def),
+        extends: vec![ast::Extend {
+            base_name: make_name("Real"),
+            base_def_id: Some(real_def),
+            modifications: vec![ast::ExtendModification {
+                expr: ast::Expression::Modification {
+                    target: match make_comp_ref_expr(&["unit"]) {
+                        ast::Expression::ComponentReference(cref) => cref,
+                        _ => unreachable!(),
+                    },
+                    value: std::sync::Arc::new(make_string_expr("V")),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                final_: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    tree.def_map.insert(real_def, "Real".to_string());
+    tree.def_map.insert(voltage_def, "Voltage".to_string());
+    tree.definitions.classes.insert("Real".to_string(), real);
+    tree.definitions
+        .classes
+        .insert("Voltage".to_string(), voltage.clone());
+
+    let comp = make_component("x", "Voltage", Some(voltage_def));
+    let mut mod_env = ast::ModificationEnvironment::new();
+    mod_env.add(
+        ast::QualifiedName::from_dotted("x.unit"),
+        ast::ModificationValue::simple(make_string_expr("kV")),
+    );
+
+    let err = validate_final_type_attribute_overrides(&tree, Some(&voltage), &comp, &mod_env)
+        .expect_err("overriding final type attribute should fail");
+    assert!(err.to_string().contains("final"));
+}
+
+#[test]
+fn test_parameter_declaration_binding_promotes_builtin_default_start() {
+    let mut comp = make_component("p", "Real", None);
+    comp.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    comp.start = make_int_expr(0);
+    comp.binding = Some(make_int_expr(5));
+
+    let (attrs, ..) =
+        extract_component_attrs_and_binding(&comp, &ast::ModificationEnvironment::new());
+
+    assert_eq!(
+        attrs.start.as_ref().map(terminal_text),
+        Some("5"),
+        "parameter declaration binding should provide start when no explicit start exists"
+    );
+}
+
+#[test]
+fn test_parameter_declaration_binding_does_not_override_explicit_start() {
+    let mut comp = make_component("p", "Real", None);
+    comp.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    comp.start = make_int_expr(0);
+    comp.modifications
+        .insert("start".to_string(), make_int_expr(2));
+    comp.binding = Some(make_int_expr(5));
+
+    let (attrs, ..) =
+        extract_component_attrs_and_binding(&comp, &ast::ModificationEnvironment::new());
+
+    assert_eq!(
+        attrs.start.as_ref().map(terminal_text),
+        Some("2"),
+        "explicit start must win over declaration binding"
+    );
 }
 
 #[test]
@@ -51,6 +296,7 @@ fn test_equations_to_instance_without_connections_filters_connect_equations() {
                     subs: None,
                 }],
                 def_id: None,
+                span: rumoca_core::Span::DUMMY,
             },
             rhs: ast::ComponentReference {
                 local: false,
@@ -59,6 +305,7 @@ fn test_equations_to_instance_without_connections_filters_connect_equations() {
                     subs: None,
                 }],
                 def_id: None,
+                span: rumoca_core::Span::DUMMY,
             },
         },
         ast::Equation::Simple {
@@ -85,11 +332,29 @@ fn test_context_path() {
     assert!(ctx.current_path().is_empty());
 
     ctx.push_path("model");
-    ctx.push_path("component");
-    assert_eq!(ctx.current_path().to_flat_string(), "model.component");
+    ctx.push_path_part("component", vec![2]);
+    let path = ctx.current_path();
+    assert_eq!(path.to_flat_string(), "model.component[2]");
+    assert_eq!(path.parts[1].0, "component");
+    assert_eq!(path.parts[1].1, vec![2]);
 
     ctx.pop_path();
     assert_eq!(ctx.current_path().to_flat_string(), "model");
+}
+
+#[test]
+fn test_zero_sized_array_component_records_parent_dimensions() {
+    let mut ctx = InstantiateContext::new();
+    let mut overlay = ast::InstanceOverlay::default();
+
+    ctx.push_path("tank1");
+    register_zero_sized_array_component(&mut ctx, &mut overlay, "topPorts", &[0]);
+    ctx.pop_path();
+
+    assert_eq!(
+        overlay.array_parent_dims.get("tank1.topPorts"),
+        Some(&vec![0])
+    );
 }
 
 #[test]
@@ -111,9 +376,15 @@ fn test_extract_int_params_record_alias_prefers_rebound_field_values() {
         ast::ModificationValue::simple(make_comp_ref_expr(&["cellData2"])),
     );
 
-    let effective_components = IndexMap::new();
+    let effective_components = IndexMap::default();
     let tree = ast::ClassTree::default();
-    let int_params = extract_int_params_with_mods(&effective_components, &mod_env, &tree);
+    let eval_ctx = InstantiateEvalCtx {
+        tree: &tree,
+        mod_env: &mod_env,
+        effective_components: &effective_components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    };
+    let int_params = extract_int_params_with_mods(&eval_ctx);
 
     assert_eq!(
         int_params.get("cellData2.nRC"),
@@ -205,6 +476,83 @@ fn test_inner_shadowing() {
     // Now should find the outer "g"
     let inner = ctx.find_inner("g").unwrap();
     assert_eq!(inner.qualified_name.to_flat_string(), "root.g");
+}
+
+#[test]
+fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
+    let state_id = DefId::new(100);
+    let uses_outer_id = DefId::new(101);
+    let root_id = DefId::new(102);
+
+    let state = ast::ClassDef {
+        def_id: Some(state_id),
+        name: make_token("State"),
+        components: [("x".to_string(), make_component("x", "Real", None))]
+            .into_iter()
+            .collect(),
+        equations: vec![make_simple_equation("x", 1)],
+        ..Default::default()
+    };
+
+    let mut outer_shared = make_component("shared", "State", Some(state_id));
+    outer_shared.outer = true;
+    let uses_outer = ast::ClassDef {
+        def_id: Some(uses_outer_id),
+        name: make_token("UsesOuter"),
+        components: [("shared".to_string(), outer_shared)].into_iter().collect(),
+        ..Default::default()
+    };
+
+    let child = make_component("child", "UsesOuter", Some(uses_outer_id));
+    let mut inner_shared = make_component("shared", "State", Some(state_id));
+    inner_shared.inner = true;
+    let root = ast::ClassDef {
+        def_id: Some(root_id),
+        name: make_token("Root"),
+        components: [
+            ("child".to_string(), child),
+            ("shared".to_string(), inner_shared),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("State".to_string(), state);
+    tree.definitions
+        .classes
+        .insert("UsesOuter".to_string(), uses_outer);
+    tree.definitions.classes.insert("Root".to_string(), root);
+    tree.def_map.insert(state_id, "State".to_string());
+    tree.def_map.insert(uses_outer_id, "UsesOuter".to_string());
+    tree.def_map.insert(root_id, "Root".to_string());
+
+    let outcome = instantiate_model_with_outcome(&tree, "Root");
+    let InstantiationOutcome::Success(overlay) = outcome else {
+        panic!("late inner declaration should resolve pending outer reference");
+    };
+
+    assert!(
+        overlay.synthesized_inners.is_empty(),
+        "the real late inner declaration should avoid synthetic retry"
+    );
+    assert_eq!(
+        overlay.outer_prefix_to_inner.get("child.shared"),
+        Some(&"shared".to_string())
+    );
+
+    let shared_classes: Vec<_> = overlay
+        .classes
+        .values()
+        .filter(|class| class.qualified_name.to_flat_string() == "shared")
+        .collect();
+    assert_eq!(
+        shared_classes.len(),
+        1,
+        "late inner resolution should instantiate the shared inner once"
+    );
+    assert_eq!(shared_classes[0].equations.len(), 1);
 }
 
 // -------------------------------------------------------------------------
@@ -330,4 +678,80 @@ fn test_class_extends_transitive() {
     assert!(class_extends(&tree, &class_c, "A"));
     // C does not extend D
     assert!(!class_extends(&tree, &class_c, "D"));
+}
+
+#[test]
+fn test_record_declaration_binding_expands_in_instance_owner_scope() {
+    let scope = binding_scope_for_record_expansion(
+        &ast::QualifiedName::from_dotted("reluctance_m.V_m"),
+        false,
+        None,
+    );
+
+    assert_eq!(scope, Some(ast::QualifiedName::from_dotted("reluctance_m")));
+}
+
+#[test]
+fn test_record_modifier_binding_keeps_lexical_source_scope() {
+    let source_scope = ast::QualifiedName::from_dotted("outer_model");
+    let scope = binding_scope_for_record_expansion(
+        &ast::QualifiedName::from_dotted("sub.V_m"),
+        true,
+        Some(&source_scope),
+    );
+
+    assert_eq!(scope, Some(source_scope));
+}
+
+#[test]
+fn inherited_attribute_modification_keeps_written_source_scope() {
+    let mut comp = make_component("x", "Logic", Some(DefId::new(20)));
+    comp.def_id = Some(DefId::new(10));
+    let start_expr = make_comp_ref_expr_at(&["L", "'U'"], "scope.mo", 150, 155);
+    comp.modifications
+        .insert("start".to_string(), start_expr.clone());
+
+    let ctx = context_with_source_scope_tree(vec![
+        class_with_component("Base", DefId::new(1), (0, 100), comp.clone()),
+        class_with_component(
+            "Derived",
+            DefId::new(2),
+            (120, 220),
+            make_component("dummy", "Real", None),
+        ),
+    ]);
+
+    let mut attrs = extract_attributes(&comp, &ast::ModificationEnvironment::new(), "x");
+    infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
+
+    assert_eq!(
+        attrs.source_scopes.get("start"),
+        Some(&ast::QualifiedName::from_ident("Derived"))
+    );
+    assert_eq!(attrs.start, Some(start_expr));
+}
+
+#[test]
+fn local_attribute_modification_keeps_instance_qualification() {
+    let mut comp = make_component("nextstate", "Logic", Some(DefId::new(20)));
+    comp.def_id = Some(DefId::new(10));
+    let start_expr = make_comp_ref_expr_at(&["n"], "scope.mo", 50, 51);
+    comp.modifications
+        .insert("start".to_string(), start_expr.clone());
+
+    let ctx = context_with_source_scope_tree(vec![class_with_component(
+        "DFFR",
+        DefId::new(1),
+        (0, 100),
+        comp.clone(),
+    )]);
+
+    let mut attrs = extract_attributes(&comp, &ast::ModificationEnvironment::new(), "nextstate");
+    infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
+
+    assert!(
+        !attrs.source_scopes.contains_key("start"),
+        "local attributes use the instance parent prefix so sibling references like n resolve to the current instance"
+    );
+    assert_eq!(attrs.start, Some(start_expr));
 }

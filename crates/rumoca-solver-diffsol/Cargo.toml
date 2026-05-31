@@ -7,15 +7,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Sim-core is the single front door: IR types, structural analysis,
-# Span/timer helpers, and the runtime expression evaluator (eval_dae)
-# are all reached through its re-export modules.
-rumoca-sim-core = { workspace = true }
-diffsol = { version = "0.10" }
-levenberg-marquardt = "0.15"
-nalgebra = "0.34"
-indexmap = { workspace = true }
+rumoca-solver = { workspace = true }
+rumoca-eval-solve = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+diffsol = { version = "0.13" }
 thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+indexmap = { workspace = true }
 
 [lints]
 workspace = true

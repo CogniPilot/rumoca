@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub type Reg = u32;
 
 /// Scalar unary operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UnaryOp {
     Neg,
     Not,
@@ -31,7 +31,7 @@ pub enum UnaryOp {
 }
 
 /// Scalar binary operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -46,7 +46,11 @@ pub enum BinaryOp {
 }
 
 /// Comparison operation that yields Modelica boolean-as-real (`0.0`/`1.0`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Equality and inequality are exact IEEE comparisons at Solve-IR row level.
+/// Relation event detection is represented separately by signed residual root
+/// functions and solver root tolerances, not by tolerant `Eq`/`Ne` rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CompareOp {
     Lt,
     Le,
@@ -54,6 +58,34 @@ pub enum CompareOp {
     Ge,
     Eq,
     Ne,
+}
+
+impl CompareOp {
+    #[must_use]
+    pub fn compare(self, lhs: f64, rhs: f64) -> bool {
+        match self {
+            Self::Lt => lhs < rhs,
+            Self::Le => lhs <= rhs,
+            Self::Gt => lhs > rhs,
+            Self::Ge => lhs >= rhs,
+            Self::Eq => lhs == rhs,
+            Self::Ne => lhs != rhs,
+        }
+    }
+
+    #[must_use]
+    pub fn compare_as_f64(self, lhs: f64, rhs: f64) -> f64 {
+        if self.compare(lhs, rhs) { 1.0 } else { 0.0 }
+    }
+}
+
+/// Supported deterministic random generators in MSL's `Modelica.Math.Random`
+/// package. These are solver-IR op kinds, not Modelica identifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RandomGenerator {
+    Xorshift64Star,
+    Xorshift128Plus,
+    Xorshift1024Star,
 }
 
 /// Flat linear operation stream (no strings, no dynamic dispatch).
@@ -78,6 +110,23 @@ pub enum LinearOp {
     LoadSeed {
         dst: Reg,
         index: usize,
+    },
+    /// Copy a register value. This keeps packed register ranges explicit
+    /// without introducing expression-level aliases into solver IR.
+    Move {
+        dst: Reg,
+        src: Reg,
+    },
+    /// Solve one component of a dense linear system `A * x = b`.
+    ///
+    /// `matrix_start..matrix_start+n*n` stores row-major `A`;
+    /// `rhs_start..rhs_start+n` stores `b`; `component` selects `x[component]`.
+    LinearSolveComponent {
+        dst: Reg,
+        matrix_start: Reg,
+        rhs_start: Reg,
+        n: usize,
+        component: usize,
     },
     /// Host-backed table bound lookup (`*_Tmin`, `*_Tmax`, `*_AbscissaUmin`, `*_AbscissaUmax`).
     TableBounds {
@@ -104,6 +153,49 @@ pub enum LinearOp {
         dst: Reg,
         table_id: Reg,
         time: Reg,
+    },
+    /// Deterministic random state initialization for MSL Xorshift generators.
+    RandomInitialState {
+        dst: Reg,
+        generator: RandomGenerator,
+        local_seed: Reg,
+        global_seed: Reg,
+        state_len: usize,
+        state_index: usize,
+    },
+    /// Deterministic random sample in `(0, 1]` from an input state vector.
+    RandomResult {
+        dst: Reg,
+        generator: RandomGenerator,
+        state_start: Reg,
+        state_len: usize,
+    },
+    /// Deterministic random output state component from an input state vector.
+    RandomState {
+        dst: Reg,
+        generator: RandomGenerator,
+        state_start: Reg,
+        state_len: usize,
+        state_index: usize,
+    },
+    /// Initialize an MSL impure random stream and return its stream id.
+    ImpureRandomInit {
+        dst: Reg,
+        seed: Reg,
+    },
+    /// Draw one MSL impure random sample in `(0, 1]`.
+    ImpureRandom {
+        dst: Reg,
+        id: Reg,
+        call_site: u64,
+    },
+    /// Draw one MSL impure random integer sample in `[imin, imax]`.
+    ImpureRandomInteger {
+        dst: Reg,
+        id: Reg,
+        imin: Reg,
+        imax: Reg,
+        call_site: u64,
     },
     Unary {
         dst: Reg,
@@ -132,4 +224,48 @@ pub enum LinearOp {
     StoreOutput {
         src: Reg,
     },
+}
+
+impl LinearOp {
+    pub fn dst_register(&self) -> Option<Reg> {
+        match *self {
+            Self::Const { dst, .. }
+            | Self::LoadTime { dst }
+            | Self::LoadY { dst, .. }
+            | Self::LoadP { dst, .. }
+            | Self::LoadSeed { dst, .. }
+            | Self::Move { dst, .. }
+            | Self::LinearSolveComponent { dst, .. }
+            | Self::TableBounds { dst, .. }
+            | Self::TableLookup { dst, .. }
+            | Self::TableLookupSlope { dst, .. }
+            | Self::TableNextEvent { dst, .. }
+            | Self::RandomInitialState { dst, .. }
+            | Self::RandomResult { dst, .. }
+            | Self::RandomState { dst, .. }
+            | Self::ImpureRandomInit { dst, .. }
+            | Self::ImpureRandom { dst, .. }
+            | Self::ImpureRandomInteger { dst, .. }
+            | Self::Unary { dst, .. }
+            | Self::Binary { dst, .. }
+            | Self::Compare { dst, .. }
+            | Self::Select { dst, .. } => Some(dst),
+            Self::StoreOutput { .. } => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CompareOp;
+
+    #[test]
+    fn compare_op_equality_is_exact_not_epsilon_based() {
+        let near_zero = f64::MIN_POSITIVE;
+
+        assert!(!CompareOp::Eq.compare(0.0, near_zero));
+        assert!(CompareOp::Ne.compare(0.0, near_zero));
+        assert_eq!(CompareOp::Eq.compare_as_f64(0.0, near_zero), 0.0);
+        assert_eq!(CompareOp::Ne.compare_as_f64(0.0, near_zero), 1.0);
+    }
 }

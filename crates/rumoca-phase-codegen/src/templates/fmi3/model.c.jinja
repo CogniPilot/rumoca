@@ -13,7 +13,26 @@
 #include <stdio.h>
 
 {# Configuration for render_expr - C style #}
-{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d"} %}
+{% set c_symbol_policy = {
+    "separator": "_",
+    "generated_prefixes": ["pre_", "der_"],
+    "reserved": [
+        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+        "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return",
+        "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+        "unsigned", "void", "volatile", "while", "inline", "restrict",
+        "m", "t", "time", "i", "n", "arr", "s", "sz", "ModelInstance", "Complex",
+        "__rumoca_sum_d", "__rumoca_solve_linear_component", "pre", "der", "edge", "change", "initial", "terminal"
+    ]
+} %}
+{% set symbols = target_symbols(dae.symbol_refs, c_symbol_policy) %}
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d", "symbols": symbols} %}
+{% set solve_root_rows = solve.events.root_conditions.programs if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else [] %}
+{% set solve_derivative_rows = solve.continuous.derivative_rhs.programs if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.programs is defined else [] %}
+{% set solve_derivative_nodes = solve_derivative_nodes if solve_derivative_nodes is defined else (solve.continuous.derivative_rhs.nodes if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.nodes is defined else []) %}
+{% set solve_jacobian_rows = solve_jacobian_rows if solve_jacobian_rows is defined else (solve.artifacts.continuous.implicit_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.implicit_jacobian_v is defined and solve.artifacts.continuous.implicit_jacobian_v.programs is defined else (solve.artifacts.continuous.full_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.full_jacobian_v is defined and solve.artifacts.continuous.full_jacobian_v.programs is defined else [])) %}
+{% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
+{% set solve_jacobian_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})", "seed": "seed[{}]"} %}
 
 /* pre(x) macro: maps pre(varname) to the pre_varname local alias */
 #define pre(x) pre_##x
@@ -27,8 +46,8 @@
 /* change(x): true when x changed value */
 #define change(x) ((x) != pre(x))
 
-/* initial(): true only during initialization (always false in continuous mode) */
-#define initial() 0
+/* initial(): true during FMI initialization mode (MLS §3.7.3.1). */
+#define initial() ((m->state == modelInitializationMode) ? 1 : 0)
 
 /* terminal(): true only at end of simulation (always false in continuous mode) */
 #define terminal() 0
@@ -42,6 +61,88 @@ static inline double __rumoca_sum_d(const double* arr, int n) {
     for (int i = 0; i < n; i++) s += arr[i];
     return s;
 }
+
+#define RUMOCA_MAX_LINEAR_SOLVE 8
+static double __rumoca_solve_linear_component(const double* A_in, const double* b_in, int n, int component) {
+    if (n <= 0 || n > RUMOCA_MAX_LINEAR_SOLVE || component < 0 || component >= n) {
+        return NAN;
+    }
+
+    double A[RUMOCA_MAX_LINEAR_SOLVE][RUMOCA_MAX_LINEAR_SOLVE] = {0};
+    double b[RUMOCA_MAX_LINEAR_SOLVE] = {0};
+    for (int row = 0; row < n; row++) {
+        b[row] = b_in[row];
+        for (int col = 0; col < n; col++) {
+            A[row][col] = A_in[row * n + col];
+        }
+    }
+
+    for (int col = 0; col < n; col++) {
+        int pivot = col;
+        double pivot_abs = fabs(A[col][col]);
+        for (int row = col + 1; row < n; row++) {
+            double candidate = fabs(A[row][col]);
+            if (candidate > pivot_abs) {
+                pivot = row;
+                pivot_abs = candidate;
+            }
+        }
+        if (pivot_abs < 1.0e-12) {
+            return NAN;
+        }
+        if (pivot != col) {
+            for (int j = col; j < n; j++) {
+                double tmp = A[col][j];
+                A[col][j] = A[pivot][j];
+                A[pivot][j] = tmp;
+            }
+            double tmp_b = b[col];
+            b[col] = b[pivot];
+            b[pivot] = tmp_b;
+        }
+
+        double inv_pivot = 1.0 / A[col][col];
+        for (int row = col + 1; row < n; row++) {
+            double factor = A[row][col] * inv_pivot;
+            A[row][col] = 0.0;
+            for (int j = col + 1; j < n; j++) {
+                A[row][j] -= factor * A[col][j];
+            }
+            b[row] -= factor * b[col];
+        }
+    }
+
+    double x[RUMOCA_MAX_LINEAR_SOLVE] = {0};
+    for (int row = n - 1; row >= 0; row--) {
+        double sum = b[row];
+        for (int col = row + 1; col < n; col++) {
+            sum -= A[row][col] * x[col];
+        }
+        x[row] = sum / A[row][row];
+    }
+    return x[component];
+}
+
+/* Dense matrix multiply: C[m×n] += A[m×k] * B[k×n] (row-major, beta=0.0).
+   Compile with -DRUMOCA_USE_CBLAS and link -lblas for BLAS acceleration. */
+#ifdef RUMOCA_USE_CBLAS
+#include <cblas.h>
+static inline void __rumoca_dgemm(int m, int n, int k,
+                                  const double* A, const double* B, double* C) {
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                m, n, k, 1.0, A, k, B, n, 0.0, C, n);
+}
+#else
+static inline void __rumoca_dgemm(int m, int n, int k,
+                                  const double* A, const double* B, double* C) {
+    for (int i = 0; i < m; i++)
+        for (int j = 0; j < n; j++) {
+            double s = 0.0;
+            for (int l = 0; l < k; l++) s += A[i * k + l] * B[l * n + j];
+            C[i * n + j] = s;
+        }
+}
+#endif
 
 /* Modelica builtin stubs for array operations (scalar fallbacks) */
 static inline double zeros(int n) { (void)n; return 0.0; }
@@ -118,12 +219,12 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
  * Enumeration literal constants
  * ========================================================================= */
 {% for name, ordinal in dae.enum_literal_ordinals | items %}
-#define {{ name | sanitize }} {{ ordinal }}
+#define {{ symbol(symbols, name) }} {{ ordinal }}
 {% endfor %}
 
 /* Enumeration type constructors — identity macros for enum type casts */
 {% for type_name in dae.enum_type_names | default([]) %}
-#define {{ type_name | sanitize }}(x) (x)
+#define {{ symbol(symbols, type_name) }}(x) (x)
 {% endfor %}
 
 {#- Macro: compute total scalar size of a variable map -#}
@@ -143,42 +244,42 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
     Also emits pointer aliases for array variables so Index expressions
     (base[subscript] style) can access them via pointer. -#}
 {% macro unpack_vars(vars, array, mutable=false, pre_array="", der_prefix=false) -%}
-{% set ns_idx = namespace(offset=0) %}
-{% for name, var in vars | items %}
-{% if var.dims %}
-{% set sz = var.dims | product %}
-{% set arr_base_offset = ns_idx.offset %}
-{% for i in range(sz) %}
-    {% if mutable %}double{% else %}const double{% endif %} {{ name | sanitize }}_{{ i + 1 }} = {{ array }}[{{ ns_idx.offset }}];
-{% if pre_array %}
-    const double pre_{{ name | sanitize }}_{{ i + 1 }} = {{ pre_array }}[{{ ns_idx.offset }}];
-{% endif %}
-{% set ns_idx.offset = ns_idx.offset + 1 %}
-{% endfor %}
-    {% if mutable %}double{% else %}const double{% endif %}* {{ name | sanitize }} = &{{ array }}[{{ arr_base_offset }}];
-{% else %}
-    {% if mutable %}double{% else %}const double{% endif %} {{ name | sanitize }} = {{ array }}[{{ ns_idx.offset }}];
-{% if pre_array %}
-    const double pre_{{ name | sanitize }} = {{ pre_array }}[{{ ns_idx.offset }}];
-{% endif %}
-{% set ns_idx.offset = ns_idx.offset + 1 %}
-{% endif %}
-{% endfor %}
-{% if der_prefix %}
-{% set ns_idx = namespace(offset=0) %}
-{% for name, var in vars | items %}
-{% if var.dims %}
-{% set sz = var.dims | product %}
-{% for i in range(sz) %}
-    const double der_{{ name | sanitize }}_{{ i + 1 }} = m->xdot[{{ ns_idx.offset }}];
-{% set ns_idx.offset = ns_idx.offset + 1 %}
-{% endfor %}
-{% else %}
-    const double der_{{ name | sanitize }} = m->xdot[{{ ns_idx.offset }}];
-{% set ns_idx.offset = ns_idx.offset + 1 %}
-{% endif %}
-{% endfor %}
-{% endif %}
+{%- set ns_idx = namespace(offset=0) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- set arr_base_offset = ns_idx.offset %}
+    {% if mutable %}double{% else %}const double{% endif %}* {{ symbol(symbols, name) }} = &{{ array }}[{{ arr_base_offset }}];
+{%- for i in range(sz) %}
+    {% if mutable %}double{% else %}const double{% endif %} {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ array }}[{{ ns_idx.offset }}];
+{%- if pre_array %}
+    const double pre_{{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ pre_array }}[{{ ns_idx.offset }}];
+{%- endif -%}
+{%- set ns_idx.offset = ns_idx.offset + 1 -%}
+{%- endfor -%}
+{%- else %}
+    {% if mutable %}double{% else %}const double{% endif %} {{ symbol(symbols, name) }} = {{ array }}[{{ ns_idx.offset }}];
+{%- if pre_array %}
+    const double pre_{{ symbol(symbols, name) }} = {{ pre_array }}[{{ ns_idx.offset }}];
+{%- endif -%}
+{%- set ns_idx.offset = ns_idx.offset + 1 -%}
+{%- endif -%}
+{%- endfor -%}
+{%- if der_prefix -%}
+{%- set ns_idx = namespace(offset=0) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    const double der_{{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = m->xdot[{{ ns_idx.offset }}];
+{%- set ns_idx.offset = ns_idx.offset + 1 -%}
+{%- endfor -%}
+{%- else %}
+    const double der_{{ symbol(symbols, name) }} = m->xdot[{{ ns_idx.offset }}];
+{%- set ns_idx.offset = ns_idx.offset + 1 -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endif %}
 {%- endmacro %}
 
 /* =========================================================================
@@ -193,11 +294,15 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 #define N_CONSTANTS      {{ var_size(dae.constants) | trim }}
 #define N_DISCRETE_REAL  {{ var_size(dae.z) | trim }}
 #define N_DISCRETE_VAL   {{ var_size(dae.m) | trim }}
-#define N_EVENT_INDICATORS {{ (dae.relation | default([]) | length) + (dae.synthetic_root_conditions | default([]) | length) }}
+#define N_EVENT_INDICATORS {{ solve_root_rows | length }}
 #define N_PERIODIC_CLOCKS {{ dae.clock_schedules | default([]) | length }}
 #define N_TRIGGERED_CLOCKS {{ dae.triggered_clock_conditions | default([]) | length }}
 #define N_CLOCKS         (N_PERIODIC_CLOCKS + N_TRIGGERED_CLOCKS)
 #define N_REALS          (N_STATES + N_DERIVATIVES + N_ALGEBRAICS + N_INPUTS + N_OUTPUTS + N_PARAMETERS + N_DISCRETE_REAL)
+#define N_SOLVE_Y        (N_STATES + N_ALGEBRAICS + N_OUTPUTS)
+#define N_SOLVE_P        (N_PARAMETERS + N_INPUTS + N_DISCRETE_REAL + N_DISCRETE_VAL)
+#define N_SOLVE_SEEDS    (N_SOLVE_Y + N_SOLVE_P)
+#define N_SOLVE_JACOBIAN_ROWS {{ solve_jacobian_rows | length }}
 
 /* Per-variable counts (FMI 3.0 native arrays: one VR per variable) */
 #define NVAR_X  {{ dae.x | length }}
@@ -311,6 +416,40 @@ typedef struct {
 #endif
 } ModelInstance;
 
+static double __rumoca_solve_y(const ModelInstance* m, int index) {
+    if (index < N_STATES) {
+        return m->x[index];
+    }
+    index -= N_STATES;
+    if (index < N_ALGEBRAICS) {
+        return m->y[index];
+    }
+    index -= N_ALGEBRAICS;
+    if (index < N_OUTPUTS) {
+        return m->w[index];
+    }
+    return 0.0;
+}
+
+static double __rumoca_solve_p(const ModelInstance* m, int index) {
+    if (index < N_PARAMETERS) {
+        return m->p[index];
+    }
+    index -= N_PARAMETERS;
+    if (index < N_INPUTS) {
+        return m->u[index];
+    }
+    index -= N_INPUTS;
+    if (index < N_DISCRETE_REAL) {
+        return m->z[index];
+    }
+    index -= N_DISCRETE_REAL;
+    if (index < N_DISCRETE_VAL) {
+        return m->m[index];
+    }
+    return 0.0;
+}
+
 /* Intermediate update callback type (FMI 3.0 §4.2.3) */
 typedef fmi3Status (*fmi3IntermediateUpdateCallback)(
     fmi3InstanceEnvironment instanceEnvironment,
@@ -333,9 +472,126 @@ static void compute_outputs(ModelInstance* m);
 static void compute_discrete_updates(ModelInstance* m);
 static void compute_event_indicators(ModelInstance* m);
 
-{#- Macro: check if a function has any Complex-typed parameters -#}
+static double event_right_limit_time(double event_time) {
+    double scale = 1.0 + fabs(event_time);
+    double stepped = event_time + fmax(1.0e-6 * scale, 2.220446049250313e-16 * scale);
+    double adjacent = nextafter(event_time, INFINITY);
+    return stepped > adjacent ? stepped : adjacent;
+}
+
+static int scheduled_time_event_active(double time) {
+{% if dae.scheduled_time_events | default([]) | length > 0 %}
+    static const double scheduled_events[] = {
+{% for t_event in dae.scheduled_time_events | default([]) %}
+        {{ t_event }}{{ "," if not loop.last else "" }}
+{% endfor %}
+    };
+    static const int n_scheduled = {{ dae.scheduled_time_events | default([]) | length }};
+    for (int i = 0; i < n_scheduled; i++) {
+        double tol = 1.0e-12 * (1.0 + fabs(scheduled_events[i]));
+        if (fabs(time - scheduled_events[i]) <= tol) return 1;
+    }
+{% else %}
+    (void)time;
+{% endif %}
+    return 0;
+}
+
+static void compute_event_discrete_updates(ModelInstance* m) {
+    double saved_time = m->time;
+    if (scheduled_time_event_active(m->time)) {
+        m->time = event_right_limit_time(m->time);
+    }
+    compute_discrete_updates(m);
+    m->time = saved_time;
+}
+
+{#- Macro: check if a function has any record-typed parameters -#}
 {% macro has_complex_params(func) -%}
-{%- for p in func.inputs -%}{%- if p.type_name == "Complex" -%}yes{%- endif -%}{%- endfor -%}
+{%- for p in func.inputs -%}{%- if p.type_class == "Record" -%}yes{%- endif -%}{%- endfor -%}
+{%- endmacro %}
+
+{#- Macro: render a C parameter list for one-output user functions. #}
+{% macro function_param_list(func) -%}
+{%- for p in func.inputs -%}
+{%- set p_symbol = symbol(symbols, p.name) -%}
+{%- if p.dims -%}const double* {{ p_symbol }}, int {{ p_symbol }}_size{%- else -%}double {{ p_symbol }}{%- endif -%}{{ ", " if not loop.last else "" }}
+{%- endfor -%}
+{%- endmacro %}
+
+{#- Macro: expose fixed-size array inputs as scalar aliases for indexed AST bodies. #}
+{% macro function_input_aliases(func) -%}
+{%- for p in func.inputs -%}
+{%- if p.dims -%}
+{%- set p_symbol = symbol(symbols, p.name) -%}
+{%- set sz = p.dims | product %}
+    (void){{ p_symbol }}_size;
+{%- for i in range(sz) %}
+    const double {{ symbol(symbols, source_ref(p.name, p.dims, i + 1)) }} = {{ p_symbol }}[{{ i }}];
+{%- endfor -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro %}
+
+{#- Macro: declare locals and outputs for function algorithm bodies. #}
+{% macro function_locals_and_outputs(func) -%}
+{%- for p in func.locals %}
+{%- if p.dims %}
+{%- set local_sz = p.dims | product %}
+{%- set p_symbol = symbol(symbols, p.name) %}
+    double {{ p_symbol }}[{{ local_sz }}] = {0};
+    int {{ p_symbol }}_size = {{ local_sz }};
+    (void){{ p_symbol }}_size;
+{%- for i in range(local_sz) %}
+    double {{ symbol(symbols, source_ref(p.name, p.dims, i + 1)) }} = 0.0;
+{%- endfor -%}
+{%- else %}
+    double {{ symbol(symbols, p.name) }}{% if p.default %} = {{ render_expr(p.default, cfg) }}{% endif %};
+{%- endif -%}
+{%- endfor %}
+{%- for p in func.outputs %}
+{%- if p.dims %}
+{%- set output_sz = p.dims | product %}
+{%- set p_symbol = symbol(symbols, p.name) %}
+    double {{ p_symbol }}[{{ output_sz }}] = {0};
+    int {{ p_symbol }}_size = {{ output_sz }};
+    (void){{ p_symbol }}_size;
+{%- for i in range(output_sz) %}
+    double {{ symbol(symbols, source_ref(p.name, p.dims, i + 1)) }} = 0.0;
+{%- endfor -%}
+{%- else %}
+    double {{ symbol(symbols, p.name) }} = 0.0;
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro %}
+
+{#- Macro: emit a one-output function body and return the requested scalar. #}
+{% macro function_body(func_name, func, return_expr) -%}
+{% if is_self_call(func_name, func) %}
+    /* Builtin wrapper — delegate to C standard library */
+    return {{ func_name | last_segment }}({% for p in func.inputs %}{{ symbol(symbols, p.name) }}{{ ", " if not loop.last else "" }}{% endfor %});
+{% elif has_complex_params(func) | trim == "yes" %}
+    /* Record-typed parameters — stub */
+    (void)0;
+{% for p in func.inputs %}    (void){{ symbol(symbols, p.name) }};
+{% endfor %}
+    return 0.0;
+{% elif func.external %}
+    /* External {{ func.external.language }} function */
+{% if func.external.output_name %}
+    return {{ func.external.function_name | default(symbol(symbols, func_name)) }}({% for arg in func.external.arg_names %}{{ symbol(symbols, arg) }}{{ ", " if not loop.last else "" }}{% endfor %});
+{% else %}
+    {{ func.external.function_name | default(symbol(symbols, func_name)) }}({% for arg in func.external.arg_names %}{{ symbol(symbols, arg) }}{{ ", " if not loop.last else "" }}{% endfor %});
+    return {{ return_expr }};
+{% endif %}
+{% else %}
+{{ function_input_aliases(func) }}
+{{ function_locals_and_outputs(func) }}
+{% if func.body | length > 0 %}
+{{ render_statements(func.body, cfg, "    ") }}
+{% endif %}
+    return {{ return_expr }};
+{% endif %}
 {%- endmacro %}
 
 /* =========================================================================
@@ -343,7 +599,14 @@ static void compute_event_indicators(ModelInstance* m);
  * ========================================================================= */
 {% for func_name, func in dae.functions | items %}
 {% if func.outputs | length == 1 %}
-static double {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims %}const double* {{ p.name | sanitize }}, int {{ p.name | sanitize }}_size{% else %}double {{ p.name | sanitize }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %});
+{% if func.outputs[0].dims %}
+{% set output_sz = func.outputs[0].dims | product %}
+{% for i in range(output_sz) %}
+static double {{ symbol(symbols, func_name ~ "." ~ func.outputs[0].name ~ "[" ~ (i + 1) ~ "]") }}({{ function_param_list(func) }});
+{% endfor %}
+{% else %}
+static double {{ symbol(symbols, func_name) }}({{ function_param_list(func) }});
+{% endif %}
 {% endif %}
 {% endfor %}
 
@@ -352,46 +615,18 @@ static double {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims 
  * ========================================================================= */
 {% for func_name, func in dae.functions | items %}
 {% if func.outputs | length == 1 %}
-static double {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims %}const double* {{ p.name | sanitize }}, int {{ p.name | sanitize }}_size{% else %}double {{ p.name | sanitize }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %}) {
-{% if is_self_call(func_name, func) %}
-    /* Builtin wrapper — delegate to C standard library */
-    return {{ func_name | last_segment }}({% for p in func.inputs %}{{ p.name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %});
-{% elif has_complex_params(func) | trim == "yes" %}
-    /* Complex-typed parameters — stub */
-    (void)0;
-{% for p in func.inputs %}    (void){{ p.name | sanitize }};
-{% endfor %}
-    return 0.0;
-{% elif func.external %}
-    /* External {{ func.external.language }} function */
-{% if func.external.output_name %}
-    return {{ func.external.function_name | default(func_name | sanitize) }}({% for arg in func.external.arg_names %}{{ arg | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %});
-{% else %}
-    {{ func.external.function_name | default(func_name | sanitize) }}({% for arg in func.external.arg_names %}{{ arg | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %});
-    return {{ func.outputs[0].name | sanitize }};
-{% endif %}
-{% else %}
-{% for p in func.locals %}
-{% if p.dims %}
-{% set local_sz = p.dims | product %}
-    double {{ p.name | sanitize }}[{{ local_sz }}];
-    int {{ p.name | sanitize }}_size = {{ local_sz }};
-    (void){{ p.name | sanitize }}_size;
-{% else %}
-    double {{ p.name | sanitize }}{% if p.default %} = {{ render_expr(p.default, cfg) }}{% endif %};
-{% endif %}
-{% endfor %}
-{% if func.outputs | length > 0 %}
-    double {{ func.outputs[0].name | sanitize }} = 0.0;
-{% endif %}
-{% if func.body | length > 0 %}
-{{ render_statements(func.body, cfg, "    ") }}
-{% endif %}
-{% if func.outputs | length > 0 %}
-    return {{ func.outputs[0].name | sanitize }};
-{% endif %}
-{% endif %}
+{% if func.outputs[0].dims %}
+{% set output_sz = func.outputs[0].dims | product %}
+{% for i in range(output_sz) %}
+static double {{ symbol(symbols, func_name ~ "." ~ func.outputs[0].name ~ "[" ~ (i + 1) ~ "]") }}({{ function_param_list(func) }}) {
+{{ function_body(func_name, func, symbol(symbols, source_ref(func.outputs[0].name, func.outputs[0].dims, i + 1))) }}
 }
+{% endfor %}
+{% else %}
+static double {{ symbol(symbols, func_name) }}({{ function_param_list(func) }}) {
+{{ function_body(func_name, func, symbol(symbols, func.outputs[0].name)) }}
+}
+{% endif %}
 {% endif %}
 {% endfor %}
 
@@ -407,7 +642,7 @@ static void initialize_defaults(ModelInstance* m) {
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.constants | items %}
-    double {{ name | sanitize }} = 0.0;
+    double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% set ns_idx = namespace(offset=0) %}
@@ -415,11 +650,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    double {{ name | sanitize }}_{{ i + 1 }} = 0.0;
+    double {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    double {{ name | sanitize }} = 0.0;
+    double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -428,7 +663,7 @@ static void initialize_defaults(ModelInstance* m) {
 {% for name, var in dae.p | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
-    double* {{ name | sanitize }} = &m->p[{{ ns_idx.offset }}];
+    double* {{ symbol(symbols, name) }} = &m->p[{{ ns_idx.offset }}];
 {% set ns_idx.offset = ns_idx.offset + sz %}
 {% else %}
 {% set ns_idx.offset = ns_idx.offset + 1 %}
@@ -439,11 +674,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    double {{ name | sanitize }}_{{ i + 1 }} = 0.0;
+    double {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    double {{ name | sanitize }} = 0.0;
+    double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -452,11 +687,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    double {{ name | sanitize }}_{{ i + 1 }} = 0.0;
+    double {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    double {{ name | sanitize }} = 0.0;
+    double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -465,11 +700,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    double {{ name | sanitize }}_{{ i + 1 }} = 0.0;
+    double {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    double {{ name | sanitize }} = 0.0;
+    double {{ symbol(symbols, name) }} = 0.0;
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -479,8 +714,8 @@ static void initialize_defaults(ModelInstance* m) {
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.constants | items %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
-    m->constants[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    m->constants[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 
@@ -489,13 +724,13 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
-    m->p[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    m->p[{{ ns_idx.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
-    m->p[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    m->p[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -519,13 +754,13 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
-    m->u[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    m->u[{{ ns_idx.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
-    m->u[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    m->u[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -535,13 +770,13 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
-    m->z[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    m->z[{{ ns_idx.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
-    m->z[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    m->z[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -590,13 +825,13 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
-    m->w[{{ ns_out.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};
+    m->w[{{ ns_out.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
-    m->w[{{ ns_out.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+    m->w[{{ ns_out.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -607,13 +842,13 @@ static void compute_algebraics(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
-    m->y[{{ ns_alg.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};
+    m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
-    m->y[{{ ns_alg.offset }}] = {{ name | sanitize }};  /* {{ name }} */
+    {{ symbol(symbols, name) }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+    m->y[{{ ns_alg.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -643,23 +878,32 @@ static void compute_derivatives(ModelInstance* m) {
 {{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
 {{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
 
-    /* Evaluate derivatives (explicit form extracted from residual 0 = der(x) - rhs) */
+    /* Evaluate derivatives from solve IR. MLS Appendix B.1a keeps f_x
+       implicit; phase-solve-lower owns the explicit xdot projection. */
+{% if solve_derivative_nodes | length > 0 %}
 {% set ns_xdot = namespace(offset=0) %}
-{% for name, var in dae.x | items %}
-{% if var.dims %}
-{% set sz = var.dims | product %}
-{% for i in range(sz) %}
-    m->xdot[{{ ns_xdot.offset }}] = {{ ode_rhs_for_state(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};  /* der({{ name }}[{{ i + 1 }}]) */
+{% for node in solve_derivative_nodes %}
+{% if node.MatMul is defined %}
+{{ render_matmul_c(node.MatMul, ns_xdot.offset, solve_row_c_cfg) }}
+{% set ns_xdot.offset = ns_xdot.offset + node.MatMul.m * node.MatMul.n %}
+{% elif node.ScalarPrograms is defined %}
+{% for row in node.ScalarPrograms.programs %}
+    m->xdot[{{ ns_xdot.offset }}] = {{ render_solve_row_c(row, solve_row_c_cfg) }};
 {% set ns_xdot.offset = ns_xdot.offset + 1 %}
 {% endfor %}
-{% else %}
-    m->xdot[{{ ns_xdot.offset }}] = {{ ode_rhs_for_state(name, dae.f_x, cfg) }};  /* der({{ name }}) */
-{% set ns_xdot.offset = ns_xdot.offset + 1 %}
 {% endif %}
 {% endfor %}
+{% else %}
+{% for row in solve_derivative_rows %}
+    m->xdot[{{ loop.index0 }}] = {{ render_solve_row_c(row, solve_row_c_cfg) }};
+{% endfor %}
+{% endif %}
 
     /* Re-compute algebraics after derivatives (resolves derivative aliases) */
     compute_algebraics(m);
+
+    /* Outputs may depend on algebraics, including array-valued function projections. */
+    compute_outputs(m);
 
     m->dirty_values = 0;
 }
@@ -688,7 +932,7 @@ static void compute_outputs(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};  /* {{ name }}[{{ i + 1 }}] */
+    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(source_ref(name, var.dims, i + 1), dae.f_x, cfg) }};  /* {{ source_ref(name, var.dims, i + 1) }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -722,7 +966,22 @@ static void compute_discrete_updates(ModelInstance* m) {
 
     /* Discrete Real updates: z = f_z(v, c) (MLS B.1b) */
 {% for eq in dae.f_z %}
+{% set target = namespace(done=false) %}
+{% for name, var in dae.x | items %}
+{% if eq.lhs == name %}
+    m->x[{{ loop.index0 }}] = {{ render_expr(eq.rhs, cfg) }};  /* {{ eq.origin }} */
+{% set target.done = true %}
+{% endif %}
+{% endfor %}
+{% for name, var in dae.z | items %}
+{% if eq.lhs == name %}
     m->z[{{ loop.index0 }}] = {{ render_expr(eq.rhs, cfg) }};  /* {{ eq.origin }} */
+{% set target.done = true %}
+{% endif %}
+{% endfor %}
+{% if not target.done %}
+    m->z[{{ loop.index0 }}] = {{ render_expr(eq.rhs, cfg) }};  /* {{ eq.origin }} */
+{% endif %}
 {% endfor %}
 
     /* Discrete-valued updates: m := f_m(v, c) (MLS B.1c) */
@@ -738,28 +997,9 @@ static void compute_discrete_updates(ModelInstance* m) {
  * Compute event indicators
  * ========================================================================= */
 static void compute_event_indicators(ModelInstance* m) {
-{% if (dae.relation | default([]) | length) > 0 or (dae.synthetic_root_conditions | default([]) | length) > 0 %}
-    const double t = m->time;
-    const double time = m->time;
-    (void)t; (void)time;
-
-{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
-{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
-{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
-{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
-{{ unpack_vars(dae.p, "m->p") }}
-{{ unpack_vars(dae.constants, "m->constants") }}
-{{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
-{{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
-
-{% set ei_idx = namespace(offset=0) %}
-{% for rel in dae.relation | default([]) %}
-    m->event_indicators[{{ ei_idx.offset }}] = {{ render_expr(rel, cfg) }};
-{% set ei_idx.offset = ei_idx.offset + 1 %}
-{% endfor %}
-{% for cond in dae.synthetic_root_conditions | default([]) %}
-    m->event_indicators[{{ ei_idx.offset }}] = {{ render_expr(cond, cfg) }};
-{% set ei_idx.offset = ei_idx.offset + 1 %}
+{% if solve_root_rows | length > 0 %}
+{% for row in solve_root_rows %}
+    m->event_indicators[{{ loop.index0 }}] = {{ render_solve_row_c(row, solve_row_c_cfg) }};
 {% endfor %}
 {% else %}
     (void)m;
@@ -931,6 +1171,74 @@ static int xdot_flat_offset_for_vr(fmi3ValueReference vr) {
     return -1;
 }
 
+/* Helper: map an FMI variable element to the solve-IR AD seed vector.
+   phase-solve-lower orders seeds as solver-y (x, y, w) followed by solver-p
+   (p, u, z, m). */
+static int solve_seed_offset_for_vr_element(fmi3ValueReference vr, int elem) {
+#if NVAR_X > 0
+    if (vr >= VR_X && vr < VR_X + NVAR_X) {
+        int i = vr - VR_X;
+        if (elem >= 0 && elem < x_var_count[i]) return x_flat_offset[i] + elem;
+    }
+#endif
+#if NVAR_Y > 0
+    if (vr >= VR_Y && vr < VR_Y + NVAR_Y) {
+        int i = vr - VR_Y;
+        if (elem >= 0 && elem < y_var_count[i]) return N_STATES + y_flat_offset[i] + elem;
+    }
+#endif
+#if NVAR_W > 0
+    if (vr >= VR_W && vr < VR_W + NVAR_W) {
+        int i = vr - VR_W;
+        if (elem >= 0 && elem < w_var_count[i]) {
+            return N_STATES + N_ALGEBRAICS + w_flat_offset[i] + elem;
+        }
+    }
+#endif
+#if NVAR_P > 0
+    if (vr >= VR_P && vr < VR_P + NVAR_P) {
+        int i = vr - VR_P;
+        if (elem >= 0 && elem < p_var_count[i]) return N_SOLVE_Y + p_flat_offset[i] + elem;
+    }
+#endif
+#if NVAR_U > 0
+    if (vr >= VR_U && vr < VR_U + NVAR_U) {
+        int i = vr - VR_U;
+        if (elem >= 0 && elem < u_var_count[i]) {
+            return N_SOLVE_Y + N_PARAMETERS + u_flat_offset[i] + elem;
+        }
+    }
+#endif
+#if NVAR_Z > 0
+    if (vr >= VR_Z && vr < VR_Z + NVAR_Z) {
+        int i = vr - VR_Z;
+        if (elem >= 0 && elem < z_var_count[i]) {
+            return N_SOLVE_Y + N_PARAMETERS + N_INPUTS + z_flat_offset[i] + elem;
+        }
+    }
+#endif
+#if NVAR_M > 0
+    if (vr >= VR_M && vr < VR_M + NVAR_M) {
+        int i = vr - VR_M;
+        if (elem >= 0 && elem < m_var_count[i]) {
+            return N_SOLVE_Y + N_PARAMETERS + N_INPUTS + N_DISCRETE_REAL + m_flat_offset[i] + elem;
+        }
+    }
+#endif
+    return -1;
+}
+
+static void compute_solve_jacobian_v(ModelInstance* m, const fmi3Float64 seed[], fmi3Float64 out[]) {
+{% if solve_jacobian_rows | length > 0 %}
+    compute_derivatives(m);
+{% for row in solve_jacobian_rows %}
+    out[{{ loop.index0 }}] = {{ render_solve_row_c(row, solve_jacobian_c_cfg) }};
+{% endfor %}
+{% else %}
+    (void)m; (void)seed; (void)out;
+{% endif %}
+}
+
 /* =========================================================================
  * FMI 3.0 API — Lifecycle
  * ========================================================================= */
@@ -1038,6 +1346,13 @@ FMI3_EXPORT fmi3Status fmi3EnterInitializationMode(
 
 FMI3_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
+
+    /* Seed pre-values from initialized discrete state before evaluating any initial discrete updates. */
+    memcpy(m->pre_z, m->z, sizeof(m->z));
+    memcpy(m->pre_m, m->m, sizeof(m->m));
+    compute_discrete_updates(m);
+    memcpy(m->pre_z, m->z, sizeof(m->z));
+    memcpy(m->pre_m, m->m, sizeof(m->m));
 
     /* Compute initial derivatives and outputs */
     compute_derivatives(m);
@@ -1379,7 +1694,7 @@ FMI3_EXPORT fmi3Status fmi3UpdateDiscreteStates(
     memcpy(m->pre_m, m->m, sizeof(m->m));
 
     /* Evaluate discrete update equations */
-    compute_discrete_updates(m);
+    compute_event_discrete_updates(m);
 
     *discreteStatesNeedUpdate = 0;
     *terminateSimulation = 0;
@@ -1604,7 +1919,7 @@ FMI3_EXPORT fmi3Status fmi3DeserializeFMUState(fmi3Instance instance, const fmi3
 }
 
 /* =========================================================================
- * FMI 3.0 API — Partial Derivatives (not supported)
+ * FMI 3.0 API — Partial Derivatives
  * ========================================================================= */
 
 FMI3_EXPORT fmi3Status fmi3GetDirectionalDerivative(
@@ -1615,61 +1930,41 @@ FMI3_EXPORT fmi3Status fmi3GetDirectionalDerivative(
     fmi3Float64 sensitivity[], size_t nSensitivity)
 {
     ModelInstance* m = (ModelInstance*)instance;
-    (void)nSeed;
-
-    /* Compute baseline derivatives */
-    compute_derivatives(m);
-    fmi3Float64 f0[N_DERIVATIVES > 0 ? N_DERIVATIVES : 1];
-    memcpy(f0, m->xdot, N_DERIVATIVES * sizeof(fmi3Float64));
-
-    /* Zero output sensitivities */
+    (void)m;
     for (size_t si = 0; si < nSensitivity; si++) sensitivity[si] = 0.0;
 
-    /* Finite-difference: for each known VR (may be array), perturb each scalar
-       element and accumulate the Jacobian-vector product into sensitivities. */
+    if (N_SOLVE_JACOBIAN_ROWS == 0) return fmi3Error;
+
+    fmi3Float64 solve_seed[N_SOLVE_SEEDS > 0 ? N_SOLVE_SEEDS : 1] = {0};
+    fmi3Float64 jv[N_SOLVE_JACOBIAN_ROWS > 0 ? N_SOLVE_JACOBIAN_ROWS : 1] = {0};
+
     size_t seed_idx = 0;
     for (size_t j = 0; j < nKnowns; j++) {
         int k_count = vr_scalar_count(knowns[j]);
-        fmi3Float64 orig_vals[N_REALS > 0 ? N_REALS : 1];
-        int dummy;
-        get_float64_by_vr(m, knowns[j], orig_vals, &dummy);
-
         for (int ke = 0; ke < k_count; ke++) {
-            if (seed[seed_idx + ke] == 0.0) continue;
-
-            const double eps = 1.0e-8;
-            double h = eps * fmax(fabs(orig_vals[ke]), 1.0);
-
-            /* Perturb single scalar element */
-            fmi3Float64 perturbed[N_REALS > 0 ? N_REALS : 1];
-            memcpy(perturbed, orig_vals, k_count * sizeof(fmi3Float64));
-            perturbed[ke] += h;
-            set_float64_by_vr(m, knowns[j], perturbed, &dummy);
-            compute_derivatives(m);
-
-            /* Accumulate (f_perturbed - f0) / h * seed into sensitivities */
-            size_t sens_idx = 0;
-            for (size_t i = 0; i < nUnknowns; i++) {
-                int u_count = vr_scalar_count(unknowns[i]);
-                int u_offset = xdot_flat_offset_for_vr(unknowns[i]);
-                if (u_offset >= 0) {
-                    for (int ue = 0; ue < u_count; ue++) {
-                        sensitivity[sens_idx + ue] +=
-                            ((m->xdot[u_offset + ue] - f0[u_offset + ue]) / h) * seed[seed_idx + ke];
-                    }
-                }
-                sens_idx += u_count;
-            }
-
-            /* Restore */
-            set_float64_by_vr(m, knowns[j], orig_vals, &dummy);
+            int seed_offset = solve_seed_offset_for_vr_element(knowns[j], ke);
+            if (seed_offset < 0 || seed_offset >= N_SOLVE_SEEDS) return fmi3Error;
+            if (seed_idx + (size_t)ke >= nSeed) return fmi3Error;
+            solve_seed[seed_offset] += seed[seed_idx + ke];
         }
         seed_idx += k_count;
     }
+    if (seed_idx != nSeed) return fmi3Error;
 
-    /* Restore clean derivatives */
-    m->dirty_values = 1;
-    compute_derivatives(m);
+    compute_solve_jacobian_v(m, solve_seed, jv);
+
+    size_t sens_idx = 0;
+    for (size_t i = 0; i < nUnknowns; i++) {
+        int u_count = vr_scalar_count(unknowns[i]);
+        int u_offset = xdot_flat_offset_for_vr(unknowns[i]);
+        if (u_offset < 0 || u_offset + u_count > N_SOLVE_JACOBIAN_ROWS) return fmi3Error;
+        for (int ue = 0; ue < u_count; ue++) {
+            if (sens_idx + (size_t)ue >= nSensitivity) return fmi3Error;
+            sensitivity[sens_idx + ue] = jv[u_offset + ue];
+        }
+        sens_idx += u_count;
+    }
+    if (sens_idx != nSensitivity) return fmi3Error;
 
     return fmi3OK;
 }
@@ -1681,64 +1976,41 @@ FMI3_EXPORT fmi3Status fmi3GetAdjointDerivative(
     const fmi3Float64 seed[], size_t nSeed,
     fmi3Float64 sensitivity[], size_t nSensitivity)
 {
-    /* Adjoint derivative via finite-difference transpose:
-     * sensitivity_j += sum_i (df_i/dx_j) * seed_i
-     * This is the transpose of the directional derivative. */
     ModelInstance* m = (ModelInstance*)instance;
-    (void)nSeed;
-
-    /* Compute baseline derivatives */
-    compute_derivatives(m);
-    fmi3Float64 f0[N_DERIVATIVES > 0 ? N_DERIVATIVES : 1];
-    memcpy(f0, m->xdot, N_DERIVATIVES * sizeof(fmi3Float64));
-
-    /* Zero output sensitivities */
+    (void)m;
     for (size_t si = 0; si < nSensitivity; si++) sensitivity[si] = 0.0;
 
-    /* For each known VR (output column), perturb each scalar element
-       and accumulate seed^T * (df/dx) into sensitivities. */
+    if (N_SOLVE_JACOBIAN_ROWS == 0) return fmi3Error;
+
+    fmi3Float64 solve_seed[N_SOLVE_SEEDS > 0 ? N_SOLVE_SEEDS : 1] = {0};
+    fmi3Float64 jv[N_SOLVE_JACOBIAN_ROWS > 0 ? N_SOLVE_JACOBIAN_ROWS : 1] = {0};
     size_t sens_idx = 0;
     for (size_t j = 0; j < nKnowns; j++) {
         int k_count = vr_scalar_count(knowns[j]);
-        fmi3Float64 orig_vals[N_REALS > 0 ? N_REALS : 1];
-        int dummy;
-        get_float64_by_vr(m, knowns[j], orig_vals, &dummy);
-
         for (int ke = 0; ke < k_count; ke++) {
-            const double eps = 1.0e-8;
-            double h = eps * fmax(fabs(orig_vals[ke]), 1.0);
+            if (sens_idx + (size_t)ke >= nSensitivity) return fmi3Error;
+            int seed_offset = solve_seed_offset_for_vr_element(knowns[j], ke);
+            if (seed_offset < 0 || seed_offset >= N_SOLVE_SEEDS) return fmi3Error;
+            memset(solve_seed, 0, sizeof(solve_seed));
+            solve_seed[seed_offset] = 1.0;
+            compute_solve_jacobian_v(m, solve_seed, jv);
 
-            /* Perturb single scalar element */
-            fmi3Float64 perturbed[N_REALS > 0 ? N_REALS : 1];
-            memcpy(perturbed, orig_vals, k_count * sizeof(fmi3Float64));
-            perturbed[ke] += h;
-            set_float64_by_vr(m, knowns[j], perturbed, &dummy);
-            compute_derivatives(m);
-
-            /* Accumulate seed^T * column_j of Jacobian:
-               sensitivity[j*k_count + ke] += sum_i seed_i * (f_perturbed_i - f0_i) / h */
             size_t seed_idx = 0;
             for (size_t i = 0; i < nUnknowns; i++) {
                 int u_count = vr_scalar_count(unknowns[i]);
                 int u_offset = xdot_flat_offset_for_vr(unknowns[i]);
-                if (u_offset >= 0) {
-                    for (int ue = 0; ue < u_count; ue++) {
-                        sensitivity[sens_idx + ke] +=
-                            seed[seed_idx + ue] * ((m->xdot[u_offset + ue] - f0[u_offset + ue]) / h);
-                    }
+                if (u_offset < 0 || u_offset + u_count > N_SOLVE_JACOBIAN_ROWS) return fmi3Error;
+                for (int ue = 0; ue < u_count; ue++) {
+                    if (seed_idx + (size_t)ue >= nSeed) return fmi3Error;
+                    sensitivity[sens_idx + ke] += seed[seed_idx + ue] * jv[u_offset + ue];
                 }
                 seed_idx += u_count;
             }
-
-            /* Restore */
-            set_float64_by_vr(m, knowns[j], orig_vals, &dummy);
+            if (seed_idx != nSeed) return fmi3Error;
         }
         sens_idx += k_count;
     }
-
-    /* Restore clean derivatives */
-    m->dirty_values = 1;
-    compute_derivatives(m);
+    if (sens_idx != nSensitivity) return fmi3Error;
 
     return fmi3OK;
 }
@@ -1746,9 +2018,163 @@ FMI3_EXPORT fmi3Status fmi3GetAdjointDerivative(
 /* =========================================================================
  * FMI 3.0 API — Co-Simulation (§4.2)
  *
- * Built-in forward Euler integrator for standalone Co-Simulation use.
- * For production accuracy, prefer Model Exchange with an external solver.
+ * Built-in adaptive Dormand-Prince RK45 integrator for standalone
+ * Co-Simulation use. For production-grade solver control, prefer Model
+ * Exchange with an external solver.
  * ========================================================================= */
+
+#define RK45_ABS_TOL 1.0e-7
+#define RK45_REL_TOL 1.0e-5
+#define RK45_MIN_STEP 1.0e-9
+#define RK45_MAX_STEP 2.0e-2
+
+static void rk45_eval(ModelInstance* m, double t, const fmi3Float64 x[], fmi3Float64 dxdt[]) {
+#if N_STATES > 0
+    memcpy(m->x, x, N_STATES * sizeof(fmi3Float64));
+    m->time = t;
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    memcpy(dxdt, m->xdot, N_STATES * sizeof(fmi3Float64));
+#else
+    (void)m; (void)t; (void)x; (void)dxdt;
+#endif
+}
+
+static fmi3Status rk45_integrate(ModelInstance* m, double t_start, double t_stop) {
+#if N_STATES > 0
+    fmi3Float64 x0[N_STATES];
+    fmi3Float64 x_stage[N_STATES];
+    fmi3Float64 x4[N_STATES];
+    fmi3Float64 x5[N_STATES];
+    fmi3Float64 k1[N_STATES];
+    fmi3Float64 k2[N_STATES];
+    fmi3Float64 k3[N_STATES];
+    fmi3Float64 k4[N_STATES];
+    fmi3Float64 k5[N_STATES];
+    fmi3Float64 k6[N_STATES];
+    fmi3Float64 k7[N_STATES];
+
+    memcpy(x0, m->x, N_STATES * sizeof(fmi3Float64));
+
+    double t = t_start;
+    if (t_stop == t_start) {
+        return fmi3OK;
+    }
+    if (t_stop < t_start) {
+        return fmi3Error;
+    }
+
+    double h = t_stop - t_start;
+    if (h > RK45_MAX_STEP) {
+        h = RK45_MAX_STEP;
+    }
+
+    while (t < t_stop - 1.0e-15) {
+        if (h > t_stop - t) {
+            h = t_stop - t;
+        }
+        if (h < RK45_MIN_STEP) {
+            h = t_stop - t;
+            if (h < RK45_MIN_STEP) {
+                h = RK45_MIN_STEP;
+            }
+        }
+
+        rk45_eval(m, t, x0, k1);
+
+        for (int i = 0; i < N_STATES; i++) {
+            x_stage[i] = x0[i] + h * (1.0 / 5.0) * k1[i];
+        }
+        rk45_eval(m, t + h * (1.0 / 5.0), x_stage, k2);
+
+        for (int i = 0; i < N_STATES; i++) {
+            x_stage[i] = x0[i] + h * ((3.0 / 40.0) * k1[i] + (9.0 / 40.0) * k2[i]);
+        }
+        rk45_eval(m, t + h * (3.0 / 10.0), x_stage, k3);
+
+        for (int i = 0; i < N_STATES; i++) {
+            x_stage[i] = x0[i] + h * ((44.0 / 45.0) * k1[i]
+                                      - (56.0 / 15.0) * k2[i]
+                                      + (32.0 / 9.0) * k3[i]);
+        }
+        rk45_eval(m, t + h * (4.0 / 5.0), x_stage, k4);
+
+        for (int i = 0; i < N_STATES; i++) {
+            x_stage[i] = x0[i] + h * ((19372.0 / 6561.0) * k1[i]
+                                      - (25360.0 / 2187.0) * k2[i]
+                                      + (64448.0 / 6561.0) * k3[i]
+                                      - (212.0 / 729.0) * k4[i]);
+        }
+        rk45_eval(m, t + h * (8.0 / 9.0), x_stage, k5);
+
+        for (int i = 0; i < N_STATES; i++) {
+            x_stage[i] = x0[i] + h * ((9017.0 / 3168.0) * k1[i]
+                                      - (355.0 / 33.0) * k2[i]
+                                      + (46732.0 / 5247.0) * k3[i]
+                                      + (49.0 / 176.0) * k4[i]
+                                      - (5103.0 / 18656.0) * k5[i]);
+        }
+        rk45_eval(m, t + h, x_stage, k6);
+
+        for (int i = 0; i < N_STATES; i++) {
+            x5[i] = x0[i] + h * ((35.0 / 384.0) * k1[i]
+                                 + (500.0 / 1113.0) * k3[i]
+                                 + (125.0 / 192.0) * k4[i]
+                                 - (2187.0 / 6784.0) * k5[i]
+                                 + (11.0 / 84.0) * k6[i]);
+        }
+        rk45_eval(m, t + h, x5, k7);
+
+        double err_norm = 0.0;
+        for (int i = 0; i < N_STATES; i++) {
+            x4[i] = x0[i] + h * ((5179.0 / 57600.0) * k1[i]
+                                 + (7571.0 / 16695.0) * k3[i]
+                                 + (393.0 / 640.0) * k4[i]
+                                 - (92097.0 / 339200.0) * k5[i]
+                                 + (187.0 / 2100.0) * k6[i]
+                                 + (1.0 / 40.0) * k7[i]);
+            double scale = RK45_ABS_TOL + RK45_REL_TOL * fmax(fabs(x0[i]), fabs(x5[i]));
+            double e = (x5[i] - x4[i]) / scale;
+            err_norm += e * e;
+        }
+        err_norm = sqrt(err_norm / (double)N_STATES);
+
+        if (!isfinite(err_norm)) {
+            h *= 0.2;
+            if (h < RK45_MIN_STEP) {
+                memcpy(m->x, x0, N_STATES * sizeof(fmi3Float64));
+                return fmi3Error;
+            }
+            continue;
+        }
+
+        if (err_norm <= 1.0 || h <= RK45_MIN_STEP) {
+            memcpy(x0, x5, N_STATES * sizeof(fmi3Float64));
+            t += h;
+
+            double factor = err_norm == 0.0 ? 5.0 : 0.9 * pow(err_norm, -0.2);
+            if (factor < 0.2) factor = 0.2;
+            if (factor > 5.0) factor = 5.0;
+            h *= factor;
+            if (h > RK45_MAX_STEP) h = RK45_MAX_STEP;
+        } else {
+            double factor = 0.9 * pow(err_norm, -0.25);
+            if (factor < 0.1) factor = 0.1;
+            if (factor > 0.5) factor = 0.5;
+            h *= factor;
+        }
+    }
+
+    memcpy(m->x, x0, N_STATES * sizeof(fmi3Float64));
+    m->time = t_stop;
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    return fmi3OK;
+#else
+    (void)m; (void)t_start; (void)t_stop;
+    return fmi3OK;
+#endif
+}
 
 FMI3_EXPORT fmi3Status fmi3DoStep(
     fmi3Instance instance,
@@ -1763,55 +2189,40 @@ FMI3_EXPORT fmi3Status fmi3DoStep(
     (void)noSetFMUStatePriorToCurrentPoint;
     ModelInstance* m = (ModelInstance*)instance;
 
-    /* Simple forward Euler with sub-stepping */
-    const double dt_max = communicationStepSize / 10.0;
-    double t = currentCommunicationPoint;
     const double t_end = currentCommunicationPoint + communicationStepSize;
     fmi3IntermediateUpdateCallback cb = (fmi3IntermediateUpdateCallback)m->intermediateUpdate;
 
-    while (t < t_end - 1.0e-15) {
-        double dt = t_end - t;
-        if (dt > dt_max) dt = dt_max;
+    fmi3Status status = rk45_integrate(m, currentCommunicationPoint, t_end);
+    if (status != fmi3OK) {
+        if (eventHandlingNeeded) *eventHandlingNeeded = 0;
+        if (terminateSimulation) *terminateSimulation = 1;
+        if (earlyReturn) *earlyReturn = 0;
+        if (lastSuccessfulTime) *lastSuccessfulTime = m->time;
+        return status;
+    }
 
-        m->time = t;
-        m->dirty_values = 1;
-        compute_derivatives(m);
-
-#if N_STATES > 0
-        for (int i = 0; i < N_STATES; i++) {
-            m->x[i] += dt * m->xdot[i];
-        }
-#endif
-
-        t += dt;
-
-        /* Intermediate update callback (FMI 3.0 §4.2.3) */
-        if (cb) {
-            fmi3Boolean earlyReturnRequested = 0;
-            fmi3Float64 earlyReturnTime = t;
-            cb(m->instance_environment, t, 0, 0, 1, 1,
-               m->early_return_allowed, &earlyReturnRequested, &earlyReturnTime);
-            if (earlyReturnRequested && m->early_return_allowed) {
-                m->time = earlyReturnTime;
-                m->dirty_values = 1;
-                compute_derivatives(m);
-                *eventHandlingNeeded = 0;
-                *terminateSimulation = 0;
-                *earlyReturn = 1;
-                *lastSuccessfulTime = earlyReturnTime;
-                return fmi3OK;
-            }
+    /* Intermediate update callback (FMI 3.0 §4.2.3) */
+    if (cb) {
+        fmi3Boolean earlyReturnRequested = 0;
+        fmi3Float64 earlyReturnTime = t_end;
+        cb(m->instance_environment, t_end, 0, 0, 1, 1,
+           m->early_return_allowed, &earlyReturnRequested, &earlyReturnTime);
+        if (earlyReturnRequested && m->early_return_allowed) {
+            m->time = earlyReturnTime;
+            m->dirty_values = 1;
+            compute_derivatives(m);
+            if (eventHandlingNeeded) *eventHandlingNeeded = 0;
+            if (terminateSimulation) *terminateSimulation = 0;
+            if (earlyReturn) *earlyReturn = 1;
+            if (lastSuccessfulTime) *lastSuccessfulTime = earlyReturnTime;
+            return fmi3OK;
         }
     }
 
-    m->time = t_end;
-    m->dirty_values = 1;
-    compute_derivatives(m);
-
-    *eventHandlingNeeded = 0;
-    *terminateSimulation = 0;
-    *earlyReturn = 0;
-    *lastSuccessfulTime = t_end;
+    if (eventHandlingNeeded) *eventHandlingNeeded = 0;
+    if (terminateSimulation) *terminateSimulation = 0;
+    if (earlyReturn) *earlyReturn = 0;
+    if (lastSuccessfulTime) *lastSuccessfulTime = t_end;
 
     return fmi3OK;
 }

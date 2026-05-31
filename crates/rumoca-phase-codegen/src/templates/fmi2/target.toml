@@ -1,0 +1,26 @@
+version = 1
+ir = "solve"
+name = "fmi2"
+description = "FMI 2.0 Model Exchange source tree"
+execution_mode = "packaged"
+deployment_class = "fmu"
+build = "fmu"
+completion_message = """FMU sources compiled to: {{ out_dir }}
+Run ./build.sh to compile and package the .fmu"""
+
+[[files]]
+path = "modelDescription.xml"
+template = "modelDescription.xml.jinja"
+
+[[files]]
+path = "sources/{{ model_name }}.c"
+template = "model.c.jinja"
+
+[[files]]
+path = "sources/CMakeLists.txt"
+template = "CMakeLists.txt.jinja"
+
+[[files]]
+path = "build.sh"
+template = "build.sh.jinja"
+mode = "0755"

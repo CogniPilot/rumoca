@@ -1,3 +1,5 @@
+#![cfg(feature = "msl-external-tests")]
+
 //! Embedded C cross-validation against rumoca's built-in simulator on MSL models.
 //!
 //! Tests the same curated set of MSL models as the FMI2 test, but using the
@@ -9,13 +11,9 @@
 //!
 //! Run with:
 //! ```text
-//! cargo test --release --package rumoca-test-msl --test embedded_c_msl_test -- --ignored --nocapture
+//! cargo test --release --package rumoca-test-msl --features msl-external-tests --test embedded_c_msl_test test_embedded_c_vs_rumoca_msl -- --nocapture
 //! ```
 //!
-//! Environment variables:
-//! - `RUMOCA_EMBEDDED_MSL_MATCH=pattern` — filter models by substring match
-//! - `RUMOCA_EMBEDDED_MSL_DT=0.0001` — RK4 step size (default 0.0001)
-//! - `RUMOCA_EMBEDDED_MSL_TOLERANCE=0.20` — max allowed trace deviation (default 0.20)
 
 use flate2::read::GzDecoder;
 use rumoca_compile::codegen::{render_dae_template_with_name, templates};
@@ -37,7 +35,7 @@ fn check_release_mode() {
     {
         panic!(
             "\n\nERROR: Embedded C MSL tests must be run in RELEASE mode!\n\
-             cargo test --release --package rumoca-test-msl --test embedded_c_msl_test -- --ignored --nocapture\n"
+             cargo test --release --package rumoca-test-msl --features msl-external-tests --test embedded_c_msl_test test_embedded_c_vs_rumoca_msl -- --nocapture\n"
         );
     }
 }
@@ -127,7 +125,7 @@ fn find_mo_files(msl_dir: &Path) -> Vec<PathBuf> {
 
 fn target_models() -> Vec<String> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/msl_tests/msl_simulation_targets_180.json");
+        .join("tests/msl_tests/msl_simulation_targets.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read target list {}: {e}", path.display()));
     let value: serde_json::Value = serde_json::from_str(&raw).expect("invalid JSON in target list");
@@ -139,38 +137,14 @@ fn target_models() -> Vec<String> {
         .collect()
 }
 
-fn apply_env_filters(names: &mut Vec<String>) {
-    if let Ok(pattern) = std::env::var("RUMOCA_EMBEDDED_MSL_MATCH") {
-        let pattern = pattern.trim().to_string();
-        if !pattern.is_empty() {
-            names.retain(|n| n.contains(&pattern));
-            println!(
-                "RUMOCA_EMBEDDED_MSL_MATCH={pattern} → {} models",
-                names.len()
-            );
-        }
-    }
-    if let Ok(raw) = std::env::var("RUMOCA_EMBEDDED_MSL_LIMIT")
-        && let Ok(limit) = raw.trim().parse::<usize>()
-        && names.len() > limit
-    {
-        names.truncate(limit);
-        println!("RUMOCA_EMBEDDED_MSL_LIMIT={limit} → {} models", names.len());
-    }
-}
-
+/// Forward-Euler step size for the embedded-C MSL trace comparison.
 fn embedded_dt() -> f64 {
-    std::env::var("RUMOCA_EMBEDDED_MSL_DT")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0.0001)
+    0.0001
 }
 
+/// Max allowed trace deviation for the embedded-C MSL comparison.
 fn embedded_tolerance() -> f64 {
-    std::env::var("RUMOCA_EMBEDDED_MSL_TOLERANCE")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0.20)
+    0.20
 }
 
 // =============================================================================
@@ -203,7 +177,7 @@ fn make_test_harness(
     let safe_name = model_name.replace('.', "_");
 
     // Build CSV header from state names
-    let state_names: Vec<&str> = dae.states.keys().map(|s| s.as_str()).collect();
+    let state_names: Vec<&str> = dae.variables.states.keys().map(|s| s.as_str()).collect();
     let header_str = std::iter::once("time".to_string())
         .chain(state_names.iter().map(|s| s.to_string()))
         .collect::<Vec<_>>()
@@ -264,10 +238,18 @@ fn embedded_simulate(
     let safe_name = model_name.replace('.', "_");
 
     // Render embedded C directly from the compiler-owned DAE
-    let header = render_dae_template_with_name(dae, templates::EMBEDDED_C_H, model_name)
-        .map_err(|e| format!("render embedded C header: {e}"))?;
-    let impl_c = render_dae_template_with_name(dae, templates::EMBEDDED_C_IMPL, model_name)
-        .map_err(|e| format!("render embedded C impl: {e}"))?;
+    let header = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("embedded-c", "model.h.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render embedded C header: {e}"))?;
+    let impl_c = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("embedded-c", "model.c.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render embedded C impl: {e}"))?;
 
     let (model_h, harness_main) = make_test_harness(&header, &impl_c, dae, model_name, t_end, dt);
 
@@ -500,7 +482,7 @@ fn run_single_model(
     rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
     let dae = &dae;
 
-    if dae.states.is_empty() {
+    if dae.variables.states.is_empty() {
         return ModelOutcome::NoStates;
     }
 
@@ -540,7 +522,7 @@ fn run_single_model(
     // 4. Compare state variable traces
     let mut worst_deviation = 0.0f64;
     let mut worst_var = String::new();
-    for name in dae.states.keys() {
+    for name in dae.variables.states.keys() {
         let name_str = name.as_str();
         let Some(emb_trace) = emb_traces.get(name_str) else {
             continue;
@@ -572,7 +554,6 @@ fn run_single_model(
 // =============================================================================
 
 #[test]
-#[ignore]
 fn test_embedded_c_vs_rumoca_msl() {
     check_release_mode();
 
@@ -593,8 +574,7 @@ fn test_embedded_c_vs_rumoca_msl() {
         .expect("failed to build source-root index");
 
     // 3. Select target models
-    let mut targets = target_models();
-    apply_env_filters(&mut targets);
+    let targets = target_models();
     println!("Testing {} models", targets.len());
 
     // 4. Run each model

@@ -5,7 +5,8 @@
 use rumoca_compile::compile::PhaseResult;
 use rumoca_compile::phase_structural::{BltBlock, analyze_structure, sort_dae};
 use rumoca_compile::{Session, SessionConfig};
-use rumoca_ir_dae::{self as dae, Dae, VarName as DaeVarName};
+use rumoca_core::{ExpressionVisitor, VarName as DaeVarName};
+use rumoca_ir_dae::Dae;
 use rumoca_ir_flat as flat;
 use rumoca_phase_codegen::{render_flat_template_with_name, render_template, templates};
 
@@ -23,95 +24,48 @@ fn compile_model(source: &str, model_name: &str) -> Result<Dae, String> {
     Ok(result.dae)
 }
 
-fn subscript_expr_contains_var(subscripts: &[dae::Subscript], var_name: &str) -> bool {
-    subscripts.iter().any(|sub| match sub {
-        dae::Subscript::Expr(sub_expr) => expr_contains_var(sub_expr, var_name),
-        _ => false,
-    })
+fn dae_expr_mentions_var(expr: &rumoca_core::Expression, var_name: &str) -> bool {
+    rumoca_ir_dae::expr_contains_var(expr, &DaeVarName::from(var_name))
 }
 
-fn expr_contains_var(expr: &dae::Expression, var_name: &str) -> bool {
+fn expr_if_branch_mentions_var(expr: &rumoca_core::Expression, var_name: &str) -> bool {
     match expr {
-        dae::Expression::VarRef { name, .. } => name.as_str() == var_name,
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            expr_contains_var(lhs, var_name) || expr_contains_var(rhs, var_name)
-        }
-        dae::Expression::Unary { rhs, .. } => expr_contains_var(rhs, var_name),
-        dae::Expression::BuiltinCall { args, .. } | dae::Expression::FunctionCall { args, .. } => {
-            args.iter().any(|arg| expr_contains_var(arg, var_name))
-        }
-        dae::Expression::If {
+        rumoca_core::Expression::If {
             branches,
             else_branch,
-        } => {
-            branches.iter().any(|(cond, value)| {
-                expr_contains_var(cond, var_name) || expr_contains_var(value, var_name)
-            }) || expr_contains_var(else_branch, var_name)
-        }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            elements.iter().any(|e| expr_contains_var(e, var_name))
-        }
-        dae::Expression::Range { start, step, end } => {
-            expr_contains_var(start, var_name)
-                || step
-                    .as_ref()
-                    .is_some_and(|s| expr_contains_var(s, var_name))
-                || expr_contains_var(end, var_name)
-        }
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            expr_contains_var(expr, var_name)
-                || indices
-                    .iter()
-                    .any(|range_idx| expr_contains_var(&range_idx.range, var_name))
-                || filter
-                    .as_ref()
-                    .is_some_and(|f| expr_contains_var(f, var_name))
-        }
-        dae::Expression::Index { base, subscripts } => {
-            expr_contains_var(base, var_name) || subscript_expr_contains_var(subscripts, var_name)
-        }
-        dae::Expression::FieldAccess { base, .. } => expr_contains_var(base, var_name),
-        dae::Expression::Literal(_) | dae::Expression::Empty => false,
-    }
-}
-
-fn expr_if_branch_mentions_var(expr: &dae::Expression, var_name: &str) -> bool {
-    match expr {
-        dae::Expression::If {
-            branches,
-            else_branch,
+            ..
         } => {
             branches
                 .iter()
-                .any(|(_, value)| expr_contains_var(value, var_name))
-                || expr_contains_var(else_branch, var_name)
+                .any(|(_, value)| dae_expr_mentions_var(value, var_name))
+                || dae_expr_mentions_var(else_branch, var_name)
         }
-        dae::Expression::Binary { lhs, rhs, .. } => {
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
             expr_if_branch_mentions_var(lhs, var_name) || expr_if_branch_mentions_var(rhs, var_name)
         }
-        dae::Expression::Unary { rhs, .. } => expr_if_branch_mentions_var(rhs, var_name),
-        dae::Expression::BuiltinCall { args, .. } | dae::Expression::FunctionCall { args, .. } => {
-            args.iter()
-                .any(|arg| expr_if_branch_mentions_var(arg, var_name))
-        }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => elements
+        rumoca_core::Expression::Unary { rhs, .. } => expr_if_branch_mentions_var(rhs, var_name),
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. } => args
+            .iter()
+            .any(|arg| expr_if_branch_mentions_var(arg, var_name)),
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. } => elements
             .iter()
             .any(|e| expr_if_branch_mentions_var(e, var_name)),
-        dae::Expression::Range { start, step, end } => {
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
             expr_if_branch_mentions_var(start, var_name)
                 || step
                     .as_ref()
                     .is_some_and(|s| expr_if_branch_mentions_var(s, var_name))
                 || expr_if_branch_mentions_var(end, var_name)
         }
-        dae::Expression::ArrayComprehension {
+        rumoca_core::Expression::ArrayComprehension {
             expr,
             indices,
             filter,
+            ..
         } => {
             expr_if_branch_mentions_var(expr, var_name)
                 || indices
@@ -121,19 +75,23 @@ fn expr_if_branch_mentions_var(expr: &dae::Expression, var_name: &str) -> bool {
                     .as_ref()
                     .is_some_and(|f| expr_if_branch_mentions_var(f, var_name))
         }
-        dae::Expression::Index { base, subscripts } => {
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
             expr_if_branch_mentions_var(base, var_name)
                 || subscripts.iter().any(|sub| match sub {
-                    dae::Subscript::Expr(sub_expr) => {
+                    rumoca_core::Subscript::Expr { expr: sub_expr, .. } => {
                         expr_if_branch_mentions_var(sub_expr, var_name)
                     }
                     _ => false,
                 })
         }
-        dae::Expression::FieldAccess { base, .. } => expr_if_branch_mentions_var(base, var_name),
-        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {
-            false
+        rumoca_core::Expression::FieldAccess { base, .. } => {
+            expr_if_branch_mentions_var(base, var_name)
         }
+        rumoca_core::Expression::VarRef { .. }
+        | rumoca_core::Expression::Literal { value: _, .. }
+        | rumoca_core::Expression::Empty { .. } => false,
     }
 }
 
@@ -156,10 +114,10 @@ end Empty;
 
     let dae = result.unwrap();
     assert!(
-        rumoca_analysis_dae::is_balanced(&dae),
+        rumoca_phase_dae::balance::is_balanced(&dae),
         "Empty model should be balanced"
     );
-    assert_eq!(rumoca_analysis_dae::balance(&dae), 0);
+    assert_eq!(rumoca_phase_dae::balance::balance(&dae), 0);
 }
 
 #[test]
@@ -179,9 +137,9 @@ end SimpleParam;
     let dae = result.unwrap();
     println!(
         "SimpleParam: params={}, algebraics={}, balance={}",
-        dae.parameters.len(),
-        dae.algebraics.len(),
-        rumoca_analysis_dae::balance(&dae)
+        dae.variables.parameters.len(),
+        dae.variables.algebraics.len(),
+        rumoca_phase_dae::balance::balance(&dae)
     );
 }
 
@@ -205,9 +163,9 @@ end SimpleVar;
     // One algebraic variable with one equation - balanced
     println!(
         "SimpleVar: {} states, {} algebraics, balance = {}",
-        dae.states.len(),
-        dae.algebraics.len(),
-        rumoca_analysis_dae::balance(&dae)
+        dae.variables.states.len(),
+        dae.variables.algebraics.len(),
+        rumoca_phase_dae::balance::balance(&dae)
     );
 }
 
@@ -230,10 +188,10 @@ end SimpleEq;
     let dae = result.unwrap();
     println!(
         "SimpleEq: states={}, algebraics={}, f_x={}, balance={}",
-        dae.states.len(),
-        dae.algebraics.len(),
-        dae.f_x.len(),
-        rumoca_analysis_dae::balance(&dae)
+        dae.variables.states.len(),
+        dae.variables.algebraics.len(),
+        dae.continuous.equations.len(),
+        rumoca_phase_dae::balance::balance(&dae)
     );
 }
 
@@ -259,12 +217,12 @@ end InverseLike;
 
     let dae = result.unwrap();
     assert_eq!(
-        dae.f_x.len(),
+        dae.continuous.equations.len(),
         2,
         "both equations should be preserved, including input alias constraint"
     );
     assert_eq!(
-        rumoca_analysis_dae::balance(&dae),
+        rumoca_phase_dae::balance::balance(&dae),
         0,
         "model should be structurally balanced"
     );
@@ -272,69 +230,6 @@ end InverseLike;
 
 #[test]
 fn test_component_for_range_uses_effective_parameter_override() {
-    fn expr_refs_index(expr: &dae::Expression, var_name: &str, idx: i64) -> bool {
-        let indexed_name = format!("{var_name}[{idx}]");
-        let has_idx = |subscripts: &[dae::Subscript]| {
-            subscripts
-                .iter()
-                .any(|sub| matches!(sub, dae::Subscript::Index(v) if *v == idx))
-        };
-
-        match expr {
-            dae::Expression::VarRef { name, subscripts } => {
-                (name.as_str() == var_name && has_idx(subscripts)) || name.as_str() == indexed_name
-            }
-            dae::Expression::Binary { lhs, rhs, .. } => {
-                expr_refs_index(lhs, var_name, idx) || expr_refs_index(rhs, var_name, idx)
-            }
-            dae::Expression::Unary { rhs, .. } => expr_refs_index(rhs, var_name, idx),
-            dae::Expression::BuiltinCall { args, .. }
-            | dae::Expression::FunctionCall { args, .. } => {
-                args.iter().any(|arg| expr_refs_index(arg, var_name, idx))
-            }
-            dae::Expression::If {
-                branches,
-                else_branch,
-            } => {
-                branches.iter().any(|(cond, value)| {
-                    expr_refs_index(cond, var_name, idx) || expr_refs_index(value, var_name, idx)
-                }) || expr_refs_index(else_branch, var_name, idx)
-            }
-            dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-                elements.iter().any(|e| expr_refs_index(e, var_name, idx))
-            }
-            dae::Expression::Range { start, step, end } => {
-                expr_refs_index(start, var_name, idx)
-                    || step
-                        .as_ref()
-                        .is_some_and(|s| expr_refs_index(s, var_name, idx))
-                    || expr_refs_index(end, var_name, idx)
-            }
-            dae::Expression::ArrayComprehension {
-                expr,
-                indices,
-                filter,
-            } => {
-                expr_refs_index(expr, var_name, idx)
-                    || indices
-                        .iter()
-                        .any(|range_idx| expr_refs_index(&range_idx.range, var_name, idx))
-                    || filter
-                        .as_ref()
-                        .is_some_and(|f| expr_refs_index(f, var_name, idx))
-            }
-            dae::Expression::Index { base, subscripts } => {
-                expr_refs_index(base, var_name, idx)
-                    || subscripts.iter().any(|sub| match sub {
-                        dae::Subscript::Expr(sub_expr) => expr_refs_index(sub_expr, var_name, idx),
-                        _ => false,
-                    })
-            }
-            dae::Expression::FieldAccess { base, .. } => expr_refs_index(base, var_name, idx),
-            dae::Expression::Literal(_) | dae::Expression::Empty => false,
-        }
-    }
-
     let source = r#"
 model Top
   model Filter
@@ -352,7 +247,8 @@ end Top;
 
     let dae = compile_model(source, "Top").expect("Top should compile");
     let offending: Vec<String> = dae
-        .f_x
+        .continuous
+        .equations
         .iter()
         .filter(|eq| expr_refs_index(&eq.rhs, "f.x", 2))
         .map(|eq| format!("{:?}", eq.rhs))
@@ -361,6 +257,105 @@ end Top;
         offending.is_empty(),
         "for i in 2:n with n=1 must be empty; found f.x[2] references in: {offending:?}"
     );
+}
+
+fn expr_refs_index(expr: &rumoca_core::Expression, var_name: &str, idx: i64) -> bool {
+    let indexed_name = format!("{var_name}[{idx}]");
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => var_ref_matches_index(name.as_str(), subscripts, var_name, idx, &indexed_name),
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            expr_refs_index(lhs, var_name, idx) || expr_refs_index(rhs, var_name, idx)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => expr_refs_index(rhs, var_name, idx),
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. } => {
+            args.iter().any(|arg| expr_refs_index(arg, var_name, idx))
+        }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expr_refs_index(cond, var_name, idx) || expr_refs_index(value, var_name, idx)
+            }) || expr_refs_index(else_branch, var_name, idx)
+        }
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. } => {
+            elements.iter().any(|e| expr_refs_index(e, var_name, idx))
+        }
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => expr_refs_range_index(start, step.as_deref(), end, var_name, idx),
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => expr_refs_comprehension_index(expr, indices, filter.as_deref(), var_name, idx),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => expr_refs_subscript_index(base, subscripts, var_name, idx),
+        rumoca_core::Expression::FieldAccess { base, .. } => expr_refs_index(base, var_name, idx),
+        rumoca_core::Expression::Literal { value: _, .. }
+        | rumoca_core::Expression::Empty { .. } => false,
+    }
+}
+
+fn var_ref_matches_index(
+    name: &str,
+    subscripts: &[rumoca_core::Subscript],
+    var_name: &str,
+    idx: i64,
+    indexed_name: &str,
+) -> bool {
+    let has_idx = subscripts
+        .iter()
+        .any(|sub| matches!(sub, rumoca_core::Subscript::Index { value: v, .. } if *v == idx));
+    (name == var_name && has_idx) || name == indexed_name
+}
+
+fn expr_refs_range_index(
+    start: &rumoca_core::Expression,
+    step: Option<&rumoca_core::Expression>,
+    end: &rumoca_core::Expression,
+    var_name: &str,
+    idx: i64,
+) -> bool {
+    expr_refs_index(start, var_name, idx)
+        || step.is_some_and(|s| expr_refs_index(s, var_name, idx))
+        || expr_refs_index(end, var_name, idx)
+}
+
+fn expr_refs_comprehension_index(
+    expr: &rumoca_core::Expression,
+    indices: &[rumoca_core::ComprehensionIndex],
+    filter: Option<&rumoca_core::Expression>,
+    var_name: &str,
+    idx: i64,
+) -> bool {
+    expr_refs_index(expr, var_name, idx)
+        || indices
+            .iter()
+            .any(|range_idx| expr_refs_index(&range_idx.range, var_name, idx))
+        || filter.is_some_and(|f| expr_refs_index(f, var_name, idx))
+}
+
+fn expr_refs_subscript_index(
+    base: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    var_name: &str,
+    idx: i64,
+) -> bool {
+    expr_refs_index(base, var_name, idx)
+        || subscripts.iter().any(|sub| match sub {
+            rumoca_core::Subscript::Expr { expr: sub_expr, .. } => {
+                expr_refs_index(sub_expr, var_name, idx)
+            }
+            _ => false,
+        })
 }
 
 #[test]
@@ -383,7 +378,8 @@ end BranchLhsSwitch;
 
     let dae = compile_model(source, "BranchLhsSwitch").expect("BranchLhsSwitch should compile");
     let if_with_i = dae
-        .f_x
+        .continuous
+        .equations
         .iter()
         .any(|eq| expr_if_branch_mentions_var(&eq.rhs, "i"));
     assert!(
@@ -411,15 +407,23 @@ end SimpleODE;
     let dae = result.unwrap();
     println!(
         "SimpleODE: states={}, algebraics={}, f_x={}, balance={}",
-        dae.states.len(),
-        dae.algebraics.len(),
-        dae.f_x.len(),
-        rumoca_analysis_dae::balance(&dae)
+        dae.variables.states.len(),
+        dae.variables.algebraics.len(),
+        dae.continuous.equations.len(),
+        rumoca_phase_dae::balance::balance(&dae)
     );
 
     // Should have 1 state (x) and 1 continuous equation
-    assert_eq!(dae.states.len(), 1, "Should have 1 state variable");
-    assert_eq!(dae.f_x.len(), 1, "Should have 1 continuous equation");
+    assert_eq!(
+        dae.variables.states.len(),
+        1,
+        "Should have 1 state variable"
+    );
+    assert_eq!(
+        dae.continuous.equations.len(),
+        1,
+        "Should have 1 continuous equation"
+    );
 }
 
 #[test]
@@ -445,16 +449,24 @@ end Oscillator;
     let dae = result.unwrap();
     println!(
         "Oscillator: states={}, algebraics={}, params={}, f_x={}, balance={}",
-        dae.states.len(),
-        dae.algebraics.len(),
-        dae.parameters.len(),
-        dae.f_x.len(),
-        rumoca_analysis_dae::balance(&dae)
+        dae.variables.states.len(),
+        dae.variables.algebraics.len(),
+        dae.variables.parameters.len(),
+        dae.continuous.equations.len(),
+        rumoca_phase_dae::balance::balance(&dae)
     );
 
     // State detection works - variables appearing in der() are states
-    assert_eq!(dae.states.len(), 2, "Should have 2 state variables (x, v)");
-    assert_eq!(dae.f_x.len(), 2, "Should have 2 continuous equations");
+    assert_eq!(
+        dae.variables.states.len(),
+        2,
+        "Should have 2 state variables (x, v)"
+    );
+    assert_eq!(
+        dae.continuous.equations.len(),
+        2,
+        "Should have 2 continuous equations"
+    );
 }
 
 // =============================================================================
@@ -483,6 +495,33 @@ fn test_compile_phase() {
 }
 
 #[test]
+fn test_multi_top_level_target_model_still_enforces_balance() {
+    let source = r#"
+model Target
+  Real x;
+end Target;
+
+model Helper
+  Real y;
+equation
+  y = 1;
+end Helper;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session.add_document("test.mo", source).unwrap();
+
+    let Err(error) = session.compile_model("Target") else {
+        panic!("unbalanced target model should fail even with another top-level class present");
+    };
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("unbalanced model"),
+        "expected unbalanced-model diagnostic, got: {message}"
+    );
+}
+
+#[test]
 fn test_colon_binding_with_indexed_rhs_keeps_1d_dims() {
     let source = r#"
 model DimProbe
@@ -508,7 +547,7 @@ end DimProbe;
     let flat_dims = result
         .flat
         .variables
-        .get(&flat::VarName::new("m_flow"))
+        .get(&rumoca_core::VarName::new("m_flow"))
         .map(|v| v.dims.clone())
         .expect("m_flow should exist in flat variables");
     assert_eq!(
@@ -519,6 +558,7 @@ end DimProbe;
 
     let dae_dims = result
         .dae
+        .variables
         .algebraics
         .get(&DaeVarName::new("m_flow"))
         .map(|v| v.dims.clone())
@@ -550,7 +590,7 @@ end RealRangeDims;
     let xsi_dims = result
         .flat
         .variables
-        .get(&flat::VarName::new("xsi"))
+        .get(&rumoca_core::VarName::new("xsi"))
         .map(|v| v.dims.clone())
         .expect("xsi should exist in flat variables");
     assert_eq!(
@@ -562,7 +602,7 @@ end RealRangeDims;
     let t_dims = result
         .flat
         .variables
-        .get(&flat::VarName::new("T"))
+        .get(&rumoca_core::VarName::new("T"))
         .map(|v| v.dims.clone())
         .expect("T should exist in flat variables");
     assert_eq!(
@@ -624,7 +664,7 @@ end P;
         }
 
         let mut collector = flat::visitor::FunctionCallCollector::new();
-        flat::visitor::ExpressionVisitor::visit_expression(&mut collector, &eq.residual);
+        ExpressionVisitor::visit_expression(&mut collector, &eq.residual);
         function_names.extend(collector.into_names());
     }
 
@@ -707,7 +747,7 @@ end P;
         }
 
         let mut collector = flat::visitor::FunctionCallCollector::new();
-        flat::visitor::ExpressionVisitor::visit_expression(&mut collector, &eq.residual);
+        ExpressionVisitor::visit_expression(&mut collector, &eq.residual);
         function_names.extend(collector.into_names());
     }
 
@@ -758,14 +798,15 @@ end KeepBindingWithSubscriptedUnknown;
     };
 
     assert_eq!(
-        rumoca_analysis_dae::balance(&result.dae),
+        rumoca_phase_dae::balance::balance(&result.dae),
         0,
         "model should remain balanced when declaration binding and explicit equation both contribute constraints"
     );
     assert!(
         result
             .dae
-            .f_x
+            .continuous
+            .equations
             .iter()
             .any(|eq| eq.origin.contains("binding equation for DP")),
         "DP declaration binding equation should be preserved in DAE"
@@ -810,14 +851,14 @@ end ModifierBindingScope;
     let leaked_binding = result
         .flat
         .variables
-        .get(&flat::VarName::new("a.c.x"))
+        .get(&rumoca_core::VarName::new("a.c.x"))
         .and_then(|var| var.binding.as_ref());
     assert!(
         leaked_binding.is_none(),
         "component modifier a(x=2) must not become a declaration binding on nested member a.c.x"
     );
     assert_eq!(
-        rumoca_analysis_dae::balance(&result.dae),
+        rumoca_phase_dae::balance::balance(&result.dae),
         0,
         "model should stay balanced without nested binding leakage"
     );
@@ -867,7 +908,11 @@ equation
 end Oscillator;
 "#;
     let dae = compile_model(source, "Oscillator").unwrap();
-    let code = render_template(&dae, templates::CASADI_MX).unwrap();
+    let code = render_template(
+        &dae,
+        templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap(),
+    )
+    .unwrap();
     assert_matches_expected(&code, "oscillator_mx.py");
 }
 
@@ -888,7 +933,11 @@ equation
 end WithFunc;
 "#;
     let dae = compile_model(source, "WithFunc").unwrap();
-    let code = render_template(&dae, templates::CASADI_MX).unwrap();
+    let code = render_template(
+        &dae,
+        templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap(),
+    )
+    .unwrap();
     assert_matches_expected(&code, "withfunc_mx.py");
 }
 
@@ -906,7 +955,11 @@ equation
 end DaeModel;
 "#;
     let dae = compile_model(source, "DaeModel").unwrap();
-    let code = render_template(&dae, templates::CASADI_MX).unwrap();
+    let code = render_template(
+        &dae,
+        templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap(),
+    )
+    .unwrap();
     assert_matches_expected(&code, "dae_model_mx.py");
 }
 
@@ -924,7 +977,11 @@ equation
 end AlgorithmModel;
 "#;
     let dae = compile_model(source, "AlgorithmModel").unwrap();
-    let code = render_template(&dae, templates::CASADI_MX).unwrap();
+    let code = render_template(
+        &dae,
+        templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap(),
+    )
+    .unwrap();
     assert_matches_expected(&code, "algorithm_mx.py");
 }
 
@@ -1197,11 +1254,11 @@ end MyMedium;
 
     // Model should be balanced: 4 unknowns (d, T, state.p, state.T), 4 equations
     assert!(
-        rumoca_analysis_dae::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae),
         "Model should be balanced: {}",
-        rumoca_analysis_dae::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae)
     );
-    assert_eq!(rumoca_analysis_dae::balance(&result.dae), 0);
+    assert_eq!(rumoca_phase_dae::balance::balance(&result.dae), 0);
 }
 
 /// MLS §7.3: Record redeclarations inherited through package extends-chains
@@ -1274,9 +1331,9 @@ end TwoPhaseWater;
     );
 
     assert!(
-        rumoca_analysis_dae::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_analysis_dae::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae)
     );
 }
 
@@ -1346,7 +1403,13 @@ end DottedStateInputs;
         "package constants must not be expanded as state_in.* fields"
     );
 
-    let dae_inputs: Vec<_> = result.dae.inputs.keys().map(|k| k.to_string()).collect();
+    let dae_inputs: Vec<_> = result
+        .dae
+        .variables
+        .inputs
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
     assert!(
         dae_inputs.iter().any(|n| n == "state.phase"),
         "state.phase should be tracked as an input scalar"
@@ -1357,9 +1420,9 @@ end DottedStateInputs;
     );
 
     assert!(
-        rumoca_analysis_dae::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_analysis_dae::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae)
     );
 }
 
@@ -1430,9 +1493,9 @@ end UsesBaseProperties;
     );
 
     assert!(
-        rumoca_analysis_dae::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_analysis_dae::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae)
     );
 }
 
@@ -1495,9 +1558,9 @@ end UsesConstrainedBaseProperties;
     );
 
     assert!(
-        rumoca_analysis_dae::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_analysis_dae::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae)
     );
 }
 

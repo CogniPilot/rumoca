@@ -1,0 +1,24 @@
+[package]
+name = "rumoca-worker"
+description = "Isolated model compilation and simulation worker for rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rumoca-worker"
+path = "src/bin/rumoca-worker.rs"
+
+[dependencies]
+clap = { workspace = true }
+core_affinity = { workspace = true }
+mimalloc = { workspace = true }
+rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
+rumoca-core = { workspace = true }
+rumoca-sim = { workspace = true, features = ["solver-diffsol", "strict-ir-validation"] }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["unbounded_depth"] }
+
+[lints]
+workspace = true

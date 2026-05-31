@@ -6,13 +6,16 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+tracing = ["dep:tracing"]
+
 [dependencies]
-rumoca-analysis-dae = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
-rumoca-ir-core = { workspace = true }
 indexmap = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true, optional = true }
 
 [lints]
 workspace = true

@@ -24,7 +24,7 @@ pub(crate) struct QueryClassLookup {
 pub(crate) struct QueryClassNavigationTarget {
     pub(crate) qualified_name: String,
     pub(crate) token_text: String,
-    pub(crate) location: ast::Location,
+    pub(crate) location: rumoca_core::Location,
 }
 
 struct NavigationTargetSearch<'a> {
@@ -49,7 +49,10 @@ impl Session {
             init_rayon_pool();
         }
         let query_state = SessionQueryState::default();
+        let (snapshot_cache, lightweight_snapshot_cache, workspace_symbol_snapshot_cache) =
+            fresh_session_snapshot_caches();
         Self {
+            instantiation_options: config.instantiate_options(),
             documents: IndexMap::new(),
             detached_document_uris: IndexSet::new(),
             detached_source_root_documents: IndexMap::new(),
@@ -66,9 +69,9 @@ impl Session {
             current_revision: RevisionId::default(),
             next_revision: 0,
             source_root_indexing: SourceRootIndexingCoordinatorState::default(),
-            snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
-            lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
-            workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
+            snapshot_cache,
+            lightweight_snapshot_cache,
+            workspace_symbol_snapshot_cache,
             evaluate_scope_is_error: config.evaluate_scope_is_error,
             when_single_assign_is_error: config.when_single_assign_is_error,
             query_state,
@@ -992,7 +995,7 @@ impl Session {
         line: u32,
         character: u32,
         include_declaration: bool,
-    ) -> Option<Vec<(String, ast::Location)>> {
+    ) -> Option<Vec<(String, rumoca_core::Location)>> {
         if let Some(locations) = self.class_body_semantics_query(uri)?.references_at(
             line,
             character,
@@ -1015,7 +1018,7 @@ impl Session {
         uri: &str,
         line: u32,
         character: u32,
-    ) -> Option<ast::Location> {
+    ) -> Option<rumoca_core::Location> {
         if let Some(location) = self
             .class_body_semantics_query(uri)?
             .rename_span_at(line, character)
@@ -1032,7 +1035,7 @@ impl Session {
         uri: &str,
         line: u32,
         character: u32,
-    ) -> Option<Vec<(String, ast::Location)>> {
+    ) -> Option<Vec<(String, rumoca_core::Location)>> {
         if let Some(locations) = self
             .class_body_semantics_query(uri)?
             .rename_locations_at(line, character)
@@ -1167,6 +1170,26 @@ impl Session {
             .unwrap_or_default()
     }
 
+    /// Resolve direct AST component declarations for one class scope.
+    pub fn class_components_query(
+        &mut self,
+        uri: &str,
+        qualified_name: &str,
+    ) -> Option<Vec<ast::Component>> {
+        let definition = self.documents.get(uri)?.summary_definition();
+        let class = parsed_class_by_qualified_name(definition, qualified_name)?;
+        Some(class.components.values().cloned().collect())
+    }
+
+    /// Resolve direct AST component declarations for a class by qualified name.
+    pub fn class_components_in_class_query(
+        &mut self,
+        class_name: &str,
+    ) -> Option<Vec<ast::Component>> {
+        let target = self.lookup_query_class_target(class_name)?;
+        self.class_components_query(&target.uri, &target.qualified_name)
+    }
+
     /// Resolve local component hover/goto data from class-body semantics.
     pub fn local_component_info_query(
         &mut self,
@@ -1257,7 +1280,7 @@ impl Session {
         &mut self,
         class_name: &str,
     ) -> Option<QueryClassLookup> {
-        if class_name.contains('.') {
+        if rumoca_core::has_top_level_dot(class_name) {
             let file_id = self
                 .session_package_def_map_query()?
                 .declared_class(class_name)?
@@ -1270,7 +1293,8 @@ impl Session {
             });
         }
         let def_map = self.session_package_def_map_query()?;
-        let suffix = (!class_name.contains('.')).then(|| format!(".{class_name}"));
+        let suffix =
+            (!rumoca_core::has_top_level_dot(class_name)).then(|| format!(".{class_name}"));
         let mut matched: Option<QueryClassLookup> = None;
         let matches = def_map
             .class_entries()
@@ -1522,7 +1546,7 @@ impl Session {
         line: u32,
         character: u32,
         include_declaration: bool,
-    ) -> Option<Vec<(String, ast::Location)>> {
+    ) -> Option<Vec<(String, rumoca_core::Location)>> {
         let target = self.navigation_class_target_at_position(uri, line, character)?;
         let document_uris = self.parsed_navigation_document_uris();
         self.prewarm_navigation_read_queries(&document_uris);
@@ -1553,7 +1577,7 @@ impl Session {
         uri: &str,
         line: u32,
         character: u32,
-    ) -> Option<ast::Location> {
+    ) -> Option<rumoca_core::Location> {
         self.navigation_class_target_at_position(uri, line, character)
             .map(|target| target.location)
     }
@@ -1563,7 +1587,7 @@ impl Session {
         uri: &str,
         line: u32,
         character: u32,
-    ) -> Option<Vec<(String, ast::Location)>> {
+    ) -> Option<Vec<(String, rumoca_core::Location)>> {
         let target = self.navigation_class_target_at_position(uri, line, character)?;
         let document_uris = self.parsed_navigation_document_uris();
         self.prewarm_navigation_read_queries(&document_uris);
@@ -1900,8 +1924,7 @@ impl Session {
 
 fn qualified_class_name_at_position(source: &str, line: u32, character: u32) -> Option<String> {
     let dotted_token = dotted_token_at_position(source, line, character)?;
-    dotted_token
-        .contains('.')
+    rumoca_core::has_top_level_dot(&dotted_token)
         .then_some(dotted_token)
         .filter(|token| token.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
 }
@@ -1963,7 +1986,7 @@ fn parsed_class_by_qualified_name<'a>(
         .as_ref()
         .and_then(|prefix| qualified_name.strip_prefix(&format!("{prefix}.")))
         .unwrap_or(qualified_name);
-    let mut parts = relative_name.split('.');
+    let mut parts = rumoca_core::split_path_with_indices(relative_name).into_iter();
     let first = parts.next()?;
     let mut class = definition.classes.get(first)?;
     for part in parts {

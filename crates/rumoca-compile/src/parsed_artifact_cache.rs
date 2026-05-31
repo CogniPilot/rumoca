@@ -142,6 +142,7 @@ pub(crate) fn parse_file_with_precomputed_hash_status(
     {
         let cache_file = cache_file_path(cache_dir, &cache_key);
         if let Some(definition) = try_read_cache(&cache_file) {
+            crate::cache::record_cache_file_access(&cache_file);
             insert_in_memory(cache_key, definition.clone());
             record_parsed_file_artifact_cache_hit();
             return Ok((file_name, definition, ParsedArtifactCacheStatus::Hit));
@@ -171,6 +172,7 @@ fn parse_file_with_preloaded_source_status(
     {
         let cache_file = cache_file_path(cache_dir, &cache_key);
         if let Some(definition) = try_read_cache(&cache_file) {
+            crate::cache::record_cache_file_access(&cache_file);
             insert_in_memory(cache_key, definition.clone());
             record_parsed_file_artifact_cache_hit();
             return Ok((file_name, definition, ParsedArtifactCacheStatus::Hit));
@@ -191,7 +193,9 @@ fn parse_file_with_preloaded_source_status(
         && fs::create_dir_all(cache_dir).is_ok()
     {
         let cache_file = cache_file_path(cache_dir, &cache_key);
-        let _ = write_cache(&cache_file, &definition);
+        if write_cache(&cache_file, &definition).is_ok() {
+            crate::cache::record_cache_file_access(&cache_file);
+        }
     }
 
     Ok((file_name, definition, ParsedArtifactCacheStatus::Miss))

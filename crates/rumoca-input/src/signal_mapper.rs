@@ -12,8 +12,9 @@
 //!   - `runtime:frame_num` / `wall_ms`      → `RuntimeContext`
 //!   - `runtime:input_connected` (bool)     → `RuntimeContext`
 //!   - `runtime:input_mode` (string)        → `RuntimeContext`
+//!   - `runtime:input_message` (string)     → `RuntimeContext`
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{Result, anyhow, bail};
 use rumoca_signal_frame::SignalFrame;
@@ -31,6 +32,7 @@ pub struct RuntimeContext<'a> {
     pub wall_ms: f64,
     pub input_connected: bool,
     pub input_mode: InputMode,
+    pub input_message: Option<&'a str>,
     pub stepper_time: f64,
     /// Read a named stepper variable. Return `None` if unknown.
     pub stepper_get: &'a dyn Fn(&str) -> Option<f64>,
@@ -42,6 +44,7 @@ pub struct SignalMapper {
     send: Vec<(String, CompiledSpec)>,
     viewer: Vec<(String, CompiledSpec)>,
     stepper_inputs: Vec<(String, CompiledSpec)>,
+    stepper_lookup_names: Vec<String>,
 }
 
 // ── Compiled source representation ─────────────────────────────────────────
@@ -57,6 +60,7 @@ enum ValueSource {
     RuntimeWallMs,
     RuntimeInputConnected,
     RuntimeInputMode,
+    RuntimeInputMessage,
 }
 
 #[derive(Debug, Clone)]
@@ -82,10 +86,12 @@ impl SignalMapper {
         let viewer = compile_section(&cfg.viewer, locals, "signals.viewer")?;
         let stepper_inputs =
             compile_section(&cfg.stepper_inputs, locals, "signals.stepper_inputs")?;
+        let stepper_lookup_names = collect_stepper_lookup_names([&send, &viewer, &stepper_inputs]);
         Ok(Self {
             send,
             viewer,
             stepper_inputs,
+            stepper_lookup_names,
         })
     }
 
@@ -110,7 +116,7 @@ impl SignalMapper {
 
     /// Resolve `[signals.stepper_inputs]` into `(stepper_input_name, value)`
     /// pairs. The sim loop calls `stepper.set_input` with each pair. Used in
-    /// standalone mode (no autopilot) to drive model inputs from locals.
+    /// standalone mode (no external interface) to drive model inputs from locals.
     pub fn build_stepper_inputs(
         &self,
         engine: &InputEngine,
@@ -120,6 +126,10 @@ impl SignalMapper {
             .iter()
             .map(|(key, spec)| (key.clone(), json_to_f64(&eval(spec, engine, rt))))
             .collect()
+    }
+
+    pub fn stepper_lookup_names(&self) -> &[String] {
+        &self.stepper_lookup_names
     }
 }
 
@@ -238,6 +248,7 @@ fn parse_source(
             "wall_ms" => ValueSource::RuntimeWallMs,
             "input_connected" => ValueSource::RuntimeInputConnected,
             "input_mode" => ValueSource::RuntimeInputMode,
+            "input_message" => ValueSource::RuntimeInputMessage,
             other => bail!("{}.{}: unknown runtime field '{}'", ctx, key, other),
         });
     }
@@ -254,6 +265,33 @@ fn source_is_bool_compatible(source: &ValueSource) -> bool {
         source,
         ValueSource::LocalBool(_) | ValueSource::RuntimeInputConnected
     )
+}
+
+fn collect_stepper_lookup_names<'a>(
+    sections: impl IntoIterator<Item = &'a Vec<(String, CompiledSpec)>>,
+) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    for section in sections {
+        for (_, spec) in section {
+            collect_spec_stepper_names(spec, &mut names);
+        }
+    }
+    names.into_iter().collect()
+}
+
+fn collect_spec_stepper_names(spec: &CompiledSpec, names: &mut BTreeSet<String>) {
+    match spec {
+        CompiledSpec::Direct(source) => collect_source_stepper_name(source, names),
+        CompiledSpec::WithDefault { source, .. } => collect_source_stepper_name(source, names),
+        CompiledSpec::Conditional { source, .. } => collect_source_stepper_name(source, names),
+        CompiledSpec::Const(_) => {}
+    }
+}
+
+fn collect_source_stepper_name(source: &ValueSource, names: &mut BTreeSet<String>) {
+    if let ValueSource::StepperVar(name) = source {
+        names.insert(name.clone());
+    }
 }
 
 fn toml_to_json(v: &toml::Value) -> Option<JsonValue> {
@@ -319,6 +357,7 @@ fn resolve_source(
             InputMode::Gamepad => "gamepad",
             InputMode::Keyboard => "keyboard",
         })),
+        ValueSource::RuntimeInputMessage => rt.input_message.map(JsonValue::from),
     }
 }
 
@@ -347,7 +386,6 @@ mod tests {
     use crate::engine::InputEngine;
     use serde::Deserialize;
     use std::collections::HashMap;
-    use std::path::PathBuf;
 
     /// Minimal subset of the full TOML config needed for signal-mapper tests.
     #[derive(Deserialize)]
@@ -361,16 +399,49 @@ mod tests {
     }
 
     fn load_cfg() -> Bundle {
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let root = manifest.parent().unwrap().parent().unwrap();
-        let text = std::fs::read_to_string(
-            root.join("examples")
-                .join("quadrotor_sil")
-                .join("quadrotor_cerebri.toml"),
-        )
-        .expect("read toml");
-        toml::from_str(&text).expect("parse")
+        toml::from_str(TEST_SIGNAL_CONFIG).expect("parse")
     }
+
+    const TEST_SIGNAL_CONFIG: &str = r#"
+[input]
+mode = "auto"
+
+[locals.armed]
+default = false
+type = "bool"
+
+[locals.rc]
+default = 1500
+element = "int"
+len = 16
+type = "array"
+
+[derive."rc.2"]
+clamp = [1000.0, 2000.0]
+from = "throttle"
+offset = 1000.0
+scale = 1000.0
+
+[locals.throttle]
+default = 0.0
+type = "float"
+
+[signals.send]
+accel_z = "stepper:accel[3]"
+gyro_x = "stepper:gyro[1]"
+imu_valid = { const = 1.0 }
+rc_2 = "local:rc.2"
+rc_link_quality = { from = "runtime:input_connected", when_false = 0.0, when_true = 255.0 }
+rc_valid = { from = "runtime:input_connected", when_false = 0.0, when_true = 1.0 }
+
+[signals.viewer]
+armed = "local:armed"
+frame = "runtime:frame_num"
+input_mode = "runtime:input_mode"
+q0 = { from = "stepper:quat[1]", default = 1.0 }
+rc_throttle = "local:rc.2"
+t = "stepper:time"
+"#;
 
     fn build_engine(cfg: &Bundle) -> InputEngine {
         let defaults = crate::engine::initialize_locals(&cfg.locals).expect("init locals");
@@ -390,6 +461,7 @@ mod tests {
             wall_ms: 123_456.0,
             input_connected: true,
             input_mode: InputMode::Gamepad,
+            input_message: None,
             stepper_time: time,
             stepper_get,
         }
@@ -402,12 +474,12 @@ mod tests {
         engine.apply_derive_for_test(); // initialize rc.0..rc.4
 
         let stepper_vars: HashMap<String, f64> = [
-            ("gyro_x", 0.1),
-            ("gyro_y", 0.2),
-            ("gyro_z", 0.3),
-            ("accel_x", 1.0),
-            ("accel_y", 2.0),
-            ("accel_z", -9.81),
+            ("gyro[1]", 0.1),
+            ("gyro[2]", 0.2),
+            ("gyro[3]", 0.3),
+            ("accel[1]", 1.0),
+            ("accel[2]", 2.0),
+            ("accel[3]", -9.81),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -453,8 +525,8 @@ mod tests {
         engine.apply_derive_for_test();
 
         let mut stepper_vars: HashMap<String, f64> = HashMap::new();
-        stepper_vars.insert("q0".into(), 0.987);
-        stepper_vars.insert("px".into(), 1.5);
+        stepper_vars.insert("quat[1]".into(), 0.987);
+        stepper_vars.insert("position[1]".into(), 1.5);
         let get = stepper_get_fn(&stepper_vars);
         let rt = make_rt(1.25, &get);
 

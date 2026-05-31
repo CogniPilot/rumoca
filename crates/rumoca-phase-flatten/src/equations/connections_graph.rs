@@ -1,6 +1,8 @@
 //! VCG extraction and side-effect function classification for equation flattening.
 
 use super::{FlattenedEquations, build_qualified_name};
+use crate::FlattenError;
+use crate::connections_builtin::extract_potential_root_priority;
 use rumoca_ir_ast as ast;
 
 /// Extract VCG data from a Connections.* function call equation.
@@ -11,7 +13,7 @@ pub(super) fn extract_vcg_data_from_function_call(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
-) -> FlattenedEquations {
+) -> Result<FlattenedEquations, FlattenError> {
     let mut result = FlattenedEquations::default();
     if is_connections_root_call(comp)
         && let Some(ref_arg) = args.first()
@@ -32,12 +34,12 @@ pub(super) fn extract_vcg_data_from_function_call(
         && let Some(ref_arg) = args.first()
         && let ast::Expression::ComponentReference(cr) = ref_arg
     {
-        let priority = extract_potential_root_priority(args);
+        let priority = extract_potential_root_priority(args, comp.span)?;
         result
             .potential_roots
             .push((build_qualified_name(prefix, cr), priority));
     }
-    result
+    Ok(result)
 }
 
 /// Check if a function call is side-effect-only (doesn't contribute equations).
@@ -142,20 +144,6 @@ fn is_connections_call(comp: &ast::ComponentReference, func_name: &str) -> bool 
     }
 }
 
-/// Extract priority from Connections.potentialRoot(a, priority) call.
-/// Default priority is 0 if not specified (MLS §9.4).
-fn extract_potential_root_priority(args: &[ast::Expression]) -> i64 {
-    if args.len() >= 2
-        && let ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token,
-        } = &args[1]
-    {
-        return token.text.parse().unwrap_or(0);
-    }
-    0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,9 +156,9 @@ mod tests {
             parts: crate::path_utils::split_path_with_indices(path)
                 .into_iter()
                 .map(|part| ast::ComponentRefPart {
-                    ident: rumoca_ir_core::Token {
+                    ident: rumoca_core::Token {
                         text: Arc::from(part),
-                        location: rumoca_ir_core::Location::default(),
+                        location: rumoca_core::Location::default(),
                         token_number: 0,
                         token_type: 0,
                     },
@@ -178,6 +166,7 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -188,12 +177,13 @@ mod tests {
     fn uint_expr(value: i64) -> ast::Expression {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
-            token: rumoca_ir_core::Token {
+            token: rumoca_core::Token {
                 text: Arc::from(value.to_string()),
-                location: rumoca_ir_core::Location::default(),
+                location: rumoca_core::Location::default(),
                 token_number: 0,
                 token_type: 0,
             },
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -215,14 +205,16 @@ mod tests {
             &cref("Connections.root"),
             &[cref_expr("a.p")],
             &prefix,
-        );
+        )
+        .unwrap();
         assert_eq!(root.definite_roots, vec!["a.p".to_string()]);
 
         let branch = extract_vcg_data_from_function_call(
             &cref("Connections.branch"),
             &[cref_expr("a.p"), cref_expr("b.n")],
             &prefix,
-        );
+        )
+        .unwrap();
         assert_eq!(
             branch.branches,
             vec![("a.p".to_string(), "b.n".to_string())]
@@ -232,7 +224,8 @@ mod tests {
             &cref("Connections.potentialRoot"),
             &[cref_expr("a.p"), uint_expr(7)],
             &prefix,
-        );
+        )
+        .unwrap();
         assert_eq!(potential.potential_roots, vec![("a.p".to_string(), 7)]);
     }
 
@@ -243,7 +236,8 @@ mod tests {
             &cref("Connections.potentialRoot"),
             &[cref_expr("a.p")],
             &prefix,
-        );
+        )
+        .unwrap();
         assert_eq!(potential.potential_roots, vec![("a.p".to_string(), 0)]);
     }
 }

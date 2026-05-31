@@ -32,12 +32,14 @@
   "main": "./out/extension.js",
   "activationEvents": [
     "onLanguage:modelica",
+    "onLanguage:toml",
+    "workspaceContains:**/rum.toml",
+    "workspaceContains:**/rum.*.toml",
     "onNotebook:jupyter-notebook",
     "onCommand:rumoca.openSettingsMenu",
-    "onCommand:rumoca.renderTemplate",
+    "onCommand:rumoca.createScenarioConfig",
     "onCommand:rumoca.simulateModel",
-    "onCommand:rumoca.openSimulationSettings",
-    "onCommand:rumoca.openTemplateSettings"
+    "onCommand:rumoca.openSimulationSettings"
   ],
   "contributes": {
     "languages": [
@@ -109,7 +111,8 @@
             "type": "string"
           },
           "default": [],
-          "description": "List of directories containing Modelica source roots (for example ModelicaStandardLibrary). These are added to MODELICAPATH for import resolution."
+          "scope": "resource",
+          "markdownDescription": "Workspace Modelica path entries containing source roots such as MSL or CMM. Repository-relative paths are supported, for example `target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0` and `target/cmm/CMM-v0.0.1`. These are added to `MODELICAPATH` for import resolution."
         },
         "rumoca.collapseAnnotations": {
           "type": "boolean",
@@ -158,9 +161,19 @@
     },
     "commands": [
       {
+        "command": "rumoca.createScenarioConfig",
+        "title": "Create Rumoca Scenario",
+        "shortTitle": "Create Scenario",
+        "category": "Rumoca",
+        "icon": {
+          "light": "icons/template-light.svg",
+          "dark": "icons/template-dark.svg"
+        }
+      },
+      {
         "command": "rumoca.simulateModel",
-        "title": "Simulate Current Modelica File",
-        "shortTitle": "Simulate",
+        "title": "Run Current Rumoca Scenario",
+        "shortTitle": "Run",
         "category": "Rumoca",
         "icon": {
           "light": "icons/simulate-light.svg",
@@ -169,28 +182,8 @@
       },
       {
         "command": "rumoca.openSimulationSettings",
-        "title": "Open Simulation Settings",
-        "shortTitle": "Simulation Settings",
-        "category": "Rumoca",
-        "icon": {
-          "light": "icons/settings-light.svg",
-          "dark": "icons/settings-dark.svg"
-        }
-      },
-      {
-        "command": "rumoca.renderTemplate",
-        "title": "Render Codegen Template",
-        "shortTitle": "Render Template",
-        "category": "Rumoca",
-        "icon": {
-          "light": "icons/template-light.svg",
-          "dark": "icons/template-dark.svg"
-        }
-      },
-      {
-        "command": "rumoca.openTemplateSettings",
-        "title": "Open Template Settings",
-        "shortTitle": "Template Settings",
+        "title": "Open Scenario Settings",
+        "shortTitle": "Scenario Settings",
         "category": "Rumoca",
         "icon": {
           "light": "icons/settings-light.svg",
@@ -226,20 +219,20 @@
     "menus": {
       "editor/title": [
         {
-          "command": "rumoca.renderTemplate",
-          "when": "editorLangId == modelica",
+          "command": "rumoca.createScenarioConfig",
+          "when": "resourceExtname == .mo",
           "group": "navigation"
         },
         {
-          "command": "rumoca.openSettingsMenu",
-          "when": "editorLangId == modelica",
+          "command": "rumoca.openSimulationSettings",
+          "when": "resourceFilename =~ /^rum\\.(.+\\.)?toml$/",
           "group": "navigation"
         }
       ],
       "editor/title/run": [
         {
           "command": "rumoca.simulateModel",
-          "when": "editorLangId == modelica",
+          "when": "resourceFilename =~ /^rum\\.(.+\\.)?toml$/",
           "group": "navigation"
         }
       ]
@@ -255,7 +248,7 @@
         "command": "rumoca.simulateModel",
         "key": "ctrl+alt+r",
         "mac": "cmd+alt+r",
-        "when": "editorTextFocus && editorLangId == modelica"
+        "when": "editorTextFocus && (resourceFilename =~ /^rum\\.(.+\\.)?toml$/)"
       }
     ]
   },
@@ -295,5 +288,3 @@
     }
   }
 }
-
-

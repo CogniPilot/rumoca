@@ -11,7 +11,6 @@ mod component_ref_helpers;
 pub mod connections;
 #[cfg(test)]
 mod convert_from_ast;
-mod function;
 pub mod name_utils;
 #[cfg(test)]
 mod subscripts;
@@ -23,97 +22,29 @@ mod tests;
 
 #[cfg(test)]
 use convert_from_ast::{
-    convert_array_comprehension_with_def_map, convert_class_modification_with_def_map,
-    convert_comprehension_indices, convert_constructor_arg, convert_expr_vec_with_def_map,
-    convert_function_call, convert_function_call_with_def_map, convert_if_with_def_map,
-    convert_terminal, function_component_ref_from_ast,
+    component_reference_from_ast_with_def_map, expression_from_ast,
+    expression_from_ast_with_def_map, expression_from_component_ref,
 };
-use indexmap::IndexMap;
-use rumoca_core::{DefId, Span, TypeId};
+use indexmap::{IndexMap, IndexSet};
+#[cfg(test)]
+use rumoca_core::DefId;
+use rumoca_core::{
+    BuiltinFunction, Causality, ClassType, ComponentReference, Expression, ForIndex, Function,
+    FunctionShapeContractError, Reference, Span, StateSelect, Statement, StatementBlock, Subscript,
+    TypeId, VarName, Variability,
+};
+#[cfg(test)]
+use rumoca_core::{ComprehensionIndex, Literal};
 #[cfg(test)]
 use rumoca_ir_ast as ast;
 use serde::{Deserialize, Serialize};
 
-pub type BuiltinFunction = rumoca_ir_core::BuiltinFunction;
-pub type Causality = rumoca_ir_core::Causality;
-pub use rumoca_ir_core::DerivativeAnnotation;
-pub use rumoca_ir_core::ExternalFunction;
-pub use rumoca_ir_core::Literal;
-pub use rumoca_ir_core::VarName;
-pub type ClassType = rumoca_ir_core::ClassType;
-pub type OpBinary = rumoca_ir_core::OpBinary;
-pub type OpUnary = rumoca_ir_core::OpUnary;
-pub type StateSelect = rumoca_ir_core::StateSelect;
-pub type Token = rumoca_ir_core::Token;
-pub type Variability = rumoca_ir_core::Variability;
-
-fn token_from_ast(token: &rumoca_ir_core::Token) -> Token {
-    token.clone()
-}
-
-pub fn op_binary_from_ast(op: &rumoca_ir_core::OpBinary) -> OpBinary {
-    match op {
-        rumoca_ir_core::OpBinary::Empty => OpBinary::Empty,
-        rumoca_ir_core::OpBinary::Add(token) => OpBinary::Add(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Sub(token) => OpBinary::Sub(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Mul(token) => OpBinary::Mul(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Div(token) => OpBinary::Div(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Eq(token) => OpBinary::Eq(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Neq(token) => OpBinary::Neq(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Lt(token) => OpBinary::Lt(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Le(token) => OpBinary::Le(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Gt(token) => OpBinary::Gt(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Ge(token) => OpBinary::Ge(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::And(token) => OpBinary::And(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Or(token) => OpBinary::Or(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Exp(token) => OpBinary::Exp(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::ExpElem(token) => OpBinary::ExpElem(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::AddElem(token) => OpBinary::AddElem(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::SubElem(token) => OpBinary::SubElem(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::MulElem(token) => OpBinary::MulElem(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::DivElem(token) => OpBinary::DivElem(token_from_ast(token)),
-        rumoca_ir_core::OpBinary::Assign(token) => OpBinary::Assign(token_from_ast(token)),
-    }
-}
-
-pub fn op_unary_from_ast(op: &rumoca_ir_core::OpUnary) -> OpUnary {
-    match op {
-        rumoca_ir_core::OpUnary::Empty => OpUnary::Empty,
-        rumoca_ir_core::OpUnary::Minus(token) => OpUnary::Minus(token_from_ast(token)),
-        rumoca_ir_core::OpUnary::Plus(token) => OpUnary::Plus(token_from_ast(token)),
-        rumoca_ir_core::OpUnary::DotMinus(token) => OpUnary::DotMinus(token_from_ast(token)),
-        rumoca_ir_core::OpUnary::DotPlus(token) => OpUnary::DotPlus(token_from_ast(token)),
-        rumoca_ir_core::OpUnary::Not(token) => OpUnary::Not(token_from_ast(token)),
-    }
-}
-
-pub fn variability_from_ast(variability: &rumoca_ir_core::Variability) -> Variability {
-    match variability {
-        rumoca_ir_core::Variability::Empty => Variability::Empty,
-        rumoca_ir_core::Variability::Constant(token) => {
-            Variability::Constant(token_from_ast(token))
-        }
-        rumoca_ir_core::Variability::Discrete(token) => {
-            Variability::Discrete(token_from_ast(token))
-        }
-        rumoca_ir_core::Variability::Parameter(token) => {
-            Variability::Parameter(token_from_ast(token))
-        }
-    }
-}
-
-pub fn causality_from_ast(causality: &rumoca_ir_core::Causality) -> Causality {
-    match causality {
-        rumoca_ir_core::Causality::Empty => Causality::Empty,
-        rumoca_ir_core::Causality::Input(token) => Causality::Input(token_from_ast(token)),
-        rumoca_ir_core::Causality::Output(token) => Causality::Output(token_from_ast(token)),
-    }
-}
+pub type VarNameIndexMap<V> = IndexMap<VarName, V, rustc_hash::FxBuildHasher>;
 
 #[cfg(test)]
 use component_ref_helpers::from_component_ref_with_def_map_impl;
 #[cfg(test)]
-use subscripts::subscript_to_string;
+use subscripts::subscript_from_ast;
 
 // Re-export connection types
 pub use connections::{
@@ -129,132 +60,11 @@ pub use name_utils::component_base_name;
 
 // Re-export visitor types
 pub use visitor::{
-    AlgorithmOutputCollector, ContainsDerChecker, ExpressionVisitor, FunctionCallCollector,
-    StateVariableCollector, StatementVisitor, VarRefCollector,
+    AlgorithmOutputCollector, ContainsDerChecker, FallibleStatementVisitor, FunctionCallCollector,
+    StateVariableCollector, StatementScope, StatementVisitor, VarRefCollector,
 };
 
-// =============================================================================
-// Expression: Flattened expression with globally qualified names
-// =============================================================================
-
-/// A flattened expression with globally qualified variable names.
-///
-/// This is the expression type used after flattening, where all variable
-/// references use globally unique names (e.g., "body.position.x").
-///
-/// Key differences from AST Expression:
-/// - Variable references use VarName (globally qualified)
-/// - Builtin functions (der, pre, sin, cos, etc.) are distinguished from user functions
-/// - Literals are concrete values
-/// - Parentheses are eliminated (precedence is in tree structure)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Expression {
-    /// Binary operation: lhs op rhs
-    Binary {
-        op: OpBinary,
-        lhs: Box<Expression>,
-        rhs: Box<Expression>,
-    },
-    /// Unary operation: op rhs
-    Unary { op: OpUnary, rhs: Box<Expression> },
-    /// Variable reference with optional subscripts.
-    VarRef {
-        name: VarName,
-        subscripts: Vec<Subscript>,
-    },
-    /// Builtin function call (der, pre, sin, cos, etc.)
-    BuiltinCall {
-        function: BuiltinFunction,
-        args: Vec<Expression>,
-    },
-    /// User-defined function call.
-    FunctionCall {
-        name: VarName,
-        args: Vec<Expression>,
-        /// True when originated from AST `ClassModification` syntax.
-        /// These represent constructor-style calls (e.g., record constructors).
-        #[serde(default)]
-        is_constructor: bool,
-    },
-    /// Literal value.
-    Literal(Literal),
-    /// Conditional expression: if cond then expr elseif ... else expr
-    If {
-        branches: Vec<(Expression, Expression)>,
-        else_branch: Box<Expression>,
-    },
-    /// Array literal: {e1, e2, ...}
-    Array {
-        elements: Vec<Expression>,
-        is_matrix: bool,
-    },
-    /// Tuple: (e1, e2, ...)
-    Tuple { elements: Vec<Expression> },
-    /// Range expression: start:step:end or start:end
-    Range {
-        start: Box<Expression>,
-        step: Option<Box<Expression>>,
-        end: Box<Expression>,
-    },
-    /// Array comprehension: `{expr for i in range ... if filter}` (MLS §10.4.1).
-    ///
-    /// Unlike `Array`, this preserves symbolic comprehension structure and avoids
-    /// eager scalar expansion when consumers can reason structurally.
-    ArrayComprehension {
-        expr: Box<Expression>,
-        indices: Vec<ComprehensionIndex>,
-        filter: Option<Box<Expression>>,
-    },
-    /// Array indexing: `base[subscripts]`
-    ///
-    /// Used for indexing into expressions that aren't simple variables,
-    /// e.g., `(a+b)[i]`, `func()[1]`.
-    Index {
-        base: Box<Expression>,
-        subscripts: Vec<Subscript>,
-    },
-    /// Field access on expressions: base.field
-    ///
-    /// Used for accessing record fields from expressions that aren't simple variables,
-    /// e.g., `func().field`, `(if cond then a else b).field`.
-    FieldAccess {
-        base: Box<Expression>,
-        field: String,
-    },
-    /// Empty expression placeholder.
-    Empty,
-}
-
-/// Namespaced short flat-IR surface used by downstream crates.
-pub mod flat {
-    pub use super::{
-        Algorithm, AssertEquation, ComprehensionIndex, DerivativeAnnotation, Equation, Expression,
-        ExternalFunction, ForEquation, ForEquationIteration, Function, FunctionParam, Literal,
-        Model, Subscript, Variable, WhenClause, WhenEquation,
-    };
-}
-
 pub use when_equations::{WhenClause, WhenEquation};
-
-/// A subscript in a flattened expression.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Subscript {
-    /// Concrete index value.
-    Index(i64),
-    /// Colon (full range): `:`
-    Colon,
-    /// Expression subscript (for dynamic indexing).
-    Expr(Box<Expression>),
-}
-
-/// One index iterator in a flat array-comprehension expression.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComprehensionIndex {
-    /// Local iterator name.
-    pub name: String,
-    /// Iterator range expression.
-    pub range: Expression,
-}
 
 /// MLS §5.6: "flat equation system with globally unique variable names"
 ///
@@ -263,17 +73,17 @@ pub struct ComprehensionIndex {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Model {
     /// All variables with globally unique names.
-    pub variables: IndexMap<VarName, Variable>,
+    pub variables: VarNameIndexMap<Variable>,
     /// Declared flat-output type name for each variable (e.g., Boolean, Integer, MyEnum).
     ///
     /// Keys match `variables` and values preserve resolved type identity for rendering.
     #[serde(default)]
-    pub variable_type_names: IndexMap<VarName, String>,
+    pub variable_type_names: VarNameIndexMap<String>,
     /// Flat-output `final` qualifier flags keyed by variable name (MLS §7.2.6).
     ///
     /// When present and true, codegen should emit `final` before the declaration prefix.
     #[serde(default)]
-    pub variable_final_flags: IndexMap<VarName, bool>,
+    pub variable_final_flags: VarNameIndexMap<bool>,
     /// Regular equations (0 = residual form).
     pub equations: Vec<Equation>,
     /// Preserved `for`-equation grouping metadata for regular equations.
@@ -300,7 +110,7 @@ pub struct Model {
     /// When clauses.
     pub when_clauses: Vec<WhenClause>,
     /// User-defined functions used by this model (MLS §12).
-    pub functions: IndexMap<VarName, Function>,
+    pub functions: VarNameIndexMap<Function>,
     /// True if the model is declared with the `partial` keyword.
     /// MLS §4.7: Partial models are incomplete and shouldn't be balance-checked.
     pub is_partial: bool,
@@ -314,7 +124,7 @@ pub struct Model {
     /// implicit equations that don't need to come from external connections.
     /// Stores the full path to the overconstrained record (e.g., "pin_p.reference").
     #[serde(default)]
-    pub definite_roots: std::collections::HashSet<String>,
+    pub definite_roots: IndexSet<String>,
     /// Branches from Connections.branch(a, b) calls (MLS §9.4).
     /// Required edges in the virtual connection graph.
     #[serde(default)]
@@ -332,13 +142,13 @@ pub struct Model {
     /// type `model` or `block` (like Delta in transformers) are NOT interface
     /// connectors even if they contain connectors internally.
     #[serde(default)]
-    pub top_level_connectors: std::collections::HashSet<String>,
+    pub top_level_connectors: IndexSet<String>,
     /// Names of top-level components declared with `input` causality.
     /// Fields of these components (e.g., `state.phase` from `input Record state`)
     /// are external inputs and should NOT be promoted to algebraic unknowns,
     /// unlike sub-component inputs from type interfaces (MLS §4.4.2.2).
     #[serde(default)]
-    pub top_level_input_components: std::collections::HashSet<String>,
+    pub top_level_input_components: IndexSet<String>,
     /// Scalar count of excess equations from VCG break edges (MLS §9.4).
     /// Break edges in the overconstrained connection graph generate equality equations
     /// that should be replaced by `equalityConstraint()` calls. Until that's implemented,
@@ -438,13 +248,77 @@ impl Model {
                 && var.binding.is_none()
         })
     }
+
+    pub fn validate_shape_contract(&self) -> Result<(), ModelShapeContractError> {
+        for (key, variable) in &self.variables {
+            if key != &variable.name {
+                return Err(ModelShapeContractError::VariableKeyNameMismatch {
+                    key: key.clone(),
+                    name: variable.name.clone(),
+                    span: variable.source_span,
+                });
+            }
+            variable
+                .validate_shape_contract()
+                .map_err(ModelShapeContractError::Variable)?;
+        }
+        for (key, function) in &self.functions {
+            if key != &function.name {
+                return Err(ModelShapeContractError::FunctionKeyNameMismatch {
+                    key: key.clone(),
+                    name: function.name.clone(),
+                    span: function.span,
+                });
+            }
+            function
+                .validate_shape_contract()
+                .map_err(ModelShapeContractError::Function)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelShapeContractError {
+    Variable(VariableShapeContractError),
+    Function(FunctionShapeContractError),
+    VariableKeyNameMismatch {
+        key: VarName,
+        name: VarName,
+        span: Span,
+    },
+    FunctionKeyNameMismatch {
+        key: VarName,
+        name: VarName,
+        span: Span,
+    },
+}
+
+impl ModelShapeContractError {
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Variable(error) => error.span(),
+            Self::Function(error) => error.span(),
+            Self::VariableKeyNameMismatch { span, .. }
+            | Self::FunctionKeyNameMismatch { span, .. } => *span,
+        }
+    }
 }
 
 /// Flat variable with globally unique name.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Variable {
-    /// Globally unique name (e.g., "body.position.x").
+    /// Globally unique flat name.
     pub name: VarName,
+    /// Structured component reference that produced this flattened variable.
+    ///
+    /// The rendered flat name is display/protocol data. Compiler logic that
+    /// needs path structure or resolved identity should use this reference
+    /// instead of reparsing `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_ref: Option<ComponentReference>,
+    /// Source span for the component declaration that produced this flat variable.
+    pub source_span: Span,
     /// Reference to the type in the TypeTable.
     pub type_id: TypeId,
     /// Variability (constant, parameter, discrete, continuous).
@@ -534,607 +408,159 @@ pub struct Variable {
     pub oc_eq_constraint_size: Option<usize>,
 }
 
-/// A single name segment in a flattened component reference.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ComponentRefPart {
-    /// Identifier text for this segment.
-    pub ident: String,
-    /// Optional explicit subscripts on this segment.
-    #[serde(default)]
-    pub subs: Vec<Subscript>,
-}
-
-/// A flattened component reference used in algorithm statements.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ComponentReference {
-    /// Whether this reference originated from an `inner/outer` local lookup.
-    #[serde(default)]
-    pub local: bool,
-    /// Dotted path segments.
-    pub parts: Vec<ComponentRefPart>,
-    /// Optional resolved definition ID carried from resolve.
-    #[serde(default)]
-    pub def_id: Option<DefId>,
-}
-
-impl ComponentReference {
-    /// Build a flattened component reference from AST.
-    #[cfg(test)]
-    pub fn from_ast_with_def_map(
-        comp: &ast::ComponentReference,
-        def_map: Option<&IndexMap<DefId, String>>,
-    ) -> Self {
-        // Some resolved/local references can carry only def_id with empty path parts.
-        // In that case, use def_map as a fallback to recover a concrete name.
-        if comp.parts.is_empty()
-            && let Some(def_id) = comp.def_id
-            && let Some(path) = def_map.and_then(|map| map.get(&def_id))
-        {
-            return Self {
-                local: comp.local,
-                parts: path
-                    .split('.')
-                    .map(|segment| ComponentRefPart {
-                        ident: segment.to_string(),
-                        subs: Vec::new(),
-                    })
-                    .collect(),
-                def_id: Some(def_id),
-            };
-        }
-
-        // Preserve already-qualified instance paths from flattening.
-        // Def-map canonicalization is only valid for function names, not
-        // variable targets in algorithm statements.
-        Self {
-            local: comp.local,
-            parts: comp
-                .parts
-                .iter()
-                .map(|part| ComponentRefPart {
-                    ident: part.ident.text.to_string(),
-                    subs: part
-                        .subs
-                        .as_ref()
-                        .map(|subs| subs.iter().map(Subscript::from_ast).collect())
-                        .unwrap_or_default(),
-                })
-                .collect(),
-            def_id: comp.def_id,
-        }
-    }
-
-    /// Build a flattened component reference from AST without a def-map.
-    #[cfg(test)]
-    pub fn from_ast(comp: &ast::ComponentReference) -> Self {
-        Self::from_ast_with_def_map(comp, None)
-    }
-
-    /// Convert to a dotted variable name.
-    pub fn to_var_name(&self) -> VarName {
-        let name = self
-            .parts
-            .iter()
-            .map(|part| part.ident.as_str())
-            .collect::<Vec<_>>()
-            .join(".");
-        VarName::new(name)
-    }
-}
-
-impl std::fmt::Display for ComponentReference {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_var_name())
-    }
-}
-
-/// A single `for` iterator in a flattened algorithm statement.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ForIndex {
-    /// Iterator identifier (e.g., `i` in `for i in 1:n loop`).
-    pub ident: String,
-    /// Iterator range expression.
-    pub range: Expression,
-}
-
-/// Conditional block used by `if`, `when`, and `while`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatementBlock {
-    /// Block condition.
-    pub cond: Expression,
-    /// Block body statements.
-    pub stmts: Vec<Statement>,
-}
-
-/// Flattened algorithm statement tree.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub enum Statement {
-    #[default]
-    Empty,
-    Assignment {
-        comp: ComponentReference,
-        value: Expression,
-    },
-    Return,
-    Break,
-    For {
-        indices: Vec<ForIndex>,
-        equations: Vec<Statement>,
-    },
-    While(StatementBlock),
-    If {
-        cond_blocks: Vec<StatementBlock>,
-        else_block: Option<Vec<Statement>>,
-    },
-    When(Vec<StatementBlock>),
-    FunctionCall {
-        comp: ComponentReference,
-        args: Vec<Expression>,
-        outputs: Vec<Expression>,
-    },
-    Reinit {
-        variable: ComponentReference,
-        value: Expression,
-    },
-    Assert {
-        condition: Expression,
-        message: Expression,
-        level: Option<Expression>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VariableShapeContractError {
+    NegativeDimension {
+        variable: VarName,
+        dimension: i64,
+        span: Span,
     },
 }
 
-/// Extract output variables assigned by algorithm statements.
-///
-/// This collects left-hand side targets from assignments (including inside control-flow
-/// statements) and deduplicates them while preserving first-seen order.
-///
-/// For array element assignments like `x[i] := ...`, the base variable `x` is returned.
-pub fn extract_algorithm_outputs(statements: &[Statement]) -> Vec<VarName> {
-    use crate::visitor::{AlgorithmOutputCollector, StatementVisitor};
-
-    let mut collector = AlgorithmOutputCollector::new();
-    for statement in statements {
-        collector.visit_statement(statement);
-    }
-    collector.into_outputs()
-}
-
-/// Convert a component reference to its base variable name.
-///
-/// Subscripts are intentionally dropped so assignments like `x[i] := ...` map to `x`.
-pub fn component_ref_to_base_var_name(comp: &ComponentReference) -> VarName {
-    let parts: Vec<String> = comp.parts.iter().map(|p| p.ident.to_string()).collect();
-    VarName::new(parts.join("."))
-}
-
-/// Strip surrounding quotes from a string if present.
-#[cfg(test)]
-fn strip_quotes(text: &str) -> String {
-    if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
-        text[1..text.len() - 1].to_string()
-    } else {
-        text.to_string()
-    }
-}
-
-#[cfg(test)]
-impl ForIndex {
-    /// Convert from an AST for-index.
-    pub fn from_ast_with_def_map(
-        index: &ast::ForIndex,
-        def_map: Option<&IndexMap<DefId, String>>,
-    ) -> Self {
-        Self {
-            ident: index.ident.text.to_string(),
-            range: Expression::from_ast_with_def_map(&index.range, def_map),
-        }
-    }
-}
-
-#[cfg(test)]
-impl StatementBlock {
-    /// Convert from an AST statement block.
-    pub fn from_ast_with_def_map(
-        block: &ast::StatementBlock,
-        def_map: Option<&IndexMap<DefId, String>>,
-    ) -> Self {
-        Self {
-            cond: Expression::from_ast_with_def_map(&block.cond, def_map),
-            stmts: block
-                .stmts
-                .iter()
-                .map(|stmt| Statement::from_ast_with_def_map(stmt, def_map))
-                .collect(),
-        }
-    }
-}
-
-#[cfg(test)]
-impl Statement {
-    /// Convert from an AST statement.
-    pub fn from_ast_with_def_map(
-        stmt: &ast::Statement,
-        def_map: Option<&IndexMap<DefId, String>>,
-    ) -> Self {
-        match stmt {
-            ast::Statement::Empty => Statement::Empty,
-            ast::Statement::Assignment { comp, value } => Statement::Assignment {
-                comp: ComponentReference::from_ast_with_def_map(comp, def_map),
-                value: Expression::from_ast_with_def_map(value, def_map),
-            },
-            ast::Statement::Return { .. } => Statement::Return,
-            ast::Statement::Break { .. } => Statement::Break,
-            ast::Statement::For { indices, equations } => Statement::For {
-                indices: indices
-                    .iter()
-                    .map(|index| ForIndex::from_ast_with_def_map(index, def_map))
-                    .collect(),
-                equations: equations
-                    .iter()
-                    .map(|inner| Statement::from_ast_with_def_map(inner, def_map))
-                    .collect(),
-            },
-            ast::Statement::While(block) => {
-                Statement::While(StatementBlock::from_ast_with_def_map(block, def_map))
-            }
-            ast::Statement::If {
-                cond_blocks,
-                else_block,
-            } => Statement::If {
-                cond_blocks: cond_blocks
-                    .iter()
-                    .map(|block| StatementBlock::from_ast_with_def_map(block, def_map))
-                    .collect(),
-                else_block: else_block.as_ref().map(|stmts| {
-                    stmts
-                        .iter()
-                        .map(|inner| Statement::from_ast_with_def_map(inner, def_map))
-                        .collect()
-                }),
-            },
-            ast::Statement::When(blocks) => Statement::When(
-                blocks
-                    .iter()
-                    .map(|block| StatementBlock::from_ast_with_def_map(block, def_map))
-                    .collect(),
-            ),
-            ast::Statement::FunctionCall {
-                comp,
-                args,
-                outputs,
-            } => Statement::FunctionCall {
-                comp: function_component_ref_from_ast(comp, def_map),
-                args: args
-                    .iter()
-                    .map(|arg| Expression::from_ast_with_def_map(arg, def_map))
-                    .collect(),
-                outputs: outputs
-                    .iter()
-                    .map(|output| Expression::from_ast_with_def_map(output, def_map))
-                    .collect(),
-            },
-            ast::Statement::Reinit { variable, value } => Statement::Reinit {
-                variable: ComponentReference::from_ast_with_def_map(variable, def_map),
-                value: Expression::from_ast_with_def_map(value, def_map),
-            },
-            ast::Statement::Assert {
-                condition,
-                message,
-                level,
-            } => Statement::Assert {
-                condition: Expression::from_ast_with_def_map(condition, def_map),
-                message: Expression::from_ast_with_def_map(message, def_map),
-                level: level
-                    .as_ref()
-                    .map(|expr| Expression::from_ast_with_def_map(expr, def_map)),
-            },
-        }
-    }
-}
-
-impl Expression {
-    /// Convert an AST Expression to a Expression.
-    ///
-    /// This performs the conversion from AST representation to flat representation:
-    /// - ComponentReference → VarRef with qualified name
-    /// - FunctionCall → BuiltinCall or FunctionCall
-    /// - Terminal → Literal
-    /// - Parenthesized is unwrapped
-    #[cfg(test)]
-    pub fn from_ast(expr: &ast::Expression) -> Self {
-        match expr {
-            ast::Expression::Empty => Expression::Empty,
-
-            ast::Expression::Binary { op, lhs, rhs } => Expression::Binary {
-                op: op_binary_from_ast(op),
-                lhs: Box::new(Expression::from_ast(lhs)),
-                rhs: Box::new(Expression::from_ast(rhs)),
-            },
-
-            ast::Expression::Unary { op, rhs } => Expression::Unary {
-                op: op_unary_from_ast(op),
-                rhs: Box::new(Expression::from_ast(rhs)),
-            },
-
-            ast::Expression::ComponentReference(cr) => {
-                Self::from_component_ref_with_def_map(cr, None)
-            }
-
-            ast::Expression::FunctionCall { comp, args } => convert_function_call(comp, args),
-
-            ast::Expression::Terminal {
-                terminal_type,
-                token,
-            } => Expression::Literal(convert_terminal(terminal_type, token)),
-
-            ast::Expression::If {
-                branches,
-                else_branch,
-            } => Expression::If {
-                branches: branches
-                    .iter()
-                    .map(|(cond, then_expr)| {
-                        (Expression::from_ast(cond), Expression::from_ast(then_expr))
-                    })
-                    .collect(),
-                else_branch: Box::new(Expression::from_ast(else_branch)),
-            },
-
-            ast::Expression::Array {
-                elements,
-                is_matrix,
-            } => Expression::Array {
-                elements: elements.iter().map(Expression::from_ast).collect(),
-                is_matrix: *is_matrix,
-            },
-
-            ast::Expression::Tuple { elements } => Expression::Tuple {
-                elements: elements.iter().map(Expression::from_ast).collect(),
-            },
-
-            ast::Expression::Range { start, step, end } => Expression::Range {
-                start: Box::new(Expression::from_ast(start)),
-                step: step.as_ref().map(|s| Box::new(Expression::from_ast(s))),
-                end: Box::new(Expression::from_ast(end)),
-            },
-
-            ast::Expression::Parenthesized { inner } => Expression::from_ast(inner),
-
-            ast::Expression::ArrayComprehension {
-                expr,
-                indices,
-                filter,
-            } => Expression::ArrayComprehension {
-                expr: Box::new(Expression::from_ast(expr)),
-                indices: convert_comprehension_indices(indices, None),
-                filter: filter
-                    .as_ref()
-                    .map(|cond| Box::new(Expression::from_ast(cond))),
-            },
-
-            ast::Expression::ClassModification {
-                target,
-                modifications,
-            } => {
-                let name_parts: Vec<_> =
-                    target.parts.iter().map(|p| p.ident.text.clone()).collect();
-                Expression::FunctionCall {
-                    name: VarName::new(name_parts.join(".")),
-                    args: modifications.iter().map(convert_constructor_arg).collect(),
-                    is_constructor: true,
-                }
-            }
-
-            ast::Expression::NamedArgument { value, .. } => Expression::from_ast(value),
-
-            ast::Expression::Modification { value, .. } => Expression::from_ast(value),
-
-            ast::Expression::ArrayIndex { base, subscripts } => {
-                // Convert to nested expression with subscripts applied
-                // For now, wrap in a special variant - base[subscripts]
-                let base_flat = Box::new(Expression::from_ast(base));
-                let flat_subs = subscripts.iter().map(Subscript::from_ast).collect();
-                Expression::Index {
-                    base: base_flat,
-                    subscripts: flat_subs,
-                }
-            }
-
-            ast::Expression::FieldAccess { base, field } => Expression::FieldAccess {
-                base: Box::new(Expression::from_ast(base)),
-                field: field.clone(),
-            },
-        }
-    }
-
-    /// Convert an AST Expression to a Expression, using def_map for function name resolution.
-    ///
-    /// This variant uses the def_id from function calls to resolve fully qualified names,
-    /// which is essential for correctly looking up user-defined functions that were imported.
-    #[cfg(test)]
-    pub fn from_ast_with_def_map(
-        expr: &ast::Expression,
-        def_map: Option<&IndexMap<DefId, String>>,
-    ) -> Self {
-        match expr {
-            ast::Expression::Empty => Expression::Empty,
-
-            ast::Expression::Binary { op, lhs, rhs } => Expression::Binary {
-                op: op_binary_from_ast(op),
-                lhs: Box::new(Expression::from_ast_with_def_map(lhs, def_map)),
-                rhs: Box::new(Expression::from_ast_with_def_map(rhs, def_map)),
-            },
-
-            ast::Expression::Unary { op, rhs } => Expression::Unary {
-                op: op_unary_from_ast(op),
-                rhs: Box::new(Expression::from_ast_with_def_map(rhs, def_map)),
-            },
-
-            ast::Expression::ComponentReference(cr) => {
-                Self::from_component_ref_with_def_map(cr, def_map)
-            }
-
-            ast::Expression::FunctionCall { comp, args } => {
-                convert_function_call_with_def_map(comp, args, def_map)
-            }
-
-            ast::Expression::Terminal {
-                terminal_type,
-                token,
-            } => Expression::Literal(convert_terminal(terminal_type, token)),
-
-            ast::Expression::If {
-                branches,
-                else_branch,
-            } => convert_if_with_def_map(branches, else_branch, def_map),
-
-            ast::Expression::Array {
-                elements,
-                is_matrix,
-            } => Expression::Array {
-                elements: convert_expr_vec_with_def_map(elements, def_map),
-                is_matrix: *is_matrix,
-            },
-
-            ast::Expression::Tuple { elements } => Expression::Tuple {
-                elements: convert_expr_vec_with_def_map(elements, def_map),
-            },
-
-            ast::Expression::Range { start, step, end } => Expression::Range {
-                start: Box::new(Expression::from_ast_with_def_map(start, def_map)),
-                step: step
-                    .as_ref()
-                    .map(|s| Box::new(Expression::from_ast_with_def_map(s, def_map))),
-                end: Box::new(Expression::from_ast_with_def_map(end, def_map)),
-            },
-
-            ast::Expression::Parenthesized { inner } => {
-                Expression::from_ast_with_def_map(inner, def_map)
-            }
-
-            ast::Expression::ArrayComprehension {
-                expr,
-                indices,
-                filter,
-            } => convert_array_comprehension_with_def_map(expr, indices, filter, def_map),
-
-            ast::Expression::ClassModification {
-                target,
-                modifications,
-            } => convert_class_modification_with_def_map(target, modifications, def_map),
-
-            ast::Expression::NamedArgument { value, .. } => {
-                Expression::from_ast_with_def_map(value, def_map)
-            }
-
-            ast::Expression::Modification { value, .. } => {
-                Expression::from_ast_with_def_map(value, def_map)
-            }
-
-            ast::Expression::ArrayIndex { base, subscripts } => {
-                let base_flat = Box::new(Expression::from_ast_with_def_map(base, def_map));
-                let flat_subs = subscripts.iter().map(Subscript::from_ast).collect();
-                Expression::Index {
-                    base: base_flat,
-                    subscripts: flat_subs,
-                }
-            }
-
-            ast::Expression::FieldAccess { base, field } => Expression::FieldAccess {
-                base: Box::new(Expression::from_ast_with_def_map(base, def_map)),
-                field: field.clone(),
-            },
-        }
-    }
-
-    /// Convert a component reference to a VarRef.
-    ///
-    /// MLS §10.1: Array subscripts are part of the variable identity.
-    /// For `r[1].p.v`, the name is "r[1].p.v" (subscripts included in name).
-    #[cfg(test)]
-    fn from_component_ref(cr: &ast::ComponentReference) -> Self {
-        // Build name with subscripts included for each part
-        let name_parts: Vec<String> = cr
-            .parts
-            .iter()
-            .map(|p| {
-                let base = p.ident.text.to_string();
-                match &p.subs {
-                    Some(subs) if !subs.is_empty() => {
-                        let sub_strs: Vec<String> = subs.iter().map(subscript_to_string).collect();
-                        format!("{}[{}]", base, sub_strs.join(","))
-                    }
-                    _ => base,
-                }
-            })
-            .collect();
-        let name = VarName::new(name_parts.join("."));
-
-        // Subscripts field is for additional trailing subscripts not in the name
-        // (typically empty since subscripts are now in the name)
-        Expression::VarRef {
-            name,
-            subscripts: vec![],
-        }
-    }
-
-    #[cfg(test)]
-    fn from_component_ref_with_def_map(
-        cr: &ast::ComponentReference,
-        def_map: Option<&IndexMap<DefId, String>>,
-    ) -> Self {
-        from_component_ref_with_def_map_impl(cr, def_map)
-    }
-
-    /// Check if this expression contains a call to der().
-    ///
-    /// Uses the `ContainsDerChecker` visitor with short-circuit evaluation.
-    pub fn contains_der(&self) -> bool {
-        ContainsDerChecker::check(self)
-    }
-
-    /// Check if this expression contains der() applied to a state variable.
-    ///
-    /// This is used to classify equations:
-    /// - `der(state_var) = ...` → ODE equation
-    /// - `y = der(input_var)` → algebraic equation (defines y using derivative)
-    pub fn contains_der_of_state(&self, state_vars: &std::collections::HashSet<VarName>) -> bool {
-        crate::visitor::ContainsDerOfStateChecker::check(self, state_vars)
-    }
-
-    /// Extract the variable name from a der() call if this is one.
-    pub fn get_der_variable(&self) -> Option<&VarName> {
+impl VariableShapeContractError {
+    pub fn span(&self) -> Span {
         match self {
-            Expression::BuiltinCall { function, args } if *function == BuiltinFunction::Der => {
-                args.first().and_then(|arg| match arg {
-                    Expression::VarRef { name, .. } => Some(name),
-                    _ => None,
-                })
-            }
-            _ => None,
+            Self::NegativeDimension { span, .. } => *span,
         }
     }
+}
 
-    /// Collect all state variables (variables passed to der()).
-    ///
-    /// Uses the `StateVariableCollector` visitor for traversal.
-    pub fn collect_state_variables(&self, states: &mut std::collections::HashSet<VarName>) {
-        use crate::visitor::{ExpressionVisitor, StateVariableCollector};
-
-        let mut collector = StateVariableCollector::new();
-        collector.visit_expression(self);
-        states.extend(collector.into_states());
+impl Variable {
+    pub fn shape_size(&self) -> Result<usize, VariableShapeContractError> {
+        shape_size(&self.name, self.source_span, &self.dims)
     }
 
-    /// Collect all variable references in this expression.
-    ///
-    /// Uses the `VarRefCollector` visitor for traversal.
-    pub fn collect_var_refs(&self, vars: &mut std::collections::HashSet<VarName>) {
-        use crate::visitor::{ExpressionVisitor, VarRefCollector};
+    pub fn validate_shape_contract(&self) -> Result<(), VariableShapeContractError> {
+        self.shape_size().map(|_| ())
+    }
+}
 
-        let mut collector = VarRefCollector::new();
-        collector.visit_expression(self);
-        vars.extend(collector.into_vars());
+fn shape_size(
+    name: &VarName,
+    span: Span,
+    dims: &[i64],
+) -> Result<usize, VariableShapeContractError> {
+    if dims.is_empty() {
+        return Ok(1);
+    }
+    let mut size = 1usize;
+    for &dimension in dims {
+        let dim = usize::try_from(dimension).map_err(|_| {
+            VariableShapeContractError::NegativeDimension {
+                variable: name.clone(),
+                dimension,
+                span,
+            }
+        })?;
+        size = size.saturating_mul(dim);
+    }
+    Ok(size)
+}
+
+impl Default for Variable {
+    fn default() -> Self {
+        Self {
+            name: VarName::default(),
+            component_ref: None,
+            source_span: Span::DUMMY,
+            type_id: TypeId::default(),
+            variability: Variability::Empty,
+            causality: Causality::Empty,
+            flow: false,
+            stream: false,
+            dims: Vec::new(),
+            connected: false,
+            start: None,
+            fixed: None,
+            min: None,
+            max: None,
+            nominal: None,
+            quantity: None,
+            unit: None,
+            display_unit: None,
+            description: None,
+            state_select: StateSelect::default(),
+            binding: None,
+            binding_from_modification: false,
+            evaluate: false,
+            is_discrete_type: false,
+            is_primitive: false,
+            from_expandable_connector: false,
+            is_overconstrained: false,
+            is_protected: false,
+            oc_record_path: None,
+            oc_eq_constraint_size: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod variable_shape_contract_tests {
+    use super::*;
+
+    #[test]
+    fn flat_variable_shape_size_preserves_zero_sized_arrays() {
+        let variable = Variable {
+            name: VarName::new("x"),
+            dims: vec![0, 3],
+            ..Default::default()
+        };
+
+        assert_eq!(variable.shape_size(), Ok(0));
+    }
+
+    #[test]
+    fn flat_variable_shape_contract_rejects_negative_dims() {
+        let variable = Variable {
+            name: VarName::new("x"),
+            dims: vec![2, -1],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            variable.validate_shape_contract(),
+            Err(VariableShapeContractError::NegativeDimension {
+                variable: VarName::new("x"),
+                dimension: -1,
+                span: Span::DUMMY,
+            })
+        );
+    }
+
+    #[test]
+    fn flat_model_shape_contract_rejects_key_name_mismatch() {
+        let mut model = Model::new();
+        model.add_variable(
+            VarName::new("key"),
+            Variable {
+                name: VarName::new("stored"),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            model.validate_shape_contract(),
+            Err(ModelShapeContractError::VariableKeyNameMismatch {
+                key: VarName::new("key"),
+                name: VarName::new("stored"),
+                span: Span::DUMMY,
+            })
+        );
+    }
+
+    #[test]
+    fn flat_model_shape_contract_rejects_function_param_negative_dims() {
+        let mut model = Model::new();
+        let mut function = Function::new("Pkg.f", Span::DUMMY);
+        function.add_output(rumoca_core::FunctionParam::new("y", "Real").with_dims(vec![-1]));
+        model.add_function(function);
+
+        assert!(matches!(
+            model.validate_shape_contract(),
+            Err(ModelShapeContractError::Function(
+                rumoca_core::FunctionShapeContractError::Param { .. }
+            ))
+        ));
     }
 }
 
@@ -1166,7 +592,14 @@ impl std::fmt::Display for EquationOrigin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EquationOrigin::ComponentEquation { component } => {
-                write!(f, "equation from {}", component)
+                // Top-level model equations have no instance prefix; rendering
+                // `equation from ` then reads as truncated, so name the source
+                // plainly instead.
+                if component.is_empty() {
+                    write!(f, "top-level model equation")
+                } else {
+                    write!(f, "equation from {}", component)
+                }
             }
             EquationOrigin::Connection { lhs, rhs } => {
                 write!(f, "connection equation: {} = {}", lhs, rhs)
@@ -1345,7 +778,7 @@ pub struct Algorithm {
     /// The statements in this algorithm section.
     pub statements: Vec<Statement>,
     /// Output variables (left-hand side variables).
-    pub outputs: Vec<VarName>,
+    pub outputs: Vec<Reference>,
     /// Source span for error reporting. Never loses source location.
     pub span: Span,
     /// Human-readable origin description (for debugging).
@@ -1362,52 +795,4 @@ impl Algorithm {
             origin: origin.into(),
         }
     }
-}
-
-/// A flattened function definition (MLS §12).
-///
-/// Functions in Modelica are callable units with input/output parameters
-/// and an algorithm body. They are compiled separately from the model
-/// and called during simulation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Function {
-    /// Qualified function name (e.g., "Modelica.Math.sin" or "MyPackage.myFunc").
-    pub name: VarName,
-    /// Input parameters in declaration order.
-    pub inputs: Vec<FunctionParam>,
-    /// Output parameters in declaration order.
-    pub outputs: Vec<FunctionParam>,
-    /// Protected local variables.
-    pub locals: Vec<FunctionParam>,
-    /// The algorithm body (statements).
-    pub body: Vec<Statement>,
-    /// True if the function is pure (no side effects).
-    /// MLS §12.3: Pure functions always return the same result for same inputs.
-    pub pure: bool,
-    /// External function declaration (MLS §12.9).
-    /// If Some, this function calls external C/Fortran code.
-    pub external: Option<ExternalFunction>,
-    /// True when this function declaration is partial (MLS §4.7/§12).
-    #[serde(default)]
-    pub partial: bool,
-    /// Derivative annotations (MLS §12.7.1).
-    /// A function may have multiple derivative annotations for different orders.
-    pub derivatives: Vec<DerivativeAnnotation>,
-    /// Source span for error reporting.
-    pub span: Span,
-}
-
-/// A function parameter or local variable (MLS §12.1).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionParam {
-    /// Parameter name.
-    pub name: String,
-    /// Type name (e.g., "Real", "Integer", "Boolean").
-    pub type_name: String,
-    /// Array dimensions (empty for scalars).
-    pub dims: Vec<i64>,
-    /// Default value expression (for optional inputs).
-    pub default: Option<Expression>,
-    /// Description string.
-    pub description: Option<String>,
 }

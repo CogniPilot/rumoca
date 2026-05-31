@@ -1,0 +1,38 @@
+[package]
+name = "rumoca-exec-cranelift"
+description = "Cranelift compiled execution adapter for Solve-IR row blocks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-eval-solve = { workspace = true }
+cranelift-codegen = "0.125"
+cranelift-frontend = "0.125"
+cranelift-jit = "0.125"
+cranelift-module = "0.125"
+
+# Path A for the Cranelift execution adapter crosses a native JIT function-pointer ABI.
+# Keep the unsafe allowance local to this crate; workspace crates remain
+# covered by the default unsafe_code deny rule.
+[lints.rust]
+unsafe_code = "allow"
+unreachable_pub = "deny"
+unnameable_types = "deny"
+private_interfaces = "deny"
+private_bounds = "deny"
+exported_private_dependencies = "deny"
+dead_code = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+excessive_nesting = "deny"
+too_many_lines = "deny"
+too_many_arguments = "deny"
+pub_use = "allow"
+pub_with_shorthand = "allow"
+pub_without_shorthand = "allow"
+missing_enforced_import_renames = "deny"

@@ -2222,10 +2222,9 @@
                         <!-- Codegen Tab -->
                         <div class="right-tab-content" id="codegenTab">
                             <div style="flex-shrink: 0; display: flex; align-items: center; margin-bottom: 8px; gap: 8px;">
-                                <button class="small" onclick="saveCodegenOutput()" title="Save rendered codegen output to a file">Save</button>
                                 <span id="codegenTemplateSummary" class="codegen-template-summary">Loading built-in templates...</span>
                             </div>
-                            <div id="codegenOutputEditor" style="flex: 1; min-height: 200px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
+                            <div id="codegenOutputSummary" class="codegen-output-summary" style="flex: 1; min-height: 200px; border: 1px solid #3c3c3c; border-radius: 4px; padding: 12px; overflow: auto;"></div>
                         </div>
                     </div>
                 </div>
@@ -2293,6 +2292,10 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
     <script src="./vendor/visualization_shared.js"></script>
     <script src="./vendor/results_app.js"></script>
+    <script>
+        window.rumocaWasmPkgBase = '../../pkg';
+        window.rumocaWasmPkgSubdir = 'release-full-web';
+    </script>
     <script type="module" src="./src/main.js"></script>
 </body>
 </html>

@@ -12,9 +12,13 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rumoca-compile = { workspace = true }
-rumoca-sim = { workspace = true, optional = true }
+rumoca-core = { workspace = true }
+rumoca-eval-ast = { workspace = true }
+rumoca-sim = { workspace = true, default-features = false, optional = true }
 rumoca-tool-lint = { workspace = true }
-rumoca-tool-lsp = { workspace = true }
+# default-features = false drops the `server`+`simulation` features and keeps
+# light builds on completions/diagnostics/helpers only.
+rumoca-tool-lsp = { workspace = true, default-features = false }
 bincode = { workspace = true }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 wasm-bindgen = "0.2"
@@ -29,7 +33,8 @@ wasm-bindgen-rayon = { version = "1.2", optional = true }
 
 [features]
 default = ["console_error_panic_hook"]
-full-web = ["sim-diffsol", "stepper-diffsol"]
+full-web = ["sim-rk45"]
+sim-wasm = ["dep:rumoca-sim", "rumoca-sim/wasm-solvers"]
 sim-diffsol = ["dep:rumoca-sim", "rumoca-sim/solver-diffsol"]
 sim-rk45 = ["dep:rumoca-sim", "rumoca-sim/solver-rk45"]
 stepper-diffsol = ["sim-diffsol"]

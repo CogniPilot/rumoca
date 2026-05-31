@@ -5,48 +5,7 @@
 /// - `support[1].phi` -> `support.phi`
 /// - `a[1].b[2].c` -> `a.b.c`
 pub fn component_base_name(name: &str) -> Option<String> {
-    let mut parts = Vec::new();
-    let mut segment_start = 0usize;
-    let mut depth = 0i32;
-
-    for (idx, ch) in name.char_indices() {
-        match ch {
-            '[' => depth += 1,
-            ']' => {
-                if depth == 0 {
-                    return None;
-                }
-                depth -= 1;
-            }
-            '.' if depth == 0 => {
-                if segment_start >= idx {
-                    return None;
-                }
-                let segment = &name[segment_start..idx];
-                let base = segment
-                    .split_once('[')
-                    .map(|(base, _)| base)
-                    .unwrap_or(segment);
-                if base.is_empty() {
-                    return None;
-                }
-                parts.push(base.to_string());
-                segment_start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-
-    if depth != 0 || segment_start >= name.len() {
-        return None;
-    }
-    let tail = &name[segment_start..];
-    let base = tail.split_once('[').map(|(base, _)| base).unwrap_or(tail);
-    if base.is_empty() {
-        return None;
-    }
-    parts.push(base.to_string());
-    Some(parts.join("."))
+    rumoca_core::component_path_base_name(name)
 }
 
 #[cfg(test)]

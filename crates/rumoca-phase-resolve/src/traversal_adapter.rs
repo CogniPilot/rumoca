@@ -181,7 +181,7 @@ pub(crate) fn walk_expression<C: ResolveTraversalCallbacks>(
 ) {
     match expression {
         Expression::ComponentReference(comp) => callbacks.on_component_reference(comp, scope),
-        Expression::FunctionCall { comp, args } => {
+        Expression::FunctionCall { comp, args, .. } => {
             callbacks.on_function_reference(comp, scope);
             walk_expressions(callbacks, args, scope);
         }
@@ -190,19 +190,22 @@ pub(crate) fn walk_expression<C: ResolveTraversalCallbacks>(
             walk_expression(callbacks, Arc::make_mut(rhs), scope);
         }
         Expression::Unary { rhs, .. } => walk_expression(callbacks, Arc::make_mut(rhs), scope),
-        Expression::Range { start, step, end } => {
+        Expression::Range {
+            start, step, end, ..
+        } => {
             walk_expression(callbacks, Arc::make_mut(start), scope);
             if let Some(step_expression) = step {
                 walk_expression(callbacks, Arc::make_mut(step_expression), scope);
             }
             walk_expression(callbacks, Arc::make_mut(end), scope);
         }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
             walk_expressions(callbacks, elements, scope);
         }
         Expression::If {
             branches,
             else_branch,
+            ..
         } => {
             for (condition, then_expr) in branches {
                 walk_expression(callbacks, condition, scope);
@@ -213,24 +216,26 @@ pub(crate) fn walk_expression<C: ResolveTraversalCallbacks>(
         Expression::ClassModification {
             target,
             modifications,
+            ..
         } => {
             callbacks.on_function_reference(target, scope);
             walk_expressions(callbacks, modifications, scope);
         }
-        Expression::Modification { target, value } => {
+        Expression::Modification { target, value, .. } => {
             callbacks.on_component_reference(target, scope);
             walk_expression(callbacks, Arc::make_mut(value), scope);
         }
         Expression::NamedArgument { value, .. } => {
             walk_expression(callbacks, Arc::make_mut(value), scope);
         }
-        Expression::Parenthesized { inner } => {
+        Expression::Parenthesized { inner, .. } => {
             walk_expression(callbacks, Arc::make_mut(inner), scope);
         }
         Expression::ArrayComprehension {
             expr,
             indices,
             filter,
+            ..
         } => {
             let loop_scope = callbacks.create_loop_scope(scope);
             for index in indices {
@@ -242,14 +247,16 @@ pub(crate) fn walk_expression<C: ResolveTraversalCallbacks>(
                 walk_expression(callbacks, Arc::make_mut(filter_expr), loop_scope);
             }
         }
-        Expression::ArrayIndex { base, subscripts } => {
+        Expression::ArrayIndex {
+            base, subscripts, ..
+        } => {
             walk_expression(callbacks, Arc::make_mut(base), scope);
             walk_subscripts(callbacks, subscripts, scope);
         }
         Expression::FieldAccess { base, .. } => {
             walk_expression(callbacks, Arc::make_mut(base), scope);
         }
-        Expression::Terminal { .. } | Expression::Empty => {}
+        Expression::Terminal { .. } | Expression::Empty { .. } => {}
     }
 }
 

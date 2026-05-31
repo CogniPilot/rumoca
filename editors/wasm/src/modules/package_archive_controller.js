@@ -147,7 +147,7 @@ export function createPackageArchiveController({
     }
 
     function packageArchiveCachePath(archiveId) {
-        return `.rumoca/cache/package-archives/${encodeURIComponent(String(archiveId || '').trim())}.bin`;
+        return `.rumoca/cache/package-archives/v2/${encodeURIComponent(String(archiveId || '').trim())}.bin`;
     }
 
     async function exportArchiveBinaryCache(archiveId) {
@@ -181,12 +181,22 @@ export function createPackageArchiveController({
         if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
             return 0;
         }
-        const merged = await sendWorkspaceCommand(
-            'rumoca.workspace.mergeParsedSourceRootsBinary',
-            { bytes },
-            300000,
-        );
-        return Number(merged) || 0;
+        try {
+            const merged = await sendWorkspaceCommand(
+                'rumoca.workspace.mergeParsedSourceRootsBinary',
+                { bytes },
+                300000,
+            );
+            return Number(merged) || 0;
+        } catch (error) {
+            projectFs?.removeCacheFile?.(packageArchiveCachePath(normalizedArchiveId));
+            console.warn(
+                'Discarding stale package-archive binary cache:',
+                normalizedArchiveId,
+                error,
+            );
+            return 0;
+        }
     }
 
     function rebuildStagedSourceRootsFromArchives() {
@@ -707,7 +717,7 @@ export function createPackageArchiveController({
             setPackageArchiveProgress(row, 0, `Parsing ${fileCount} files`, true);
         }
 
-        setTerminalOutput(`Loaded ${fileCount} .mo files from ${fileName}\n\nParsing source roots with rayon...`);
+        setTerminalOutput(`Loaded ${fileCount} .mo files from ${fileName}\n\nParsing source roots...`);
         const importStart = performance.now();
         const sourceRootsJson = JSON.stringify(stagedSourceRoots);
         const resultJson = await sendWorkspaceCommand(

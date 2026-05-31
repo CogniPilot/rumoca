@@ -1,0 +1,14 @@
+version = 1
+ir = "dae"
+name = "standalone-web-example"
+description = "Example target bundle that renders standalone HTML and companion JavaScript"
+execution_mode = "symbolic"
+deployment_class = "browser"
+
+[[files]]
+path = "{{ model_name }}_standalone.html"
+template = "standalone_html.jinja"
+
+[[files]]
+path = "{{ model_name }}.js"
+template = "javascript.jinja"

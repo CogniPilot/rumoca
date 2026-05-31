@@ -7,7 +7,7 @@ DEFERRED
 > This is an optimization that can be added when compilation performance becomes a concern.
 
 ## Summary
-Phases that evaluate expressions (flatten, todae) MUST use memoization with key `(eval_version, expr_semantic_hash, env_semantic_hash)` to enable caching and avoid redundant computation.
+Phases that evaluate expressions (flatten, DAE construction) may use memoization with key `(eval_version, expr_semantic_hash, env_semantic_hash)` to avoid redundant computation when profiling shows it matters.
 
 ## Motivation
 Expression evaluation during flattening can be expensive:
@@ -43,16 +43,15 @@ pub const EVAL_VERSION: u32 = 1;
 
 ```rust
 pub struct EvalCache {
-    cache: HashMap<CacheKey, Value>,
+    cache: IndexMap<CacheKey, Value>,
 }
 
 /// Cache key uses full 256-bit digests to minimize collision risk.
-/// See SPEC_0016 for collision posture.
 pub type CacheKey = (u32, [u8; 32], [u8; 32]);  // (version, expr_digest, env_digest)
 
 impl EvalCache {
     pub fn new() -> Self {
-        EvalCache { cache: HashMap::new() }
+        EvalCache { cache: IndexMap::new() }
     }
     
     /// Evaluate expression with memoization.
@@ -84,29 +83,22 @@ The environment digest includes all bindings that could affect evaluation:
 ```rust
 pub struct Env {
     /// Parameter bindings: name → value
-    params: HashMap<String, Value>,
+    params: IndexMap<String, Value>,
     /// Structural parameters (affect array sizes)
-    structural: HashMap<String, i64>,
+    structural: IndexMap<String, i64>,
 }
 
 impl Env {
     pub fn semantic_digest(&self) -> [u8; 32] {
         let mut h = blake3::Hasher::new();
         
-        // Sort keys for determinism
-        let mut params: Vec<_> = self.params.iter().collect();
-        params.sort_by_key(|(k, _)| *k);
-        
-        for (name, value) in params {
+        for (name, value) in &self.params {
             h.update(&(name.len() as u32).to_le_bytes());
             h.update(name.as_bytes());
             value.hash_into(&mut h);
         }
-        
-        let mut structural: Vec<_> = self.structural.iter().collect();
-        structural.sort_by_key(|(k, _)| *k);
-        
-        for (name, value) in structural {
+
+        for (name, value) in &self.structural {
             h.update(&(name.len() as u32).to_le_bytes());
             h.update(name.as_bytes());
             h.update(&value.to_le_bytes());
@@ -122,7 +114,7 @@ impl Env {
 | Phase | Caching Requirement |
 |-------|---------------------|
 | `flatten` | MUST use EvalCache for parameter expressions, array sizes |
-| `todae` | MUST use EvalCache for start/nominal/min/max values |
+| `phase-dae` | MAY use EvalCache for start/nominal/min/max values |
 | `codegen` | MAY cache template output by DAE semantic_hash |
 
 ### What Environment Digest Includes
@@ -187,13 +179,11 @@ pub struct ConcurrentEvalCache {
 
 ## Rationale
 - Avoids redundant computation in common cases
-- Full 256-bit digests prevent cache corruption (see SPEC_0016)
+- Full 256-bit digests keep cache keys wide enough for compiler use
 - eval_version prevents stale entries after compiler updates
 - Environment digest ensures correctness (no stale values)
 - Single compilation unit lifetime avoids staleness bugs (Phase 1)
 
 ## References
-- SPEC_0005: Two-Hash Strategy
-- SPEC_0006: N-ary Add/Mul with Sorting (for expr digest)
-- SPEC_0013: Unified stable_id Contract
-- SPEC_0016: Collision Detection Posture
+- SPEC_0021: deterministic collection guidance
+- SPEC_0029: evaluation crates stay separate from IR data crates

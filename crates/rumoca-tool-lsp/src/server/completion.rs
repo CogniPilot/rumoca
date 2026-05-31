@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Instant;
 
 use crate::completion_metrics::extract_namespace_completion_prefix;
@@ -53,6 +54,7 @@ struct CompletionProgressContext<'a> {
     uri_path: &'a str,
     request_edit_epoch: u64,
     started: &'a Instant,
+    completion_progress_path: Option<&'a Path>,
 }
 
 pub(super) struct CompletionTimingContext {
@@ -105,7 +107,7 @@ impl<'a> CompletionProgressContext<'a> {
                 query_fast_path_matched,
                 detail: detail.map(ToString::to_string),
             },
-            None,
+            self.completion_progress_path,
         );
     }
 }
@@ -207,10 +209,12 @@ impl ModelicaLanguageServer {
         request_edit_epoch: u64,
     ) -> CompletionPreparation {
         let prepare_started = Instant::now();
+        let completion_progress_path = self.completion_progress_path.read().await.clone();
         let progress = CompletionProgressContext {
             uri_path,
             request_edit_epoch,
             started: &prepare_started,
+            completion_progress_path: completion_progress_path.as_deref(),
         };
         if self.completion_request_is_stale(request_edit_epoch) {
             return CompletionPreparation::stale(
@@ -388,7 +392,7 @@ pub(super) fn code_lens_title_from_strict_report(mut report: StrictCompileReport
 
     match report.requested_result.take() {
         Some(PhaseResult::Success(result)) => balanced_code_lens_title(&result),
-        Some(PhaseResult::NeedsInner { missing_inners }) => {
+        Some(PhaseResult::NeedsInner { missing_inners, .. }) => {
             format!("Needs inner ({})", missing_inners.join(", "))
         }
         Some(PhaseResult::Failed { phase, error, .. }) => {

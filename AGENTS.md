@@ -1,220 +1,41 @@
 # AGENTS.md
 
-This file tells coding agents how to work in `rumoca` without drifting from the
-Modelica Language Specification (MLS) or Rumoca's design decisions.
+**This file is a routing index, not a guidance document.** All design rules
+live in `spec/`. Use the tables below to figure out which spec to read for
+the task you're working on, then go read that spec. If a rule isn't in a
+spec, it's not a rule — propose a spec change first.
 
-For the detailed operational workflow (triage proof requirements, upstream-first
-fix policy, and MSL-backed validation expectations), also read:
+## Starting point
 
-- `docs/development_instructions.md`
+- [spec/README.md](spec/README.md) — index of all active specs and their
+  status (`ACCEPTED`, `REFERENCE`, `DRAFT`).
+- [spec/SPEC_0000_SPEC_GUIDELINES.md](spec/SPEC_0000_SPEC_GUIDELINES.md) —
+  how specs themselves work; what the statuses mean; how to propose a new
+  spec.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — local setup and `rum` CLI usage.
+- [docs/development_instructions.md](docs/development_instructions.md) —
+  operational workflow, triage proof requirements, upstream-first fix policy,
+  and MSL-backed validation expectations.
 
-## Scope
+## Task → specs
 
-- Treat active specs in `spec/README.md` as the source of truth.
-- Archived specs are historical context only. Do not treat them as normative
-  unless the user explicitly asks for archived behavior.
-- Spec status matters:
-  - `ACCEPTED`: mandatory
-  - `REFERENCE`: normative lookup/reference material
-  - `DRAFT`: current design direction; preserve it unless the user is
-    intentionally changing architecture
+| If you are touching... | Read these specs |
+|---|---|
+| Compiler pipeline / any IR / any phase | [SPEC_0007](spec/SPEC_0007_IR_PIPELINE.md) — IR stage contracts, structural-transformation scope |
+| Crate dependencies, foundation types, re-exports, single-source helpers | [SPEC_0029](spec/SPEC_0029_CRATE_BOUNDARIES.md) |
+| Modelica semantics (any MLS-affecting change) | [SPEC_0022](spec/SPEC_0022_MLS_COMPILER_COMPLIANCE.md) (use its section index) |
+| Name lookup, scopes, `DefId` | [SPEC_0001](spec/SPEC_0001_DEFID.md), [SPEC_0002](spec/SPEC_0002_SCOPE_TREE.md) |
+| Diagnostics, spans, error codes, tracing | [SPEC_0008](spec/SPEC_0008_PHASE_ERRORS.md) |
+| Tool config (`rumoca-tool-*`) | [SPEC_0018](spec/SPEC_0018_TOOL_CONFIG.md) |
+| Function length, nesting, file size, deterministic collections, code-size policy | [SPEC_0021](spec/SPEC_0021_CODE_COMPLEXITY.md) |
+| Opening a PR (workflow, metrics, verification commands, MSL gates, done criteria) | [SPEC_0025](spec/SPEC_0025_PR_REVIEW_PROCESS.md) |
 
-## Required Reading Before Editing
+## Rules of thumb
 
-Start with `spec/README.md`, then read only the specs relevant to the change.
-
-Minimum default set for compiler work:
-
-- `spec/SPEC_0025_PR_REVIEW_PROCESS.md`
-- `spec/SPEC_0022_MLS_COMPILER_COMPLIANCE.md` (use its section index; do not
-  load the entire file unless truly necessary)
-- `spec/SPEC_0029_CRATE_BOUNDARIES.md`
-- `spec/SPEC_0021_CODE_COMPLEXITY.md`
-
-Read additional specs based on the area you touch:
-
-- Name lookup / scopes: `SPEC_0001`, `SPEC_0002`
-- Instantiation / flattening: `SPEC_0004`
-- DAE representation: `SPEC_0003`, `SPEC_0007`
-- Error handling: `SPEC_0008`
-- Shared foundation types: `SPEC_0009`
-- Ordered public collections: `SPEC_0017`
-- Arrays: `SPEC_0019`
-- Algorithms / ToDae: `SPEC_0020`
-- MLS-to-crate mapping: `SPEC_0023`
-- Diagnostics / tracing: `SPEC_0024`
-- Source spans / traceability: `SPEC_0026`
-
-## Mandatory Workflow For Agents
-
-1. Identify the owning crate and phase before editing code.
-2. Read that crate's `Cargo.toml`; its dependencies are the allowed context.
-3. Find the relevant MLS section and spec section before changing Modelica
-   semantics.
-4. Make the smallest change that preserves spec compliance and crate
-   boundaries.
-5. Add or update tests that prove the behavior, not just exercise the code.
-6. Run the relevant verification commands before claiming the task is done.
-7. Record PR-size metrics in the review payload:
-   - `production_lines_added`, `production_lines_deleted`
-   - `test_lines_added`, `test_lines_deleted`
-   - `net_added_lines`, `files_touched`
-   - `public_items_added`, `public_items_removed`
-8. If `net_added_lines > 0`, complete a compression pass and justify remaining net growth.
-
-If you cannot identify the governing MLS/spec section for a semantic change,
-stop and read more before coding.
-
-## MLS Compliance Rules
-
-These rules come primarily from `SPEC_0025` and `SPEC_0022`.
-
-- Any change affecting Modelica semantics must cite the relevant MLS section in
-  nearby code comments, tests, or the change explanation.
-- Prefer root-cause fixes over model-specific hacks.
-- Do not special-case one MSL model if that would violate general MLS
-  semantics.
-- Preserve Modelica case sensitivity. Do not lowercase identifiers or make
-  name lookup case-insensitive.
-- When uncertain, implement the general MLS rule, not a local workaround.
-
-Recommended comment style near non-obvious semantic logic:
-
-```rust
-// MLS §8.3.4: If-equations may contain any equation kind in each branch.
-```
-
-## Rumoca Architecture Rules
-
-These rules come primarily from `SPEC_0004`, `SPEC_0007`, `SPEC_0023`, and
-`SPEC_0029`.
-
-- Keep compiler phases separate. Do not merge instantiation, flattening,
-  ToDae, or codegen logic into a single cross-phase shortcut.
-- IR crates are pure data. Do not add evaluation logic, phase logic, caches, or
-  side effects to IR crates.
-- Preserve the crate DAG. Do not add dependencies or re-exports that tunnel
-  across layers.
-- In non-IR crates, prefer namespaced imports such as
-  `use rumoca_ir_flat as flat;`.
-- Do not add wildcard re-exports or facade shortcuts in low-level crates.
-- Use `rumoca-core` for shared IDs, spans, diagnostics, and `PhaseError`.
-
-## Representation Rules
-
-These rules are easy for agents to violate and must be preserved.
-
-- Arrays stay symbolic through flatten and DAE. Do not eagerly scalarize arrays
-  or array comprehensions in core IR. See `SPEC_0019`.
-- Function algorithms stay structured in `Dae.functions`. Do not lower function
-  bodies into solver equation buckets. See `SPEC_0020`.
-- Model algorithms may only be lowered when they fit the supported declarative
-  subset; otherwise fail explicitly with `ED013`. See `SPEC_0020`.
-- Keep the solver-facing DAE lean. Do not store derived data such as incidence
-  matrices, BLT orderings, or stale caches in `rumoca-ir-dae`. See `SPEC_0007`.
-- Public IR/DAE collections that affect output or serialization must be
-  deterministic (`IndexMap`), not `HashMap`. See `SPEC_0017`.
-
-## Diagnostics And Traceability Rules
-
-These rules come primarily from `SPEC_0008`, `SPEC_0024`, and `SPEC_0026`.
-
-- Every phase owns its own error enum and error codes.
-- User-facing diagnostics must carry real spans whenever source exists.
-- Do not silently drop spans during transformations.
-- `Span::DUMMY` is only for true compiler-generated constructs or tightly
-  justified placeholders.
-- If you add tracing, guard it according to `SPEC_0024` and use explicit
-  tracing levels.
-
-## Complexity And Maintainability Rules
-
-These rules come primarily from `SPEC_0021` and `SPEC_0025`.
-
-- Prefer functions under 60 lines; avoid exceeding 100.
-- Keep nesting shallow; avoid nesting beyond 3 levels when possible.
-- Prefer 0-5 parameters; avoid exceeding 7.
-- Do not use `#[allow(clippy::...)]` to bypass maintainability issues except
-  for generated code or documented spec-backed exceptions.
-- Do not use `include!(...)` as a complexity or file-size escape hatch.
-- Use clear names, explicit comments for non-obvious logic, and modules with
-  single responsibilities.
-- Require deletion/merge pass after each substantial feature:
-  - remove duplicated helper layers,
-  - collapse unnecessary abstractions,
-  - delete speculative compatibility code,
-  - remove one-use wrappers unless they materially improve correctness.
-
-### 0. Code Size Policy
-
-- Every PR should state explicit line deltas and whether net `production +
-  tests` line count is positive, zero, or negative.
-- Positive net growth requires a written explanation for each new abstraction and
-  each file/class added.
-- Prefer fewer modules and fewer exports when alternatives are equivalent.
-- Do not add traits for single concrete uses; require at least two current call
-  sites.
-- Avoid one-use wrappers unless they materially improve correctness or avoid
-  repeated bug-prone code.
-- Prefer inlining or collapsing if only one caller uses a new helper layer.
-- If a new abstraction is not used by at least two concrete call sites,
-  prefer direct implementation.
-- New public surface must be minimal; remove or narrow visibility when no
-  downstream consumer requires it.
-- Keep old and new paths separate only when an explicit migration window is
-  planned and documented.
-
-## Testing And Verification
-
-Before finishing compiler-facing work, run the narrowest relevant checks plus
-the required project gates from `SPEC_0025`.
-
-Standard checks:
-
-```bash
-cargo run --bin rum -- verify msl-parity
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-```
-
-For parser / resolve / typecheck / instantiate / flatten / ToDae / simulator
-behavior changes, also run the unified MSL gate:
-
-```bash
-cargo test --release --package rumoca-test-msl --test msl_tests \
-  balance_pipeline::balance_pipeline_core::test_msl_all -- --ignored
-```
-
-If the change updates committed MSL quality data, ensure it was regenerated at
-the current commit and promoted using the documented workflow in
-`SPEC_0025_PR_REVIEW_PROCESS.md` and `SPEC_0030_COVERAGE_TRIM_PROCESS.md`.
-
-## When To Update Specs
-
-If you introduce a new invariant, cross-cutting pattern, or architectural rule:
-
-- update an existing spec, or
-- add a new spec in `spec/`
-
-Do not silently introduce new project rules in code only.
-
-## Prohibited Shortcuts
-
-- No model-specific balance hacks that violate the MLS.
-- No silent fallback that changes semantics just to make one test pass.
-- No cross-layer crate forwarding to "make imports easier."
-- No dropping spans, diagnostics, or source references for convenience.
-- No moving behavior into IR crates because it feels simpler locally.
-- No speculative architecture changes without checking the relevant spec first.
-
-## Done Means
-
-Do not say a compiler change is done unless:
-
-- the relevant specs were checked,
-- MLS-sensitive changes cite the right MLS sections,
-- architecture boundaries remain intact,
-- tests cover the changed behavior,
-- required verification commands were run or an explicit blocker was stated.
-- PR size budget was reviewed and any positive LOC delta is justified, with a
-  deletion/compression plan when no immediate reduction is possible.
+- Active specs (`ACCEPTED` / `REFERENCE`) are mandatory. Archived specs are
+  historical context only.
+- If you cannot find the spec for what you're about to change, stop and ask
+  before coding — the rule either exists somewhere you haven't looked or it
+  needs to be written.
+- Do not duplicate spec content in `AGENTS.md`, code comments, or other
+  pointer documents. One source of truth per rule.

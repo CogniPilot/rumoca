@@ -13,7 +13,7 @@ pub(crate) struct FileClassBodyIndex {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub(crate) struct ClassBody {
-    component_occurrences: IndexMap<String, Vec<ast::Location>>,
+    component_occurrences: IndexMap<String, Vec<rumoca_core::Location>>,
     equation_section: Option<BodySectionSummary>,
     algorithm_section: Option<BodySectionSummary>,
     modifier_class_targets: Vec<ModifierClassTarget>,
@@ -22,14 +22,14 @@ pub(crate) struct ClassBody {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct BodySectionSummary {
     count: usize,
-    range: Option<ast::Location>,
+    range: Option<rumoca_core::Location>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct ModifierClassTarget {
     raw_name: String,
     token_text: String,
-    location: ast::Location,
+    location: rumoca_core::Location,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,7 +73,7 @@ pub(crate) fn class_body_fingerprints(
 }
 
 impl ClassBody {
-    pub(crate) fn component_occurrences(&self, component_name: &str) -> &[ast::Location] {
+    pub(crate) fn component_occurrences(&self, component_name: &str) -> &[rumoca_core::Location] {
         self.component_occurrences
             .get(component_name)
             .map(Vec::as_slice)
@@ -98,7 +98,7 @@ impl BodySectionSummary {
         self.count
     }
 
-    pub(crate) fn range(&self) -> Option<&ast::Location> {
+    pub(crate) fn range(&self) -> Option<&rumoca_core::Location> {
         self.range.as_ref()
     }
 }
@@ -112,7 +112,7 @@ impl ModifierClassTarget {
         &self.token_text
     }
 
-    pub(crate) fn location(&self) -> &ast::Location {
+    pub(crate) fn location(&self) -> &rumoca_core::Location {
         &self.location
     }
 }
@@ -302,8 +302,8 @@ fn collect_algorithm_section(
 }
 
 fn merge_locations<'a>(
-    locations: impl Iterator<Item = &'a ast::Location>,
-) -> Option<ast::Location> {
+    locations: impl Iterator<Item = &'a rumoca_core::Location>,
+) -> Option<rumoca_core::Location> {
     let mut iter = locations;
     let first = iter.next()?.clone();
     let mut merged = first.clone();

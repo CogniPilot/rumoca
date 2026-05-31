@@ -7,19 +7,26 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+default = []
+backend-stress-tests = []
+msl-external-tests = []
+msl-full-test = []
+
 [[bin]]
 name = "rumoca-sim-worker"
 path = "src/bin/rumoca-sim-worker.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-bincode = "1.3"
 clap = { workspace = true }
 mimalloc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
-rumoca-compile = { workspace = true }
-rumoca-sim = { workspace = true, features = ["solver-diffsol"] }
+rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
+rumoca-ir-solve = { workspace = true }
+rumoca-sim = { workspace = true, features = ["solver-diffsol", "strict-ir-validation"] }
+rumoca-worker = { workspace = true }
 
 [dev-dependencies]
 walkdir = "2.5"
@@ -33,7 +40,6 @@ flate2 = { workspace = true }
 tar = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-rumoca-analysis-dae = { workspace = true }
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-flat = { workspace = true }
@@ -41,10 +47,10 @@ rumoca-phase-flatten = { workspace = true }
 rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
-rumoca-phase-dae = { workspace = true }
+rumoca-phase-dae = { workspace = true, features = ["strict-ir-validation"] }
 rumoca-phase-structural = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
-rumoca-compile = { workspace = true }
+rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
 
 [lints]
 workspace = true

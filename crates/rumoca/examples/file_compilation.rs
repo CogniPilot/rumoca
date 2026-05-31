@@ -57,9 +57,9 @@ fn main() -> anyhow::Result<()> {
         .model(model_name)
         .compile_file(path_to_str(&model_file)?)?;
 
-    println!("States: {}", result.dae.states.len());
-    println!("Algebraics: {}", result.dae.algebraics.len());
-    println!("f_x equations: {}", result.dae.f_x.len());
+    println!("States: {}", result.dae.variables.states.len());
+    println!("Algebraics: {}", result.dae.variables.algebraics.len());
+    println!("f_x equations: {}", result.dae.continuous.equations.len());
     println!("Balanced: {}", result.is_balanced());
 
     if let Some(path) = cleanup_file {

@@ -86,7 +86,7 @@ end TestPkg;
     match source_root.compile_model_phases("TestPkg.Dimmer") {
         PhaseResult::Success(result) => {
             println!("Success!");
-            let balance = rumoca_analysis_dae::balance(&result.dae);
+            let balance = rumoca_phase_dae::balance::balance(&result.dae);
             println!("Balance: {}", balance);
 
             // List all variables
@@ -101,7 +101,7 @@ end TestPkg;
                 println!("  {:?}", eq);
             }
         }
-        PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners, .. } => {
             println!("Needs inner: {:?}", missing_inners);
         }
         PhaseResult::Failed { phase, error, .. } => {

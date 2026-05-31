@@ -40,6 +40,7 @@ package P
     Real X[Medium.nX];
     Real Xi[Medium.nXi];
   equation
+    Xi[1] = 0.5;
     Xi[1] = X[1];
     X[2] = 1 - Xi[1];
   end Probe;
@@ -119,10 +120,12 @@ package ActiveMedium
     final fixedX=false);
 end ActiveMedium;
 
-model AliasCollisionProbe
+partial model AliasCollisionProbe
   package Other = OtherMedium;
   package Medium = ActiveMedium;
   Medium.BaseProperties medium;
+equation
+  medium.Xi[1] = 0.5;
 end AliasCollisionProbe;
 "#;
 
@@ -321,9 +324,9 @@ end Top;
     let result = session.compile_model("Top").expect("compile failed");
 
     assert!(
-        rumoca_analysis_dae::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae),
         "for-range should expand with Medium.nXi=2 from redeclared package: {}",
-        rumoca_analysis_dae::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae)
     );
 }
 
@@ -376,9 +379,9 @@ end Derived;
 
     let result = session.compile_model("Derived").expect("compile failed");
     assert!(
-        rumoca_analysis_dae::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae),
         "equation with 1:Medium.nXi should not be dropped after extends modifiers: {}",
-        rumoca_analysis_dae::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae)
     );
 }
 
@@ -403,7 +406,11 @@ end SpringMass;
 
     let result = session.compile_model("SpringMass").expect("compile failed");
 
-    let tmpl = rumoca_phase_codegen::templates::DAE_MODELICA;
+    let tmpl = rumoca_phase_codegen::templates::builtin_template_source(
+        "dae-modelica",
+        "dae_modelica.mo.jinja",
+    )
+    .unwrap();
     let code =
         rumoca_phase_codegen::render_template_with_name(&result.dae, tmpl, "SpringMass").unwrap();
 

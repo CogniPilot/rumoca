@@ -12,6 +12,7 @@
 
 use rumoca_ir_ast as ast;
 
+use rumoca_eval_ast::eval_instantiate::expr_to_string as extract_string_literal;
 use rumoca_ir_flat as flat;
 
 use crate::equations::{build_qualified_name, expand_range_indices, substitute_index_in_equation};
@@ -76,7 +77,7 @@ pub(crate) fn flatten_when_block(
         &ctx.current_imports,
         def_map,
         ctx,
-    );
+    )?;
 
     let mut clause = flat::WhenClause::new(condition, span);
 
@@ -182,7 +183,7 @@ fn flatten_when_if_equation(
             &ctx.current_imports,
             def_map,
             ctx,
-        );
+        )?;
         let mut branch_eqs = Vec::new();
 
         for eq in &block.eqs {
@@ -268,7 +269,9 @@ fn flatten_when_if_equation(
 }
 
 /// Collect the set of LHS assignment targets from a list of when-equations.
-fn collect_when_eq_targets(eqs: &[flat::WhenEquation]) -> std::collections::HashSet<flat::VarName> {
+fn collect_when_eq_targets(
+    eqs: &[flat::WhenEquation],
+) -> std::collections::HashSet<rumoca_core::VarName> {
     let mut targets = std::collections::HashSet::new();
     for eq in eqs {
         match eq {
@@ -359,14 +362,14 @@ fn flatten_when_simple_equation(
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
     // Check for tuple assignment (multi-output function call)
-    if let ast::Expression::Tuple { elements } = lhs {
+    if let ast::Expression::Tuple { elements, .. } = lhs {
         // Extract output variable names from the tuple
         let mut outputs = Vec::new();
         for elem in elements {
             match elem {
                 ast::Expression::ComponentReference(cr) => {
                     let name = build_qualified_name(prefix, cr);
-                    outputs.push(flat::VarName::new(name));
+                    outputs.push(rumoca_core::VarName::new(name));
                 }
                 _ => {
                     return Err(FlattenError::unsupported_equation(
@@ -379,7 +382,7 @@ fn flatten_when_simple_equation(
 
         // Qualify the function call expression
         let function =
-            qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx);
+            qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx)?;
         let origin = format!(
             "when equation multi-output assignment to ({})",
             outputs
@@ -396,7 +399,7 @@ fn flatten_when_simple_equation(
 
     // Simple single-target assignment
     let target = extract_assignment_target(lhs, prefix)?;
-    let value = qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx);
+    let value = qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx)?;
     let origin = format!("when equation assignment to {}", target);
     Ok(Some(flat::WhenEquation::assign(
         target, value, span, origin,
@@ -426,8 +429,6 @@ fn flatten_when_function_call(
         .map(|p| p.ident.text.to_string())
         .collect::<Vec<_>>()
         .join(".");
-    let last_part = comp.parts.last().map(|p| &*p.ident.text).unwrap_or("");
-
     // Check for known functions (by first part or full qualified name)
     match &**func_name {
         "reinit" => flatten_reinit_call(ctx, args, prefix, span, imports, def_map),
@@ -436,16 +437,9 @@ fn flatten_when_function_call(
         // print() is a side-effect function that outputs debug messages
         // It doesn't contribute to the DAE system, so we skip it
         "print" => Ok(None),
-        // Handle qualified Streams.* functions which are side-effects
+        // Handle qualified Streams.* functions which are side-effects.
         "Streams" | "Modelica" => {
-            // Check if it's a known Streams function (print, close, error, etc.)
-            if last_part == "print"
-                || last_part == "close"
-                || last_part == "error"
-                || full_name.ends_with(".print")
-                || full_name.ends_with(".close")
-                || full_name.ends_with(".error")
-            {
+            if is_known_streams_side_effect_call(comp) {
                 Ok(None) // Skip side-effect functions
             } else {
                 Err(FlattenError::unsupported_equation(
@@ -459,6 +453,27 @@ fn flatten_when_function_call(
             span,
         )),
     }
+}
+
+fn is_known_streams_side_effect_call(comp: &ast::ComponentReference) -> bool {
+    let first = comp
+        .parts
+        .first()
+        .map(|part| part.ident.text.as_ref())
+        .unwrap_or("");
+    let has_streams_segment = comp
+        .parts
+        .iter()
+        .any(|part| part.ident.text.as_ref() == "Streams");
+    let is_streams_scope = first == "Streams" || (first == "Modelica" && has_streams_segment);
+    if !is_streams_scope {
+        return false;
+    }
+
+    matches!(
+        comp.parts.last().map(|part| part.ident.text.as_ref()),
+        Some("print" | "close" | "error")
+    )
 }
 
 /// Flatten a for-equation inside a when-clause.
@@ -483,33 +498,42 @@ fn flatten_when_for_equation(
     span: rumoca_core::Span,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Vec<flat::WhenEquation>, FlattenError> {
-    // For now, support single index
-    if indices.is_empty() {
-        return Ok(vec![]);
-    }
+    expand_when_for_indices(ctx, indices, equations.to_vec(), prefix, span, def_map)
+}
 
-    let index = &indices[0];
-    let var_name = index.ident.text.to_string();
-
-    // Try to evaluate the range using context-aware evaluation
-    let range_values = match expand_range_indices(ctx, &index.range, prefix, span) {
-        Ok(values) => values,
-        Err(_) => {
-            return Ok(vec![]);
+fn expand_when_for_indices(
+    ctx: &Context,
+    indices: &[ast::ForIndex],
+    equations: Vec<ast::Equation>,
+    prefix: &ast::QualifiedName,
+    span: rumoca_core::Span,
+    def_map: Option<&crate::ResolveDefMap>,
+) -> Result<Vec<flat::WhenEquation>, FlattenError> {
+    let Some((index, rest)) = indices.split_first() else {
+        let mut all_when_eqs = Vec::new();
+        for eq in &equations {
+            all_when_eqs.extend(flatten_when_body_equation(ctx, eq, prefix, span, def_map)?);
         }
+        return Ok(all_when_eqs);
     };
 
-    // Collect all expanded equations
+    let var_name = index.ident.text.to_string();
+    let range_values = expand_range_indices(ctx, &index.range, prefix, span)?;
     let mut all_when_eqs = Vec::new();
 
     for value in range_values {
-        // Substitute the index variable in all nested equations
-        for eq in equations {
-            let substituted = substitute_index_in_equation(eq, &var_name, value);
-            // Recursively flatten the substituted equation
-            let when_eqs = flatten_when_body_equation(ctx, &substituted, prefix, span, def_map)?;
-            all_when_eqs.extend(when_eqs);
-        }
+        let substituted = equations
+            .iter()
+            .map(|eq| substitute_index_in_equation(eq, &var_name, value))
+            .collect();
+        all_when_eqs.extend(expand_when_for_indices(
+            ctx,
+            rest,
+            substituted,
+            prefix,
+            span,
+            def_map,
+        )?);
     }
 
     Ok(all_when_eqs)
@@ -532,7 +556,7 @@ fn flatten_assert_call(
     }
 
     let condition =
-        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx);
+        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx)?;
     let message =
         extract_string_literal(&args[1]).unwrap_or_else(|| "assertion failed".to_string());
     let origin = "assert in when-clause".to_string();
@@ -561,25 +585,6 @@ fn flatten_terminate_call(
     Ok(Some(flat::WhenEquation::terminate(message, span, origin)))
 }
 
-/// Extract a string literal from an expression.
-fn extract_string_literal(expr: &ast::Expression) -> Option<String> {
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::String,
-            token,
-        } => {
-            // Remove surrounding quotes
-            let text = &token.text;
-            if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
-                Some(text[1..text.len() - 1].to_string())
-            } else {
-                Some(text.to_string())
-            }
-        }
-        _ => None,
-    }
-}
-
 /// Flatten a reinit() call: reinit(x, expr)
 fn flatten_reinit_call(
     ctx: &Context,
@@ -598,7 +603,7 @@ fn flatten_reinit_call(
 
     let state = extract_assignment_target(&args[0], prefix)?;
     let value =
-        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx);
+        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx)?;
     let origin = format!("reinit({})", state);
 
     // Note: EQN-016 validation (reinit target must be state) is done in ToDae phase
@@ -610,11 +615,11 @@ fn flatten_reinit_call(
 fn extract_assignment_target(
     lhs: &ast::Expression,
     prefix: &ast::QualifiedName,
-) -> Result<flat::VarName, FlattenError> {
+) -> Result<rumoca_core::VarName, FlattenError> {
     match lhs {
         ast::Expression::ComponentReference(cr) => {
             let name = build_qualified_name(prefix, cr);
-            Ok(flat::VarName::new(name))
+            Ok(rumoca_core::VarName::new(name))
         }
         _ => {
             // LHS must be a simple variable reference
@@ -623,5 +628,139 @@ fn extract_assignment_target(
                 rumoca_core::Span::DUMMY,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{flatten_when_for_equation, is_known_streams_side_effect_call};
+    use rumoca_ir_ast as ast;
+    use rumoca_ir_ast::TerminalType;
+    use rumoca_ir_flat as flat;
+    use std::sync::Arc;
+
+    fn token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
+            text: Arc::from(text.to_string()),
+            ..rumoca_core::Token::default()
+        }
+    }
+
+    fn comp_ref(path: &str) -> ast::ComponentReference {
+        ast::ComponentReference {
+            local: false,
+            parts: rumoca_core::split_path_with_indices(path)
+                .into_iter()
+                .map(|part| ast::ComponentRefPart {
+                    ident: token(part),
+                    subs: None,
+                })
+                .collect(),
+            def_id: None,
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn int_expr(value: i64) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: TerminalType::UnsignedInteger,
+            token: token(&value.to_string()),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn range_expr(start: i64, end: i64) -> ast::Expression {
+        ast::Expression::Range {
+            start: Arc::new(int_expr(start)),
+            step: None,
+            end: Arc::new(int_expr(end)),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn var_expr(name: &str) -> ast::Expression {
+        ast::Expression::ComponentReference(comp_ref(name))
+    }
+
+    fn for_index(name: &str, start: i64, end: i64) -> ast::ForIndex {
+        ast::ForIndex {
+            ident: token(name),
+            range: range_expr(start, end),
+        }
+    }
+
+    fn indexed_var_expr(name: &str, subscripts: &[&str]) -> ast::Expression {
+        ast::Expression::ComponentReference(ast::ComponentReference {
+            local: false,
+            parts: vec![ast::ComponentRefPart {
+                ident: token(name),
+                subs: Some(
+                    subscripts
+                        .iter()
+                        .map(|name| ast::Subscript::Expression(var_expr(name)))
+                        .collect(),
+                ),
+            }],
+            def_id: None,
+            span: rumoca_core::Span::DUMMY,
+        })
+    }
+
+    #[test]
+    fn streams_side_effect_matching_uses_structured_parts() {
+        assert!(is_known_streams_side_effect_call(&comp_ref(
+            "Streams.print"
+        )));
+        assert!(is_known_streams_side_effect_call(&comp_ref(
+            "Modelica.Utilities.Streams.close"
+        )));
+        assert!(is_known_streams_side_effect_call(&comp_ref(
+            "Modelica.Utilities.Streams.error"
+        )));
+        assert!(!is_known_streams_side_effect_call(&comp_ref(
+            "Modelica.Utilities.FakeStreams.print"
+        )));
+        assert!(!is_known_streams_side_effect_call(&comp_ref(
+            "Modelica.Utilities.Streams.myprint"
+        )));
+    }
+
+    #[test]
+    fn when_for_equation_expands_all_index_ranges() {
+        let ctx = crate::Context::default();
+        let indices = vec![for_index("i", 1, 2), for_index("j", 1, 2)];
+        let equations = vec![ast::Equation::Simple {
+            lhs: indexed_var_expr("y", &["i", "j"]),
+            rhs: ast::Expression::Binary {
+                op: rumoca_core::OpBinary::Add,
+                lhs: Arc::new(var_expr("i")),
+                rhs: Arc::new(var_expr("j")),
+                span: rumoca_core::Span::DUMMY,
+            },
+        }];
+
+        let expanded = flatten_when_for_equation(
+            &ctx,
+            &indices,
+            &equations,
+            &ast::QualifiedName::new(),
+            rumoca_core::Span::DUMMY,
+            None,
+        )
+        .unwrap();
+
+        let targets = expanded
+            .iter()
+            .map(|eq| match eq {
+                flat::WhenEquation::Assign { target, .. } => target.as_str().to_string(),
+                other => panic!("expected assignment, got {other:?}"),
+            })
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(targets.len(), 4);
+        assert!(targets.contains("y[1,1]"));
+        assert!(targets.contains("y[1,2]"));
+        assert!(targets.contains("y[2,1]"));
+        assert!(targets.contains("y[2,2]"));
     }
 }

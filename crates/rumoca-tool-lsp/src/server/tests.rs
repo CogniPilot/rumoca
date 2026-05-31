@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tower_lsp::LspService;
 
 mod diagnostics_timing_tests;
+mod editor_surface_session_tests;
 mod editor_surface_tests;
 mod multi_source_root_completion_tests;
 mod simulation_surface_tests;
@@ -771,8 +772,7 @@ fn session_document_uri_key_uses_decoded_file_path() {
 fn project_config_uri_detection_handles_file_paths_with_spaces() {
     let path = std::env::temp_dir()
         .join("workspace with spaces")
-        .join(".rumoca")
-        .join("project.toml");
+        .join("rum.toml");
     let uri = Url::from_file_path(path).expect("file uri");
     assert!(is_project_config_uri(&uri));
 }
@@ -985,10 +985,14 @@ fn source_root_load_primitive_loads_source_roots() {
 }
 
 #[test]
-#[ignore = "requires cached MSL under target/msl"]
 fn msl_live_diagnostics_do_not_load_libraries_when_source_requires_them() {
     run_async_test(async {
-        let msl_root = cached_msl_source_root().expect("cached MSL should exist");
+        let Some(msl_root) = cached_msl_source_root() else {
+            eprintln!(
+                "msl_live_diagnostics_do_not_load_libraries_when_source_requires_them: cached MSL not found under target/msl"
+            );
+            return;
+        };
         let temp = new_temp_dir("msl-live-diagnostics");
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");

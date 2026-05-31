@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 tungstenite = "0.26"
 
 [lints]

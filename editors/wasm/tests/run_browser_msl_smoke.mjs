@@ -4,31 +4,29 @@ import path from "node:path";
 
 import { chromium } from "playwright-core";
 
-function requiredEnv(name) {
-  const value = process.env[name];
+const SIMULATION_SMOKE_MODEL = "BrowserRunSmoke";
+const SIMULATION_SMOKE_SOURCE = `
+model ${SIMULATION_SMOKE_MODEL}
+  Real x(start = 1.0);
+equation
+  der(x) = -x;
+end ${SIMULATION_SMOKE_MODEL};
+`;
+
+function requiredArg(name) {
+  const idx = process.argv.indexOf(name);
+  const value = idx >= 0 ? process.argv[idx + 1] : undefined;
   if (!value) {
-    throw new Error(`missing required env var ${name}`);
+    throw new Error(`missing required arg ${name}`);
   }
   return value;
 }
 
-function envMs(name, fallback) {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`invalid timeout env var ${name}=${raw}`);
-  }
-  return parsed;
-}
-
 async function main() {
-  const browserBinary = requiredEnv("RUMOCA_BROWSER_BINARY");
-  const smokeUrl = requiredEnv("RUMOCA_WASM_SMOKE_URL");
-  const resultPath = requiredEnv("RUMOCA_WASM_SMOKE_RESULT");
-  const timeoutMs = envMs("RUMOCA_WASM_SMOKE_TIMEOUT_MS", 330000);
+  const browserBinary = requiredArg("--browser-binary");
+  const smokeUrl = requiredArg("--smoke-url");
+  const resultPath = requiredArg("--smoke-result");
+  const timeoutMs = 330000;
   const browserExecutablePath = path.isAbsolute(browserBinary)
     ? browserBinary
     : spawnSync("which", [browserBinary], { encoding: "utf8" }).stdout.trim();
@@ -58,11 +56,29 @@ async function main() {
     await page.waitForFunction(
       () => {
         const status = document.body?.dataset?.rumocaSmokeStatus;
-        return status === "pass" || status === "fail";
+        const runtimeStatus = document.getElementById("outputRuntimeStatus");
+        return (
+          status === "pass" ||
+          status === "fail" ||
+          runtimeStatus?.dataset?.tone === "error"
+        );
       },
       undefined,
       { timeout: timeoutMs },
     );
+    const startupFailure = await page.evaluate(() => {
+      const runtimeStatus = document.getElementById("outputRuntimeStatus");
+      if (runtimeStatus?.dataset?.tone !== "error") {
+        return null;
+      }
+      return {
+        runtimeStatus: runtimeStatus.textContent || "",
+        output: document.getElementById("terminalOutput")?.textContent || "",
+      };
+    });
+    if (startupFailure) {
+      throw new Error(`wasm runtime startup failed: ${JSON.stringify(startupFailure)}`);
+    }
     await page.waitForFunction(
       () => {
         const host = document.getElementById("simPlot");
@@ -97,6 +113,31 @@ async function main() {
         window.updateSelectedModel();
       }
     });
+
+    await page.evaluate(
+      ({ modelName, source }) => {
+        if (!window.editor?.setValue) {
+          throw new Error("editor unavailable for simulation run smoke");
+        }
+        window.editor.setValue(source);
+        window.compiledModels = {};
+        const modelSelect = document.getElementById("modelSelect");
+        if (!(modelSelect instanceof HTMLSelectElement)) {
+          throw new Error("missing model select");
+        }
+        if (!Array.from(modelSelect.options).some((option) => option.value === modelName)) {
+          modelSelect.appendChild(new Option(modelName, modelName));
+        }
+        modelSelect.value = modelName;
+        if (typeof window.updateSelectedModel === "function") {
+          window.updateSelectedModel();
+        }
+      },
+      {
+        modelName: SIMULATION_SMOKE_MODEL,
+        source: SIMULATION_SMOKE_SOURCE,
+      },
+    );
 
     const initialRunTabs = await page.locator("#simRunTabs .results-run-tab").count();
     await page.evaluate(async () => {

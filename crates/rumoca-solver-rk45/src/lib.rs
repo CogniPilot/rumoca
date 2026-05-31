@@ -1,23 +1,28 @@
-use rumoca_sim_core::ir_dae as dae;
-use rumoca_sim_core::phase_solve_lower as eval;
-use rumoca_sim_core::phase_solve_lower::{VarEnv, eval_array_values, eval_expr};
-use rumoca_sim_core::phase_structural::scalarize::{build_output_names, scalarize_equations};
-use rumoca_sim_core::simulation::dae_prepare::{
-    expr_contains_der_of, normalize_ode_equation_signs,
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
 };
-use rumoca_sim_core::simulation::runtime_prep::derivative_coefficient_expr;
-use rumoca_sim_core::timeline;
-use rumoca_sim_core::{
-    BackendState, SimOptions, SimResult, SimSolverMode, SimulationBackend, StepUntilOutcome,
-};
-use rumoca_sim_core::{TimeoutBudget, TimeoutExceeded, build_variable_meta};
 
-type Dae = dae::Dae;
-type Expression = dae::Expression;
-type VarName = dae::VarName;
-type Variable = dae::Variable;
+use rumoca_eval_solve::SolveRuntime;
+use rumoca_ir_solve as solve;
+use rumoca_solver::{
+    BackendState, EventActionOutcome, RootCrossing, RuntimeSolveError, SimOptions, SimResult,
+    SimSolverMode, SimTermination, SimulationBackend, StepUntilOutcome, TimeoutBudget,
+    TimeoutExceeded, convert_variable_meta, root_crossings_with_relation_memory,
+    root_value_crossed, timeline,
+};
 
 const MIN_STEP: f64 = 1.0e-12;
+const ROOT_BISECTION_ITERS: usize = 48;
+const UPDATE_MAX_ITERS: usize = 32;
+const ALGEBRAIC_REFRESH_TOL: f64 = 1.0e-10;
+
+static RK_DERIVATIVE_CALLS: AtomicU64 = AtomicU64::new(0);
+static RK_DERIVATIVE_NANOS: AtomicU64 = AtomicU64::new(0);
+static RK_ROOT_CALLS: AtomicU64 = AtomicU64::new(0);
+static RK_ROOT_NANOS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, thiserror::Error)]
 pub enum SimError {
@@ -30,26 +35,17 @@ pub enum SimError {
     #[error("rk45 backend only supports a narrow explicit ODE subset: {reason}")]
     UnsupportedModel { reason: String },
 
-    #[error("missing explicit ODE row for state '{state_name}'")]
-    MissingStateEquation { state_name: String },
-
-    #[error(
-        "state '{state_name}' is not an explicit single-derivative ODE row (origin '{origin}'): {reason}"
-    )]
-    NonExplicitStateEquation {
-        state_name: String,
-        origin: String,
-        reason: String,
-    },
-
     #[error("non-finite derivative evaluation for state '{state_name}'")]
     NonFiniteDerivative { state_name: String },
 
-    #[error("derivative coefficient collapsed to zero for state '{state_name}'")]
-    ZeroDerivativeCoefficient { state_name: String },
-
     #[error("step size underflow while advancing toward t={target_t}")]
     StepSizeUnderflow { target_t: f64 },
+
+    #[error("solve-IR evaluation failed: {0}")]
+    SolveIr(String),
+
+    #[error("Modelica assert failed at t={time:.9}: {message}")]
+    AssertionFailed { time: f64, message: String },
 
     #[error("timeout after {seconds:.3}s")]
     Timeout { seconds: f64 },
@@ -63,108 +59,347 @@ impl From<TimeoutExceeded> for SimError {
     }
 }
 
-#[derive(Clone)]
-struct StateRowPlan {
-    state_name: VarName,
-    equation_index: usize,
-    coeff_expr: Expression,
+fn rk_eval_trace_enabled() -> bool {
+    tracing::enabled!(target: "rumoca_solver_rk45::eval", tracing::Level::DEBUG)
 }
 
-struct ExplicitModel {
-    dae: Dae,
-    state_rows: Vec<StateRowPlan>,
-    params: Vec<f64>,
+fn reset_rk_eval_trace() {
+    if !rk_eval_trace_enabled() {
+        return;
+    }
+    for counter in [
+        &RK_DERIVATIVE_CALLS,
+        &RK_DERIVATIVE_NANOS,
+        &RK_ROOT_CALLS,
+        &RK_ROOT_NANOS,
+    ] {
+        counter.store(0, Ordering::Relaxed);
+    }
+}
+
+fn trace_rk_eval_snapshot(label: &str) {
+    if !rk_eval_trace_enabled() {
+        return;
+    }
+    let derivative_calls = RK_DERIVATIVE_CALLS.load(Ordering::Relaxed);
+    let derivative_nanos = RK_DERIVATIVE_NANOS.load(Ordering::Relaxed);
+    let root_calls = RK_ROOT_CALLS.load(Ordering::Relaxed);
+    let root_nanos = RK_ROOT_NANOS.load(Ordering::Relaxed);
+    tracing::debug!(
+        target: "rumoca_solver_rk45::eval",
+        "{label}: derivatives={} ({:.3}ms) roots={} ({:.3}ms) total_eval={:.3}ms",
+        derivative_calls,
+        nanos_to_ms(derivative_nanos),
+        root_calls,
+        nanos_to_ms(root_nanos),
+        nanos_to_ms(derivative_nanos.saturating_add(root_nanos))
+    );
+}
+
+fn elapsed_nanos_u64(start: Instant) -> u64 {
+    start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+}
+
+fn nanos_to_ms(nanos: u64) -> f64 {
+    nanos as f64 / 1.0e6
+}
+
+#[derive(Debug, Clone)]
+pub struct StepperState {
+    pub time: f64,
+    pub values: HashMap<String, f64>,
+}
+
+pub struct SimStepper {
+    runtime: &'static SolveRuntime,
+    backend: Rk45Backend<'static>,
+    input_values: HashMap<String, f64>,
+}
+
+impl SimStepper {
+    pub fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
+        match opts.solver_mode {
+            SimSolverMode::Auto | SimSolverMode::RkLike => {}
+            requested => return Err(SimError::UnsupportedSolverMode { requested }),
+        }
+        validate_explicit_solve_model(model)?;
+        let runtime = Box::leak(Box::new(SolveRuntime::new(model)));
+        let mut backend = Rk45Backend::new(runtime, &opts)?;
+        backend.init()?;
+        Ok(Self {
+            runtime,
+            backend,
+            input_values: HashMap::new(),
+        })
+    }
+
+    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
+        let Some(param_idx) = self
+            .runtime
+            .model
+            .problem
+            .solve_layout
+            .input_parameter_index(name)
+        else {
+            return Err(SimError::SolveIr(format!("unknown input '{name}'")));
+        };
+        self.input_values.insert(name.to_string(), value);
+        if let Some(slot) = self.backend.params.get_mut(param_idx) {
+            *slot = value;
+        }
+        self.backend.clear_runtime_caches();
+        Ok(())
+    }
+
+    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
+        for (name, value) in inputs {
+            self.set_input(name, *value)?;
+        }
+        Ok(())
+    }
+
+    pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
+        if dt <= 0.0 {
+            return Ok(());
+        }
+        let target = self.backend.time + dt;
+        advance_backend_to(&mut self.backend, target)
+    }
+
+    pub fn time(&self) -> f64 {
+        self.backend.time
+    }
+
+    pub fn get(&self, name: &str) -> Option<f64> {
+        if let Some(value) = self.input_values.get(name).copied() {
+            return Some(value);
+        }
+        let solver_y = self.backend.current_solver_y().ok()?;
+        self.runtime
+            .visible_values(&solver_y, &self.backend.params, self.backend.time)
+            .ok()
+            .and_then(|values| {
+                self.runtime
+                    .model
+                    .visible_names
+                    .iter()
+                    .position(|visible| visible == name)
+                    .and_then(|idx| values.get(idx).copied())
+            })
+    }
+
+    pub fn state(&self) -> StepperState {
+        let values = self.stepper_visible_values();
+        StepperState {
+            time: self.time(),
+            values,
+        }
+    }
+
+    pub fn values_for(&self, names: &[String]) -> HashMap<String, f64> {
+        let mut values = self
+            .backend
+            .current_solver_y()
+            .ok()
+            .and_then(|solver_y| {
+                self.runtime
+                    .visible_values_for_names(
+                        &solver_y,
+                        &self.backend.params,
+                        self.backend.time,
+                        names,
+                    )
+                    .ok()
+            })
+            .unwrap_or_default();
+        for name in names {
+            if let Some(value) = self.input_values.get(name).copied() {
+                values.insert(name.clone(), value);
+            }
+        }
+        values
+    }
+
+    pub fn input_names(&self) -> &[String] {
+        self.runtime.model.problem.solve_layout.input_scalar_names()
+    }
+
+    pub fn variable_names(&self) -> &[String] {
+        &self.runtime.model.visible_names
+    }
+
+    fn stepper_visible_values(&self) -> HashMap<String, f64> {
+        let mut values: HashMap<String, f64> = self
+            .backend
+            .current_solver_y()
+            .ok()
+            .and_then(|solver_y| {
+                self.runtime
+                    .visible_values(&solver_y, &self.backend.params, self.backend.time)
+                    .ok()
+            })
+            .map(|visible_values| {
+                self.runtime
+                    .model
+                    .visible_names
+                    .iter()
+                    .cloned()
+                    .zip(visible_values)
+                    .collect()
+            })
+            .unwrap_or_default();
+        values.extend(
+            self.input_values
+                .iter()
+                .map(|(name, value)| (name.clone(), *value)),
+        );
+        values
+    }
+}
+
+impl From<RuntimeSolveError> for SimError {
+    fn from(value: RuntimeSolveError) -> Self {
+        match value {
+            RuntimeSolveError::SolveIr(message) => Self::SolveIr(message),
+            RuntimeSolveError::UnsupportedModel { reason } => Self::UnsupportedModel { reason },
+            RuntimeSolveError::NonFiniteDerivative { state_name } => {
+                Self::NonFiniteDerivative { state_name }
+            }
+            non_finite @ RuntimeSolveError::NonFiniteValue { .. } => {
+                Self::SolveIr(non_finite.to_string())
+            }
+        }
+    }
 }
 
 struct Rk45Backend<'a> {
-    model: &'a ExplicitModel,
+    model: &'a SolveRuntime,
     time: f64,
     state: Vec<f64>,
+    params: Vec<f64>,
     atol: f64,
     rtol: f64,
     next_step: f64,
     budget: TimeoutBudget,
+    termination: Option<SimTermination>,
+    pending_root_crossings: Vec<RootCrossing>,
+    pending_event_pre_y: Option<Vec<f64>>,
+    pending_event_pre_p: Option<Vec<f64>>,
+    post_event_eval_time: Option<f64>,
+    solver_y_guess: RefCell<Vec<f64>>,
+    derivative_cache: RefCell<Option<CachedDerivative>>,
+    root_cache: RefCell<Option<CachedRootConditions>>,
 }
 
 struct TrialStep {
     y_next: Vec<f64>,
+    next_derivative: Option<Vec<f64>>,
     error_norm: f64,
 }
 
-pub fn simulate_dae(dae_model: &Dae, opts: &SimOptions) -> Result<SimResult, SimError> {
+struct StepAcceptanceContext<'a> {
+    old_roots: &'a [f64],
+    target_t: f64,
+    event_boundary: Option<f64>,
+}
+
+struct CachedDerivative {
+    time: f64,
+    state: Vec<f64>,
+    derivative: Vec<f64>,
+}
+
+struct CachedRootConditions {
+    time: f64,
+    state: Vec<f64>,
+    values: Vec<f64>,
+}
+
+struct EventStop {
+    time: f64,
+    is_event: bool,
+}
+
+struct LocatedRoot {
+    time: f64,
+    state: Vec<f64>,
+    pre_state: Vec<f64>,
+}
+
+pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResult, SimError> {
+    reset_rk_eval_trace();
+    rumoca_eval_solve::reset_solve_row_eval_trace();
     match opts.solver_mode {
         SimSolverMode::Auto | SimSolverMode::RkLike => {}
         requested => return Err(SimError::UnsupportedSolverMode { requested }),
     }
 
-    let model = ExplicitModel::new(dae_model, opts.scalarize)?;
-    let names = build_output_names(&model.dae);
+    validate_explicit_solve_model(model)?;
+    let model = SolveRuntime::new(model);
     let sample_dt = default_output_dt(opts);
     let sample_times = timeline::build_output_times(opts.t_start, opts.t_end, sample_dt);
+    let mut times = Vec::with_capacity(sample_times.len());
     let mut backend = Rk45Backend::new(&model, opts)?;
-    let mut data = vec![Vec::with_capacity(sample_times.len()); names.len()];
-    record_state_sample(&mut data, &backend.state);
+    backend.init()?;
+    let mut data = vec![Vec::with_capacity(sample_times.len()); model.model.visible_names.len()];
+    let solver_y = backend.current_solver_y()?;
+    model.record_visible_sample(&mut data, &solver_y, &backend.params, opts.t_start)?;
+    times.push(opts.t_start);
 
     for &target_t in sample_times.iter().skip(1) {
         advance_backend_to(&mut backend, target_t)?;
-        record_state_sample(&mut data, &backend.state);
+        let solver_y = backend.current_solver_y()?;
+        let sample_t = backend.time;
+        if !times
+            .last()
+            .copied()
+            .is_some_and(|last_t| time_match_with_tol(last_t, sample_t))
+        {
+            model.record_visible_sample(&mut data, &solver_y, &backend.params, sample_t)?;
+            times.push(sample_t);
+        }
+        if backend.termination.is_some() {
+            break;
+        }
     }
 
+    trace_rk_eval_snapshot("rk-like");
+    rumoca_eval_solve::trace_solve_row_eval_snapshot("rk-like");
     Ok(SimResult {
-        times: sample_times,
-        names: names.clone(),
+        times,
+        names: model.model.visible_names.clone(),
         data,
-        n_states: names.len(),
-        variable_meta: build_variable_meta(&model.dae, &names, names.len()),
+        n_states: model.state_count,
+        variable_meta: convert_variable_meta(&model.model.variable_meta),
+        termination: backend.termination,
     })
 }
 
-pub use simulate_dae as simulate;
-
-impl ExplicitModel {
-    fn new(source: &Dae, scalarize: bool) -> Result<Self, SimError> {
-        let dae = prepare_explicit_dae(source, scalarize)?;
-        let state_rows = build_state_row_plans(&dae)?;
-        let params = build_parameter_values(&dae);
-        Ok(Self {
-            dae,
-            state_rows,
-            params,
-        })
+fn validate_explicit_solve_model(model: &solve::SolveModel) -> Result<(), SimError> {
+    let layout = &model.problem.solve_layout;
+    if layout.state_scalar_count == 0 {
+        return Err(SimError::EmptySystem);
     }
-
-    fn eval_state_derivatives(&self, t: f64, state: &[f64]) -> Result<Vec<f64>, SimError> {
-        let env = eval::build_env(&self.dae, state, &self.params, t);
-        let mut derivatives = Vec::with_capacity(self.state_rows.len());
-        for row in &self.state_rows {
-            let eq = &self.dae.f_x[row.equation_index];
-            let residual = eval_expr::<f64>(&eq.rhs, &env);
-            let coeff = eval_expr::<f64>(&row.coeff_expr, &env);
-            if !residual.is_finite() {
-                return Err(SimError::NonFiniteDerivative {
-                    state_name: row.state_name.to_string(),
-                });
-            }
-            if !coeff.is_finite() || coeff.abs() <= 1.0e-12 {
-                return Err(SimError::ZeroDerivativeCoefficient {
-                    state_name: row.state_name.to_string(),
-                });
-            }
-            let value = -residual / coeff;
-            if !value.is_finite() {
-                return Err(SimError::NonFiniteDerivative {
-                    state_name: row.state_name.to_string(),
-                });
-            }
-            derivatives.push(value);
-        }
-        Ok(derivatives)
+    if model.initial_y.len() != model.solver_scalar_count() {
+        return Err(SimError::SolveIr(format!(
+            "initial vector length {} does not match solver layout {}",
+            model.initial_y.len(),
+            model.solver_scalar_count()
+        )));
     }
+    if model.problem.continuous.implicit_rhs.len() < layout.state_scalar_count {
+        return Err(SimError::SolveIr(format!(
+            "implicit RHS has {} rows for {} states",
+            model.problem.continuous.implicit_rhs.len(),
+            layout.state_scalar_count
+        )));
+    }
+    Ok(())
 }
 
 impl<'a> Rk45Backend<'a> {
-    fn new(model: &'a ExplicitModel, opts: &SimOptions) -> Result<Self, SimError> {
-        let state = build_state_start_values(&model.dae);
+    fn new(model: &'a SolveRuntime, opts: &SimOptions) -> Result<Self, SimError> {
+        let state = model.model.initial_y[..model.state_count].to_vec();
         let next_step = default_step_size(opts);
         if !next_step.is_finite() || next_step <= 0.0 {
             return Err(SimError::StepSizeUnderflow {
@@ -175,36 +410,129 @@ impl<'a> Rk45Backend<'a> {
             model,
             time: opts.t_start,
             state,
+            params: model.model.parameters.clone(),
             atol: opts.atol.max(1.0e-12),
             rtol: opts.rtol.max(1.0e-12),
             next_step,
             budget: TimeoutBudget::new(opts.max_wall_seconds),
+            termination: None,
+            pending_root_crossings: Vec::new(),
+            pending_event_pre_y: None,
+            pending_event_pre_p: None,
+            post_event_eval_time: None,
+            solver_y_guess: RefCell::new(Vec::new()),
+            derivative_cache: RefCell::new(None),
+            root_cache: RefCell::new(None),
         })
     }
 
-    fn trial_step(&self, h: f64) -> Result<TrialStep, SimError> {
-        let k1 = self.model.eval_state_derivatives(self.time, &self.state)?;
-        let y2 = combine_stage(&self.state, h, &[(&k1, 1.0 / 5.0)]);
-        let k2 = self
-            .model
-            .eval_state_derivatives(self.time + h * (1.0 / 5.0), &y2)?;
+    fn current_solver_y(&self) -> Result<Vec<f64>, SimError> {
+        let mut guess = self.solver_y_guess.borrow_mut();
+        self.model
+            .full_solver_y_with_guess(
+                self.public_time_eval_time(self.time),
+                &self.state,
+                &self.params,
+                &mut guess,
+                ALGEBRAIC_REFRESH_TOL,
+                UPDATE_MAX_ITERS,
+            )
+            .map(|()| guess.clone())
+            .map_err(Into::into)
+    }
 
-        let y3 = combine_stage(&self.state, h, &[(&k1, 3.0 / 40.0), (&k2, 9.0 / 40.0)]);
-        let k3 = self
+    fn copy_state_from_solver_y(&mut self, solver_y: &[f64]) {
+        for (dst, src) in self.state.iter_mut().zip(solver_y.iter().copied()) {
+            *dst = src;
+        }
+    }
+
+    fn trial_step(&self, h: f64, event_boundary: Option<f64>) -> Result<TrialStep, SimError> {
+        self.trial_step_from(self.time, &self.state, h, event_boundary)
+    }
+
+    fn derivatives_at(&self, time: f64, state: &[f64]) -> Result<Vec<f64>, SimError> {
+        if let Some(derivative) = self.cached_derivative(time, state) {
+            return Ok(derivative);
+        }
+        let start = rk_eval_trace_enabled().then(Instant::now);
+        let mut guess = self.solver_y_guess.borrow_mut();
+        let result = self
             .model
-            .eval_state_derivatives(self.time + h * (3.0 / 10.0), &y3)?;
+            .eval_state_derivatives_with_guess(
+                time,
+                state,
+                &self.params,
+                &mut guess,
+                ALGEBRAIC_REFRESH_TOL,
+                UPDATE_MAX_ITERS,
+            )
+            .map_err(Into::into);
+        if let Some(start) = start {
+            RK_DERIVATIVE_CALLS.fetch_add(1, Ordering::Relaxed);
+            RK_DERIVATIVE_NANOS.fetch_add(elapsed_nanos_u64(start), Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn cached_derivative(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
+        let cache = self.derivative_cache.borrow();
+        let cached = cache.as_ref()?;
+        if !time_match_with_tol(cached.time, time) || !state_values_match(&cached.state, state) {
+            return None;
+        }
+        Some(cached.derivative.clone())
+    }
+
+    fn cache_derivative(&self, time: f64, state: &[f64], derivative: Vec<f64>) {
+        *self.derivative_cache.borrow_mut() = Some(CachedDerivative {
+            time,
+            state: state.to_vec(),
+            derivative,
+        });
+    }
+
+    fn clear_derivative_cache(&self) {
+        *self.derivative_cache.borrow_mut() = None;
+    }
+
+    fn clear_runtime_caches(&self) {
+        self.clear_derivative_cache();
+        *self.root_cache.borrow_mut() = None;
+    }
+
+    fn trial_step_from(
+        &self,
+        time: f64,
+        state: &[f64],
+        h: f64,
+        event_boundary: Option<f64>,
+    ) -> Result<TrialStep, SimError> {
+        let k1 = self.derivatives_at(self.continuous_eval_time(time, event_boundary), state)?;
+        let y2 = combine_stage(state, h, &[(&k1, 1.0 / 5.0)]);
+        let k2 = self.derivatives_at(
+            self.continuous_eval_time(time + h * (1.0 / 5.0), event_boundary),
+            &y2,
+        )?;
+
+        let y3 = combine_stage(state, h, &[(&k1, 3.0 / 40.0), (&k2, 9.0 / 40.0)]);
+        let k3 = self.derivatives_at(
+            self.continuous_eval_time(time + h * (3.0 / 10.0), event_boundary),
+            &y3,
+        )?;
 
         let y4 = combine_stage(
-            &self.state,
+            state,
             h,
             &[(&k1, 44.0 / 45.0), (&k2, -56.0 / 15.0), (&k3, 32.0 / 9.0)],
         );
-        let k4 = self
-            .model
-            .eval_state_derivatives(self.time + h * (4.0 / 5.0), &y4)?;
+        let k4 = self.derivatives_at(
+            self.continuous_eval_time(time + h * (4.0 / 5.0), event_boundary),
+            &y4,
+        )?;
 
         let y5 = combine_stage(
-            &self.state,
+            state,
             h,
             &[
                 (&k1, 19372.0 / 6561.0),
@@ -213,12 +541,13 @@ impl<'a> Rk45Backend<'a> {
                 (&k4, -212.0 / 729.0),
             ],
         );
-        let k5 = self
-            .model
-            .eval_state_derivatives(self.time + h * (8.0 / 9.0), &y5)?;
+        let k5 = self.derivatives_at(
+            self.continuous_eval_time(time + h * (8.0 / 9.0), event_boundary),
+            &y5,
+        )?;
 
         let y6 = combine_stage(
-            &self.state,
+            state,
             h,
             &[
                 (&k1, 9017.0 / 3168.0),
@@ -228,10 +557,10 @@ impl<'a> Rk45Backend<'a> {
                 (&k5, -5103.0 / 18656.0),
             ],
         );
-        let k6 = self.model.eval_state_derivatives(self.time + h, &y6)?;
+        let k6 = self.derivatives_at(self.continuous_eval_time(time + h, event_boundary), &y6)?;
 
-        let y_next = combine_stage(
-            &self.state,
+        let y5th = combine_stage(
+            state,
             h,
             &[
                 (&k1, 35.0 / 384.0),
@@ -241,9 +570,11 @@ impl<'a> Rk45Backend<'a> {
                 (&k6, 11.0 / 84.0),
             ],
         );
-        let k7 = self.model.eval_state_derivatives(self.time + h, &y_next)?;
-        let y_fourth = combine_stage(
-            &self.state,
+
+        let y7 = y5th.clone();
+        let k7 = self.derivatives_at(self.continuous_eval_time(time + h, event_boundary), &y7)?;
+        let y4th = combine_stage(
+            state,
             h,
             &[
                 (&k1, 5179.0 / 57600.0),
@@ -255,37 +586,405 @@ impl<'a> Rk45Backend<'a> {
             ],
         );
 
+        let error_norm = error_norm(state, &y5th, &y4th, self.atol, self.rtol);
         Ok(TrialStep {
-            error_norm: normalized_error(&self.state, &y_next, &y_fourth, self.atol, self.rtol),
-            y_next,
+            y_next: y5th,
+            next_derivative: Some(k7),
+            error_norm,
         })
     }
 
-    fn accepted_step_size(&self, error_norm: f64, h: f64) -> f64 {
-        if error_norm <= f64::EPSILON {
-            return (h * 5.0).max(MIN_STEP);
+    fn advance_to(&mut self, target_t: f64) -> Result<StepUntilOutcome, SimError> {
+        if self.termination.is_some() {
+            return Ok(StepUntilOutcome::Finished);
         }
-        let factor = (0.9 * error_norm.powf(-0.2)).clamp(0.2, 5.0);
-        (h * factor).max(MIN_STEP)
+        if target_t <= self.time {
+            return Ok(StepUntilOutcome::StopReached);
+        }
+        while self.time < target_t {
+            let stop = self.next_event_stop(target_t)?;
+            let event_boundary = stop.is_event.then_some(stop.time);
+            let outcome = self.advance_continuous_to(stop.time, event_boundary)?;
+            match self.process_event_boundary(outcome, &stop, target_t)? {
+                Some(StepUntilOutcome::Finished) => return Ok(StepUntilOutcome::Finished),
+                Some(_) => continue,
+                None => {}
+            }
+        }
+        Ok(StepUntilOutcome::StopReached)
     }
 
-    fn commit_step(
+    fn process_event_boundary(
         &mut self,
-        y_next: Vec<f64>,
-        h: f64,
-        next_h: f64,
-        stop_time: f64,
-    ) -> StepUntilOutcome {
-        self.state = y_next;
-        self.time += h;
-        self.next_step = next_h;
-        let reached_stop =
-            timeline::sample_time_match_with_tol(self.time, stop_time) || self.time >= stop_time;
-        if !reached_stop {
-            return StepUntilOutcome::InternalStep;
+        outcome: StepUntilOutcome,
+        stop: &EventStop,
+        target_t: f64,
+    ) -> Result<Option<StepUntilOutcome>, SimError> {
+        if matches!(outcome, StepUntilOutcome::RootFound { .. }) {
+            return self.apply_events_and_continue_or_finish(self.time);
         }
-        self.time = stop_time;
-        StepUntilOutcome::StopReached
+        if stop.is_event && time_match_with_tol(self.time, stop.time) {
+            return self.apply_scheduled_events_and_continue_or_finish(stop.time, target_t);
+        }
+        Ok(None)
+    }
+
+    fn advance_continuous_to(
+        &mut self,
+        target_t: f64,
+        event_boundary: Option<f64>,
+    ) -> Result<StepUntilOutcome, SimError> {
+        while self.time < target_t {
+            self.budget.check()?;
+            let old_t = self.time;
+            let old_state = self.state.clone();
+            let old_roots = self.eval_root_conditions(
+                self.continuous_eval_time(old_t, event_boundary),
+                &old_state,
+            )?;
+            let remaining = target_t - self.time;
+            let h = self.next_step.min(remaining).max(MIN_STEP);
+            let trial = self.trial_step(h, event_boundary)?;
+            let step_context = StepAcceptanceContext {
+                old_roots: &old_roots,
+                target_t,
+                event_boundary,
+            };
+            if let Some(outcome) =
+                self.accept_trial_step(old_t, old_state, h, &trial, step_context)?
+            {
+                return Ok(outcome);
+            }
+            self.next_step = adapt_step(h, trial.error_norm);
+            if self.next_step < MIN_STEP && self.time + MIN_STEP < target_t {
+                return Err(SimError::StepSizeUnderflow { target_t });
+            }
+        }
+        Ok(StepUntilOutcome::StopReached)
+    }
+
+    fn accept_trial_step(
+        &mut self,
+        old_t: f64,
+        old_state: Vec<f64>,
+        h: f64,
+        trial: &TrialStep,
+        context: StepAcceptanceContext<'_>,
+    ) -> Result<Option<StepUntilOutcome>, SimError> {
+        if trial.error_norm > 1.0 {
+            return Ok(None);
+        }
+        let new_t = (self.time + h).min(context.target_t);
+        let new_roots = self.eval_root_conditions(
+            self.continuous_eval_time(new_t, context.event_boundary),
+            &trial.y_next,
+        )?;
+        let crossings = root_crossings_with_relation_memory(
+            context.old_roots,
+            &new_roots,
+            self.atol,
+            &self.model.model.problem.events.root_relation_memory_targets,
+            &self.params,
+        );
+        if let Some(crossing) = crossings.first().copied() {
+            let root = self.bisect_root(
+                old_t,
+                old_state.clone(),
+                new_t,
+                crossing,
+                context.event_boundary,
+            )?;
+            let simultaneous_crossings = self.locate_simultaneous_crossings(
+                old_t,
+                &old_state,
+                new_t,
+                root.time,
+                &crossings,
+                context.event_boundary,
+            )?;
+            if rk_eval_trace_enabled() {
+                tracing::debug!(
+                    target: "rumoca_solver_rk45::eval",
+                    "event root old_t={old_t:.12} new_t={new_t:.12} root_t={:.12} roots={}",
+                    root.time,
+                    simultaneous_crossings
+                        .iter()
+                        .map(|crossing| format!(
+                            "{}->{:.0}",
+                            crossing.index, crossing.post_relation_memory_value
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+            }
+            self.pending_event_pre_y = Some(self.model.full_solver_y(
+                root.time,
+                &root.pre_state,
+                &self.params,
+                ALGEBRAIC_REFRESH_TOL,
+                UPDATE_MAX_ITERS,
+            )?);
+            self.pending_event_pre_p = Some(self.params.clone());
+            self.pending_root_crossings = simultaneous_crossings.clone();
+            self.time = root.time;
+            self.state = root.state;
+            self.post_event_eval_time = None;
+            self.clear_runtime_caches();
+            return Ok(Some(StepUntilOutcome::RootFound { t_root: root.time }));
+        }
+        self.time = new_t;
+        self.state = trial.y_next.clone();
+        self.post_event_eval_time = None;
+        if let Some(next_derivative) = trial.next_derivative.clone() {
+            self.cache_derivative(self.time, &self.state, next_derivative);
+        }
+        Ok(None)
+    }
+
+    fn bisect_root(
+        &self,
+        mut lo_t: f64,
+        mut lo_state: Vec<f64>,
+        mut hi_t: f64,
+        crossing: RootCrossing,
+        event_boundary: Option<f64>,
+    ) -> Result<LocatedRoot, SimError> {
+        let mut lo_roots =
+            self.eval_root_conditions(self.continuous_eval_time(lo_t, event_boundary), &lo_state)?;
+        let mut hi_state = self
+            .trial_step_from(lo_t, &lo_state, hi_t - lo_t, event_boundary)?
+            .y_next;
+        for _ in 0..ROOT_BISECTION_ITERS {
+            let mid_t = lo_t + 0.5 * (hi_t - lo_t);
+            let mid_state = self
+                .trial_step_from(lo_t, &lo_state, mid_t - lo_t, event_boundary)?
+                .y_next;
+            let mid_roots = self.eval_root_conditions(
+                self.continuous_eval_time(mid_t, event_boundary),
+                &mid_state,
+            )?;
+            let old = lo_roots.get(crossing.index).copied().unwrap_or(0.0);
+            let new = mid_roots.get(crossing.index).copied().unwrap_or(0.0);
+            if root_value_crossed(old, new, self.atol) {
+                hi_t = mid_t;
+                hi_state = mid_state;
+            } else {
+                lo_t = mid_t;
+                lo_state = mid_state;
+                lo_roots = mid_roots;
+            }
+        }
+        Ok(LocatedRoot {
+            time: hi_t,
+            state: hi_state,
+            pre_state: lo_state,
+        })
+    }
+
+    fn locate_simultaneous_crossings(
+        &self,
+        old_t: f64,
+        old_state: &[f64],
+        new_t: f64,
+        event_t: f64,
+        crossings: &[RootCrossing],
+        event_boundary: Option<f64>,
+    ) -> Result<Vec<RootCrossing>, SimError> {
+        let mut simultaneous = Vec::new();
+        for crossing in crossings {
+            let located =
+                self.bisect_root(old_t, old_state.to_vec(), new_t, *crossing, event_boundary)?;
+            if time_match_with_tol(located.time, event_t) {
+                simultaneous.push(*crossing);
+            }
+        }
+        if simultaneous.is_empty() {
+            simultaneous.extend(crossings.first().copied());
+        }
+        Ok(simultaneous)
+    }
+
+    fn eval_root_conditions(&self, t: f64, state: &[f64]) -> Result<Vec<f64>, SimError> {
+        if let Some(values) = self.cached_root_conditions(t, state) {
+            return Ok(values);
+        }
+        let start = rk_eval_trace_enabled().then(Instant::now);
+        let result = self
+            .model
+            .eval_root_conditions(
+                t,
+                state,
+                &self.params,
+                ALGEBRAIC_REFRESH_TOL,
+                UPDATE_MAX_ITERS,
+            )
+            .inspect(|values| {
+                self.cache_root_conditions(t, state, values);
+            })
+            .map_err(Into::into);
+        if let Some(start) = start {
+            RK_ROOT_CALLS.fetch_add(1, Ordering::Relaxed);
+            RK_ROOT_NANOS.fetch_add(elapsed_nanos_u64(start), Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn cached_root_conditions(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
+        let cache = self.root_cache.borrow();
+        let cached = cache.as_ref()?;
+        if !time_match_with_tol(cached.time, time) || !state_values_match(&cached.state, state) {
+            return None;
+        }
+        Some(cached.values.clone())
+    }
+
+    fn cache_root_conditions(&self, time: f64, state: &[f64], values: &[f64]) {
+        *self.root_cache.borrow_mut() = Some(CachedRootConditions {
+            time,
+            state: state.to_vec(),
+            values: values.to_vec(),
+        });
+    }
+
+    fn next_event_stop(&self, target_t: f64) -> Result<EventStop, SimError> {
+        let mut events =
+            timeline::scheduled_event_times(&self.model.model.problem, self.time, target_t);
+        events.extend(self.dynamic_time_event_times(target_t)?);
+        let time = events
+            .iter()
+            .copied()
+            .min_by(f64::total_cmp)
+            .unwrap_or(target_t);
+        Ok(EventStop {
+            time,
+            is_event: events
+                .iter()
+                .any(|event_t| time_match_with_tol(*event_t, time)),
+        })
+    }
+
+    fn dynamic_time_event_times(&self, target_t: f64) -> Result<Vec<f64>, SimError> {
+        let mut event_times = timeline::named_dynamic_time_event_values(
+            &self.model.model.problem.solve_layout,
+            &self.params,
+            &self.model.model.problem.events.dynamic_time_event_names,
+        );
+        event_times.extend(self.dynamic_time_event_row_values()?);
+        Ok(event_times
+            .into_iter()
+            .filter(|event_t| timeline::event_time_in_window(*event_t, self.time, target_t))
+            .collect())
+    }
+
+    fn dynamic_time_event_row_values(&self) -> Result<Vec<f64>, SimError> {
+        let solver_y = self.current_solver_y()?;
+        self.model
+            .eval_dynamic_time_event_rows(self.time, &solver_y, &self.params)
+            .map_err(Into::into)
+    }
+
+    fn apply_discrete_event_updates(&mut self, event_time: f64) -> Result<(), SimError> {
+        let event_entry_y = self
+            .pending_event_pre_y
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| self.current_solver_y())?;
+        let event_entry_p = self
+            .pending_event_pre_p
+            .take()
+            .unwrap_or_else(|| self.params.clone());
+        let mut solver_y = self.current_solver_y()?;
+        let root_overrides = self
+            .pending_root_crossings
+            .drain(..)
+            .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
+            .collect::<Vec<_>>();
+        self.model
+            .apply_simple_event_update_with_relation_overrides(
+                &mut solver_y,
+                &mut self.params,
+                event_time,
+                self.atol,
+                &event_entry_y,
+                &event_entry_p,
+                &root_overrides,
+            )?;
+        self.copy_state_from_solver_y(&solver_y);
+        self.model.update_relation_memory_from_state(
+            event_time,
+            &self.state,
+            &mut self.params,
+            self.atol,
+            UPDATE_MAX_ITERS,
+        )?;
+        self.clear_runtime_caches();
+        Ok(())
+    }
+
+    fn apply_events_and_continue_or_finish(
+        &mut self,
+        event_time: f64,
+    ) -> Result<Option<StepUntilOutcome>, SimError> {
+        self.apply_event_updates(event_time)?;
+        self.apply_event_actions(event_time)?;
+        Ok(Some(
+            self.termination
+                .as_ref()
+                .map_or(StepUntilOutcome::InternalStep, |_| {
+                    StepUntilOutcome::Finished
+                }),
+        ))
+    }
+
+    fn apply_scheduled_events_and_continue_or_finish(
+        &mut self,
+        event_time: f64,
+        _target_t: f64,
+    ) -> Result<Option<StepUntilOutcome>, SimError> {
+        self.time = event_time.max(self.time);
+        let update_time = timeline::event_right_limit_time(event_time);
+        self.apply_discrete_event_updates(update_time)?;
+        self.post_event_eval_time = Some(update_time);
+        self.apply_event_actions(update_time)?;
+        self.clear_runtime_caches();
+        Ok(Some(
+            self.termination
+                .as_ref()
+                .map_or(StepUntilOutcome::InternalStep, |_| {
+                    StepUntilOutcome::Finished
+                }),
+        ))
+    }
+
+    fn apply_event_actions(&mut self, event_time: f64) -> Result<(), SimError> {
+        let solver_y = self.current_solver_y()?;
+        match self
+            .model
+            .eval_event_actions(&solver_y, &self.params, event_time)?
+        {
+            EventActionOutcome::Continue => Ok(()),
+            EventActionOutcome::AssertionFailed { time, message } => {
+                Err(SimError::AssertionFailed { time, message })
+            }
+            EventActionOutcome::Terminated { time, message } => {
+                self.termination = Some(SimTermination { time, message });
+                Ok(())
+            }
+        }
+    }
+
+    fn public_time_eval_time(&self, time: f64) -> f64 {
+        match self.post_event_eval_time {
+            Some(eval_time) if time_match_with_tol(time, self.time) => eval_time,
+            _ => time,
+        }
+    }
+
+    fn continuous_eval_time(&self, time: f64, event_boundary: Option<f64>) -> f64 {
+        match event_boundary {
+            Some(boundary) if time >= boundary => timeline::event_left_limit_time(boundary),
+            _ => self.public_time_eval_time(time),
+        }
     }
 }
 
@@ -293,34 +992,28 @@ impl SimulationBackend for Rk45Backend<'_> {
     type Error = SimError;
 
     fn init(&mut self) -> Result<(), Self::Error> {
+        let mut solver_y = self.current_solver_y()?;
+        self.model.apply_initialization_updates(
+            &mut solver_y,
+            &mut self.params,
+            self.time,
+            self.atol,
+            UPDATE_MAX_ITERS,
+        )?;
+        self.copy_state_from_solver_y(&solver_y);
+        self.model.update_relation_memory_from_state(
+            self.time,
+            &self.state,
+            &mut self.params,
+            self.atol,
+            UPDATE_MAX_ITERS,
+        )?;
+        self.clear_runtime_caches();
         Ok(())
     }
 
     fn step_until(&mut self, stop_time: f64) -> Result<StepUntilOutcome, Self::Error> {
-        self.budget.check()?;
-        let remaining = stop_time - self.time;
-        if timeline::sample_time_match_with_tol(self.time, stop_time) || remaining <= 0.0 {
-            self.time = stop_time;
-            return Ok(StepUntilOutcome::StopReached);
-        }
-
-        let mut h = self.next_step.min(remaining);
-        loop {
-            self.budget.check()?;
-            if !h.is_finite() || h <= MIN_STEP {
-                return Err(SimError::StepSizeUnderflow {
-                    target_t: stop_time,
-                });
-            }
-
-            let trial = self.trial_step(h)?;
-            let next_h = self.accepted_step_size(trial.error_norm, h);
-            if trial.error_norm > 1.0 {
-                h = next_h.min(remaining);
-                continue;
-            }
-            return Ok(self.commit_step(trial.y_next, h, next_h, stop_time));
-        }
+        self.advance_to(stop_time)
     }
 
     fn read_state(&self) -> BackendState {
@@ -328,441 +1021,818 @@ impl SimulationBackend for Rk45Backend<'_> {
     }
 
     fn apply_event_updates(&mut self, event_time: f64) -> Result<(), Self::Error> {
-        self.time = event_time;
+        self.time = event_time.max(self.time);
+        self.apply_discrete_event_updates(self.time)?;
         Ok(())
     }
-}
 
-fn prepare_explicit_dae(source: &Dae, scalarize: bool) -> Result<Dae, SimError> {
-    if source.states.is_empty() {
-        return Err(SimError::EmptySystem);
+    fn apply_event_actions(&mut self, event_time: f64) -> Result<(), Self::Error> {
+        Rk45Backend::apply_event_actions(self, event_time)
     }
-
-    let mut dae = source.clone();
-    if scalarize {
-        scalarize_equations(&mut dae);
-    }
-    normalize_ode_equation_signs(&mut dae);
-
-    reject_if_present(dae.inputs.is_empty(), "input variables")?;
-    reject_if_present(dae.algebraics.is_empty(), "continuous algebraics")?;
-    reject_if_present(dae.outputs.is_empty(), "continuous outputs")?;
-    reject_if_present(dae.discrete_reals.is_empty(), "discrete Real variables")?;
-    reject_if_present(dae.discrete_valued.is_empty(), "discrete-valued variables")?;
-    reject_if_present(dae.derivative_aliases.is_empty(), "derivative aliases")?;
-
-    if !dae.f_z.is_empty()
-        || !dae.f_m.is_empty()
-        || !dae.f_c.is_empty()
-        || !dae.relation.is_empty()
-        || !dae.synthetic_root_conditions.is_empty()
-        || !dae.scheduled_time_events.is_empty()
-        || !dae.clock_schedules.is_empty()
-        || !dae.clock_constructor_exprs.is_empty()
-        || !dae.triggered_clock_conditions.is_empty()
-        || !dae.initial_equations.is_empty()
-    {
-        return Err(SimError::UnsupportedModel {
-            reason: "events, clocks, and initial-equation solving are not yet supported"
-                .to_string(),
-        });
-    }
-
-    if dae.states.values().any(|var| var.size() != 1) {
-        return Err(SimError::UnsupportedModel {
-            reason: "non-scalar states require scalarization before rk45 simulation".to_string(),
-        });
-    }
-    if dae.f_x.len() != dae.states.len() {
-        return Err(SimError::UnsupportedModel {
-            reason: "explicit rk45 currently requires exactly one residual row per state"
-                .to_string(),
-        });
-    }
-
-    Ok(dae)
-}
-
-fn reject_if_present(is_empty: bool, label: &str) -> Result<(), SimError> {
-    if is_empty {
-        Ok(())
-    } else {
-        Err(SimError::UnsupportedModel {
-            reason: format!("{label} are not yet supported"),
-        })
-    }
-}
-
-fn build_state_row_plans(dae: &Dae) -> Result<Vec<StateRowPlan>, SimError> {
-    let state_names: Vec<VarName> = dae.states.keys().cloned().collect();
-    state_names
-        .iter()
-        .map(|state_name| build_state_row_plan(dae, &state_names, state_name))
-        .collect()
-}
-
-fn build_state_row_plan(
-    dae: &Dae,
-    state_names: &[VarName],
-    state_name: &VarName,
-) -> Result<StateRowPlan, SimError> {
-    let matches: Vec<usize> = dae
-        .f_x
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, eq)| expr_contains_der_of(&eq.rhs, state_name).then_some(idx))
-        .collect();
-
-    if matches.len() != 1 {
-        return Err(SimError::MissingStateEquation {
-            state_name: state_name.to_string(),
-        });
-    }
-    let equation_index = matches[0];
-    let eq = &dae.f_x[equation_index];
-    for other_state in state_names {
-        if other_state == state_name {
-            continue;
-        }
-        if expr_contains_der_of(&eq.rhs, other_state) {
-            return Err(SimError::NonExplicitStateEquation {
-                state_name: state_name.to_string(),
-                origin: eq.origin.clone(),
-                reason: format!("row also depends on der({})", other_state.as_str()),
-            });
-        }
-    }
-
-    let coeff_expr = derivative_coefficient_expr(&eq.rhs, state_name).map_err(|reason| {
-        SimError::NonExplicitStateEquation {
-            state_name: state_name.to_string(),
-            origin: eq.origin.clone(),
-            reason,
-        }
-    })?;
-    let Some(coeff_expr) = coeff_expr else {
-        return Err(SimError::NonExplicitStateEquation {
-            state_name: state_name.to_string(),
-            origin: eq.origin.clone(),
-            reason: "could not isolate derivative coefficient".to_string(),
-        });
-    };
-
-    Ok(StateRowPlan {
-        state_name: state_name.clone(),
-        equation_index,
-        coeff_expr,
-    })
-}
-
-fn default_output_dt(opts: &SimOptions) -> f64 {
-    opts.dt.unwrap_or_else(|| {
-        let span = (opts.t_end - opts.t_start).abs();
-        if span <= f64::EPSILON {
-            0.0
-        } else {
-            span / 500.0
-        }
-    })
-}
-
-fn default_step_size(opts: &SimOptions) -> f64 {
-    let span = (opts.t_end - opts.t_start).abs();
-    if span <= f64::EPSILON {
-        return 1.0e-3;
-    }
-    let sample_dt = default_output_dt(opts);
-    let reference = if sample_dt.is_finite() && sample_dt > 0.0 {
-        sample_dt
-    } else {
-        span / 100.0
-    };
-    (reference / 10.0).max(1.0e-6)
 }
 
 fn advance_backend_to(backend: &mut Rk45Backend<'_>, target_t: f64) -> Result<(), SimError> {
-    while backend.time < target_t && !timeline::sample_time_match_with_tol(backend.time, target_t) {
-        match backend.step_until(target_t)? {
-            StepUntilOutcome::InternalStep | StepUntilOutcome::StopReached => {}
-            StepUntilOutcome::Finished | StepUntilOutcome::RootFound { .. } => break,
-        }
-    }
-    Ok(())
-}
-
-fn record_state_sample(data: &mut [Vec<f64>], state: &[f64]) {
-    for (series, value) in data.iter_mut().zip(state.iter().copied()) {
-        series.push(value);
+    match backend.advance_to(target_t)? {
+        StepUntilOutcome::StopReached | StepUntilOutcome::Finished => Ok(()),
+        StepUntilOutcome::InternalStep | StepUntilOutcome::RootFound { .. } => Ok(()),
     }
 }
 
-fn combine_stage(base: &[f64], h: f64, terms: &[(&[f64], f64)]) -> Vec<f64> {
-    let mut out = base.to_vec();
-    for (idx, value) in out.iter_mut().enumerate() {
-        for (k, coeff) in terms {
-            *value += h * coeff * k[idx];
-        }
-    }
-    out
+fn default_output_dt(opts: &SimOptions) -> f64 {
+    opts.dt
+        .filter(|dt| dt.is_finite() && *dt > 0.0)
+        .unwrap_or_else(|| ((opts.t_end - opts.t_start).abs() / 500.0).max(1.0e-3))
 }
 
-fn normalized_error(current: &[f64], fifth: &[f64], fourth: &[f64], atol: f64, rtol: f64) -> f64 {
-    current
-        .iter()
-        .zip(fifth.iter())
-        .zip(fourth.iter())
-        .fold(0.0, |max_norm, ((y0, y5), y4)| {
-            let scale = atol + rtol * y0.abs().max(y5.abs());
-            let norm = (y5 - y4).abs() / scale.max(1.0e-15);
-            max_norm.max(norm)
+fn default_step_size(opts: &SimOptions) -> f64 {
+    opts.dt
+        .filter(|dt| dt.is_finite() && *dt > 0.0)
+        .map(|dt| dt.min(0.01))
+        .unwrap_or(1.0e-3)
+}
+
+fn time_match_with_tol(a: f64, b: f64) -> bool {
+    rumoca_solver::time_match_with_tol(a, b)
+}
+
+fn state_values_match(a: &[f64], b: &[f64]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(lhs, rhs)| lhs.to_bits() == rhs.to_bits())
+}
+
+fn combine_stage(y: &[f64], h: f64, stages: &[(&[f64], f64)]) -> Vec<f64> {
+    y.iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            value
+                + h * stages
+                    .iter()
+                    .map(|(k, coeff)| coeff * k.get(idx).copied().unwrap_or(0.0))
+                    .sum::<f64>()
         })
-}
-
-fn init_eval_env(dae: &Dae) -> VarEnv<f64> {
-    let mut env = VarEnv::<f64>::new();
-    if !dae.functions.is_empty() {
-        env.functions = std::sync::Arc::new(eval::collect_user_functions(dae));
-    }
-    env.dims = std::sync::Arc::new(eval::collect_var_dims(dae));
-    env.start_exprs = std::sync::Arc::new(eval::collect_var_starts(dae));
-    env.enum_literal_ordinals = std::sync::Arc::new(dae.enum_literal_ordinals.clone());
-    for &(fqn, value) in eval::MODELICA_CONSTANTS {
-        env.set(fqn, value);
-    }
-    env
-}
-
-fn evaluate_constants_in_place(dae: &Dae, env: &mut VarEnv<f64>) {
-    for _ in 0..2 {
-        for (name, var) in &dae.constants {
-            if let Some(start) = &var.start {
-                env.set(name.as_str(), eval_expr::<f64>(start, env));
-            }
-        }
-    }
-}
-
-fn build_parameter_env(dae: &Dae) -> VarEnv<f64> {
-    let mut env = init_eval_env(dae);
-    evaluate_constants_in_place(dae, &mut env);
-    for _ in 0..2 {
-        for (name, var) in &dae.parameters {
-            assign_start_values(&mut env, name, var);
-        }
-    }
-    env
-}
-
-fn assign_start_values(env: &mut VarEnv<f64>, name: &VarName, var: &Variable) {
-    let size = var.size();
-    if size <= 1 {
-        let value = var
-            .start
-            .as_ref()
-            .map(|expr| eval_expr::<f64>(expr, env))
-            .unwrap_or(0.0);
-        env.set(name.as_str(), value);
-        return;
-    }
-
-    if let Some(Expression::Array { elements, .. }) = var.start.as_ref() {
-        for (idx, expr) in elements.iter().enumerate() {
-            let value = eval_expr::<f64>(expr, env);
-            env.set(&format!("{}[{}]", name.as_str(), idx + 1), value);
-        }
-        return;
-    }
-
-    let value = var
-        .start
-        .as_ref()
-        .map(|expr| eval_expr::<f64>(expr, env))
-        .unwrap_or(0.0);
-    for idx in 0..size {
-        env.set(&format!("{}[{}]", name.as_str(), idx + 1), value);
-    }
-}
-
-fn build_parameter_values(dae: &Dae) -> Vec<f64> {
-    let env = build_parameter_env(dae);
-    dae.parameters
-        .values()
-        .flat_map(|var| eval_var_start_values(var, &env))
         .collect()
 }
 
-fn build_state_start_values(dae: &Dae) -> Vec<f64> {
-    let env = build_parameter_env(dae);
-    dae.states
-        .values()
-        .flat_map(|var| eval_var_start_values(var, &env))
-        .collect()
+fn error_norm(y: &[f64], y_high: &[f64], y_low: &[f64], atol: f64, rtol: f64) -> f64 {
+    let mut max_norm = 0.0_f64;
+    for (idx, value) in y.iter().enumerate() {
+        let high = y_high.get(idx).copied().unwrap_or(0.0);
+        let low = y_low.get(idx).copied().unwrap_or(0.0);
+        let scale = atol + rtol * value.abs().max(high.abs());
+        max_norm = max_norm.max((high - low).abs() / scale.max(1.0e-30));
+    }
+    max_norm
 }
 
-fn eval_var_start_values(var: &Variable, env: &VarEnv<f64>) -> Vec<f64> {
-    let size = var.size();
-    if size <= 1 {
-        return vec![eval_scalar_start_value(var, env)];
+fn adapt_step(h: f64, error_norm: f64) -> f64 {
+    if error_norm <= 0.0 {
+        return (h * 5.0).max(MIN_STEP);
     }
-    let Some(start) = var.start.as_ref() else {
-        return vec![0.0; size];
-    };
-
-    let raw = eval_array_values::<f64>(start, env);
-    if raw.is_empty() {
-        return vec![eval_expr::<f64>(start, env); size];
-    }
-    if raw.len() == 1 {
-        return vec![raw[0]; size];
-    }
-    let last = *raw.last().unwrap_or(&0.0);
-    (0..size)
-        .map(|idx| raw.get(idx).copied().unwrap_or(last))
-        .collect()
-}
-
-fn eval_scalar_start_value(var: &Variable, env: &VarEnv<f64>) -> f64 {
-    if let Some(start) = &var.start {
-        return eval_expr::<f64>(start, env);
-    }
-    if let Some(nominal) = &var.nominal {
-        return eval_expr::<f64>(nominal, env);
-    }
-    0.0
+    let factor = (0.9 * error_norm.powf(-0.2)).clamp(0.2, 5.0);
+    (h * factor).max(MIN_STEP)
 }
 
 #[cfg(test)]
 mod tests {
+    use indexmap::IndexMap;
+    use rumoca_ir_solve::{
+        ComputeBlock, LinearOp, ScalarProgramBlock, SolveLayout, SolveProblem, SolverNameIndexMaps,
+    };
+
     use super::*;
-    use rumoca_sim_core::core::Span;
-    use rumoca_sim_core::ir_core::OpBinary;
-    use rumoca_sim_core::run_with_runtime_schedule;
-
-    fn var(name: &str) -> Expression {
-        Expression::VarRef {
-            name: VarName::new(name),
-            subscripts: vec![],
-        }
-    }
-
-    fn real(value: f64) -> Expression {
-        Expression::Literal(dae::Literal::Real(value))
-    }
-
-    fn der(name: &str) -> Expression {
-        Expression::BuiltinCall {
-            function: dae::BuiltinFunction::Der,
-            args: vec![var(name)],
-        }
-    }
-
-    fn add(lhs: Expression, rhs: Expression) -> Expression {
-        Expression::Binary {
-            op: OpBinary::Add(Default::default()),
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-        }
-    }
-
-    fn mul(lhs: Expression, rhs: Expression) -> Expression {
-        Expression::Binary {
-            op: OpBinary::Mul(Default::default()),
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-        }
-    }
-
-    fn sub(lhs: Expression, rhs: Expression) -> Expression {
-        Expression::Binary {
-            op: OpBinary::Sub(Default::default()),
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-        }
-    }
-
-    fn residual(rhs: Expression, origin: &str) -> dae::Equation {
-        dae::Equation {
-            lhs: None,
-            rhs,
-            span: Span::DUMMY,
-            scalar_count: 1,
-            origin: origin.to_string(),
-        }
-    }
-
-    fn build_decay_dae() -> Dae {
-        let mut dae = Dae::default();
-        let mut x = Variable::new(VarName::new("x"));
-        x.start = Some(real(2.0));
-        dae.states.insert(VarName::new("x"), x);
-
-        let mut k = Variable::new(VarName::new("k"));
-        k.start = Some(real(3.0));
-        dae.parameters.insert(VarName::new("k"), k);
-
-        dae.f_x.push(residual(
-            add(der("x"), mul(var("k"), var("x"))),
-            "der(x) = -k*x",
-        ));
-        dae
-    }
 
     #[test]
-    fn simulates_simple_decay_model() {
-        let dae = build_decay_dae();
-        let result = simulate_dae(
-            &dae,
+    fn rk45_simulates_solve_ir_integrator() {
+        let model = single_state_model(vec![vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        let result = simulate(
+            &model,
             &SimOptions {
-                t_end: 1.0,
-                dt: Some(0.1),
+                t_end: 0.2,
+                dt: Some(0.01),
                 solver_mode: SimSolverMode::RkLike,
-                ..SimOptions::default()
+                ..Default::default()
             },
         )
         .expect("rk45 simulation should succeed");
 
-        let x_final = result
-            .data
-            .first()
-            .and_then(|series| series.last())
-            .copied()
-            .expect("state trajectory");
-        let expected = 2.0 * (-3.0_f64).exp();
+        let final_x = result.data[0][result.data[0].len() - 1];
+        assert!((final_x - 0.2_f64.exp()).abs() <= 1.0e-4);
+    }
+
+    #[test]
+    fn rk45_emits_one_series_per_visible_name() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.problem.solve_layout.discrete_valued_scalar_names = vec!["c[1]".to_string()];
+        model.parameters = vec![1.0];
+        model.visible_names = vec!["x".to_string(), "c[1]".to_string()];
+
+        let result = simulate(
+            &model,
+            &SimOptions {
+                t_end: 0.1,
+                dt: Some(0.05),
+                solver_mode: SimSolverMode::RkLike,
+                ..Default::default()
+            },
+        )
+        .expect("rk45 simulation should succeed");
+
+        assert_eq!(result.names, ["x", "c[1]"]);
+        assert_eq!(
+            result.data.len(),
+            result.names.len(),
+            "simulation payload requires one data series per visible name"
+        );
         assert!(
-            (x_final - expected).abs() < 5.0e-4,
-            "expected x(1)≈{expected}, got {x_final}"
+            result.data[1]
+                .iter()
+                .all(|value| (*value - 1.0).abs() <= f64::EPSILON)
         );
     }
 
     #[test]
-    fn rejects_models_with_continuous_algebraics() {
-        let mut dae = build_decay_dae();
-        dae.algebraics
-            .insert(VarName::new("y"), Variable::new(VarName::new("y")));
-        dae.f_x.push(residual(sub(var("y"), var("x")), "y = x"));
+    fn rk45_refreshes_algebraic_solve_ir_layout() {
+        let mut model = single_state_model(vec![
+            vec![
+                LinearOp::LoadY { dst: 0, index: 1 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::Const { dst: 1, value: 2.0 },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ],
+        ]);
+        model.problem.solve_layout.algebraic_scalar_count = 1;
+        model.problem.solve_layout.solver_maps.names = vec!["x".to_string(), "a".to_string()];
+        model.problem.solve_layout.solver_maps.name_to_idx =
+            IndexMap::from([("x".to_string(), 0), ("a".to_string(), 1)]);
+        model.problem.solve_layout.solver_maps.base_to_indices =
+            IndexMap::from([("x".to_string(), vec![0]), ("a".to_string(), vec![1])]);
+        model.problem.continuous.implicit_row_targets =
+            vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+        model.initial_y = vec![1.0, 2.0];
+        model.visible_names = vec!["x".to_string(), "a".to_string()];
 
-        let err = simulate_dae(&dae, &SimOptions::default()).expect_err("must reject algebraics");
+        let result = simulate(
+            &model,
+            &SimOptions {
+                t_end: 0.1,
+                dt: Some(0.01),
+                solver_mode: SimSolverMode::RkLike,
+                ..Default::default()
+            },
+        )
+        .expect("rk45 should refresh explicit algebraic slots");
+
+        let final_x = result.data[0][result.data[0].len() - 1];
+        let final_a = result.data[1][result.data[1].len() - 1];
+        assert!((final_x - 0.2_f64.exp()).abs() <= 1.0e-4);
+        assert!((final_a - 2.0 * final_x).abs() <= 1.0e-8);
+    }
+
+    #[test]
+    fn rk45_snapshots_pre_params_before_event_updates() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.initial_y = vec![10.0];
+        model.parameters = vec![0.0];
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.pre_param_bindings = vec![solve::PreParamBinding {
+            dest_p_index: 0,
+            source: solve::PreParamSource::Y { index: 0 },
+        }];
+        model.problem.events.scheduled_time_events = vec![0.05];
+        model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0)];
+        model.problem.discrete.rhs = ScalarProgramBlock::new(vec![vec![
+            LinearOp::LoadP { dst: 0, index: 0 },
+            LinearOp::Const {
+                dst: 1,
+                value: -0.8,
+            },
+            LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Mul,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ]]);
+
+        let result = simulate(
+            &model,
+            &SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                t_end: 0.1,
+                dt: Some(0.05),
+                ..Default::default()
+            },
+        )
+        .expect("rk45 should snapshot pre(v) before applying event updates");
+
+        assert_eq!(result.times, vec![0.0, 0.05, 0.1]);
+        assert_eq!(result.data[0], vec![10.0, -8.0, -8.0]);
+    }
+
+    #[test]
+    fn rk45_terminate_returns_partial_success() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.initial_y = vec![0.0];
+        model.problem.events.root_conditions = ScalarProgramBlock::new(vec![vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ]]);
+        model.problem.discrete.rhs = ScalarProgramBlock::default();
+        model.problem.events.action_conditions = const_scalar_program_block(1.0);
+        model.problem.events.actions = vec![solve::SolveEventAction {
+            kind: solve::SolveEventActionKind::Terminate,
+            message: Some("finished".to_string()),
+            span: Default::default(),
+            origin: "terminate(\"finished\")".to_string(),
+        }];
+
+        let result = simulate(
+            &model,
+            &SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                t_end: 0.1,
+                dt: Some(0.1),
+                ..Default::default()
+            },
+        )
+        .expect("Modelica terminate should return partial simulation data");
+
+        let termination = result.termination.expect("termination metadata");
+        assert_eq!(termination.message, "finished");
+        assert!((termination.time - 0.05).abs() <= 1.0e-6);
+        assert!((result.times[result.times.len() - 1] - 0.05).abs() <= 1.0e-6);
+        assert_eq!(result.data[0].len(), result.times.len());
+    }
+
+    #[test]
+    fn rk45_applies_scheduled_time_event_update() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+        model.problem.events.scheduled_time_events = vec![0.05];
+        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+        model.problem.discrete.rhs = const_scalar_program_block(2.0);
+        model.parameters = vec![0.0];
+        model.visible_names = vec!["x".to_string(), "m".to_string()];
+
+        let result = simulate(
+            &model,
+            &SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                t_end: 0.1,
+                dt: Some(0.05),
+                ..Default::default()
+            },
+        )
+        .expect("rk45 should handle scheduled Solve-IR events");
+
+        assert_eq!(result.times, vec![0.0, 0.05, 0.1]);
+        assert_eq!(result.data[1], vec![0.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn rk45_simulate_records_initialization_updates_at_start_sample() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.initial_y = vec![1.0];
+        model.problem.initialization.update_targets = vec![solve::scalar_slot_y(0)];
+        model.problem.initialization.update_rhs = const_scalar_program_block(4.0);
+
+        let result = simulate(
+            &model,
+            &SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                t_end: 0.1,
+                dt: Some(0.1),
+                ..Default::default()
+            },
+        )
+        .expect("rk45 simulate should apply initialization before first sample");
+
+        assert_eq!(result.data[0], vec![4.0, 4.0]);
+    }
+
+    #[test]
+    fn rk45_applies_root_event_update() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.initial_y = vec![0.0];
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+        model.problem.events.root_conditions = ScalarProgramBlock::new(vec![vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ]]);
+        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+        model.problem.discrete.rhs = const_scalar_program_block(2.0);
+        model.parameters = vec![0.0];
+        model.visible_names = vec!["x".to_string(), "m".to_string()];
+
+        let result = simulate(
+            &model,
+            &SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                t_end: 0.1,
+                dt: Some(0.1),
+                ..Default::default()
+            },
+        )
+        .expect("rk45 should locate root events with Solve-IR residual rows");
+
+        assert!((result.data[0][1] - 0.1).abs() <= 1.0e-6);
+        assert_eq!(result.data[1], vec![0.0, 2.0]);
+    }
+
+    #[test]
+    fn rk45_root_event_updates_relation_memory_for_continuous_if_branch() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::LoadP { dst: 0, index: 0 },
+            LinearOp::Const { dst: 1, value: 0.5 },
+            LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::Const { dst: 3, value: 1.0 },
+            LinearOp::Const {
+                dst: 4,
+                value: -1.0,
+            },
+            LinearOp::Select {
+                dst: 5,
+                cond: 2,
+                if_true: 3,
+                if_false: 4,
+            },
+            LinearOp::StoreOutput { src: 5 },
+        ]]);
+        model.initial_y = vec![0.1];
+        model.parameters = vec![0.0];
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+        model.problem.discrete.rhs = ScalarProgramBlock::new(vec![vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::Const { dst: 1, value: 0.0 },
+            LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Lt,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ]]);
+        model.problem.events.root_conditions = ScalarProgramBlock::new(vec![vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_p(0))];
+
+        let result = simulate(
+            &model,
+            &SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                t_end: 0.2,
+                dt: Some(0.2),
+                ..Default::default()
+            },
+        )
+        .expect("rk45 should update relation memory after root events");
+
+        let final_x = result.data[0][result.data[0].len() - 1];
         assert!(
-            err.to_string().contains("continuous algebraics"),
-            "unexpected error: {err}"
+            final_x > 0.05,
+            "relation memory should flip the continuous branch after root crossing; x={final_x}"
         );
     }
 
     #[test]
-    fn backend_conforms_to_shared_runtime_schedule_surface() {
-        let dae = build_decay_dae();
-        let model = ExplicitModel::new(&dae, true).expect("prepare explicit model");
-        let opts = SimOptions {
-            t_end: 0.2,
-            dt: Some(0.2),
-            solver_mode: SimSolverMode::RkLike,
-            ..SimOptions::default()
-        };
-        let mut backend = Rk45Backend::new(&model, &opts).expect("backend");
+    fn rk45_applies_periodic_event_update() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+        model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
+            period_seconds: 0.05,
+            phase_seconds: 0.05,
+        }];
+        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+        model.problem.discrete.rhs = const_scalar_program_block(3.0);
+        model.parameters = vec![0.0];
+        model.visible_names = vec!["x".to_string(), "m".to_string()];
 
-        let stats = run_with_runtime_schedule(&mut backend, &dae, 0.0, 0.2, || Ok(()))
-            .expect("shared runtime schedule should drive rk45 backend");
-        assert!(stats.steps > 0);
-        assert!(backend.time >= 0.2);
+        let result = simulate(
+            &model,
+            &SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                t_end: 0.1,
+                dt: Some(0.1),
+                ..Default::default()
+            },
+        )
+        .expect("rk45 should handle periodic Solve-IR events");
+
+        assert_eq!(result.data[1], vec![0.0, 3.0]);
+    }
+
+    #[test]
+    fn rk45_applies_dynamic_time_event_update() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.problem.solve_layout.compiled_parameter_len = 2;
+        model.problem.solve_layout.discrete_real_scalar_names = vec!["next".to_string()];
+        model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+        model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
+        model.problem.discrete.update_targets = vec![solve::scalar_slot_p(1)];
+        model.problem.discrete.rhs = const_scalar_program_block(4.0);
+        model.parameters = vec![0.05, 0.0];
+        model.visible_names = vec!["x".to_string(), "next".to_string(), "m".to_string()];
+
+        let result = simulate(
+            &model,
+            &SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                t_end: 0.1,
+                dt: Some(0.1),
+                ..Default::default()
+            },
+        )
+        .expect("rk45 should handle named dynamic Solve-IR time events");
+
+        assert_eq!(result.data[2], vec![0.0, 4.0]);
+    }
+
+    #[test]
+    fn runtime_contract_step_until_advances_rk45_backend() {
+        let prepared = single_state_model(vec![vec![
+            LinearOp::Const { dst: 0, value: 2.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        let model = SolveRuntime::new(&prepared);
+        let mut backend = Rk45Backend::new(
+            &model,
+            &SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                dt: Some(0.01),
+                ..Default::default()
+            },
+        )
+        .expect("backend should build");
+
+        backend.init().expect("init should succeed");
+        let outcome = backend.step_until(0.1).expect("backend should step");
+
+        assert_eq!(outcome, StepUntilOutcome::StopReached);
+        assert!((backend.read_state().t - 0.1).abs() <= 1.0e-12);
+        assert!((backend.state[0] - 1.2).abs() <= 1.0e-6);
+    }
+
+    #[test]
+    fn rk45_stepper_uses_adaptive_event_integration_for_stiff_contact() {
+        let model = stiff_contact_model();
+        let mut stepper = SimStepper::new(
+            &model,
+            SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                dt: Some(0.02),
+                ..Default::default()
+            },
+        )
+        .expect("stiff contact stepper should initialize");
+
+        for _ in 0..50 {
+            stepper.step(0.02).expect("stepper should advance");
+        }
+
+        let x = stepper.get("x").expect("x should be visible");
+        let contact = stepper.get("contact").expect("contact should be visible");
+        assert!(
+            x > -0.01 && x < 0.03,
+            "adaptive stepper should settle near the contact surface without frame-step penetration; x={x}"
+        );
+        assert_eq!(contact, 1.0);
+    }
+
+    #[test]
+    fn rk45_stepper_redetects_contact_after_thrust_liftoff() {
+        let model = stiff_contact_model();
+        let mut stepper = SimStepper::new(
+            &model,
+            SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                dt: Some(0.02),
+                ..Default::default()
+            },
+        )
+        .expect("stiff contact stepper should initialize");
+
+        for _ in 0..50 {
+            stepper.step(0.02).expect("initial settle should advance");
+        }
+        stepper
+            .set_input("thrust", 40.0)
+            .expect("thrust input should exist");
+        for _ in 0..10 {
+            stepper.step(0.02).expect("liftoff should advance");
+        }
+        let lifted_x = stepper.get("x").unwrap_or_default();
+        assert!(
+            lifted_x > 0.05,
+            "thrust phase should lift the mass above the contact surface; x={lifted_x}"
+        );
+
+        stepper
+            .set_input("thrust", 0.0)
+            .expect("thrust input should update");
+        for _ in 0..180 {
+            stepper.step(0.02).expect("descent should advance");
+        }
+
+        let x = stepper.get("x").expect("x should be visible");
+        let contact = stepper.get("contact").expect("contact should be visible");
+        assert!(
+            x > -0.02 && x < 0.04,
+            "re-contact after liftoff should not miss the ground event; x={x}"
+        );
+        assert_eq!(contact, 1.0);
+    }
+
+    // SPEC_0021: Exception - test fixture declares the full Solve-IR model
+    // inline so contact/event semantics stay visible in one place.
+    #[allow(clippy::too_many_lines)]
+    fn stiff_contact_model() -> solve::SolveModel {
+        let dx = vec![
+            LinearOp::LoadY { dst: 0, index: 1 },
+            LinearOp::StoreOutput { src: 0 },
+        ];
+        let dv = vec![
+            LinearOp::LoadP { dst: 0, index: 2 },
+            LinearOp::Const { dst: 1, value: 0.5 },
+            LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::Const {
+                dst: 3,
+                value: -9.81,
+            },
+            LinearOp::LoadP { dst: 4, index: 1 },
+            LinearOp::Binary {
+                dst: 5,
+                op: solve::BinaryOp::Add,
+                lhs: 3,
+                rhs: 4,
+            },
+            LinearOp::LoadY { dst: 6, index: 0 },
+            LinearOp::Const {
+                dst: 7,
+                value: -30000.0,
+            },
+            LinearOp::Binary {
+                dst: 8,
+                op: solve::BinaryOp::Mul,
+                lhs: 6,
+                rhs: 7,
+            },
+            LinearOp::LoadY { dst: 9, index: 1 },
+            LinearOp::Const {
+                dst: 10,
+                value: -200.0,
+            },
+            LinearOp::Binary {
+                dst: 11,
+                op: solve::BinaryOp::Mul,
+                lhs: 9,
+                rhs: 10,
+            },
+            LinearOp::Binary {
+                dst: 12,
+                op: solve::BinaryOp::Add,
+                lhs: 5,
+                rhs: 8,
+            },
+            LinearOp::Binary {
+                dst: 13,
+                op: solve::BinaryOp::Add,
+                lhs: 12,
+                rhs: 11,
+            },
+            LinearOp::Select {
+                dst: 14,
+                cond: 2,
+                if_true: 13,
+                if_false: 5,
+            },
+            LinearOp::StoreOutput { src: 14 },
+        ];
+        solve::SolveModel {
+            problem: SolveProblem {
+                schema_version: solve::SOLVE_SCHEMA_VERSION,
+                layout: solve::VarLayout::from_parts(Default::default(), 2, 1),
+                continuous: solve::ContinuousSolveSystem {
+                    implicit_rhs: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(
+                        vec![dx.clone(), dv.clone()],
+                    )),
+                    implicit_row_targets: vec![
+                        Some(solve::scalar_slot_y(0)),
+                        Some(solve::scalar_slot_y(1)),
+                    ],
+                    residual: ScalarProgramBlock::new(vec![dx.clone(), dv.clone()]),
+                    derivative_rhs: ComputeBlock::from_scalar_program_block(
+                        ScalarProgramBlock::new(vec![dx, dv]),
+                    ),
+                    algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
+                },
+                initialization: solve::InitializationSolveSystem::default(),
+                discrete: solve::DiscreteSolveSystem {
+                    rhs: ScalarProgramBlock::new(vec![vec![
+                        LinearOp::LoadY { dst: 0, index: 0 },
+                        LinearOp::Const { dst: 1, value: 0.0 },
+                        LinearOp::Compare {
+                            dst: 2,
+                            op: solve::CompareOp::Lt,
+                            lhs: 0,
+                            rhs: 1,
+                        },
+                        LinearOp::StoreOutput { src: 2 },
+                    ]]),
+                    update_targets: vec![solve::scalar_slot_p(2)],
+                    ..Default::default()
+                },
+                events: solve::SolveEventPartition {
+                    root_conditions: ScalarProgramBlock::new(vec![vec![
+                        LinearOp::LoadY { dst: 0, index: 0 },
+                        LinearOp::StoreOutput { src: 0 },
+                    ]]),
+                    root_relation_memory_targets: vec![Some(solve::scalar_slot_p(2))],
+                    ..Default::default()
+                },
+                clocks: solve::SolveClockPartition::default(),
+                solve_layout: SolveLayout {
+                    solver_maps: SolverNameIndexMaps {
+                        names: vec!["x".to_string(), "v".to_string()],
+                        name_to_idx: IndexMap::from([("x".to_string(), 0), ("v".to_string(), 1)]),
+                        base_to_indices: IndexMap::from([
+                            ("x".to_string(), vec![0]),
+                            ("v".to_string(), vec![1]),
+                        ]),
+                    },
+                    state_scalar_count: 2,
+                    algebraic_scalar_count: 0,
+                    output_scalar_count: 0,
+                    parameter_count: 1,
+                    compiled_parameter_len: 3,
+                    input_scalar_names: vec!["thrust".to_string()],
+                    discrete_real_scalar_names: Vec::new(),
+                    discrete_valued_scalar_names: vec!["contact".to_string()],
+                    relation_memory_parameter_indices: Vec::new(),
+                    initial_event_parameter_index: None,
+                    pre_param_bindings: Vec::new(),
+                },
+            },
+            artifacts: solve::SolveArtifacts {
+                continuous: solve::ContinuousSolveArtifacts::default(),
+            },
+            initial_y: vec![0.02, 0.0],
+            parameters: vec![0.0, 0.0, 0.0],
+            external_tables: solve::ExternalTables::default(),
+            visible_names: vec!["x".to_string(), "v".to_string(), "contact".to_string()],
+            visible_value_rows: solve::ScalarProgramBlock::default(),
+            variable_meta: Vec::new(),
+        }
+    }
+
+    fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
+        let derivative_rows = rhs_rows.iter().take(1).cloned().collect::<Vec<_>>();
+        let zero = ScalarProgramBlock::new(vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        solve::SolveModel {
+            problem: SolveProblem {
+                schema_version: solve::SOLVE_SCHEMA_VERSION,
+                layout: solve::VarLayout::from_parts(Default::default(), 1, 1),
+                continuous: solve::ContinuousSolveSystem {
+                    implicit_rhs: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::new(
+                        rhs_rows.clone(),
+                    )),
+                    implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+                    residual: ScalarProgramBlock::new(rhs_rows.clone()),
+                    derivative_rhs: ComputeBlock::from_scalar_program_block(
+                        ScalarProgramBlock::new(derivative_rows),
+                    ),
+                    algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
+                },
+                initialization: solve::InitializationSolveSystem {
+                    residual: zero.clone(),
+                    row_targets: Vec::new(),
+                    projection_plan: solve::AlgebraicProjectionPlan::default(),
+                    update_rhs: solve::ScalarProgramBlock::default(),
+                    update_targets: Vec::new(),
+                },
+                discrete: solve::DiscreteSolveSystem {
+                    rhs: zero.clone(),
+                    ..Default::default()
+                },
+                events: solve::SolveEventPartition::default(),
+                clocks: solve::SolveClockPartition::default(),
+                solve_layout: SolveLayout {
+                    solver_maps: SolverNameIndexMaps {
+                        names: vec!["x".to_string()],
+                        name_to_idx: IndexMap::from([("x".to_string(), 0)]),
+                        base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
+                    },
+                    state_scalar_count: 1,
+                    algebraic_scalar_count: 0,
+                    output_scalar_count: 0,
+                    parameter_count: 0,
+                    compiled_parameter_len: 0,
+                    input_scalar_names: Vec::new(),
+                    discrete_real_scalar_names: Vec::new(),
+                    discrete_valued_scalar_names: Vec::new(),
+                    relation_memory_parameter_indices: Vec::new(),
+                    initial_event_parameter_index: None,
+                    pre_param_bindings: Vec::new(),
+                },
+            },
+            artifacts: solve::SolveArtifacts {
+                continuous: solve::ContinuousSolveArtifacts {
+                    mass_matrix: vec![vec![1.0]],
+                    implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
+                    implicit_jacobian_v_scalar: zero.clone(),
+                    full_jacobian_v: zero.clone(),
+                },
+            },
+            initial_y: vec![1.0],
+            parameters: Vec::new(),
+            external_tables: solve::ExternalTables::default(),
+            visible_names: vec!["x".to_string()],
+            visible_value_rows: solve::ScalarProgramBlock::default(),
+            variable_meta: Vec::new(),
+        }
+    }
+
+    fn const_scalar_program_block(value: f64) -> ScalarProgramBlock {
+        ScalarProgramBlock::new(vec![vec![
+            LinearOp::Const { dst: 0, value },
+            LinearOp::StoreOutput { src: 0 },
+        ]])
     }
 }

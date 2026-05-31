@@ -4,52 +4,50 @@ fn assert_prewarmed_snapshot_cache_state(
     snapshot: &SessionSnapshot,
     local_uri: &str,
 ) -> (FileId, usize, usize) {
-    let snapshot_session = snapshot
-        .session
-        .lock()
-        .expect("snapshot session lock should not be poisoned");
-    let file_id = *snapshot_session
-        .file_ids
-        .get(local_uri)
-        .expect("prewarmed snapshot should preserve the local file id");
-    assert!(
-        snapshot_session
-            .query_state
-            .ast
-            .class_interface_query_cache
-            .contains_key(&file_id),
-        "prewarm should build the local class-interface cache"
-    );
-    assert!(
-        snapshot_session
-            .query_state
-            .ast
-            .package_def_map
-            .orphan_cache
-            .is_some(),
-        "prewarm should build detached-package lookup state"
-    );
-    assert!(
-        snapshot_session
-            .query_state
-            .ast
-            .class_component_members_query_cache
-            .contains_key("Lib.Helper"),
-        "prewarm should build member completion state for referenced classes"
-    );
-    (
-        file_id,
-        snapshot_session
-            .query_state
-            .ast
-            .class_interface_query_cache
-            .len(),
-        snapshot_session
-            .query_state
-            .ast
-            .class_component_members_query_cache
-            .len(),
-    )
+    snapshot.inspect_detached_session(|snapshot_session| {
+        let file_id = *snapshot_session
+            .file_ids
+            .get(local_uri)
+            .expect("prewarmed snapshot should preserve the local file id");
+        assert!(
+            snapshot_session
+                .query_state
+                .ast
+                .class_interface_query_cache
+                .contains_key(&file_id),
+            "prewarm should build the local class-interface cache"
+        );
+        assert!(
+            snapshot_session
+                .query_state
+                .ast
+                .package_def_map
+                .orphan_cache
+                .is_some(),
+            "prewarm should build detached-package lookup state"
+        );
+        assert!(
+            snapshot_session
+                .query_state
+                .ast
+                .class_component_members_query_cache
+                .contains_key("Lib.Helper"),
+            "prewarm should build member completion state for referenced classes"
+        );
+        (
+            file_id,
+            snapshot_session
+                .query_state
+                .ast
+                .class_interface_query_cache
+                .len(),
+            snapshot_session
+                .query_state
+                .ast
+                .class_component_members_query_cache
+                .len(),
+        )
+    })
 }
 
 fn assert_snapshot_prewarm_remains_warm(
@@ -58,36 +56,34 @@ fn assert_snapshot_prewarm_remains_warm(
     prewarmed_scope_entries: usize,
     prewarmed_member_entries: usize,
 ) {
-    let snapshot_session = snapshot
-        .session
-        .lock()
-        .expect("snapshot session lock should not be poisoned");
-    assert!(
-        snapshot_session
-            .query_state
-            .ast
-            .class_interface_query_cache
-            .contains_key(&file_id),
-        "query-backed reads should keep the prewarmed class-interface cache available"
-    );
-    assert_eq!(
-        snapshot_session
-            .query_state
-            .ast
-            .class_interface_query_cache
-            .len(),
-        prewarmed_scope_entries,
-        "prewarmed document queries should not create extra class-interface cache entries"
-    );
-    assert_eq!(
-        snapshot_session
-            .query_state
-            .ast
-            .class_component_members_query_cache
-            .len(),
-        prewarmed_member_entries,
-        "prewarmed document queries should keep member completion caches warm"
-    );
+    snapshot.inspect_detached_session(|snapshot_session| {
+        assert!(
+            snapshot_session
+                .query_state
+                .ast
+                .class_interface_query_cache
+                .contains_key(&file_id),
+            "query-backed reads should keep the prewarmed class-interface cache available"
+        );
+        assert_eq!(
+            snapshot_session
+                .query_state
+                .ast
+                .class_interface_query_cache
+                .len(),
+            prewarmed_scope_entries,
+            "prewarmed document queries should not create extra class-interface cache entries"
+        );
+        assert_eq!(
+            snapshot_session
+                .query_state
+                .ast
+                .class_component_members_query_cache
+                .len(),
+            prewarmed_member_entries,
+            "prewarmed document queries should keep member completion caches warm"
+        );
+    });
 }
 
 #[test]

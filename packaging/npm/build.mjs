@@ -70,6 +70,13 @@ const buildSubdirName = ({ profile, variant, rayon }) =>
 
 const buildTimeUtcNow = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
+const appendRustflags = (env, flags) => {
+  const current = String(env.RUSTFLAGS || "");
+  const missingFlags = flags.filter((flag) => !current.includes(flag));
+  if (missingFlags.length === 0) return;
+  env.RUSTFLAGS = `${current}${current.trim() ? " " : ""}${missingFlags.join(" ")}`;
+};
+
 const run = (cmd, args, options = {}) => {
   const result = spawnSync(cmd, args, {
     stdio: "inherit",
@@ -164,9 +171,8 @@ const main = async () => {
       releaseFlag,
     ];
 
-    if (!truthy(process.env.RUMOCA_WASM_OPT)) {
-      wasmPackArgs.push("--no-opt");
-    }
+    // wasm-opt is disabled (slow, and not needed for these builds).
+    wasmPackArgs.push("--no-opt");
     if (features.length > 0) {
       wasmPackArgs.push("--", "--features", features.join(","));
     }
@@ -175,10 +181,7 @@ const main = async () => {
     const nowUtc = buildTimeUtcNow();
     if (args.rayon) {
       const threadFlags = "-C target-feature=+atomics,+bulk-memory,+mutable-globals";
-      const current = String(env.RUSTFLAGS || "");
-      env.RUSTFLAGS = current.includes("target-feature=+atomics")
-        ? current
-        : `${current}${current.trim() ? " " : ""}${threadFlags}`;
+      appendRustflags(env, [threadFlags]);
     }
 
     run("wasm-pack", wasmPackArgs, { env });

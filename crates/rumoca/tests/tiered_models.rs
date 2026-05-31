@@ -20,69 +20,78 @@
 //! | 9 | Advanced | Algorithms, external functions |
 
 use rumoca_compile::{Session, SessionConfig};
-use rumoca_ir_dae::{self as dae, Dae};
+use rumoca_ir_dae::Dae;
 
 /// Check if a Expression contains an If expression anywhere in its tree.
-fn contains_if_expr(expr: &dae::Expression) -> bool {
+fn contains_if_expr(expr: &rumoca_core::Expression) -> bool {
     match expr {
-        dae::Expression::If { .. } => true,
-        dae::Expression::Binary { lhs, rhs, .. } => contains_if_expr(lhs) || contains_if_expr(rhs),
-        dae::Expression::Unary { rhs, .. } => contains_if_expr(rhs),
+        rumoca_core::Expression::If { .. } => true,
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            contains_if_expr(lhs) || contains_if_expr(rhs)
+        }
+        rumoca_core::Expression::Unary { rhs, .. } => contains_if_expr(rhs),
         _ => false,
     }
 }
 
-/// Check if a Expression contains a pre() builtin call anywhere in its tree.
-fn contains_pre_expr(expr: &dae::Expression) -> bool {
+/// Check if an expression references a lowered pre() parameter.
+fn contains_pre_param_ref(expr: &rumoca_core::Expression) -> bool {
     match expr {
-        dae::Expression::BuiltinCall {
-            function: rumoca_ir_dae::BuiltinFunction::Pre,
-            ..
-        } => true,
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            contains_pre_expr(lhs) || contains_pre_expr(rhs)
+        rumoca_core::Expression::VarRef { name, .. } => name.as_str().starts_with("__pre__."),
+        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
+            contains_pre_param_ref(lhs) || contains_pre_param_ref(rhs)
         }
-        dae::Expression::Unary { rhs, .. } => contains_pre_expr(rhs),
-        dae::Expression::If {
+        rumoca_core::Expression::Unary { rhs, .. } => contains_pre_param_ref(rhs),
+        rumoca_core::Expression::If {
             branches,
             else_branch,
+            ..
         } => {
-            branches
-                .iter()
-                .any(|(cond, then_expr)| contains_pre_expr(cond) || contains_pre_expr(then_expr))
-                || contains_pre_expr(else_branch)
+            branches.iter().any(|(cond, then_expr)| {
+                contains_pre_param_ref(cond) || contains_pre_param_ref(then_expr)
+            }) || contains_pre_param_ref(else_branch)
         }
-        dae::Expression::BuiltinCall { args, .. } | dae::Expression::FunctionCall { args, .. } => {
-            args.iter().any(contains_pre_expr)
+        rumoca_core::Expression::BuiltinCall { args, .. }
+        | rumoca_core::Expression::FunctionCall { args, .. } => {
+            args.iter().any(contains_pre_param_ref)
         }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            elements.iter().any(contains_pre_expr)
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. } => {
+            elements.iter().any(contains_pre_param_ref)
         }
-        dae::Expression::Range { start, step, end } => {
-            contains_pre_expr(start)
-                || step.as_ref().is_some_and(|s| contains_pre_expr(s))
-                || contains_pre_expr(end)
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => {
+            contains_pre_param_ref(start)
+                || step.as_ref().is_some_and(|s| contains_pre_param_ref(s))
+                || contains_pre_param_ref(end)
         }
-        dae::Expression::Index { base, subscripts } => {
-            contains_pre_expr(base)
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => {
+            contains_pre_param_ref(base)
                 || subscripts.iter().any(|sub| match sub {
-                    rumoca_ir_dae::Subscript::Expr(e) => contains_pre_expr(e),
+                    rumoca_core::Subscript::Expr { expr: e, .. } => contains_pre_param_ref(e),
                     _ => false,
                 })
         }
-        dae::Expression::FieldAccess { base, .. } => contains_pre_expr(base),
-        dae::Expression::ArrayComprehension {
+        rumoca_core::Expression::FieldAccess { base, .. } => contains_pre_param_ref(base),
+        rumoca_core::Expression::ArrayComprehension {
             expr,
             indices,
             filter,
+            ..
         } => {
-            indices.iter().any(|index| contains_pre_expr(&index.range))
-                || contains_pre_expr(expr)
-                || filter.as_ref().is_some_and(|cond| contains_pre_expr(cond))
+            indices
+                .iter()
+                .any(|index| contains_pre_param_ref(&index.range))
+                || contains_pre_param_ref(expr)
+                || filter
+                    .as_ref()
+                    .is_some_and(|cond| contains_pre_param_ref(cond))
         }
-        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {
-            false
-        }
+        rumoca_core::Expression::Literal { value: _, .. }
+        | rumoca_core::Expression::Empty { .. } => false,
     }
 }
 
@@ -121,16 +130,16 @@ fn compile(source: &str, model_name: &str) -> Result<CompileResult, String> {
 
     let dae = result.dae;
     Ok(CompileResult {
-        states: dae.states.len(),
-        algebraics: dae.algebraics.len(),
-        parameters: dae.parameters.len(),
-        constants: dae.constants.len(),
-        discrete_reals: dae.discrete_reals.len(),
-        discrete_valued: dae.discrete_valued.len(),
-        inputs: dae.inputs.len(),
-        outputs: dae.outputs.len(),
-        f_x_count: dae.f_x.len(),
-        balance: rumoca_analysis_dae::balance(&dae),
+        states: dae.variables.states.len(),
+        algebraics: dae.variables.algebraics.len(),
+        parameters: dae.variables.parameters.len(),
+        constants: dae.variables.constants.len(),
+        discrete_reals: dae.variables.discrete_reals.len(),
+        discrete_valued: dae.variables.discrete_valued.len(),
+        inputs: dae.variables.inputs.len(),
+        outputs: dae.variables.outputs.len(),
+        f_x_count: dae.continuous.equations.len(),
+        balance: rumoca_phase_dae::balance::balance(&dae),
         dae,
     })
 }

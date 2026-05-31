@@ -1,9 +1,10 @@
-//! TOML configuration model for the `rumoca lockstep` runtime.
+//! TOML configuration model for the interactive simulation runner.
 //!
-//! Aggregates lockstep-only input, codec, and transport sections outside the
-//! compiler/session layer.
+//! Aggregates input, codec, transport, and pacing sections outside the
+//! compiler/session layer. Lockstep is one pacing mode, not the runner's
+//! architecture.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -11,20 +12,53 @@ use rumoca_codec::config::{
     MessageConfig as FlatbufferMessageConfig, SchemaConfig as FlatbufferSchemaConfig,
 };
 use rumoca_input::config::{DeriveSpec, InputConfig, LocalDef, SignalsConfig};
+use rumoca_solver::SimPacingMode;
 use rumoca_transport_udp::UdpConfig;
 
 // ── Top-level ──────────────────────────────────────────────────────────────
 
+/// Authoritative marker that a TOML file is a Rumoca task file.
+///
+/// The filename convention (`rum.toml` / `rum.<profile>.toml`) is the discovery
+/// hook; this `[rumoca]` section is the authoritative declaration. Keeping a
+/// `version` field gives a clean path for future schema evolution.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RumocaMarker {
+    /// Task-file schema version (currently `"1"`).
+    pub version: String,
+    /// Optional declared task kind (e.g. `"simulate"`, `"codegen"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+}
+
+/// Whether a path's filename matches the Rumoca task-file convention:
+/// `rum.toml` (default) or `rum.<profile>.toml` (e.g. `rum.f16.toml`).
+///
+/// This is the editor/discovery hook only — the authoritative check is the
+/// presence of the `[rumoca]` marker inside the file (see [`RumocaMarker`]).
+#[must_use]
+pub fn is_rumoca_task_filename(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|name| name.starts_with("rum.") && name.ends_with(".toml"))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SimulationConfig {
+    /// Required marker section declaring this a Rumoca task file.
+    #[serde(default)]
+    pub rumoca: Option<RumocaMarker>,
+
     pub sim: SimConfig,
 
-    /// Legacy flat `[udp]` section. Prefer `[transport.udp]` in new configs.
+    /// Additional Modelica package roots loaded before the requested model.
+    /// Paths are resolved relative to the config file by the CLI.
     #[serde(default)]
-    pub udp: Option<UdpConfig>,
+    pub source_roots: Vec<String>,
 
     /// FlatBuffer schema files. Required only when coupling to an external
-    /// autopilot over UDP; standalone demos (rover etc.) omit this.
+    /// interface over UDP; standalone demos (rover etc.) omit this.
     #[serde(default)]
     pub schema: Option<FlatbufferSchemaConfig>,
     /// Incoming FB message routing. Omit for standalone mode.
@@ -35,18 +69,13 @@ pub struct SimulationConfig {
     pub send: Option<FlatbufferMessageConfig>,
 
     #[serde(default)]
-    pub autopilot: Option<AutopilotConfig>,
-
-    /// Plant / physics model. Required.
+    pub external_interface: Option<ExternalInterfaceConfig>,
+    /// Complete top-level Modelica model. If a controller is needed, compose
+    /// it with the plant in Modelica and point this section at that wrapper.
+    #[serde(default, alias = "physics")]
+    pub model: Option<ModelConfig>,
     #[serde(default)]
-    pub physics: Option<ModelConfig>,
-    /// Optional in-process Modelica controller. When present, rumoca
-    /// synthesizes a composition wrapper at load time: physics and
-    /// controller instantiated together and wired via `controller.actuate`
-    /// and `controller.sense`. Mutually exclusive with `autopilot` at the
-    /// config-semantics level: both technically load, but pick one.
-    #[serde(default)]
-    pub controller: Option<ControllerConfig>,
+    controller: Option<toml::Value>,
     #[serde(default)]
     pub transport: Option<TransportConfig>,
     #[serde(default)]
@@ -61,61 +90,62 @@ pub struct SimulationConfig {
     pub debug_log: Option<DebugLogConfig>,
     #[serde(default)]
     pub reset: Option<ResetConfig>,
+    #[serde(default)]
+    pub viewer: Option<ViewerConfig>,
 }
 
-// ── Sim + autopilot (orchestration-level) ──────────────────────────────────
+impl SimulationConfig {
+    pub fn http_port(&self) -> u16 {
+        self.transport
+            .as_ref()
+            .and_then(|transport| transport.http.as_ref())
+            .map(|http| http.port)
+            .unwrap_or(8080)
+    }
+
+    pub fn websocket_port(&self) -> u16 {
+        self.transport
+            .as_ref()
+            .and_then(|transport| transport.websocket.as_ref())
+            .map(|websocket| websocket.port)
+            .unwrap_or(8081)
+    }
+}
+
+// ── Sim + external interface (orchestration-level) ─────────────────────────
 
 #[derive(Debug, Deserialize)]
-pub struct AutopilotConfig {
+pub struct ExternalInterfaceConfig {
     pub command: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimConfig {
     #[serde(default = "default_dt")]
     pub dt: f64,
-    #[serde(default = "default_true")]
-    pub realtime: bool,
+    #[serde(default = "default_t_end")]
+    pub t_end: f64,
+    #[serde(default)]
+    pub solver: Option<String>,
+    #[serde(default)]
+    pub output: Option<String>,
     #[serde(default, rename = "test")]
     pub _test: bool,
     /// Outer-loop pacing mode.
     ///
-    /// - `lockstep`: block on each inbound autopilot packet; one physics
-    ///   step per packet. Deterministic; the autopilot paces the sim.
-    ///   Default when autopilot coupling is configured.
-    /// - `free_run`: non-blocking drain every `dt`; wall-clock paced.
-    ///   The only option that makes sense for standalone mode.
-    ///   Default when no autopilot / FB sections are configured.
+    /// - `as_fast_as_possible`: drain available input and advance without wall-clock sleep.
+    /// - `realtime`: drain available input and pace steps to wall-clock `dt`.
+    /// - `lockstep`: wait for each inbound external-interface packet before stepping.
     #[serde(default)]
-    pub mode: Option<SimMode>,
-}
-
-/// Outer-loop pacing mode. See [`SimConfig::mode`].
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SimMode {
-    Lockstep,
-    FreeRun,
-}
-
-impl SimMode {
-    /// Resolve the effective mode: explicit config takes priority,
-    /// otherwise defaults to lockstep iff autopilot coupling is present.
-    #[must_use]
-    pub fn resolve(explicit: Option<SimMode>, has_fb: bool) -> SimMode {
-        explicit.unwrap_or(if has_fb {
-            SimMode::Lockstep
-        } else {
-            SimMode::FreeRun
-        })
-    }
+    pub mode: Option<SimPacingMode>,
 }
 
 fn default_dt() -> f64 {
     0.004
 }
-fn default_true() -> bool {
-    true
+fn default_t_end() -> f64 {
+    1.0
 }
 
 // ── Model ──────────────────────────────────────────────────────────────────
@@ -126,28 +156,6 @@ pub struct ModelConfig {
     pub name: String,
 }
 
-/// In-process Modelica controller paired with the physics model.
-///
-/// At load time rumoca generates a wrapper model that instantiates
-/// `physics` and `controller`, forwards top-level inputs (controller
-/// inputs NOT in `sense`) through to the controller, wires `actuate`
-/// (controller output → physics input) and `sense` (physics output →
-/// controller input), and exposes physics variables via hierarchical
-/// `physics.<name>` stepper paths.
-#[derive(Debug, Deserialize)]
-pub struct ControllerConfig {
-    pub file: String,
-    pub name: String,
-    /// Controller output -> physics input. Keys are controller-side,
-    /// values are physics-side (left arrow, from caller's perspective).
-    #[serde(default)]
-    pub actuate: HashMap<String, String>,
-    /// Physics output -> controller input. Keys are physics-side, values
-    /// are controller-side.
-    #[serde(default)]
-    pub sense: HashMap<String, String>,
-}
-
 // ── Transports ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -155,7 +163,7 @@ pub struct TransportConfig {
     #[serde(default)]
     pub udp: Option<UdpConfig>,
     #[serde(default, rename = "websocket")]
-    pub _websocket: Option<WebSocketConfig>,
+    pub websocket: Option<WebSocketConfig>,
     #[serde(default)]
     pub http: Option<HttpConfig>,
 }
@@ -163,15 +171,45 @@ pub struct TransportConfig {
 #[derive(Debug, Deserialize)]
 pub struct WebSocketConfig {
     #[serde(rename = "port")]
-    pub _port: u16,
+    pub port: u16,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct HttpConfig {
     #[serde(rename = "port")]
-    pub _port: u16,
+    pub port: u16,
     #[serde(default)]
     pub scene: Option<String>,
+}
+
+// ── Viewer presentation ───────────────────────────────────────────────────
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct ViewerConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_external: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_armed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controls: Option<ViewerControlsConfig>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct ViewerControlsConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyboard: Vec<ViewerControlHelpItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gamepad: Vec<ViewerControlHelpItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ViewerControlHelpItem {
+    pub keys: String,
+    pub action: String,
 }
 
 // ── Debug log ──────────────────────────────────────────────────────────────
@@ -182,6 +220,13 @@ pub struct DebugLogConfig {
     pub _ring_size: usize,
     pub trigger_signal: String,
     pub capture: Vec<String>,
+    /// Output CSV path for the trace log (default `rumoca_trace.csv`).
+    #[serde(default = "default_trace_log_path")]
+    pub path: String,
+}
+
+fn default_trace_log_path() -> String {
+    "rumoca_trace.csv".to_string()
 }
 
 // ── Reset ──────────────────────────────────────────────────────────────────
@@ -194,7 +239,7 @@ pub struct ResetConfig {
     #[serde(default)]
     pub rebuild_stepper: bool,
     #[serde(default)]
-    pub restart_autopilot: bool,
+    pub restart_external_interface: bool,
 }
 
 // ── Loader ─────────────────────────────────────────────────────────────────
@@ -203,11 +248,19 @@ impl SimulationConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)?;
         let config: SimulationConfig = toml::from_str(&text)?;
+        if config.rumoca.is_none() {
+            anyhow::bail!(
+                "'{}' is not a Rumoca task file: missing the required `[rumoca]` marker section. \
+                 Add:\n\n[rumoca]\nversion = \"1\"\n\nand name task files `rum.toml` or \
+                 `rum.<profile>.toml` (e.g. `rum.f16.toml`).",
+                path.display()
+            );
+        }
         config.validate()?;
         Ok(config)
     }
 
-    /// The three FB sections must all be present (autopilot coupling) or all
+    /// The three FB sections must all be present (external coupling) or all
     /// absent (standalone). Any mix is a user error.
     fn validate(&self) -> anyhow::Result<()> {
         let present = [
@@ -232,15 +285,42 @@ impl SimulationConfig {
             anyhow::bail!(
                 "FB config is partial: have [{have}], missing [{missing}]. \
                  Provide all three ([schema], [receive], [send]) to enable \
-                 autopilot coupling, or omit all three for standalone mode."
+                 external-interface coupling, or omit all three for standalone mode."
+            );
+        }
+        if self.controller.is_some() {
+            anyhow::bail!(
+                "[controller] is no longer part of simulation config. Compose the controller \
+                 and vehicle in a Modelica model, then point [model] at that top-level class."
             );
         }
         Ok(())
     }
 
-    /// True when configured for autopilot coupling (all FB sections present).
+    /// True when configured for external coupling (all FB sections present).
     pub fn has_fb(&self) -> bool {
         self.schema.is_some() && self.receive.is_some() && self.send.is_some()
+    }
+
+    /// Effective interactive pacing mode. Explicit TOML wins; otherwise an
+    /// externally-coupled runner defaults to lockstep and standalone defaults
+    /// to realtime.
+    pub fn effective_pacing_mode(&self) -> SimPacingMode {
+        SimPacingMode::resolve_interactive(self.sim.mode, self.has_fb())
+    }
+
+    /// True when the config requests the interactive runner instead of a
+    /// batch compile/simulate/report run.
+    pub fn is_interactive_runner(&self) -> bool {
+        self.has_fb()
+            || self.external_interface.is_some()
+            || self.transport.is_some()
+            || self.input.is_some()
+            || self.signals.is_some()
+            || !self.locals.is_empty()
+            || !self.derive.is_empty()
+            || self.debug_log.is_some()
+            || self.reset.is_some()
     }
 }
 
@@ -260,15 +340,107 @@ mod tests {
     }
 
     #[test]
-    fn parses_rover_toml_standalone_mode() {
+    fn parses_rover_rum_standalone_mode() {
         let path = workspace_root()
             .join("examples")
-            .join("rover_sil")
-            .join("rover.toml");
-        let cfg = SimulationConfig::load(&path).expect("rover.toml must parse");
+            .join("interactive")
+            .join("rover")
+            .join("rum.toml");
+        let cfg = SimulationConfig::load(&path).expect("rover rum.toml must parse");
         assert!(!cfg.has_fb());
+        assert_eq!(cfg.effective_pacing_mode(), SimPacingMode::Realtime);
         let sig = cfg.signals.as_ref().expect("[signals]");
-        assert_eq!(sig.stepper_inputs.len(), 2, "forward_cmd + turn_cmd");
+        assert_eq!(sig.stepper_inputs.len(), 2, "steering + throttle");
+        let viewer = cfg.viewer.as_ref().expect("[viewer]");
+        assert_eq!(viewer.status_title.as_deref(), Some("Vehicle"));
+        assert_eq!(viewer.show_armed, Some(false));
+        let controls = viewer.controls.as_ref().expect("[viewer.controls]");
+        assert!(
+            controls
+                .keyboard
+                .iter()
+                .any(|item| item.action == "Steering"),
+            "rover viewer help should describe steering controls"
+        );
+    }
+
+    #[test]
+    fn standalone_defaults_to_realtime_pacing() {
+        let text = r#"
+[sim]
+dt = 0.01
+"#;
+        let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
+        assert!(!cfg.has_fb());
+        assert_eq!(cfg.effective_pacing_mode(), SimPacingMode::Realtime);
+        assert!(!cfg.is_interactive_runner());
+    }
+
+    #[test]
+    fn simple_model_config_is_batch_simulation_config() {
+        let text = r#"
+[model]
+file = "Ball.mo"
+name = "Ball"
+
+[sim]
+t_end = 10.0
+dt = 0.01
+output = "Ball_results.html"
+"#;
+        let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
+        assert!(!cfg.is_interactive_runner());
+        assert_eq!(cfg.sim.t_end, 10.0);
+        assert_eq!(cfg.sim.output.as_deref(), Some("Ball_results.html"));
+    }
+
+    #[test]
+    fn parses_all_pacing_modes() {
+        for (raw, expected) in [
+            ("as_fast_as_possible", SimPacingMode::AsFastAsPossible),
+            ("realtime", SimPacingMode::Realtime),
+            ("lockstep", SimPacingMode::Lockstep),
+        ] {
+            let text = format!(
+                r#"
+[sim]
+dt = 0.01
+mode = "{raw}"
+"#
+            );
+            let cfg = toml::from_str::<SimulationConfig>(&text).unwrap();
+            assert_eq!(cfg.effective_pacing_mode(), expected);
+        }
+    }
+
+    #[test]
+    fn resolves_configured_viewer_ports() {
+        let text = r#"
+[sim]
+
+[transport.http]
+port = 8090
+
+[transport.websocket]
+port = 8091
+"#;
+        let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
+        assert_eq!(cfg.http_port(), 8090);
+        assert_eq!(cfg.websocket_port(), 8091);
+    }
+
+    #[test]
+    fn rejects_obsolete_realtime_boolean() {
+        let text = r#"
+[sim]
+dt = 0.01
+realtime = true
+"#;
+        let err = toml::from_str::<SimulationConfig>(text).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field `realtime`"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -288,13 +460,41 @@ bfbs = []
     }
 
     #[test]
-    fn parses_quadrotor_toml() {
+    fn parses_quadrotor_rum() {
         let path = workspace_root()
             .join("examples")
-            .join("quadrotor_sil")
-            .join("quadrotor_cerebri.toml");
-        let cfg = SimulationConfig::load(&path).expect("quadrotor_cerebri.toml must parse");
-        assert!(cfg.has_fb());
-        assert_eq!(cfg.locals["rc"].len, Some(16));
+            .join("interactive")
+            .join("quadrotor")
+            .join("rum.acro.toml");
+        let cfg = SimulationConfig::load(&path).expect("rum.acro.toml must parse");
+        assert!(!cfg.has_fb());
+        assert_eq!(cfg.effective_pacing_mode(), SimPacingMode::Realtime);
+        assert_eq!(
+            cfg.source_roots,
+            vec!["../../../target/cmm/CMM-v0.0.1".to_string()]
+        );
+        assert_eq!(cfg.model.as_ref().unwrap().name, "QuadrotorAcro");
+        assert!(cfg.locals.contains_key("armed"));
+    }
+
+    #[test]
+    fn rejects_runtime_controller_composition() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[model]
+file = "Vehicle.mo"
+name = "Vehicle"
+
+[controller]
+file = "Controller.mo"
+name = "Controller"
+"#;
+        let err = toml::from_str::<SimulationConfig>(text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(err.to_string().contains("[controller]"), "got: {err}");
     }
 }

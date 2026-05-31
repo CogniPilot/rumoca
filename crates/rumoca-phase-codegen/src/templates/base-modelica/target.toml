@@ -1,0 +1,10 @@
+version = 1
+ir = "flat"
+name = "base-modelica"
+description = "Base Modelica interchange output from flat IR"
+execution_mode = "source-transform"
+deployment_class = "modelica"
+
+[[files]]
+path = "{{ model_name }}_base.mo"
+template = "base_modelica.mo.jinja"

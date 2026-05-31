@@ -22,14 +22,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rumoca_sim::viz_web::THREE_JS;
-use rumoca_sim::{SimStepper, StepperOptions};
+use rumoca_sim::{SimOptions, SimStepper};
 use tungstenite::{Message, accept};
 
 const HTTP_PORT: u16 = 8080;
 const WS_PORT: u16 = 8081;
 const MAX_SUB_DT: f64 = 0.002;
 
-const MODEL_SOURCE: &str = include_str!("../../../examples/quadrotor_sil/QuadrotorSIL.mo");
+const MODEL_SOURCE: &str = include_str!("../../../examples/interactive/quadrotor/QuadrotorSIL.mo");
 // Physical constants matching the Modelica model
 const MASS: f64 = 2.0;
 const G: f64 = 9.80665;
@@ -60,7 +60,6 @@ mod cerebri_fb {
     const MOTOR_FIELD_TEST_MODE: u16 = 29;
 
     // --- Flight snapshot (SIL → Cerebri): 164 bytes ---
-    #[allow(dead_code)]
     pub(super) const FLIGHT_SNAPSHOT_SIZE: usize = 164;
     const FLIGHT_VTABLE_OFFSET: usize = 4;
     const FLIGHT_VTABLE_SIZE: u16 = 16;
@@ -79,11 +78,7 @@ mod cerebri_fb {
     const STATUS_RC_LINK_QUALITY: usize = 12;
     const STATUS_ARMED: usize = 13;
     const STATUS_RC_VALID: usize = 14;
-    #[allow(dead_code)]
-    const STATUS_RC_STALE: usize = 15;
     const STATUS_IMU_OK: usize = 16;
-    #[allow(dead_code)]
-    const STATUS_ARM_SWITCH: usize = 17;
 
     // --- Data structs ---
 
@@ -272,7 +267,7 @@ impl QuadrotorSil {
         let result = compiler.compile_str(&source, "QuadrotorSIL.mo")?;
         let stepper = SimStepper::new(
             &result.dae,
-            StepperOptions {
+            SimOptions {
                 rtol: 1e-4,
                 atol: 1e-4,
                 ..Default::default()
@@ -351,7 +346,7 @@ impl QuadrotorSil {
         let result = compiler.compile_str(&self.model_source, "QuadrotorSIL.mo")?;
         self.stepper = SimStepper::new(
             &result.dae,
-            StepperOptions {
+            SimOptions {
                 rtol: 1e-4,
                 atol: 1e-4,
                 ..Default::default()

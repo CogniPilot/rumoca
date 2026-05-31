@@ -1,0 +1,49 @@
+[package]
+name = "xtask"
+description = "Cross-platform developer tooling for rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[[bin]]
+name = "rumoca-msl-tools"
+path = "src/bin/rumoca-msl-tools.rs"
+
+[[bin]]
+name = "rumoca-traversal-policy-check"
+path = "src/bin/rumoca-traversal-policy-check.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+mimalloc = { workspace = true }
+rumoca-compile = { workspace = true }
+rumoca-sim = { workspace = true, features = ["viz", "solver-diffsol"] }
+rumoca-worker = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+blake3 = { workspace = true }
+sha2 = "0.10"
+toml = { workspace = true }
+lsp-types = { workspace = true }
+dirs = "5.0"
+flate2 = "1.0"
+rayon = { workspace = true }
+tar = "0.4"
+tempfile = { workspace = true }
+ureq = "2.9"
+walkdir = "2.5"
+zmq = "0.10"
+nix = { version = "0.29", features = ["signal"] }
+regex = "1"
+syn = { version = "2.0", features = ["full", "visit"] }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

@@ -1,52 +1,261 @@
-//! flat::Function collection and flattening for user-defined functions.
+//! rumoca_core::Function collection and flattening for user-defined functions.
 //!
 //! This module is responsible for:
 //! - Collecting function calls used in the model
 //! - Looking up function definitions from the ast::ClassTree
-//! - Converting function definitions to flat::Function
+//! - Converting function definitions to rumoca_core::Function
 //!
 //! Per MLS §12, functions in Modelica are callable units with:
 //! - Input parameters (values passed in)
 //! - Output parameters (values returned)
 //! - An algorithm section (the function body)
 
-use indexmap::IndexMap;
+use indexmap::IndexSet;
+#[cfg(test)]
+use rumoca_core::Span;
+use rumoca_core::{ExpressionRewriter, ExpressionVisitor, StatementRewriter};
 use rumoca_ir_ast as ast;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rumoca_ir_flat as flat;
+use rustc_hash::FxHashSet;
 use std::collections::{HashMap, HashSet};
+
+mod function_metadata;
+use function_metadata::*;
+pub(crate) use function_metadata::{
+    lower_record_function_params, specialize_static_function_params,
+};
 
 use crate::algorithms;
 use crate::ast_lower;
 use crate::errors::FlattenError;
+use crate::path_utils;
+use crate::pipeline::{collect_package_chain, rewrite_function_extends_aliases_in_function};
 use crate::qualify;
 
-const NON_FUNCTION_SCALAR_TYPES: &[&str] = &[
-    "Real",
-    "Integer",
-    "Boolean",
-    "String",
-    "Clock",
-    "Complex",
-    "Modelica.ComplexMath.Complex",
-];
-type StaticBindingPairs = Vec<(String, String)>;
-type SpecializationKey = (String, StaticBindingPairs);
-type SpecializationCache = HashMap<SpecializationKey, flat::VarName>;
-type StaticBindingResult = (SpecializationKey, String);
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FunctionRequest {
+    pub(crate) name: String,
+    pub(crate) target_def_id: Option<rumoca_core::DefId>,
+    component_ref: Option<rumoca_core::ComponentReference>,
+}
 
-fn is_callable_class_type(class_type: &ast::ClassType) -> bool {
+impl FunctionRequest {
+    fn from_reference(reference: &rumoca_core::Reference) -> Self {
+        Self {
+            name: reference.as_str().to_string(),
+            target_def_id: reference.target_def_id(),
+            component_ref: reference.component_ref().cloned(),
+        }
+    }
+
+    fn from_component_reference(reference: &rumoca_core::ComponentReference) -> Self {
+        Self {
+            name: component_ref_name(reference),
+            target_def_id: reference.def_id,
+            component_ref: Some(reference.clone()),
+        }
+    }
+
+    pub(crate) fn from_resolved_ast_reference(
+        name: String,
+        reference: &rumoca_ir_ast::ComponentReference,
+    ) -> Self {
+        Self {
+            name,
+            target_def_id: reference.def_id,
+            component_ref: Some(ast_component_ref_to_core(reference)),
+        }
+    }
+
+    fn from_name(name: String) -> Self {
+        Self {
+            name,
+            target_def_id: None,
+            component_ref: None,
+        }
+    }
+}
+
+fn ast_component_ref_to_core(
+    reference: &rumoca_ir_ast::ComponentReference,
+) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: reference.local,
+        span: reference.span,
+        parts: reference
+            .parts
+            .iter()
+            .map(|part| rumoca_core::ComponentRefPart {
+                ident: part.ident.text.to_string(),
+                span: reference.span,
+                subs: Vec::new(),
+            })
+            .collect(),
+        def_id: reference.def_id,
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct FunctionRequests {
+    entries: Vec<FunctionRequest>,
+}
+
+impl FunctionRequests {
+    pub(crate) fn insert(&mut self, request: FunctionRequest) {
+        let _ = self.insert_if_new(request);
+    }
+
+    pub(crate) fn insert_if_new(&mut self, request: FunctionRequest) -> bool {
+        if self.contains(&request) {
+            return false;
+        }
+        self.entries.push(request);
+        true
+    }
+
+    pub(crate) fn contains(&self, request: &FunctionRequest) -> bool {
+        self.entries
+            .iter()
+            .any(|existing| same_function_request(existing, request))
+    }
+
+    pub(crate) fn into_entries(self) -> Vec<FunctionRequest> {
+        self.entries
+    }
+}
+
+#[derive(Default)]
+struct FunctionIdentitySet {
+    entries: Vec<FunctionIdentity>,
+}
+
+#[derive(Clone)]
+struct FunctionIdentity {
+    def_id: Option<rumoca_core::DefId>,
+    name: String,
+}
+
+impl FunctionIdentitySet {
+    fn insert_request(&mut self, request: &FunctionRequest) -> bool {
+        self.insert_identity(FunctionIdentity {
+            def_id: request.target_def_id,
+            name: request.name.clone(),
+        })
+    }
+
+    fn insert_function(&mut self, function: &rumoca_core::Function) -> bool {
+        self.insert_identity(FunctionIdentity {
+            def_id: function.def_id,
+            name: function.name.as_str().to_string(),
+        })
+    }
+
+    fn contains_function(&self, function: &rumoca_core::Function) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| same_function_identity(entry, function.def_id, function.name.as_str()))
+    }
+
+    fn contains_name(&self, name: &str) -> bool {
+        self.entries.iter().any(|entry| entry.name == name)
+    }
+
+    fn insert_identity(&mut self, identity: FunctionIdentity) -> bool {
+        if self
+            .entries
+            .iter()
+            .any(|entry| same_function_identity(entry, identity.def_id, &identity.name))
+        {
+            return false;
+        }
+        self.entries.push(identity);
+        true
+    }
+}
+
+fn same_function_identity(
+    left: &FunctionIdentity,
+    right_def_id: Option<rumoca_core::DefId>,
+    right_name: &str,
+) -> bool {
+    match (left.def_id, right_def_id) {
+        (Some(left_id), Some(right_id)) => left_id == right_id && left.name == right_name,
+        _ => left.name == right_name,
+    }
+}
+
+fn is_callable_class_type(class_type: &rumoca_core::ClassType) -> bool {
     !matches!(
         class_type,
-        ast::ClassType::Package | ast::ClassType::Connector | ast::ClassType::Operator
+        rumoca_core::ClassType::Package
+            | rumoca_core::ClassType::Connector
+            | rumoca_core::ClassType::Operator
     )
+}
+
+fn class_by_name_or_def_id<'a>(
+    class_index: &ast::ClassDefIndex<'a>,
+    name: &str,
+    def_id: Option<rumoca_core::DefId>,
+) -> Option<&'a ast::ClassDef> {
+    def_id
+        .and_then(|def_id| class_index.get(def_id))
+        .or_else(|| class_index.get_by_qualified_name(name))
+}
+
+fn function_param_type_alias_dims(
+    class_index: &ast::ClassDefIndex<'_>,
+    component: &ast::Component,
+) -> Vec<i64> {
+    const MAX_DEPTH: usize = 16;
+    let type_name = component.type_name.to_string();
+    let mut current = class_by_name_or_def_id(class_index, &type_name, component.type_name.def_id);
+    let mut dims = Vec::new();
+    let mut visited_defs = HashSet::new();
+    let mut visited_names = HashSet::new();
+
+    for _ in 0..MAX_DEPTH {
+        let Some(class_def) = current else {
+            break;
+        };
+        if let Some(def_id) = class_def.def_id {
+            if !visited_defs.insert(def_id) {
+                break;
+            }
+        } else if !visited_names.insert(class_def.name.text.to_string()) {
+            break;
+        }
+
+        dims.extend(subscripts_to_param_dims(&class_def.array_subscripts));
+
+        let Some(base) = class_def.extends.first() else {
+            break;
+        };
+        let base_name = base.base_name.to_string();
+        if rumoca_core::is_builtin_type(&base_name) {
+            break;
+        }
+        current = class_by_name_or_def_id(class_index, &base_name, base.base_def_id);
+    }
+
+    dims
 }
 
 /// Collect all user function calls from a flat::Model.
 ///
 /// Walks through all equations and expressions to find function calls,
 /// returning a set of unique function names that need definitions.
+#[cfg(test)]
 pub(crate) fn collect_function_calls(flat: &flat::Model) -> HashSet<String> {
-    let mut calls = HashSet::new();
+    collect_function_call_requests(flat)
+        .into_iter()
+        .map(|request| request.name)
+        .collect()
+}
+
+fn collect_function_call_requests(flat: &flat::Model) -> Vec<FunctionRequest> {
+    let mut calls = FunctionRequests::default();
 
     // Collect from equations
     for eq in &flat.equations {
@@ -113,11 +322,11 @@ pub(crate) fn collect_function_calls(flat: &flat::Model) -> HashSet<String> {
         }
     }
 
-    calls
+    calls.into_entries()
 }
 
 /// Collect function calls from a WhenEquation.
-fn collect_from_when_equation(eq: &rumoca_ir_flat::WhenEquation, calls: &mut HashSet<String>) {
+fn collect_from_when_equation(eq: &rumoca_ir_flat::WhenEquation, calls: &mut FunctionRequests) {
     match eq {
         flat::WhenEquation::Assign { value, .. } => {
             collect_from_expression(value, calls);
@@ -151,65 +360,129 @@ fn collect_from_when_equation(eq: &rumoca_ir_flat::WhenEquation, calls: &mut Has
     }
 }
 
-/// Collect function calls from an expression using the visitor pattern.
-///
-/// Uses `flat::ExpressionVisitor` to traverse the expression tree and collect
-/// all user-defined function call names.
-fn collect_from_expression(expr: &flat::Expression, calls: &mut HashSet<String>) {
-    /// Local visitor that collects into an existing HashSet.
-    struct Collector<'a> {
-        calls: &'a mut HashSet<String>,
-    }
+struct FunctionCallCollector<'a> {
+    calls: &'a mut FunctionRequests,
+}
 
-    impl flat::ExpressionVisitor for Collector<'_> {
-        fn visit_function_call(&mut self, name: &flat::VarName, args: &[flat::Expression]) {
-            self.calls.insert(name.to_string());
-            self.walk_function_call(name, args);
+impl rumoca_core::ExpressionVisitor for FunctionCallCollector<'_> {
+    fn visit_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+    ) {
+        self.calls.insert(FunctionRequest::from_reference(name));
+        self.walk_function_call(name, args, is_constructor);
+    }
+}
+
+impl rumoca_ir_flat::visitor::StatementVisitor for FunctionCallCollector<'_> {
+    fn visit_statement_function_call(
+        &mut self,
+        comp: &rumoca_core::ComponentReference,
+        args: &[rumoca_core::Expression],
+        outputs: &[rumoca_core::ComponentReference],
+    ) {
+        self.calls
+            .insert(FunctionRequest::from_component_reference(comp));
+        self.visit_component_reference(comp);
+        for arg in args {
+            self.visit_expression(arg);
+        }
+        for output in outputs {
+            self.visit_component_reference(output);
         }
     }
+}
 
-    let mut collector = Collector { calls };
-    flat::ExpressionVisitor::visit_expression(&mut collector, expr);
+/// Collect function calls from an expression using the visitor pattern.
+fn collect_from_expression(expr: &rumoca_core::Expression, calls: &mut FunctionRequests) {
+    let mut collector = FunctionCallCollector { calls };
+    rumoca_core::ExpressionVisitor::visit_expression(&mut collector, expr);
 }
 
 /// Collect and flatten all function definitions used by the model.
 ///
 /// This finds all function calls in the model, looks up their definitions
-/// in the ast::ClassTree, and converts them to flat::Function objects.
+/// in the ast::ClassTree, and converts them to rumoca_core::Function objects.
 pub(crate) fn collect_functions(
     flat: &mut flat::Model,
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
 ) -> Result<(), FlattenError> {
-    let mut pending: Vec<(String, Option<String>)> = collect_function_calls(flat)
-        .into_iter()
-        .map(|name| (name, None))
+    let mut member_cache = qualify::MemberDefIdCache::default();
+    let initial_calls = collect_function_call_requests(flat);
+    let mut pending: Vec<(FunctionRequest, Option<String>)> = initial_calls
+        .iter()
+        .cloned()
+        .map(|request| (request, None))
         .collect();
     pending.extend(
         flat.functions
             .keys()
-            .map(|name| (name.as_str().to_string(), None)),
+            .map(|name| (FunctionRequest::from_name(name.as_str().to_string()), None)),
     );
-    let mut requested = HashSet::new();
-    let mut expanded = HashSet::new();
-    let mut inserted: HashSet<String> = flat
+    let mut requested: Vec<(FunctionRequest, Option<String>)> = Vec::new();
+    let mut expanded = FunctionIdentitySet::default();
+    let mut inserted: Vec<String> = flat
         .functions
         .keys()
         .map(|n| n.as_str().to_string())
         .collect();
+    for request in &initial_calls {
+        insert_unique_name(&mut inserted, &request.name);
+    }
 
-    while let Some((func_name, caller_scope)) = pending.pop() {
-        if !requested.insert((func_name.clone(), caller_scope.clone())) {
+    while let Some((request, caller_scope)) = pending.pop() {
+        if request_seen_in_scope(&requested, &request, caller_scope.as_deref()) {
+            continue;
+        }
+        requested.push((request.clone(), caller_scope.clone()));
+
+        if let Some(existing) = existing_executable_flat_function(flat, &request.name) {
+            let qualified_name = existing.name.as_str().to_string();
+            if !expanded.insert_function(existing) {
+                continue;
+            }
+            queue_unseen_function_dependencies(&mut pending, &requested, &qualified_name, existing);
+            insert_unique_name(&mut inserted, &qualified_name);
             continue;
         }
 
-        let resolved = lookup_function_with_scope(tree, &func_name, caller_scope.as_deref())
-            .or_else(|| {
-                flat.functions
-                    .get(&flat::VarName::new(func_name.clone()))
-                    .cloned()
-                    .map(|f| (f.name.as_str().to_string(), f))
-            })
-            .or_else(|| lookup_function_in_known_packages(tree, &func_name, &inserted));
+        let resolved = if let Some(resolved) = lookup_function_request_with_scope(
+            tree,
+            class_index,
+            &request,
+            caller_scope.as_deref(),
+            &mut member_cache,
+        )? {
+            if is_executable_flat_function(&resolved.1) {
+                Some(resolved)
+            } else {
+                lookup_function_in_known_packages(
+                    tree,
+                    class_index,
+                    &request.name,
+                    &inserted,
+                    &mut member_cache,
+                )?
+            }
+        } else {
+            flat.functions
+                .get(&rumoca_core::VarName::new(request.name.clone()))
+                .cloned()
+                .map(|f| (f.name.as_str().to_string(), f))
+        };
+        let resolved = match resolved {
+            Some(resolved) => Some(resolved),
+            None => lookup_function_in_known_packages(
+                tree,
+                class_index,
+                &request.name,
+                &inserted,
+                &mut member_cache,
+            )?,
+        };
         let Some((qualified_name, flat_func)) = resolved else {
             // If not found or not a function type, it might be:
             // - An external function (MLS §12.9)
@@ -219,907 +492,635 @@ pub(crate) fn collect_functions(
             continue;
         };
 
-        if !expanded.insert(qualified_name.clone()) {
+        if !expanded.insert_function(&flat_func) {
             continue;
         }
 
-        for dep in collect_function_deps(&flat_func, tree) {
-            if !requested.contains(&(dep.clone(), Some(qualified_name.clone()))) {
+        for dep in collect_function_dep_requests(&flat_func) {
+            if !request_seen_in_scope(&requested, &dep, Some(&qualified_name)) {
                 pending.push((dep, Some(qualified_name.clone())));
             }
         }
-        inserted.insert(qualified_name);
+        insert_unique_name(&mut inserted, &qualified_name);
+        if existing_executable_flat_function(flat, flat_func.name.as_str()).is_some() {
+            continue;
+        }
         flat.add_function(flat_func);
     }
 
     Ok(())
 }
 
-/// Specialize static function-typed parameters at flatten level.
-///
-/// For calls where a function-typed input has a concrete static binding
-/// (explicit argument or function default), clone the callee into a specialized
-/// function and rewrite local function-parameter calls to the concrete target.
-///
-/// MLS §12.4.1/§12.4.2: function formals are lexically scoped and call-time
-/// bound; this pass resolves static bindings early for compile-time overhead
-/// reduction while preserving semantics.
-pub(crate) fn specialize_static_function_params(flat: &mut flat::Model) {
-    let function_index = flat.functions.clone();
-    let mut cache: SpecializationCache = HashMap::new();
-    let mut pending_new_functions: Vec<flat::Function> = Vec::new();
-
-    specialize_equation_lists(
-        flat,
-        &function_index,
-        &mut cache,
-        &mut pending_new_functions,
-    );
-    specialize_variable_annotations(
-        flat,
-        &function_index,
-        &mut cache,
-        &mut pending_new_functions,
-    );
-    specialize_assertions(
-        flat,
-        &function_index,
-        &mut cache,
-        &mut pending_new_functions,
-    );
-    specialize_when_clauses(
-        flat,
-        &function_index,
-        &mut cache,
-        &mut pending_new_functions,
-    );
-    specialize_algorithms(
-        flat,
-        &function_index,
-        &mut cache,
-        &mut pending_new_functions,
-    );
-    specialize_functions(
-        flat,
-        &function_index,
-        &mut cache,
-        &mut pending_new_functions,
-    );
-
-    for func in pending_new_functions {
-        flat.functions.insert(func.name.clone(), func);
-    }
+fn existing_executable_flat_function<'model>(
+    flat: &'model flat::Model,
+    func_name: &str,
+) -> Option<&'model rumoca_core::Function> {
+    let function = flat.functions.get(&rumoca_core::VarName::new(func_name))?;
+    is_executable_flat_function(function).then_some(function)
 }
 
-fn specialize_equation_lists(
-    flat: &mut flat::Model,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    for eq in &mut flat.equations {
-        specialize_in_expr(
-            &mut eq.residual,
-            function_index,
-            cache,
-            pending_new_functions,
-        );
-    }
-    for eq in &mut flat.initial_equations {
-        specialize_in_expr(
-            &mut eq.residual,
-            function_index,
-            cache,
-            pending_new_functions,
-        );
-    }
-}
-
-fn specialize_variable_annotations(
-    flat: &mut flat::Model,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    for var in flat.variables.values_mut() {
-        for expr in [
-            &mut var.binding,
-            &mut var.start,
-            &mut var.min,
-            &mut var.max,
-            &mut var.nominal,
-        ] {
-            rewrite_opt_expr(expr, function_index, cache, pending_new_functions);
-        }
-    }
-}
-
-fn specialize_assertions(
-    flat: &mut flat::Model,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    for assertion in &mut flat.assert_equations {
-        specialize_in_expr(
-            &mut assertion.condition,
-            function_index,
-            cache,
-            pending_new_functions,
-        );
-        specialize_in_expr(
-            &mut assertion.message,
-            function_index,
-            cache,
-            pending_new_functions,
-        );
-        rewrite_opt_expr(
-            &mut assertion.level,
-            function_index,
-            cache,
-            pending_new_functions,
-        );
-    }
-    for assertion in &mut flat.initial_assert_equations {
-        specialize_in_expr(
-            &mut assertion.condition,
-            function_index,
-            cache,
-            pending_new_functions,
-        );
-        specialize_in_expr(
-            &mut assertion.message,
-            function_index,
-            cache,
-            pending_new_functions,
-        );
-        rewrite_opt_expr(
-            &mut assertion.level,
-            function_index,
-            cache,
-            pending_new_functions,
-        );
-    }
-}
-
-fn specialize_when_clauses(
-    flat: &mut flat::Model,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    for when in &mut flat.when_clauses {
-        specialize_in_expr(
-            &mut when.condition,
-            function_index,
-            cache,
-            pending_new_functions,
-        );
-        for eq in &mut when.equations {
-            specialize_in_when_equation(eq, function_index, cache, pending_new_functions);
-        }
-    }
-}
-
-fn specialize_algorithms(
-    flat: &mut flat::Model,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    for alg in &mut flat.algorithms {
-        for stmt in &mut alg.statements {
-            specialize_in_statement(stmt, function_index, cache, pending_new_functions);
-        }
-    }
-    for alg in &mut flat.initial_algorithms {
-        for stmt in &mut alg.statements {
-            specialize_in_statement(stmt, function_index, cache, pending_new_functions);
-        }
-    }
-}
-
-fn specialize_functions(
-    flat: &mut flat::Model,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    for func in flat.functions.values_mut() {
-        for param in func
-            .inputs
-            .iter_mut()
-            .chain(func.outputs.iter_mut())
-            .chain(func.locals.iter_mut())
-        {
-            rewrite_opt_expr(
-                &mut param.default,
-                function_index,
-                cache,
-                pending_new_functions,
-            );
-        }
-        for stmt in &mut func.body {
-            specialize_in_statement(stmt, function_index, cache, pending_new_functions);
-        }
-    }
-}
-
-fn rewrite_opt_expr(
-    expr: &mut Option<flat::Expression>,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    if let Some(expr) = expr {
-        specialize_in_expr(expr, function_index, cache, pending_new_functions);
-    }
-}
-
-fn specialize_in_statement(
-    stmt: &mut flat::Statement,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    match stmt {
-        flat::Statement::Assignment { value, .. } => {
-            specialize_in_expr(value, function_index, cache, pending_new_functions);
-        }
-        flat::Statement::For { indices, equations } => {
-            for idx in indices {
-                specialize_in_expr(&mut idx.range, function_index, cache, pending_new_functions);
-            }
-            for nested in equations {
-                specialize_in_statement(nested, function_index, cache, pending_new_functions);
-            }
-        }
-        flat::Statement::While(block) => {
-            specialize_in_expr(
-                &mut block.cond,
-                function_index,
-                cache,
-                pending_new_functions,
-            );
-            for nested in &mut block.stmts {
-                specialize_in_statement(nested, function_index, cache, pending_new_functions);
-            }
-        }
-        flat::Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                specialize_in_expr(
-                    &mut block.cond,
-                    function_index,
-                    cache,
-                    pending_new_functions,
-                );
-                for nested in &mut block.stmts {
-                    specialize_in_statement(nested, function_index, cache, pending_new_functions);
-                }
-            }
-            if let Some(stmts) = else_block {
-                for nested in stmts {
-                    specialize_in_statement(nested, function_index, cache, pending_new_functions);
-                }
-            }
-        }
-        flat::Statement::When(blocks) => {
-            for block in blocks {
-                specialize_in_expr(
-                    &mut block.cond,
-                    function_index,
-                    cache,
-                    pending_new_functions,
-                );
-                for nested in &mut block.stmts {
-                    specialize_in_statement(nested, function_index, cache, pending_new_functions);
-                }
-            }
-        }
-        flat::Statement::FunctionCall { args, outputs, .. } => {
-            for arg in args {
-                specialize_in_expr(arg, function_index, cache, pending_new_functions);
-            }
-            for output in outputs {
-                specialize_in_expr(output, function_index, cache, pending_new_functions);
-            }
-        }
-        flat::Statement::Reinit { value, .. } => {
-            specialize_in_expr(value, function_index, cache, pending_new_functions);
-        }
-        flat::Statement::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            specialize_in_expr(condition, function_index, cache, pending_new_functions);
-            specialize_in_expr(message, function_index, cache, pending_new_functions);
-            if let Some(level_expr) = level {
-                specialize_in_expr(level_expr, function_index, cache, pending_new_functions);
-            }
-        }
-        flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
-    }
-}
-
-fn specialize_in_when_equation(
-    eq: &mut flat::WhenEquation,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    match eq {
-        flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
-            specialize_in_expr(value, function_index, cache, pending_new_functions);
-        }
-        flat::WhenEquation::Assert { condition, .. } => {
-            specialize_in_expr(condition, function_index, cache, pending_new_functions);
-        }
-        flat::WhenEquation::Conditional {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (condition, equations) in branches {
-                specialize_in_expr(condition, function_index, cache, pending_new_functions);
-                for nested in equations {
-                    specialize_in_when_equation(
-                        nested,
-                        function_index,
-                        cache,
-                        pending_new_functions,
-                    );
-                }
-            }
-            for nested in else_branch {
-                specialize_in_when_equation(nested, function_index, cache, pending_new_functions);
-            }
-        }
-        flat::WhenEquation::FunctionCallOutputs { function, .. } => {
-            specialize_in_expr(function, function_index, cache, pending_new_functions);
-        }
-        flat::WhenEquation::Terminate { .. } => {}
-    }
-}
-
-fn specialize_in_expr(
-    expr: &mut flat::Expression,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    match expr {
-        flat::Expression::Binary { lhs, rhs, .. } => {
-            specialize_in_expr(lhs, function_index, cache, pending_new_functions);
-            specialize_in_expr(rhs, function_index, cache, pending_new_functions);
-        }
-        flat::Expression::Unary { rhs, .. } => {
-            specialize_in_expr(rhs, function_index, cache, pending_new_functions);
-        }
-        flat::Expression::BuiltinCall { args, .. } => {
-            for arg in args {
-                specialize_in_expr(arg, function_index, cache, pending_new_functions);
-            }
-        }
-        flat::Expression::FunctionCall { name, args, .. } => {
-            for arg in args.iter_mut() {
-                specialize_in_expr(arg, function_index, cache, pending_new_functions);
-            }
-            rewrite_static_function_call(name, args, function_index, cache, pending_new_functions);
-        }
-        flat::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                specialize_in_expr(cond, function_index, cache, pending_new_functions);
-                specialize_in_expr(then_expr, function_index, cache, pending_new_functions);
-            }
-            specialize_in_expr(else_branch, function_index, cache, pending_new_functions);
-        }
-        flat::Expression::Array { elements, .. } | flat::Expression::Tuple { elements } => {
-            for elem in elements {
-                specialize_in_expr(elem, function_index, cache, pending_new_functions);
-            }
-        }
-        flat::Expression::Range { start, step, end } => {
-            specialize_in_expr(start, function_index, cache, pending_new_functions);
-            if let Some(step) = step {
-                specialize_in_expr(step, function_index, cache, pending_new_functions);
-            }
-            specialize_in_expr(end, function_index, cache, pending_new_functions);
-        }
-        flat::Expression::Index { base, subscripts } => {
-            specialize_in_expr(base, function_index, cache, pending_new_functions);
-            for sub in subscripts {
-                if let flat::Subscript::Expr(inner) = sub {
-                    specialize_in_expr(inner, function_index, cache, pending_new_functions);
-                }
-            }
-        }
-        flat::Expression::FieldAccess { base, .. } => {
-            specialize_in_expr(base, function_index, cache, pending_new_functions);
-        }
-        flat::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            specialize_in_expr(expr, function_index, cache, pending_new_functions);
-            for idx in indices {
-                specialize_in_expr(&mut idx.range, function_index, cache, pending_new_functions);
-            }
-            if let Some(filter) = filter {
-                specialize_in_expr(filter, function_index, cache, pending_new_functions);
-            }
-        }
-        flat::Expression::VarRef { .. }
-        | flat::Expression::Literal(_)
-        | flat::Expression::Empty => {}
-    }
-}
-
-fn rewrite_static_function_call(
-    name: &mut flat::VarName,
-    args: &mut [flat::Expression],
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) {
-    let Some((key, specialized_name)) =
-        build_static_function_binding(name.as_str(), args, function_index)
-    else {
-        return;
-    };
-    let Some(specialized) = resolve_specialized_name(
-        &key,
-        &specialized_name,
-        name.as_str(),
-        function_index,
-        cache,
-        pending_new_functions,
-    ) else {
-        return;
-    };
-    *name = specialized;
-}
-
-fn resolve_specialized_name(
-    key: &SpecializationKey,
-    specialized_name: &str,
-    original_name: &str,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    cache: &mut SpecializationCache,
-    pending_new_functions: &mut Vec<flat::Function>,
-) -> Option<flat::VarName> {
-    if let Some(existing) = cache.get(key) {
-        return Some(existing.clone());
-    }
-    let func =
-        create_specialized_function(function_index, original_name, specialized_name, &key.1)?;
-    let new_name = func.name.clone();
-    cache.insert(key.clone(), new_name.clone());
-    pending_new_functions.push(func);
-    Some(new_name)
-}
-
-fn build_static_function_binding(
-    function_name: &str,
-    args: &[flat::Expression],
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-) -> Option<StaticBindingResult> {
-    let function = function_index.get(&flat::VarName::new(function_name))?;
-    let mut binding_pairs = Vec::new();
-    for (index, param) in function.inputs.iter().enumerate() {
-        if !is_function_typed_param(param, function_index) {
-            continue;
-        }
-        let arg_expr = args.get(index).or(param.default.as_ref())?;
-        let target = function_name_from_expr(arg_expr)?;
-        if !can_specialize_target_function(&target, function_index) {
-            // Keep canonical call names for non-specializable targets
-            // (notably external/runtime functions).
-            return None;
-        }
-        binding_pairs.push((param.name.clone(), target));
-    }
-    if binding_pairs.is_empty() {
-        return None;
-    }
-    let suffix = binding_pairs
-        .iter()
-        .map(|(param, target)| format!("{param}={target}"))
-        .collect::<Vec<_>>()
-        .join(";");
-    let specialized_name = format!(
-        "{}$spec${}",
-        function.name.as_str(),
-        simple_hash_hex(&suffix)
-    );
-    Some((
-        (function.name.as_str().to_string(), binding_pairs),
-        specialized_name,
-    ))
-}
-
-fn is_function_typed_param(
-    param: &flat::FunctionParam,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-) -> bool {
-    if NON_FUNCTION_SCALAR_TYPES.contains(&param.type_name.as_str()) {
-        return false;
-    }
-    // Treat as function-typed only when the declared type resolves to a partial
-    // function signature. Do not infer "function-typed" from arbitrary named
-    // types that happen to have constructor functions.
-    function_index
-        .get(&flat::VarName::new(param.type_name.as_str()))
-        .is_some_and(|sig| sig.partial)
-        || param.type_name.contains("partial")
-}
-
-fn can_specialize_target_function(
-    target_name: &str,
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-) -> bool {
-    let Some(target) = function_index.get(&flat::VarName::new(target_name)) else {
-        // Unknown targets must stay canonical.
-        return false;
-    };
-    // External/runtime-bound functions must keep canonical symbol names.
-    target.external.is_none()
-}
-
-fn function_name_from_expr(expr: &flat::Expression) -> Option<String> {
-    match expr {
-        flat::Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
-            Some(name.as_str().to_string())
-        }
-        flat::Expression::FunctionCall {
-            name,
-            args,
-            is_constructor: false,
-        } if args.is_empty() => Some(name.as_str().to_string()),
-        _ => None,
-    }
-}
-
-fn create_specialized_function(
-    function_index: &IndexMap<flat::VarName, flat::Function>,
-    original_name: &str,
-    specialized_name: &str,
-    bindings: &[(String, String)],
-) -> Option<flat::Function> {
-    let mut cloned = function_index
-        .get(&flat::VarName::new(original_name))?
-        .clone();
-    cloned.name = flat::VarName::new(specialized_name);
-    let binding_map: HashMap<&str, &str> = bindings
-        .iter()
-        .map(|(param, target)| (param.as_str(), target.as_str()))
-        .collect();
-    for stmt in &mut cloned.body {
-        rewrite_function_param_callees_in_statement(stmt, original_name, &binding_map);
-    }
-    Some(cloned)
-}
-
-fn rewrite_function_param_callees_in_statement(
-    stmt: &mut flat::Statement,
-    owner_name: &str,
-    bindings: &HashMap<&str, &str>,
-) {
-    match stmt {
-        flat::Statement::Assignment { value, .. } => {
-            rewrite_function_param_callees_in_expr(value, owner_name, bindings);
-        }
-        flat::Statement::For { indices, equations } => {
-            for idx in indices {
-                rewrite_function_param_callees_in_expr(&mut idx.range, owner_name, bindings);
-            }
-            for nested in equations {
-                rewrite_function_param_callees_in_statement(nested, owner_name, bindings);
-            }
-        }
-        flat::Statement::While(block) => {
-            rewrite_function_param_callees_in_expr(&mut block.cond, owner_name, bindings);
-            for nested in &mut block.stmts {
-                rewrite_function_param_callees_in_statement(nested, owner_name, bindings);
-            }
-        }
-        flat::Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                rewrite_function_param_callees_in_expr(&mut block.cond, owner_name, bindings);
-                for nested in &mut block.stmts {
-                    rewrite_function_param_callees_in_statement(nested, owner_name, bindings);
-                }
-            }
-            if let Some(stmts) = else_block {
-                for nested in stmts {
-                    rewrite_function_param_callees_in_statement(nested, owner_name, bindings);
-                }
-            }
-        }
-        flat::Statement::When(blocks) => {
-            for block in blocks {
-                rewrite_function_param_callees_in_expr(&mut block.cond, owner_name, bindings);
-                for nested in &mut block.stmts {
-                    rewrite_function_param_callees_in_statement(nested, owner_name, bindings);
-                }
-            }
-        }
-        flat::Statement::FunctionCall { args, outputs, .. } => {
-            for arg in args {
-                rewrite_function_param_callees_in_expr(arg, owner_name, bindings);
-            }
-            for output in outputs {
-                rewrite_function_param_callees_in_expr(output, owner_name, bindings);
-            }
-        }
-        flat::Statement::Reinit { value, .. } => {
-            rewrite_function_param_callees_in_expr(value, owner_name, bindings);
-        }
-        flat::Statement::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            rewrite_function_param_callees_in_expr(condition, owner_name, bindings);
-            rewrite_function_param_callees_in_expr(message, owner_name, bindings);
-            if let Some(level_expr) = level {
-                rewrite_function_param_callees_in_expr(level_expr, owner_name, bindings);
-            }
-        }
-        flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
-    }
-}
-
-fn rewrite_function_param_callees_in_expr(
-    expr: &mut flat::Expression,
-    owner_name: &str,
-    bindings: &HashMap<&str, &str>,
-) {
-    match expr {
-        flat::Expression::Binary { lhs, rhs, .. } => {
-            rewrite_function_param_callees_in_expr(lhs, owner_name, bindings);
-            rewrite_function_param_callees_in_expr(rhs, owner_name, bindings);
-        }
-        flat::Expression::Unary { rhs, .. } => {
-            rewrite_function_param_callees_in_expr(rhs, owner_name, bindings);
-        }
-        flat::Expression::BuiltinCall { args, .. } => {
-            for arg in args {
-                rewrite_function_param_callees_in_expr(arg, owner_name, bindings);
-            }
-        }
-        flat::Expression::FunctionCall { name, args, .. } => {
-            for arg in args {
-                rewrite_function_param_callees_in_expr(arg, owner_name, bindings);
-            }
-            if let Some(rewritten) = rewrite_callee_name(name.as_str(), owner_name, bindings) {
-                *name = flat::VarName::new(rewritten);
-            }
-        }
-        flat::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                rewrite_function_param_callees_in_expr(cond, owner_name, bindings);
-                rewrite_function_param_callees_in_expr(then_expr, owner_name, bindings);
-            }
-            rewrite_function_param_callees_in_expr(else_branch, owner_name, bindings);
-        }
-        flat::Expression::Array { elements, .. } | flat::Expression::Tuple { elements } => {
-            for elem in elements {
-                rewrite_function_param_callees_in_expr(elem, owner_name, bindings);
-            }
-        }
-        flat::Expression::Range { start, step, end } => {
-            rewrite_function_param_callees_in_expr(start, owner_name, bindings);
-            if let Some(step) = step {
-                rewrite_function_param_callees_in_expr(step, owner_name, bindings);
-            }
-            rewrite_function_param_callees_in_expr(end, owner_name, bindings);
-        }
-        flat::Expression::Index { base, subscripts } => {
-            rewrite_function_param_callees_in_expr(base, owner_name, bindings);
-            for sub in subscripts {
-                if let flat::Subscript::Expr(inner) = sub {
-                    rewrite_function_param_callees_in_expr(inner, owner_name, bindings);
-                }
-            }
-        }
-        flat::Expression::FieldAccess { base, .. } => {
-            rewrite_function_param_callees_in_expr(base, owner_name, bindings);
-        }
-        flat::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            rewrite_function_param_callees_in_expr(expr, owner_name, bindings);
-            for idx in indices {
-                rewrite_function_param_callees_in_expr(&mut idx.range, owner_name, bindings);
-            }
-            if let Some(filter) = filter {
-                rewrite_function_param_callees_in_expr(filter, owner_name, bindings);
-            }
-        }
-        flat::Expression::VarRef { .. }
-        | flat::Expression::Literal(_)
-        | flat::Expression::Empty => {}
-    }
-}
-
-fn rewrite_callee_name(
-    name: &str,
-    owner_name: &str,
-    bindings: &HashMap<&str, &str>,
-) -> Option<String> {
-    if let Some(target) = bindings.get(name) {
-        return Some((*target).to_string());
-    }
-    if let Some((owner, member)) = name.rsplit_once('.')
-        && owner == owner_name
-        && let Some(target) = bindings.get(member)
+fn function_by_request<'model>(
+    flat: &'model flat::Model,
+    request: &FunctionRequest,
+) -> Option<&'model rumoca_core::Function> {
+    if let Some(function) = flat
+        .functions
+        .get(&rumoca_core::VarName::new(&request.name))
     {
-        return Some((*target).to_string());
+        return Some(function);
+    }
+    if let Some(def_id) = request.target_def_id
+        && let Some(function) = flat
+            .functions
+            .values()
+            .find(|function| function.def_id == Some(def_id))
+    {
+        return Some(function);
     }
     None
 }
 
-fn simple_hash_hex(input: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    input.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+fn request_seen_in_scope(
+    requested: &[(FunctionRequest, Option<String>)],
+    request: &FunctionRequest,
+    caller_scope: Option<&str>,
+) -> bool {
+    requested.iter().any(|(existing, existing_scope)| {
+        same_function_request(existing, request) && existing_scope.as_deref() == caller_scope
+    })
 }
 
-/// Look up a function by name from the ast::ClassTree and convert to flat::Function.
-///
-/// This is useful for lazy function lookup during constant evaluation.
-/// Returns None if the function is not found or is not a function type.
-pub(crate) fn lookup_function(tree: &ast::ClassTree, func_name: &str) -> Option<flat::Function> {
-    let (_, func) = lookup_function_with_name(tree, func_name)?;
-    Some(func)
+fn same_function_request(left: &FunctionRequest, right: &FunctionRequest) -> bool {
+    if let (Some(left_ref), Some(right_ref)) = (&left.component_ref, &right.component_ref)
+        && left_ref == right_ref
+    {
+        return true;
+    }
+    match (left.target_def_id, right.target_def_id) {
+        (Some(left_id), Some(right_id)) => left_id == right_id && left.name == right.name,
+        _ => left.name == right.name,
+    }
 }
 
-fn lookup_function_with_name(
+fn queue_unseen_function_dependencies(
+    pending: &mut Vec<(FunctionRequest, Option<String>)>,
+    requested: &[(FunctionRequest, Option<String>)],
+    qualified_name: &str,
+    function: &rumoca_core::Function,
+) {
+    for dep in collect_function_dep_requests(function) {
+        if !request_seen_in_scope(requested, &dep, Some(qualified_name)) {
+            pending.push((dep, Some(qualified_name.to_string())));
+        }
+    }
+}
+
+fn insert_unique_name(names: &mut Vec<String>, name: &str) {
+    if !names.iter().any(|existing| existing == name) {
+        names.push(name.to_string());
+    }
+}
+
+pub(crate) fn prune_unreachable_functions(flat: &mut flat::Model) {
+    let mut reachable = FunctionIdentitySet::default();
+    let mut pending = collect_function_call_requests(flat);
+    for request in &pending {
+        reachable.insert_request(request);
+    }
+
+    while let Some(request) = pending.pop() {
+        let Some(function) = function_by_request(flat, &request) else {
+            continue;
+        };
+        for dependency in collect_function_dep_requests(function) {
+            if reachable.insert_request(&dependency) {
+                pending.push(dependency);
+            }
+        }
+    }
+
+    flat.functions.retain(|name, function| {
+        reachable.contains_function(function) || reachable.contains_name(name.as_str())
+    });
+}
+
+pub(crate) fn validate_flat_function_bindings(flat: &flat::Model) -> Result<(), FlattenError> {
+    for function in flat.functions.values() {
+        if is_executable_flat_function(function) {
+            continue;
+        }
+        return Err(FlattenError::function_without_body(
+            function.name.as_str(),
+            function.span,
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn is_executable_flat_function(function: &rumoca_core::Function) -> bool {
+    function.is_constructor
+        || function.external.is_some()
+        || !function.body.is_empty()
+        || function
+            .outputs
+            .iter()
+            .any(|output| output.default.is_some())
+}
+
+pub(crate) fn canonicalize_function_calls_in_expression_with_scope(
+    expr: &mut rumoca_core::Expression,
     tree: &ast::ClassTree,
-    func_name: &str,
-) -> Option<(String, flat::Function)> {
-    lookup_function_with_scope(tree, func_name, None)
+    class_index: &ast::ClassDefIndex<'_>,
+    caller_scope: Option<&str>,
+) {
+    if caller_scope.is_none() {
+        return;
+    }
+    *expr = ScopedFunctionCallCanonicalizer {
+        tree,
+        class_index,
+        caller_scope,
+    }
+    .rewrite_expression(expr);
 }
 
-fn lookup_function_with_scope(
+struct ScopedFunctionCallCanonicalizer<'a> {
+    tree: &'a ast::ClassTree,
+    class_index: &'a ast::ClassDefIndex<'a>,
+    caller_scope: Option<&'a str>,
+}
+
+impl ExpressionRewriter for ScopedFunctionCallCanonicalizer<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            span,
+        } = expr
+        else {
+            return self.walk_expression(expr);
+        };
+        let args = self.rewrite_expressions(args);
+        if *is_constructor {
+            return rumoca_core::Expression::FunctionCall {
+                name: name.clone(),
+                args,
+                is_constructor: *is_constructor,
+                span: *span,
+            };
+        }
+        let Some(resolved_name) = canonical_function_name_with_scope(
+            name,
+            self.tree,
+            self.class_index,
+            self.caller_scope,
+        ) else {
+            return rumoca_core::Expression::FunctionCall {
+                name: name.clone(),
+                args,
+                is_constructor: *is_constructor,
+                span: *span,
+            };
+        };
+        rumoca_core::Expression::FunctionCall {
+            name: resolved_function_reference(name, resolved_name, self.tree, self.class_index),
+            args,
+            is_constructor: *is_constructor,
+            span: *span,
+        }
+    }
+}
+
+fn canonical_function_name_with_scope(
+    reference: &rumoca_core::Reference,
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    caller_scope: Option<&str>,
+) -> Option<String> {
+    if let Some(def_id) = reference.target_def_id()
+        && let Some(class_def) = class_index.get(def_id)
+        && class_def.class_type == rumoca_core::ClassType::Function
+        && !class_def.partial
+    {
+        return class_index
+            .qualified_name(def_id)
+            .map(str::to_string)
+            .filter(|name| name != reference.as_str());
+    }
+
+    let resolved =
+        resolve_function_class_with_scope(tree, class_index, reference.as_str(), caller_scope)?;
+    if resolved.class_def.class_type != rumoca_core::ClassType::Function
+        || resolved.class_def.partial
+    {
+        return None;
+    }
+    (resolved.exposed_name != reference.as_str()).then_some(resolved.exposed_name)
+}
+
+fn resolved_function_reference(
+    original: &rumoca_core::Reference,
+    resolved_name: String,
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+) -> rumoca_core::Reference {
+    let Some(mut component_ref) = original.component_ref().cloned() else {
+        return rumoca_core::Reference::new(resolved_name);
+    };
+    component_ref.def_id = tree.name_map.get(&resolved_name).copied().or_else(|| {
+        class_index
+            .get_by_qualified_name(&resolved_name)
+            .and_then(|class_def| class_def.def_id)
+    });
+    rumoca_core::Reference::with_component_reference(resolved_name, component_ref)
+}
+
+fn lookup_function_with_scope<'tree>(
+    tree: &'tree ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
     func_name: &str,
     caller_scope: Option<&str>,
-) -> Option<(String, flat::Function)> {
-    let (lookup_name, emitted_name) =
-        resolve_function_target_with_scope(tree, func_name, caller_scope)?;
-    let class_def = tree.get_class_by_qualified_name(&lookup_name)?;
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
+    let Some(resolved) =
+        resolve_function_class_with_scope(tree, class_index, func_name, caller_scope)
+    else {
+        return Ok(None);
+    };
     let flat_func = convert_callable(
         tree,
-        class_def,
-        &emitted_name,
+        class_index,
+        resolved.class_def,
+        &resolved.exposed_name,
         &tree.source_map,
         &tree.def_map,
+        member_cache,
     )?;
-    Some((emitted_name, flat_func))
+    let Some(flat_func) = flat_func else {
+        return Ok(None);
+    };
+    Ok(Some((resolved.exposed_name, flat_func)))
 }
 
-fn resolve_function_target_with_scope(
-    tree: &ast::ClassTree,
-    func_name: &str,
+fn lookup_function_request_with_scope<'tree>(
+    tree: &'tree ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    request: &FunctionRequest,
     caller_scope: Option<&str>,
-) -> Option<(String, String)> {
-    if let Some(class_def) = tree.get_class_by_qualified_name(func_name)
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
+    if let Some(resolved) = lookup_exposed_function_request_by_name(
+        tree,
+        class_index,
+        request,
+        caller_scope,
+        member_cache,
+    )? {
+        return Ok(Some(resolved));
+    }
+    if let Some(def_id) = request.target_def_id
+        && let Some(class_def) = class_index.get(def_id)
         && is_callable_class_type(&class_def.class_type)
+        && !class_def.partial
     {
-        return Some((func_name.to_string(), func_name.to_string()));
+        let exposed_name = class_index
+            .qualified_name(def_id)
+            .unwrap_or(request.name.as_str())
+            .to_string();
+        if let Some(flat_func) = convert_callable(
+            tree,
+            class_index,
+            class_def,
+            &exposed_name,
+            &tree.source_map,
+            &tree.def_map,
+            member_cache,
+        )? && is_executable_flat_function(&flat_func)
+        {
+            return Ok(Some((exposed_name, flat_func)));
+        }
     }
 
-    if let Some((package_name, leaf)) = func_name.rsplit_once('.')
-        && tree.get_class_by_qualified_name(package_name).is_some()
-        && let Some(inherited_name) =
-            crate::pipeline::resolve_function_in_package_chain(tree, package_name, leaf)
-    {
-        return Some((inherited_name, func_name.to_string()));
-    }
+    lookup_function_with_scope(tree, class_index, &request.name, caller_scope, member_cache)
+}
 
-    resolve_function_qualified_name_with_scope(tree, func_name, caller_scope)
-        .map(|name| (name.clone(), name))
+fn lookup_exposed_function_request_by_name<'tree>(
+    tree: &'tree ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    request: &FunctionRequest,
+    caller_scope: Option<&str>,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
+    let Some(def_id) = request.target_def_id else {
+        return Ok(None);
+    };
+    if class_index
+        .qualified_name(def_id)
+        .is_some_and(|canonical_name| canonical_name == request.name)
+    {
+        return Ok(None);
+    }
+    let Some(resolved) =
+        resolve_function_class_with_scope(tree, class_index, &request.name, caller_scope)
+    else {
+        return Ok(None);
+    };
+    if resolved.class_def.def_id != Some(def_id)
+        || !is_callable_class_type(&resolved.class_def.class_type)
+        || resolved.class_def.partial
+    {
+        return Ok(None);
+    }
+    let Some(flat_func) = convert_callable(
+        tree,
+        class_index,
+        resolved.class_def,
+        &resolved.exposed_name,
+        &tree.source_map,
+        &tree.def_map,
+        member_cache,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(is_executable_flat_function(&flat_func).then_some((resolved.exposed_name, flat_func)))
+}
+
+pub(crate) fn lookup_function_request(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    request: &FunctionRequest,
+) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
+    let mut member_cache = qualify::MemberDefIdCache::default();
+    lookup_function_request_with_scope(tree, class_index, request, None, &mut member_cache)
+}
+
+struct FunctionClassResolution<'a> {
+    exposed_name: String,
+    class_def: &'a ast::ClassDef,
 }
 
 /// Resolve alias-style function names (e.g. `Medium.dynamicViscosity`) by
 /// reusing package prefixes already present in the model's known function set.
-fn lookup_function_in_known_packages(
-    tree: &ast::ClassTree,
+fn lookup_function_in_known_packages<'tree>(
+    tree: &'tree ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
     func_name: &str,
-    known_functions: &HashSet<String>,
-) -> Option<(String, flat::Function)> {
-    let mut parts = func_name.split('.');
-    let _first = parts.next()?;
-    let remainder = parts.collect::<Vec<_>>().join(".");
+    known_functions: &[String],
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
+    let Some((_first, remainder)) = path_utils::split_first_top_level(func_name) else {
+        return Ok(None);
+    };
     if remainder.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let mut matched: Option<String> = None;
     for known in known_functions {
-        let Some((pkg_prefix, _leaf)) = known.rsplit_once('.') else {
+        let Some(pkg_prefix) = path_utils::parent_scope(known) else {
             continue;
         };
-        let candidate = format!("{pkg_prefix}.{remainder}");
-        let Some(class_def) = tree.get_class_by_qualified_name(&candidate) else {
-            continue;
-        };
-        if !is_callable_class_type(&class_def.class_type) {
+        if resolve_function_in_package_chain_class(tree, class_index, pkg_prefix, remainder)
+            .is_none()
+        {
             continue;
         }
+        let candidate = format!("{pkg_prefix}.{remainder}");
         if matched
             .as_ref()
             .is_some_and(|existing| existing != &candidate)
         {
-            return None;
+            return Ok(None);
         }
         matched = Some(candidate);
     }
 
-    let qualified_name = matched?;
-    let class_def = tree.get_class_by_qualified_name(&qualified_name)?;
+    let Some(qualified_name) = matched else {
+        return Ok(None);
+    };
+    let Some((class_def, _source_name)) = path_utils::split_last_top_level(&qualified_name)
+        .and_then(|(package, leaf)| {
+            resolve_function_in_package_chain_class(tree, class_index, package, leaf)
+        })
+    else {
+        return Ok(None);
+    };
     let flat_func = convert_callable(
         tree,
+        class_index,
         class_def,
         &qualified_name,
         &tree.source_map,
         &tree.def_map,
+        member_cache,
     )?;
-    Some((qualified_name, flat_func))
+    let Some(flat_func) = flat_func else {
+        return Ok(None);
+    };
+    if !is_executable_flat_function(&flat_func) {
+        return Ok(None);
+    }
+    Ok(Some((qualified_name, flat_func)))
 }
 
-fn resolve_function_qualified_name_with_scope(
-    tree: &ast::ClassTree,
+fn resolve_function_class_with_scope<'a>(
+    tree: &'a ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'a>,
     func_name: &str,
     caller_scope: Option<&str>,
-) -> Option<String> {
-    if let Some(class_def) = tree.get_class_by_qualified_name(func_name)
+) -> Option<FunctionClassResolution<'a>> {
+    if let Some(class_def) = class_index.get_by_qualified_name(func_name)
         && is_callable_class_type(&class_def.class_type)
     {
-        return Some(func_name.to_string());
-    }
-
-    if let Some(matched) = resolve_unique_function_suffix(tree, func_name) {
-        return Some(matched);
-    }
-
-    let short_name = func_name.rsplit('.').next().unwrap_or(func_name);
-    if short_name != func_name {
-        if let Some(caller_scope) = caller_scope
-            && let Some(scoped_match) =
-                resolve_function_in_caller_packages(tree, caller_scope, short_name)
+        if class_def.partial
+            && let Some(caller_scope) = caller_scope
         {
-            return Some(scoped_match);
+            let short_name = path_utils::top_level_last_segment(func_name);
+            if let Some(scoped_match) =
+                resolve_function_in_caller_packages(tree, class_index, caller_scope, short_name)
+                && scoped_match != func_name
+            {
+                return resolve_function_class_with_scope(
+                    tree,
+                    class_index,
+                    &scoped_match,
+                    Some(caller_scope),
+                );
+            }
         }
-        if let Some(matched) = resolve_unique_function_suffix(tree, short_name) {
-            return Some(matched);
-        }
+        return Some(FunctionClassResolution {
+            exposed_name: func_name.to_string(),
+            class_def,
+        });
+    }
+
+    if let Some((package_name, function_leaf)) = path_utils::split_last_top_level(func_name)
+        && let Some((class_def, _source_name)) =
+            resolve_function_in_package_chain_class(tree, class_index, package_name, function_leaf)
+    {
+        return Some(FunctionClassResolution {
+            exposed_name: func_name.to_string(),
+            class_def,
+        });
+    }
+
+    if let Some(caller_scope) = caller_scope
+        && let Some(scoped_match) =
+            resolve_function_path_in_caller_packages(tree, class_index, caller_scope, func_name)
+    {
+        return resolve_function_class_with_scope(
+            tree,
+            class_index,
+            &scoped_match,
+            Some(caller_scope),
+        );
+    }
+
+    let short_name = path_utils::top_level_last_segment(func_name);
+    if short_name != func_name
+        && let Some(caller_scope) = caller_scope
+        && let Some(scoped_match) =
+            resolve_function_in_caller_packages(tree, class_index, caller_scope, short_name)
+    {
+        return resolve_function_class_with_scope(
+            tree,
+            class_index,
+            &scoped_match,
+            Some(caller_scope),
+        );
     }
 
     None
 }
 
-fn collect_function_deps(func: &flat::Function, tree: &ast::ClassTree) -> HashSet<String> {
-    let _ = tree;
-    let mut deps = HashSet::new();
+fn resolve_function_path_in_caller_packages(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    caller_scope: &str,
+    func_path: &str,
+) -> Option<String> {
+    let mut visited = HashSet::new();
+    resolve_function_path_in_caller_packages_inner(
+        tree,
+        class_index,
+        caller_scope,
+        func_path,
+        &mut visited,
+    )
+}
+
+fn resolve_function_path_in_caller_packages_inner(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    caller_scope: &str,
+    func_path: &str,
+    visited: &mut HashSet<String>,
+) -> Option<String> {
+    if !visited.insert(caller_scope.to_string()) {
+        return None;
+    }
+
+    if let Some(class_def) = class_index.get_by_qualified_name(caller_scope) {
+        for ext in &class_def.extends {
+            let base_name = ext.base_name.to_string();
+            if let Some(base_scope) =
+                crate::pipeline::resolve_extends_base_qname(class_index, &base_name, caller_scope)
+                && let Some(resolved) = resolve_function_path_in_caller_packages_inner(
+                    tree,
+                    class_index,
+                    &base_scope,
+                    func_path,
+                    visited,
+                )
+            {
+                return Some(resolved);
+            }
+        }
+    }
+
+    if !path_utils::has_top_level_dot(func_path) {
+        return resolve_function_in_caller_packages(tree, class_index, caller_scope, func_path);
+    }
+
+    let mut prefix = path_utils::parent_scope(caller_scope)?;
+    loop {
+        let candidate = format!("{prefix}.{func_path}");
+        if let Some((package_name, function_leaf)) = path_utils::split_last_top_level(&candidate)
+            && resolve_function_in_package_chain_class(
+                tree,
+                class_index,
+                package_name,
+                function_leaf,
+            )
+            .is_some()
+        {
+            return Some(candidate);
+        }
+        let Some(parent) = path_utils::parent_scope(prefix) else {
+            break;
+        };
+        prefix = parent;
+    }
+    None
+}
+
+fn resolve_function_in_package_chain_class<'a>(
+    tree: &'a ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'a>,
+    package_name: &str,
+    function_leaf: &str,
+) -> Option<(&'a ast::ClassDef, String)> {
+    fn resolve_inner<'a>(
+        tree: &'a ast::ClassTree,
+        class_index: &ast::ClassDefIndex<'a>,
+        package_name: &str,
+        function_leaf: &str,
+        visited: &mut HashSet<String>,
+    ) -> Option<(&'a ast::ClassDef, String)> {
+        if !visited.insert(package_name.to_string()) {
+            return None;
+        }
+
+        let direct = format!("{package_name}.{function_leaf}");
+        if let Some(class_def) = class_index.get_by_qualified_name(&direct)
+            && is_callable_class_type(&class_def.class_type)
+        {
+            return Some((class_def, direct));
+        }
+
+        let package_class = class_index.get_by_qualified_name(package_name)?;
+        for ext in &package_class.extends {
+            let base_name = ext.base_name.to_string();
+            let resolved_base = ext
+                .base_def_id
+                .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+                .or_else(|| {
+                    crate::resolve_class_in_scope_indexed(class_index, &base_name, package_name).1
+                })
+                .or_else(|| {
+                    class_index
+                        .get_by_qualified_name(&base_name)
+                        .map(|_| base_name.clone())
+                });
+            if let Some(base) = resolved_base
+                && let Some(resolved) =
+                    resolve_inner(tree, class_index, &base, function_leaf, visited)
+            {
+                return Some(resolved);
+            }
+        }
+
+        None
+    }
+
+    let mut visited = HashSet::new();
+    resolve_inner(tree, class_index, package_name, function_leaf, &mut visited)
+}
+
+pub(crate) fn collect_function_dep_requests(func: &rumoca_core::Function) -> Vec<FunctionRequest> {
+    let mut deps = FunctionRequests::default();
 
     for param in func
         .inputs
@@ -1130,90 +1131,30 @@ fn collect_function_deps(func: &flat::Function, tree: &ast::ClassTree) -> HashSe
         if let Some(default) = &param.default {
             collect_from_expression(default, &mut deps);
         }
+        for subscript in &param.shape_expr {
+            collect_from_subscript(subscript, &mut deps);
+        }
     }
 
     for stmt in &func.body {
         collect_from_statement(stmt, &mut deps);
     }
 
-    deps
+    deps.into_entries()
 }
 
-fn collect_from_statement(stmt: &flat::Statement, deps: &mut HashSet<String>) {
-    match stmt {
-        flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
-        flat::Statement::Assignment { value, .. } => {
-            collect_from_expression(value, deps);
-        }
-        flat::Statement::For { indices, equations } => {
-            for idx in indices {
-                collect_from_expression(&idx.range, deps);
-            }
-            for inner in equations {
-                collect_from_statement(inner, deps);
-            }
-        }
-        flat::Statement::While(block) => {
-            collect_from_expression(&block.cond, deps);
-            for inner in &block.stmts {
-                collect_from_statement(inner, deps);
-            }
-        }
-        flat::Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_from_expression(&block.cond, deps);
-                for inner in &block.stmts {
-                    collect_from_statement(inner, deps);
-                }
-            }
-            if let Some(stmts) = else_block {
-                for inner in stmts {
-                    collect_from_statement(inner, deps);
-                }
-            }
-        }
-        flat::Statement::When(blocks) => {
-            for block in blocks {
-                collect_from_expression(&block.cond, deps);
-                for inner in &block.stmts {
-                    collect_from_statement(inner, deps);
-                }
-            }
-        }
-        flat::Statement::FunctionCall {
-            comp,
-            args,
-            outputs,
-        } => {
-            deps.insert(component_ref_name(comp));
-            for arg in args {
-                collect_from_expression(arg, deps);
-            }
-            for output in outputs {
-                collect_from_expression(output, deps);
-            }
-        }
-        flat::Statement::Reinit { value, .. } => {
-            collect_from_expression(value, deps);
-        }
-        flat::Statement::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            collect_from_expression(condition, deps);
-            collect_from_expression(message, deps);
-            if let Some(level_expr) = level {
-                collect_from_expression(level_expr, deps);
-            }
-        }
+fn collect_from_subscript(subscript: &rumoca_core::Subscript, deps: &mut FunctionRequests) {
+    if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+        collect_from_expression(expr, deps);
     }
 }
 
-fn component_ref_name(comp: &rumoca_ir_flat::ComponentReference) -> String {
+fn collect_from_statement(stmt: &rumoca_core::Statement, deps: &mut FunctionRequests) {
+    let mut collector = FunctionCallCollector { calls: deps };
+    rumoca_ir_flat::visitor::StatementVisitor::visit_statement(&mut collector, stmt);
+}
+
+fn component_ref_name(comp: &rumoca_core::ComponentReference) -> String {
     comp.parts
         .iter()
         .map(|part| part.ident.as_str())
@@ -1221,41 +1162,27 @@ fn component_ref_name(comp: &rumoca_ir_flat::ComponentReference) -> String {
         .join(".")
 }
 
-fn resolve_unique_function_suffix(tree: &ast::ClassTree, suffix_name: &str) -> Option<String> {
-    let suffix = format!(".{suffix_name}");
-    let mut matched: Option<String> = None;
-    for candidate in tree.name_map.keys() {
-        if !candidate.ends_with(&suffix) {
-            continue;
-        }
-        let Some(class_def) = tree.get_class_by_qualified_name(candidate) else {
-            continue;
-        };
-        if !is_callable_class_type(&class_def.class_type) {
-            continue;
-        }
-        if matched.is_some() {
-            return None;
-        }
-        matched = Some(candidate.clone());
-    }
-    matched
-}
-
 fn resolve_function_in_caller_packages(
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
     caller_scope: &str,
     short_name: &str,
 ) -> Option<String> {
-    let mut prefix = caller_scope.rsplit_once('.').map(|(pkg, _)| pkg)?;
+    let mut prefix = path_utils::parent_scope(caller_scope)?;
     loop {
         let candidate = format!("{prefix}.{short_name}");
-        if let Some(class_def) = tree.get_class_by_qualified_name(&candidate)
-            && is_callable_class_type(&class_def.class_type)
+        if let Some((package_name, function_leaf)) = path_utils::split_last_top_level(&candidate)
+            && resolve_function_in_package_chain_class(
+                tree,
+                class_index,
+                package_name,
+                function_leaf,
+            )
+            .is_some()
         {
             return Some(candidate);
         }
-        let Some((parent, _)) = prefix.rsplit_once('.') else {
+        let Some(parent) = path_utils::parent_scope(prefix) else {
             break;
         };
         prefix = parent;
@@ -1270,21 +1197,32 @@ struct FunctionClassContext {
     imports: qualify::ImportMap,
 }
 
-fn collect_function_context(
+fn collect_function_context<'tree>(
     tree: &ast::ClassTree,
-    class_def: &ast::ClassDef,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
 ) -> FunctionClassContext {
     let mut visited = HashSet::new();
     let mut context = FunctionClassContext::default();
-    collect_function_context_recursive(tree, class_def, &mut visited, &mut context);
+    collect_function_context_recursive(
+        tree,
+        class_index,
+        class_def,
+        &mut visited,
+        &mut context,
+        member_cache,
+    );
     context
 }
 
-fn collect_function_context_recursive(
+fn collect_function_context_recursive<'tree>(
     tree: &ast::ClassTree,
-    class_def: &ast::ClassDef,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
     visited: &mut HashSet<usize>,
     context: &mut FunctionClassContext,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
 ) {
     let class_key = class_def as *const ast::ClassDef as usize;
     if !visited.insert(class_key) {
@@ -1294,60 +1232,89 @@ fn collect_function_context_recursive(
     for extend in &class_def.extends {
         let base_class = extend
             .base_def_id
-            .and_then(|def_id| tree.get_class_by_def_id(def_id))
+            .and_then(|def_id| class_index.get(def_id))
             .or_else(|| {
                 let qualified = extend.base_name.to_string();
-                tree.get_class_by_qualified_name(&qualified)
+                class_index.get_by_qualified_name(&qualified)
             });
         if let Some(base_class) = base_class {
-            collect_function_context_recursive(tree, base_class, visited, context);
+            collect_function_context_recursive(
+                tree,
+                class_index,
+                base_class,
+                visited,
+                context,
+                member_cache,
+            );
         }
     }
 
-    resolve_import_pairs(&class_def.imports, tree, &mut context.imports);
+    if let Some(class_def_id) = class_def.def_id {
+        collect_lexical_ancestor_imports(class_index, class_def_id, &mut context.imports);
+        qualify::collect_lexical_package_aliases_for_def_id_with_member_cache(
+            tree,
+            class_index,
+            class_def_id,
+            &mut context.imports,
+            Some(member_cache),
+        );
+        qualify::collect_lexical_class_aliases_for_def_id_with_member_cache(
+            tree,
+            class_index,
+            class_def_id,
+            &mut context.imports,
+            Some(member_cache),
+        );
+        qualify::collect_lexical_constant_aliases_for_def_id_with_packages_and_member_cache(
+            tree,
+            class_index,
+            class_def_id,
+            &[],
+            &mut context.imports,
+            Some(member_cache),
+        );
+    }
+    resolve_import_pairs(&class_def.imports, class_index, &mut context.imports);
     context.algorithms.extend(class_def.algorithms.clone());
     context.components.extend(class_def.components.clone());
 }
 
 fn collect_lexical_ancestor_imports(
-    tree: &ast::ClassTree,
-    class_name: &str,
+    class_index: &ast::ClassDefIndex<'_>,
+    class_def_id: rumoca_core::DefId,
     map: &mut qualify::ImportMap,
 ) {
-    let mut ancestors = Vec::new();
-    let mut scope = class_name;
-    while let Some((parent, _)) = scope.rsplit_once('.') {
-        ancestors.push(parent.to_string());
-        scope = parent;
+    let mut ancestor_def_ids = Vec::new();
+    let mut current = class_index.parent_def_id(class_def_id);
+    while let Some(def_id) = current {
+        ancestor_def_ids.push(def_id);
+        current = class_index.parent_def_id(def_id);
     }
-    ancestors.reverse();
-    for ancestor in ancestors {
-        let Some(ancestor_class) = tree.get_class_by_qualified_name(&ancestor) else {
+    for ancestor_def_id in ancestor_def_ids.into_iter().rev() {
+        let Some(ancestor_class) = class_index.get(ancestor_def_id) else {
             continue;
         };
-        resolve_import_pairs(&ancestor_class.imports, tree, map);
+        resolve_import_pairs(&ancestor_class.imports, class_index, map);
     }
 }
 
 fn resolve_import_pairs(
     imports: &[ast::Import],
-    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
     map: &mut qualify::ImportMap,
 ) {
     for import in imports {
         match import {
             ast::Import::Qualified { path, .. } => {
                 let fqn = path.to_string();
-                if let Some(short) = fqn.rsplit('.').next() {
-                    map.insert(short.to_string(), fqn);
-                }
+                map.insert(path_utils::top_level_last_segment(&fqn).to_string(), fqn);
             }
             ast::Import::Renamed { alias, path, .. } => {
                 map.insert(alias.text.to_string(), path.to_string());
             }
             ast::Import::Unqualified { path, .. } => {
                 let pkg_name = path.to_string();
-                let Some(class_def) = tree.get_class_by_qualified_name(&pkg_name) else {
+                let Some(class_def) = class_index.get_by_qualified_name(&pkg_name) else {
                     continue;
                 };
                 for name in class_def.components.keys() {
@@ -1368,67 +1335,85 @@ fn resolve_import_pairs(
     }
 }
 
-fn convert_callable(
+fn convert_callable<'tree>(
     tree: &ast::ClassTree,
-    class_def: &ast::ClassDef,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
-    def_map: &indexmap::IndexMap<rumoca_core::DefId, String>,
-) -> Option<flat::Function> {
+    def_map: &crate::ResolveDefMap,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<Option<rumoca_core::Function>, FlattenError> {
     match &class_def.class_type {
-        ast::ClassType::Function => {
-            convert_function(tree, class_def, qualified_name, source_map, def_map).ok()
-        }
-        class_type if is_callable_class_type(class_type) => Some(convert_constructor_signature(
+        rumoca_core::ClassType::Function => convert_function(
             tree,
+            class_index,
             class_def,
             qualified_name,
             source_map,
             def_map,
-        )),
-        _ => None,
+            member_cache,
+        )
+        .map(Some),
+        class_type if is_callable_class_type(class_type) => {
+            Ok(Some(convert_constructor_signature(
+                class_index,
+                class_def,
+                qualified_name,
+                source_map,
+                def_map,
+            )?))
+        }
+        _ => Ok(None),
     }
 }
 
-/// Convert a ast::ClassDef (function) to a flat::Function.
-fn convert_function(
+/// Convert a ast::ClassDef (function) to a rumoca_core::Function.
+fn convert_function<'tree>(
     tree: &ast::ClassTree,
-    class_def: &ast::ClassDef,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
-    def_map: &indexmap::IndexMap<rumoca_core::DefId, String>,
-) -> Result<flat::Function, FlattenError> {
+    def_map: &crate::ResolveDefMap,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<rumoca_core::Function, FlattenError> {
     // Use the location from class definition
     let span = source_map.location_to_span(
         &class_def.location.file_name,
         class_def.location.start as usize,
         class_def.location.end as usize,
     );
-    let mut func = flat::Function::new(qualified_name, span);
-    let context = collect_function_context(tree, class_def);
+    let mut func = rumoca_core::Function::new(qualified_name, span);
+    func.def_id = class_def.def_id;
+    let context = collect_function_context(tree, class_index, class_def, member_cache);
     let effective_components = context.components;
-    let mut import_map = qualify::ImportMap::default();
-    qualify::collect_lexical_package_aliases(tree, qualified_name, &mut import_map);
-    collect_lexical_constant_aliases(tree, qualified_name, &mut import_map);
-    collect_lexical_ancestor_imports(tree, qualified_name, &mut import_map);
-    import_map.extend(context.imports);
+    let mut import_map =
+        function_initial_import_map(tree, class_index, class_def, qualified_name, member_cache);
+    extend_imports_if_absent(&mut import_map, context.imports);
+    resolve_import_pairs(&class_def.imports, class_index, &mut import_map);
+    if let Some(class_def_id) = class_def.def_id {
+        collect_lexical_constant_aliases(tree, class_index, class_def_id, &mut import_map, true);
+    }
     let prefix = ast::QualifiedName::new();
     let function_locals: HashSet<String> = effective_components.keys().cloned().collect();
 
     // Process components to find inputs, outputs, and locals
     for (comp_name, component) in &effective_components {
         let param = convert_component_to_param(
+            class_index,
             comp_name,
             component,
+            source_map,
             def_map,
             &import_map,
             &function_locals,
-        );
+        )?;
 
         match &component.causality {
-            rumoca_ir_core::Causality::Input(_) => func.add_input(param),
-            rumoca_ir_core::Causality::Output(_) => func.add_output(param),
-            rumoca_ir_core::Causality::Empty => func.add_local(param),
+            rumoca_core::Causality::Input(_) => func.add_input(param),
+            rumoca_core::Causality::Output(_) => func.add_output(param),
+            rumoca_core::Causality::Empty => func.add_local(param),
         }
     }
 
@@ -1440,7 +1425,9 @@ fn convert_function(
     // during AST lowering. The qualified path would produce a non-existent
     // global name after dot-to-underscore sanitization.
     let func_prefix_dot = format!("{qualified_name}.");
-    let filtered_def_map: indexmap::IndexMap<rumoca_core::DefId, String> = def_map
+    let active_constant_def_overrides =
+        active_constant_def_overrides(tree, class_index, class_def, def_map);
+    let filtered_def_map: crate::ResolveDefMap = def_map
         .iter()
         .filter(|(_, path)| {
             if let Some(suffix) = path.strip_prefix(&func_prefix_dot) {
@@ -1452,21 +1439,33 @@ fn convert_function(
                 true
             }
         })
-        .map(|(k, v)| (*k, v.clone()))
+        .map(|(k, v)| {
+            (
+                *k,
+                active_constant_def_overrides
+                    .get(k)
+                    .cloned()
+                    .unwrap_or_else(|| v.clone()),
+            )
+        })
         .collect();
 
     for alg in &context.algorithms {
         let flat_alg = algorithms::flatten_algorithm_section(
             alg,
-            &prefix,
-            span,
-            qualified_name.to_string(),
-            &import_map,
-            Some(&filtered_def_map),
-            &function_locals,
+            algorithms::AlgorithmSectionContext {
+                prefix: &prefix,
+                imports: &import_map,
+                def_map: Some(&filtered_def_map),
+                initial_locals: &function_locals,
+                source_map: Some(source_map),
+            },
+            algorithms::AlgorithmSectionMetadata::new(span, qualified_name.to_string()),
         )?;
         func.body.extend(flat_alg.statements);
     }
+
+    normalize_function_local_references(&mut func);
 
     // MLS §4.9: Rewrite FieldAccess on record-typed function parameters
     // to direct VarRef names (e.g., `c.re` → `c_re`). This allows backends
@@ -1478,7 +1477,6 @@ fn convert_function(
     // Use pure flag from ast::ClassDef (MLS §12.3)
     // Functions are pure by default unless declared with `impure` keyword
     func.pure = class_def.pure;
-    func.partial = class_def.partial;
 
     // Convert external function declaration (MLS §12.9)
     if let Some(ref ext) = class_def.external {
@@ -1488,43 +1486,346 @@ fn convert_function(
     // Extract derivative annotations (MLS §12.7.1)
     func.derivatives = extract_derivative_annotations(&class_def.annotation);
 
+    rewrite_function_extends_aliases_in_function(&mut func, tree, class_index);
+    if !class_def.partial && is_executable_flat_function(&func) {
+        validate_function_outputs_assigned(&func)?;
+    }
+
     Ok(func)
+}
+
+fn function_initial_import_map<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &ast::ClassDef,
+    qualified_name: &str,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> qualify::ImportMap {
+    let mut import_map = qualify::ImportMap::default();
+    if let Some(class_def_id) = class_def.def_id {
+        qualify::collect_lexical_package_aliases_for_def_id_with_member_cache(
+            tree,
+            class_index,
+            class_def_id,
+            &mut import_map,
+            Some(member_cache),
+        );
+        qualify::collect_lexical_class_aliases_for_def_id_with_member_cache(
+            tree,
+            class_index,
+            class_def_id,
+            &mut import_map,
+            Some(member_cache),
+        );
+        collect_lexical_constant_aliases(tree, class_index, class_def_id, &mut import_map, false);
+        collect_lexical_ancestor_imports(class_index, class_def_id, &mut import_map);
+    } else {
+        qualify::collect_lexical_package_aliases(
+            tree,
+            class_index,
+            qualified_name,
+            &mut import_map,
+        );
+        qualify::collect_lexical_class_aliases(tree, class_index, qualified_name, &mut import_map);
+    }
+    import_map
+}
+
+fn validate_function_outputs_assigned(
+    function: &rumoca_core::Function,
+) -> Result<(), FlattenError> {
+    if function.external.is_some() || function.outputs.is_empty() {
+        return Ok(());
+    }
+
+    let output_names: IndexSet<&str> = function
+        .outputs
+        .iter()
+        .map(|output| output.name.as_str())
+        .collect();
+    let mut assigned: IndexSet<&str> = function
+        .outputs
+        .iter()
+        .filter(|output| output.default.is_some())
+        .map(|output| output.name.as_str())
+        .collect();
+    collect_assigned_outputs_before_return(&function.body, &output_names, &mut assigned);
+
+    for output in &function.outputs {
+        if !assigned.contains(output.name.as_str()) {
+            return Err(FlattenError::function_output_unassigned(
+                function.name.as_str(),
+                &output.name,
+                output.span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_assigned_outputs_before_return<'a>(
+    statements: &'a [rumoca_core::Statement],
+    outputs: &IndexSet<&'a str>,
+    assigned: &mut IndexSet<&'a str>,
+) {
+    for statement in statements {
+        if collect_statement_assigned_outputs(statement, outputs, assigned) {
+            return;
+        }
+    }
+}
+
+fn collect_statement_assigned_outputs<'a>(
+    statement: &'a rumoca_core::Statement,
+    outputs: &IndexSet<&'a str>,
+    assigned: &mut IndexSet<&'a str>,
+) -> bool {
+    match statement {
+        rumoca_core::Statement::Assignment { comp, .. } => {
+            collect_assigned_output_from_component_reference(comp, outputs, assigned);
+            false
+        }
+        rumoca_core::Statement::FunctionCall {
+            outputs: targets, ..
+        } => {
+            for target in targets {
+                collect_assigned_output_from_component_reference(target, outputs, assigned);
+            }
+            false
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            for block in cond_blocks {
+                collect_assigned_outputs_before_return(&block.stmts, outputs, assigned);
+            }
+            if let Some(else_stmts) = else_block {
+                collect_assigned_outputs_before_return(else_stmts, outputs, assigned);
+            }
+            false
+        }
+        rumoca_core::Statement::For { equations, .. } => {
+            collect_assigned_outputs_before_return(equations, outputs, assigned);
+            false
+        }
+        rumoca_core::Statement::While { block, .. } => {
+            collect_assigned_outputs_before_return(&block.stmts, outputs, assigned);
+            false
+        }
+        rumoca_core::Statement::When { blocks, .. } => {
+            for block in blocks {
+                collect_assigned_outputs_before_return(&block.stmts, outputs, assigned);
+            }
+            false
+        }
+        rumoca_core::Statement::Return { .. } => true,
+        rumoca_core::Statement::Empty { .. }
+        | rumoca_core::Statement::Break { .. }
+        | rumoca_core::Statement::Reinit { .. }
+        | rumoca_core::Statement::Assert { .. } => false,
+    }
+}
+
+fn collect_assigned_output_from_component_reference<'a>(
+    comp: &'a rumoca_core::ComponentReference,
+    outputs: &IndexSet<&'a str>,
+    assigned: &mut IndexSet<&'a str>,
+) {
+    let Some(first) = comp.parts.first() else {
+        return;
+    };
+    let output = first.ident.as_str();
+    if outputs.contains(output) {
+        assigned.insert(output);
+    }
 }
 
 use crate::function_lowering::rewrite_record_field_access_in_body;
 
-fn collect_lexical_constant_aliases(
+fn extend_imports_if_absent(imports: &mut qualify::ImportMap, aliases: qualify::ImportMap) {
+    for (name, target) in aliases {
+        imports.entry(name).or_insert(target);
+    }
+}
+
+fn collect_lexical_constant_aliases<'tree>(
     tree: &ast::ClassTree,
-    class_name: &str,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def_id: rumoca_core::DefId,
     imports: &mut qualify::ImportMap,
+    overwrite: bool,
 ) {
-    let mut scope = class_name;
-    while let Some((parent, _)) = scope.rsplit_once('.') {
-        scope = parent;
-        let Some(class_def) = tree.get_class_by_qualified_name(scope) else {
+    let mut ancestor_def_ids = Vec::new();
+    let mut current = class_index.parent_def_id(class_def_id);
+    while let Some(def_id) = current {
+        ancestor_def_ids.push(def_id);
+        current = class_index.parent_def_id(def_id);
+    }
+    for ancestor_def_id in ancestor_def_ids {
+        let Some(scope) = class_index.qualified_name(ancestor_def_id) else {
             continue;
         };
+        collect_effective_package_constant_aliases(tree, class_index, scope, imports, overwrite);
+    }
+}
+
+fn collect_effective_package_constant_aliases(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    active_scope: &str,
+    imports: &mut qualify::ImportMap,
+    overwrite: bool,
+) {
+    let mut chain = Vec::new();
+    let mut visited = FxHashSet::default();
+    collect_package_chain(tree, class_index, active_scope, &mut chain, &mut visited);
+    if chain.is_empty()
+        && let Some(active_def_id) = class_index
+            .get_by_qualified_name(active_scope)
+            .and_then(|class_def| class_def.def_id)
+    {
+        chain.push(active_def_id);
+    }
+    for source_def_id in chain {
+        let Some(class_def) = class_index.get(source_def_id) else {
+            continue;
+        };
+        if !tree.def_map.contains_key(&source_def_id) {
+            continue;
+        }
         for (name, component) in &class_def.components {
-            if matches!(
+            if !matches!(
                 component.variability,
-                rumoca_ir_core::Variability::Constant(_)
-                    | rumoca_ir_core::Variability::Parameter(_)
+                rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
             ) {
-                imports
-                    .entry(name.clone())
-                    .or_insert_with(|| format!("{scope}.{name}"));
+                continue;
+            }
+            let target = format!("{active_scope}.{name}");
+            if overwrite {
+                imports.insert(name.clone(), target);
+            } else {
+                imports.entry(name.clone()).or_insert(target);
             }
         }
     }
 }
 
-fn collect_constructor_params(
+fn active_constant_def_overrides(
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    active_function: &ast::ClassDef,
+    def_map: &crate::ResolveDefMap,
+) -> crate::ResolveDefMap {
+    let Some(active_function_def_id) = active_function.def_id else {
+        return crate::ResolveDefMap::default();
+    };
+    let Some(active_package_def_id) = class_index.parent_def_id(active_function_def_id) else {
+        return crate::ResolveDefMap::default();
+    };
+    let Some(active_package) = tree.def_map.get(&active_package_def_id) else {
+        return crate::ResolveDefMap::default();
+    };
+    let mut package_chain = Vec::new();
+    let mut visited = FxHashSet::default();
+    collect_package_chain(
+        tree,
+        class_index,
+        active_package,
+        &mut package_chain,
+        &mut visited,
+    );
+    if package_chain.is_empty() {
+        package_chain.push(active_package_def_id);
+    }
+    let package_chain: FxHashSet<rumoca_core::DefId> = package_chain.into_iter().collect();
+    def_map
+        .iter()
+        .filter_map(|(def_id, _resolved_path)| {
+            let source_def_id = class_index.parent_def_id(*def_id)?;
+            if source_def_id == active_package_def_id {
+                return None;
+            }
+            if !package_chain.contains(&source_def_id) {
+                return None;
+            }
+            let source_class = class_index.get(source_def_id)?;
+            let leaf = class_index.local_name(*def_id)?;
+            let component = source_class.components.get(leaf)?;
+            if component.def_id != Some(*def_id)
+                || !matches!(
+                    component.variability,
+                    rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
+                )
+            {
+                return None;
+            }
+            Some((*def_id, format!("{active_package}.{leaf}")))
+        })
+        .collect()
+}
+
+fn collect_constructor_params(
+    class_index: &ast::ClassDefIndex<'_>,
     class_def: &ast::ClassDef,
     visited_classes: &mut HashSet<usize>,
-    params: &mut Vec<flat::FunctionParam>,
+    params: &mut Vec<rumoca_core::FunctionParam>,
     param_index: &mut HashMap<String, usize>,
-    def_map: &indexmap::IndexMap<rumoca_core::DefId, String>,
+    source_map: &rumoca_core::SourceMap,
+    def_map: &crate::ResolveDefMap,
+) -> Result<(), FlattenError> {
+    let class_ptr = class_def as *const ast::ClassDef as usize;
+    if !visited_classes.insert(class_ptr) {
+        return Ok(());
+    }
+
+    for ext in &class_def.extends {
+        let base_class = ext
+            .base_def_id
+            .and_then(|def_id| class_index.get(def_id))
+            .or_else(|| {
+                let name = ext.base_name.to_string();
+                class_index.get_by_qualified_name(&name)
+            });
+        if let Some(base_class) = base_class {
+            collect_constructor_params(
+                class_index,
+                base_class,
+                visited_classes,
+                params,
+                param_index,
+                source_map,
+                def_map,
+            )?;
+        }
+    }
+
+    for (comp_name, component) in &class_def.components {
+        let param = convert_component_to_param(
+            class_index,
+            comp_name,
+            component,
+            source_map,
+            def_map,
+            &qualify::ImportMap::default(),
+            &HashSet::new(),
+        )?;
+        if let Some(index) = param_index.get(comp_name).copied() {
+            params[index] = param;
+        } else {
+            param_index.insert(comp_name.clone(), params.len());
+            params.push(param);
+        }
+    }
+    Ok(())
+}
+
+fn collect_constructor_local_def_ids(
+    class_index: &ast::ClassDefIndex<'_>,
+    class_def: &ast::ClassDef,
+    visited_classes: &mut HashSet<usize>,
+    local_def_ids: &mut crate::ResolveDefMap,
 ) {
     let class_ptr = class_def as *const ast::ClassDef as usize;
     if !visited_classes.insert(class_ptr) {
@@ -1534,48 +1835,56 @@ fn collect_constructor_params(
     for ext in &class_def.extends {
         let base_class = ext
             .base_def_id
-            .and_then(|def_id| tree.get_class_by_def_id(def_id))
+            .and_then(|def_id| class_index.get(def_id))
             .or_else(|| {
                 let name = ext.base_name.to_string();
-                tree.get_class_by_qualified_name(&name)
+                class_index.get_by_qualified_name(&name)
             });
         if let Some(base_class) = base_class {
-            collect_constructor_params(
-                tree,
+            collect_constructor_local_def_ids(
+                class_index,
                 base_class,
                 visited_classes,
-                params,
-                param_index,
-                def_map,
+                local_def_ids,
             );
         }
     }
 
-    for (comp_name, component) in &class_def.components {
-        let param = convert_component_to_param(
-            comp_name,
-            component,
-            def_map,
-            &qualify::ImportMap::default(),
-            &HashSet::new(),
-        );
-        if let Some(index) = param_index.get(comp_name).copied() {
-            params[index] = param;
-        } else {
-            param_index.insert(comp_name.clone(), params.len());
-            params.push(param);
+    for (name, component) in &class_def.components {
+        if let Some(def_id) = component.def_id {
+            local_def_ids.insert(def_id, name.clone());
         }
     }
 }
 
+fn constructor_def_map(
+    class_index: &ast::ClassDefIndex<'_>,
+    class_def: &ast::ClassDef,
+    def_map: &crate::ResolveDefMap,
+) -> crate::ResolveDefMap {
+    let mut constructor_map = def_map.clone();
+    let mut local_def_ids = crate::ResolveDefMap::default();
+    let mut visited_classes = HashSet::new();
+    collect_constructor_local_def_ids(
+        class_index,
+        class_def,
+        &mut visited_classes,
+        &mut local_def_ids,
+    );
+    for (def_id, name) in local_def_ids {
+        constructor_map.insert(def_id, name);
+    }
+    constructor_map
+}
+
 /// Build a synthetic constructor signature for constructor-like class calls.
 fn convert_constructor_signature(
-    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
     class_def: &ast::ClassDef,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
-    def_map: &indexmap::IndexMap<rumoca_core::DefId, String>,
-) -> flat::Function {
+    def_map: &crate::ResolveDefMap,
+) -> Result<rumoca_core::Function, FlattenError> {
     let span = source_map.location_to_span(
         &class_def.location.file_name,
         class_def.location.start as usize,
@@ -1584,384 +1893,102 @@ fn convert_constructor_signature(
     let mut params = Vec::new();
     let mut param_index = HashMap::new();
     let mut visited_classes = HashSet::new();
+    let constructor_def_map = constructor_def_map(class_index, class_def, def_map);
     collect_constructor_params(
-        tree,
+        class_index,
         class_def,
         &mut visited_classes,
         &mut params,
         &mut param_index,
-        def_map,
-    );
+        source_map,
+        &constructor_def_map,
+    )?;
 
-    let mut func = flat::Function::new(qualified_name, span);
+    let mut func = rumoca_core::Function::new(qualified_name, span);
+    func.def_id = class_def.def_id;
+    func.is_constructor = true;
     for param in params {
         func.add_input(param);
     }
-    func
+    normalize_function_local_references(&mut func);
+    Ok(func)
 }
 
-/// Convert an AST ExternalFunction to ExternalFunction.
-fn convert_external_function(
-    ext: &rumoca_ir_ast::ExternalFunction,
-    _default_name: &str,
-) -> rumoca_ir_flat::ExternalFunction {
-    rumoca_ir_flat::ExternalFunction {
-        language: ext.language.clone().unwrap_or_else(|| "C".to_string()),
-        function_name: ext.function_name.as_ref().map(|t| t.text.to_string()),
-        output_name: ext.output.as_ref().map(|o| {
-            o.parts
-                .iter()
-                .map(|p| p.ident.text.to_string())
-                .collect::<Vec<_>>()
-                .join(".")
-        }),
-        arg_names: ext
-            .args
-            .iter()
-            .filter_map(|arg| {
-                // Extract variable names from expressions
-                if let ast::Expression::ComponentReference(cr) = arg {
-                    Some(
-                        cr.parts
-                            .iter()
-                            .map(|p| p.ident.text.to_string())
-                            .collect::<Vec<_>>()
-                            .join("."),
-                    )
-                } else {
-                    None
-                }
-            })
-            .collect(),
-    }
-}
-
-/// Extract derivative annotations from function annotation expressions (MLS §12.7.1).
-///
-/// Looks for annotations like:
-/// - `derivative = funcName`
-/// - `derivative(order=2) = funcName`
-/// - `derivative(zeroDerivative=x, zeroDerivative=y) = funcName`
-/// - `derivative(noDerivative=u) = funcName`
-fn extract_derivative_annotations(
-    annotations: &[ast::Expression],
-) -> Vec<flat::DerivativeAnnotation> {
-    let mut derivatives = Vec::new();
-
-    for expr in annotations {
-        if let Some(deriv) = extract_single_derivative(expr) {
-            derivatives.push(deriv);
-        }
-    }
-
-    derivatives
-}
-
-/// Extract a single derivative annotation from an expression.
-fn extract_single_derivative(expr: &ast::Expression) -> Option<flat::DerivativeAnnotation> {
-    // Pattern 1: NamedArgument { name: "derivative", value: ... }
-    // This handles: derivative = funcName
-    if let ast::Expression::NamedArgument { name, value } = expr
-        && name.text.as_ref() == "derivative"
-    {
-        let func_name = extract_function_name(value)?;
-        return Some(flat::DerivativeAnnotation {
-            derivative_function: func_name,
-            order: 1,
-            zero_derivative: Vec::new(),
-            no_derivative: Vec::new(),
-        });
-    }
-
-    // Pattern 2: Modification { target: derivative(...), value: funcName }
-    // This handles: derivative(order=2) = funcName, derivative(zeroDerivative=x) = funcName
-    if let ast::Expression::Modification { target, value } = expr
-        && let Some(annotation) = try_extract_modification_derivative(target, value)
-    {
-        return Some(annotation);
-    }
-
-    // Pattern 3: ClassModification { target: derivative, modifications: [...] }
-    // This handles more complex cases where derivative has modifications
-    if let ast::Expression::ClassModification {
-        target,
-        modifications,
-    } = expr
-        && let Some(annotation) = try_extract_class_mod_derivative(target, modifications)
-    {
-        return Some(annotation);
-    }
-
-    None
-}
-
-/// Try to extract a derivative annotation from a Modification expression.
-fn try_extract_modification_derivative(
-    target: &rumoca_ir_ast::ComponentReference,
-    value: &ast::Expression,
-) -> Option<flat::DerivativeAnnotation> {
-    // Check if target is "derivative"
-    if target.parts.len() != 1 || target.parts[0].ident.text.as_ref() != "derivative" {
-        return None;
-    }
-
-    let func_name = extract_function_name(value)?;
-    let mut annotation = flat::DerivativeAnnotation {
-        derivative_function: func_name,
-        order: 1,
-        zero_derivative: Vec::new(),
-        no_derivative: Vec::new(),
-    };
-
-    // Extract modifiers from subscripts
-    extract_modifiers_from_subscripts(&target.parts[0].subs, &mut annotation);
-    Some(annotation)
-}
-
-/// Try to extract a derivative annotation from a ClassModification expression.
-fn try_extract_class_mod_derivative(
-    target: &rumoca_ir_ast::ComponentReference,
-    modifications: &[ast::Expression],
-) -> Option<flat::DerivativeAnnotation> {
-    // Check if target is "derivative"
-    if target.parts.len() != 1 || target.parts[0].ident.text.as_ref() != "derivative" {
-        return None;
-    }
-
-    let mut annotation = flat::DerivativeAnnotation {
-        derivative_function: String::new(),
-        order: 1,
-        zero_derivative: Vec::new(),
-        no_derivative: Vec::new(),
-    };
-
-    // Extract modifiers from the modifications list
-    for mod_expr in modifications {
-        extract_derivative_modifier(mod_expr, &mut annotation);
-        // Check if this is the function name (ComponentReference without assignment)
-        if let Some(name) = extract_function_name(mod_expr) {
-            annotation.derivative_function = name;
-        }
-    }
-
-    if annotation.derivative_function.is_empty() {
-        None
-    } else {
-        Some(annotation)
-    }
-}
-
-/// Extract modifiers from subscripts (used in derivative(order=2) style).
-fn extract_modifiers_from_subscripts(
-    subs: &Option<Vec<rumoca_ir_ast::Subscript>>,
-    annotation: &mut flat::DerivativeAnnotation,
-) {
-    let Some(subs) = subs else { return };
-    for sub in subs {
-        if let rumoca_ir_ast::Subscript::Expression(sub_expr) = sub {
-            extract_derivative_modifier(sub_expr, annotation);
-        }
-    }
-}
-
-/// Extract derivative modifiers like order, zeroDerivative, noDerivative from an expression.
-fn extract_derivative_modifier(
-    expr: &ast::Expression,
-    annotation: &mut flat::DerivativeAnnotation,
-) {
-    // Handle NamedArgument { name: "order"|"zeroDerivative"|"noDerivative", value: ... }
-    if let ast::Expression::NamedArgument { name, value } = expr {
-        apply_modifier(name.text.as_ref(), value, annotation);
-    }
-
-    // Handle Modification { target: "order"|..., value: ... }
-    if let ast::Expression::Modification { target, value } = expr
-        && target.parts.len() == 1
-    {
-        apply_modifier(target.parts[0].ident.text.as_ref(), value, annotation);
-    }
-}
-
-/// Apply a derivative modifier by name to the annotation.
-fn apply_modifier(
-    name: &str,
-    value: &ast::Expression,
-    annotation: &mut flat::DerivativeAnnotation,
-) {
-    match name {
-        "order" => {
-            if let Some(order) = extract_integer_value(value) {
-                annotation.order = order as u32;
-            }
-        }
-        "zeroDerivative" => {
-            if let Some(var_name) = extract_variable_name(value) {
-                annotation.zero_derivative.push(var_name);
-            }
-        }
-        "noDerivative" => {
-            if let Some(var_name) = extract_variable_name(value) {
-                annotation.no_derivative.push(var_name);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Extract a function name from an expression (ComponentReference).
-fn extract_function_name(expr: &ast::Expression) -> Option<String> {
-    if let ast::Expression::ComponentReference(cr) = expr {
-        Some(
-            cr.parts
-                .iter()
-                .map(|p| p.ident.text.to_string())
-                .collect::<Vec<_>>()
-                .join("."),
-        )
-    } else {
-        None
-    }
-}
-
-/// Extract an integer value from an expression (Terminal with UnsignedInteger).
-fn extract_integer_value(expr: &ast::Expression) -> Option<i64> {
-    if let ast::Expression::Terminal {
-        terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-        token,
-    } = expr
-    {
-        token.text.parse().ok()
-    } else {
-        None
-    }
-}
-
-/// Extract a variable name from an expression (ComponentReference).
-fn extract_variable_name(expr: &ast::Expression) -> Option<String> {
-    if let ast::Expression::ComponentReference(cr) = expr {
-        Some(
-            cr.parts
-                .iter()
-                .map(|p| p.ident.text.to_string())
-                .collect::<Vec<_>>()
-                .join("."),
-        )
-    } else {
-        None
-    }
-}
-
-/// Try to extract an integer value from a subscript expression.
-fn extract_integer_from_subscript(sub: &rumoca_ir_ast::Subscript) -> Option<i64> {
-    if let rumoca_ir_ast::Subscript::Expression(rumoca_ir_ast::Expression::Terminal {
-        terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-        token,
-    }) = sub
-    {
-        token.text.parse().ok()
-    } else {
-        None
-    }
-}
-
-/// Convert a component declaration to a function parameter.
-fn convert_component_to_param(
-    name: &str,
-    component: &ast::Component,
-    def_map: &indexmap::IndexMap<rumoca_core::DefId, String>,
-    imports: &qualify::ImportMap,
-    locals: &HashSet<String>,
-) -> flat::FunctionParam {
-    // Get the type name from type_name.name (Vec<Token>)
-    let type_name = component
-        .type_name
-        .name
+fn normalize_function_local_references(function: &mut rumoca_core::Function) {
+    let locals = function
+        .inputs
         .iter()
-        .map(|t| t.text.to_string())
-        .collect::<Vec<_>>()
-        .join(".");
-
-    let mut param = flat::FunctionParam::new(name, type_name);
-
-    // Get array dimensions from shape (resolved) or shape_expr (expressions).
-    // For variable-size arrays (e.g., `Real x[:]`), use [0] as a sentinel
-    // so that code generators know the parameter is an array even when
-    // the exact size is unknown at compile time.
-    if !component.shape.is_empty() {
-        let dims: Vec<i64> = component.shape.iter().map(|&d| d as i64).collect();
-        param = param.with_dims(dims);
-    } else if !component.shape_expr.is_empty() {
-        let dims: Vec<i64> = component
-            .shape_expr
-            .iter()
-            .filter_map(extract_integer_from_subscript)
-            .collect();
-
-        if !dims.is_empty() {
-            param = param.with_dims(dims);
-        } else {
-            // Variable-size array: shape_expr has entries (e.g., colon subscripts)
-            // but no extractable integer dimensions. Use [0] as sentinel.
-            param = param.with_dims(vec![0; component.shape_expr.len()]);
-        }
+        .chain(function.outputs.iter())
+        .chain(function.locals.iter())
+        .map(|param| param.name.clone())
+        .collect::<HashSet<_>>();
+    if locals.is_empty() {
+        return;
     }
 
-    // Use explicit declaration binding (`= expr`) for default function inputs.
-    // Fall back to `start` only for legacy cases where binding is unavailable.
-    if component.has_explicit_binding {
-        if let Some(binding_expr) = component.binding.as_ref()
-            && !matches!(binding_expr, ast::Expression::Empty)
-        {
-            let qualified = qualify_function_expr(binding_expr, imports, locals);
-            param = param.with_default(ast_lower::expression_from_ast_with_def_map(
-                &qualified,
-                Some(def_map),
-            ));
-        } else if !matches!(component.start, ast::Expression::Empty) {
-            let qualified = qualify_function_expr(&component.start, imports, locals);
-            param = param.with_default(ast_lower::expression_from_ast_with_def_map(
-                &qualified,
-                Some(def_map),
-            ));
-        }
-    }
-
-    // Get description
-    if !component.description.is_empty() {
-        let desc: Vec<_> = component
-            .description
-            .iter()
-            .map(|t| t.text.to_string())
-            .collect();
-        param.description = Some(desc.join(" "));
-    }
-
-    param
-}
-
-const FUNCTION_QUALIFY_OPTS: qualify::QualifyOptions = qualify::QualifyOptions {
-    skip_local: true,
-    preserve_def_id: true,
-};
-
-fn qualify_function_expr(
-    expr: &ast::Expression,
-    imports: &qualify::ImportMap,
-    locals: &HashSet<String>,
-) -> ast::Expression {
-    qualify::qualify_expression_with_imports_and_locals(
-        expr,
-        &ast::QualifiedName::new(),
-        FUNCTION_QUALIFY_OPTS,
+    let mut normalizer = FunctionLocalReferenceNormalizer {
+        function_name: function.name.as_str().to_string(),
         locals,
-        imports,
-    )
+    };
+    for param in function
+        .inputs
+        .iter_mut()
+        .chain(function.outputs.iter_mut())
+        .chain(function.locals.iter_mut())
+    {
+        if let Some(default) = &param.default {
+            param.default = Some(normalizer.rewrite_expression(default));
+        }
+    }
+    for statement in &mut function.body {
+        *statement = normalizer.rewrite_statement(statement);
+    }
 }
 
-// Re-export lowering passes so callers can still use `functions::lower_record_function_params`
-// and `functions::insert_array_size_args`.
-pub(crate) use crate::function_lowering::{insert_array_size_args, lower_record_function_params};
+struct FunctionLocalReferenceNormalizer {
+    function_name: String,
+    locals: HashSet<String>,
+}
+
+impl FunctionLocalReferenceNormalizer {
+    fn local_reference<'a>(&self, name: &'a str) -> Option<&'a str> {
+        let suffix = name.strip_prefix(&self.function_name)?;
+        let local_ref = suffix.strip_prefix('.')?;
+        self.locals
+            .iter()
+            .any(|local| {
+                local_ref == local
+                    || local_ref
+                        .strip_prefix(local.as_str())
+                        .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+            })
+            .then_some(local_ref)
+    }
+}
+
+impl ExpressionRewriter for FunctionLocalReferenceNormalizer {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        match expr {
+            rumoca_core::Expression::VarRef {
+                name,
+                subscripts,
+                span,
+            } => {
+                if let Some(local_name) = self.local_reference(name.as_str()) {
+                    return rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::new(local_name.to_string()),
+                        subscripts: self.rewrite_subscripts(subscripts),
+                        span: *span,
+                    };
+                }
+                self.walk_expression(expr)
+            }
+            _ => self.walk_expression(expr),
+        }
+    }
+}
+
+impl StatementRewriter for FunctionLocalReferenceNormalizer {}
 
 #[cfg(test)]
-#[path = "functions_tests.rs"]
-mod functions_tests;
+mod tests;

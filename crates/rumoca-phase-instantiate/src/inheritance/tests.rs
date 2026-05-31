@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_core::DefId;
 use std::sync::Arc;
 
 /// Create a minimal component for testing.
@@ -16,23 +17,24 @@ fn make_component_ref(name: &str) -> ast::ComponentReference {
     ast::ComponentReference {
         local: false,
         parts: vec![ast::ComponentRefPart {
-            ident: rumoca_ir_core::Token {
+            ident: rumoca_core::Token {
                 text: std::sync::Arc::from(name),
-                location: rumoca_ir_core::Location::default(),
+                location: rumoca_core::Location::default(),
                 token_number: 0,
                 token_type: 0,
             },
             subs: None,
         }],
         def_id: None,
+        span: rumoca_core::Span::DUMMY,
     }
 }
 
 /// Create a token for testing.
-fn make_token(text: &str) -> rumoca_ir_core::Token {
-    rumoca_ir_core::Token {
+fn make_token(text: &str) -> rumoca_core::Token {
+    rumoca_core::Token {
         text: std::sync::Arc::from(text),
-        location: rumoca_ir_core::Location::default(),
+        location: rumoca_core::Location::default(),
         token_number: 0,
         token_type: 0,
     }
@@ -41,8 +43,21 @@ fn make_token(text: &str) -> rumoca_ir_core::Token {
 /// Create a Name for testing.
 fn make_name(text: &str) -> rumoca_ir_ast::Name {
     rumoca_ir_ast::Name {
-        name: vec![make_token(text)],
+        name: rumoca_core::split_path_with_indices(text)
+            .into_iter()
+            .map(make_token)
+            .collect(),
         def_id: None,
+    }
+}
+
+fn make_resolved_name(text: &str, def_id: DefId) -> rumoca_ir_ast::Name {
+    rumoca_ir_ast::Name {
+        name: rumoca_core::split_path_with_indices(text)
+            .into_iter()
+            .map(make_token)
+            .collect(),
+        def_id: Some(def_id),
     }
 }
 
@@ -81,7 +96,7 @@ fn test_validate_redeclaration_replaceable() {
 fn test_validate_redeclaration_constant_rejected() {
     let tree = ast::ClassTree::default();
     let mut comp = make_component("x", true, false);
-    comp.variability = rumoca_ir_core::Variability::Constant(make_token("constant"));
+    comp.variability = rumoca_core::Variability::Constant(make_token("constant"));
     let result = validate_redeclaration(&tree, &comp, "x", Some("Real"), Span::DUMMY);
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -97,29 +112,31 @@ fn test_classes_are_compatible_for_equivalent_declarations() {
         name: "k".to_string(),
         name_token: make_token("k"),
         type_name: make_name("Real"),
-        variability: rumoca_ir_core::Variability::Parameter(make_token("parameter")),
+        variability: rumoca_core::Variability::Parameter(make_token("parameter")),
         start: ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token: make_token("1"),
+            span: rumoca_core::Span::DUMMY,
         },
         has_explicit_binding: true,
         binding: Some(ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token: make_token("1"),
+            span: rumoca_core::Span::DUMMY,
         }),
         ..Default::default()
     };
 
     let helper_a = ast::ClassDef {
         name: make_token("Helper"),
-        class_type: ast::ClassType::Model,
-        components: IndexMap::from([("k".to_string(), component.clone())]),
+        class_type: rumoca_core::ClassType::Model,
+        components: [("k".to_string(), component.clone())].into_iter().collect(),
         ..Default::default()
     };
     let helper_b = ast::ClassDef {
         name: make_token("Helper"),
-        class_type: ast::ClassType::Model,
-        components: IndexMap::from([("k".to_string(), component)]),
+        class_type: rumoca_core::ClassType::Model,
+        components: [("k".to_string(), component)].into_iter().collect(),
         ..Default::default()
     };
 
@@ -211,6 +228,190 @@ fn test_constrainedby_subtype_allowed() {
     // Redeclaring to DerivedConnector (a subtype) should succeed
     let result = validate_redeclaration(&tree, &comp, "c", Some("DerivedConnector"), Span::DUMMY);
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_class_redeclare_constraint_resolves_relative_to_declaration_scope() {
+    let (tree, flow_characteristic_id) = relative_class_redeclare_constraint_tree();
+
+    let class = tree
+        .get_class_by_def_id(flow_characteristic_id)
+        .expect("flowCharacteristic class should exist");
+
+    let result = validate_class_redeclaration(
+        &tree,
+        class,
+        "flowCharacteristic",
+        Some("Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.quadraticFlow"),
+        Span::DUMMY,
+    );
+    assert!(result.is_ok());
+}
+
+fn relative_class_redeclare_constraint_tree() -> (ast::ClassTree, DefId) {
+    let ids = RelativeConstraintIds::new();
+    let modelica = relative_constraint_modelica_class(&ids);
+
+    let mut tree = ast::ClassTree::default();
+    tree.definitions
+        .classes
+        .insert("Modelica".to_string(), modelica);
+    for (name, def_id) in ids.qualified_names() {
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+    }
+    (tree, ids.flow_characteristic)
+}
+
+struct RelativeConstraintIds {
+    base_flow: DefId,
+    quadratic_flow: DefId,
+    flow_characteristic: DefId,
+    pump_characteristics: DefId,
+    partial_pump: DefId,
+    base_classes: DefId,
+    machines: DefId,
+    fluid: DefId,
+    modelica: DefId,
+}
+
+impl RelativeConstraintIds {
+    fn new() -> Self {
+        Self {
+            base_flow: DefId::new(1),
+            quadratic_flow: DefId::new(2),
+            flow_characteristic: DefId::new(3),
+            pump_characteristics: DefId::new(4),
+            partial_pump: DefId::new(5),
+            base_classes: DefId::new(6),
+            machines: DefId::new(7),
+            fluid: DefId::new(8),
+            modelica: DefId::new(9),
+        }
+    }
+
+    fn qualified_names(&self) -> [(&'static str, DefId); 9] {
+        [
+            ("Modelica", self.modelica),
+            ("Modelica.Fluid", self.fluid),
+            ("Modelica.Fluid.Machines", self.machines),
+            ("Modelica.Fluid.Machines.BaseClasses", self.base_classes),
+            (
+                "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics",
+                self.pump_characteristics,
+            ),
+            (
+                "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.baseFlow",
+                self.base_flow,
+            ),
+            (
+                "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.quadraticFlow",
+                self.quadratic_flow,
+            ),
+            (
+                "Modelica.Fluid.Machines.BaseClasses.PartialPump",
+                self.partial_pump,
+            ),
+            (
+                "Modelica.Fluid.Machines.BaseClasses.PartialPump.flowCharacteristic",
+                self.flow_characteristic,
+            ),
+        ]
+    }
+}
+
+fn relative_constraint_modelica_class(ids: &RelativeConstraintIds) -> ast::ClassDef {
+    let base_flow = ast::ClassDef {
+        name: make_token("baseFlow"),
+        def_id: Some(ids.base_flow),
+        class_type: rumoca_core::ClassType::Function,
+        ..Default::default()
+    };
+    let quadratic_flow = ast::ClassDef {
+        name: make_token("quadraticFlow"),
+        def_id: Some(ids.quadratic_flow),
+        class_type: rumoca_core::ClassType::Function,
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name("baseFlow", ids.base_flow),
+            base_def_id: Some(ids.base_flow),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut pump_characteristics = ast::ClassDef {
+        name: make_token("PumpCharacteristics"),
+        def_id: Some(ids.pump_characteristics),
+        class_type: rumoca_core::ClassType::Package,
+        ..Default::default()
+    };
+    pump_characteristics
+        .classes
+        .insert("baseFlow".to_string(), base_flow);
+    pump_characteristics
+        .classes
+        .insert("quadraticFlow".to_string(), quadratic_flow);
+
+    let flow_characteristic = ast::ClassDef {
+        name: make_token("flowCharacteristic"),
+        def_id: Some(ids.flow_characteristic),
+        class_type: rumoca_core::ClassType::Function,
+        is_replaceable: true,
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name("PumpCharacteristics.baseFlow", ids.base_flow),
+            base_def_id: Some(ids.base_flow),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut partial_pump = ast::ClassDef {
+        name: make_token("PartialPump"),
+        def_id: Some(ids.partial_pump),
+        ..Default::default()
+    };
+    partial_pump
+        .classes
+        .insert("flowCharacteristic".to_string(), flow_characteristic);
+
+    let mut base_classes = ast::ClassDef {
+        name: make_token("BaseClasses"),
+        def_id: Some(ids.base_classes),
+        class_type: rumoca_core::ClassType::Package,
+        ..Default::default()
+    };
+    base_classes
+        .classes
+        .insert("PumpCharacteristics".to_string(), pump_characteristics);
+    base_classes
+        .classes
+        .insert("PartialPump".to_string(), partial_pump);
+
+    let mut machines = ast::ClassDef {
+        name: make_token("Machines"),
+        def_id: Some(ids.machines),
+        class_type: rumoca_core::ClassType::Package,
+        ..Default::default()
+    };
+    machines
+        .classes
+        .insert("BaseClasses".to_string(), base_classes);
+
+    let mut fluid = ast::ClassDef {
+        name: make_token("Fluid"),
+        def_id: Some(ids.fluid),
+        class_type: rumoca_core::ClassType::Package,
+        ..Default::default()
+    };
+    fluid.classes.insert("Machines".to_string(), machines);
+
+    let mut modelica = ast::ClassDef {
+        name: make_token("Modelica"),
+        def_id: Some(ids.modelica),
+        class_type: rumoca_core::ClassType::Package,
+        ..Default::default()
+    };
+    modelica.classes.insert("Fluid".to_string(), fluid);
+    modelica
 }
 
 #[test]
@@ -330,6 +531,182 @@ fn test_class_redeclaration_default_constraint_uses_declared_base() {
     );
 }
 
+#[test]
+fn test_nested_class_redeclaration_replaces_inherited_replaceable_class() {
+    let mut tree = ast::ClassTree::default();
+
+    let partial_id = DefId::new(10);
+    let base_properties_id = DefId::new(11);
+    let derived_id = DefId::new(12);
+    let redeclared_id = DefId::new(13);
+
+    let base_properties = ast::ClassDef {
+        name: make_token("BaseProperties"),
+        def_id: Some(base_properties_id),
+        class_type: rumoca_core::ClassType::Model,
+        is_replaceable: true,
+        ..Default::default()
+    };
+    let mut partial = ast::ClassDef {
+        name: make_token("PartialPureSubstance"),
+        def_id: Some(partial_id),
+        class_type: rumoca_core::ClassType::Package,
+        ..Default::default()
+    };
+    partial
+        .classes
+        .insert("BaseProperties".to_string(), base_properties);
+
+    let redeclared_base_properties = ast::ClassDef {
+        name: make_token("BaseProperties"),
+        def_id: Some(redeclared_id),
+        class_type: rumoca_core::ClassType::Model,
+        is_replaceable: true,
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name(
+                "PartialPureSubstance.BaseProperties",
+                base_properties_id,
+            ),
+            base_def_id: Some(base_properties_id),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut derived = ast::ClassDef {
+        name: make_token("WaterIF97_base"),
+        def_id: Some(derived_id),
+        class_type: rumoca_core::ClassType::Package,
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name("PartialPureSubstance", partial_id),
+            base_def_id: Some(partial_id),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    derived
+        .classes
+        .insert("BaseProperties".to_string(), redeclared_base_properties);
+
+    tree.definitions
+        .classes
+        .insert("PartialPureSubstance".to_string(), partial);
+    tree.definitions
+        .classes
+        .insert("WaterIF97_base".to_string(), derived);
+    for (name, def_id) in [
+        ("PartialPureSubstance", partial_id),
+        ("PartialPureSubstance.BaseProperties", base_properties_id),
+        ("WaterIF97_base", derived_id),
+        ("WaterIF97_base.BaseProperties", redeclared_id),
+    ] {
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+    }
+
+    let class = tree
+        .get_class_by_qualified_name("WaterIF97_base")
+        .expect("derived class should exist");
+    let result = get_effective_components(&tree, class);
+    assert!(
+        result.is_ok(),
+        "nested replaceable class redeclare should replace the inherited declaration"
+    );
+}
+
+#[test]
+fn test_nested_class_redeclaration_shadows_inherited_replaceable_merged_later() {
+    let mut tree = ast::ClassTree::default();
+
+    let partial_medium_id = DefId::new(20);
+    let partial_state_id = DefId::new(21);
+    let simple_medium_id = DefId::new(22);
+    let simple_state_id = DefId::new(23);
+    let water_id = DefId::new(24);
+
+    let mut partial_medium = ast::ClassDef {
+        name: make_token("PartialMedium"),
+        def_id: Some(partial_medium_id),
+        class_type: rumoca_core::ClassType::Package,
+        ..Default::default()
+    };
+    partial_medium.classes.insert(
+        "ThermodynamicState".to_string(),
+        ast::ClassDef {
+            name: make_token("ThermodynamicState"),
+            def_id: Some(partial_state_id),
+            class_type: rumoca_core::ClassType::Record,
+            is_replaceable: true,
+            ..Default::default()
+        },
+    );
+
+    let mut simple_medium = ast::ClassDef {
+        name: make_token("PartialSimpleMedium"),
+        def_id: Some(simple_medium_id),
+        class_type: rumoca_core::ClassType::Package,
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name("PartialMedium", partial_medium_id),
+            base_def_id: Some(partial_medium_id),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    simple_medium.classes.insert(
+        "ThermodynamicState".to_string(),
+        ast::ClassDef {
+            name: make_token("ThermodynamicState"),
+            def_id: Some(simple_state_id),
+            class_type: rumoca_core::ClassType::Record,
+            is_replaceable: true,
+            ..Default::default()
+        },
+    );
+
+    let water = ast::ClassDef {
+        name: make_token("ConstantPropertyLiquidWater"),
+        def_id: Some(water_id),
+        class_type: rumoca_core::ClassType::Package,
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name("PartialSimpleMedium", simple_medium_id),
+            base_def_id: Some(simple_medium_id),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    tree.definitions
+        .classes
+        .insert("PartialMedium".to_string(), partial_medium);
+    tree.definitions
+        .classes
+        .insert("PartialSimpleMedium".to_string(), simple_medium);
+    tree.definitions
+        .classes
+        .insert("ConstantPropertyLiquidWater".to_string(), water);
+    for (name, def_id) in [
+        ("PartialMedium", partial_medium_id),
+        ("PartialMedium.ThermodynamicState", partial_state_id),
+        ("PartialSimpleMedium", simple_medium_id),
+        ("PartialSimpleMedium.ThermodynamicState", simple_state_id),
+        ("ConstantPropertyLiquidWater", water_id),
+    ] {
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+    }
+
+    let class = tree
+        .get_class_by_qualified_name("ConstantPropertyLiquidWater")
+        .expect("derived class should exist");
+    let inherited = process_extends(&tree, class)
+        .expect("redeclared nested class should shadow inherited replaceable class");
+    let effective_state = inherited
+        .classes
+        .get("ThermodynamicState")
+        .expect("effective nested class should exist");
+    assert_eq!(effective_state.def_id, Some(simple_state_id));
+}
+
 // -------------------------------------------------------------------------
 // is_type_subtype tests
 // -------------------------------------------------------------------------
@@ -413,7 +790,7 @@ fn test_class_extends_cached_matches_base_def_id_for_relative_extends_name() {
     let mut class_interfaces = ast::ClassDef {
         def_id: Some(interfaces_id),
         name: make_token("Interfaces"),
-        class_type: ast::ClassType::Package,
+        class_type: rumoca_core::ClassType::Package,
         ..Default::default()
     };
     class_interfaces
@@ -435,7 +812,7 @@ fn test_class_extends_cached_matches_base_def_id_for_relative_extends_name() {
     let mut class_pkg = ast::ClassDef {
         def_id: Some(pkg_id),
         name: make_token("Pkg"),
-        class_type: ast::ClassType::Package,
+        class_type: rumoca_core::ClassType::Package,
         ..Default::default()
     };
     class_pkg
@@ -446,7 +823,7 @@ fn test_class_extends_cached_matches_base_def_id_for_relative_extends_name() {
     let mut class_root = ast::ClassDef {
         def_id: Some(root_id),
         name: make_token("Root"),
-        class_type: ast::ClassType::Package,
+        class_type: rumoca_core::ClassType::Package,
         ..Default::default()
     };
     class_root.classes.insert("Pkg".to_string(), class_pkg);
@@ -473,11 +850,45 @@ fn test_class_extends_cached_matches_base_def_id_for_relative_extends_name() {
     let d_class = tree
         .get_class_by_qualified_name("Root.Pkg.D")
         .expect("Root.Pkg.D class should exist");
-    let mut cache = SubtypeCache::new();
+    let mut cache = SubtypeCache::default();
     assert!(
-        class_extends_cached(&tree, d_class, "Interfaces.C", &mut cache),
-        "relative extends with base_def_id should match short queried supertype"
+        class_extends_cached(&tree, d_class, "Root.Pkg.Interfaces.C", &mut cache),
+        "relative extends with base_def_id should match the resolved queried supertype"
     );
+    let mut cache = SubtypeCache::default();
+    assert!(
+        !class_extends_cached(&tree, d_class, "Interfaces.C", &mut cache),
+        "unresolved short supertype names must not match by suffix"
+    );
+}
+
+#[test]
+fn test_type_names_match_requires_resolved_identity() {
+    use rumoca_core::DefId;
+
+    let mut tree = ast::ClassTree::default();
+    let def_id = DefId::new(1);
+    tree.name_map
+        .insert("Modelica.Units.SI.Resistance".to_string(), def_id);
+    tree.name_map.insert("SI.Resistance".to_string(), def_id);
+    tree.def_map
+        .insert(def_id, "Modelica.Units.SI.Resistance".to_string());
+
+    assert!(type_names_match(
+        &tree,
+        "Modelica.Units.SI.Resistance",
+        "SI.Resistance"
+    ));
+    assert!(!type_names_match(
+        &tree,
+        "Modelica.Units.SI.Resistance",
+        "Resistance"
+    ));
+    assert!(!type_names_match(
+        &tree,
+        "Modelica.Units.SI.Resistance",
+        "stance"
+    ));
 }
 
 #[test]
@@ -485,7 +896,10 @@ fn test_extract_modification_target_modification() {
     // Test extracting target from ast::Expression::Modification
     let expr = ast::Expression::Modification {
         target: make_component_ref("myVar"),
-        value: Arc::new(ast::Expression::Empty),
+        value: Arc::new(ast::Expression::Empty {
+            span: rumoca_core::Span::DUMMY,
+        }),
+        span: rumoca_core::Span::DUMMY,
     };
     assert_eq!(
         extract_modification_target(&expr),
@@ -499,6 +913,10 @@ fn test_extract_modification_target_class_modification() {
     let expr = ast::Expression::ClassModification {
         target: make_component_ref("myClass"),
         modifications: vec![],
+        each_flags: vec![],
+        final_flags: vec![],
+        redeclare_flags: vec![],
+        span: rumoca_core::Span::DUMMY,
     };
     assert_eq!(
         extract_modification_target(&expr),
@@ -511,7 +929,10 @@ fn test_extract_modification_target_named_argument() {
     // Test extracting target from ast::Expression::NamedArgument
     let expr = ast::Expression::NamedArgument {
         name: make_token("param"),
-        value: Arc::new(ast::Expression::Empty),
+        value: Arc::new(ast::Expression::Empty {
+            span: rumoca_core::Span::DUMMY,
+        }),
+        span: rumoca_core::Span::DUMMY,
     };
     assert_eq!(
         extract_modification_target(&expr),

@@ -14,79 +14,43 @@ use tracing::{debug, warn};
 
 use crate::boolean_eval::{
     is_structural_expression, try_eval_boolean_with_ctx_inner, try_eval_structural_boolean,
+    try_resolve_enum_value,
 };
 use crate::errors::FlattenError;
-use crate::{Context, qualify_expression_imports_with_def_map_ctx};
+use crate::static_subscripts::try_constant_integer;
+use crate::{Context, qualify_expression_imports_with_def_map};
 
 mod conditional_and_eval;
 mod connections_graph;
+mod flattened_equations;
+mod zero_sized_reductions;
 pub(crate) use conditional_and_eval::build_eval_context;
 use conditional_and_eval::*;
 pub(crate) use conditional_and_eval::{
     expand_range_indices, substitute_index_in_equation, substitute_index_in_expression,
 };
 use connections_graph::{extract_vcg_data_from_function_call, is_side_effect_only_function};
+pub(crate) use flattened_equations::FlattenedEquations;
+use zero_sized_reductions::{expand_reduction_over_array_ref, simplify_zero_sized_reductions};
 
 type ClassTree = ast::ClassTree;
 type ComponentRefPart = ast::ComponentRefPart;
 type ComponentReference = ast::ComponentReference;
 type EquationBlock = ast::EquationBlock;
 type ForIndex = ast::ForIndex;
-type OpBinary = rumoca_ir_core::OpBinary;
+type OpBinary = rumoca_core::OpBinary;
 type QualifiedName = ast::QualifiedName;
 type TerminalType = ast::TerminalType;
-type Token = rumoca_ir_core::Token;
+type Token = rumoca_core::Token;
 #[cfg(test)]
 type InstanceEquation = ast::InstanceEquation;
 type AssertEquation = flat::AssertEquation;
 
-/// Result of flattening equations, containing both regular equations and when-clauses.
-/// This is needed because for/if-equations can contain when-equations inside them.
-#[derive(Default)]
-pub(crate) struct FlattenedEquations {
-    /// Regular flat equations (continuous, discrete)
-    pub equations: Vec<flat::Equation>,
-    /// Preserved `for`-equation grouping metadata (MLS §8.3.3).
-    pub for_equations: Vec<flat::ForEquation>,
-    /// Assertion equations preserved from equation sections (MLS §8.3.7).
-    pub assert_equations: Vec<flat::AssertEquation>,
-    /// When-clauses extracted from nested when-equations
-    pub when_clauses: Vec<flat::WhenClause>,
-    /// Definite roots from Connections.root() calls (MLS §9.4.1).
-    /// Stores the qualified path to the overconstrained record.
-    pub definite_roots: Vec<String>,
-    /// Branches from Connections.branch(a, b) calls (MLS §9.4).
-    /// Each entry is (from_path, to_path) forming a required edge in the VCG.
-    pub branches: Vec<(String, String)>,
-    /// Potential roots from Connections.potentialRoot(a, priority) calls (MLS §9.4).
-    /// Each entry is (path, priority) where lower priority means more likely to be root.
-    pub potential_roots: Vec<(String, i64)>,
-}
-
-impl FlattenedEquations {
-    /// Merge another flattened bundle into this one.
-    ///
-    /// Keeping merge logic centralized avoids accidentally dropping side-channel
-    /// data when adding new flattened outputs.
-    fn append(&mut self, mut other: FlattenedEquations) {
-        self.equations.append(&mut other.equations);
-        self.for_equations.append(&mut other.for_equations);
-        self.assert_equations.append(&mut other.assert_equations);
-        self.when_clauses.append(&mut other.when_clauses);
-        self.definite_roots.append(&mut other.definite_roots);
-        self.branches.append(&mut other.branches);
-        self.potential_roots.append(&mut other.potential_roots);
-    }
-
-    fn is_empty(&self) -> bool {
-        self.equations.is_empty()
-            && self.for_equations.is_empty()
-            && self.assert_equations.is_empty()
-            && self.when_clauses.is_empty()
-            && self.definite_roots.is_empty()
-            && self.branches.is_empty()
-            && self.potential_roots.is_empty()
-    }
+#[derive(Debug, Clone)]
+struct ArrayRefExpansion {
+    path: String,
+    dims: Vec<i64>,
+    component_part_index: Option<usize>,
 }
 
 /// Build a qualified name string from a prefix and component reference.
@@ -152,10 +116,15 @@ fn format_subscript_for_lookup(sub: &ast::Subscript) -> String {
 
 /// Format a subscript expression to string.
 fn format_subscript_expr(expr: &ast::Expression) -> String {
+    if let Some(value) = try_constant_integer(expr) {
+        return value.to_string();
+    }
+
     match expr {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token,
+            ..
         } => token.text.to_string(),
         ast::Expression::ComponentReference(cr) => {
             // Simple variable reference (should have been substituted)
@@ -165,10 +134,10 @@ fn format_subscript_expr(expr: &ast::Expression) -> String {
                 .collect::<Vec<_>>()
                 .join(".")
         }
-        ast::Expression::Unary { op, rhs } => {
+        ast::Expression::Unary { op, rhs, .. } => {
             format!("{}{}", op, format_subscript_expr(rhs))
         }
-        ast::Expression::Binary { op, lhs, rhs } => {
+        ast::Expression::Binary { op, lhs, rhs, .. } => {
             format!(
                 "({} {} {})",
                 format_subscript_expr(lhs),
@@ -176,7 +145,7 @@ fn format_subscript_expr(expr: &ast::Expression) -> String {
                 format_subscript_expr(rhs)
             )
         }
-        ast::Expression::FunctionCall { comp, args } => {
+        ast::Expression::FunctionCall { comp, args, .. } => {
             let func_name: String = comp
                 .parts
                 .iter()
@@ -186,7 +155,9 @@ fn format_subscript_expr(expr: &ast::Expression) -> String {
             let arg_strs: Vec<String> = args.iter().map(format_subscript_expr).collect();
             format!("{}({})", func_name, arg_strs.join(", "))
         }
-        ast::Expression::Range { start, step, end } => match step {
+        ast::Expression::Range {
+            start, step, end, ..
+        } => match step {
             Some(s) => format!(
                 "{}:{}:{}",
                 format_subscript_expr(start),
@@ -206,6 +177,7 @@ fn format_subscript_expr(expr: &ast::Expression) -> String {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::Bool,
             token,
+            ..
         } => token.text.to_string(),
         _ => "?".to_string(),
     }
@@ -226,6 +198,30 @@ fn get_parent_prefix(prefix: &ast::QualifiedName) -> Option<ast::QualifiedName> 
     }
 }
 
+fn lookup_integer_param_with_unindexed_scope(ctx: &Context, key: &str) -> Option<i64> {
+    if let Some(value) = ctx.get_integer_param(key) {
+        return Some(value);
+    }
+    for candidate in crate::path_utils::unindexed_lookup_variants(key) {
+        if let Some(value) = ctx.get_integer_param(&candidate) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn lookup_array_dims_with_unindexed_scope(ctx: &Context, key: &str) -> Option<Vec<i64>> {
+    if let Some(dims) = ctx.get_array_dims(key) {
+        return Some(dims);
+    }
+    for candidate in crate::path_utils::unindexed_lookup_variants(key) {
+        if let Some(dims) = ctx.get_array_dims(&candidate) {
+            return Some(dims);
+        }
+    }
+    None
+}
+
 /// Try to look up a parameter value in the current scope or any parent scope.
 ///
 /// Per MLS scope resolution rules, a reference like `lines` in a nested component
@@ -243,16 +239,17 @@ fn lookup_parameter_in_scope(
     let is_type_ref = first_ident.starts_with(char::is_uppercase);
     let is_instance_ref = first_ident.starts_with(char::is_lowercase);
 
-    // First try fully qualified (with alias resolution)
-    let qualified = build_qualified_name(prefix, cr);
-    if let Some(val) = ctx.get_integer_param(&qualified) {
-        return Some(val);
-    }
-
     // MLS §7.3: Replaceable type references like `Medium.nXi` map to instance
     // names like `medium.nXi` in the flat model. Try lowercasing the first part
     // of the component reference when it looks like a type name (starts uppercase).
     if is_type_ref && let Some(val) = try_lowercase_type_ref(ctx, cr, prefix) {
+        return Some(val);
+    }
+
+    // Try fully qualified after active package aliases so an instance redeclare
+    // can override stale defaults injected under the package alias spelling.
+    let qualified = build_qualified_name(prefix, cr);
+    if let Some(val) = lookup_integer_param_with_unindexed_scope(ctx, &qualified) {
         return Some(val);
     }
 
@@ -265,18 +262,17 @@ fn lookup_parameter_in_scope(
     // Try parent scopes (with alias resolution)
     let mut current_prefix = prefix.clone();
     while let Some(parent) = get_parent_prefix(&current_prefix) {
+        if is_type_ref && let Some(val) = try_lowercase_type_ref(ctx, cr, &parent) {
+            return Some(val);
+        }
         let parent_qualified = build_qualified_name(&parent, cr);
-        if let Some(val) = ctx.get_integer_param(&parent_qualified) {
+        if let Some(val) = lookup_integer_param_with_unindexed_scope(ctx, &parent_qualified) {
             #[cfg(feature = "tracing")]
             debug!(
                 original = %qualified,
                 found = %parent_qualified,
                 "parameter resolved in parent scope"
             );
-            return Some(val);
-        }
-        // Also try lowercase type ref in parent scope
-        if is_type_ref && let Some(val) = try_lowercase_type_ref(ctx, cr, &parent) {
             return Some(val);
         }
         // Also try uppercase package alias form in parent scope
@@ -294,7 +290,7 @@ fn lookup_parameter_in_scope(
         .map(format_component_ref_part)
         .collect::<Vec<_>>()
         .join(".");
-    if let Some(val) = ctx.get_integer_param(&unqualified) {
+    if let Some(val) = lookup_integer_param_with_unindexed_scope(ctx, &unqualified) {
         return Some(val);
     }
 
@@ -308,17 +304,7 @@ fn lookup_parameter_in_scope(
         return Some(val);
     }
 
-    // MLS §7.3: Last resort for type references like `Medium.nXi` when the type alias
-    // is declared inside a component class (not at root). Search for any parameter
-    // with a matching lowercased suffix (e.g., find `source.medium.nXi` for `Medium.nXi`).
-    if is_type_ref && let Some(val) = try_lowercase_type_ref_suffix(ctx, cr) {
-        return Some(val);
-    }
-    if is_instance_ref && let Some(val) = try_uppercase_instance_ref_suffix(ctx, cr) {
-        return Some(val);
-    }
-
-    // Final fallback for common medium size constants (nX, nXi, nC, nS):
+    // Common medium size constants (nX, nXi, nC, nS):
     // infer from already-known array dimensions in the current scope chain.
     if cr.parts.len() == 1 {
         let simple_name = cr.parts[0].ident.text.as_ref();
@@ -350,21 +336,6 @@ fn try_lowercase_type_ref(
     ctx.get_integer_param(&lowered_name)
 }
 
-/// Last-resort lookup for type references like `Medium.nXi` by suffix matching.
-///
-/// When a component class declares `replaceable package Medium = ...` but the
-/// root model doesn't, `Medium.nXi` won't exist at root scope. However, instance
-/// variables like `source.medium.nXi` will exist. This function finds the first
-/// parameter whose name ends with the lowercased suffix (e.g., `.medium.nXi`).
-fn try_lowercase_type_ref_suffix(ctx: &Context, cr: &ast::ComponentReference) -> Option<i64> {
-    let first = cr.parts[0].ident.text.to_string();
-    let lowered = first[..1].to_lowercase() + &first[1..];
-    let mut suffix_parts = vec![lowered];
-    suffix_parts.extend(cr.parts[1..].iter().map(format_component_ref_part));
-    let suffix = format!(".{}", suffix_parts.join("."));
-    lookup_unique_suffix_integer_param(ctx, &suffix)
-}
-
 /// Try looking up an instance-qualified reference with the first part uppercased.
 ///
 /// Example: `medium.nXi` -> `Medium.nXi`.
@@ -380,38 +351,6 @@ fn try_uppercase_instance_ref(
     parts.extend(cr.parts[1..].iter().map(format_component_ref_part));
     let uppered_name = parts.join(".");
     ctx.get_integer_param(&uppered_name)
-}
-
-/// Last-resort lookup for instance-qualified refs by uppercased suffix matching.
-///
-/// Example: `medium.nXi` -> suffix `.Medium.nXi`.
-fn try_uppercase_instance_ref_suffix(ctx: &Context, cr: &ast::ComponentReference) -> Option<i64> {
-    let first = cr.parts[0].ident.text.to_string();
-    let uppered = first[..1].to_uppercase() + &first[1..];
-    let mut suffix_parts = vec![uppered];
-    suffix_parts.extend(cr.parts[1..].iter().map(format_component_ref_part));
-    let suffix = format!(".{}", suffix_parts.join("."));
-    lookup_unique_suffix_integer_param(ctx, &suffix)
-}
-
-/// Resolve an integer parameter by suffix only when all matches agree.
-///
-/// This constrains suffix matching to deterministic, non-ambiguous cases.
-/// We require exactly one matching key to avoid cross-scope accidental matches.
-fn lookup_unique_suffix_integer_param(ctx: &Context, suffix: &str) -> Option<i64> {
-    let mut value: Option<i64> = None;
-    let mut matches = 0usize;
-    for (key, candidate) in &ctx.parameter_values {
-        if !key.ends_with(suffix) {
-            continue;
-        }
-        matches += 1;
-        if matches > 1 {
-            return None;
-        }
-        value = Some(*candidate);
-    }
-    value
 }
 
 /// Infer medium-style size constants from known array dimensions in scope.
@@ -504,10 +443,12 @@ pub(crate) fn flatten_equation_with_def_map(
             // structural ranges before AST->Flat conversion.
             let lhs = expand_array_comprehensions_in_expression(ctx, lhs, prefix, span)?;
             let rhs = expand_array_comprehensions_in_expression(ctx, rhs, prefix, span)?;
+            let lhs = simplify_zero_sized_reductions(ctx, &lhs, prefix);
+            let rhs = simplify_zero_sized_reductions(ctx, &rhs, prefix);
 
             // Preserve simple equations as a single residual equation.
             // Array scalarization and counting are handled downstream.
-            let residual = make_residual(ctx, &lhs, &rhs, prefix, &ctx.current_imports, def_map);
+            let residual = make_residual(&lhs, &rhs, prefix, &ctx.current_imports, def_map)?;
             let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, prefix, ctx);
             if scalar_count == 0 {
                 return Ok(FlattenedEquations::default());
@@ -554,15 +495,9 @@ pub(crate) fn flatten_equation_with_def_map(
             expand_if_equation(ctx, cond_blocks, else_block, prefix, span, &origin, def_map)
         }
 
-        ast::Equation::FunctionCall { comp, args } => flatten_function_call_equation(
-            ctx,
-            comp,
-            args,
-            prefix,
-            span,
-            &ctx.current_imports,
-            def_map,
-        ),
+        ast::Equation::FunctionCall { comp, args } => {
+            flatten_function_call_equation(comp, args, prefix, span, &ctx.current_imports, def_map)
+        }
 
         ast::Equation::Assert {
             condition,
@@ -573,13 +508,14 @@ pub(crate) fn flatten_equation_with_def_map(
             // They do not contribute to the DAE residual equation system.
             let imports = &ctx.current_imports;
             let assert_eq = flat::AssertEquation::new(
-                qualify_expression_imports_with_def_map_ctx(
-                    condition, prefix, imports, def_map, ctx,
-                ),
-                qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx),
-                level.as_ref().map(|expr| {
-                    qualify_expression_imports_with_def_map_ctx(expr, prefix, imports, def_map, ctx)
-                }),
+                qualify_expression_imports_with_def_map(condition, prefix, imports, def_map)?,
+                qualify_expression_imports_with_def_map(message, prefix, imports, def_map)?,
+                level
+                    .as_ref()
+                    .map(|expr| {
+                        qualify_expression_imports_with_def_map(expr, prefix, imports, def_map)
+                    })
+                    .transpose()?,
                 span,
             );
             Ok(FlattenedEquations {
@@ -596,7 +532,6 @@ pub(crate) fn flatten_equation_with_def_map(
 }
 
 fn flatten_function_call_equation(
-    ctx: &Context,
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
@@ -605,9 +540,9 @@ fn flatten_function_call_equation(
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<FlattenedEquations, FlattenError> {
     if is_assert_function_call(comp) {
-        return flatten_assert_function_call(ctx, args, prefix, span, imports, def_map);
+        return flatten_assert_function_call(args, prefix, span, imports, def_map);
     }
-    Ok(extract_vcg_data_from_function_call(comp, args, prefix))
+    extract_vcg_data_from_function_call(comp, args, prefix)
 }
 
 fn is_assert_function_call(comp: &ast::ComponentReference) -> bool {
@@ -618,7 +553,6 @@ fn is_assert_function_call(comp: &ast::ComponentReference) -> bool {
 }
 
 fn flatten_assert_function_call(
-    ctx: &Context,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
@@ -644,11 +578,11 @@ fn flatten_assert_function_call(
     };
 
     let assert_eq = flat::AssertEquation::new(
-        qualify_expression_imports_with_def_map_ctx(condition, prefix, imports, def_map, ctx),
-        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx),
-        level.map(|expr| {
-            qualify_expression_imports_with_def_map_ctx(expr, prefix, imports, def_map, ctx)
-        }),
+        qualify_expression_imports_with_def_map(condition, prefix, imports, def_map)?,
+        qualify_expression_imports_with_def_map(message, prefix, imports, def_map)?,
+        level
+            .map(|expr| qualify_expression_imports_with_def_map(expr, prefix, imports, def_map))
+            .transpose()?,
         span,
     );
 
@@ -668,6 +602,7 @@ fn named_call_arg<'a>(args: &'a [ast::Expression], name: &str) -> Option<&'a ast
         if let ast::Expression::NamedArgument {
             name: arg_name,
             value,
+            ..
         } = arg
             && arg_name.text.as_ref() == name
         {
@@ -680,27 +615,29 @@ fn named_call_arg<'a>(args: &'a [ast::Expression], name: &str) -> Option<&'a ast
 
 /// Create a residual expression: lhs - rhs
 fn make_residual(
-    ctx: &Context,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     prefix: &ast::QualifiedName,
     imports: &crate::qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
-) -> flat::Expression {
+) -> Result<rumoca_core::Expression, FlattenError> {
     // Create: lhs - rhs
     let residual = ast::Expression::Binary {
-        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
+        op: rumoca_core::OpBinary::Sub,
         lhs: Arc::new(lhs.clone()),
         rhs: Arc::new(rhs.clone()),
+        span: lhs.span(),
     };
 
-    qualify_expression_imports_with_def_map_ctx(&residual, prefix, imports, def_map, ctx)
+    qualify_expression_imports_with_def_map(&residual, prefix, imports, def_map)
 }
 
 /// Expand array comprehensions in equation expressions when index ranges are structural.
 ///
 /// This preserves current scalar-count and ToDAE expectations for equation residuals
 /// while `ast::Expression::ArrayComprehension` support is rolled through downstream passes.
+// SPEC_0021: Exception - exhaustive expression-tree rewrite over AST variants.
+#[allow(clippy::too_many_lines)]
 fn expand_array_comprehensions_in_expression(
     ctx: &Context,
     expr: &ast::Expression,
@@ -712,6 +649,7 @@ fn expand_array_comprehensions_in_expression(
             expr: body,
             indices,
             filter,
+            ..
         } => expand_array_comprehension_expression(
             ctx,
             body,
@@ -720,68 +658,94 @@ fn expand_array_comprehensions_in_expression(
             prefix,
             span,
         ),
-        ast::Expression::Binary { op, lhs, rhs } => Ok(ast::Expression::Binary {
+        ast::Expression::Binary { op, lhs, rhs, span } => Ok(ast::Expression::Binary {
             op: op.clone(),
             lhs: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, lhs, prefix, span,
+                ctx, lhs, prefix, *span,
             )?),
             rhs: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, rhs, prefix, span,
+                ctx, rhs, prefix, *span,
             )?),
+            span: *span,
         }),
-        ast::Expression::Unary { op, rhs } => Ok(ast::Expression::Unary {
+        ast::Expression::Unary { op, rhs, span } => Ok(ast::Expression::Unary {
             op: op.clone(),
             rhs: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, rhs, prefix, span,
+                ctx, rhs, prefix, *span,
             )?),
+            span: *span,
         }),
-        ast::Expression::FunctionCall { comp, args } => Ok(ast::Expression::FunctionCall {
-            comp: comp.clone(),
-            args: expand_expression_list(ctx, args, prefix, span)?,
-        }),
+        ast::Expression::FunctionCall { comp, args, span } => {
+            if let Some(expanded) = expand_reduction_over_array_ref(ctx, comp, args, prefix, *span)?
+            {
+                return Ok(expanded);
+            }
+            Ok(ast::Expression::FunctionCall {
+                comp: comp.clone(),
+                args: expand_expression_list(ctx, args, prefix, *span)?,
+                span: *span,
+            })
+        }
         ast::Expression::If {
             branches,
             else_branch,
+            ..
         } => expand_if_expression(ctx, branches, else_branch, prefix, span),
         ast::Expression::Array {
             elements,
             is_matrix,
+            span,
         } => Ok(ast::Expression::Array {
-            elements: expand_expression_list(ctx, elements, prefix, span)?,
+            elements: expand_expression_list(ctx, elements, prefix, *span)?,
             is_matrix: *is_matrix,
+            span: *span,
         }),
-        ast::Expression::Tuple { elements } => Ok(ast::Expression::Tuple {
-            elements: expand_expression_list(ctx, elements, prefix, span)?,
+        ast::Expression::Tuple { elements, span } => Ok(ast::Expression::Tuple {
+            elements: expand_expression_list(ctx, elements, prefix, *span)?,
+            span: *span,
         }),
-        ast::Expression::Range { start, step, end } => Ok(ast::Expression::Range {
+        ast::Expression::Range {
+            start,
+            step,
+            end,
+            span,
+        } => Ok(ast::Expression::Range {
             start: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, start, prefix, span,
+                ctx, start, prefix, *span,
             )?),
             step: step
                 .as_ref()
-                .map(|s| expand_array_comprehensions_in_expression(ctx, s, prefix, span))
+                .map(|s| expand_array_comprehensions_in_expression(ctx, s, prefix, *span))
                 .transpose()?
                 .map(Arc::new),
             end: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, end, prefix, span,
+                ctx, end, prefix, *span,
             )?),
+            span: *span,
         }),
-        ast::Expression::Parenthesized { inner } => Ok(ast::Expression::Parenthesized {
+        ast::Expression::Parenthesized { inner, span } => Ok(ast::Expression::Parenthesized {
             inner: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, inner, prefix, span,
+                ctx, inner, prefix, *span,
             )?),
+            span: *span,
         }),
-        ast::Expression::ArrayIndex { base, subscripts } => Ok(ast::Expression::ArrayIndex {
+        ast::Expression::ArrayIndex {
+            base,
+            subscripts,
+            span,
+        } => Ok(ast::Expression::ArrayIndex {
             base: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, base, prefix, span,
+                ctx, base, prefix, *span,
             )?),
             subscripts: subscripts.clone(),
+            span: *span,
         }),
-        ast::Expression::FieldAccess { base, field } => Ok(ast::Expression::FieldAccess {
+        ast::Expression::FieldAccess { base, field, span } => Ok(ast::Expression::FieldAccess {
             base: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, base, prefix, span,
+                ctx, base, prefix, *span,
             )?),
             field: field.clone(),
+            span: *span,
         }),
         _ => Ok(expr.clone()),
     }
@@ -824,6 +788,7 @@ fn expand_if_expression(
     Ok(ast::Expression::If {
         branches,
         else_branch,
+        span,
     })
 }
 
@@ -859,6 +824,7 @@ fn expand_array_comprehension_expression(
     Ok(ast::Expression::Array {
         elements: expanded_elements,
         is_matrix: matches!(body, ast::Expression::Array { .. }),
+        span,
     })
 }
 
@@ -1071,32 +1037,32 @@ fn infer_scalar_rhs_shape(
 }
 
 fn infer_binary_shape(
-    op: &rumoca_ir_core::OpBinary,
+    op: &rumoca_core::OpBinary,
     lhs_shape: ExpressionShape,
     rhs_shape: ExpressionShape,
 ) -> ExpressionShape {
     match op {
-        rumoca_ir_core::OpBinary::Add(_)
-        | rumoca_ir_core::OpBinary::Sub(_)
-        | rumoca_ir_core::OpBinary::AddElem(_)
-        | rumoca_ir_core::OpBinary::SubElem(_) => combine_additive_shapes(lhs_shape, rhs_shape),
-        rumoca_ir_core::OpBinary::Mul(_) => combine_mul_shapes(lhs_shape, rhs_shape),
-        rumoca_ir_core::OpBinary::MulElem(_)
-        | rumoca_ir_core::OpBinary::DivElem(_)
-        | rumoca_ir_core::OpBinary::ExpElem(_) => combine_elementwise_shapes(lhs_shape, rhs_shape),
-        rumoca_ir_core::OpBinary::Div(_) | rumoca_ir_core::OpBinary::Exp(_) => {
+        rumoca_core::OpBinary::Add
+        | rumoca_core::OpBinary::Sub
+        | rumoca_core::OpBinary::AddElem
+        | rumoca_core::OpBinary::SubElem => combine_additive_shapes(lhs_shape, rhs_shape),
+        rumoca_core::OpBinary::Mul => combine_mul_shapes(lhs_shape, rhs_shape),
+        rumoca_core::OpBinary::MulElem
+        | rumoca_core::OpBinary::DivElem
+        | rumoca_core::OpBinary::ExpElem => combine_elementwise_shapes(lhs_shape, rhs_shape),
+        rumoca_core::OpBinary::Div | rumoca_core::OpBinary::Exp => {
             infer_scalar_rhs_shape(lhs_shape, rhs_shape)
         }
-        rumoca_ir_core::OpBinary::Eq(_)
-        | rumoca_ir_core::OpBinary::Neq(_)
-        | rumoca_ir_core::OpBinary::Lt(_)
-        | rumoca_ir_core::OpBinary::Le(_)
-        | rumoca_ir_core::OpBinary::Gt(_)
-        | rumoca_ir_core::OpBinary::Ge(_)
-        | rumoca_ir_core::OpBinary::And(_)
-        | rumoca_ir_core::OpBinary::Or(_)
-        | rumoca_ir_core::OpBinary::Assign(_)
-        | rumoca_ir_core::OpBinary::Empty => ExpressionShape::Scalar,
+        rumoca_core::OpBinary::Eq
+        | rumoca_core::OpBinary::Neq
+        | rumoca_core::OpBinary::Lt
+        | rumoca_core::OpBinary::Le
+        | rumoca_core::OpBinary::Gt
+        | rumoca_core::OpBinary::Ge
+        | rumoca_core::OpBinary::And
+        | rumoca_core::OpBinary::Or
+        | rumoca_core::OpBinary::Assign
+        | rumoca_core::OpBinary::Empty => ExpressionShape::Scalar,
     }
 }
 
@@ -1108,10 +1074,10 @@ fn infer_expression_shape(
     match expr {
         ast::Expression::Terminal { .. } => ExpressionShape::Scalar,
         ast::Expression::ComponentReference(cr) => infer_component_ref_shape(cr, prefix, ctx),
-        ast::Expression::Unary { rhs, .. } | ast::Expression::Parenthesized { inner: rhs } => {
+        ast::Expression::Unary { rhs, .. } | ast::Expression::Parenthesized { inner: rhs, .. } => {
             infer_expression_shape(rhs, prefix, ctx)
         }
-        ast::Expression::Binary { op, lhs, rhs } => {
+        ast::Expression::Binary { op, lhs, rhs, .. } => {
             let lhs_shape = infer_expression_shape(lhs, prefix, ctx);
             let rhs_shape = infer_expression_shape(rhs, prefix, ctx);
             infer_binary_shape(op, lhs_shape, rhs_shape)
@@ -1126,6 +1092,7 @@ fn infer_expression_shape(
         ast::Expression::If {
             branches,
             else_branch,
+            ..
         } => {
             let else_shape = infer_expression_shape(else_branch, prefix, ctx);
             if branches
@@ -1140,6 +1107,7 @@ fn infer_expression_shape(
         ast::Expression::Array {
             elements,
             is_matrix,
+            ..
         } => {
             if *is_matrix {
                 ExpressionShape::Other
@@ -1160,7 +1128,7 @@ fn infer_expression_shape(
         | ast::Expression::NamedArgument { .. }
         | ast::Expression::Modification { .. }
         | ast::Expression::ClassModification { .. }
-        | ast::Expression::Empty => ExpressionShape::Other,
+        | ast::Expression::Empty { .. } => ExpressionShape::Other,
     }
 }
 
@@ -1229,8 +1197,8 @@ fn infer_simple_equation_scalar_count(
     }
 
     // Fallback to array-reference dimensional metadata.
-    if let Some((_, dims)) = find_array_refs_needing_expansion(lhs, prefix, ctx).first() {
-        return dims_scalar_size(dims);
+    if let Some(array_ref) = find_array_refs_needing_expansion(lhs, prefix, ctx).first() {
+        return dims_scalar_size(&array_ref.dims);
     }
     1
 }
@@ -1247,7 +1215,7 @@ fn find_array_refs_needing_expansion(
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,
     ctx: &Context,
-) -> Vec<(String, Vec<i64>)> {
+) -> Vec<ArrayRefExpansion> {
     let mut results = Vec::new();
     find_array_refs_recursive(expr, prefix, ctx, &mut results);
     results
@@ -1263,14 +1231,38 @@ fn find_array_ref_in_component(
     cr: &ast::ComponentReference,
     prefix: &ast::QualifiedName,
     ctx: &Context,
-    results: &mut Vec<(String, Vec<i64>)>,
+    results: &mut Vec<ArrayRefExpansion>,
 ) {
-    let qualified = build_qualified_name(prefix, cr);
-    let parts = crate::path_utils::split_path_with_indices(&qualified);
-    let prefix_part_count = prefix.parts.len();
+    let mut path = String::new();
+    let prefix_parts = prefix.parts.iter().map(|(name, subs)| {
+        let formatted = if subs.is_empty() {
+            name.clone()
+        } else {
+            format!(
+                "{}[{}]",
+                name,
+                subs.iter()
+                    .map(|sub| sub.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        (formatted, None, !subs.is_empty() || name.contains('['))
+    });
+    let component_parts = cr.parts.iter().enumerate().map(|(index, part)| {
+        (
+            format_component_ref_part(part),
+            Some(index),
+            has_subscript_at_index(cr, index),
+        )
+    });
 
-    for i in 1..=parts.len() {
-        let path = parts[..i].join(".");
+    for (segment, component_part_index, already_subscripted) in prefix_parts.chain(component_parts)
+    {
+        if !path.is_empty() {
+            path.push('.');
+        }
+        path.push_str(&segment);
         let Some(dims) = ctx.get_array_dimensions(&path) else {
             continue;
         };
@@ -1279,24 +1271,17 @@ fn find_array_ref_in_component(
             continue;
         }
 
-        // Check if this path segment already has subscripts (already indexed).
-        // For prefix parts (i <= prefix_part_count): check both the subscripts vector
-        // and embedded brackets in the name string (from array component expansion,
-        // which embeds subscripts like "inductor[1]" in the name).
-        // For CR parts (i > prefix_part_count): check the component reference subscripts.
-        let already_subscripted = if i <= prefix_part_count {
-            !prefix.parts[i - 1].1.is_empty() || prefix.parts[i - 1].0.contains('[')
-        } else {
-            has_subscript_at_index(cr, i - prefix_part_count - 1)
-        };
-
         if already_subscripted {
             continue;
         }
 
         // Add if not already present
-        if !results.iter().any(|(p, _)| p == &path) {
-            results.push((path, dims.clone()));
+        if !results.iter().any(|array_ref| array_ref.path == path) {
+            results.push(ArrayRefExpansion {
+                path: path.clone(),
+                dims: dims.clone(),
+                component_part_index,
+            });
         }
         break; // Found array, stop looking (innermost first)
     }
@@ -1319,7 +1304,7 @@ fn find_array_refs_recursive(
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,
     ctx: &Context,
-    results: &mut Vec<(String, Vec<i64>)>,
+    results: &mut Vec<ArrayRefExpansion>,
 ) {
     match expr {
         ast::Expression::ComponentReference(cr) => {
@@ -1345,13 +1330,14 @@ fn find_array_refs_recursive(
             }
         }
 
-        ast::Expression::Parenthesized { inner } => {
+        ast::Expression::Parenthesized { inner, .. } => {
             find_array_refs_recursive(inner, prefix, ctx, results);
         }
 
         ast::Expression::If {
             branches,
             else_branch,
+            ..
         } => {
             for (cond, then_expr) in branches {
                 find_array_refs_recursive(cond, prefix, ctx, results);
@@ -1366,7 +1352,9 @@ fn find_array_refs_recursive(
             }
         }
 
-        ast::Expression::Range { start, step, end } => {
+        ast::Expression::Range {
+            start, step, end, ..
+        } => {
             find_array_refs_recursive(start, prefix, ctx, results);
             if let Some(s) = step {
                 find_array_refs_recursive(s, prefix, ctx, results);
@@ -1381,7 +1369,7 @@ fn find_array_refs_recursive(
         // Terminal expressions and others don't contain array references needing expansion
         ast::Expression::Terminal { .. }
         | ast::Expression::Tuple { .. }
-        | ast::Expression::Empty
+        | ast::Expression::Empty { .. }
         | ast::Expression::NamedArgument { .. }
         | ast::Expression::Modification { .. }
         | ast::Expression::ClassModification { .. }
@@ -1572,7 +1560,6 @@ fn expand_if_equation(
         // Fast path: position-based matching (original behavior)
         let mut result = FlattenedEquations::default();
         let eq_context = ConditionalEquationContext {
-            ctx,
             prefix,
             span,
             origin,
@@ -1670,13 +1657,126 @@ fn try_select_branch_for_mismatched_if(
         }
         // Can't evaluate this condition at all
         return Err(FlattenError::unsupported_equation(
-            "if-equation branches have mismatched equation counts",
+            mismatched_if_equation_description(ctx, cond_blocks, else_block, prefix, span),
             span,
         ));
     }
     // All conditions false, use else branch
     let else_eqs = else_block.clone().unwrap_or_default();
     flatten_equations_list(ctx, &else_eqs, prefix, span, origin, def_map)
+}
+
+fn mismatched_if_equation_description(
+    ctx: &Context,
+    cond_blocks: &[ast::EquationBlock],
+    else_block: &Option<Vec<ast::Equation>>,
+    prefix: &ast::QualifiedName,
+    span: rumoca_core::Span,
+) -> String {
+    let mut counts = cond_blocks
+        .iter()
+        .map(|block| expand_to_simple_equations(ctx, &block.eqs, prefix, span).map(|eqs| eqs.len()))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+    let else_count = else_block
+        .as_ref()
+        .map(|eqs| expand_to_simple_equations(ctx, eqs, prefix, span).map(|eqs| eqs.len()))
+        .transpose()
+        .ok()
+        .flatten();
+    if let Some(count) = else_count {
+        counts.push(count);
+    }
+    let conditions = cond_blocks
+        .iter()
+        .map(|block| format_subscript_expr(&block.cond))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let references = cond_blocks
+        .iter()
+        .flat_map(|block| condition_reference_debug(ctx, &block.cond, prefix))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let enum_candidates = cond_blocks
+        .iter()
+        .flat_map(|block| condition_enum_candidates(ctx, &block.cond))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "if-equation branches have mismatched equation counts in scope `{}`: conditions [{}], refs [{}], enum candidates [{}], branch counts {:?}, else count {}",
+        prefix.to_flat_string(),
+        conditions,
+        references,
+        enum_candidates,
+        counts,
+        else_count
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    )
+}
+
+fn condition_enum_candidates(ctx: &Context, expr: &ast::Expression) -> Vec<String> {
+    match expr {
+        ast::Expression::ComponentReference(cr) => {
+            let name = cr.to_string();
+            let suffix = format!(".{name}");
+            ctx.enum_parameter_values
+                .iter()
+                .filter(|(key, _)| key.as_str() == name || key.ends_with(&suffix))
+                .take(12)
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect()
+        }
+        ast::Expression::Binary { lhs, rhs, .. } => {
+            let mut refs = condition_enum_candidates(ctx, lhs);
+            refs.extend(condition_enum_candidates(ctx, rhs));
+            refs
+        }
+        ast::Expression::Unary { rhs, .. } => condition_enum_candidates(ctx, rhs),
+        ast::Expression::Parenthesized { inner, .. } => condition_enum_candidates(ctx, inner),
+        ast::Expression::FunctionCall { args, .. } => args
+            .iter()
+            .flat_map(|arg| condition_enum_candidates(ctx, arg))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn condition_reference_debug(
+    ctx: &Context,
+    expr: &ast::Expression,
+    prefix: &ast::QualifiedName,
+) -> Vec<String> {
+    match expr {
+        ast::Expression::ComponentReference(cr) => {
+            let name = cr.to_string();
+            let enum_value =
+                try_resolve_enum_value(Some(ctx), expr, prefix).unwrap_or_else(|| "-".to_string());
+            let bool_value = try_eval_boolean_with_ctx_inner(expr, Some(ctx), prefix)
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let int_value = lookup_parameter_in_scope(ctx, cr, prefix)
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            vec![format!(
+                "{name}:int={int_value}:enum={enum_value}:bool={bool_value}"
+            )]
+        }
+        ast::Expression::Binary { lhs, rhs, .. } => {
+            let mut refs = condition_reference_debug(ctx, lhs, prefix);
+            refs.extend(condition_reference_debug(ctx, rhs, prefix));
+            refs
+        }
+        ast::Expression::Unary { rhs, .. } => condition_reference_debug(ctx, rhs, prefix),
+        ast::Expression::Parenthesized { inner, .. } => {
+            condition_reference_debug(ctx, inner, prefix)
+        }
+        ast::Expression::FunctionCall { args, .. } => args
+            .iter()
+            .flat_map(|arg| condition_reference_debug(ctx, arg, prefix))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Expand equations to simple equations (lhs = rhs form).
@@ -1809,10 +1909,11 @@ fn add_subscript_to_component_ref(
     if let Some(last) = new_cr.parts.last_mut() {
         let sub = ast::Subscript::Expression(ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
-            token: rumoca_ir_core::Token {
+            token: rumoca_core::Token {
                 text: std::sync::Arc::from(index.to_string()),
                 ..Default::default()
             },
+            span: cr.span,
         });
         match &mut last.subs {
             Some(subs) => subs.push(sub),
@@ -1837,10 +1938,7 @@ fn expand_for_to_simple(
     let first_index = &indices[0];
     let remaining_indices = &indices[1..];
 
-    let index_values = match expand_range_indices(ctx, &first_index.range, prefix, span) {
-        Ok(values) => values,
-        Err(_) => return Ok(Vec::new()), // Skip unresolvable for-equations
-    };
+    let index_values = expand_range_indices(ctx, &first_index.range, prefix, span)?;
     let index_name = &first_index.ident.text;
 
     let mut result = Vec::new();

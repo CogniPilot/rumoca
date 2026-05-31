@@ -251,24 +251,36 @@ fn execute_command_dispatches_safe_project_command() {
 
         let response = server
             .execute_command(ExecuteCommandParams {
-                command: "rumoca.project.filesMoved".to_string(),
+                command: "rumoca.project.getSimulationConfig".to_string(),
                 arguments: vec![serde_json::json!({
                     "workspaceRoot": workspace_root.display().to_string(),
-                    "files": [],
+                    "model": "Ball",
+                    "fallback": {
+                        "solver": "auto",
+                        "tEnd": 10.0,
+                        "dt": null,
+                        "outputDir": "",
+                        "sourceRootPaths": [],
+                    },
                 })],
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })
             .await
             .expect("execute command should succeed")
             .expect("execute command should return a payload");
-        assert_eq!(response, serde_json::json!({ "ok": true }));
+        assert_eq!(
+            response
+                .get("effective")
+                .and_then(|value| value.get("solver")),
+            Some(&serde_json::json!("auto"))
+        );
     });
 }
 
 #[test]
-fn execute_command_dispatches_workspace_template_catalog_command() {
+fn execute_command_dispatches_workspace_target_catalog_command() {
     run_async_test(async {
-        let workspace_root = new_temp_dir("execute-workspace-template-command");
+        let workspace_root = new_temp_dir("execute-workspace-target-command");
         let workspace_uri = Url::from_directory_path(&workspace_root).expect("workspace uri");
         let service = new_test_service();
         let server = service.inner();
@@ -282,112 +294,21 @@ fn execute_command_dispatches_workspace_template_catalog_command() {
 
         let response = server
             .execute_command(ExecuteCommandParams {
-                command: "rumoca.workspace.getBuiltinTemplates".to_string(),
+                command: "rumoca.workspace.getBuiltinTargets".to_string(),
                 arguments: Vec::new(),
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })
             .await
             .expect("execute command should succeed")
             .expect("execute command should return a payload");
-        let templates = response
+        let targets = response
             .as_array()
-            .expect("template catalog should serialize to an array");
+            .expect("target catalog should serialize to an array");
         assert!(
-            templates.iter().any(|template| {
-                template.get("id").and_then(serde_json::Value::as_str) == Some("sympy.py.jinja")
+            targets.iter().any(|target| {
+                target.get("id").and_then(serde_json::Value::as_str) == Some("sympy")
             }),
-            "workspace template catalog should include the SymPy built-in"
-        );
-    });
-}
-
-#[test]
-fn resync_sidecars_preserves_loaded_source_roots_and_simulation_cache_when_paths_unchanged() {
-    run_async_test(async {
-        let workspace_root = new_temp_dir("resync-preserves-simulation-cache");
-        let focus = workspace_root.join("Root.mo");
-        let source_root_dir = workspace_root.join("ModelicaStandardLibrary");
-        std::fs::create_dir_all(&source_root_dir).expect("mkdir source-root dir");
-        std::fs::write(
-            &focus,
-            "model Root\n  Real x(start=0);\nequation\n  der(x) = 1;\nend Root;\n",
-        )
-        .expect("write focus");
-
-        let service = new_test_service();
-        let server = service.inner();
-        *server.workspace_root.write().await = Some(workspace_root.clone());
-        *server.initial_source_root_paths.write().await =
-            vec![source_root_dir.to_string_lossy().to_string()];
-        *server.source_root_paths.write().await =
-            vec![source_root_dir.to_string_lossy().to_string()];
-
-        {
-            let mut session = server.session.write().await;
-            session.update_document(
-                &focus.to_string_lossy(),
-                &std::fs::read_to_string(&focus).expect("read focus"),
-            );
-        }
-
-        let source_root_key = canonical_path_key(&source_root_dir.to_string_lossy());
-        {
-            let source_set_key =
-                source_root_source_set_key(source_root_dir.to_string_lossy().as_ref());
-            let source_root_epoch = server.session.read().await.source_root_state_epoch();
-            server
-                .load_source_root_if_current(
-                    source_root_dir.to_string_lossy().as_ref(),
-                    &source_root_key,
-                    &source_set_key,
-                    None,
-                    source_root_epoch,
-                    SourceRootIndexingReason::CompletionImports,
-                )
-                .await
-                .expect("source-root load should succeed")
-                .expect("source root should load");
-        }
-        server
-            .compile_model_for_simulation("Root", &focus.to_string_lossy())
-            .await
-            .expect("initial simulation compile should succeed");
-        assert_eq!(
-            server.simulation_compile_cache.read().await.len(),
-            1,
-            "initial compile should populate the simulation cache"
-        );
-
-        let response = server
-            .execute_command(ExecuteCommandParams {
-                command: "rumoca.project.resyncSidecars".to_string(),
-                arguments: vec![serde_json::json!({
-                    "workspaceRoot": workspace_root.display().to_string(),
-                    "dryRun": false,
-                    "pruneOrphans": false,
-                })],
-                work_done_progress_params: WorkDoneProgressParams::default(),
-            })
-            .await
-            .expect("resync sidecars command should succeed")
-            .expect("resync sidecars command should return a payload");
-        assert_eq!(
-            response.get("ok").and_then(serde_json::Value::as_bool),
-            Some(true),
-            "resync sidecars should report success"
-        );
-        assert_eq!(
-            server.simulation_compile_cache.read().await.len(),
-            1,
-            "resync sidecars should not flush simulation cache when source-root paths are unchanged"
-        );
-        assert!(
-            server
-                .session
-                .read()
-                .await
-                .is_source_root_path_loaded(&source_root_key),
-            "resync sidecars should preserve the loaded source-root set when source-root paths are unchanged"
+            "workspace target catalog should include the SymPy built-in"
         );
     });
 }
@@ -1156,10 +1077,14 @@ fn hover_timing_summary_marks_flat_preview_requests() {
 }
 
 #[test]
-#[ignore = "requires cached MSL under target/msl"]
 fn msl_completion_loads_libraries_on_demand() {
     run_async_test(async {
-        let msl_root = cached_msl_source_root().expect("cached MSL should exist");
+        let Some(msl_root) = cached_msl_source_root() else {
+            eprintln!(
+                "msl_completion_loads_libraries_on_demand: cached MSL not found under target/msl"
+            );
+            return;
+        };
         let temp = new_temp_dir("msl-completion-load");
         let active_path = temp.join("active.mo");
         let source_root_key = canonical_path_key(msl_root.to_string_lossy().as_ref());
@@ -1190,10 +1115,14 @@ fn msl_completion_loads_libraries_on_demand() {
 }
 
 #[test]
-#[ignore = "requires cached MSL under target/msl"]
 fn msl_completion_on_open_source_root_example_returns_namespace_members() {
     run_async_test(async {
-        let msl_root = cached_msl_source_root().expect("cached MSL should exist");
+        let Some(msl_root) = cached_msl_source_root() else {
+            eprintln!(
+                "msl_completion_on_open_source_root_example_returns_namespace_members: cached MSL not found under target/msl"
+            );
+            return;
+        };
         let example_path = msl_root.join("Electrical/Analog/Examples/Resistor.mo");
         let example_uri = Url::from_file_path(&example_path).expect("file uri");
         let source = std::fs::read_to_string(&example_path).expect("read MSL example");
@@ -1334,6 +1263,69 @@ fn code_lens_request_stays_parse_only_until_resolved() {
         assert!(
             !server.session.read().await.has_standard_resolved_cached(),
             "code lens resolve should avoid the standard resolved session"
+        );
+    });
+}
+
+#[test]
+fn code_lens_resolve_compiles_within_qualified_model_name() {
+    run_async_test(async {
+        let temp = new_temp_dir("code-lens-within-qualified-model");
+        let active_path = temp.join("Ball.mo");
+        let active_uri = Url::from_file_path(&active_path).expect("file uri");
+        let active_key = session_document_uri_key(&active_uri);
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &active_key,
+                r#"
+                    within Examples;
+                    model Ball
+                      Real x(start=0);
+                    equation
+                      der(x) = 1;
+                    end Ball;
+                    "#,
+            );
+        }
+
+        let lenses = server
+            .code_lens(CodeLensParams {
+                text_document: TextDocumentIdentifier {
+                    uri: active_uri.clone(),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            })
+            .await
+            .expect("code lens request should succeed")
+            .expect("code lens should return the model lens");
+        assert_eq!(lenses.len(), 1, "expected one model code lens");
+        assert_eq!(
+            lenses[0]
+                .data
+                .as_ref()
+                .and_then(|data| data.get("modelName"))
+                .and_then(serde_json::Value::as_str),
+            Some("Examples.Ball"),
+            "CodeLens compile requests must use the stored definition's within-qualified model name",
+        );
+
+        let resolved = server
+            .code_lens_resolve(lenses[0].clone())
+            .await
+            .expect("code lens resolve should succeed");
+        let title = resolved
+            .command
+            .as_ref()
+            .map(|command| command.title.clone())
+            .expect("resolved code lens should supply a title");
+        assert!(
+            title.starts_with("Balanced"),
+            "within-qualified code lens should compile the same model simulation can run: {title}"
         );
     });
 }
@@ -1537,6 +1529,76 @@ fn code_lens_defers_when_required_source_roots_are_unloaded() {
                 .loaded_source_root_path_keys()
                 .is_empty(),
             "code lens should not synchronously load source roots"
+        );
+    });
+}
+
+#[test]
+fn code_lens_resolve_uses_model_simulation_source_root_overrides() {
+    run_async_test(async {
+        let temp = new_temp_dir("code-lens-model-source-root-overrides");
+        let source_root_path = write_test_source_root(&temp, "Lib");
+        let active_path = temp.join("active.mo");
+        let active_uri = Url::from_file_path(&active_path).expect("file uri");
+        let active_key = session_document_uri_key(&active_uri);
+        let source_root_key = canonical_path_key(source_root_path.to_string_lossy().as_ref());
+
+        write_model_simulation_preset(
+            &temp,
+            "Active",
+            SimulationModelOverride {
+                source_root_overrides: vec![source_root_path.to_string_lossy().to_string()],
+                ..Default::default()
+            },
+        )
+        .expect("write model simulation preset");
+
+        let service = new_test_service();
+        let server = service.inner();
+        *server.workspace_root.write().await = Some(temp.clone());
+        {
+            let mut session = server.session.write().await;
+            session.update_document(&active_key, "model Active\n  Lib.A a;\nend Active;\n");
+        }
+
+        let lenses = server
+            .code_lens(CodeLensParams {
+                text_document: TextDocumentIdentifier {
+                    uri: active_uri.clone(),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            })
+            .await
+            .expect("code lens request should succeed")
+            .expect("code lens should return the model lens");
+
+        let resolved = server
+            .code_lens_resolve(
+                lenses
+                    .into_iter()
+                    .next()
+                    .expect("expected one unresolved code lens"),
+            )
+            .await
+            .expect("code lens resolve should succeed");
+        let title = resolved
+            .command
+            .as_ref()
+            .map(|command| command.title.clone())
+            .expect("resolved code lens should supply a title");
+
+        assert!(
+            title.starts_with("Balanced"),
+            "code lens resolve should compile with model-specific source roots: {title}"
+        );
+        assert!(
+            server
+                .session
+                .read()
+                .await
+                .is_source_root_path_loaded(&source_root_key),
+            "code lens resolve should load source roots from the model simulation preset"
         );
     });
 }
@@ -1778,7 +1840,7 @@ fn compile_model_for_simulation_loads_same_directory_siblings_from_disk() {
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("compile with sibling file should succeed");
-        assert_eq!(compiled.dae.states.len(), 1);
+        assert_eq!(compiled.dae.variables.states.len(), 1);
     });
 }
 
@@ -1833,163 +1895,4 @@ fn package_layout_source_root_load_warning_is_concise_when_file_diagnostics_exis
         !message.contains("PKG-009"),
         "warning should not repeat the full diagnostic summary: {message}"
     );
-}
-
-#[test]
-fn did_open_source_root_document_moves_live_text_into_session() {
-    run_async_test(async {
-        let service = new_test_service();
-        let server = service.inner();
-        let source_root_dir = std::env::temp_dir().join("rumoca-lsp-test-open");
-        let source_root_path = source_root_dir
-            .join("Modelica")
-            .join("Blocks")
-            .join("Continuous.mo");
-        let source_root_uri = canonical_path_key(source_root_path.to_string_lossy().as_ref());
-        let text = "within Modelica.Blocks;\npackage Continuous\nend Continuous;\n";
-
-        {
-            let mut session = server.session.write().await;
-            session.replace_parsed_source_set(
-                "source-root::Modelica",
-                SourceRootKind::External,
-                vec![(source_root_uri.clone(), ast::StoredDefinition::default())],
-                None,
-            );
-        }
-        let uri = Url::from_file_path(&source_root_path).expect("file uri");
-        server
-            .did_open(DidOpenTextDocumentParams {
-                text_document: TextDocumentItem {
-                    uri,
-                    language_id: "modelica".to_string(),
-                    version: 1,
-                    text: text.to_string(),
-                },
-            })
-            .await;
-
-        let session_doc = server
-            .session
-            .read()
-            .await
-            .get_document(&source_root_uri)
-            .cloned()
-            .expect("opened source-root document must be owned by the session");
-        assert_eq!(
-            session_doc.content, text,
-            "session should track the live source-root document text directly"
-        );
-    });
-}
-
-#[test]
-fn did_change_ignores_stale_document_versions() {
-    run_async_test(async {
-        let service = new_test_service();
-        let server = service.inner();
-        let path = new_temp_dir("stale-version").join("active.mo");
-        let uri = Url::from_file_path(&path).expect("file uri");
-        let uri_path = session_document_uri_key(&uri);
-        let fresh = "model Fresh\nend Fresh;\n";
-        let stale = "model Stale\nend Stale;\n";
-
-        server
-            .did_open(DidOpenTextDocumentParams {
-                text_document: TextDocumentItem {
-                    uri: uri.clone(),
-                    language_id: "modelica".to_string(),
-                    version: 2,
-                    text: fresh.to_string(),
-                },
-            })
-            .await;
-
-        server
-            .did_change(DidChangeTextDocumentParams {
-                text_document: VersionedTextDocumentIdentifier { uri, version: 1 },
-                content_changes: vec![TextDocumentContentChangeEvent {
-                    range: None,
-                    range_length: None,
-                    text: stale.to_string(),
-                }],
-            })
-            .await;
-
-        let doc = server
-            .session
-            .read()
-            .await
-            .get_document(&uri_path)
-            .cloned()
-            .expect("document should remain tracked");
-        assert_eq!(
-            doc.content, fresh,
-            "older document versions must not overwrite newer session state"
-        );
-    });
-}
-
-#[test]
-fn did_close_source_root_document_restores_cached_session_document() {
-    run_async_test(async {
-        let service = new_test_service();
-        let server = service.inner();
-        let source_root_dir = std::env::temp_dir().join("rumoca-lsp-test-close");
-        let source_root_path = source_root_dir
-            .join("Modelica")
-            .join("Blocks")
-            .join("Continuous.mo");
-        let source_root_uri = canonical_path_key(source_root_path.to_string_lossy().as_ref());
-
-        {
-            let mut session = server.session.write().await;
-            session.replace_parsed_source_set(
-                "source-root::Modelica",
-                SourceRootKind::External,
-                vec![(source_root_uri.clone(), ast::StoredDefinition::default())],
-                None,
-            );
-        }
-        let uri = Url::from_file_path(&source_root_path).expect("file uri");
-        server
-            .did_open(DidOpenTextDocumentParams {
-                text_document: TextDocumentItem {
-                    uri: uri.clone(),
-                    language_id: "modelica".to_string(),
-                    version: 1,
-                    text: "within Modelica.Blocks;".to_string(),
-                },
-            })
-            .await;
-        server
-            .did_close(DidCloseTextDocumentParams {
-                text_document: TextDocumentIdentifier { uri },
-            })
-            .await;
-
-        let session_doc = server
-            .session
-            .read()
-            .await
-            .get_document(&source_root_uri)
-            .cloned();
-        assert!(
-            session_doc.is_some(),
-            "closing a live source-root document should restore the cached source-root document"
-        );
-        assert!(
-            session_doc.is_some_and(|doc| doc.content.is_empty()),
-            "restored source-root document should return to source-root ownership"
-        );
-        let current_revision = server.current_analysis_revision().await;
-        assert!(
-            !server
-                .session
-                .read()
-                .await
-                .source_root_read_prewarm_is_pending(current_revision),
-            "closing a live source-root document should not enqueue background source-root read prewarm"
-        );
-    });
 }

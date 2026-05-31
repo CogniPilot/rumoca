@@ -66,7 +66,7 @@ pub(super) async fn rename(
 }
 
 fn navigation_locations_to_lsp(
-    locations: Vec<(String, ast::Location)>,
+    locations: Vec<(String, rumoca_compile::parsing::ir_core::Location)>,
     fallback_uri: &Url,
 ) -> Vec<Location> {
     locations
@@ -79,7 +79,7 @@ fn navigation_locations_to_lsp(
 }
 
 fn navigation_rename_edit(
-    locations: Vec<(String, ast::Location)>,
+    locations: Vec<(String, rumoca_compile::parsing::ir_core::Location)>,
     fallback_uri: &Url,
     new_name: &str,
 ) -> WorkspaceEdit {

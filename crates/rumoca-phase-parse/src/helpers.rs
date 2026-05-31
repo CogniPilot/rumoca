@@ -1,10 +1,11 @@
 //! Helper functions for grammar conversion.
 
 use crate::generated::modelica_grammar_trait;
+use rumoca_core::{SourceId, Span};
 use std::sync::Arc;
 
 /// Helper to format location info from a token for error messages
-pub(crate) fn loc_info(token: &rumoca_ir_core::Token) -> String {
+pub(crate) fn loc_info(token: &rumoca_core::Token) -> String {
     let loc = &token.location;
     format!(
         " at {}:{}:{}",
@@ -14,10 +15,10 @@ pub(crate) fn loc_info(token: &rumoca_ir_core::Token) -> String {
 
 /// Create a location spanning from the start of one token to the end of another
 pub(crate) fn span_location(
-    start: &rumoca_ir_core::Token,
-    end: &rumoca_ir_core::Token,
-) -> rumoca_ir_core::Location {
-    rumoca_ir_core::Location {
+    start: &rumoca_core::Token,
+    end: &rumoca_core::Token,
+) -> rumoca_core::Location {
+    rumoca_core::Location {
         start_line: start.location.start_line,
         start_column: start.location.start_column,
         end_line: end.location.end_line,
@@ -25,6 +26,37 @@ pub(crate) fn span_location(
         start: start.location.start,
         end: end.location.end,
         file_name: start.location.file_name.clone(),
+    }
+}
+
+pub(crate) fn location_span(location: &rumoca_core::Location) -> Span {
+    let start = location.start as usize;
+    let end = location.end as usize;
+    if end > start && !location.file_name.is_empty() {
+        Span::from_offsets(SourceId::from_source_name(&location.file_name), start, end)
+    } else {
+        Span::DUMMY
+    }
+}
+
+pub(crate) fn token_span(token: &rumoca_core::Token) -> Span {
+    location_span(&token.location)
+}
+
+pub(crate) fn merge_spans(start: Span, end: Span) -> Span {
+    if start.is_dummy() {
+        return end;
+    }
+    if end.is_dummy() {
+        return start;
+    }
+    Span::from_offsets(start.source, start.start.0, end.end.0.max(start.start.0))
+}
+
+pub(crate) fn expression_list_span(elements: &[rumoca_ir_ast::Expression]) -> Span {
+    match (elements.first(), elements.last()) {
+        (Some(first), Some(last)) => merge_spans(first.span(), last.span()),
+        _ => Span::DUMMY,
     }
 }
 
@@ -43,6 +75,7 @@ pub(crate) fn collect_array_elements(
                 let mut elements = vec![args.expression.clone()];
                 collect_array_non_first(&comma_args.array_arguments_non_first, &mut elements);
                 Ok(rumoca_ir_ast::Expression::Array {
+                    span: expression_list_span(&elements),
                     elements,
                     is_matrix: false,
                 })
@@ -57,6 +90,7 @@ pub(crate) fn collect_array_elements(
                     .as_ref()
                     .map(|opt| Arc::new(opt.expression.clone()));
                 Ok(rumoca_ir_ast::Expression::ArrayComprehension {
+                    span: args.expression.span(),
                     expr: Arc::new(args.expression.clone()),
                     indices,
                     filter,
@@ -66,6 +100,7 @@ pub(crate) fn collect_array_elements(
     } else {
         // Single element array
         Ok(rumoca_ir_ast::Expression::Array {
+            span: args.expression.span(),
             elements: vec![args.expression.clone()],
             is_matrix: false,
         })
@@ -95,7 +130,7 @@ fn convert_for_index(index: &modelica_grammar_trait::ForIndex) -> rumoca_ir_ast:
         .for_index_opt
         .as_ref()
         .map(|opt| opt.expression.clone())
-        .unwrap_or(rumoca_ir_ast::Expression::Empty);
+        .unwrap_or(rumoca_ir_ast::Expression::Empty { span: Span::DUMMY });
 
     rumoca_ir_ast::ForIndex {
         ident: index.ident.clone(),

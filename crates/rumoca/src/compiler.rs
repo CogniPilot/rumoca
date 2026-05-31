@@ -38,9 +38,15 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use rumoca_compile::codegen::{render_dae_template, render_dae_template_with_name};
+use rumoca_compile::analysis as dae_analysis;
+use rumoca_compile::codegen::{
+    CodegenError, dae_to_template_json, render_ast_template_with_name,
+    render_dae_template_with_json, render_dae_template_with_json_and_name,
+    render_flat_template_with_name,
+};
 use rumoca_compile::compile::{
-    Dae, FailedPhase, FlatModel, PhaseResult, ResolvedTree, Session, SessionConfig, SourceRootKind,
+    Dae, DaeCompilationResult as CompileDaeCompilationResult, FailedPhase, FlatModel, PhaseResult,
+    ResolvedTree, Session, SessionConfig, SourceRootKind,
 };
 use rumoca_compile::parsing::collect_compile_unit_source_files;
 use rumoca_compile::source_roots::{
@@ -48,7 +54,7 @@ use rumoca_compile::source_roots::{
     referenced_unloaded_source_root_paths, render_source_root_status_message,
     resolve_source_root_cache_dir, source_root_source_set_key,
 };
-use rumoca_sim::{dae_balance, dae_is_balanced};
+use rumoca_sim::{lower_solve_artifacts, lower_solve_problem};
 use serde_json::{Map, Value};
 
 use crate::error::CompilerError;
@@ -64,6 +70,17 @@ pub struct CompilationResult {
     pub resolved: ResolvedTree,
 }
 
+/// Lean result of a successful DAE-only compilation.
+pub type DaeCompilationResult = CompileDaeCompilationResult;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplateIr {
+    Dae,
+    Solve,
+    Flat,
+    Ast,
+}
+
 /// Return a scalarized clone of `dae` — vector equations like
 /// `der(x) = -x` for `x: Real[3]` are expanded to one equation per element.
 ///
@@ -71,11 +88,56 @@ pub struct CompilationResult {
 /// safe to apply unconditionally before template rendering.
 fn scalarized_dae(dae: &Dae) -> Dae {
     let mut dae = dae.clone();
-    rumoca_compile::phase_structural::scalarize::scalarize_equations(&mut dae);
+    rumoca_compile::phase_structural::scalarize_equations(&mut dae);
     dae
 }
 
+fn dae_to_template_json_with_solve(dae_model: &Dae) -> Result<Value, CodegenError> {
+    let mut value = dae_to_template_json(dae_model)?;
+    let solve =
+        lower_solve_problem(dae_model).map_err(|err| CodegenError::template(err.to_string()))?;
+    let artifacts =
+        lower_solve_artifacts(&solve).map_err(|err| CodegenError::template(err.to_string()))?;
+    let mut solve_value =
+        serde_json::to_value(solve).map_err(|err| CodegenError::template(err.to_string()))?;
+    solve_value
+        .as_object_mut()
+        .ok_or_else(|| CodegenError::template("Solve template JSON root must be an object"))?
+        .insert(
+            "artifacts".to_string(),
+            serde_json::to_value(artifacts)
+                .map_err(|err| CodegenError::template(err.to_string()))?,
+        );
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| CodegenError::template("DAE template JSON root must be an object"))?;
+    object.insert("solve".to_string(), solve_value);
+    Ok(value)
+}
+
+fn render_solve_template_with_name(
+    dae_model: &Dae,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    let dae = scalarized_dae(dae_model);
+    let mut dae_json = dae_to_template_json_with_solve(&dae)?;
+    dae_json
+        .as_object_mut()
+        .ok_or_else(|| CodegenError::template("DAE template JSON root must be an object"))?
+        .insert(
+            "__ir_kind".to_string(),
+            serde_json::Value::String("solve".to_string()),
+        );
+    render_dae_template_with_json_and_name(&dae_json, template, model_name)
+}
+
 impl CompilationResult {
+    fn template_json_with_solve(&self) -> Result<Value, CompilerError> {
+        let dae = scalarized_dae(&self.dae);
+        dae_to_template_json_with_solve(&dae).map_err(CompilerError::TemplateError)
+    }
+
     fn is_prunable_child(child: &Value) -> bool {
         match child {
             Value::Null => true,
@@ -257,15 +319,8 @@ impl CompilationResult {
 
     /// Render the DAE using a template string.
     pub fn render_template_str(&self, template: &str) -> Result<String, CompilerError> {
-        // Use the codegen module's render function which sets up the context properly
-        // with the DAE as `dae` and includes custom filters/functions.
-        //
-        // Scalarize first: backend templates (FMI2/3 runtime C, embedded C, etc.)
-        // emit one output row per scalar state, so vector equations like
-        // `der(x) = -x` for `x: Real[3]` must be expanded to three scalar
-        // equations. For scalar models this is a no-op.
-        let dae = scalarized_dae(&self.dae);
-        render_dae_template(&dae, template).map_err(CompilerError::TemplateError)
+        let dae_json = self.template_json_with_solve()?;
+        render_dae_template_with_json(&dae_json, template).map_err(CompilerError::TemplateError)
     }
 
     /// Render the DAE using a template string with an explicit model name.
@@ -276,48 +331,83 @@ impl CompilationResult {
         template: &str,
         model_name: &str,
     ) -> Result<String, CompilerError> {
-        let dae = scalarized_dae(&self.dae);
-        render_dae_template_with_name(&dae, template, model_name)
+        let dae_json = self.template_json_with_solve()?;
+        render_dae_template_with_json_and_name(&dae_json, template, model_name)
             .map_err(CompilerError::TemplateError)
+    }
+
+    pub fn render_template_str_with_name_and_ir(
+        &self,
+        template: &str,
+        model_name: &str,
+        ir: TemplateIr,
+    ) -> Result<String, CompilerError> {
+        match ir {
+            TemplateIr::Dae => self.render_template_str_with_name(template, model_name),
+            TemplateIr::Solve => render_solve_template_with_name(&self.dae, template, model_name)
+                .map_err(CompilerError::TemplateError),
+            TemplateIr::Flat => render_flat_template_with_name(&self.flat, template, model_name)
+                .map_err(CompilerError::TemplateError),
+            TemplateIr::Ast => {
+                render_ast_template_with_name(self.resolved.inner(), template, model_name)
+                    .map_err(CompilerError::TemplateError)
+            }
+        }
+    }
+
+    pub fn to_ir_json(&self, ir: TemplateIr) -> Result<String, CompilerError> {
+        match ir {
+            TemplateIr::Dae => self.to_json(),
+            TemplateIr::Solve => {
+                let solve = lower_solve_problem(&self.dae)
+                    .map_err(|err| CompilerError::JsonError(err.to_string()))?;
+                serde_json::to_string_pretty(&solve)
+                    .map_err(|err| CompilerError::JsonError(err.to_string()))
+            }
+            TemplateIr::Flat => serde_json::to_string_pretty(&self.flat)
+                .map_err(|err| CompilerError::JsonError(err.to_string())),
+            TemplateIr::Ast => serde_json::to_string_pretty(self.resolved.inner())
+                .map_err(|err| CompilerError::JsonError(err.to_string())),
+        }
     }
 
     /// Equation balance (equations - unknowns).
     pub fn balance(&self) -> i64 {
-        dae_balance(&self.dae)
+        dae_analysis::balance(&self.dae)
     }
 
     /// Whether equation/unknown balance is exact.
     pub fn is_balanced(&self) -> bool {
-        dae_is_balanced(&self.dae)
+        dae_analysis::is_balanced(&self.dae)
     }
 
     /// Convert the DAE to JSON.
     pub fn to_json(&self) -> Result<String, CompilerError> {
-        let mut p = self.dae.parameters.clone();
+        let mut p = self.dae.variables.parameters.clone();
         // MLS Appendix B groups parameters and constants together in p.
-        for (name, var) in &self.dae.constants {
+        for (name, var) in &self.dae.variables.constants {
             p.entry(name.clone()).or_insert_with(|| var.clone());
         }
 
-        let f_x = Self::residuals_to_minimal_json(&self.dae.f_x)?;
-        let f_z = Self::assignments_to_minimal_json(&self.dae.f_z)?;
-        let f_m = Self::assignments_to_minimal_json(&self.dae.f_m)?;
-        let f_c = Self::assignments_to_minimal_json(&self.dae.f_c)?;
-        let initial = Self::initial_to_minimal_json(&self.dae.initial_equations)?;
+        let f_x = Self::residuals_to_minimal_json(&self.dae.continuous.equations)?;
+        let f_z = Self::assignments_to_minimal_json(&self.dae.discrete.real_updates)?;
+        let f_m = Self::assignments_to_minimal_json(&self.dae.discrete.valued_updates)?;
+        let f_c = Self::assignments_to_minimal_json(&self.dae.conditions.equations)?;
+        let initial = Self::initial_to_minimal_json(&self.dae.initialization.equations)?;
 
         let mut canonical = Map::new();
         Self::push_nonempty(&mut canonical, "p", &p)?;
-        Self::push_nonempty(&mut canonical, "x", &self.dae.states)?;
-        Self::push_nonempty(&mut canonical, "y", &self.dae.algebraics)?;
-        Self::push_nonempty(&mut canonical, "z", &self.dae.discrete_reals)?;
-        Self::push_nonempty(&mut canonical, "m", &self.dae.discrete_valued)?;
+        Self::push_nonempty(&mut canonical, "x", &self.dae.variables.states)?;
+        Self::push_nonempty(&mut canonical, "y", &self.dae.variables.algebraics)?;
+        Self::push_nonempty(&mut canonical, "z", &self.dae.variables.discrete_reals)?;
+        Self::push_nonempty(&mut canonical, "m", &self.dae.variables.discrete_valued)?;
         Self::push_nonempty(&mut canonical, "f_x", &f_x)?;
         Self::push_nonempty(&mut canonical, "f_z", &f_z)?;
         Self::push_nonempty(&mut canonical, "f_m", &f_m)?;
         Self::push_nonempty(&mut canonical, "f_c", &f_c)?;
-        Self::push_nonempty(&mut canonical, "relation", &self.dae.relation)?;
+        Self::push_nonempty(&mut canonical, "relation", &self.dae.conditions.relations)?;
         Self::push_nonempty(&mut canonical, "initial", &initial)?;
-        Self::push_nonempty(&mut canonical, "functions", &self.dae.functions)?;
+        Self::push_nonempty(&mut canonical, "functions", &self.dae.symbols.functions)?;
 
         serde_json::to_string_pretty(&Value::Object(canonical))
             .map_err(|e| CompilerError::JsonError(e.to_string()))
@@ -392,7 +482,7 @@ impl Compiler {
                 return CompilerError::SourceDiagnosticsError {
                     summary: package_layout_error.to_string(),
                     diagnostics: package_layout_error.diagnostics().to_vec(),
-                    source_map: package_layout_error.source_map().clone(),
+                    source_map: Box::new(package_layout_error.source_map().clone()),
                 };
             }
             CompilerError::ParseError(format!("{}: {}", path, e))
@@ -508,6 +598,23 @@ impl Compiler {
         self.compile_file(&path_str)
     }
 
+    /// Compile a Modelica file through DAE only.
+    ///
+    /// This avoids retaining Flat and Resolved artifacts in callers that only
+    /// need simulation-ready DAE output.
+    pub fn compile_file_dae(&self, path: &str) -> Result<DaeCompilationResult, CompilerError> {
+        let source =
+            fs::read_to_string(path).map_err(|e| CompilerError::io_error(path, e.to_string()))?;
+
+        self.compile_str_dae(&source, path)
+    }
+
+    /// Compile a Modelica file from a Path through DAE only.
+    pub fn compile_path_dae(&self, path: &Path) -> Result<DaeCompilationResult, CompilerError> {
+        let path_str = path.to_string_lossy().to_string();
+        self.compile_file_dae(&path_str)
+    }
+
     /// Compile Modelica source code.
     pub fn compile_str(
         &self,
@@ -547,7 +654,7 @@ impl Compiler {
                     return Err(CompilerError::CompileDiagnosticsError {
                         summary: failure_summary,
                         failures: report.failures,
-                        source_map: report.source_map,
+                        source_map: report.source_map.map(Box::new),
                     });
                 }
                 *result
@@ -568,7 +675,7 @@ impl Compiler {
                 return Err(CompilerError::CompileDiagnosticsError {
                     summary: failure_summary,
                     failures: report.failures,
-                    source_map: report.source_map,
+                    source_map: report.source_map.map(Box::new),
                 });
             }
         };
@@ -582,14 +689,20 @@ impl Compiler {
 
         if self.verbose {
             eprintln!("[rumoca] Compilation complete.");
-            eprintln!("[rumoca]   States: {}", result.dae.states.len());
-            eprintln!("[rumoca]   Algebraics: {}", result.dae.algebraics.len());
-            eprintln!("[rumoca]   Parameters: {}", result.dae.parameters.len());
+            eprintln!("[rumoca]   States: {}", result.dae.variables.states.len());
+            eprintln!(
+                "[rumoca]   Algebraics: {}",
+                result.dae.variables.algebraics.len()
+            );
+            eprintln!(
+                "[rumoca]   Parameters: {}",
+                result.dae.variables.parameters.len()
+            );
             eprintln!(
                 "[rumoca]   Continuous equations (f_x): {}",
-                result.dae.f_x.len()
+                result.dae.continuous.equations.len()
             );
-            eprintln!("[rumoca]   Balance: {}", dae_balance(&result.dae));
+            eprintln!("[rumoca]   Balance: {}", dae_analysis::balance(&result.dae));
         }
 
         Ok(CompilationResult {
@@ -597,6 +710,77 @@ impl Compiler {
             flat: result.flat,
             resolved,
         })
+    }
+
+    /// Compile Modelica source code through DAE only.
+    pub fn compile_str_dae(
+        &self,
+        source: &str,
+        file_name: &str,
+    ) -> Result<DaeCompilationResult, CompilerError> {
+        let model_name = self
+            .model_name
+            .as_ref()
+            .ok_or(CompilerError::NoModelSpecified)?;
+
+        if self.verbose {
+            eprintln!("[rumoca] Compiling model through DAE: {}", model_name);
+            eprintln!("[rumoca] Source file: {}", file_name);
+        }
+
+        let mut session = Session::new(SessionConfig::default());
+        self.load_required_source_roots(&mut session, source)?;
+
+        if self.verbose {
+            eprintln!("[rumoca] Phase 1-2: Parsing and resolving...");
+        }
+        self.load_local_compile_unit(&mut session, source, file_name)?;
+
+        if self.verbose {
+            eprintln!("[rumoca] Phase 3-6: Strict-reachable DAE compile...");
+        }
+
+        let result =
+            match session.compile_model_dae_strict_reachable_uncached_with_recovery(model_name) {
+                Ok(result) => result,
+                Err(summary) => {
+                    let report =
+                        session.compile_model_strict_reachable_uncached_with_recovery(model_name);
+                    let summary = if report.failures.is_empty() {
+                        summary
+                    } else {
+                        report.failure_summary(usize::MAX)
+                    };
+                    return Err(CompilerError::CompileDiagnosticsError {
+                        summary,
+                        failures: report.failures,
+                        source_map: report.source_map.map(Box::new),
+                    });
+                }
+            };
+
+        if self.verbose {
+            eprintln!("[rumoca] DAE compilation complete.");
+            eprintln!("[rumoca]   States: {}", result.dae.variables.states.len());
+            eprintln!(
+                "[rumoca]   Algebraics: {}",
+                result.dae.variables.algebraics.len()
+            );
+            eprintln!(
+                "[rumoca]   Parameters: {}",
+                result.dae.variables.parameters.len()
+            );
+            eprintln!(
+                "[rumoca]   Continuous equations (f_x): {}",
+                result.dae.continuous.equations.len()
+            );
+            eprintln!(
+                "[rumoca]   Balance: {}",
+                dae_analysis::balance(result.dae.as_ref())
+            );
+        }
+
+        Ok(*result)
     }
 }
 
@@ -619,7 +803,55 @@ mod tests {
 
         assert!(result.is_ok(), "Compilation failed: {:?}", result.err());
         let result = result.unwrap();
-        assert_eq!(result.dae.states.len(), 1);
+        assert_eq!(result.dae.variables.states.len(), 1);
+    }
+
+    #[test]
+    fn test_dae_only_compile_returns_dae_without_full_artifacts() {
+        let source = r#"
+            model Test
+                Real x(start=0);
+            equation
+                der(x) = 1;
+            end Test;
+        "#;
+
+        let result = Compiler::new()
+            .model("Test")
+            .compile_str_dae(source, "test.mo")
+            .expect("DAE-only compile should succeed");
+
+        assert_eq!(result.dae.variables.states.len(), 1);
+        assert_eq!(result.balance_detail.state_unknowns, 1);
+    }
+
+    #[test]
+    fn test_dae_only_compile_preserves_structured_parse_diagnostics() {
+        let err = Compiler::new()
+            .model("Broken")
+            .compile_str_dae("model Broken\n  Real x\nend Broken;\n", "Broken.mo")
+            .expect_err("broken active document must fail DAE-only strict compile");
+
+        match err {
+            CompilerError::CompileDiagnosticsError {
+                failures,
+                source_map,
+                ..
+            } => {
+                assert!(
+                    source_map.is_some(),
+                    "DAE-only compile must preserve the source map for CLI diagnostics"
+                );
+                assert!(
+                    failures
+                        .iter()
+                        .any(|failure| failure.error_code.as_deref() == Some("EP001")
+                            && failure.primary_label.is_some()),
+                    "DAE-only compile must preserve structured parse failures: {failures:?}"
+                );
+            }
+            other => panic!("expected structured compile diagnostics, got {other:?}"),
+        }
     }
 
     #[test]
@@ -904,6 +1136,45 @@ mod tests {
                 "hybrid runtime JSON should contain key `{key}`"
             );
         }
+    }
+
+    #[test]
+    fn test_solve_ir_rendering_preserves_tensor_nodes_from_native_dae() {
+        let source = r#"
+            model TensorTargetDemo
+              Real omega[2](start={0, 0});
+              parameter Real J[2,2] = [2, 0; 0, 4];
+              parameter Real tau[2] = {8, 20};
+            equation
+              J * der(omega) = tau;
+            end TensorTargetDemo;
+        "#;
+
+        let result = Compiler::new()
+            .model("TensorTargetDemo")
+            .compile_str(source, "TensorTargetDemo.mo")
+            .expect("tensor target demo should compile");
+
+        let solve_json = result
+            .to_ir_json(TemplateIr::Solve)
+            .expect("Solve IR JSON should render");
+        assert!(
+            solve_json.contains("\"LinSolve\""),
+            "Solve JSON should preserve the tensor LinSolve node from the native DAE: {solve_json}"
+        );
+
+        let rendered = result
+            .render_template_str_with_name_and_ir(
+                "{{ solve_blocks.continuous.derivative_rhs.tensor_node_count }}",
+                "TensorTargetDemo",
+                TemplateIr::Solve,
+            )
+            .expect("Solve template should render");
+        assert_eq!(
+            rendered.trim(),
+            "1",
+            "Solve templates should see tensor nodes before scalar fallback"
+        );
     }
 
     #[test]

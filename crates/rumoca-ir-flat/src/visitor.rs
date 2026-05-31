@@ -25,245 +25,15 @@
 //! ```
 
 use crate::{
-    BuiltinFunction, ComponentReference, ComprehensionIndex, Expression, ForIndex, Literal,
-    OpBinary, Statement, StatementBlock, Subscript, VarName,
+    BuiltinFunction, ComponentReference, Expression, ForIndex, Statement, StatementBlock,
+    Subscript, VarName,
 };
+use indexmap::IndexSet;
 
-/// Trait for visiting Expression trees without modification.
-///
-/// Implementors override specific `visit_*` methods to customize behavior.
-/// Default implementations call `walk_*` methods to continue traversal.
-///
-/// # Pattern
-///
-/// ```ignore
-/// fn visit_xyz(&mut self, ...) {
-///     // Custom logic before visiting children
-///     self.walk_xyz(...);  // Visit children
-///     // Custom logic after visiting children
-/// }
-/// ```
-pub trait ExpressionVisitor {
-    /// Visit any expression. Override for general expression handling.
-    fn visit_expression(&mut self, expr: &Expression) {
-        self.walk_expression(expr);
-    }
+use rumoca_core::{ExpressionVisitor, FallibleExpressionVisitor};
 
-    /// Walk all children of an expression.
-    fn walk_expression(&mut self, expr: &Expression) {
-        match expr {
-            Expression::Binary { op, lhs, rhs } => {
-                self.visit_binary(op, lhs, rhs);
-            }
-            Expression::Unary { rhs, .. } => {
-                self.visit_expression(rhs);
-            }
-            Expression::VarRef { name, subscripts } => {
-                self.visit_var_ref(name, subscripts);
-            }
-            Expression::BuiltinCall { function, args } => {
-                self.visit_builtin_call(function, args);
-            }
-            Expression::FunctionCall { name, args, .. } => {
-                self.visit_function_call(name, args);
-            }
-            Expression::Literal(lit) => {
-                self.visit_literal(lit);
-            }
-            Expression::If {
-                branches,
-                else_branch,
-            } => {
-                self.visit_if(branches, else_branch);
-            }
-            Expression::Array {
-                elements,
-                is_matrix,
-            } => {
-                self.visit_array(elements, *is_matrix);
-            }
-            Expression::Tuple { elements } => {
-                self.visit_tuple(elements);
-            }
-            Expression::Range { start, step, end } => {
-                self.visit_range(start, step.as_deref(), end);
-            }
-            Expression::ArrayComprehension {
-                expr,
-                indices,
-                filter,
-            } => {
-                self.visit_array_comprehension(expr, indices, filter.as_deref());
-            }
-            Expression::Index { base, subscripts } => {
-                self.visit_index(base, subscripts);
-            }
-            Expression::FieldAccess { base, field } => {
-                self.visit_field_access(base, field);
-            }
-            Expression::Empty => {}
-        }
-    }
-
-    /// Visit a field access expression.
-    fn visit_field_access(&mut self, base: &Expression, _field: &str) {
-        self.visit_expression(base);
-    }
-
-    /// Visit a binary expression.
-    fn visit_binary(&mut self, op: &OpBinary, lhs: &Expression, rhs: &Expression) {
-        self.walk_binary(op, lhs, rhs);
-    }
-
-    /// Walk children of a binary expression.
-    fn walk_binary(&mut self, _op: &OpBinary, lhs: &Expression, rhs: &Expression) {
-        self.visit_expression(lhs);
-        self.visit_expression(rhs);
-    }
-
-    /// Visit a variable reference.
-    fn visit_var_ref(&mut self, name: &VarName, subscripts: &[Subscript]) {
-        self.walk_var_ref(name, subscripts);
-    }
-
-    /// Walk children of a variable reference (subscript expressions).
-    fn walk_var_ref(&mut self, _name: &VarName, subscripts: &[Subscript]) {
-        for sub in subscripts {
-            self.visit_subscript(sub);
-        }
-    }
-
-    /// Visit a subscript.
-    fn visit_subscript(&mut self, sub: &Subscript) {
-        self.walk_subscript(sub);
-    }
-
-    /// Walk children of a subscript.
-    fn walk_subscript(&mut self, sub: &Subscript) {
-        if let Subscript::Expr(expr) = sub {
-            self.visit_expression(expr);
-        }
-    }
-
-    /// Visit a builtin function call (der, sin, cos, etc.).
-    fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
-        self.walk_builtin_call(function, args);
-    }
-
-    /// Walk children of a builtin call.
-    fn walk_builtin_call(&mut self, _function: &BuiltinFunction, args: &[Expression]) {
-        for arg in args {
-            self.visit_expression(arg);
-        }
-    }
-
-    /// Visit a user-defined function call.
-    fn visit_function_call(&mut self, name: &VarName, args: &[Expression]) {
-        self.walk_function_call(name, args);
-    }
-
-    /// Walk children of a function call.
-    fn walk_function_call(&mut self, _name: &VarName, args: &[Expression]) {
-        for arg in args {
-            self.visit_expression(arg);
-        }
-    }
-
-    /// Visit a literal.
-    fn visit_literal(&mut self, _lit: &Literal) {
-        // No children to walk
-    }
-
-    /// Visit an if-expression.
-    fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
-        self.walk_if(branches, else_branch);
-    }
-
-    /// Walk children of an if-expression.
-    fn walk_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
-        for (cond, then_expr) in branches {
-            self.visit_expression(cond);
-            self.visit_expression(then_expr);
-        }
-        self.visit_expression(else_branch);
-    }
-
-    /// Visit an array.
-    fn visit_array(&mut self, elements: &[Expression], is_matrix: bool) {
-        self.walk_array(elements, is_matrix);
-    }
-
-    /// Walk children of an array.
-    fn walk_array(&mut self, elements: &[Expression], _is_matrix: bool) {
-        for elem in elements {
-            self.visit_expression(elem);
-        }
-    }
-
-    /// Visit a tuple.
-    fn visit_tuple(&mut self, elements: &[Expression]) {
-        self.walk_tuple(elements);
-    }
-
-    /// Walk children of a tuple.
-    fn walk_tuple(&mut self, elements: &[Expression]) {
-        for elem in elements {
-            self.visit_expression(elem);
-        }
-    }
-
-    /// Visit a range expression.
-    fn visit_range(&mut self, start: &Expression, step: Option<&Expression>, end: &Expression) {
-        self.walk_range(start, step, end);
-    }
-
-    /// Walk children of a range expression.
-    fn walk_range(&mut self, start: &Expression, step: Option<&Expression>, end: &Expression) {
-        self.visit_expression(start);
-        if let Some(s) = step {
-            self.visit_expression(s);
-        }
-        self.visit_expression(end);
-    }
-
-    /// Visit an array-comprehension expression.
-    fn visit_array_comprehension(
-        &mut self,
-        expr: &Expression,
-        indices: &[ComprehensionIndex],
-        filter: Option<&Expression>,
-    ) {
-        self.walk_array_comprehension(expr, indices, filter);
-    }
-
-    /// Walk children of an array-comprehension expression.
-    fn walk_array_comprehension(
-        &mut self,
-        expr: &Expression,
-        indices: &[ComprehensionIndex],
-        filter: Option<&Expression>,
-    ) {
-        for index in indices {
-            self.visit_expression(&index.range);
-        }
-        self.visit_expression(expr);
-        if let Some(condition) = filter {
-            self.visit_expression(condition);
-        }
-    }
-
-    /// Visit an index expression.
-    fn visit_index(&mut self, base: &Expression, subscripts: &[Subscript]) {
-        self.walk_index(base, subscripts);
-    }
-
-    /// Walk children of an index expression.
-    fn walk_index(&mut self, base: &Expression, subscripts: &[Subscript]) {
-        self.visit_expression(base);
-        for sub in subscripts {
-            self.visit_subscript(sub);
-        }
-    }
+pub enum StatementScope<'a> {
+    ForStatement(&'a [ForIndex]),
 }
 
 /// Visitor for flat algorithm statements.
@@ -274,26 +44,33 @@ pub trait StatementVisitor: ExpressionVisitor {
 
     fn walk_statement(&mut self, stmt: &Statement) {
         match stmt {
-            Statement::Empty | Statement::Return | Statement::Break => {}
-            Statement::Assignment { comp, value } => self.visit_assignment(comp, value),
-            Statement::For { indices, equations } => self.visit_for_statement(indices, equations),
-            Statement::While(block) => self.visit_statement_block(block),
+            Statement::Empty { .. } | Statement::Return { .. } | Statement::Break { .. } => {}
+            Statement::Assignment { comp, value, .. } => self.visit_assignment(comp, value),
+            Statement::For {
+                indices, equations, ..
+            } => self.visit_for_statement(indices, equations),
+            Statement::While { block, .. } => self.visit_statement_block(block),
             Statement::If {
                 cond_blocks,
                 else_block,
+                ..
             } => self.visit_if_statement(cond_blocks, else_block.as_deref()),
-            Statement::When(blocks) => self.visit_when_statement(blocks),
+            Statement::When { blocks, .. } => self.visit_when_statement(blocks),
             Statement::FunctionCall {
                 comp,
                 args,
                 outputs,
+                ..
             } => self.visit_statement_function_call(comp, args, outputs),
-            Statement::Reinit { variable, value } => self.visit_reinit(variable, value),
+            Statement::Reinit {
+                variable, value, ..
+            } => self.visit_reinit(variable, value),
             Statement::Assert {
                 condition,
                 message,
                 level,
-            } => self.visit_assert(condition, message, level.as_ref()),
+                ..
+            } => self.visit_assert(condition, message, level.as_deref()),
         }
     }
 
@@ -306,10 +83,16 @@ pub trait StatementVisitor: ExpressionVisitor {
         for index in indices {
             self.visit_expression(&index.range);
         }
+        StatementVisitor::enter_scope(self, StatementScope::ForStatement(indices));
         for stmt in statements {
             self.visit_statement(stmt);
         }
+        StatementVisitor::exit_scope(self, StatementScope::ForStatement(indices));
     }
+
+    fn enter_scope(&mut self, _scope: StatementScope<'_>) {}
+
+    fn exit_scope(&mut self, _scope: StatementScope<'_>) {}
 
     fn visit_if_statement(
         &mut self,
@@ -336,14 +119,14 @@ pub trait StatementVisitor: ExpressionVisitor {
         &mut self,
         comp: &ComponentReference,
         args: &[Expression],
-        outputs: &[Expression],
+        outputs: &[ComponentReference],
     ) {
         self.visit_component_reference(comp);
         for arg in args {
             self.visit_expression(arg);
         }
         for output in outputs {
-            self.visit_expression(output);
+            self.visit_component_reference(output);
         }
     }
 
@@ -381,6 +164,162 @@ pub trait StatementVisitor: ExpressionVisitor {
     }
 }
 
+/// Fallible visitor for flat algorithm statements.
+pub trait FallibleStatementVisitor: FallibleExpressionVisitor {
+    fn visit_statement(&mut self, stmt: &Statement) -> Result<(), Self::Error> {
+        self.walk_statement(stmt)
+    }
+
+    fn walk_statement(&mut self, stmt: &Statement) -> Result<(), Self::Error> {
+        match stmt {
+            Statement::Empty { .. } | Statement::Return { .. } | Statement::Break { .. } => Ok(()),
+            Statement::Assignment { comp, value, .. } => self.visit_assignment(comp, value),
+            Statement::For {
+                indices, equations, ..
+            } => self.visit_for_statement(indices, equations),
+            Statement::While { block, .. } => self.visit_statement_block(block),
+            Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => self.visit_if_statement(cond_blocks, else_block.as_deref()),
+            Statement::When { blocks, .. } => self.visit_when_statement(blocks),
+            Statement::FunctionCall {
+                comp,
+                args,
+                outputs,
+                ..
+            } => self.visit_statement_function_call(comp, args, outputs),
+            Statement::Reinit {
+                variable, value, ..
+            } => self.visit_reinit(variable, value),
+            Statement::Assert {
+                condition,
+                message,
+                level,
+                ..
+            } => self.visit_assert(condition, message, level.as_deref()),
+        }
+    }
+
+    fn visit_assignment(
+        &mut self,
+        comp: &ComponentReference,
+        value: &Expression,
+    ) -> Result<(), Self::Error> {
+        self.visit_component_reference(comp)?;
+        self.visit_expression(value)
+    }
+
+    fn visit_for_statement(
+        &mut self,
+        indices: &[ForIndex],
+        statements: &[Statement],
+    ) -> Result<(), Self::Error> {
+        for index in indices {
+            self.visit_expression(&index.range)?;
+        }
+        FallibleStatementVisitor::enter_scope(self, StatementScope::ForStatement(indices))?;
+        let body_result = (|| {
+            for stmt in statements {
+                self.visit_statement(stmt)?;
+            }
+            Ok(())
+        })();
+        let exit_result =
+            FallibleStatementVisitor::exit_scope(self, StatementScope::ForStatement(indices));
+        body_result?;
+        exit_result
+    }
+
+    fn enter_scope(&mut self, _scope: StatementScope<'_>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn exit_scope(&mut self, _scope: StatementScope<'_>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn visit_if_statement(
+        &mut self,
+        cond_blocks: &[StatementBlock],
+        else_block: Option<&[Statement]>,
+    ) -> Result<(), Self::Error> {
+        for block in cond_blocks {
+            self.visit_statement_block(block)?;
+        }
+        if let Some(else_statements) = else_block {
+            for stmt in else_statements {
+                self.visit_statement(stmt)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_when_statement(&mut self, blocks: &[StatementBlock]) -> Result<(), Self::Error> {
+        for block in blocks {
+            self.visit_statement_block(block)?;
+        }
+        Ok(())
+    }
+
+    fn visit_statement_function_call(
+        &mut self,
+        comp: &ComponentReference,
+        args: &[Expression],
+        outputs: &[ComponentReference],
+    ) -> Result<(), Self::Error> {
+        self.visit_component_reference(comp)?;
+        for arg in args {
+            self.visit_expression(arg)?;
+        }
+        for output in outputs {
+            self.visit_component_reference(output)?;
+        }
+        Ok(())
+    }
+
+    fn visit_reinit(
+        &mut self,
+        variable: &ComponentReference,
+        value: &Expression,
+    ) -> Result<(), Self::Error> {
+        self.visit_component_reference(variable)?;
+        self.visit_expression(value)
+    }
+
+    fn visit_assert(
+        &mut self,
+        condition: &Expression,
+        message: &Expression,
+        level: Option<&Expression>,
+    ) -> Result<(), Self::Error> {
+        self.visit_expression(condition)?;
+        self.visit_expression(message)?;
+        if let Some(level_expr) = level {
+            self.visit_expression(level_expr)?;
+        }
+        Ok(())
+    }
+
+    fn visit_component_reference(&mut self, comp: &ComponentReference) -> Result<(), Self::Error> {
+        for part in &comp.parts {
+            for subscript in &part.subs {
+                self.visit_subscript(subscript)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_statement_block(&mut self, block: &StatementBlock) -> Result<(), Self::Error> {
+        self.visit_expression(&block.cond)?;
+        for stmt in &block.stmts {
+            self.visit_statement(stmt)?;
+        }
+        Ok(())
+    }
+}
+
 // =============================================================================
 // Common visitor implementations
 // =============================================================================
@@ -394,24 +333,24 @@ pub trait StatementVisitor: ExpressionVisitor {
 /// let function_names = collector.into_names();
 /// ```
 pub struct FunctionCallCollector {
-    names: std::collections::HashSet<String>,
+    names: IndexSet<String>,
 }
 
 impl FunctionCallCollector {
     /// Create a new function call collector.
     pub fn new() -> Self {
         Self {
-            names: std::collections::HashSet::new(),
+            names: IndexSet::new(),
         }
     }
 
-    /// Consume the collector and return the collected function names.
-    pub fn into_names(self) -> std::collections::HashSet<String> {
+    /// Consume the collector and return the collected function names in first-seen order.
+    pub fn into_names(self) -> IndexSet<String> {
         self.names
     }
 
     /// Get a reference to the collected names.
-    pub fn names(&self) -> &std::collections::HashSet<String> {
+    pub fn names(&self) -> &IndexSet<String> {
         &self.names
     }
 }
@@ -423,33 +362,44 @@ impl Default for FunctionCallCollector {
 }
 
 impl ExpressionVisitor for FunctionCallCollector {
-    fn visit_function_call(&mut self, name: &VarName, args: &[Expression]) {
+    fn visit_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[Expression],
+        is_constructor: bool,
+    ) {
         self.names.insert(name.to_string());
-        self.walk_function_call(name, args);
+        self.walk_function_call(name, args, is_constructor);
     }
 }
 
 /// Collector for algorithm output variables from statement trees.
 pub struct AlgorithmOutputCollector {
-    outputs: indexmap::IndexSet<VarName>,
+    outputs: Vec<rumoca_core::Reference>,
 }
 
 impl AlgorithmOutputCollector {
     /// Create a new algorithm output collector.
     pub fn new() -> Self {
         Self {
-            outputs: indexmap::IndexSet::new(),
+            outputs: Vec::new(),
         }
     }
 
     /// Consume the collector and return collected outputs in first-seen order.
-    pub fn into_outputs(self) -> Vec<VarName> {
-        self.outputs.into_iter().collect()
+    pub fn into_outputs(self) -> Vec<rumoca_core::Reference> {
+        self.outputs
     }
 
     /// Get a reference to collected outputs.
-    pub fn outputs(&self) -> &indexmap::IndexSet<VarName> {
+    pub fn outputs(&self) -> &[rumoca_core::Reference] {
         &self.outputs
+    }
+
+    fn insert_output(&mut self, output: rumoca_core::Reference) {
+        if !self.outputs.contains(&output) {
+            self.outputs.push(output);
+        }
     }
 }
 
@@ -463,8 +413,7 @@ impl ExpressionVisitor for AlgorithmOutputCollector {}
 
 impl StatementVisitor for AlgorithmOutputCollector {
     fn visit_assignment(&mut self, comp: &ComponentReference, value: &Expression) {
-        self.outputs
-            .insert(crate::component_ref_to_base_var_name(comp));
+        self.insert_output(rumoca_core::component_ref_to_base_reference(comp));
         self.visit_expression(value);
     }
 
@@ -472,23 +421,20 @@ impl StatementVisitor for AlgorithmOutputCollector {
         &mut self,
         comp: &ComponentReference,
         args: &[Expression],
-        outputs: &[Expression],
+        outputs: &[ComponentReference],
     ) {
         self.visit_component_reference(comp);
         for arg in args {
             self.visit_expression(arg);
         }
         for output in outputs {
-            if let Expression::VarRef { name, .. } = output {
-                self.outputs.insert(name.clone());
-            }
-            self.visit_expression(output);
+            self.insert_output(rumoca_core::component_ref_to_base_reference(output));
+            self.visit_component_reference(output);
         }
     }
 
     fn visit_reinit(&mut self, variable: &ComponentReference, value: &Expression) {
-        self.outputs
-            .insert(crate::component_ref_to_base_var_name(variable));
+        self.insert_output(rumoca_core::component_ref_to_base_reference(variable));
         self.visit_expression(value);
     }
 }
@@ -502,24 +448,24 @@ impl StatementVisitor for AlgorithmOutputCollector {
 /// let states = collector.into_states();
 /// ```
 pub struct StateVariableCollector {
-    states: std::collections::HashSet<VarName>,
+    states: IndexSet<VarName>,
 }
 
 impl StateVariableCollector {
     /// Create a new state variable collector.
     pub fn new() -> Self {
         Self {
-            states: std::collections::HashSet::new(),
+            states: IndexSet::new(),
         }
     }
 
-    /// Consume the collector and return the collected state variables.
-    pub fn into_states(self) -> std::collections::HashSet<VarName> {
+    /// Consume the collector and return the collected state variables in first-seen order.
+    pub fn into_states(self) -> IndexSet<VarName> {
         self.states
     }
 
     /// Get a reference to the collected states.
-    pub fn states(&self) -> &std::collections::HashSet<VarName> {
+    pub fn states(&self) -> &IndexSet<VarName> {
         &self.states
     }
 }
@@ -539,13 +485,8 @@ impl ExpressionVisitor for StateVariableCollector {
             // since flat variables are keyed by base name (MLS §8.4).
             // Only strip subscripts at the end — mid-path subscripts like
             // rmsvM[1].mean.x are component array indices, not variable subscripts.
-            let base = if name.0.ends_with(']') {
-                name.0
-                    .rfind('[')
-                    .map_or_else(|| name.clone(), |i| VarName(name.0[..i].to_string()))
-            } else {
-                name.clone()
-            };
+            let base = rumoca_core::strip_trailing_subscript_suffix(name.as_str())
+                .map_or_else(|| name.var_name().clone(), VarName::new);
             self.states.insert(base);
         }
         self.walk_builtin_call(function, args);
@@ -602,17 +543,17 @@ impl ExpressionVisitor for ContainsDerChecker {
 ///
 /// Usage:
 /// ```ignore
-/// let state_vars: HashSet<VarName> = ...;
+/// let state_vars: IndexSet<VarName> = ...;
 /// let is_ode = ContainsDerOfStateChecker::check(&expr, &state_vars);
 /// ```
 pub struct ContainsDerOfStateChecker<'a> {
-    state_vars: &'a std::collections::HashSet<VarName>,
+    state_vars: &'a IndexSet<VarName>,
     found: bool,
 }
 
 impl<'a> ContainsDerOfStateChecker<'a> {
     /// Check if an expression contains der() applied to a state variable.
-    pub fn check(expr: &Expression, state_vars: &'a std::collections::HashSet<VarName>) -> bool {
+    pub fn check(expr: &Expression, state_vars: &'a IndexSet<VarName>) -> bool {
         let mut checker = Self {
             state_vars,
             found: false,
@@ -635,13 +576,8 @@ impl ExpressionVisitor for ContainsDerOfStateChecker<'_> {
             && let Some(Expression::VarRef { name, .. }) = args.first()
         {
             // Strip trailing array subscripts to match base name (MLS §8.4)
-            let base = if name.0.ends_with(']') {
-                name.0
-                    .rfind('[')
-                    .map_or_else(|| name.clone(), |i| VarName(name.0[..i].to_string()))
-            } else {
-                name.clone()
-            };
+            let base = rumoca_core::strip_trailing_subscript_suffix(name.as_str())
+                .map_or_else(|| name.var_name().clone(), VarName::new);
             if self.state_vars.contains(&base) {
                 self.found = true;
             }
@@ -662,24 +598,24 @@ impl ExpressionVisitor for ContainsDerOfStateChecker<'_> {
 /// let vars = collector.into_vars();
 /// ```
 pub struct VarRefCollector {
-    vars: std::collections::HashSet<VarName>,
+    vars: IndexSet<VarName>,
 }
 
 impl VarRefCollector {
     /// Create a new variable reference collector.
     pub fn new() -> Self {
         Self {
-            vars: std::collections::HashSet::new(),
+            vars: IndexSet::new(),
         }
     }
 
-    /// Consume the collector and return the collected variable names.
-    pub fn into_vars(self) -> std::collections::HashSet<VarName> {
+    /// Consume the collector and return the collected variable names in first-seen order.
+    pub fn into_vars(self) -> IndexSet<VarName> {
         self.vars
     }
 
     /// Get a reference to the collected variables.
-    pub fn vars(&self) -> &std::collections::HashSet<VarName> {
+    pub fn vars(&self) -> &IndexSet<VarName> {
         &self.vars
     }
 }
@@ -691,8 +627,8 @@ impl Default for VarRefCollector {
 }
 
 impl ExpressionVisitor for VarRefCollector {
-    fn visit_var_ref(&mut self, name: &VarName, subscripts: &[Subscript]) {
-        self.vars.insert(name.clone());
+    fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+        self.vars.insert(name.var_name().clone());
         self.walk_var_ref(name, subscripts);
     }
 }
@@ -700,19 +636,23 @@ impl ExpressionVisitor for VarRefCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_core::Reference;
+    use rumoca_core::{ComponentRefPart, Literal, OpBinary};
 
     fn make_var(name: &str) -> Expression {
         Expression::VarRef {
-            name: VarName::new(name),
+            name: Reference::from(name),
             subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
     fn make_func_call(name: &str, args: Vec<Expression>) -> Expression {
         Expression::FunctionCall {
-            name: VarName::new(name),
+            name: Reference::from(name),
             args,
             is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -720,6 +660,7 @@ mod tests {
         Expression::BuiltinCall {
             function: BuiltinFunction::Der,
             args: vec![make_var(var_name)],
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -748,13 +689,15 @@ mod tests {
     fn test_state_variable_collector() {
         // der(x) + der(y) - z
         let expr = Expression::Binary {
-            op: OpBinary::Sub(crate::Token::default()),
+            op: OpBinary::Sub,
             lhs: Box::new(Expression::Binary {
-                op: OpBinary::Add(crate::Token::default()),
+                op: OpBinary::Add,
                 lhs: Box::new(make_der("x")),
                 rhs: Box::new(make_der("y")),
+                span: rumoca_core::Span::DUMMY,
             }),
             rhs: Box::new(make_var("z")),
+            span: rumoca_core::Span::DUMMY,
         };
 
         let mut collector = StateVariableCollector::new();
@@ -771,17 +714,19 @@ mod tests {
     fn test_contains_der_checker() {
         // Expression with der(): der(x) + y
         let with_der = Expression::Binary {
-            op: OpBinary::Add(crate::Token::default()),
+            op: OpBinary::Add,
             lhs: Box::new(make_der("x")),
             rhs: Box::new(make_var("y")),
+            span: rumoca_core::Span::DUMMY,
         };
         assert!(ContainsDerChecker::check(&with_der));
 
         // Expression without der(): x + y
         let without_der = Expression::Binary {
-            op: OpBinary::Add(crate::Token::default()),
+            op: OpBinary::Add,
             lhs: Box::new(make_var("x")),
             rhs: Box::new(make_var("y")),
+            span: rumoca_core::Span::DUMMY,
         };
         assert!(!ContainsDerChecker::check(&without_der));
 
@@ -794,13 +739,15 @@ mod tests {
     fn test_var_ref_collector() {
         // x + y * z
         let expr = Expression::Binary {
-            op: OpBinary::Add(crate::Token::default()),
+            op: OpBinary::Add,
             lhs: Box::new(make_var("x")),
             rhs: Box::new(Expression::Binary {
-                op: OpBinary::Mul(crate::Token::default()),
+                op: OpBinary::Mul,
                 lhs: Box::new(make_var("y")),
                 rhs: Box::new(make_var("z")),
+                span: rumoca_core::Span::DUMMY,
             }),
+            span: rumoca_core::Span::DUMMY,
         };
 
         let mut collector = VarRefCollector::new();
@@ -818,32 +765,42 @@ mod tests {
         let stmts = vec![Statement::For {
             indices: vec![ForIndex {
                 ident: "i".to_string(),
-                range: Expression::Literal(Literal::Integer(1)),
+                range: Expression::Literal {
+                    value: Literal::Integer(1),
+                    span: rumoca_core::Span::DUMMY,
+                },
             }],
             equations: vec![
                 Statement::Assignment {
                     comp: ComponentReference {
                         local: false,
-                        parts: vec![crate::ComponentRefPart {
+                        span: rumoca_core::Span::DUMMY,
+                        parts: vec![ComponentRefPart {
                             ident: "x".to_string(),
-                            subs: vec![Subscript::Index(1)],
+                            span: rumoca_core::Span::DUMMY,
+                            subs: vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)],
                         }],
                         def_id: None,
                     },
                     value: make_var("u"),
+                    span: rumoca_core::Span::DUMMY,
                 },
                 Statement::Reinit {
                     variable: ComponentReference {
                         local: false,
-                        parts: vec![crate::ComponentRefPart {
+                        span: rumoca_core::Span::DUMMY,
+                        parts: vec![ComponentRefPart {
                             ident: "y".to_string(),
+                            span: rumoca_core::Span::DUMMY,
                             subs: vec![],
                         }],
                         def_id: None,
                     },
                     value: make_var("v"),
+                    span: rumoca_core::Span::DUMMY,
                 },
             ],
+            span: rumoca_core::Span::DUMMY,
         }];
 
         let mut collector = AlgorithmOutputCollector::new();
@@ -852,7 +809,8 @@ mod tests {
         }
         let outputs = collector.into_outputs();
 
-        assert!(outputs.contains(&VarName::new("x")));
-        assert!(outputs.contains(&VarName::new("y")));
+        assert!(outputs.iter().any(|output| output.as_str() == "x"));
+        assert!(outputs.iter().any(|output| output.as_str() == "y"));
+        assert!(outputs.iter().all(rumoca_core::Reference::has_structure));
     }
 }

@@ -6,9 +6,10 @@
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
 use rayon::prelude::*;
+use rumoca_core::{DefId, Span};
 use rumoca_core::{
-    DefId, Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, OptionalTimer,
-    PrimaryLabel, SourceMap, Span, maybe_elapsed_duration, maybe_start_timer,
+    Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, OptionalTimer,
+    PrimaryLabel, SourceMap, maybe_elapsed_duration, maybe_start_timer,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
@@ -16,7 +17,8 @@ use rumoca_ir_flat as flat;
 use rumoca_phase_dae::{ToDaeError, ToDaeOptions, to_dae_with_options};
 use rumoca_phase_flatten::{FlattenError, FlattenOptions, flatten_ref_with_options};
 use rumoca_phase_instantiate::{
-    InstantiateError, InstantiationOutcome, instantiate_model_with_outcome,
+    InstantiateError, InstantiateOptions, InstantiationOutcome,
+    instantiate_model_with_outcome_options,
 };
 use rumoca_phase_resolve::{ResolveOptions, resolve_with_options, resolve_with_options_collect};
 use rumoca_phase_typecheck::typecheck_instanced;
@@ -24,16 +26,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+mod lru_cache;
 mod session_impl;
 mod session_impl_query_indexes;
+use lru_cache::{LruMap, SessionLruCache};
 
 #[cfg(test)]
 mod tests;
 
-use crate::experiment::experiment_settings_for_model;
+use crate::experiment::{ExperimentSettings, experiment_settings_for_model};
 use crate::instrumentation::{
     CacheInvalidationCause, record_body_semantic_diagnostics_build,
     record_body_semantic_diagnostics_cache_hit, record_body_semantic_diagnostics_cache_miss,
@@ -64,7 +68,9 @@ use crate::source_root_cache::{
 };
 
 mod dependency_fingerprint;
-use dependency_fingerprint::{CompileCacheEntry, DependencyFingerprintCache, Fingerprint};
+use dependency_fingerprint::{
+    CachedCompileResult, CompileCacheEntry, DependencyFingerprintCache, Fingerprint,
+};
 mod declaration_index;
 use declaration_index::DeclarationIndex;
 use declaration_index::ItemKey;
@@ -86,19 +92,27 @@ use package_def_map::PackageDefMap;
 mod class_interface;
 use class_interface::FileClassInterfaceIndex;
 use class_interface::{ClassInterface, ImportMap};
+mod config;
+pub use config::SessionConfig;
+use config::init_rayon_pool;
 mod namespace_completion;
 use namespace_completion::NamespaceCompletionCache;
 mod compile_phase_timing;
-use compile_phase_timing::maybe_record_compile_phase_timing;
 pub use compile_phase_timing::{
-    CompilePhaseTimingSnapshot, CompilePhaseTimingStat, compile_phase_timing_stats,
+    CompilePhaseEvent, CompilePhaseObserverGuard, CompilePhaseTimingSnapshot,
+    CompilePhaseTimingStat, compile_phase_timing_stats, install_compile_phase_observer,
     reset_compile_phase_timing_stats,
 };
+use compile_phase_timing::{maybe_record_compile_phase_timing, notify_compile_phase};
 mod compile_support;
 use compile_support::{
-    collect_class_component_members, compile_model_internal, compile_phase_result_from_dae,
-    dae_model_outcome_from_flat, dae_phase_result_from_dae, diagnostics_from_vec,
-    diagnostics_to_anyhow, finalize_strict_compile_report, flat_model_outcome_from_typed,
+    collect_class_component_members, compile_model_dae_internal,
+    compile_model_dae_internal_allow_unbalanced_for_diagnostics,
+    compile_model_dae_internal_with_options, compile_model_internal,
+    compile_model_internal_allow_unbalanced_for_diagnostics, compile_model_internal_with_options,
+    compile_phase_result_from_dae, dae_model_outcome_from_flat, dae_phase_result_from_dae,
+    diagnostics_from_vec, diagnostics_to_anyhow, finalize_strict_compile_report,
+    finalize_strict_compile_report_from_uncached_targets, flat_model_outcome_from_typed,
     is_simulatable_class_type, missing_inner_label, resolve_class_for_completion,
     split_cached_target_results, typed_model_outcome_from_instantiated,
 };
@@ -119,6 +133,7 @@ use strict_compile_diagnostics::{
     collect_resolve_failures_for_files, collect_target_source_files, dae_phase_result_to_failure,
     default_tree_span, document_parse_diagnostics, phase_result_to_failure, same_path,
 };
+mod session_impl_caches;
 mod session_impl_diagnostics;
 mod session_impl_inputs;
 mod session_impl_model_queries;
@@ -129,7 +144,6 @@ mod session_impl_symbols;
 mod session_impl_workspace_symbol_queries;
 mod session_snapshot;
 
-static RAYON_INIT: Once = Once::new();
 const MAX_SESSION_COMPILE_CACHE_ENTRIES: usize = 256;
 const MAX_SESSION_SEMANTIC_NAVIGATION_CACHE_ENTRIES: usize = 64;
 const MAX_SESSION_SEMANTIC_DIAGNOSTICS_CACHE_ENTRIES: usize = 64;
@@ -158,7 +172,7 @@ struct SemanticDiagnosticsArtifact {
 #[derive(Debug, Clone)]
 struct InterfaceSemanticDiagnosticsArtifact {
     fingerprint: Fingerprint,
-    class_type: Option<ast::ClassType>,
+    class_type: Option<rumoca_core::ClassType>,
 }
 
 #[derive(Debug, Clone)]
@@ -298,7 +312,7 @@ struct TypedModelArtifact {
 
 #[derive(Debug, Clone, Default)]
 struct TypedModelQueryState {
-    artifacts: IndexMap<TypedModelCacheKey, TypedModelArtifact>,
+    artifacts: LruMap<TypedModelCacheKey, TypedModelArtifact>,
 }
 
 #[derive(Debug, Clone)]
@@ -340,7 +354,7 @@ struct FlatModelArtifact {
 
 #[derive(Debug, Clone, Default)]
 struct FlatModelQueryState {
-    artifacts: IndexMap<FlatModelCacheKey, FlatModelArtifact>,
+    artifacts: LruMap<FlatModelCacheKey, FlatModelArtifact>,
 }
 
 #[derive(Debug, Clone)]
@@ -389,10 +403,9 @@ struct SemanticDiagnosticsQueryState {
     resolved_by_mode: IndexMap<SemanticDiagnosticsMode, Arc<ast::ResolvedTree>>,
     resolved_diagnostics_by_mode: IndexMap<SemanticDiagnosticsMode, Vec<CommonDiagnostic>>,
     dependency_fingerprints_by_mode: IndexMap<SemanticDiagnosticsMode, DependencyFingerprintCache>,
-    interface_artifacts:
-        IndexMap<SemanticDiagnosticsCacheKey, InterfaceSemanticDiagnosticsArtifact>,
-    body_artifacts: IndexMap<SemanticDiagnosticsCacheKey, BodySemanticDiagnosticsArtifact>,
-    model_stage_artifacts: IndexMap<SemanticDiagnosticsCacheKey, SemanticDiagnosticsArtifact>,
+    interface_artifacts: LruMap<SemanticDiagnosticsCacheKey, InterfaceSemanticDiagnosticsArtifact>,
+    body_artifacts: LruMap<SemanticDiagnosticsCacheKey, BodySemanticDiagnosticsArtifact>,
+    model_stage_artifacts: LruMap<SemanticDiagnosticsCacheKey, SemanticDiagnosticsArtifact>,
 }
 
 impl SemanticDiagnosticsQueryState {
@@ -406,43 +419,6 @@ impl SemanticDiagnosticsQueryState {
         self.resolved_by_mode.shift_remove(&mode);
         self.resolved_diagnostics_by_mode.shift_remove(&mode);
         self.dependency_fingerprints_by_mode.shift_remove(&mode);
-    }
-}
-
-/// Initialize rayon thread pool with num_cpus - 1 threads and 16MB stack per thread.
-/// This leaves one CPU free for system responsiveness.
-/// The large stack size is needed for deep MSL class hierarchies.
-fn init_rayon_pool() {
-    RAYON_INIT.call_once(|| {
-        let num_threads = std::thread::available_parallelism()
-            .map(|n| n.get().saturating_sub(1).max(1))
-            .unwrap_or(1);
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .stack_size(16 * 1024 * 1024) // 16 MB per thread for deep class hierarchies
-            .build_global()
-            .ok(); // Ignore error if pool already initialized
-    });
-}
-
-/// Configuration for a compilation session.
-#[derive(Debug, Clone)]
-pub struct SessionConfig {
-    /// Enable parallel compilation.
-    pub parallel: bool,
-    /// Strictness toggle for ER070 Evaluate-scope diagnostics.
-    pub evaluate_scope_is_error: bool,
-    /// Strictness toggle for ER053 when single-assignment diagnostics.
-    pub when_single_assign_is_error: bool,
-}
-
-impl Default for SessionConfig {
-    fn default() -> Self {
-        Self {
-            parallel: false,
-            evaluate_scope_is_error: true,
-            when_single_assign_is_error: true,
-        }
     }
 }
 
@@ -668,10 +644,6 @@ impl ResolveBuildMode {
     fn include_parse_error_diags(self) -> bool {
         matches!(self, Self::Standard)
     }
-
-    fn unresolved_refs_are_errors_in_single_document(self) -> bool {
-        matches!(self, Self::Standard)
-    }
 }
 
 impl SemanticDiagnosticsMode {
@@ -858,7 +830,7 @@ fn hash_query_fingerprint_pair(left: Fingerprint, right: Fingerprint) -> Fingerp
 
 #[derive(Debug, Clone)]
 pub enum WorkspaceSymbolKind {
-    Class(ast::ClassType),
+    Class(rumoca_core::ClassType),
     Component,
 }
 
@@ -867,7 +839,7 @@ pub struct WorkspaceSymbol {
     pub name: String,
     pub kind: WorkspaceSymbolKind,
     pub container_name: Option<String>,
-    pub location: ast::Location,
+    pub location: rumoca_core::Location,
     pub uri: String,
 }
 
@@ -876,14 +848,14 @@ pub struct DocumentSymbol {
     pub name: String,
     pub detail: Option<String>,
     pub kind: DocumentSymbolKind,
-    pub range: ast::Location,
-    pub selection_range: ast::Location,
+    pub range: rumoca_core::Location,
+    pub selection_range: rumoca_core::Location,
     pub children: Vec<DocumentSymbol>,
 }
 
 #[derive(Debug, Clone)]
 pub enum DocumentSymbolKind {
-    Class(ast::ClassType),
+    Class(rumoca_core::ClassType),
     ParametersSection,
     InputsSection,
     OutputsSection,
@@ -914,7 +886,7 @@ pub struct LocalComponentInfo {
     pub type_name: String,
     pub keyword_prefix: Option<String>,
     pub shape: Vec<usize>,
-    pub declaration_location: ast::Location,
+    pub declaration_location: rumoca_core::Location,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -922,11 +894,11 @@ pub struct NavigationClassTargetInfo {
     pub target_uri: String,
     pub qualified_name: String,
     pub class_name: String,
-    pub class_type: ast::ClassType,
+    pub class_type: rumoca_core::ClassType,
     pub description: Option<String>,
     pub component_count: usize,
     pub equation_count: usize,
-    pub declaration_location: ast::Location,
+    pub declaration_location: rumoca_core::Location,
 }
 
 #[derive(Debug, Clone)]
@@ -1411,9 +1383,8 @@ struct ResolvedArtifactState {
     builds: ResolvedBuildCache,
     dependency_fingerprints: DependencyFingerprintBuildCache,
     source_set_aggregates: IndexMap<SourceSetId, SourceSetResolvedAggregateQueryCache>,
-    reachable_model_closures:
-        IndexMap<ReachableModelClosureCacheKey, ReachableModelClosureArtifact>,
-    semantic_navigation: IndexMap<String, SemanticNavigationArtifact>,
+    reachable_model_closures: LruMap<ReachableModelClosureCacheKey, ReachableModelClosureArtifact>,
+    semantic_navigation: LruMap<String, SemanticNavigationArtifact>,
 }
 
 impl ResolvedArtifactState {
@@ -1439,7 +1410,7 @@ impl ResolvedArtifactState {
 /// semantic diagnostics keyed by resolved fingerprints.
 #[derive(Debug, Clone, Default)]
 struct FlattenedArtifactState {
-    instantiated_models: IndexMap<InstantiatedModelCacheKey, InstantiatedModelArtifact>,
+    instantiated_models: LruMap<InstantiatedModelCacheKey, InstantiatedModelArtifact>,
     typed_models: TypedModelQueryState,
     flat_models: FlatModelQueryState,
     semantic_diagnostics: SemanticDiagnosticsQueryState,
@@ -1461,8 +1432,8 @@ impl FlattenedArtifactState {
 /// keyed by the dependency fingerprints produced by the resolved tier.
 #[derive(Debug, Clone, Default)]
 struct DaeArtifactState {
-    dae_models: IndexMap<DaeModelCacheKey, DaeModelArtifact>,
-    compile_results: IndexMap<String, CompileCacheEntry>,
+    dae_models: LruMap<DaeModelCacheKey, DaeModelArtifact>,
+    compile_results: LruMap<String, CompileCacheEntry>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1477,6 +1448,24 @@ struct SessionQueryState {
 struct SharedSessionSnapshot {
     revision: RevisionId,
     snapshot: Option<SessionSnapshot>,
+}
+
+type SharedSessionSnapshotCache = Arc<RwLock<SharedSessionSnapshot>>;
+
+fn fresh_session_snapshot_cache() -> SharedSessionSnapshotCache {
+    Arc::new(RwLock::new(SharedSessionSnapshot::default()))
+}
+
+fn fresh_session_snapshot_caches() -> (
+    SharedSessionSnapshotCache,
+    SharedSessionSnapshotCache,
+    SharedSessionSnapshotCache,
+) {
+    (
+        fresh_session_snapshot_cache(),
+        fresh_session_snapshot_cache(),
+        fresh_session_snapshot_cache(),
+    )
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1516,7 +1505,7 @@ pub struct Document {
     /// Document URI or file path.
     pub uri: String,
     /// Source content.
-    pub content: String,
+    pub content: Arc<str>,
     syntax: Arc<crate::parse::SyntaxFile>,
     query_fingerprints: DocumentQueryFingerprints,
 }
@@ -1526,7 +1515,7 @@ impl Document {
         let query_fingerprints = DocumentQueryFingerprints::from_definition(syntax.best_effort());
         Self {
             uri,
-            content,
+            content: Arc::<str>::from(content),
             syntax: Arc::new(syntax),
             query_fingerprints,
         }
@@ -1578,7 +1567,7 @@ impl Document {
 }
 
 /// Result of compiling a single model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompilationResult {
     /// The flattened representation.
     pub flat: flat::Model,
@@ -1599,10 +1588,20 @@ pub struct CompilationResult {
 }
 
 /// Result of compiling a single model through the DAE stage only.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaeCompilationResult {
+    /// The flattened representation used to produce this DAE.
+    pub flat: Arc<flat::Model>,
     /// The final DAE representation.
     pub dae: Arc<dae::Dae>,
+    /// Source map used to compile this DAE.
+    pub source_map: Option<SourceMap>,
+    /// True if any fixed parameter had no binding while Flat was available.
+    pub has_unbound_fixed_parameters: bool,
+    /// Active discrete scalar count computed before dropping Flat.
+    pub active_discrete_scalar_count: i64,
+    /// Detailed continuous balance inputs for callers that need compact status.
+    pub balance_detail: rumoca_phase_dae::balance::BalanceDetail,
     /// Optional simulation start time from `annotation(experiment(StartTime=...))`
     /// on the compiled root class.
     pub experiment_start_time: Option<f64>,
@@ -1618,7 +1617,7 @@ pub struct DaeCompilationResult {
 }
 
 /// Diagnostics collected for a model compilation attempt.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelDiagnostics {
     pub diagnostics: Vec<CommonDiagnostic>,
     pub source_map: Option<SourceMap>,
@@ -1626,7 +1625,7 @@ pub struct ModelDiagnostics {
 }
 
 /// Failure diagnostic for a single model in a strict-reachable-with-recovery pass.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelFailureDiagnostic {
     pub model_name: String,
     pub phase: Option<FailedPhase>,
@@ -1640,7 +1639,7 @@ pub struct ModelFailureDiagnostic {
 /// The requested model remains strict: it must compile successfully for callers
 /// to treat the compile as successful. Other related models are still compiled
 /// so additional diagnostics can be surfaced to the user.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StrictCompileReport {
     pub requested_model: String,
     pub requested_result: Option<PhaseResult>,
@@ -1672,7 +1671,7 @@ impl StrictCompileReport {
             Some(PhaseResult::Success(_)) => {
                 format!("{} compiled successfully", self.requested_model)
             }
-            Some(PhaseResult::NeedsInner { missing_inners }) => format!(
+            Some(PhaseResult::NeedsInner { missing_inners, .. }) => format!(
                 "{} requires inner declarations: {}",
                 self.requested_model,
                 missing_inners.join(", ")
@@ -1702,6 +1701,19 @@ fn requested_missing_result_message(
         .unwrap_or_else(|| {
             format!("{requested_model} could not be compiled because resolve/parse failed")
         })
+}
+
+fn dae_phase_result_requested_message(model_name: &str, result: &DaePhaseResult) -> String {
+    match result {
+        DaePhaseResult::Success(_) => format!("{model_name} compiled successfully"),
+        DaePhaseResult::NeedsInner { missing_inners, .. } => format!(
+            "{model_name} requires inner declarations: {}",
+            missing_inners.join(", ")
+        ),
+        DaePhaseResult::Failed { phase, error, .. } => {
+            format!("{model_name} failed in {phase}: {error}")
+        }
+    }
 }
 
 pub(crate) fn format_strict_failure_summary(
@@ -1739,7 +1751,7 @@ pub(crate) fn format_strict_failure_summary(
 impl CompilationResult {
     /// Check if the model is balanced (equal equations and unknowns).
     pub fn is_balanced(&self) -> bool {
-        rumoca_phase_dae::dae_is_balanced(&self.dae)
+        rumoca_phase_dae::is_balanced(&self.dae)
     }
 }
 
@@ -1748,6 +1760,7 @@ pub(crate) enum DaePhaseResult {
     Success(Box<DaeCompilationResult>),
     NeedsInner {
         missing_inners: Vec<String>,
+        missing_spans: Vec<Span>,
     },
     Failed {
         phase: FailedPhase,
@@ -1757,7 +1770,7 @@ pub(crate) enum DaePhaseResult {
 }
 
 /// Phase at which compilation failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FailedPhase {
     Instantiate,
     Typecheck,
@@ -1777,7 +1790,7 @@ impl std::fmt::Display for FailedPhase {
 }
 
 /// Result of compiling a model with phase-level tracking.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PhaseResult {
     /// Compilation succeeded.
     Success(Box<CompilationResult>),
@@ -1786,6 +1799,8 @@ pub enum PhaseResult {
     NeedsInner {
         /// Names of outer components that need inner declarations.
         missing_inners: Vec<String>,
+        /// Source spans for each outer component declaration, when available.
+        missing_spans: Vec<Span>,
     },
 
     /// Compilation failed at a specific phase.
@@ -1814,7 +1829,7 @@ impl PhaseResult {
 }
 
 /// Summary statistics for bulk compilation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CompilationSummary {
     /// Number of models that compiled successfully.
     pub success_count: usize,
@@ -1842,7 +1857,7 @@ impl CompilationSummary {
         summary
     }
 
-    fn add_result(&mut self, result: &PhaseResult) {
+    pub(in crate::session) fn add_result(&mut self, result: &PhaseResult) {
         match result {
             PhaseResult::Success(r) => {
                 self.success_count += 1;
@@ -1891,6 +1906,7 @@ impl CompilationSummary {
 /// - Parallel compilation support
 #[derive(Debug, Clone)]
 pub struct Session {
+    instantiation_options: InstantiateOptions,
     documents: IndexMap<String, Arc<Document>>,
     detached_document_uris: IndexSet<String>,
     detached_source_root_documents: IndexMap<FileId, DetachedSourceRootDocument>,
@@ -1925,22 +1941,30 @@ pub struct Session {
     query_state: SessionQueryState,
     /// Shared immutable snapshot for the current revision so read requests
     /// do not reclone the full session on every query.
-    snapshot_cache: Arc<Mutex<SharedSessionSnapshot>>,
+    snapshot_cache: SharedSessionSnapshotCache,
     /// Shared lightweight snapshot for local document-scoped IDE requests.
-    lightweight_snapshot_cache: Arc<Mutex<SharedSessionSnapshot>>,
+    lightweight_snapshot_cache: SharedSessionSnapshotCache,
     /// Shared medium-weight snapshot for global workspace symbol reads.
-    workspace_symbol_snapshot_cache: Arc<Mutex<SharedSessionSnapshot>>,
+    workspace_symbol_snapshot_cache: SharedSessionSnapshotCache,
     /// Session-wide semantic strictness for ER070.
     evaluate_scope_is_error: bool,
     /// Session-wide semantic strictness for ER053.
     when_single_assign_is_error: bool,
 }
 
-/// Immutable query snapshot cloned from one host session revision.
+/// Detached query snapshot cloned from one host session revision.
 ///
 /// This is the phase-10 analysis boundary: the mutable host owns input changes,
-/// while snapshots serve IDE-style read queries against one fixed revision.
+/// while snapshots serve IDE-style read queries against one fixed revision. The
+/// read/write lock protects snapshot-local query-cache warming; it does not
+/// point back at the live host session. Read-only snapshot accessors take a
+/// shared lock so independent editor reads can proceed concurrently.
 #[derive(Debug, Clone)]
 pub struct SessionSnapshot {
-    session: Arc<Mutex<Session>>,
+    detached_state: Arc<RwLock<DetachedSessionSnapshotState>>,
+}
+
+#[derive(Debug)]
+struct DetachedSessionSnapshotState {
+    session: Session,
 }

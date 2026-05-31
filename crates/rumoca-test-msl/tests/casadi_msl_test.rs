@@ -1,6 +1,8 @@
+#![cfg(feature = "msl-external-tests")]
+
 //! CasADi cross-validation against rumoca's built-in simulator on MSL models.
 //!
-//! For each model in the 180-model MSL simulation target list, we:
+//! For each model in the committed MSL simulation target list, we:
 //! 1. Compile the model from the MSL source root
 //! 2. Run rumoca's built-in diffsol simulator to get a reference trace
 //! 3. Render CasADi MX Python code, run via `python3`
@@ -8,12 +10,9 @@
 //!
 //! Run with:
 //! ```text
-//! cargo test --release --package rumoca-test-msl --test casadi_msl_test -- --ignored --nocapture
+//! cargo test --release --package rumoca-test-msl --features msl-external-tests --test casadi_msl_test test_casadi_vs_rumoca_msl -- --nocapture
 //! ```
 //!
-//! Environment variables:
-//! - `RUMOCA_CASADI_MSL_MATCH=pattern` — filter models by substring match
-//! - `RUMOCA_CASADI_MSL_LIMIT=N` — cap number of models tested
 
 use flate2::read::GzDecoder;
 use rumoca_compile::codegen::{render_dae_template_with_name, templates};
@@ -115,8 +114,8 @@ fn find_mo_files(msl_dir: &Path) -> Vec<PathBuf> {
 // =============================================================================
 
 fn load_target_models() -> Vec<String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/msl_tests/msl_simulation_targets_180.json");
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/msl_tests/msl_simulation_targets.json");
     let raw = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read target list {}: {e}", path.display()));
     let value: serde_json::Value =
@@ -127,23 +126,6 @@ fn load_target_models() -> Vec<String> {
         .iter()
         .map(|v| v.as_str().expect("each entry must be a string").to_string())
         .collect()
-}
-
-fn apply_env_filters(names: &mut Vec<String>) {
-    if let Ok(pattern) = std::env::var("RUMOCA_CASADI_MSL_MATCH") {
-        let pattern = pattern.trim().to_string();
-        if !pattern.is_empty() {
-            names.retain(|n| n.contains(&pattern));
-            println!("RUMOCA_CASADI_MSL_MATCH={pattern} → {} models", names.len());
-        }
-    }
-    if let Ok(raw) = std::env::var("RUMOCA_CASADI_MSL_LIMIT")
-        && let Ok(limit) = raw.trim().parse::<usize>()
-        && names.len() > limit
-    {
-        names.truncate(limit);
-        println!("RUMOCA_CASADI_MSL_LIMIT={limit} → {} models", names.len());
-    }
 }
 
 // =============================================================================
@@ -209,8 +191,12 @@ fn casadi_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<SimTrace, String> {
-    let code = render_dae_template_with_name(dae, templates::CASADI_MX, model_name)
-        .map_err(|e| format!("render: {e}"))?;
+    let code = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render: {e}"))?;
 
     let dir = tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let model_path = dir.path().join("model.py");
@@ -308,7 +294,7 @@ enum ModelOutcome {
     CasadiRenderFail(String),
     CasadiPythonFail(String),
     TraceCompareFail(String),
-    Pass { metric: ModelDeviationMetric },
+    Pass { metric: Box<ModelDeviationMetric> },
     NoStates,
 }
 
@@ -334,7 +320,7 @@ impl OutcomeCounts {
 fn assert_release_mode() {
     panic!(
         "\n\nERROR: CasADi MSL tests must be run in RELEASE mode!\n\
-         cargo test --release --package rumoca-test-msl --test casadi_msl_test -- --ignored --nocapture\n"
+         cargo test --release --package rumoca-test-msl --features msl-external-tests --test casadi_msl_test test_casadi_vs_rumoca_msl -- --nocapture\n"
     );
 }
 
@@ -432,7 +418,7 @@ fn track_outcome_details(
             *python_fail_errors.entry(key).or_default() += 1;
         }
         ModelOutcome::Pass { metric } => {
-            pass_metrics.push((model_name.to_string(), metric.clone()));
+            pass_metrics.push((model_name.to_string(), (**metric).clone()));
         }
         _ => {}
     }
@@ -523,7 +509,7 @@ fn run_single_model(source_root: &CompiledSourceRoot, model_name: &str) -> Model
     let dae = &result.dae;
 
     // Skip models with no states — CasADi integrator needs states
-    if dae.states.is_empty() {
+    if dae.variables.states.is_empty() {
         return ModelOutcome::NoStates;
     }
 
@@ -564,7 +550,9 @@ fn run_single_model(source_root: &CompiledSourceRoot, model_name: &str) -> Model
 
     // 4. Compare traces
     match compare_model_traces(model_name, &rumoca_trace, &casadi_trace) {
-        Ok(metric) => ModelOutcome::Pass { metric },
+        Ok(metric) => ModelOutcome::Pass {
+            metric: Box::new(metric),
+        },
         Err(e) => ModelOutcome::TraceCompareFail(format!("{e}")),
     }
 }
@@ -574,7 +562,6 @@ fn run_single_model(source_root: &CompiledSourceRoot, model_name: &str) -> Model
 // =============================================================================
 
 #[test]
-#[ignore]
 fn test_casadi_vs_rumoca_msl() {
     assert_release_mode();
 
@@ -596,8 +583,7 @@ fn test_casadi_vs_rumoca_msl() {
         .expect("failed to build source-root index");
 
     // 3. Select target models
-    let mut targets = load_target_models();
-    apply_env_filters(&mut targets);
+    let targets = load_target_models();
     println!("Testing {} models\n", targets.len());
 
     // 4. Run each model

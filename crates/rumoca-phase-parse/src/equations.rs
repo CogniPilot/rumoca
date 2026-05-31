@@ -4,7 +4,7 @@ use crate::errors::semantic_error_from_expression;
 use crate::generated::modelica_grammar_trait;
 
 //-----------------------------------------------------------------------------
-impl TryFrom<&modelica_grammar_trait::Ident> for rumoca_ir_core::Token {
+impl TryFrom<&modelica_grammar_trait::Ident> for rumoca_core::Token {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Ident) -> std::result::Result<Self, Self::Error> {
@@ -16,7 +16,7 @@ impl TryFrom<&modelica_grammar_trait::Ident> for rumoca_ir_core::Token {
 }
 
 //-----------------------------------------------------------------------------
-impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for rumoca_ir_core::Token {
+impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for rumoca_core::Token {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -27,7 +27,7 @@ impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for rumoca_ir_core::Token
 }
 
 //-----------------------------------------------------------------------------
-impl TryFrom<&modelica_grammar_trait::UnsignedReal> for rumoca_ir_core::Token {
+impl TryFrom<&modelica_grammar_trait::UnsignedReal> for rumoca_core::Token {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -93,7 +93,7 @@ fn convert_simple_equation(
 
     // No RHS means function call equation (reinit, assert, terminate, etc.)
     // See MLS 8.3.6-8.3.8
-    let rumoca_ir_ast::Expression::FunctionCall { comp, args } = &simple_eq.simple_expression
+    let rumoca_ir_ast::Expression::FunctionCall { comp, args, .. } = &simple_eq.simple_expression
     else {
         return Err(semantic_error_from_expression(
             format!(

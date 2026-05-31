@@ -25,8 +25,11 @@ fn fmt_check_fails_when_file_needs_formatting() {
         !output.status.success(),
         "fmt --check should fail when file needs formatting"
     );
+    // The changed-file list is result data → stdout (matches `lint`); the
+    // summary stays on stderr.
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Would reformat"));
+    assert!(stdout.contains("Would reformat"));
     assert!(stderr.contains("need formatting"));
 }
 

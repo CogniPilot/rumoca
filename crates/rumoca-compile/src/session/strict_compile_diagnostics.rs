@@ -2,8 +2,9 @@ use super::{DaePhaseResult, Document, FailedPhase, ModelFailureDiagnostic, Phase
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, PrimaryLabel,
-    SourceId, SourceMap, Span,
+    SourceMap,
 };
+use rumoca_core::{SourceId, Span};
 use rumoca_ir_ast as ast;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,7 +18,10 @@ pub(super) fn phase_result_to_failure(
 ) -> Option<ModelFailureDiagnostic> {
     match result {
         PhaseResult::Success(_) => None,
-        PhaseResult::NeedsInner { missing_inners } => Some(ModelFailureDiagnostic {
+        PhaseResult::NeedsInner {
+            missing_inners,
+            missing_spans,
+        } => Some(ModelFailureDiagnostic {
             model_name: model_name.to_string(),
             phase: Some(FailedPhase::Instantiate),
             error_code: None,
@@ -25,7 +29,7 @@ pub(super) fn phase_result_to_failure(
                 "model needs inner declarations: {}",
                 missing_inners.join(", ")
             ),
-            primary_label: class_primary_label(tree, model_name, "model needs inner declarations"),
+            primary_label: missing_inner_primary_label(tree, model_name, missing_spans),
         }),
         PhaseResult::Failed {
             phase,
@@ -48,7 +52,10 @@ pub(super) fn dae_phase_result_to_failure(
 ) -> Option<ModelFailureDiagnostic> {
     match result {
         DaePhaseResult::Success(_) => None,
-        DaePhaseResult::NeedsInner { missing_inners } => Some(ModelFailureDiagnostic {
+        DaePhaseResult::NeedsInner {
+            missing_inners,
+            missing_spans,
+        } => Some(ModelFailureDiagnostic {
             model_name: model_name.to_string(),
             phase: Some(FailedPhase::Instantiate),
             error_code: None,
@@ -56,7 +63,7 @@ pub(super) fn dae_phase_result_to_failure(
                 "model needs inner declarations: {}",
                 missing_inners.join(", ")
             ),
-            primary_label: class_primary_label(tree, model_name, "model needs inner declarations"),
+            primary_label: missing_inner_primary_label(tree, model_name, missing_spans),
         }),
         DaePhaseResult::Failed {
             phase,
@@ -184,7 +191,9 @@ pub(super) fn document_parse_diagnostics(
 }
 
 pub(super) fn default_tree_span(source_map: &SourceMap) -> Span {
-    let source_id = SourceId(0);
+    let Some(source_id) = source_map.first_source_id() else {
+        return Span::from_offsets(SourceId::DUMMY, 0, 1);
+    };
     if let Some((_, content)) = source_map.get_source(source_id) {
         return leading_non_whitespace_span(source_id, content);
     }
@@ -208,6 +217,18 @@ pub(super) fn collect_target_source_files(
 fn class_primary_label(tree: &ast::ClassTree, model_name: &str, message: &str) -> Option<Label> {
     let span = class_primary_span(tree, model_name)?;
     Some(Label::primary(span).with_message(message))
+}
+
+fn missing_inner_primary_label(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    missing_spans: &[Span],
+) -> Option<Label> {
+    missing_spans
+        .first()
+        .copied()
+        .map(|span| Label::primary(span).with_message("missing matching `inner`"))
+        .or_else(|| class_primary_label(tree, model_name, "model needs inner declarations"))
 }
 
 fn collect_document_parse_failures(

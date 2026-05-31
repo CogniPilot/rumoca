@@ -300,17 +300,23 @@ gates from the active specs.
 Common local verification commands:
 
 ```bash
-rum verify lint
-rum verify workspace
-rum verify quick
-rum verify msl-parity
+cargo xtask verify lint
+cargo xtask verify workspace
+cargo xtask verify quick
+cargo xtask verify msl-parity
 ```
 
 For compiler-semantics changes that require the full parity gate:
 
 ```bash
-cargo test --release --package rumoca-test-msl --test msl_tests \
-  balance_pipeline::balance_pipeline_core::test_msl_all -- --ignored
+cargo xtask verify msl-parity
+```
+
+Raw test equivalent:
+
+```bash
+cargo test --release --package rumoca-test-msl --features msl-full-test \
+  --test msl_tests balance_pipeline::balance_pipeline_core::test_msl_all -- --nocapture
 ```
 
 If MSL quality/baseline data changes, regenerate and promote it using the

@@ -57,10 +57,10 @@ fn collect_document_symbols_for_class(
 
     for (comp_name, comp) in &class.components {
         let section = match (&comp.variability, &comp.causality) {
-            (rumoca_ir_core::Variability::Parameter(_), _) => DocumentSymbolKind::ParametersSection,
-            (rumoca_ir_core::Variability::Constant(_), _) => DocumentSymbolKind::ParametersSection,
-            (_, rumoca_ir_core::Causality::Input(_)) => DocumentSymbolKind::InputsSection,
-            (_, rumoca_ir_core::Causality::Output(_)) => DocumentSymbolKind::OutputsSection,
+            (rumoca_core::Variability::Parameter(_), _) => DocumentSymbolKind::ParametersSection,
+            (rumoca_core::Variability::Constant(_), _) => DocumentSymbolKind::ParametersSection,
+            (_, rumoca_core::Causality::Input(_)) => DocumentSymbolKind::InputsSection,
+            (_, rumoca_core::Causality::Output(_)) => DocumentSymbolKind::OutputsSection,
             _ => DocumentSymbolKind::VariablesSection,
         };
 
@@ -175,7 +175,7 @@ fn add_document_symbol_group(
     });
 }
 
-fn document_symbol_group_range(symbols: &[DocumentSymbol]) -> ast::Location {
+fn document_symbol_group_range(symbols: &[DocumentSymbol]) -> rumoca_core::Location {
     let mut min_start = u32::MAX;
     let mut max_end = 0u32;
     let mut min_column = u32::MAX;
@@ -197,7 +197,7 @@ fn document_symbol_group_range(symbols: &[DocumentSymbol]) -> ast::Location {
     }
 
     if min_start == u32::MAX {
-        return ast::Location {
+        return rumoca_core::Location {
             start_line: 1,
             start_column: 1,
             end_line: 1,
@@ -208,7 +208,7 @@ fn document_symbol_group_range(symbols: &[DocumentSymbol]) -> ast::Location {
         };
     }
 
-    ast::Location {
+    rumoca_core::Location {
         start_line: min_start,
         start_column: min_column,
         end_line: max_end,

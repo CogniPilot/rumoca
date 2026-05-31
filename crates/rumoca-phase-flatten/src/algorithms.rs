@@ -7,7 +7,8 @@
 //! Algorithms are preserved as structured statements through the DAE phase,
 //! with expansion to flat equations deferred to code generation.
 
-use rumoca_core::Span;
+use rumoca_core::SourceMap;
+use rumoca_core::{Span, extract_algorithm_outputs};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 use std::collections::HashSet;
@@ -22,7 +23,7 @@ use crate::qualify::{self, ImportMap, QualifyOptions};
 
 /// Qualify all variable references in an algorithm section.
 ///
-/// Per ALG-001: All variable references become globally qualified names.
+/// Per ALG-001: All variable references become globally unique flat names.
 /// For example, `x := y + 1` in component `comp` becomes `comp.x := comp.y + 1`.
 pub(crate) fn qualify_algorithm(
     statements: &[ast::Statement],
@@ -139,7 +140,7 @@ fn qualify_statement(
             message: qualify_expr(message, prefix, imports, locals),
             level: level
                 .as_ref()
-                .map(|l| qualify_expr(l, prefix, imports, locals)),
+                .map(|l| Box::new(qualify_expr(l, prefix, imports, locals))),
         },
     }
 }
@@ -215,13 +216,34 @@ fn qualify_expr(
 ///
 /// Per SPEC_0020: Track which variables are assigned in algorithms.
 /// This is needed for balance checking and causality analysis.
-pub(crate) fn extract_outputs(statements: &[flat::Statement]) -> Vec<flat::VarName> {
-    rumoca_ir_flat::extract_algorithm_outputs(statements)
+pub(crate) fn extract_outputs(
+    statements: &[rumoca_core::Statement],
+) -> Vec<rumoca_core::Reference> {
+    extract_algorithm_outputs(statements)
 }
 
 // =============================================================================
 // Main Entry Point
 // =============================================================================
+
+pub(crate) struct AlgorithmSectionContext<'a> {
+    pub(crate) prefix: &'a ast::QualifiedName,
+    pub(crate) imports: &'a ImportMap,
+    pub(crate) def_map: Option<&'a crate::ResolveDefMap>,
+    pub(crate) initial_locals: &'a HashSet<String>,
+    pub(crate) source_map: Option<&'a SourceMap>,
+}
+
+pub(crate) struct AlgorithmSectionMetadata {
+    pub(crate) span: Span,
+    pub(crate) origin: String,
+}
+
+impl AlgorithmSectionMetadata {
+    pub(crate) fn new(span: Span, origin: String) -> Self {
+        Self { span, origin }
+    }
+}
 
 /// Flatten an algorithm section with variable qualification and output extraction.
 ///
@@ -229,19 +251,26 @@ pub(crate) fn extract_outputs(statements: &[flat::Statement]) -> Vec<flat::VarNa
 /// Tasks 3.1 (qualification) and 3.2 (outputs).
 pub(crate) fn flatten_algorithm_section(
     statements: &[ast::Statement],
-    prefix: &ast::QualifiedName,
-    span: Span,
-    origin: String,
-    imports: &ImportMap,
-    def_map: Option<&crate::ResolveDefMap>,
-    initial_locals: &HashSet<String>,
+    context: AlgorithmSectionContext<'_>,
+    metadata: AlgorithmSectionMetadata,
 ) -> Result<flat::Algorithm, FlattenError> {
     // Task 3.1: Qualify all variable names
-    let qualified_ast = qualify_algorithm(statements, prefix, imports, initial_locals);
-    let qualified_statements: Vec<flat::Statement> = qualified_ast
+    let qualified_ast = qualify_algorithm(
+        statements,
+        context.prefix,
+        context.imports,
+        context.initial_locals,
+    );
+    let qualified_statements: Vec<rumoca_core::Statement> = qualified_ast
         .iter()
-        .map(|stmt| ast_lower::statement_from_ast_with_def_map(stmt, def_map))
-        .collect();
+        .map(|stmt| {
+            ast_lower::statement_from_ast_with_def_map_and_source_map(
+                stmt,
+                context.def_map,
+                context.source_map,
+            )
+        })
+        .collect::<Result<_, FlattenError>>()?;
 
     // Task 3.2: Extract output variables
     let outputs = extract_outputs(&qualified_statements);
@@ -249,8 +278,8 @@ pub(crate) fn flatten_algorithm_section(
     Ok(flat::Algorithm {
         statements: qualified_statements,
         outputs,
-        span,
-        origin,
+        span: metadata.span,
+        origin: metadata.origin,
     })
 }
 
@@ -262,7 +291,8 @@ pub(crate) fn flatten_algorithm_section(
 mod tests {
     use super::*;
     use crate::qualify::int_expr;
-    use rumoca_ir_ast::{self as ast, ComponentRefPart, OpBinary, Subscript, Token};
+    use rumoca_core::{OpBinary, Token};
+    use rumoca_ir_ast::{self as ast, ComponentRefPart, Subscript};
     use std::sync::Arc;
 
     fn make_comp_ref(names: &[&str]) -> ast::ComponentReference {
@@ -279,6 +309,7 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
+            span: rumoca_core::Span::DUMMY,
         }
     }
 
@@ -286,10 +317,10 @@ mod tests {
         ast::Expression::ComponentReference(make_comp_ref(&[name]))
     }
 
-    fn ast_to_flat(stmts: &[ast::Statement]) -> Vec<flat::Statement> {
+    fn ast_to_flat(stmts: &[ast::Statement]) -> Vec<rumoca_core::Statement> {
         stmts
             .iter()
-            .map(|stmt| ast_lower::statement_from_ast_with_def_map(stmt, None))
+            .map(|stmt| ast_lower::statement_from_ast_with_def_map(stmt, None).unwrap())
             .collect()
     }
 
@@ -337,14 +368,16 @@ mod tests {
                     start: Arc::new(int_expr(1)),
                     step: None,
                     end: Arc::new(make_var_expr("n")),
+                    span: rumoca_core::Span::DUMMY,
                 },
             }],
             equations: vec![ast::Statement::Assignment {
                 comp: make_comp_ref(&["x"]),
                 value: ast::Expression::Binary {
-                    op: OpBinary::Add(Token::default()),
+                    op: OpBinary::Add,
                     lhs: Arc::new(make_var_expr("x")),
                     rhs: Arc::new(make_var_expr("i")),
+                    span: rumoca_core::Span::DUMMY,
                 },
             }],
         };
@@ -394,6 +427,7 @@ mod tests {
                     start: Arc::new(int_expr(1)),
                     step: None,
                     end: Arc::new(make_var_expr("n")),
+                    span: rumoca_core::Span::DUMMY,
                 },
             }],
             equations: vec![ast::Statement::Assignment {
@@ -408,6 +442,7 @@ mod tests {
                         subs: Some(vec![Subscript::Expression(make_var_expr("i"))]),
                     }],
                     def_id: None,
+                    span: rumoca_core::Span::DUMMY,
                 }),
             }],
         };
@@ -471,9 +506,10 @@ mod tests {
             ast::Statement::Assignment {
                 comp: make_comp_ref(&["x"]),
                 value: ast::Expression::Binary {
-                    op: OpBinary::Add(Token::default()),
+                    op: OpBinary::Add,
                     lhs: Arc::new(make_var_expr("x")),
                     rhs: Arc::new(int_expr(1)),
+                    span: rumoca_core::Span::DUMMY,
                 },
             },
         ];
@@ -494,7 +530,9 @@ mod tests {
                     text: std::sync::Arc::from("i"),
                     ..Default::default()
                 },
-                range: ast::Expression::Empty,
+                range: ast::Expression::Empty {
+                    span: rumoca_core::Span::DUMMY,
+                },
             }],
             equations: vec![ast::Statement::Assignment {
                 comp: make_comp_ref(&["y"]),
@@ -523,6 +561,7 @@ mod tests {
                     subs: Some(vec![Subscript::Expression(int_expr(1))]),
                 }],
                 def_id: None,
+                span: rumoca_core::Span::DUMMY,
             }),
         };
 
@@ -550,5 +589,38 @@ mod tests {
         assert_eq!(cr.parts.len(), 1);
         assert_eq!(&*cr.parts[0].ident.text, "table");
         assert!(cr.parts[0].subs.is_some());
+    }
+
+    #[test]
+    fn test_qualify_algorithm_keeps_local_record_root_before_import_alias() {
+        let stmt = ast::Statement::Assignment {
+            comp: make_comp_ref(&["tau2"]),
+            value: ast::Expression::ComponentReference(make_comp_ref(&["g", "tau"])),
+        };
+
+        let mut imports = ImportMap::default();
+        imports.insert("g".to_string(), "Modelica.Constants.g_n".to_string());
+
+        let mut initial_locals = HashSet::new();
+        initial_locals.insert("g".to_string());
+        initial_locals.insert("tau2".to_string());
+
+        let qualified = qualify_algorithm(
+            &[stmt],
+            &ast::QualifiedName::new(),
+            &imports,
+            &initial_locals,
+        );
+        let ast::Statement::Assignment { value, .. } = &qualified[0] else {
+            panic!("expected assignment");
+        };
+        let ast::Expression::ComponentReference(cr) = value else {
+            panic!("expected component reference");
+        };
+
+        assert_eq!(cr.parts.len(), 2);
+        assert_eq!(&*cr.parts[0].ident.text, "g");
+        assert_eq!(&*cr.parts[1].ident.text, "tau");
+        assert_eq!(cr.def_id, None);
     }
 }

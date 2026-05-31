@@ -12,6 +12,8 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
 use crate::Context;
+use crate::FlattenError;
+use crate::connections_builtin::extract_potential_root_priority;
 use crate::equations::build_qualified_name;
 use crate::path_utils::{find_last_top_level_dot, split_path_with_indices, strip_array_index};
 
@@ -41,7 +43,7 @@ pub(crate) struct VcgPreScanData {
 pub(crate) fn pre_collect_vcg_data(
     overlay: &ast::InstanceOverlay,
     ctx: &Context,
-) -> VcgPreScanData {
+) -> Result<VcgPreScanData, FlattenError> {
     let mut data = VcgPreScanData {
         definite_roots: FxHashSet::default(),
         branches: Vec::new(),
@@ -56,11 +58,11 @@ pub(crate) fn pre_collect_vcg_data(
 
         let prefix = &class_data.qualified_name;
         for inst_eq in &class_data.equations {
-            collect_vcg_from_equation(&inst_eq.equation, prefix, ctx, &mut data);
+            collect_vcg_from_equation(&inst_eq.equation, prefix, ctx, &mut data)?;
         }
     }
 
-    data
+    Ok(data)
 }
 
 /// Recursively collect VCG data from an equation.
@@ -69,22 +71,23 @@ fn collect_vcg_from_equation(
     prefix: &ast::QualifiedName,
     ctx: &Context,
     data: &mut VcgPreScanData,
-) {
+) -> Result<(), FlattenError> {
     match eq {
         ast::Equation::FunctionCall { comp, args } => {
-            collect_vcg_from_function_call(comp, args, prefix, data);
+            collect_vcg_from_function_call(comp, args, prefix, data)?;
         }
         ast::Equation::For { indices, equations } => {
-            collect_vcg_from_for(indices, equations, prefix, ctx, data);
+            collect_vcg_from_for(indices, equations, prefix, ctx, data)?;
         }
         ast::Equation::If {
             cond_blocks,
             else_block,
         } => {
-            collect_vcg_from_if(cond_blocks, else_block, prefix, ctx, data);
+            collect_vcg_from_if(cond_blocks, else_block, prefix, ctx, data)?;
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Collect VCG data from an if-equation.
@@ -99,7 +102,7 @@ fn collect_vcg_from_if(
     prefix: &ast::QualifiedName,
     ctx: &Context,
     data: &mut VcgPreScanData,
-) {
+) -> Result<(), FlattenError> {
     // Try to evaluate conditions to select the right branch
     for block in cond_blocks {
         let eval =
@@ -108,9 +111,9 @@ fn collect_vcg_from_if(
             Some(true) => {
                 // This branch is taken — scan it and return
                 for eq in &block.eqs {
-                    collect_vcg_from_equation(eq, prefix, ctx, data);
+                    collect_vcg_from_equation(eq, prefix, ctx, data)?;
                 }
-                return;
+                return Ok(());
             }
             Some(false) => {
                 // This branch is not taken — skip it
@@ -118,17 +121,18 @@ fn collect_vcg_from_if(
             }
             None => {
                 // Can't evaluate — scan ALL branches conservatively
-                scan_all_if_branches(cond_blocks, else_block, prefix, ctx, data);
-                return;
+                scan_all_if_branches(cond_blocks, else_block, prefix, ctx, data)?;
+                return Ok(());
             }
         }
     }
     // All conditions were false — use else branch
     if let Some(else_eqs) = else_block {
         for eq in else_eqs {
-            collect_vcg_from_equation(eq, prefix, ctx, data);
+            collect_vcg_from_equation(eq, prefix, ctx, data)?;
         }
     }
+    Ok(())
 }
 
 /// Scan all branches of an if-equation when conditions can't be evaluated.
@@ -138,17 +142,18 @@ fn scan_all_if_branches(
     prefix: &ast::QualifiedName,
     ctx: &Context,
     data: &mut VcgPreScanData,
-) {
+) -> Result<(), FlattenError> {
     for block in cond_blocks {
         for eq in &block.eqs {
-            collect_vcg_from_equation(eq, prefix, ctx, data);
+            collect_vcg_from_equation(eq, prefix, ctx, data)?;
         }
     }
     if let Some(else_eqs) = else_block {
         for eq in else_eqs {
-            collect_vcg_from_equation(eq, prefix, ctx, data);
+            collect_vcg_from_equation(eq, prefix, ctx, data)?;
         }
     }
+    Ok(())
 }
 
 /// Collect VCG data from a Connections.* function call.
@@ -157,12 +162,12 @@ fn collect_vcg_from_function_call(
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
     data: &mut VcgPreScanData,
-) {
+) -> Result<(), FlattenError> {
     let Some((parent, func)) = get_connections_func(comp) else {
-        return;
+        return Ok(());
     };
     if parent != "Connections" {
-        return;
+        return Ok(());
     }
 
     match func {
@@ -172,9 +177,10 @@ fn collect_vcg_from_function_call(
             }
         }
         "branch" => extract_branch(args, prefix, data),
-        "potentialRoot" => extract_potential_root(args, prefix, data),
+        "potentialRoot" => extract_potential_root(args, prefix, comp.span, data)?,
         _ => {}
     }
+    Ok(())
 }
 
 /// Extract a branch edge from Connections.branch(a, b) arguments.
@@ -197,13 +203,15 @@ fn extract_branch(
 fn extract_potential_root(
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
+    span: rumoca_core::Span,
     data: &mut VcgPreScanData,
-) {
+) -> Result<(), FlattenError> {
     if let Some(ast::Expression::ComponentReference(cr)) = args.first() {
-        let priority = extract_priority(args);
+        let priority = extract_potential_root_priority(args, span)?;
         let path = build_qualified_name(prefix, cr);
         data.potential_roots.push((path, priority));
     }
+    Ok(())
 }
 
 /// Expand for-loop indices and collect VCG calls from nested equations.
@@ -213,12 +221,12 @@ fn collect_vcg_from_for(
     prefix: &ast::QualifiedName,
     ctx: &Context,
     data: &mut VcgPreScanData,
-) {
+) -> Result<(), FlattenError> {
     if indices.is_empty() {
         for eq in equations {
-            collect_vcg_from_equation(eq, prefix, ctx, data);
+            collect_vcg_from_equation(eq, prefix, ctx, data)?;
         }
-        return;
+        return Ok(());
     }
 
     let first = &indices[0];
@@ -227,7 +235,7 @@ fn collect_vcg_from_for(
     let Ok(index_values) =
         crate::equations::expand_range_indices(ctx, &first.range, prefix, rumoca_core::Span::DUMMY)
     else {
-        return;
+        return Ok(());
     };
 
     let index_name = &first.ident.text;
@@ -236,22 +244,9 @@ fn collect_vcg_from_for(
             .iter()
             .map(|eq| crate::equations::substitute_index_in_equation(eq, index_name, value))
             .collect();
-        collect_vcg_from_for(remaining, &substituted, prefix, ctx, data);
+        collect_vcg_from_for(remaining, &substituted, prefix, ctx, data)?;
     }
-}
-
-/// Extract priority from `Connections.potentialRoot(a, priority)`.
-/// Default priority is 0 per MLS §9.4.
-fn extract_priority(args: &[ast::Expression]) -> i64 {
-    if args.len() >= 2
-        && let ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token,
-        } = &args[1]
-    {
-        return token.text.parse().unwrap_or(0);
-    }
-    0
+    Ok(())
 }
 
 /// Get (parent, func) from a `Connections.<func>` component reference.
@@ -555,7 +550,8 @@ pub(crate) fn build_vcg(
         let has_definite_root = component.iter().any(|n| definite_roots.contains(*n));
 
         for &node in component {
-            let node_is_root = node == root;
+            let node_is_root =
+                definite_roots.contains(node) || (!has_definite_root && node == root);
             is_root_map.insert(node.to_string(), node_is_root);
             // rooted(N) = true iff N is NOT the root and the component has a root
             let node_rooted = !node_is_root && (has_definite_root || !potential_roots.is_empty());
@@ -672,7 +668,11 @@ fn select_root<'a>(
     }
 
     // Alphabetically first as tiebreaker
-    component.iter().copied().min().unwrap_or(component[0])
+    component
+        .iter()
+        .copied()
+        .min()
+        .expect("component is non-empty")
 }
 
 /// Find the best potential root in a component (lowest priority, alphabetical tiebreaker).
@@ -729,7 +729,8 @@ pub(crate) fn compute_break_edge_scalar_count(
 
     let mut total_excess = 0;
     for component in &components {
-        let break_edges = count_component_break_edges(component, branches, optional_edges);
+        let break_edges =
+            count_component_break_edges(component, branches, optional_edges, definite_roots);
         if break_edges == 0 {
             continue;
         }
@@ -757,6 +758,7 @@ fn count_component_break_edges(
     component: &[&str],
     branches: &[(String, String)],
     optional_edges: &[(String, String)],
+    definite_roots: &FxHashSet<String>,
 ) -> usize {
     let component_set: FxHashSet<&str> = component.iter().copied().collect();
     let mut edge_count: usize = 0;
@@ -765,7 +767,12 @@ fn count_component_break_edges(
             edge_count += 1;
         }
     }
-    edge_count.saturating_sub(component.len().saturating_sub(1))
+    let root_count = component
+        .iter()
+        .filter(|node| definite_roots.contains(**node))
+        .count()
+        .max(1);
+    edge_count.saturating_sub(component.len().saturating_sub(root_count))
 }
 
 /// Compute the scalar count of an overconstrained record's fields.
@@ -782,7 +789,7 @@ fn oc_record_scalar_count(vcg_node: &str, flat: &flat::Model) -> usize {
     }
     // If no child fields found, the node itself might be a scalar variable
     if count == 0
-        && let Some(var) = flat.variables.get(&flat::VarName::new(vcg_node))
+        && let Some(var) = flat.variables.get(&rumoca_core::VarName::new(vcg_node))
     {
         count = var_scalar_size(var);
     }
@@ -811,7 +818,7 @@ mod tests {
 
     fn add_orientation_record(flat: &mut flat::Model, base: &str) {
         for (suffix, dims) in [("T", vec![3, 3]), ("w", vec![3])] {
-            let name = flat::VarName::new(format!("{base}.{suffix}"));
+            let name = rumoca_core::VarName::new(format!("{base}.{suffix}"));
             flat.add_variable(
                 name.clone(),
                 rumoca_ir_flat::Variable {
@@ -855,10 +862,59 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_break_edge_scalar_count_multiple_definite_roots_form_forest() {
+        let branches = vec![("a.R".to_string(), "b.R".to_string())];
+        let optional_edges = vec![
+            ("b.R".to_string(), "c.R".to_string()),
+            ("c.R".to_string(), "a.R".to_string()),
+        ];
+        let definite_roots: FxHashSet<String> =
+            ["a.R".to_string(), "c.R".to_string()].into_iter().collect();
+        let potential_roots: Vec<(String, i64)> = Vec::new();
+
+        let mut flat = flat::Model::new();
+        add_orientation_record(&mut flat, "a.R");
+        add_orientation_record(&mut flat, "b.R");
+        add_orientation_record(&mut flat, "c.R");
+
+        let break_edge_scalars = compute_break_edge_scalar_count(
+            &branches,
+            &optional_edges,
+            &definite_roots,
+            &potential_roots,
+            &flat,
+        );
+        assert_eq!(
+            break_edge_scalars, 24,
+            "two definite roots in one component require a two-root forest, so two Orientation edges are broken"
+        );
+    }
+
+    #[test]
+    fn test_build_vcg_marks_all_definite_roots_as_roots() {
+        let branches = vec![("a.R".to_string(), "b.R".to_string())];
+        let optional_edges = vec![("b.R".to_string(), "c.R".to_string())];
+        let definite_roots: FxHashSet<String> =
+            ["a.R".to_string(), "c.R".to_string()].into_iter().collect();
+        let potential_roots: Vec<(String, i64)> = Vec::new();
+
+        let vcg = build_vcg(
+            &definite_roots,
+            &potential_roots,
+            &branches,
+            &optional_edges,
+        );
+
+        assert_eq!(vcg.is_root.get("a.R"), Some(&true));
+        assert_eq!(vcg.is_root.get("c.R"), Some(&true));
+        assert_eq!(vcg.rooted.get("b.R"), Some(&true));
+    }
+
+    #[test]
     fn test_component_oc_record_scalar_count_uses_max_node_size() {
         let mut flat = flat::Model::default();
         for (base, dims) in [("a.R", vec![1]), ("b.R", vec![3]), ("c.R", vec![2])] {
-            let name = flat::VarName::new(format!("{base}.x"));
+            let name = rumoca_core::VarName::new(format!("{base}.x"));
             flat.add_variable(
                 name.clone(),
                 rumoca_ir_flat::Variable {

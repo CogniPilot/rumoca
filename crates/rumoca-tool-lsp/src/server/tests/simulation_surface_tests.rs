@@ -112,7 +112,7 @@ fn compile_model_for_simulation_ignores_unrelated_local_parse_errors() {
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("compile should ignore unrelated local parse errors");
-        assert_eq!(compiled.dae.states.len(), 1);
+        assert_eq!(compiled.dae.variables.states.len(), 1);
     });
 }
 
@@ -144,7 +144,7 @@ fn compile_model_for_simulation_repeated_runs_ignore_new_unrelated_local_parse_e
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("first focused compile should succeed");
-        assert_eq!(first.dae.states.len(), 1);
+        assert_eq!(first.dae.variables.states.len(), 1);
 
         std::fs::write(&broken, "model Broken\n  Real x\nend Broken;\n").expect("write broken");
 
@@ -152,7 +152,7 @@ fn compile_model_for_simulation_repeated_runs_ignore_new_unrelated_local_parse_e
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("second focused compile should ignore unrelated local parse errors");
-        assert_eq!(second.dae.states.len(), 1);
+        assert_eq!(second.dae.variables.states.len(), 1);
     });
 }
 
@@ -223,9 +223,9 @@ fn compile_model_for_simulation_reports_active_local_parse_errors() {
 }
 
 #[test]
-fn render_template_command_renders_compiled_open_document_model() {
+fn render_target_command_renders_compiled_open_document_model() {
     run_async_test(async {
-        let temp = new_temp_dir("render-template-command");
+        let temp = new_temp_dir("render-target-command");
         let focus = temp.join("Decay.mo");
         std::fs::write(
             &focus,
@@ -245,13 +245,13 @@ fn render_template_command_renders_compiled_open_document_model() {
 
         let response = server
             .execute_command(ExecuteCommandParams {
-                command: "rumoca.workspace.renderTemplate".to_string(),
+                command: "rumoca.workspace.renderTarget".to_string(),
                 arguments: vec![serde_json::json!({
                     "uri": Url::from_file_path(&focus)
                         .expect("file uri")
                         .to_string(),
                     "model": "Decay",
-                    "template": "{{ model_name }}",
+                    "target": "sympy",
                 })],
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })
@@ -261,12 +261,170 @@ fn render_template_command_renders_compiled_open_document_model() {
         assert_eq!(
             response.get("ok").and_then(serde_json::Value::as_bool),
             Some(true),
-            "render template command should report success"
+            "render target command should report success"
         );
+        assert!(
+            response
+                .get("files")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|files| files.iter().any(|file| {
+                    file.get("path").and_then(serde_json::Value::as_str) == Some("Decay_sympy.py")
+                })),
+            "render target command should return the built-in SymPy model file"
+        );
+    });
+}
+
+#[test]
+fn render_target_command_renders_relative_raw_jinja_from_rum_scenario() {
+    run_async_test(async {
+        let temp = new_temp_dir("render-target-raw-jinja-scenario");
+        let model_dir = temp.join("models");
+        let scenario_dir = temp.join("codegen");
+        std::fs::create_dir_all(&model_dir).expect("mkdir models");
+        std::fs::create_dir_all(&scenario_dir).expect("mkdir codegen");
+        let model_path = model_dir.join("Decay.mo");
+        let scenario_path = scenario_dir.join("rum.toml");
+        let template_path = scenario_dir.join("custom.py.jinja");
+        std::fs::write(
+            &model_path,
+            "model Decay\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Decay;\n",
+        )
+        .expect("write model");
+        std::fs::write(
+            &scenario_path,
+            "[rumoca]\nversion = \"1\"\ntask = \"codegen\"\n\n[model]\nfile = \"../models/Decay.mo\"\nname = \"Decay\"\n\n[codegen]\ntarget = \"custom.py.jinja\"\n",
+        )
+        .expect("write scenario");
+        std::fs::write(
+            &template_path,
+            "model={{ model_name }} f_x={{ dae.f_x | length }}",
+        )
+        .expect("write template");
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &scenario_path.to_string_lossy(),
+                &std::fs::read_to_string(&scenario_path).expect("read scenario"),
+            );
+        }
+
+        let response = server
+            .execute_command(ExecuteCommandParams {
+                command: "rumoca.workspace.renderTarget".to_string(),
+                arguments: vec![serde_json::json!({
+                    "uri": Url::from_file_path(&scenario_path)
+                        .expect("scenario file uri")
+                        .to_string(),
+                    "model": "Decay",
+                    "target": "custom.py.jinja",
+                })],
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            })
+            .await
+            .expect("execute command should succeed")
+            .expect("execute command should return a payload");
+
         assert_eq!(
-            response.get("output").and_then(serde_json::Value::as_str),
-            Some("Decay"),
-            "render template command should render with the compiled model name"
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "raw Jinja render target command should report success: {response:#?}"
+        );
+        let files = response
+            .get("files")
+            .and_then(serde_json::Value::as_array)
+            .expect("render response should include files");
+        assert!(
+            files.iter().any(|file| {
+                file.get("path").and_then(serde_json::Value::as_str) == Some("custom.py")
+                    && file
+                        .get("content")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|content| content.contains("model=Decay"))
+            }),
+            "render target command should return rendered raw template output: {response:#?}"
+        );
+    });
+}
+
+#[test]
+fn render_target_command_renders_relative_target_directory_from_rum_scenario() {
+    run_async_test(async {
+        let temp = new_temp_dir("render-target-directory-scenario");
+        let model_dir = temp.join("models");
+        let scenario_dir = temp.join("codegen");
+        let target_dir = scenario_dir.join("standalone_web");
+        std::fs::create_dir_all(&model_dir).expect("mkdir models");
+        std::fs::create_dir_all(&target_dir).expect("mkdir target");
+        let model_path = model_dir.join("Decay.mo");
+        let scenario_path = scenario_dir.join("rum.toml");
+        std::fs::write(
+            &model_path,
+            "model Decay\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Decay;\n",
+        )
+        .expect("write model");
+        std::fs::write(
+            &scenario_path,
+            "[rumoca]\nversion = \"1\"\ntask = \"codegen\"\n\n[model]\nfile = \"../models/Decay.mo\"\nname = \"Decay\"\n\n[codegen]\ntarget = \"standalone_web\"\n",
+        )
+        .expect("write scenario");
+        std::fs::write(
+            target_dir.join("target.toml"),
+            "version = 1\nir = \"dae\"\n\n[[files]]\npath = \"{{ model_name }}.txt\"\ntemplate = \"model.txt.jinja\"\n",
+        )
+        .expect("write target manifest");
+        std::fs::write(
+            target_dir.join("model.txt.jinja"),
+            "target={{ model_name }} f_x={{ dae.f_x | length }}",
+        )
+        .expect("write target template");
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &scenario_path.to_string_lossy(),
+                &std::fs::read_to_string(&scenario_path).expect("read scenario"),
+            );
+        }
+
+        let response = server
+            .execute_command(ExecuteCommandParams {
+                command: "rumoca.workspace.renderTarget".to_string(),
+                arguments: vec![serde_json::json!({
+                    "uri": Url::from_file_path(&scenario_path)
+                        .expect("scenario file uri")
+                        .to_string(),
+                    "model": "Decay",
+                    "target": "standalone_web",
+                })],
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            })
+            .await
+            .expect("execute command should succeed")
+            .expect("execute command should return a payload");
+
+        assert_eq!(
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "target-directory render command should report success: {response:#?}"
+        );
+        assert!(
+            response
+                .get("files")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|files| files.iter().any(|file| {
+                    file.get("path").and_then(serde_json::Value::as_str) == Some("Decay.txt")
+                        && file
+                            .get("content")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|content| content.contains("target=Decay"))
+                })),
+            "render command should return rendered directory target output: {response:#?}"
         );
     });
 }
@@ -309,7 +467,7 @@ fn compile_model_for_simulation_reuses_warm_save_diagnostics_for_single_document
             .expect("simulation compile should reuse warmed save artifacts");
         let delta = session_cache_stats().delta_since(before);
 
-        assert_eq!(compiled.dae.states.len(), 1);
+        assert_eq!(compiled.dae.variables.states.len(), 1);
         assert_eq!(
             delta.strict_resolved_builds, 0,
             "simulation compile should not rebuild strict resolved state when save diagnostics already warmed it"
@@ -395,6 +553,198 @@ fn simulate_model_returns_shared_report_payload_and_metrics() {
 }
 
 #[test]
+fn simulate_rum_scenario_can_use_closed_model_file() {
+    run_async_test(async {
+        let temp = new_temp_dir("simulate-rum-closed-model");
+        let model_path = temp.join("Decay.mo");
+        let scenario_path = temp.join("rum.toml");
+        std::fs::write(
+            &model_path,
+            "model Decay\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Decay;\n",
+        )
+        .expect("write model");
+        std::fs::write(
+            &scenario_path,
+            "[rumoca]\nversion = \"1\"\ntask = \"simulate\"\n\n[model]\nfile = \"Decay.mo\"\nname = \"Decay\"\n",
+        )
+        .expect("write scenario");
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &scenario_path.to_string_lossy(),
+                &std::fs::read_to_string(&scenario_path).expect("read scenario"),
+            );
+        }
+
+        let response = server
+            .execute_simulate_model(
+                Some(serde_json::json!({
+                    "uri": Url::from_file_path(&scenario_path)
+                        .expect("scenario file uri")
+                        .to_string(),
+                    "model": "Decay",
+                    "settings": {
+                        "solver": "auto",
+                        "tEnd": 1.0,
+                        "dt": 0.1,
+                    },
+                })),
+                None,
+            )
+            .await
+            .expect("simulate should return a response");
+
+        assert_eq!(
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "simulation from a rum.toml scenario should not require the referenced model file to be open: {response:#?}"
+        );
+    });
+}
+
+#[test]
+fn scenario_config_reports_external_web_viewer_mode_for_interactive_rum() {
+    run_async_test(async {
+        let temp = new_temp_dir("scenario-external-web-viewer");
+        let scenario_path = temp.join("rum.toml");
+        let scenario = [
+            "[rumoca]",
+            "version = \"1\"",
+            "task = \"simulate\"",
+            "",
+            "[model]",
+            "file = \"Rover.mo\"",
+            "name = \"Rover\"",
+            "",
+            "[sim]",
+            "mode = \"realtime\"",
+            "",
+            "[input]",
+            "mode = \"auto\"",
+            "",
+            "[transport.http]",
+            "port = 8080",
+            "scene = \"rover_scene.js\"",
+            "",
+            "[viewer]",
+            "prefer_external = true",
+            "",
+        ]
+        .join("\n");
+        std::fs::write(&scenario_path, &scenario).expect("write scenario");
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(&scenario_path.to_string_lossy(), &scenario);
+        }
+
+        let response = server
+            .execute_get_scenario_config(Some(serde_json::json!({
+                "uri": Url::from_file_path(&scenario_path)
+                    .expect("scenario uri")
+                    .to_string(),
+            })))
+            .await
+            .expect("scenario response");
+
+        assert_eq!(
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            response
+                .get("viewerMode")
+                .and_then(serde_json::Value::as_str),
+            Some("external_web")
+        );
+        assert_eq!(
+            response.get("simMode").and_then(serde_json::Value::as_str),
+            Some("realtime")
+        );
+        assert_eq!(
+            response.get("httpPort").and_then(serde_json::Value::as_i64),
+            Some(8080)
+        );
+        assert_eq!(
+            response
+                .get("httpScene")
+                .and_then(serde_json::Value::as_str),
+            Some("rover_scene.js")
+        );
+        assert_eq!(
+            response
+                .get("viewerPreferExternal")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+    });
+}
+
+#[test]
+fn scenario_config_explicit_results_panel_overrides_interactive_inference() {
+    run_async_test(async {
+        let temp = new_temp_dir("scenario-results-panel-viewer");
+        let scenario_path = temp.join("rum.toml");
+        let scenario = [
+            "[rumoca]",
+            "version = \"1\"",
+            "task = \"simulate\"",
+            "",
+            "[viewer]",
+            "mode = \"results_panel\"",
+            "",
+            "[model]",
+            "file = \"Ball.mo\"",
+            "name = \"Ball\"",
+            "",
+            "[input]",
+            "mode = \"auto\"",
+            "",
+        ]
+        .join("\n");
+        std::fs::write(&scenario_path, &scenario).expect("write scenario");
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(&scenario_path.to_string_lossy(), &scenario);
+        }
+
+        let response = server
+            .execute_get_scenario_config(Some(serde_json::json!({
+                "uri": Url::from_file_path(&scenario_path)
+                    .expect("scenario uri")
+                    .to_string(),
+            })))
+            .await
+            .expect("scenario response");
+
+        assert_eq!(
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            response
+                .get("viewerMode")
+                .and_then(serde_json::Value::as_str),
+            Some("results_panel")
+        );
+        assert_eq!(
+            response
+                .get("interactive")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+    });
+}
+
+#[test]
 fn simulation_compile_keeps_sibling_namespace_fingerprint_warm_after_subtree_refresh() {
     run_async_test(async {
         let temp = new_temp_dir("simulation-subtree-refresh");
@@ -442,7 +792,7 @@ fn simulation_compile_keeps_sibling_namespace_fingerprint_warm_after_subtree_ref
             .await
             .expect("simulation compile after subtree refresh should succeed");
 
-        assert_eq!(compiled.dae.states.len(), 1);
+        assert_eq!(compiled.dae.variables.states.len(), 1);
         let session = server.session.read().await;
         assert!(
             session.dirty_source_root_keys().is_empty(),
@@ -911,7 +1261,7 @@ fn prepare_simulation_models_request_returns_stale_error_after_revision_bump() {
             .expect("prepare simulation task should finish");
         assert!(
             prepared_models.is_empty(),
-            "stale prepare request should not report prepared models"
+            "stale prepare request should not report solve models"
         );
         assert!(
             failures.is_empty(),

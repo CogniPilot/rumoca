@@ -1,7 +1,7 @@
 //! Crossterm-backed keyboard device adapter for `rumoca-input`.
 
 use crossterm::event::{KeyCode as CrosstermKeyCode, KeyEventKind};
-use rumoca_input_types::{KeyCode, KeyModifiers, KeyboardEvent};
+use rumoca_input::{KeyCode, KeyModifiers, KeyboardEvent};
 
 /// Drain all pending key press/repeat events. Release events are filtered
 /// out; Press and Repeat are treated the same.

@@ -8,13 +8,19 @@ repository.workspace = true
 
 [features]
 default = []
-tracing = ["rumoca-phase-flatten/tracing"]
+strict-ir-validation = ["rumoca-phase-dae/strict-ir-validation"]
+tracing = [
+    "rumoca-phase-dae/tracing",
+    "rumoca-phase-flatten/tracing",
+    "rumoca-phase-instantiate/tracing",
+    "rumoca-phase-resolve/tracing",
+    "rumoca-phase-structural/tracing",
+]
 
 [dependencies]
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-dae = { workspace = true }
-rumoca-ir-core = { workspace = true }
 rumoca-phase-parse = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }

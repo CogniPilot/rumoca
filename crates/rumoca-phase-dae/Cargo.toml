@@ -6,16 +6,25 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+strict-ir-validation = [
+    "rumoca-ir-flat/strict-ir-validation",
+    "rumoca-ir-dae/strict-ir-validation",
+]
+tracing = ["dep:tracing"]
+
 [dependencies]
-rumoca-analysis-dae = { workspace = true }
-rumoca-core = { path = "../rumoca-core" }
-rumoca-ir-flat = { path = "../rumoca-ir-flat" }
-rumoca-ir-dae = { path = "../rumoca-ir-dae" }
-rumoca-ir-core = { path = "../rumoca-ir-core" }
+rumoca-core = { workspace = true }
+rumoca-eval-dae = { workspace = true }
+rumoca-ir-flat = { workspace = true }
+rumoca-ir-dae = { workspace = true }
 indexmap = "2.2"
 rustc-hash = { workspace = true }
+serde = { workspace = true }
 thiserror = "2.0"
 miette = "7.4"
+tracing = { workspace = true, optional = true }
 
 [lints]
 workspace = true

@@ -755,9 +755,6 @@ function createReadOnlyEditor(elementId) {
 const outputEditor = createReadOnlyEditor('outputEditor');
 window.outputEditor = outputEditor;
 
-const codegenOutputEditor = createReadOnlyEditor('codegenOutputEditor');
-window.codegenOutputEditor = codegenOutputEditor;
-
 function createSourceEditor(elementId) {
     const element = typeof elementId === 'string' ? document.getElementById(elementId) : elementId;
     if (!element) {
@@ -841,5 +838,5 @@ monaco.languages.registerCodeLensProvider('modelica', {
     provideCodeLenses: provideModelicaCodeLenses
 });
 
-    return { editor, templateEditor: null, outputEditor, codegenOutputEditor, createSourceEditor };
+    return { editor, templateEditor: null, outputEditor, createSourceEditor };
 }

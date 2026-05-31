@@ -23,15 +23,16 @@
 //! - [x] MLS §5.4 - Outer reference resolution (nearest inner)
 //! - [x] MLS §5.4 - Type compatibility checking (inheritance-aware)
 
-use indexmap::IndexMap;
-use rumoca_core::{DefId, SourceMap, Span, is_builtin_type};
+use rumoca_core::{DefId, Span};
+use rumoca_core::{SourceMap, is_builtin_type};
+use rumoca_core::{parent_scope, split_path_with_indices, top_level_last_segment};
 use rumoca_ir_ast as ast;
+use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
 
 use crate::errors::{InstantiateError, InstantiateResult};
 use crate::traversal_adapter::{
-    nested_target_modifications, redeclare_target_value, walk_extend_modifications,
-    walk_nested_classes,
+    redeclare_target_value, walk_extend_modifications, walk_nested_classes,
 };
 use crate::type_overrides::find_nested_class_in_hierarchy;
 
@@ -52,41 +53,19 @@ pub type InheritanceCache = IndexMap<DefId, Arc<InheritedContent>>;
 /// This is useful for deeply nested inheritance hierarchies.
 pub type SubtypeCache = IndexMap<(String, String), bool>;
 
-/// Check if two type names refer to the same type.
+/// Check if two type names refer to the same resolved type.
 ///
-/// This handles cases where names differ in qualification level:
-/// - "Interfaces.CompositeStepState" matches "StateGraph.Interfaces.CompositeStepState"
-/// - "A.B.C" matches "X.A.B.C" if either name exists in the tree
-///
-/// MLS §5.4, §7.3: Type name matching must handle relative vs qualified names.
+/// MLS §5.4, §7.3: relative and qualified spellings are equivalent only after
+/// resolution proves they identify the same declaration.
 pub fn type_names_match(tree: &ast::ClassTree, name_a: &str, name_b: &str) -> bool {
     if name_a == name_b {
         return true;
     }
 
-    // Try DefId-based comparison: resolve both names and compare
-    let def_a = tree.name_map.get(name_a).copied();
-    let def_b = tree.name_map.get(name_b).copied();
-
-    if let (Some(a), Some(b)) = (def_a, def_b) {
-        return a == b;
-    }
-
-    // Fallback: if only one resolved, check if the other is a suffix of its qualified name
-    if let Some(a_id) = def_a
-        && let Some(qualified_a) = tree.def_map.get(&a_id)
-    {
-        return qualified_a.ends_with(&format!(".{}", name_b))
-            || name_b.ends_with(&format!(".{}", qualified_a));
-    }
-    if let Some(b_id) = def_b
-        && let Some(qualified_b) = tree.def_map.get(&b_id)
-    {
-        return qualified_b.ends_with(&format!(".{}", name_a))
-            || name_a.ends_with(&format!(".{}", qualified_b));
-    }
-
-    false
+    matches!(
+        (tree.name_map.get(name_a), tree.name_map.get(name_b)),
+        (Some(a), Some(b)) if a == b
+    )
 }
 
 /// Result of processing inheritance for a class.
@@ -141,6 +120,58 @@ fn extract_modification_target(expr: &ast::Expression) -> Option<String> {
     }
 }
 
+fn extract_extend_modification_target(
+    extend: &ast::Extend,
+    expr: &ast::Expression,
+) -> Option<String> {
+    let target = match expr {
+        ast::Expression::Modification { target, .. }
+        | ast::Expression::ClassModification { target, .. } => target,
+        ast::Expression::NamedArgument { name, .. } => return Some(name.text.to_string()),
+        _ => return None,
+    };
+    extend_relative_component_target(extend, target)
+}
+
+fn extend_relative_component_target(
+    extend: &ast::Extend,
+    target: &ast::ComponentReference,
+) -> Option<String> {
+    let target_parts = target
+        .parts
+        .iter()
+        .map(|part| part.ident.text.as_ref())
+        .collect::<Vec<_>>();
+    let first = target_parts.first()?.to_string();
+    let base_name = extend.base_name.to_string();
+    let base_parts = split_path_with_indices(&base_name)
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let base_part_refs = base_parts.iter().map(String::as_str).collect::<Vec<_>>();
+
+    if let Some(next_idx) = target_parts
+        .windows(base_part_refs.len())
+        .position(|window| window == base_part_refs.as_slice())
+        .map(|idx| idx + base_part_refs.len())
+        && next_idx < target_parts.len()
+    {
+        return Some(target_parts[next_idx].to_string());
+    }
+
+    if let Some(base_leaf) = base_part_refs.last()
+        && let Some(next_idx) = target_parts
+            .iter()
+            .position(|part| part == base_leaf)
+            .map(|idx| idx + 1)
+        && next_idx < target_parts.len()
+    {
+        return Some(target_parts[next_idx].to_string());
+    }
+
+    Some(first)
+}
+
 /// Extract the value from a modification expression.
 ///
 /// MLS §7.2: Modifications can override component bindings.
@@ -158,7 +189,7 @@ fn extract_modification_value(expr: &ast::Expression) -> Option<ast::Expression>
     }?;
 
     // Don't return Empty values
-    if matches!(value.as_ref(), ast::Expression::Empty) {
+    if matches!(value.as_ref(), ast::Expression::Empty { .. }) {
         None
     } else {
         Some(value.as_ref().clone())
@@ -171,19 +202,20 @@ fn extract_modification_value(expr: &ast::Expression) -> Option<ast::Expression>
 /// Returns Some((name, value)) if this modification applies to a component in the class.
 fn try_extract_value_modification(
     modification: &ast::ExtendModification,
+    extend: &ast::Extend,
     class: &ast::ClassDef,
-) -> Option<(String, ast::Expression)> {
+) -> Option<(String, ast::Expression, bool)> {
     // Only non-redeclare modifications can be value modifications
     if modification.redeclare {
         return None;
     }
-    let target_name = extract_modification_target(&modification.expr)?;
+    let target_name = extract_extend_modification_target(extend, &modification.expr)?;
     // Only apply if the base class has this component
     if !class.components.contains_key(&target_name) {
         return None;
     }
     let value = extract_modification_value(&modification.expr)?;
-    Some((target_name, value))
+    Some((target_name, value, modification.final_))
 }
 
 /// Extract a value modification target/value from an extends modification without
@@ -194,17 +226,18 @@ fn try_extract_value_modification(
 /// when `a` is declared in a grandparent class.
 fn try_extract_value_modification_any(
     modification: &ast::ExtendModification,
-) -> Option<(String, ast::Expression)> {
+    extend: &ast::Extend,
+) -> Option<(String, ast::Expression, bool)> {
     if modification.redeclare {
         return None;
     }
-    let target_name = extract_modification_target(&modification.expr)?;
+    let target_name = extract_extend_modification_target(extend, &modification.expr)?;
     let value = extract_modification_value(&modification.expr)?;
     // Nested class modifications are merged separately.
     if matches!(value, ast::Expression::ClassModification { .. }) {
         return None;
     }
-    Some((target_name, value))
+    Some((target_name, value, modification.final_))
 }
 
 /// Extract the new type from a redeclaration modification.
@@ -320,10 +353,7 @@ fn validate_redeclaration(
     span: Span,
 ) -> InstantiateResult<()> {
     // MLS §7.3.3: constants cannot be redeclared.
-    if matches!(
-        component.variability,
-        rumoca_ir_core::Variability::Constant(_)
-    ) {
+    if matches!(component.variability, rumoca_core::Variability::Constant(_)) {
         return Err(Box::new(InstantiateError::redeclare_error(
             target_name,
             "constant elements cannot be redeclared",
@@ -461,7 +491,15 @@ fn validate_class_redeclaration(
                     .get(&constraint_type_raw)
                     .and_then(|def_id| tree.def_map.get(def_id).cloned())
             })
-            .unwrap_or(constraint_type_raw.clone());
+            .unwrap_or_else(|| {
+                class
+                    .def_id
+                    .and_then(|def_id| tree.def_map.get(&def_id))
+                    .map(|declaration_context| {
+                        resolve_type_in_context(tree, &constraint_type_raw, declaration_context)
+                    })
+                    .unwrap_or_else(|| constraint_type_raw.clone())
+            });
 
         let resolved_new_type = resolve_type_in_context(tree, new_type_name, &constraint_type);
         if !is_type_subtype(tree, &resolved_new_type, &constraint_type) {
@@ -495,8 +533,8 @@ fn resolve_type_in_context(tree: &ast::ClassTree, type_name: &str, context_type:
     // Try to resolve by prepending context package prefixes
     // For context "A.B.C.TypeX", try: "A.B.C.{type_name}", "A.B.{type_name}", "A.{type_name}"
     let mut package = context_type.to_string();
-    while let Some(last_dot) = package.rfind('.') {
-        package.truncate(last_dot);
+    while let Some(parent) = parent_scope(&package) {
+        package.truncate(parent.len());
         let qualified = format!("{}.{}", package, type_name);
         if tree.name_map.contains_key(&qualified) {
             return qualified;
@@ -549,7 +587,7 @@ fn redeclare_target_span(
 /// For performance-critical code with deeply nested inheritance, use
 /// `is_type_subtype_cached` instead.
 pub fn is_type_subtype(tree: &ast::ClassTree, subtype: &str, supertype: &str) -> bool {
-    let mut cache = SubtypeCache::new();
+    let mut cache = SubtypeCache::default();
     is_type_subtype_cached(tree, subtype, supertype, &mut cache)
 }
 
@@ -691,11 +729,10 @@ fn class_extends_builtin(tree: &ast::ClassTree, class: &ast::ClassDef, builtin: 
     false
 }
 
-/// Find a class by name in the tree (top-level or nested).
+/// Find a class by resolved name in the tree (top-level or nested).
 ///
 /// Uses O(1) lookup via the name_map (populated during resolve phase).
 /// For nested classes, use the qualified name (e.g., "Package.Inner").
-/// Also tries common MSL prefixes for short names (e.g., "Resistance" -> "Modelica.Units.SI.Resistance").
 ///
 /// # Panics
 /// Debug builds panic if name_map is empty (indicates resolve phase wasn't run).
@@ -709,18 +746,6 @@ pub fn find_class_in_tree<'a>(tree: &'a ast::ClassTree, name: &str) -> Option<&'
     // uses qualified names but caller uses short names for top-level classes)
     if let Some(class) = tree.definitions.classes.get(name) {
         return Some(class);
-    }
-
-    // Suffix matching: find fully qualified names ending with ".{name}".
-    // This handles unresolved import aliases (e.g., `import SI = Modelica.Units.SI`)
-    // and short names like `Resistance` → `Modelica.Units.SI.Resistance`.
-    let suffix = format!(".{}", name);
-    for (qualified, &def_id) in &tree.name_map {
-        if qualified.ends_with(&suffix)
-            && let Some(class) = tree.get_class_by_def_id(def_id)
-        {
-            return Some(class);
-        }
     }
 
     None
@@ -818,7 +843,8 @@ pub(crate) fn is_effectively_primitive_transitive(
         if is_builtin_type(&next_name) {
             return true;
         }
-        // Use base_def_id for O(1) lookup, fall back to name lookup
+        // Use base_def_id for O(1) lookup; unresolved unit tests may only
+        // provide an exact tree name.
         current_class = next_extend
             .base_def_id
             .and_then(|def_id| tree.get_class_by_def_id(def_id))
@@ -845,7 +871,7 @@ pub(crate) fn is_discrete_by_type(
 ) -> bool {
     // Helper to check if a name is Integer or Boolean
     fn is_discrete_builtin(name: &str) -> bool {
-        let simple_name = name.rsplit('.').next().unwrap_or(name);
+        let simple_name = top_level_last_segment(name);
         simple_name == "Integer" || simple_name == "Boolean"
     }
 
@@ -902,7 +928,8 @@ pub(crate) fn is_discrete_by_type(
             if is_discrete_builtin(&next_name) {
                 return true;
             }
-            // Use base_def_id for O(1) lookup, fall back to name lookup
+            // Use base_def_id for O(1) lookup; unresolved unit tests may only
+            // provide an exact tree name.
             current_class = next_extend
                 .base_def_id
                 .and_then(|def_id| tree.get_class_by_def_id(def_id))
@@ -921,14 +948,13 @@ pub(crate) fn is_discrete_by_type(
 /// For performance-critical code with deeply nested inheritance, use
 /// `class_extends_cached` instead.
 pub fn class_extends(tree: &ast::ClassTree, class: &ast::ClassDef, base_name: &str) -> bool {
-    let mut cache = SubtypeCache::new();
+    let mut cache = SubtypeCache::default();
     class_extends_cached(tree, class, base_name, &mut cache)
 }
 
-/// Check if a class extends a base class (by name) directly or transitively, with caching.
+/// Check if a class extends a base class (by resolved name) directly or transitively, with caching.
 ///
 /// This cached version avoids recomputation for deeply nested inheritance hierarchies.
-/// It handles cases where type names differ in qualification level (short vs full paths).
 pub fn class_extends_cached(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
@@ -1004,7 +1030,7 @@ pub fn process_extends(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
 ) -> InstantiateResult<InheritedContent> {
-    let mut cache = InheritanceCache::new();
+    let mut cache = InheritanceCache::default();
     process_extends_with_cache(tree, class, &mut cache)
 }
 
@@ -1055,7 +1081,7 @@ pub fn process_extends_with_cache(
 
         // MLS §7.2: Apply extends modifications after recursive merge so
         // transitively inherited targets are available.
-        apply_extends_modifications(&mut inherited, extend);
+        apply_extends_modifications(&mut inherited, base_class, extend)?;
     }
 
     // Store in cache for reuse, then return
@@ -1073,20 +1099,50 @@ pub fn process_extends_with_cache(
 ///
 /// This post-merge pass ensures modifications like `extends Mid(c(k=2))` also
 /// apply when `c` is declared in a grandparent class.
-fn apply_extends_modifications(target: &mut InheritedContent, extend: &ast::Extend) {
+///
+/// MLS §4.4.4 / §7.2: a value modification (`x = expr`) updates the *binding
+/// equation* of the inherited component, not its `start` attribute. Conflating
+/// the two corrupts attribute source-scope tracking and causes flatten to
+/// qualify the start expression with the parent type's lexical scope instead
+/// of the component instance prefix.
+fn apply_extends_modifications(
+    target: &mut InheritedContent,
+    base_class: &ast::ClassDef,
+    extend: &ast::Extend,
+) -> InstantiateResult<()> {
+    let extend_span = Span::DUMMY;
+    let mut final_override: Option<String> = None;
     walk_extend_modifications(extend, |modification| {
-        let Some((name, value)) = try_extract_value_modification_any(modification) else {
+        let Some((name, value, is_final)) =
+            try_extract_value_modification_any(modification, extend)
+        else {
             return;
         };
+        if base_class.components.contains_key(&name) {
+            return;
+        }
         let Some(comp) = target.components.get_mut(&name) else {
             return;
         };
-        comp.start = value.clone();
+        if comp.is_final {
+            final_override = Some(name);
+            return;
+        }
         comp.binding = Some(value);
         comp.has_explicit_binding = true;
+        if is_final {
+            comp.is_final = true;
+        }
     });
+    if let Some(name) = final_override {
+        return Err(Box::new(InstantiateError::redeclare_final(
+            name,
+            extend_span,
+        )));
+    }
 
     merge_nested_extends_modifications(target, extend);
+    Ok(())
 }
 
 /// Resolve a base class from an extends clause.
@@ -1113,13 +1169,13 @@ fn resolve_base_class<'a>(
 /// Returns `None` if the class has no `equalityConstraint` function.
 pub(crate) fn equality_constraint_output_size(class: &ast::ClassDef) -> Option<usize> {
     let eq_func = class.classes.values().find(|c| {
-        c.class_type == rumoca_ir_ast::ClassType::Function
+        c.class_type == rumoca_core::ClassType::Function
             && c.name.text.as_ref() == "equalityConstraint"
     })?;
 
     // Find the output component of the function
     for comp in eq_func.components.values() {
-        if matches!(comp.causality, rumoca_ir_core::Causality::Output(_)) {
+        if matches!(comp.causality, rumoca_core::Causality::Output(_)) {
             // Compute the product of array dimensions (e.g., Real[3] → 3, Real[3,3] → 9)
             if comp.shape.is_empty() {
                 return Some(1); // scalar output
@@ -1133,55 +1189,57 @@ pub(crate) fn equality_constraint_output_size(class: &ast::ClassDef) -> Option<u
     Some(3)
 }
 
-/// Create a Span from a rumoca_ir_core::Location using the source map for file resolution.
-pub fn location_to_span(loc: &rumoca_ir_core::Location, source_map: &SourceMap) -> Span {
+/// Create a Span from a rumoca_core::Location using the source map for file resolution.
+pub fn location_to_span(loc: &rumoca_core::Location, source_map: &SourceMap) -> Span {
     source_map.location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
 }
 
-/// Create a Span from an Option<rumoca_ir_core::Location> using the source map.
+/// Create a Span from an Option<rumoca_core::Location> using the source map.
 /// Returns Span::DUMMY if the location is None.
 pub(crate) fn option_location_to_span(
-    loc: Option<&rumoca_ir_core::Location>,
+    loc: Option<&rumoca_core::Location>,
     source_map: &SourceMap,
 ) -> Span {
     loc.map(|l| location_to_span(l, source_map))
         .unwrap_or(Span::DUMMY)
 }
 
-/// Compare variability by semantic kind (ignoring rumoca_ir_core::Token locations).
-fn variability_eq(a: &rumoca_ir_core::Variability, b: &rumoca_ir_core::Variability) -> bool {
+/// Compare variability by semantic kind (ignoring rumoca_core::Token locations).
+fn variability_eq(a: &rumoca_core::Variability, b: &rumoca_core::Variability) -> bool {
     matches!(
         (a, b),
         (
-            rumoca_ir_core::Variability::Empty,
-            rumoca_ir_core::Variability::Empty
+            rumoca_core::Variability::Empty,
+            rumoca_core::Variability::Empty
         ) | (
-            rumoca_ir_core::Variability::Constant(_),
-            rumoca_ir_core::Variability::Constant(_)
+            rumoca_core::Variability::Constant(_),
+            rumoca_core::Variability::Constant(_)
         ) | (
-            rumoca_ir_core::Variability::Discrete(_),
-            rumoca_ir_core::Variability::Discrete(_)
+            rumoca_core::Variability::Discrete(_),
+            rumoca_core::Variability::Discrete(_)
         ) | (
-            rumoca_ir_core::Variability::Parameter(_),
-            rumoca_ir_core::Variability::Parameter(_)
+            rumoca_core::Variability::Parameter(_),
+            rumoca_core::Variability::Parameter(_)
+        ) | (
+            rumoca_core::Variability::Continuous(_),
+            rumoca_core::Variability::Continuous(_)
         )
     )
 }
 
-/// Compare causality by semantic kind (ignoring rumoca_ir_core::Token locations).
-fn causality_eq(a: &rumoca_ir_core::Causality, b: &rumoca_ir_core::Causality) -> bool {
+/// Compare causality by semantic kind (ignoring rumoca_core::Token locations).
+fn causality_eq(a: &rumoca_core::Causality, b: &rumoca_core::Causality) -> bool {
     matches!(
         (a, b),
-        (
-            rumoca_ir_core::Causality::Empty,
-            rumoca_ir_core::Causality::Empty
-        ) | (
-            rumoca_ir_core::Causality::Input(_),
-            rumoca_ir_core::Causality::Input(_)
-        ) | (
-            rumoca_ir_core::Causality::Output(_),
-            rumoca_ir_core::Causality::Output(_)
-        )
+        (rumoca_core::Causality::Empty, rumoca_core::Causality::Empty)
+            | (
+                rumoca_core::Causality::Input(_),
+                rumoca_core::Causality::Input(_)
+            )
+            | (
+                rumoca_core::Causality::Output(_),
+                rumoca_core::Causality::Output(_)
+            )
     )
 }
 
@@ -1213,9 +1271,9 @@ fn components_are_compatible(existing: &ast::Component, incoming: &ast::Componen
     }
 
     // MLS §5.6: Components with equivalent declarations are compatible.
-    // Compare by string representation (avoids rumoca_ir_core::Location/token_number differences in rumoca_ir_core::Token).
+    // Compare by string representation (avoids rumoca_core::Location/token_number differences in rumoca_core::Token).
     // Also verify variability and causality match for true equivalence.
-    // Use semantic comparison for variability/causality (ignoring rumoca_ir_core::Token internals).
+    // Use semantic comparison for variability/causality (ignoring rumoca_core::Token internals).
     existing.type_name.to_string() == incoming.type_name.to_string()
         && variability_eq(&existing.variability, &incoming.variability)
         && causality_eq(&existing.causality, &incoming.causality)
@@ -1234,6 +1292,26 @@ fn classes_are_compatible(existing: &ast::ClassDef, incoming: &ast::ClassDef) ->
     }
 
     existing.to_modelica("") == incoming.to_modelica("")
+}
+
+fn nested_class_redeclaration_replaces_existing(
+    existing: &ast::ClassDef,
+    incoming: &ast::ClassDef,
+) -> bool {
+    if !existing.is_replaceable {
+        return false;
+    }
+
+    existing.name.text == incoming.name.text && existing.class_type == incoming.class_type
+}
+
+fn nested_class_existing_redeclaration_shadows_inherited(
+    existing: &ast::ClassDef,
+    incoming: &ast::ClassDef,
+) -> bool {
+    incoming.is_replaceable
+        && existing.name.text == incoming.name.text
+        && existing.class_type == incoming.class_type
 }
 
 /// Merge inherited content from a base class.
@@ -1278,23 +1356,48 @@ fn merge_inherited(
 
     // Merge nested classes
     for (name, class) in base.classes {
-        if let Some(existing) = target.classes.get(&name) {
-            if !classes_are_compatible(existing, &class) {
-                return Err(Box::new(InstantiateError::conflicting_inheritance(
-                    name.clone(),
-                    "previous base",
-                    extend.base_name.to_string(),
-                    location_to_span(&extend.location, source_map),
-                )));
-            }
-        } else {
-            let mut inherited_class = class;
-            apply_protected_class_visibility(&mut inherited_class, extend.is_protected);
-            target.classes.insert(name, inherited_class);
+        match merge_inherited_nested_class(target, extend, source_map, name, class)? {
+            NestedClassMerge::Inserted | NestedClassMerge::Skipped => {}
         }
     }
 
     Ok(())
+}
+
+enum NestedClassMerge {
+    Inserted,
+    Skipped,
+}
+
+fn merge_inherited_nested_class(
+    target: &mut InheritedContent,
+    extend: &ast::Extend,
+    source_map: &SourceMap,
+    name: String,
+    class: ast::ClassDef,
+) -> InstantiateResult<NestedClassMerge> {
+    let Some(existing) = target.classes.get(&name) else {
+        let mut inherited_class = class;
+        apply_protected_class_visibility(&mut inherited_class, extend.is_protected);
+        target.classes.insert(name, inherited_class);
+        return Ok(NestedClassMerge::Inserted);
+    };
+
+    if classes_are_compatible(existing, &class)
+        || nested_class_existing_redeclaration_shadows_inherited(existing, &class)
+    {
+        return Ok(NestedClassMerge::Skipped);
+    }
+    if nested_class_redeclaration_replaces_existing(existing, &class) {
+        target.classes.insert(name, class);
+        return Ok(NestedClassMerge::Inserted);
+    }
+    Err(Box::new(InstantiateError::conflicting_inheritance(
+        name,
+        "previous base",
+        extend.base_name.to_string(),
+        location_to_span(&extend.location, source_map),
+    )))
 }
 
 /// Merge content from a class definition into inherited content.
@@ -1307,7 +1410,7 @@ fn collect_redeclarations(
     extend: &ast::Extend,
     extend_span: Span,
 ) -> InstantiateResult<IndexMap<String, String>> {
-    let mut redeclare_types = IndexMap::new();
+    let mut redeclare_types = IndexMap::default();
     let mut validation_error: Option<Box<InstantiateError>> = None;
 
     walk_extend_modifications(extend, |modification| {
@@ -1390,29 +1493,11 @@ fn merge_class_content(
     let extend_span = location_to_span(&extend.location, &tree.source_map);
     let mut validation_error: Option<Box<InstantiateError>> = None;
 
-    // MLS §7.4: Validate break names exist in base class
-    let base_class_name = extend.base_name.to_string();
-    for break_name in &extend.break_names {
-        // Check if break name exists as a component or nested class
-        let exists_as_component = class.components.contains_key(break_name);
-        let exists_as_class = class.classes.contains_key(break_name);
-        if !exists_as_component && !exists_as_class {
-            return Err(Box::new(InstantiateError::invalid_break_name(
-                break_name,
-                &base_class_name,
-                extend_span,
-            )));
-        }
-    }
+    validate_break_names(class, extend, extend_span)?;
 
     // MLS §7.2: Collect value modifications (non-redeclare) from extends clause
     // These override default bindings in inherited components, e.g., extends Foo(n=2)
-    let mut value_modifications: IndexMap<String, ast::Expression> = IndexMap::new();
-    walk_extend_modifications(extend, |modification| {
-        if let Some((name, value)) = try_extract_value_modification(modification, class) {
-            value_modifications.insert(name, value);
-        }
-    });
+    let value_modifications = collect_value_modifications(extend, class);
 
     // MLS §7.3: Validate redeclarations and collect type changes
     let redeclare_types = collect_redeclarations(tree, class, extend, extend_span)?;
@@ -1448,11 +1533,11 @@ fn merge_class_content(
         if let Some(comp) = target.components.get_mut(comp_name) {
             // Update the type_name to the new type
             comp.type_name = rumoca_ir_ast::Name {
-                name: new_type_name
-                    .split('.')
-                    .map(|part| rumoca_ir_core::Token {
+                name: split_path_with_indices(new_type_name)
+                    .into_iter()
+                    .map(|part| rumoca_core::Token {
                         text: std::sync::Arc::from(part),
-                        location: rumoca_ir_core::Location::default(),
+                        location: rumoca_core::Location::default(),
                         token_number: 0,
                         token_type: 0,
                     })
@@ -1462,7 +1547,7 @@ fn merge_class_content(
             // Update type_def_id by looking up the new type in the tree
             comp.type_def_id = tree.name_map.get(new_type_name).copied().or_else(|| {
                 // Try with shorter name (last segment) for unqualified lookups
-                let short_name = new_type_name.rsplit('.').next().unwrap_or(new_type_name);
+                let short_name = top_level_last_segment(new_type_name);
                 tree.name_map.get(short_name).copied()
             });
 
@@ -1472,19 +1557,7 @@ fn merge_class_content(
         }
     }
 
-    // MLS §7.2: Apply value modifications to inherited components
-    // This overrides default bindings, e.g., extends MIMOs(final n=2) sets n=2
-    for (comp_name, new_value) in value_modifications {
-        if let Some(comp) = target.components.get_mut(&comp_name) {
-            // Override the binding with the new value from extends modification
-            // Must update BOTH start and binding fields:
-            // - start: used for parameter default values and attribute evaluation
-            // - binding: used by extract_binding() for component instantiation
-            comp.start = new_value.clone();
-            comp.binding = Some(new_value);
-            comp.has_explicit_binding = true;
-        }
-    }
+    apply_value_modifications(target, value_modifications, extend_span)?;
 
     // MLS §7.2: Merge nested class modifications into inherited components
     // Handles extends clauses like: extends Foo(friction(useHeatPort=true))
@@ -1509,6 +1582,10 @@ fn merge_class_content(
             if classes_are_compatible(existing, nested) {
                 return;
             }
+            if nested_class_redeclaration_replaces_existing(existing, nested) {
+                target.classes.insert(name.to_string(), nested.clone());
+                return;
+            }
             validation_error = Some(Box::new(InstantiateError::conflicting_inheritance(
                 name.to_string(),
                 "previous base",
@@ -1526,6 +1603,64 @@ fn merge_class_content(
         return Err(err);
     }
 
+    Ok(())
+}
+
+fn collect_value_modifications(
+    extend: &ast::Extend,
+    class: &ast::ClassDef,
+) -> IndexMap<String, (ast::Expression, bool)> {
+    let mut value_modifications = IndexMap::default();
+    walk_extend_modifications(extend, |modification| {
+        if let Some((name, value, is_final)) =
+            try_extract_value_modification(modification, extend, class)
+        {
+            value_modifications.insert(name, (value, is_final));
+        }
+    });
+    value_modifications
+}
+
+fn apply_value_modifications(
+    target: &mut InheritedContent,
+    value_modifications: IndexMap<String, (ast::Expression, bool)>,
+    span: Span,
+) -> InstantiateResult<()> {
+    // MLS §7.2 / §4.4.4: value modifications (`x = expr`) update the binding
+    // equation only. `start` is a distinct attribute (MLS §4.8.6).
+    for (comp_name, (new_value, is_final)) in value_modifications {
+        let Some(comp) = target.components.get_mut(&comp_name) else {
+            continue;
+        };
+        if comp.is_final {
+            return Err(Box::new(InstantiateError::redeclare_final(comp_name, span)));
+        }
+        comp.binding = Some(new_value);
+        comp.has_explicit_binding = true;
+        if is_final {
+            comp.is_final = true;
+        }
+    }
+    Ok(())
+}
+
+fn validate_break_names(
+    class: &ast::ClassDef,
+    extend: &ast::Extend,
+    extend_span: Span,
+) -> InstantiateResult<()> {
+    let base_class_name = extend.base_name.to_string();
+    for break_name in &extend.break_names {
+        let exists_as_component = class.components.contains_key(break_name);
+        let exists_as_class = class.classes.contains_key(break_name);
+        if !exists_as_component && !exists_as_class {
+            return Err(Box::new(InstantiateError::invalid_break_name(
+                break_name,
+                &base_class_name,
+                extend_span,
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -1557,8 +1692,8 @@ fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
 
     for key in prefixed_keys {
         comp.modifications.shift_remove(&key);
-        comp.each_modifications.remove(&key);
-        comp.final_attributes.remove(&key);
+        comp.each_modifications.shift_remove(&key);
+        comp.final_attributes.shift_remove(&key);
     }
 }
 
@@ -1578,10 +1713,12 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
         //   2. Modification { target: comp_name, value: ClassModification { target: TypeName, modifications: [...] } }
         //      For: extends Foo(redeclare final NewType comp(nested=val))
         //      Type changes are handled by collect_redeclarations(); here we merge nested mods.
-        let Some((target_name, modifications)) = nested_target_modifications(modification) else {
+        let Some((target_name, modifications)) =
+            extend_nested_target_modifications(extend, modification)
+        else {
             return;
         };
-        let Some(comp) = target.components.get_mut(target_name) else {
+        let Some(comp) = target.components.get_mut(&target_name) else {
             return;
         };
         for nested_mod in modifications {
@@ -1590,15 +1727,43 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
     });
 }
 
+fn extend_nested_target_modifications<'a>(
+    extend: &ast::Extend,
+    modification: &'a ast::ExtendModification,
+) -> Option<(String, &'a [ast::Expression])> {
+    match &modification.expr {
+        ast::Expression::ClassModification {
+            target,
+            modifications,
+            ..
+        } => Some((
+            extend_relative_component_target(extend, target)?,
+            modifications.as_slice(),
+        )),
+        ast::Expression::Modification { target, value, .. } => {
+            let ast::Expression::ClassModification { modifications, .. } = value.as_ref() else {
+                return None;
+            };
+            Some((
+                extend_relative_component_target(extend, target)?,
+                modifications.as_slice(),
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Insert a single nested modification into a component's modifications map.
 fn insert_nested_modification(comp: &mut ast::Component, nested_mod: &ast::Expression) {
     match nested_mod {
-        ast::Expression::Modification { target: t, value } => {
+        ast::Expression::Modification {
+            target: t, value, ..
+        } => {
             if let Some(name) = t.parts.first().map(|p| p.ident.text.to_string()) {
                 comp.modifications.insert(name, value.as_ref().clone());
             }
         }
-        ast::Expression::NamedArgument { name, value } => {
+        ast::Expression::NamedArgument { name, value, .. } => {
             comp.modifications
                 .insert(name.text.to_string(), value.as_ref().clone());
         }
@@ -1616,8 +1781,18 @@ pub fn get_effective_components(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
 ) -> InstantiateResult<IndexMap<String, ast::Component>> {
-    let mut cache = InheritanceCache::new();
+    let mut cache = InheritanceCache::default();
     get_effective_components_with_cache(tree, class, &mut cache)
+}
+
+/// Callback for resolving effective components.
+/// Suitable for use as `InstantiateEvalCtx::resolve_class_components`.
+pub fn resolve_effective_components_for_eval(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+) -> IndexMap<String, ast::Component> {
+    get_effective_components(tree, class)
+        .expect("inheritance must be validated before resolving components for eval")
 }
 
 /// Get the effective components for a class with caching.
@@ -1649,7 +1824,7 @@ fn collect_local_type_def_ids(
     own_classes: &IndexMap<String, ast::ClassDef>,
     components: &IndexMap<String, ast::Component>,
 ) -> IndexMap<String, DefId> {
-    let mut local = IndexMap::new();
+    let mut local = IndexMap::default();
 
     for (name, class) in inherited_classes {
         if let Some(def_id) = class.def_id {
@@ -1666,11 +1841,12 @@ fn collect_local_type_def_ids(
     // Components with explicit type_def_id can also anchor short local names
     // during inherited-content synthesis.
     for comp in components.values() {
-        if let Some(def_id) = comp.type_def_id
-            && let Some(short) = comp.type_name.to_string().rsplit('.').next()
-            && !short.is_empty()
-        {
-            local.entry(short.to_string()).or_insert(def_id);
+        if let Some(def_id) = comp.type_def_id {
+            let type_name = comp.type_name.to_string();
+            let short = top_level_last_segment(&type_name);
+            if !short.is_empty() {
+                local.entry(short.to_string()).or_insert(def_id);
+            }
         }
     }
 
@@ -1690,7 +1866,7 @@ fn populate_local_component_type_def_ids(
         if type_name.is_empty() {
             continue;
         }
-        let is_dotted = type_name.contains('.');
+        let is_dotted = rumoca_core::has_top_level_dot(&type_name);
 
         // `type_name.def_id` may be a partial first-segment anchor (e.g. `Medium`
         // for `Medium.AbsolutePressure`). Promote it only for short names.
@@ -1719,7 +1895,7 @@ pub fn get_effective_equations(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
 ) -> InstantiateResult<Vec<ast::Equation>> {
-    let mut cache = InheritanceCache::new();
+    let mut cache = InheritanceCache::default();
     get_effective_equations_with_cache(tree, class, &mut cache)
 }
 

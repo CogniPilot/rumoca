@@ -67,8 +67,6 @@ async function readFolderEntriesFromHandle(handle, prefix = '') {
 
 export function installFileActions({
     getEditor,
-    getCompiledModels,
-    getCodegenOutputEditor,
     projectFs,
     setTerminalOutput,
     beforeProjectExport,
@@ -189,22 +187,4 @@ export function installFileActions({
         }
     };
 
-    window.saveCodegenOutput = function() {
-        const modelName = document.getElementById('modelSelect').value;
-        const compiledModels = getCompiledModels();
-        const codegenOutputEditor = getCodegenOutputEditor();
-        const content = codegenOutputEditor && codegenOutputEditor.getValue
-            ? codegenOutputEditor.getValue()
-            : '';
-        if (!modelName || !compiledModels[modelName]) {
-            alert('No code generation output available yet. Choose a model and wait for compilation.');
-            return;
-        }
-        if (!content || content.startsWith('No model selected') || content.startsWith('No DAE')) {
-            alert('No valid codegen output to save.');
-            return;
-        }
-        const filename = `${modelName || 'output'}.txt`;
-        triggerDownload(new Blob([content], { type: 'text/plain' }), filename);
-    };
 }

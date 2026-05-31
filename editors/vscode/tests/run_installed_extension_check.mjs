@@ -4,12 +4,23 @@ import { fileURLToPath } from "node:url";
 
 import { runTests } from "@vscode/test-electron";
 
-function envPath(name) {
-  const value = process.env[name];
+// Read a required `--flag value` argument passed by `cargo xtask` (the
+// harness's argv channel; editor configuration travels in the workspace file).
+function argPath(name) {
+  const idx = process.argv.indexOf(name);
+  const value =
+    idx >= 0 && idx + 1 < process.argv.length ? process.argv[idx + 1] : undefined;
   if (!value) {
-    throw new Error(`missing required env var: ${name}`);
+    throw new Error(`missing required argument: ${name}`);
   }
   return path.resolve(value);
+}
+
+function argValue(name) {
+  const idx = process.argv.indexOf(name);
+  return idx >= 0 && idx + 1 < process.argv.length
+    ? process.argv[idx + 1]
+    : undefined;
 }
 
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
@@ -18,14 +29,25 @@ const harnessDir = path.resolve(vscodeDir, "tests", "install_check_harness");
 const suitePath = path.resolve(vscodeDir, "tests", "installed_extension_check_suite.cjs");
 
 async function main() {
-  const workspaceFile = envPath("RUMOCA_VSCODE_INSTALL_CHECK_WORKSPACE");
-  const documentPath = envPath("RUMOCA_VSCODE_INSTALL_CHECK_DOCUMENT");
-  const userDataDir = envPath("RUMOCA_VSCODE_INSTALL_CHECK_USER_DATA_DIR");
-  const extensionsDir = envPath("RUMOCA_VSCODE_INSTALL_CHECK_EXTENSIONS_DIR");
-  const resultPath = envPath("RUMOCA_VSCODE_INSTALL_CHECK_RESULT");
+  const workspaceFile = argPath("--workspace");
+  const documentPath = argPath("--document");
+  const userDataDir = argPath("--user-data-dir");
+  const extensionsDir = argPath("--extensions-dir");
+  const resultPath = argPath("--result");
 
   await mkdir(userDataDir, { recursive: true });
   await mkdir(extensionsDir, { recursive: true });
+
+  // Hand the document/result paths to the extension-host suite via the
+  // launched workspace's settings (the suite reads them with getConfiguration;
+  // no environment variables).
+  const workspace = JSON.parse(await readFile(workspaceFile, "utf8"));
+  workspace.settings = {
+    ...(workspace.settings ?? {}),
+    "rumoca.benchmark.installCheck.document": documentPath,
+    "rumoca.benchmark.installCheck.result": resultPath,
+  };
+  await writeFile(workspaceFile, `${JSON.stringify(workspace, null, 2)}\n`, "utf8");
 
   process.env.ELECTRON_DISABLE_SANDBOX = "1";
 
@@ -47,14 +69,10 @@ async function main() {
     extensionDevelopmentPath: harnessDir,
     extensionTestsPath: suitePath,
     launchArgs,
-    extensionTestsEnv: {
-      ...process.env,
-      RUMOCA_VSCODE_INSTALL_CHECK_DOCUMENT: documentPath,
-      RUMOCA_VSCODE_INSTALL_CHECK_RESULT: resultPath,
-    },
+    extensionTestsEnv: { ...process.env },
   };
 
-  const executable = process.env.RUMOCA_VSCODE_SMOKE_EXECUTABLE;
+  const executable = argValue("--smoke-executable");
   if (executable) {
     options.vscodeExecutablePath = executable;
   }

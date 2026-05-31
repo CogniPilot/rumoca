@@ -4,6 +4,7 @@
 
 use crate::path_utils::{split_path_with_indices, strip_array_index};
 use rumoca_ir_flat as flat;
+use std::cmp::Ordering;
 
 pub(super) fn normalized_base_key_from_segments(segments: &[&str]) -> String {
     segments
@@ -52,8 +53,8 @@ pub(super) fn compare_path_part_with_mode(
         return false;
     }
     // If segment specifies an exact index, enforce match.
-    match (segment.find('['), name_part.find('[')) {
-        (Some(si), Some(ni)) => name_part[ni..] == segment[si..],
+    match (extract_array_index(segment), extract_array_index(name_part)) {
+        (Some(segment_idx), Some(name_idx)) => name_idx == segment_idx,
         (Some(_), None) => allow_collapsed_index_match,
         _ => true,
     }
@@ -127,7 +128,55 @@ pub(super) fn extract_suffix(full_name: &str, prefix: &str) -> Option<(String, S
 /// "resistor[1]" -> Some("[1]")
 /// "p" -> None
 pub(super) fn extract_array_index(s: &str) -> Option<String> {
-    s.find('[').map(|bracket_pos| s[bracket_pos..].to_string())
+    let base = strip_array_index(s);
+    let suffix = s.get(base.len()..)?;
+    (!suffix.is_empty() && balanced_index_groups(suffix).is_some()).then(|| suffix.to_string())
+}
+
+pub(super) fn first_array_index_group(path: &str) -> Option<String> {
+    split_path_with_indices(path)
+        .into_iter()
+        .filter_map(extract_array_index)
+        .find_map(|indices| {
+            balanced_index_groups(&indices)
+                .and_then(|groups| groups.first().map(|group| (*group).to_string()))
+        })
+}
+
+pub(super) fn split_trailing_index_groups(path: &str) -> Option<(String, Vec<String>)> {
+    let bytes = path.as_bytes();
+    let mut end = bytes.len();
+    if bytes.last().copied() != Some(b']') {
+        return None;
+    }
+
+    let mut groups_rev: Vec<String> = Vec::new();
+    while end > 0 && bytes[end - 1] == b']' {
+        let start = find_trailing_group_start(bytes, end)?;
+        groups_rev.push(path[start..end].to_string());
+        end = start;
+    }
+
+    if groups_rev.is_empty() || end == 0 {
+        return None;
+    }
+
+    let mut groups = groups_rev;
+    groups.reverse();
+    Some((path[..end].to_string(), groups))
+}
+
+fn find_trailing_group_start(bytes: &[u8], end: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for i in (0..end - 1).rev() {
+        match bytes[i] {
+            b']' => depth += 1,
+            b'[' if depth == 0 => return Some(i),
+            b'[' => depth = depth.checked_sub(1)?,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Scalarize a matched collapsed connector-array field for element connections.
@@ -140,10 +189,10 @@ pub(super) fn extract_array_index(s: &str) -> Option<String> {
 /// This keeps element-level connections scalar when flattened variables store
 /// connector arrays as indexless array fields.
 pub(super) fn scalarize_collapsed_connector_element(
-    var: &flat::VarName,
+    var: &rumoca_core::VarName,
     path: &str,
     flat: &flat::Model,
-) -> flat::VarName {
+) -> rumoca_core::VarName {
     if !flat.variables.contains_key(var) {
         return var.clone();
     }
@@ -162,7 +211,7 @@ pub(super) fn scalarize_collapsed_connector_element(
         }
     }
     if let Some(idx) = missing_index {
-        return flat::VarName::new(format!("{}{}", var.as_str(), idx));
+        return rumoca_core::VarName::new(format!("{}{}", var.as_str(), idx));
     }
     var.clone()
 }
@@ -178,20 +227,43 @@ pub(super) fn path_has_explicit_index(path: &str) -> bool {
 ///
 /// Example: `"[1][2]" -> vec!["[1]", "[2]"]`.
 fn extract_index_groups(indices: &str) -> Vec<String> {
+    balanced_index_groups(indices)
+        .unwrap_or_default()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn balanced_index_groups(indices: &str) -> Option<Vec<&str>> {
     let mut groups = Vec::new();
-    let mut start: Option<usize> = None;
-    for (i, ch) in indices.char_indices() {
+    let mut cursor = 0usize;
+    while cursor < indices.len() {
+        if !indices[cursor..].starts_with('[') {
+            return None;
+        }
+        let end = matching_index_group_end(indices, cursor)?;
+        groups.push(&indices[cursor..end]);
+        cursor = end;
+    }
+    (!groups.is_empty()).then_some(groups)
+}
+
+fn matching_index_group_end(text: &str, start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, ch) in text[start..].char_indices() {
+        let idx = start + offset;
         match ch {
-            '[' => start = Some(i),
+            '[' => depth += 1,
             ']' => {
-                if let Some(s) = start.take() {
-                    groups.push(indices[s..=i].to_string());
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return (idx > start + 1).then_some(idx + ch.len_utf8());
                 }
             }
             _ => {}
         }
     }
-    groups
+    None
 }
 
 /// Remove index groups that are fixed by explicit indices in `path`.
@@ -268,10 +340,81 @@ pub(super) fn select_indices_for_dims(indices: &str, dims_len: usize) -> Option<
 
 /// Parse an index group like `"[2]"` into its integer value.
 fn parse_index_group_value(group: &str) -> Option<i64> {
-    if group.len() < 3 || !group.starts_with('[') || !group.ends_with(']') {
+    let groups = balanced_index_groups(group)?;
+    let [group] = groups.as_slice() else {
+        return None;
+    };
+    group[1..group.len() - 1].trim().parse().ok()
+}
+
+pub(super) fn parse_single_index_group_value(group: &str) -> Option<i64> {
+    parse_index_group_value(group)
+}
+
+pub(super) fn compare_path_index_order(left: &str, right: &str) -> Ordering {
+    let mut left_tail = left;
+    let mut right_tail = right;
+
+    loop {
+        let left_part = pop_order_segment(&mut left_tail);
+        let right_part = pop_order_segment(&mut right_tail);
+        let (Some(left_part), Some(right_part)) = (left_part, right_part) else {
+            return left_part.is_some().cmp(&right_part.is_some());
+        };
+        let base_order = strip_array_index(left_part).cmp(strip_array_index(right_part));
+        if base_order != Ordering::Equal {
+            return base_order;
+        }
+
+        let index_order = compare_index_groups(
+            extract_array_index(left_part).as_deref(),
+            extract_array_index(right_part).as_deref(),
+        );
+        if index_order != Ordering::Equal {
+            return index_order;
+        }
+    }
+}
+
+fn pop_order_segment<'a>(tail: &mut &'a str) -> Option<&'a str> {
+    if tail.is_empty() {
         return None;
     }
-    group[1..group.len() - 1].trim().parse().ok()
+    let mut depth = 0usize;
+    for (offset, ch) in tail.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            '.' if depth == 0 => {
+                let segment = &tail[..offset];
+                *tail = &tail[offset + ch.len_utf8()..];
+                return Some(segment);
+            }
+            _ => {}
+        }
+    }
+    let segment = *tail;
+    *tail = "";
+    Some(segment)
+}
+
+fn compare_index_groups(left: Option<&str>, right: Option<&str>) -> Ordering {
+    let left_groups = left.and_then(balanced_index_groups).unwrap_or_default();
+    let right_groups = right.and_then(balanced_index_groups).unwrap_or_default();
+
+    for (left_group, right_group) in left_groups.iter().zip(right_groups.iter()) {
+        let left_value = parse_index_group_value(left_group);
+        let right_value = parse_index_group_value(right_group);
+        let group_order = match (left_value, right_value) {
+            (Some(left_value), Some(right_value)) => left_value.cmp(&right_value),
+            _ => left_group.cmp(right_group),
+        };
+        if group_order != Ordering::Equal {
+            return group_order;
+        }
+    }
+
+    left_groups.len().cmp(&right_groups.len())
 }
 
 /// True if projected bracket indices are valid for the corresponding dimensions.
@@ -365,6 +508,71 @@ mod tests {
         assert_eq!(
             extract_suffix("r1.n.v", "r1.n"),
             Some(("v".to_string(), String::new()))
+        );
+    }
+
+    #[test]
+    fn extract_array_index_requires_balanced_index_suffix() {
+        assert_eq!(extract_array_index("resistor[1]"), Some("[1]".to_string()));
+        assert_eq!(
+            extract_array_index("pin[index.with.dot][2]"),
+            Some("[index.with.dot][2]".to_string())
+        );
+        assert_eq!(extract_array_index("p"), None);
+        assert_eq!(extract_array_index("pin[1"), None);
+        assert_eq!(extract_array_index("pin[1]tail"), None);
+        assert_eq!(extract_array_index("pin[]"), None);
+    }
+
+    #[test]
+    fn split_trailing_index_groups_rejects_malformed_trailing_groups() {
+        assert_eq!(
+            split_trailing_index_groups("connector.field[2][3]"),
+            Some((
+                "connector.field".to_string(),
+                vec!["[2]".to_string(), "[3]".to_string()]
+            ))
+        );
+        assert_eq!(
+            split_trailing_index_groups("cell[1].field[2]"),
+            Some(("cell[1].field".to_string(), vec!["[2]".to_string()]))
+        );
+        assert_eq!(split_trailing_index_groups("connector.field[2]tail"), None);
+        assert_eq!(split_trailing_index_groups("connector.field[2"), None);
+        assert_eq!(split_trailing_index_groups("[2]"), None);
+    }
+
+    #[test]
+    fn first_array_index_group_uses_balanced_path_segments() {
+        assert_eq!(
+            first_array_index_group("voltageSensor[1].v"),
+            Some("[1]".to_string())
+        );
+        assert_eq!(
+            first_array_index_group("cell[index.with.dot][2].v"),
+            Some("[index.with.dot]".to_string())
+        );
+        assert_eq!(first_array_index_group("cell[1]tail.v"), None);
+        assert_eq!(first_array_index_group("r1.n.v"), None);
+    }
+
+    #[test]
+    fn compare_path_index_order_sorts_numeric_indices_numerically() {
+        let mut names = [
+            "comp[10].pin[1].v",
+            "comp[2].pin[1].v",
+            "comp[1].pin[12].v",
+            "comp[1].pin[2].v",
+        ];
+        names.sort_by(|left, right| compare_path_index_order(left, right));
+        assert_eq!(
+            names,
+            [
+                "comp[1].pin[2].v",
+                "comp[1].pin[12].v",
+                "comp[2].pin[1].v",
+                "comp[10].pin[1].v",
+            ]
         );
     }
 }

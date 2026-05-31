@@ -73,6 +73,28 @@ struct ParsedProjectSourceLoad {
     skipped_files: Vec<String>,
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(message: &str);
+}
+
+fn report_parse_progress(scope: &str, current: usize, total: usize) {
+    if total == 0 {
+        return;
+    }
+    if current != 1 && current != total && !current.is_multiple_of(50) {
+        return;
+    }
+    let percent = current.saturating_mul(100) / total;
+    let message = format!("[WASM] {scope}: parsing {current}/{total} ({percent}%)");
+    #[cfg(target_arch = "wasm32")]
+    log(&message);
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = message;
+}
+
 fn parse_text_sources_json(sources_json: &str) -> Result<BTreeMap<String, String>, JsValue> {
     let trimmed = sources_json.trim();
     if trimmed.is_empty() {
@@ -119,8 +141,10 @@ fn load_text_sources_in_session_with_cache_root(
     let sources = parse_text_sources_json(sources_json)?;
     let mut definitions: Vec<(String, StoredDefinition)> = Vec::with_capacity(sources.len());
     let mut skipped_files: Vec<String> = Vec::new();
+    let total_sources = sources.len();
 
-    for (filename, source) in sources {
+    for (index, (filename, source)) in sources.into_iter().enumerate() {
+        report_parse_progress(source_set_id, index + 1, total_sources);
         match parse_source_to_ast(&source, &filename) {
             Ok(definition) => definitions.push((filename, definition)),
             Err(error) => skipped_files.push(format!("{filename}: {error}")),
@@ -222,7 +246,9 @@ fn parse_project_source_roots(
     let mut parsed_count = 0usize;
     let mut skipped_files = Vec::new();
     let mut definitions = Vec::with_capacity(sources.len());
-    for (filename, source) in sources {
+    let total_sources = sources.len();
+    for (index, (filename, source)) in sources.into_iter().enumerate() {
+        report_parse_progress(WASM_PROJECT_SOURCE_SET_ID, index + 1, total_sources);
         let normalized_filename = normalize_source_path(&filename);
         match parse_source_to_ast(&source, &normalized_filename) {
             Ok(definition) => {

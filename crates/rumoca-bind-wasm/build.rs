@@ -21,8 +21,6 @@ fn main() {
     // Re-run when HEAD changes in source checkouts.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
-    println!("cargo:rerun-if-env-changed=RUMOCA_WASM_BUNDLED_SOURCE_ROOT_MANIFEST");
-    println!("cargo:rerun-if-env-changed=RUMOCA_WASM_BUNDLED_SOURCE_ROOT_BINARY");
 
     let git_commit = command_output(&["git", "rev-parse", "--short=12", "HEAD"])
         .unwrap_or_else(|| "unknown".to_string());
@@ -35,31 +33,27 @@ fn main() {
             }
         });
 
-    println!("cargo:rustc-env=RUMOCA_GIT_COMMIT={git_commit}");
-    println!("cargo:rustc-env=RUMOCA_BUILD_TIME_UTC={build_time_utc}");
-    write_bundled_source_root_assets();
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR set by cargo"));
+
+    // Emit build metadata as a generated Rust source included by lib.rs, rather
+    // than RUMOCA_* rustc-env vars read with option_env!.
+    let metadata = format!(
+        "pub const GIT_COMMIT: &str = {git_commit:?};\n\
+         pub const BUILD_TIME_UTC: &str = {build_time_utc:?};\n"
+    );
+    fs::write(out_dir.join("build_metadata.rs"), metadata).expect("write build_metadata.rs");
+
+    write_bundled_source_root_assets(&out_dir);
 }
 
-fn write_bundled_source_root_assets() {
-    let out_dir = match env::var_os("OUT_DIR") {
-        Some(value) => PathBuf::from(value),
-        None => return,
-    };
-    let manifest_out = out_dir.join("bundled_source_root_manifest.json");
-    let binary_out = out_dir.join("bundled_source_root_cache.bin");
-
-    let manifest_src = env::var_os("RUMOCA_WASM_BUNDLED_SOURCE_ROOT_MANIFEST").map(PathBuf::from);
-    let binary_src = env::var_os("RUMOCA_WASM_BUNDLED_SOURCE_ROOT_BINARY").map(PathBuf::from);
-
-    if let (Some(manifest_src), Some(binary_src)) = (manifest_src, binary_src)
-        && manifest_src.is_file()
-        && binary_src.is_file()
-    {
-        let _ = fs::copy(manifest_src, &manifest_out);
-        let _ = fs::copy(binary_src, &binary_out);
-        return;
-    }
-
-    let _ = fs::write(&manifest_out, r#"{"archives":[]}"#);
-    let _ = fs::write(&binary_out, []);
+fn write_bundled_source_root_assets(out_dir: &std::path::Path) {
+    // Bundled source-root assets (offline MSL in the WASM build) are not wired up
+    // here; write empty placeholders so the `include_*!` sites in lib.rs compile.
+    // A future bundling path should pass these via a build-script input, not an
+    // environment variable.
+    let _ = fs::write(
+        out_dir.join("bundled_source_root_manifest.json"),
+        r#"{"archives":[]}"#,
+    );
+    let _ = fs::write(out_dir.join("bundled_source_root_cache.bin"), []);
 }

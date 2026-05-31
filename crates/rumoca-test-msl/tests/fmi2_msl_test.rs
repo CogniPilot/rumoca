@@ -1,3 +1,5 @@
+#![cfg(feature = "msl-external-tests")]
+
 //! FMI2 cross-validation against rumoca's built-in simulator on MSL models.
 //!
 //! Tests a curated set of MSL models that compile and simulate successfully
@@ -9,14 +11,8 @@
 //!
 //! Run with:
 //! ```text
-//! cargo test --release --package rumoca-test-msl --test fmi2_msl_test -- --ignored --nocapture
+//! cargo test --release --package rumoca-test-msl --features msl-external-tests --test fmi2_msl_test test_fmi2_vs_rumoca_msl -- --nocapture
 //! ```
-//!
-//! Environment variables:
-//! - `RUMOCA_FMI2_MSL_MATCH=pattern` — filter models by substring match
-//! - `RUMOCA_FMI2_MSL_LIMIT=N` — cap number of models tested
-//! - `RUMOCA_FMI2_MSL_DT=0.0001` — forward Euler step size (default 0.0001)
-//! - `RUMOCA_FMI2_MSL_TOLERANCE=0.20` — max allowed trace deviation (default 0.20)
 
 use flate2::read::GzDecoder;
 use rumoca_compile::codegen::{render_dae_template_with_name, templates};
@@ -38,7 +34,7 @@ fn check_release_mode() {
     {
         panic!(
             "\n\nERROR: FMI2 MSL tests must be run in RELEASE mode!\n\
-             cargo test --release --package rumoca-test-msl --test fmi2_msl_test -- --ignored --nocapture\n"
+             cargo test --release --package rumoca-test-msl --features msl-external-tests --test fmi2_msl_test test_fmi2_vs_rumoca_msl -- --nocapture\n"
         );
     }
 }
@@ -142,35 +138,14 @@ fn fmi2_target_models() -> Vec<String> {
         .collect()
 }
 
-fn apply_env_filters(names: &mut Vec<String>) {
-    if let Ok(pattern) = std::env::var("RUMOCA_FMI2_MSL_MATCH") {
-        let pattern = pattern.trim().to_string();
-        if !pattern.is_empty() {
-            names.retain(|n| n.contains(&pattern));
-            println!("RUMOCA_FMI2_MSL_MATCH={pattern} → {} models", names.len());
-        }
-    }
-    if let Ok(raw) = std::env::var("RUMOCA_FMI2_MSL_LIMIT")
-        && let Ok(limit) = raw.trim().parse::<usize>()
-        && names.len() > limit
-    {
-        names.truncate(limit);
-        println!("RUMOCA_FMI2_MSL_LIMIT={limit} → {} models", names.len());
-    }
-}
-
+/// Forward-Euler step size for the FMI2 MSL trace comparison.
 fn fmi2_dt() -> f64 {
-    std::env::var("RUMOCA_FMI2_MSL_DT")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0.0001)
+    0.0001
 }
 
+/// Max allowed trace deviation for the FMI2 MSL comparison.
 fn fmi2_tolerance() -> f64 {
-    std::env::var("RUMOCA_FMI2_MSL_TOLERANCE")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0.20)
+    0.20
 }
 
 // =============================================================================
@@ -184,11 +159,19 @@ fn fmi2_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    let model_c = render_dae_template_with_name(dae, templates::FMI2_MODEL, model_name)
-        .map_err(|e| format!("render model: {e}"))?;
+    let model_c = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("fmi2", "model.c.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render model: {e}"))?;
 
-    let driver_c = render_dae_template_with_name(dae, templates::FMI2_TEST_DRIVER, model_name)
-        .map_err(|e| format!("render driver: {e}"))?;
+    let driver_c = render_dae_template_with_name(
+        dae,
+        templates::builtin_template_source("fmi2", "test_driver.c.jinja").unwrap(),
+        model_name,
+    )
+    .map_err(|e| format!("render driver: {e}"))?;
 
     let dir = tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let model_path = dir.path().join("model.c");
@@ -430,7 +413,7 @@ fn run_single_model(
     }
 
     // Skip models with no states — FMI2 forward Euler has nothing to integrate
-    if dae.states.is_empty() {
+    if dae.variables.states.is_empty() {
         return ModelOutcome::NoStates;
     }
 
@@ -470,7 +453,7 @@ fn run_single_model(
     // 4. Compare state variable traces
     let mut worst_deviation = 0.0f64;
     let mut worst_var = String::new();
-    for name in dae.states.keys() {
+    for name in dae.variables.states.keys() {
         let name_str = name.as_str();
         let Some(fmi_trace) = fmi_traces.get(name_str) else {
             continue;
@@ -502,7 +485,6 @@ fn run_single_model(
 // =============================================================================
 
 #[test]
-#[ignore]
 fn test_fmi2_vs_rumoca_msl() {
     check_release_mode();
 
@@ -523,8 +505,7 @@ fn test_fmi2_vs_rumoca_msl() {
         .expect("failed to build source-root index");
 
     // 3. Select target models
-    let mut targets = fmi2_target_models();
-    apply_env_filters(&mut targets);
+    let targets = fmi2_target_models();
     println!("Testing {} models", targets.len());
 
     // 4. Run each model

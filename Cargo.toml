@@ -2,14 +2,16 @@
 resolver = "2"
 members = [
     "crates/rumoca",
+    "crates/rumoca-worker",
     "crates/rumoca-test-msl",
     "crates/rumoca-core",
     "crates/rumoca-contracts",
     "crates/rumoca-ir-dae",
     "crates/rumoca-ir-solve",
-    "crates/rumoca-ir-core",
     "crates/rumoca-eval-ast",
     "crates/rumoca-eval-flat",
+    "crates/rumoca-eval-dae",
+    "crates/rumoca-eval-solve",
     "crates/rumoca-ir-ast",
     "crates/rumoca-ir-flat",
     "crates/rumoca-phase-codegen",
@@ -19,18 +21,16 @@ members = [
     "crates/rumoca-phase-resolve",
     "crates/rumoca-phase-dae",
     "crates/rumoca-phase-structural",
-    "crates/rumoca-phase-solve-lower",
-    "crates/rumoca-analysis-dae",
+    "crates/rumoca-phase-solve",
     "crates/rumoca-signal-frame",
     "crates/rumoca-codec",
     "crates/rumoca-codec-flatbuffers",
     "crates/rumoca-transport-udp",
     "crates/rumoca-transport-websocket",
-    "crates/rumoca-input-types",
     "crates/rumoca-input",
     "crates/rumoca-input-gamepad",
     "crates/rumoca-input-keyboard",
-    "crates/rumoca-sim-core",
+    "crates/rumoca-solver",
     "crates/rumoca-sim",
     "crates/rumoca-solver-diffsol",
     "crates/rumoca-solver-rk45",
@@ -41,10 +41,14 @@ members = [
     "crates/rumoca-tool-lint",
     "crates/rumoca-tool-fmt",
     "crates/rumoca-tool-lsp",
-    "crates/rumoca-tool-dev",
+    "crates/xtask",
     # Bindings
     "crates/rumoca-bind-wasm",
     "crates/rumoca-bind-python",
+    # Compiled execution adapters
+    "crates/rumoca-exec-cranelift",
+    "crates/rumoca-exec-mlir",
+    "crates/rumoca-exec-wasm",
 ]
 
 [workspace.package]
@@ -57,13 +61,15 @@ homepage = "https://github.com/cognipilot/rumoca"
 [workspace.dependencies]
 # Internal crates
 rumoca = { path = "crates/rumoca" }
+rumoca-worker = { path = "crates/rumoca-worker" }
 rumoca-core = { path = "crates/rumoca-core" }
 rumoca-contracts = { path = "crates/rumoca-contracts" }
 rumoca-ir-dae = { path = "crates/rumoca-ir-dae" }
 rumoca-ir-solve = { path = "crates/rumoca-ir-solve" }
-rumoca-ir-core = { path = "crates/rumoca-ir-core" }
 rumoca-eval-ast = { path = "crates/rumoca-eval-ast" }
 rumoca-eval-flat = { path = "crates/rumoca-eval-flat" }
+rumoca-eval-dae = { path = "crates/rumoca-eval-dae" }
+rumoca-eval-solve = { path = "crates/rumoca-eval-solve" }
 rumoca-ir-ast = { path = "crates/rumoca-ir-ast" }
 rumoca-ir-flat = { path = "crates/rumoca-ir-flat" }
 rumoca-phase-flatten = { path = "crates/rumoca-phase-flatten" }
@@ -72,30 +78,32 @@ rumoca-phase-parse = { path = "crates/rumoca-phase-parse" }
 rumoca-phase-resolve = { path = "crates/rumoca-phase-resolve" }
 rumoca-phase-dae = { path = "crates/rumoca-phase-dae" }
 rumoca-phase-structural = { path = "crates/rumoca-phase-structural" }
-rumoca-phase-solve-lower = { path = "crates/rumoca-phase-solve-lower", default-features = false }
-rumoca-analysis-dae = { path = "crates/rumoca-analysis-dae" }
+rumoca-phase-solve = { path = "crates/rumoca-phase-solve", default-features = false }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
 rumoca-signal-frame = { path = "crates/rumoca-signal-frame" }
 rumoca-codec = { path = "crates/rumoca-codec" }
 rumoca-codec-flatbuffers = { path = "crates/rumoca-codec-flatbuffers" }
 rumoca-transport-udp = { path = "crates/rumoca-transport-udp" }
 rumoca-transport-websocket = { path = "crates/rumoca-transport-websocket" }
-rumoca-input-types = { path = "crates/rumoca-input-types" }
 rumoca-input = { path = "crates/rumoca-input" }
 rumoca-input-gamepad = { path = "crates/rumoca-input-gamepad" }
 rumoca-input-keyboard = { path = "crates/rumoca-input-keyboard" }
-rumoca-sim-core = { path = "crates/rumoca-sim-core" }
+rumoca-solver = { path = "crates/rumoca-solver" }
 rumoca-sim = { path = "crates/rumoca-sim", default-features = false }
 rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
 rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
 rumoca-viz-web = { path = "crates/rumoca-viz-web" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-compile = { path = "crates/rumoca-compile" }
+rumoca-exec-cranelift = { path = "crates/rumoca-exec-cranelift" }
+rumoca-exec-mlir = { path = "crates/rumoca-exec-mlir" }
+rumoca-exec-wasm = { path = "crates/rumoca-exec-wasm" }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
 rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }
 rumoca-bind-wasm = { path = "crates/rumoca-bind-wasm" }
 rumoca-bind-python = { path = "crates/rumoca-bind-python" }
+rumoca-test-msl = { path = "crates/rumoca-test-msl" }
 
 # External dependencies
 anyhow = "1.0"
@@ -103,16 +111,18 @@ mimalloc = "0.1"
 blake3 = "1.5"
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
+core_affinity = "0.8"
 dirs = "6.0"
 flate2 = "1.0"
 indexmap = { version = "2.7", features = ["serde"] }
 miette = { version = "7.4", features = ["fancy"] }
 minijinja = { version = "2.5", features = ["debug", "preserve_order"] }
-parol = "4.2"
-parol_runtime = "4.2"
+parol = "=4.2.2"
+parol_runtime = "=4.2.0"
 rayon = "1.10"
 rustc-hash = "2.0"
 scnr2 = "0.3.3"
+sigpipe = "0.1"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_yaml = "0.9"
@@ -122,6 +132,7 @@ tar = "0.4"
 thiserror = "2.0"
 toml = "0.8"
 tempfile = "3.10"
+libloading = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = "3.0"

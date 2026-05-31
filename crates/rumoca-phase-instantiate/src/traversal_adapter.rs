@@ -48,34 +48,9 @@ pub(super) fn redeclare_target_value(
     if !modification.redeclare {
         return None;
     }
-    let ast::Expression::Modification { target, value } = &modification.expr else {
+    let ast::Expression::Modification { target, value, .. } = &modification.expr else {
         return None;
     };
     let first_target = target.parts.first()?;
     Some((first_target.ident.text.as_ref(), value.as_ref()))
-}
-
-/// Parse nested class-style modifications from an extends-modification:
-/// - `comp(a=1)` represented as `ClassModification`
-/// - `comp = Type(...mods...)` represented as `Modification` with class-mod value
-pub(super) fn nested_target_modifications(
-    modification: &ast::ExtendModification,
-) -> Option<(&str, &[ast::Expression])> {
-    match &modification.expr {
-        ast::Expression::ClassModification {
-            target,
-            modifications,
-        } => {
-            let name = target.parts.first()?.ident.text.as_ref();
-            Some((name, modifications.as_slice()))
-        }
-        ast::Expression::Modification { target, value } => {
-            let name = target.parts.first()?.ident.text.as_ref();
-            let ast::Expression::ClassModification { modifications, .. } = value.as_ref() else {
-                return None;
-            };
-            Some((name, modifications.as_slice()))
-        }
-        _ => None,
-    }
 }

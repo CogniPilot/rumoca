@@ -1,5 +1,5 @@
 {#- FMI 3.0 Model Exchange modelDescription.xml template. -#}
-{#- Generates a conformant modelDescription.xml from DAE IR. -#}
+{#- Generates FMI metadata from DAE metadata and Solve IR runtime rows. -#}
 {#- Reference: FMI 3.0 specification, §§2.4, 3.2 -#}
 {%- set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary"} -%}
 {#- Macro: compute total scalar size of a variable map -#}
@@ -93,12 +93,6 @@
     <Category name="logStatusWarning"/>
   </LogCategories>
 
-  <BuildConfiguration>
-    <SourceFileSet>
-      <SourceFile name="{{ model_name | sanitize }}.c"/>
-    </SourceFileSet>
-  </BuildConfiguration>
-
   <ModelVariables>
 {#- States (x) — one VR per variable -#}
 {% set ns_vr = namespace(offset=vr_x) %}
@@ -187,7 +181,5 @@
 {% set ns_vr.offset = ns_vr.offset + 1 %}
 {% endfor %}
   </ModelStructure>
-
-  <Terminals/>
 
 </fmiModelDescription>

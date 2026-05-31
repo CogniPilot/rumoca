@@ -1,0 +1,26 @@
+[package]
+name = "rumoca-phase-solve"
+description = "Lower DAE-IR into solver-facing row IR plus AD support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+strict-ir-validation = [
+    "rumoca-ir-dae/strict-ir-validation",
+    "rumoca-ir-solve/strict-ir-validation",
+]
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-phase-structural = { workspace = true }
+rumoca-eval-dae = { workspace = true }
+rumoca-eval-solve = { workspace = true }
+indexmap = { workspace = true }
+
+[lints]
+workspace = true

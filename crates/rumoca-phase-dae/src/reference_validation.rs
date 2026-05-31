@@ -1,253 +1,53 @@
 use super::*;
 use indexmap::IndexMap;
-use rumoca_ir_dae as dae;
+use rumoca_ir_dae::{self as dae, DaeVisitor};
 
-type ComponentReference = dae::ComponentReference;
-type ComprehensionIndex = dae::ComprehensionIndex;
+type ComponentReference = rumoca_core::ComponentReference;
+type ComprehensionIndex = rumoca_core::ComprehensionIndex;
 type Dae = dae::Dae;
-type Expression = dae::Expression;
-type ForIndex = dae::ForIndex;
-type Function = dae::Function;
-type Statement = dae::Statement;
-type StatementBlock = dae::StatementBlock;
-type Subscript = dae::Subscript;
-type VarName = dae::VarName;
+type Expression = rumoca_core::Expression;
+type ForIndex = rumoca_core::ForIndex;
+type Function = rumoca_core::Function;
+type Statement = rumoca_core::Statement;
+type StatementBlock = rumoca_core::StatementBlock;
+type Subscript = rumoca_core::Subscript;
+type VarName = rumoca_core::VarName;
 
 struct KnownReferenceIndex {
     flat_queries: HashSet<String>,
     dae_queries: HashSet<String>,
     enum_literal_queries: HashSet<String>,
-    enum_suffix_queries: HashSet<String>,
-    flat_dae_leaf_queries: HashSet<String>,
-    namespace_prefixes: HashSet<String>,
-    scoped_index_names: HashSet<String>,
 }
 
 impl KnownReferenceIndex {
     fn build(dae: &Dae, known_flat_var_names: &HashSet<String>) -> Self {
-        let flat_queries =
-            build_flat_reference_query_set(known_flat_var_names.iter().map(String::as_str));
-        let dae_queries = build_dae_reference_query_set(
-            dae.states
-                .keys()
-                .chain(dae.algebraics.keys())
-                .chain(dae.inputs.keys())
-                .chain(dae.outputs.keys())
-                .chain(dae.parameters.keys())
-                .chain(dae.constants.keys())
-                .chain(dae.discrete_reals.keys())
-                .chain(dae.discrete_valued.keys())
-                .chain(dae.derivative_aliases.keys())
-                .map(VarName::as_str),
-        );
-        let enum_literal_queries = build_enum_literal_query_set(&dae.enum_literal_ordinals);
+        let mut dae_var_collector = DaeVariableNameCollector { names: Vec::new() };
+        dae_var_collector.visit_variables(&dae.variables);
         Self {
-            enum_suffix_queries: build_enum_suffix_query_set(&enum_literal_queries),
-            flat_dae_leaf_queries: build_leaf_query_set(&flat_queries, &dae_queries),
-            namespace_prefixes: build_namespace_prefix_set(
-                [&flat_queries, &dae_queries, &enum_literal_queries]
-                    .into_iter()
-                    .flatten(),
+            flat_queries: build_flat_reference_query_set(
+                known_flat_var_names.iter().map(String::as_str),
             ),
-            flat_queries,
-            dae_queries,
-            enum_literal_queries,
-            scoped_index_names: collect_scoped_index_names(dae),
+            dae_queries: build_dae_reference_query_set(
+                dae_var_collector.names.iter().map(String::as_str),
+            ),
+            enum_literal_queries: build_enum_literal_query_set(&dae.symbols.enum_literal_ordinals),
         }
     }
 }
 
-fn collect_scoped_index_names(dae: &Dae) -> HashSet<String> {
-    let mut names = HashSet::new();
-    for equation in dae
-        .f_x
-        .iter()
-        .chain(dae.f_z.iter())
-        .chain(dae.f_m.iter())
-        .chain(dae.f_c.iter())
-        .chain(dae.initial_equations.iter())
-    {
-        collect_indices_from_expression(&equation.rhs, &mut names);
-    }
-    for expr in dae
-        .relation
-        .iter()
-        .chain(dae.synthetic_root_conditions.iter())
-        .chain(dae.triggered_clock_conditions.iter())
-    {
-        collect_indices_from_expression(expr, &mut names);
-    }
-    for function in dae.functions.values() {
-        for stmt in &function.body {
-            collect_indices_from_statement(stmt, &mut names);
-        }
-    }
-    names
+struct DaeVariableNameCollector {
+    names: Vec<String>,
 }
 
-fn collect_indices_from_statement(stmt: &Statement, names: &mut HashSet<String>) {
-    match stmt {
-        Statement::Assignment { comp, value } => {
-            collect_indices_from_component_reference(comp, names);
-            collect_indices_from_expression(value, names);
-        }
-        Statement::For { indices, equations } => {
-            for index in indices {
-                names.insert(index.ident.to_string());
-                collect_indices_from_expression(&index.range, names);
-            }
-            for nested in equations {
-                collect_indices_from_statement(nested, names);
-            }
-        }
-        Statement::While(block) => {
-            collect_indices_from_expression(&block.cond, names);
-            for nested in &block.stmts {
-                collect_indices_from_statement(nested, names);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_indices_from_expression(&block.cond, names);
-                for nested in &block.stmts {
-                    collect_indices_from_statement(nested, names);
-                }
-            }
-            if let Some(else_block) = else_block {
-                for nested in else_block {
-                    collect_indices_from_statement(nested, names);
-                }
-            }
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                collect_indices_from_expression(&block.cond, names);
-                for nested in &block.stmts {
-                    collect_indices_from_statement(nested, names);
-                }
-            }
-        }
-        Statement::FunctionCall {
-            comp,
-            args,
-            outputs,
-        } => {
-            collect_indices_from_component_reference(comp, names);
-            for arg in args {
-                collect_indices_from_expression(arg, names);
-            }
-            for output in outputs {
-                collect_indices_from_expression(output, names);
-            }
-        }
-        Statement::Reinit { variable, value } => {
-            collect_indices_from_component_reference(variable, names);
-            collect_indices_from_expression(value, names);
-        }
-        Statement::Assert {
-            condition,
-            message,
-            level,
-            ..
-        } => {
-            collect_indices_from_expression(condition, names);
-            collect_indices_from_expression(message, names);
-            if let Some(level) = level {
-                collect_indices_from_expression(level, names);
-            }
-        }
-        Statement::Return | Statement::Break | Statement::Empty => {}
+impl DaeVisitor for DaeVariableNameCollector {
+    fn visit_variable(
+        &mut self,
+        _partition: dae::DaeVariablePartition,
+        name: &VarName,
+        _variable: &dae::Variable,
+    ) {
+        self.names.push(name.as_str().to_string());
     }
-}
-
-fn collect_indices_from_expression(expr: &Expression, names: &mut HashSet<String>) {
-    match expr {
-        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => {}
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_indices_from_expression(lhs, names);
-            collect_indices_from_expression(rhs, names);
-        }
-        Expression::Unary { rhs, .. } => collect_indices_from_expression(rhs, names),
-        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_indices_from_expression(arg, names);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, value) in branches {
-                collect_indices_from_expression(cond, names);
-                collect_indices_from_expression(value, names);
-            }
-            collect_indices_from_expression(else_branch, names);
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            for element in elements {
-                collect_indices_from_expression(element, names);
-            }
-        }
-        Expression::Range { start, step, end } => {
-            collect_indices_from_expression(start, names);
-            if let Some(step) = step {
-                collect_indices_from_expression(step, names);
-            }
-            collect_indices_from_expression(end, names);
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            for index in indices {
-                names.insert(index.name.to_string());
-                collect_indices_from_expression(&index.range, names);
-            }
-            collect_indices_from_expression(expr, names);
-            if let Some(filter) = filter {
-                collect_indices_from_expression(filter, names);
-            }
-        }
-        Expression::Index { base, subscripts } => {
-            collect_indices_from_expression(base, names);
-            for subscript in subscripts {
-                if let Subscript::Expr(expr) = subscript {
-                    collect_indices_from_expression(expr, names);
-                }
-            }
-        }
-        Expression::FieldAccess { base, .. } => collect_indices_from_expression(base, names),
-    }
-}
-
-fn collect_indices_from_component_reference(
-    comp: &ComponentReference,
-    names: &mut HashSet<String>,
-) {
-    for part in &comp.parts {
-        for subscript in &part.subs {
-            if let Subscript::Expr(expr) = subscript {
-                collect_indices_from_expression(expr, names);
-            }
-        }
-    }
-}
-
-fn reference_query_matches(known_refs: &KnownReferenceIndex, candidate: &str) -> bool {
-    known_refs.flat_queries.contains(candidate)
-        || known_refs.dae_queries.contains(candidate)
-        || enum_literal_query_matches(known_refs, candidate)
-}
-
-fn enum_literal_query_matches(known_refs: &KnownReferenceIndex, candidate: &str) -> bool {
-    if known_refs.enum_literal_queries.contains(candidate) {
-        return true;
-    }
-    known_refs.enum_suffix_queries.contains(candidate)
 }
 
 fn build_flat_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> HashSet<String> {
@@ -265,7 +65,7 @@ fn build_dae_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> Ha
     for name in names {
         queries.insert(name.to_string());
         insert_ancestor_reference_queries(&mut queries, name);
-        if !path_utils::has_top_level_dot(name) && name.contains('[') {
+        if !path_utils::has_top_level_dot(name) && path_utils::has_top_level_subscript(name) {
             insert_reference_query_alias(
                 &mut queries,
                 path_utils::normalize_top_level_segment(name),
@@ -286,53 +86,8 @@ fn build_enum_literal_query_set(ordinals: &IndexMap<String, i64>) -> HashSet<Str
     queries
 }
 
-fn build_enum_suffix_query_set(queries: &HashSet<String>) -> HashSet<String> {
-    let mut suffixes = HashSet::new();
-    for query in queries {
-        let parts = path_utils::split_path_with_indices(query);
-        if parts.len() < 2 {
-            continue;
-        }
-        for start in 1..parts.len() {
-            suffixes.insert(parts[start..].join("."));
-        }
-    }
-    suffixes
-}
-
-fn build_leaf_query_set(flat: &HashSet<String>, dae: &HashSet<String>) -> HashSet<String> {
-    let mut leaves = HashSet::new();
-    for query in flat.iter().chain(dae.iter()) {
-        if let Some(leaf) = query.rsplit('.').next()
-            && !leaf.is_empty()
-        {
-            leaves.insert(leaf.to_string());
-        }
-    }
-    leaves
-}
-
-fn build_namespace_prefix_set<'a>(queries: impl Iterator<Item = &'a String>) -> HashSet<String> {
-    let mut prefixes = HashSet::new();
-    for query in queries {
-        let parts = path_utils::split_path_with_indices(query);
-        if parts.len() < 2 {
-            continue;
-        }
-        let mut prefix = String::new();
-        for part in parts.iter().take(parts.len() - 1) {
-            if !prefix.is_empty() {
-                prefix.push('.');
-            }
-            prefix.push_str(part);
-            prefixes.insert(prefix.clone());
-        }
-    }
-    prefixes
-}
-
 fn alternate_enum_literal_alias(name: &str) -> Option<String> {
-    let (prefix, literal) = name.rsplit_once('.')?;
+    let (prefix, literal) = rumoca_core::split_last_top_level(name)?;
     if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
         let unquoted = &literal[1..literal.len() - 1];
         return Some(format!("{prefix}.{unquoted}"));
@@ -347,17 +102,12 @@ fn insert_reference_query_alias(queries: &mut HashSet<String>, name: &str) {
 }
 
 fn insert_ancestor_reference_queries(queries: &mut HashSet<String>, name: &str) {
-    let parts = path_utils::split_path_with_indices(name);
-    if parts.len() <= 1 {
-        return;
-    }
-
-    let mut prefix = String::new();
-    for part in parts.iter().take(parts.len() - 1) {
-        if !prefix.is_empty() {
-            prefix.push('.');
-        }
-        prefix.push_str(part);
+    let path = rumoca_core::ComponentPath::from_flat_path(name);
+    for idx in 1..path.len() {
+        let prefix = path
+            .prefix(idx)
+            .expect("ancestor prefix index is in range")
+            .to_flat_string();
         insert_reference_query_alias(queries, &prefix);
         let normalized = path_utils::strip_all_subscripts(&prefix);
         insert_reference_query_alias(queries, &normalized);
@@ -365,13 +115,20 @@ fn insert_ancestor_reference_queries(queries: &mut HashSet<String>, name: &str) 
 }
 
 fn short_leaf_matches(candidate: &str, short: &str) -> bool {
-    candidate
-        .rsplit('.')
-        .next()
-        .is_some_and(|leaf| leaf == short)
+    rumoca_core::top_level_last_segment(candidate) == short
 }
 
-fn validate_constructor_field_projection(
+fn enum_literal_alias_matches(candidate: &str, raw: &str) -> bool {
+    let raw_literal = rumoca_core::top_level_last_segment(raw);
+    let candidate_literal = rumoca_core::top_level_last_segment(candidate);
+    raw_literal == candidate_literal && is_quoted_enum_literal(raw_literal)
+}
+
+fn is_quoted_enum_literal(segment: &str) -> bool {
+    segment.len() >= 2 && segment.starts_with('\'') && segment.ends_with('\'')
+}
+
+fn validate_constructor_field_selection(
     base: &Expression,
     field: &str,
     functions: &IndexMap<VarName, Function>,
@@ -381,43 +138,35 @@ fn validate_constructor_field_projection(
         name,
         args,
         is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
     } = base
     {
         for arg in args {
-            validate_expression_constructor_projections(arg, functions, span)?;
+            validate_expression_constructor_selections(arg, functions, span)?;
         }
 
-        if matches!(field, "re" | "im") {
-            return Ok(());
-        }
-
-        let projected_name = format!("{}.{}", name.as_str(), field);
-        let Some(constructor) = resolve_constructor_function(name, functions) else {
-            if std::env::var("RUMOCA_DEBUG_TODAE").is_ok() {
+        let selected_name = format!("{}.{}", name.as_str(), field);
+        let Some(constructor) = functions.get(name.var_name()) else {
+            if crate::todae_debug_enabled() {
                 let mut candidates: Vec<String> =
                     functions.keys().map(|f| f.as_str().to_string()).collect();
                 candidates.sort();
-                let short = name
-                    .as_str()
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(name.as_str())
-                    .to_string();
+                let short = rumoca_core::top_level_last_segment(name.as_str()).to_string();
                 let mut short_matches: Vec<String> = candidates
                     .iter()
                     .filter(|candidate| short_leaf_matches(candidate, &short))
                     .cloned()
                     .collect();
                 short_matches.sort();
-                eprintln!(
-                    "DEBUG TODAE missing constructor projection={} args_len={} short_matches={short_matches:?} total_functions={}",
-                    projected_name,
+                crate::log_todae_debug(format!(
+                    "DEBUG TODAE missing constructor selection={} args_len={} short_matches={short_matches:?} total_functions={}",
+                    selected_name,
                     args.len(),
                     candidates.len()
-                );
+                ));
             }
-            return Err(ToDaeError::constructor_field_projection_unresolved(
-                projected_name,
+            return Err(ToDaeError::constructor_field_selection_unresolved(
+                selected_name,
                 span,
             ));
         };
@@ -425,7 +174,7 @@ fn validate_constructor_field_projection(
         let field_known = constructor.inputs.iter().any(|param| param.name == field)
             || constructor.outputs.iter().any(|param| param.name == field);
         if !field_known {
-            if std::env::var("RUMOCA_DEBUG_TODAE").is_ok() {
+            if crate::todae_debug_enabled() {
                 let mut available_fields: Vec<String> = constructor
                     .inputs
                     .iter()
@@ -438,225 +187,221 @@ fn validate_constructor_field_projection(
                     )
                     .collect();
                 available_fields.sort();
-                eprintln!(
-                    "DEBUG TODAE constructor field missing projection={} available={available_fields:?}",
-                    projected_name
-                );
+                crate::log_todae_debug(format!(
+                    "DEBUG TODAE constructor field missing selection={} available={available_fields:?}",
+                    selected_name
+                ));
             }
-            return Err(ToDaeError::constructor_field_projection_unresolved(
-                projected_name,
+            return Err(ToDaeError::constructor_field_selection_unresolved(
+                selected_name,
                 span,
             ));
         }
         return Ok(());
     }
 
-    validate_expression_constructor_projections(base, functions, span)
+    validate_expression_constructor_selections(base, functions, span)
 }
 
-fn resolve_constructor_function<'a>(
-    name: &VarName,
-    functions: &'a IndexMap<VarName, Function>,
-) -> Option<&'a Function> {
-    if let Some(function) = functions.get(name) {
-        return Some(function);
-    }
-
-    // MLS §5.3/§7.3: short or partially qualified type names may be visible
-    // in local scope; if ToDae sees such a name here, recover by unique suffix.
-    let mut matches = functions
-        .iter()
-        .filter(|(candidate, _)| {
-            let text = candidate.as_str();
-            text == name.as_str() || text.ends_with(&format!(".{}", name.as_str()))
-        })
-        .map(|(_, function)| function);
-
-    let first = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-    Some(first)
-}
-
-fn validate_expression_constructor_projections(
+fn validate_expression_constructor_selections(
     expr: &Expression,
     functions: &IndexMap<VarName, Function>,
     span: Span,
 ) -> Result<(), ToDaeError> {
+    let span = expr.span().unwrap_or(span);
     match expr {
         Expression::FunctionCall { args, .. } | Expression::BuiltinCall { args, .. } => {
             for arg in args {
-                validate_expression_constructor_projections(arg, functions, span)?;
+                validate_expression_constructor_selections(arg, functions, span)?;
             }
         }
         Expression::Binary { lhs, rhs, .. } => {
-            validate_expression_constructor_projections(lhs, functions, span)?;
-            validate_expression_constructor_projections(rhs, functions, span)?;
+            validate_expression_constructor_selections(lhs, functions, span)?;
+            validate_expression_constructor_selections(rhs, functions, span)?;
         }
         Expression::Unary { rhs, .. } => {
-            validate_expression_constructor_projections(rhs, functions, span)?;
+            validate_expression_constructor_selections(rhs, functions, span)?;
         }
         Expression::If {
             branches,
             else_branch,
+            ..
         } => {
             for (cond, value) in branches {
-                validate_expression_constructor_projections(cond, functions, span)?;
-                validate_expression_constructor_projections(value, functions, span)?;
+                validate_expression_constructor_selections(cond, functions, span)?;
+                validate_expression_constructor_selections(value, functions, span)?;
             }
-            validate_expression_constructor_projections(else_branch, functions, span)?;
+            validate_expression_constructor_selections(else_branch, functions, span)?;
         }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
             for element in elements {
-                validate_expression_constructor_projections(element, functions, span)?;
+                validate_expression_constructor_selections(element, functions, span)?;
             }
         }
-        Expression::Range { start, step, end } => {
-            validate_expression_constructor_projections(start, functions, span)?;
+        Expression::Range {
+            start, step, end, ..
+        } => {
+            validate_expression_constructor_selections(start, functions, span)?;
             if let Some(step) = step {
-                validate_expression_constructor_projections(step, functions, span)?;
+                validate_expression_constructor_selections(step, functions, span)?;
             }
-            validate_expression_constructor_projections(end, functions, span)?;
+            validate_expression_constructor_selections(end, functions, span)?;
         }
-        Expression::Index { base, subscripts } => {
-            validate_expression_constructor_projections(base, functions, span)?;
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            validate_expression_constructor_selections(base, functions, span)?;
             for subscript in subscripts {
-                if let Subscript::Expr(expr) = subscript {
-                    validate_expression_constructor_projections(expr, functions, span)?;
+                if let Subscript::Expr { expr, .. } = subscript {
+                    validate_expression_constructor_selections(expr, functions, span)?;
                 }
             }
         }
-        Expression::FieldAccess { base, field } => {
-            validate_constructor_field_projection(base, field, functions, span)?;
+        Expression::FieldAccess { base, field, .. } => {
+            validate_constructor_field_selection(base, field, functions, span)?;
         }
         Expression::ArrayComprehension {
             expr,
             indices,
             filter,
+            ..
         } => {
-            validate_expression_constructor_projections(expr, functions, span)?;
+            validate_expression_constructor_selections(expr, functions, span)?;
             for index in indices {
-                validate_expression_constructor_projections(&index.range, functions, span)?;
+                validate_expression_constructor_selections(&index.range, functions, span)?;
             }
             if let Some(filter_expr) = filter {
-                validate_expression_constructor_projections(filter_expr, functions, span)?;
+                validate_expression_constructor_selections(filter_expr, functions, span)?;
             }
         }
-        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => {}
+        Expression::VarRef { .. }
+        | Expression::Literal { value: _, .. }
+        | Expression::Empty { .. } => {}
     }
     Ok(())
 }
 
-fn validate_statement_constructor_projections(
+fn validate_statement_constructor_selections(
     stmt: &Statement,
     functions: &IndexMap<VarName, Function>,
-    span: Span,
+    _span: Span,
 ) -> Result<(), ToDaeError> {
     match stmt {
-        Statement::Assignment { value, .. } | Statement::Reinit { value, .. } => {
-            validate_expression_constructor_projections(value, functions, span)?
+        Statement::Assignment {
+            value,
+            span: stmt_span,
+            ..
         }
-        Statement::For { indices, equations } => {
+        | Statement::Reinit {
+            value,
+            span: stmt_span,
+            ..
+        } => validate_expression_constructor_selections(value, functions, *stmt_span)?,
+        Statement::For {
+            indices,
+            equations,
+            span: stmt_span,
+        } => {
+            let span = *stmt_span;
             for index in indices {
-                validate_expression_constructor_projections(&index.range, functions, span)?;
+                validate_expression_constructor_selections(&index.range, functions, span)?;
             }
             for nested in equations {
-                validate_statement_constructor_projections(nested, functions, span)?;
+                validate_statement_constructor_selections(nested, functions, span)?;
             }
         }
-        Statement::While(block) => {
-            validate_expression_constructor_projections(&block.cond, functions, span)?;
+        Statement::While {
+            block,
+            span: stmt_span,
+        } => {
+            let span = *stmt_span;
+            validate_expression_constructor_selections(&block.cond, functions, span)?;
             for nested in &block.stmts {
-                validate_statement_constructor_projections(nested, functions, span)?;
+                validate_statement_constructor_selections(nested, functions, span)?;
             }
         }
         Statement::If {
             cond_blocks,
             else_block,
+            span: stmt_span,
         } => {
+            let span = *stmt_span;
             for block in cond_blocks {
-                validate_expression_constructor_projections(&block.cond, functions, span)?;
+                validate_expression_constructor_selections(&block.cond, functions, span)?;
                 for nested in &block.stmts {
-                    validate_statement_constructor_projections(nested, functions, span)?;
+                    validate_statement_constructor_selections(nested, functions, span)?;
                 }
             }
             if let Some(else_block) = else_block {
                 for nested in else_block {
-                    validate_statement_constructor_projections(nested, functions, span)?;
+                    validate_statement_constructor_selections(nested, functions, span)?;
                 }
             }
         }
-        Statement::When(blocks) => {
+        Statement::When {
+            blocks,
+            span: stmt_span,
+        } => {
+            let span = *stmt_span;
             for block in blocks {
-                validate_expression_constructor_projections(&block.cond, functions, span)?;
+                validate_expression_constructor_selections(&block.cond, functions, span)?;
                 for nested in &block.stmts {
-                    validate_statement_constructor_projections(nested, functions, span)?;
+                    validate_statement_constructor_selections(nested, functions, span)?;
                 }
             }
         }
-        Statement::FunctionCall { args, outputs, .. } => {
+        Statement::FunctionCall {
+            args,
+            span: stmt_span,
+            ..
+        } => {
             for arg in args {
-                validate_expression_constructor_projections(arg, functions, span)?;
-            }
-            for output in outputs {
-                validate_expression_constructor_projections(output, functions, span)?;
+                validate_expression_constructor_selections(arg, functions, *stmt_span)?;
             }
         }
         Statement::Assert {
             condition,
             message,
             level,
+            span: stmt_span,
         } => {
-            validate_expression_constructor_projections(condition, functions, span)?;
-            validate_expression_constructor_projections(message, functions, span)?;
+            let span = *stmt_span;
+            validate_expression_constructor_selections(condition, functions, span)?;
+            validate_expression_constructor_selections(message, functions, span)?;
             if let Some(level) = level {
-                validate_expression_constructor_projections(level, functions, span)?;
+                validate_expression_constructor_selections(level, functions, span)?;
             }
         }
-        Statement::Empty | Statement::Return | Statement::Break => {}
+        Statement::Empty { .. } | Statement::Return { .. } | Statement::Break { .. } => {}
     }
     Ok(())
 }
 
-pub(super) fn validate_dae_constructor_field_projections(dae: &Dae) -> Result<(), ToDaeError> {
-    for variable in dae
-        .states
-        .values()
-        .chain(dae.algebraics.values())
-        .chain(dae.inputs.values())
-        .chain(dae.outputs.values())
-        .chain(dae.parameters.values())
-        .chain(dae.constants.values())
-        .chain(dae.discrete_reals.values())
-        .chain(dae.discrete_valued.values())
-        .chain(dae.derivative_aliases.values())
-    {
-        for expr in [
-            variable.start.as_ref(),
-            variable.min.as_ref(),
-            variable.max.as_ref(),
-            variable.nominal.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            validate_expression_constructor_projections(expr, &dae.functions, Span::DUMMY)?;
-        }
-    }
+pub(super) fn validate_dae_constructor_field_selections(dae: &Dae) -> Result<(), ToDaeError> {
+    let mut validator = ConstructorSelectionAttributeValidator {
+        functions: &dae.symbols.functions,
+        result: Ok(()),
+    };
+    validator.visit_variables(&dae.variables);
+    validator.result?;
 
     for equation in dae
-        .f_x
+        .continuous
+        .equations
         .iter()
-        .chain(dae.f_z.iter())
-        .chain(dae.f_m.iter())
-        .chain(dae.f_c.iter())
-        .chain(dae.initial_equations.iter())
+        .chain(dae.discrete.real_updates.iter())
+        .chain(dae.discrete.valued_updates.iter())
+        .chain(dae.conditions.equations.iter())
+        .chain(dae.initialization.equations.iter())
     {
-        validate_expression_constructor_projections(&equation.rhs, &dae.functions, equation.span)?;
+        validate_expression_constructor_selections(
+            &equation.rhs,
+            &dae.symbols.functions,
+            equation.span,
+        )?;
     }
 
-    for function in dae.functions.values() {
+    for function in dae.symbols.functions.values() {
         for param in function
             .inputs
             .iter()
@@ -664,19 +409,51 @@ pub(super) fn validate_dae_constructor_field_projections(dae: &Dae) -> Result<()
             .chain(function.locals.iter())
         {
             if let Some(default_expr) = &param.default {
-                validate_expression_constructor_projections(
+                validate_expression_constructor_selections(
                     default_expr,
-                    &dae.functions,
+                    &dae.symbols.functions,
                     function.span,
                 )?;
             }
         }
         for statement in &function.body {
-            validate_statement_constructor_projections(statement, &dae.functions, function.span)?;
+            validate_statement_constructor_selections(
+                statement,
+                &dae.symbols.functions,
+                function.span,
+            )?;
         }
     }
 
     Ok(())
+}
+
+struct ConstructorSelectionAttributeValidator<'a> {
+    functions: &'a IndexMap<VarName, Function>,
+    result: Result<(), ToDaeError>,
+}
+
+impl DaeVisitor for ConstructorSelectionAttributeValidator<'_> {
+    fn visit_variable(
+        &mut self,
+        _partition: dae::DaeVariablePartition,
+        _name: &VarName,
+        variable: &dae::Variable,
+    ) {
+        if self.result.is_err() {
+            return;
+        }
+        for (expr, span) in variable_attribute_expressions(variable) {
+            self.result = validate_expression_constructor_selections(
+                expr,
+                self.functions,
+                variable_attribute_span(expr, span),
+            );
+            if self.result.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 pub(super) fn validate_dae_references(
@@ -695,31 +472,44 @@ fn validate_variable_reference_attributes(
     dae: &Dae,
     known_refs: &KnownReferenceIndex,
 ) -> Result<(), ToDaeError> {
-    for variable in dae
-        .states
-        .values()
-        .chain(dae.algebraics.values())
-        .chain(dae.inputs.values())
-        .chain(dae.outputs.values())
-        .chain(dae.parameters.values())
-        .chain(dae.constants.values())
-        .chain(dae.discrete_reals.values())
-        .chain(dae.discrete_valued.values())
-        .chain(dae.derivative_aliases.values())
-    {
-        for expr in [
-            variable.start.as_ref(),
-            variable.min.as_ref(),
-            variable.max.as_ref(),
-            variable.nominal.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            validate_expression_references(expr, dae, Span::DUMMY, None, known_refs)?;
+    let mut validator = VariableReferenceAttributeValidator {
+        dae,
+        known_refs,
+        result: Ok(()),
+    };
+    validator.visit_variables(&dae.variables);
+    validator.result
+}
+
+struct VariableReferenceAttributeValidator<'a> {
+    dae: &'a Dae,
+    known_refs: &'a KnownReferenceIndex,
+    result: Result<(), ToDaeError>,
+}
+
+impl DaeVisitor for VariableReferenceAttributeValidator<'_> {
+    fn visit_variable(
+        &mut self,
+        _partition: dae::DaeVariablePartition,
+        _name: &VarName,
+        variable: &dae::Variable,
+    ) {
+        if self.result.is_err() {
+            return;
+        }
+        for (expr, span) in variable_attribute_expressions(variable) {
+            self.result = validate_expression_references(
+                expr,
+                self.dae,
+                variable_attribute_span(expr, span),
+                None,
+                self.known_refs,
+            );
+            if self.result.is_err() {
+                return;
+            }
         }
     }
-    Ok(())
 }
 
 fn validate_equation_rhs_references(
@@ -727,12 +517,13 @@ fn validate_equation_rhs_references(
     known_refs: &KnownReferenceIndex,
 ) -> Result<(), ToDaeError> {
     for equation in dae
-        .f_x
+        .continuous
+        .equations
         .iter()
-        .chain(dae.f_z.iter())
-        .chain(dae.f_m.iter())
-        .chain(dae.f_c.iter())
-        .chain(dae.initial_equations.iter())
+        .chain(dae.discrete.real_updates.iter())
+        .chain(dae.discrete.valued_updates.iter())
+        .chain(dae.conditions.equations.iter())
+        .chain(dae.initialization.equations.iter())
     {
         validate_expression_references(&equation.rhs, dae, equation.span, None, known_refs)?;
     }
@@ -743,17 +534,44 @@ fn validate_relation_references(
     dae: &Dae,
     known_refs: &KnownReferenceIndex,
 ) -> Result<(), ToDaeError> {
-    for relation in &dae.relation {
-        validate_expression_references(relation, dae, Span::DUMMY, None, known_refs)?;
+    for relation in &dae.conditions.relations {
+        validate_expression_references(
+            relation,
+            dae,
+            expression_validation_span(relation, Span::DUMMY),
+            None,
+            known_refs,
+        )?;
     }
     Ok(())
+}
+
+fn expression_validation_span(expr: &Expression, fallback: Span) -> Span {
+    expr.span().unwrap_or(fallback)
+}
+
+fn variable_attribute_expressions(
+    variable: &dae::Variable,
+) -> impl Iterator<Item = (&Expression, Option<Span>)> {
+    [
+        (variable.start.as_ref(), variable.start_attribute_span()),
+        (variable.min.as_ref(), variable.min_attribute_span()),
+        (variable.max.as_ref(), variable.max_attribute_span()),
+        (variable.nominal.as_ref(), variable.nominal_attribute_span()),
+    ]
+    .into_iter()
+    .filter_map(|(expr, span)| expr.map(|expr| (expr, span)))
+}
+
+fn variable_attribute_span(expr: &Expression, span: Option<Span>) -> Span {
+    span.unwrap_or_else(|| expression_validation_span(expr, Span::DUMMY))
 }
 
 fn validate_function_references(
     dae: &Dae,
     known_refs: &KnownReferenceIndex,
 ) -> Result<(), ToDaeError> {
-    for function in dae.functions.values() {
+    for function in dae.symbols.functions.values() {
         let function_scope: HashSet<&str> = function
             .inputs
             .iter()
@@ -806,60 +624,74 @@ fn validate_statement_slice_references(
 fn validate_statement_references(
     stmt: &Statement,
     dae: &Dae,
-    span: Span,
+    _span: Span,
     function_scope: Option<&HashSet<&str>>,
     known_refs: &KnownReferenceIndex,
 ) -> Result<(), ToDaeError> {
     match stmt {
-        Statement::Empty | Statement::Return | Statement::Break => Ok(()),
-        Statement::Assignment { comp, value } => validate_assignment_statement_references(
+        Statement::Empty { .. } | Statement::Return { .. } | Statement::Break { .. } => Ok(()),
+        Statement::Assignment {
+            comp, value, span, ..
+        } => validate_assignment_statement_references(
             comp,
             value,
             dae,
-            span,
+            *span,
             function_scope,
             known_refs,
         ),
-        Statement::For { indices, equations } => validate_for_statement_references(
+        Statement::For {
+            indices,
+            equations,
+            span,
+        } => validate_for_statement_references(
             indices,
             equations,
             dae,
-            span,
+            *span,
             function_scope,
             known_refs,
         ),
-        Statement::While(block) => {
-            validate_block_statement_references(block, dae, span, function_scope, known_refs)
+        Statement::While { block, span } => {
+            validate_block_statement_references(block, dae, *span, function_scope, known_refs)
         }
         Statement::If {
             cond_blocks,
             else_block,
+            span,
         } => validate_if_statement_references(
             cond_blocks,
             else_block.as_deref(),
             dae,
-            span,
+            *span,
             function_scope,
             known_refs,
         ),
-        Statement::When(blocks) => {
-            validate_when_statement_references(blocks, dae, span, function_scope, known_refs)
+        Statement::When { blocks, span } => {
+            validate_when_statement_references(blocks, dae, *span, function_scope, known_refs)
         }
-        Statement::FunctionCall { args, outputs, .. } => {
-            validate_function_call_statement_references(
-                args,
-                outputs,
-                dae,
-                span,
-                function_scope,
-                known_refs,
-            )
-        }
-        Statement::Reinit { variable, value } => validate_reinit_statement_references(
+        Statement::FunctionCall {
+            args,
+            outputs,
+            span,
+            ..
+        } => validate_function_call_statement_references(
+            args,
+            outputs,
+            dae,
+            *span,
+            function_scope,
+            known_refs,
+        ),
+        Statement::Reinit {
+            variable,
+            value,
+            span,
+        } => validate_reinit_statement_references(
             variable,
             value,
             dae,
-            span,
+            *span,
             function_scope,
             known_refs,
         ),
@@ -867,12 +699,13 @@ fn validate_statement_references(
             condition,
             message,
             level,
+            span,
         } => validate_assert_statement_references(
             condition,
             message,
-            level.as_ref(),
+            level.as_deref(),
             dae,
-            span,
+            *span,
             function_scope,
             known_refs,
         ),
@@ -952,7 +785,7 @@ fn validate_when_statement_references(
 
 fn validate_function_call_statement_references(
     args: &[Expression],
-    outputs: &[Expression],
+    outputs: &[ComponentReference],
     dae: &Dae,
     span: Span,
     function_scope: Option<&HashSet<&str>>,
@@ -962,7 +795,7 @@ fn validate_function_call_statement_references(
         validate_expression_references(arg, dae, span, function_scope, known_refs)?;
     }
     for output in outputs {
-        validate_expression_references(output, dae, span, function_scope, known_refs)?;
+        validate_component_reference_target(output, dae, span, function_scope, known_refs)?;
     }
     Ok(())
 }
@@ -1005,13 +838,14 @@ fn validate_component_reference_target(
 ) -> Result<(), ToDaeError> {
     if let Some(scope) = function_scope {
         let target_name = comp.to_var_name();
-        if function_scope_contains_reference(&target_name, scope) {
+        if function_scope_contains_reference(target_name.as_str(), scope) {
             return Ok(());
         }
     }
     let expr = Expression::VarRef {
-        name: comp.to_var_name(),
+        name: comp.to_var_name().into(),
         subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
     };
     validate_expression_references(&expr, dae, span, function_scope, known_refs)
 }
@@ -1023,8 +857,11 @@ fn validate_expression_references(
     function_scope: Option<&HashSet<&str>>,
     known_refs: &KnownReferenceIndex,
 ) -> Result<(), ToDaeError> {
+    let span = expr.span().unwrap_or(span);
     match expr {
-        Expression::VarRef { name, subscripts } => validate_var_ref_expression_references(
+        Expression::VarRef {
+            name, subscripts, ..
+        } => validate_var_ref_expression_references(
             name,
             subscripts,
             dae,
@@ -1045,6 +882,7 @@ fn validate_expression_references(
         Expression::If {
             branches,
             else_branch,
+            ..
         } => validate_if_expression_references(
             branches,
             else_branch,
@@ -1053,10 +891,12 @@ fn validate_expression_references(
             function_scope,
             known_refs,
         ),
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
             validate_expression_slice_references(elements, dae, span, function_scope, known_refs)
         }
-        Expression::Range { start, step, end } => validate_range_expression_references(
+        Expression::Range {
+            start, step, end, ..
+        } => validate_range_expression_references(
             start,
             step.as_deref(),
             end,
@@ -1069,6 +909,7 @@ fn validate_expression_references(
             expr,
             indices,
             filter,
+            ..
         } => validate_array_comprehension_references(
             expr,
             indices,
@@ -1078,31 +919,22 @@ fn validate_expression_references(
             function_scope,
             known_refs,
         ),
-        Expression::Index { base, subscripts } => {
+        Expression::Index {
+            base, subscripts, ..
+        } => {
             validate_expression_references(base, dae, span, function_scope, known_refs)?;
             validate_subscript_expr_references(subscripts, dae, span, function_scope, known_refs)?;
             Ok(())
         }
-        Expression::FieldAccess { base, .. } => match base.as_ref() {
-            Expression::VarRef { name, subscripts }
-                if is_known_namespace_prefix(name, known_refs) =>
-            {
-                validate_subscript_expr_references(
-                    subscripts,
-                    dae,
-                    span,
-                    function_scope,
-                    known_refs,
-                )
-            }
-            _ => validate_expression_references(base, dae, span, function_scope, known_refs),
-        },
-        Expression::Literal(_) | Expression::Empty => Ok(()),
+        Expression::FieldAccess { base, .. } => {
+            validate_expression_references(base, dae, span, function_scope, known_refs)
+        }
+        Expression::Literal { value: _, .. } | Expression::Empty { .. } => Ok(()),
     }
 }
 
 fn validate_var_ref_expression_references(
-    name: &VarName,
+    name: &rumoca_core::Reference,
     subscripts: &[Subscript],
     dae: &Dae,
     span: Span,
@@ -1110,7 +942,7 @@ fn validate_var_ref_expression_references(
     known_refs: &KnownReferenceIndex,
 ) -> Result<(), ToDaeError> {
     if let Some(scope) = function_scope
-        && function_scope_contains_reference(name, scope)
+        && function_scope_contains_reference(name.as_str(), scope)
     {
         return validate_subscript_expr_references(
             subscripts,
@@ -1122,60 +954,17 @@ fn validate_var_ref_expression_references(
     }
 
     if !is_known_dae_reference(name, known_refs) {
-        if is_package_like_qualified_name(name) {
-            return validate_subscript_expr_references(
-                subscripts,
-                dae,
-                span,
-                function_scope,
-                known_refs,
-            );
-        }
-        if is_known_namespace_prefix(name, known_refs) {
-            return validate_subscript_expr_references(
-                subscripts,
-                dae,
-                span,
-                function_scope,
-                known_refs,
-            );
-        }
-        if is_scoped_index_reference(name, known_refs) {
-            return validate_subscript_expr_references(
-                subscripts,
-                dae,
-                span,
-                function_scope,
-                known_refs,
-            );
-        }
         return Err(ToDaeError::unresolved_reference(name.as_str(), span));
     }
 
     validate_subscript_expr_references(subscripts, dae, span, function_scope, known_refs)
 }
 
-fn is_scoped_index_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> bool {
-    let Some(leaf) = name.as_str().rsplit('.').next() else {
-        return false;
-    };
-    name.as_str().contains('.') && known_refs.scoped_index_names.contains(leaf)
-}
-
-fn function_scope_contains_reference(name: &VarName, scope: &HashSet<&str>) -> bool {
-    if scope.contains(name.as_str()) {
+fn function_scope_contains_reference(name: &str, scope: &HashSet<&str>) -> bool {
+    if scope.contains(name) {
         return true;
     }
-    if name
-        .as_str()
-        .rsplit('.')
-        .next()
-        .is_some_and(|leaf| scope.contains(leaf))
-    {
-        return true;
-    }
-    path_utils::get_top_level_prefix(name.as_str())
-        .is_some_and(|prefix| scope.contains(prefix.as_str()))
+    path_utils::get_top_level_prefix(name).is_some_and(|prefix| scope.contains(prefix.as_str()))
 }
 
 fn validate_expression_slice_references(
@@ -1260,217 +1049,55 @@ fn validate_subscript_expr_references(
     known_refs: &KnownReferenceIndex,
 ) -> Result<(), ToDaeError> {
     for subscript in subscripts {
-        if let Subscript::Expr(expr) = subscript {
+        if let Subscript::Expr { expr, .. } = subscript {
             validate_expression_references(expr, dae, span, function_scope, known_refs)?;
         }
     }
     Ok(())
 }
 
-fn is_known_dae_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> bool {
+fn is_known_dae_reference(name: &rumoca_core::Reference, known_refs: &KnownReferenceIndex) -> bool {
     let raw = name.as_str();
     if raw == "time" {
         return true;
     }
 
-    if enum_literal_query_matches(known_refs, raw) {
+    if known_refs.enum_literal_queries.contains(raw) {
+        return true;
+    }
+    if known_refs
+        .enum_literal_queries
+        .iter()
+        .any(|candidate| enum_literal_alias_matches(candidate, raw))
+    {
         return true;
     }
     if known_refs.flat_queries.contains(raw) || known_refs.dae_queries.contains(raw) {
         return true;
     }
-    // Accept short leaf-name aliases for enum literals and known references.
-    // Libraries often use imported aliases and unqualified enum names (e.g. `TableDir`).
-    if !raw.contains('.') {
-        if known_refs.enum_suffix_queries.contains(raw) {
-            return true;
-        }
-        if known_refs.flat_dae_leaf_queries.contains(raw) {
-            return true;
-        }
+    // Accept short leaf-name aliases for enum literals. General variable
+    // references must already be resolved/qualified by earlier phases; accepting
+    // arbitrary leaf matches lets typos like `x` bind to unrelated `comp.x`.
+    if !path_utils::has_top_level_dot(raw)
+        && known_refs
+            .enum_literal_queries
+            .iter()
+            .any(|candidate| short_leaf_matches(candidate, raw))
+    {
+        return true;
     }
 
-    let known_via_subscript = path_utils::subscript_fallback_chain(&dae_to_flat_var_name(name))
+    path_utils::subscript_fallback_chain(dae_to_flat_var_name(name.var_name()).as_str())
         .into_iter()
         .any(|candidate| {
             known_refs.flat_queries.contains(candidate.as_str())
                 || known_refs.dae_queries.contains(candidate.as_str())
-        });
-    let known_via_outer_scope =
-        resolves_via_outer_scope_component_modifier_fallback(raw, known_refs);
-    let known_via_leading_scope = resolves_via_leading_component_scope_fallback(raw, known_refs);
-    let known_via_member_value_scope =
-        resolves_via_component_member_value_fallback(raw, known_refs);
-    let known_via_nested_member_value_scope =
-        resolves_via_component_nested_member_value_fallback(raw, known_refs);
-    let known_via_component_package_constant_scope =
-        resolves_via_component_package_constant_fallback(raw, known_refs);
-    known_via_subscript
-        || known_via_outer_scope
-        || known_via_leading_scope
-        || known_via_member_value_scope
-        || known_via_nested_member_value_scope
-        || known_via_component_package_constant_scope
-}
-
-fn is_known_namespace_prefix(name: &VarName, known_refs: &KnownReferenceIndex) -> bool {
-    known_refs.namespace_prefixes.contains(name.as_str())
-}
-
-fn is_package_like_qualified_name(name: &VarName) -> bool {
-    let raw = name.as_str();
-    if !raw.contains('.') {
-        return false;
-    }
-    raw.split('.').all(is_namespace_segment)
-}
-
-fn is_namespace_segment(segment: &str) -> bool {
-    let mut chars = segment.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    first.is_ascii_uppercase() || (first == '\'' && segment.ends_with('\''))
-}
-
-fn resolves_via_outer_scope_component_modifier_fallback(
-    raw: &str,
-    known_refs: &KnownReferenceIndex,
-) -> bool {
-    let segments = path_utils::split_path_with_indices(raw);
-    if segments.len() < 3 {
-        return false;
-    }
-
-    // MLS §7.2/§7.3: names used in component modifiers are looked up in the
-    // enclosing lexical scope. If an earlier phase over-qualifies that name
-    // with the modified component segment (e.g. `a.b.k` vs `a.k`), allow
-    // fallback to the enclosing scope spelling.
-    let mut collapsed = Vec::with_capacity(segments.len() - 1);
-    collapsed.extend(segments.iter().take(segments.len() - 2).copied());
-    collapsed.push(segments[segments.len() - 1]);
-    let candidate = collapsed.join(".");
-
-    known_refs.flat_queries.contains(candidate.as_str())
-        || known_refs.dae_queries.contains(candidate.as_str())
-}
-
-fn resolves_via_leading_component_scope_fallback(
-    raw: &str,
-    known_refs: &KnownReferenceIndex,
-) -> bool {
-    let segments = path_utils::split_path_with_indices(raw);
-    if segments.len() < 2 {
-        return false;
-    }
-
-    // Some expressions are over-qualified with a leading instance segment
-    // (`inst.Type.EnumLiteral`). Try dropping that leading segment only.
-    let candidate = segments[1..].join(".");
-    reference_query_matches(known_refs, &candidate)
-}
-
-fn resolves_via_component_member_value_fallback(
-    raw: &str,
-    known_refs: &KnownReferenceIndex,
-) -> bool {
-    let segments = path_utils::split_path_with_indices(raw);
-    if segments.len() != 3 {
-        return false;
-    }
-
-    // Guarded fallback for over-qualified modifier values like
-    // `component.member.valueSymbol`, where `valueSymbol` belongs to the
-    // enclosing scope (MLS §7.2/§7.3 name lookup in modifications).
-    if !segments[2].starts_with(segments[1]) {
-        return false;
-    }
-    if reference_query_matches(known_refs, segments[2]) {
-        return true;
-    }
-
-    known_refs.flat_dae_leaf_queries.contains(segments[2])
-}
-
-fn resolves_via_component_nested_member_value_fallback(
-    raw: &str,
-    known_refs: &KnownReferenceIndex,
-) -> bool {
-    let segments = path_utils::split_path_with_indices(raw);
-    if segments.len() < 4 {
-        return false;
-    }
-
-    // Guarded fallback for nested over-qualified modifier values like
-    // `inst.scope.arr[i].scope`, where the trailing scope symbol refers to
-    // an enclosing declaration rather than the indexed member chain.
-    let scope_name = segments[1];
-    let trailing = segments[segments.len() - 1];
-    if trailing != scope_name && !trailing.starts_with(scope_name) {
-        return false;
-    }
-
-    if reference_query_matches(known_refs, trailing) {
-        return true;
-    }
-    known_refs.flat_dae_leaf_queries.contains(trailing)
-}
-
-fn resolves_via_component_package_constant_fallback(
-    raw: &str,
-    known_refs: &KnownReferenceIndex,
-) -> bool {
-    let segments = path_utils::split_path_with_indices(raw);
-    if segments.len() != 2 {
-        return false;
-    }
-
-    let symbol = segments[1];
-    if !symbol
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-    {
-        return false;
-    }
-
-    let base = segments[0];
-    if reference_query_matches(known_refs, base) {
-        return true;
-    }
-
-    if reference_query_matches(known_refs, symbol) {
-        return true;
-    }
-
-    // Guarded fallback for over-qualified lexical symbols emitted as
-    // `component.symbol` instead of lexical `symbol` from class/package scope.
-    known_refs.flat_dae_leaf_queries.contains(symbol)
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_known_refs(
-        flat_queries: HashSet<String>,
-        dae_queries: HashSet<String>,
-        enum_literal_queries: HashSet<String>,
-    ) -> KnownReferenceIndex {
-        KnownReferenceIndex {
-            enum_suffix_queries: build_enum_suffix_query_set(&enum_literal_queries),
-            flat_dae_leaf_queries: build_leaf_query_set(&flat_queries, &dae_queries),
-            namespace_prefixes: build_namespace_prefix_set(
-                [&flat_queries, &dae_queries, &enum_literal_queries]
-                    .into_iter()
-                    .flatten(),
-            ),
-            flat_queries,
-            dae_queries,
-            enum_literal_queries,
-            scoped_index_names: HashSet::new(),
-        }
-    }
 
     #[test]
     fn flat_reference_queries_include_normalized_member_names() {
@@ -1513,112 +1140,79 @@ mod tests {
             2,
         );
 
-        let known = test_known_refs(
-            HashSet::new(),
-            HashSet::new(),
-            build_enum_literal_query_set(&ordinals),
-        );
-
-        assert!(is_known_dae_reference(&VarName::from("TableDir"), &known));
-    }
-
-    #[test]
-    fn known_reference_accepts_outer_scope_modifier_fallback() {
-        let known_refs = test_known_refs(
-            HashSet::from([String::from("rectifier.RonThyristor")]),
-            HashSet::new(),
-            HashSet::new(),
-        );
+        let known = KnownReferenceIndex {
+            flat_queries: HashSet::new(),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: build_enum_literal_query_set(&ordinals),
+        };
 
         assert!(is_known_dae_reference(
-            &VarName::new("rectifier.thyristor_p.RonThyristor"),
-            &known_refs
+            &rumoca_core::Reference::new("TableDir"),
+            &known
         ));
     }
 
     #[test]
-    fn known_reference_accepts_leading_component_scope_fallback() {
-        let known_refs = test_known_refs(
-            HashSet::new(),
-            HashSet::new(),
-            HashSet::from([String::from(
-                "Modelica.Electrical.PowerConverters.Types.PWMType.SVPWM",
-            )]),
+    fn known_reference_accepts_qualified_local_enum_literal_alias() {
+        let mut ordinals = IndexMap::new();
+        ordinals.insert(
+            "Modelica.Electrical.Digital.Interfaces.Logic.'U'".to_string(),
+            0,
         );
 
+        let known = KnownReferenceIndex {
+            flat_queries: HashSet::new(),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: build_enum_literal_query_set(&ordinals),
+        };
+
         assert!(is_known_dae_reference(
-            &VarName::new("pwm.PowerConverters.Types.PWMType.SVPWM"),
-            &known_refs
+            &rumoca_core::Reference::new("gate.L.'U'"),
+            &known
+        ));
+        assert!(!is_known_dae_reference(
+            &rumoca_core::Reference::new("gate.L.U"),
+            &known
+        ));
+        assert!(!is_known_dae_reference(
+            &rumoca_core::Reference::new("gate[index.with.dot].L"),
+            &known
         ));
     }
 
     #[test]
-    fn resolve_constructor_function_accepts_unique_suffix_match() {
-        let name = VarName::new("Machines.Losses.BrushParameters");
-        let full = VarName::new("Modelica.Electrical.Machines.Losses.BrushParameters");
-        let mut functions = IndexMap::new();
-        functions.insert(full.clone(), Function::new(full.as_str(), Span::DUMMY));
+    fn known_reference_short_leaf_matching_ignores_dots_inside_indices() {
+        let known = KnownReferenceIndex {
+            flat_queries: HashSet::from(["system.a[index.with.dot]".to_string()]),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: HashSet::new(),
+        };
 
-        let resolved = resolve_constructor_function(&name, &functions);
-        assert!(resolved.is_some());
-    }
-
-    #[test]
-    fn known_reference_accepts_component_member_value_fallback() {
-        let known_refs = test_known_refs(
-            HashSet::from([String::from("cellData2")]),
-            HashSet::new(),
-            HashSet::new(),
-        );
-
-        assert!(is_known_dae_reference(
-            &VarName::new("battery2.cellData.cellData2"),
-            &known_refs
+        assert!(!is_known_dae_reference(
+            &rumoca_core::Reference::new("a[index.with.dot]"),
+            &known
+        ));
+        assert!(!is_known_dae_reference(
+            &rumoca_core::Reference::new("a.nested[index.with.dot]"),
+            &known
         ));
     }
 
     #[test]
-    fn known_reference_accepts_component_nested_member_value_fallback() {
-        let known_refs = test_known_refs(
-            HashSet::from([String::from("stackData")]),
-            HashSet::new(),
-            HashSet::new(),
-        );
+    fn known_reference_rejects_unqualified_leaf_of_component_member() {
+        let known = KnownReferenceIndex {
+            flat_queries: HashSet::from(["pid.x".to_string(), "x2".to_string()]),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: HashSet::new(),
+        };
 
-        assert!(is_known_dae_reference(
-            &VarName::new("stack.stackData.cellData[1,1].stackData"),
-            &known_refs
-        ));
-    }
-
-    #[test]
-    fn function_scope_contains_reference_accepts_overqualified_leaf() {
-        let mut scope = HashSet::new();
-        scope.insert("k");
-        assert!(function_scope_contains_reference(
-            &VarName::new("symmetricalComponents_1.k"),
-            &scope
-        ));
-    }
-
-    #[test]
-    fn known_reference_accepts_component_qualified_package_constant() {
-        let known_refs = test_known_refs(
-            HashSet::from([
-                String::from("medium"),
-                String::from("Modelica.Media.Air.MoistAir.MMX"),
-            ]),
-            HashSet::new(),
-            HashSet::new(),
-        );
-
-        assert!(is_known_dae_reference(
-            &VarName::new("medium.MMX"),
-            &known_refs
+        assert!(!is_known_dae_reference(
+            &rumoca_core::Reference::new("x"),
+            &known
         ));
         assert!(is_known_dae_reference(
-            &VarName::new("medium.k_mair"),
-            &known_refs
+            &rumoca_core::Reference::new("pid.x"),
+            &known
         ));
     }
 }

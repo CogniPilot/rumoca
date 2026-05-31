@@ -3,6 +3,9 @@
 //! Tests for the 9 simulation contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
+use rumoca_compile::compile::core as rumoca_core;
+use rumoca_compile::compile::core::ExpressionVisitor;
+use rumoca_compile::{Session, SessionConfig};
 use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_resolve_failure_with_code,
     expect_success, is_standalone_simulatable, unbound_fixed_parameter_names,
@@ -26,8 +29,11 @@ fn sim_002_initialization_fixed() {
         "Test",
     );
     // Check that start value is present in DAE
-    assert!(!result.dae.states.is_empty(), "Should have state variables");
-    let state = result.dae.states.values().next().unwrap();
+    assert!(
+        !result.dae.variables.states.is_empty(),
+        "Should have state variables"
+    );
+    let state = result.dae.variables.states.values().next().unwrap();
     assert!(state.start.is_some(), "State should have start value");
 }
 
@@ -50,7 +56,7 @@ fn sim_003_parameter_fixed_default() {
         "Test",
     );
     assert!(
-        !result.dae.parameters.is_empty(),
+        !result.dae.variables.parameters.is_empty(),
         "Should have parameters in DAE"
     );
 }
@@ -124,6 +130,7 @@ fn sim_004_non_parameter_variable_defaults_fixed_false() {
 
     let state = result
         .dae
+        .variables
         .states
         .iter()
         .find(|(name, _)| name.as_str() == "x")
@@ -131,7 +138,7 @@ fn sim_004_non_parameter_variable_defaults_fixed_false() {
         .unwrap_or_else(|| {
             panic!(
                 "expected state x, got states={:?}",
-                result.dae.states.keys()
+                result.dae.variables.states.keys()
             )
         });
     assert_eq!(
@@ -139,7 +146,7 @@ fn sim_004_non_parameter_variable_defaults_fixed_false() {
         "non-parameter variables should not default to fixed=true"
     );
     assert!(
-        result.dae.initial_equations.is_empty(),
+        result.dae.initialization.equations.is_empty(),
         "start value without fixed=true must not add an initialization equation"
     );
 }
@@ -162,11 +169,11 @@ fn sim_009_dae_has_ode_equations() {
         "Test",
     );
     assert!(
-        !result.dae.f_x.is_empty(),
+        !result.dae.continuous.equations.is_empty(),
         "DAE should have continuous equations (f_x)"
     );
     assert!(
-        !result.dae.states.is_empty(),
+        !result.dae.variables.states.is_empty(),
         "DAE should have state variables"
     );
 }
@@ -185,7 +192,7 @@ fn sim_009_dae_has_algebraic_equations() {
     );
     // The model has equations (no der)
     assert!(
-        !result.dae.f_x.is_empty(),
+        !result.dae.continuous.equations.is_empty(),
         "DAE should have equations (f_x)"
     );
 }
@@ -205,11 +212,11 @@ fn sim_009_dae_structure_ode_and_algebraic() {
         "Test",
     );
     assert!(
-        !result.dae.states.is_empty(),
+        !result.dae.variables.states.is_empty(),
         "Should have state variables for ODE"
     );
     assert!(
-        !result.dae.f_x.is_empty(),
+        !result.dae.continuous.equations.is_empty(),
         "Should have continuous equations (f_x)"
     );
 }
@@ -230,8 +237,8 @@ fn sim_basic_integrator() {
     "#,
         "Integrator",
     );
-    assert_eq!(result.dae.states.len(), 1);
-    assert_eq!(result.dae.f_x.len(), 1);
+    assert_eq!(result.dae.variables.states.len(), 1);
+    assert_eq!(result.dae.continuous.equations.len(), 1);
 }
 
 #[test]
@@ -250,7 +257,7 @@ fn sim_spring_mass() {
     "#,
         "SpringMass",
     );
-    assert_eq!(result.dae.states.len(), 2);
+    assert_eq!(result.dae.variables.states.len(), 2);
 }
 
 #[test]
@@ -266,8 +273,8 @@ fn sim_with_parameters() {
     "#,
         "Test",
     );
-    assert!(!result.dae.parameters.is_empty());
-    assert!(!result.dae.states.is_empty());
+    assert!(!result.dae.variables.parameters.is_empty());
+    assert!(!result.dae.variables.states.is_empty());
 }
 
 #[test]
@@ -286,14 +293,14 @@ fn sim_with_when_clause() {
         "Test",
     );
     assert!(
-        !result.dae.relation.is_empty() && !result.dae.f_c.is_empty(),
+        !result.dae.conditions.relations.is_empty() && !result.dae.conditions.equations.is_empty(),
         "DAE should expose canonical condition equations"
     );
 }
 
 #[test]
-fn sim_009_strict_solver_dae_rejects_unlowered_sample_in_fx() {
-    expect_failure_in_phase_with_code(
+fn sim_009_sample_in_fx_lowers_to_internal_runtime_operator() {
+    let result = expect_success(
         r#"
         model Test
             Real x(start = 0);
@@ -302,8 +309,28 @@ fn sim_009_strict_solver_dae_rejects_unlowered_sample_in_fx() {
         end Test;
     "#,
         "Test",
-        FailedPhase::ToDae,
-        "ED014",
+    );
+
+    assert!(
+        result
+            .dae
+            .continuous
+            .equations
+            .iter()
+            .any(|eq| expression_contains_function(
+                &eq.rhs,
+                rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+            )),
+        "sample() in f_x should lower to the internal runtime sample operator"
+    );
+    assert!(
+        !result
+            .dae
+            .continuous
+            .equations
+            .iter()
+            .any(|eq| expression_contains_builtin_sample(&eq.rhs)),
+        "source-level BuiltinFunction::Sample must not survive the DAE boundary"
     );
 }
 
@@ -341,7 +368,7 @@ fn sim_009_sample_allowed_in_discrete_when_condition() {
     );
 
     assert!(
-        !result.dae.f_m.is_empty(),
+        !result.dae.discrete.valued_updates.is_empty(),
         "sample() in when-condition should lower to discrete partition equations"
     );
 }
@@ -364,13 +391,14 @@ fn sim_009_runtime_metadata_consistent_for_hybrid_model() {
     );
 
     assert_eq!(
-        result.dae.f_c.len(),
-        result.dae.relation.len(),
+        result.dae.conditions.equations.len(),
+        result.dae.conditions.relations.len(),
         "f_c and relation must stay aligned for hybrid models"
     );
     assert!(
         result
             .dae
+            .events
             .scheduled_time_events
             .iter()
             .any(|event| (*event - 0.5).abs() <= 1.0e-12),
@@ -379,11 +407,65 @@ fn sim_009_runtime_metadata_consistent_for_hybrid_model() {
     assert!(
         result
             .dae
+            .events
             .scheduled_time_events
             .iter()
             .all(|event| event.is_finite()),
         "scheduled_time_events must contain finite values"
     );
+}
+
+fn expression_contains_function(expr: &rumoca_core::Expression, target: &str) -> bool {
+    let mut visitor = FunctionNameFinder {
+        target,
+        found: false,
+    };
+    visitor.visit_expression(expr);
+    visitor.found
+}
+
+struct FunctionNameFinder<'a> {
+    target: &'a str,
+    found: bool,
+}
+
+impl ExpressionVisitor for FunctionNameFinder<'_> {
+    fn visit_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+    ) {
+        if name.as_str() == self.target {
+            self.found = true;
+            return;
+        }
+        self.walk_function_call(name, args, is_constructor);
+    }
+}
+
+fn expression_contains_builtin_sample(expr: &rumoca_core::Expression) -> bool {
+    let mut visitor = BuiltinSampleFinder { found: false };
+    visitor.visit_expression(expr);
+    visitor.found
+}
+
+struct BuiltinSampleFinder {
+    found: bool,
+}
+
+impl ExpressionVisitor for BuiltinSampleFinder {
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if *function == rumoca_core::BuiltinFunction::Sample {
+            self.found = true;
+            return;
+        }
+        self.walk_builtin_call(function, args);
+    }
 }
 
 #[test]
@@ -404,19 +486,20 @@ fn sim_009_fc_relation_covers_if_and_when_conditions() {
     );
 
     assert_eq!(
-        result.dae.f_c.len(),
-        result.dae.relation.len(),
+        result.dae.conditions.equations.len(),
+        result.dae.conditions.relations.len(),
         "f_c and relation must remain 1:1"
     );
     assert_eq!(
-        result.dae.relation.len(),
+        result.dae.conditions.relations.len(),
         2,
         "expected both if-condition and when-condition in relation"
     );
 
     let relation_text: Vec<String> = result
         .dae
-        .relation
+        .conditions
+        .relations
         .iter()
         .map(|expr| format!("{expr:?}"))
         .collect();
@@ -444,11 +527,11 @@ fn sim_009_fc_relation_ignores_noevent_conditions() {
     );
 
     assert!(
-        result.dae.relation.is_empty(),
+        result.dae.conditions.relations.is_empty(),
         "noEvent condition must not generate relation entries"
     );
     assert!(
-        result.dae.f_c.is_empty(),
+        result.dae.conditions.equations.is_empty(),
         "noEvent condition must not generate f_c entries"
     );
 }
@@ -471,7 +554,12 @@ fn sim_005_discrete_solved_form_acyclic_dependency() {
     );
 
     assert!(
-        result.dae.f_m.iter().all(|eq| eq.lhs.is_some()),
+        result
+            .dae
+            .discrete
+            .valued_updates
+            .iter()
+            .all(|eq| eq.lhs.is_some()),
         "f_m equations must be explicit assignments"
     );
 }
@@ -497,20 +585,21 @@ fn sim_005_conditional_when_missing_branch_uses_pre_fallback() {
 
     let k_eq = result
         .dae
-        .f_m
+        .discrete
+        .valued_updates
         .iter()
         .find(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "k"))
         .unwrap_or_else(|| {
             panic!(
                 "expected explicit f_m assignment for k; f_m={:?}",
-                result.dae.f_m
+                result.dae.discrete.valued_updates
             )
         });
 
     let rhs_debug = format!("{:?}", k_eq.rhs);
     assert!(
-        rhs_debug.contains("BuiltinCall") && rhs_debug.contains("Pre"),
-        "conditional when lowering must preserve pre(k) fallback in missing branches; rhs={rhs_debug}"
+        rhs_debug.contains("__pre__.k"),
+        "conditional when lowering must preserve lowered pre(k) fallback in missing branches; rhs={rhs_debug}"
     );
 }
 
@@ -561,5 +650,48 @@ fn sim_009_unresolved_reference_rejected_in_resolve() {
     "#,
         "Test",
         "ER002",
+    );
+}
+
+#[test]
+fn sim_009_unresolved_reference_rejected_in_multi_document_resolve() {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document(
+            "library.mo",
+            r#"
+            record Inner
+                Real x;
+            end Inner;
+        "#,
+        )
+        .unwrap_or_else(|e| panic!("library parse failed: {e}"));
+    session
+        .add_document(
+            "target.mo",
+            r#"
+            model Test
+                Inner pid;
+                Real x2;
+            equation
+                pid.x = 0;
+                der(x2) = x;
+            end Test;
+        "#,
+        )
+        .unwrap_or_else(|e| panic!("target parse failed: {e}"));
+
+    if let Ok(phase_result) = session.compile_model_phases("Test") {
+        panic!("expected resolve failure, got {phase_result:?}");
+    }
+
+    let diagnostics = session.compile_model_diagnostics("Test");
+    assert!(
+        diagnostics.diagnostics.iter().any(|diag| {
+            diag.code.as_deref() == Some("ER002")
+                && diag.message.contains("unresolved component reference: 'x'")
+        }),
+        "expected ER002 unresolved `x`, got {:?}",
+        diagnostics.diagnostics
     );
 }

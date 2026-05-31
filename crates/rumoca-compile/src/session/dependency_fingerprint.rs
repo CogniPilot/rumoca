@@ -11,7 +11,22 @@ pub(crate) type Fingerprint = [u8; 32];
 #[derive(Debug, Clone)]
 pub(crate) struct CompileCacheEntry {
     pub(crate) fingerprint: Fingerprint,
-    pub(crate) result: PhaseResult,
+    pub(crate) result: CachedCompileResult,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum CachedCompileResult {
+    Full(PhaseResult),
+    Success,
+}
+
+impl CachedCompileResult {
+    pub(crate) fn from_phase_result(result: PhaseResult) -> Self {
+        match result {
+            PhaseResult::Success(_) => Self::Success,
+            result => Self::Full(result),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -55,13 +70,21 @@ impl DependencyFingerprintCache {
     }
 
     pub(crate) fn merge_from(&mut self, other: &Self) {
+        let mut changed_classes = IndexSet::new();
+
         for (qualified_name, hash) in &other.class_hashes {
+            if self.class_hashes.get(qualified_name) != Some(hash) {
+                changed_classes.insert(qualified_name.clone());
+            }
             self.class_hashes.insert(qualified_name.clone(), *hash);
         }
         for (qualified_name, deps) in &other.class_deps {
+            if self.class_deps.get(qualified_name) != Some(deps) {
+                changed_classes.insert(qualified_name.clone());
+            }
             self.class_deps.insert(qualified_name.clone(), deps.clone());
         }
-        self.model_fingerprints.clear();
+        self.invalidate_model_fingerprints_for(changed_classes);
     }
 
     pub(crate) fn aggregate_fingerprint(&self) -> Fingerprint {
@@ -95,9 +118,51 @@ impl DependencyFingerprintCache {
         class_name: &str,
         deps: impl IntoIterator<Item = String>,
     ) {
+        let mut changed_classes = IndexSet::new();
+        changed_classes.insert(class_name.to_string());
         self.class_deps
             .insert(class_name.to_string(), deps.into_iter().collect());
-        self.model_fingerprints.clear();
+        self.invalidate_model_fingerprints_for(changed_classes);
+    }
+
+    fn invalidate_model_fingerprints_for(&mut self, changed_classes: IndexSet<String>) {
+        if changed_classes.is_empty() || self.model_fingerprints.is_empty() {
+            return;
+        }
+
+        let affected = self.affected_classes(changed_classes);
+        self.model_fingerprints
+            .retain(|model_name, _| !affected.contains(model_name));
+    }
+
+    fn affected_classes(&self, changed_classes: IndexSet<String>) -> IndexSet<String> {
+        let reverse_deps = self.reverse_dependencies();
+        let mut affected = IndexSet::new();
+        let mut pending = changed_classes.into_iter().collect::<Vec<_>>();
+
+        while let Some(class_name) = pending.pop() {
+            if !affected.insert(class_name.clone()) {
+                continue;
+            }
+            if let Some(dependents) = reverse_deps.get(&class_name) {
+                pending.extend(dependents.iter().cloned());
+            }
+        }
+
+        affected
+    }
+
+    fn reverse_dependencies(&self) -> IndexMap<String, IndexSet<String>> {
+        let mut reverse_deps: IndexMap<String, IndexSet<String>> = IndexMap::new();
+        for (class_name, deps) in &self.class_deps {
+            for dep in deps {
+                reverse_deps
+                    .entry(dep.clone())
+                    .or_default()
+                    .insert(class_name.clone());
+            }
+        }
+        reverse_deps
     }
 
     fn model_fingerprint_recursive(
@@ -198,6 +263,24 @@ mod tests {
     use super::*;
     use crate::Session;
 
+    fn test_fingerprint(byte: u8) -> Fingerprint {
+        [byte; 32]
+    }
+
+    fn cache_with_classes(classes: &[(&str, u8, &[&str])]) -> DependencyFingerprintCache {
+        let mut cache = DependencyFingerprintCache::default();
+        for (class_name, hash_byte, deps) in classes {
+            cache
+                .class_hashes
+                .insert((*class_name).to_string(), test_fingerprint(*hash_byte));
+            cache.class_deps.insert(
+                (*class_name).to_string(),
+                deps.iter().map(|dep| (*dep).to_string()).collect(),
+            );
+        }
+        cache
+    }
+
     #[test]
     fn from_tree_collects_import_dependencies() {
         let source = r#"
@@ -238,6 +321,57 @@ mod tests {
         assert!(
             deps.iter().any(|dep| dep == "P.Dep"),
             "import dependency should be included in class dependency graph"
+        );
+    }
+
+    #[test]
+    fn merge_from_keeps_unaffected_model_fingerprint_cache_entries() {
+        let mut cache = cache_with_classes(&[
+            ("P.Root", 1, &["P.Dep"]),
+            ("P.Dep", 2, &[]),
+            ("P.Sibling", 3, &[]),
+        ]);
+
+        let root_fingerprint = cache.model_fingerprint("P.Root");
+        let sibling_fingerprint = cache.model_fingerprint("P.Sibling");
+
+        let updated = cache_with_classes(&[("P.Sibling", 4, &[])]);
+        cache.merge_from(&updated);
+
+        assert_eq!(
+            cache.model_fingerprints.get("P.Root"),
+            Some(&root_fingerprint),
+            "unaffected reachable closures should stay warm after an unrelated class changes"
+        );
+        assert_ne!(
+            cache.model_fingerprint("P.Sibling"),
+            sibling_fingerprint,
+            "changed classes should be recomputed"
+        );
+    }
+
+    #[test]
+    fn merge_from_invalidates_reverse_dependency_closure() {
+        let mut cache = cache_with_classes(&[
+            ("P.Root", 1, &["P.Dep"]),
+            ("P.Dep", 2, &[]),
+            ("P.Sibling", 3, &[]),
+        ]);
+
+        cache.model_fingerprint("P.Root");
+        let sibling_fingerprint = cache.model_fingerprint("P.Sibling");
+
+        let updated = cache_with_classes(&[("P.Dep", 5, &[])]);
+        cache.merge_from(&updated);
+
+        assert!(
+            !cache.model_fingerprints.contains_key("P.Root"),
+            "dependent model fingerprints must be invalidated when a dependency changes"
+        );
+        assert_eq!(
+            cache.model_fingerprints.get("P.Sibling"),
+            Some(&sibling_fingerprint),
+            "unrelated cached model fingerprints should remain warm"
         );
     }
 

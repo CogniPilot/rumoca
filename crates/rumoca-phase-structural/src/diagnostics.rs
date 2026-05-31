@@ -1,6 +1,7 @@
 //! Structural diagnostics: singularity checks and algebraic loop reporting.
 
-use rumoca_core::{Diagnostic, Label, PrimaryLabel, Span};
+use rumoca_core::Span;
+use rumoca_core::{Diagnostic, Label, PrimaryLabel};
 use rumoca_ir_dae as dae;
 
 use crate::incidence::Incidence;
