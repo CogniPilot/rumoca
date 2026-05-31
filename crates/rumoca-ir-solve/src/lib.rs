@@ -1246,7 +1246,11 @@ pub struct SolveClockPartition {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DiscreteEventPreMode {
+    /// Use the value from the start of the current clock/event tick.
+    EventEntry,
+    /// Hold `pre(..)` fixed for one event-iteration pass.
     Fixed,
+    /// Read the current event-iteration fixed-point state.
     #[default]
     FollowCurrent,
 }

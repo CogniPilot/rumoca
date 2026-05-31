@@ -152,7 +152,8 @@ fn test_lower_pre_does_not_allocate_sampled_time_parameter() -> Result<(), ToDae
 }
 
 #[test]
-fn test_lower_pre_keeps_time_edge_guard_live_for_scheduled_event() -> Result<(), ToDaeError> {
+fn test_lower_pre_does_not_rewrite_memoryless_time_edge_to_raw_relation() -> Result<(), ToDaeError>
+{
     let mut dae = dae::Dae::new();
     let time_guard = rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Ge,
@@ -180,11 +181,77 @@ fn test_lower_pre_keeps_time_edge_guard_live_for_scheduled_event() -> Result<(),
         matches!(
             dae.discrete.real_updates[0].rhs,
             rumoca_core::Expression::Binary {
-                op: rumoca_core::OpBinary::Ge,
+                op: rumoca_core::OpBinary::And,
                 ..
             }
         ),
-        "time-threshold edge guards lower to the live scheduled-event condition"
+        "memoryless time-threshold edge guards must not lower to a level-sensitive raw relation"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_lower_pre_preserves_pre_time_threshold_condition_memory() -> Result<(), ToDaeError> {
+    let mut dae = dae::Dae::new();
+    dae.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("deadline"),
+        discrete_valued_var("deadline"),
+    );
+    dae.variables
+        .discrete_valued
+        .insert(rumoca_core::VarName::new("c"), discrete_valued_var("c"));
+    let time_guard = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Ge,
+        lhs: Box::new(var_ref("time")),
+        rhs: Box::new(pre_call("deadline")),
+        span: rumoca_core::Span::DUMMY,
+    };
+    dae.conditions.relations.push(time_guard.clone());
+    dae.conditions.equations.push(dae::Equation::explicit(
+        rumoca_core::VarName::new("c"),
+        time_guard.clone(),
+        rumoca_core::Span::default(),
+        "condition variable".to_string(),
+    ));
+    dae.discrete.real_updates.push(dae::Equation::explicit(
+        rumoca_core::VarName::new("v"),
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Edge,
+            args: vec![time_guard],
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::default(),
+        "pre time-event guard".to_string(),
+    ));
+
+    lower_pre_operator(&mut dae)?;
+
+    assert!(
+        matches!(
+            &dae.discrete.real_updates[0].rhs,
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::And,
+                lhs,
+                rhs,
+                ..
+            } if matches!(
+                lhs.as_ref(),
+                rumoca_core::Expression::VarRef { name, subscripts, .. }
+                    if name.as_str() == "c" && subscripts.is_empty()
+            ) && matches!(
+                rhs.as_ref(),
+                rumoca_core::Expression::Unary {
+                    op: rumoca_core::OpUnary::Not,
+                    rhs,
+                    ..
+                } if matches!(
+                    rhs.as_ref(),
+                    rumoca_core::Expression::VarRef { name, subscripts, .. }
+                        if name.as_str() == "__pre__.c" && subscripts.is_empty()
+                )
+            )
+        ),
+        "pre-based time-threshold edge guards keep condition-memory edge detection"
     );
     Ok(())
 }

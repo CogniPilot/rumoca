@@ -8,142 +8,63 @@
 // handles that live with the leaked solver problem.
 #![allow(clippy::arc_with_non_send_sync)]
 
-mod discrete_updates;
-mod initialization;
-mod no_state;
+mod bdf;
+mod error;
 mod ode;
-mod panic_capture;
-mod projection;
-mod root_search;
-mod solver_state;
-mod state_only_eligibility;
+mod prepared;
+mod runtime;
 pub mod stepper;
 
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+use bdf::can_use_state_only_bdf;
+pub(crate) use bdf::{
+    bdf_derivative_guess, initial_bdf_state, reset_solver_state, solver_call, write_state_to_solver,
+};
 use diffsol::{
     BacktrackingLineSearch, BdfState, FaerSparseLU, FaerSparseMat, MatrixCommon,
     NewtonNonlinearSolver, OdeEquations, OdeSolverMethod, OdeSolverState, OdeSolverStopReason,
     VectorHost,
 };
-pub(crate) use discrete_updates::{
-    EventUpdateInput, apply_discrete_value, apply_event_updates,
-    apply_event_updates_with_event_pre, apply_initialization_updates,
-    apply_post_initial_event_updates, apply_runtime_assignments, seed_initial_discrete_values,
-    settle_algebraics_and_relation_memory,
-};
-pub(crate) use initialization::{bdf_derivative_guess, initial_bdf_state};
-use no_state::{
-    check_no_state_initialization, prepare_fixed_event_left_limit, simulate_no_state_solve_ir,
-};
 use rumoca_eval_solve::{
-    self as solve_eval, RowEvalContext, SolveRuntime, next_runtime_event_stop,
-    visible_values_with_context,
+    self as solve_eval, RowEvalContext, SolveRuntime, current_dynamic_time_event_stop,
+    next_runtime_event_stop, visible_values_with_context,
 };
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    EventPreMode, RuntimeEventStop, RuntimeSolveError, SimBackend, SimOptions, SimResult,
-    SimTermination, SolveStopSchedule, build_sim_result_from_solve_model, discrete_row_pre_mode,
-    initial_static_event_pre_mode, push_visible_values, replace_last_visible_values,
-    timeline::{event_right_limit_time, sample_time_match_with_tol},
-    update_relation_memory_slots, write_pre_params_from_sources,
+    EventPreMode, RuntimeEventBoundary, RuntimeEventBoundaryHandler, RuntimeEventStop, SimOptions,
+    SimResult, SimTermination, SolveStopSchedule, build_sim_result_from_solve_model,
+    commit_pre_params_after_event, discrete_row_pre_mode, initial_runtime_event_stop,
+    process_runtime_event_boundary, push_visible_values, replace_last_visible_values,
+    runtime_event_horizon, runtime_root_event_application_time,
+    timeline::sample_time_match_with_tol, write_pre_params_from_sources,
 };
-use solver_state::{reset_solver_state, write_state_to_solver};
-use state_only_eligibility::can_use_state_only_bdf;
+pub(crate) use runtime::{
+    EventUpdateInput, apply_discrete_value, apply_event_updates,
+    apply_event_updates_with_event_pre, apply_initialization_updates,
+    apply_post_initial_event_updates, seed_initial_discrete_values,
+    settle_algebraics_and_relation_memory,
+};
+use runtime::{
+    check_no_state_initialization, prepare_fixed_event_left_limit, simulate_no_state_solve_ir,
+};
 
 type Matrix = FaerSparseMat<f64>;
 type Vector = <Matrix as MatrixCommon>::V;
 type Scalar = <Matrix as MatrixCommon>::T;
 pub(crate) type LinearSolver = FaerSparseLU<f64>;
 pub(crate) type RuntimeParameters = Rc<RefCell<Vec<f64>>>;
+pub use error::SimError;
 pub(crate) use ode::{
     OdeModel, build_ode_problem_with_runtime_params_and_initial,
     build_state_ode_problem_with_runtime_params_and_initial, new_bdf_eval_counters,
     trace_bdf_eval_counter_snapshot, validate_model,
 };
-pub(crate) use panic_capture::{catch_solver_panic, solver_call};
-pub(crate) use projection::settle_initial_projection_context;
+pub use prepared::PreparedSimulation;
+use prepared::PreparedSimulationState;
 use rumoca_solver::{project_algebraics, project_initial_variables_with_plan};
 
 const EVENT_UPDATE_MAX_ITERS: usize = 256;
-
-#[derive(Debug, thiserror::Error)]
-pub enum SimError {
-    #[error("empty system: no equations to simulate")]
-    EmptySystem,
-
-    #[error("solver error: {0}")]
-    SolverError(String),
-
-    #[error("solve-IR evaluation failed: {0}")]
-    SolveIr(String),
-
-    #[error("Modelica assert failed at t={time:.9}: {message}")]
-    AssertionFailed { time: f64, message: String },
-
-    #[error("Modelica terminate requested at t={time:.9}: {message}")]
-    Terminated { time: f64, message: String },
-
-    #[error("timeout after {seconds:.3}s")]
-    Timeout { seconds: f64 },
-}
-
-impl SimError {
-    pub fn source_span(&self) -> Option<()> {
-        None
-    }
-}
-
-impl From<RuntimeSolveError> for SimError {
-    fn from(value: RuntimeSolveError) -> Self {
-        match value {
-            RuntimeSolveError::SolveIr(message) => Self::SolveIr(message),
-            RuntimeSolveError::UnsupportedModel { reason } => Self::SolveIr(reason),
-            RuntimeSolveError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
-                "non-finite derivative evaluation for state '{state_name}'"
-            )),
-            non_finite @ RuntimeSolveError::NonFiniteValue { .. } => {
-                Self::SolveIr(non_finite.to_string())
-            }
-        }
-    }
-}
-
-pub struct PreparedSimulation {
-    model: solve::SolveModel,
-    opts: SimOptions,
-    state: PreparedSimulationState,
-}
-
-enum PreparedSimulationState {
-    NoState,
-    StateOnly {
-        equilibrium_model: Arc<OdeModel>,
-        runtime: Arc<SolveRuntime>,
-    },
-    General {
-        equilibrium_model: Arc<OdeModel>,
-        runtime: Arc<SolveRuntime>,
-    },
-}
-
-impl PreparedSimulation {
-    pub fn backend(&self) -> SimBackend {
-        SimBackend::Diffsol
-    }
-
-    pub fn run(&self) -> Result<SimResult, SimError> {
-        run_prepared_simulation(self)
-    }
-
-    pub fn check_initialization(&self) -> Result<(), SimError> {
-        check_initialization(&self.model, &self.opts)
-    }
-
-    pub fn model(&self) -> &solve::SolveModel {
-        &self.model
-    }
-}
 
 pub fn build_simulation(
     model: &solve::SolveModel,
@@ -205,6 +126,7 @@ pub fn check_initialization(model: &solve::SolveModel, opts: &SimOptions) -> Res
     initialize_state_runtime_values(
         model,
         opts,
+        &SolveRuntime::new(model),
         &equilibrium_model,
         &mut current_y,
         &mut params,
@@ -269,6 +191,7 @@ fn simulate_with_states(
     initialize_state_runtime_values(
         model,
         opts,
+        runtime,
         equilibrium_model,
         &mut current_y,
         &mut params,
@@ -376,6 +299,7 @@ fn simulate_state_only_bdf(
     initialize_state_runtime_values(
         model,
         opts,
+        runtime,
         equilibrium_model,
         &mut current_y,
         &mut params,
@@ -595,17 +519,18 @@ where
         tol,
         event,
     )?;
+    let event_pre_y = ctx.current_y.to_vec();
+    let event_pre_p = ctx.params.to_vec();
     apply_event_updates(
-        ctx.model,
+        ctx.runtime,
         ctx.equilibrium_model,
         ctx.current_y,
         ctx.params,
         *ctx.current_t,
         tol,
-        event.pre_mode,
     )?;
     *ctx.current_t = EventObservation {
-        runtime: Some(ctx.runtime),
+        runtime: ctx.runtime,
         model: ctx.model,
         equilibrium_model: ctx.equilibrium_model,
         y: ctx.current_y,
@@ -613,23 +538,23 @@ where
         tol,
         recorded_times: observations.recorded_times,
         data: observations.data,
+        event_pre_y: &event_pre_y,
+        event_pre_p: &event_pre_p,
     }
     .record_time_event(
         *ctx.current_t,
-        time_event_right_limit_cap(event, target, ctx.opts.t_end),
+        runtime_event_horizon(event, target, ctx.opts.t_end),
         event,
     )?;
+    commit_pre_params_after_event(ctx.model, ctx.current_y, ctx.params, tol);
     let t_right = *ctx.current_t;
     settle_algebraics_and_relation_memory(
+        ctx.runtime,
         ctx.equilibrium_model,
         ctx.current_y,
         ctx.params,
         t_right,
         ctx.model.state_scalar_count(),
-        &ctx.model
-            .problem
-            .solve_layout
-            .relation_memory_parameter_indices,
         tol,
     )?;
     ctx.current_state
@@ -758,19 +683,16 @@ where
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'a, Eqn>,
 {
+    let tol = ctx.opts.atol.max(1.0e-10);
     ctx.solver
         .state_mut_back(t_root)
         .map_err(|e| SimError::SolverError(format!("state_mut_back: {e}")))?;
     ctx.current_state
         .copy_from_slice(ctx.solver.state().y.as_slice());
     *ctx.current_t = ctx.solver.state().t;
-    *ctx.current_y = ctx.runtime.full_solver_y(
-        *ctx.current_t,
-        ctx.current_state,
-        ctx.params,
-        ctx.opts.atol.max(1.0e-10),
-        256,
-    )?;
+    *ctx.current_y =
+        ctx.runtime
+            .full_solver_y(*ctx.current_t, ctx.current_state, ctx.params, tol, 256)?;
     record_sample_if_new(
         Some(ctx.runtime),
         ctx.model,
@@ -783,14 +705,14 @@ where
 
     let event_pre_y = ctx.current_y.clone();
     let event_pre_p = ctx.params.clone();
-    let right_t = event_right_limit_time(*ctx.current_t).min(ctx.target);
+    let right_t = runtime_root_event_application_time(*ctx.current_t, ctx.target);
     let dt = right_t - *ctx.current_t;
     if dt > 0.0 {
         let dy = ctx.runtime.eval_state_derivatives(
             *ctx.current_t,
             ctx.current_state,
             ctx.params,
-            ctx.opts.atol.max(1.0e-10),
+            tol,
             256,
         )?;
         for (slot, derivative) in ctx.current_state.iter_mut().zip(dy) {
@@ -798,24 +720,21 @@ where
         }
         *ctx.current_t = right_t;
     }
-    *ctx.current_y = ctx.runtime.full_solver_y(
-        *ctx.current_t,
-        ctx.current_state,
-        ctx.params,
-        ctx.opts.atol.max(1.0e-10),
-        256,
-    )?;
+    *ctx.current_y =
+        ctx.runtime
+            .full_solver_y(*ctx.current_t, ctx.current_state, ctx.params, tol, 256)?;
     apply_event_updates_with_event_pre(EventUpdateInput {
-        model: ctx.model,
+        runtime: ctx.runtime,
         ode_model: ctx.equilibrium_model,
         y: ctx.current_y,
         p: ctx.params,
         t: *ctx.current_t,
-        tol: ctx.opts.atol.max(1.0e-10),
+        tol,
         event_pre_y: &event_pre_y,
         event_pre_p: &event_pre_p,
     })?;
     settle_prepared_state(
+        ctx.runtime,
         ctx.model,
         ctx.equilibrium_model,
         ctx.current_y,
@@ -823,13 +742,14 @@ where
         *ctx.current_t,
         ctx.opts,
     )?;
+    commit_pre_params_after_event(ctx.model, ctx.current_y, ctx.params, tol);
     ctx.current_state
         .copy_from_slice(&ctx.current_y[..ctx.model.state_scalar_count()]);
     let dy = ctx.runtime.eval_state_derivatives(
         *ctx.current_t,
         ctx.current_state,
         ctx.params,
-        ctx.opts.atol.max(1.0e-10),
+        tol,
         256,
     )?;
     reset_solver_state(
@@ -1024,89 +944,189 @@ where
 fn initialize_state_runtime_values(
     model: &solve::SolveModel,
     opts: &SimOptions,
+    runtime: &SolveRuntime,
     equilibrium_model: &OdeModel,
     current_y: &mut [f64],
     params: &mut [f64],
     current_t: f64,
 ) -> Result<(), SimError> {
+    let tol = opts.atol.max(1.0e-10);
     set_initial_event_flag(model, params, true);
-    let mut initial_projection_params = params.to_vec();
-    seed_initial_discrete_values(
+    let event_pre = InitialEventPreValues::snapshot(current_y, params);
+    let initial_projection_params = state_initial_projection_params(
         model,
+        runtime,
         equilibrium_model,
         current_y,
-        &mut initial_projection_params,
+        params,
         current_t,
-        opts.atol.max(1.0e-10),
-    )?;
-    settle_initial_projection_context(
-        model,
-        equilibrium_model,
-        current_y,
-        &mut initial_projection_params,
-        current_t,
-        opts.atol.max(1.0e-10),
-    )?;
-    project_initial_unknowns(
-        model,
-        equilibrium_model,
-        current_y,
-        &initial_projection_params,
-        current_t,
-        opts.atol.max(1.0e-10),
-    )?;
-    seed_initial_discrete_values(
-        model,
-        equilibrium_model,
-        current_y,
-        &mut initial_projection_params,
-        current_t,
-        opts.atol.max(1.0e-10),
-    )?;
-    project_initial_algebraics_and_updates(
-        model,
-        equilibrium_model,
-        current_y,
-        &mut initial_projection_params,
-        current_t,
-        opts.atol.max(1.0e-10),
+        tol,
     )?;
     params.copy_from_slice(&initial_projection_params);
+    let initial_event = initial_runtime_event_stop(
+        &model.problem,
+        current_t,
+        current_dynamic_time_event_stop(
+            model,
+            &equilibrium_model.runtime_state,
+            current_y,
+            params,
+            current_t,
+        )?,
+    );
     settle_algebraics_and_relation_memory(
+        runtime,
         equilibrium_model,
         current_y,
         params,
         current_t,
         model.state_scalar_count(),
-        &model.problem.solve_layout.relation_memory_parameter_indices,
-        opts.atol.max(1.0e-10),
+        tol,
     )?;
-    let initial_event_mode = initial_static_event_pre_mode(&model.problem, current_t);
-    apply_event_updates(
+    apply_state_initial_event_updates(StateInitialEventUpdates {
         model,
+        runtime,
         equilibrium_model,
         current_y,
         params,
         current_t,
-        opts.atol.max(1.0e-10),
-        initial_event_mode.unwrap_or(EventPreMode::FollowCurrent),
+        tol,
+        initial_event,
+        event_pre: &event_pre,
+    })?;
+    Ok(())
+}
+
+struct InitialEventPreValues {
+    y: Vec<f64>,
+    p: Vec<f64>,
+}
+
+impl InitialEventPreValues {
+    fn snapshot(y: &[f64], p: &[f64]) -> Self {
+        Self {
+            y: y.to_vec(),
+            p: p.to_vec(),
+        }
+    }
+}
+
+fn state_initial_projection_params(
+    model: &solve::SolveModel,
+    runtime: &SolveRuntime,
+    equilibrium_model: &OdeModel,
+    current_y: &mut [f64],
+    params: &[f64],
+    current_t: f64,
+    tol: f64,
+) -> Result<Vec<f64>, SimError> {
+    let mut projection_params = params.to_vec();
+    seed_initial_discrete_values(
+        runtime,
+        equilibrium_model,
+        current_y,
+        &mut projection_params,
+        current_t,
+        tol,
     )?;
-    set_initial_event_flag(model, params, false);
-    if initial_event_mode.is_some() {
-        apply_post_initial_event_updates(
-            model,
+    runtime.settle_runtime_assignments_and_relation_memory(
+        current_y,
+        &mut projection_params,
+        current_t,
+        tol,
+        EVENT_UPDATE_MAX_ITERS,
+    )?;
+    project_initial_unknowns(
+        model,
+        equilibrium_model,
+        current_y,
+        &projection_params,
+        current_t,
+        tol,
+    )?;
+    seed_initial_discrete_values(
+        runtime,
+        equilibrium_model,
+        current_y,
+        &mut projection_params,
+        current_t,
+        tol,
+    )?;
+    project_initial_algebraics_and_updates(
+        model,
+        runtime,
+        equilibrium_model,
+        current_y,
+        &mut projection_params,
+        current_t,
+        tol,
+    )?;
+    Ok(projection_params)
+}
+
+struct StateInitialEventUpdates<'a> {
+    model: &'a solve::SolveModel,
+    runtime: &'a SolveRuntime,
+    equilibrium_model: &'a OdeModel,
+    current_y: &'a mut [f64],
+    params: &'a mut [f64],
+    current_t: f64,
+    tol: f64,
+    initial_event: Option<RuntimeEventStop>,
+    event_pre: &'a InitialEventPreValues,
+}
+
+fn apply_state_initial_event_updates(ctx: StateInitialEventUpdates<'_>) -> Result<(), SimError> {
+    let StateInitialEventUpdates {
+        model,
+        runtime,
+        equilibrium_model,
+        current_y,
+        params,
+        current_t,
+        tol,
+        initial_event,
+        event_pre,
+    } = ctx;
+    if initial_event.is_some() {
+        apply_event_updates_with_event_pre(EventUpdateInput {
+            runtime,
+            ode_model: equilibrium_model,
+            y: current_y,
+            p: params,
+            t: current_t,
+            tol,
+            event_pre_y: &event_pre.y,
+            event_pre_p: &event_pre.p,
+        })?;
+    } else {
+        apply_event_updates(
+            runtime,
             equilibrium_model,
             current_y,
             params,
             current_t,
-            opts.atol.max(1.0e-10),
+            tol,
         )?;
     }
+    set_initial_event_flag(model, params, false);
+    if initial_event.is_some() {
+        apply_post_initial_event_updates(
+            runtime,
+            equilibrium_model,
+            current_y,
+            params,
+            current_t,
+            tol,
+        )?;
+    }
+    commit_pre_params_after_event(model, current_y, params, tol);
     Ok(())
 }
 
 fn project_initial_algebraics_and_updates(
     model: &solve::SolveModel,
+    runtime: &SolveRuntime,
     equilibrium_model: &OdeModel,
     current_y: &mut [f64],
     params: &mut [f64],
@@ -1116,7 +1136,7 @@ fn project_initial_algebraics_and_updates(
     for _ in 0..EVENT_UPDATE_MAX_ITERS {
         project_initial_unknowns(model, equilibrium_model, current_y, params, current_t, tol)?;
         let updates_changed = apply_initialization_updates(
-            model,
+            runtime,
             equilibrium_model,
             current_y,
             params,
@@ -1186,7 +1206,7 @@ fn solve_variable_meta_by_solver_slot(
 }
 
 struct EventObservation<'a> {
-    runtime: Option<&'a SolveRuntime>,
+    runtime: &'a SolveRuntime,
     model: &'a solve::SolveModel,
     equilibrium_model: &'a OdeModel,
     y: &'a mut [f64],
@@ -1194,6 +1214,13 @@ struct EventObservation<'a> {
     tol: f64,
     recorded_times: &'a mut Vec<f64>,
     data: &'a mut [Vec<f64>],
+    /// Solver/parameter state captured *before* the event update was first
+    /// applied at `event_t`. Modelica `pre()` is frozen for the whole event
+    /// instant, so the right-limit re-application must read `pre()` from this
+    /// snapshot rather than re-snapshotting the already-updated state (which
+    /// would double-count `pre()`-accumulators such as `count = pre(count)+1`).
+    event_pre_y: &'a [f64],
+    event_pre_p: &'a [f64],
 }
 
 impl EventObservation<'_> {
@@ -1203,6 +1230,22 @@ impl EventObservation<'_> {
         horizon_t: f64,
         event: RuntimeEventStop,
     ) -> Result<f64, SimError> {
+        let outcome = process_runtime_event_boundary(
+            RuntimeEventBoundary {
+                event_t,
+                horizon_t,
+                event,
+            },
+            self,
+        )?;
+        Ok(outcome.final_t)
+    }
+}
+
+impl RuntimeEventBoundaryHandler for EventObservation<'_> {
+    type Error = SimError;
+
+    fn on_event_time(&mut self, event_t: f64, _event: RuntimeEventStop) -> Result<(), Self::Error> {
         refresh_observation_discrete_rows(
             self.model,
             &self.equilibrium_model.runtime_state,
@@ -1212,7 +1255,7 @@ impl EventObservation<'_> {
             self.tol,
         )?;
         record_sample_if_new(
-            self.runtime,
+            Some(self.runtime),
             self.model,
             self.y,
             self.params,
@@ -1220,52 +1263,42 @@ impl EventObservation<'_> {
             self.data,
             event_t,
         )?;
-        let right_t = event_right_limit_time(event_t).min(horizon_t);
-        if event.observe_right_limit
-            && event.pre_mode == EventPreMode::FollowCurrent
-            && right_t > event_t
-            && !sample_time_match_with_tol(right_t, event_t)
-        {
-            apply_event_updates(
-                self.model,
-                self.equilibrium_model,
-                self.y,
-                self.params,
-                right_t,
-                self.tol,
-                event.pre_mode,
-            )?;
-            refresh_observation_discrete_rows(
-                self.model,
-                &self.equilibrium_model.runtime_state,
-                self.y,
-                self.params,
-                right_t,
-                self.tol,
-            )?;
-            record_sample_if_new(
-                self.runtime,
-                self.model,
-                self.y,
-                self.params,
-                self.recorded_times,
-                self.data,
-                right_t,
-            )?;
-        }
-        if event.observe_right_limit {
-            Ok(right_t)
-        } else {
-            Ok(event_t)
-        }
+        Ok(())
     }
-}
 
-fn time_event_right_limit_cap(event: RuntimeEventStop, target: f64, horizon: f64) -> f64 {
-    match (event.pre_mode, event.observe_right_limit) {
-        (EventPreMode::Fixed, _) => target,
-        (EventPreMode::FollowCurrent, true) => horizon,
-        (EventPreMode::FollowCurrent, false) => target,
+    fn on_event_right_limit(
+        &mut self,
+        right_t: f64,
+        _event: RuntimeEventStop,
+    ) -> Result<(), Self::Error> {
+        apply_event_updates_with_event_pre(EventUpdateInput {
+            runtime: self.runtime,
+            ode_model: self.equilibrium_model,
+            y: self.y,
+            p: self.params,
+            t: right_t,
+            tol: self.tol,
+            event_pre_y: self.event_pre_y,
+            event_pre_p: self.event_pre_p,
+        })?;
+        refresh_observation_discrete_rows(
+            self.model,
+            &self.equilibrium_model.runtime_state,
+            self.y,
+            self.params,
+            right_t,
+            self.tol,
+        )?;
+        record_sample_if_new(
+            Some(self.runtime),
+            self.model,
+            self.y,
+            self.params,
+            self.recorded_times,
+            self.data,
+            right_t,
+        )?;
+        Ok(())
     }
 }
 
@@ -1395,7 +1428,7 @@ fn refresh_observation_pre_params(
     p: &mut [f64],
 ) {
     match discrete_row_pre_mode(model, row_idx) {
-        EventPreMode::Fixed => {
+        EventPreMode::EventEntry | EventPreMode::Fixed => {
             write_pre_params_from_sources(model, ctx.event_pre_y, ctx.event_pre_p, p, ctx.tol);
         }
         EventPreMode::FollowCurrent => {
@@ -1516,6 +1549,7 @@ fn refresh_interpolated_sample_state(
     target: f64,
 ) -> Result<(), SimError> {
     settle_prepared_state(
+        ctx.runtime,
         ctx.model,
         ctx.equilibrium_model,
         state.current_y,
@@ -1560,17 +1594,18 @@ where
         tol,
         event,
     )?;
+    let event_pre_y = state.current_y.to_vec();
+    let event_pre_p = state.params.to_vec();
     apply_event_updates(
-        ctx.model,
+        ctx.runtime,
         ctx.equilibrium_model,
         state.current_y,
         state.params,
         *state.current_t,
         tol,
-        event.pre_mode,
     )?;
     *state.current_t = EventObservation {
-        runtime: Some(ctx.runtime),
+        runtime: ctx.runtime,
         model: ctx.model,
         equilibrium_model: ctx.equilibrium_model,
         y: state.current_y,
@@ -1578,12 +1613,15 @@ where
         tol,
         recorded_times: observations.recorded_times,
         data: observations.data,
+        event_pre_y: &event_pre_y,
+        event_pre_p: &event_pre_p,
     }
     .record_time_event(
         *state.current_t,
-        time_event_right_limit_cap(event, target, ctx.opts.t_end),
+        runtime_event_horizon(event, target, ctx.opts.t_end),
         event,
     )?;
+    commit_pre_params_after_event(ctx.model, state.current_y, state.params, tol);
     reinitialize_solver_after_time_event(ctx, state, solver, tol)
 }
 
@@ -1600,15 +1638,12 @@ where
 {
     let t_right = *state.current_t;
     settle_algebraics_and_relation_memory(
+        ctx.runtime,
         ctx.equilibrium_model,
         state.current_y,
         state.params,
         t_right,
         ctx.model.state_scalar_count(),
-        &ctx.model
-            .problem
-            .solve_layout
-            .relation_memory_parameter_indices,
         tol,
     )?;
     let dy_sched = bdf_derivative_guess(
@@ -1801,13 +1836,14 @@ where
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'a, Eqn>,
 {
+    let tol = ctx.opts.atol.max(1.0e-10);
     solver
         .state_mut_back(t_root)
         .map_err(|e| SimError::SolverError(format!("state_mut_back: {e}")))?;
     let mut event_pre_y = solver.state().y.as_slice().to_vec();
     let event_pre_p = ctx.runtime_params.borrow().as_slice().to_vec();
     let root_t = solver.state().t;
-    let right_t = event_right_limit_time(root_t).min(target);
+    let right_t = runtime_root_event_application_time(root_t, target);
     *state.current_t = right_t;
     state.current_y.copy_from_slice(solver.state().y.as_slice());
     state
@@ -1823,16 +1859,17 @@ where
         right_t,
     )?;
     apply_event_updates_with_event_pre(EventUpdateInput {
-        model: ctx.model,
+        runtime: ctx.runtime,
         ode_model: ctx.equilibrium_model,
         y: state.current_y,
         p: state.params,
         t: *state.current_t,
-        tol: ctx.opts.atol.max(1.0e-10),
+        tol,
         event_pre_y: &event_pre_y,
         event_pre_p: &event_pre_p,
     })?;
     settle_prepared_state(
+        ctx.runtime,
         ctx.model,
         ctx.equilibrium_model,
         state.current_y,
@@ -1840,6 +1877,7 @@ where
         *state.current_t,
         ctx.opts,
     )?;
+    commit_pre_params_after_event(ctx.model, state.current_y, state.params, tol);
     trace_bdf_post_event_state(ctx, &state);
     let dy_post = bdf_derivative_guess(
         ctx.model,
@@ -1914,6 +1952,7 @@ fn advance_state_to_event_limits(
 }
 
 fn settle_prepared_state(
+    runtime: &SolveRuntime,
     model: &solve::SolveModel,
     equilibrium_model: &OdeModel,
     current_y: &mut [f64],
@@ -1922,33 +1961,14 @@ fn settle_prepared_state(
     opts: &SimOptions,
 ) -> Result<(), SimError> {
     settle_algebraics_and_relation_memory(
+        runtime,
         equilibrium_model,
         current_y,
         params,
         current_t,
         model.state_scalar_count(),
-        &model.problem.solve_layout.relation_memory_parameter_indices,
         opts.atol.max(1.0e-10),
     )
-}
-
-fn update_relation_memory_values(
-    model: &OdeModel,
-    y: &[f64],
-    p: &mut [f64],
-    t: f64,
-    relation_memory_indices: &[usize],
-) -> Result<bool, SimError> {
-    if relation_memory_indices.is_empty() {
-        return Ok(false);
-    }
-    let mut roots = vec![0.0; model.root_conditions.len().max(1)];
-    model.eval_roots(y, p, t, &mut roots)?;
-    Ok(update_relation_memory_slots(
-        roots.as_slice(),
-        p,
-        relation_memory_indices,
-    ))
 }
 
 fn set_solver_stop_time<'a, Eqn, S>(solver: &mut S, stop_time: f64) -> Result<(), SimError>

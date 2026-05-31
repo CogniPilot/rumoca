@@ -811,8 +811,9 @@ impl ExpressionRewriter for RelationEventMemoryRewriter<'_> {
             && args.len() == 1
             && let Some(memory) = relation_memory_expr_for_condition(self.dae_model, &args[0])
         {
-            // MLS §3.7.5 and §8.6: pre(relation(v)) reads the relation memory
-            // from the event-entry left limit, not the live value being settled.
+            // MLS §3.7.5 and §8.6: pre(relation(v)) reads relation memory from
+            // the previous event-iteration pass, not the live value currently
+            // being settled.
             return pre_relation_memory_expr(memory, *span);
         }
         if *function == rumoca_core::BuiltinFunction::Edge

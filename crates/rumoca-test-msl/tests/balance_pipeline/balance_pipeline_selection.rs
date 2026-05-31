@@ -18,8 +18,8 @@ pub(super) const MSL_MEMORY_RESERVED_MB_DEFAULT: usize = 8192;
 pub(super) const SIM_SET_LIMIT_DEFAULT: usize = 180;
 pub(super) const DEFAULT_SIM_TARGETS_FILE_REL: &str = "tests/msl_tests/msl_simulation_targets.json";
 const MODELICA_TEST_TARGETS_FILE_REL: &str = "tests/msl_tests/modelica_test_targets_ci.json";
-const GENERATED_SIM_TARGETS_FILE_REL: &str = "results/msl_simulation_targets.json";
-const PRIOR_RESULTS_FILE_REL: &str = "results/msl_results.json";
+const GENERATED_SIM_TARGETS_FILE_REL: &str = "msl_simulation_targets.json";
+const PRIOR_RESULTS_FILE_REL: &str = "msl_results.json";
 const MIN_PRIOR_COMPLEXITY_RANKED_MODELS: usize = 32;
 const MIN_PRIOR_COMPLEXITY_COVERAGE_RATIO: f64 = 0.10;
 
@@ -370,7 +370,7 @@ fn resolve_sim_targets_file_path(path: PathBuf) -> PathBuf {
 }
 
 fn generated_sim_targets_file() -> Option<PathBuf> {
-    let path = get_msl_cache_dir().join(GENERATED_SIM_TARGETS_FILE_REL);
+    let path = msl_results_dir().join(GENERATED_SIM_TARGETS_FILE_REL);
     path.is_file().then_some(path)
 }
 
@@ -420,7 +420,7 @@ fn should_apply_prior_complexity_schedule(subset_requested: bool) -> bool {
 }
 
 fn prior_results_file() -> Option<PathBuf> {
-    let path = get_msl_cache_dir().join(PRIOR_RESULTS_FILE_REL);
+    let path = msl_results_dir().join(PRIOR_RESULTS_FILE_REL);
     path.is_file().then_some(path)
 }
 

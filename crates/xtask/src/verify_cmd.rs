@@ -106,6 +106,12 @@ impl VerifyMslParityArgs {
     /// set fields are written; absent fields fall back to the harness defaults.
     fn to_parity_config_json(&self) -> serde_json::Value {
         let mut config = serde_json::Map::new();
+        if let Some(value) = &self.results_dir {
+            config.insert(
+                "results_dir".into(),
+                value.to_string_lossy().into_owned().into(),
+            );
+        }
         if let Some(value) = &self.target_scope {
             config.insert("target_scope".into(), value.clone().into());
         }

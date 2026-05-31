@@ -539,20 +539,13 @@ fn fixed_static_event_keeps_follow_current_pre_rows_iterating() {
     ];
     model.parameters = vec![1.0, 0.0, 0.0];
 
+    let runtime = SolveRuntime::new(&model);
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
     let mut p = model.parameters.clone();
 
-    apply_event_updates(
-        &model,
-        &ode_model,
-        &mut y,
-        &mut p,
-        0.0,
-        1.0e-12,
-        EventPreMode::Fixed,
-    )
-    .expect("row-level FollowCurrent pre feedback should settle at fixed events");
+    apply_event_updates(&runtime, &ode_model, &mut y, &mut p, 0.0, 1.0e-12)
+        .expect("row-level FollowCurrent pre feedback should settle at fixed events");
 
     assert_eq!(&p[..2], [3.0, 3.0]);
 }
@@ -874,7 +867,7 @@ fn simulate_no_state_solve_ir_updates_clocked_previous_feedback_at_periodic_tick
     ]);
     model.problem.discrete.pre_modes = vec![
         solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::Fixed,
+        solve::DiscreteEventPreMode::EventEntry,
         solve::DiscreteEventPreMode::FollowCurrent,
         solve::DiscreteEventPreMode::FollowCurrent,
         solve::DiscreteEventPreMode::FollowCurrent,
@@ -1193,20 +1186,13 @@ fn event_update_converges_boolean_pre_feedback_loop_row_by_row() {
     ];
     model.parameters = vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0];
 
+    let runtime = SolveRuntime::new(&model);
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
     let mut p = model.parameters.clone();
 
-    apply_event_updates(
-        &model,
-        &ode_model,
-        &mut y,
-        &mut p,
-        1.2,
-        1.0e-12,
-        EventPreMode::FollowCurrent,
-    )
-    .expect("MLS Appendix B event iteration should converge the Boolean pre feedback loop");
+    apply_event_updates(&runtime, &ode_model, &mut y, &mut p, 1.2, 1.0e-12)
+        .expect("MLS Appendix B event iteration should converge the Boolean pre feedback loop");
 
     assert_eq!(&p[..5], [1.0, 1.0, 0.0, 0.0, 1.0]);
 }
@@ -1243,20 +1229,13 @@ fn fixed_time_event_does_not_freeze_follow_current_rows() {
     ];
     model.parameters = vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0];
 
+    let runtime = SolveRuntime::new(&model);
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
     let mut p = model.parameters.clone();
 
-    apply_event_updates(
-        &model,
-        &ode_model,
-        &mut y,
-        &mut p,
-        1.2,
-        1.0e-12,
-        EventPreMode::Fixed,
-    )
-    .expect("row-level FollowCurrent pre modes should still event-iterate");
+    apply_event_updates(&runtime, &ode_model, &mut y, &mut p, 1.2, 1.0e-12)
+        .expect("row-level FollowCurrent pre modes should still event-iterate");
 
     assert_eq!(&p[..5], [1.0, 1.0, 0.0, 0.0, 1.0]);
 }
@@ -1315,20 +1294,13 @@ fn event_update_rechecks_change_guard_after_runtime_alias_refresh() {
     ];
     model.parameters = vec![1.0, 1.0, 0.0, 0.0, 0.0];
 
+    let runtime = SolveRuntime::new(&model);
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
     let mut p = model.parameters.clone();
 
-    apply_event_updates(
-        &model,
-        &ode_model,
-        &mut y,
-        &mut p,
-        1.0,
-        1.0e-12,
-        EventPreMode::FollowCurrent,
-    )
-    .expect("MLS Appendix B event iteration should include runtime alias equations");
+    apply_event_updates(&runtime, &ode_model, &mut y, &mut p, 1.0, 1.0e-12)
+        .expect("MLS Appendix B event iteration should include runtime alias equations");
 
     // MLS Appendix B: all discrete equations are solved with the same pre(..)
     // snapshot for an event-iteration pass. Alias equations produced as
@@ -1365,20 +1337,13 @@ fn event_update_refreshes_runtime_aliases_before_parameter_only_projection() {
         solve::ScalarProgramBlock::new(vec![load_parameter_row(2)]);
     model.parameters = vec![0.0, 2.0, 2.0];
 
+    let runtime = SolveRuntime::new(&model);
     let ode_model = OdeModel::new(&model).expect("ODE model should build");
     let mut y = model.initial_y.clone();
     let mut p = model.parameters.clone();
 
-    apply_event_updates(
-        &model,
-        &ode_model,
-        &mut y,
-        &mut p,
-        0.0,
-        1.0e-12,
-        EventPreMode::FollowCurrent,
-    )
-    .expect("runtime aliases should settle before parameter-only residual projection");
+    apply_event_updates(&runtime, &ode_model, &mut y, &mut p, 0.0, 1.0e-12)
+        .expect("runtime aliases should settle before parameter-only residual projection");
 
     assert_eq!(p[0], 2.0);
 }

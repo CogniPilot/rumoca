@@ -336,12 +336,9 @@ pub(super) fn sim_worker_io_paths(
     run_id: usize,
     model_name: &str,
 ) -> io::Result<(PathBuf, PathBuf)> {
-    let sim_worker_dir = get_msl_cache_dir().join("results").join("sim_worker");
+    let sim_worker_dir = msl_results_dir().join("sim_worker");
     fs::create_dir_all(&sim_worker_dir)?;
-    let sim_trace_dir = get_msl_cache_dir()
-        .join("results")
-        .join("sim_traces")
-        .join("rumoca");
+    let sim_trace_dir = msl_results_dir().join("sim_traces").join("rumoca");
     fs::create_dir_all(&sim_trace_dir)?;
     Ok((
         sim_worker_dir.join(format!("sim_{run_id}.json")),
@@ -575,10 +572,10 @@ impl SimWorkerArtifacts {
         let run_id = SIM_WORKER_RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
         let (output_path, trace_path) = sim_worker_io_paths(run_id, model_name)
             .map_err(|e| format!("failed to create sim worker artifact paths: {e}"))?;
-        let dae_dir = get_msl_cache_dir().join("results").join("ir_dae");
+        let dae_dir = msl_results_dir().join("ir_dae");
         fs::create_dir_all(&dae_dir)
             .map_err(|e| format!("failed to create DAE artifact directory: {e}"))?;
-        let solve_ir_dir = get_msl_cache_dir().join("results").join("ir_solve");
+        let solve_ir_dir = msl_results_dir().join("ir_solve");
         fs::create_dir_all(&solve_ir_dir)
             .map_err(|e| format!("failed to create Solve IR artifact directory: {e}"))?;
         let dae_path = dae_dir.join(format!("{model_name}.json"));
@@ -593,7 +590,7 @@ impl SimWorkerArtifacts {
             let _ = fs::remove_file(&trace_path);
         }
         let (perf_profile_path, perf_profile_relative_path) = if sim_worker_perf_record_enabled() {
-            let perf_dir = get_msl_cache_dir().join("results").join("perf").join("sim");
+            let perf_dir = msl_results_dir().join("perf").join("sim");
             fs::create_dir_all(&perf_dir)
                 .map_err(|e| format!("failed to create sim perf profile directory: {e}"))?;
             let path = perf_dir.join(format!("{model_name}.perf.data"));

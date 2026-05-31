@@ -154,8 +154,12 @@ fn prune_time_only_relation_roots(
     let mut kept_conditions = Vec::with_capacity(old_conditions.len());
     let mut replacements = Vec::with_capacity(old_relations.len());
 
-    for (relation, equation) in old_relations.into_iter().zip(old_conditions) {
-        if extract_time_event_instant(&relation, constants).is_some() {
+    for (old_index, (relation, equation)) in
+        old_relations.into_iter().zip(old_conditions).enumerate()
+    {
+        if extract_time_event_instant(&relation, constants).is_some()
+            && !condition_memory_is_referenced(dae_model, &condition_name, old_index + 1)
+        {
             replacements.push(ConditionMemoryReplacement::Direct(relation));
             continue;
         }
@@ -175,6 +179,64 @@ fn prune_time_only_relation_roots(
     dae_model.conditions.equations = kept_conditions;
     rewrite_condition_memory_references(dae_model, &condition_name, &replacements);
     Ok(())
+}
+
+fn condition_memory_is_referenced(
+    dae_model: &dae::Dae,
+    condition_name: &str,
+    condition_index: usize,
+) -> bool {
+    let mut checker = ConditionMemoryUseChecker {
+        condition_name,
+        condition_index,
+        found: false,
+    };
+    for expr in dae_model
+        .continuous
+        .equations
+        .iter()
+        .chain(dae_model.discrete.real_updates.iter())
+        .chain(dae_model.discrete.valued_updates.iter())
+        .chain(dae_model.initialization.equations.iter())
+        .map(|equation| &equation.rhs)
+        .chain(
+            dae_model
+                .events
+                .event_actions
+                .iter()
+                .map(|action| &action.condition),
+        )
+    {
+        checker.visit_expression(expr);
+        if checker.found {
+            return true;
+        }
+    }
+    false
+}
+
+struct ConditionMemoryUseChecker<'a> {
+    condition_name: &'a str,
+    condition_index: usize,
+    found: bool,
+}
+
+impl ExpressionVisitor for ConditionMemoryUseChecker<'_> {
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        if condition_memory_index(name.as_str(), subscripts, self.condition_name)
+            .is_some_and(|(_, index)| index == self.condition_index)
+        {
+            self.found = true;
+            return;
+        }
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
 }
 
 #[derive(Clone)]

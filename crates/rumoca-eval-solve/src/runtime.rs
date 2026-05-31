@@ -1,22 +1,110 @@
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    EventActionOutcome, RuntimeEventStop, RuntimeSolveError, SolveStopSchedule,
-    push_visible_values, replace_last_visible_values,
-    timeline::{event_time_in_window, runtime_parameter_index, sample_time_match_with_tol},
-    update_relation_memory_slots, write_pre_params_from_sources,
+    EventActionOutcome, EventPreMode, EventPreSources, RuntimeEventStop, RuntimeSolveError,
+    SolveStopSchedule, discrete_row_pre_mode, event_eval_params_for_row_pre_mode,
+    push_visible_values, replace_last_visible_values, row_reads_solver_or_time,
+    timeline::sample_time_match_with_tol, update_relation_memory_slots,
 };
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
-    sync::Arc,
-};
+use std::{cell::RefCell, collections::HashMap};
 
+use crate::refresh_plan::{
+    AlgebraicRefreshRow, RefreshPlan, build_algebraic_refresh_plan, build_derivative_refresh_plan,
+    build_root_refresh_plan, trace_refresh_plan,
+};
+use crate::runtime_events::{
+    apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
+    event_eval_params_with_relation_overrides, next_runtime_event_stop,
+    visible_values_with_context,
+};
 use crate::{
     self as solve_eval, PreparedComputeBlock, PreparedScalarProgramBlock, RowEvalContext,
     to_scalar_program_block,
 };
 
-const EVENT_REFRESH_MAX_ITERS: usize = 32;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventUpdateRowFilter {
+    All,
+    FollowCurrentOnly,
+}
+
+impl EventUpdateRowFilter {
+    fn accepts(self, mode: EventPreMode) -> bool {
+        matches!(self, Self::All)
+            || matches!(
+                (self, mode),
+                (Self::FollowCurrentOnly, EventPreMode::FollowCurrent)
+            )
+    }
+}
+
+pub struct ProjectedEventUpdateInput<'a> {
+    pub y: &'a mut [f64],
+    pub p: &'a mut [f64],
+    pub t: f64,
+    pub tol: f64,
+    pub event_pre_y: &'a [f64],
+    pub event_pre_p: &'a [f64],
+    pub max_iters: usize,
+    pub row_filter: EventUpdateRowFilter,
+    pub root_relation_overrides: &'a [(usize, f64)],
+}
+
+struct DiscretePreSnapshot<'a> {
+    event_pre_y: &'a [f64],
+    event_pre_p: &'a [f64],
+    iter_pre_y: &'a [f64],
+    iter_pre_p: &'a [f64],
+    row_filter: EventUpdateRowFilter,
+    root_relation_overrides: &'a [(usize, f64)],
+    event_iteration: usize,
+}
+
+impl<'a> DiscretePreSnapshot<'a> {
+    fn event_pre_sources(&self) -> EventPreSources<'a> {
+        EventPreSources {
+            event_pre_y: self.event_pre_y,
+            event_pre_p: self.event_pre_p,
+            iter_pre_y: self.iter_pre_y,
+            iter_pre_p: self.iter_pre_p,
+            event_iteration: self.event_iteration,
+        }
+    }
+}
+
+struct DiscreteRowsSettleInput<'a> {
+    y: &'a mut [f64],
+    p: &'a mut [f64],
+    t: f64,
+    tol: f64,
+    max_iters: usize,
+}
+
+#[derive(Default)]
+struct EventEvalParamCache {
+    event_entry: Option<Vec<f64>>,
+    fixed: Option<Vec<f64>>,
+    follow_current: Option<Vec<f64>>,
+}
+
+impl EventEvalParamCache {
+    fn params<'a>(
+        &'a mut self,
+        model: &solve::SolveModel,
+        base_p: &[f64],
+        mode: EventPreMode,
+        sources: &EventPreSources<'_>,
+        tol: f64,
+    ) -> &'a [f64] {
+        let slot = match mode {
+            EventPreMode::EventEntry => &mut self.event_entry,
+            EventPreMode::Fixed => &mut self.fixed,
+            EventPreMode::FollowCurrent => &mut self.follow_current,
+        };
+        slot.get_or_insert_with(|| {
+            event_eval_params_for_row_pre_mode(model, base_p, mode, sources, tol)
+        })
+    }
+}
 
 struct RefreshSlotArgs<'a> {
     t: f64,
@@ -57,7 +145,6 @@ pub struct SolveRuntime {
     algebraic_refresh: RefreshPlan,
     derivative_refresh: RefreshPlan,
     root_refresh: RefreshPlan,
-    event_refresh: RefreshPlan,
     visible_name_index: HashMap<String, usize>,
     visible_value_rows: PreparedScalarProgramBlock,
     runtime_state: solve_eval::SimulationRuntimeState,
@@ -76,11 +163,9 @@ impl SolveRuntime {
         let derivative_refresh =
             build_derivative_refresh_plan(model, &derivative_scalar_rhs, &algebraic_refresh);
         let root_refresh = build_root_refresh_plan(model, &algebraic_refresh);
-        let event_refresh = build_event_refresh_plan(model, &algebraic_refresh);
         trace_refresh_plan(model, "algebraic", &algebraic_refresh);
         trace_refresh_plan(model, "derivative", &derivative_refresh);
         trace_refresh_plan(model, "root", &root_refresh);
-        trace_refresh_plan(model, "event", &event_refresh);
         Self {
             model: model.clone(),
             state_count: model.state_scalar_count(),
@@ -107,7 +192,6 @@ impl SolveRuntime {
             algebraic_refresh,
             derivative_refresh,
             root_refresh,
-            event_refresh,
             visible_name_index: model
                 .visible_names
                 .iter()
@@ -183,26 +267,6 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         self.refresh_slots_with_plan(
             &self.derivative_refresh,
-            RefreshSlotArgs {
-                t,
-                solver_y,
-                params,
-                tol,
-                max_iters,
-            },
-        )
-    }
-
-    fn refresh_event_dependencies(
-        &self,
-        t: f64,
-        solver_y: &mut [f64],
-        params: &[f64],
-        tol: f64,
-        max_iters: usize,
-    ) -> Result<(), RuntimeSolveError> {
-        self.refresh_slots_with_plan(
-            &self.event_refresh,
             RefreshSlotArgs {
                 t,
                 solver_y,
@@ -843,6 +907,34 @@ impl SolveRuntime {
         self.eval_scalar_program_block(block, solver_y, params, t)
     }
 
+    pub fn current_dynamic_time_event_stop(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        current_t: f64,
+    ) -> Result<Option<RuntimeEventStop>, RuntimeSolveError> {
+        current_dynamic_time_event_stop(&self.model, &self.runtime_state, y, params, current_t)
+    }
+
+    pub fn next_runtime_event_stop(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        stop_schedule: &mut SolveStopSchedule,
+        current_t: f64,
+        target: f64,
+    ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
+        next_runtime_event_stop(
+            &self.model,
+            &self.runtime_state,
+            y,
+            params,
+            stop_schedule,
+            current_t,
+            target,
+        )
+    }
+
     pub fn eval_scalar_program_block(
         &self,
         block: &solve::ScalarProgramBlock,
@@ -910,75 +1002,446 @@ impl SolveRuntime {
         )
     }
 
-    pub fn apply_simple_event_update(
+    pub fn apply_runtime_assignments_until_stable(
         &self,
         y: &mut [f64],
         p: &mut [f64],
         t: f64,
         tol: f64,
-        event_pre_y: &[f64],
-        event_pre_p: &[f64],
+        max_iters: usize,
+    ) -> Result<bool, RuntimeSolveError> {
+        solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
+            block: &self.model.problem.discrete.runtime_assignment_rhs,
+            targets: &self.model.problem.discrete.runtime_assignment_targets,
+            y,
+            p,
+            t,
+            context: self.row_eval_context(),
+            tol,
+            max_iters,
+        })
+        .map_err(Into::into)
+    }
+
+    pub fn settle_runtime_assignments_and_relation_memory(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+        max_iters: usize,
     ) -> Result<(), RuntimeSolveError> {
-        self.apply_simple_event_update_with_relation_overrides(
+        for _ in 0..max_iters {
+            let mut changed =
+                self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
+            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            if !changed {
+                return Ok(());
+            }
+        }
+        Err(RuntimeSolveError::SolveIr(format!(
+            "runtime assignments and relation memory did not converge at t={t}"
+        )))
+    }
+
+    pub fn settle_projected_runtime_and_relation_memory<P>(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+        max_iters: usize,
+        mut project_algebraics: P,
+    ) -> Result<(), RuntimeSolveError>
+    where
+        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
+    {
+        for _ in 0..max_iters {
+            let mut changed =
+                self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            changed |= project_algebraics(y, p)?;
+            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
+            if !changed {
+                return Ok(());
+            }
+        }
+        Err(RuntimeSolveError::SolveIr(format!(
+            "projected runtime assignments and relation memory did not converge at t={t}"
+        )))
+    }
+
+    pub fn seed_initial_discrete_values(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+        max_iters: usize,
+    ) -> Result<(), RuntimeSolveError> {
+        self.validate_discrete_event_rows()?;
+        if self.model.problem.discrete.rhs.is_empty() {
+            return Ok(());
+        }
+        let event_pre_y = y.to_vec();
+        let event_pre_p = p.to_vec();
+        for event_iteration in 0..max_iters {
+            let iter_pre_y = y.to_vec();
+            let iter_pre_p = p.to_vec();
+            let snapshot = DiscretePreSnapshot {
+                event_pre_y: &event_pre_y,
+                event_pre_p: &event_pre_p,
+                iter_pre_y: iter_pre_y.as_slice(),
+                iter_pre_p: iter_pre_p.as_slice(),
+                row_filter: EventUpdateRowFilter::All,
+                root_relation_overrides: &[],
+                event_iteration,
+            };
+            let changed =
+                self.apply_constant_discrete_rows_for_pre_snapshot(&snapshot, y, p, t, tol)?;
+            if !changed {
+                return Ok(());
+            }
+        }
+        Err(RuntimeSolveError::SolveIr(format!(
+            "initial discrete equations did not converge at t={t}"
+        )))
+    }
+
+    pub fn apply_projected_post_initial_event_update<P>(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+        max_iters: usize,
+        project_algebraics: P,
+    ) -> Result<EventActionOutcome, RuntimeSolveError>
+    where
+        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
+    {
+        let event_pre_y = y.to_vec();
+        let event_pre_p = p.to_vec();
+        self.apply_projected_event_update(
+            ProjectedEventUpdateInput {
+                y,
+                p,
+                t,
+                tol,
+                event_pre_y: &event_pre_y,
+                event_pre_p: &event_pre_p,
+                max_iters,
+                row_filter: EventUpdateRowFilter::FollowCurrentOnly,
+                root_relation_overrides: &[],
+            },
+            project_algebraics,
+        )
+    }
+
+    pub fn apply_projected_event_update<P>(
+        &self,
+        input: ProjectedEventUpdateInput<'_>,
+        mut project_algebraics: P,
+    ) -> Result<EventActionOutcome, RuntimeSolveError>
+    where
+        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
+    {
+        self.validate_discrete_event_rows()?;
+        let ProjectedEventUpdateInput {
             y,
             p,
             t,
             tol,
             event_pre_y,
             event_pre_p,
-            &[],
-        )
+            max_iters,
+            row_filter,
+            root_relation_overrides,
+        } = input;
+        if self.model.problem.discrete.rhs.is_empty() {
+            self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
+            return self.settle_runtime_assignments_and_projection(
+                y,
+                p,
+                t,
+                tol,
+                max_iters,
+                &mut project_algebraics,
+            );
+        }
+
+        for event_iteration in 0..max_iters {
+            let mut changed =
+                self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
+            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            changed |= project_algebraics(y, p)?;
+            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            let iter_pre_y = y.to_vec();
+            let iter_pre_p = p.to_vec();
+            let snapshot = DiscretePreSnapshot {
+                event_pre_y,
+                event_pre_p,
+                iter_pre_y: iter_pre_y.as_slice(),
+                iter_pre_p: iter_pre_p.as_slice(),
+                row_filter,
+                root_relation_overrides,
+                event_iteration,
+            };
+            {
+                let mut settle_input = DiscreteRowsSettleInput {
+                    y,
+                    p,
+                    t,
+                    tol,
+                    max_iters,
+                };
+                changed |= self.settle_discrete_rows_for_pre_snapshot(
+                    &snapshot,
+                    &mut settle_input,
+                    &mut project_algebraics,
+                )?;
+            }
+            changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
+            changed |=
+                self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
+            changed |= project_algebraics(y, p)?;
+            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            if !changed {
+                return self.eval_event_actions(y, p, t);
+            }
+        }
+        Err(RuntimeSolveError::SolveIr(format!(
+            "event update iteration did not converge at t={t}"
+        )))
     }
 
-    // SPEC_0021: Exception - event-update API keeps pre-event state, parameters,
-    // and root override slices explicit for solver integrations.
-    #[allow(clippy::too_many_arguments)]
-    pub fn apply_simple_event_update_with_relation_overrides(
+    fn validate_discrete_event_rows(&self) -> Result<(), RuntimeSolveError> {
+        let rows = self.model.problem.discrete.rhs.len();
+        let targets = self.model.problem.discrete.update_targets.len();
+        if rows == targets {
+            return Ok(());
+        }
+        Err(RuntimeSolveError::SolveIr(format!(
+            "discrete RHS row count {rows} does not match target count {targets}"
+        )))
+    }
+
+    fn settle_runtime_assignments_and_projection<P>(
         &self,
         y: &mut [f64],
         p: &mut [f64],
         t: f64,
         tol: f64,
-        event_pre_y: &[f64],
-        event_pre_p: &[f64],
+        max_iters: usize,
+        project_algebraics: &mut P,
+    ) -> Result<EventActionOutcome, RuntimeSolveError>
+    where
+        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
+    {
+        for _ in 0..max_iters {
+            let mut changed =
+                self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            changed |= project_algebraics(y, p)?;
+            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            if !changed {
+                return self.eval_event_actions(y, p, t);
+            }
+        }
+        Err(RuntimeSolveError::SolveIr(format!(
+            "event runtime assignments did not converge at t={t}"
+        )))
+    }
+
+    fn settle_discrete_rows_for_pre_snapshot<P>(
+        &self,
+        snapshot: &DiscretePreSnapshot<'_>,
+        input: &mut DiscreteRowsSettleInput<'_>,
+        project_algebraics: &mut P,
+    ) -> Result<bool, RuntimeSolveError>
+    where
+        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
+    {
+        let mut changed_any = false;
+        for _ in 0..input.max_iters {
+            let mut pass_changed = self.apply_discrete_rows_for_pre_snapshot(
+                snapshot, input.y, input.p, input.t, input.tol, false,
+            )?;
+            pass_changed |= self.apply_runtime_assignments_until_stable(
+                input.y,
+                input.p,
+                input.t,
+                input.tol,
+                input.max_iters,
+            )?;
+            pass_changed |= project_algebraics(input.y, input.p)?;
+            pass_changed |= self.apply_runtime_assignments_until_stable(
+                input.y,
+                input.p,
+                input.t,
+                input.tol,
+                input.max_iters,
+            )?;
+            if !pass_changed {
+                return Ok(changed_any);
+            }
+            changed_any = true;
+        }
+        Err(RuntimeSolveError::SolveIr(format!(
+            "discrete event equations did not converge at t={}",
+            input.t
+        )))
+    }
+
+    fn apply_constant_discrete_rows_for_pre_snapshot(
+        &self,
+        snapshot: &DiscretePreSnapshot<'_>,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+    ) -> Result<bool, RuntimeSolveError> {
+        self.apply_discrete_rows_for_pre_snapshot(snapshot, y, p, t, tol, true)
+    }
+
+    fn apply_discrete_rows_for_pre_snapshot(
+        &self,
+        snapshot: &DiscretePreSnapshot<'_>,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+        skip_solver_or_time_rows: bool,
+    ) -> Result<bool, RuntimeSolveError> {
+        let eval_y = y.to_vec();
+        let eval_p = p.to_vec();
+        let sources = snapshot.event_pre_sources();
+        let mut eval_p_cache = EventEvalParamCache::default();
+        let mut row_values = Vec::with_capacity(self.model.problem.discrete.rhs.programs.len());
+        for (row_idx, row) in self.model.problem.discrete.rhs.programs.iter().enumerate() {
+            if skip_solver_or_time_rows && row_reads_solver_or_time(row) {
+                continue;
+            }
+            let row_pre_mode = discrete_row_pre_mode(&self.model, row_idx);
+            if !snapshot.row_filter.accepts(row_pre_mode) {
+                continue;
+            }
+            let row_p = eval_p_cache.params(&self.model, &eval_p, row_pre_mode, &sources, tol);
+            let row_p_with_root_overrides;
+            let row_p = if snapshot.root_relation_overrides.is_empty() {
+                row_p
+            } else {
+                row_p_with_root_overrides = event_eval_params_with_relation_overrides(
+                    &self.model.problem.events.root_relation_memory_targets,
+                    snapshot.root_relation_overrides,
+                    row_p,
+                );
+                &row_p_with_root_overrides
+            };
+            let value =
+                solve_eval::eval_row_with_context(row, &eval_y, row_p, t, self.row_eval_context())?;
+            row_values.push((self.model.problem.discrete.update_targets[row_idx], value));
+        }
+        self.override_relation_memory_row_values(snapshot.root_relation_overrides, &mut row_values);
+        let mut changed = false;
+        for (target, value) in row_values {
+            changed |= solve_eval::apply_scalar_slot_value(target, value, y, p, tol)?;
+        }
+        Ok(changed)
+    }
+
+    fn override_relation_memory_row_values(
+        &self,
         root_relation_overrides: &[(usize, f64)],
-    ) -> Result<(), RuntimeSolveError> {
-        write_pre_params_from_sources(&self.model, event_pre_y, event_pre_p, p, tol);
-        self.refresh_event_dependencies(t, y, p, tol, EVENT_REFRESH_MAX_ITERS)?;
-        self.apply_runtime_assignments_once(y, p, t)?;
-        self.refresh_event_dependencies(t, y, p, tol, EVENT_REFRESH_MAX_ITERS)?;
-        if self.model.problem.discrete.rhs.is_empty() {
-            return Ok(());
+        row_values: &mut [(solve::ScalarSlot, f64)],
+    ) {
+        for (root_idx, value) in root_relation_overrides {
+            let Some(Some(target)) = self
+                .model
+                .problem
+                .events
+                .root_relation_memory_targets
+                .get(*root_idx)
+                .copied()
+            else {
+                continue;
+            };
+            if let Some((_, row_value)) = row_values
+                .iter_mut()
+                .find(|(row_target, _)| *row_target == target)
+            {
+                *row_value = *value;
+            }
         }
-        if self.model.problem.discrete.rhs.len() != self.model.problem.discrete.update_targets.len()
-        {
-            return Err(RuntimeSolveError::SolveIr(format!(
-                "discrete RHS row count {} does not match target count {}",
-                self.model.problem.discrete.rhs.len(),
-                self.model.problem.discrete.update_targets.len()
-            )));
+    }
+
+    fn apply_root_relation_memory_overrides(
+        &self,
+        root_relation_overrides: &[(usize, f64)],
+        y: &mut [f64],
+        p: &mut [f64],
+        tol: f64,
+    ) -> Result<bool, RuntimeSolveError> {
+        let mut changed = false;
+        for (root_idx, value) in root_relation_overrides {
+            let Some(Some(target)) = self
+                .model
+                .problem
+                .events
+                .root_relation_memory_targets
+                .get(*root_idx)
+                .copied()
+            else {
+                continue;
+            };
+            changed |= solve_eval::apply_scalar_slot_value(target, *value, y, p, tol)?;
         }
-        let event_eval_p = event_eval_params_with_relation_overrides(
-            &self.model.problem.events.root_relation_memory_targets,
-            root_relation_overrides,
+        Ok(changed)
+    }
+
+    pub fn update_relation_memory_from_solver_y(
+        &self,
+        t: f64,
+        y: &[f64],
+        p: &mut [f64],
+        _tol: f64,
+    ) -> Result<bool, RuntimeSolveError> {
+        let relation_memory_indices = &self
+            .model
+            .problem
+            .solve_layout
+            .relation_memory_parameter_indices;
+        if relation_memory_indices.is_empty() {
+            return Ok(false);
+        }
+        let roots = self.eval_root_conditions_from_solver_y(t, y, p)?;
+        Ok(update_relation_memory_slots(
+            &roots,
             p,
-        );
-        let mut values =
-            self.eval_scalar_program_block(&self.model.problem.discrete.rhs, y, &event_eval_p, t)?;
-        override_relation_memory_update_values(
-            &self.model.problem.events.root_relation_memory_targets,
-            &self.model.problem.discrete.update_targets,
-            root_relation_overrides,
-            &mut values,
-        );
-        apply_discrete_slot_values(
-            &self.model.problem.discrete.update_targets,
-            &values,
+            relation_memory_indices,
+        ))
+    }
+
+    pub fn eval_root_conditions_from_solver_y(
+        &self,
+        t: f64,
+        y: &[f64],
+        p: &[f64],
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        let roots = &self.model.problem.events.root_conditions;
+        if roots.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut values = vec![0.0; roots.len()];
+        solve_eval::eval_scalar_program_block_with_context(
+            roots,
             y,
             p,
-            tol,
+            t,
+            self.row_eval_context(),
+            &mut values,
         )?;
-        self.apply_runtime_assignments_once(y, p, t)
+        Ok(values)
     }
 
     pub fn eval_event_actions(
@@ -1211,464 +1674,6 @@ fn validate_derivative_output_len(
     )))
 }
 
-fn trace_algebraic_refresh() -> bool {
-    tracing::enabled!(target: "rumoca_eval_solve::refresh", tracing::Level::DEBUG)
-}
-
-fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshPlan) {
-    if !trace_algebraic_refresh() {
-        return;
-    }
-    let preview = plan
-        .rows
-        .iter()
-        .take(64)
-        .map(|row| {
-            let target = model
-                .problem
-                .solve_layout
-                .solver_maps
-                .names
-                .get(row.target_index)
-                .map_or("<unnamed>", String::as_str);
-            format!("{target}@row{}", row.row_idx)
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let duplicate_targets = plan.rows.len()
-        - plan
-            .rows
-            .iter()
-            .map(|row| row.target_index)
-            .collect::<BTreeSet<_>>()
-            .len();
-    let missing = plan
-        .missing_dependencies
-        .iter()
-        .take(32)
-        .map(|index| {
-            model
-                .problem
-                .solve_layout
-                .solver_maps
-                .names
-                .get(*index)
-                .map_or_else(|| format!("y[{index}]"), Clone::clone)
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    tracing::debug!(
-        target: "rumoca_eval_solve::refresh",
-        "{name} refresh plan: rows={} duplicate_targets={} missing={} iterative={} [{}] missing=[{}]",
-        plan.rows.len(),
-        duplicate_targets,
-        plan.missing_dependencies.len(),
-        plan.iterative,
-        preview,
-        missing
-    );
-}
-
-#[derive(Clone)]
-struct AlgebraicRefreshRow {
-    row_idx: usize,
-    target_index: usize,
-}
-
-#[derive(Clone, Default)]
-struct RefreshPlan {
-    source_block: Arc<solve::ScalarProgramBlock>,
-    rows: Vec<AlgebraicRefreshRow>,
-    missing_dependencies: Vec<usize>,
-    iterative: bool,
-}
-
-impl RefreshPlan {
-    fn source_block(&self) -> &solve::ScalarProgramBlock {
-        &self.source_block
-    }
-}
-
-fn build_algebraic_refresh_plan(
-    model: &solve::SolveModel,
-    block: &PreparedScalarProgramBlock,
-) -> RefreshPlan {
-    let state_count = model.state_scalar_count();
-    let mut rows_by_target = algebraic_refresh_rows_from_row_targets(model, block, state_count)
-        .into_iter()
-        .map(|row| (row.target_index, row))
-        .collect::<BTreeMap<_, _>>();
-    for row in algebraic_refresh_rows_from_projection_plan(model, state_count) {
-        rows_by_target.insert(row.target_index, row);
-    }
-    let rows = rows_by_target.into_values().collect();
-    order_refresh_rows(rows, Arc::new(block.block().clone()), state_count)
-}
-
-fn algebraic_refresh_rows_from_projection_plan(
-    model: &solve::SolveModel,
-    state_count: usize,
-) -> Vec<AlgebraicRefreshRow> {
-    model
-        .problem
-        .continuous
-        .algebraic_projection_plan
-        .blocks
-        .iter()
-        .flat_map(|block| {
-            block
-                .rows
-                .iter()
-                .copied()
-                .zip(block.y_indices.iter().copied())
-                .chain(
-                    block
-                        .causal_steps
-                        .iter()
-                        .map(|step| (step.row, step.y_index)),
-                )
-        })
-        .filter_map(|(row_idx, target_index)| {
-            (target_index >= state_count).then_some(AlgebraicRefreshRow {
-                row_idx,
-                target_index,
-            })
-        })
-        .collect()
-}
-
-fn algebraic_refresh_rows_from_row_targets(
-    model: &solve::SolveModel,
-    block: &PreparedScalarProgramBlock,
-    state_count: usize,
-) -> Vec<AlgebraicRefreshRow> {
-    let solver_count = model.solver_scalar_count();
-    let mut rows = Vec::new();
-    let mut claimed_targets = BTreeSet::new();
-    for (row_idx, target) in model
-        .problem
-        .continuous
-        .implicit_row_targets
-        .iter()
-        .enumerate()
-    {
-        let Some(solve::ScalarSlot::Y { index, .. }) = target else {
-            continue;
-        };
-        let target_index = *index;
-        if target_index < state_count
-            || target_index >= solver_count
-            || !block.can_evaluate_target_assignment(row_idx, target_index)
-            || !claimed_targets.insert(target_index)
-        {
-            continue;
-        }
-        rows.push(AlgebraicRefreshRow {
-            row_idx,
-            target_index,
-        });
-    }
-    rows
-}
-
-fn build_derivative_refresh_plan(
-    model: &solve::SolveModel,
-    derivative_block: &solve::ScalarProgramBlock,
-    full_plan: &RefreshPlan,
-) -> RefreshPlan {
-    let state_count = model.state_scalar_count();
-    let initial_deps = derivative_row_dependencies(derivative_block, state_count);
-    build_dependency_refresh_plan(model, full_plan, initial_deps)
-}
-
-fn build_root_refresh_plan(model: &solve::SolveModel, full_plan: &RefreshPlan) -> RefreshPlan {
-    let state_count = model.state_scalar_count();
-    let initial_deps =
-        root_condition_dependencies(&model.problem.events.root_conditions, state_count);
-    build_dependency_refresh_plan(model, full_plan, initial_deps)
-}
-
-fn build_event_refresh_plan(model: &solve::SolveModel, full_plan: &RefreshPlan) -> RefreshPlan {
-    let state_count = model.state_scalar_count();
-    let mut initial_deps = scalar_program_block_dependencies(
-        &model.problem.discrete.runtime_assignment_rhs,
-        state_count,
-    );
-    initial_deps.extend(scalar_program_block_dependencies(
-        &model.problem.discrete.rhs,
-        state_count,
-    ));
-    initial_deps.extend(scalar_program_block_dependencies(
-        &model.problem.events.action_conditions,
-        state_count,
-    ));
-    initial_deps.sort_unstable();
-    initial_deps.dedup();
-    build_dependency_refresh_plan(model, full_plan, initial_deps)
-}
-
-fn build_dependency_refresh_plan(
-    model: &solve::SolveModel,
-    full_plan: &RefreshPlan,
-    initial_deps: Vec<usize>,
-) -> RefreshPlan {
-    let implicit_block = full_plan.source_block();
-    let state_count = model.state_scalar_count();
-    let target_to_row = full_plan
-        .rows
-        .iter()
-        .map(|row| (row.target_index, row.row_idx))
-        .collect::<HashMap<_, _>>();
-    let mut needed = BTreeSet::new();
-    let mut missing = BTreeSet::new();
-    let mut stack = initial_deps;
-    while let Some(index) = stack.pop() {
-        if index < state_count || !needed.insert(index) {
-            continue;
-        }
-        let Some(row_idx) = target_to_row.get(&index).copied() else {
-            missing.insert(index);
-            continue;
-        };
-        for dep in row_all_y_dependencies(implicit_block, row_idx) {
-            if dep >= state_count {
-                stack.push(dep);
-            }
-        }
-    }
-    let rows = full_plan
-        .rows
-        .iter()
-        .filter(|row| needed.contains(&row.target_index))
-        .cloned()
-        .collect();
-    let mut plan = order_refresh_rows(rows, full_plan.source_block.clone(), state_count);
-    plan.missing_dependencies = missing.into_iter().collect();
-    plan
-}
-
-fn order_refresh_rows(
-    rows: Vec<AlgebraicRefreshRow>,
-    block: Arc<solve::ScalarProgramBlock>,
-    state_count: usize,
-) -> RefreshPlan {
-    let producer_by_target = rows
-        .iter()
-        .enumerate()
-        .map(|(pos, row)| (row.target_index, pos))
-        .collect::<HashMap<_, _>>();
-    let mut edges = vec![Vec::new(); rows.len()];
-    let mut indegree = vec![0usize; rows.len()];
-    for (row_pos, row) in rows.iter().enumerate() {
-        let Some(ops) = block.programs.get(row.row_idx) else {
-            continue;
-        };
-        for dep_index in row_y_dependencies(ops, row.target_index, state_count) {
-            let Some(&dep_pos) = producer_by_target.get(&dep_index) else {
-                continue;
-            };
-            if dep_pos == row_pos || edges[dep_pos].contains(&row_pos) {
-                continue;
-            }
-            edges[dep_pos].push(row_pos);
-            indegree[row_pos] += 1;
-        }
-    }
-    let mut ready = indegree
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, degree)| (*degree == 0).then_some(idx))
-        .collect::<VecDeque<_>>();
-    let mut ordered = Vec::with_capacity(rows.len());
-    while let Some(row_pos) = ready.pop_front() {
-        ordered.push(rows[row_pos].clone());
-        for &next in &edges[row_pos] {
-            indegree[next] -= 1;
-            if indegree[next] == 0 {
-                ready.push_back(next);
-            }
-        }
-    }
-    let requires_iteration = ordered.len() != rows.len();
-    if requires_iteration {
-        let mut emitted = vec![false; rows.len()];
-        for row in &ordered {
-            if let Some(pos) = rows.iter().position(|candidate| {
-                candidate.row_idx == row.row_idx && candidate.target_index == row.target_index
-            }) {
-                emitted[pos] = true;
-            }
-        }
-        ordered.extend(
-            rows.into_iter()
-                .enumerate()
-                .filter_map(|(idx, row)| (!emitted[idx]).then_some(row)),
-        );
-    }
-    RefreshPlan {
-        source_block: block,
-        rows: ordered,
-        missing_dependencies: Vec::new(),
-        iterative: requires_iteration,
-    }
-}
-
-fn derivative_row_dependencies(
-    block: &solve::ScalarProgramBlock,
-    state_count: usize,
-) -> Vec<usize> {
-    let mut deps = BTreeSet::new();
-    for row_idx in 0..state_count.min(block.programs.len()) {
-        deps.extend(
-            row_all_y_dependencies(block, row_idx)
-                .into_iter()
-                .filter(|index| *index >= state_count),
-        );
-    }
-    deps.into_iter().collect()
-}
-
-fn root_condition_dependencies(
-    block: &solve::ScalarProgramBlock,
-    state_count: usize,
-) -> Vec<usize> {
-    scalar_program_block_dependencies(block, state_count)
-}
-
-fn scalar_program_block_dependencies(
-    block: &solve::ScalarProgramBlock,
-    state_count: usize,
-) -> Vec<usize> {
-    let mut deps = BTreeSet::new();
-    for row_idx in 0..block.programs.len() {
-        deps.extend(
-            row_all_y_dependencies(block, row_idx)
-                .into_iter()
-                .filter(|index| *index >= state_count),
-        );
-    }
-    deps.into_iter().collect()
-}
-
-fn row_y_dependencies(
-    row: &[solve::LinearOp],
-    target_index: usize,
-    state_count: usize,
-) -> impl Iterator<Item = usize> + '_ {
-    row.iter().filter_map(move |op| match *op {
-        solve::LinearOp::LoadY { index, .. } if index >= state_count && index != target_index => {
-            Some(index)
-        }
-        _ => None,
-    })
-}
-
-fn row_all_y_dependencies(block: &solve::ScalarProgramBlock, row_idx: usize) -> Vec<usize> {
-    let Some(row) = block.programs.get(row_idx) else {
-        return Vec::new();
-    };
-    row.iter()
-        .filter_map(|op| match *op {
-            solve::LinearOp::LoadY { index, .. } => Some(index),
-            _ => None,
-        })
-        .collect()
-}
-
-pub fn next_runtime_event_stop(
-    model: &solve::SolveModel,
-    runtime_state: &solve_eval::SimulationRuntimeState,
-    y: &[f64],
-    params: &[f64],
-    stop_schedule: &mut SolveStopSchedule,
-    current_t: f64,
-    target: f64,
-) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
-    let (static_stop, static_mode) = stop_schedule.next_stop(current_t, target);
-    let static_event = static_mode.map(RuntimeEventStop::static_event);
-    let Some(dynamic_stop) =
-        next_dynamic_time_event(model, runtime_state, y, params, current_t, target)?
-    else {
-        return Ok((static_stop, static_event));
-    };
-    if dynamic_stop < static_stop && !sample_time_match_with_tol(dynamic_stop, static_stop) {
-        return Ok((dynamic_stop, Some(RuntimeEventStop::dynamic_time_event())));
-    }
-    if sample_time_match_with_tol(dynamic_stop, static_stop) {
-        let event = static_event
-            .unwrap_or_else(RuntimeEventStop::dynamic_time_event)
-            .merge_dynamic_time_event();
-        return Ok((static_stop, Some(event)));
-    }
-    Ok((static_stop, static_event))
-}
-
-pub fn visible_values_with_context(
-    model: &solve::SolveModel,
-    y: &[f64],
-    params: &[f64],
-    t: f64,
-    context: RowEvalContext<'_>,
-) -> Result<Vec<f64>, RuntimeSolveError> {
-    model
-        .visible_names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| visible_value_with_context(model, idx, name, y, params, t, context))
-        .collect()
-}
-
-pub fn apply_discrete_slot_values(
-    targets: &[solve::ScalarSlot],
-    values: &[f64],
-    y: &mut [f64],
-    p: &mut [f64],
-    tol: f64,
-) -> Result<(), RuntimeSolveError> {
-    solve_eval::apply_scalar_slot_values(targets, values, y, p, tol)
-        .map(|_| ())
-        .map_err(Into::into)
-}
-
-fn override_relation_memory_update_values(
-    root_relation_memory_targets: &[Option<solve::ScalarSlot>],
-    update_targets: &[solve::ScalarSlot],
-    root_relation_overrides: &[(usize, f64)],
-    values: &mut [f64],
-) {
-    for (root_idx, value) in root_relation_overrides {
-        let Some(Some(target)) = root_relation_memory_targets.get(*root_idx).copied() else {
-            continue;
-        };
-        for (row_idx, update_target) in update_targets.iter().copied().enumerate() {
-            if update_target == target
-                && let Some(slot) = values.get_mut(row_idx)
-            {
-                *slot = *value;
-            }
-        }
-    }
-}
-
-fn event_eval_params_with_relation_overrides(
-    root_relation_memory_targets: &[Option<solve::ScalarSlot>],
-    root_relation_overrides: &[(usize, f64)],
-    p: &[f64],
-) -> Vec<f64> {
-    let mut event_eval_p = p.to_vec();
-    for (root_idx, value) in root_relation_overrides {
-        let Some(Some(solve::ScalarSlot::P { index, .. })) =
-            root_relation_memory_targets.get(*root_idx).copied()
-        else {
-            continue;
-        };
-        if let Some(slot) = event_eval_p.get_mut(index) {
-            *slot = *value;
-        }
-    }
-    event_eval_p
-}
-
 pub fn apply_discrete_slot_value(
     target: solve::ScalarSlot,
     value: f64,
@@ -1677,107 +1682,6 @@ pub fn apply_discrete_slot_value(
     tol: f64,
 ) -> bool {
     solve_eval::apply_scalar_slot_value(target, value, y, p, tol).unwrap_or(false)
-}
-
-pub fn eval_event_actions_with_context(
-    events: &solve::SolveEventPartition,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    context: RowEvalContext<'_>,
-) -> Result<EventActionOutcome, RuntimeSolveError> {
-    match solve_eval::eval_event_action_request(events, y, p, t, context)? {
-        solve_eval::EventActionRequest::Continue => Ok(EventActionOutcome::Continue),
-        solve_eval::EventActionRequest::AssertionFailed { message } => {
-            Ok(EventActionOutcome::AssertionFailed { time: t, message })
-        }
-        solve_eval::EventActionRequest::Terminate { message } => {
-            Ok(EventActionOutcome::Terminated { time: t, message })
-        }
-    }
-}
-
-fn visible_value_with_context(
-    model: &solve::SolveModel,
-    visible_idx: usize,
-    name: &str,
-    y: &[f64],
-    params: &[f64],
-    t: f64,
-    context: RowEvalContext<'_>,
-) -> Result<f64, RuntimeSolveError> {
-    if model.visible_value_rows.len() == model.visible_names.len() {
-        let evaluator = PreparedScalarProgramBlock::new(model.visible_value_rows.clone());
-        return evaluator
-            .eval_row_with_context(visible_idx, y, params, t, context)
-            .map_err(Into::into);
-    }
-    if let Some(idx) = runtime_parameter_index(&model.problem.solve_layout, name) {
-        return params.get(idx).copied().ok_or_else(|| {
-            RuntimeSolveError::SolveIr(format!("runtime slot `{name}` is out of range"))
-        });
-    }
-    if let Some(idx) = model.problem.solve_layout.solver_maps.name_to_idx.get(name) {
-        return y.get(*idx).copied().ok_or_else(|| {
-            RuntimeSolveError::SolveIr(format!("solver slot `{name}` is out of range"))
-        });
-    }
-    Err(RuntimeSolveError::SolveIr(format!(
-        "visible trace name `{name}` is not in solve layout"
-    )))
-}
-
-fn next_dynamic_time_event(
-    model: &solve::SolveModel,
-    runtime_state: &solve_eval::SimulationRuntimeState,
-    y: &[f64],
-    params: &[f64],
-    current_t: f64,
-    target: f64,
-) -> Result<Option<f64>, RuntimeSolveError> {
-    let named_events = model
-        .problem
-        .events
-        .dynamic_time_event_names
-        .iter()
-        .filter_map(|name| dynamic_time_event_value(model, params, name));
-    let row_events = dynamic_time_event_row_values(model, runtime_state, y, params, current_t)?;
-    Ok(named_events
-        .chain(row_events)
-        .filter(|event_t| event_time_in_window(*event_t, current_t, target))
-        .min_by(f64::total_cmp))
-}
-
-fn dynamic_time_event_row_values(
-    model: &solve::SolveModel,
-    runtime_state: &solve_eval::SimulationRuntimeState,
-    y: &[f64],
-    params: &[f64],
-    current_t: f64,
-) -> Result<Vec<f64>, RuntimeSolveError> {
-    let block = &model.problem.events.dynamic_time_event_rhs;
-    if block.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut values = vec![0.0; block.len()];
-    solve_eval::eval_scalar_program_block_with_context(
-        block,
-        y,
-        params,
-        current_t,
-        RowEvalContext {
-            external_tables: Some(model.external_tables.as_slice()),
-            runtime_state: Some(runtime_state),
-            ..Default::default()
-        },
-        &mut values,
-    )?;
-    Ok(values)
-}
-
-fn dynamic_time_event_value(model: &solve::SolveModel, params: &[f64], name: &str) -> Option<f64> {
-    runtime_parameter_index(&model.problem.solve_layout, name)
-        .and_then(|idx| params.get(idx).copied())
 }
 
 #[cfg(test)]

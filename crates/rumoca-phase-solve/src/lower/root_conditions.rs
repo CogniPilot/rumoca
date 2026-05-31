@@ -278,9 +278,32 @@ fn lower_inactive_root_row(
 }
 
 fn root_condition_is_inactive(dae_model: &dae::Dae, expr: &rumoca_core::Expression) -> bool {
+    // MLS §3.7.3: a relation of the form `time >= threshold` is a time-event
+    // generating expression. When `threshold` is piecewise-constant between
+    // events (parameters, constants, or `pre(discrete)` held values) the root
+    // surface `threshold - time` is a clean, continuous function of time, so it
+    // can — and must — fire as an active root condition. This is the firing
+    // mechanism for self-rescheduling counters such as the periodic-source
+    // pattern `when time >= (pre(count)+1)*period + startTime then
+    // count = pre(count)+1`. Without this carve-out the `pre(count)` reference
+    // would mark the relation inactive and the `when` would never fire (the
+    // dynamic time event stops the integrator but does not, on its own, fire
+    // the guarded discrete update).
+    if is_piecewise_constant_time_threshold_relation(dae_model, expr) {
+        return false;
+    }
     uses_runtime_discrete_condition(expr)
         || expression_uses_runtime_discrete_bindings(dae_model, expr)
         || !expression_uses_known_root_bindings(dae_model, expr)
+}
+
+/// A relation `time <rel> threshold` (or `threshold <rel> time`) where the
+/// non-time side is piecewise-constant between events.
+fn is_piecewise_constant_time_threshold_relation(
+    dae_model: &dae::Dae,
+    expr: &rumoca_core::Expression,
+) -> bool {
+    dae::is_event_constant_time_threshold_relation(dae_model, expr)
 }
 
 fn expression_uses_known_root_bindings(

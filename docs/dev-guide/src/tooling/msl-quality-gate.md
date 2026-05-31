@@ -41,7 +41,9 @@ count drops below the committed baseline for the same target set.
 
 `msl_quality_current.json` also records release review metadata:
 
-- `omc_version` pins the OpenModelica version used for OMC trace parity.
+- `omc_version` records the OpenModelica build used for OMC trace parity; the
+  quality gate compares the upstream release version and tolerates distro
+  package rebuild suffix drift.
 - `mls_contract_coverage` groups per-model stage, Solve-IR, balance,
   simulation, and error-code counts by MLS contract category (`ARR`,
   `CONN_STRM`, `FUNC`, `EQN_ALG_SIM`, `CLK_SM`, `DECL_TYPE`, `PKG`, `OTHER`).

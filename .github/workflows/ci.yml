@@ -513,7 +513,9 @@ jobs:
         run: |
           set -euo pipefail
           targets="crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json"
+          rm -rf target/msl/modelicatest-results
           cargo xtask verify msl-parity \
+            --results-dir target/msl/modelicatest-results \
             --sim-targets-file "$targets" \
             --include-modelica-test \
             --require-selected-targets-success \
@@ -523,14 +525,14 @@ jobs:
             --sim-worker-memory-mb 2048 \
             --sim-total-memory-mb 6144
           cargo xtask repo msl modelica-test-catalog \
-            --results target/msl/results/msl_results.json \
+            --results target/msl/modelicatest-results/msl_results.json \
             --out target/msl/results/modelica_test_catalog.md \
             --json-out target/msl/results/modelica_test_catalog.json
 
       - name: Generate MSL PR summary comment
         if: always()
         shell: bash
-        run: cargo xtask repo msl pr-comment
+        run: cargo xtask repo msl pr-comment --results-dir target/msl/results
 
       - name: Upload MSL compatibility artifacts
         if: always()
@@ -551,6 +553,8 @@ jobs:
             target/msl/results/msl_compatibility_report.json
             target/msl/results/modelica_test_catalog.md
             target/msl/results/modelica_test_catalog.json
+            target/msl/modelicatest-results/msl_results.json
+            target/msl/modelicatest-results/msl_quality_current.json
           if-no-files-found: warn
 
       - name: Publish MSL PR summary comment

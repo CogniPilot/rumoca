@@ -1,4 +1,8 @@
-use super::schedule::RuntimeStopSchedule;
+use super::{
+    event::{RuntimeEventBoundary, process_runtime_event_boundary},
+    schedule::{RuntimeEventStop, RuntimeStopSchedule},
+    solve_ops::EventPreMode,
+};
 #[cfg(test)]
 use crate::BackendState;
 use crate::runtime::hotpath_stats;
@@ -53,8 +57,14 @@ where
             StepUntilOutcome::RootFound { t_root } => {
                 stats.root_hits += 1;
                 hotpath_stats::inc_root_hit();
-                backend.apply_event_updates(t_root)?;
-                backend.apply_event_actions(t_root)?;
+                process_runtime_event_boundary(
+                    RuntimeEventBoundary {
+                        event_t: t_root,
+                        horizon_t: t_root,
+                        event: RuntimeEventStop::static_event(EventPreMode::EventEntry),
+                    },
+                    backend,
+                )?;
                 let state_after = backend.read_state();
                 if stop_time_reached_with_tol(state_after.t, t_end) {
                     break;
@@ -66,8 +76,14 @@ where
                 if stop_time_reached_with_tol(state_after_step.t, t_end) {
                     break;
                 }
-                backend.apply_event_updates(state_after_step.t)?;
-                backend.apply_event_actions(state_after_step.t)?;
+                process_runtime_event_boundary(
+                    RuntimeEventBoundary {
+                        event_t: state_after_step.t,
+                        horizon_t: state_after_step.t,
+                        event: RuntimeEventStop::static_event(EventPreMode::FollowCurrent),
+                    },
+                    backend,
+                )?;
                 let state_after_event = backend.read_state();
                 if stop_time_reached_with_tol(state_after_event.t, t_end) {
                     break;
@@ -84,6 +100,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RuntimeEventBoundaryHandler;
     use std::collections::VecDeque;
 
     #[derive(Clone, Copy)]
@@ -102,9 +119,31 @@ mod tests {
         init_calls: usize,
     }
 
-    impl SimulationBackend for MockBackend {
+    impl RuntimeEventBoundaryHandler for MockBackend {
         type Error = String;
 
+        fn on_event_time(
+            &mut self,
+            event_time: f64,
+            _event: RuntimeEventStop,
+        ) -> Result<(), Self::Error> {
+            self.event_updates.push(event_time);
+            self.t = event_time + 1.0e-6;
+            Ok(())
+        }
+
+        fn on_event_right_limit(
+            &mut self,
+            event_time: f64,
+            _event: RuntimeEventStop,
+        ) -> Result<(), Self::Error> {
+            self.event_updates.push(event_time);
+            self.t = event_time;
+            Ok(())
+        }
+    }
+
+    impl SimulationBackend for MockBackend {
         fn init(&mut self) -> Result<(), Self::Error> {
             self.init_calls += 1;
             Ok(())
@@ -134,16 +173,6 @@ mod tests {
 
         fn read_state(&self) -> BackendState {
             BackendState { t: self.t }
-        }
-
-        fn apply_event_updates(&mut self, event_time: f64) -> Result<(), Self::Error> {
-            self.event_updates.push(event_time);
-            self.t = event_time + 1.0e-6;
-            Ok(())
-        }
-
-        fn apply_event_actions(&mut self, _event_time: f64) -> Result<(), Self::Error> {
-            Ok(())
         }
     }
 

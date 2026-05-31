@@ -443,6 +443,76 @@ pub(super) fn render_solve_row_rust_function(row: Value, config: Value) -> Rende
     render_solve_row_for(&row, &cfg, SolveRowDialect::Rust)
 }
 
+pub(super) fn render_solve_slot_assign_c_function(
+    slot: Value,
+    value: Value,
+    config: Value,
+) -> RenderResult {
+    render_solve_slot_assign_c_required(&slot, &value, &config)
+}
+
+pub(super) fn render_solve_pre_param_binding_c_function(
+    binding: Value,
+    access_config: Value,
+    assign_config: Value,
+) -> RenderResult {
+    let access_cfg = SolveRowCConfig::from_value(&access_config);
+    let assign_cfg = SolveSlotAssignCConfig::from_value(&assign_config);
+    let dest = solve_field_usize(&binding, "dest_p_index")?;
+    let source = get_field(&binding, "source")?;
+    let value = if let Ok(slot) = get_field(&source, "Y") {
+        access_cfg.y_access(solve_field_usize(&slot, "index")?)
+    } else if let Ok(slot) = get_field(&source, "P") {
+        access_cfg.p_access(solve_field_usize(&slot, "index")?)
+    } else {
+        return Err(render_err(format!(
+            "unsupported pre-parameter source slot: {source}"
+        )));
+    };
+
+    Ok(format!(
+        "{};",
+        format_solve_set(&assign_cfg.p_set_pattern, dest, &value)
+    ))
+}
+
+pub(super) fn render_optional_solve_slot_assign_c_function(
+    slot: Value,
+    value: Value,
+    config: Value,
+) -> RenderResult {
+    if slot.is_none() || slot.is_undefined() {
+        return Ok(String::new());
+    }
+    render_solve_slot_assign_c_required(&slot, &value, &config)
+}
+
+fn render_solve_slot_assign_c_required(
+    slot: &Value,
+    value: &Value,
+    config: &Value,
+) -> RenderResult {
+    let cfg = SolveSlotAssignCConfig::from_value(config);
+    let value = value_to_string(value);
+    if let Ok(slot) = get_field(slot, "Y") {
+        let index = solve_field_usize(&slot, "index")?;
+        return Ok(format!(
+            "{};",
+            format_solve_set(&cfg.y_set_pattern, index, &value)
+        ));
+    }
+    if let Ok(slot) = get_field(slot, "P") {
+        let index = solve_field_usize(&slot, "index")?;
+        return Ok(format!(
+            "{};",
+            format_solve_set(&cfg.p_set_pattern, index, &value)
+        ));
+    }
+    Err(render_err(format!(
+        "unsupported solve assignment target slot: {slot}"
+    )))
+}
+
 /// Render a `ComputeNode::MatMul` inner value as a C block.
 ///
 /// Three dispatch paths:
@@ -988,11 +1058,36 @@ impl SolveRowCConfig {
     }
 }
 
+struct SolveSlotAssignCConfig {
+    y_set_pattern: String,
+    p_set_pattern: String,
+}
+
+impl SolveSlotAssignCConfig {
+    fn from_value(value: &Value) -> Self {
+        Self {
+            y_set_pattern: config_string(value, "y_set")
+                .unwrap_or_else(|| "__rumoca_solve_set_y(m, {}, {})".to_string()),
+            p_set_pattern: config_string(value, "p_set")
+                .unwrap_or_else(|| "__rumoca_solve_set_p(m, {}, {})".to_string()),
+        }
+    }
+}
+
 fn format_solve_access(pattern: &str, index: usize) -> String {
     if pattern.contains("{}") {
         return pattern.replacen("{}", &index.to_string(), 1);
     }
     format!("{pattern}[{index}]")
+}
+
+fn format_solve_set(pattern: &str, index: usize, value: &str) -> String {
+    if pattern.contains("{}") {
+        return pattern
+            .replacen("{}", &index.to_string(), 1)
+            .replacen("{}", value, 1);
+    }
+    format!("{pattern}[{index}] = {value}")
 }
 
 fn config_string(value: &Value, field: &str) -> Option<String> {

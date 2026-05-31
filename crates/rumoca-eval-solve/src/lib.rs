@@ -27,7 +27,9 @@ mod linear_solve;
 pub mod nan_trace;
 mod prepared;
 mod random_runtime;
+mod refresh_plan;
 mod runtime;
+mod runtime_events;
 mod sparsity;
 mod table_runtime;
 mod update_rows;
@@ -41,8 +43,12 @@ use random_runtime::{
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
 };
 pub use runtime::{
-    AlgebraicSettle, SolveRuntime, apply_discrete_slot_value, apply_discrete_slot_values,
-    eval_event_actions_with_context, next_runtime_event_stop, visible_values_with_context,
+    AlgebraicSettle, EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime,
+    apply_discrete_slot_value,
+};
+pub use runtime_events::{
+    apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
+    next_runtime_event_stop, visible_values_with_context,
 };
 pub use sparsity::{
     JacobianSparsity, jacobian_sparsity_from_jvp, jacobian_sparsity_from_scalar_jvp,

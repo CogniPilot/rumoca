@@ -10,7 +10,7 @@
 
 use rayon::prelude::*;
 use rumoca_compile::{
-    compile::core::msl_cache_dir_from_manifest,
+    compile::core::{msl_cache_dir_from_manifest, workspace_root_from_manifest_dir},
     compile::{
         CompiledSourceRoot, Dae, FailedPhase, PhaseResult, StrictCompileReport,
         compile_phase_timing_stats, reset_compile_phase_timing_stats,

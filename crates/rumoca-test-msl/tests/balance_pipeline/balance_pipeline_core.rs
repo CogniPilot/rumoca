@@ -215,10 +215,7 @@ impl CompilePerfArtifacts {
         if !COMPILE_PERF_RECORD {
             return None;
         }
-        let perf_dir = get_msl_cache_dir()
-            .join("results")
-            .join("perf")
-            .join("compile");
+        let perf_dir = msl_results_dir().join("perf").join("compile");
         if let Err(error) = fs::create_dir_all(&perf_dir) {
             eprintln!("WARNING: failed to create compile perf profile directory: {error}");
             return None;
@@ -799,8 +796,7 @@ fn model_worker_artifact_dir_name(model_name: &str) -> String {
 }
 
 fn model_worker_output_dir(model_name: &str) -> PathBuf {
-    get_msl_cache_dir()
-        .join("results")
+    msl_results_dir()
         .join("model_worker")
         .join(model_worker_artifact_dir_name(model_name))
 }

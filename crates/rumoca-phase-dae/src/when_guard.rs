@@ -101,6 +101,7 @@ fn when_guard_scalar_activation_expr(dae: &Dae, when_condition: &Expression) -> 
     if is_clock_constructor_condition(&unfolded) {
         return unfolded;
     }
+    let span = when_condition.span().unwrap_or(rumoca_core::Span::DUMMY);
     // MLS §8.3.5.1: when-equation assignments fire on the false->true edge
     // of the condition, not while the condition remains true. Keep the
     // canonical relational subexpressions visible under edge(...) so the
@@ -112,13 +113,13 @@ fn when_guard_scalar_activation_expr(dae: &Dae, when_condition: &Expression) -> 
             Expression::BuiltinCall {
                 function: BuiltinFunction::Edge,
                 args: vec![when_condition.clone()],
-                span: rumoca_core::Span::DUMMY,
+                span,
             }
         }
         _ => Expression::BuiltinCall {
             function: BuiltinFunction::Edge,
             args: vec![unfolded],
-            span: rumoca_core::Span::DUMMY,
+            span,
         },
     }
 }
@@ -130,61 +131,56 @@ fn is_clock_constructor_condition(expr: &Expression) -> bool {
     )
 }
 
-fn bool_expr(value: bool) -> Expression {
+fn bool_expr(value: bool, span: rumoca_core::Span) -> Expression {
     Expression::Literal {
         value: Literal::Boolean(value),
-        span: rumoca_core::Span::DUMMY,
+        span,
     }
 }
 
 fn or_expr(lhs: Expression, rhs: Expression) -> Expression {
-    match (&lhs, &rhs) {
-        (
-            Expression::Literal {
-                value: Literal::Boolean(true),
-                span: rumoca_core::Span::DUMMY,
-            },
-            _,
-        )
-        | (
-            _,
-            Expression::Literal {
-                value: Literal::Boolean(true),
-                span: rumoca_core::Span::DUMMY,
-            },
-        ) => bool_expr(true),
-        (
-            Expression::Literal {
-                value: Literal::Boolean(false),
-                span: rumoca_core::Span::DUMMY,
-            },
-            _,
-        ) => rhs,
-        (
-            _,
-            Expression::Literal {
-                value: Literal::Boolean(false),
-                span: rumoca_core::Span::DUMMY,
-            },
-        ) => lhs,
-        _ => Expression::Binary {
-            op: rumoca_core::OpBinary::Or,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        },
+    match (literal_bool(&lhs), literal_bool(&rhs)) {
+        (Some(true), _) => lhs,
+        (_, Some(true)) => rhs,
+        (Some(false), _) => rhs,
+        (_, Some(false)) => lhs,
+        _ => {
+            let span = expression_span(&lhs)
+                .unwrap_or_else(|| expression_span(&rhs).unwrap_or(rumoca_core::Span::DUMMY));
+            Expression::Binary {
+                op: rumoca_core::OpBinary::Or,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            }
+        }
     }
+}
+
+fn literal_bool(expr: &Expression) -> Option<bool> {
+    match expr {
+        Expression::Literal {
+            value: Literal::Boolean(value),
+            ..
+        } => Some(*value),
+        _ => None,
+    }
+}
+
+fn expression_span(expr: &Expression) -> Option<rumoca_core::Span> {
+    expr.span()
 }
 
 fn vector_when_guard_activation_expr<'a>(
     dae: &Dae,
+    span: rumoca_core::Span,
     elements: impl IntoIterator<Item = &'a Expression>,
 ) -> Expression {
     elements
         .into_iter()
         .map(|element| when_guard_activation_expr(dae, element))
         .reduce(or_expr)
-        .unwrap_or_else(|| bool_expr(false))
+        .unwrap_or_else(|| bool_expr(false, span))
 }
 
 pub(super) fn when_guard_activation_expr(dae: &Dae, when_condition: &Expression) -> Expression {
@@ -194,8 +190,12 @@ pub(super) fn when_guard_activation_expr(dae: &Dae, when_condition: &Expression)
         // activation edge and the aggregate guard is the scalar OR of those
         // edges. `edge(a or b)` would miss an event when `a` is already true
         // and `b` becomes true.
-        Expression::Array { elements, .. } => vector_when_guard_activation_expr(dae, elements),
-        Expression::Tuple { elements, .. } => vector_when_guard_activation_expr(dae, elements),
+        Expression::Array { elements, span, .. } => {
+            vector_when_guard_activation_expr(dae, *span, elements)
+        }
+        Expression::Tuple { elements, span, .. } => {
+            vector_when_guard_activation_expr(dae, *span, elements)
+        }
         _ => when_guard_scalar_activation_expr(dae, when_condition),
     }
 }

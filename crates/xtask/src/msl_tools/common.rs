@@ -106,6 +106,22 @@ impl MslPaths {
         Self::from_manifest_dir(env!("CARGO_MANIFEST_DIR"))
     }
 
+    pub fn with_results_dir(mut self, results_dir: &Path) -> Self {
+        let results_dir = if results_dir.is_absolute() {
+            results_dir.to_path_buf()
+        } else {
+            self.repo_root.join(results_dir)
+        };
+        let trace_root_dir = results_dir.join("sim_traces");
+        self.flat_dir = results_dir.join("omc_flat");
+        self.work_dir = results_dir.join("omc_work");
+        self.sim_work_dir = results_dir.join("omc_sim_work");
+        self.omc_trace_dir = trace_root_dir.join("omc");
+        self.rumoca_trace_dir = trace_root_dir.join("rumoca");
+        self.results_dir = results_dir;
+        self
+    }
+
     pub fn work_dir_for_run_id(&self, run_id: Option<&str>) -> PathBuf {
         let Some(run_id) = run_id else {
             return self.work_dir.clone();

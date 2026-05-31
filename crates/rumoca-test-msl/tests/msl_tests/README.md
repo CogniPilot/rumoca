@@ -62,6 +62,10 @@ This directory contains helper includes for `tests/msl_tests.rs`.
   - `target/msl/results/msl_package_pass_rates_compact.txt`
   These reports include parse, flatten, DAE, Solve-IR, initial-condition
   solve, and simulation pass rates by package.
+- `cargo xtask verify msl-parity --results-dir <path>` redirects the harness
+  JSON, markdown, trace, and debug artifacts for that invocation. CI uses this
+  to keep the focused ModelicaTest semantic gate from overwriting the full MSL
+  quality gate artifacts used in the PR summary comment.
 - Set `RUMOCA_MSL_PRINT_PACKAGE_PASS_TABLE=1` to print the compact percentage
   table at the end of the test output.
 - Runs that complete the OMC parity stage also write package-level trace

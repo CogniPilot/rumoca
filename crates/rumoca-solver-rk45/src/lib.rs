@@ -5,13 +5,15 @@ use std::{
     time::Instant,
 };
 
-use rumoca_eval_solve::SolveRuntime;
+use rumoca_eval_solve::{EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime};
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    BackendState, EventActionOutcome, RootCrossing, RuntimeSolveError, SimOptions, SimResult,
-    SimSolverMode, SimTermination, SimulationBackend, StepUntilOutcome, TimeoutBudget,
-    TimeoutExceeded, convert_variable_meta, root_crossings_with_relation_memory,
-    root_value_crossed, timeline,
+    BackendState, EventActionOutcome, EventPreMode, RootCrossing, RuntimeEventBoundary,
+    RuntimeEventBoundaryHandler, RuntimeEventStop, RuntimeSolveError, SimOptions, SimResult,
+    SimSolverMode, SimTermination, SimulationBackend, SolveStopSchedule, StepUntilOutcome,
+    TimeoutBudget, TimeoutExceeded, commit_pre_params_after_event, convert_variable_meta,
+    initial_runtime_event_stop, process_runtime_event_boundary,
+    root_crossings_with_relation_memory, root_value_crossed, runtime_event_horizon, timeline,
 };
 
 const MIN_STEP: f64 = 1.0e-12;
@@ -280,11 +282,15 @@ struct Rk45Backend<'a> {
     atol: f64,
     rtol: f64,
     next_step: f64,
+    t_end: f64,
     budget: TimeoutBudget,
+    stop_schedule: SolveStopSchedule,
     termination: Option<SimTermination>,
     pending_root_crossings: Vec<RootCrossing>,
     pending_event_pre_y: Option<Vec<f64>>,
     pending_event_pre_p: Option<Vec<f64>>,
+    boundary_event_pre_y: Option<Vec<f64>>,
+    boundary_event_pre_p: Option<Vec<f64>>,
     post_event_eval_time: Option<f64>,
     solver_y_guess: RefCell<Vec<f64>>,
     derivative_cache: RefCell<Option<CachedDerivative>>,
@@ -317,7 +323,7 @@ struct CachedRootConditions {
 
 struct EventStop {
     time: f64,
-    is_event: bool,
+    event: Option<RuntimeEventStop>,
 }
 
 struct LocatedRoot {
@@ -414,11 +420,15 @@ impl<'a> Rk45Backend<'a> {
             atol: opts.atol.max(1.0e-12),
             rtol: opts.rtol.max(1.0e-12),
             next_step,
+            t_end: opts.t_end,
             budget: TimeoutBudget::new(opts.max_wall_seconds),
+            stop_schedule: SolveStopSchedule::new(&model.model.problem, opts.t_start, opts.t_end),
             termination: None,
             pending_root_crossings: Vec::new(),
             pending_event_pre_y: None,
             pending_event_pre_p: None,
+            boundary_event_pre_y: None,
+            boundary_event_pre_p: None,
             post_event_eval_time: None,
             solver_y_guess: RefCell::new(Vec::new()),
             derivative_cache: RefCell::new(None),
@@ -603,7 +613,7 @@ impl<'a> Rk45Backend<'a> {
         }
         while self.time < target_t {
             let stop = self.next_event_stop(target_t)?;
-            let event_boundary = stop.is_event.then_some(stop.time);
+            let event_boundary = stop.event.is_some().then_some(stop.time);
             let outcome = self.advance_continuous_to(stop.time, event_boundary)?;
             match self.process_event_boundary(outcome, &stop, target_t)? {
                 Some(StepUntilOutcome::Finished) => return Ok(StepUntilOutcome::Finished),
@@ -621,10 +631,12 @@ impl<'a> Rk45Backend<'a> {
         target_t: f64,
     ) -> Result<Option<StepUntilOutcome>, SimError> {
         if matches!(outcome, StepUntilOutcome::RootFound { .. }) {
-            return self.apply_events_and_continue_or_finish(self.time);
+            return self.apply_events_and_continue_or_finish(self.time, target_t);
         }
-        if stop.is_event && time_match_with_tol(self.time, stop.time) {
-            return self.apply_scheduled_events_and_continue_or_finish(stop.time, target_t);
+        if let Some(event) = stop.event
+            && time_match_with_tol(self.time, stop.time)
+        {
+            return self.apply_scheduled_events_and_continue_or_finish(stop.time, target_t, event);
         }
         Ok(None)
     }
@@ -846,44 +858,23 @@ impl<'a> Rk45Backend<'a> {
         });
     }
 
-    fn next_event_stop(&self, target_t: f64) -> Result<EventStop, SimError> {
-        let mut events =
-            timeline::scheduled_event_times(&self.model.model.problem, self.time, target_t);
-        events.extend(self.dynamic_time_event_times(target_t)?);
-        let time = events
-            .iter()
-            .copied()
-            .min_by(f64::total_cmp)
-            .unwrap_or(target_t);
-        Ok(EventStop {
-            time,
-            is_event: events
-                .iter()
-                .any(|event_t| time_match_with_tol(*event_t, time)),
-        })
-    }
-
-    fn dynamic_time_event_times(&self, target_t: f64) -> Result<Vec<f64>, SimError> {
-        let mut event_times = timeline::named_dynamic_time_event_values(
-            &self.model.model.problem.solve_layout,
-            &self.params,
-            &self.model.model.problem.events.dynamic_time_event_names,
-        );
-        event_times.extend(self.dynamic_time_event_row_values()?);
-        Ok(event_times
-            .into_iter()
-            .filter(|event_t| timeline::event_time_in_window(*event_t, self.time, target_t))
-            .collect())
-    }
-
-    fn dynamic_time_event_row_values(&self) -> Result<Vec<f64>, SimError> {
+    fn next_event_stop(&mut self, target_t: f64) -> Result<EventStop, SimError> {
         let solver_y = self.current_solver_y()?;
-        self.model
-            .eval_dynamic_time_event_rows(self.time, &solver_y, &self.params)
-            .map_err(Into::into)
+        let (time, event) = self.model.next_runtime_event_stop(
+            &solver_y,
+            &self.params,
+            &mut self.stop_schedule,
+            self.time,
+            target_t,
+        )?;
+        Ok(EventStop { time, event })
     }
 
-    fn apply_discrete_event_updates(&mut self, event_time: f64) -> Result<(), SimError> {
+    fn apply_discrete_event_updates(
+        &mut self,
+        event_time: f64,
+        _event: RuntimeEventStop,
+    ) -> Result<(), SimError> {
         let event_entry_y = self
             .pending_event_pre_y
             .take()
@@ -899,24 +890,32 @@ impl<'a> Rk45Backend<'a> {
             .drain(..)
             .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
             .collect::<Vec<_>>();
-        self.model
-            .apply_simple_event_update_with_relation_overrides(
-                &mut solver_y,
-                &mut self.params,
-                event_time,
-                self.atol,
-                &event_entry_y,
-                &event_entry_p,
-                &root_overrides,
-            )?;
+        let runtime = self.model;
+        let state_count = runtime.state_count;
+        let tol = self.atol;
+        let outcome = runtime.apply_projected_event_update(
+            ProjectedEventUpdateInput {
+                y: &mut solver_y,
+                p: &mut self.params,
+                t: event_time,
+                tol,
+                event_pre_y: &event_entry_y,
+                event_pre_p: &event_entry_p,
+                max_iters: UPDATE_MAX_ITERS,
+                row_filter: EventUpdateRowFilter::All,
+                root_relation_overrides: &root_overrides,
+            },
+            move |y, p| project_rk_algebraics(runtime, y, p, event_time, state_count, tol),
+        )?;
         self.copy_state_from_solver_y(&solver_y);
-        self.model.update_relation_memory_from_state(
-            event_time,
-            &self.state,
+        let post_event_y = self.current_solver_y()?;
+        commit_pre_params_after_event(
+            &self.model.model,
+            &post_event_y,
             &mut self.params,
             self.atol,
-            UPDATE_MAX_ITERS,
-        )?;
+        );
+        self.apply_event_action_outcome(outcome, event_time)?;
         self.clear_runtime_caches();
         Ok(())
     }
@@ -924,9 +923,17 @@ impl<'a> Rk45Backend<'a> {
     fn apply_events_and_continue_or_finish(
         &mut self,
         event_time: f64,
+        target_t: f64,
     ) -> Result<Option<StepUntilOutcome>, SimError> {
-        self.apply_event_updates(event_time)?;
-        self.apply_event_actions(event_time)?;
+        let outcome = process_runtime_event_boundary(
+            RuntimeEventBoundary {
+                event_t: event_time,
+                horizon_t: event_time.min(target_t),
+                event: RuntimeEventStop::static_event(EventPreMode::EventEntry),
+            },
+            self,
+        )?;
+        self.apply_event_actions(outcome.final_t)?;
         Ok(Some(
             self.termination
                 .as_ref()
@@ -939,13 +946,20 @@ impl<'a> Rk45Backend<'a> {
     fn apply_scheduled_events_and_continue_or_finish(
         &mut self,
         event_time: f64,
-        _target_t: f64,
+        target_t: f64,
+        event: RuntimeEventStop,
     ) -> Result<Option<StepUntilOutcome>, SimError> {
         self.time = event_time.max(self.time);
-        let update_time = timeline::event_right_limit_time(event_time);
-        self.apply_discrete_event_updates(update_time)?;
-        self.post_event_eval_time = Some(update_time);
-        self.apply_event_actions(update_time)?;
+        let outcome = process_runtime_event_boundary(
+            RuntimeEventBoundary {
+                event_t: event_time,
+                horizon_t: runtime_event_horizon(event, target_t, self.t_end),
+                event,
+            },
+            self,
+        )?;
+        self.post_event_eval_time = outcome.right_limit_t;
+        self.apply_event_actions(outcome.final_t)?;
         self.clear_runtime_caches();
         Ok(Some(
             self.termination
@@ -963,11 +977,28 @@ impl<'a> Rk45Backend<'a> {
             .eval_event_actions(&solver_y, &self.params, event_time)?
         {
             EventActionOutcome::Continue => Ok(()),
+            outcome => self.apply_event_action_outcome(outcome, event_time),
+        }
+    }
+
+    fn apply_event_action_outcome(
+        &mut self,
+        outcome: EventActionOutcome,
+        event_time: f64,
+    ) -> Result<(), SimError> {
+        match outcome {
+            EventActionOutcome::Continue => Ok(()),
             EventActionOutcome::AssertionFailed { time, message } => {
-                Err(SimError::AssertionFailed { time, message })
+                Err(SimError::AssertionFailed {
+                    time: if time.is_finite() { time } else { event_time },
+                    message,
+                })
             }
             EventActionOutcome::Terminated { time, message } => {
-                self.termination = Some(SimTermination { time, message });
+                self.termination = Some(SimTermination {
+                    time: if time.is_finite() { time } else { event_time },
+                    message,
+                });
                 Ok(())
             }
         }
@@ -989,9 +1020,9 @@ impl<'a> Rk45Backend<'a> {
 }
 
 impl SimulationBackend for Rk45Backend<'_> {
-    type Error = SimError;
-
     fn init(&mut self) -> Result<(), Self::Error> {
+        let startup_event_pre_y = self.current_solver_y()?;
+        let startup_event_pre_p = self.params.clone();
         let mut solver_y = self.current_solver_y()?;
         self.model.apply_initialization_updates(
             &mut solver_y,
@@ -1008,6 +1039,32 @@ impl SimulationBackend for Rk45Backend<'_> {
             self.atol,
             UPDATE_MAX_ITERS,
         )?;
+        let initial_event = initial_runtime_event_stop(
+            &self.model.model.problem,
+            self.time,
+            self.model
+                .current_dynamic_time_event_stop(&solver_y, &self.params, self.time)?,
+        );
+        if let Some(event) = initial_event {
+            self.pending_event_pre_y = Some(startup_event_pre_y);
+            self.pending_event_pre_p = Some(startup_event_pre_p);
+            let outcome = process_runtime_event_boundary(
+                RuntimeEventBoundary {
+                    event_t: self.time,
+                    horizon_t: self.time,
+                    event,
+                },
+                self,
+            )?;
+            self.apply_event_actions(outcome.final_t)?;
+        }
+        let post_initial_y = self.current_solver_y()?;
+        commit_pre_params_after_event(
+            &self.model.model,
+            &post_initial_y,
+            &mut self.params,
+            self.atol,
+        );
         self.clear_runtime_caches();
         Ok(())
     }
@@ -1019,15 +1076,60 @@ impl SimulationBackend for Rk45Backend<'_> {
     fn read_state(&self) -> BackendState {
         BackendState { t: self.time }
     }
+}
 
-    fn apply_event_updates(&mut self, event_time: f64) -> Result<(), Self::Error> {
+impl RuntimeEventBoundaryHandler for Rk45Backend<'_> {
+    type Error = SimError;
+
+    fn on_event_time(
+        &mut self,
+        event_time: f64,
+        event: RuntimeEventStop,
+    ) -> Result<(), Self::Error> {
         self.time = event_time.max(self.time);
-        self.apply_discrete_event_updates(self.time)?;
+        let (event_pre_y, event_pre_p) = self.event_pre_for_update()?;
+        self.boundary_event_pre_y = Some(event_pre_y.clone());
+        self.boundary_event_pre_p = Some(event_pre_p.clone());
+        self.pending_event_pre_y = Some(event_pre_y);
+        self.pending_event_pre_p = Some(event_pre_p);
+        self.apply_discrete_event_updates(self.time, event)?;
         Ok(())
     }
 
-    fn apply_event_actions(&mut self, event_time: f64) -> Result<(), Self::Error> {
-        Rk45Backend::apply_event_actions(self, event_time)
+    fn on_event_right_limit(
+        &mut self,
+        right_time: f64,
+        event: RuntimeEventStop,
+    ) -> Result<(), Self::Error> {
+        let event_pre_y = if let Some(event_pre_y) = self.boundary_event_pre_y.clone() {
+            event_pre_y
+        } else {
+            self.current_solver_y()?
+        };
+        let event_pre_p = self
+            .boundary_event_pre_p
+            .clone()
+            .unwrap_or_else(|| self.params.clone());
+        self.pending_event_pre_y = Some(event_pre_y);
+        self.pending_event_pre_p = Some(event_pre_p);
+        self.apply_discrete_event_updates(right_time, event)?;
+        self.post_event_eval_time = Some(right_time);
+        Ok(())
+    }
+}
+
+impl Rk45Backend<'_> {
+    fn event_pre_for_update(&mut self) -> Result<(Vec<f64>, Vec<f64>), SimError> {
+        let event_pre_y = self
+            .pending_event_pre_y
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| self.current_solver_y())?;
+        let event_pre_p = self
+            .pending_event_pre_p
+            .take()
+            .unwrap_or_else(|| self.params.clone());
+        Ok((event_pre_y, event_pre_p))
     }
 }
 
@@ -1049,6 +1151,29 @@ fn default_step_size(opts: &SimOptions) -> f64 {
         .filter(|dt| dt.is_finite() && *dt > 0.0)
         .map(|dt| dt.min(0.01))
         .unwrap_or(1.0e-3)
+}
+
+fn project_rk_algebraics(
+    runtime: &SolveRuntime,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    state_count: usize,
+    tol: f64,
+) -> Result<bool, RuntimeSolveError> {
+    let before = y.to_vec();
+    let state = y[..state_count.min(y.len())].to_vec();
+    let refreshed = runtime.full_solver_y(t, &state, p, ALGEBRAIC_REFRESH_TOL, UPDATE_MAX_ITERS)?;
+    y.copy_from_slice(&refreshed);
+    Ok(solver_values_changed(&before, y, tol))
+}
+
+fn solver_values_changed(before: &[f64], after: &[f64], tol: f64) -> bool {
+    before.len() != after.len()
+        || before
+            .iter()
+            .zip(after)
+            .any(|(old, new)| old.to_bits() != new.to_bits() && (old - new).abs() > tol)
 }
 
 fn time_match_with_tol(a: f64, b: f64) -> bool {
@@ -1220,6 +1345,7 @@ mod tests {
         }];
         model.problem.events.scheduled_time_events = vec![0.05];
         model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0)];
+        model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::EventEntry];
         model.problem.discrete.rhs = ScalarProgramBlock::new(vec![vec![
             LinearOp::LoadP { dst: 0, index: 0 },
             LinearOp::Const {

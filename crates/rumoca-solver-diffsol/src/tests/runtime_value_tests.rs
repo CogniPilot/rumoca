@@ -522,11 +522,13 @@ fn initialization_projects_demoted_state_layout_slots() {
     ];
 
     let ode_model = OdeModel::new(&model).expect("ODE model should build from solve-IR rows");
+    let runtime = SolveRuntime::new(&model);
     let mut y = model.initial_y.clone();
     let mut params = model.parameters.clone();
     initialize_state_runtime_values(
         &model,
         &SimOptions::default(),
+        &runtime,
         &ode_model,
         &mut y,
         &mut params,

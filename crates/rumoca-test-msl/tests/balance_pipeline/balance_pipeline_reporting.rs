@@ -1278,7 +1278,7 @@ fn append_trace_accuracy_markdown_row(markdown: &mut String, row: &MslPackageTra
 }
 
 pub(super) fn write_msl_package_trace_accuracy_report(summary: &MslSummary) -> io::Result<bool> {
-    let results_dir = get_msl_cache_dir().join("results");
+    let results_dir = msl_results_dir();
     let trace_file = results_dir.join("sim_trace_comparison.json");
     if !trace_file.is_file() {
         println!(
@@ -1308,7 +1308,7 @@ pub(super) fn write_msl_package_trace_accuracy_report(summary: &MslSummary) -> i
 
 /// Write MSL test results to a JSON file.
 pub(super) fn write_msl_results(summary: &MslSummary) -> io::Result<()> {
-    let results_dir = get_msl_cache_dir().join("results");
+    let results_dir = msl_results_dir();
     fs::create_dir_all(&results_dir)?;
 
     let json = serde_json::to_string_pretty(summary)?;

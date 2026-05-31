@@ -1,5 +1,6 @@
 //! Backend-neutral solver contracts shared by simulation backends.
 
+use crate::RuntimeEventBoundaryHandler;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,14 +157,10 @@ pub enum StepUntilOutcome {
     Finished,
 }
 
-pub trait SimulationBackend {
-    type Error;
-
+pub trait SimulationBackend: RuntimeEventBoundaryHandler {
     fn init(&mut self) -> Result<(), Self::Error>;
     fn step_until(&mut self, stop_time: f64) -> Result<StepUntilOutcome, Self::Error>;
     fn read_state(&self) -> BackendState;
-    fn apply_event_updates(&mut self, event_time: f64) -> Result<(), Self::Error>;
-    fn apply_event_actions(&mut self, event_time: f64) -> Result<(), Self::Error>;
 }
 
 #[cfg(test)]

@@ -66,7 +66,7 @@ impl RuntimeEventStop {
     pub fn static_event(pre_mode: EventPreMode) -> Self {
         Self {
             pre_mode,
-            observe_right_limit: false,
+            observe_right_limit: pre_mode == EventPreMode::FollowCurrent,
         }
     }
 
@@ -85,6 +85,27 @@ impl RuntimeEventStop {
     }
 }
 
+pub fn merge_runtime_event_stops(
+    static_event: Option<RuntimeEventStop>,
+    dynamic_event: Option<RuntimeEventStop>,
+) -> Option<RuntimeEventStop> {
+    match (static_event, dynamic_event) {
+        (Some(event), Some(_)) => Some(event.merge_dynamic_time_event()),
+        (Some(event), None) | (None, Some(event)) => Some(event),
+        (None, None) => None,
+    }
+}
+
+pub fn initial_runtime_event_stop(
+    problem: &solve::SolveProblem,
+    t_start: f64,
+    dynamic_event: Option<RuntimeEventStop>,
+) -> Option<RuntimeEventStop> {
+    let static_event =
+        initial_static_event_pre_mode(problem, t_start).map(RuntimeEventStop::static_event);
+    merge_runtime_event_stops(static_event, dynamic_event)
+}
+
 pub fn initial_static_event_pre_mode(
     problem: &solve::SolveProblem,
     t_start: f64,
@@ -97,7 +118,7 @@ pub fn initial_static_event_pre_mode(
     }
     for schedule in &problem.clocks.periodic_event_schedules {
         if periodic_schedule_matches_time(schedule, t_start) {
-            merge_initial_event_mode(&mut mode, EventPreMode::Fixed);
+            merge_initial_event_mode(&mut mode, EventPreMode::EventEntry);
         }
     }
     mode
@@ -137,7 +158,7 @@ fn collect_periodic_solve_events(
         .filter(|t| scheduled_time_in_horizon(*t, t_start, t_end))
         .map(|time| StopEvent {
             time,
-            pre_mode: EventPreMode::Fixed,
+            pre_mode: EventPreMode::EventEntry,
         })
         .collect();
     merge_stop_events(events)
@@ -198,5 +219,23 @@ mod tests {
     fn runtime_stop_schedule_defaults_to_horizon_without_events() {
         let schedule = RuntimeStopSchedule::new(Vec::new(), 0.0, 0.0, 1.0);
         assert!((schedule.active_stop() - 1.0).abs() <= 1.0e-15);
+    }
+
+    #[test]
+    fn periodic_clock_stops_use_event_entry_pre_mode() {
+        let mut problem = solve::SolveProblem::default();
+        problem
+            .clocks
+            .periodic_event_schedules
+            .push(solve::PeriodicEventSchedule {
+                period_seconds: 0.1,
+                phase_seconds: 0.0,
+            });
+        let mut schedule = SolveStopSchedule::new(&problem, 0.0, 0.3);
+
+        let (stop, mode) = schedule.next_stop(0.0, 0.2);
+
+        assert!((stop - 0.1).abs() <= 1.0e-15);
+        assert_eq!(mode, Some(EventPreMode::EventEntry));
     }
 }

@@ -24,6 +24,9 @@ pub(crate) fn parity_config_path() -> PathBuf {
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct MslParityConfig {
+    /// Results directory for JSON, markdown, trace, and debug artifacts. Relative
+    /// paths are resolved from the workspace root.
+    pub results_dir: Option<PathBuf>,
     /// `"root-examples"` (default) or `"default-simulation-targets"`.
     pub target_scope: Option<String>,
     /// `"full"` (default), `"short"`, or `"long"`.
@@ -79,4 +82,17 @@ pub(crate) fn parity_config() -> &'static MslParityConfig {
             Err(err) => panic!("invalid MSL parity config '{}': {err}", path.display()),
         }
     })
+}
+
+pub(crate) fn msl_results_dir() -> PathBuf {
+    let Some(path) = parity_config().results_dir.as_ref() else {
+        return get_msl_cache_dir().join("results");
+    };
+    if path.as_os_str().is_empty() {
+        return get_msl_cache_dir().join("results");
+    }
+    if path.is_absolute() {
+        return path.clone();
+    }
+    workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR")).join(path)
 }
