@@ -617,6 +617,183 @@ pub(crate) fn validate_flat_function_bindings(flat: &flat::Model) -> Result<(), 
     Ok(())
 }
 
+pub(crate) fn canonicalize_collected_function_calls(flat: &mut flat::Model) {
+    let canonical_names = flat
+        .functions
+        .keys()
+        .map(|name| name.as_str().to_string())
+        .collect::<Vec<_>>();
+    if canonical_names.is_empty() {
+        return;
+    }
+    let mut rewriter = CollectedFunctionCallCanonicalizer { canonical_names };
+
+    for var in flat.variables.values_mut() {
+        if let Some(binding) = &mut var.binding {
+            *binding = rewriter.rewrite_expression(binding);
+        }
+        if let Some(start) = &mut var.start {
+            *start = rewriter.rewrite_expression(start);
+        }
+        if let Some(min) = &mut var.min {
+            *min = rewriter.rewrite_expression(min);
+        }
+        if let Some(max) = &mut var.max {
+            *max = rewriter.rewrite_expression(max);
+        }
+        if let Some(nominal) = &mut var.nominal {
+            *nominal = rewriter.rewrite_expression(nominal);
+        }
+    }
+    for eq in &mut flat.equations {
+        eq.residual = rewriter.rewrite_expression(&eq.residual);
+    }
+    for eq in &mut flat.initial_equations {
+        eq.residual = rewriter.rewrite_expression(&eq.residual);
+    }
+    for when_clause in &mut flat.when_clauses {
+        when_clause.condition = rewriter.rewrite_expression(&when_clause.condition);
+        canonicalize_when_equations(&mut when_clause.equations, &mut rewriter);
+    }
+    for assertion in &mut flat.assert_equations {
+        assertion.condition = rewriter.rewrite_expression(&assertion.condition);
+        assertion.message = rewriter.rewrite_expression(&assertion.message);
+        if let Some(level) = &mut assertion.level {
+            *level = rewriter.rewrite_expression(level);
+        }
+    }
+    for assertion in &mut flat.initial_assert_equations {
+        assertion.condition = rewriter.rewrite_expression(&assertion.condition);
+        assertion.message = rewriter.rewrite_expression(&assertion.message);
+        if let Some(level) = &mut assertion.level {
+            *level = rewriter.rewrite_expression(level);
+        }
+    }
+    for algorithm in &mut flat.algorithms {
+        for statement in &mut algorithm.statements {
+            *statement = rewriter.rewrite_statement(statement);
+        }
+    }
+    for algorithm in &mut flat.initial_algorithms {
+        for statement in &mut algorithm.statements {
+            *statement = rewriter.rewrite_statement(statement);
+        }
+    }
+    for function in flat.functions.values_mut() {
+        for input in &mut function.inputs {
+            canonicalize_function_param_default(input, &mut rewriter);
+        }
+        for output in &mut function.outputs {
+            canonicalize_function_param_default(output, &mut rewriter);
+        }
+        for local in &mut function.locals {
+            canonicalize_function_param_default(local, &mut rewriter);
+        }
+        for statement in &mut function.body {
+            *statement = rewriter.rewrite_statement(statement);
+        }
+    }
+}
+
+fn canonicalize_when_equations(
+    equations: &mut [flat::WhenEquation],
+    rewriter: &mut CollectedFunctionCallCanonicalizer,
+) {
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+                *value = rewriter.rewrite_expression(value);
+            }
+            flat::WhenEquation::Assert { condition, .. } => {
+                *condition = rewriter.rewrite_expression(condition);
+            }
+            flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (condition, branch_equations) in branches {
+                    *condition = rewriter.rewrite_expression(condition);
+                    canonicalize_when_equations(branch_equations, rewriter);
+                }
+                canonicalize_when_equations(else_branch, rewriter);
+            }
+            flat::WhenEquation::FunctionCallOutputs { function, .. } => {
+                *function = rewriter.rewrite_expression(function);
+            }
+        }
+    }
+}
+
+fn canonicalize_function_param_default(
+    param: &mut rumoca_core::FunctionParam,
+    rewriter: &mut CollectedFunctionCallCanonicalizer,
+) {
+    if let Some(default) = &mut param.default {
+        *default = rewriter.rewrite_expression(default);
+    }
+    for subscript in &mut param.shape_expr {
+        if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+            **expr = rewriter.rewrite_expression(expr);
+        }
+    }
+}
+
+struct CollectedFunctionCallCanonicalizer {
+    canonical_names: Vec<String>,
+}
+
+impl CollectedFunctionCallCanonicalizer {
+    fn canonical_name_for(&self, name: &str) -> Option<String> {
+        if self
+            .canonical_names
+            .iter()
+            .any(|candidate| candidate == name)
+        {
+            return None;
+        }
+        let suffix = format!(".{name}");
+        let mut matches = self
+            .canonical_names
+            .iter()
+            .filter(|candidate| candidate.ends_with(&suffix));
+        let first = matches.next()?;
+        matches.next().is_none().then(|| first.clone())
+    }
+}
+
+impl ExpressionRewriter for CollectedFunctionCallCanonicalizer {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            span,
+        } = expr
+        else {
+            return self.walk_expression(expr);
+        };
+        let args = self.rewrite_expressions(args);
+        if let Some(canonical_name) = self.canonical_name_for(name.as_str()) {
+            return rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new(canonical_name),
+                args,
+                is_constructor: *is_constructor,
+                span: *span,
+            };
+        }
+        rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args,
+            is_constructor: *is_constructor,
+            span: *span,
+        }
+    }
+}
+
+impl StatementRewriter for CollectedFunctionCallCanonicalizer {}
+
 pub(crate) fn is_executable_flat_function(function: &rumoca_core::Function) -> bool {
     function.is_constructor
         || function.external.is_some()
@@ -1766,229 +1943,8 @@ fn active_constant_def_overrides(
         .collect()
 }
 
-fn collect_constructor_params(
-    class_index: &ast::ClassDefIndex<'_>,
-    class_def: &ast::ClassDef,
-    visited_classes: &mut HashSet<usize>,
-    params: &mut Vec<rumoca_core::FunctionParam>,
-    param_index: &mut HashMap<String, usize>,
-    source_map: &rumoca_core::SourceMap,
-    def_map: &crate::ResolveDefMap,
-) -> Result<(), FlattenError> {
-    let class_ptr = class_def as *const ast::ClassDef as usize;
-    if !visited_classes.insert(class_ptr) {
-        return Ok(());
-    }
-
-    for ext in &class_def.extends {
-        let base_class = ext
-            .base_def_id
-            .and_then(|def_id| class_index.get(def_id))
-            .or_else(|| {
-                let name = ext.base_name.to_string();
-                class_index.get_by_qualified_name(&name)
-            });
-        if let Some(base_class) = base_class {
-            collect_constructor_params(
-                class_index,
-                base_class,
-                visited_classes,
-                params,
-                param_index,
-                source_map,
-                def_map,
-            )?;
-        }
-    }
-
-    for (comp_name, component) in &class_def.components {
-        let param = convert_component_to_param(
-            class_index,
-            comp_name,
-            component,
-            source_map,
-            def_map,
-            &qualify::ImportMap::default(),
-            &HashSet::new(),
-        )?;
-        if let Some(index) = param_index.get(comp_name).copied() {
-            params[index] = param;
-        } else {
-            param_index.insert(comp_name.clone(), params.len());
-            params.push(param);
-        }
-    }
-    Ok(())
-}
-
-fn collect_constructor_local_def_ids(
-    class_index: &ast::ClassDefIndex<'_>,
-    class_def: &ast::ClassDef,
-    visited_classes: &mut HashSet<usize>,
-    local_def_ids: &mut crate::ResolveDefMap,
-) {
-    let class_ptr = class_def as *const ast::ClassDef as usize;
-    if !visited_classes.insert(class_ptr) {
-        return;
-    }
-
-    for ext in &class_def.extends {
-        let base_class = ext
-            .base_def_id
-            .and_then(|def_id| class_index.get(def_id))
-            .or_else(|| {
-                let name = ext.base_name.to_string();
-                class_index.get_by_qualified_name(&name)
-            });
-        if let Some(base_class) = base_class {
-            collect_constructor_local_def_ids(
-                class_index,
-                base_class,
-                visited_classes,
-                local_def_ids,
-            );
-        }
-    }
-
-    for (name, component) in &class_def.components {
-        if let Some(def_id) = component.def_id {
-            local_def_ids.insert(def_id, name.clone());
-        }
-    }
-}
-
-fn constructor_def_map(
-    class_index: &ast::ClassDefIndex<'_>,
-    class_def: &ast::ClassDef,
-    def_map: &crate::ResolveDefMap,
-) -> crate::ResolveDefMap {
-    let mut constructor_map = def_map.clone();
-    let mut local_def_ids = crate::ResolveDefMap::default();
-    let mut visited_classes = HashSet::new();
-    collect_constructor_local_def_ids(
-        class_index,
-        class_def,
-        &mut visited_classes,
-        &mut local_def_ids,
-    );
-    for (def_id, name) in local_def_ids {
-        constructor_map.insert(def_id, name);
-    }
-    constructor_map
-}
-
-/// Build a synthetic constructor signature for constructor-like class calls.
-fn convert_constructor_signature(
-    class_index: &ast::ClassDefIndex<'_>,
-    class_def: &ast::ClassDef,
-    qualified_name: &str,
-    source_map: &rumoca_core::SourceMap,
-    def_map: &crate::ResolveDefMap,
-) -> Result<rumoca_core::Function, FlattenError> {
-    let span = source_map.location_to_span(
-        &class_def.location.file_name,
-        class_def.location.start as usize,
-        class_def.location.end as usize,
-    );
-    let mut params = Vec::new();
-    let mut param_index = HashMap::new();
-    let mut visited_classes = HashSet::new();
-    let constructor_def_map = constructor_def_map(class_index, class_def, def_map);
-    collect_constructor_params(
-        class_index,
-        class_def,
-        &mut visited_classes,
-        &mut params,
-        &mut param_index,
-        source_map,
-        &constructor_def_map,
-    )?;
-
-    let mut func = rumoca_core::Function::new(qualified_name, span);
-    func.def_id = class_def.def_id;
-    func.is_constructor = true;
-    for param in params {
-        func.add_input(param);
-    }
-    normalize_function_local_references(&mut func);
-    Ok(func)
-}
-
-fn normalize_function_local_references(function: &mut rumoca_core::Function) {
-    let locals = function
-        .inputs
-        .iter()
-        .chain(function.outputs.iter())
-        .chain(function.locals.iter())
-        .map(|param| param.name.clone())
-        .collect::<HashSet<_>>();
-    if locals.is_empty() {
-        return;
-    }
-
-    let mut normalizer = FunctionLocalReferenceNormalizer {
-        function_name: function.name.as_str().to_string(),
-        locals,
-    };
-    for param in function
-        .inputs
-        .iter_mut()
-        .chain(function.outputs.iter_mut())
-        .chain(function.locals.iter_mut())
-    {
-        if let Some(default) = &param.default {
-            param.default = Some(normalizer.rewrite_expression(default));
-        }
-    }
-    for statement in &mut function.body {
-        *statement = normalizer.rewrite_statement(statement);
-    }
-}
-
-struct FunctionLocalReferenceNormalizer {
-    function_name: String,
-    locals: HashSet<String>,
-}
-
-impl FunctionLocalReferenceNormalizer {
-    fn local_reference<'a>(&self, name: &'a str) -> Option<&'a str> {
-        let suffix = name.strip_prefix(&self.function_name)?;
-        let local_ref = suffix.strip_prefix('.')?;
-        self.locals
-            .iter()
-            .any(|local| {
-                local_ref == local
-                    || local_ref
-                        .strip_prefix(local.as_str())
-                        .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
-            })
-            .then_some(local_ref)
-    }
-}
-
-impl ExpressionRewriter for FunctionLocalReferenceNormalizer {
-    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
-        match expr {
-            rumoca_core::Expression::VarRef {
-                name,
-                subscripts,
-                span,
-            } => {
-                if let Some(local_name) = self.local_reference(name.as_str()) {
-                    return rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::new(local_name.to_string()),
-                        subscripts: self.rewrite_subscripts(subscripts),
-                        span: *span,
-                    };
-                }
-                self.walk_expression(expr)
-            }
-            _ => self.walk_expression(expr),
-        }
-    }
-}
-
-impl StatementRewriter for FunctionLocalReferenceNormalizer {}
+mod constructor_signature;
+use constructor_signature::{convert_constructor_signature, normalize_function_local_references};
 
 #[cfg(test)]
 mod tests;

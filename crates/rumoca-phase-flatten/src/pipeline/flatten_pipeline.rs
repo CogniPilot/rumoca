@@ -934,6 +934,7 @@ pub(crate) fn finalize_flat_model(
     functions::specialize_static_function_params(flat);
     mark_record_constructor_calls(flat, tree);
     canonicalize_varrefs_via_record_aliases(flat, ctx);
+    canonicalize_varrefs_via_instantiated_def_ids(flat);
     drop_invalid_field_access_bindings(flat);
     propagate_unexpanded_record_array_dims(flat, overlay);
     flat.oc_break_edge_scalar_count = vcg::compute_break_edge_scalar_count(
@@ -972,7 +973,9 @@ pub(crate) fn finalize_flat_model(
         substitute_known_constants_in_flat(flat, ctx);
         mark_record_constructor_calls(flat, tree);
         collapse_index_refs_to_known_varrefs(flat);
+        canonicalize_varrefs_via_instantiated_def_ids(flat);
     }
+    functions::canonicalize_collected_function_calls(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
 

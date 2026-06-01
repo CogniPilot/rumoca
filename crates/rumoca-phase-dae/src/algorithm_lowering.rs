@@ -651,6 +651,7 @@ fn lookup_algorithm_target_scalar_count(
     dae: &Dae,
     target: &VarName,
     span: Span,
+    allow_parameter_target: bool,
 ) -> Result<usize, String> {
     let target_key = flat_to_dae_var_name(target);
     if let Some(var) = dae
@@ -666,6 +667,10 @@ fn lookup_algorithm_target_scalar_count(
         return Ok(var.size().max(1));
     }
 
+    if allow_parameter_target && let Some(var) = dae.variables.parameters.get(&target_key) {
+        return Ok(var.size().max(1));
+    }
+
     for candidate in subscript_fallback_chain(target.as_str()) {
         let candidate_key = flat_to_dae_var_name(&candidate);
         if dae.variables.states.contains_key(&candidate_key)
@@ -674,6 +679,7 @@ fn lookup_algorithm_target_scalar_count(
             || dae.variables.inputs.contains_key(&candidate_key)
             || dae.variables.discrete_reals.contains_key(&candidate_key)
             || dae.variables.discrete_valued.contains_key(&candidate_key)
+            || (allow_parameter_target && dae.variables.parameters.contains_key(&candidate_key))
         {
             return Ok(1);
         }
@@ -1447,6 +1453,7 @@ fn lower_when_target_branches_to_event_equations(
     targets: WhenAssignmentBranches,
     algorithm_span: Span,
     algorithm_origin: &str,
+    allow_parameter_targets: bool,
 ) -> Result<Vec<rumoca_ir_dae::Equation>, String> {
     let mut lowered = Vec::with_capacity(targets.len());
     for (target, assignment) in targets {
@@ -1464,7 +1471,7 @@ fn lower_when_target_branches_to_event_equations(
             }),
             span,
             format!("algorithm when-assignment ({algorithm_origin})"),
-            lookup_algorithm_target_scalar_count(dae, &target, span)?,
+            lookup_algorithm_target_scalar_count(dae, &target, span, allow_parameter_targets)?,
         );
         lowered.push(eq);
     }
@@ -1476,6 +1483,7 @@ fn lower_algorithm_to_equations(
     dae: &Dae,
     flat: &Model,
     algorithm: &rumoca_ir_flat::Algorithm,
+    allow_parameter_targets: bool,
 ) -> Result<LoweredAlgorithmPartitions, String> {
     if algorithm.statements.is_empty() {
         return Ok(LoweredAlgorithmPartitions::default());
@@ -1505,6 +1513,7 @@ fn lower_algorithm_to_equations(
         when_assignments,
         algorithm.span,
         &algorithm.origin,
+        allow_parameter_targets,
     )? {
         route_lowered_when_equation(dae, &mut lowered, eq);
     }
@@ -1529,11 +1538,14 @@ fn lower_algorithm_to_equations(
         route_lowered_main_algorithm_assignment(
             dae,
             &mut lowered,
-            target,
-            value,
-            span,
-            origin,
+            LoweredMainAlgorithmAssignment {
+                target,
+                value,
+                span,
+                origin,
+            },
             &algorithm.origin,
+            allow_parameter_targets,
         )?;
     }
 
@@ -1556,15 +1568,26 @@ fn route_lowered_when_equation(
     }
 }
 
-fn route_lowered_main_algorithm_assignment(
-    dae: &Dae,
-    lowered: &mut LoweredAlgorithmPartitions,
+struct LoweredMainAlgorithmAssignment {
     target: VarName,
     value: Expression,
     span: Span,
     origin: String,
+}
+
+fn route_lowered_main_algorithm_assignment(
+    dae: &Dae,
+    lowered: &mut LoweredAlgorithmPartitions,
+    assignment: LoweredMainAlgorithmAssignment,
     algorithm_origin: &str,
+    allow_parameter_target: bool,
 ) -> Result<(), String> {
+    let LoweredMainAlgorithmAssignment {
+        target,
+        value,
+        span,
+        origin,
+    } = assignment;
     if let Some(bucket) = discrete_variable_equation_bucket_for_lhs(dae, &target) {
         // MLS §11.1 algorithm assignments are equation-like model behavior.
         // MLS Appendix B stores discrete Real and discrete-valued variables in
@@ -1574,13 +1597,35 @@ fn route_lowered_main_algorithm_assignment(
             flat_to_dae_expression(&value),
             span,
             format!("{} ({})", origin, algorithm_origin),
-            lookup_algorithm_target_scalar_count(dae, &target, span)?,
+            lookup_algorithm_target_scalar_count(dae, &target, span, allow_parameter_target)?,
         );
         match bucket {
             DiscreteEquationBucket::DiscreteValued => lowered.f_m.push(eq),
             DiscreteEquationBucket::DiscreteReal => lowered.f_z.push(eq),
         }
         return Ok(());
+    }
+
+    if allow_parameter_target {
+        let target_key = flat_to_dae_var_name(&target);
+        if let Some(var) = dae.variables.parameters.get(&target_key) {
+            if var.fixed != Some(false) {
+                return Err(format!(
+                    "initial algorithm assignment target `{target}` is a fixed parameter; only parameter fixed=false may be solved during initialization at {:?}",
+                    rumoca_core::span_to_source_span(span)
+                ));
+            }
+            lowered
+                .main
+                .push(rumoca_ir_dae::Equation::explicit_with_scalar_count(
+                    target_key,
+                    flat_to_dae_expression(&value),
+                    span,
+                    format!("{} ({})", origin, algorithm_origin),
+                    lookup_algorithm_target_scalar_count(dae, &target, span, true)?,
+                ));
+            return Ok(());
+        }
     }
 
     let lhs = Expression::VarRef {
@@ -1599,14 +1644,14 @@ fn route_lowered_main_algorithm_assignment(
         flat_to_dae_expression(&residual),
         span,
         format!("{} ({})", origin, algorithm_origin),
-        lookup_algorithm_target_scalar_count(dae, &target, span)?,
+        lookup_algorithm_target_scalar_count(dae, &target, span, allow_parameter_target)?,
     ));
     Ok(())
 }
 
 pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Result<(), ToDaeError> {
     for algorithm in &flat.algorithms {
-        match lower_algorithm_to_equations(dae, flat, algorithm) {
+        match lower_algorithm_to_equations(dae, flat, algorithm, false) {
             Ok(lowered) => {
                 dae.continuous.equations.extend(lowered.main);
                 dae.discrete.real_updates.extend(lowered.f_z);
@@ -1623,7 +1668,7 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
     }
 
     for algorithm in &flat.initial_algorithms {
-        match lower_algorithm_to_equations(dae, flat, algorithm) {
+        match lower_algorithm_to_equations(dae, flat, algorithm, true) {
             Ok(lowered) => {
                 dae.initialization.equations.extend(lowered.main);
                 // MLS §8.6 and §11.1: initial algorithms contribute equations

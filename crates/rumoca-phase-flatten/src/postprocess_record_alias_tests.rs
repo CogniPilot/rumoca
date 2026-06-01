@@ -21,6 +21,26 @@ fn component_ref(name: &str) -> rumoca_core::ComponentReference {
     }
 }
 
+fn component_ref_with_def_id(
+    path: &str,
+    def_id: rumoca_core::DefId,
+) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span: rumoca_core::Span::DUMMY,
+        parts: rumoca_core::ComponentPath::from_flat_path(path)
+            .parts()
+            .iter()
+            .map(|ident| rumoca_core::ComponentRefPart {
+                ident: ident.clone(),
+                span: rumoca_core::Span::DUMMY,
+                subs: vec![],
+            })
+            .collect(),
+        def_id: Some(def_id),
+    }
+}
+
 fn context_with_alias() -> Context {
     let mut ctx = Context::new();
     ctx.record_aliases.insert(
@@ -28,6 +48,60 @@ fn context_with_alias() -> Context {
         rumoca_core::ComponentPath::from_flat_path("pipe"),
     );
     ctx
+}
+
+#[test]
+fn def_id_canonicalization_rewrites_class_qualified_ref_by_owner_scope() {
+    let mut model = flat::Model::new();
+    let def_id = rumoca_core::DefId::new(42);
+    for name in [
+        "inertia1.rotorWith3DEffects.e",
+        "inertia2.rotorWith3DEffects.e",
+    ] {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                component_ref: Some(component_ref_with_def_id(name, def_id)),
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    model.add_variable(
+        rumoca_core::VarName::new("inertia1.rotorWith3DEffects.cylinder.r_shape"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("inertia1.rotorWith3DEffects.cylinder.r_shape"),
+            binding: Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "Modelica.Mechanics.MultiBody.Parts.Rotor1D.e",
+                    component_ref_with_def_id(
+                        "Modelica.Mechanics.MultiBody.Parts.Rotor1D.e",
+                        def_id,
+                    ),
+                ),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+
+    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new(
+            "inertia1.rotorWith3DEffects.cylinder.r_shape",
+        ))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected varref binding");
+    };
+    assert_eq!(name.as_str(), "inertia1.rotorWith3DEffects.e");
 }
 
 #[test]

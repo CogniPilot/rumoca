@@ -5,6 +5,22 @@ pub(crate) use rumoca_core::{
     subscript_fallback_chain,
 };
 
+use std::collections::HashSet;
+
+pub(crate) fn resolve_known_path_suffix(
+    name: &str,
+    known_names: &HashSet<String>,
+) -> Option<String> {
+    if known_names.contains(name) {
+        return Some(name.to_string());
+    }
+
+    let path = rumoca_core::ComponentPath::from_flat_path(name);
+    path.suffixes_excluding_self()
+        .map(|suffix| suffix.to_flat_string())
+        .find(|candidate| known_names.contains(candidate))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +107,18 @@ mod tests {
         assert_eq!(strip_all_subscripts("pc[((2*1)-1)].i"), "pc.i");
         assert_eq!(strip_all_subscripts("pin_n[1].v"), "pin_n.v");
         assert_eq!(strip_all_subscripts("R[1].w"), "R.w");
+    }
+
+    #[test]
+    fn test_resolve_known_path_suffix_prefers_nearest_known_suffix() {
+        let known = HashSet::from([
+            "aimcData.statorCoreParameters.wRef".to_string(),
+            "statorCoreParameters.wRef".to_string(),
+        ]);
+
+        assert_eq!(
+            resolve_known_path_suffix("aimc.aimcData.statorCoreParameters.wRef", &known).as_deref(),
+            Some("aimcData.statorCoreParameters.wRef")
+        );
     }
 }

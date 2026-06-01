@@ -1,5 +1,212 @@
 use super::*;
 
+/// MLS §7.3 + §12.4: component-level redeclare values can be function calls
+/// carrying modifier actuals. The active instance must rewrite inherited
+/// replaceable-function calls to the concrete function and preserve those
+/// modifier actuals as named call arguments.
+#[test]
+fn test_component_redeclare_function_call_rewrites_inherited_calls() {
+    let source = r#"
+package Characteristics
+  partial function baseFlow
+    input Real x;
+    input Real scale = 1;
+    output Real y;
+  end baseFlow;
+
+  function quadraticFlow
+    extends baseFlow;
+  algorithm
+    y := scale*x*x;
+  end quadraticFlow;
+end Characteristics;
+
+model PartialPump
+  replaceable function flowCharacteristic = Characteristics.baseFlow;
+  parameter Real delta = flowCharacteristic(1);
+  Real head;
+equation
+  head = flowCharacteristic(2);
+end PartialPump;
+
+model PrescribedPump
+  extends PartialPump;
+end PrescribedPump;
+
+model Probe
+  PrescribedPump pump(
+    redeclare function flowCharacteristic =
+      Characteristics.quadraticFlow(scale=3));
+  Real y = pump.head;
+end Probe;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("Probe").expect("compile failed");
+    let flat_debug = format!("{:?}", result.flat);
+    assert!(
+        flat_debug.contains("Characteristics.quadraticFlow"),
+        "component redeclare should rewrite inherited calls to concrete function; flat={flat_debug}"
+    );
+    assert!(
+        !flat_debug.contains("PartialPump.flowCharacteristic"),
+        "partial replaceable function call must not remain in flat IR; flat={flat_debug}"
+    );
+    assert!(
+        flat_debug.contains("__rumoca_named_arg__.scale"),
+        "component redeclare modifier actual should be appended to rewritten calls; flat={flat_debug}"
+    );
+}
+
+/// MLS §7.3 + §12.4: modifier actuals on a function redeclared in an extends
+/// clause are evaluated in the extending class instance, not in the inherited
+/// partial base class where the replaceable function is called.
+#[test]
+fn test_extends_redeclare_function_modifier_actual_uses_extending_instance_scope() {
+    let source = r#"
+package Modelica
+  package Fluid
+    package Machines
+      package BaseClasses
+        package PumpCharacteristics
+          partial function baseFlow
+            input Real x;
+            output Real y;
+          end baseFlow;
+
+          function quadraticFlow
+            extends baseFlow;
+            input Real V_flow_nominal[3];
+            input Real head_nominal[3];
+          algorithm
+            y := V_flow_nominal[2]*x + head_nominal[2];
+          end quadraticFlow;
+        end PumpCharacteristics;
+
+        model PartialPump
+          replaceable function flowCharacteristic =
+            PumpCharacteristics.baseFlow;
+          parameter Real delta =
+            flowCharacteristic(1.1) - flowCharacteristic(1.0);
+          Real head;
+        equation
+          head = flowCharacteristic(2);
+        end PartialPump;
+      end BaseClasses;
+
+      model ControlledPump
+        extends Modelica.Fluid.Machines.BaseClasses.PartialPump(
+          redeclare function flowCharacteristic =
+            Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.quadraticFlow(
+              V_flow_nominal={0, V_flow_op, 1.5*V_flow_op},
+              head_nominal={2*head_op, head_op, 0}));
+
+        parameter Real V_flow_op = 2;
+        parameter Real head_op = 3;
+      end ControlledPump;
+    end Machines;
+
+    package Examples
+      model InverseParameterization
+        Modelica.Fluid.Machines.ControlledPump pump;
+        Real y = pump.head;
+      end InverseParameterization;
+    end Examples;
+  end Fluid;
+end Modelica;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session
+        .compile_model("Modelica.Fluid.Examples.InverseParameterization")
+        .expect("compile failed");
+    let dae_debug = format!("{:?}", result.dae);
+    assert!(
+        dae_debug.contains("pump.V_flow_op"),
+        "redeclare function modifier actual should be scoped to the pump instance; dae={dae_debug}"
+    );
+    assert!(
+        !dae_debug.contains("PartialPump.V_flow_op"),
+        "partial-base qualifier must not leak into modifier actuals; dae={dae_debug}"
+    );
+}
+
+/// MLS §13.2: a qualified import of a package makes its final identifier
+/// visible in the importing class scope. Function calls in package constant
+/// bindings must keep that import when the package is used through a medium
+/// alias.
+#[test]
+fn test_package_constant_binding_uses_imported_package_function() {
+    let source = r#"
+package Modelica
+  package Math
+    package Polynomials
+      function fitting
+        input Real u[:];
+        input Real y[size(u, 1)];
+        input Integer n;
+        output Real p[n + 1];
+      algorithm
+        p := fill(y[1], n + 1);
+      end fitting;
+    end Polynomials;
+  end Math;
+
+  package Media
+    package Incompressible
+      package TableBased
+        import Modelica.Math.Polynomials;
+
+        final constant Real poly[:] =
+          Polynomials.fitting({1, 2}, {3, 4}, 1);
+
+        function h_T
+          input Real T;
+          output Real h;
+        algorithm
+          h := poly[1]*T;
+        end h_T;
+      end TableBased;
+
+      package Glycol47
+        extends TableBased;
+      end Glycol47;
+    end Incompressible;
+  end Media;
+end Modelica;
+
+model Probe
+  replaceable package Medium = Modelica.Media.Incompressible.Glycol47;
+  parameter Real h = Medium.h_T(2);
+  parameter Real p = Medium.poly[1];
+end Probe;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("Probe").expect("compile failed");
+    let dae_debug = format!("{:?}", result.dae);
+    assert!(
+        dae_debug.contains("Modelica.Math.Polynomials.fitting"),
+        "imported package function should be fully qualified; dae={dae_debug}"
+    );
+    assert!(
+        !dae_debug.contains("VarName(\"Polynomials.fitting\")"),
+        "short imported package call must not leak into DAE; dae={dae_debug}"
+    );
+}
+
 /// MLS §7.3: a component with a single package redeclare override must expose
 /// that package's constants in component scope, even when the component type is
 /// fully qualified (e.g. `Modelica.Fluid.Sources.Boundary_pT` style).
@@ -1032,5 +1239,172 @@ end Probe;
     assert!(
         !dae_debug.contains("MMX") && !dae_debug.contains("nS"),
         "member package constants should be resolved before DAE; dae={dae_debug}"
+    );
+}
+
+/// MLS §5.3 + §7.3: an import alias to a concrete package is an effective
+/// package binding for function calls in model-level bindings.
+#[test]
+fn test_import_package_alias_rewrites_nested_function_calls_in_binding() {
+    let source = r#"
+package Interfaces
+  partial package PartialMedium
+    replaceable record State
+      Real x;
+    end State;
+
+    replaceable partial function setState_pTX
+      input Real p;
+      input Real T;
+      input Real X[:]={};
+      output State state;
+    end setState_pTX;
+
+    replaceable partial function property
+      input State state;
+      output Real y;
+    end property;
+  end PartialMedium;
+end Interfaces;
+
+package Concrete
+  extends BaseMedium;
+
+end Concrete;
+
+package BaseMedium
+  extends Interfaces.PartialMedium;
+
+  redeclare record extends State
+    Real p;
+  end State;
+
+  redeclare function setState_pTX
+    input Real p;
+    input Real T;
+    input Real X[:]={};
+    output State state;
+  algorithm
+    state := State(x=T, p=p);
+  end setState_pTX;
+
+  redeclare function extends property
+  algorithm
+    y := state.x;
+  end property;
+end BaseMedium;
+
+model Probe
+  import Medium = Concrete;
+  Real y = Medium.property(Medium.setState_pTX(1, 2, {}));
+end Probe;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let result = session.compile_model("Probe").expect("compile failed");
+    let flat_debug = format!("{:?}", result.flat);
+    assert!(
+        flat_debug.contains("Concrete.setState_pTX"),
+        "import alias should rewrite nested call to concrete function; flat={flat_debug}"
+    );
+    assert!(
+        !flat_debug.contains("Interfaces.PartialMedium.setState_pTX"),
+        "partial package function must not remain in flat IR; flat={flat_debug}"
+    );
+}
+
+/// MLS §5.3 + §7.3 + §12.4.3: member model equations inherited through a
+/// package alias must use the concrete package context for inherited package
+/// functions.
+#[test]
+fn test_package_alias_member_model_equation_uses_concrete_function_context() {
+    let source = r#"
+package Interfaces
+  partial package PartialMedium
+    replaceable record State
+      Real x;
+    end State;
+
+    replaceable partial function setState_pTX
+      input Real p;
+      input Real T;
+      input Real X[:]={};
+      output State state;
+    end setState_pTX;
+
+    replaceable partial function property
+      input State state;
+      output Real y;
+    end property;
+
+    function property_pTX
+      input Real p;
+      input Real T;
+      input Real X[:]={};
+      output Real y;
+    algorithm
+      y := property(setState_pTX(p, T, X));
+    end property_pTX;
+
+    replaceable model BaseProperties
+      Real h;
+    equation
+      h = property_pTX(1, 2, {});
+    end BaseProperties;
+  end PartialMedium;
+end Interfaces;
+
+package Concrete
+  extends Interfaces.PartialMedium;
+
+  redeclare record extends State
+    Real p;
+  end State;
+
+  redeclare function setState_pTX
+    input Real p;
+    input Real T;
+    input Real X[:]={};
+    output State state;
+  algorithm
+    state := State(x=T, p=p);
+  end setState_pTX;
+
+  redeclare function extends property
+  algorithm
+    y := state.x;
+  end property;
+end Concrete;
+
+model Probe
+  package Medium = Concrete;
+  Medium.BaseProperties medium;
+end Probe;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse failed");
+
+    let phase_result = session
+        .compile_model_phases("Probe")
+        .expect("phase compilation should succeed");
+    let result = match phase_result {
+        rumoca_compile::compile::PhaseResult::Success(result) => result,
+        other => panic!("expected successful phase result, got {other:?}"),
+    };
+    let flat_debug = format!("{:?}", result.flat);
+    assert!(
+        flat_debug.contains("Concrete.setState_pTX"),
+        "member model equation should rewrite inherited call to concrete function; flat={flat_debug}"
+    );
+    assert!(
+        !flat_debug.contains("Interfaces.PartialMedium.setState_pTX"),
+        "partial package function must not remain in flat IR; flat={flat_debug}"
     );
 }

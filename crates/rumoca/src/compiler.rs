@@ -592,6 +592,22 @@ impl Compiler {
         self.compile_str(&source, path)
     }
 
+    /// Compile a Modelica file through the resolved AST stage only.
+    pub fn compile_file_ast(&self, path: &str) -> Result<ResolvedTree, CompilerError> {
+        let source =
+            fs::read_to_string(path).map_err(|e| CompilerError::io_error(path, e.to_string()))?;
+
+        self.compile_str_ast(&source, path)
+    }
+
+    /// Compile a Modelica file through the flat-model stage only.
+    pub fn compile_file_flat(&self, path: &str) -> Result<FlatModel, CompilerError> {
+        let source =
+            fs::read_to_string(path).map_err(|e| CompilerError::io_error(path, e.to_string()))?;
+
+        self.compile_str_flat(&source, path)
+    }
+
     /// Compile a Modelica file from a Path.
     pub fn compile_path(&self, path: &Path) -> Result<CompilationResult, CompilerError> {
         let path_str = path.to_string_lossy().to_string();
@@ -710,6 +726,50 @@ impl Compiler {
             flat: result.flat,
             resolved,
         })
+    }
+
+    /// Compile Modelica source code through the resolved AST stage only.
+    pub fn compile_str_ast(
+        &self,
+        source: &str,
+        file_name: &str,
+    ) -> Result<ResolvedTree, CompilerError> {
+        if self.verbose {
+            eprintln!("[rumoca] Compiling source through AST: {}", file_name);
+            eprintln!("[rumoca] Phase 1-2: Parsing and resolving...");
+        }
+
+        let mut session = Session::new(SessionConfig::default());
+        self.load_required_source_roots(&mut session, source)?;
+        self.load_local_compile_unit(&mut session, source, file_name)?;
+        session
+            .resolved()
+            .map_err(|err| CompilerError::ResolveError(err.to_string()))
+    }
+
+    /// Compile Modelica source code through the flat-model stage only.
+    pub fn compile_str_flat(
+        &self,
+        source: &str,
+        file_name: &str,
+    ) -> Result<FlatModel, CompilerError> {
+        let model_name = self
+            .model_name
+            .as_ref()
+            .ok_or(CompilerError::NoModelSpecified)?;
+
+        if self.verbose {
+            eprintln!("[rumoca] Compiling model through Flat: {}", model_name);
+            eprintln!("[rumoca] Source file: {}", file_name);
+            eprintln!("[rumoca] Phase 1-5: Parsing, resolving, and flattening...");
+        }
+
+        let mut session = Session::new(SessionConfig::default());
+        self.load_required_source_roots(&mut session, source)?;
+        self.load_local_compile_unit(&mut session, source, file_name)?;
+        session
+            .compile_model_flat_strict_reachable_uncached_with_recovery(model_name)
+            .map_err(CompilerError::FlattenError)
     }
 
     /// Compile Modelica source code through DAE only.

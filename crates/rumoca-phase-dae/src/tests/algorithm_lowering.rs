@@ -149,6 +149,23 @@ fn add_primitive_real(flat: &mut Model, name: &str) {
     );
 }
 
+fn add_fixed_false_parameter(flat: &mut Model, name: &str) {
+    add_parameter_with_fixed(flat, name, Some(false));
+}
+
+fn add_parameter_with_fixed(flat: &mut Model, name: &str, fixed: Option<bool>) {
+    flat.add_variable(
+        VarName::new(name),
+        flat::Variable {
+            name: VarName::new(name),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            fixed,
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+}
+
 fn add_discrete_valued(flat: &mut Model, name: &str) {
     flat.add_variable(
         VarName::new(name),
@@ -1129,6 +1146,141 @@ fn test_todae_lowers_top_level_algorithm_assignment_before_for_loop_sequentially
     )
     .expect("top-level sequential algorithm state should stay visible inside following for-loop");
     assert_top_level_assignment_before_loop_lowering(&dae);
+}
+
+#[test]
+fn test_todae_lowers_initial_algorithm_assignment_to_fixed_false_parameter() {
+    let mut flat = Model::new();
+    add_fixed_false_parameter(&mut flat, "k");
+
+    flat.initial_algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::Assignment {
+            comp: make_comp_ref("k"),
+            value: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: rumoca_core::Span::DUMMY,
+        }],
+        Span::DUMMY,
+        "initial algorithm from SimpleFriction".to_string(),
+    ));
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("MLS fixed=false parameters may be solved by initial algorithms");
+
+    assert!(
+        dae.initialization
+            .equations
+            .iter()
+            .any(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "k")),
+        "missing initialization equation for fixed=false parameter assignment"
+    );
+    assert!(
+        dae.continuous.equations.is_empty(),
+        "initial parameter assignment must not become a runtime continuous equation"
+    );
+}
+
+#[test]
+fn test_todae_rejects_initial_algorithm_assignment_to_default_fixed_parameter() {
+    let mut flat = Model::new();
+    add_parameter_with_fixed(&mut flat, "k", None);
+
+    flat.initial_algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::Assignment {
+            comp: make_comp_ref("k"),
+            value: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: rumoca_core::Span::DUMMY,
+        }],
+        Span::DUMMY,
+        "initial fixed parameter assignment".to_string(),
+    ));
+
+    let err = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect_err("parameter fixed=true by default must not be solved by initial algorithms");
+
+    assert!(
+        err.to_string().contains("fixed parameter"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_todae_rejects_initial_algorithm_assignment_to_explicit_fixed_parameter() {
+    let mut flat = Model::new();
+    add_parameter_with_fixed(&mut flat, "k", Some(true));
+
+    flat.initial_algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::Assignment {
+            comp: make_comp_ref("k"),
+            value: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: rumoca_core::Span::DUMMY,
+        }],
+        Span::DUMMY,
+        "initial fixed parameter assignment".to_string(),
+    ));
+
+    let err = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect_err("parameter fixed=true must not be solved by initial algorithms");
+
+    assert!(
+        err.to_string().contains("fixed parameter"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_todae_rejects_runtime_algorithm_assignment_to_parameter() {
+    let mut flat = Model::new();
+    add_fixed_false_parameter(&mut flat, "k");
+
+    flat.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::Assignment {
+            comp: make_comp_ref("k"),
+            value: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: rumoca_core::Span::DUMMY,
+        }],
+        Span::DUMMY,
+        "runtime parameter assignment".to_string(),
+    ));
+
+    let err = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect_err("regular algorithm sections must not assign parameters");
+
+    assert!(
+        matches!(err, ToDaeError::UnsupportedAlgorithm { ref section, .. } if section == "model"),
+        "expected unsupported model algorithm diagnostic, got {err:?}"
+    );
 }
 
 #[test]

@@ -1029,6 +1029,12 @@ impl<'a> LowerBuilder<'a> {
             return Ok(reg);
         }
 
+        if let Some(reg) =
+            self.lower_function_output_name_field_access(base, field, scope, call_depth)?
+        {
+            return Ok(reg);
+        }
+
         if let Some(mut values) = self.lower_indexed_record_field_values(base, field, scope)? {
             if values.len() == 1 {
                 return Ok(values.remove(0));
@@ -1057,6 +1063,38 @@ impl<'a> LowerBuilder<'a> {
             .binding(&key)
             .ok_or(LowerError::MissingBinding { name: key })?;
         self.emit_slot_load(slot)
+    }
+
+    fn lower_function_output_name_field_access(
+        &mut self,
+        base: &rumoca_core::Expression,
+        field: &str,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            span,
+        } = base
+        else {
+            return Ok(None);
+        };
+        let Some(function) = self.lookup_function(name) else {
+            return Ok(None);
+        };
+        let [output] = function.outputs.as_slice() else {
+            return Ok(None);
+        };
+        if output.name != field
+            || !output.dims.is_empty()
+            || output.type_class == Some(rumoca_core::ClassType::Record)
+        {
+            return Ok(None);
+        }
+        self.lower_function_call(name, args, false, *span, scope, call_depth)
+            .map(Some)
     }
 
     fn lower_indexed_field_access(
@@ -1929,44 +1967,5 @@ impl<'a> LowerBuilder<'a> {
     }
 }
 
-fn static_singleton_subscript_index(
-    expr: &rumoca_core::Expression,
-) -> Result<Option<usize>, LowerError> {
-    lower_static_index_expr(expr)
-}
-
-fn direct_assignment_component(
-    values: &[Reg],
-    flat_index: usize,
-    repeat_period: Option<usize>,
-) -> Option<Reg> {
-    values.get(flat_index).copied().or_else(|| {
-        let period = repeat_period?;
-        (period > 0 && values.len() == period).then(|| values[flat_index % period])
-    })
-}
-
-fn complex_operator_call_op(name: &str) -> Option<BinaryOp> {
-    match name {
-        "Complex.'+'" => Some(BinaryOp::Add),
-        "Complex.'-'" => Some(BinaryOp::Sub),
-        "Complex.'*'" => Some(BinaryOp::Mul),
-        "Complex.'/'" => Some(BinaryOp::Div),
-        _ => None,
-    }
-}
-
-fn is_time_var_ref(expr: &rumoca_core::Expression) -> bool {
-    matches!(
-        expr,
-        rumoca_core::Expression::VarRef {
-            name,
-            subscripts,
-            ..
-        } if name.as_str() == "time" && subscripts.is_empty()
-    )
-}
-
-pub(super) fn size_binding_key(name: &str, dim: usize) -> String {
-    format!("{SIZE_BINDING_PREFIX}{name}.{dim}")
-}
+mod misc_helpers;
+use misc_helpers::*;

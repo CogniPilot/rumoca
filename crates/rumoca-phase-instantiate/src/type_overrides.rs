@@ -311,8 +311,13 @@ fn resolve_redeclare_value_def_id_with_depth(
     }
 
     match value {
+        ast::Expression::Modification { value, .. } => {
+            resolve_redeclare_value_def_id_with_depth(tree, value, mod_env, depth + 1)
+        }
         ast::Expression::ClassModification { target, .. } => resolve_cref_def_id(tree, target)
             .or_else(|| resolve_cref_via_mod_env(tree, target, mod_env, depth)),
+        ast::Expression::FunctionCall { comp, .. } => resolve_cref_def_id(tree, comp)
+            .or_else(|| resolve_cref_via_mod_env(tree, comp, mod_env, depth)),
         ast::Expression::ComponentReference(cref) => resolve_cref_def_id(tree, cref)
             .or_else(|| resolve_cref_via_mod_env(tree, cref, mod_env, depth)),
         _ => None,
@@ -532,14 +537,14 @@ fn validate_component_class_redeclare_target(
     nested_class: &ast::ClassDef,
     mod_expr: &ast::Expression,
 ) -> InstantiateResult<()> {
-    let ast::Expression::ClassModification { target, .. } = mod_expr else {
+    let Some(target_ref) = class_redeclare_target_ref(mod_expr) else {
         return Err(Box::new(InstantiateError::redeclare_error(
             target_name,
             "redeclare target is missing source span",
             location_to_span(&nested_class.location, &tree.source_map),
         )));
     };
-    let Some(part) = target.parts.first() else {
+    let Some(part) = target_ref.parts.first() else {
         return Err(Box::new(InstantiateError::redeclare_error(
             target_name,
             "redeclare target is missing source span",
@@ -579,9 +584,9 @@ pub(super) fn extract_component_class_overrides(
     };
 
     for (target_name, mod_expr) in &comp.modifications {
-        let ast::Expression::ClassModification { .. } = mod_expr else {
+        if class_redeclare_target_ref(mod_expr).is_none() {
             continue;
-        };
+        }
 
         let Some(nested_class) = find_nested_class_in_hierarchy(tree, target_class, target_name)
         else {
@@ -595,7 +600,11 @@ pub(super) fn extract_component_class_overrides(
                 location_to_span(&nested_class.location, &tree.source_map),
             )));
         };
-        let resolved_def_id = resolve_redeclare_value_def_id(tree, mod_expr, mod_env);
+        let resolved_def_id =
+            resolve_redeclare_value_def_id(tree, mod_expr, mod_env).or_else(|| {
+                class_redeclare_target_ref(mod_expr)
+                    .and_then(|target| target.def_id.or_else(|| resolve_cref_def_id(tree, &target)))
+            });
 
         if let Some(def_id) = resolved_def_id {
             overrides.insert(
@@ -605,7 +614,8 @@ pub(super) fn extract_component_class_overrides(
                     alias_def_id,
                     def_id,
                     class_redeclare_target_ref(mod_expr),
-                ),
+                )
+                .with_modifier_args(class_redeclare_modifier_args(mod_expr)),
             );
         }
     }
@@ -614,10 +624,24 @@ pub(super) fn extract_component_class_overrides(
 }
 
 fn class_redeclare_target_ref(mod_expr: &ast::Expression) -> Option<ast::ComponentReference> {
-    let ast::Expression::ClassModification { target, .. } = mod_expr else {
-        return None;
-    };
-    Some(target.clone())
+    match mod_expr {
+        ast::Expression::Modification { target, value, .. } => {
+            class_redeclare_target_ref(value).or_else(|| Some(target.clone()))
+        }
+        ast::Expression::ClassModification { target, .. } => Some(target.clone()),
+        ast::Expression::FunctionCall { comp, .. } => Some(comp.clone()),
+        ast::Expression::ComponentReference(cref) => Some(cref.clone()),
+        _ => None,
+    }
+}
+
+fn class_redeclare_modifier_args(mod_expr: &ast::Expression) -> Vec<ast::Expression> {
+    match mod_expr {
+        ast::Expression::Modification { value, .. } => class_redeclare_modifier_args(value),
+        ast::Expression::ClassModification { modifications, .. } => modifications.clone(),
+        ast::Expression::FunctionCall { args, .. } => args.clone(),
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

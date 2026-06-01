@@ -667,11 +667,13 @@ fn resolved_function_call_name(
     let resolved = comp
         .def_id
         .and_then(|def_id| def_map.and_then(|map| map.get(&def_id)))?;
-    if !resolved_path_ends_with_component_ref(resolved, comp) {
-        return None;
-    }
     let call_leaf = comp.parts.last()?.ident.text.as_ref();
     let resolved_leaf = top_level_last_segment(resolved.as_str());
+    if !resolved_path_ends_with_component_ref(resolved, comp)
+        && !is_receiver_member_function_call(comp, call_leaf, resolved_leaf)
+    {
+        return None;
+    }
 
     // `ComponentReference::def_id` usually names the first segment. Function
     // resolution rewrites successful multi-segment calls so the DefId names the
@@ -680,6 +682,24 @@ fn resolved_function_call_name(
     // call so flatten's component-override rewrite can resolve it from the
     // receiver type.
     (resolved_leaf == call_leaf).then(|| resolved.clone())
+}
+
+fn is_receiver_member_function_call(
+    comp: &ast::ComponentReference,
+    call_leaf: &str,
+    resolved_leaf: &str,
+) -> bool {
+    let Some(receiver) = comp.parts.first() else {
+        return false;
+    };
+    comp.parts.len() == 2
+        && receiver
+            .ident
+            .text
+            .chars()
+            .next()
+            .is_some_and(char::is_lowercase)
+        && resolved_leaf == call_leaf
 }
 
 fn resolved_path_ends_with_component_ref(resolved: &str, comp: &ast::ComponentReference) -> bool {
@@ -930,6 +950,31 @@ mod tests {
         assert_eq!(
             resolved_function_call_name(&comp, Some(&def_map)).as_deref(),
             Some("Pkg.Receiver.member")
+        );
+    }
+
+    #[test]
+    fn function_call_lowering_canonicalizes_receiver_member_function_target() {
+        let function_def = DefId::new(4);
+        let mut def_map = IndexMap::default();
+        def_map.insert(
+            function_def,
+            "Modelica.Mechanics.MultiBody.World.gravityAcceleration".to_string(),
+        );
+        let comp = ast::ComponentReference {
+            local: false,
+            parts: vec![part("world"), part("gravityAcceleration")],
+            span: Span::DUMMY,
+            def_id: Some(function_def),
+        };
+
+        let expr = convert_function_call_with_def_map(&comp, &[], Some(&def_map)).unwrap();
+        let rumoca_core::Expression::FunctionCall { name, .. } = expr else {
+            panic!("expected function call");
+        };
+        assert_eq!(
+            name.as_str(),
+            "Modelica.Mechanics.MultiBody.World.gravityAcceleration"
         );
     }
 

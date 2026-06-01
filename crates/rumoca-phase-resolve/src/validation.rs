@@ -4,6 +4,7 @@
 
 use rumoca_core::Location;
 use rumoca_ir_ast as ast;
+use std::collections::HashSet;
 use std::ops::ControlFlow;
 
 type ClassDef = ast::ClassDef;
@@ -59,7 +60,10 @@ impl ValidationResult {
 
 /// Validate that a ClassTree has all symbols resolved.
 pub fn validate_resolution(tree: &ClassTree) -> ValidationResult {
-    let mut v = Validator::default();
+    let mut v = Validator {
+        component_names: collect_component_names(&tree.definitions),
+        ..Validator::default()
+    };
     let _ = ast::Visitor::visit_stored_definition(&mut v, &tree.definitions);
     ValidationResult {
         unresolved: v.unresolved,
@@ -69,6 +73,7 @@ pub fn validate_resolution(tree: &ClassTree) -> ValidationResult {
 #[derive(Default)]
 struct Validator {
     path: Vec<String>,
+    component_names: HashSet<String>,
     unresolved: Vec<UnresolvedSymbol>,
 }
 
@@ -117,6 +122,11 @@ impl Validator {
 
     fn add_unresolved_function_call(&mut self, cr: &ComponentReference) {
         if cr.def_id.is_none() && !cr.parts.is_empty() {
+            // Receiver-qualified calls such as `world.gravityAcceleration(...)`
+            // may require inherited/outer component type context from instantiation.
+            if self.is_likely_component_receiver_call(cr) {
+                return;
+            }
             let source_location = cr.parts[0].ident.location.clone();
             self.add(
                 cr.parts[0].ident.text.to_string(),
@@ -124,6 +134,32 @@ impl Validator {
                 source_location,
             );
         }
+    }
+
+    fn is_likely_component_receiver_call(&self, cr: &ComponentReference) -> bool {
+        cr.parts.len() > 1
+            && cr
+                .parts
+                .first()
+                .is_some_and(|part| self.component_names.contains(part.ident.text.as_ref()))
+    }
+}
+
+fn collect_component_names(definition: &ast::StoredDefinition) -> HashSet<String> {
+    let mut collector = ComponentNameCollector::default();
+    let _ = ast::Visitor::visit_stored_definition(&mut collector, definition);
+    collector.names
+}
+
+#[derive(Default)]
+struct ComponentNameCollector {
+    names: HashSet<String>,
+}
+
+impl ast::Visitor for ComponentNameCollector {
+    fn visit_component(&mut self, comp: &Component) -> ControlFlow<()> {
+        self.names.insert(comp.name.clone());
+        ControlFlow::Continue(())
     }
 }
 
@@ -327,6 +363,60 @@ mod tests {
     fn test_unresolved_function() {
         let r = resolve_for_validation("model T Real x; equation x = unknownFunc(1.0); end T;");
         assert!(r.unresolved.iter().any(|s| s.name == "unknownFunc"));
+    }
+
+    #[test]
+    fn test_component_qualified_function_call_is_deferred_to_instantiation() {
+        let r = resolve_for_validation(
+            r#"
+model World
+  function gravityAcceleration
+    input Real r;
+    output Real g;
+  algorithm
+    g := r;
+  end gravityAcceleration;
+end World;
+
+model Base
+  outer World world;
+end Base;
+
+model M
+  extends Base;
+  Real y;
+equation
+  y = world.gravityAcceleration(1.0);
+end M;
+"#,
+        );
+        assert!(
+            !r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::FunctionCall && s.name == "world"),
+            "component-qualified member calls need instance/type context, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_missing_package_qualified_function_call_is_reported() {
+        let r = resolve_for_validation(
+            r#"
+model M
+  Real y;
+equation
+  y = MissingPkg.f(1.0);
+end M;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::FunctionCall && s.name == "MissingPkg"),
+            "package-qualified calls must still report unresolved leading names, got: {:?}",
+            r.unresolved
+        );
     }
 
     #[test]
