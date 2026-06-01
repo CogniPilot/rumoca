@@ -76,7 +76,8 @@ fn lower_algorithm_uses_statement_span_for_main_assignment_equations() {
         "algorithm",
     );
 
-    let lowered = lower_algorithm_to_equations(&dae, &flat, &algorithm).expect("lower algorithm");
+    let lowered =
+        lower_algorithm_to_equations(&dae, &flat, &algorithm, false).expect("lower algorithm");
 
     assert_eq!(lowered.main.len(), 1);
     assert_eq!(lowered.main[0].span, statement_span);
@@ -125,7 +126,8 @@ fn lower_algorithm_uses_statement_span_for_when_assignment_equations() {
         "algorithm",
     );
 
-    let lowered = lower_algorithm_to_equations(&dae, &flat, &algorithm).expect("lower algorithm");
+    let lowered =
+        lower_algorithm_to_equations(&dae, &flat, &algorithm, false).expect("lower algorithm");
 
     assert_eq!(lowered.f_m.len(), 1);
     assert_eq!(lowered.f_m[0].span, statement_span);
@@ -151,7 +153,7 @@ fn lower_algorithm_rejects_reinit_outside_when_statement() {
         "algorithm",
     );
 
-    let err = match lower_algorithm_to_equations(&dae, &flat, &algorithm) {
+    let err = match lower_algorithm_to_equations(&dae, &flat, &algorithm, false) {
         Ok(_) => panic!("bare reinit() must be rejected"),
         Err(err) => err,
     };

@@ -219,6 +219,18 @@ pub(super) struct FunctionInputBindState<'a> {
     pub(in crate::lower) const_bindings: &'a mut IndexMap<String, f64>,
 }
 
+pub(super) struct MaterializedRecordComponent {
+    pub(super) suffix: String,
+    pub(super) reg: Reg,
+    pub(super) dims: Option<Vec<i64>>,
+    pub(super) known_empty: bool,
+}
+
+pub(super) struct MaterializedRecordComponents {
+    pub(super) components: Vec<MaterializedRecordComponent>,
+    pub(super) indexed_components: Vec<(String, Vec<LocalIndexedBinding>)>,
+}
+
 #[derive(Clone)]
 pub(super) struct LocalLowerFrame {
     pub(super) structural_bindings: IndexMap<String, f64>,

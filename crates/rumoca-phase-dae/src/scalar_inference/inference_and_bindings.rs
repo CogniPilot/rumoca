@@ -501,16 +501,10 @@ pub(crate) fn resolve_missing_start_ref(
     name: &VarName,
     known_var_names: &HashSet<String>,
 ) -> VarName {
-    if known_var_names.contains(name.as_str()) {
-        return name.clone();
-    }
-
-    let path = rumoca_core::ComponentPath::from_flat_path(name.as_str());
-    for suffix in path.suffixes_excluding_self() {
-        let candidate = suffix.to_flat_string();
-        if known_var_names.contains(candidate.as_str()) {
-            return VarName::new(candidate);
-        }
+    if let Some(resolved) =
+        crate::path_utils::resolve_known_path_suffix(name.as_str(), known_var_names)
+    {
+        return VarName::new(resolved);
     }
     name.clone()
 }
@@ -597,17 +591,23 @@ fn select_scalar_start_record_alias(
     expr: &Expression,
     known_var_names: &HashSet<String>,
 ) -> Expression {
+    let lhs_path = rumoca_core::ComponentPath::from_flat_path(lhs_name.as_str());
+    let leaf_field = lhs_path.parts().last();
     let Some(lhs_base) = flat::component_base_name(lhs_name.as_str()) else {
-        return expr.clone();
+        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+            .unwrap_or_else(|| expr.clone());
     };
     if lhs_base == lhs_name.as_str() {
-        return expr.clone();
+        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+            .unwrap_or_else(|| expr.clone());
     }
     let Some(field_suffix) = lhs_name.as_str().strip_prefix(lhs_base.as_str()) else {
-        return expr.clone();
+        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+            .unwrap_or_else(|| expr.clone());
     };
     if !field_suffix.starts_with('.') {
-        return expr.clone();
+        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+            .unwrap_or_else(|| expr.clone());
     }
 
     match expr {
@@ -617,12 +617,26 @@ fn select_scalar_start_record_alias(
             span,
         } if subscripts.is_empty() => {
             let selected = format!("{}{}", rhs_name.as_str(), field_suffix);
-            if known_var_names.contains(selected.as_str()) {
+            if let Some(selected) =
+                crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
+            {
                 return Expression::VarRef {
                     name: VarName::new(selected).into(),
                     subscripts: vec![],
                     span: *span,
                 };
+            }
+            if let Some(field) = leaf_field {
+                let selected = format!("{}.{}", rhs_name.as_str(), field);
+                if let Some(selected) =
+                    crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
+                {
+                    return Expression::VarRef {
+                        name: VarName::new(selected).into(),
+                        subscripts: vec![],
+                        span: *span,
+                    };
+                }
             }
             expr.clone()
         }
@@ -639,16 +653,76 @@ fn select_scalar_start_record_alias(
                 return expr.clone();
             }
             let selected = format!("{}.{}{}", rhs_name.as_str(), field, field_suffix);
-            if known_var_names.contains(selected.as_str()) {
+            if let Some(selected) =
+                crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
+            {
                 return Expression::VarRef {
                     name: VarName::new(selected).into(),
                     subscripts: vec![],
                     span: *span,
                 };
             }
+            if let Some(lhs_leaf) = leaf_field {
+                let selected = format!("{}.{}.{}", rhs_name.as_str(), field, lhs_leaf);
+                if let Some(selected) =
+                    crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
+                {
+                    return Expression::VarRef {
+                        name: VarName::new(selected).into(),
+                        subscripts: vec![],
+                        span: *span,
+                    };
+                }
+            }
             expr.clone()
         }
         _ => expr.clone(),
+    }
+}
+
+fn select_leaf_start_record_alias(
+    expr: &Expression,
+    leaf_field: Option<&String>,
+    known_var_names: &HashSet<String>,
+) -> Option<Expression> {
+    let field = leaf_field?;
+    match expr {
+        Expression::VarRef {
+            name: rhs_name,
+            subscripts,
+            span,
+        } if subscripts.is_empty() => {
+            let selected = format!("{}.{}", rhs_name.as_str(), field);
+            crate::path_utils::resolve_known_path_suffix(&selected, known_var_names).map(
+                |selected| Expression::VarRef {
+                    name: VarName::new(selected).into(),
+                    subscripts: vec![],
+                    span: *span,
+                },
+            )
+        }
+        Expression::FieldAccess { base, field, span } => {
+            let Expression::VarRef {
+                name: rhs_name,
+                subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            if !subscripts.is_empty() {
+                return None;
+            }
+            let selected = format!("{}.{}", rhs_name.as_str(), field);
+            crate::path_utils::resolve_known_path_suffix(&selected, known_var_names).map(
+                |selected| Expression::VarRef {
+                    name: VarName::new(selected).into(),
+                    subscripts: vec![],
+                    span: *span,
+                },
+            )
+        }
+        _ => None,
     }
 }
 

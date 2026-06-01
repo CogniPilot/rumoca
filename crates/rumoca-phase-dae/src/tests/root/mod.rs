@@ -182,6 +182,71 @@ fn test_todae_rewrites_missing_scoped_parameter_start_reference() {
 }
 
 #[test]
+fn test_todae_rewrites_misqualified_record_parameter_alias_field() {
+    let mut flat = Model::new();
+
+    flat.add_variable(
+        VarName::new("aimcData.statorCoreParameters.wRef"),
+        flat::Variable {
+            name: VarName::new("aimcData.statorCoreParameters.wRef"),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(314.159),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+
+    flat.add_variable(
+        VarName::new("aimc.statorCoreParameters.wRef"),
+        flat::Variable {
+            name: VarName::new("aimc.statorCoreParameters.wRef"),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(rumoca_core::Expression::FieldAccess {
+                base: Box::new(make_var_ref("aimc.aimcData.statorCoreParameters")),
+                field: "wRef".to_string(),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("record-parameter alias should resolve to the matching scalar field");
+
+    let nested = dae
+        .variables
+        .parameters
+        .get(&rumoca_core::VarName::new("aimc.statorCoreParameters.wRef"))
+        .expect("missing nested stator core parameter");
+    let start = nested
+        .start
+        .as_ref()
+        .expect("nested stator core parameter should keep rewritten start expression");
+
+    match start {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            assert!(
+                subscripts.is_empty(),
+                "expected scalar rewritten record-field reference"
+            );
+            assert_eq!(name.as_str(), "aimcData.statorCoreParameters.wRef");
+        }
+        other => panic!("expected VarRef start expression, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_todae_rejects_unresolved_function_calls() {
     let mut flat = Model::new();
     add_primitive_real(&mut flat, "x");
@@ -850,6 +915,87 @@ fn test_todae_routes_explicit_discrete_integer_when_assignment_to_f_m() {
         dae.discrete.valued_updates.len(),
         1,
         "expected one discrete-valued event equation"
+    );
+}
+
+#[test]
+fn test_todae_lowers_when_multi_output_function_call_to_selection_updates() {
+    let mut flat = Model::new();
+    add_primitive_real(&mut flat, "seed");
+    flat.add_variable(
+        VarName::new("trigger"),
+        flat::Variable {
+            name: VarName::new("trigger"),
+            variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
+            is_discrete_type: true,
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+    for name in ["noise.r_raw", "noise.state"] {
+        flat.add_variable(
+            VarName::new(name),
+            flat::Variable {
+                name: VarName::new(name),
+                variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    let mut function = rumoca_core::Function::new("Noise.next", Span::DUMMY);
+    function.add_input(rumoca_core::FunctionParam::new("seed", "Real"));
+    function.add_output(rumoca_core::FunctionParam::new("r_raw", "Real"));
+    function.add_output(rumoca_core::FunctionParam::new("state", "Real"));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: make_comp_ref("r_raw"),
+        value: make_var_ref("seed"),
+        span: rumoca_core::Span::DUMMY,
+    });
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: make_comp_ref("state"),
+        value: make_var_ref("seed"),
+        span: rumoca_core::Span::DUMMY,
+    });
+    flat.add_function(function);
+
+    let mut when_clause = rumoca_ir_flat::WhenClause::new(make_var_ref("trigger"), Span::DUMMY);
+    when_clause.add_equation(rumoca_ir_flat::WhenEquation::function_call_outputs(
+        vec![VarName::new("noise.r_raw"), VarName::new("noise.state")],
+        rumoca_core::Expression::FunctionCall {
+            name: VarName::new("Noise.next").into(),
+            args: vec![make_var_ref("seed")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+        Span::DUMMY,
+        "noise update",
+    ));
+    flat.when_clauses.push(when_clause);
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("when multi-output function call should lower to per-output updates");
+
+    let updates = dae
+        .discrete
+        .real_updates
+        .iter()
+        .map(|eq| format!("{:?}", eq.rhs))
+        .collect::<Vec<_>>();
+    assert_eq!(updates.len(), 2);
+    assert!(
+        updates.iter().any(|rhs| rhs.contains("Noise.next.r_raw")),
+        "missing first output selection in updates: {updates:?}"
+    );
+    assert!(
+        updates.iter().any(|rhs| rhs.contains("Noise.next.state")),
+        "missing second output selection in updates: {updates:?}"
     );
 }
 
@@ -1783,204 +1929,8 @@ fn test_connected_input_alias_with_multilayer_subscripts_promotes_internal_input
     }
 }
 
-#[test]
-fn test_equation_defined_indexed_array_input_promotes_internal_input() {
-    let mut flat = Model::new();
-    flat.add_variable(
-        VarName::new("plant.omega_cmd"),
-        flat::Variable {
-            name: VarName::new("plant.omega_cmd"),
-            causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
-            variability: rumoca_core::Variability::Empty,
-            is_primitive: true,
-            dims: vec![4],
-            ..Default::default()
-        },
-    );
-
-    add_component_equation(
-        &mut flat,
-        "plant.omega_cmd[1]",
-        make_var_ref("motor_cmd[1]"),
-    );
-
-    let defined_inputs = find_equation_defined_inputs_for_test(&flat);
-    assert!(
-        defined_inputs.contains(&VarName::new("plant.omega_cmd")),
-        "internal array input assigned by an indexed equation should be promoted"
-    );
-}
-
-#[test]
-fn test_equation_defined_array_lhs_promotes_internal_input_elements() {
-    let mut flat = Model::new();
-    for name in ["plant.motor[1].omega_cmd", "plant.motor[2].omega_cmd"] {
-        flat.add_variable(
-            VarName::new(name),
-            flat::Variable {
-                name: VarName::new(name),
-                causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
-                variability: rumoca_core::Variability::Empty,
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-    }
-    flat.add_equation(rumoca_ir_flat::Equation {
-        residual: rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(rumoca_core::Expression::Array {
-                elements: vec![
-                    make_var_ref("plant.motor[1].omega_cmd"),
-                    make_var_ref("plant.motor[2].omega_cmd"),
-                ],
-                is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
-            }),
-            rhs: Box::new(make_var_ref("plant.omega_cmd")),
-            span: rumoca_core::Span::DUMMY,
-        },
-        span: Span::DUMMY,
-        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
-            component: "plant.motor".to_string(),
-        },
-        scalar_count: 2,
-    });
-
-    let defined_inputs = find_equation_defined_inputs_for_test(&flat);
-    for name in ["plant.motor[1].omega_cmd", "plant.motor[2].omega_cmd"] {
-        assert!(
-            defined_inputs.contains(&VarName::new(name)),
-            "array LHS input {name} should be promoted"
-        );
-    }
-}
-
-#[test]
-fn test_rhs_input_alias_with_lhs_internal_input_promotes_rhs_input() {
-    let mut flat = Model::new();
-    for name in ["plant.omega_cmd", "plant.motor[1].omega_cmd"] {
-        flat.add_variable(
-            VarName::new(name),
-            flat::Variable {
-                name: VarName::new(name),
-                causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
-                variability: rumoca_core::Variability::Empty,
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-    }
-
-    add_component_equation(
-        &mut flat,
-        "plant.omega_cmd",
-        make_var_ref("plant.motor[1].omega_cmd"),
-    );
-
-    let defined_inputs = find_equation_defined_inputs_for_test(&flat);
-    assert!(
-        defined_inputs.contains(&VarName::new("plant.motor[1].omega_cmd")),
-        "RHS child input should be promoted when aliased to another internal input"
-    );
-}
-
-#[test]
-fn test_rhs_array_alias_with_lhs_internal_input_promotes_rhs_inputs() {
-    let mut flat = Model::new();
-    for (name, dims) in [
-        ("plant.omega_cmd", vec![2]),
-        ("plant.motor[1].omega_cmd", vec![]),
-        ("plant.motor[2].omega_cmd", vec![]),
-    ] {
-        flat.add_variable(
-            VarName::new(name),
-            flat::Variable {
-                name: VarName::new(name),
-                causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
-                variability: rumoca_core::Variability::Empty,
-                is_primitive: true,
-                dims,
-                ..Default::default()
-            },
-        );
-    }
-
-    flat.add_equation(rumoca_ir_flat::Equation {
-        residual: rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(make_var_ref("plant.omega_cmd")),
-            rhs: Box::new(rumoca_core::Expression::Array {
-                elements: vec![
-                    make_var_ref("plant.motor[1].omega_cmd"),
-                    make_var_ref("plant.motor[2].omega_cmd"),
-                ],
-                is_matrix: false,
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        },
-        span: Span::DUMMY,
-        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
-            component: "plant".to_string(),
-        },
-        scalar_count: 2,
-    });
-
-    let defined_inputs = find_equation_defined_inputs_for_test(&flat);
-    for name in [
-        "plant.omega_cmd",
-        "plant.motor[1].omega_cmd",
-        "plant.motor[2].omega_cmd",
-    ] {
-        assert!(
-            defined_inputs.contains(&VarName::new(name)),
-            "internal input {name} should be promoted through vector alias"
-        );
-    }
-}
-
-#[test]
-fn test_component_array_selection_lhs_promotes_indexed_internal_inputs() {
-    let mut flat = Model::new();
-    for (name, dims) in [
-        ("plant.omega_cmd", vec![2]),
-        ("plant.motor[1].omega_cmd", vec![]),
-        ("plant.motor[2].omega_cmd", vec![]),
-    ] {
-        flat.add_variable(
-            VarName::new(name),
-            flat::Variable {
-                name: VarName::new(name),
-                causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
-                variability: rumoca_core::Variability::Empty,
-                is_primitive: true,
-                dims,
-                ..Default::default()
-            },
-        );
-    }
-
-    add_component_equation(
-        &mut flat,
-        "plant.motor.omega_cmd",
-        make_var_ref("plant.omega_cmd"),
-    );
-
-    let defined_inputs = find_equation_defined_inputs_for_test(&flat);
-    for name in [
-        "plant.omega_cmd",
-        "plant.motor[1].omega_cmd",
-        "plant.motor[2].omega_cmd",
-    ] {
-        assert!(
-            defined_inputs.contains(&VarName::new(name)),
-            "component-array selection should promote internal input {name}"
-        );
-    }
-}
-
 mod input_promotion_extra;
+mod input_promotion_indexed;
 mod tests_embedded_range;
 mod tests_equation_classification;
 mod tests_flow_sum;

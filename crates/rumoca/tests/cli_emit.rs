@@ -26,10 +26,25 @@ equation
 end EmitFixture;
 ";
 
+const FLAT_ONLY_FIXTURE: &str = "\
+model FlatOnlyFixture
+  Real x;
+algorithm
+  x := 1;
+end FlatOnlyFixture;
+";
+
 fn fixture_file() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempdir().expect("tempdir");
     let file = dir.path().join("EmitFixture.mo");
     fs::write(&file, FIXTURE).expect("write fixture");
+    (dir, file)
+}
+
+fn named_fixture_file(name: &str, source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join(format!("{name}.mo"));
+    fs::write(&file, source).expect("write fixture");
     (dir, file)
 }
 
@@ -82,6 +97,18 @@ fn emit_json_stages_are_valid_json() {
         serde_json::from_str::<serde_json::Value>(&out)
             .unwrap_or_else(|err| panic!("`--emit {emit}` did not produce valid JSON: {err}"));
     }
+}
+
+#[test]
+fn emit_flat_json_stops_before_todae() {
+    let (_dir, file) = named_fixture_file("FlatOnlyFixture", FLAT_ONLY_FIXTURE);
+    let out = assert_emit_ok(&file, "flat-json");
+    let json = serde_json::from_str::<serde_json::Value>(&out)
+        .expect("flat-json should produce valid JSON even when later phases reject the model");
+    assert!(
+        json.get("algorithms").is_some(),
+        "flat artifact should contain the model algorithm section, got:\n{out}"
+    );
 }
 
 #[test]

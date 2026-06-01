@@ -16,6 +16,12 @@ fn complex_output_param(name: &str) -> rumoca_core::FunctionParam {
     }
 }
 
+fn record_param(name: &str, type_name: &str) -> rumoca_core::FunctionParam {
+    let mut param = rumoca_core::FunctionParam::new(name, type_name);
+    param.type_class = Some(rumoca_core::ClassType::Record);
+    param
+}
+
 fn insert_complex_constructor(
     dae_model: &mut dae::Dae,
     im_default: Option<rumoca_core::Expression>,
@@ -99,6 +105,55 @@ fn array_lit(values: &[f64]) -> rumoca_core::Expression {
         is_matrix: false,
         span: rumoca_core::Span::DUMMY,
     }
+}
+
+#[test]
+fn lower_function_call_does_not_fold_self_referential_start_metadata() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
+    dae_model
+        .metadata
+        .variable_starts
+        .insert("x".to_string(), var("x"));
+
+    let mut identity = rumoca_core::Function::new("My.identity", rumoca_core::Span::DUMMY);
+    identity.inputs.push(function_param("u"));
+    identity.outputs.push(function_param("y"));
+    identity.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: var("u"),
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(identity.name.clone(), identity);
+
+    let layout = build_var_layout(&dae_model);
+    let rows = lower_expression_rows_from_expressions_with_runtime_metadata(
+        &[rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.identity").into(),
+            args: vec![var("x")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        }],
+        &layout,
+        &dae_model.symbols.functions,
+        &dae_model.clocks.intervals,
+        &dae_model.clocks.timings,
+        &dae_model.metadata.variable_starts,
+    )
+    .expect("self-referential start metadata should not recurse during constant folding");
+
+    assert_eq!(rows.len(), 1);
+    assert!(
+        rows[0]
+            .iter()
+            .any(|op| matches!(op, LinearOp::LoadY { .. }))
+    );
 }
 
 fn record_ctor(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
@@ -653,6 +708,369 @@ fn lower_expression_inlines_user_function_call() {
     let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
     let compiled = read_reg(&regs, lowered.result);
     assert!((compiled - 10.0).abs() <= 1e-12);
+}
+
+#[test]
+fn lower_expression_binds_record_function_result_to_record_input() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("p"), scalar_var("p"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("temp"), scalar_var("temp"));
+
+    let mut state_ctor = rumoca_core::Function::new("My.State", rumoca_core::Span::DUMMY);
+    state_ctor.is_constructor = true;
+    state_ctor.inputs.push(function_param("p"));
+    state_ctor.inputs.push(function_param("T"));
+    state_ctor.outputs.push(record_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(state_ctor.name.clone(), state_ctor);
+
+    let mut make_state = rumoca_core::Function::new("My.makeState", rumoca_core::Span::DUMMY);
+    make_state.inputs.push(function_param("p"));
+    make_state.inputs.push(function_param("T"));
+    make_state.outputs.push(record_param("state", "My.State"));
+    make_state.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("state"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.State").into(),
+            args: vec![var("p"), var("T")],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(make_state.name.clone(), make_state);
+
+    let mut temperature = rumoca_core::Function::new("My.temperature", rumoca_core::Span::DUMMY);
+    temperature.inputs.push(record_param("state", "My.State"));
+    temperature.outputs.push(function_param("T"));
+    temperature.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("T"),
+        value: rumoca_core::Expression::FieldAccess {
+            base: Box::new(var("state")),
+            field: "T".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(temperature.name.clone(), temperature);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.temperature").into(),
+        args: vec![rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.makeState").into(),
+            args: vec![var("p"), var("temp")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        }],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let layout = build_var_layout(&dae_model);
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("record-valued function actual should bind record input components");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let p = vec![];
+    set_y_value(&layout, &mut y, "p", 101325.0);
+    set_y_value(&layout, &mut y, "temp", 350.0);
+
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+    let compiled = read_reg(&regs, lowered.result);
+    assert!((compiled - 350.0).abs() <= 1e-12);
+}
+
+#[test]
+fn lower_expression_binds_record_function_result_to_flattened_record_inputs() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("p"), scalar_var("p"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("temp"), scalar_var("temp"));
+
+    let mut state_ctor = rumoca_core::Function::new("My.State", rumoca_core::Span::DUMMY);
+    state_ctor.is_constructor = true;
+    state_ctor.inputs.push(function_param("p"));
+    state_ctor.inputs.push(function_param("T"));
+    state_ctor.outputs.push(record_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(state_ctor.name.clone(), state_ctor);
+
+    let mut make_state = rumoca_core::Function::new("My.makeState", rumoca_core::Span::DUMMY);
+    make_state.inputs.push(function_param("p"));
+    make_state.inputs.push(function_param("T"));
+    make_state.outputs.push(record_param("state", "My.State"));
+    make_state.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("state"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.State").into(),
+            args: vec![var("p"), var("T")],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(make_state.name.clone(), make_state);
+
+    let mut enthalpy = rumoca_core::Function::new("My.specificEnthalpy", rumoca_core::Span::DUMMY);
+    enthalpy.inputs.push(function_param("state_p"));
+    enthalpy.inputs.push(function_param("state_T"));
+    enthalpy.outputs.push(function_param("h"));
+    enthalpy.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("h"),
+        value: var("state_T"),
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(enthalpy.name.clone(), enthalpy);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.specificEnthalpy").into(),
+        args: vec![rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.makeState").into(),
+            args: vec![var("p"), var("temp")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        }],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let layout = build_var_layout(&dae_model);
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("record-valued actual should bind flattened record inputs");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let p = vec![];
+    set_y_value(&layout, &mut y, "p", 101325.0);
+    set_y_value(&layout, &mut y, "temp", 380.0);
+
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+    let compiled = read_reg(&regs, lowered.result);
+    assert!((compiled - 380.0).abs() <= 1e-12);
+}
+
+#[test]
+fn lower_expression_projects_record_field_from_function_result() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("p"), scalar_var("p"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("temp"), scalar_var("temp"));
+
+    let mut state_ctor = rumoca_core::Function::new("My.State", rumoca_core::Span::DUMMY);
+    state_ctor.is_constructor = true;
+    state_ctor.inputs.push(function_param("p"));
+    state_ctor.inputs.push(function_param("T"));
+    state_ctor.outputs.push(record_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(state_ctor.name.clone(), state_ctor);
+
+    let mut make_state = rumoca_core::Function::new("My.makeState", rumoca_core::Span::DUMMY);
+    make_state.inputs.push(function_param("p"));
+    make_state.inputs.push(function_param("T"));
+    make_state.outputs.push(record_param("state", "My.State"));
+    make_state.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("state"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.State").into(),
+            args: vec![var("p"), var("T")],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(make_state.name.clone(), make_state);
+
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.makeState").into(),
+            args: vec![var("p"), var("temp")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "T".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let layout = build_var_layout(&dae_model);
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("record-valued function field projection should lower");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let p = vec![];
+    set_y_value(&layout, &mut y, "p", 101325.0);
+    set_y_value(&layout, &mut y, "temp", 360.0);
+
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+    let compiled = read_reg(&regs, lowered.result);
+    assert!((compiled - 360.0).abs() <= 1e-12);
+}
+
+#[test]
+fn lower_expression_projects_single_output_function_by_output_name() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+
+    let mut temperature = rumoca_core::Function::new("My.temperature", rumoca_core::Span::DUMMY);
+    temperature.inputs.push(function_param("u"));
+    temperature.outputs.push(function_param("T"));
+    temperature.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("T"),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Box::new(var("u")),
+            rhs: Box::new(real_lit(10.0)),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(temperature.name.clone(), temperature);
+
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.temperature").into(),
+            args: vec![var("u")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "T".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let layout = build_var_layout(&dae_model);
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("single-output function output-name projection should lower");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let p = vec![];
+    set_y_value(&layout, &mut y, "u", 273.15);
+
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+    let compiled = read_reg(&regs, lowered.result);
+    assert!((compiled - 283.15).abs() <= 1e-12);
+}
+
+#[test]
+fn lower_expression_projects_record_field_from_forwarded_function_result() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("p"), scalar_var("p"));
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("temp"), scalar_var("temp"));
+
+    let mut state_ctor = rumoca_core::Function::new("My.State", rumoca_core::Span::DUMMY);
+    state_ctor.is_constructor = true;
+    state_ctor.inputs.push(function_param("p"));
+    state_ctor.inputs.push(function_param("T"));
+    state_ctor.outputs.push(record_param("state", "My.State"));
+    dae_model
+        .symbols
+        .functions
+        .insert(state_ctor.name.clone(), state_ctor);
+
+    let mut make_state = rumoca_core::Function::new("My.makeState", rumoca_core::Span::DUMMY);
+    make_state.inputs.push(function_param("p"));
+    make_state.inputs.push(function_param("T"));
+    make_state.outputs.push(record_param("state", "My.State"));
+    make_state.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("state"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.State").into(),
+            args: vec![var("p"), var("T")],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(make_state.name.clone(), make_state);
+
+    let mut forward_state = rumoca_core::Function::new("My.forwardState", rumoca_core::Span::DUMMY);
+    forward_state.inputs.push(function_param("p"));
+    forward_state.inputs.push(function_param("T"));
+    forward_state
+        .outputs
+        .push(record_param("state", "My.State"));
+    forward_state.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("state"),
+        value: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.makeState").into(),
+            args: vec![var("p"), var("T")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(forward_state.name.clone(), forward_state);
+
+    let expr = rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.forwardState").into(),
+            args: vec![var("p"), var("temp")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "T".to_string(),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let layout = build_var_layout(&dae_model);
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("forwarded record-valued function field projection should lower");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let p = vec![];
+    set_y_value(&layout, &mut y, "p", 101325.0);
+    set_y_value(&layout, &mut y, "temp", 370.0);
+
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &p, 0.0);
+    let compiled = read_reg(&regs, lowered.result);
+    assert!((compiled - 370.0).abs() <= 1e-12);
 }
 
 #[test]

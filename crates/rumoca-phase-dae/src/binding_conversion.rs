@@ -633,9 +633,10 @@ fn select_scalar_binding_record_field_alias(
     let selected = rumoca_core::ComponentPath::from_reference(rhs_name)
         .join(&rumoca_core::ComponentPath::from_flat_path(field_name))
         .to_flat_string();
-    if !known_var_names.contains(selected.as_str()) {
+    let Some(selected) = crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
+    else {
         return binding.clone();
-    }
+    };
 
     Expression::VarRef {
         name: VarName::new(selected).into(),
@@ -822,6 +823,30 @@ mod tests {
                 "{:?}",
                 Expression::VarRef {
                     name: VarName::new("data.frictionParameters.wRef").into(),
+                    subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_select_scalar_binding_record_field_alias_resolves_misqualified_prefix() {
+        let known_var_names = HashSet::from(["aimcData.statorCoreParameters.wRef".to_string()]);
+        let lhs = VarName::new("aimc.statorCoreParameters.wRef");
+        let binding = Expression::VarRef {
+            name: VarName::new("aimc.aimcData.statorCoreParameters").into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let selected = select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names);
+        assert_eq!(
+            format!("{selected:?}"),
+            format!(
+                "{:?}",
+                Expression::VarRef {
+                    name: VarName::new("aimcData.statorCoreParameters.wRef").into(),
                     subscripts: vec![],
                     span: rumoca_core::Span::DUMMY,
                 }

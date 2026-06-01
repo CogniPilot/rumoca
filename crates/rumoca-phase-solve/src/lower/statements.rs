@@ -5,28 +5,11 @@ use rumoca_ir_solve::{BinaryOp, Reg, ScalarSlot};
 use super::function_projection::format_subscript_binding_key;
 use super::helpers::*;
 use super::{
-    BREAK_FLAG_BINDING, LowerBuilder, LowerError, MAX_FUNCTION_INLINE_DEPTH, RETURN_FLAG_BINDING,
-    Scope, size_binding_key, upsert_local_indexed_binding,
+    BREAK_FLAG_BINDING, LowerBuilder, LowerError, RETURN_FLAG_BINDING, Scope, size_binding_key,
+    upsert_local_indexed_binding,
 };
 
 const MAX_INLINE_WHILE_ITERS: usize = 128;
-
-type ProjectedRecordComponentEntry = (String, Reg, Option<Vec<i64>>, bool);
-
-fn projected_record_component_entry(
-    builder: &LowerBuilder<'_>,
-    key_text: &str,
-    reg: Reg,
-    source_prefix: &str,
-) -> Option<ProjectedRecordComponentEntry> {
-    let suffix = key_text.strip_prefix(source_prefix)?;
-    Some((
-        suffix.to_string(),
-        reg,
-        builder.local_binding_dims.get(key_text).cloned(),
-        builder.known_empty_local_arrays.contains(key_text),
-    ))
-}
 
 impl<'a> LowerBuilder<'a> {
     /// Returns `true` when lowering should stop due to `return`.
@@ -347,6 +330,7 @@ impl<'a> LowerBuilder<'a> {
         if let Some(start) = self
             .variable_starts
             .and_then(|starts| starts.get(key.as_str()))
+            .filter(|start| !start_metadata_refers_to_key(start, key.as_str()))
             && let Ok(value) = self.eval_compile_time_expr(start, const_scope)
         {
             return Ok(value);
@@ -744,68 +728,34 @@ impl<'a> LowerBuilder<'a> {
         args: &[rumoca_core::Expression],
         call_depth: usize,
     ) -> Result<bool, LowerError> {
-        if call_depth >= MAX_FUNCTION_INLINE_DEPTH {
-            return Ok(false);
-        }
-        let Some(function) = self.lookup_function(name).cloned() else {
-            return Ok(false);
-        };
-        if function.external.is_some() {
-            return Ok(false);
-        }
-        let [output] = function.outputs.as_slice() else {
+        let Some(materialized) = self.materialize_single_record_function_call_components(
+            name,
+            args,
+            caller_scope,
+            call_depth,
+        )?
+        else {
             return Ok(false);
         };
-        if output.type_class != Some(rumoca_core::ClassType::Record) {
-            return Ok(false);
-        }
-        self.ensure_pure_inline_function(name.as_str(), &function)?;
-
-        let (components, indexed_components) = self.with_local_lower_frame(|this| {
-            let bindings =
-                this.bind_function_inputs(name, &function.inputs, args, caller_scope, call_depth)?;
-            let mut function_scope = bindings.scope;
-            this.local_const_bindings.extend(bindings.const_bindings);
-            this.initialize_function_output_scope(&function, &mut function_scope, call_depth)?;
-            let _returned =
-                this.lower_statements(&function.body, &mut function_scope, call_depth + 1)?;
-            let source_prefix = format!("{}.", output.name);
-            let components = function_scope
-                .iter()
-                .into_iter()
-                .filter_map(|(key, reg)| {
-                    let key_text = key.as_str();
-                    projected_record_component_entry(this, key_text, reg, source_prefix.as_str())
-                })
-                .collect::<Vec<_>>();
-            let indexed_components = this
-                .local_indexed_bindings
-                .iter()
-                .filter_map(|(key, bindings)| {
-                    key.strip_prefix(source_prefix.as_str())
-                        .map(|suffix| (format!("{target}.{suffix}"), bindings.clone()))
-                })
-                .collect::<Vec<_>>();
-            Ok((components, indexed_components))
-        })?;
-        if components.is_empty() {
+        if materialized.components.is_empty() {
             return Err(LowerError::InvalidFunction {
-                name: output.name.clone(),
+                name: name.as_str().to_string(),
                 reason: "record function output had no assigned components".to_string(),
             });
         }
 
         self.clear_record_component_bindings(caller_scope, target);
-        for (suffix, reg, dims, known_empty) in components {
-            let target_key = format!("{target}.{suffix}");
-            caller_scope.insert(ComponentPath::from_flat_path(&target_key), reg);
-            if let Some(dims) = dims {
+        for component in materialized.components {
+            let target_key = format!("{target}.{}", component.suffix);
+            caller_scope.insert(ComponentPath::from_flat_path(&target_key), component.reg);
+            if let Some(dims) = component.dims {
                 self.local_binding_dims.insert(target_key.clone(), dims);
-                self.set_known_empty_local_array(&target_key, known_empty);
+                self.set_known_empty_local_array(&target_key, component.known_empty);
             }
         }
-        for (target_key, bindings) in indexed_components {
-            self.local_indexed_bindings.insert(target_key, bindings);
+        for (suffix, bindings) in materialized.indexed_components {
+            self.local_indexed_bindings
+                .insert(format!("{target}.{suffix}"), bindings);
         }
         Ok(true)
     }
@@ -1282,6 +1232,10 @@ impl<'a> LowerBuilder<'a> {
         }
         Ok(())
     }
+}
+
+fn start_metadata_refers_to_key(expr: &rumoca_core::Expression, key: &str) -> bool {
+    binding_base_key(expr).is_ok_and(|start_key| start_key == key)
 }
 
 fn is_control_flag(name: &ComponentPath) -> bool {

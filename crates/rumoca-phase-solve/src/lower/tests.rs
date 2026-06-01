@@ -1,6 +1,7 @@
 use super::{
     expression_rows::lower_expression_rows_with_mode, lower_derivative_rhs,
     lower_derivative_rhs_scalar_programs, lower_discrete_rhs, lower_expression,
+    lower_expression_rows_from_expressions_with_runtime_metadata,
     lower_initial_expression_rows_from_expressions, lower_initial_residual, lower_residual,
     lower_root_conditions, lower_runtime_assignment_rhs,
 };

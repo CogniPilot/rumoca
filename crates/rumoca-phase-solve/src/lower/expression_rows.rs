@@ -452,6 +452,9 @@ struct ScalarizedRecordField {
 }
 
 fn scalarized_record_fields(base: &str, layout: &VarLayout) -> Option<Vec<ScalarizedRecordField>> {
+    if layout.binding(base).is_some() && layout.shape(base).is_none() {
+        return None;
+    }
     let prefix = format!("{base}.");
     let mut fields = Vec::new();
     for name in layout.bindings().keys() {
@@ -1123,5 +1126,12 @@ mod tests {
         assert!(suffixes.contains(&"p"));
         assert!(suffixes.contains(&"v[index.with.dot]"));
         assert!(!suffixes.contains(&"nested.q"));
+    }
+
+    #[test]
+    fn scalarized_record_fields_ignore_scalar_binding_with_enum_alias_prefix() {
+        let layout = layout_with_bindings(&["Th", "Th.default"]);
+
+        assert!(scalarized_record_fields("Th", &layout).is_none());
     }
 }

@@ -9,7 +9,7 @@ use indexmap::IndexMap;
 use rumoca_core::{ExpressionRewriter, ExpressionVisitor};
 use rumoca_ir_dae::{self as dae, DaeVisitor};
 
-use crate::ToDaeError;
+use crate::{ToDaeError, reference_validation::build_enum_literal_query_set};
 
 /// Lower every `pre()` call in any DAE equation partition to a parameter
 /// reference. SPEC_0007 Stage 3 Contract: no `pre()` survives into f_x, f_z,
@@ -42,6 +42,7 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     collect_pre_targets_from_event_actions(&dae.events.event_actions, &mut pre_targets);
     collect_pre_targets_from_equations(&dae.initialization.equations, &mut pre_targets, true);
 
+    discard_enum_literal_pre_targets(dae, &mut pre_targets);
     resolve_pre_targets(dae, &mut pre_targets)?;
     let mut pre_params: IndexMap<rumoca_core::VarName, dae::Variable> = IndexMap::new();
 
@@ -337,6 +338,14 @@ fn insert_pre_target(
             require_discrete,
             allow_continuous_target,
         });
+}
+
+fn discard_enum_literal_pre_targets(
+    dae: &dae::Dae,
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+) {
+    let enum_literals = build_enum_literal_query_set(&dae.symbols.enum_literal_ordinals);
+    targets.retain(|name, _| !enum_literals.contains(name.as_str()));
 }
 
 fn resolve_pre_targets(

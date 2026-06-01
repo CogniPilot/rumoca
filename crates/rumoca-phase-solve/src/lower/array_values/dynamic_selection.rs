@@ -687,6 +687,16 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         }
         let Some(function) = self.lookup_function(name).cloned() else {
+            if let Some(closure) = self.lookup_function_closure(name).cloned() {
+                let reg = self.lower_function_closure_call(
+                    &closure,
+                    args,
+                    rumoca_core::Span::DUMMY,
+                    caller_scope,
+                    call_depth,
+                )?;
+                return Ok(Some(vec![reg]));
+            }
             return Ok(None);
         };
         if function.external.is_some() || function.outputs.is_empty() {
@@ -949,6 +959,13 @@ impl<'a> LowerBuilder<'a> {
                 }
             }
 
+            if !self.can_project_record_field_expression(value) {
+                match self.lower_statement_or_stop(statement, scope, call_depth)? {
+                    true => break,
+                    false => continue,
+                }
+            }
+
             let projected = projected_record_field_expression(value, field);
             let field_key = format!("{}.{}", output.name, field);
             let values = self.lower_array_like_values(&projected, scope, call_depth)?;
@@ -969,6 +986,42 @@ impl<'a> LowerBuilder<'a> {
         call_depth: usize,
     ) -> Result<bool, LowerError> {
         self.lower_statement(statement, scope, call_depth)
+    }
+
+    fn can_project_record_field_expression(&self, expr: &rumoca_core::Expression) -> bool {
+        match expr {
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                branches
+                    .iter()
+                    .all(|(_, branch)| self.can_project_record_field_expression(branch))
+                    && self.can_project_record_field_expression(else_branch)
+            }
+            rumoca_core::Expression::Array { elements, .. }
+            | rumoca_core::Expression::Tuple { elements, .. } => elements
+                .iter()
+                .all(|element| self.can_project_record_field_expression(element)),
+            rumoca_core::Expression::VarRef { .. }
+            | rumoca_core::Expression::FieldAccess { .. } => true,
+            rumoca_core::Expression::FunctionCall {
+                name,
+                is_constructor,
+                ..
+            } => {
+                self.is_record_constructor_call(name, *is_constructor)
+                    || self.lookup_function(name).is_some_and(|function| {
+                        matches!(
+                            function.outputs.as_slice(),
+                            [output]
+                                if output.type_class == Some(rumoca_core::ClassType::Record)
+                        )
+                    })
+            }
+            _ => false,
+        }
     }
 
     pub(in crate::lower) fn scoped_record_output_field_values(

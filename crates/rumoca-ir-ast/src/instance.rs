@@ -517,6 +517,8 @@ pub struct ClassOverride {
     pub target_def_id: DefId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_ref: Option<ComponentReference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modifier_args: Vec<Expression>,
 }
 
 pub type ClassOverrideMap = FastIndexMap<DefId, ClassOverride>;
@@ -533,7 +535,13 @@ impl ClassOverride {
             alias_def_id,
             target_def_id,
             target_ref,
+            modifier_args: Vec::new(),
         }
+    }
+
+    pub fn with_modifier_args(mut self, modifier_args: Vec<Expression>) -> Self {
+        self.modifier_args = modifier_args;
+        self
     }
 }
 

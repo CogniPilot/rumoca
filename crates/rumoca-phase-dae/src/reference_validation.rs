@@ -75,7 +75,7 @@ fn build_dae_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> Ha
     queries
 }
 
-fn build_enum_literal_query_set(ordinals: &IndexMap<String, i64>) -> HashSet<String> {
+pub(crate) fn build_enum_literal_query_set(ordinals: &IndexMap<String, i64>) -> HashSet<String> {
     let mut queries = HashSet::with_capacity(ordinals.len().saturating_mul(2));
     for literal in ordinals.keys() {
         queries.insert(literal.clone());

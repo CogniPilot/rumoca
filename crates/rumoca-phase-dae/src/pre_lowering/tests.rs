@@ -567,6 +567,66 @@ fn test_lower_pre_rejects_missing_target_variable() -> Result<(), ToDaeError> {
 }
 
 #[test]
+fn test_lower_pre_ignores_enum_literals_in_edge_relations() -> Result<(), ToDaeError> {
+    let mut dae = dae::Dae::new();
+    dae.variables.discrete_valued.insert(
+        rumoca_core::VarName::new("logic"),
+        discrete_valued_var("logic"),
+    );
+    dae.symbols.enum_literal_ordinals.insert(
+        "Modelica.Electrical.Digital.Interfaces.Logic.'1'".to_string(),
+        4,
+    );
+
+    let relation = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Eq,
+        lhs: Box::new(var_ref("logic")),
+        rhs: Box::new(var_ref("Modelica.Electrical.Digital.Interfaces.Logic.'1'")),
+        span: rumoca_core::Span::DUMMY,
+    };
+    dae.continuous.equations.push(dae::Equation::residual(
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Edge,
+            args: vec![relation],
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::default(),
+        "test".to_string(),
+    ));
+
+    lower_pre_operator(&mut dae)?;
+
+    assert!(
+        dae.variables
+            .parameters
+            .contains_key(&rumoca_core::VarName::new("__pre__.logic")),
+        "discrete variable should still get a pre parameter"
+    );
+    assert!(
+        !dae.variables
+            .parameters
+            .contains_key(&rumoca_core::VarName::new(
+                "__pre__.Modelica.Electrical.Digital.Interfaces.Logic.'1'"
+            )),
+        "enum literal must not get a pre parameter"
+    );
+    let rhs = format!("{:?}", dae.continuous.equations[0].rhs);
+    assert!(
+        !rhs.contains("BuiltinFunction::Pre"),
+        "pre operator should be fully lowered: {rhs}"
+    );
+    assert!(
+        rhs.contains("__pre__.logic"),
+        "missing pre logic ref: {rhs}"
+    );
+    assert!(
+        rhs.contains("Modelica.Electrical.Digital.Interfaces.Logic.'1'"),
+        "enum literal should remain as a symbol: {rhs}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_lower_pre_rejects_continuous_state_target() {
     let mut dae = dae::Dae::new();
     dae.variables

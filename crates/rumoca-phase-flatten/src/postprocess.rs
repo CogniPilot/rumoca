@@ -28,6 +28,10 @@ pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ct
     }
 }
 
+#[path = "postprocess_def_id.rs"]
+mod def_id;
+pub(crate) use def_id::canonicalize_varrefs_via_instantiated_def_ids;
+
 fn record_alias_rewrite_name(
     name: &str,
     ctx: &Context,

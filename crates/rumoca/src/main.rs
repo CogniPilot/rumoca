@@ -47,8 +47,9 @@ use miette::{
 };
 use rumoca::{CompilationResult, Compiler, CompilerError, DaeCompilationResult, TemplateIr};
 use rumoca_compile::{
+    codegen::{render_ast_template_with_name, render_flat_template_with_name},
     compile::core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap},
-    compile::{Dae, Session, SessionConfig},
+    compile::{Dae, FlatModel, ResolvedTree, Session, SessionConfig},
     project::{write_last_simulation_result_for_model, write_simulation_run},
 };
 use rumoca_sim::{SimOptions, SimSolverMode};
@@ -976,6 +977,17 @@ fn run_config_init() -> Result<()> {
 
 fn run_compile(args: CompileArgs) -> Result<()> {
     init_debug_tracing(&args.diagnostics)?;
+    if let Some(emit) = args.emit
+        && matches!(emit.phase(), CompilePhase::Ast | CompilePhase::Flat)
+    {
+        let (artifact, model) = compile_early_ir_with_inferred_model(
+            &args.input,
+            emit.phase(),
+            args.diagnostics.verbose,
+        )?;
+        return run_early_ir_dump(&artifact, &model, emit.is_json(), args.output);
+    }
+
     let (result, model) = compile_with_inferred_model(&args.input, args.diagnostics.verbose)?;
 
     // Structural / point inspection of the lowered model (shares the `sim
@@ -1021,6 +1033,36 @@ fn run_compile(args: CompileArgs) -> Result<()> {
     }
 }
 
+enum EarlyIrArtifact {
+    Ast(Box<ResolvedTree>),
+    Flat(Box<FlatModel>),
+}
+
+fn run_early_ir_dump(
+    artifact: &EarlyIrArtifact,
+    model: &str,
+    json: bool,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    let rendered = match (artifact, json) {
+        (EarlyIrArtifact::Ast(resolved), true) => serde_json::to_string_pretty(resolved.inner())?,
+        (EarlyIrArtifact::Ast(resolved), false) => {
+            render_early_ir_as_modelica_ast(resolved, model)?
+        }
+        (EarlyIrArtifact::Flat(flat), true) => serde_json::to_string_pretty(flat)?,
+        (EarlyIrArtifact::Flat(flat), false) => render_early_ir_as_modelica_flat(flat, model)?,
+    };
+    write_ir_dump(
+        &rendered,
+        match artifact {
+            EarlyIrArtifact::Ast(_) => CompilePhase::Ast,
+            EarlyIrArtifact::Flat(_) => CompilePhase::Flat,
+        },
+        json,
+        output,
+    )
+}
+
 /// Dump the IR at `phase` as JSON (`--json`) or Modelica (default) to `output`
 /// or stdout.
 fn run_ir_dump(
@@ -1036,6 +1078,15 @@ fn run_ir_dump(
         render_ir_as_modelica(result, model, phase)?
     };
 
+    write_ir_dump(&rendered, phase, json, output)
+}
+
+fn write_ir_dump(
+    rendered: &str,
+    phase: CompilePhase,
+    json: bool,
+    output: Option<PathBuf>,
+) -> Result<()> {
     match output {
         Some(path) => {
             // An --emit dump is a single file; catch `-o <dir>` with a friendly
@@ -1048,8 +1099,7 @@ fn run_ir_dump(
                     path.display()
                 );
             }
-            std::fs::write(&path, &rendered)
-                .with_context(|| format!("write {}", path.display()))?;
+            std::fs::write(&path, rendered).with_context(|| format!("write {}", path.display()))?;
             eprintln!(
                 "wrote {:?} IR ({}) to {}",
                 phase,
@@ -1065,6 +1115,26 @@ fn run_ir_dump(
         }
     }
     Ok(())
+}
+
+fn render_early_ir_as_modelica_ast(resolved: &ResolvedTree, model: &str) -> Result<String> {
+    let template = rumoca_compile::codegen::templates::builtin_template_source(
+        "modelica",
+        "modelica.mo.jinja",
+    )
+    .ok_or_else(|| anyhow::anyhow!("missing built-in modelica template"))?;
+    let model_identifier = model.replace('.', "_");
+    render_ast_template_with_name(resolved.inner(), template, &model_identifier).map_err(Into::into)
+}
+
+fn render_early_ir_as_modelica_flat(flat: &FlatModel, model: &str) -> Result<String> {
+    let template = rumoca_compile::codegen::templates::builtin_template_source(
+        "flat-modelica",
+        "flat_modelica.mo.jinja",
+    )
+    .ok_or_else(|| anyhow::anyhow!("missing built-in flat-modelica template"))?;
+    let model_identifier = model.replace('.', "_");
+    render_flat_template_with_name(flat, template, &model_identifier).map_err(Into::into)
 }
 
 /// Render the IR at `phase` back to equivalent Modelica via the built-in
@@ -1478,6 +1548,37 @@ fn compile_with_inferred_model(
     Ok((result, model))
 }
 
+fn compile_early_ir_with_inferred_model(
+    args: &ModelInputArgs,
+    phase: CompilePhase,
+    verbose: bool,
+) -> Result<(EarlyIrArtifact, String)> {
+    ensure_model_file_readable(&args.model_file)?;
+    let model = match &args.options.model {
+        Some(model) => model.clone(),
+        None => infer_model_name(&args.model_file)?,
+    };
+
+    let source_roots = merged_source_root_paths(&args.options.source_roots);
+
+    let compiler = Compiler::new()
+        .model(&model)
+        .verbose(verbose)
+        .source_roots(&source_roots);
+    let artifact = match phase {
+        CompilePhase::Ast => {
+            EarlyIrArtifact::Ast(Box::new(compiler.compile_file_ast(&args.model_file)?))
+        }
+        CompilePhase::Flat => {
+            EarlyIrArtifact::Flat(Box::new(compiler.compile_file_flat(&args.model_file)?))
+        }
+        CompilePhase::Dae | CompilePhase::Solve => {
+            bail!("internal error: early IR compile requested for {phase:?}")
+        }
+    };
+    Ok((artifact, model))
+}
+
 fn compile_dae_with_inferred_model(
     args: &ModelInputArgs,
     verbose: bool,
@@ -1868,43 +1969,8 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
     Ok(())
 }
 
-fn discover_workspace_root_for_model_file(model_file: &str) -> Option<PathBuf> {
-    let input_path = PathBuf::from(model_file);
-    let absolute = if input_path.is_absolute() {
-        input_path
-    } else {
-        std::env::current_dir().ok()?.join(input_path)
-    };
-    let start_dir = if absolute.is_dir() {
-        absolute
-    } else {
-        absolute.parent()?.to_path_buf()
-    };
-    for ancestor in start_dir.ancestors() {
-        if ancestor.join("modelica_dependencies.toml").is_file() {
-            return Some(ancestor.to_path_buf());
-        }
-    }
-    None
-}
-
-/// Generate a shell completion script directly from the clap command tree, so
-/// completions can never drift from the real command/flag set (no hand-
-/// maintained list to keep in sync — see the CLI review's completions finding).
-fn completion_script(shell: CompletionShell) -> String {
-    use clap::CommandFactory;
-
-    let shell = match shell {
-        CompletionShell::Bash => clap_complete::Shell::Bash,
-        CompletionShell::Zsh => clap_complete::Shell::Zsh,
-        CompletionShell::Fish => clap_complete::Shell::Fish,
-        CompletionShell::PowerShell => clap_complete::Shell::PowerShell,
-    };
-    let mut command = Cli::command();
-    let mut buffer = Vec::new();
-    clap_complete::generate(shell, &mut command, "rumoca", &mut buffer);
-    String::from_utf8(buffer).expect("clap_complete emits valid UTF-8")
-}
+mod main_helpers;
+use main_helpers::{completion_script, discover_workspace_root_for_model_file};
 
 #[cfg(test)]
 mod main_tests;
