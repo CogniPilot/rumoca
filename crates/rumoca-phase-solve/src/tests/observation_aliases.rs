@@ -398,7 +398,7 @@ fn solve_problem_orients_residual_aliases_away_from_residual_update_target() {
             .discrete
             .pre_modes
             .iter()
-            .any(|mode| matches!(mode, solve::DiscreteEventPreMode::Fixed)),
+            .any(|mode| matches!(mode, solve::DiscreteEventPreMode::EventEntry)),
         "MLS §16.4 previous(..) rows must keep tick left-limit pre values fixed"
     );
 }

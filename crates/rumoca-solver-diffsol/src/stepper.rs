@@ -6,8 +6,7 @@ use diffsol::{OdeSolverMethod, VectorHost};
 use rumoca_eval_solve::{self as solve_eval, SolveRuntime};
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    EventPreMode, SimOptions, implicit_residual_is_zero_through_interval,
-    timeline::event_right_limit_time,
+    SimOptions, implicit_residual_is_zero_through_interval, runtime_root_event_application_time,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -51,7 +50,7 @@ impl SimStepper {
         let runtime = SolveRuntime::new(model);
         let ode_model = OdeModel::new(model)?;
         let runtime_params = Rc::new(RefCell::new(model.parameters.clone()));
-        let initial_y = settled_initial_y(model, &ode_model, &opts, &runtime_params)?;
+        let initial_y = settled_initial_y(model, &runtime, &ode_model, &opts, &runtime_params)?;
         let ode_model = Arc::new(ode_model);
         let problem = build_ode_problem_with_runtime_params_and_initial(
             model,
@@ -98,8 +97,10 @@ impl SimStepper {
                 solver.state().y.as_slice().to_vec()
             };
             let ode_model = Arc::new(OdeModel::new(&reset_model)?);
+            let reset_runtime = SolveRuntime::new(&reset_model);
             let initial_y = settled_problem_y(
                 &reset_model,
+                &reset_runtime,
                 &ode_model,
                 &reset_opts,
                 &reset_params,
@@ -131,9 +132,20 @@ impl SimStepper {
             *reset_solver.borrow_mut() = rebuilt;
             Ok(())
         });
-        let project_fn = make_project_fn(Rc::clone(&solver), model, runtime_params.clone(), &opts)?;
-        let refresh_input_fn =
-            make_input_refresh_fn(Rc::clone(&solver), model, runtime_params.clone(), &opts)?;
+        let project_fn = make_project_fn(
+            Rc::clone(&solver),
+            model,
+            runtime.clone(),
+            runtime_params.clone(),
+            &opts,
+        )?;
+        let refresh_input_fn = make_input_refresh_fn(
+            Rc::clone(&solver),
+            model,
+            runtime.clone(),
+            runtime_params.clone(),
+            &opts,
+        )?;
 
         Ok(Self {
             _runtime_context: runtime_context,
@@ -185,7 +197,7 @@ impl SimStepper {
         let advance = (self.step_fn)(dt)?;
         if advance.hit_root {
             (self.project_fn)()?;
-            let reset_time = event_right_limit_time(self.time());
+            let reset_time = runtime_root_event_application_time(self.time(), f64::INFINITY);
             (self.reset_fn)(reset_time)?;
         }
         Ok(())
@@ -274,6 +286,7 @@ impl SimStepper {
 fn make_input_refresh_fn<Eqn, S>(
     solver: Rc<RefCell<S>>,
     model: &solve::SolveModel,
+    runtime: SolveRuntime,
     params: RuntimeParameters,
     opts: &SimOptions,
 ) -> Result<Box<dyn FnMut() -> Result<(), SimError>>, SimError>
@@ -284,11 +297,6 @@ where
 {
     let refresh_model = OdeModel::new(model)?;
     let state_count = model.state_scalar_count();
-    let relation_memory_indices = model
-        .problem
-        .solve_layout
-        .relation_memory_parameter_indices
-        .clone();
     let solve_model = model.clone();
     let tol = opts.atol.max(1.0e-10);
     Ok(Box::new(move || {
@@ -297,12 +305,12 @@ where
         let mut y = solver.state().y.as_slice().to_vec();
         let mut p = params.borrow().to_vec();
         settle_algebraics_and_relation_memory(
+            &runtime,
             &refresh_model,
             &mut y,
             &mut p,
             t,
             state_count,
-            &relation_memory_indices,
             tol,
         )?;
         let dy = bdf_derivative_guess(&solve_model, &refresh_model, &y, &p, t)?;
@@ -324,22 +332,8 @@ where
 {
     let step_model = OdeModel::new(model)?;
     let step_opts = opts.clone();
-    let state_count = model.state_scalar_count();
-    let relation_memory_indices = model
-        .problem
-        .solve_layout
-        .relation_memory_parameter_indices
-        .clone();
     Ok(Box::new(move |dt: f64| {
-        step_solver_by(
-            &solver,
-            &step_model,
-            &params,
-            &step_opts,
-            state_count,
-            &relation_memory_indices,
-            dt,
-        )
+        step_solver_by(&solver, &step_model, &params, &step_opts, dt)
     }))
 }
 
@@ -351,12 +345,14 @@ pub struct StepperState {
 
 fn settled_initial_y(
     model: &solve::SolveModel,
+    runtime: &SolveRuntime,
     ode_model: &OdeModel,
     opts: &rumoca_solver::SimOptions,
     runtime_params: &RuntimeParameters,
 ) -> Result<Vec<f64>, SimError> {
     settled_problem_y(
         model,
+        runtime,
         ode_model,
         opts,
         runtime_params,
@@ -367,6 +363,7 @@ fn settled_initial_y(
 
 fn settled_problem_y(
     model: &solve::SolveModel,
+    runtime: &SolveRuntime,
     ode_model: &OdeModel,
     opts: &rumoca_solver::SimOptions,
     runtime_params: &RuntimeParameters,
@@ -375,12 +372,12 @@ fn settled_problem_y(
 ) -> Result<Vec<f64>, SimError> {
     let mut params = runtime_params.borrow_mut();
     settle_algebraics_and_relation_memory(
+        runtime,
         ode_model,
         &mut y,
         params.as_mut_slice(),
         t_start,
         model.state_scalar_count(),
-        &model.problem.solve_layout.relation_memory_parameter_indices,
         opts.atol.max(1.0e-10),
     )?;
     Ok(y)
@@ -389,6 +386,7 @@ fn settled_problem_y(
 fn make_project_fn<Eqn, S>(
     solver: Rc<RefCell<S>>,
     model: &solve::SolveModel,
+    runtime: SolveRuntime,
     params: RuntimeParameters,
     opts: &SimOptions,
 ) -> Result<Box<dyn FnMut() -> Result<(), SimError>>, SimError>
@@ -400,20 +398,15 @@ where
     let project_model = OdeModel::new(model)?;
     let event_model = model.clone();
     let state_count = model.state_scalar_count();
-    let relation_memory_indices = model
-        .problem
-        .solve_layout
-        .relation_memory_parameter_indices
-        .clone();
     let tol = opts.atol.max(1.0e-10);
     Ok(Box::new(move || {
         project_stepper_algebraics(
             &solver,
             &event_model,
+            &runtime,
             &project_model,
             &params,
             state_count,
-            &relation_memory_indices,
             tol,
         )
     }))
@@ -421,11 +414,11 @@ where
 
 fn project_stepper_algebraics<Eqn, S>(
     solver: &Rc<RefCell<S>>,
-    solve_model: &solve::SolveModel,
+    _solve_model: &solve::SolveModel,
+    runtime: &SolveRuntime,
     model: &OdeModel,
     params: &RuntimeParameters,
     state_count: usize,
-    relation_memory_indices: &[usize],
     tol: f64,
 ) -> Result<(), SimError>
 where
@@ -439,23 +432,15 @@ where
     {
         let mut params = params.borrow_mut();
         settle_algebraics_and_relation_memory(
+            runtime,
             model,
             &mut y,
             params.as_mut_slice(),
             t,
             state_count,
-            relation_memory_indices,
             tol,
         )?;
-        apply_event_updates(
-            solve_model,
-            model,
-            &mut y,
-            params.as_mut_slice(),
-            t,
-            tol,
-            EventPreMode::FollowCurrent,
-        )?;
+        apply_event_updates(runtime, model, &mut y, params.as_mut_slice(), t, tol)?;
     }
     solver.state_mut().y.as_mut_slice().copy_from_slice(&y);
     let state = solver.state_clone();
@@ -468,8 +453,6 @@ fn step_solver_by<Eqn, S>(
     model: &OdeModel,
     params: &RuntimeParameters,
     opts: &SimOptions,
-    _state_count: usize,
-    _relation_memory_indices: &[usize],
     dt: f64,
 ) -> Result<StepAdvance, SimError>
 where

@@ -79,28 +79,6 @@ impl ScheduledTimeEvents {
     }
 }
 
-pub fn scheduled_event_times(
-    problem: &solve::SolveProblem,
-    current_t: f64,
-    target_t: f64,
-) -> Vec<f64> {
-    let mut events: Vec<f64> = problem
-        .events
-        .scheduled_time_events
-        .iter()
-        .copied()
-        .filter(|time| event_time_in_window(*time, current_t, target_t))
-        .collect();
-    events.extend(periodic_event_times(
-        &problem.clocks.periodic_event_schedules,
-        current_t,
-        target_t,
-    ));
-    events.sort_by(f64::total_cmp);
-    events.dedup_by(|a, b| sample_time_match_with_tol(*a, *b));
-    events
-}
-
 pub fn periodic_event_times(
     schedules: &[solve::PeriodicEventSchedule],
     current_t: f64,
@@ -161,18 +139,6 @@ pub fn periodic_schedule_matches_time(schedule: &solve::PeriodicEventSchedule, t
     }
     let ticks = (t - phase) / period;
     ticks >= 0.0 && sample_time_match_with_tol(ticks, ticks.round())
-}
-
-pub fn named_dynamic_time_event_values(
-    layout: &solve::SolveLayout,
-    params: &[f64],
-    event_names: &[String],
-) -> Vec<f64> {
-    event_names
-        .iter()
-        .filter_map(|name| runtime_parameter_index(layout, name))
-        .filter_map(|idx| params.get(idx).copied())
-        .collect()
 }
 
 pub fn runtime_parameter_index(layout: &solve::SolveLayout, name: &str) -> Option<usize> {

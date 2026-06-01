@@ -24,7 +24,9 @@ mod render_stmt;
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
     render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
+    render_optional_solve_slot_assign_c_function, render_solve_pre_param_binding_c_function,
     render_solve_row_c_function, render_solve_row_rust_function,
+    render_solve_slot_assign_c_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 
@@ -1058,6 +1060,18 @@ fn create_environment() -> Environment<'static> {
     env.add_function("render_event_indicator", render_event_indicator_function);
     env.add_function("render_solve_row_c", render_solve_row_c_function);
     env.add_function("render_solve_row_rust", render_solve_row_rust_function);
+    env.add_function(
+        "render_solve_slot_assign_c",
+        render_solve_slot_assign_c_function,
+    );
+    env.add_function(
+        "render_optional_solve_slot_assign_c",
+        render_optional_solve_slot_assign_c_function,
+    );
+    env.add_function(
+        "render_solve_pre_param_binding_c",
+        render_solve_pre_param_binding_c_function,
+    );
     env.add_function("render_matmul_c", render_matmul_c_function);
     env.add_function("render_matmul_mlir", render_matmul_mlir_function);
     env.add_function("render_linsolve_mlir", render_linsolve_mlir_function);
@@ -1659,5 +1673,7 @@ mod local_tests {
 
 #[cfg(test)]
 mod codegen_tests;
+#[cfg(test)]
+mod fmi_template_tests;
 #[cfg(test)]
 mod strict_render_tests;

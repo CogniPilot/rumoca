@@ -29,9 +29,11 @@ use serde::{Deserialize, Serialize};
 
 pub const DAE_SCHEMA_VERSION: u16 = 2;
 
+mod event_threshold;
 mod expr_query;
 mod types;
 pub mod visitor;
+pub use event_threshold::{is_event_constant_threshold, is_event_constant_time_threshold_relation};
 pub use expr_query::{
     DerivativeNameMatcher, complex_base_alias_match, embedded_subscripts_all_one,
     expr_contains_der_of, expr_contains_der_of_any, expr_contains_var, expr_refers_to_var,

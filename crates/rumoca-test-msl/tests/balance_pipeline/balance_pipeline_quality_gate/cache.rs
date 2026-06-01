@@ -8,6 +8,21 @@ pub(super) fn canonical_omc_version(version: &str) -> &str {
     version.trim()
 }
 
+pub(super) fn quality_gate_omc_version(version: &str) -> String {
+    let trimmed = version.trim();
+    let Some(version_suffix) = trimmed.strip_prefix("OpenModelica ") else {
+        return trimmed.to_string();
+    };
+    let release_len = version_suffix
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit() || *byte == b'.')
+        .count();
+    if release_len == 0 {
+        return trimmed.to_string();
+    }
+    format!("OpenModelica {}", &version_suffix[..release_len])
+}
+
 pub(super) fn fnv1a64_update(mut hash: u64, bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x00000100000001B3;

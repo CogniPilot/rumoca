@@ -792,7 +792,8 @@ fn solve_problem_accepts_lowered_pre_parameter_rows() {
         rhs: pre_var("aux"),
         span: Default::default(),
         // DAE lowering rewrites pre(aux) to a __pre__.aux parameter before
-        // Solve-IR lowering so the solver snapshots the event-entry value.
+        // Solve-IR lowering. The first event-iteration pass reads the event
+        // entry value; later passes read the previous fixed-point pass.
         origin: "digital gate previous auxiliary".to_string(),
         scalar_count: 1,
     });
@@ -803,6 +804,36 @@ fn solve_problem_accepts_lowered_pre_parameter_rows() {
     assert_eq!(
         problem.discrete.pre_modes,
         vec![solve::DiscreteEventPreMode::Fixed]
+    );
+}
+
+#[test]
+fn solve_problem_marks_clocked_target_pre_rows_as_event_entry() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["u", "y"] {
+        dae_model
+            .variables
+            .discrete_reals
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    dae_model.clocks.intervals.insert("y".to_string(), 0.1);
+    insert_pre_parameter(&mut dae_model, "u");
+    dae_model.discrete.real_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("y")),
+        rhs: pre_var("u"),
+        span: Default::default(),
+        // Clocked rows read the previous clock tick value for the whole tick;
+        // event iteration must not advance these pre slots within the tick.
+        origin: "clocked sample hold".to_string(),
+        scalar_count: 1,
+    });
+
+    let problem =
+        lower_solve_problem(&dae_model).expect("clocked pre update should lower to solve-IR");
+
+    assert_eq!(
+        problem.discrete.pre_modes,
+        vec![solve::DiscreteEventPreMode::EventEntry]
     );
 }
 
@@ -847,7 +878,8 @@ fn solve_problem_marks_condition_memory_pre_rows_as_fixed_pre() {
         },
         span: Default::default(),
         // MLS §8.6 / Appendix B: pre(c[i]) is relation memory from the
-        // event-entry left limit, not ordinary discrete feedback.
+        // previous event-iteration pass, with the event-entry value on the
+        // first pass.
         origin: "when condition memory read".to_string(),
         scalar_count: 1,
     });

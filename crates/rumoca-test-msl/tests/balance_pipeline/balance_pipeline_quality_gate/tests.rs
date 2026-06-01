@@ -211,6 +211,28 @@ fn quality_context_reports_omc_version_mismatch_for_pinned_baseline() {
 }
 
 #[test]
+fn quality_context_accepts_omc_package_rebuild_suffix_drift() {
+    let gate_input = gate_input_with_sim_rate(8, 10);
+    let mut baseline = baseline_quality_template();
+    baseline.omc_version = Some("OpenModelica 1.26.7~1-g2b913cc".to_string());
+    baseline.trace_accuracy_stats = Some(trace_accuracy_baseline());
+    let parity = MslParityGateInput {
+        total_models: Some(10),
+        omc_version: Some("OpenModelica 1.26.7~2-ge74480f".to_string()),
+        runtime_context: None,
+        runtime_ratio_stats: None,
+        trace_accuracy_stats: None,
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
+    };
+
+    assert_eq!(
+        msl_quality_context_mismatch_reason(gate_input, &baseline, Some(&parity)),
+        None
+    );
+}
+
+#[test]
 fn current_quality_snapshot_includes_pipeline_progression() {
     let mut summary = valid_summary_template();
     summary.total_models = 12;

@@ -85,6 +85,9 @@ pub struct Args {
     /// Balance results JSON used for target selection
     #[arg(long)]
     balance_results_file: Option<PathBuf>,
+    /// Directory for OMC reference output, trace reports, and intermediate work
+    #[arg(long)]
+    results_dir: Option<PathBuf>,
     /// Optional explicit model list JSON (array or object.model_names)
     #[arg(long)]
     target_models_file: Option<PathBuf>,
@@ -289,7 +292,12 @@ struct InitialConditionSummary {
 }
 
 pub fn run(args: Args) -> Result<()> {
-    let paths = MslPaths::current();
+    let paths = args
+        .results_dir
+        .as_deref()
+        .map_or_else(MslPaths::current, |dir| {
+            MslPaths::current().with_results_dir(dir)
+        });
     ensure_msl_available(&paths)?;
     // Warm OMC sessions are heavyweight (one omc process each), so size the pool
     // like the rumoca warm-worker stage: physical cores, with headroom reserved

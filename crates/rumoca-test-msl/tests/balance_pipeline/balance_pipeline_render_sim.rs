@@ -288,8 +288,8 @@ pub(super) struct RenderSimSetup {
 
 impl RenderSimSetup {
     fn new_from_compile_scope(compile_scope_names: &[String], run_simulation: bool) -> Self {
-        let dae_dir = get_msl_cache_dir().join("results").join("rumoca_dae");
-        let flat_dir = get_msl_cache_dir().join("results").join("rumoca_flat");
+        let dae_dir = msl_results_dir().join("rumoca_dae");
+        let flat_dir = msl_results_dir().join("rumoca_flat");
         let _ = fs::create_dir_all(&dae_dir);
         let _ = fs::create_dir_all(&flat_dir);
 

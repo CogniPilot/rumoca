@@ -105,8 +105,7 @@ fn trace_bdf_eval_counts() -> bool {
 }
 
 pub(crate) struct OdeModel {
-    pub(crate) runtime_assignment_rhs: solve::ScalarProgramBlock,
-    pub(crate) runtime_assignment_targets: Vec<solve::ScalarSlot>,
+    state_count: usize,
     implicit_rhs: PreparedComputeBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
     initial_residual: PreparedScalarProgramBlock,
@@ -123,6 +122,7 @@ pub(crate) struct OdeModel {
 impl OdeModel {
     pub(crate) fn new(model: &solve::SolveModel) -> Result<Self, SimError> {
         Ok(Self {
+            state_count: model.state_scalar_count(),
             implicit_rhs: PreparedComputeBlock::new_with_label(
                 &model.problem.continuous.implicit_rhs,
                 "ode_implicit_rhs",
@@ -141,14 +141,16 @@ impl OdeModel {
             root_conditions: PreparedScalarProgramBlock::new(
                 model.problem.events.root_conditions.clone(),
             ),
-            runtime_assignment_rhs: model.problem.discrete.runtime_assignment_rhs.clone(),
-            runtime_assignment_targets: model.problem.discrete.runtime_assignment_targets.clone(),
             implicit_targets: model.problem.continuous.implicit_row_targets.clone(),
             algebraic_projection_plan: model.problem.continuous.algebraic_projection_plan.clone(),
             solver_names: model.problem.solve_layout.solver_maps.names.clone(),
             external_tables: model.external_tables.clone(),
             runtime_state: solve_eval::SimulationRuntimeState::new(),
         })
+    }
+
+    pub(crate) fn state_count_for_projection(&self) -> usize {
+        self.state_count
     }
 
     pub(crate) fn eval_initial_residual(

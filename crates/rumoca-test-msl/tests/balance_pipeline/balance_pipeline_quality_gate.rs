@@ -41,10 +41,10 @@ pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 1;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
-pub(super) const MSL_QUALITY_CURRENT_FILE_REL: &str = "results/msl_quality_current.json";
-pub(super) const MSL_SIM_TARGETS_FILE_REL: &str = "results/msl_simulation_targets.json";
-pub(super) const OMC_PARITY_CACHE_DIR_REL: &str = "results/omc_parity_cache";
-pub(super) const OMC_SIM_REFERENCE_FILE_REL: &str = "results/omc_simulation_reference.json";
+pub(super) const MSL_QUALITY_CURRENT_FILE_REL: &str = "msl_quality_current.json";
+pub(super) const MSL_SIM_TARGETS_FILE_REL: &str = "msl_simulation_targets.json";
+pub(super) const OMC_PARITY_CACHE_DIR_REL: &str = "omc_parity_cache";
+pub(super) const OMC_SIM_REFERENCE_FILE_REL: &str = "omc_simulation_reference.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct MslDistributionStats {
@@ -334,15 +334,15 @@ pub(super) fn msl_quality_baseline_path() -> PathBuf {
 }
 
 pub(super) fn msl_quality_current_path() -> PathBuf {
-    get_msl_cache_dir().join(MSL_QUALITY_CURRENT_FILE_REL)
+    msl_results_dir().join(MSL_QUALITY_CURRENT_FILE_REL)
 }
 
 pub(super) fn msl_simulation_targets_path() -> PathBuf {
-    get_msl_cache_dir().join(MSL_SIM_TARGETS_FILE_REL)
+    msl_results_dir().join(MSL_SIM_TARGETS_FILE_REL)
 }
 
 pub(super) fn omc_parity_cache_dir() -> PathBuf {
-    get_msl_cache_dir().join(OMC_PARITY_CACHE_DIR_REL)
+    msl_results_dir().join(OMC_PARITY_CACHE_DIR_REL)
 }
 
 pub(super) fn load_msl_quality_baseline(path: &Path) -> io::Result<MslQualityBaseline> {
@@ -352,7 +352,7 @@ pub(super) fn load_msl_quality_baseline(path: &Path) -> io::Result<MslQualityBas
 }
 
 pub(super) fn omc_simulation_reference_path() -> PathBuf {
-    get_msl_cache_dir().join(OMC_SIM_REFERENCE_FILE_REL)
+    msl_results_dir().join(OMC_SIM_REFERENCE_FILE_REL)
 }
 
 pub(super) fn json_usize_field(root: &serde_json::Value, key: &str) -> Option<usize> {
@@ -851,6 +851,8 @@ fn run_simulation_parity_reference_command(
         "omc-simulation-reference".to_string(),
         "--target-models-file".to_string(),
         sim_targets_arg,
+        "--results-dir".to_string(),
+        msl_results_dir().to_string_lossy().to_string(),
         // CI restricts the OMC baseline to models rumoca already simulates to
         // keep the gate fast; local runs default to all targets so newly
         // passing models already have an OMC baseline.
@@ -1201,7 +1203,8 @@ pub(super) fn msl_quality_context_mismatch_reason(
     if let Some(baseline_omc_version) = baseline.omc_version.as_deref()
         && let Some(current_omc_version) =
             parity_input.and_then(|parity| parity.omc_version.as_deref())
-        && canonical_omc_version(baseline_omc_version) != canonical_omc_version(current_omc_version)
+        && quality_gate_omc_version(baseline_omc_version)
+            != quality_gate_omc_version(current_omc_version)
     {
         return Some(format!(
             "omc_version differs (baseline={}, current={})",

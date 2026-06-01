@@ -738,9 +738,6 @@ impl PreExpressionRewriter<'_> {
                 span,
             };
         };
-        if is_time_only_event_condition(arg, self.targets) {
-            return self.rewrite_expression(arg);
-        }
         if let Some(memory) = relation_memory_expr_for_condition(self.relation_memories, arg) {
             return rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::And,
@@ -753,8 +750,11 @@ impl PreExpressionRewriter<'_> {
                 span,
             };
         }
+        // A source `edge(relation)` that reaches this pass without condition
+        // memory must still keep Modelica edge semantics instead of becoming a
+        // level-sensitive relation.
         let current = self.rewrite_expression(arg);
-        let previous = rewrite_pre_expr_value(arg, self.targets);
+        let previous = rewrite_pre_expr_value(&current, self.targets);
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::And,
             lhs: Box::new(current),
@@ -828,96 +828,6 @@ fn relation_memory_pre_expr(
         function: rumoca_core::BuiltinFunction::Pre,
         args: vec![memory.clone()],
         span,
-    }
-}
-
-fn is_time_only_event_condition(
-    expr: &rumoca_core::Expression,
-    targets: &IndexMap<rumoca_core::VarName, PreTarget>,
-) -> bool {
-    expression_contains_time_relation(expr) && !expression_has_pre_target(expr, targets)
-}
-
-fn expression_contains_time_relation(expr: &rumoca_core::Expression) -> bool {
-    let mut checker = TimeRelationChecker {
-        contains_time_relation: false,
-    };
-    checker.visit_expression(expr);
-    checker.contains_time_relation
-}
-
-struct TimeRelationChecker {
-    contains_time_relation: bool,
-}
-
-impl ExpressionVisitor for TimeRelationChecker {
-    fn visit_binary(
-        &mut self,
-        op: &rumoca_core::OpBinary,
-        lhs: &rumoca_core::Expression,
-        rhs: &rumoca_core::Expression,
-    ) {
-        if op.is_relational()
-            && (expression_contains_time_ref(lhs) || expression_contains_time_ref(rhs))
-        {
-            self.contains_time_relation = true;
-            return;
-        }
-        self.visit_expression(lhs);
-        self.visit_expression(rhs);
-    }
-}
-
-fn expression_contains_time_ref(expr: &rumoca_core::Expression) -> bool {
-    let mut checker = TimeRefChecker {
-        contains_time: false,
-    };
-    checker.visit_expression(expr);
-    checker.contains_time
-}
-
-struct TimeRefChecker {
-    contains_time: bool,
-}
-
-impl ExpressionVisitor for TimeRefChecker {
-    fn visit_var_ref(
-        &mut self,
-        name: &rumoca_core::Reference,
-        subscripts: &[rumoca_core::Subscript],
-    ) {
-        if name.as_str() == "time" && subscripts.is_empty() {
-            self.contains_time = true;
-        }
-    }
-}
-
-fn expression_has_pre_target(
-    expr: &rumoca_core::Expression,
-    targets: &IndexMap<rumoca_core::VarName, PreTarget>,
-) -> bool {
-    let mut checker = PreTargetUseChecker {
-        targets,
-        has_pre_target: false,
-    };
-    checker.visit_expression(expr);
-    checker.has_pre_target
-}
-
-struct PreTargetUseChecker<'a> {
-    targets: &'a IndexMap<rumoca_core::VarName, PreTarget>,
-    has_pre_target: bool,
-}
-
-impl ExpressionVisitor for PreTargetUseChecker<'_> {
-    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
-        if let Some((name, _)) = pre_target_parts(expr)
-            && self.targets.contains_key(&name)
-        {
-            self.has_pre_target = true;
-            return;
-        }
-        self.walk_expression(expr);
     }
 }
 

@@ -28,10 +28,15 @@
 {% set symbols = target_symbols(dae.symbol_refs, c_symbol_policy) %}
 {% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d", "symbols": symbols} %}
 {% set solve_root_rows = solve.events.root_conditions.programs if solve is defined and solve.events is defined and solve.events.root_conditions is defined and solve.events.root_conditions.programs is defined else [] %}
+{% set solve_root_relation_memory_targets = solve.events.root_relation_memory_targets if solve is defined and solve.events is defined and solve.events.root_relation_memory_targets is defined else [] %}
+{% set solve_discrete_rows = solve.discrete.rhs.programs if solve is defined and solve.discrete is defined and solve.discrete.rhs is defined and solve.discrete.rhs.programs is defined else [] %}
+{% set solve_discrete_targets = solve.discrete.update_targets if solve is defined and solve.discrete is defined and solve.discrete.update_targets is defined else [] %}
+{% set solve_pre_param_bindings = solve.solve_layout.pre_param_bindings if solve is defined and solve.solve_layout is defined and solve.solve_layout.pre_param_bindings is defined else [] %}
 {% set solve_derivative_rows = solve.continuous.derivative_rhs.programs if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.programs is defined else [] %}
 {% set solve_derivative_nodes = solve_derivative_nodes if solve_derivative_nodes is defined else (solve.continuous.derivative_rhs.nodes if solve is defined and solve.continuous is defined and solve.continuous.derivative_rhs is defined and solve.continuous.derivative_rhs.nodes is defined else []) %}
 {% set solve_jacobian_rows = solve_jacobian_rows if solve_jacobian_rows is defined else (solve.artifacts.continuous.implicit_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.implicit_jacobian_v is defined and solve.artifacts.continuous.implicit_jacobian_v.programs is defined else (solve.artifacts.continuous.full_jacobian_v.programs if solve is defined and solve.artifacts is defined and solve.artifacts.continuous is defined and solve.artifacts.continuous.full_jacobian_v is defined and solve.artifacts.continuous.full_jacobian_v.programs is defined else [])) %}
 {% set solve_row_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})"} %}
+{% set solve_slot_assign_c_cfg = {"y_set": "__rumoca_solve_set_y(m, {}, {})", "p_set": "__rumoca_solve_set_p(m, {}, {})"} %}
 {% set solve_jacobian_c_cfg = {"time": "m->time", "y": "__rumoca_solve_y(m, {})", "p": "__rumoca_solve_p(m, {})", "seed": "seed[{}]"} %}
 
 /* pre(x) macro: maps pre(varname) to the pre_varname local alias */
@@ -403,6 +408,7 @@ typedef struct {
     ModelState   state;
     fmi3Boolean  dirty_values;
     fmi3Boolean  is_new_event_iteration;
+    fmi3Boolean  root_event_pending;
     fmi3String   instance_name;
     fmi3String   instantiation_token;
     fmi3Boolean  is_co_simulation;
@@ -450,6 +456,45 @@ static double __rumoca_solve_p(const ModelInstance* m, int index) {
     return 0.0;
 }
 
+static void __rumoca_solve_set_y(ModelInstance* m, int index, double value) {
+    if (index < N_STATES) {
+        m->x[index] = value;
+        return;
+    }
+    index -= N_STATES;
+    if (index < N_ALGEBRAICS) {
+        m->y[index] = value;
+        return;
+    }
+    index -= N_ALGEBRAICS;
+    if (index < N_OUTPUTS) {
+        m->w[index] = value;
+        return;
+    }
+}
+
+static void __rumoca_solve_set_p(ModelInstance* m, int index, double value) {
+    if (index < N_PARAMETERS) {
+        m->p[index] = value;
+        return;
+    }
+    index -= N_PARAMETERS;
+    if (index < N_INPUTS) {
+        m->u[index] = value;
+        return;
+    }
+    index -= N_INPUTS;
+    if (index < N_DISCRETE_REAL) {
+        m->z[index] = value;
+        return;
+    }
+    index -= N_DISCRETE_REAL;
+    if (index < N_DISCRETE_VAL) {
+        m->m[index] = value;
+        return;
+    }
+}
+
 /* Intermediate update callback type (FMI 3.0 §4.2.3) */
 typedef fmi3Status (*fmi3IntermediateUpdateCallback)(
     fmi3InstanceEnvironment instanceEnvironment,
@@ -479,6 +524,17 @@ static double event_right_limit_time(double event_time) {
     return stepped > adjacent ? stepped : adjacent;
 }
 
+static int event_indicator_crossed(double previous, double current) {
+    return (previous < 0.0 && current >= 0.0) || (previous > 0.0 && current <= 0.0);
+}
+
+static double root_relation_memory_value(double previous, double current) {
+    if (current < 0.0) return 1.0;
+    if (current > 0.0) return 0.0;
+    if (previous > 0.0) return 1.0;
+    return 0.0;
+}
+
 static int scheduled_time_event_active(double time) {
 {% if dae.scheduled_time_events | default([]) | length > 0 %}
     static const double scheduled_events[] = {
@@ -499,11 +555,21 @@ static int scheduled_time_event_active(double time) {
 
 static void compute_event_discrete_updates(ModelInstance* m) {
     double saved_time = m->time;
-    if (scheduled_time_event_active(m->time)) {
+    if (m->root_event_pending || scheduled_time_event_active(m->time)) {
         m->time = event_right_limit_time(m->time);
     }
     compute_discrete_updates(m);
     m->time = saved_time;
+}
+
+static void snapshot_pre_parameters(ModelInstance* m) {
+{% if solve_pre_param_bindings | length > 0 %}
+{% for binding in solve_pre_param_bindings %}
+    {{ render_solve_pre_param_binding_c(binding, solve_row_c_cfg, solve_slot_assign_c_cfg) }}
+{% endfor %}
+{% else %}
+    (void)m;
+{% endif %}
 }
 
 {#- Macro: check if a function has any record-typed parameters -#}
@@ -946,47 +1012,16 @@ static void compute_outputs(ModelInstance* m) {
 }
 
 /* =========================================================================
- * Compute discrete variable updates (f_z, f_m) — called in event mode
+ * Compute discrete variable updates from Solve IR — called in event mode
  * ========================================================================= */
 static void compute_discrete_updates(ModelInstance* m) {
-{% if dae.f_z | length > 0 or dae.f_m | length > 0 %}
-    const double t = m->time;
-    const double time = m->time;
-    (void)t; (void)time;
-
-{#- Unpack all variables needed for discrete equations (pre_ = current value for continuous vars) -#}
-{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
-{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
-{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
-{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
-{{ unpack_vars(dae.p, "m->p") }}
-{{ unpack_vars(dae.constants, "m->constants") }}
-{{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
-{{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
-
-    /* Discrete Real updates: z = f_z(v, c) (MLS B.1b) */
-{% for eq in dae.f_z %}
-{% set target = namespace(done=false) %}
-{% for name, var in dae.x | items %}
-{% if eq.lhs == name %}
-    m->x[{{ loop.index0 }}] = {{ render_expr(eq.rhs, cfg) }};  /* {{ eq.origin }} */
-{% set target.done = true %}
-{% endif %}
+{% if solve_discrete_rows | length > 0 %}
+    double __rumoca_discrete_values[{{ solve_discrete_rows | length }}];
+{% for row in solve_discrete_rows %}
+    __rumoca_discrete_values[{{ loop.index0 }}] = {{ render_solve_row_c(row, solve_row_c_cfg) }};
 {% endfor %}
-{% for name, var in dae.z | items %}
-{% if eq.lhs == name %}
-    m->z[{{ loop.index0 }}] = {{ render_expr(eq.rhs, cfg) }};  /* {{ eq.origin }} */
-{% set target.done = true %}
-{% endif %}
-{% endfor %}
-{% if not target.done %}
-    m->z[{{ loop.index0 }}] = {{ render_expr(eq.rhs, cfg) }};  /* {{ eq.origin }} */
-{% endif %}
-{% endfor %}
-
-    /* Discrete-valued updates: m := f_m(v, c) (MLS B.1c) */
-{% for eq in dae.f_m %}
-    m->m[{{ loop.index0 }}] = {{ render_expr(eq.rhs, cfg) }};  /* {{ eq.origin }} */
+{% for target in solve_discrete_targets %}
+    {{ render_solve_slot_assign_c(target, "__rumoca_discrete_values[" ~ loop.index0 ~ "]", solve_slot_assign_c_cfg) }}
 {% endfor %}
 {% else %}
     (void)m;
@@ -1350,9 +1385,11 @@ FMI3_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
     /* Seed pre-values from initialized discrete state before evaluating any initial discrete updates. */
     memcpy(m->pre_z, m->z, sizeof(m->z));
     memcpy(m->pre_m, m->m, sizeof(m->m));
+    snapshot_pre_parameters(m);
     compute_discrete_updates(m);
     memcpy(m->pre_z, m->z, sizeof(m->z));
     memcpy(m->pre_m, m->m, sizeof(m->m));
+    snapshot_pre_parameters(m);
 
     /* Compute initial derivatives and outputs */
     compute_derivatives(m);
@@ -1692,9 +1729,13 @@ FMI3_EXPORT fmi3Status fmi3UpdateDiscreteStates(
     /* Save pre-values before discrete update */
     memcpy(m->pre_z, m->z, sizeof(m->z));
     memcpy(m->pre_m, m->m, sizeof(m->m));
+    if (!m->root_event_pending) {
+        snapshot_pre_parameters(m);
+    }
 
     /* Evaluate discrete update equations */
     compute_event_discrete_updates(m);
+    m->root_event_pending = 0;
 
     *discreteStatesNeedUpdate = 0;
     *terminateSimulation = 0;
@@ -1787,12 +1828,22 @@ FMI3_EXPORT fmi3Status fmi3CompletedIntegratorStep(
 #if N_EVENT_INDICATORS > 0
     /* Check for zero-crossings in event indicators */
     compute_event_indicators(m);
+    int any_root_event = 0;
     for (int i = 0; i < N_EVENT_INDICATORS; i++) {
-        if (m->event_indicators[i] * m->event_indicators_prev[i] < 0.0) {
+        if (event_indicator_crossed(m->event_indicators_prev[i], m->event_indicators[i])) {
             *enterEventMode = 1;
-            break;
+            m->root_event_pending = 1;
+            any_root_event = 1;
         }
     }
+    if (any_root_event) {
+        snapshot_pre_parameters(m);
+    }
+{% for target in solve_root_relation_memory_targets %}
+    if (event_indicator_crossed(m->event_indicators_prev[{{ loop.index0 }}], m->event_indicators[{{ loop.index0 }}])) {
+        {{ render_optional_solve_slot_assign_c(target, "root_relation_memory_value(m->event_indicators_prev[" ~ loop.index0 ~ "], m->event_indicators[" ~ loop.index0 ~ "])", solve_slot_assign_c_cfg) }}
+    }
+{% endfor %}
     memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
 #else
     (void)m;

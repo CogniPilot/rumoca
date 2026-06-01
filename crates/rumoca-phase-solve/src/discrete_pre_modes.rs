@@ -6,17 +6,36 @@ pub(crate) fn discrete_pre_mode_for_equation(
     dae_model: &dae::Dae,
     eq: &dae::Equation,
 ) -> solve::DiscreteEventPreMode {
+    if clocked_target_reads_pre(dae_model, eq) || lowered_previous_origin_reads_pre(eq) {
+        return solve::DiscreteEventPreMode::EventEntry;
+    }
     // DAE lowering rewrites Modelica pre(..), edge(..), change(..), sample(..),
     // and previous(..) reads to explicit `__pre__.*` slots where needed. Those
-    // slots are event-entry snapshots; rows without such reads can follow the
-    // current fixed-point pass.
-    if expression_contains_event_entry_pre_operator(dae_model, &eq.rhs)
-        || lowered_previous_origin_reads_pre(eq)
-    {
+    // slots are fixed for one event-iteration pass; rows without such reads can
+    // follow the current fixed-point pass. Clocked previous(..) is event-entry
+    // history for the whole clock tick and is handled above.
+    if expression_contains_event_entry_pre_operator(dae_model, &eq.rhs) {
         solve::DiscreteEventPreMode::Fixed
     } else {
         solve::DiscreteEventPreMode::FollowCurrent
     }
+}
+
+fn clocked_target_reads_pre(dae_model: &dae::Dae, eq: &dae::Equation) -> bool {
+    let Some(lhs) = eq.lhs.as_ref() else {
+        return false;
+    };
+    target_has_clock_metadata(dae_model, lhs.as_str())
+        && expression_contains_event_entry_pre_operator(dae_model, &eq.rhs)
+}
+
+fn target_has_clock_metadata(dae_model: &dae::Dae, name: &str) -> bool {
+    dae_model.clocks.intervals.contains_key(name)
+        || dae_model.clocks.timings.contains_key(name)
+        || dae::component_base_name(name).is_some_and(|base| {
+            dae_model.clocks.intervals.contains_key(base.as_str())
+                || dae_model.clocks.timings.contains_key(base.as_str())
+        })
 }
 
 fn lowered_previous_origin_reads_pre(eq: &dae::Equation) -> bool {

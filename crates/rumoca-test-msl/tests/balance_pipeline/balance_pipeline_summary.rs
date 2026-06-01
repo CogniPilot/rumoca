@@ -203,12 +203,9 @@ pub(super) fn prepare_sim_trace_dirs(run_simulation: bool) {
         return;
     }
     for dir in [
-        get_msl_cache_dir()
-            .join("results")
-            .join("sim_traces")
-            .join("rumoca"),
-        get_msl_cache_dir().join("results").join("ir_dae"),
-        get_msl_cache_dir().join("results").join("ir_solve"),
+        msl_results_dir().join("sim_traces").join("rumoca"),
+        msl_results_dir().join("ir_dae"),
+        msl_results_dir().join("ir_solve"),
     ] {
         if dir.exists() {
             let _ = fs::remove_dir_all(&dir);

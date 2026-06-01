@@ -107,6 +107,22 @@ pub fn project_algebraics<M: AlgebraicProjectionModel>(
     )
 }
 
+pub fn project_algebraics_and_detect_changes<M: AlgebraicProjectionModel>(
+    model: &M,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    state_count: usize,
+    tol: f64,
+) -> Result<bool, RuntimeSolveError> {
+    let before = y.to_vec();
+    project_algebraics(model, y, p, t, state_count, tol)?;
+    Ok(before
+        .iter()
+        .zip(y.iter())
+        .any(|(old, new)| (old - new).abs() > tol))
+}
+
 fn project_algebraics_with_plan<M: AlgebraicProjectionModel>(
     model: &M,
     plan: &solve::AlgebraicProjectionPlan,

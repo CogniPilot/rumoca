@@ -89,17 +89,15 @@ fn discrete_equation_bucket_for_lhs(dae: &Dae, lhs: &VarName) -> Option<Discrete
     discrete_variable_equation_bucket_for_lhs(dae, lhs)
 }
 
-fn guarded_when_rhs(
-    dae: &Dae,
-    when_condition: &Expression,
+fn guarded_when_rhs_with_guard(
+    guard: &Expression,
     lhs: &VarName,
     rhs: &Expression,
     use_pre_else: bool,
 ) -> Expression {
-    let guard = when_guard_activation_expr(dae, when_condition);
     let else_expr = when_inactive_rhs(lhs, use_pre_else);
     Expression::If {
-        branches: vec![(guard, rhs.clone())],
+        branches: vec![(guard.clone(), rhs.clone())],
         else_branch: Box::new(else_expr),
         span: rumoca_core::Span::DUMMY,
     }
@@ -152,6 +150,7 @@ pub(super) fn route_discrete_event_equations(
         .event_actions
         .extend(when_clause.actions.iter().cloned());
     let when_condition = dae_to_flat_expression(&when_clause.condition);
+    let guard = when_guard_activation_expr(dae, &when_condition);
     for eq in &when_clause.equations {
         let Some(lhs) = &eq.lhs else {
             continue;
@@ -161,9 +160,8 @@ pub(super) fn route_discrete_event_equations(
         let use_pre_else = !eq.origin.starts_with("reinit");
         let guarded = rumoca_ir_dae::Equation::explicit_with_scalar_count(
             flat_to_dae_var_name(&lhs),
-            flat_to_dae_expression(&guarded_when_rhs(
-                dae,
-                &when_condition,
+            flat_to_dae_expression(&guarded_when_rhs_with_guard(
+                &guard,
                 &lhs,
                 &rhs,
                 use_pre_else,

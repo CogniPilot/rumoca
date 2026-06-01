@@ -260,6 +260,34 @@ fn expr_can_vary_during_simulation(expr: &rumoca_core::Expression, dae_model: &d
                 self.visit_subscript(subscript);
             }
         }
+
+        fn visit_builtin_call(
+            &mut self,
+            function: &rumoca_core::BuiltinFunction,
+            args: &[rumoca_core::Expression],
+        ) {
+            if matches!(function, rumoca_core::BuiltinFunction::Sample) {
+                self.varies = true;
+                return;
+            }
+            self.walk_builtin_call(function, args);
+        }
+
+        fn visit_function_call(
+            &mut self,
+            name: &rumoca_core::Reference,
+            args: &[rumoca_core::Expression],
+            is_constructor: bool,
+        ) {
+            if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+                || rumoca_core::source_temporal_function_short_name(name.as_str())
+                    .is_some_and(|short| short == "sample")
+            {
+                self.varies = true;
+                return;
+            }
+            self.walk_function_call(name, args, is_constructor);
+        }
     }
 
     let mut checker = SimulationVarianceChecker {
@@ -357,6 +385,25 @@ fn is_non_relation_condition(expr: &rumoca_core::Expression) -> bool {
             ..
         }
     )
+}
+
+fn is_condition_memory_candidate(expr: &rumoca_core::Expression) -> bool {
+    expr.contains_relational_operator() || is_sample_tick_condition(expr)
+}
+
+fn is_sample_tick_condition(expr: &rumoca_core::Expression) -> bool {
+    match expr {
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sample,
+            ..
+        } => true,
+        rumoca_core::Expression::FunctionCall { name, .. } => {
+            name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+                || rumoca_core::source_temporal_function_short_name(name.as_str())
+                    .is_some_and(|short| short == "sample")
+        }
+        _ => false,
+    }
 }
 
 fn c_var_ref(condition_name: &str, condition_index: usize, span: Span) -> rumoca_core::Expression {
@@ -515,7 +562,7 @@ impl ExpressionVisitor for ConditionCandidateCollector<'_> {
                 rumoca_core::BuiltinFunction::Edge | rumoca_core::BuiltinFunction::Change
             )
             && let Some(arg) = args.first()
-            && arg.contains_relational_operator()
+            && is_condition_memory_candidate(arg)
         {
             self.insert_candidate(arg.clone());
         }

@@ -35,7 +35,11 @@ pub enum EventActionOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventPreMode {
+    /// Use the pre snapshot captured at the start of the current event.
+    EventEntry,
+    /// Keep pre slots fixed within one event-iteration pass.
     Fixed,
+    /// Read the current fixed-point values while evaluating the row.
     FollowCurrent,
 }
 
@@ -48,6 +52,7 @@ pub struct RootCrossing {
 impl EventPreMode {
     pub fn merge(self, other: Self) -> Self {
         match (self, other) {
+            (Self::EventEntry, _) | (_, Self::EventEntry) => Self::EventEntry,
             (Self::Fixed, _) | (_, Self::Fixed) => Self::Fixed,
             (Self::FollowCurrent, Self::FollowCurrent) => Self::FollowCurrent,
         }
@@ -57,6 +62,7 @@ impl EventPreMode {
 impl From<solve::DiscreteEventPreMode> for EventPreMode {
     fn from(value: solve::DiscreteEventPreMode) -> Self {
         match value {
+            solve::DiscreteEventPreMode::EventEntry => Self::EventEntry,
             solve::DiscreteEventPreMode::Fixed => Self::Fixed,
             solve::DiscreteEventPreMode::FollowCurrent => Self::FollowCurrent,
         }
@@ -129,6 +135,46 @@ pub fn event_eval_params_for_pre_mode(
     let mut eval_p = base_p.to_vec();
     write_pre_params_from_sources(model, pre_y, pre_p, &mut eval_p, tol);
     eval_p
+}
+
+/// Candidate pre snapshots available while evaluating one event-iteration row.
+pub struct EventPreSources<'a> {
+    /// Snapshot captured at the start of the event.
+    pub event_pre_y: &'a [f64],
+    /// Parameter snapshot captured at the start of the event.
+    pub event_pre_p: &'a [f64],
+    /// Snapshot captured before the current event-iteration pass.
+    pub iter_pre_y: &'a [f64],
+    /// Parameter snapshot captured before the current event-iteration pass.
+    pub iter_pre_p: &'a [f64],
+    /// Zero-based event-iteration pass number.
+    pub event_iteration: usize,
+}
+
+pub fn event_eval_params_for_row_pre_mode(
+    model: &solve::SolveModel,
+    base_p: &[f64],
+    mode: EventPreMode,
+    sources: &EventPreSources<'_>,
+    tol: f64,
+) -> Vec<f64> {
+    let (pre_y, pre_p) = event_pre_sources_for_mode(mode, sources);
+    event_eval_params_for_pre_mode(model, base_p, pre_y, pre_p, tol)
+}
+
+fn event_pre_sources_for_mode<'a>(
+    mode: EventPreMode,
+    sources: &'a EventPreSources<'_>,
+) -> (&'a [f64], &'a [f64]) {
+    match mode {
+        EventPreMode::EventEntry => (sources.event_pre_y, sources.event_pre_p),
+        EventPreMode::Fixed if sources.event_iteration == 0 => {
+            (sources.event_pre_y, sources.event_pre_p)
+        }
+        EventPreMode::Fixed | EventPreMode::FollowCurrent => {
+            (sources.iter_pre_y, sources.iter_pre_p)
+        }
+    }
 }
 
 pub fn convert_variable_meta(meta: &[solve::SolveVariableMeta]) -> Vec<SimVariableMeta> {
