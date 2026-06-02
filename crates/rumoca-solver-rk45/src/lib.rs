@@ -1,9 +1,4 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    sync::atomic::{AtomicU64, Ordering},
-    time::Instant,
-};
+use std::{cell::RefCell, collections::HashMap, time::Instant};
 
 use rumoca_eval_solve::{EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime};
 use rumoca_ir_solve as solve;
@@ -16,15 +11,19 @@ use rumoca_solver::{
     root_crossings_with_relation_memory, root_value_crossed, runtime_event_horizon, timeline,
 };
 
+mod reset;
+mod trace;
+
+use reset::Rk45ResetSnapshot;
+use trace::{
+    record_derivative_eval_trace, record_root_eval_trace, reset_rk_eval_trace,
+    rk_eval_trace_enabled, trace_rk_eval_snapshot,
+};
+
 const MIN_STEP: f64 = 1.0e-12;
 const ROOT_BISECTION_ITERS: usize = 48;
 const UPDATE_MAX_ITERS: usize = 32;
 const ALGEBRAIC_REFRESH_TOL: f64 = 1.0e-10;
-
-static RK_DERIVATIVE_CALLS: AtomicU64 = AtomicU64::new(0);
-static RK_DERIVATIVE_NANOS: AtomicU64 = AtomicU64::new(0);
-static RK_ROOT_CALLS: AtomicU64 = AtomicU64::new(0);
-static RK_ROOT_NANOS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, thiserror::Error)]
 pub enum SimError {
@@ -61,51 +60,6 @@ impl From<TimeoutExceeded> for SimError {
     }
 }
 
-fn rk_eval_trace_enabled() -> bool {
-    tracing::enabled!(target: "rumoca_solver_rk45::eval", tracing::Level::DEBUG)
-}
-
-fn reset_rk_eval_trace() {
-    if !rk_eval_trace_enabled() {
-        return;
-    }
-    for counter in [
-        &RK_DERIVATIVE_CALLS,
-        &RK_DERIVATIVE_NANOS,
-        &RK_ROOT_CALLS,
-        &RK_ROOT_NANOS,
-    ] {
-        counter.store(0, Ordering::Relaxed);
-    }
-}
-
-fn trace_rk_eval_snapshot(label: &str) {
-    if !rk_eval_trace_enabled() {
-        return;
-    }
-    let derivative_calls = RK_DERIVATIVE_CALLS.load(Ordering::Relaxed);
-    let derivative_nanos = RK_DERIVATIVE_NANOS.load(Ordering::Relaxed);
-    let root_calls = RK_ROOT_CALLS.load(Ordering::Relaxed);
-    let root_nanos = RK_ROOT_NANOS.load(Ordering::Relaxed);
-    tracing::debug!(
-        target: "rumoca_solver_rk45::eval",
-        "{label}: derivatives={} ({:.3}ms) roots={} ({:.3}ms) total_eval={:.3}ms",
-        derivative_calls,
-        nanos_to_ms(derivative_nanos),
-        root_calls,
-        nanos_to_ms(root_nanos),
-        nanos_to_ms(derivative_nanos.saturating_add(root_nanos))
-    );
-}
-
-fn elapsed_nanos_u64(start: Instant) -> u64 {
-    start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
-}
-
-fn nanos_to_ms(nanos: u64) -> f64 {
-    nanos as f64 / 1.0e6
-}
-
 #[derive(Debug, Clone)]
 pub struct StepperState {
     pub time: f64,
@@ -115,6 +69,7 @@ pub struct StepperState {
 pub struct SimStepper {
     runtime: &'static SolveRuntime,
     backend: Rk45Backend<'static>,
+    reset_snapshot: Rk45ResetSnapshot,
     input_values: HashMap<String, f64>,
 }
 
@@ -128,9 +83,11 @@ impl SimStepper {
         let runtime = Box::leak(Box::new(SolveRuntime::new(model)));
         let mut backend = Rk45Backend::new(runtime, &opts)?;
         backend.init()?;
+        let reset_snapshot = backend.reset_snapshot();
         Ok(Self {
             runtime,
             backend,
+            reset_snapshot,
             input_values: HashMap::new(),
         })
     }
@@ -166,6 +123,13 @@ impl SimStepper {
         }
         let target = self.backend.time + dt;
         advance_backend_to(&mut self.backend, target)
+    }
+
+    pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+        self.input_values.clear();
+        self.backend
+            .reset_to_snapshot(&self.reset_snapshot, t_start);
+        Ok(())
     }
 
     pub fn time(&self) -> f64 {
@@ -479,8 +443,7 @@ impl<'a> Rk45Backend<'a> {
             )
             .map_err(Into::into);
         if let Some(start) = start {
-            RK_DERIVATIVE_CALLS.fetch_add(1, Ordering::Relaxed);
-            RK_DERIVATIVE_NANOS.fetch_add(elapsed_nanos_u64(start), Ordering::Relaxed);
+            record_derivative_eval_trace(start);
         }
         result
     }
@@ -835,8 +798,7 @@ impl<'a> Rk45Backend<'a> {
             })
             .map_err(Into::into);
         if let Some(start) = start {
-            RK_ROOT_CALLS.fetch_add(1, Ordering::Relaxed);
-            RK_ROOT_NANOS.fetch_add(elapsed_nanos_u64(start), Ordering::Relaxed);
+            record_root_eval_trace(start);
         }
         result
     }
@@ -1666,6 +1628,42 @@ mod tests {
         assert_eq!(outcome, StepUntilOutcome::StopReached);
         assert!((backend.read_state().t - 0.1).abs() <= 1.0e-12);
         assert!((backend.state[0] - 1.2).abs() <= 1.0e-6);
+    }
+
+    #[test]
+    fn rk45_stepper_reset_restores_cached_initial_state() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::LoadP { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
+        model.parameters = vec![0.0];
+        let mut stepper = SimStepper::new(
+            &model,
+            SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                dt: Some(0.01),
+                ..Default::default()
+            },
+        )
+        .expect("stepper should build");
+
+        stepper.set_input("u", 4.0).expect("input should exist");
+        stepper.step(0.1).expect("stepper should advance");
+        assert!(stepper.get("x").unwrap_or_default() > 1.1);
+
+        stepper
+            .reset(12.5)
+            .expect("reset should restore cached initial state");
+
+        assert!((stepper.time() - 12.5).abs() <= 1.0e-12);
+        assert!((stepper.get("x").unwrap_or_default() - 1.0).abs() <= 1.0e-12);
+        assert_eq!(
+            stepper.get("u"),
+            None,
+            "reset should clear stale input overrides"
+        );
     }
 
     #[test]

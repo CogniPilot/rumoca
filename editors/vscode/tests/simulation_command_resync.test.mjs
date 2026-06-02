@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const extensionSourcePath = path.join(testDir, "..", "src", "extension.ts");
+const simulateCommandStartPattern =
+  "const simulateCommand = vscode.commands.registerCommand('rumoca.simulateModel', async (resource?: vscode.Uri) => {";
 
 function readExtensionSource() {
   return fs.readFileSync(extensionSourcePath, "utf8");
@@ -22,7 +24,7 @@ function sliceFrom(source, startPattern, endPattern) {
 test("simulate command has no sidecar resync dependency before starting the run", () => {
   const simulateCommandBlock = sliceFrom(
     readExtensionSource(),
-    "const simulateCommand = vscode.commands.registerCommand('rumoca.simulateModel', async () => {",
+    simulateCommandStartPattern,
     "context.subscriptions.push(simulateCommand);",
   );
 
@@ -42,7 +44,7 @@ test("simulate command publishes failures to Problems diagnostics", () => {
   const source = readExtensionSource();
   const simulateCommandBlock = sliceFrom(
     source,
-    "const simulateCommand = vscode.commands.registerCommand('rumoca.simulateModel', async () => {",
+    simulateCommandStartPattern,
     "context.subscriptions.push(simulateCommand);",
   );
 
@@ -103,6 +105,71 @@ test("interactive viewer launch waits for runner ready output", () => {
   );
 });
 
+test("interactive viewer launch does not pass unsupported port flags", () => {
+  const source = readExtensionSource();
+  const startInteractiveScenarioBlock = sliceFrom(
+    source,
+    "const startInteractiveScenario = async (",
+    "const wireResultsPanelMessageHandling = (panel: vscode.WebviewPanel) => {",
+  );
+
+  assert.equal(
+    startInteractiveScenarioBlock.includes("--http-port"),
+    false,
+    "rumoca sim --config reads HTTP transport from the scenario file",
+  );
+  assert.equal(
+    startInteractiveScenarioBlock.includes("--ws-port"),
+    false,
+    "rumoca sim --config reads WebSocket transport from the scenario file",
+  );
+  assert.equal(
+    startInteractiveScenarioBlock.includes("document.uri.fsPath"),
+    true,
+    "interactive runs should still launch the selected scenario config",
+  );
+});
+
+test("interactive viewer launch reports actionable process failures", () => {
+  const source = readExtensionSource();
+  const startInteractiveScenarioBlock = sliceFrom(
+    source,
+    "const startInteractiveScenario = async (",
+    "const wireResultsPanelMessageHandling = (panel: vscode.WebviewPanel) => {",
+  );
+
+  assert.equal(
+    source.includes("function summarizeInteractiveFailure("),
+    true,
+    "interactive process output should be summarized before showing failure messages",
+  );
+  assert.equal(
+    source.includes("Address already in use"),
+    true,
+    "port conflicts should be recognized as a first-class interactive failure",
+  );
+  assert.equal(
+    source.includes("source-root path does not exist"),
+    true,
+    "missing Modelica dependency roots should be recognized as a first-class interactive failure",
+  );
+  assert.equal(
+    startInteractiveScenarioBlock.includes("rememberInteractiveOutput(recentOutputLines, text);"),
+    true,
+    "interactive runs should keep recent output for failure messages",
+  );
+  assert.equal(
+    startInteractiveScenarioBlock.includes("setSimulationDiagnostic(document, model, message);"),
+    true,
+    "interactive run failures should be published to Problems diagnostics",
+  );
+  assert.equal(
+    startInteractiveScenarioBlock.includes("closeEmitter.fire(0);"),
+    true,
+    "normal rumoca process exits should avoid VS Code's misleading terminal-launch failure toast",
+  );
+});
+
 test("viewer prefer_external controls embedded versus browser presentation", () => {
   const source = readExtensionSource();
   const startInteractiveScenarioBlock = sliceFrom(
@@ -112,7 +179,7 @@ test("viewer prefer_external controls embedded versus browser presentation", () 
   );
   const simulateCommandBlock = sliceFrom(
     source,
-    "const simulateCommand = vscode.commands.registerCommand('rumoca.simulateModel', async () => {",
+    simulateCommandStartPattern,
     "context.subscriptions.push(simulateCommand);",
   );
 
@@ -140,5 +207,35 @@ test("viewer prefer_external controls embedded versus browser presentation", () 
     simulateCommandBlock.includes("openResultsPanelForRun("),
     true,
     "batch plotting should still default to the embedded VS Code results panel",
+  );
+});
+
+test("scenario toolbar commands honor the menu resource URI", () => {
+  const source = readExtensionSource();
+  const simulateCommandBlock = sliceFrom(
+    source,
+    simulateCommandStartPattern,
+    "context.subscriptions.push(simulateCommand);",
+  );
+  const simulationSettingsCommandBlock = sliceFrom(
+    source,
+    "const simulationSettingsCommand = vscode.commands.registerCommand(",
+    "context.subscriptions.push(simulationSettingsCommand);",
+  );
+
+  assert.equal(
+    source.includes("async function scenarioDocumentFromCommandResource("),
+    true,
+    "extension should resolve a scenario document from the editor title resource URI",
+  );
+  assert.equal(
+    simulateCommandBlock.includes("scenarioDocumentFromCommandResource(resource)"),
+    true,
+    "run command should use the menu resource URI before falling back to the active editor",
+  );
+  assert.equal(
+    simulationSettingsCommandBlock.includes("scenarioDocumentFromCommandResource(resource)"),
+    true,
+    "settings command should use the menu resource URI before falling back to the active editor",
   );
 });

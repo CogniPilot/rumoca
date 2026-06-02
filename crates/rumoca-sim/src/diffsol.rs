@@ -170,6 +170,10 @@ impl SimStepper {
         self.inner.step(dt)
     }
 
+    pub(crate) fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+        self.inner.reset(t_start)
+    }
+
     pub(crate) fn time(&self) -> f64 {
         self.inner.time()
     }
@@ -207,6 +211,10 @@ impl InteractiveStepper for SimStepper {
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, Self::Error> {
         Self::new(dae_model, opts)
+    }
+
+    fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
+        Self::reset(self, t_start)
     }
 
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error> {

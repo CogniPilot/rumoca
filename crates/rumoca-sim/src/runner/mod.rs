@@ -232,9 +232,6 @@ pub fn run(args: SimArgs) -> std::result::Result<(), RunnerError> {
         &mut stepper,
         executor::SimLoopArgs {
             cfg: &args.config,
-            model_source: &args.model_source,
-            model_name: &args.model_name,
-            source_roots: &args.source_roots,
             http_port: args.http_port,
             ws_port: args.ws_port,
             debug: args.debug,
