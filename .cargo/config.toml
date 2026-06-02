@@ -13,9 +13,9 @@ rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 
 [alias]
 # cargo-xtask convention: `cargo xtask <SUBCOMMAND>` runs the developer tooling.
-xtask = "run --quiet --package xtask --bin xtask --"
+xtask = "run --package xtask --bin xtask --"
 # Dev-iteration shortcut for the product CLI: `cargo rumoca <ARGS>` builds and
 # runs the rumoca binary from source (debug). For real use, install/build the
 # release binary instead. Args after `rumoca` go straight to the binary, so
 # build flags like `--release` cannot be passed through this alias.
-rumoca = "run --quiet --package rumoca --bin rumoca --"
+rumoca = "run --package rumoca --bin rumoca --"
