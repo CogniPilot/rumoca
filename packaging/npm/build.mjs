@@ -126,6 +126,13 @@ const copyEditorWorkers = async (pkgDir) => {
   );
 };
 
+const copyPackageReadme = async (pkgDir) => {
+  await fs.copyFile(
+    path.join(repoRoot, "packaging", "npm", "README.md"),
+    path.join(pkgDir, "README.md"),
+  );
+};
+
 const utcTimestamp = () => {
   const iso = new Date().toISOString(); // 2026-04-30T20:10:55.123Z
   return iso.replaceAll(":", "").replaceAll("-", "").replace(".", "").replace("T", "-").replace("Z", "Z");
@@ -186,6 +193,7 @@ const main = async () => {
 
     run("wasm-pack", wasmPackArgs, { env });
     await copyEditorWorkers(pkgDir);
+    await copyPackageReadme(pkgDir);
     await fs.writeFile(
       path.join(pkgDir, "rumoca_package_meta.json"),
       `${JSON.stringify({ packageBuiltTimeUtc: nowUtc }, null, 2)}\n`,
