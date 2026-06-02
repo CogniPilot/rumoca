@@ -242,6 +242,8 @@ jobs:
 
       - name: Run tests (Linux monitored)
         if: runner.os == 'Linux'
+        env:
+          REQUIRE_MSL_FMT_DRIFT: "1"
         shell: bash
         run: |
           set -euo pipefail
@@ -262,6 +264,8 @@ jobs:
 
       - name: Run tests
         if: runner.os != 'Linux'
+        env:
+          REQUIRE_MSL_FMT_DRIFT: "1"
         run: cargo xtask verify workspace
 
       - name: Build all binaries

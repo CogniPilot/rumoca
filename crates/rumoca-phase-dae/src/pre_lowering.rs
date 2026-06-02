@@ -82,6 +82,7 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
             unit: None,
             state_select: rumoca_core::StateSelect::Default,
             description: Some(format!("pre() of {}", target.source_name.as_str())),
+            causality: dae::VariableCausality::CalculatedParameter,
             is_tunable: false,
         };
         pre_params.insert(pre_param_name, pre_var);

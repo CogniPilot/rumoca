@@ -13,7 +13,9 @@ mod tests;
 pub use query::{collect_component_refs, contains_component_ref, contains_function_call};
 pub use read_only::{
     ComponentReferenceContext, ExpressionContext, FunctionCallContext, NameContext,
-    SubscriptContext, TypeNameContext, VisitScope, Visitor, walk_equation_default,
-    walk_expr_function_call_ctx_default, walk_expression_default, walk_statement_default,
+    SubscriptContext, TypeNameContext, VisitScope, Visitor, walk_class_def_default,
+    walk_component_default, walk_component_reference_default, walk_equation_default,
+    walk_expr_function_call_ctx_default, walk_expression_default, walk_extend_default,
+    walk_statement_default,
 };
 pub use rewrite::ExpressionTransformer;

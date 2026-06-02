@@ -1128,9 +1128,9 @@ mod tests {
 
     #[test]
     fn test_format_valid() {
-        let formatted = format_source("model M Real x; end M;", None).expect("format");
-        assert!(formatted.contains("model M"));
-        assert!(formatted.ends_with('\n'));
+        let source = "model M Real x; end M;";
+        let formatted = format_source(source, None).expect("format");
+        assert_eq!(formatted, "model M Real x; end M;\n");
     }
 
     #[test]

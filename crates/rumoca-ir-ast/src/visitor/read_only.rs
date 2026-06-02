@@ -90,6 +90,7 @@ pub fn walk_expr_function_call_ctx_default<V: Visitor + ?Sized>(
     args: &[Expression],
     ctx: FunctionCallContext,
 ) -> ControlFlow<()> {
+    visitor.enter_expr_function_call(comp, args, ctx)?;
     if matches!(ctx, FunctionCallContext::Expression) {
         visitor.visit_component_reference_ctx(
             comp,
@@ -99,11 +100,29 @@ pub fn walk_expr_function_call_ctx_default<V: Visitor + ?Sized>(
     visitor.visit_expr_function_call(comp, args)
 }
 
+/// Default recursion for a component reference.
+pub fn walk_component_reference_default<V: Visitor + ?Sized>(
+    visitor: &mut V,
+    cr: &ComponentReference,
+) -> ControlFlow<()> {
+    visitor.enter_component_reference(cr)?;
+    for part in &cr.parts {
+        let Some(subs) = &part.subs else {
+            continue;
+        };
+        for subscript in subs {
+            visitor.visit_subscript_ctx(subscript, SubscriptContext::ComponentReferencePart)?;
+        }
+    }
+    Continue(())
+}
+
 /// Default recursion for an expression node.
 pub fn walk_expression_default<V: Visitor + ?Sized>(
     visitor: &mut V,
     expr: &Expression,
 ) -> ControlFlow<()> {
+    visitor.enter_expression(expr)?;
     match expr {
         Expression::Empty { .. } | Expression::Terminal { .. } => Continue(()),
         Expression::Range {
@@ -246,6 +265,102 @@ pub fn walk_statement_default<V: Visitor + ?Sized>(
     }
 }
 
+/// Default recursion for a component declaration.
+pub fn walk_component_default<V: Visitor + ?Sized>(
+    visitor: &mut V,
+    comp: &Component,
+) -> ControlFlow<()> {
+    visitor.enter_component(comp)?;
+    visitor.visit_type_name(&comp.type_name, TypeNameContext::ComponentType)?;
+    if let Some(constrainedby) = &comp.constrainedby {
+        visitor.visit_type_name(constrainedby, TypeNameContext::ComponentConstrainedBy)?;
+    }
+    for subscript in &comp.shape_expr {
+        visitor.visit_subscript_ctx(subscript, SubscriptContext::ComponentShape)?;
+    }
+    if !matches!(comp.start, Expression::Empty { .. }) {
+        visitor.visit_expression_ctx(&comp.start, ExpressionContext::ComponentStart)?;
+    }
+    if let Some(binding) = &comp.binding {
+        visitor.visit_expression_ctx(binding, ExpressionContext::ComponentBinding)?;
+    }
+    if comp.source_modifications.is_empty() {
+        for (_, mod_expr) in &comp.modifications {
+            visitor.visit_expression_ctx(mod_expr, ExpressionContext::ComponentModification)?;
+        }
+    } else {
+        for source_modification in &comp.source_modifications {
+            visitor.visit_expression_ctx(
+                source_modification,
+                ExpressionContext::ComponentModification,
+            )?;
+        }
+    }
+    if let Some(cond) = &comp.condition {
+        visitor.visit_expression_ctx(cond, ExpressionContext::ComponentCondition)?;
+    }
+    for annotation in &comp.annotation {
+        visitor.visit_expression_ctx(annotation, ExpressionContext::ComponentAnnotation)?;
+    }
+    Continue(())
+}
+
+/// Default recursion for an extends clause.
+pub fn walk_extend_default<V: Visitor + ?Sized>(visitor: &mut V, ext: &Extend) -> ControlFlow<()> {
+    visitor.enter_extend(ext)?;
+    visitor.visit_type_name(&ext.base_name, TypeNameContext::ExtendsBase)?;
+    for modification in &ext.modifications {
+        visitor.visit_expression_ctx(&modification.expr, ExpressionContext::ExtendModification)?;
+    }
+    for annotation in &ext.annotation {
+        visitor.visit_expression_ctx(annotation, ExpressionContext::ExtendAnnotation)?;
+    }
+    Continue(())
+}
+
+/// Default recursion for a class definition.
+pub fn walk_class_def_default<V: Visitor + ?Sized>(
+    visitor: &mut V,
+    class: &ClassDef,
+) -> ControlFlow<()> {
+    visitor.enter_class_def(class)?;
+    visitor.enter_scope(VisitScope::Class(class))?;
+    let result = (|| {
+        if let Some(constrainedby) = &class.constrainedby {
+            visitor.visit_type_name(constrainedby, TypeNameContext::ClassConstrainedBy)?;
+        }
+        for ext in &class.extends {
+            visitor.visit_extend(ext)?;
+        }
+        visitor.visit_each(&class.imports, V::visit_import)?;
+        for subscript in &class.array_subscripts {
+            visitor.visit_subscript_ctx(subscript, SubscriptContext::ClassArraySubscript)?;
+        }
+        for (_, nested) in &class.classes {
+            visitor.visit_class_def(nested)?;
+        }
+        for (_, comp) in &class.components {
+            visitor.visit_component(comp)?;
+        }
+        visitor.visit_each(&class.equations, V::visit_equation)?;
+        visitor.visit_each(&class.initial_equations, V::visit_equation)?;
+        for section in &class.algorithms {
+            visitor.visit_each(section, V::visit_statement)?;
+        }
+        for section in &class.initial_algorithms {
+            visitor.visit_each(section, V::visit_statement)?;
+        }
+        for annotation in &class.annotation {
+            visitor.visit_expression_ctx(annotation, ExpressionContext::ClassAnnotation)?;
+        }
+        if let Some(external) = &class.external {
+            visitor.visit_external_function(external)?;
+        }
+        Continue(())
+    })();
+    finish_scope(result, visitor.exit_scope(VisitScope::Class(class)))
+}
+
 /// Trait for visiting AST nodes without modification.
 ///
 /// All methods return `ControlFlow<()>`:
@@ -332,6 +447,94 @@ pub trait Visitor {
         Continue(())
     }
 
+    fn enter_class_def(&mut self, _class: &ClassDef) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_import(&mut self, _import: &Import) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_extend(&mut self, _ext: &Extend) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_component(&mut self, _comp: &Component) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_expression(&mut self, _expr: &Expression) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_component_reference(&mut self, _cr: &ComponentReference) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_expr_function_call(
+        &mut self,
+        _comp: &ComponentReference,
+        _args: &[Expression],
+        _ctx: FunctionCallContext,
+    ) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_simple_equation(&mut self, _lhs: &Expression, _rhs: &Expression) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_connect(
+        &mut self,
+        _lhs: &ComponentReference,
+        _rhs: &ComponentReference,
+    ) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_for_index(&mut self, _idx: &ForIndex) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_assignment(
+        &mut self,
+        _comp: &ComponentReference,
+        _value: &Expression,
+    ) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_statement_function_call(
+        &mut self,
+        _comp: &ComponentReference,
+        _args: &[Expression],
+        _outputs: &[Expression],
+    ) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_external_function(&mut self, _external: &ExternalFunction) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_equation_assert(
+        &mut self,
+        _condition: &Expression,
+        _message: &Expression,
+        _level: Option<&Expression>,
+    ) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    fn enter_statement_assert(
+        &mut self,
+        _condition: &Expression,
+        _message: &Expression,
+        _level: Option<&Expression>,
+    ) -> ControlFlow<()> {
+        Continue(())
+    }
+
     // =========================================================================
     // Expression methods
     // =========================================================================
@@ -343,15 +546,7 @@ pub trait Visitor {
 
     /// Visit a component reference.
     fn visit_component_reference(&mut self, cr: &ComponentReference) -> ControlFlow<()> {
-        for part in &cr.parts {
-            let Some(subs) = &part.subs else {
-                continue;
-            };
-            for subscript in subs {
-                self.visit_subscript_ctx(subscript, SubscriptContext::ComponentReferencePart)?;
-            }
-        }
-        Continue(())
+        walk_component_reference_default(self, cr)
     }
 
     /// Visit a function call in expression context.
@@ -373,6 +568,7 @@ pub trait Visitor {
 
     /// Visit a for-loop index.
     fn visit_for_index(&mut self, idx: &ForIndex) -> ControlFlow<()> {
+        self.enter_for_index(idx)?;
         self.visit_expression(&idx.range)
     }
 
@@ -387,6 +583,7 @@ pub trait Visitor {
 
     /// Visit a simple equation: lhs = rhs
     fn visit_simple_equation(&mut self, lhs: &Expression, rhs: &Expression) -> ControlFlow<()> {
+        self.enter_simple_equation(lhs, rhs)?;
         self.visit_expression(lhs)?;
         self.visit_expression(rhs)
     }
@@ -397,6 +594,7 @@ pub trait Visitor {
         lhs: &ComponentReference,
         rhs: &ComponentReference,
     ) -> ControlFlow<()> {
+        self.enter_connect(lhs, rhs)?;
         self.visit_component_reference_ctx(lhs, ComponentReferenceContext::EquationConnectLhs)?;
         self.visit_component_reference_ctx(rhs, ComponentReferenceContext::EquationConnectRhs)
     }
@@ -451,6 +649,7 @@ pub trait Visitor {
         message: &Expression,
         level: Option<&Expression>,
     ) -> ControlFlow<()> {
+        self.enter_equation_assert(condition, message, level)?;
         self.visit_expression_ctx(condition, ExpressionContext::EquationAssertCondition)?;
         self.visit_expression_ctx(message, ExpressionContext::EquationAssertMessage)?;
         if let Some(lvl) = level {
@@ -480,6 +679,7 @@ pub trait Visitor {
         comp: &ComponentReference,
         value: &Expression,
     ) -> ControlFlow<()> {
+        self.enter_assignment(comp, value)?;
         self.visit_component_reference_ctx(comp, ComponentReferenceContext::AssignmentTarget)?;
         self.visit_expression(value)
     }
@@ -521,6 +721,7 @@ pub trait Visitor {
         args: &[Expression],
         outputs: &[Expression],
     ) -> ControlFlow<()> {
+        self.enter_statement_function_call(comp, args, outputs)?;
         self.visit_component_reference_ctx(
             comp,
             ComponentReferenceContext::StatementFunctionCallTarget,
@@ -549,6 +750,7 @@ pub trait Visitor {
         message: &Expression,
         level: Option<&Expression>,
     ) -> ControlFlow<()> {
+        self.enter_statement_assert(condition, message, level)?;
         self.visit_expression_ctx(condition, ExpressionContext::StatementAssertCondition)?;
         self.visit_expression_ctx(message, ExpressionContext::StatementAssertMessage)?;
         if let Some(lvl) = level {
@@ -580,89 +782,28 @@ pub trait Visitor {
 
     /// Visit a class definition.
     fn visit_class_def(&mut self, class: &ClassDef) -> ControlFlow<()> {
-        self.enter_scope(VisitScope::Class(class))?;
-        let result = (|| {
-            if let Some(constrainedby) = &class.constrainedby {
-                self.visit_type_name(constrainedby, TypeNameContext::ClassConstrainedBy)?;
-            }
-            for ext in &class.extends {
-                self.visit_extend(ext)?;
-            }
-            self.visit_each(&class.imports, Self::visit_import)?;
-            for subscript in &class.array_subscripts {
-                self.visit_subscript_ctx(subscript, SubscriptContext::ClassArraySubscript)?;
-            }
-            for (_, nested) in &class.classes {
-                self.visit_class_def(nested)?;
-            }
-            for (_, comp) in &class.components {
-                self.visit_component(comp)?;
-            }
-            self.visit_each(&class.equations, Self::visit_equation)?;
-            self.visit_each(&class.initial_equations, Self::visit_equation)?;
-            for section in &class.algorithms {
-                self.visit_each(section, Self::visit_statement)?;
-            }
-            for section in &class.initial_algorithms {
-                self.visit_each(section, Self::visit_statement)?;
-            }
-            for annotation in &class.annotation {
-                self.visit_expression_ctx(annotation, ExpressionContext::ClassAnnotation)?;
-            }
-            if let Some(external) = &class.external {
-                self.visit_external_function(external)?;
-            }
-            Continue(())
-        })();
-        finish_scope(result, self.exit_scope(VisitScope::Class(class)))
+        walk_class_def_default(self, class)
     }
 
     /// Visit an import clause.
     fn visit_import(&mut self, import: &Import) -> ControlFlow<()> {
+        self.enter_import(import)?;
         self.visit_name_ctx(import.base_path(), NameContext::ImportPath)
     }
 
     /// Visit an extends clause.
     fn visit_extend(&mut self, ext: &Extend) -> ControlFlow<()> {
-        self.visit_type_name(&ext.base_name, TypeNameContext::ExtendsBase)?;
-        for modification in &ext.modifications {
-            self.visit_expression_ctx(&modification.expr, ExpressionContext::ExtendModification)?;
-        }
-        for annotation in &ext.annotation {
-            self.visit_expression_ctx(annotation, ExpressionContext::ExtendAnnotation)?;
-        }
-        Continue(())
+        walk_extend_default(self, ext)
     }
 
     /// Visit a component declaration.
     fn visit_component(&mut self, comp: &Component) -> ControlFlow<()> {
-        self.visit_type_name(&comp.type_name, TypeNameContext::ComponentType)?;
-        if let Some(constrainedby) = &comp.constrainedby {
-            self.visit_type_name(constrainedby, TypeNameContext::ComponentConstrainedBy)?;
-        }
-        for subscript in &comp.shape_expr {
-            self.visit_subscript_ctx(subscript, SubscriptContext::ComponentShape)?;
-        }
-        if !matches!(comp.start, Expression::Empty { .. }) {
-            self.visit_expression_ctx(&comp.start, ExpressionContext::ComponentStart)?;
-        }
-        if let Some(binding) = &comp.binding {
-            self.visit_expression_ctx(binding, ExpressionContext::ComponentBinding)?;
-        }
-        for (_, mod_expr) in &comp.modifications {
-            self.visit_expression_ctx(mod_expr, ExpressionContext::ComponentModification)?;
-        }
-        if let Some(cond) = &comp.condition {
-            self.visit_expression_ctx(cond, ExpressionContext::ComponentCondition)?;
-        }
-        for annotation in &comp.annotation {
-            self.visit_expression_ctx(annotation, ExpressionContext::ComponentAnnotation)?;
-        }
-        Continue(())
+        walk_component_default(self, comp)
     }
 
     /// Visit an external function declaration.
     fn visit_external_function(&mut self, external: &ExternalFunction) -> ControlFlow<()> {
+        self.enter_external_function(external)?;
         if let Some(output) = &external.output {
             self.visit_component_reference_ctx(output, ComponentReferenceContext::ExternalOutput)?;
         }

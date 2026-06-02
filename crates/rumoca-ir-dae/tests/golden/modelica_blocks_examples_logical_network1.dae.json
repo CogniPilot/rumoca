@@ -36,6 +36,7 @@
       "unit": "s",
       "state_select": "Default",
       "description": "Periodic Boolean sample interval",
+      "causality": "calculatedParameter",
       "is_tunable": false
     }
   },
@@ -72,6 +73,7 @@
       "unit": null,
       "state_select": "Default",
       "description": "Latched numeric visualization of logical state",
+      "causality": "local",
       "is_tunable": false
     }
   },
@@ -107,6 +109,7 @@
       "unit": null,
       "state_select": "Default",
       "description": "Logical block output",
+      "causality": "local",
       "is_tunable": false
     },
     "not1.y": {
@@ -140,6 +143,7 @@
       "unit": null,
       "state_select": "Default",
       "description": "Logical inversion output",
+      "causality": "local",
       "is_tunable": false
     }
   },

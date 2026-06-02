@@ -25,6 +25,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod cache_cmd;
+mod fmt_cli;
 mod fmu;
 mod sim_bench;
 mod sim_inspect;
@@ -42,6 +43,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use fmt_cli::FmtArgs;
 use miette::{
     GraphicalTheme, LabeledSpan, MietteDiagnostic, MietteHandlerOpts, NamedSource, Report, Severity,
 };
@@ -533,46 +535,6 @@ impl SimulateSolverMode {
 }
 
 #[derive(Args, Debug)]
-struct FmtArgs {
-    /// Files or directories to format. If empty, formats current directory.
-    #[arg()]
-    paths: Vec<PathBuf>,
-    /// Check formatting without writing changes.
-    #[arg(long, default_value_t = false)]
-    check: bool,
-    /// Number of spaces per indentation level.
-    #[arg(long)]
-    indent_size: Option<usize>,
-    /// Use tabs instead of spaces (bare `--use-tabs` means true; or
-    /// `--use-tabs false`).
-    #[arg(
-        long,
-        num_args = 0..=1,
-        default_missing_value = "true",
-        value_parser = clap::builder::BoolishValueParser::new()
-    )]
-    use_tabs: Option<bool>,
-    /// Formatting profile.
-    #[arg(long, value_enum)]
-    profile: Option<FmtProfileArg>,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum FmtProfileArg {
-    Msl,
-    Canonical,
-}
-
-impl From<FmtProfileArg> for rumoca_tool_fmt::FormatProfile {
-    fn from(value: FmtProfileArg) -> Self {
-        match value {
-            FmtProfileArg::Msl => rumoca_tool_fmt::FormatProfile::Msl,
-            FmtProfileArg::Canonical => rumoca_tool_fmt::FormatProfile::Canonical,
-        }
-    }
-}
-
-#[derive(Args, Debug)]
 struct LintArgs {
     /// Files or directories to lint. If empty, lints current directory.
     #[arg()]
@@ -654,7 +616,7 @@ fn try_main() -> Result<()> {
     match cli.command {
         Commands::Compile(args) => run_compile(args),
         Commands::Sim(args) => run_sim(*args),
-        Commands::Fmt(args) => run_fmt(args),
+        Commands::Fmt(args) => fmt_cli::run_fmt(args),
         Commands::Lint(args) => run_lint(args),
         Commands::Completions { shell } => {
             print!("{}", completion_script(shell));
@@ -1217,88 +1179,6 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
         output: args.output.as_deref(),
         workspace_root: workspace_root.as_deref(),
     })
-}
-
-fn run_fmt(args: FmtArgs) -> Result<()> {
-    validate_explicit_target_paths(&args.paths)?;
-    let paths = normalize_target_paths(&args.paths);
-    let config_dir = first_path_config_dir(&paths);
-    let mut options = rumoca_tool_fmt::load_config_from_dir(&config_dir)
-        .map_err(|e| anyhow::anyhow!("Failed to load formatter config: {e}"))?
-        .unwrap_or_default();
-    if let Some(indent_size) = args.indent_size {
-        options.indent_size = indent_size;
-    }
-    if let Some(use_tabs) = args.use_tabs {
-        options.use_tabs = use_tabs;
-    }
-    if let Some(profile) = args.profile {
-        options.profile = profile.into();
-    }
-
-    let files = collect_modelica_files(&paths);
-    if files.is_empty() {
-        eprintln!("No .mo files found");
-        return Ok(());
-    }
-
-    let mut needs_formatting = 0usize;
-    let mut errors = 0usize;
-    for file in &files {
-        let source = match std::fs::read_to_string(file) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("Error reading {}: {e}", file.display());
-                errors += 1;
-                continue;
-            }
-        };
-
-        let source_name = file.display().to_string();
-        let formatted =
-            match rumoca_tool_fmt::format_with_source_name(&source, &options, &source_name) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("Error formatting {}: {e}", file.display());
-                    errors += 1;
-                    continue;
-                }
-            };
-        if formatted == source {
-            continue;
-        }
-        needs_formatting += 1;
-        if args.check {
-            // The changed-file list is the result data → stdout (matches `lint`,
-            // so `rumoca fmt --check . > changes.txt` captures it).
-            println!("Would reformat: {}", file.display());
-        } else if let Err(e) = std::fs::write(file, formatted) {
-            eprintln!("Error writing {}: {e}", file.display());
-            errors += 1;
-        } else {
-            println!("Formatted: {}", file.display());
-        }
-    }
-
-    let total = files.len();
-    let unchanged = total.saturating_sub(needs_formatting + errors);
-    if args.check {
-        eprintln!(
-            "{total} files checked: {unchanged} ok, {needs_formatting} need formatting, {errors} errors"
-        );
-        if needs_formatting > 0 || errors > 0 {
-            std::process::exit(1);
-        }
-    } else {
-        eprintln!(
-            "{total} files processed: {unchanged} unchanged, {needs_formatting} formatted, {errors} errors"
-        );
-        if errors > 0 {
-            std::process::exit(1);
-        }
-    }
-
-    Ok(())
 }
 
 fn run_lint(args: LintArgs) -> Result<()> {

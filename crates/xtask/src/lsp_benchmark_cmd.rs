@@ -62,7 +62,7 @@ end M;
 "#;
 
 const VALIDATION_CHANGED_SOURCE: &str = "model Shifted\n  Real x;\nend Shifted;\n";
-const VALIDATION_FORMATTING_SOURCE: &str = "model F\nReal x;\nequation\nx=1;\nend F;\n";
+const VALIDATION_FORMATTING_SOURCE: &str = "model F\nReal x;\nequation\nx=1;\nend F;";
 const VALIDATION_SAVE_SOURCE: &str =
     "model Active\n  Real x;\nequation\n  der(x) = -x;\nend Active;\n";
 const VALIDATION_CODE_ACTION_SOURCE: &str = r#"model Broken

@@ -781,9 +781,16 @@ fn validate_mutation_rewrites(
         }),
         VALIDATION_TIMEOUT,
     )?;
+    let format_result = response_result(&format_response);
+    let format_edits = format_result
+        .as_array()
+        .context("formatting should return edit list")?;
     ensure!(
-        json_array_len(&response_result(&format_response)) >= 1,
-        "formatting should return a rewrite edit"
+        format_edits.iter().any(|edit| edit
+            .get("newText")
+            .and_then(|text| text.as_str())
+            .is_some_and(|text| text.ends_with("end F;\n"))),
+        "formatting should return default final-newline edit"
     );
 
     client.did_open(&workspace.broken_uri, VALIDATION_CODE_ACTION_SOURCE)?;
@@ -812,7 +819,7 @@ fn validate_mutation_rewrites(
     client.did_close(&workspace.broken_uri)?;
 
     Ok(vec![
-        ok_validation("formatting", "req", Some(format_ms), "synthetic rewrite"),
+        ok_validation("formatting", "req", Some(format_ms), "synthetic preserved"),
         ok_validation("codeAction", "req", Some(action_ms), "synthetic EP001"),
     ])
 }

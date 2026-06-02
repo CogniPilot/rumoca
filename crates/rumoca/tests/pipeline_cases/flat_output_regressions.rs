@@ -1,6 +1,46 @@
 use super::*;
 
 #[test]
+fn test_dae_json_surfaces_variable_causality() {
+    let source = r#"
+model Base
+  input Real inherited_u;
+  output Real inherited_y;
+equation
+  inherited_y = inherited_u;
+end Base;
+
+model Plant
+  extends Base;
+  parameter Real R = 1.0;
+  Real x(start = 0);
+  input Real u;
+  output Real y;
+equation
+  der(x) = -R*x + u + inherited_u;
+  y = x;
+end Plant;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse/resolve/typecheck failed");
+
+    let result = session
+        .compile_model("Plant")
+        .expect("compile should succeed");
+    let json = serde_json::to_value(&result.dae).expect("DAE should serialize");
+
+    assert_eq!(json["u"]["u"]["causality"], "input");
+    assert_eq!(json["u"]["inherited_u"]["causality"], "input");
+    assert_eq!(json["w"]["y"]["causality"], "output");
+    assert_eq!(json["w"]["inherited_y"]["causality"], "output");
+    assert_eq!(json["p"]["R"]["causality"], "parameter");
+    assert_eq!(json["x"]["x"]["causality"], "local");
+}
+
+#[test]
 fn test_flat_output_preserves_symbolic_modifier_binding_for_subcomponent_parameter() {
     let source = r#"
 model Parent
