@@ -548,6 +548,12 @@ mod tests {
         parse_to_ast(&rendered, "roundtrip.mo").expect("round-trip parse should succeed")
     }
 
+    fn source_slice(source: &str, span: Span) -> &str {
+        source
+            .get(span.start.0..span.end.0)
+            .expect("span should slice source")
+    }
+
     #[test]
     fn test_parse_extends() {
         let source = r#"
@@ -670,6 +676,24 @@ end Ball;
     }
 
     #[test]
+    fn test_parse_unary_expression_span_includes_operator() {
+        let source = "model Test\n  parameter Real M[2,2] = [-d, not flag; d, flag];\nend Test;";
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+        let component = model.components.get("M").expect("M should exist");
+        let binding = component.binding.as_ref().expect("binding should exist");
+        let ast::Expression::Array { elements, .. } = binding else {
+            panic!("expected matrix binding");
+        };
+        let ast::Expression::Array { elements, .. } = &elements[0] else {
+            panic!("expected first matrix row");
+        };
+
+        assert_eq!(source_slice(source, elements[0].span()), "-d");
+        assert_eq!(source_slice(source, elements[1].span()), "not flag");
+    }
+
+    #[test]
     fn test_parse_component_declarations() {
         let source = r#"
 model Test
@@ -683,6 +707,36 @@ end Test;
         let model = ast.classes.get("Test").expect("Test should exist");
         assert_eq!(&*model.name.text, "Test");
         assert_eq!(model.components.len(), 3, "Should have 3 components");
+    }
+
+    #[test]
+    fn test_component_declaration_preserves_source_modifications() {
+        let source = r#"
+model Test
+  Real x(start = 1, fixed = true);
+end Test;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+        let x = model.components.get("x").expect("x should exist");
+
+        assert_eq!(x.source_modifications.len(), 2);
+        assert_eq!(x.source_modification_each_flags, vec![false, false]);
+        assert_eq!(x.source_modification_final_flags, vec![false, false]);
+        assert_eq!(x.source_modification_redeclare_flags, vec![false, false]);
+        assert!(x.start_is_modification);
+        assert!(x.modifications.contains_key("fixed"));
+
+        let first_name = match &x.source_modifications[0] {
+            ast::Expression::Modification { target, .. } => target.to_string(),
+            other => panic!("expected source modification, got {other:?}"),
+        };
+        let second_name = match &x.source_modifications[1] {
+            ast::Expression::Modification { target, .. } => target.to_string(),
+            other => panic!("expected source modification, got {other:?}"),
+        };
+        assert_eq!(first_name, "start");
+        assert_eq!(second_name, "fixed");
     }
 
     #[test]

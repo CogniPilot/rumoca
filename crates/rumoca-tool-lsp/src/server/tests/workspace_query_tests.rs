@@ -913,7 +913,7 @@ fn formatting_code_actions_inlay_hints_and_document_links_wrap_handler_results()
             let mut session = server.session.write().await;
             session.update_document(
                 &session_document_uri_key(&formatting_uri),
-                "model F\nReal x;\nequation\nx=1;\nend F;\n",
+                "model F\nReal x;\nequation\nx=1;\nend F;",
             );
         }
         assert_formatting_wraps_handler(server, &formatting_uri).await;

@@ -122,6 +122,17 @@ fn add_op_to_unary(op: &modelica_grammar_trait::AddOperator) -> rumoca_core::OpU
     }
 }
 
+fn add_op_span(op: &modelica_grammar_trait::AddOperator) -> Span {
+    match op {
+        modelica_grammar_trait::AddOperator::Minus(op) => token_span(&op.minus.clone().into()),
+        modelica_grammar_trait::AddOperator::Plus(op) => token_span(&op.plus.clone().into()),
+        modelica_grammar_trait::AddOperator::DotMinus(op) => {
+            token_span(&op.dot_minus.clone().into())
+        }
+        modelica_grammar_trait::AddOperator::DotPlus(op) => token_span(&op.dot_plus.clone().into()),
+    }
+}
+
 //-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 
@@ -1262,7 +1273,7 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for rumoca_ir_ast::E
         let mut lhs = match &ast.arithmetic_expression_opt {
             Some(opt) => rumoca_ir_ast::Expression::Unary {
                 op: add_op_to_unary(&opt.add_operator),
-                span: ast.term.span(),
+                span: merge_spans(add_op_span(&opt.add_operator), ast.term.span()),
                 rhs: Arc::new(ast.term.clone()),
             },
             None => ast.term.clone(),
@@ -1328,9 +1339,9 @@ impl TryFrom<&modelica_grammar_trait::LogicalFactor> for rumoca_ir_ast::Expressi
         ast: &modelica_grammar_trait::LogicalFactor,
     ) -> std::result::Result<Self, Self::Error> {
         match &ast.logical_factor_opt {
-            Some(_) => Ok(rumoca_ir_ast::Expression::Unary {
+            Some(opt) => Ok(rumoca_ir_ast::Expression::Unary {
                 op: rumoca_core::OpUnary::Not,
-                span: ast.relation.span(),
+                span: merge_spans(token_span(&opt.not.not.clone().into()), ast.relation.span()),
                 rhs: Arc::new(ast.relation.clone()),
             }),
             None => Ok(ast.relation.clone()),

@@ -6,11 +6,14 @@ mod formatter;
 
 pub use format_errors::FormatError;
 pub use format_options::{
-    CONFIG_FILE_NAMES, ConfigError, FormatOptions, FormatProfile, PartialFormatOptions,
-    find_config, load_config, load_config_from_dir,
+    CONFIG_FILE_NAMES, ConfigError, FormatOptions, FormatProfile, LineEnding, PartialFormatOptions,
+    find_config, load_config, load_config_from_dir, load_config_overrides,
+    load_config_overrides_from_dir,
 };
 pub use formatter::{
-    format, format_or_original, format_or_original_with_source_name, format_with_source_name,
+    FormatCoverageCategory, FormatCoverageCategoryReport, FormatCoverageReport, format,
+    format_coverage_report, format_coverage_report_with_source_name, format_or_original,
+    format_or_original_with_source_name, format_with_source_name,
 };
 
 /// Check if source code is valid Modelica syntax.

@@ -537,6 +537,10 @@ fn process_single_component(
         shape_expr: ctx.type_level_shape_expr.clone(),
         shape_is_modification: false,
         annotation,
+        source_modifications: Vec::new(),
+        source_modification_each_flags: Vec::new(),
+        source_modification_final_flags: Vec::new(),
+        source_modification_redeclare_flags: Vec::new(),
         modifications: IndexMap::default(),
         location: comp_location,
         condition,
@@ -564,6 +568,7 @@ fn process_single_component(
 
     // Handle component modification
     if let Some(modif) = &c.declaration.declaration_opt0 {
+        preserve_component_source_modification(&mut value, modif);
         process_component_modification(&mut value, modif)?;
     }
 
@@ -1195,4 +1200,22 @@ fn process_component_modification(
         }
     }
     Ok(())
+}
+
+fn preserve_component_source_modification(
+    value: &mut rumoca_ir_ast::Component,
+    modif: &modelica_grammar_trait::DeclarationOpt0,
+) {
+    let modelica_grammar_trait::Modification::ClassModificationModificationOpt(class_mod) =
+        &modif.modification
+    else {
+        return;
+    };
+    let Some(opt) = &class_mod.class_modification.class_modification_opt else {
+        return;
+    };
+    value.source_modifications = opt.argument_list.args.clone();
+    value.source_modification_each_flags = opt.argument_list.each_flags.clone();
+    value.source_modification_final_flags = opt.argument_list.final_flags.clone();
+    value.source_modification_redeclare_flags = opt.argument_list.redeclare_flags.clone();
 }

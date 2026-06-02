@@ -61,6 +61,7 @@ async function createWorkspaceFile(rootDir, { completionTimingPath, documentPath
           // Document/result are consumed by the extension-host test suite.
           "rumoca.benchmark.smoke.document": documentPath,
           "rumoca.benchmark.smoke.result": resultPath,
+          "rumoca.benchmark.smoke.activateMaxMs": 60000,
           // The extension forwards this to rumoca-lsp as `--completion-timing-file`.
           "rumoca.benchmark.completionTimingFile": completionTimingPath,
         },

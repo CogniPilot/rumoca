@@ -582,7 +582,24 @@ pub(crate) fn create_dae_variable(
         unit: var.unit.clone(),
         state_select: var.state_select,
         description: None,
+        causality: variable_causality(var, is_tunable),
         is_tunable,
+    }
+}
+
+fn variable_causality(var: &flat::Variable, is_tunable: bool) -> rumoca_ir_dae::VariableCausality {
+    match &var.causality {
+        rumoca_core::Causality::Input(_) => rumoca_ir_dae::VariableCausality::Input,
+        rumoca_core::Causality::Output(_) => rumoca_ir_dae::VariableCausality::Output,
+        rumoca_core::Causality::Empty => match var.variability {
+            Variability::Parameter(_) if is_tunable => rumoca_ir_dae::VariableCausality::Parameter,
+            Variability::Parameter(_) | Variability::Constant(_) => {
+                rumoca_ir_dae::VariableCausality::CalculatedParameter
+            }
+            Variability::Empty | Variability::Continuous(_) | Variability::Discrete(_) => {
+                rumoca_ir_dae::VariableCausality::Local
+            }
+        },
     }
 }
 
@@ -759,6 +776,41 @@ mod tests {
                 .as_ref()
                 .and_then(|reference| reference.def_id),
             Some(component_def_id)
+        );
+    }
+
+    #[test]
+    fn create_dae_variable_surfaces_source_causality() {
+        let name = VarName::new("u");
+        let flat_var = flat::Variable {
+            name: name.clone(),
+            causality: rumoca_core::Causality::Input(Default::default()),
+            is_primitive: true,
+            ..Default::default()
+        };
+        let known_var_names = HashSet::from([name.as_str().to_string()]);
+
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+
+        assert_eq!(dae_var.causality, rumoca_ir_dae::VariableCausality::Input);
+    }
+
+    #[test]
+    fn create_dae_variable_marks_parameter_causality() {
+        let name = VarName::new("p");
+        let flat_var = flat::Variable {
+            name: name.clone(),
+            variability: Variability::Parameter(Default::default()),
+            is_primitive: true,
+            ..Default::default()
+        };
+        let known_var_names = HashSet::from([name.as_str().to_string()]);
+
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+
+        assert_eq!(
+            dae_var.causality,
+            rumoca_ir_dae::VariableCausality::Parameter
         );
     }
 }

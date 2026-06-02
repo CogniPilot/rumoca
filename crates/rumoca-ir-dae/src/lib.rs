@@ -722,11 +722,26 @@ pub struct Variable {
     pub state_select: rumoca_core::StateSelect,
     /// Description string.
     pub description: Option<String>,
+    /// FMI-style causality metadata for downstream JSON consumers.
+    #[serde(default)]
+    pub causality: VariableCausality,
     /// True if this parameter is tunable at runtime (FMI 3.0 ConfigurationMode).
     /// Structural parameters (evaluate=true, Integer/Boolean used for sizing)
     /// remain fixed; all other parameters are tunable.
     #[serde(default)]
     pub is_tunable: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VariableCausality {
+    Input,
+    Output,
+    #[default]
+    Local,
+    Parameter,
+    CalculatedParameter,
+    Independent,
 }
 
 impl Serialize for Variable {
@@ -735,7 +750,7 @@ impl Serialize for Variable {
         S: serde::Serializer,
     {
         let include_component_ref = !serializer.is_human_readable() || self.component_ref.is_some();
-        let field_count = if include_component_ref { 18 } else { 17 };
+        let field_count = if include_component_ref { 19 } else { 18 };
         let mut state = serializer.serialize_struct("Variable", field_count)?;
         state.serialize_field("name", &self.name)?;
         if include_component_ref {
@@ -755,6 +770,7 @@ impl Serialize for Variable {
         state.serialize_field("unit", &self.unit)?;
         state.serialize_field("state_select", &self.state_select)?;
         state.serialize_field("description", &self.description)?;
+        state.serialize_field("causality", &self.causality)?;
         state.serialize_field("is_tunable", &self.is_tunable)?;
         state.end()
     }
@@ -1001,7 +1017,7 @@ fn default_scalar_count() -> usize {
 mod tests {
     use super::{
         Algorithm, ClockSchedule, DAE_SCHEMA_VERSION, Dae, Equation, VarName, Variable,
-        flat_index_to_subscripts, scalar_name_text_for_flat_index,
+        VariableCausality, flat_index_to_subscripts, scalar_name_text_for_flat_index,
     };
     use rumoca_core::{Expression, Literal, OpBinary, OpUnary, Reference, Span};
 
@@ -1057,6 +1073,7 @@ mod tests {
                 fixed: Some(true),
                 unit: Some("s".to_string()),
                 description: Some("Periodic Boolean sample interval".to_string()),
+                causality: VariableCausality::CalculatedParameter,
                 ..Default::default()
             },
         );
@@ -1181,6 +1198,18 @@ mod tests {
         ] {
             assert!(obj.contains_key(key), "expected MLS key `{key}`");
         }
+    }
+
+    #[test]
+    fn variable_json_surfaces_causality() {
+        let variable = Variable {
+            name: VarName::new("u"),
+            causality: VariableCausality::Input,
+            ..Default::default()
+        };
+        let value = serde_json::to_value(variable).expect("variable should serialize");
+
+        assert_eq!(value["causality"], serde_json::json!("input"));
     }
 
     #[test]

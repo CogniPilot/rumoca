@@ -87,6 +87,7 @@ pub mod parsing {
     };
     pub use rumoca_ir_ast::{
         ClassDef, ComponentReference, Expression, StoredDefinition, TerminalType,
+        walk_component_reference_default,
     };
 
     pub use crate::merge::{

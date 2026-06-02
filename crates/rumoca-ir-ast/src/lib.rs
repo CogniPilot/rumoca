@@ -61,8 +61,9 @@ use std::{fmt::Debug, fmt::Display};
 pub use visitor::{
     ComponentReferenceContext, ExpressionContext, ExpressionTransformer, FunctionCallContext,
     NameContext, SubscriptContext, TypeNameContext, VisitScope, Visitor, collect_component_refs,
-    contains_component_ref, contains_function_call, walk_equation_default, walk_expression_default,
-    walk_statement_default,
+    contains_component_ref, contains_function_call, walk_class_def_default, walk_component_default,
+    walk_component_reference_default, walk_equation_default, walk_expression_default,
+    walk_extend_default, walk_statement_default,
 };
 
 pub type AstIndexMap<K, V> = IndexMap<K, V, rustc_hash::FxBuildHasher>;

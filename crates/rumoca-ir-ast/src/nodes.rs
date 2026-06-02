@@ -102,6 +102,18 @@ pub struct Component {
     pub shape_is_modification: bool,
     /// Annotation arguments (e.g., from `annotation(Icon(...), Dialog(...))`)
     pub annotation: Vec<Expression>,
+    /// Ordered source-form modifier arguments from the component declaration.
+    ///
+    /// These preserve the syntax inside `x(...)` before semantic component
+    /// attributes are split into `start`, `binding`, `shape`, and
+    /// `modifications`.
+    pub source_modifications: Vec<Expression>,
+    /// Parallel to `source_modifications` - true if the source modifier has an `each` prefix.
+    pub source_modification_each_flags: Vec<bool>,
+    /// Parallel to `source_modifications` - true if the source modifier has a `final` prefix.
+    pub source_modification_final_flags: Vec<bool>,
+    /// Parallel to `source_modifications` - true if the source modifier is a redeclaration.
+    pub source_modification_redeclare_flags: Vec<bool>,
     /// Component modifications (e.g., R=10 in `Resistor R1(R=10)`)
     /// Maps parameter name to its modified value expression
     pub modifications: AstIndexMap<String, Expression>,
@@ -213,6 +225,10 @@ impl Default for Component {
             shape_expr: Vec::new(),
             shape_is_modification: false,
             annotation: Vec::new(),
+            source_modifications: Vec::new(),
+            source_modification_each_flags: Vec::new(),
+            source_modification_final_flags: Vec::new(),
+            source_modification_redeclare_flags: Vec::new(),
             modifications: AstIndexMap::default(),
             location: Location::default(),
             condition: None,

@@ -20,6 +20,17 @@ function requiredBenchmarkSetting(vscode, key) {
   return value;
 }
 
+function optionalPositiveNumberBenchmarkSetting(vscode, key, fallback) {
+  const value = vscode.workspace.getConfiguration("rumoca").get(key);
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  throw new Error(`expected positive numeric workspace setting: rumoca.${key}`);
+}
+
 function labelText(label) {
   if (typeof label === "string") {
     return label;
@@ -58,7 +69,11 @@ exports.run = async function run() {
 
   const documentPath = requiredBenchmarkSetting(vscode, "benchmark.smoke.document");
   const resultPath = requiredBenchmarkSetting(vscode, "benchmark.smoke.result");
-  const activateMaxMs = ACTIVATE_MAX_MS;
+  const activateMaxMs = optionalPositiveNumberBenchmarkSetting(
+    vscode,
+    "benchmark.smoke.activateMaxMs",
+    ACTIVATE_MAX_MS,
+  );
   const codeLensMaxMs = CODELENS_MAX_MS;
   const completionMaxMs = COMPLETION_MAX_MS;
   const hoverMaxMs = HOVER_MAX_MS;

@@ -238,28 +238,39 @@ CLI arguments override file configuration using partial option types:
 ```rust
 /// Full options (all fields required)
 pub struct FormatOptions {
+    pub profile: FormatProfile,
     pub indent_size: usize,
     pub use_tabs: bool,
-    pub max_line_length: usize,
-    // ...
+    pub normalize_indentation: bool,
+    pub repair_missing_indentation: bool,
+    pub normalize_equation_spacing: bool,
+    pub normalize_operator_spacing: bool,
+    pub normalize_argument_assignment_spacing: bool,
+    pub insert_final_newline: bool,
+    pub trim_trailing_whitespace: bool,
+    pub line_ending: LineEnding,
 }
 
 /// Partial options for CLI overrides (all fields optional)
 pub struct PartialFormatOptions {
+    pub profile: Option<FormatProfile>,
     pub indent_size: Option<usize>,
     pub use_tabs: Option<bool>,
-    pub max_line_length: Option<usize>,
-    // ...
+    pub normalize_indentation: Option<bool>,
+    pub repair_missing_indentation: Option<bool>,
+    pub normalize_equation_spacing: Option<bool>,
+    pub normalize_operator_spacing: Option<bool>,
+    pub normalize_argument_assignment_spacing: Option<bool>,
+    pub insert_final_newline: Option<bool>,
+    pub trim_trailing_whitespace: Option<bool>,
+    pub line_ending: Option<LineEnding>,
 }
 
 impl FormatOptions {
     /// Merge with partial options. CLI values override file values.
     pub fn merge(self, cli: PartialFormatOptions) -> Self {
         FormatOptions {
-            indent_size: cli.indent_size.unwrap_or(self.indent_size),
-            use_tabs: cli.use_tabs.unwrap_or(self.use_tabs),
-            max_line_length: cli.max_line_length.unwrap_or(self.max_line_length),
-            // ...
+            profile: cli.profile.unwrap_or(self.profile),
         }
     }
 }
@@ -282,17 +293,38 @@ let formatted = format(&source, &options)?;
 ### TOML Format
 
 ```toml
-# .rumoca_fmt.toml
-indent_size = 4
+profile = "dymola"
+indent_size = 2
 use_tabs = false
-max_line_length = 120
-align_annotations = true
+normalize_indentation = false
+repair_missing_indentation = true
+normalize_equation_spacing = false
+normalize_operator_spacing = false
+normalize_argument_assignment_spacing = false
 insert_final_newline = true
 trim_trailing_whitespace = true
+line_ending = "auto" # "auto", "lf", or "crlf"
 ```
 
+`normalize_indentation = true` normalizes clear structural indentation for
+class/package bodies, section headers, and control blocks. Continuation lines,
+annotation alignment, comments, quoted identifiers, and multi-line strings keep
+local MSL/Dymola alignment rather than a single global indentation rule.
+
+`repair_missing_indentation = true` is the Dymola default. It only adds
+structural indentation to otherwise unindented built-in scalar declaration
+lines; existing nonzero indentation and local alignment are preserved.
+
+`normalize_equation_spacing` covers declaration bindings and equation/algorithm
+assignments. `normalize_operator_spacing` covers binary operators.
+`normalize_argument_assignment_spacing` compacts call/modification assignments
+such as `Real x(start=10)` and `h(a=1, b=2)`. Canonical enables it; Dymola
+disables it to preserve MSL modifier whitespace.
+
+`trim_trailing_whitespace = true` is the Dymola default. It trims only outside
+strings, quoted identifiers, and block comments.
+
 ```toml
-# .rumoca_lint.toml
 min_level = "warning"  # "help", "note", "warning", "error"
 disabled_rules = ["magic-number", "naming-convention"]
 warnings_as_errors = false

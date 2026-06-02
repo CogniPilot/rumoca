@@ -147,6 +147,7 @@ fn declare_condition_pre_parameter(dae_model: &mut dae::Dae, condition_name: &st
             unit: None,
             state_select: rumoca_core::StateSelect::Default,
             description: Some(format!("pre() of {condition_name}")),
+            causality: dae::VariableCausality::CalculatedParameter,
             is_tunable: false,
         });
 }

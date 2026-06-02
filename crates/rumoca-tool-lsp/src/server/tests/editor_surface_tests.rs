@@ -18,8 +18,8 @@ pub(super) async fn assert_formatting_wraps_handler(
         .expect("formatting should return an edit");
     assert_eq!(formatting.len(), 1);
     assert!(
-        formatting[0].new_text.contains("x = 1;"),
-        "formatting should rewrite the document into the formatter's normalized form"
+        formatting[0].new_text.ends_with("end F;\n"),
+        "formatting should insert the default final newline"
     );
 }
 

@@ -84,6 +84,7 @@ fn discrete_valued_var(name: &str) -> dae::Variable {
         unit: None,
         state_select: rumoca_core::StateSelect::Default,
         description: None,
+        causality: dae::VariableCausality::Local,
         is_tunable: false,
     }
 }
@@ -382,6 +383,7 @@ fn test_lower_pre_creates_parameter() -> Result<(), ToDaeError> {
             unit: None,
             state_select: rumoca_core::StateSelect::Default,
             description: None,
+            causality: dae::VariableCausality::Local,
             is_tunable: false,
         },
     );
@@ -513,6 +515,7 @@ fn test_lower_pre_normalizes_encoded_integer_subscript_target() -> Result<(), To
             unit: None,
             state_select: rumoca_core::StateSelect::Default,
             description: None,
+            causality: dae::VariableCausality::Local,
             is_tunable: false,
         },
     );
@@ -671,6 +674,7 @@ fn test_lower_pre_keeps_existing_pre_parameter_metadata() -> Result<(), ToDaeErr
             unit: None,
             state_select: rumoca_core::StateSelect::Default,
             description: None,
+            causality: dae::VariableCausality::Local,
             is_tunable: false,
         },
     );
@@ -696,6 +700,7 @@ fn test_lower_pre_keeps_existing_pre_parameter_metadata() -> Result<(), ToDaeErr
             unit: None,
             state_select: rumoca_core::StateSelect::Default,
             description: Some("first pass metadata".to_string()),
+            causality: dae::VariableCausality::Local,
             is_tunable: false,
         },
     );
@@ -773,6 +778,7 @@ fn test_lower_pre_rewrites_expression_variables_to_pre_parameters() -> Result<()
                 unit: None,
                 state_select: rumoca_core::StateSelect::Default,
                 description: None,
+                causality: dae::VariableCausality::Local,
                 is_tunable: false,
             },
         );
@@ -916,6 +922,7 @@ fn test_lower_pre_preserves_index_subscripts() -> Result<(), ToDaeError> {
             unit: None,
             state_select: rumoca_core::StateSelect::Default,
             description: None,
+            causality: dae::VariableCausality::Local,
             is_tunable: false,
         },
     );
@@ -1082,6 +1089,7 @@ fn test_lower_pre_rewrites_record_field_target() -> Result<(), ToDaeError> {
             unit: None,
             state_select: rumoca_core::StateSelect::Default,
             description: None,
+            causality: dae::VariableCausality::Local,
             is_tunable: false,
         },
     );
