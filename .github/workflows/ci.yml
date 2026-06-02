@@ -808,6 +808,19 @@ jobs:
         with:
           path: gh-pages/
 
+  deploy-pages:
+    name: Deploy Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-wasm]
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
   # ============================================================================
   # Cross-platform Rust binary builds
   # ============================================================================
@@ -1051,11 +1064,8 @@ jobs:
   deploy:
     name: Deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, coverage-gate, msl-quality-gate, docs, vscode, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
+    needs: [detect-release-tag, lint, test, coverage-gate, msl-quality-gate, docs, vscode, deploy-pages, build-rust-binaries, build-python-wheels, build-python-sdist]
     runs-on: ubuntu-24.04
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1078,10 +1088,6 @@ jobs:
       - name: Distribution policy note
         run: |
           echo "As of v0.8.0, Rust distribution is via GitHub Releases binaries (not crates.io)."
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
 
       - name: Download all artifacts
         uses: actions/download-artifact@v5
