@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::{InteractiveStepper, SimOptions, SimPacingMode, SimSolverMode};
+use crate::{InteractiveStepper, SimPacingMode};
 use anyhow::{Context, Result};
 use rumoca_codec::{PackCodec, UnpackCodec};
 use rumoca_input::{
@@ -365,9 +365,6 @@ struct FrameCtx<'a> {
     realtime: &'a Arc<AtomicBool>,
     quit: &'a Arc<AtomicBool>,
     external_interface: &'a Arc<Mutex<Option<ExternalInterfaceProcess>>>,
-    model_source: &'a str,
-    model_name: &'a str,
-    source_roots: &'a [PathBuf],
     debug: bool,
     dt: f64,
     mode: SimPacingMode,
@@ -384,9 +381,6 @@ struct FrameState {
 
 pub struct SimLoopArgs<'a> {
     pub cfg: &'a SimulationConfig,
-    pub model_source: &'a str,
-    pub model_name: &'a str,
-    pub source_roots: &'a [PathBuf],
     pub http_port: u16,
     pub ws_port: u16,
     pub debug: bool,
@@ -425,9 +419,6 @@ where
 {
     let SimLoopArgs {
         cfg,
-        model_source,
-        model_name,
-        source_roots,
         http_port,
         ws_port,
         debug,
@@ -512,9 +503,6 @@ where
         realtime: &realtime,
         quit: &quit,
         external_interface: &external_interface,
-        model_source,
-        model_name,
-        source_roots,
         debug,
         dt: cfg.sim.dt,
         mode,
@@ -783,12 +771,6 @@ impl FrameCtx<'_> {
                 engine,
                 stepper,
                 ResetRuntime {
-                    model_source: self.model_source,
-                    model_name: self.model_name,
-                    source_roots: self.source_roots,
-                    dt: self.dt,
-                    pacing_mode: self.mode,
-                    solver_mode: SimSolverMode::parse_request(self.cfg.sim.solver.as_deref()).0,
                     external_handle: self.external_interface,
                 },
             )?;
@@ -922,12 +904,6 @@ fn apply_received(
 }
 
 struct ResetRuntime<'a> {
-    model_source: &'a str,
-    model_name: &'a str,
-    source_roots: &'a [PathBuf],
-    dt: f64,
-    pacing_mode: SimPacingMode,
-    solver_mode: SimSolverMode,
     external_handle: &'a Arc<Mutex<Option<ExternalInterfaceProcess>>>,
 }
 
@@ -953,31 +929,10 @@ where
     }
     if reset_cfg.rebuild_stepper {
         let reset_time = stepper.time();
-        let mut session = rumoca_compile::compile::Session::default();
-        super::load_source_roots_into_session(&mut session, runtime.source_roots)?;
-        session
-            .add_document(&format!("{}.mo", runtime.model_name), runtime.model_source)
-            .map_err(|e| anyhow::anyhow!("reset: parse failed: {e}"))?;
-        let result = super::compile_model_with_diagnostics(
-            &mut session,
-            runtime.model_name,
-            "reset: compilation failed",
-        )?;
-        let new_stepper = S::new_from_dae(
-            &result.dae,
-            SimOptions {
-                t_start: reset_time,
-                rtol: 1e-3,
-                atol: 1e-3,
-                dt: Some(runtime.dt),
-                solver_mode: runtime.solver_mode,
-                pacing_mode: runtime.pacing_mode,
-                ..Default::default()
-            },
-        )
-        .context("reset: stepper creation failed")?;
-        *stepper = new_stepper;
-        eprintln!("[reset] stepper rebuilt");
+        stepper
+            .reset(reset_time)
+            .context("reset: stepper reset failed")?;
+        eprintln!("[reset] stepper reset");
     }
     Ok(())
 }

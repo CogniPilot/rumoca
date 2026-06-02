@@ -6,7 +6,8 @@ use diffsol::{OdeSolverMethod, VectorHost};
 use rumoca_eval_solve::{self as solve_eval, SolveRuntime};
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    SimOptions, implicit_residual_is_zero_through_interval, runtime_root_event_application_time,
+    SimOptions, event_solver_step_cap, implicit_residual_is_zero_through_interval,
+    runtime_root_event_application_time,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,24 +16,34 @@ use std::sync::Arc;
 
 use crate::{
     LinearSolver, OdeModel, RuntimeParameters, SimError, apply_event_updates, bdf_derivative_guess,
-    build_ode_problem_with_runtime_params_and_initial, initial_bdf_state,
+    build_ode_problem_with_runtime_params_and_initial, initial_bdf_state, reset_solver_state,
     settle_algebraics_and_relation_memory, solver_call, write_state_to_solver,
 };
 
 type StepFn = Box<dyn FnMut(f64) -> Result<StepAdvance, SimError>>;
+type ResetFn = Box<dyn FnMut(f64, &BdfResetSnapshot) -> Result<(), SimError>>;
 
 pub struct SimStepper {
     _runtime_context: solve_eval::SimulationContext,
     step_fn: StepFn,
     time_fn: Box<dyn Fn() -> f64>,
     y_fn: Box<dyn Fn() -> Vec<f64>>,
-    reset_fn: Box<dyn FnMut(f64) -> Result<(), SimError>>,
+    event_reset_fn: Box<dyn FnMut(f64) -> Result<(), SimError>>,
+    reset_fn: ResetFn,
     refresh_input_fn: Box<dyn FnMut() -> Result<(), SimError>>,
     project_fn: Box<dyn FnMut() -> Result<(), SimError>>,
     runtime: SolveRuntime,
     runtime_params: RuntimeParameters,
+    reset_snapshot: BdfResetSnapshot,
     input_values: HashMap<String, f64>,
     inputs_dirty: bool,
+}
+
+#[derive(Clone)]
+struct BdfResetSnapshot {
+    y: Vec<f64>,
+    dy: Vec<f64>,
+    params: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -80,6 +91,11 @@ impl SimStepper {
         let solver = solver_call("BDF new", || {
             diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(problem_ref, state, newton())
         })?;
+        let reset_snapshot = BdfResetSnapshot {
+            y: solver.state().y.as_slice().to_vec(),
+            dy: solver.state().dy.as_slice().to_vec(),
+            params: runtime_params.borrow().to_vec(),
+        };
         let solver = Rc::new(RefCell::new(solver));
 
         let step_fn = make_step_fn(Rc::clone(&solver), model, runtime_params.clone(), &opts)?;
@@ -88,38 +104,39 @@ impl SimStepper {
         let y_solver = Rc::clone(&solver);
         let y_fn = Box::new(move || y_solver.borrow().state().y.as_slice().to_vec());
         let reset_solver = Rc::clone(&solver);
-        let reset_model = model.clone();
-        let reset_opts = opts.clone();
-        let reset_params = runtime_params.clone();
-        let reset_fn = Box::new(move |t_start: f64| {
+        let event_reset_solver = Rc::clone(&solver);
+        let event_reset_model = model.clone();
+        let event_reset_opts = opts.clone();
+        let event_reset_params = runtime_params.clone();
+        let event_reset_fn = Box::new(move |t_start: f64| {
             let initial_y = {
-                let solver = reset_solver.borrow();
+                let solver = event_reset_solver.borrow();
                 solver.state().y.as_slice().to_vec()
             };
-            let ode_model = Arc::new(OdeModel::new(&reset_model)?);
-            let reset_runtime = SolveRuntime::new(&reset_model);
+            let ode_model = Arc::new(OdeModel::new(&event_reset_model)?);
+            let reset_runtime = SolveRuntime::new(&event_reset_model);
             let initial_y = settled_problem_y(
-                &reset_model,
+                &event_reset_model,
                 &reset_runtime,
                 &ode_model,
-                &reset_opts,
-                &reset_params,
+                &event_reset_opts,
+                &event_reset_params,
                 t_start,
                 initial_y,
             )?;
             let problem = build_ode_problem_with_runtime_params_and_initial(
-                &reset_model,
-                &reset_opts,
-                reset_params.clone(),
+                &event_reset_model,
+                &event_reset_opts,
+                event_reset_params.clone(),
                 t_start,
                 initial_y.clone(),
                 ode_model.clone(),
             )?;
             let problem_ref = Box::leak(Box::new(problem));
             let state = {
-                let params = reset_params.borrow();
+                let params = event_reset_params.borrow();
                 initial_bdf_state(
-                    &reset_model,
+                    &event_reset_model,
                     &ode_model,
                     problem_ref,
                     &initial_y,
@@ -129,8 +146,21 @@ impl SimStepper {
             let rebuilt = solver_call("BDF new", || {
                 diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(problem_ref, state, newton())
             })?;
-            *reset_solver.borrow_mut() = rebuilt;
+            *event_reset_solver.borrow_mut() = rebuilt;
             Ok(())
+        });
+        let reset_opts = opts.clone();
+        let reset_params = runtime_params.clone();
+        let reset_fn = Box::new(move |t_start: f64, snapshot: &BdfResetSnapshot| {
+            reset_solver_state(
+                &mut *reset_solver.borrow_mut(),
+                &reset_params,
+                &snapshot.y,
+                &snapshot.dy,
+                &snapshot.params,
+                t_start,
+                event_solver_step_cap(reset_opts.dt),
+            )
         });
         let project_fn = make_project_fn(
             Rc::clone(&solver),
@@ -152,11 +182,13 @@ impl SimStepper {
             step_fn,
             time_fn,
             y_fn,
+            event_reset_fn,
             reset_fn,
             refresh_input_fn,
             project_fn,
             runtime,
             runtime_params,
+            reset_snapshot,
             input_values: HashMap::new(),
             inputs_dirty: false,
         })
@@ -198,9 +230,15 @@ impl SimStepper {
         if advance.hit_root {
             (self.project_fn)()?;
             let reset_time = runtime_root_event_application_time(self.time(), f64::INFINITY);
-            (self.reset_fn)(reset_time)?;
+            (self.event_reset_fn)(reset_time)?;
         }
         Ok(())
+    }
+
+    pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+        self.input_values.clear();
+        self.inputs_dirty = false;
+        (self.reset_fn)(t_start, &self.reset_snapshot)
     }
 
     pub fn time(&self) -> f64 {
@@ -575,6 +613,37 @@ mod tests {
         assert!((stepper.time() - 0.032).abs() <= 1.0e-12);
         let x = stepper.get("x").expect("x should be visible");
         assert!(x.abs() <= 1.0e-12, "x={x}");
+    }
+
+    #[test]
+    fn bdf_stepper_reset_restores_cached_initial_state() {
+        let model = single_input_integrator();
+        let mut stepper = SimStepper::new(
+            &model,
+            SimOptions {
+                rtol: 1.0e-8,
+                atol: 1.0e-10,
+                dt: Some(1.0e-3),
+                ..Default::default()
+            },
+        )
+        .expect("stepper should build");
+
+        stepper.set_input("u", 2.0).expect("input should exist");
+        stepper.step(0.05).expect("stepper should advance");
+        assert!(stepper.get("x").unwrap_or_default() > 0.05);
+
+        stepper
+            .reset(7.25)
+            .expect("reset should restore cached initial state");
+
+        assert!((stepper.time() - 7.25).abs() <= 1.0e-12);
+        assert!(stepper.get("x").unwrap_or_default().abs() <= 1.0e-12);
+        assert_eq!(
+            stepper.get("u"),
+            None,
+            "reset should clear stale input overrides"
+        );
     }
 
     #[test]

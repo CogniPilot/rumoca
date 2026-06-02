@@ -53,6 +53,19 @@ impl SimStepper {
         }
     }
 
+    pub fn reset(&mut self, t_start: f64) -> Result<(), SimulationDiagnosticError> {
+        match &mut self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimStepperInner::Bdf(stepper) => stepper
+                .reset(t_start)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+            #[cfg(feature = "solver-rk45")]
+            SimStepperInner::RkLike(stepper) => stepper
+                .reset(t_start)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+        }
+    }
+
     pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimulationDiagnosticError> {
         for (name, value) in inputs {
             self.set_input(name, *value)?;
@@ -136,6 +149,10 @@ impl InteractiveStepper for SimStepper {
 
     fn new_from_dae(dae_model: &dae::Dae, opts: SimOptions) -> Result<Self, Self::Error> {
         Self::new_with_diagnostics(dae_model, opts)
+    }
+
+    fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
+        Self::reset(self, t_start)
     }
 
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error> {

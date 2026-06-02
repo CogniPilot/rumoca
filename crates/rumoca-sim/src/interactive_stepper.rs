@@ -8,6 +8,7 @@ pub trait InteractiveStepper: Sized {
     type Error: Error + Send + Sync + 'static;
 
     fn new_from_dae(dae_model: &dae::Dae, opts: SimOptions) -> Result<Self, Self::Error>;
+    fn reset(&mut self, t_start: f64) -> Result<(), Self::Error>;
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error>;
     fn step(&mut self, dt: f64) -> Result<(), Self::Error>;
     fn time(&self) -> f64;

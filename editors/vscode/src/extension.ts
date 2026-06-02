@@ -1183,6 +1183,22 @@ function hasRumocaMarker(text: string): boolean {
     return /^[ \t]*\[rumoca\][ \t]*$/m.test(text);
 }
 
+async function scenarioDocumentFromCommandResource(
+    resource: vscode.Uri | undefined,
+): Promise<vscode.TextDocument | undefined> {
+    if (resource?.scheme === 'file') {
+        const document = await vscode.workspace.openTextDocument(resource);
+        if (isSimulationRunnableDocument(document)) {
+            return document;
+        }
+    }
+
+    const editor = vscode.window.activeTextEditor;
+    return editor && isSimulationRunnableDocument(editor.document)
+        ? editor.document
+        : undefined;
+}
+
 function isModelicaSourceDocument(document: vscode.TextDocument): boolean {
     return document.uri.fsPath.toLowerCase().endsWith('.mo');
 }
@@ -1389,6 +1405,63 @@ const DEFAULT_CODEGEN_TARGET_ID = 'sympy';
 const CODEGEN_SETTINGS_STATE_KEY = 'rumoca.codegenSettings';
 const SELECTED_SIMULATION_MODELS_STATE_KEY = 'rumoca.selectedSimulationModelsByDocument';
 const LIVE_VIEWER_READY_PREFIX = 'rumoca-viewer-ready ';
+const MAX_INTERACTIVE_FAILURE_LINES = 30;
+
+function stripAnsiControlCodes(text: string): string {
+    return text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+}
+
+function rememberInteractiveOutput(recentLines: string[], text: string): void {
+    const normalized = stripAnsiControlCodes(text).replace(/\r/g, '\n');
+    for (const rawLine of normalized.split('\n')) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('[sim] t=')) {
+            continue;
+        }
+        recentLines.push(line);
+    }
+    while (recentLines.length > MAX_INTERACTIVE_FAILURE_LINES) {
+        recentLines.shift();
+    }
+}
+
+function collectPortNumbers(lines: string[]): string[] {
+    const ports = new Set<string>();
+    for (const line of lines) {
+        for (const match of line.matchAll(/\b(?:port\s+|localhost:|0\.0\.0\.0:)(\d{2,5})\b/g)) {
+            ports.add(match[1]);
+        }
+    }
+    return [...ports];
+}
+
+function summarizeInteractiveFailure(recentLines: string[]): string | undefined {
+    const combined = recentLines.join('\n');
+    const portConflictLines = recentLines.filter((line) =>
+        /Address already in use|Failed to bind .*port|HTTP server error/i.test(line)
+    );
+    if (portConflictLines.length > 0) {
+        const ports = collectPortNumbers(portConflictLines);
+        const portText = ports.length > 0 ? ` ${ports.join('/')}` : '';
+        return `viewer port${ports.length === 1 ? '' : 's'}${portText} already in use; stop the running Rumoca simulation or choose different ports in the scenario config.`;
+    }
+
+    const missingSourceRoot = combined.match(/source-root path does not exist:\s*([^\n]+)/);
+    if (missingSourceRoot) {
+        return `missing Modelica source root: ${missingSourceRoot[1].trim()}. Run cargo xtask repo modelica-deps ensure for the example dependencies.`;
+    }
+
+    const unexpectedArg = combined.match(/unexpected argument ['"]([^'"]+)['"]/);
+    if (unexpectedArg) {
+        return `unsupported rumoca CLI argument ${unexpectedArg[1]}; update the extension launch command or the rumoca binary.`;
+    }
+
+    return [...recentLines].reverse().find((line) =>
+        !line.startsWith('Finished ')
+        && !line.startsWith('Running ')
+        && line !== 'rumoca sim'
+    );
+}
 
 // Benchmark/smoke instrumentation (no environment variables). The LSP benchmark
 // harness records timing artifacts by setting workspace settings such as
@@ -2914,24 +2987,18 @@ export async function activate(context: vscode.ExtensionContext) {
         if (!rumocaPath) {
             throw new Error('rumoca executable not found. Configure rumoca.serverPath or add rumoca to PATH.');
         }
-        const port = typeof scenario.httpPort === 'number' && Number.isFinite(scenario.httpPort)
-            ? scenario.httpPort
-            : undefined;
-        const wsPort = typeof scenario.websocketPort === 'number' && Number.isFinite(scenario.websocketPort)
-            ? scenario.websocketPort
-            : undefined;
+        const expectsLiveViewer = scenario.viewerMode === 'external_web' || scenario.interactive === true;
         const args = [
             'sim',
             '--config',
             document.uri.fsPath,
-            ...(port && port > 0 ? ['--http-port', String(port)] : []),
-            ...(wsPort && wsPort > 0 ? ['--ws-port', String(wsPort)] : []),
         ];
         const writeEmitter = new vscode.EventEmitter<string>();
         const closeEmitter = new vscode.EventEmitter<number>();
         let child: ChildProcessWithoutNullStreams | undefined;
         let lineBuffer = '';
         let viewerOpened = false;
+        const recentOutputLines: string[] = [];
 
         const openViewerFromReadyLine = (line: string) => {
             if (!line.startsWith(LIVE_VIEWER_READY_PREFIX) || viewerOpened) {
@@ -2954,6 +3021,7 @@ export async function activate(context: vscode.ExtensionContext) {
         };
         const handleOutput = (chunk: Buffer) => {
             const text = chunk.toString();
+            rememberInteractiveOutput(recentOutputLines, text);
             lineBuffer += text.replace(/\r/g, '');
             const lines = lineBuffer.split('\n');
             lineBuffer = lines.pop() ?? '';
@@ -2993,10 +3061,25 @@ export async function activate(context: vscode.ExtensionContext) {
                         closeEmitter.fire(1);
                     });
                     child.on('exit', (code) => {
-                        if (!viewerOpened && port && port > 0) {
-                            vscode.window.showWarningMessage('Rumoca exited before the interactive viewer was ready.');
+                        const exitCode = code ?? 0;
+                        if (exitCode !== 0) {
+                            writeEmitter.fire(`\r\nRumoca exited with code ${exitCode}.\r\n`);
                         }
-                        closeEmitter.fire(code ?? 0);
+                        if (!viewerOpened && expectsLiveViewer) {
+                            const summary = summarizeInteractiveFailure(recentOutputLines);
+                            const detail = summary ? ` ${summary}` : ' See the Rumoca terminal for details.';
+                            const message = `Rumoca exited before the interactive viewer was ready (exit code ${exitCode}).${detail}`;
+                            if (exitCode !== 0) {
+                                const model = trimMaybeString(scenario.model);
+                                if (model) {
+                                    setSimulationDiagnostic(document, model, message);
+                                }
+                                vscode.window.showErrorMessage(message);
+                            } else {
+                                vscode.window.showWarningMessage(message);
+                            }
+                        }
+                        closeEmitter.fire(0);
                     });
                 },
                 close: () => {
@@ -3012,7 +3095,7 @@ export async function activate(context: vscode.ExtensionContext) {
             },
         });
         terminal.show();
-        if (port && port > 0) {
+        if (expectsLiveViewer) {
             vscode.window.showInformationMessage(`Started Rumoca interactive simulation; viewer opens after compile.`);
         } else {
             vscode.window.showInformationMessage('Started Rumoca interactive simulation in the terminal.');
@@ -3622,14 +3705,13 @@ export async function activate(context: vscode.ExtensionContext) {
         log(`Rendered target for ${model}: ${target} -> ${outputRoot}`);
     };
 
-    const simulateCommand = vscode.commands.registerCommand('rumoca.simulateModel', async () => {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor || !isSimulationRunnableDocument(editor.document)) {
+    const simulateCommand = vscode.commands.registerCommand('rumoca.simulateModel', async (resource?: vscode.Uri) => {
+        const document = await scenarioDocumentFromCommandResource(resource);
+        if (!document) {
             vscode.window.showErrorMessage('No active Rumoca scenario editor.');
             return;
         }
 
-        const document = editor.document;
         if (document.isUntitled || document.isDirty) {
             const saved = await document.save();
             if (!saved) {
@@ -3766,12 +3848,13 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const simulationSettingsCommand = vscode.commands.registerCommand(
         'rumoca.openSimulationSettings',
-        async () => {
-            const editor = vscode.window.activeTextEditor;
-            if (!editor || !isSimulationRunnableDocument(editor.document)) {
+        async (resource?: vscode.Uri) => {
+            const document = await scenarioDocumentFromCommandResource(resource);
+            if (!document) {
                 vscode.window.showErrorMessage('Open a Rumoca scenario file to configure it.');
                 return;
             }
+            const editor = await vscode.window.showTextDocument(document, { preview: false });
             await openUnifiedSettingsForEditor(editor);
         },
     );

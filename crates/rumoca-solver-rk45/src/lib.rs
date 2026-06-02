@@ -115,7 +115,15 @@ pub struct StepperState {
 pub struct SimStepper {
     runtime: &'static SolveRuntime,
     backend: Rk45Backend<'static>,
+    reset_snapshot: Rk45ResetSnapshot,
     input_values: HashMap<String, f64>,
+}
+
+#[derive(Clone)]
+struct Rk45ResetSnapshot {
+    state: Vec<f64>,
+    params: Vec<f64>,
+    next_step: f64,
 }
 
 impl SimStepper {
@@ -128,9 +136,11 @@ impl SimStepper {
         let runtime = Box::leak(Box::new(SolveRuntime::new(model)));
         let mut backend = Rk45Backend::new(runtime, &opts)?;
         backend.init()?;
+        let reset_snapshot = backend.reset_snapshot();
         Ok(Self {
             runtime,
             backend,
+            reset_snapshot,
             input_values: HashMap::new(),
         })
     }
@@ -166,6 +176,13 @@ impl SimStepper {
         }
         let target = self.backend.time + dt;
         advance_backend_to(&mut self.backend, target)
+    }
+
+    pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+        self.input_values.clear();
+        self.backend
+            .reset_to_snapshot(&self.reset_snapshot, t_start);
+        Ok(())
     }
 
     pub fn time(&self) -> f64 {
@@ -455,6 +472,31 @@ impl<'a> Rk45Backend<'a> {
         for (dst, src) in self.state.iter_mut().zip(solver_y.iter().copied()) {
             *dst = src;
         }
+    }
+
+    fn reset_snapshot(&self) -> Rk45ResetSnapshot {
+        Rk45ResetSnapshot {
+            state: self.state.clone(),
+            params: self.params.clone(),
+            next_step: self.next_step,
+        }
+    }
+
+    fn reset_to_snapshot(&mut self, snapshot: &Rk45ResetSnapshot, t_start: f64) {
+        self.time = t_start;
+        self.state.clone_from(&snapshot.state);
+        self.params.clone_from(&snapshot.params);
+        self.next_step = snapshot.next_step;
+        self.stop_schedule = SolveStopSchedule::new(&self.model.model.problem, t_start, self.t_end);
+        self.termination = None;
+        self.pending_root_crossings.clear();
+        self.pending_event_pre_y = None;
+        self.pending_event_pre_p = None;
+        self.boundary_event_pre_y = None;
+        self.boundary_event_pre_p = None;
+        self.post_event_eval_time = None;
+        self.solver_y_guess.borrow_mut().clear();
+        self.clear_runtime_caches();
     }
 
     fn trial_step(&self, h: f64, event_boundary: Option<f64>) -> Result<TrialStep, SimError> {
@@ -1666,6 +1708,42 @@ mod tests {
         assert_eq!(outcome, StepUntilOutcome::StopReached);
         assert!((backend.read_state().t - 0.1).abs() <= 1.0e-12);
         assert!((backend.state[0] - 1.2).abs() <= 1.0e-6);
+    }
+
+    #[test]
+    fn rk45_stepper_reset_restores_cached_initial_state() {
+        let mut model = single_state_model(vec![vec![
+            LinearOp::LoadP { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
+        model.parameters = vec![0.0];
+        let mut stepper = SimStepper::new(
+            &model,
+            SimOptions {
+                solver_mode: SimSolverMode::RkLike,
+                dt: Some(0.01),
+                ..Default::default()
+            },
+        )
+        .expect("stepper should build");
+
+        stepper.set_input("u", 4.0).expect("input should exist");
+        stepper.step(0.1).expect("stepper should advance");
+        assert!(stepper.get("x").unwrap_or_default() > 1.1);
+
+        stepper
+            .reset(12.5)
+            .expect("reset should restore cached initial state");
+
+        assert!((stepper.time() - 12.5).abs() <= 1.0e-12);
+        assert!((stepper.get("x").unwrap_or_default() - 1.0).abs() <= 1.0e-12);
+        assert_eq!(
+            stepper.get("u"),
+            None,
+            "reset should clear stale input overrides"
+        );
     }
 
     #[test]
