@@ -127,6 +127,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v5
         with:
@@ -208,10 +212,52 @@ jobs:
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
+      - name: Run example build smoke (Linux monitored)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          monitor() {
+            while true; do
+              echo "== resource snapshot: $(date -Is) =="
+              df -h . /tmp /home/runner/actions-runner/cached 2>/dev/null || true
+              free -h || true
+              du -sh target target/debug target/debug/deps target/debug/incremental target/msl target/cmm ~/.rustup ~/.cargo ~/.cargo/registry ~/.cargo/git /home/runner/actions-runner/cached/_diag 2>/dev/null || true
+              ps -eo pid,ppid,%cpu,%mem,rss,vsz,comm,args --sort=-rss | head -n 15 || true
+              sleep 60
+            done
+          }
+          monitor &
+          monitor_pid=$!
+          trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+          cargo xtask verify examples
+
       - name: Run example build smoke
+        if: runner.os != 'Linux'
         run: cargo xtask verify examples
 
+      - name: Run tests (Linux monitored)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          monitor() {
+            while true; do
+              echo "== resource snapshot: $(date -Is) =="
+              df -h . /tmp /home/runner/actions-runner/cached 2>/dev/null || true
+              free -h || true
+              du -sh target target/debug target/debug/deps target/debug/incremental target/msl target/cmm ~/.rustup ~/.cargo ~/.cargo/registry ~/.cargo/git /home/runner/actions-runner/cached/_diag 2>/dev/null || true
+              ps -eo pid,ppid,%cpu,%mem,rss,vsz,comm,args --sort=-rss | head -n 15 || true
+              sleep 60
+            done
+          }
+          monitor &
+          monitor_pid=$!
+          trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+          cargo xtask verify workspace
+
       - name: Run tests
+        if: runner.os != 'Linux'
         run: cargo xtask verify workspace
 
       - name: Build all binaries
