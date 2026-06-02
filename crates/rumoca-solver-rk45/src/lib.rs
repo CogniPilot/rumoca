@@ -1,9 +1,4 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    sync::atomic::{AtomicU64, Ordering},
-    time::Instant,
-};
+use std::{cell::RefCell, collections::HashMap, time::Instant};
 
 use rumoca_eval_solve::{EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime};
 use rumoca_ir_solve as solve;
@@ -16,15 +11,19 @@ use rumoca_solver::{
     root_crossings_with_relation_memory, root_value_crossed, runtime_event_horizon, timeline,
 };
 
+mod reset;
+mod trace;
+
+use reset::Rk45ResetSnapshot;
+use trace::{
+    record_derivative_eval_trace, record_root_eval_trace, reset_rk_eval_trace,
+    rk_eval_trace_enabled, trace_rk_eval_snapshot,
+};
+
 const MIN_STEP: f64 = 1.0e-12;
 const ROOT_BISECTION_ITERS: usize = 48;
 const UPDATE_MAX_ITERS: usize = 32;
 const ALGEBRAIC_REFRESH_TOL: f64 = 1.0e-10;
-
-static RK_DERIVATIVE_CALLS: AtomicU64 = AtomicU64::new(0);
-static RK_DERIVATIVE_NANOS: AtomicU64 = AtomicU64::new(0);
-static RK_ROOT_CALLS: AtomicU64 = AtomicU64::new(0);
-static RK_ROOT_NANOS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, thiserror::Error)]
 pub enum SimError {
@@ -61,51 +60,6 @@ impl From<TimeoutExceeded> for SimError {
     }
 }
 
-fn rk_eval_trace_enabled() -> bool {
-    tracing::enabled!(target: "rumoca_solver_rk45::eval", tracing::Level::DEBUG)
-}
-
-fn reset_rk_eval_trace() {
-    if !rk_eval_trace_enabled() {
-        return;
-    }
-    for counter in [
-        &RK_DERIVATIVE_CALLS,
-        &RK_DERIVATIVE_NANOS,
-        &RK_ROOT_CALLS,
-        &RK_ROOT_NANOS,
-    ] {
-        counter.store(0, Ordering::Relaxed);
-    }
-}
-
-fn trace_rk_eval_snapshot(label: &str) {
-    if !rk_eval_trace_enabled() {
-        return;
-    }
-    let derivative_calls = RK_DERIVATIVE_CALLS.load(Ordering::Relaxed);
-    let derivative_nanos = RK_DERIVATIVE_NANOS.load(Ordering::Relaxed);
-    let root_calls = RK_ROOT_CALLS.load(Ordering::Relaxed);
-    let root_nanos = RK_ROOT_NANOS.load(Ordering::Relaxed);
-    tracing::debug!(
-        target: "rumoca_solver_rk45::eval",
-        "{label}: derivatives={} ({:.3}ms) roots={} ({:.3}ms) total_eval={:.3}ms",
-        derivative_calls,
-        nanos_to_ms(derivative_nanos),
-        root_calls,
-        nanos_to_ms(root_nanos),
-        nanos_to_ms(derivative_nanos.saturating_add(root_nanos))
-    );
-}
-
-fn elapsed_nanos_u64(start: Instant) -> u64 {
-    start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
-}
-
-fn nanos_to_ms(nanos: u64) -> f64 {
-    nanos as f64 / 1.0e6
-}
-
 #[derive(Debug, Clone)]
 pub struct StepperState {
     pub time: f64,
@@ -117,13 +71,6 @@ pub struct SimStepper {
     backend: Rk45Backend<'static>,
     reset_snapshot: Rk45ResetSnapshot,
     input_values: HashMap<String, f64>,
-}
-
-#[derive(Clone)]
-struct Rk45ResetSnapshot {
-    state: Vec<f64>,
-    params: Vec<f64>,
-    next_step: f64,
 }
 
 impl SimStepper {
@@ -474,31 +421,6 @@ impl<'a> Rk45Backend<'a> {
         }
     }
 
-    fn reset_snapshot(&self) -> Rk45ResetSnapshot {
-        Rk45ResetSnapshot {
-            state: self.state.clone(),
-            params: self.params.clone(),
-            next_step: self.next_step,
-        }
-    }
-
-    fn reset_to_snapshot(&mut self, snapshot: &Rk45ResetSnapshot, t_start: f64) {
-        self.time = t_start;
-        self.state.clone_from(&snapshot.state);
-        self.params.clone_from(&snapshot.params);
-        self.next_step = snapshot.next_step;
-        self.stop_schedule = SolveStopSchedule::new(&self.model.model.problem, t_start, self.t_end);
-        self.termination = None;
-        self.pending_root_crossings.clear();
-        self.pending_event_pre_y = None;
-        self.pending_event_pre_p = None;
-        self.boundary_event_pre_y = None;
-        self.boundary_event_pre_p = None;
-        self.post_event_eval_time = None;
-        self.solver_y_guess.borrow_mut().clear();
-        self.clear_runtime_caches();
-    }
-
     fn trial_step(&self, h: f64, event_boundary: Option<f64>) -> Result<TrialStep, SimError> {
         self.trial_step_from(self.time, &self.state, h, event_boundary)
     }
@@ -521,8 +443,7 @@ impl<'a> Rk45Backend<'a> {
             )
             .map_err(Into::into);
         if let Some(start) = start {
-            RK_DERIVATIVE_CALLS.fetch_add(1, Ordering::Relaxed);
-            RK_DERIVATIVE_NANOS.fetch_add(elapsed_nanos_u64(start), Ordering::Relaxed);
+            record_derivative_eval_trace(start);
         }
         result
     }
@@ -877,8 +798,7 @@ impl<'a> Rk45Backend<'a> {
             })
             .map_err(Into::into);
         if let Some(start) = start {
-            RK_ROOT_CALLS.fetch_add(1, Ordering::Relaxed);
-            RK_ROOT_NANOS.fetch_add(elapsed_nanos_u64(start), Ordering::Relaxed);
+            record_root_eval_trace(start);
         }
         result
     }

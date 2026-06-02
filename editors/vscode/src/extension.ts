@@ -1408,7 +1408,22 @@ const LIVE_VIEWER_READY_PREFIX = 'rumoca-viewer-ready ';
 const MAX_INTERACTIVE_FAILURE_LINES = 30;
 
 function stripAnsiControlCodes(text: string): string {
-    return text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+    let stripped = '';
+    for (let i = 0; i < text.length; i += 1) {
+        if (text.charCodeAt(i) !== 27 || text[i + 1] !== '[') {
+            stripped += text[i];
+            continue;
+        }
+        i += 2;
+        while (i < text.length) {
+            const code = text.charCodeAt(i);
+            if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) {
+                break;
+            }
+            i += 1;
+        }
+    }
+    return stripped;
 }
 
 function rememberInteractiveOutput(recentLines: string[], text: string): void {
