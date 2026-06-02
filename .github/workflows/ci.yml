@@ -145,6 +145,7 @@ jobs:
 
       - name: Cache rustup toolchain
         uses: actions/cache@v5
+        continue-on-error: true
         with:
           path: |
             ~/.rustup/toolchains
@@ -174,6 +175,7 @@ jobs:
 
       - name: Cache cargo
         uses: actions/cache@v5
+        continue-on-error: true
         with:
           path: |
             ~/.cargo/registry
@@ -182,6 +184,7 @@ jobs:
 
       - name: Cache MSL
         uses: actions/cache@v5
+        continue-on-error: true
         id: msl-cache
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
@@ -189,6 +192,7 @@ jobs:
 
       - name: Cache CMM
         uses: actions/cache@v5
+        continue-on-error: true
         id: cmm-cache
         with:
           path: target/cmm/CMM-v0.0.1
@@ -284,6 +288,7 @@ jobs:
 
       - name: Cache cargo
         uses: actions/cache@v5
+        continue-on-error: true
         with:
           path: |
             /opt/rumoca/cargo/registry
@@ -340,6 +345,7 @@ jobs:
 
       - name: Cache cargo
         uses: actions/cache@v5
+        continue-on-error: true
         with:
           path: |
             ~/.cargo/registry
@@ -348,6 +354,7 @@ jobs:
 
       - name: Cache MSL
         uses: actions/cache@v5
+        continue-on-error: true
         id: msl-cache-editor
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
@@ -409,6 +416,7 @@ jobs:
 
       - name: Cache cargo
         uses: actions/cache@v5
+        continue-on-error: true
         with:
           path: |
             ~/.cargo/registry
@@ -455,6 +463,7 @@ jobs:
 
       - name: Cache cargo
         uses: actions/cache@v5
+        continue-on-error: true
         with:
           path: |
             ~/.cargo/registry
@@ -463,6 +472,7 @@ jobs:
 
       - name: Cache MSL
         uses: actions/cache@v5
+        continue-on-error: true
         id: msl-cache
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
@@ -706,6 +716,7 @@ jobs:
 
       - name: Cache cargo
         uses: actions/cache@v5
+        continue-on-error: true
         with:
           path: |
             ~/.cargo/registry
@@ -746,6 +757,7 @@ jobs:
 
       - name: Cache cargo
         uses: actions/cache@v5
+        continue-on-error: true
         with:
           path: |
             ~/.cargo/registry
