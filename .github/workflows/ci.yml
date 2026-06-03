@@ -1057,7 +1057,22 @@ jobs:
 
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          toolchain="$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          fi
+          rustup set profile minimal
+          if ! rustup toolchain list | grep -Eq "^${toolchain}"; then
+            rustup toolchain install "$toolchain"
+          fi
+          if ! rustup component list --toolchain "$toolchain" --installed | grep -qx 'rust-src'; then
+            rustup component add rust-src --toolchain "$toolchain"
+          fi
+          if ! rustup target list --toolchain "$toolchain" --installed | grep -qx 'wasm32-unknown-unknown'; then
+            rustup target add wasm32-unknown-unknown --toolchain "$toolchain"
+          fi
+          rustup default "$toolchain"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Install maturin

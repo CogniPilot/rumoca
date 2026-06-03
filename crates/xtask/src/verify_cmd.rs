@@ -14,9 +14,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::{
-    CheckRustFileLinesArgs, cmd_check_rust_file_lines, command_exists, exe_name, lsp_benchmark_cmd,
-    modelica_dependency_cache, msl_flamegraph_cmd, run_status, run_status_quiet, test_cmd,
-    vscode_cmd,
+    command_exists, exe_name, lsp_benchmark_cmd, modelica_dependency_cache, msl_flamegraph_cmd,
+    run_status, run_status_quiet, test_cmd, vscode_cmd,
 };
 
 const MSL_VERSION: &str = "4.1.0";
@@ -182,7 +181,7 @@ fn write_parity_config(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
 pub(crate) enum VerifyCommand {
     /// Architecture-hardening gates (env-var registry, file-size, layering)
     Architecture,
-    /// Rust formatting, line-count policy, traversal policy, and clippy
+    /// Rust formatting, traversal policy, and clippy
     Lint,
     /// Workspace tests that mirror the main test matrix
     Workspace,
@@ -1078,13 +1077,7 @@ impl Drop for ChildGuard {
 fn run_lint_policy_checks(root: &Path) -> Result<()> {
     let fmt_root = root.to_path_buf();
     let fmt_check = thread::spawn(move || test_cmd::run_workspace_fmt_check(&fmt_root));
-    let policy_checks = thread::spawn(|| {
-        cmd_check_rust_file_lines(CheckRustFileLinesArgs {
-            max_lines: 2000,
-            all_files: true,
-        })?;
-        xtask::run_traversal_policy_check()
-    });
+    let policy_checks = thread::spawn(xtask::run_traversal_policy_check);
 
     join_lint_policy_check("rustfmt", fmt_check)?;
     join_lint_policy_check("policy checks", policy_checks)
