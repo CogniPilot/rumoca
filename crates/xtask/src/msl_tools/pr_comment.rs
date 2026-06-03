@@ -17,6 +17,7 @@ const SIZE_BINS: &[(u64, Option<u64>)] = &[
     (100, Some(249)),
     (250, None),
 ];
+const SLOWEST_MODEL_LIMIT: usize = 10;
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct Args {
@@ -192,8 +193,9 @@ fn signed_delta(current: u64, baseline: u64) -> String {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SpeedRecord {
+    model_name: String,
     scalar_equations: u64,
     rumoca_frontend_compile: f64,
     rumoca_sim_build: f64,
@@ -204,11 +206,11 @@ struct SpeedRecord {
 }
 
 impl SpeedRecord {
-    fn rumoca_compile(self) -> f64 {
+    fn rumoca_compile(&self) -> f64 {
         self.rumoca_frontend_compile + self.rumoca_sim_build
     }
 
-    fn rumoca_total(self) -> f64 {
+    fn rumoca_total(&self) -> f64 {
         self.rumoca_compile() + self.rumoca_sim_run
     }
 }
@@ -241,7 +243,7 @@ impl SpeedView {
         }
     }
 
-    fn rumoca_seconds(self, record: SpeedRecord) -> f64 {
+    fn rumoca_seconds(self, record: &SpeedRecord) -> f64 {
         match self {
             Self::Total => record.rumoca_total(),
             Self::Compilation => record.rumoca_compile(),
@@ -249,7 +251,7 @@ impl SpeedView {
         }
     }
 
-    fn omc_seconds(self, record: SpeedRecord) -> f64 {
+    fn omc_seconds(self, record: &SpeedRecord) -> f64 {
         match self {
             Self::Total => record.omc_total,
             Self::Compilation => record.omc_compile,
@@ -302,6 +304,7 @@ fn collect_detailed_speed_records(results_dir: &Path) -> Result<Option<Vec<Speed
         .filter(|(_, trace_model)| trace_model_agrees(trace_model))
         .filter_map(|(name, _)| {
             speed_record_from_models(
+                name,
                 rumoca_by_name.get(name.as_str()).copied()?,
                 omc_models.get(name)?,
             )
@@ -310,7 +313,7 @@ fn collect_detailed_speed_records(results_dir: &Path) -> Result<Option<Vec<Speed
     Ok(Some(records))
 }
 
-fn speed_record_from_models(rumoca: &Value, omc: &Value) -> Option<SpeedRecord> {
+fn speed_record_from_models(name: &str, rumoca: &Value, omc: &Value) -> Option<SpeedRecord> {
     if json_str(omc, "status")? != "success" {
         return None;
     }
@@ -322,6 +325,7 @@ fn speed_record_from_models(rumoca: &Value, omc: &Value) -> Option<SpeedRecord> 
     let omc_sim = positive_json_f64(omc, "sim_system_seconds")?;
     let omc_compile = omc_total - omc_sim;
     (omc_compile > 0.0).then_some(SpeedRecord {
+        model_name: name.to_string(),
         scalar_equations,
         rumoca_frontend_compile,
         rumoca_sim_build,
@@ -355,6 +359,8 @@ fn render_detailed_speed_section(records: &[SpeedRecord]) -> String {
         out.push('\n');
         out.push_str(&render_speed_view_table(records, view));
     }
+    out.push('\n');
+    out.push_str(&render_slowest_models_tables(records));
     out
 }
 
@@ -402,16 +408,12 @@ fn render_speed_view_table(records: &[SpeedRecord], view: SpeedView) -> String {
         view.description()
     );
     for (label, bin_records) in speed_bins(records) {
-        let rumoca = median_value(
-            bin_records
-                .iter()
-                .map(|record| view.rumoca_seconds(*record)),
-        );
-        let omc = median_value(bin_records.iter().map(|record| view.omc_seconds(*record)));
+        let rumoca = median_value(bin_records.iter().map(|record| view.rumoca_seconds(record)));
+        let omc = median_value(bin_records.iter().map(|record| view.omc_seconds(record)));
         let speedup = median_value(
             bin_records
                 .iter()
-                .map(|record| view.omc_seconds(*record) / view.rumoca_seconds(*record)),
+                .map(|record| view.omc_seconds(record) / view.rumoca_seconds(record)),
         );
         out.push_str(&format!(
             "| {label} | {} | {rumoca:.4} | {omc:.4} | **{speedup:.2}** |\n",
@@ -420,15 +422,15 @@ fn render_speed_view_table(records: &[SpeedRecord], view: SpeedView) -> String {
     }
     let rumoca_sum = records
         .iter()
-        .map(|record| view.rumoca_seconds(*record))
+        .map(|record| view.rumoca_seconds(record))
         .sum::<f64>();
     let omc_sum = records
         .iter()
-        .map(|record| view.omc_seconds(*record))
+        .map(|record| view.omc_seconds(record))
         .sum::<f64>();
     let speedups = records
         .iter()
-        .map(|record| view.omc_seconds(*record) / view.rumoca_seconds(*record))
+        .map(|record| view.omc_seconds(record) / view.rumoca_seconds(record))
         .collect::<Vec<_>>();
     out.push_str(&format!(
         "| **All (sum)** | {} | {:.1} | {:.1} | **{:.2}** |\n\n",
@@ -446,13 +448,62 @@ fn render_speed_view_table(records: &[SpeedRecord], view: SpeedView) -> String {
     out
 }
 
-fn speed_bins(records: &[SpeedRecord]) -> Vec<(String, Vec<SpeedRecord>)> {
+fn render_slowest_models_tables(records: &[SpeedRecord]) -> String {
+    format!(
+        "<details>\n<summary><strong>Top 10 slowest models</strong></summary>\n\n{}\n{}\n</details>\n",
+        render_slowest_model_table(records, SpeedView::Compilation),
+        render_slowest_model_table(records, SpeedView::Simulation),
+    )
+}
+
+fn render_slowest_model_table(records: &[SpeedRecord], view: SpeedView) -> String {
+    let mut slowest = records.iter().collect::<Vec<_>>();
+    slowest.sort_by(|left, right| {
+        view.rumoca_seconds(right)
+            .total_cmp(&view.rumoca_seconds(left))
+    });
+    let (title, rumoca_header, omc_header) = match view {
+        SpeedView::Compilation => (
+            "Top 10 slowest rumoca compilation models",
+            "Rumoca compile (s)",
+            "OMC compile (s)",
+        ),
+        SpeedView::Simulation => (
+            "Top 10 slowest rumoca simulation models",
+            "Rumoca simulation (s)",
+            "OMC simulation (s)",
+        ),
+        SpeedView::Total => (
+            "Top 10 slowest rumoca total models",
+            "Rumoca total (s)",
+            "OMC total (s)",
+        ),
+    };
+
+    let mut out = format!(
+        "##### {title}\n\nTrace-agreeing models ranked by rumoca time.\n\n\
+         | Model | Scalar eqns | {rumoca_header} | {omc_header} | Speedup (×) |\n\
+         |---|--:|--:|--:|--:|\n"
+    );
+    for record in slowest.into_iter().take(SLOWEST_MODEL_LIMIT) {
+        let rumoca = view.rumoca_seconds(record);
+        let omc = view.omc_seconds(record);
+        out.push_str(&format!(
+            "| `{}` | {} | {rumoca:.4} | {omc:.4} | **{:.2}** |\n",
+            record.model_name,
+            record.scalar_equations,
+            omc / rumoca,
+        ));
+    }
+    out
+}
+
+fn speed_bins(records: &[SpeedRecord]) -> Vec<(String, Vec<&SpeedRecord>)> {
     SIZE_BINS
         .iter()
         .filter_map(|(low, high)| {
             let in_bin = records
                 .iter()
-                .copied()
                 .filter(|record| {
                     record.scalar_equations >= *low
                         && high.is_none_or(|high| record.scalar_equations <= high)
@@ -576,15 +627,18 @@ fn max_value(values: &[f64]) -> f64 {
 }
 
 fn append_report_section(body: &mut String, title: &str, path: &Path) -> Result<()> {
-    body.push_str(&format!("#### {title}\n\n"));
+    body.push_str("<details>\n");
+    body.push_str(&format!("<summary><strong>{title}</strong></summary>\n\n"));
     if !path.is_file() {
         body.push_str("_Report was not produced in this run._\n\n");
+        body.push_str("</details>\n\n");
         return Ok(());
     }
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     body.push_str(&report_section_text(title, &text));
     body.push_str("\n\n");
+    body.push_str("</details>\n\n");
     Ok(())
 }
 
@@ -757,7 +811,8 @@ mod tests {
         assert!(rendered.contains("Trace agreement vs baseline: high+near Δ+2, deviation Δ-1"));
         assert!(rendered.contains("| MSL Package | n | Ast | Flat |"));
         assert!(!rendered.contains("0.01s"));
-        assert!(rendered.contains("#### MLS Contract Coverage"));
+        assert!(rendered.contains("<summary><strong>Package Pass Rates</strong></summary>"));
+        assert!(rendered.contains("<summary><strong>MLS Contract Coverage</strong></summary>"));
         assert!(rendered.contains("| OTHER | 10 |"));
     }
 
@@ -832,6 +887,15 @@ mod tests {
         assert!(rendered.contains("Table 3 — Simulation"));
         assert!(rendered.contains("| 1–9 | 1 | 2.0000 | 5.0000 | **2.50** |"));
         assert!(rendered.contains("| **All (sum)** | 2 | 6.0 | 13.0 | **2.17** |"));
+        assert!(rendered.contains("<summary><strong>Top 10 slowest models</strong></summary>"));
+        assert!(rendered.contains("Top 10 slowest rumoca compilation models"));
+        assert!(rendered.contains("Top 10 slowest rumoca simulation models"));
+        assert!(
+            rendered.contains("| `Modelica.Blocks.Examples.B` | 12 | 3.0000 | 6.0000 | **2.00** |")
+        );
+        assert!(
+            rendered.contains("| `Modelica.Blocks.Examples.B` | 12 | 1.0000 | 2.0000 | **2.00** |")
+        );
     }
 
     #[test]
