@@ -530,6 +530,49 @@ fn quadrotor_acro_solve_preserves_tensor_structure_when_cmm_available() {
 
 #[cfg(feature = "runner")]
 #[test]
+fn rover_config_steering_input_changes_delta_and_heading() {
+    let config_path = example_root().join("interactive/rover/rum.toml");
+    let result = compile_toml_model_if_source_roots_exist(&config_path)
+        .expect("rover rum.toml should compile without extra source roots");
+    let mut stepper = SimStepper::new_with_diagnostics(
+        &result.dae,
+        SimOptions {
+            rtol: 1e-5,
+            atol: 1e-7,
+            dt: Some(0.01),
+            solver_mode: SimSolverMode::RkLike,
+            pacing_mode: SimPacingMode::AsFastAsPossible,
+            ..Default::default()
+        },
+    )
+    .expect("rover rum.toml should create an RK-like simulation stepper");
+
+    assert!(
+        stepper.input_names().iter().any(|name| name == "steering"),
+        "rover solve input layout should expose steering"
+    );
+    stepper
+        .set_inputs(&[("throttle", 1.0), ("steering", 1.0)])
+        .expect("rover should accept throttle and steering inputs");
+    for _ in 0..100 {
+        stepper.step(0.01).expect("rover should advance");
+    }
+
+    let state = stepper.state();
+    let delta = state_value(&state.values, "delta");
+    let theta = state_value(&state.values, "theta");
+    assert!(
+        delta > 0.3,
+        "full steering should move the steering state; delta={delta}"
+    );
+    assert!(
+        theta > 0.1,
+        "full steering while moving should change heading; theta={theta}"
+    );
+}
+
+#[cfg(feature = "runner")]
+#[test]
 fn quadrotor_acro_config_creates_rk_stepper_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
         eprintln!(

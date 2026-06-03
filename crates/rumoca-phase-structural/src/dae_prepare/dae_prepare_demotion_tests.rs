@@ -355,6 +355,40 @@ fn test_demote_direct_assigned_states_keeps_state_defined_by_non_state_alias() {
 }
 
 #[test]
+fn test_constrained_dummy_reduction_keeps_state_with_direct_output_alias() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("delta"), Variable::new(VarName::new("delta")));
+    dae.variables.outputs.insert(
+        VarName::new("front_wheel_yaw"),
+        Variable::new(VarName::new("front_wheel_yaw")),
+    );
+    dae.variables
+        .parameters
+        .insert(VarName::new("u"), Variable::new(VarName::new("u")));
+
+    dae.continuous
+        .equations
+        .push(eq(sub(der("delta"), var("u"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("front_wheel_yaw"), var("delta"))));
+
+    let demoted = reduce_constrained_dummy_derivatives(&mut dae);
+    assert_eq!(
+        demoted, 0,
+        "a plain output alias must not make the source state a dummy derivative"
+    );
+    assert!(dae.variables.states.contains_key(&VarName::new("delta")));
+    assert!(
+        !dae.variables
+            .algebraics
+            .contains_key(&VarName::new("delta"))
+    );
+}
+
+#[test]
 fn test_demote_direct_assigned_states_keeps_state_with_other_state_in_alias_closure() {
     let mut dae = Dae::new();
     dae.variables
