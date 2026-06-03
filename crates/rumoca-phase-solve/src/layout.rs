@@ -517,6 +517,11 @@ fn eval_const_builtin(
         let rhs = eval_const_scalar(args.get(1)?, enum_literal_ordinals)?;
         Some(vec![f(lhs, rhs)])
     };
+    let binary_builtin = |function| {
+        let lhs = eval_const_scalar(args.first()?, enum_literal_ordinals)?;
+        let rhs = eval_const_scalar(args.get(1)?, enum_literal_ordinals)?;
+        rumoca_core::apply_scalar_binary_math(function, lhs, rhs).map(|value| vec![value])
+    };
 
     match function {
         Builtin::Abs => unary(f64::abs),
@@ -540,9 +545,9 @@ fn eval_const_builtin(
         Builtin::Atan2 => binary(f64::atan2),
         Builtin::Min => binary(f64::min),
         Builtin::Max => binary(f64::max),
-        Builtin::Div => binary(|lhs, rhs| (lhs / rhs).floor()),
-        Builtin::Mod => binary(f64::rem_euclid),
-        Builtin::Rem => binary(f64::rem_euclid),
+        Builtin::Div => binary_builtin(Builtin::Div),
+        Builtin::Mod => binary_builtin(Builtin::Mod),
+        Builtin::Rem => binary_builtin(Builtin::Rem),
         Builtin::NoEvent => eval_const_values(args.first()?, enum_literal_ordinals),
         Builtin::Smooth => eval_const_values(args.get(1)?, enum_literal_ordinals),
         Builtin::Homotopy => eval_const_values(args.first()?, enum_literal_ordinals),
@@ -586,4 +591,41 @@ fn expand_values_to_size(raw_values: Vec<f64>, size: usize) -> Vec<f64> {
         expanded.push(raw_values.get(idx).copied().unwrap_or(last));
     }
     expanded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn real(value: f64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn builtin(function: rumoca_core::BuiltinFunction) -> rumoca_core::Expression {
+        rumoca_core::Expression::BuiltinCall {
+            function,
+            args: vec![real(-5.5), real(2.0)],
+            span: Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn const_builtin_div_mod_and_rem_follow_modelica_rounding() {
+        let ordinals = IndexMap::new();
+        assert_eq!(
+            eval_const_values(&builtin(rumoca_core::BuiltinFunction::Div), &ordinals),
+            Some(vec![-2.0])
+        );
+        assert_eq!(
+            eval_const_values(&builtin(rumoca_core::BuiltinFunction::Mod), &ordinals),
+            Some(vec![0.5])
+        );
+        assert_eq!(
+            eval_const_values(&builtin(rumoca_core::BuiltinFunction::Rem), &ordinals),
+            Some(vec![-1.5])
+        );
+    }
 }
