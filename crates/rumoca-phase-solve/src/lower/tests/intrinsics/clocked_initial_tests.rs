@@ -672,9 +672,9 @@ fn lower_expression_supports_scalar_array_builtins() {
 #[test]
 fn lower_expression_supports_mod_and_rem_builtins() {
     let layout = VarLayout::default();
-    for function in [
-        rumoca_core::BuiltinFunction::Mod,
-        rumoca_core::BuiltinFunction::Rem,
+    for (function, expected) in [
+        (rumoca_core::BuiltinFunction::Mod, 0.5),
+        (rumoca_core::BuiltinFunction::Rem, -1.5),
     ] {
         let expr = rumoca_core::Expression::BuiltinCall {
             function,
@@ -694,7 +694,6 @@ fn lower_expression_supports_mod_and_rem_builtins() {
             lower_expression(&expr, &layout, &IndexMap::new()).expect("mod/rem should lower");
         let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
         let compiled = read_reg(&regs, lowered.result);
-        let expected = -1.5;
         assert!(
             (compiled - expected).abs() < 1e-12,
             "builtin {} mismatch: compiled={compiled}, expected={expected}",

@@ -1566,8 +1566,11 @@ impl<'a> LowerBuilder<'a> {
             rumoca_core::BuiltinFunction::Log10 => unary(self, UnaryOp::Log10),
             rumoca_core::BuiltinFunction::Atan2 => binary(self, BinaryOp::Atan2),
             rumoca_core::BuiltinFunction::Div => self.lower_div_builtin(args, scope, call_depth),
-            rumoca_core::BuiltinFunction::Mod | rumoca_core::BuiltinFunction::Rem => {
-                self.lower_truncating_remainder_builtin(args, scope, call_depth)
+            rumoca_core::BuiltinFunction::Mod => {
+                self.lower_remainder_builtin(args, scope, call_depth, UnaryOp::Floor, "mod")
+            }
+            rumoca_core::BuiltinFunction::Rem => {
+                self.lower_remainder_builtin(args, scope, call_depth, UnaryOp::Trunc, "rem")
             }
             rumoca_core::BuiltinFunction::NoEvent => arg(self, 0),
             rumoca_core::BuiltinFunction::Homotopy => {
@@ -1610,7 +1613,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
-        if args.len() < 2 {
+        if args.len() != 2 {
             return Err(LowerError::ContractViolation {
                 reason: format!("div() requires exactly 2 arguments, got {}", args.len()),
                 span: rumoca_core::Span::DUMMY,
@@ -1622,23 +1625,28 @@ impl<'a> LowerBuilder<'a> {
         Ok(self.emit_unary(UnaryOp::Trunc, q))
     }
 
-    fn lower_truncating_remainder_builtin(
+    fn lower_remainder_builtin(
         &mut self,
         args: &[rumoca_core::Expression],
         scope: &Scope,
         call_depth: usize,
+        quotient_rounding: UnaryOp,
+        function_name: &str,
     ) -> Result<Reg, LowerError> {
-        if args.len() < 2 {
+        if args.len() != 2 {
             return Err(LowerError::ContractViolation {
-                reason: format!("mod/rem requires exactly 2 arguments, got {}", args.len()),
+                reason: format!(
+                    "{function_name}() requires exactly 2 arguments, got {}",
+                    args.len()
+                ),
                 span: rumoca_core::Span::DUMMY,
             });
         }
         let x = self.lower_expr(&args[0], scope, call_depth)?;
         let y = self.lower_expr(&args[1], scope, call_depth)?;
         let q = self.emit_binary(BinaryOp::Div, x, y);
-        let q_trunc = self.emit_unary(UnaryOp::Trunc, q);
-        let product = self.emit_binary(BinaryOp::Mul, q_trunc, y);
+        let q_rounded = self.emit_unary(quotient_rounding, q);
+        let product = self.emit_binary(BinaryOp::Mul, q_rounded, y);
         Ok(self.emit_binary(BinaryOp::Sub, x, product))
     }
 
