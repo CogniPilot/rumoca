@@ -128,11 +128,14 @@ fn render_quality_snapshot_summary(
         }
     }
 
+    let ci_gate_metrics = render_ci_gate_metrics_table(&json, baseline.as_ref());
+
     Ok(Some(format!(
         "| Scope | MSL | OMC | Compile | Balance | Initial Balance | Simulation |\n\
          |---|---|---|---:|---:|---:|---:|\n\
          | `{run_scope}` | `{msl_version}` | `{omc_version}` | {compile} | {balance} | {initial_balance} | {simulation} |\n\
-         {delta_note}"
+         {delta_note}\n\
+         {ci_gate_metrics}"
     )))
 }
 
@@ -168,6 +171,327 @@ fn quality_metric_cell(
         signed_delta(numerator, base_numerator),
         signed_delta(denominator, base_denominator)
     )
+}
+
+fn render_ci_gate_metrics_table(json: &Value, baseline: Option<&Value>) -> String {
+    let mut out = String::from(
+        "#### CI Gate Snapshot\n\n\
+         _These are the baseline-relative MSL stats enforced by CI; speed metrics are informational only._\n\n\
+         | Gate area | Current (Δ vs baseline) |\n\
+         |---|---:|\n",
+    );
+    out.push_str(&compact_structural_gate_row(json, baseline));
+    out.push_str(&compact_balance_gate_row(json, baseline));
+    out.push_str(&compact_runtime_gate_row(json, baseline));
+    if let Some(row) = compact_trace_gate_row(json, baseline) {
+        out.push_str(&row);
+    }
+    out.push_str("\n<details>\n<summary><strong>CI gate details</strong></summary>\n\n");
+    out.push_str(&render_ci_gate_detail_table(json, baseline));
+    out.push_str("\n</details>\n");
+    out
+}
+
+fn compact_structural_gate_row(json: &Value, baseline: Option<&Value>) -> String {
+    let keys = [
+        ("parse", "parse_models"),
+        ("flat", "flatten_models"),
+        ("DAE", "compiled_models"),
+        ("solve", "solve_models"),
+    ];
+    compact_gate_row("Structural floors", json, baseline, &keys, None)
+}
+
+fn compact_balance_gate_row(json: &Value, baseline: Option<&Value>) -> String {
+    let keys = [
+        ("balance", "balanced_models"),
+        ("init", "initial_balanced_models"),
+    ];
+    compact_gate_row(
+        "Balance floors",
+        json,
+        baseline,
+        &keys,
+        Some("balance_denominator"),
+    )
+}
+
+fn compact_runtime_gate_row(json: &Value, baseline: Option<&Value>) -> String {
+    let keys = [("IC", "ic_ok"), ("sim", "sim_ok")];
+    compact_gate_row(
+        "Runtime floors",
+        json,
+        baseline,
+        &keys,
+        Some("sim_target_models"),
+    )
+}
+
+fn compact_gate_row(
+    label: &str,
+    json: &Value,
+    baseline: Option<&Value>,
+    keys: &[(&str, &str)],
+    denominator_key: Option<&str>,
+) -> String {
+    let current = compact_gate_values(json, keys, denominator_key);
+    let Some(baseline) = baseline else {
+        return format!("| {label} | {current} |\n");
+    };
+    let values = keys
+        .iter()
+        .map(|(name, key)| {
+            let current = json_u64(json, key).unwrap_or(0);
+            let base = json_u64(baseline, key).unwrap_or(0);
+            let denominator = denominator_key.and_then(|key| json_u64(json, key));
+            format!(
+                "{name} {} ({})",
+                gate_count_cell(current, denominator),
+                signed_delta(current, base)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("| {label} | {values} |\n")
+}
+
+fn compact_gate_values(
+    json: &Value,
+    keys: &[(&str, &str)],
+    denominator_key: Option<&str>,
+) -> String {
+    let denominator = denominator_key.and_then(|key| json_u64(json, key));
+    keys.iter()
+        .map(|(name, key)| {
+            let count = json_u64(json, key).unwrap_or(0);
+            format!("{name} {}", gate_count_cell(count, denominator))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn compact_trace_gate_row(json: &Value, baseline: Option<&Value>) -> Option<String> {
+    let current_trace = json.get("trace_accuracy_stats")?;
+    let current_acceptable =
+        json_u64(current_trace, "agreement_high")? + json_u64(current_trace, "agreement_minor")?;
+    let current_no_severe = trace_no_severe_count(current_trace)?;
+    let current_compared = json_u64(current_trace, "models_compared")?;
+    let current_target = json_u64(json, "sim_target_models");
+    let current = format!(
+        "acceptable {}, no-severe {}, compared {}",
+        gate_count_cell(current_acceptable, current_target),
+        gate_count_cell(current_no_severe, current_target),
+        current_compared,
+    );
+    let Some(baseline) = baseline else {
+        return Some(format!("| Trace floors | {current} |\n"));
+    };
+    let base_trace = baseline.get("trace_accuracy_stats")?;
+    let base_acceptable =
+        json_u64(base_trace, "agreement_high")? + json_u64(base_trace, "agreement_minor")?;
+    let base_no_severe = trace_no_severe_count(base_trace)?;
+    let base_compared = json_u64(base_trace, "models_compared")?;
+    let values = format!(
+        "acceptable {} ({}), no-severe {} ({}), compared {} ({})",
+        gate_count_cell(current_acceptable, current_target),
+        signed_delta(current_acceptable, base_acceptable),
+        gate_count_cell(current_no_severe, current_target),
+        signed_delta(current_no_severe, base_no_severe),
+        current_compared,
+        signed_delta(current_compared, base_compared),
+    );
+    Some(format!("| Trace floors | {values} |\n"))
+}
+
+fn render_ci_gate_detail_table(json: &Value, baseline: Option<&Value>) -> String {
+    let mut out = String::from(
+        "| CI gate metric | Current | Baseline | Δ |\n\
+         |---|---:|---:|---:|\n",
+    );
+    push_gate_count_row(
+        &mut out,
+        "Parse floor",
+        json,
+        baseline,
+        "parse_models",
+        Some("simulatable_attempted"),
+    );
+    push_gate_count_row(
+        &mut out,
+        "Flatten floor",
+        json,
+        baseline,
+        "flatten_models",
+        Some("simulatable_attempted"),
+    );
+    push_gate_count_row(
+        &mut out,
+        "DAE/compile floor",
+        json,
+        baseline,
+        "compiled_models",
+        Some("simulatable_attempted"),
+    );
+    push_gate_count_row(
+        &mut out,
+        "Solve-IR floor",
+        json,
+        baseline,
+        "solve_models",
+        Some("simulatable_attempted"),
+    );
+    push_gate_count_row(
+        &mut out,
+        "Balance floor",
+        json,
+        baseline,
+        "balanced_models",
+        Some("balance_denominator"),
+    );
+    push_gate_count_row(
+        &mut out,
+        "Initial balance floor",
+        json,
+        baseline,
+        "initial_balanced_models",
+        Some("balance_denominator"),
+    );
+    push_gate_count_row(
+        &mut out,
+        "IC floor",
+        json,
+        baseline,
+        "ic_ok",
+        Some("sim_target_models"),
+    );
+    push_gate_count_row(
+        &mut out,
+        "Simulation floor",
+        json,
+        baseline,
+        "sim_ok",
+        Some("sim_target_models"),
+    );
+    push_gate_count_row(
+        &mut out,
+        "Partial models ceiling",
+        json,
+        baseline,
+        "partial_models",
+        None,
+    );
+    push_gate_count_row(
+        &mut out,
+        "Unbalanced models ceiling",
+        json,
+        baseline,
+        "unbalanced_models",
+        None,
+    );
+    if let Some(row) = trace_acceptable_gate_row(json, baseline) {
+        out.push_str(&row);
+    }
+    if let Some(row) = trace_no_severe_gate_row(json, baseline) {
+        out.push_str(&row);
+    }
+    if let Some(row) = trace_compared_gate_row(json, baseline) {
+        out.push_str(&row);
+    }
+    out
+}
+
+fn push_gate_count_row(
+    out: &mut String,
+    label: &str,
+    json: &Value,
+    baseline: Option<&Value>,
+    count_key: &str,
+    denominator_key: Option<&str>,
+) {
+    let current = json_u64(json, count_key).unwrap_or(0);
+    let current_denominator = denominator_key.and_then(|key| json_u64(json, key));
+    let Some(baseline) = baseline else {
+        out.push_str(&format!(
+            "| {label} | {} | n/a | n/a |\n",
+            gate_count_cell(current, current_denominator)
+        ));
+        return;
+    };
+    let base = json_u64(baseline, count_key).unwrap_or(0);
+    let base_denominator = denominator_key.and_then(|key| json_u64(baseline, key));
+    out.push_str(&format!(
+        "| {label} | {} | {} | {} |\n",
+        gate_count_cell(current, current_denominator),
+        gate_count_cell(base, base_denominator),
+        signed_delta(current, base)
+    ));
+}
+
+fn gate_count_cell(count: u64, denominator: Option<u64>) -> String {
+    denominator.map_or_else(
+        || count.to_string(),
+        |denominator| format!("{count}/{denominator}"),
+    )
+}
+
+fn trace_acceptable_gate_row(json: &Value, baseline: Option<&Value>) -> Option<String> {
+    let current_trace = json.get("trace_accuracy_stats")?;
+    let current =
+        json_u64(current_trace, "agreement_high")? + json_u64(current_trace, "agreement_minor")?;
+    let current_denominator = json_u64(json, "sim_target_models");
+    let Some(baseline) = baseline else {
+        return Some(format!(
+            "| Trace acceptable floor | {} | n/a | n/a |\n",
+            gate_count_cell(current, current_denominator)
+        ));
+    };
+    let base_trace = baseline.get("trace_accuracy_stats")?;
+    let base = json_u64(base_trace, "agreement_high")? + json_u64(base_trace, "agreement_minor")?;
+    Some(format!(
+        "| Trace acceptable floor | {} | {} | {} |\n",
+        gate_count_cell(current, current_denominator),
+        gate_count_cell(base, json_u64(baseline, "sim_target_models")),
+        signed_delta(current, base)
+    ))
+}
+
+fn trace_no_severe_gate_row(json: &Value, baseline: Option<&Value>) -> Option<String> {
+    let current_trace = json.get("trace_accuracy_stats")?;
+    let current = trace_no_severe_count(current_trace)?;
+    let current_denominator = json_u64(json, "sim_target_models");
+    let Some(baseline) = baseline else {
+        return Some(format!(
+            "| Trace no-severe floor | {} | n/a | n/a |\n",
+            gate_count_cell(current, current_denominator)
+        ));
+    };
+    let base = trace_no_severe_count(baseline.get("trace_accuracy_stats")?)?;
+    Some(format!(
+        "| Trace no-severe floor | {} | {} | {} |\n",
+        gate_count_cell(current, current_denominator),
+        gate_count_cell(base, json_u64(baseline, "sim_target_models")),
+        signed_delta(current, base)
+    ))
+}
+
+fn trace_no_severe_count(trace: &Value) -> Option<u64> {
+    let compared = json_u64(trace, "models_compared")?;
+    let severe = json_u64(trace, "models_with_severe_channel")?;
+    Some(compared.saturating_sub(severe))
+}
+
+fn trace_compared_gate_row(json: &Value, baseline: Option<&Value>) -> Option<String> {
+    let current = json_u64(json.get("trace_accuracy_stats")?, "models_compared")?;
+    let Some(baseline) = baseline else {
+        return Some(format!(
+            "| Trace compared floor (drop ≤2) | {current} | n/a | n/a |\n"
+        ));
+    };
+    let base = json_u64(baseline.get("trace_accuracy_stats")?, "models_compared")?;
+    Some(format!(
+        "| Trace compared floor (drop ≤2) | {current} | {base} | {} |\n",
+        signed_delta(current, base)
+    ))
 }
 
 fn trace_baseline_delta_note(json: &Value, baseline: &Value) -> Option<String> {
@@ -874,48 +1198,118 @@ mod tests {
     fn pr_comment_renders_existing_msl_reports() {
         let temp = tempfile::tempdir().expect("tempdir");
         let results = temp.path();
+        let baseline_path = write_existing_msl_report_inputs(results);
+
+        let rendered = render_pr_comment(results, Some(&baseline_path)).expect("render comment");
+        assert!(rendered.contains(COMMENT_MARKER));
+        assert!(rendered.contains(
+            "| `full` | `v4.1.0` | `OpenModelica 1.26.1` | 10/10 (Δ+2/0) | 9/10 (Δ+1/0) | 8/10 (Δ0/0) | 7/10 (Δ+2/+1) |"
+        ));
+        assert!(rendered.contains("Deltas compare numerator/denominator"));
+        assert!(rendered.contains(
+            "Baseline: quality gate v1, commit `bac3be3`, MSL `v4.1.0`, OMC `OpenModelica 1.26.7`"
+        ));
+        assert!(rendered.contains("#### CI Gate Snapshot"));
+        assert!(rendered.contains(
+            "| Structural floors | parse 10 (0), flat 9 (+1), DAE 10 (+2), solve 7 (+1) |"
+        ));
+        assert!(rendered.contains(
+            "| Trace floors | acceptable 6/10 (+2), no-severe 6/10 (+2), compared 7 (+1) |"
+        ));
+        assert!(rendered.contains("<summary><strong>CI gate details</strong></summary>"));
+        assert!(rendered.contains("| Flatten floor | 9/10 | 8/10 | +1 |"));
+        assert!(rendered.contains("| Solve-IR floor | 7/10 | 6/10 | +1 |"));
+        assert!(rendered.contains("| IC floor | 6/10 | 5/10 | +1 |"));
+        assert!(rendered.contains("| Trace acceptable floor | 6/10 | 4/10 | +2 |"));
+        assert!(rendered.contains("| Trace no-severe floor | 6/10 | 4/10 | +2 |"));
+        assert!(rendered.contains("| Trace compared floor (drop ≤2) | 7 | 6 | +1 |"));
+        assert!(rendered.contains("Trace agreement vs baseline: high+near Δ+2, deviation Δ-1"));
+        assert!(rendered.contains("#### Package Pass Rates"));
+        assert!(rendered.contains("| MSL Package | n | Ast | Flat |"));
+        assert!(rendered.contains("| Overall | 10 | 100% | 90% |"));
+        assert!(rendered.contains("<summary><strong>Per-package pass rates</strong></summary>"));
+        assert!(rendered.contains("| Blocks | 10 | 100% | 90% |"));
+        assert!(!rendered.contains("0.01s"));
+        assert!(rendered.contains("<summary><strong>MLS Contract Coverage</strong></summary>"));
+        assert!(rendered.contains("| OTHER | 10 |"));
+    }
+
+    fn write_existing_msl_report_inputs(results: &Path) -> PathBuf {
+        write_existing_quality_snapshot(results);
+        let baseline_path = results.join("msl_quality_baseline.json");
+        write_existing_quality_baseline(&baseline_path);
+        write_existing_markdown_reports(results);
+        baseline_path
+    }
+
+    fn write_existing_quality_snapshot(results: &Path) {
         fs::write(
             results.join("msl_quality_current.json"),
             r#"{
                 "run_scope": "full",
                 "msl_version": "v4.1.0",
                 "omc_version": "OpenModelica 1.26.1",
+                "simulatable_attempted": 10,
+                "parse_models": 10,
+                "flatten_models": 9,
+                "solve_models": 7,
                 "compiled_models": 10,
                 "balance_denominator": 10,
                 "balanced_models": 9,
+                "partial_models": 1,
+                "unbalanced_models": 0,
                 "initial_balanced_models": 8,
+                "sim_target_models": 10,
+                "ic_ok": 6,
                 "sim_ok": 7,
                 "sim_attempted": 10,
                 "trace_accuracy_stats": {
+                    "models_compared": 7,
                     "agreement_high": 4,
                     "agreement_minor": 2,
-                    "agreement_deviation": 1
+                    "agreement_deviation": 1,
+                    "models_with_severe_channel": 1
                 }
             }"#,
         )
         .expect("write quality snapshot");
-        let baseline_path = results.join("msl_quality_baseline.json");
+    }
+
+    fn write_existing_quality_baseline(baseline_path: &Path) {
         fs::write(
-            &baseline_path,
+            baseline_path,
             r#"{
                 "quality_gate_version": 1,
                 "git_commit": "bac3be350bc0eecb0727f3f0fa27c38320b81173",
                 "msl_version": "v4.1.0",
                 "omc_version": "OpenModelica 1.26.7",
+                "simulatable_attempted": 10,
+                "parse_models": 10,
+                "flatten_models": 8,
+                "solve_models": 6,
                 "compiled_models": 8,
                 "balance_denominator": 10,
                 "balanced_models": 8,
+                "partial_models": 1,
+                "unbalanced_models": 0,
                 "initial_balanced_models": 8,
+                "sim_target_models": 10,
+                "ic_ok": 5,
                 "sim_ok": 5,
                 "sim_attempted": 9,
                 "trace_accuracy_stats": {
+                    "models_compared": 6,
                     "agreement_high": 3,
                     "agreement_minor": 1,
-                    "agreement_deviation": 2
+                    "agreement_deviation": 2,
+                    "models_with_severe_channel": 2
                 }
             }"#,
         )
         .expect("write quality baseline");
+    }
+
+    fn write_existing_markdown_reports(results: &Path) {
         fs::write(
             results.join("mls_contract_coverage.md"),
             "| MLS Category | n |\n|---|---:|\n| OTHER | 10 |\n",
@@ -934,25 +1328,6 @@ mod tests {
             "| MSL Package | Trace |\n|---|---:|\n| Blocks | 90% |\n",
         )
         .expect("write trace accuracy");
-
-        let rendered = render_pr_comment(results, Some(&baseline_path)).expect("render comment");
-        assert!(rendered.contains(COMMENT_MARKER));
-        assert!(rendered.contains(
-            "| `full` | `v4.1.0` | `OpenModelica 1.26.1` | 10/10 (Δ+2/0) | 9/10 (Δ+1/0) | 8/10 (Δ0/0) | 7/10 (Δ+2/+1) |"
-        ));
-        assert!(rendered.contains("Deltas compare numerator/denominator"));
-        assert!(rendered.contains(
-            "Baseline: quality gate v1, commit `bac3be3`, MSL `v4.1.0`, OMC `OpenModelica 1.26.7`"
-        ));
-        assert!(rendered.contains("Trace agreement vs baseline: high+near Δ+2, deviation Δ-1"));
-        assert!(rendered.contains("#### Package Pass Rates"));
-        assert!(rendered.contains("| MSL Package | n | Ast | Flat |"));
-        assert!(rendered.contains("| Overall | 10 | 100% | 90% |"));
-        assert!(rendered.contains("<summary><strong>Per-package pass rates</strong></summary>"));
-        assert!(rendered.contains("| Blocks | 10 | 100% | 90% |"));
-        assert!(!rendered.contains("0.01s"));
-        assert!(rendered.contains("<summary><strong>MLS Contract Coverage</strong></summary>"));
-        assert!(rendered.contains("| OTHER | 10 |"));
     }
 
     #[test]
