@@ -122,6 +122,7 @@ fn render_quality_snapshot_summary(
         delta_note.push_str(
             "\n_Deltas compare numerator/denominator against the committed MSL quality baseline._\n",
         );
+        delta_note.push_str(&baseline_identity_note(baseline));
         if let Some(trace_note) = trace_baseline_delta_note(&json, baseline) {
             delta_note.push_str(&trace_note);
         }
@@ -184,6 +185,22 @@ fn trace_baseline_delta_note(json: &Value, baseline: &Value) -> Option<String> {
     ))
 }
 
+fn baseline_identity_note(baseline: &Value) -> String {
+    let version = json_u64(baseline, "quality_gate_version")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let commit = json_str(baseline, "git_commit")
+        .map(short_commit)
+        .unwrap_or("unknown");
+    let msl = json_str(baseline, "msl_version").unwrap_or("unknown");
+    let omc = json_str(baseline, "omc_version").unwrap_or("unknown");
+    format!("_Baseline: quality gate v{version}, commit `{commit}`, MSL `{msl}`, OMC `{omc}`._\n")
+}
+
+fn short_commit(commit: &str) -> &str {
+    commit.get(..7).unwrap_or(commit)
+}
+
 fn signed_delta(current: u64, baseline: u64) -> String {
     let delta = current as i128 - baseline as i128;
     if delta > 0 {
@@ -228,6 +245,14 @@ impl SpeedView {
             Self::Total => "Table 1 — Total (model → simulated results)",
             Self::Compilation => "Table 2 — Compilation (build-to-runnable)",
             Self::Simulation => "Table 3 — Simulation (integration only)",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Total => "Total",
+            Self::Compilation => "Compilation",
+            Self::Simulation => "Simulation",
         }
     }
 
@@ -349,8 +374,16 @@ fn render_detailed_speed_section(records: &[SpeedRecord]) -> String {
         "Compilation and simulation are reported separately for the **{} trace-agreeing models** with valid timings on both tools. `Speedup = OMC / Rumoca` (>1 means rumoca faster).\n\n",
         records.len()
     ));
+    out.push_str("##### Aggregate speed summary\n\n");
+    out.push_str(&render_speed_aggregate_table(records));
+    out.push('\n');
+    out.push_str("<details>\n<summary><strong>Speed breakdown</strong></summary>\n\n");
     out.push_str("##### Where rumoca's time goes\n\n");
     out.push_str(&render_stage_breakdown_table(records));
+    out.push('\n');
+    out.push_str(&render_stage_totals_table(records));
+    out.push('\n');
+    out.push_str("##### Speed by system size\n\n");
     for view in [
         SpeedView::Total,
         SpeedView::Compilation,
@@ -359,8 +392,42 @@ fn render_detailed_speed_section(records: &[SpeedRecord]) -> String {
         out.push('\n');
         out.push_str(&render_speed_view_table(records, view));
     }
+    out.push_str("\n</details>\n");
     out.push('\n');
     out.push_str(&render_slowest_models_tables(records));
+    out
+}
+
+fn render_speed_aggregate_table(records: &[SpeedRecord]) -> String {
+    let mut out = String::from(
+        "| Phase | Models | Rumoca total (s) | OMC total (s) | Throughput speedup (×) | Median per-model speedup (×) |\n\
+         |---|--:|--:|--:|--:|--:|\n",
+    );
+    for view in [
+        SpeedView::Total,
+        SpeedView::Compilation,
+        SpeedView::Simulation,
+    ] {
+        let rumoca_sum = records
+            .iter()
+            .map(|record| view.rumoca_seconds(record))
+            .sum::<f64>();
+        let omc_sum = records
+            .iter()
+            .map(|record| view.omc_seconds(record))
+            .sum::<f64>();
+        let median_speedup = median_value(
+            records
+                .iter()
+                .map(|record| view.omc_seconds(record) / view.rumoca_seconds(record)),
+        );
+        out.push_str(&format!(
+            "| {} | {} | {rumoca_sum:.1} | {omc_sum:.1} | **{:.2}** | **{median_speedup:.2}** |\n",
+            view.label(),
+            records.len(),
+            omc_sum / rumoca_sum,
+        ));
+    }
     out
 }
 
@@ -382,23 +449,41 @@ fn render_stage_breakdown_table(records: &[SpeedRecord]) -> String {
             median_value(bin_records.iter().map(|record| record.rumoca_sim_run)),
         ));
     }
-    out.push_str(&format!(
-        "| **sum ({})** |  | {:.1} | {:.1} | {:.1} |\n",
-        records.len(),
-        records
-            .iter()
-            .map(|record| record.rumoca_frontend_compile)
-            .sum::<f64>(),
-        records
-            .iter()
-            .map(|record| record.rumoca_sim_build)
-            .sum::<f64>(),
-        records
-            .iter()
-            .map(|record| record.rumoca_sim_run)
-            .sum::<f64>(),
-    ));
     out
+}
+
+fn render_stage_totals_table(records: &[SpeedRecord]) -> String {
+    let frontend = records
+        .iter()
+        .map(|record| record.rumoca_frontend_compile)
+        .sum::<f64>();
+    let sim_build = records
+        .iter()
+        .map(|record| record.rumoca_sim_build)
+        .sum::<f64>();
+    let sim_run = records
+        .iter()
+        .map(|record| record.rumoca_sim_run)
+        .sum::<f64>();
+    let total = frontend + sim_build + sim_run;
+    format!(
+        "| Rumoca stage | Total seconds | Share of rumoca total |\n\
+         |---|--:|--:|\n\
+         | front→DAE | {frontend:.1} | {:.0}% |\n\
+         | Solve-IR + JIT | {sim_build:.1} | {:.0}% |\n\
+         | integration | {sim_run:.1} | {:.0}% |\n",
+        stage_share(frontend, total),
+        stage_share(sim_build, total),
+        stage_share(sim_run, total),
+    )
+}
+
+fn stage_share(stage_seconds: f64, total_seconds: f64) -> f64 {
+    if total_seconds > 0.0 {
+        stage_seconds * 100.0 / total_seconds
+    } else {
+        0.0
+    }
 }
 
 fn render_speed_view_table(records: &[SpeedRecord], view: SpeedView) -> String {
@@ -420,27 +505,12 @@ fn render_speed_view_table(records: &[SpeedRecord], view: SpeedView) -> String {
             bin_records.len()
         ));
     }
-    let rumoca_sum = records
-        .iter()
-        .map(|record| view.rumoca_seconds(record))
-        .sum::<f64>();
-    let omc_sum = records
-        .iter()
-        .map(|record| view.omc_seconds(record))
-        .sum::<f64>();
     let speedups = records
         .iter()
         .map(|record| view.omc_seconds(record) / view.rumoca_seconds(record))
         .collect::<Vec<_>>();
     out.push_str(&format!(
-        "| **All (sum)** | {} | {:.1} | {:.1} | **{:.2}** |\n\n",
-        records.len(),
-        rumoca_sum,
-        omc_sum,
-        omc_sum / rumoca_sum
-    ));
-    out.push_str(&format!(
-        "Per-model speedup: min {:.2}, median {:.2}, max {:.2}.\n",
+        "\nPer-model speedup: min {:.2}, median {:.2}, max {:.2}.\n",
         min_value(&speedups),
         median_value(speedups.iter().copied()),
         max_value(&speedups),
@@ -828,6 +898,10 @@ mod tests {
         fs::write(
             &baseline_path,
             r#"{
+                "quality_gate_version": 1,
+                "git_commit": "bac3be350bc0eecb0727f3f0fa27c38320b81173",
+                "msl_version": "v4.1.0",
+                "omc_version": "OpenModelica 1.26.7",
                 "compiled_models": 8,
                 "balance_denominator": 10,
                 "balanced_models": 8,
@@ -867,6 +941,9 @@ mod tests {
             "| `full` | `v4.1.0` | `OpenModelica 1.26.1` | 10/10 (Δ+2/0) | 9/10 (Δ+1/0) | 8/10 (Δ0/0) | 7/10 (Δ+2/+1) |"
         ));
         assert!(rendered.contains("Deltas compare numerator/denominator"));
+        assert!(rendered.contains(
+            "Baseline: quality gate v1, commit `bac3be3`, MSL `v4.1.0`, OMC `OpenModelica 1.26.7`"
+        ));
         assert!(rendered.contains("Trace agreement vs baseline: high+near Δ+2, deviation Δ-1"));
         assert!(rendered.contains("#### Package Pass Rates"));
         assert!(rendered.contains("| MSL Package | n | Ast | Flat |"));
@@ -943,12 +1020,15 @@ mod tests {
 
         let rendered = render_speed_section(results).expect("render speed section");
 
+        assert!(rendered.contains("Aggregate speed summary"));
+        assert!(rendered.contains("| Total | 2 | 6.0 | 13.0 | **2.17** | **2.25** |"));
         assert!(rendered.contains("Where rumoca's time goes"));
+        assert!(rendered.contains("<summary><strong>Speed breakdown</strong></summary>"));
         assert!(rendered.contains("Table 1 — Total"));
         assert!(rendered.contains("Table 2 — Compilation"));
         assert!(rendered.contains("Table 3 — Simulation"));
         assert!(rendered.contains("| 1–9 | 1 | 2.0000 | 5.0000 | **2.50** |"));
-        assert!(rendered.contains("| **All (sum)** | 2 | 6.0 | 13.0 | **2.17** |"));
+        assert!(!rendered.contains("All (sum)"));
         assert!(rendered.contains("<summary><strong>Top 10 slowest models</strong></summary>"));
         assert!(rendered.contains("Top 10 slowest rumoca compilation models"));
         assert!(rendered.contains("Top 10 slowest rumoca simulation models"));
