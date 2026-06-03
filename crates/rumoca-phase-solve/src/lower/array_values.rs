@@ -124,6 +124,25 @@ fn indexed_record_field_key_indices(key: &str, base_key: &str, field: &str) -> O
     (candidate_base == base_key).then_some(indices)
 }
 
+/// Cartesian product of per-dimension index selections into one-based
+/// subscript tuples (the same ordering `collect_slice_binding_keys` uses).
+fn collect_slice_index_combos(
+    selections: &[Vec<usize>],
+    depth: usize,
+    current: &mut Vec<usize>,
+    combos: &mut Vec<Vec<usize>>,
+) {
+    if depth >= selections.len() {
+        combos.push(current.clone());
+        return;
+    }
+    for &index in &selections[depth] {
+        current.push(index);
+        collect_slice_index_combos(selections, depth + 1, current, combos);
+        current.pop();
+    }
+}
+
 fn infer_dims_from_index_sets(index_sets: impl IntoIterator<Item = Vec<usize>>) -> Vec<usize> {
     let mut dims = Vec::new();
     for indices in index_sets {
@@ -1158,6 +1177,15 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
+        // A function-scope (local) array binding shadows a global model
+        // variable of the same name. The slice path below consults the global
+        // layout shape, which would mis-resolve e.g. a `Real[4]` function input
+        // `p` against a `Real[3]` model state `p` (yielding a phantom `p[4]`).
+        // Resolve against the local binding first, mirroring the local-first
+        // ordering of the unsubscripted `lower_var_ref_array_like_values` path.
+        if let Some(values) = self.local_shadowed_subscript_values(name, subscripts, scope)? {
+            return Ok(values);
+        }
         let Some(keys) =
             self.slice_binding_keys_or_scalar_fallback(name.as_str(), subscripts, scope)?
         else {
@@ -1170,6 +1198,50 @@ impl<'a> LowerBuilder<'a> {
             ]);
         };
         self.load_binding_keys(&keys)
+    }
+
+    /// Resolve `name[subscripts]` against a function-scope (local) array
+    /// binding, ignoring any global model variable of the same name. Returns
+    /// `None` (so the caller falls back to global resolution) unless `name` is
+    /// a local array binding and every selected element is locally available.
+    fn local_shadowed_subscript_values(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        scope: &Scope,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let key = name.as_str();
+        if subscripts.is_empty() {
+            return Ok(None);
+        }
+        let Some(dims) = self.local_binding_dims.get(key).cloned() else {
+            return Ok(None);
+        };
+        if dims.iter().any(|dim| *dim <= 0) {
+            return Ok(None);
+        }
+        let Some(bindings) = self
+            .local_indexed_bindings
+            .get(key)
+            .filter(|bindings| !bindings.is_empty())
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let shape = dims.iter().map(|dim| *dim as usize).collect::<Vec<_>>();
+        let Ok(selections) = self.slice_selections(subscripts, &shape, scope) else {
+            return Ok(None);
+        };
+        let mut combos = Vec::new();
+        collect_slice_index_combos(&selections, 0, &mut Vec::new(), &mut combos);
+        let mut regs = Vec::with_capacity(combos.len());
+        for combo in &combos {
+            let Some(binding) = bindings.iter().find(|binding| binding.indices == *combo) else {
+                return Ok(None);
+            };
+            regs.push(binding.reg);
+        }
+        Ok(Some(regs))
     }
 
     fn lower_index_array_like_values(
