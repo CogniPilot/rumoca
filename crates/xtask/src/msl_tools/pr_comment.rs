@@ -627,6 +627,10 @@ fn max_value(values: &[f64]) -> f64 {
 }
 
 fn append_report_section(body: &mut String, title: &str, path: &Path) -> Result<()> {
+    if title == "Package Pass Rates" {
+        return append_package_pass_rates_section(body, path);
+    }
+
     body.push_str("<details>\n");
     body.push_str(&format!("<summary><strong>{title}</strong></summary>\n\n"));
     if !path.is_file() {
@@ -642,6 +646,19 @@ fn append_report_section(body: &mut String, title: &str, path: &Path) -> Result<
     Ok(())
 }
 
+fn append_package_pass_rates_section(body: &mut String, path: &Path) -> Result<()> {
+    body.push_str("#### Package Pass Rates\n\n");
+    if !path.is_file() {
+        body.push_str("_Report was not produced in this run._\n\n");
+        return Ok(());
+    }
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    body.push_str(&render_package_pass_rates_section(&text));
+    body.push_str("\n\n");
+    Ok(())
+}
+
 fn report_section_text(title: &str, text: &str) -> String {
     let trimmed = text.trim();
     if title == "Package Pass Rates" {
@@ -649,6 +666,47 @@ fn report_section_text(title: &str, text: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn render_package_pass_rates_section(text: &str) -> String {
+    let table = strip_time_columns(text.trim());
+    let lines = table.lines().collect::<Vec<_>>();
+    if lines.len() < 3 {
+        return table;
+    }
+
+    let header = lines[0];
+    let separator = lines[1];
+    let (overall_rows, package_rows): (Vec<_>, Vec<_>) = lines[2..]
+        .iter()
+        .partition(|line| markdown_table_cells(line).first() == Some(&"Overall"));
+    if overall_rows.is_empty() {
+        return table;
+    }
+
+    let mut out = String::new();
+    out.push_str(header);
+    out.push('\n');
+    out.push_str(separator);
+    out.push('\n');
+    for row in overall_rows {
+        out.push_str(row);
+        out.push('\n');
+    }
+    if !package_rows.is_empty() {
+        out.push_str("\n<details>\n");
+        out.push_str("<summary><strong>Per-package pass rates</strong></summary>\n\n");
+        out.push_str(header);
+        out.push('\n');
+        out.push_str(separator);
+        out.push('\n');
+        for row in package_rows {
+            out.push_str(row);
+            out.push('\n');
+        }
+        out.push_str("\n</details>");
+    }
+    out.trim_end().to_string()
 }
 
 fn strip_time_columns(text: &str) -> String {
@@ -793,7 +851,8 @@ mod tests {
             results.join("msl_package_pass_rates.md"),
             "| MSL Package | n | Ast | Time | Flat | Time |\n\
              |---|---:|---:|---:|---:|---:|\n\
-             | Blocks | 10 | 100% | 0.01s | 90% | 0.02s |\n",
+             | Blocks | 10 | 100% | 0.01s | 90% | 0.02s |\n\
+             | Overall | 10 | 100% | 0.01s | 90% | 0.02s |\n",
         )
         .expect("write pass rates");
         fs::write(
@@ -809,9 +868,12 @@ mod tests {
         ));
         assert!(rendered.contains("Deltas compare numerator/denominator"));
         assert!(rendered.contains("Trace agreement vs baseline: high+near Δ+2, deviation Δ-1"));
+        assert!(rendered.contains("#### Package Pass Rates"));
         assert!(rendered.contains("| MSL Package | n | Ast | Flat |"));
+        assert!(rendered.contains("| Overall | 10 | 100% | 90% |"));
+        assert!(rendered.contains("<summary><strong>Per-package pass rates</strong></summary>"));
+        assert!(rendered.contains("| Blocks | 10 | 100% | 90% |"));
         assert!(!rendered.contains("0.01s"));
-        assert!(rendered.contains("<summary><strong>Package Pass Rates</strong></summary>"));
         assert!(rendered.contains("<summary><strong>MLS Contract Coverage</strong></summary>"));
         assert!(rendered.contains("| OTHER | 10 |"));
     }
