@@ -35,6 +35,24 @@ fn compile_ball_example() -> rumoca::CompilationResult {
         .expect("Ball example should compile")
 }
 
+fn compile_circuit_example() -> rumoca::CompilationResult {
+    let model_path = example_root().join("models/Circuit.mo");
+    assert!(
+        model_path.is_file(),
+        "expected example model at {}",
+        model_path.display()
+    );
+
+    Compiler::new()
+        .model("Circuit.Test")
+        .compile_file(
+            model_path
+                .to_str()
+                .expect("example path should be utf8 for this test"),
+        )
+        .expect("Circuit example should compile")
+}
+
 #[derive(serde::Deserialize)]
 struct ExampleTomlConfig {
     #[serde(default)]
@@ -909,6 +927,54 @@ fn ball_results_panel_path_applies_reinit_bounce() {
     assert!(
         final_x > 0.0,
         "Ball should be above the ground after the first bounce at t=1.8; x={final_x}"
+    );
+}
+
+#[test]
+fn circuit_example_simulates_rc_transient() {
+    let result = compile_circuit_example();
+    let sim = rumoca_sim::simulate_dae_with_diagnostics(
+        &result.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 0.2,
+            dt: Some(0.005),
+            solver_mode: rumoca_sim::SimSolverMode::RkLike,
+            ..Default::default()
+        },
+    )
+    .expect("Circuit example should simulate");
+    let cap_v_idx = sim
+        .names
+        .iter()
+        .position(|name| name == "cap.v")
+        .expect("capacitor voltage should be visible");
+    let cap_v = &sim.data[cap_v_idx];
+    let value_at = |target: f64| {
+        sim.times
+            .iter()
+            .zip(cap_v.iter())
+            .find(|(time, _)| (**time - target).abs() < 1.0e-12)
+            .map(|(_, value)| *value)
+            .unwrap_or_else(|| panic!("expected output sample at t={target}"))
+    };
+
+    let initial = cap_v.first().copied().expect("simulation should have data");
+    let one_tau = value_at(0.025);
+    let final_v = cap_v.last().copied().expect("simulation should have data");
+    let expected_one_tau = 5.0 * (1.0 - f64::exp(-1.0));
+
+    assert!(
+        initial.abs() < 1.0e-9,
+        "RC capacitor should start discharged; cap.v(0)={initial}"
+    );
+    assert!(
+        (one_tau - expected_one_tau).abs() < 0.08,
+        "RC capacitor should follow the one-time-constant transient; \
+         cap.v(0.025)={one_tau}, expected {expected_one_tau}"
+    );
+    assert!(
+        final_v > 4.95,
+        "RC capacitor should settle near source voltage; cap.v(0.2)={final_v}"
     );
 }
 
