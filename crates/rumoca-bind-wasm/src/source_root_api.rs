@@ -389,11 +389,26 @@ pub fn compile_check_with_source_roots_with_options(
                 .map_err(|message| JsValue::from_str(&message))?;
             let check_ms = wasm_elapsed_ms(check_started);
             let total_ms = wasm_elapsed_ms(total_started);
+            let warning_diagnostics = session
+                .compile_model_diagnostics(&requested_model)
+                .diagnostics
+                .into_iter()
+                .filter(|diag| matches!(diag.severity, rumoca_core::DiagnosticSeverity::Warning))
+                .map(|diag| {
+                    serde_json::json!({
+                        "code": diag.code,
+                        "message": diag.message,
+                        "labels": diag.labels,
+                        "notes": diag.notes,
+                    })
+                })
+                .collect::<Vec<_>>();
 
             let timing = compile_phase_timing_stats();
             Ok(serde_json::json!({
                 "status": "compiled",
                 "model_name": requested_model,
+                "__compile_warnings": warning_diagnostics,
                 "__compile_check_timing": {
                     "load_source_roots_ms": load_ms,
                     "update_document_ms": update_ms,

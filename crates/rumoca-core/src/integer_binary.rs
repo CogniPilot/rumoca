@@ -18,9 +18,9 @@ pub enum IntegerBinaryOperator {
 /// Evaluate an integer binary operation.
 pub fn eval_integer_binary(op: IntegerBinaryOperator, lhs: i64, rhs: i64) -> Option<i64> {
     match op {
-        IntegerBinaryOperator::Add => Some(lhs + rhs),
-        IntegerBinaryOperator::Sub => Some(lhs - rhs),
-        IntegerBinaryOperator::Mul => Some(lhs * rhs),
+        IntegerBinaryOperator::Add => lhs.checked_add(rhs),
+        IntegerBinaryOperator::Sub => lhs.checked_sub(rhs),
+        IntegerBinaryOperator::Mul => lhs.checked_mul(rhs),
         IntegerBinaryOperator::Div => eval_integer_slash(lhs, rhs),
         IntegerBinaryOperator::Exp => {
             let exponent = u32::try_from(rhs).ok()?;
@@ -86,6 +86,22 @@ mod tests {
     #[test]
     fn exp_overflow_returns_none() {
         assert_eq!(eval_integer_binary(IntegerBinaryOperator::Exp, 2, 63), None);
+    }
+
+    #[test]
+    fn add_sub_mul_overflow_returns_none() {
+        assert_eq!(
+            eval_integer_binary(IntegerBinaryOperator::Add, i64::MAX, 1),
+            None
+        );
+        assert_eq!(
+            eval_integer_binary(IntegerBinaryOperator::Sub, i64::MIN, 1),
+            None
+        );
+        assert_eq!(
+            eval_integer_binary(IntegerBinaryOperator::Mul, i64::MAX, 2),
+            None
+        );
     }
 
     #[test]
