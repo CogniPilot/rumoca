@@ -98,26 +98,41 @@ fn direct_dummy_state_candidate(
     let references_other_state = state_names
         .iter()
         .any(|other| other != &state_name && expr_contains_var(&defining_expr, other))
-        || defining_expr_references_output(dae, &defining_expr);
+        || defining_expr_references_non_alias_output(dae, &defining_expr, &state_name);
     references_other_state.then_some(state_name)
 }
 
-/// True if `defining_expr` references a model output variable. A state defined
-/// by `S = E` where `E` depends on an output is over-determined: outputs are
-/// causally computed by their own block equations, so a differentiated input
-/// bound to one (e.g. a `Modelica.Blocks.Continuous.Der` chain `der1.u =
-/// Bessel.y`, or successive `derN.u = der(N-1).y`) is not a free state but a
-/// dummy derivative to be deselected (Mattsson & Söderlind dummy derivatives, as
-/// in OpenModelica's `IndexReduction.mo`). The direct [`expr_contains_var`]
-/// state check and the linear [`linear_constraint_dummy_state_definitions`] path
-/// both miss this when the binding runs through a nonlinear output such as a
-/// filter result. The differentiation guard in `constrained_dummy_derivative_plan`
-/// still rejects the demotion if `d/dt(E)` cannot be expressed over the states.
-fn defining_expr_references_output(dae: &Dae, defining_expr: &Expression) -> bool {
+/// True if `defining_expr` references a model output variable that is not just a
+/// direct alias of `state_name`. A state defined by `S = E` where `E` depends on
+/// a computed output is over-determined: outputs are causally computed by their
+/// own block equations, so a differentiated input bound to one can be a dummy
+/// derivative to deselect. Plain visualization aliases (`output = state`) must
+/// not trigger demotion, or the state loses its ODE row.
+fn defining_expr_references_non_alias_output(
+    dae: &Dae,
+    defining_expr: &Expression,
+    state_name: &VarName,
+) -> bool {
     let mut refs: Vec<VarName> = Vec::new();
     defining_expr.collect_var_refs(&mut refs);
-    refs.iter()
-        .any(|name| dae.variables.outputs.contains_key(name))
+    refs.iter().any(|name| {
+        dae.variables.outputs.contains_key(name)
+            && !output_is_direct_alias_of_state(dae, name, state_name)
+    })
+}
+
+fn output_is_direct_alias_of_state(dae: &Dae, output_name: &VarName, state_name: &VarName) -> bool {
+    super::find_defining_expr_candidates(dae, output_name)
+        .into_iter()
+        .any(|expr| expression_is_plain_var_ref(&expr, state_name))
+}
+
+fn expression_is_plain_var_ref(expr: &Expression, expected: &VarName) -> bool {
+    matches!(
+        expr,
+        Expression::VarRef { name, subscripts, .. }
+            if subscripts.is_empty() && name.var_name() == expected
+    )
 }
 
 fn numeric_constant(expr: &Expression) -> Option<f64> {
