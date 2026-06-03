@@ -1,6 +1,8 @@
 # npm Packaging
 
 This directory is the canonical npm entrypoint for Rumoca WASM packaging.
+The build copies this README into each generated `pkg/<profile>-<variant>`
+package so the published npm package links back to the packaging workflow.
 
 ## Common commands
 

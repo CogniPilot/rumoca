@@ -56,6 +56,9 @@ export const patchWasmPackageJson = async (pkgDir, variant) => {
   if (await exists(path.join(pkgDir, "rumoca_package_meta.json"))) {
     addFile("rumoca_package_meta.json");
   }
+  if (await exists(path.join(pkgDir, "README.md"))) {
+    addFile("README.md");
+  }
   addFile("snippets");
 
   const unique = [...new Set(pkg.files)];
