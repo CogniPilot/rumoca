@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,14 @@ const DEFAULT_OUTPUT_FILE: &str = "msl_pr_comment.md";
 const DEFAULT_BASELINE_FILE: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
 const COMMENT_MARKER: &str = "<!-- rumoca-msl-quality-summary -->";
+const SIZE_BINS: &[(u64, Option<u64>)] = &[
+    (1, Some(9)),
+    (10, Some(24)),
+    (25, Some(49)),
+    (50, Some(99)),
+    (100, Some(249)),
+    (250, None),
+];
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct Args {
@@ -63,7 +72,7 @@ fn render_pr_comment(results_dir: &Path, baseline_path: Option<&Path>) -> Result
         "Trace Accuracy vs OMC",
         &results_dir.join("msl_package_trace_accuracy.md"),
     )?;
-    body.push_str("#### Compile Speed vs OMC\n\n");
+    body.push_str("#### Speed vs OMC\n\n");
     body.push_str(&render_speed_section(results_dir)?);
     body.push_str("\n\n");
     append_optional_link_note(&mut body, results_dir);
@@ -107,10 +116,15 @@ fn render_quality_snapshot_summary(
         "balance_denominator",
     );
     let simulation = quality_metric_cell(&json, baseline.as_ref(), "sim_ok", "sim_attempted");
-    let delta_note = baseline
-        .as_ref()
-        .map(|_| "\n_Deltas compare numerator/denominator against the committed MSL quality baseline._\n")
-        .unwrap_or("");
+    let mut delta_note = String::new();
+    if let Some(baseline) = baseline.as_ref() {
+        delta_note.push_str(
+            "\n_Deltas compare numerator/denominator against the committed MSL quality baseline._\n",
+        );
+        if let Some(trace_note) = trace_baseline_delta_note(&json, baseline) {
+            delta_note.push_str(&trace_note);
+        }
+    }
 
     Ok(Some(format!(
         "| Scope | MSL | OMC | Compile | Balance | Initial Balance | Simulation |\n\
@@ -154,6 +168,21 @@ fn quality_metric_cell(
     )
 }
 
+fn trace_baseline_delta_note(json: &Value, baseline: &Value) -> Option<String> {
+    let current = json.get("trace_accuracy_stats")?;
+    let base = baseline.get("trace_accuracy_stats")?;
+    let current_agree =
+        json_u64(current, "agreement_high")? + json_u64(current, "agreement_minor")?;
+    let base_agree = json_u64(base, "agreement_high")? + json_u64(base, "agreement_minor")?;
+    let current_deviation = json_u64(current, "agreement_deviation")?;
+    let base_deviation = json_u64(base, "agreement_deviation")?;
+    Some(format!(
+        "_Trace agreement vs baseline: high+near Δ{}, deviation Δ{}._\n",
+        signed_delta(current_agree, base_agree),
+        signed_delta(current_deviation, base_deviation),
+    ))
+}
+
 fn signed_delta(current: u64, baseline: u64) -> String {
     let delta = current as i128 - baseline as i128;
     if delta > 0 {
@@ -163,11 +192,282 @@ fn signed_delta(current: u64, baseline: u64) -> String {
     }
 }
 
-/// Render the compile-speed table and mermaid scalability plot from
-/// `msl_speed_comparison.json`. The mermaid plot lives here, in the PR-comment
-/// step, rather than being emitted on every OMC run; local developers use the
-/// `msl_speed_scaling.html` uPlot view instead.
+#[derive(Clone, Copy)]
+struct SpeedRecord {
+    scalar_equations: u64,
+    rumoca_frontend_compile: f64,
+    rumoca_sim_build: f64,
+    rumoca_sim_run: f64,
+    omc_compile: f64,
+    omc_sim: f64,
+    omc_total: f64,
+}
+
+impl SpeedRecord {
+    fn rumoca_compile(self) -> f64 {
+        self.rumoca_frontend_compile + self.rumoca_sim_build
+    }
+
+    fn rumoca_total(self) -> f64 {
+        self.rumoca_compile() + self.rumoca_sim_run
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SpeedView {
+    Total,
+    Compilation,
+    Simulation,
+}
+
+impl SpeedView {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Total => "Table 1 — Total (model → simulated results)",
+            Self::Compilation => "Table 2 — Compilation (build-to-runnable)",
+            Self::Simulation => "Table 3 — Simulation (integration only)",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Total => {
+                "Rumoca = front-end compile + Solve-IR/JIT build + integration; OMC = `timeTotal`."
+            }
+            Self::Compilation => {
+                "Rumoca = front-end compile + Solve-IR/JIT build; OMC = `timeTotal - timeSimulation`."
+            }
+            Self::Simulation => "Rumoca = `sim_run_seconds`; OMC = `timeSimulation`.",
+        }
+    }
+
+    fn rumoca_seconds(self, record: SpeedRecord) -> f64 {
+        match self {
+            Self::Total => record.rumoca_total(),
+            Self::Compilation => record.rumoca_compile(),
+            Self::Simulation => record.rumoca_sim_run,
+        }
+    }
+
+    fn omc_seconds(self, record: SpeedRecord) -> f64 {
+        match self {
+            Self::Total => record.omc_total,
+            Self::Compilation => record.omc_compile,
+            Self::Simulation => record.omc_sim,
+        }
+    }
+}
+
+/// Render speed tables from the full MSL timing artifacts when available. The
+/// old `msl_speed_comparison.json` compile-only table is kept as a fallback for
+/// partial/local runs that do not upload the joined timing inputs.
 fn render_speed_section(results_dir: &Path) -> Result<String> {
+    if let Some(records) = collect_detailed_speed_records(results_dir)? {
+        if records.is_empty() {
+            return Ok("_No agreeing models had valid timings on both tools._\n".to_string());
+        }
+        return Ok(render_detailed_speed_section(&records));
+    }
+    render_compile_only_speed_section(results_dir)
+}
+
+fn collect_detailed_speed_records(results_dir: &Path) -> Result<Option<Vec<SpeedRecord>>> {
+    let msl_path = results_dir.join("msl_results.json");
+    let omc_path = results_dir.join("omc_simulation_reference.json");
+    let trace_path = results_dir.join("sim_trace_comparison.json");
+    if !msl_path.is_file() || !omc_path.is_file() || !trace_path.is_file() {
+        return Ok(None);
+    }
+
+    let msl = read_json_file(&msl_path)?;
+    let omc = read_json_file(&omc_path)?;
+    let trace = read_json_file(&trace_path)?;
+    let Some(msl_models) = msl.get("model_results").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    let Some(omc_models) = omc.get("models").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let Some(trace_models) = trace.get("models").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+
+    let rumoca_by_name: BTreeMap<&str, &Value> = msl_models
+        .iter()
+        .filter_map(|model| Some((json_str(model, "model_name")?, model)))
+        .collect();
+
+    let records = trace_models
+        .iter()
+        .filter(|(_, trace_model)| trace_model_agrees(trace_model))
+        .filter_map(|(name, _)| {
+            speed_record_from_models(
+                rumoca_by_name.get(name.as_str()).copied()?,
+                omc_models.get(name)?,
+            )
+        })
+        .collect();
+    Ok(Some(records))
+}
+
+fn speed_record_from_models(rumoca: &Value, omc: &Value) -> Option<SpeedRecord> {
+    if json_str(omc, "status")? != "success" {
+        return None;
+    }
+    let scalar_equations = json_u64(rumoca, "scalar_equations")?;
+    let rumoca_frontend_compile = positive_json_f64(rumoca, "compile_seconds")?;
+    let rumoca_sim_build = nonnegative_json_f64(rumoca, "sim_build_seconds")?;
+    let rumoca_sim_run = positive_json_f64(rumoca, "sim_run_seconds")?;
+    let omc_total = positive_json_f64(omc, "total_system_seconds")?;
+    let omc_sim = positive_json_f64(omc, "sim_system_seconds")?;
+    let omc_compile = omc_total - omc_sim;
+    (omc_compile > 0.0).then_some(SpeedRecord {
+        scalar_equations,
+        rumoca_frontend_compile,
+        rumoca_sim_build,
+        rumoca_sim_run,
+        omc_compile,
+        omc_sim,
+        omc_total,
+    })
+}
+
+fn trace_model_agrees(trace_model: &Value) -> bool {
+    let high = json_f64(trace_model, "channel_high_percent").unwrap_or(0.0);
+    let near = json_f64(trace_model, "channel_minor_percent").unwrap_or(0.0);
+    let deviation = json_f64(trace_model, "channel_deviation_percent").unwrap_or(1.0);
+    (high >= 0.80 && deviation <= 0.01) || (high + near >= 0.90 && deviation <= 0.10)
+}
+
+fn render_detailed_speed_section(records: &[SpeedRecord]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Compilation and simulation are reported separately for the **{} trace-agreeing models** with valid timings on both tools. `Speedup = OMC / Rumoca` (>1 means rumoca faster).\n\n",
+        records.len()
+    ));
+    out.push_str("##### Where rumoca's time goes\n\n");
+    out.push_str(&render_stage_breakdown_table(records));
+    for view in [
+        SpeedView::Total,
+        SpeedView::Compilation,
+        SpeedView::Simulation,
+    ] {
+        out.push('\n');
+        out.push_str(&render_speed_view_table(records, view));
+    }
+    out
+}
+
+fn render_stage_breakdown_table(records: &[SpeedRecord]) -> String {
+    let mut out = String::from(
+        "| Scalar eqns | Models | front→DAE | Solve-IR + JIT | integration |\n\
+         |---|--:|--:|--:|--:|\n",
+    );
+    for (label, bin_records) in speed_bins(records) {
+        out.push_str(&format!(
+            "| {label} | {} | {:.3} | {:.3} | {:.4} |\n",
+            bin_records.len(),
+            median_value(
+                bin_records
+                    .iter()
+                    .map(|record| record.rumoca_frontend_compile)
+            ),
+            median_value(bin_records.iter().map(|record| record.rumoca_sim_build)),
+            median_value(bin_records.iter().map(|record| record.rumoca_sim_run)),
+        ));
+    }
+    out.push_str(&format!(
+        "| **sum ({})** |  | {:.1} | {:.1} | {:.1} |\n",
+        records.len(),
+        records
+            .iter()
+            .map(|record| record.rumoca_frontend_compile)
+            .sum::<f64>(),
+        records
+            .iter()
+            .map(|record| record.rumoca_sim_build)
+            .sum::<f64>(),
+        records
+            .iter()
+            .map(|record| record.rumoca_sim_run)
+            .sum::<f64>(),
+    ));
+    out
+}
+
+fn render_speed_view_table(records: &[SpeedRecord], view: SpeedView) -> String {
+    let mut out = format!(
+        "##### {}\n\n{}\n\n| Scalar eqns | Models | Rumoca (s) | OMC (s) | Speedup (×) |\n|---|--:|--:|--:|--:|\n",
+        view.title(),
+        view.description()
+    );
+    for (label, bin_records) in speed_bins(records) {
+        let rumoca = median_value(
+            bin_records
+                .iter()
+                .map(|record| view.rumoca_seconds(*record)),
+        );
+        let omc = median_value(bin_records.iter().map(|record| view.omc_seconds(*record)));
+        let speedup = median_value(
+            bin_records
+                .iter()
+                .map(|record| view.omc_seconds(*record) / view.rumoca_seconds(*record)),
+        );
+        out.push_str(&format!(
+            "| {label} | {} | {rumoca:.4} | {omc:.4} | **{speedup:.2}** |\n",
+            bin_records.len()
+        ));
+    }
+    let rumoca_sum = records
+        .iter()
+        .map(|record| view.rumoca_seconds(*record))
+        .sum::<f64>();
+    let omc_sum = records
+        .iter()
+        .map(|record| view.omc_seconds(*record))
+        .sum::<f64>();
+    let speedups = records
+        .iter()
+        .map(|record| view.omc_seconds(*record) / view.rumoca_seconds(*record))
+        .collect::<Vec<_>>();
+    out.push_str(&format!(
+        "| **All (sum)** | {} | {:.1} | {:.1} | **{:.2}** |\n\n",
+        records.len(),
+        rumoca_sum,
+        omc_sum,
+        omc_sum / rumoca_sum
+    ));
+    out.push_str(&format!(
+        "Per-model speedup: min {:.2}, median {:.2}, max {:.2}.\n",
+        min_value(&speedups),
+        median_value(speedups.iter().copied()),
+        max_value(&speedups),
+    ));
+    out
+}
+
+fn speed_bins(records: &[SpeedRecord]) -> Vec<(String, Vec<SpeedRecord>)> {
+    SIZE_BINS
+        .iter()
+        .filter_map(|(low, high)| {
+            let in_bin = records
+                .iter()
+                .copied()
+                .filter(|record| {
+                    record.scalar_equations >= *low
+                        && high.is_none_or(|high| record.scalar_equations <= high)
+                })
+                .collect::<Vec<_>>();
+            (!in_bin.is_empty()).then(|| (bin_label(*low, *high), in_bin))
+        })
+        .collect()
+}
+
+fn bin_label(low: u64, high: Option<u64>) -> String {
+    high.map_or_else(|| format!("{low}+"), |high| format!("{low}–{high}"))
+}
+
+fn render_compile_only_speed_section(results_dir: &Path) -> Result<String> {
     let path = results_dir.join("msl_speed_comparison.json");
     if !path.is_file() {
         return Ok("_Report was not produced in this run._\n".to_string());
@@ -243,6 +543,38 @@ fn render_speed_section(results_dir: &Path) -> Result<String> {
     Ok(out)
 }
 
+fn read_json_file(path: &Path) -> Result<Value> {
+    serde_json::from_str(
+        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn median_value(values: impl IntoIterator<Item = f64>) -> f64 {
+    let mut values = values
+        .into_iter()
+        .filter(|value| value.is_finite())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[mid - 1] + values[mid]) / 2.0
+    } else {
+        values[mid]
+    }
+}
+
+fn min_value(values: &[f64]) -> f64 {
+    values.iter().copied().fold(f64::INFINITY, f64::min)
+}
+
+fn max_value(values: &[f64]) -> f64 {
+    values.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+}
+
 fn append_report_section(body: &mut String, title: &str, path: &Path) -> Result<()> {
     body.push_str(&format!("#### {title}\n\n"));
     if !path.is_file() {
@@ -251,9 +583,66 @@ fn append_report_section(body: &mut String, title: &str, path: &Path) -> Result<
     }
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    body.push_str(text.trim());
+    body.push_str(&report_section_text(title, &text));
     body.push_str("\n\n");
     Ok(())
+}
+
+fn report_section_text(title: &str, text: &str) -> String {
+    let trimmed = text.trim();
+    if title == "Package Pass Rates" {
+        strip_time_columns(trimmed)
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn strip_time_columns(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut time_indices: Option<Vec<usize>> = None;
+    for line in text.lines() {
+        if !line.trim_start().starts_with('|') {
+            time_indices = None;
+            out.push(line.to_string());
+            continue;
+        }
+
+        let cells = markdown_table_cells(line);
+        if time_indices.is_none() {
+            let indices = cells
+                .iter()
+                .enumerate()
+                .filter_map(|(index, cell)| (*cell == "Time").then_some(index))
+                .collect::<Vec<_>>();
+            if !indices.is_empty() {
+                time_indices = Some(indices);
+            }
+        }
+
+        let Some(indices) = time_indices.as_deref() else {
+            out.push(line.to_string());
+            continue;
+        };
+        out.push(render_markdown_table_row(&cells, indices));
+    }
+    out.join("\n")
+}
+
+fn markdown_table_cells(line: &str) -> Vec<&str> {
+    line.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(str::trim)
+        .collect()
+}
+
+fn render_markdown_table_row(cells: &[&str], remove_indices: &[usize]) -> String {
+    let kept = cells
+        .iter()
+        .enumerate()
+        .filter_map(|(index, cell)| (!remove_indices.contains(&index)).then_some(*cell))
+        .collect::<Vec<_>>();
+    format!("| {} |", kept.join(" | "))
 }
 
 fn append_optional_link_note(body: &mut String, results_dir: &Path) {
@@ -281,6 +670,20 @@ fn json_u64(json: &Value, key: &str) -> Option<u64> {
     json.get(key).and_then(Value::as_u64)
 }
 
+fn json_f64(json: &Value, key: &str) -> Option<f64> {
+    json.get(key).and_then(Value::as_f64)
+}
+
+fn positive_json_f64(json: &Value, key: &str) -> Option<f64> {
+    let value = json_f64(json, key)?;
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
+fn nonnegative_json_f64(json: &Value, key: &str) -> Option<f64> {
+    let value = json_f64(json, key)?;
+    (value.is_finite() && value >= 0.0).then_some(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,7 +703,12 @@ mod tests {
                 "balanced_models": 9,
                 "initial_balanced_models": 8,
                 "sim_ok": 7,
-                "sim_attempted": 10
+                "sim_attempted": 10,
+                "trace_accuracy_stats": {
+                    "agreement_high": 4,
+                    "agreement_minor": 2,
+                    "agreement_deviation": 1
+                }
             }"#,
         )
         .expect("write quality snapshot");
@@ -313,7 +721,12 @@ mod tests {
                 "balanced_models": 8,
                 "initial_balanced_models": 8,
                 "sim_ok": 5,
-                "sim_attempted": 9
+                "sim_attempted": 9,
+                "trace_accuracy_stats": {
+                    "agreement_high": 3,
+                    "agreement_minor": 1,
+                    "agreement_deviation": 2
+                }
             }"#,
         )
         .expect("write quality baseline");
@@ -324,7 +737,9 @@ mod tests {
         .expect("write coverage");
         fs::write(
             results.join("msl_package_pass_rates.md"),
-            "| MSL Package | n |\n|---|---:|\n| Blocks | 10 |\n",
+            "| MSL Package | n | Ast | Time | Flat | Time |\n\
+             |---|---:|---:|---:|---:|---:|\n\
+             | Blocks | 10 | 100% | 0.01s | 90% | 0.02s |\n",
         )
         .expect("write pass rates");
         fs::write(
@@ -339,8 +754,84 @@ mod tests {
             "| `full` | `v4.1.0` | `OpenModelica 1.26.1` | 10/10 (Δ+2/0) | 9/10 (Δ+1/0) | 8/10 (Δ0/0) | 7/10 (Δ+2/+1) |"
         ));
         assert!(rendered.contains("Deltas compare numerator/denominator"));
+        assert!(rendered.contains("Trace agreement vs baseline: high+near Δ+2, deviation Δ-1"));
+        assert!(rendered.contains("| MSL Package | n | Ast | Flat |"));
+        assert!(!rendered.contains("0.01s"));
         assert!(rendered.contains("#### MLS Contract Coverage"));
         assert!(rendered.contains("| OTHER | 10 |"));
+    }
+
+    #[test]
+    fn pr_comment_renders_detailed_speed_tables() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let results = temp.path();
+        fs::write(
+            results.join("msl_results.json"),
+            r#"{
+                "model_results": [
+                    {
+                        "model_name": "Modelica.Blocks.Examples.A",
+                        "scalar_equations": 5,
+                        "compile_seconds": 1.0,
+                        "sim_build_seconds": 0.5,
+                        "sim_run_seconds": 0.5
+                    },
+                    {
+                        "model_name": "Modelica.Blocks.Examples.B",
+                        "scalar_equations": 12,
+                        "compile_seconds": 2.0,
+                        "sim_build_seconds": 1.0,
+                        "sim_run_seconds": 1.0
+                    }
+                ]
+            }"#,
+        )
+        .expect("write msl results");
+        fs::write(
+            results.join("omc_simulation_reference.json"),
+            r#"{
+                "models": {
+                    "Modelica.Blocks.Examples.A": {
+                        "status": "success",
+                        "total_system_seconds": 5.0,
+                        "sim_system_seconds": 1.0
+                    },
+                    "Modelica.Blocks.Examples.B": {
+                        "status": "success",
+                        "total_system_seconds": 8.0,
+                        "sim_system_seconds": 2.0
+                    }
+                }
+            }"#,
+        )
+        .expect("write omc reference");
+        fs::write(
+            results.join("sim_trace_comparison.json"),
+            r#"{
+                "models": {
+                    "Modelica.Blocks.Examples.A": {
+                        "channel_high_percent": 1.0,
+                        "channel_minor_percent": 0.0,
+                        "channel_deviation_percent": 0.0
+                    },
+                    "Modelica.Blocks.Examples.B": {
+                        "channel_high_percent": 0.8,
+                        "channel_minor_percent": 0.1,
+                        "channel_deviation_percent": 0.1
+                    }
+                }
+            }"#,
+        )
+        .expect("write trace comparison");
+
+        let rendered = render_speed_section(results).expect("render speed section");
+
+        assert!(rendered.contains("Where rumoca's time goes"));
+        assert!(rendered.contains("Table 1 — Total"));
+        assert!(rendered.contains("Table 2 — Compilation"));
+        assert!(rendered.contains("Table 3 — Simulation"));
+        assert!(rendered.contains("| 1–9 | 1 | 2.0000 | 5.0000 | **2.50** |"));
+        assert!(rendered.contains("| **All (sum)** | 2 | 6.0 | 13.0 | **2.17** |"));
     }
 
     #[test]
