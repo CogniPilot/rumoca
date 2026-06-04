@@ -19,7 +19,8 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use bdf::can_use_state_only_bdf;
 pub(crate) use bdf::{
-    bdf_derivative_guess, initial_bdf_state, reset_solver_state, solver_call, write_state_to_solver,
+    bdf_derivative_guess, initial_bdf_state, initial_rk_state, reset_solver_state, solver_call,
+    write_state_to_solver,
 };
 use diffsol::{
     BacktrackingLineSearch, BdfState, FaerSparseLU, FaerSparseMat, MatrixCommon,
@@ -32,11 +33,11 @@ use rumoca_eval_solve::{
 };
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    EventPreMode, RuntimeEventBoundary, RuntimeEventBoundaryHandler, RuntimeEventStop, SimOptions,
-    SimResult, SimTermination, SolveStopSchedule, build_sim_result_from_solve_model,
-    commit_pre_params_after_event, discrete_row_pre_mode, initial_runtime_event_stop,
-    process_runtime_event_boundary, push_visible_values, replace_last_visible_values,
-    runtime_event_horizon, runtime_root_event_application_time,
+    DiffsolMethod, EventPreMode, RuntimeEventBoundary, RuntimeEventBoundaryHandler,
+    RuntimeEventStop, SimOptions, SimResult, SimTermination, SolveStopSchedule,
+    build_sim_result_from_solve_model, commit_pre_params_after_event, discrete_row_pre_mode,
+    initial_runtime_event_stop, process_runtime_event_boundary, push_visible_values,
+    replace_last_visible_values, runtime_event_horizon, runtime_root_event_application_time,
     timeline::sample_time_match_with_tol, write_pre_params_from_sources,
 };
 pub(crate) use runtime::{
@@ -76,7 +77,10 @@ pub fn build_simulation(
     let state = if model.state_scalar_count() == 0 {
         tracing::debug!(target: "rumoca_solver_diffsol::bdf_path", "no-state path");
         PreparedSimulationState::NoState
-    } else if can_use_state_only_bdf(model) {
+    } else if opts.diffsol_method == DiffsolMethod::Bdf && can_use_state_only_bdf(model) {
+        // SDIRK tableaus are wired only on the general/implicit path, so a
+        // non-BDF request routes through `General` even when the model is
+        // state-only eligible.
         tracing::debug!(
             target: "rumoca_solver_diffsol::bdf_path",
             states = model.state_scalar_count(),
@@ -219,64 +223,135 @@ fn simulate_with_states(
         current_y.clone(),
         equilibrium_model.clone(),
     )?;
-    let state = initial_bdf_state(model, equilibrium_model, &problem, &current_y, &params)?;
-    let nl_solver =
-        NewtonNonlinearSolver::new(LinearSolver::default(), BacktrackingLineSearch::default());
-    // One BDF solver that lives for the whole simulation. After zero-crossing
-    // events we pin the state to root time (state_mut_back), apply Modelica
-    // event semantics, then write updated (t, y, params) back via state_mut()
-    // so BDF history is preserved when only params change and naturally
-    // reinitialised for state-jump events.
-    let mut solver = solver_call("BDF new", || {
-        diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
-    })?;
+    // The solver borrows `problem` for the full simulation. `Bdf` and `Sdirk`
+    // are distinct concrete types, so we branch construction and run the
+    // (solver-generic) `simulate_state_targets` inside each arm. The default
+    // `Bdf` arm is unchanged; the implicit RK tableaus (ESDIRK34 / TR-BDF2)
+    // reuse the same projection-aware consistent initial condition via
+    // `initial_rk_state`.
+    let result = match opts.diffsol_method {
+        DiffsolMethod::Bdf => {
+            let state = initial_bdf_state(model, equilibrium_model, &problem, &current_y, &params)?;
+            let nl_solver = NewtonNonlinearSolver::new(
+                LinearSolver::default(),
+                BacktrackingLineSearch::default(),
+            );
+            // One BDF solver that lives for the whole simulation. After
+            // zero-crossing events we pin the state to root time
+            // (state_mut_back), apply Modelica event semantics, then write
+            // updated (t, y, params) back via state_mut() so BDF history is
+            // preserved when only params change and naturally reinitialised
+            // for state-jump events.
+            let mut solver = solver_call("BDF new", || {
+                diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
+            })?;
+            simulate_state_targets(
+                model,
+                opts,
+                &times,
+                equilibrium_model,
+                &runtime_params,
+                &mut solver,
+                StateTrajectory {
+                    params: &mut params,
+                    data: &mut data,
+                    recorded_times: &mut recorded_times,
+                    current_t: &mut current_t,
+                    current_y: &mut current_y,
+                    runtime,
+                },
+            )
+        }
+        method @ (DiffsolMethod::Esdirk34 | DiffsolMethod::TrBdf2) => {
+            let state = initial_rk_state(model, equilibrium_model, &problem, &current_y, &params)?;
+            let mut solver = solver_call("SDIRK new", || match method {
+                DiffsolMethod::Esdirk34 => problem.esdirk34_solver::<LinearSolver>(state),
+                _ => problem.tr_bdf2_solver::<LinearSolver>(state),
+            })?;
+            simulate_state_targets(
+                model,
+                opts,
+                &times,
+                equilibrium_model,
+                &runtime_params,
+                &mut solver,
+                StateTrajectory {
+                    params: &mut params,
+                    data: &mut data,
+                    recorded_times: &mut recorded_times,
+                    current_t: &mut current_t,
+                    current_y: &mut current_y,
+                    runtime,
+                },
+            )
+        }
+    };
 
-    match simulate_state_targets(
-        model,
-        opts,
-        &times,
-        equilibrium_model,
-        &runtime_params,
-        &mut solver,
-        StateTrajectory {
-            params: &mut params,
-            data: &mut data,
-            recorded_times: &mut recorded_times,
-            current_t: &mut current_t,
-            current_y: &mut current_y,
-            runtime,
-        },
-    ) {
-        Ok(()) => Ok(build_sim_result_from_solve_model(
+    finalize_state_simulation(
+        result,
+        StateSimFinalize {
             model,
-            recorded_times,
+            opts,
+            equilibrium_model,
+            runtime,
+            runtime_params: &runtime_params,
+            params,
             data,
+            recorded_times,
+            current_y,
+        },
+    )
+}
+
+/// Owned trajectory buffers + context needed to turn a `simulate_state_targets`
+/// outcome into a `SimResult`, shared by every solver arm of
+/// [`simulate_with_states`].
+struct StateSimFinalize<'a> {
+    model: &'a solve::SolveModel,
+    opts: &'a SimOptions,
+    equilibrium_model: &'a Arc<OdeModel>,
+    runtime: &'a Arc<SolveRuntime>,
+    runtime_params: &'a RuntimeParameters,
+    params: Vec<f64>,
+    data: Vec<Vec<f64>>,
+    recorded_times: Vec<f64>,
+    current_y: Vec<f64>,
+}
+
+fn finalize_state_simulation(
+    result: Result<(), SimError>,
+    mut fin: StateSimFinalize<'_>,
+) -> Result<SimResult, SimError> {
+    match result {
+        Ok(()) => Ok(build_sim_result_from_solve_model(
+            fin.model,
+            fin.recorded_times,
+            fin.data,
             None,
         )),
         Err(SimError::Terminated { time, message }) => {
-            current_t = time;
             refresh_observation_discrete_rows(
-                model,
-                &equilibrium_model.runtime_state,
-                &mut current_y,
-                &mut params,
-                current_t,
-                opts.atol.max(1.0e-10),
+                fin.model,
+                &fin.equilibrium_model.runtime_state,
+                &mut fin.current_y,
+                &mut fin.params,
+                time,
+                fin.opts.atol.max(1.0e-10),
             )?;
-            runtime_params.borrow_mut().copy_from_slice(&params);
+            fin.runtime_params.borrow_mut().copy_from_slice(&fin.params);
             record_sample_if_new(
-                Some(runtime),
-                model,
-                &current_y,
-                &params,
-                &mut recorded_times,
-                &mut data,
-                current_t,
+                Some(fin.runtime),
+                fin.model,
+                &fin.current_y,
+                &fin.params,
+                &mut fin.recorded_times,
+                &mut fin.data,
+                time,
             )?;
             Ok(build_sim_result_from_solve_model(
-                model,
-                recorded_times,
-                data,
+                fin.model,
+                fin.recorded_times,
+                fin.data,
                 Some(SimTermination { time, message }),
             ))
         }

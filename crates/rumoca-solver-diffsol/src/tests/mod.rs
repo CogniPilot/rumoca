@@ -39,6 +39,68 @@ fn state_only_bdf_accepts_projection_backed_derivative_dependencies() {
 }
 
 #[test]
+fn general_path_integrates_with_sdirk_tableaus() {
+    // A non-BDF `diffsol_method` routes the model through the general/implicit
+    // path, where ESDIRK34 / TR-BDF2 are wired. The ramp model (x' = 1,
+    // x(0) = 0) has the closed form x(t) = t, so every tableau must land on
+    // x(1) = 1 and agree with the BDF baseline.
+    let model = general_ramp_model();
+    let bdf = run_ramp(&model, DiffsolMethod::Bdf);
+    assert!((bdf - 1.0).abs() <= 1.0e-6, "BDF baseline: x(1) = {bdf}");
+    for method in [DiffsolMethod::Esdirk34, DiffsolMethod::TrBdf2] {
+        let x = run_ramp(&model, method);
+        assert!((x - 1.0).abs() <= 1.0e-6, "{method:?}: x(1) = {x}");
+        assert!(
+            (x - bdf).abs() <= 1.0e-6,
+            "{method:?} disagrees with BDF: {x} vs {bdf}"
+        );
+    }
+}
+
+fn run_ramp(model: &solve::SolveModel, method: DiffsolMethod) -> f64 {
+    let result = simulate(
+        model,
+        &SimOptions {
+            t_start: 0.0,
+            t_end: 1.0,
+            dt: Some(0.25),
+            diffsol_method: method,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|err| panic!("{method:?} should integrate the ramp: {err}"));
+    *result
+        .data
+        .first()
+        .and_then(|series| series.last())
+        .expect("x series should have a final sample")
+}
+
+/// A single-state ramp `x' = 1` (so `x(t) = t`) whose residual/jacobian are
+/// consistently formed for the general/implicit solver path: `M·x' = f` with
+/// `M = I` and `f = 1`, exact JVP `df/dx = 0`, visible value reading the state
+/// directly.
+fn general_ramp_model() -> solve::SolveModel {
+    let mut model = unit_integrator_model();
+    model.problem.continuous.implicit_rhs =
+        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 1.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]]));
+    model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
+    model.artifacts.continuous.implicit_jacobian_v =
+        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::new(vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]]));
+    model.visible_value_rows = solve::ScalarProgramBlock::new(vec![vec![
+        solve::LinearOp::LoadY { dst: 0, index: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]]);
+    model
+}
+
+#[test]
 fn state_only_bdf_accepts_transitive_projection_dependencies() {
     let mut model = projected_derivative_model();
     model
