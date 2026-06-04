@@ -983,7 +983,7 @@ fn try_eval_integer_expr_with_depth_and_locals(
         ast::Expression::Unary { op, rhs, .. } => {
             let r = recurse(rhs)?;
             match op {
-                rumoca_core::OpUnary::Minus => Some(-r),
+                rumoca_core::OpUnary::Minus => r.checked_neg(),
                 rumoca_core::OpUnary::Plus => Some(r),
                 _ => None,
             }

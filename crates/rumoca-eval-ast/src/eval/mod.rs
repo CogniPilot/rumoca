@@ -7,12 +7,15 @@
 
 use rumoca_core::{Causality, ClassType, OpBinary, OpUnary};
 use rumoca_core::{
-    IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
-    eval_integer_div_builtin, find_last_top_level_dot,
+    Diagnostic as CommonDiagnostic, IntegerBinaryOperator, PrimaryLabel, Span,
+    eval_integer_binary as eval_common_integer_binary, eval_integer_div_builtin,
+    find_last_top_level_dot,
 };
 use rumoca_ir_ast::{ClassDef, Expression, Statement, StatementBlock, Subscript, TerminalType};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 pub use dimension_inference::{
@@ -96,6 +99,8 @@ pub struct TypeCheckEvalContext {
     pub func_eval_depth: usize,
     pub enum_sizes: FxHashMap<String, usize>,
     pub enum_ordinals: FxHashMap<String, i64>,
+    warning_keys: RefCell<HashSet<(String, Span)>>,
+    warnings: RefCell<Vec<CommonDiagnostic>>,
 }
 
 impl Default for TypeCheckEvalContext {
@@ -116,6 +121,8 @@ impl TypeCheckEvalContext {
             func_eval_depth: 0,
             enum_sizes: FxHashMap::default(),
             enum_ordinals: FxHashMap::default(),
+            warning_keys: RefCell::new(HashSet::default()),
+            warnings: RefCell::new(Vec::new()),
         }
     }
 
@@ -138,6 +145,149 @@ impl TypeCheckEvalContext {
     pub fn get_dimensions(&self, name: &str) -> Option<&Vec<usize>> {
         self.dimensions.get(name)
     }
+
+    pub fn emit_warning(&self, code: &str, message: impl Into<String>, span: Span, label: &str) {
+        let key = (code.to_string(), span);
+        if !self.warning_keys.borrow_mut().insert(key) {
+            return;
+        }
+        let message = message.into();
+        let diagnostic = if span.is_dummy() {
+            CommonDiagnostic::global_warning(code, message)
+        } else {
+            CommonDiagnostic::warning(code, message, PrimaryLabel::new(span).with_message(label))
+        };
+        self.warnings.borrow_mut().push(diagnostic);
+    }
+
+    pub fn take_warnings(&self) -> Vec<CommonDiagnostic> {
+        std::mem::take(&mut *self.warnings.borrow_mut())
+    }
+}
+
+const ET006_INVALID_INT_COERCION: &str = "ET006";
+const ET007_INT_FOLD_OVERFLOW: &str = "ET007";
+
+fn checked_real_to_i64(
+    value: f64,
+    ctx: &TypeCheckEvalContext,
+    span: Span,
+    context: &str,
+) -> Option<i64> {
+    if !value.is_finite() {
+        ctx.emit_warning(
+            ET006_INVALID_INT_COERCION,
+            format!(
+                "non-finite real value {value} cannot be used as a compile-time integer while evaluating {context}; skipping constant fold"
+            ),
+            span,
+            "invalid compile-time integer coercion",
+        );
+        return None;
+    }
+    if value < i64::MIN as f64 || value > i64::MAX as f64 {
+        ctx.emit_warning(
+            ET006_INVALID_INT_COERCION,
+            format!(
+                "real value {value} is outside i64 range while evaluating {context}; skipping constant fold"
+            ),
+            span,
+            "out-of-range compile-time integer coercion",
+        );
+        return None;
+    }
+    Some(value as i64)
+}
+
+fn checked_integral_real_to_i64(
+    value: f64,
+    ctx: &TypeCheckEvalContext,
+    span: Span,
+    context: &str,
+) -> Option<i64> {
+    let rounded = value.round();
+    ((value - rounded).abs() < REAL_COMPARISON_EPSILON)
+        .then_some(rounded)
+        .and_then(|integral| checked_real_to_i64(integral, ctx, span, context))
+}
+
+fn emit_integer_overflow_warning(ctx: &TypeCheckEvalContext, span: Span, context: &str) {
+    ctx.emit_warning(
+        ET007_INT_FOLD_OVERFLOW,
+        format!("compile-time integer overflow while evaluating {context}; skipping constant fold"),
+        span,
+        "integer overflow during constant evaluation",
+    );
+}
+
+fn checked_abs_with_warning(
+    value: i64,
+    ctx: &TypeCheckEvalContext,
+    span: Span,
+    context: &str,
+) -> Option<i64> {
+    let result = value.checked_abs();
+    if result.is_none() {
+        emit_integer_overflow_warning(ctx, span, context);
+    }
+    result
+}
+
+fn try_fold_integers_with_warning<I>(
+    values: I,
+    init: i64,
+    ctx: &TypeCheckEvalContext,
+    span: Span,
+    context: &str,
+    combine: impl Fn(i64, i64) -> Option<i64>,
+) -> Option<i64>
+where
+    I: IntoIterator<Item = i64>,
+{
+    values.into_iter().try_fold(init, |acc, value| {
+        let result = combine(acc, value);
+        if result.is_none() {
+            emit_integer_overflow_warning(ctx, span, context);
+        }
+        result
+    })
+}
+
+fn eval_integer_binary_with_warning(
+    op: &OpBinary,
+    lhs: i64,
+    rhs: i64,
+    ctx: &TypeCheckEvalContext,
+    span: Span,
+) -> Option<i64> {
+    let operator = match op {
+        OpBinary::Add | OpBinary::AddElem => IntegerBinaryOperator::Add,
+        OpBinary::Sub | OpBinary::SubElem => IntegerBinaryOperator::Sub,
+        OpBinary::Mul | OpBinary::MulElem => IntegerBinaryOperator::Mul,
+        OpBinary::Div | OpBinary::DivElem => IntegerBinaryOperator::Div,
+        OpBinary::Exp | OpBinary::ExpElem => IntegerBinaryOperator::Exp,
+        _ => return None,
+    };
+    let value = eval_common_integer_binary(operator, lhs, rhs);
+    if value.is_none()
+        && matches!(
+            operator,
+            IntegerBinaryOperator::Add
+                | IntegerBinaryOperator::Sub
+                | IntegerBinaryOperator::Mul
+                | IntegerBinaryOperator::Exp
+        )
+    {
+        ctx.emit_warning(
+            ET007_INT_FOLD_OVERFLOW,
+            format!(
+                "compile-time integer overflow while evaluating {lhs} {op:?} {rhs}; skipping constant fold"
+            ),
+            span,
+            "integer overflow during constant evaluation",
+        );
+    }
+    value
 }
 
 /// Scope-aware evaluation for integer builtins and pure functions.
@@ -146,10 +296,27 @@ fn eval_integer_func_with_scope(
     args: &[Expression],
     ctx: &TypeCheckEvalContext,
     scope: &str,
+    call_span: Span,
+) -> Option<i64> {
+    if let Some(value) =
+        eval_builtin_integer_func_with_scope(func_name, args, ctx, scope, call_span)
+    {
+        return Some(value);
+    }
+
+    eval_user_func_integer(func_name, args, ctx, scope)
+}
+
+fn eval_builtin_integer_func_with_scope(
+    func_name: &str,
+    args: &[Expression],
+    ctx: &TypeCheckEvalContext,
+    scope: &str,
+    call_span: Span,
 ) -> Option<i64> {
     match func_name {
         "integer" if args.len() == 1 => eval_real_with_scope(&args[0], ctx, scope)
-            .map(|r| r.floor() as i64)
+            .and_then(|r| checked_real_to_i64(r.floor(), ctx, call_span, "integer(...)"))
             .or_else(|| eval_integer_with_scope(&args[0], ctx, scope)),
         "size" if args.len() == 2 => {
             let dim_idx = eval_integer_with_scope(&args[1], ctx, scope)? as usize;
@@ -167,7 +334,8 @@ fn eval_integer_func_with_scope(
             let dims = infer_dimensions_from_binding_with_scope(&args[0], ctx, scope)?;
             (dim_idx <= dims.len()).then(|| dims[dim_idx - 1] as i64)
         }
-        "abs" if args.len() == 1 => eval_integer_with_scope(&args[0], ctx, scope).map(|v| v.abs()),
+        "abs" if args.len() == 1 => eval_integer_with_scope(&args[0], ctx, scope)
+            .and_then(|value| checked_abs_with_warning(value, ctx, call_span, "abs(...)")),
         "max" if args.len() == 2 => {
             let a = eval_integer_with_scope(&args[0], ctx, scope)?;
             let b = eval_integer_with_scope(&args[1], ctx, scope)?;
@@ -198,18 +366,33 @@ fn eval_integer_func_with_scope(
             let b = eval_integer_with_scope(&args[1], ctx, scope)?;
             (b != 0).then(|| a % b)
         }
-        "floor" if args.len() == 1 => {
-            eval_real_with_scope(&args[0], ctx, scope).map(|r| r.floor() as i64)
-        }
-        "ceil" if args.len() == 1 => {
-            eval_real_with_scope(&args[0], ctx, scope).map(|r| r.ceil() as i64)
-        }
+        "floor" if args.len() == 1 => eval_real_with_scope(&args[0], ctx, scope)
+            .and_then(|r| checked_real_to_i64(r.floor(), ctx, call_span, "floor(...)")),
+        "ceil" if args.len() == 1 => eval_real_with_scope(&args[0], ctx, scope)
+            .and_then(|r| checked_real_to_i64(r.ceil(), ctx, call_span, "ceil(...)")),
         "sum" if args.len() == 1 => {
-            eval_integer_array_with_scope(&args[0], ctx, scope).map(|vals| vals.iter().sum())
+            eval_integer_array_with_scope(&args[0], ctx, scope).and_then(|vals| {
+                try_fold_integers_with_warning(
+                    vals,
+                    0_i64,
+                    ctx,
+                    call_span,
+                    "sum(...)",
+                    i64::checked_add,
+                )
+            })
         }
-        "product" if args.len() == 1 => {
-            eval_integer_array_with_scope(&args[0], ctx, scope).map(|vals| vals.iter().product())
-        }
+        "product" if args.len() == 1 => eval_integer_array_with_scope(&args[0], ctx, scope)
+            .and_then(|vals| {
+                try_fold_integers_with_warning(
+                    vals,
+                    1_i64,
+                    ctx,
+                    call_span,
+                    "product(...)",
+                    i64::checked_mul,
+                )
+            }),
         "rem" if args.len() == 2 => {
             let a = eval_integer_with_scope(&args[0], ctx, scope)?;
             let b = eval_integer_with_scope(&args[1], ctx, scope)?;
@@ -228,8 +411,7 @@ fn eval_integer_func_with_scope(
             infer_dimensions_from_binding_with_scope(&args[0], ctx, scope)
                 .map(|dims| dims.len() as i64)
         }
-        // Fallback: try interpreting user-defined pure functions (MLS §12.4)
-        _ => eval_user_func_integer(func_name, args, ctx, scope),
+        _ => None,
     }
 }
 
@@ -247,9 +429,13 @@ fn find_func_output_name(func_def: &ClassDef) -> Option<String> {
         .map(|(name, _)| name.clone())
 }
 
-fn integral_real_to_i64(value: f64) -> Option<i64> {
-    let rounded = value.round();
-    ((value - rounded).abs() < REAL_COMPARISON_EPSILON).then_some(rounded as i64)
+fn integral_real_to_i64(
+    value: f64,
+    ctx: &TypeCheckEvalContext,
+    span: Span,
+    context: &str,
+) -> Option<i64> {
+    checked_integral_real_to_i64(value, ctx, span, context)
 }
 
 fn local_has_scalar(local: &TypeCheckEvalContext, name: &str) -> bool {
@@ -272,7 +458,7 @@ fn bind_local_scalar_value(
     }
     if let Some(v) = eval_real_with_scope(expr, ctx, scope) {
         local.reals.insert(name.to_string(), v);
-        if let Some(i) = integral_real_to_i64(v) {
+        if let Some(i) = integral_real_to_i64(v, ctx, expr.span(), "local scalar binding") {
             local.integers.insert(name.to_string(), i);
         }
         return;
@@ -373,7 +559,7 @@ fn eval_user_func_integer(
         local_ctx
             .reals
             .get(&output_name)
-            .and_then(|v| integral_real_to_i64(*v))
+            .and_then(|v| integral_real_to_i64(*v, &local_ctx, Span::DUMMY, "function return"))
     })
 }
 
@@ -413,7 +599,9 @@ fn interpret_stmt(stmt: &Statement, ctx: &mut TypeCheckEvalContext) -> Option<Fu
             }
             if let Some(val) = eval_real_with_scope(value, ctx, "") {
                 ctx.reals.insert(var_name.clone(), val);
-                if let Some(i) = integral_real_to_i64(val) {
+                if let Some(i) =
+                    integral_real_to_i64(val, ctx, value.span(), "algorithm assignment")
+                {
                     ctx.integers.insert(var_name, i);
                 }
                 return Some(FunctionStmtFlow::Continue);
@@ -580,19 +768,6 @@ fn eval_integer_array_with_scope(
         Expression::Parenthesized { inner, .. } => eval_integer_array_with_scope(inner, ctx, scope),
         _ => None,
     }
-}
-
-/// Evaluate integer binary operations.
-fn eval_integer_binary(op: &OpBinary, l: i64, r: i64) -> Option<i64> {
-    let operator = match op {
-        OpBinary::Add | OpBinary::AddElem => IntegerBinaryOperator::Add,
-        OpBinary::Sub | OpBinary::SubElem => IntegerBinaryOperator::Sub,
-        OpBinary::Mul | OpBinary::MulElem => IntegerBinaryOperator::Mul,
-        OpBinary::Div | OpBinary::DivElem => IntegerBinaryOperator::Div,
-        OpBinary::Exp | OpBinary::ExpElem => IntegerBinaryOperator::Exp,
-        _ => return None,
-    };
-    eval_common_integer_binary(operator, l, r)
 }
 
 /// Try to evaluate an AST expression to an integer.
@@ -1046,7 +1221,9 @@ pub fn eval_integer_with_scope(
             ..
         } => {
             let f: f64 = token.text.parse().ok()?;
-            (f.fract() == 0.0).then_some(f as i64)
+            (f.fract() == 0.0).then_some(f).and_then(|integral| {
+                checked_real_to_i64(integral, ctx, expr.span(), "real literal")
+            })
         }
         Expression::Terminal { .. } => None,
 
@@ -1064,14 +1241,25 @@ pub fn eval_integer_with_scope(
             match op {
                 OpUnary::Not => None,
                 OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(val),
-                OpUnary::Minus | OpUnary::DotMinus => Some(-val),
+                OpUnary::Minus | OpUnary::DotMinus => {
+                    let value = val.checked_neg();
+                    if value.is_none() {
+                        ctx.emit_warning(
+                            ET007_INT_FOLD_OVERFLOW,
+                            "compile-time integer overflow while evaluating unary minus; skipping constant fold",
+                            expr.span(),
+                            "integer overflow during constant evaluation",
+                        );
+                    }
+                    value
+                }
             }
         }
 
         Expression::Binary { op, lhs, rhs, .. } => {
             let l = eval_integer_with_scope(lhs, ctx, scope)?;
             let r = eval_integer_with_scope(rhs, ctx, scope)?;
-            eval_integer_binary(op, l, r)
+            eval_integer_binary_with_warning(op, l, r, ctx, expr.span())
         }
 
         Expression::Parenthesized { inner, .. } => eval_integer_with_scope(inner, ctx, scope),
@@ -1083,7 +1271,7 @@ pub fn eval_integer_with_scope(
                 .map(|p| p.ident.text.as_ref())
                 .collect::<Vec<_>>()
                 .join(".");
-            eval_integer_func_with_scope(&func_name, args, ctx, scope)
+            eval_integer_func_with_scope(&func_name, args, ctx, scope, expr.span())
         }
 
         Expression::If {

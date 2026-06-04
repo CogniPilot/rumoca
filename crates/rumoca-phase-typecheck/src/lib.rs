@@ -298,6 +298,7 @@ impl TypeChecker {
                 &self.type_suffix_index,
             );
         self.check_stored_definition(&mut tree.definitions, &mut tree.type_table);
+        self.flush_eval_warnings();
     }
 
     /// Collect constants from instance-level class/package redeclare overrides.
@@ -334,6 +335,12 @@ impl TypeChecker {
             if new == prev {
                 break;
             }
+        }
+    }
+
+    fn flush_eval_warnings(&mut self) {
+        for diagnostic in self.eval_ctx.take_warnings() {
+            self.diagnostics.emit(diagnostic);
         }
     }
 
