@@ -123,10 +123,6 @@ def _substitute_until_stable(expr, solution):
     return current
 
 
-def _substitute_sequence(values, solution):
-    return [_substitute_until_stable(value, solution) for value in values]
-
-
 def _normalize_solution(solution, targets):
     normalized = {}
     for target in targets:
@@ -283,13 +279,8 @@ class Model:
             self.explicit_rhs = sp.Matrix([])
             return self.explicit_solution
 
-        residuals = _substitute_sequence(list(self.f_x), self.condition_aliases)
-        explicit_residuals = _substitute_sequence(
-            self.explicit_residuals,
-            self.condition_aliases,
-        )
         solutions = sp.solve(
-            residuals,
+            list(self.f_x),
             self.explicit_targets,
             dict=True,
             simplify=False,
@@ -297,7 +288,7 @@ class Model:
         solution = _normalize_solution(solutions[0], self.explicit_targets) if solutions else {}
         if not _solution_covers_targets(solution, self.explicit_targets):
             solution = _solve_explicit_rows(
-                zip(explicit_residuals, self.explicit_targets),
+                zip(self.explicit_residuals, self.explicit_targets),
                 self.explicit_targets,
             )
         self.explicit_solution = solution

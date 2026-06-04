@@ -246,19 +246,16 @@ assert raw_piecewise.subs({
     module.sp.Symbol("omega_turn"): 0.4,
 }) == -0.4
 piecewise_rhs = solution[model.explicit_targets[4]]
-assert piecewise_rhs.has(module.sp.Symbol("T_lobe")), piecewise_rhs
-assert piecewise_rhs.has(module.sp.Symbol("time")), piecewise_rhs
-assert not piecewise_rhs.has(module.sp.Symbol("c[1]", boolean=True)), piecewise_rhs
+condition_memory = module.sp.Symbol("c[1]", boolean=True)
+assert piecewise_rhs.has(condition_memory), piecewise_rhs
+assert not piecewise_rhs.has(module.sp.Symbol("T_lobe")), piecewise_rhs
+assert not piecewise_rhs.has(module.sp.Symbol("time")), piecewise_rhs
 assert piecewise_rhs.subs({
-    module.sp.Symbol("time"): 1,
-    module.sp.Symbol("T_fig8"): 10,
-    module.sp.Symbol("T_lobe"): 2,
+    condition_memory: True,
     module.sp.Symbol("omega_turn"): 0.4,
 }) == 0.4
 assert piecewise_rhs.subs({
-    module.sp.Symbol("time"): 3,
-    module.sp.Symbol("T_fig8"): 10,
-    module.sp.Symbol("T_lobe"): 2,
+    condition_memory: False,
     module.sp.Symbol("omega_turn"): 0.4,
 }) == -0.4
 "#,
