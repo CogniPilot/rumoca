@@ -562,14 +562,35 @@ fn row_loads_y_index(row: &[LinearOp], target_y_index: usize) -> bool {
 }
 
 fn reg_depends_on_y_index(row: &[LinearOp], reg: u32, target_y_index: usize) -> bool {
-    producer(row, reg).is_some_and(|op| match *op {
+    // Register programs form a DAG: a register computed once can feed many
+    // downstream ops, so the naive recursion below re-traverses shared
+    // sub-expressions exponentially (a 1700-op matrix-product row never
+    // finishes). Memoize by register — dependence on a fixed `y` index is a
+    // pure function of the register — to make the walk linear in the row.
+    let mut memo: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
+    reg_depends_on_y_index_memo(row, reg, target_y_index, &mut memo)
+}
+
+fn reg_depends_on_y_index_memo(
+    row: &[LinearOp],
+    reg: u32,
+    target_y_index: usize,
+    memo: &mut std::collections::HashMap<u32, bool>,
+) -> bool {
+    if let Some(&cached) = memo.get(&reg) {
+        return cached;
+    }
+    // Guard against accidental cycles (register programs are acyclic in
+    // practice): seed `false` before recursing so a back-edge terminates.
+    memo.insert(reg, false);
+    let result = producer(row, reg).is_some_and(|op| match *op {
         LinearOp::LoadY { index, .. } => index == target_y_index,
         LinearOp::Move { src, .. } | LinearOp::Unary { arg: src, .. } => {
-            reg_depends_on_y_index(row, src, target_y_index)
+            reg_depends_on_y_index_memo(row, src, target_y_index, memo)
         }
         LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
-            reg_depends_on_y_index(row, lhs, target_y_index)
-                || reg_depends_on_y_index(row, rhs, target_y_index)
+            reg_depends_on_y_index_memo(row, lhs, target_y_index, memo)
+                || reg_depends_on_y_index_memo(row, rhs, target_y_index, memo)
         }
         LinearOp::Select {
             cond,
@@ -577,9 +598,9 @@ fn reg_depends_on_y_index(row: &[LinearOp], reg: u32, target_y_index: usize) -> 
             if_false,
             ..
         } => {
-            reg_depends_on_y_index(row, cond, target_y_index)
-                || reg_depends_on_y_index(row, if_true, target_y_index)
-                || reg_depends_on_y_index(row, if_false, target_y_index)
+            reg_depends_on_y_index_memo(row, cond, target_y_index, memo)
+                || reg_depends_on_y_index_memo(row, if_true, target_y_index, memo)
+                || reg_depends_on_y_index_memo(row, if_false, target_y_index, memo)
         }
         LinearOp::LinearSolveComponent {
             matrix_start,
@@ -587,11 +608,11 @@ fn reg_depends_on_y_index(row: &[LinearOp], reg: u32, target_y_index: usize) -> 
             n,
             ..
         } => {
-            reg_range_depends_on_y_index(row, matrix_start, n * n, target_y_index)
-                || reg_range_depends_on_y_index(row, rhs_start, n, target_y_index)
+            reg_range_depends_on_y_index(row, matrix_start, n * n, target_y_index, memo)
+                || reg_range_depends_on_y_index(row, rhs_start, n, target_y_index, memo)
         }
         LinearOp::TableBounds { table_id, .. } => {
-            reg_depends_on_y_index(row, table_id, target_y_index)
+            reg_depends_on_y_index_memo(row, table_id, target_y_index, memo)
         }
         LinearOp::TableLookup {
             table_id,
@@ -605,21 +626,21 @@ fn reg_depends_on_y_index(row: &[LinearOp], reg: u32, target_y_index: usize) -> 
             input,
             ..
         } => {
-            reg_depends_on_y_index(row, table_id, target_y_index)
-                || reg_depends_on_y_index(row, column, target_y_index)
-                || reg_depends_on_y_index(row, input, target_y_index)
+            reg_depends_on_y_index_memo(row, table_id, target_y_index, memo)
+                || reg_depends_on_y_index_memo(row, column, target_y_index, memo)
+                || reg_depends_on_y_index_memo(row, input, target_y_index, memo)
         }
         LinearOp::TableNextEvent { table_id, time, .. } => {
-            reg_depends_on_y_index(row, table_id, target_y_index)
-                || reg_depends_on_y_index(row, time, target_y_index)
+            reg_depends_on_y_index_memo(row, table_id, target_y_index, memo)
+                || reg_depends_on_y_index_memo(row, time, target_y_index, memo)
         }
         LinearOp::RandomInitialState {
             local_seed,
             global_seed,
             ..
         } => {
-            reg_depends_on_y_index(row, local_seed, target_y_index)
-                || reg_depends_on_y_index(row, global_seed, target_y_index)
+            reg_depends_on_y_index_memo(row, local_seed, target_y_index, memo)
+                || reg_depends_on_y_index_memo(row, global_seed, target_y_index, memo)
         }
         LinearOp::RandomResult {
             state_start,
@@ -630,22 +651,26 @@ fn reg_depends_on_y_index(row: &[LinearOp], reg: u32, target_y_index: usize) -> 
             state_start,
             state_len,
             ..
-        } => reg_range_depends_on_y_index(row, state_start, state_len, target_y_index),
+        } => reg_range_depends_on_y_index(row, state_start, state_len, target_y_index, memo),
         LinearOp::ImpureRandomInit { seed, .. } => {
-            reg_depends_on_y_index(row, seed, target_y_index)
+            reg_depends_on_y_index_memo(row, seed, target_y_index, memo)
         }
-        LinearOp::ImpureRandom { id, .. } => reg_depends_on_y_index(row, id, target_y_index),
+        LinearOp::ImpureRandom { id, .. } => {
+            reg_depends_on_y_index_memo(row, id, target_y_index, memo)
+        }
         LinearOp::ImpureRandomInteger { id, imin, imax, .. } => {
-            reg_depends_on_y_index(row, id, target_y_index)
-                || reg_depends_on_y_index(row, imin, target_y_index)
-                || reg_depends_on_y_index(row, imax, target_y_index)
+            reg_depends_on_y_index_memo(row, id, target_y_index, memo)
+                || reg_depends_on_y_index_memo(row, imin, target_y_index, memo)
+                || reg_depends_on_y_index_memo(row, imax, target_y_index, memo)
         }
         LinearOp::Const { .. }
         | LinearOp::LoadTime { .. }
         | LinearOp::LoadP { .. }
         | LinearOp::LoadSeed { .. }
         | LinearOp::StoreOutput { .. } => false,
-    })
+    });
+    memo.insert(reg, result);
+    result
 }
 
 fn reg_range_depends_on_y_index(
@@ -653,12 +678,14 @@ fn reg_range_depends_on_y_index(
     start: u32,
     len: usize,
     target_y_index: usize,
+    memo: &mut std::collections::HashMap<u32, bool>,
 ) -> bool {
     (0..len).any(|offset| {
-        reg_depends_on_y_index(
+        reg_depends_on_y_index_memo(
             row,
             start.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX)),
             target_y_index,
+            memo,
         )
     })
 }
@@ -1069,4 +1096,65 @@ fn ensure_register_range(
         register: start.saturating_add(len.saturating_sub(1) as u32),
         len: regs.len(),
     })
+}
+
+#[cfg(test)]
+mod assignment_shape_tests {
+    use super::*;
+    use rumoca_ir_solve::{BinaryOp, LinearOp};
+
+    // Regression: `reg_depends_on_y_index` used to recurse over the register DAG
+    // without memoization, so a row whose affine coefficient/offset is a deeply
+    // shared sub-expression (typical of inlined matrix products) took O(2^depth)
+    // and hung `PreparedScalarProgramBlock::new`. A 40-deep doubling chain has
+    // 2^40 distinct root-to-leaf paths; the memoized walk must still finish
+    // instantly and classify the row correctly.
+    #[test]
+    fn affine_shape_with_deep_shared_dag_terminates() {
+        let depth: u32 = 40;
+        let mut ops = vec![LinearOp::Const { dst: 0, value: 1.0 }];
+        // reg i = reg(i-1) + reg(i-1): a register reused twice at every level.
+        for i in 1..=depth {
+            ops.push(LinearOp::Binary {
+                dst: i,
+                op: BinaryOp::Add,
+                lhs: i - 1,
+                rhs: i - 1,
+            });
+        }
+        let deep = depth; // root of the shared DAG (no LoadY inside -> full traversal)
+        let y_reg = depth + 1;
+        let mul_reg = depth + 2;
+        let out_reg = depth + 3;
+        // out = (y[7] * deep) + deep  -> affine: coefficient `deep`, offset `deep`.
+        ops.push(LinearOp::LoadY {
+            dst: y_reg,
+            index: 7,
+        });
+        ops.push(LinearOp::Binary {
+            dst: mul_reg,
+            op: BinaryOp::Mul,
+            lhs: y_reg,
+            rhs: deep,
+        });
+        ops.push(LinearOp::Binary {
+            dst: out_reg,
+            op: BinaryOp::Add,
+            lhs: mul_reg,
+            rhs: deep,
+        });
+        ops.push(LinearOp::StoreOutput { src: out_reg });
+
+        // Would hang pre-fix; must return promptly now.
+        let shape = target_assignment_shape(&ops);
+        match shape {
+            Some(TargetAssignmentShape::Affine { target_y_index, .. }) => {
+                assert_eq!(target_y_index, 7);
+            }
+            _ => panic!("expected Affine shape for y[7]"),
+        }
+
+        // And the public preparation path must also complete.
+        let _ = PreparedScalarProgramBlock::new(rumoca_ir_solve::ScalarProgramBlock::new(vec![ops]));
+    }
 }
