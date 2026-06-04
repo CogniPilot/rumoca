@@ -421,30 +421,36 @@ fn resolve_connection_alias_target_collisions(
 
 pub(super) fn canonicalize_discrete_assignment_equations(dae: &mut Dae) -> Result<(), ToDaeError> {
     let debug_canonicalize = crate::fm_canon_debug_enabled();
-    let (mut grouped, passthrough) = drain_grouped_discrete_assignments(dae);
-    reroute_connection_aliases_for_defined_targets(&mut grouped, dae);
-    resolve_connection_alias_target_collisions(&mut grouped, dae)?;
-    debug_log_grouped_target_collisions(debug_canonicalize, &grouped);
-
-    let mut rebuilt = Vec::with_capacity(passthrough.len() + grouped.len());
-    rebuilt.extend(passthrough);
-    for (lhs, equations) in grouped {
-        rebuilt.extend(canonicalize_assignment_group(lhs, equations));
+    {
+        let (mut grouped, passthrough) =
+            drain_grouped_discrete_assignments(&mut dae.discrete.valued_updates);
+        reroute_connection_aliases_for_defined_targets(&mut grouped, dae);
+        resolve_connection_alias_target_collisions(&mut grouped, dae)?;
+        debug_log_grouped_target_collisions(debug_canonicalize, "f_m", &grouped);
+        dae.discrete.valued_updates =
+            rebuild_canonicalized_discrete_assignments(grouped, passthrough);
+        debug_log_final_target_collisions(debug_canonicalize, "f_m", &dae.discrete.valued_updates);
     }
-    dae.discrete.valued_updates = rebuilt;
-    debug_log_final_target_collisions(debug_canonicalize, &dae.discrete.valued_updates);
+    {
+        let (grouped, passthrough) =
+            drain_grouped_discrete_assignments(&mut dae.discrete.real_updates);
+        debug_log_grouped_target_collisions(debug_canonicalize, "f_z", &grouped);
+        dae.discrete.real_updates =
+            rebuild_canonicalized_discrete_assignments(grouped, passthrough);
+        debug_log_final_target_collisions(debug_canonicalize, "f_z", &dae.discrete.real_updates);
+    }
     Ok(())
 }
 
 fn drain_grouped_discrete_assignments(
-    dae: &mut Dae,
+    equations: &mut Vec<rumoca_ir_dae::Equation>,
 ) -> (
     IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
     Vec<rumoca_ir_dae::Equation>,
 ) {
     let mut grouped: IndexMap<VarName, Vec<rumoca_ir_dae::Equation>> = IndexMap::new();
     let mut passthrough = Vec::new();
-    for equation in dae.discrete.valued_updates.drain(..) {
+    for equation in equations.drain(..) {
         if let Some(lhs) = equation.lhs.as_ref() {
             grouped
                 .entry(dae_to_flat_var_name(lhs))
@@ -455,6 +461,18 @@ fn drain_grouped_discrete_assignments(
         }
     }
     (grouped, passthrough)
+}
+
+fn rebuild_canonicalized_discrete_assignments(
+    grouped: IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    passthrough: Vec<rumoca_ir_dae::Equation>,
+) -> Vec<rumoca_ir_dae::Equation> {
+    let mut rebuilt = Vec::with_capacity(passthrough.len() + grouped.len());
+    rebuilt.extend(passthrough);
+    for (lhs, equations) in grouped {
+        rebuilt.extend(canonicalize_assignment_group(lhs, equations));
+    }
+    rebuilt
 }
 
 fn reroute_connection_aliases_for_defined_targets(
@@ -503,9 +521,11 @@ fn canonicalize_assignment_group(
 ) -> Vec<rumoca_ir_dae::Equation> {
     if equations.len() == 1 {
         let mut equation = equations.remove(0);
-        let rewritten =
-            rewrite_discrete_self_refs_to_pre(&dae_to_flat_expression(&equation.rhs), &lhs);
-        equation.rhs = flat_to_dae_expression(&rewritten);
+        if rewrites_discrete_self_refs(&equation) {
+            let rewritten =
+                rewrite_discrete_self_refs_to_pre(&dae_to_flat_expression(&equation.rhs), &lhs);
+            equation.rhs = flat_to_dae_expression(&rewritten);
+        }
         return vec![equation];
     }
 
@@ -522,12 +542,18 @@ fn canonicalize_assignment_group(
 
     let mut rewritten_equations = Vec::with_capacity(equations.len());
     for mut equation in equations {
-        let rewritten =
-            rewrite_discrete_self_refs_to_pre(&dae_to_flat_expression(&equation.rhs), &lhs);
-        equation.rhs = flat_to_dae_expression(&rewritten);
+        if rewrites_discrete_self_refs(&equation) {
+            let rewritten =
+                rewrite_discrete_self_refs_to_pre(&dae_to_flat_expression(&equation.rhs), &lhs);
+            equation.rhs = flat_to_dae_expression(&rewritten);
+        }
         rewritten_equations.push(equation);
     }
     rewritten_equations
+}
+
+fn rewrites_discrete_self_refs(equation: &rumoca_ir_dae::Equation) -> bool {
+    !equation.origin.starts_with("guarded reinit")
 }
 
 fn merge_branch_split_discrete_assignments(
@@ -535,6 +561,9 @@ fn merge_branch_split_discrete_assignments(
     equations: &[rumoca_ir_dae::Equation],
 ) -> Option<rumoca_ir_dae::Equation> {
     let first = equations.first()?;
+    if !rewrites_discrete_self_refs(first) {
+        return None;
+    }
     if equations
         .iter()
         .any(|equation| is_connection_equation_origin(&equation.origin))
@@ -608,6 +637,7 @@ fn negated_branch_guard(branches: &[(Expression, Expression)]) -> Expression {
 
 fn debug_log_grouped_target_collisions(
     debug_canonicalize: bool,
+    partition: &str,
     grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
 ) {
     if !debug_canonicalize {
@@ -615,7 +645,8 @@ fn debug_log_grouped_target_collisions(
     }
     for (lhs, equations) in grouped.iter().filter(|(_, eqs)| eqs.len() > 1) {
         crate::log_fm_canon_debug(format!(
-            "f_m canonicalize grouped-collision lhs={} count={} origins={:?}",
+            "{} canonicalize grouped-collision lhs={} count={} origins={:?}",
+            partition,
             lhs,
             equations.len(),
             equations
@@ -628,6 +659,7 @@ fn debug_log_grouped_target_collisions(
 
 fn debug_log_final_target_collisions(
     debug_canonicalize: bool,
+    partition: &str,
     equations: &[rumoca_ir_dae::Equation],
 ) {
     if !debug_canonicalize {
@@ -641,8 +673,8 @@ fn debug_log_final_target_collisions(
     }
     for (lhs, count) in counts.into_iter().filter(|(_, count)| *count > 1) {
         crate::log_fm_canon_debug(format!(
-            "f_m canonicalize final-target-collision lhs={} count={}",
-            lhs, count
+            "{} canonicalize final-target-collision lhs={} count={}",
+            partition, lhs, count
         ));
     }
 }
