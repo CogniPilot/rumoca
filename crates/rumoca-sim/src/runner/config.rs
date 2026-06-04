@@ -231,6 +231,34 @@ pub enum ViewerOnboardCameraConfig {
     },
 }
 
+impl ViewerOnboardCameraConfig {
+    fn signal_names(&self) -> Vec<&str> {
+        match self {
+            ViewerOnboardCameraConfig::PlanarXyHeading { x, y, heading, .. } => {
+                vec![x.as_str(), y.as_str(), heading.as_str()]
+            }
+            ViewerOnboardCameraConfig::QuaternionFlu {
+                px,
+                py,
+                pz,
+                q0,
+                q1,
+                q2,
+                q3,
+                ..
+            } => vec![
+                px.as_str(),
+                py.as_str(),
+                pz.as_str(),
+                q0.as_str(),
+                q1.as_str(),
+                q2.as_str(),
+                q3.as_str(),
+            ],
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct ViewerControlsConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -327,7 +355,34 @@ impl SimulationConfig {
                  and vehicle in a Modelica model, then point [model] at that top-level class."
             );
         }
+        self.validate_onboard_camera_signals()?;
         Ok(())
+    }
+
+    fn validate_onboard_camera_signals(&self) -> anyhow::Result<()> {
+        let Some(camera) = self
+            .viewer
+            .as_ref()
+            .and_then(|viewer| viewer.onboard_camera.as_ref())
+        else {
+            return Ok(());
+        };
+        let missing = camera
+            .signal_names()
+            .into_iter()
+            .filter(|name| {
+                self.signals
+                    .as_ref()
+                    .is_none_or(|signals| !signals.viewer.contains_key(*name))
+            })
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "[viewer.onboard_camera] references signal(s) not routed under [signals.viewer]: {}",
+            missing.join(", ")
+        );
     }
 
     /// True when configured for external coupling (all FB sections present).
@@ -464,6 +519,55 @@ port = 8091
         let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
         assert_eq!(cfg.http_port(), 8090);
         assert_eq!(cfg.websocket_port(), 8091);
+    }
+
+    #[test]
+    fn validates_onboard_camera_viewer_signals() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[viewer.onboard_camera]
+mode = "planar_xy_heading"
+x = "x"
+y = "y"
+heading = "theta"
+
+[signals.viewer]
+x = "stepper:x"
+y = "stepper:y"
+theta = "stepper:theta"
+"#;
+        let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
+        cfg.validate()
+            .expect("camera references are present in signals.viewer");
+    }
+
+    #[test]
+    fn rejects_onboard_camera_missing_viewer_signal() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[viewer.onboard_camera]
+mode = "planar_xy_heading"
+x = "x"
+y = "y_typo"
+heading = "theta"
+
+[signals.viewer]
+x = "stepper:x"
+y = "stepper:y"
+theta = "stepper:theta"
+"#;
+        let err = toml::from_str::<SimulationConfig>(text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("y_typo") && err.to_string().contains("[signals.viewer]"),
+            "got: {err}"
+        );
     }
 
     #[test]
