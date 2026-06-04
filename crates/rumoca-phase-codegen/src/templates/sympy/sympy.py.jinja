@@ -82,7 +82,17 @@ def pre(symbol):
 def _piecewise_condition(condition):
     if condition is True or condition is False:
         return condition
+    if getattr(condition, "is_Relational", False):
+        return condition
     if getattr(condition, "is_Boolean", False):
+        return condition
+    return _condition_symbol(condition)
+
+
+def _condition_symbol(condition):
+    if condition is True or condition is False:
+        return condition
+    if getattr(condition, "is_Relational", False):
         return condition
     return sp.Symbol(str(condition), boolean=True)
 
@@ -111,6 +121,10 @@ def _substitute_until_stable(expr, solution):
             return updated
         current = updated
     return current
+
+
+def _substitute_sequence(values, solution):
+    return [_substitute_until_stable(value, solution) for value in values]
 
 
 def _normalize_solution(solution, targets):
@@ -221,6 +235,12 @@ class Model:
 {{ declare_vector("constants", dae.constants) }}
 {{ declare_vector("z", dae.z) }}
 {{ declare_vector("m", dae.m) }}
+        self.condition_aliases = {
+{%- for alias in dae.condition_aliases %}
+            _condition_symbol({{ render_expr(alias.condition, cfg) }}): {{ render_expr(alias.relation, cfg) }},
+{%- endfor %}
+        }
+
         self.f_x = {% if dae.f_x | length > 0 %}_column([
 {%- for eq in dae.f_x %}
             {{ render_residual(eq) }}{{ "," if not loop.last }}
@@ -263,8 +283,13 @@ class Model:
             self.explicit_rhs = sp.Matrix([])
             return self.explicit_solution
 
+        residuals = _substitute_sequence(list(self.f_x), self.condition_aliases)
+        explicit_residuals = _substitute_sequence(
+            self.explicit_residuals,
+            self.condition_aliases,
+        )
         solutions = sp.solve(
-            list(self.f_x),
+            residuals,
             self.explicit_targets,
             dict=True,
             simplify=False,
@@ -272,7 +297,7 @@ class Model:
         solution = _normalize_solution(solutions[0], self.explicit_targets) if solutions else {}
         if not _solution_covers_targets(solution, self.explicit_targets):
             solution = _solve_explicit_rows(
-                zip(self.explicit_residuals, self.explicit_targets),
+                zip(explicit_residuals, self.explicit_targets),
                 self.explicit_targets,
             )
         self.explicit_solution = solution

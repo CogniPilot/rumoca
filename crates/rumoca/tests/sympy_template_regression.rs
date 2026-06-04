@@ -30,6 +30,15 @@ fn render_template(source: &str, model_name: &str, file_name: &str) -> String {
     .expect("render sympy template")
 }
 
+fn render_dae_template_json(source: &str, model_name: &str, file_name: &str) -> serde_json::Value {
+    let compiled = Compiler::new()
+        .model(model_name)
+        .compile_str(source, file_name)
+        .expect("compile test model");
+
+    rumoca_phase_codegen::dae_template_json(&compiled.dae).expect("render DAE template JSON")
+}
+
 #[cfg(feature = "template-runtime-tests")]
 fn assert_python_executes(rendered: &str, assertion_script: &str) {
     let temp = Builder::new()
@@ -92,7 +101,11 @@ end Arr;
 }
 
 fn render_unicycle_template() -> String {
-    let source = r#"
+    render_template(unicycle_source(), "Unicycle", "Unicycle.mo")
+}
+
+fn unicycle_source() -> &'static str {
+    r#"
 model Unicycle
   Real x(start=0);
   Real y(start=0);
@@ -114,9 +127,7 @@ equation
   der(y) = v_nom * sin(theta);
   der(theta) = omega_ref;
 end Unicycle;
-"#;
-
-    render_template(source, "Unicycle", "Unicycle.mo")
+"#
 }
 
 #[test]
@@ -156,6 +167,19 @@ fn sympy_template_uses_indexed_symbols_for_array_states() {
             || rendered.contains("der(x_1_)"),
         "expected explicit derivative targets for array state equations, got:\n{rendered}"
     );
+}
+
+#[test]
+fn sympy_template_dae_context_exposes_condition_aliases() {
+    let value = render_dae_template_json(unicycle_source(), "Unicycle", "Unicycle.mo");
+    let aliases = value
+        .get("condition_aliases")
+        .and_then(serde_json::Value::as_array)
+        .expect("condition aliases should be present");
+
+    assert_eq!(aliases.len(), 1);
+    assert_eq!(aliases[0]["condition"]["VarRef"]["name"], "c[1]");
+    assert!(aliases[0]["relation"]["Binary"].is_object());
 }
 
 #[test]
@@ -205,6 +229,38 @@ rhs = [str(value) for value in model.explicit_rhs]
 assert "Piecewise" in rhs[2], rhs
 assert "floor" in rhs[3], rhs
 assert "Piecewise" in rhs[4], rhs
+raw_piecewise = module.if_else(
+    module.sp.Symbol("tau") <= module.sp.Symbol("T_lobe"),
+    module.sp.Symbol("omega_turn"),
+    -module.sp.Symbol("omega_turn"),
+)
+assert raw_piecewise.has(module.sp.Symbol("tau")), raw_piecewise
+assert raw_piecewise.subs({
+    module.sp.Symbol("tau"): 1,
+    module.sp.Symbol("T_lobe"): 2,
+    module.sp.Symbol("omega_turn"): 0.4,
+}) == 0.4
+assert raw_piecewise.subs({
+    module.sp.Symbol("tau"): 3,
+    module.sp.Symbol("T_lobe"): 2,
+    module.sp.Symbol("omega_turn"): 0.4,
+}) == -0.4
+piecewise_rhs = solution[model.explicit_targets[4]]
+assert piecewise_rhs.has(module.sp.Symbol("T_lobe")), piecewise_rhs
+assert piecewise_rhs.has(module.sp.Symbol("time")), piecewise_rhs
+assert not piecewise_rhs.has(module.sp.Symbol("c[1]", boolean=True)), piecewise_rhs
+assert piecewise_rhs.subs({
+    module.sp.Symbol("time"): 1,
+    module.sp.Symbol("T_fig8"): 10,
+    module.sp.Symbol("T_lobe"): 2,
+    module.sp.Symbol("omega_turn"): 0.4,
+}) == 0.4
+assert piecewise_rhs.subs({
+    module.sp.Symbol("time"): 3,
+    module.sp.Symbol("T_fig8"): 10,
+    module.sp.Symbol("T_lobe"): 2,
+    module.sp.Symbol("omega_turn"): 0.4,
+}) == -0.4
 "#,
     );
 }
