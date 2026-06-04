@@ -218,16 +218,16 @@ fn check_literal_metadata(variable: &dae::Variable, report: &mut GalecAdmissibil
         ("max", variable.max.as_ref()),
         ("nominal", variable.nominal.as_ref()),
     ] {
-        if let Some(expr) = expr {
-            if !matches!(expr, Expression::Literal { .. }) {
-                push(
-                    report,
-                    format!(
-                        "variable `{}` has non-literal `{attribute}` metadata; initial GALEC manifest lowering only supports literal metadata",
-                        variable.name.as_str()
-                    ),
-                );
-            }
+        if let Some(expr) = expr
+            && !matches!(expr, Expression::Literal { .. })
+        {
+            push(
+                report,
+                format!(
+                    "variable `{}` has non-literal `{attribute}` metadata; initial GALEC manifest lowering only supports literal metadata",
+                    variable.name.as_str()
+                ),
+            );
         }
     }
 }
@@ -265,22 +265,22 @@ fn check_range_metadata(variable: &dae::Variable, report: &mut GalecAdmissibilit
             check_start_range_i64(variable, start, min, max, report);
         }
         GalecLiteralValue::Real(start) => {
-            let min = numeric_metadata(variable.min.as_ref());
-            let max = numeric_metadata(variable.max.as_ref());
-            let nominal = numeric_metadata(variable.nominal.as_ref());
+            let min = real_metadata(variable, "min", variable.min.as_ref(), report);
+            let max = real_metadata(variable, "max", variable.max.as_ref(), report);
+            let nominal = real_metadata(variable, "nominal", variable.nominal.as_ref(), report);
 
             check_ordered_f64(variable, min, max, report);
             check_start_range_f64(variable, start, min, max, report);
-            if let Some(nominal) = nominal {
-                if !nominal.is_finite() || nominal <= 0.0 {
-                    push(
-                        report,
-                        format!(
-                            "Real variable `{}` has nominal metadata that is not > 0",
-                            variable.name.as_str()
-                        ),
-                    );
-                }
+            if let Some(nominal) = nominal
+                && (!nominal.is_finite() || nominal <= 0.0)
+            {
+                push(
+                    report,
+                    format!(
+                        "Real variable `{}` has nominal metadata that is not > 0",
+                        variable.name.as_str()
+                    ),
+                );
             }
         }
     }
@@ -314,16 +314,16 @@ fn check_ordered_i64(
     max: Option<i64>,
     report: &mut GalecAdmissibilityReport,
 ) {
-    if let (Some(min), Some(max)) = (min, max) {
-        if max < min {
-            push(
-                report,
-                format!(
-                    "variable `{}` has max metadata below min",
-                    variable.name.as_str()
-                ),
-            );
-        }
+    if let (Some(min), Some(max)) = (min, max)
+        && max < min
+    {
+        push(
+            report,
+            format!(
+                "variable `{}` has max metadata below min",
+                variable.name.as_str()
+            ),
+        );
     }
 }
 
@@ -333,16 +333,16 @@ fn check_ordered_f64(
     max: Option<f64>,
     report: &mut GalecAdmissibilityReport,
 ) {
-    if let (Some(min), Some(max)) = (min, max) {
-        if max < min {
-            push(
-                report,
-                format!(
-                    "variable `{}` has max metadata below min",
-                    variable.name.as_str()
-                ),
-            );
-        }
+    if let (Some(min), Some(max)) = (min, max)
+        && max < min
+    {
+        push(
+            report,
+            format!(
+                "variable `{}` has max metadata below min",
+                variable.name.as_str()
+            ),
+        );
     }
 }
 
@@ -414,10 +414,10 @@ fn check_equations(dae: &dae::Dae, report: &mut GalecAdmissibilityReport) {
             report,
         );
 
-        if let Some(lhs) = lhs {
-            if roles.dependent_parameters.contains(lhs) {
-                check_recalibrate_equation(equation, &roles, &mut recalibrate_assigned, report);
-            }
+        if let Some(lhs) = lhs
+            && roles.dependent_parameters.contains(lhs)
+        {
+            check_recalibrate_equation(equation, &roles, &mut recalibrate_assigned, report);
         }
     }
 
@@ -799,11 +799,26 @@ fn literal_value(expr: Option<&Expression>) -> Option<GalecLiteralValue> {
     }
 }
 
-fn numeric_metadata(expr: Option<&Expression>) -> Option<f64> {
-    match literal_value(expr)? {
-        GalecLiteralValue::Real(value) => Some(value),
-        GalecLiteralValue::Integer(value) => Some(value as f64),
-        GalecLiteralValue::Boolean => None,
+fn real_metadata(
+    variable: &dae::Variable,
+    attribute: &str,
+    expr: Option<&Expression>,
+    report: &mut GalecAdmissibilityReport,
+) -> Option<f64> {
+    match literal_value(expr) {
+        Some(GalecLiteralValue::Real(value)) => Some(value),
+        Some(GalecLiteralValue::Integer(value)) => Some(value as f64),
+        Some(GalecLiteralValue::Boolean) => {
+            push(
+                report,
+                format!(
+                    "Real variable `{}` has non-numeric `{attribute}` metadata",
+                    variable.name.as_str()
+                ),
+            );
+            None
+        }
+        None => None,
     }
 }
 

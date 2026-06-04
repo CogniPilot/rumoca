@@ -377,6 +377,30 @@ fn rejects_invalid_range_metadata() {
 }
 
 #[test]
+fn rejects_boolean_real_range_metadata() {
+    let mut dae = clocked_dae();
+    dae.variables.outputs.insert(
+        VarName::new("y"),
+        dae::Variable {
+            name: VarName::new("y"),
+            start: Some(real_literal(0.0)),
+            min: Some(bool_literal(true)),
+            ..Default::default()
+        },
+    );
+
+    let err = check_galec_admissible(&dae, GalecProfile::Efmi10)
+        .expect_err("Real variables should reject Boolean range metadata");
+
+    let messages = violation_messages(err);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("non-numeric `min` metadata"))
+    );
+}
+
+#[test]
 fn rejects_dependent_parameter_without_recalibrate_assignment() {
     let mut dae = clocked_dae();
     dae.variables.parameters.insert(
