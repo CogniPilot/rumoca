@@ -146,7 +146,10 @@ fn eval_abs(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 1, span)?;
     match &args[0] {
         Value::Real(x) => Ok(Value::Real(x.abs())),
-        Value::Integer(x) => Ok(Value::Integer(x.abs())),
+        Value::Integer(x) => x
+            .checked_abs()
+            .map(Value::Integer)
+            .ok_or_else(|| integer_overflow_error("abs(...)", span)),
         other => Err(EvalError::type_mismatch(
             "Real or Integer",
             other.type_name(),
@@ -191,7 +194,7 @@ fn eval_sign(args: &[Value], span: Span) -> Result<Value, EvalError> {
 fn eval_floor(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 1, span)?;
     match &args[0] {
-        Value::Real(x) => Ok(Value::Integer(x.floor() as i64)),
+        Value::Real(x) => checked_real_to_i64(x.floor(), span, "floor(...)").map(Value::Integer),
         Value::Integer(x) => Ok(Value::Integer(*x)),
         other => Err(EvalError::type_mismatch(
             "Real or Integer",
@@ -205,7 +208,7 @@ fn eval_floor(args: &[Value], span: Span) -> Result<Value, EvalError> {
 fn eval_ceil(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 1, span)?;
     match &args[0] {
-        Value::Real(x) => Ok(Value::Integer(x.ceil() as i64)),
+        Value::Real(x) => checked_real_to_i64(x.ceil(), span, "ceil(...)").map(Value::Integer),
         Value::Integer(x) => Ok(Value::Integer(*x)),
         other => Err(EvalError::type_mismatch(
             "Real or Integer",
@@ -330,7 +333,7 @@ fn eval_div(args: &[Value], span: Span) -> Result<Value, EvalError> {
             if y == 0.0 {
                 return Err(EvalError::DivisionByZero { span });
             }
-            Ok(Value::Integer((x / y).trunc() as i64))
+            checked_real_to_i64((x / y).trunc(), span, "div(...)").map(Value::Integer)
         }
     }
 }
@@ -340,7 +343,7 @@ fn eval_integer(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 1, span)?;
     match &args[0] {
         Value::Integer(x) => Ok(Value::Integer(*x)),
-        Value::Real(x) => Ok(Value::Integer(x.floor() as i64)),
+        Value::Real(x) => checked_real_to_i64(x.floor(), span, "integer(...)").map(Value::Integer),
         other => Err(EvalError::type_mismatch(
             "Real or Integer",
             other.type_name(),
@@ -411,7 +414,9 @@ fn eval_sum(args: &[Value], span: Span) -> Result<Value, EvalError> {
     let all_int = arr.iter().all(|v| matches!(v, Value::Integer(_)));
     if all_int {
         let sum = arr.iter().try_fold(0_i64, |acc, value| {
-            integer_value(value, span).map(|value| acc + value)
+            let value = integer_value(value, span)?;
+            acc.checked_add(value)
+                .ok_or_else(|| integer_overflow_error("sum(...)", span))
         })?;
         return Ok(Value::Integer(sum));
     }
@@ -434,7 +439,9 @@ fn eval_product(args: &[Value], span: Span) -> Result<Value, EvalError> {
     let all_int = arr.iter().all(|v| matches!(v, Value::Integer(_)));
     if all_int {
         let prod = arr.iter().try_fold(1_i64, |acc, value| {
-            integer_value(value, span).map(|value| acc * value)
+            let value = integer_value(value, span)?;
+            acc.checked_mul(value)
+                .ok_or_else(|| integer_overflow_error("product(...)", span))
         })?;
         return Ok(Value::Integer(prod));
     }
@@ -695,6 +702,23 @@ fn integer_value(v: &Value, span: Span) -> Result<i64, EvalError> {
         .ok_or_else(|| EvalError::type_mismatch("Integer", v.type_name(), span))
 }
 
+fn checked_real_to_i64(value: f64, span: Span, context: &str) -> Result<i64, EvalError> {
+    if !value.is_finite() || value < i64::MIN as f64 || value > i64::MAX as f64 {
+        return Err(EvalError::function_error(
+            format!("real value {value} is outside i64 range while evaluating {context}"),
+            span,
+        ));
+    }
+    Ok(value as i64)
+}
+
+fn integer_overflow_error(context: &str, span: Span) -> EvalError {
+    EvalError::function_error(
+        format!("compile-time integer overflow while evaluating {context}"),
+        span,
+    )
+}
+
 // Helper: get nested array dimension size (reduces nesting in eval_size)
 fn get_nested_dim_size(arr: &[Value], dim: i64, span: Span) -> Result<Value, EvalError> {
     let Some(first) = arr.first() else {
@@ -853,6 +877,34 @@ mod tests {
 
         let ceil_result = eval_builtin("ceil", &[Value::Real(3.2)], Span::DUMMY).unwrap();
         assert_eq!(ceil_result.as_integer(), Some(4));
+    }
+
+    #[test]
+    fn test_integer_out_of_range_real_returns_error() {
+        let err = eval_builtin("integer", &[Value::Real(-1e40)], Span::DUMMY).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("outside i64 range while evaluating integer(...)")
+        );
+    }
+
+    #[test]
+    fn test_sum_integer_overflow_returns_error() {
+        let arr = Value::Array(vec![Value::Integer(i64::MAX), Value::Integer(1)]);
+        let err = eval_builtin("sum", &[arr], Span::DUMMY).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("compile-time integer overflow while evaluating sum(...)")
+        );
+    }
+
+    #[test]
+    fn test_abs_integer_overflow_returns_error() {
+        let err = eval_builtin("abs", &[Value::Integer(i64::MIN)], Span::DUMMY).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("compile-time integer overflow while evaluating abs(...)")
+        );
     }
 
     #[test]

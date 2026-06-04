@@ -278,9 +278,7 @@ fn collect_when_eq_targets(
             flat::WhenEquation::Assign { target, .. } => {
                 targets.insert(target.clone());
             }
-            flat::WhenEquation::Reinit { state, .. } => {
-                targets.insert(state.clone());
-            }
+            flat::WhenEquation::Reinit { .. } => {}
             flat::WhenEquation::FunctionCallOutputs { outputs, .. } => {
                 for out in outputs {
                     targets.insert(out.clone());

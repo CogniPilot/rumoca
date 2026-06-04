@@ -1281,6 +1281,33 @@ end ReinitOnTime;
     }
 
     #[test]
+    fn t5_09_elsewhen_reinit_can_reset_state_without_matching_branch_assignment() {
+        let source = r#"
+model WhenExample
+    Real x(start = 0.0);
+    Real rate(start = 1.0);
+equation
+    when mod(time, 1.0) > 0.25 then
+        rate = 2.0;
+    elsewhen mod(time, 1.0) > 0.75 then
+        rate = 1.0;
+        reinit(x, 0.0);
+    end when;
+
+    der(x) = rate;
+end WhenExample;
+"#;
+        let r = assert_compiles(source, "WhenExample");
+        assert_eq!(r.states, 1, "x should be the sole continuous state");
+        assert_eq!(r.f_x_count, 1, "der(x) should lower to one ODE equation");
+        assert_eq!(
+            r.dae.discrete.real_updates.len() + r.dae.discrete.valued_updates.len(),
+            2,
+            "rate assignment plus reinit should lower to discrete event updates"
+        );
+    }
+
+    #[test]
     fn t5_09_right_continuous_time_event_matches_strict_event_limit() {
         let strict_source = r#"
 model StrictStepRLC

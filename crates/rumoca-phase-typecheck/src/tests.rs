@@ -17,6 +17,15 @@ fn parse(source: &str) -> ParsedTree {
     ParsedTree::new(tree)
 }
 
+fn typecheck_diagnostics(source: &str) -> rumoca_core::Diagnostics {
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let mut tree = resolved.into_inner();
+    let mut checker = TypeChecker::new();
+    checker.check(&mut tree);
+    checker.take_diagnostics()
+}
+
 #[test]
 fn test_empty_typecheck() {
     let tree = ClassTree::new();
@@ -24,6 +33,62 @@ fn test_empty_typecheck() {
     let resolved = resolve(parsed).expect("resolve should succeed");
     let result = typecheck(resolved);
     assert!(result.is_ok());
+}
+
+#[test]
+fn legitimate_integer_conversion_emits_no_warning() {
+    let diagnostics = typecheck_diagnostics(
+        r#"
+        model Test
+          parameter Integer n = integer(4.0);
+          Real x[n];
+        end Test;
+        "#,
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diag| diag.code.as_deref() != Some("ET006")
+                && diag.code.as_deref() != Some("ET007")),
+        "expected no integer-coercion warnings, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn out_of_range_integer_coercion_emits_warning() {
+    let diagnostics = typecheck_diagnostics(
+        r#"
+        model Test
+          parameter Integer n = integer(-1e40);
+        end Test;
+        "#,
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diag| diag.code.as_deref() == Some("ET006")),
+        "expected ET006 warning, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn integer_fold_overflow_emits_warning() {
+    let diagnostics = typecheck_diagnostics(
+        r#"
+        model Test
+          parameter Integer n = integer(9e18) + integer(9e18);
+        end Test;
+        "#,
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diag| diag.code.as_deref() == Some("ET007")),
+        "expected ET007 warning, got: {diagnostics:?}"
+    );
 }
 
 #[test]

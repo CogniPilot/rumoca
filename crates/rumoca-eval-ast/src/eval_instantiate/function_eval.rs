@@ -824,7 +824,7 @@ fn try_eval_integer_shape_expr_with_depth(
         ast::Expression::Unary { op, rhs, .. } => {
             let value = recurse(rhs)?;
             match op {
-                rumoca_core::OpUnary::Minus => Some(-value),
+                rumoca_core::OpUnary::Minus => value.checked_neg(),
                 rumoca_core::OpUnary::Plus => Some(value),
                 _ => None,
             }
