@@ -635,8 +635,21 @@ function drawFlightHud(state, roll, pitch, speed) {
 }
 
 function vehicleThreeMatrix(state) {
-  const px = state.px ?? 0, py = state.py ?? 0, pz = state.pz ?? 0;
-  const q0 = state.q0 ?? 1, q1 = state.q1 ?? 0, q2 = state.q2 ?? 0, q3 = state.q3 ?? 0;
+  return vehicleThreeMatrixFromSignals(state, {
+    px: "px",
+    py: "py",
+    pz: "pz",
+    q0: "q0",
+    q1: "q1",
+    q2: "q2",
+    q3: "q3",
+  });
+}
+
+function vehicleThreeMatrixFromSignals(state, names) {
+  const px = state[names.px] ?? 0, py = state[names.py] ?? 0, pz = state[names.pz] ?? 0;
+  const q0 = state[names.q0] ?? 1, q1 = state[names.q1] ?? 0;
+  const q2 = state[names.q2] ?? 0, q3 = state[names.q3] ?? 0;
 
   const R11 = 1-2*(q2*q2+q3*q3), R12 = 2*(q1*q2-q0*q3), R13 = 2*(q1*q3+q0*q2);
   const R21 = 2*(q1*q2+q0*q3), R22 = 1-2*(q1*q1+q3*q3), R23 = 2*(q2*q3-q0*q1);
@@ -661,11 +674,58 @@ function visualAttitudeFromMatrix(m) {
   };
 }
 
+function configuredVec3(value, fallback) {
+  if (!Array.isArray(value) || value.length !== 3) return fallback.clone();
+  const numbers = value.map(Number);
+  if (!numbers.every(Number.isFinite)) return fallback.clone();
+  return new THREE.Vector3(numbers[0], numbers[1], numbers[2]);
+}
+
 function applyOnboardCamera(state) {
-  const m = vehicleThreeMatrix(state);
-  const mount = new THREE.Vector3(0.95, 0.18, 0).applyMatrix4(m);
-  const forward = new THREE.Vector3(1, 0, 0).transformDirection(m);
-  const up = new THREE.Vector3(0, 1, 0).transformDirection(m);
+  const config = VIEWER_CONFIG?.onboard_camera;
+  if (config?.mode === "planar_xy_heading") {
+    applyPlanarOnboardCamera(state, config);
+    return;
+  }
+  applyQuaternionOnboardCamera(state, config);
+}
+
+function applyPlanarOnboardCamera(state, config) {
+  const x = Number(state[config.x]);
+  const y = Number(state[config.y]);
+  const heading = Number(state[config.heading]);
+  if (![x, y, heading].every(Number.isFinite)) return;
+
+  const mount = configuredVec3(config.mount, new THREE.Vector3(0.95, 0.18, 0));
+  const forward = configuredVec3(config.forward, new THREE.Vector3(1, 0, 0)).normalize();
+  const up = configuredVec3(config.up, new THREE.Vector3(0, 1, 0)).normalize();
+  const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -heading);
+  const origin = new THREE.Vector3(x, 0, y);
+  const mountWorld = origin.clone().add(mount.applyQuaternion(q));
+  const forwardWorld = forward.applyQuaternion(q);
+  const upWorld = up.applyQuaternion(q);
+
+  camera.position.copy(mountWorld);
+  camera.up.copy(upWorld);
+  camera.lookAt(mountWorld.clone().add(forwardWorld));
+}
+
+function applyQuaternionOnboardCamera(state, config) {
+  const m = vehicleThreeMatrixFromSignals(state, {
+    px: config?.px ?? "px",
+    py: config?.py ?? "py",
+    pz: config?.pz ?? "pz",
+    q0: config?.q0 ?? "q0",
+    q1: config?.q1 ?? "q1",
+    q2: config?.q2 ?? "q2",
+    q3: config?.q3 ?? "q3",
+  });
+  const mountLocal = configuredVec3(config?.mount, new THREE.Vector3(0.95, 0.18, 0));
+  const forwardLocal = configuredVec3(config?.forward, new THREE.Vector3(1, 0, 0));
+  const upLocal = configuredVec3(config?.up, new THREE.Vector3(0, 1, 0));
+  const mount = mountLocal.applyMatrix4(m);
+  const forward = forwardLocal.transformDirection(m);
+  const up = upLocal.transformDirection(m);
   camera.position.copy(mount);
   camera.up.copy(up);
   camera.lookAt(mount.clone().add(forward));

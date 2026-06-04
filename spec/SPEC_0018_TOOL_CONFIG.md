@@ -159,6 +159,13 @@ Simulation scenarios choose their presentation separately from solver pacing:
   describe control help rows with `keys` and `action` strings. These fields are
   presentation metadata only; actual signal routing stays under `[input]`,
   `[locals]`, `[derived]`, and `[signals]`.
+- `[viewer.onboard_camera]` configures the live viewer's onboard camera pose.
+  Supported modes are `planar_xy_heading` for ground vehicles exposing planar
+  `x`/`y`/heading signals and `quaternion_flu` for 6-DOF vehicles exposing
+  position plus scalar-first quaternion signals. The block names viewer JSON
+  signals, so each referenced signal MUST also be routed under
+  `[signals.viewer]`. Optional `mount`, `forward`, and `up` arrays are
+  vehicle-local 3-vectors.
 - If `[viewer].mode` is omitted, editors infer `external_web` only when the
   scenario contains an HTTP transport, explicit input routing, signals, locals,
   derived signals, reset behavior, or external-interface coupling. Otherwise

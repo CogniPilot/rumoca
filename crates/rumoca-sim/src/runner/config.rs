@@ -196,6 +196,39 @@ pub struct ViewerConfig {
     pub show_armed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controls: Option<ViewerControlsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onboard_camera: Option<ViewerOnboardCameraConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ViewerOnboardCameraConfig {
+    PlanarXyHeading {
+        x: String,
+        y: String,
+        heading: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mount: Option<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forward: Option<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up: Option<[f64; 3]>,
+    },
+    QuaternionFlu {
+        px: String,
+        py: String,
+        pz: String,
+        q0: String,
+        q1: String,
+        q2: String,
+        q3: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mount: Option<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forward: Option<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up: Option<[f64; 3]>,
+    },
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -354,6 +387,10 @@ mod tests {
         let viewer = cfg.viewer.as_ref().expect("[viewer]");
         assert_eq!(viewer.status_title.as_deref(), Some("Vehicle"));
         assert_eq!(viewer.show_armed, Some(false));
+        assert!(matches!(
+            viewer.onboard_camera,
+            Some(ViewerOnboardCameraConfig::PlanarXyHeading { .. })
+        ));
         let controls = viewer.controls.as_ref().expect("[viewer.controls]");
         assert!(
             controls

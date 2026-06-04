@@ -201,3 +201,13 @@ on_signal         = "reset"
 reset_locals      = true
 rebuild_stepper   = true
 restart_external_interface = false
+
+# ── Viewer presentation ───────────────────────────────────────────────────
+# Optional onboard camera configuration for the C key. Referenced signal names
+# must be present in [signals.viewer].
+# [viewer.onboard_camera]
+# mode = "planar_xy_heading"
+# x = "x"
+# y = "y"
+# heading = "theta"
+# mount = [0.95, 0.18, 0.0]

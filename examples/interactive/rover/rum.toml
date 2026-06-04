@@ -103,6 +103,13 @@ mode = "external_web"
 show_armed = false
 status_title = "Vehicle"
 
+[viewer.onboard_camera]
+mode = "planar_xy_heading"
+x = "x"
+y = "y"
+heading = "theta"
+mount = [0.95, 0.24, 0.0]
+
 [[viewer.controls.keyboard]]
 keys = "Up / Down"
 action = "Throttle"
