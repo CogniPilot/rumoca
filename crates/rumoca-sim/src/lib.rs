@@ -13,15 +13,15 @@ pub use rumoca_eval_solve::nan_trace;
 use rumoca_ir_dae as dae;
 pub use rumoca_phase_solve::{lower_solve_artifacts, lower_solve_problem};
 pub use rumoca_solver::{
-    BackendState, LoopStats, RuntimeProgressSnapshot, RuntimeStopSchedule, RuntimeTraceContext,
-    SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimVariableMeta,
-    SimulationBackend, SimulationRequestSummary, SimulationRunMetrics, SolverDeadlineGuard,
-    StepUntilOutcome, TimeoutBudget, TimeoutExceeded, build_simulation_metrics_value,
-    build_simulation_payload, is_solver_timeout_panic, panic_on_expired_solver_deadline,
-    run_timeout_result, run_timeout_step, run_timeout_step_result, run_with_runtime_schedule,
-    runtime_progress_snapshot, stop_time_reached_with_tol, time_advanced_with_tol,
-    time_match_with_tol, trace_runtime_done, trace_runtime_progress, trace_runtime_start,
-    trace_runtime_step_fail, trace_runtime_timeout,
+    BackendState, DiffsolMethod, LoopStats, RuntimeProgressSnapshot, RuntimeStopSchedule,
+    RuntimeTraceContext, SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode,
+    SimVariableMeta, SimulationBackend, SimulationRequestSummary, SimulationRunMetrics,
+    SolverDeadlineGuard, StepUntilOutcome, TimeoutBudget, TimeoutExceeded,
+    build_simulation_metrics_value, build_simulation_payload, is_solver_timeout_panic,
+    panic_on_expired_solver_deadline, run_timeout_result, run_timeout_step,
+    run_timeout_step_result, run_with_runtime_schedule, runtime_progress_snapshot,
+    stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol, trace_runtime_done,
+    trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
 };
 
 pub mod bulk;
