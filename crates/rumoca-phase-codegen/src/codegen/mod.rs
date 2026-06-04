@@ -9,6 +9,7 @@
 
 use crate::errors::{CodegenError, render_err};
 use minijinja::{Environment, UndefinedBehavior, Value};
+use rumoca_core::{Expression, Reference, Span};
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
@@ -56,6 +57,10 @@ pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenErr
         })?;
     let enum_type_names = enum_type_names_from_ordinals(dae);
     let symbol_refs = source_refs_from_dae(dae, &enum_type_names);
+    let condition_aliases =
+        condition_aliases_from_dae(dae).map_err(|e| CodegenError::SerializationFailed {
+            message: format!("condition_aliases: {e}"),
+        })?;
     object.insert(
         "model_description".to_string(),
         serde_json::to_value(&dae.metadata.model_description).map_err(|e| {
@@ -76,7 +81,29 @@ pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenErr
             message: format!("symbol_refs: {e}"),
         })?,
     );
+    object.insert(
+        "condition_aliases".to_string(),
+        serde_json::Value::Array(condition_aliases),
+    );
     Ok(value)
+}
+
+fn condition_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, serde_json::Error> {
+    dae.conditions
+        .equations
+        .iter()
+        .filter_map(|eq| eq.lhs.as_ref().map(|lhs| (lhs, &eq.rhs)))
+        .map(|(lhs, relation)| {
+            Ok(serde_json::json!({
+                "condition": Expression::VarRef {
+                    name: Reference::from_var_name(lhs.clone()),
+                    subscripts: Vec::new(),
+                    span: Span::DUMMY,
+                },
+                "relation": relation,
+            }))
+        })
+        .collect()
 }
 
 /// Extract unique enum type names from enum literal ordinals.

@@ -30,6 +30,15 @@ fn render_template(source: &str, model_name: &str, file_name: &str) -> String {
     .expect("render sympy template")
 }
 
+fn render_dae_template_json(source: &str, model_name: &str, file_name: &str) -> serde_json::Value {
+    let compiled = Compiler::new()
+        .model(model_name)
+        .compile_str(source, file_name)
+        .expect("compile test model");
+
+    rumoca_phase_codegen::dae_template_json(&compiled.dae).expect("render DAE template JSON")
+}
+
 #[cfg(feature = "template-runtime-tests")]
 fn assert_python_executes(rendered: &str, assertion_script: &str) {
     let temp = Builder::new()
@@ -91,6 +100,36 @@ end Arr;
     render_template(source, "Arr", "Arr.mo")
 }
 
+fn render_unicycle_template() -> String {
+    render_template(unicycle_source(), "Unicycle", "Unicycle.mo")
+}
+
+fn unicycle_source() -> &'static str {
+    r#"
+model Unicycle
+  Real x(start=0);
+  Real y(start=0);
+  Real theta(start=0);
+  Real omega_ref;
+  Real tau;
+  parameter Real v_nom = 2.0;
+  parameter Real omega_turn = 0.4;
+  parameter Real r_fig8 = 5.0;
+  parameter Real dt = 0.1;
+  parameter Real pi = 3.14159;
+  parameter Real T_fig8 = 10 * pi;
+  parameter Real T_lobe = 2 * pi * r_fig8 / v_nom;
+algorithm
+  tau := time - T_fig8 * floor(time / T_fig8);
+  omega_ref := if tau <= T_lobe then omega_turn else -omega_turn;
+equation
+  der(x) = v_nom * cos(theta);
+  der(y) = v_nom * sin(theta);
+  der(theta) = omega_ref;
+end Unicycle;
+"#
+}
+
 #[test]
 fn sympy_template_renders_against_current_dae_context() {
     let rendered = render_ball_template();
@@ -131,6 +170,19 @@ fn sympy_template_uses_indexed_symbols_for_array_states() {
 }
 
 #[test]
+fn sympy_template_dae_context_exposes_condition_aliases() {
+    let value = render_dae_template_json(unicycle_source(), "Unicycle", "Unicycle.mo");
+    let aliases = value
+        .get("condition_aliases")
+        .and_then(serde_json::Value::as_array)
+        .expect("condition aliases should be present");
+
+    assert_eq!(aliases.len(), 1);
+    assert_eq!(aliases[0]["condition"]["VarRef"]["name"], "c[1]");
+    assert!(aliases[0]["relation"]["Binary"].is_object());
+}
+
+#[test]
 #[cfg(feature = "template-runtime-tests")]
 fn sympy_template_executes_against_current_dae_context() {
     let rendered = render_ball_template();
@@ -158,6 +210,54 @@ targets = [str(target) for target in model.explicit_targets]
 assert targets == ["x_dot[1]", "x_dot[2]"] or targets == ["x_1_dot", "x_2_dot"] or targets == ["x_1__dot", "x_2__dot"]
 assert str(solution[model.explicit_targets[0]]) in {"-x[1]", "-x_1", "-x_1_"}
 assert str(solution[model.explicit_targets[1]]) in {"-x[2]", "-x_2", "-x_2_"}
+"#,
+    );
+}
+
+#[test]
+#[cfg(feature = "template-runtime-tests")]
+fn sympy_template_solves_piecewise_explicit_rows() {
+    let rendered = render_unicycle_template();
+
+    assert_python_executes(
+        &rendered,
+        r#"
+targets = [str(target) for target in model.explicit_targets]
+assert targets == ["x_dot", "y_dot", "theta_dot", "tau", "omega_ref"], targets
+assert len(solution) == len(model.explicit_targets), solution
+rhs = [str(value) for value in model.explicit_rhs]
+assert "Piecewise" in rhs[2], rhs
+assert "floor" in rhs[3], rhs
+assert "Piecewise" in rhs[4], rhs
+raw_piecewise = module.if_else(
+    module.sp.Symbol("tau") <= module.sp.Symbol("T_lobe"),
+    module.sp.Symbol("omega_turn"),
+    -module.sp.Symbol("omega_turn"),
+)
+assert raw_piecewise.has(module.sp.Symbol("tau")), raw_piecewise
+assert raw_piecewise.subs({
+    module.sp.Symbol("tau"): 1,
+    module.sp.Symbol("T_lobe"): 2,
+    module.sp.Symbol("omega_turn"): 0.4,
+}) == 0.4
+assert raw_piecewise.subs({
+    module.sp.Symbol("tau"): 3,
+    module.sp.Symbol("T_lobe"): 2,
+    module.sp.Symbol("omega_turn"): 0.4,
+}) == -0.4
+piecewise_rhs = solution[model.explicit_targets[4]]
+condition_memory = module.sp.Symbol("c[1]", boolean=True)
+assert piecewise_rhs.has(condition_memory), piecewise_rhs
+assert not piecewise_rhs.has(module.sp.Symbol("T_lobe")), piecewise_rhs
+assert not piecewise_rhs.has(module.sp.Symbol("time")), piecewise_rhs
+assert piecewise_rhs.subs({
+    condition_memory: True,
+    module.sp.Symbol("omega_turn"): 0.4,
+}) == 0.4
+assert piecewise_rhs.subs({
+    condition_memory: False,
+    module.sp.Symbol("omega_turn"): 0.4,
+}) == -0.4
 "#,
     );
 }

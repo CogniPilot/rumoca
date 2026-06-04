@@ -79,8 +79,26 @@ def pre(symbol):
     return sp.Symbol(f"pre_{symbol}")
 
 
+def _piecewise_condition(condition):
+    if condition is True or condition is False:
+        return condition
+    if getattr(condition, "is_Relational", False):
+        return condition
+    if getattr(condition, "is_Boolean", False):
+        return condition
+    return _condition_symbol(condition)
+
+
+def _condition_symbol(condition):
+    if condition is True or condition is False:
+        return condition
+    if getattr(condition, "is_Relational", False):
+        return condition
+    return sp.Symbol(str(condition), boolean=True)
+
+
 def if_else(condition, then_expr, else_expr):
-    return sp.Piecewise((then_expr, condition), (else_expr, True))
+    return sp.Piecewise((then_expr, _piecewise_condition(condition)), (else_expr, True))
 
 
 def _vector(entries):
@@ -93,6 +111,60 @@ def _vector(entries):
 
 def _column(entries):
     return sp.Matrix(entries) if entries else sp.Matrix([])
+
+
+def _substitute_until_stable(expr, solution):
+    current = expr
+    for _ in range(len(solution) + 1):
+        updated = current.subs(solution, simultaneous=False)
+        if updated == current:
+            return updated
+        current = updated
+    return current
+
+
+def _normalize_solution(solution, targets):
+    normalized = {}
+    for target in targets:
+        if target in solution:
+            normalized[target] = _substitute_until_stable(solution[target], solution)
+    return normalized
+
+
+def _solution_covers_targets(solution, targets):
+    return all(target in solution for target in targets)
+
+
+def _solve_explicit_rows(residual_target_pairs, targets):
+    solution = {}
+    remaining = list(residual_target_pairs)
+    while remaining:
+        progressed = False
+        next_remaining = []
+        for residual, target in remaining:
+            if target in solution:
+                continue
+            reduced = _substitute_until_stable(residual, solution)
+            try:
+                row_solutions = sp.solve(
+                    [reduced],
+                    [target],
+                    dict=True,
+                    simplify=False,
+                )
+            except (NotImplementedError, TypeError, ValueError):
+                row_solutions = []
+            if len(row_solutions) == 1 and target in row_solutions[0]:
+                candidate = row_solutions[0][target]
+                if not candidate.has(target):
+                    solution[target] = candidate
+                    progressed = True
+                    continue
+            next_remaining.append((residual, target))
+        if not progressed:
+            break
+        remaining = next_remaining
+    return _normalize_solution(solution, targets)
 
 
 def zeros(*dims):
@@ -159,6 +231,12 @@ class Model:
 {{ declare_vector("constants", dae.constants) }}
 {{ declare_vector("z", dae.z) }}
 {{ declare_vector("m", dae.m) }}
+        self.condition_aliases = {
+{%- for alias in dae.condition_aliases %}
+            _condition_symbol({{ render_expr(alias.condition, cfg) }}): {{ render_expr(alias.relation, cfg) }},
+{%- endfor %}
+        }
+
         self.f_x = {% if dae.f_x | length > 0 %}_column([
 {%- for eq in dae.f_x %}
             {{ render_residual(eq) }}{{ "," if not loop.last }}
@@ -184,6 +262,13 @@ class Model:
 {% endif %}
 {%- endfor %}
         ]
+        self.explicit_residuals = [
+{%- for eq in dae.f_x %}
+{% if (eq.lhs is defined and eq.lhs is not none) or (eq.rhs is defined and eq.rhs.Binary is defined and eq.rhs.Binary.lhs is defined) %}
+            {{ render_residual(eq) }},
+{% endif %}
+{%- endfor %}
+        ]
         self.explicit_solution = None
         self.explicit_rhs = sp.Matrix([])
 
@@ -200,7 +285,13 @@ class Model:
             dict=True,
             simplify=False,
         )
-        self.explicit_solution = solutions[0] if solutions else {}
+        solution = _normalize_solution(solutions[0], self.explicit_targets) if solutions else {}
+        if not _solution_covers_targets(solution, self.explicit_targets):
+            solution = _solve_explicit_rows(
+                zip(self.explicit_residuals, self.explicit_targets),
+                self.explicit_targets,
+            )
+        self.explicit_solution = solution
         self.explicit_rhs = sp.Matrix(
             [
                 self.explicit_solution.get(symbol, symbol)
