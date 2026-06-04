@@ -91,6 +91,34 @@ end Arr;
     render_template(source, "Arr", "Arr.mo")
 }
 
+fn render_unicycle_template() -> String {
+    let source = r#"
+model Unicycle
+  Real x(start=0);
+  Real y(start=0);
+  Real theta(start=0);
+  Real omega_ref;
+  Real tau;
+  parameter Real v_nom = 2.0;
+  parameter Real omega_turn = 0.4;
+  parameter Real r_fig8 = 5.0;
+  parameter Real dt = 0.1;
+  parameter Real pi = 3.14159;
+  parameter Real T_fig8 = 10 * pi;
+  parameter Real T_lobe = 2 * pi * r_fig8 / v_nom;
+algorithm
+  tau := time - T_fig8 * floor(time / T_fig8);
+  omega_ref := if tau <= T_lobe then omega_turn else -omega_turn;
+equation
+  der(x) = v_nom * cos(theta);
+  der(y) = v_nom * sin(theta);
+  der(theta) = omega_ref;
+end Unicycle;
+"#;
+
+    render_template(source, "Unicycle", "Unicycle.mo")
+}
+
 #[test]
 fn sympy_template_renders_against_current_dae_context() {
     let rendered = render_ball_template();
@@ -158,6 +186,25 @@ targets = [str(target) for target in model.explicit_targets]
 assert targets == ["x_dot[1]", "x_dot[2]"] or targets == ["x_1_dot", "x_2_dot"] or targets == ["x_1__dot", "x_2__dot"]
 assert str(solution[model.explicit_targets[0]]) in {"-x[1]", "-x_1", "-x_1_"}
 assert str(solution[model.explicit_targets[1]]) in {"-x[2]", "-x_2", "-x_2_"}
+"#,
+    );
+}
+
+#[test]
+#[cfg(feature = "template-runtime-tests")]
+fn sympy_template_solves_piecewise_explicit_rows() {
+    let rendered = render_unicycle_template();
+
+    assert_python_executes(
+        &rendered,
+        r#"
+targets = [str(target) for target in model.explicit_targets]
+assert targets == ["x_dot", "y_dot", "theta_dot", "tau", "omega_ref"], targets
+assert len(solution) == len(model.explicit_targets), solution
+rhs = [str(value) for value in model.explicit_rhs]
+assert "Piecewise" in rhs[2], rhs
+assert "floor" in rhs[3], rhs
+assert "Piecewise" in rhs[4], rhs
 "#,
     );
 }
