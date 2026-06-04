@@ -36,6 +36,7 @@ members = [
     "crates/rumoca-solver-rk45",
     "crates/rumoca-viz-web",
     "crates/rumoca-phase-typecheck",
+		"crates/rumoca-phase-galec",
     # Compile pipeline and tools
     "crates/rumoca-compile",
     "crates/rumoca-tool-lint",
@@ -81,6 +82,7 @@ rumoca-phase-dae = { path = "crates/rumoca-phase-dae" }
 rumoca-phase-structural = { path = "crates/rumoca-phase-structural" }
 rumoca-phase-solve = { path = "crates/rumoca-phase-solve", default-features = false }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
+rumoca-phase-galec = { path = "crates/rumoca-phase-galec" }
 rumoca-signal-frame = { path = "crates/rumoca-signal-frame" }
 rumoca-codec = { path = "crates/rumoca-codec" }
 rumoca-codec-flatbuffers = { path = "crates/rumoca-codec-flatbuffers" }

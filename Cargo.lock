@@ -3546,6 +3546,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-phase-galec"
+version = "0.8.13"
+dependencies = [
+ "miette",
+ "rumoca-core",
+ "rumoca-ir-dae",
+ "serde",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "rumoca-phase-instantiate"
 version = "0.9.4"
 dependencies = [

@@ -1,0 +1,17 @@
+[package]
+name = "rumoca-phase-galec"
+description = "GALEC admissibility, lowering, and code generation for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true
