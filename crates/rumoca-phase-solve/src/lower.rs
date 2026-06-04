@@ -63,7 +63,7 @@ pub(super) struct IndexedBinding {
 
 pub(super) type IndexedBindingMap = Arc<IndexMap<ComponentPath, Vec<IndexedBinding>>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LocalIndexedBinding {
     reg: Reg,
     indices: Vec<usize>,

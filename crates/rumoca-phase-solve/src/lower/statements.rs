@@ -49,6 +49,15 @@ impl<'a> LowerBuilder<'a> {
         }
 
         let entry_scope = scope.clone();
+        // Branch bodies mutate builder-level caches (indexed/const bindings,
+        // empty-array tracking) in place. Those caches are consulted *before*
+        // `scope` when a later read resolves a variable, so a value written
+        // only inside a branch would shadow the conditional `select` we build
+        // in `merged_scope` and leak out unconditionally. Snapshot them here so
+        // we can drop any branch-touched entry below and let `scope` win.
+        let entry_indexed_bindings = self.local_indexed_bindings.clone();
+        let entry_const_bindings = self.local_const_bindings.clone();
+        let entry_empty_arrays = self.known_empty_local_arrays.clone();
         let mut cond_regs = Vec::with_capacity(cond_blocks.len());
         let mut branch_scopes = Vec::with_capacity(cond_blocks.len());
 
@@ -87,6 +96,18 @@ impl<'a> LowerBuilder<'a> {
             }
             merged_scope.insert(name, merged);
         }
+
+        // Drop every cache entry a branch added or changed: a variable assigned
+        // only conditionally is no longer a compile-time constant or a fixed
+        // indexed binding, so subsequent reads must fall through to the merged
+        // `select` registers in `merged_scope`. Entries untouched by any branch
+        // stay (they already agree with `scope`).
+        self.local_indexed_bindings
+            .retain(|key, value| entry_indexed_bindings.get(key) == Some(value));
+        self.local_const_bindings
+            .retain(|key, value| entry_const_bindings.get(key) == Some(value));
+        self.known_empty_local_arrays
+            .retain(|key| entry_empty_arrays.contains(key));
 
         *scope = merged_scope;
         Ok(false)
