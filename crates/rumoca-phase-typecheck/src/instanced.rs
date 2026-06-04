@@ -25,6 +25,7 @@ impl TypeChecker {
         self.validate_dimensions(overlay);
         self.check_instanced_component_modifiers(tree, model_name, &type_table);
         self.check_instanced_equations(tree, overlay, model_name, &type_table);
+        self.flush_eval_warnings();
     }
 
     fn initialize_instanced_context(&mut self, tree: &ClassTree) -> TypeTable {

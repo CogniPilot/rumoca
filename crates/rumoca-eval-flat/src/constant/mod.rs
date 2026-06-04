@@ -539,9 +539,19 @@ fn eval_unary_op(op: &OpUnary, rhs: &Value, span: Span) -> Result<Value, EvalErr
 
 // Arithmetic operations
 
+fn integer_overflow_error(op: &str, span: Span) -> EvalError {
+    EvalError::function_error(
+        format!("compile-time integer overflow while evaluating {op}"),
+        span,
+    )
+}
+
 fn eval_add(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     match (lhs, rhs) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a + b)),
+        (Value::Integer(a), Value::Integer(b)) => a
+            .checked_add(*b)
+            .map(Value::Integer)
+            .ok_or_else(|| integer_overflow_error("integer addition", span)),
         (Value::Real(a), Value::Real(b)) => Ok(Value::Real(a + b)),
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Real(*a as f64 + b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Real(a + *b as f64)),
@@ -570,7 +580,10 @@ fn eval_add(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
 
 fn eval_sub(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     match (lhs, rhs) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a - b)),
+        (Value::Integer(a), Value::Integer(b)) => a
+            .checked_sub(*b)
+            .map(Value::Integer)
+            .ok_or_else(|| integer_overflow_error("integer subtraction", span)),
         (Value::Real(a), Value::Real(b)) => Ok(Value::Real(a - b)),
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Real(*a as f64 - b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Real(a - *b as f64)),
@@ -598,7 +611,10 @@ fn eval_sub(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
 
 fn eval_mul(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     match (lhs, rhs) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a * b)),
+        (Value::Integer(a), Value::Integer(b)) => a
+            .checked_mul(*b)
+            .map(Value::Integer)
+            .ok_or_else(|| integer_overflow_error("integer multiplication", span)),
         (Value::Real(a), Value::Real(b)) => Ok(Value::Real(a * b)),
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Real(*a as f64 * b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Real(a * *b as f64)),
@@ -617,7 +633,10 @@ fn eval_mul(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
 
 fn eval_mul_elem(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     match (lhs, rhs) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a * b)),
+        (Value::Integer(a), Value::Integer(b)) => a
+            .checked_mul(*b)
+            .map(Value::Integer)
+            .ok_or_else(|| integer_overflow_error("integer multiplication", span)),
         (Value::Real(a), Value::Real(b)) => Ok(Value::Real(a * b)),
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Real(*a as f64 * b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Real(a * *b as f64)),
@@ -919,7 +938,9 @@ fn eval_exp(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     match (lhs, rhs) {
         (Value::Integer(a), Value::Integer(b)) => {
             if *b >= 0 {
-                Ok(Value::Integer(a.pow(*b as u32)))
+                a.checked_pow(*b as u32)
+                    .map(Value::Integer)
+                    .ok_or_else(|| integer_overflow_error("integer exponentiation", span))
             } else {
                 Ok(Value::Real((*a as f64).powf(*b as f64)))
             }
@@ -937,7 +958,10 @@ fn eval_exp(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
 
 fn eval_negate(v: &Value, span: Span) -> Result<Value, EvalError> {
     match v {
-        Value::Integer(x) => Ok(Value::Integer(-x)),
+        Value::Integer(x) => x
+            .checked_neg()
+            .map(Value::Integer)
+            .ok_or_else(|| integer_overflow_error("integer negation", span)),
         Value::Real(x) => Ok(Value::Real(-x)),
         Value::Array(arr) => {
             let result: Vec<Value> = arr
@@ -1120,7 +1144,7 @@ fn eval_builtin_function(
             .first()
             .cloned()
             .ok_or_else(|| EvalError::not_constant("delay requires 1 argument".to_string(), span)),
-        BuiltinFunction::Integer => eval_builtin("floor", args, span),
+        BuiltinFunction::Integer => eval_builtin("integer", args, span),
         BuiltinFunction::SemiLinear => eval_builtin("semiLinear", args, span),
 
         // These are runtime-only functions
@@ -1339,6 +1363,22 @@ mod tests {
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert!((result.as_real().unwrap() - 2.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_eval_binary_integer_overflow_returns_error() {
+        let ctx = EvalContext::new();
+        let expr = Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(make_int(i64::MAX)),
+            rhs: Box::new(make_int(1)),
+            span: rumoca_core::Span::DUMMY,
+        };
+        let err = eval_expr(&expr, &ctx).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("compile-time integer overflow while evaluating integer addition")
+        );
     }
 
     #[test]
@@ -1577,6 +1617,21 @@ mod tests {
         };
         let result = eval_expr(&expr, &ctx).unwrap();
         assert!((result.as_real().unwrap() - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_eval_builtin_integer_overflow_returns_error() {
+        let ctx = EvalContext::new();
+        let expr = Expression::BuiltinCall {
+            function: BuiltinFunction::Integer,
+            args: vec![make_real(-1e40)],
+            span: rumoca_core::Span::DUMMY,
+        };
+        let err = eval_expr(&expr, &ctx).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("outside i64 range while evaluating integer(...)")
+        );
     }
 
     #[test]
