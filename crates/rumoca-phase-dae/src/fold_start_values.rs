@@ -15,10 +15,37 @@ use std::collections::HashMap;
 
 /// Evaluate all parameter/state/constant start expressions to typed literals
 /// where possible. Modifies the DAE in place.
-pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
+///
+/// When `preserve_overridable_param_starts` is set, a *parameter* whose `start`
+/// expression references one or more other parameters is left symbolic instead
+/// of being folded to a literal. This keeps the dependency live so that a
+/// runtime override of a base parameter (e.g. `Isp`) propagates to its computed
+/// dependents (e.g. `massRatio = exp(dv_hop/(Isp*g0))`) when the interpreter
+/// re-evaluates start expressions, without recompiling from source. The
+/// parameter chain is already ordered for forward evaluation earlier in the
+/// pipeline. Defaults to the historical behaviour (`false`) so codegen backends
+/// keep getting literals.
+pub(crate) fn fold_start_values_to_literals(
+    dae: &mut Dae,
+    preserve_overridable_param_starts: bool,
+) {
     // Phase 1: build a name→value map from constants, enum ordinals, and
     // parameter start expressions (fixed-point iteration).
     let mut values: HashMap<String, ConstValue> = HashMap::new();
+
+    // Set of all parameter names — used by the override-preservation carve-out
+    // to detect parameter→parameter dependencies in a start expression. Only
+    // needed when preservation is on, so the default (codegen) path pays
+    // nothing.
+    let param_names: std::collections::HashSet<String> = if preserve_overridable_param_starts {
+        dae.variables
+            .parameters
+            .keys()
+            .map(|k| k.as_str().to_string())
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
 
     // Seed with enum literal ordinals
     for (name, ordinal) in &dae.symbols.enum_literal_ordinals {
@@ -55,7 +82,7 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
 
     // Phase 2: rewrite start expressions to literals where we found values.
     // Also clear self-referencing defaults (start = VarRef(self_name)).
-    let rewrite = |var: &mut Variable| {
+    let rewrite = |var: &mut Variable, is_param: bool| {
         if let Some(ref start) = var.start {
             // Check for self-reference: start = VarRef(own_name)
             if let Expression::VarRef {
@@ -78,6 +105,15 @@ pub(crate) fn fold_start_values_to_literals(dae: &mut Dae) {
             //   already orders the chain for forward-eval templates.
             if let Expression::VarRef { subscripts, .. } = start
                 && subscripts.is_empty()
+            {
+                return;
+            }
+            // Override-preservation carve-out: keep a *computed* parameter start
+            // (not just a bare alias) symbolic when it references another
+            // parameter, so runtime base-parameter overrides propagate to it.
+            if is_param
+                && preserve_overridable_param_starts
+                && !collect_param_refs(start, &param_names).is_empty()
             {
                 return;
             }
@@ -116,15 +152,15 @@ struct StartRewriter<F> {
 
 impl<F> DaeVariableMutVisitor for StartRewriter<F>
 where
-    F: FnMut(&mut Variable),
+    F: FnMut(&mut Variable, bool),
 {
     fn visit_variable_mut(
         &mut self,
-        _partition: DaeVariablePartition,
+        partition: DaeVariablePartition,
         _name: &VarName,
         variable: &mut Variable,
     ) {
-        (self.rewrite)(variable);
+        (self.rewrite)(variable, partition == DaeVariablePartition::Parameter);
     }
 }
 
@@ -475,6 +511,55 @@ mod tests {
     }
 
     #[test]
+    fn preserve_overridable_keeps_computed_param_start_symbolic() {
+        // `base = 2.0` (literal); `derived.start = base * 3` is a *computed*
+        // start that references another parameter.
+        let make_dae = || {
+            let mut dae = Dae::new();
+            dae.variables
+                .parameters
+                .insert(VarName::new("base"), parameter("base", real(2.0)));
+            dae.variables.parameters.insert(
+                VarName::new("derived"),
+                parameter(
+                    "derived",
+                    Expression::Binary {
+                        op: OpBinary::Mul,
+                        lhs: Box::new(var("base")),
+                        rhs: Box::new(real(3.0)),
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                ),
+            );
+            dae
+        };
+
+        // preserve = true: the computed, parameter-referencing start stays
+        // symbolic so a runtime override of `base` propagates to `derived`.
+        let mut dae = make_dae();
+        fold_start_values_to_literals(&mut dae, true);
+        let derived = &dae.variables.parameters[&VarName::new("derived")];
+        assert!(
+            matches!(derived.start, Some(Expression::Binary { .. })),
+            "expected symbolic start under preservation, got {:?}",
+            derived.start
+        );
+
+        // preserve = false (default): folds to the literal 6.0.
+        let mut dae = make_dae();
+        fold_start_values_to_literals(&mut dae, false);
+        let derived = &dae.variables.parameters[&VarName::new("derived")];
+        assert!(
+            matches!(
+                derived.start,
+                Some(Expression::Literal { value: Literal::Real(v), .. }) if (v - 6.0).abs() <= 1.0e-12
+            ),
+            "expected folded literal 6.0, got {:?}",
+            derived.start
+        );
+    }
+
+    #[test]
     fn reorder_by_index_order_reports_invalid_topological_index() {
         let mut variables = indexmap::IndexMap::new();
         variables.insert(VarName::new("x"), Variable::new(VarName::new("x")));
@@ -538,7 +623,7 @@ mod tests {
             ),
         );
 
-        fold_start_values_to_literals(&mut dae);
+        fold_start_values_to_literals(&mut dae, false);
 
         let c1 = &dae.variables.parameters[&VarName::new("transformerData1.C1")];
         assert!(matches!(

@@ -31,6 +31,7 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("to_dae should succeed for multi-layer connected LHS alias");

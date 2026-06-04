@@ -1,5 +1,15 @@
 use super::*;
 
+/// ToDAE options used by the regression fixtures: allow unbalanced models
+/// (these tests exercise narrow pipeline slices) and keep the historical
+/// literal-folding behaviour.
+fn unbalanced_todae_opts() -> ToDaeOptions {
+    ToDaeOptions {
+        error_on_unbalanced: false,
+        preserve_overridable_param_starts: false,
+    }
+}
+
 #[test]
 fn test_todae_inherits_scalarized_element_start_from_array_base() {
     let mut flat = Model::new();
@@ -30,13 +40,8 @@ fn test_todae_inherits_scalarized_element_start_from_array_base() {
         0,
     );
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("todae should inherit scalarized element starts from array base declaration");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("todae should inherit scalarized element starts from array base declaration");
 
     let inherited = dae
         .variables
@@ -100,13 +105,8 @@ fn test_todae_keeps_non_primitive_leaf_outputs() {
         scalar_count: 1,
     });
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("todae should keep non-primitive leaf output variables");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("todae should keep non-primitive leaf output variables");
 
     assert!(
         dae.variables
@@ -203,13 +203,8 @@ fn test_todae_classifies_clocked_flat_assignment_as_discrete_real_and_routes_to_
         scalar_count: 1,
     });
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("clocked assignment should convert");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("clocked assignment should convert");
 
     assert!(
         dae.variables
@@ -300,13 +295,8 @@ fn test_todae_routes_if_lhs_clocked_assignment_with_supersample_to_f_z() {
         scalar_count: 1,
     });
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("if-lhs clocked superSample assignment should convert");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("if-lhs clocked superSample assignment should convert");
 
     assert!(
         dae.variables
@@ -354,13 +344,8 @@ fn test_todae_routes_clocked_binding_out_of_fx_even_without_discrete_type_flag()
         },
     );
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("clocked binding must not remain in f_x");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("clocked binding must not remain in f_x");
 
     assert!(
         dae.variables
@@ -417,13 +402,8 @@ fn test_todae_routes_discrete_valued_clocked_binding_to_fm() {
         },
     );
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("clocked discrete-valued binding should convert");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("clocked discrete-valued binding should convert");
 
     assert!(
         dae.variables
@@ -488,13 +468,8 @@ fn test_todae_routes_clocked_tuple_assignment_to_f_z() {
         scalar_count: 4,
     });
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("clocked tuple assignment should convert");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("clocked tuple assignment should convert");
 
     assert!(
         dae.variables
@@ -573,13 +548,8 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
     });
     flat.algorithms.push(algorithm);
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("algorithm when sample assignment should lower to discrete partition");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("algorithm when sample assignment should lower to discrete partition");
 
     assert!(
         dae.variables
@@ -651,13 +621,8 @@ fn sequential_when_same_target_model() -> Model {
 #[test]
 fn test_todae_merges_sequential_when_statements_for_same_target_in_source_order() {
     let flat = sequential_when_same_target_model();
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("sequential when-statements should lower to one ordered discrete equation");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("sequential when-statements should lower to one ordered discrete equation");
 
     let eq = dae
         .discrete
@@ -868,13 +833,7 @@ fn test_todae_routes_zero_minus_if_discrete_assignments_to_f_m() {
         add_tick_based_discrete_vars(&mut flat);
         add_tick_based_equation(&mut flat, residual);
 
-        let dae = to_dae_with_options(
-            &flat,
-            ToDaeOptions {
-                error_on_unbalanced: false,
-            },
-        )
-        .unwrap_or_else(|err| {
+        let dae = to_dae_with_options(&flat, unbalanced_todae_opts()).unwrap_or_else(|err| {
             panic!("clocked if-residual assignment should convert ({label}): {err:?}")
         });
 
@@ -926,13 +885,8 @@ fn test_todae_merges_branch_split_discrete_if_assignments_to_f_m() {
         },
     );
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("branch-split if-equation assignments should merge into solved f_m updates");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("branch-split if-equation assignments should merge into solved f_m updates");
 
     let counter_updates = dae
         .discrete
@@ -1027,13 +981,8 @@ fn test_todae_keeps_time_guarded_discrete_output_binding_and_alias_consumer() {
         scalar_count: 1,
     });
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("todae should preserve time-guarded discrete output bindings");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("todae should preserve time-guarded discrete output bindings");
 
     assert!(
         dae.variables
@@ -1133,13 +1082,8 @@ fn test_todae_converts_non_primitive_leaf_discrete_binding_to_f_m() {
         scalar_count: 1,
     });
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("todae should keep non-primitive leaf discrete bindings");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("todae should keep non-primitive leaf discrete bindings");
 
     assert!(
         dae.discrete.valued_updates.iter().any(|eq| eq
@@ -1331,13 +1275,8 @@ fn test_connected_discrete_input_alias_keeps_discrete_partition() {
 
     add_connection_equation(&mut flat, "inner.flagAlias", "inner.flag");
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("to_dae should succeed for connected discrete input aliases");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("to_dae should succeed for connected discrete input aliases");
 
     for name in ["inner.flag", "inner.flagAlias"] {
         let var = rumoca_core::VarName::new(name);
@@ -1404,13 +1343,8 @@ fn test_discrete_input_connected_to_local_output_counts_as_local_unknown() {
     flat.algorithms.push(algorithm);
     add_connection_equation(&mut flat, "sink.u", "source.y");
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("to_dae should succeed for locally driven discrete input");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("to_dae should succeed for locally driven discrete input");
 
     assert!(
         dae.variables
@@ -1469,13 +1403,8 @@ fn test_discrete_input_alias_chain_to_local_output_counts_as_local_unknown() {
     add_connection_equation(&mut flat, "relay.u", "source.y");
     add_connection_equation(&mut flat, "sink.u", "relay.u");
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("to_dae should succeed for locally driven discrete input alias chain");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("to_dae should succeed for locally driven discrete input alias chain");
 
     assert_eq!(
         dae.metadata.discrete_input_names,
@@ -1515,13 +1444,8 @@ fn test_connected_real_input_propagates_discrete_partition_from_peer() {
 
     add_connection_equation(&mut flat, "inner.u", "inner.clocked");
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("to_dae should succeed for connected clocked real inputs");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("to_dae should succeed for connected clocked real inputs");
 
     assert!(
         dae.variables
@@ -1582,13 +1506,8 @@ fn test_when_clause_guard_for_var_condition_uses_edge_activation() {
     ));
     flat.when_clauses.push(when_clause);
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("when clause should lower to guarded discrete update");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("when clause should lower to guarded discrete update");
 
     let guarded = dae
         .discrete
@@ -1650,13 +1569,8 @@ fn test_when_clause_guard_for_clock_condition_uses_clock_tick_directly() {
     ));
     flat.when_clauses.push(when_clause);
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("when Clock clause should lower to guarded discrete update");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("when Clock clause should lower to guarded discrete update");
 
     let guarded = dae
         .discrete
@@ -1728,13 +1642,8 @@ fn test_when_clause_guard_for_vector_var_conditions_uses_edge_activation_per_ele
     ));
     flat.when_clauses.push(when_clause);
 
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("vector when clause should lower to guarded discrete update");
+    let dae = to_dae_with_options(&flat, unbalanced_todae_opts())
+        .expect("vector when clause should lower to guarded discrete update");
 
     let guarded = dae
         .discrete
@@ -1909,20 +1818,10 @@ fn test_when_boolean_alias_guard_matches_inline_relational_guard() {
     let direct_flat = build_when_condition_alias_model(false);
     let alias_flat = build_when_condition_alias_model(true);
 
-    let direct_dae = to_dae_with_options(
-        &direct_flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("direct-guard model should lower");
-    let alias_dae = to_dae_with_options(
-        &alias_flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("alias-guard model should lower");
+    let direct_dae = to_dae_with_options(&direct_flat, unbalanced_todae_opts())
+        .expect("direct-guard model should lower");
+    let alias_dae = to_dae_with_options(&alias_flat, unbalanced_todae_opts())
+        .expect("alias-guard model should lower");
 
     let direct_guard = extract_guard_expr_for_lhs(&direct_dae, "z");
     let alias_guard = extract_guard_expr_for_lhs(&alias_dae, "z");

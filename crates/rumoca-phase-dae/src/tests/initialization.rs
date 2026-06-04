@@ -73,6 +73,7 @@ fn todae_adds_fixed_start_initial_equation_for_state() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("state with fixed start should lower");
@@ -100,6 +101,7 @@ fn todae_adds_fixed_start_initial_equation_for_algebraic() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("algebraic with fixed start should lower");
@@ -124,6 +126,7 @@ fn todae_does_not_add_fixed_start_initial_equation_by_default() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("default non-parameter fixed=false should lower");
@@ -143,6 +146,7 @@ fn todae_respects_explicit_fixed_false_for_start_attribute() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("fixed=false start attribute should lower");
@@ -161,6 +165,7 @@ fn todae_skips_fixed_start_initial_equation_for_zero_size_array() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("zero-size fixed variable should lower");

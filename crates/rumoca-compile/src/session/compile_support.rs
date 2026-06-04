@@ -130,6 +130,11 @@ fn summarize_typecheck_error_code(diags: &CommonDiagnostics) -> Option<String> {
 pub(super) fn todae_options_for_target_model() -> ToDaeOptions {
     ToDaeOptions {
         error_on_unbalanced: true,
+        // Keep computed parameter start expressions symbolic so an interactive
+        // host can override a base parameter between runs and have the
+        // dependents recompute without recompiling from source. Set false to
+        // restore the historical literal-folding behaviour.
+        preserve_overridable_param_starts: true,
     }
 }
 
@@ -234,6 +239,7 @@ pub(super) fn compile_model_internal_allow_unbalanced_for_diagnostics(
         InstantiateOptions::default(),
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     );
     compile_phase_result_from_dae(tree, model_name, dae_outcome)
@@ -267,6 +273,7 @@ pub(super) fn compile_model_dae_internal_allow_unbalanced_for_diagnostics(
         InstantiateOptions::default(),
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     );
     dae_phase_result_from_dae(tree, model_name, dae_outcome)

@@ -631,6 +631,7 @@ fn test_todae_preserves_function_algorithm_bodies_for_codegen_readability() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("to_dae should keep reachable function bodies");
@@ -668,6 +669,7 @@ fn test_todae_lowers_supported_model_algorithms_to_equations() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("to_dae should lower simple model algorithms");
@@ -702,6 +704,7 @@ fn test_todae_routes_discrete_valued_algorithm_assignment_to_f_m() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("discrete-valued model algorithm assignments should lower");
@@ -761,6 +764,7 @@ fn test_todae_lowers_model_algorithm_for_loop_with_static_range() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("for-loop algorithms with static ranges should lower to equations");
@@ -820,6 +824,7 @@ fn test_todae_lowers_model_algorithm_for_loop_with_subscripted_targets() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("for-loop algorithms with static indexed targets should lower to equations");
@@ -888,6 +893,7 @@ fn test_todae_lowers_model_algorithm_dynamic_scalar_index_assignment() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("dynamic scalar index algorithm assignments should lower");
@@ -977,6 +983,7 @@ fn test_todae_lowers_when_algorithm_for_loop_with_subscripted_targets() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("when for-loop algorithms with static indexed targets should lower to event equations");
@@ -1027,6 +1034,7 @@ fn test_todae_lowers_when_algorithm_for_loop_with_sequential_cross_target_update
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("when for-loop algorithms with sequential updates should lower");
@@ -1102,6 +1110,7 @@ fn test_todae_lowers_when_algorithm_preceding_assignment_visible_inside_for_loop
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("when assignments before for-loop should stay visible inside the loop");
@@ -1142,6 +1151,7 @@ fn test_todae_lowers_top_level_algorithm_assignment_before_for_loop_sequentially
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("top-level sequential algorithm state should stay visible inside following for-loop");
@@ -1170,6 +1180,7 @@ fn test_todae_lowers_initial_algorithm_assignment_to_fixed_false_parameter() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("MLS fixed=false parameters may be solved by initial algorithms");
@@ -1209,6 +1220,7 @@ fn test_todae_rejects_initial_algorithm_assignment_to_default_fixed_parameter() 
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("parameter fixed=true by default must not be solved by initial algorithms");
@@ -1241,6 +1253,7 @@ fn test_todae_rejects_initial_algorithm_assignment_to_explicit_fixed_parameter()
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("parameter fixed=true must not be solved by initial algorithms");
@@ -1273,6 +1286,7 @@ fn test_todae_rejects_runtime_algorithm_assignment_to_parameter() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("regular algorithm sections must not assign parameters");
@@ -1315,6 +1329,7 @@ fn test_todae_lowers_initial_when_algorithm_discrete_assignment_to_initial_equat
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("MLS initial algorithms with when-statements initialize discrete targets");
@@ -1368,6 +1383,7 @@ fn test_todae_lowers_vector_when_algorithm_condition_to_scalar_event_guard() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("vector when algorithm should lower");
@@ -1442,6 +1458,7 @@ fn test_todae_rewrites_current_algorithm_value_inside_index_subscript() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("MLS §11.1 sequential algorithm reads inside subscripts use current values");
@@ -1504,6 +1521,7 @@ fn test_todae_rejects_model_algorithm_for_loop_with_non_constant_range() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("for-loop algorithms with non-constant ranges must fail");
@@ -1573,6 +1591,7 @@ fn test_todae_accepts_model_algorithm_for_loop_with_constant_array_binding_range
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("for-loop algorithms with constant array binding ranges should lower");
@@ -1585,6 +1604,7 @@ fn test_todae_lowers_supported_algorithm_slice_row_write_and_read() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("supported row slice algorithm should lower");
@@ -1673,6 +1693,7 @@ fn test_todae_lowers_supported_algorithm_slice_row_read_to_scalar_refs() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("supported row slice read should lower");
@@ -1739,6 +1760,7 @@ fn test_todae_lowers_multi_output_algorithm_function_call_to_output_selections()
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("multi-output model algorithm calls should lower to selection equations");

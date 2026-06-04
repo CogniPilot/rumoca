@@ -200,12 +200,19 @@ fn run_todae_phase<R>(timing_enabled: bool, label: &str, f: impl FnOnce() -> R) 
 pub struct ToDaeOptions {
     /// Whether to return an error for non-partial unbalanced models.
     pub error_on_unbalanced: bool,
+    /// Keep computed parameter `start` expressions symbolic (instead of
+    /// folding to literals) when they reference other parameters, so a runtime
+    /// override of a base parameter propagates to its dependents without a
+    /// recompile. Used by the interactive/sim compile path; codegen backends
+    /// keep the default (`false`) so they continue to receive literals.
+    pub preserve_overridable_param_starts: bool,
 }
 
 impl Default for ToDaeOptions {
     fn default() -> Self {
         Self {
             error_on_unbalanced: true,
+            preserve_overridable_param_starts: false,
         }
     }
 }
@@ -361,7 +368,10 @@ fn finalize_lowered_dae(
     // possible. Safe as an always-on pass: start values are init-time
     // metadata, not user-observable at runtime.
     run_todae_phase(todae_subphase_timing, "fold_start_values", || {
-        fold_start_values::fold_start_values_to_literals(dae);
+        fold_start_values::fold_start_values_to_literals(
+            dae,
+            options.preserve_overridable_param_starts,
+        );
     });
 
     // Reorder algebraics so any algebraic used in another's defining

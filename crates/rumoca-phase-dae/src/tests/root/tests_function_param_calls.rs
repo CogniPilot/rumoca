@@ -45,6 +45,7 @@ fn test_todae_accepts_function_typed_parameter_calls_in_function_body() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("function-typed function parameters should be callable in function bodies");
@@ -94,6 +95,7 @@ fn test_todae_accepts_function_typed_parameter_without_flat_function_entry() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("function-typed formals should not require executable flat function entries");

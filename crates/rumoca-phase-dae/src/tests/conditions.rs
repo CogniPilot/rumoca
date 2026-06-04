@@ -108,6 +108,7 @@ fn to_dae_unbalanced_ok(model: &Model) -> Dae {
         model,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("ToDAE conversion should succeed")

@@ -151,6 +151,7 @@ fn test_todae_rewrites_missing_scoped_parameter_start_reference() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("to_dae should succeed for parameter-only model");
@@ -218,6 +219,7 @@ fn test_todae_rewrites_misqualified_record_parameter_alias_field() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("record-parameter alias should resolve to the matching scalar field");
@@ -278,6 +280,7 @@ fn test_todae_rejects_unresolved_function_calls() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("missingFn should fail in ToDae validation");
@@ -315,6 +318,7 @@ fn test_todae_rejects_unresolved_references() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("missingRef should fail in ToDae validation");
@@ -352,6 +356,7 @@ fn test_todae_rejects_unresolved_component_qualified_constant_like_ref() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("unresolved qualified reference should fail in ToDae validation");
@@ -397,6 +402,7 @@ fn test_todae_rejects_non_external_function_without_body() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("empty non-external function should fail in ToDae validation");
@@ -429,6 +435,7 @@ fn test_todae_rejects_reinit_on_non_state_variable() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("reinit(x, ...) must fail when x is not a state");
@@ -469,6 +476,7 @@ fn test_todae_ignores_unreachable_function_without_body() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("unreachable empty function bodies should not fail ToDae validation");
@@ -494,6 +502,7 @@ fn test_todae_rejects_member_style_function_call_without_resolved_name() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("member-style call should fail without prior name resolution");
@@ -518,6 +527,7 @@ fn test_todae_accepts_runtime_intrinsic_cardinality_call() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("cardinality should be treated as runtime intrinsic during validation");
@@ -533,6 +543,7 @@ fn test_todae_accepts_runtime_intrinsic_complex_call() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("Complex should be treated as runtime intrinsic during validation");
@@ -584,6 +595,7 @@ fn test_todae_accepts_record_constructor_calls_for_known_type_names() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("record constructor calls should be accepted for known type names");
@@ -628,6 +640,7 @@ fn test_todae_rejects_constructor_field_selection_without_signature() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("missing constructor signature should fail in ToDae validation");
@@ -685,6 +698,7 @@ fn test_todae_accepts_constructor_field_selection_with_signature() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("constructor selection should pass when signature includes selected field");
@@ -729,6 +743,7 @@ fn test_todae_rejects_complex_constructor_selection_without_signature_metadata()
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("constructor field selections require constructor signature metadata");
@@ -795,6 +810,7 @@ fn test_todae_rejects_parameter_constructor_selection_in_final_dae_validation() 
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect_err("parameter constructor selection should fail in final DAE validation");
@@ -897,6 +913,7 @@ fn test_todae_routes_explicit_discrete_integer_when_assignment_to_f_m() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("explicit discrete integer when assignment should route to f_m");
@@ -978,6 +995,7 @@ fn test_todae_lowers_when_multi_output_function_call_to_selection_updates() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("when multi-output function call should lower to per-output updates");
@@ -1044,6 +1062,7 @@ fn test_todae_preserves_indexed_explicit_discrete_assignment_targets() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("indexed discrete assignments should preserve their element targets in ToDae");
@@ -1126,6 +1145,7 @@ fn test_todae_canonicalizes_constant_expr_subscripts_in_explicit_targets() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("constant-expression indexed targets should canonicalize in ToDae");
@@ -1178,6 +1198,7 @@ fn test_todae_routes_explicit_discrete_real_when_assignment_to_f_z() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("discrete real when assignment should route to f_z");
@@ -1449,6 +1470,7 @@ fn test_top_level_input_with_der_remains_input() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("top-level input der-equation should compile");
@@ -1854,6 +1876,7 @@ fn test_connected_input_binding_kept_for_input_only_connection_alias() {
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("to_dae should succeed for connected internal input alias");
@@ -1912,6 +1935,7 @@ fn test_connected_input_alias_with_multilayer_subscripts_promotes_internal_input
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
+            preserve_overridable_param_starts: false,
         },
     )
     .expect("to_dae should succeed for multi-layer indexed input aliases");
