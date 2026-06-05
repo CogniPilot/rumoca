@@ -1209,6 +1209,41 @@ mod tests {
     }
 
     #[test]
+    fn compare_model_matches_channels_by_name_not_order() {
+        let rumoca = trace(
+            "M",
+            vec![0.0, 0.5, 1.0],
+            vec!["x", "y", "z"],
+            vec![
+                vec![0.0, 1.0, 2.0],
+                vec![10.0, 11.0, 12.0],
+                vec![-1.0, 0.0, 1.0],
+            ],
+        );
+        let omc = trace(
+            "M",
+            vec![0.0, 0.5, 1.0],
+            vec!["z", "x", "y"],
+            vec![
+                vec![-1.0, 0.0, 1.0],
+                vec![0.0, 1.0, 2.0],
+                vec![10.0, 11.0, 12.0],
+            ],
+        );
+
+        let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+
+        assert_eq!(metric.compared_variables, 3);
+        assert!(metric.bounded_normalized_l1_score < 1.0e-12);
+        assert!(
+            metric
+                .worst_variables
+                .iter()
+                .all(|channel| channel.bounded_normalized_l1_error < 1.0e-12)
+        );
+    }
+
+    #[test]
     fn compare_model_requires_common_variables() {
         let rumoca = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
         let omc = trace("M", vec![0.0, 1.0], vec!["z"], vec![vec![0.0, 1.0]]);
