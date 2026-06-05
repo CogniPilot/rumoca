@@ -165,7 +165,12 @@ Simulation scenarios choose their presentation separately from solver pacing:
   position plus scalar-first quaternion signals. The block names viewer JSON
   signals, so each referenced signal MUST also be routed under
   `[signals.viewer]`. Optional `mount`, `forward`, and `up` arrays are
-  vehicle-local 3-vectors.
+  vehicle-local 3-vectors. Viewer world space is the Three.js basis: world
+  `Y` is up, the ground plane is world `X/Z`, and planar `x`/`y` map to world
+  `X`/`Z` respectively. For `planar_xy_heading`, zero heading uses vehicle
+  local `+X` as forward and `+Y` as up; positive heading is a rotation about
+  world `+Y`, with the viewer applying `-heading` to align the configured
+  vehicle-local `mount`, `forward`, and `up` vectors into world space.
 - If `[viewer].mode` is omitted, editors infer `external_web` only when the
   scenario contains an HTTP transport, explicit input routing, signals, locals,
   derived signals, reset behavior, or external-interface coupling. Otherwise
