@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
 
 # Prevent duplicate runs
@@ -128,7 +129,6 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
     env:
-      CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
@@ -401,6 +401,9 @@ jobs:
     # GitHub runners. Keep explicit headroom here to avoid job-level
     # cancellation while tests are still progressing.
     timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v5
         with:
@@ -430,17 +433,56 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
 
-      - name: Generate workspace coverage artifacts
+      - name: Build coverage helper
+        run: cargo build --package xtask --bin xtask
+
+      - name: Reclaim runner disk before coverage
+        shell: bash
         run: |
-          cargo xtask coverage run
+          set -euo pipefail
+          echo "== disk before cleanup =="
+          df -h . / /tmp || true
+          du -sh target target/debug target/debug/deps target/debug/build target/debug/incremental ~/.cargo ~/.rustup /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+
+          rm -rf target/debug/deps target/debug/build target/debug/incremental target/debug/.fingerprint
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+
+          echo "== disk after cleanup =="
+          df -h . / /tmp || true
+          du -sh target target/debug ~/.cargo ~/.rustup 2>/dev/null || true
+
+      - name: Generate workspace coverage artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          monitor() {
+            while true; do
+              echo "== resource snapshot: $(date -Is) =="
+              df -h . / /tmp || true
+              free -h || true
+              du -sh target target/llvm-cov target/llvm-cov-target ~/.cargo ~/.rustup 2>/dev/null || true
+              ps -eo pid,ppid,%cpu,%mem,rss,vsz,comm,args --sort=-rss | head -n 10 || true
+              sleep 60
+            done
+          }
+          monitor &
+          monitor_pid=$!
+          trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+          ./target/debug/xtask coverage run
 
       - name: Generate trim candidate inventory
         run: |
-          cargo xtask coverage report
+          ./target/debug/xtask coverage report
 
       - name: Enforce coverage regression gate
         run: |
-          cargo xtask coverage gate --allowed-workspace-line-coverage-drop 3.0
+          ./target/debug/xtask coverage gate --allowed-workspace-line-coverage-drop 3.0
 
   msl-quality-gate:
     name: MSL Quality Gate
