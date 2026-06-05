@@ -499,10 +499,10 @@ pub(crate) fn extract_var_from_lhs(lhs: &Expression) -> Option<VarName> {
 /// Create a Variable from a flat::Variable.
 pub(crate) fn resolve_missing_start_ref(
     name: &VarName,
-    known_var_names: &HashSet<String>,
+    reference_index: &DaeReferenceIndex,
 ) -> VarName {
     if let Some(resolved) =
-        crate::path_utils::resolve_known_path_suffix(name.as_str(), known_var_names)
+        crate::path_utils::resolve_known_path_suffix(name.as_str(), reference_index.known_names())
     {
         return VarName::new(resolved);
     }
@@ -511,13 +511,13 @@ pub(crate) fn resolve_missing_start_ref(
 
 pub(crate) fn rewrite_start_expr_missing_refs(
     expr: &Expression,
-    known_var_names: &HashSet<String>,
+    reference_index: &DaeReferenceIndex,
 ) -> Expression {
-    StartRefRewriter { known_var_names }.rewrite_expression(expr)
+    StartRefRewriter { reference_index }.rewrite_expression(expr)
 }
 
 struct StartRefRewriter<'a> {
-    known_var_names: &'a HashSet<String>,
+    reference_index: &'a DaeReferenceIndex,
 }
 
 impl ExpressionRewriter for StartRefRewriter<'_> {
@@ -531,17 +531,59 @@ impl ExpressionRewriter for StartRefRewriter<'_> {
             return self.walk_expression(expr);
         };
         Expression::VarRef {
-            name: resolve_missing_start_ref(name.var_name(), self.known_var_names).into(),
+            name: resolve_missing_start_ref(name.var_name(), self.reference_index).into(),
             subscripts: self.rewrite_subscripts(subscripts),
             span: *span,
         }
     }
 }
 
+/// Post-flattening DAE reference membership index.
+///
+/// This is not a Modelica scope: name lookup and declaration identity have
+/// already been resolved before Flat. It only prevents DAE scalar projection
+/// helpers from treating scalar variables and enum literals as aggregate aliases.
+pub(crate) struct DaeReferenceIndex {
+    known_var_names: HashSet<String>,
+    scalar_value_names: HashSet<String>,
+}
+
+impl DaeReferenceIndex {
+    pub(crate) fn from_flat(flat: &flat::Model) -> Self {
+        let primitive_var_names: HashSet<String> = flat
+            .variables
+            .iter()
+            .filter(|(_, var)| var.is_primitive)
+            .map(|(name, _)| name.as_str().to_string())
+            .collect();
+        let scalar_value_names = primitive_var_names
+            .iter()
+            .cloned()
+            .chain(flat.enum_literal_ordinals.keys().cloned())
+            .collect();
+        Self {
+            known_var_names: flat
+                .variables
+                .keys()
+                .map(|name| name.as_str().to_string())
+                .collect(),
+            scalar_value_names,
+        }
+    }
+
+    pub(crate) fn known_names(&self) -> &HashSet<String> {
+        &self.known_var_names
+    }
+
+    pub(crate) fn is_known_scalar_value(&self, name: &VarName) -> bool {
+        self.scalar_value_names.contains(name.as_str())
+    }
+}
+
 pub(crate) fn create_dae_variable(
     name: &VarName,
     var: &flat::Variable,
-    known_var_names: &HashSet<String>,
+    reference_index: &DaeReferenceIndex,
 ) -> Variable {
     // MLS §4.4.1: declaration/modification bindings define parameter/constant values.
     // Start remains an initialization attribute and should not be used as the
@@ -554,8 +596,8 @@ pub(crate) fn create_dae_variable(
     };
     let start_span = start_source.and_then(Expression::span);
     let start = start_source
-        .map(|expr| select_scalar_start_record_alias(name, expr, known_var_names))
-        .map(|expr| rewrite_start_expr_missing_refs(&expr, known_var_names))
+        .map(|expr| select_scalar_start_record_alias(name, expr, reference_index))
+        .map(|expr| rewrite_start_expr_missing_refs(&expr, reference_index))
         .map(|expr| flat_to_dae_expression(&expr));
 
     // A parameter is tunable (changeable at runtime in FMI 3.0 ConfigurationMode)
@@ -606,24 +648,24 @@ fn variable_causality(var: &flat::Variable, is_tunable: bool) -> rumoca_ir_dae::
 fn select_scalar_start_record_alias(
     lhs_name: &VarName,
     expr: &Expression,
-    known_var_names: &HashSet<String>,
+    reference_index: &DaeReferenceIndex,
 ) -> Expression {
     let lhs_path = rumoca_core::ComponentPath::from_flat_path(lhs_name.as_str());
     let leaf_field = lhs_path.parts().last();
     let Some(lhs_base) = flat::component_base_name(lhs_name.as_str()) else {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+        return select_leaf_start_record_alias(expr, leaf_field, reference_index)
             .unwrap_or_else(|| expr.clone());
     };
     if lhs_base == lhs_name.as_str() {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+        return select_leaf_start_record_alias(expr, leaf_field, reference_index)
             .unwrap_or_else(|| expr.clone());
     }
     let Some(field_suffix) = lhs_name.as_str().strip_prefix(lhs_base.as_str()) else {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+        return select_leaf_start_record_alias(expr, leaf_field, reference_index)
             .unwrap_or_else(|| expr.clone());
     };
     if !field_suffix.starts_with('.') {
-        return select_leaf_start_record_alias(expr, leaf_field, known_var_names)
+        return select_leaf_start_record_alias(expr, leaf_field, reference_index)
             .unwrap_or_else(|| expr.clone());
     }
 
@@ -633,10 +675,14 @@ fn select_scalar_start_record_alias(
             subscripts,
             span,
         } if subscripts.is_empty() => {
+            if reference_index.is_known_scalar_value(rhs_name.var_name()) {
+                return expr.clone();
+            }
             let selected = format!("{}{}", rhs_name.as_str(), field_suffix);
-            if let Some(selected) =
-                crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
-            {
+            if let Some(selected) = crate::path_utils::resolve_known_path_suffix(
+                &selected,
+                reference_index.known_names(),
+            ) {
                 return Expression::VarRef {
                     name: VarName::new(selected).into(),
                     subscripts: vec![],
@@ -645,9 +691,10 @@ fn select_scalar_start_record_alias(
             }
             if let Some(field) = leaf_field {
                 let selected = format!("{}.{}", rhs_name.as_str(), field);
-                if let Some(selected) =
-                    crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
-                {
+                if let Some(selected) = crate::path_utils::resolve_known_path_suffix(
+                    &selected,
+                    reference_index.known_names(),
+                ) {
                     return Expression::VarRef {
                         name: VarName::new(selected).into(),
                         subscripts: vec![],
@@ -670,9 +717,10 @@ fn select_scalar_start_record_alias(
                 return expr.clone();
             }
             let selected = format!("{}.{}{}", rhs_name.as_str(), field, field_suffix);
-            if let Some(selected) =
-                crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
-            {
+            if let Some(selected) = crate::path_utils::resolve_known_path_suffix(
+                &selected,
+                reference_index.known_names(),
+            ) {
                 return Expression::VarRef {
                     name: VarName::new(selected).into(),
                     subscripts: vec![],
@@ -681,9 +729,10 @@ fn select_scalar_start_record_alias(
             }
             if let Some(lhs_leaf) = leaf_field {
                 let selected = format!("{}.{}.{}", rhs_name.as_str(), field, lhs_leaf);
-                if let Some(selected) =
-                    crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
-                {
+                if let Some(selected) = crate::path_utils::resolve_known_path_suffix(
+                    &selected,
+                    reference_index.known_names(),
+                ) {
                     return Expression::VarRef {
                         name: VarName::new(selected).into(),
                         subscripts: vec![],
@@ -700,7 +749,7 @@ fn select_scalar_start_record_alias(
 fn select_leaf_start_record_alias(
     expr: &Expression,
     leaf_field: Option<&String>,
-    known_var_names: &HashSet<String>,
+    reference_index: &DaeReferenceIndex,
 ) -> Option<Expression> {
     let field = leaf_field?;
     match expr {
@@ -709,14 +758,16 @@ fn select_leaf_start_record_alias(
             subscripts,
             span,
         } if subscripts.is_empty() => {
+            if reference_index.is_known_scalar_value(rhs_name.var_name()) {
+                return None;
+            }
             let selected = format!("{}.{}", rhs_name.as_str(), field);
-            crate::path_utils::resolve_known_path_suffix(&selected, known_var_names).map(
-                |selected| Expression::VarRef {
+            crate::path_utils::resolve_known_path_suffix(&selected, reference_index.known_names())
+                .map(|selected| Expression::VarRef {
                     name: VarName::new(selected).into(),
                     subscripts: vec![],
                     span: *span,
-                },
-            )
+                })
         }
         Expression::FieldAccess { base, field, span } => {
             let Expression::VarRef {
@@ -731,13 +782,12 @@ fn select_leaf_start_record_alias(
                 return None;
             }
             let selected = format!("{}.{}", rhs_name.as_str(), field);
-            crate::path_utils::resolve_known_path_suffix(&selected, known_var_names).map(
-                |selected| Expression::VarRef {
+            crate::path_utils::resolve_known_path_suffix(&selected, reference_index.known_names())
+                .map(|selected| Expression::VarRef {
                     name: VarName::new(selected).into(),
                     subscripts: vec![],
                     span: *span,
-                },
-            )
+                })
         }
         _ => None,
     }
@@ -746,6 +796,14 @@ fn select_leaf_start_record_alias(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reference_index(names: &[&VarName]) -> DaeReferenceIndex {
+        let known_var_names = names.iter().map(|name| name.as_str().to_string()).collect();
+        DaeReferenceIndex {
+            known_var_names,
+            scalar_value_names: names.iter().map(|name| name.as_str().to_string()).collect(),
+        }
+    }
 
     #[test]
     fn create_dae_variable_preserves_component_reference() {
@@ -766,9 +824,9 @@ mod tests {
             is_primitive: true,
             ..Default::default()
         };
-        let known_var_names = HashSet::from([name.as_str().to_string()]);
+        let reference_index = reference_index(&[&name]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+        let dae_var = create_dae_variable(&name, &flat_var, &reference_index);
 
         assert_eq!(
             dae_var
@@ -788,9 +846,9 @@ mod tests {
             is_primitive: true,
             ..Default::default()
         };
-        let known_var_names = HashSet::from([name.as_str().to_string()]);
+        let reference_index = reference_index(&[&name]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+        let dae_var = create_dae_variable(&name, &flat_var, &reference_index);
 
         assert_eq!(dae_var.causality, rumoca_ir_dae::VariableCausality::Input);
     }
@@ -804,9 +862,9 @@ mod tests {
             is_primitive: true,
             ..Default::default()
         };
-        let known_var_names = HashSet::from([name.as_str().to_string()]);
+        let reference_index = reference_index(&[&name]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names);
+        let dae_var = create_dae_variable(&name, &flat_var, &reference_index);
 
         assert_eq!(
             dae_var.causality,

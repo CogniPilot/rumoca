@@ -1068,7 +1068,7 @@ fn constructor_extent<T: SimFloat>(
 
 fn constructor_dim<T: SimFloat>(arg: &rumoca_core::Expression, env: &VarEnv<T>) -> Option<usize> {
     let dim = eval_expr_or_default::<T>(arg, env).real().round();
-    (dim.is_finite() && dim > 0.0).then_some(dim as usize)
+    (dim.is_finite() && dim >= 0.0).then_some(dim as usize)
 }
 
 fn eval_function_call_array_values<T: SimFloat>(

@@ -1048,6 +1048,68 @@ fn lower_discrete_rhs_uses_assigned_width_for_unknown_function_output_dims() {
 }
 
 #[test]
+fn lower_discrete_rhs_uses_shape_expr_for_function_output_dims() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("y"),
+        dae::Variable {
+            dims: vec![3],
+            ..scalar_var("y")
+        },
+    );
+    let mut fill_fn = rumoca_core::Function::new("Pkg.fillN", Default::default());
+    fill_fn
+        .inputs
+        .push(rumoca_core::FunctionParam::new("n", "Integer"));
+    fill_fn.outputs.push(rumoca_core::FunctionParam {
+        def_id: None,
+        name: "y".to_string(),
+        span: rumoca_core::Span::DUMMY,
+        type_name: "Real".to_string(),
+        type_class: None,
+        dims: vec![0],
+        shape_expr: vec![rumoca_core::Subscript::generated_expr(Box::new(var("n")))],
+        default: None,
+        description: None,
+    });
+    fill_fn.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("y"),
+        value: rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args: vec![real_lit(2.0), var("n")],
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(fill_fn.name.clone(), fill_fn);
+    dae_model.discrete.real_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("y")),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("Pkg.fillN").into(),
+            args: vec![int_lit(3)],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Default::default(),
+        origin: "symbolic function output shape".to_string(),
+        scalar_count: 3,
+    });
+
+    let layout = build_var_layout(&dae_model);
+    let rows =
+        lower_discrete_rhs(&dae_model, &layout).expect("shape_expr output dims should lower");
+    let actual = rows
+        .iter()
+        .map(|row| eval_linear_ops(row, &[], &[], 0.0).1.expect("row output"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(actual, vec![2.0, 2.0, 2.0]);
+}
+
+#[test]
 fn lower_expression_reduces_min_max_over_array_ir_values() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.parameters.insert(

@@ -33,27 +33,8 @@ impl<'a> LowerBuilder<'a> {
                     .map(|arg| self.infer_expr_dims(arg, scope))
                     .unwrap_or_default()
             }
-            rumoca_core::Expression::FunctionCall { name, .. } => {
-                // Returning an empty Vec (scalar) when the function is unknown or has no
-                // declared first output is intentional: inference is best-effort.
-                // A `debug_assert!` gates the regression-prone case where the function IS
-                // known but its first output has non-empty dims — those must not silently
-                // collapse to scalar.
-                let maybe_output = self
-                    .lookup_function(name)
-                    .and_then(|function| function.outputs.first().cloned());
-                debug_assert!(
-                    maybe_output
-                        .as_ref()
-                        .is_none_or(|o| !dims_i64_to_usize(&o.dims).is_empty()
-                            || o.dims.is_empty()),
-                    "function `{}` has non-scalar declared output dims but inference \
-                     would return scalar — check dims_i64_to_usize is not lossy",
-                    name.as_str()
-                );
-                maybe_output
-                    .map(|output| dims_i64_to_usize(&output.dims))
-                    .unwrap_or_default()
+            rumoca_core::Expression::FunctionCall { name, args, .. } => {
+                self.infer_function_call_dims_from_signature(name, args)
             }
             rumoca_core::Expression::Array {
                 elements,
@@ -111,6 +92,82 @@ impl<'a> LowerBuilder<'a> {
             })
             .sum();
         vector_dims(scalar_count)
+    }
+
+    fn infer_function_call_dims_from_signature(
+        &self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+    ) -> Vec<usize> {
+        let Some(function) = self.lookup_function(name) else {
+            return Vec::new();
+        };
+        let Some(output) = function.outputs.first() else {
+            return Vec::new();
+        };
+        let dims = dims_i64_to_usize(&output.dims);
+        if !dims.is_empty() || output.shape_expr.is_empty() {
+            return dims;
+        }
+        self.infer_function_output_shape_expr_dims(name, &function.inputs, args, output)
+            .unwrap_or_else(|| unresolved_symbolic_dims(&output.dims))
+    }
+
+    fn infer_function_output_shape_expr_dims(
+        &self,
+        name: &rumoca_core::Reference,
+        inputs: &[rumoca_core::FunctionParam],
+        args: &[rumoca_core::Expression],
+        output: &rumoca_core::FunctionParam,
+    ) -> Option<Vec<usize>> {
+        if output.shape_expr.len() != output.dims.len() {
+            return None;
+        }
+        let const_scope = self.function_call_const_scope(name, inputs, args)?;
+        output
+            .shape_expr
+            .iter()
+            .map(|subscript| match subscript {
+                rumoca_core::Subscript::Index { value, .. } if *value >= 0 => Some(*value as usize),
+                rumoca_core::Subscript::Expr { expr, .. } => self
+                    .eval_compile_time_int(expr, &const_scope, "function output shape")
+                    .ok()
+                    .and_then(|dim| usize::try_from(dim).ok()),
+                rumoca_core::Subscript::Colon { .. } | rumoca_core::Subscript::Index { .. } => None,
+            })
+            .collect()
+    }
+
+    fn function_call_const_scope(
+        &self,
+        name: &rumoca_core::Reference,
+        inputs: &[rumoca_core::FunctionParam],
+        args: &[rumoca_core::Expression],
+    ) -> Option<IndexMap<String, f64>> {
+        let (named_args, positional_args) =
+            super::function_calls::split_named_and_positional_call_args(name.as_str(), args)
+                .ok()?;
+        let mut const_scope = self.local_const_bindings.clone();
+        let mut positional_idx = 0usize;
+
+        for input in inputs {
+            let arg = named_args
+                .get(input.name.as_str())
+                .copied()
+                .or_else(|| {
+                    super::function_calls::next_positional_function_input_arg(
+                        input,
+                        &positional_args,
+                        &mut positional_idx,
+                    )
+                })
+                .or(input.default.as_ref())?;
+            if let Ok(value) = self.eval_compile_time_expr(arg, &const_scope) {
+                const_scope.insert(input.name.clone(), value);
+            }
+        }
+
+        Some(const_scope)
     }
 
     fn infer_function_call_field_dims(
@@ -665,4 +722,10 @@ impl<'a> LowerBuilder<'a> {
             _ => Vec::new(),
         }
     }
+}
+
+fn unresolved_symbolic_dims(dims: &[i64]) -> Vec<usize> {
+    dims.iter()
+        .filter_map(|dim| usize::try_from(*dim).ok())
+        .collect()
 }

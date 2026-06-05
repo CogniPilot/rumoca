@@ -556,11 +556,7 @@ struct ClassificationInputs<'a> {
 // SPEC_0021: Exception - top-level DAE variable classification pass.
 #[allow(clippy::too_many_lines)]
 fn classify_variables(dae: &mut dae::Dae, flat: &flat::Model, inputs: &ClassificationInputs<'_>) {
-    let known_var_names: HashSet<String> = flat
-        .variables
-        .keys()
-        .map(|name| name.as_str().to_string())
-        .collect();
+    let reference_index = DaeReferenceIndex::from_flat(flat);
 
     for (name, var) in &flat.variables {
         // Skip non-primitive aggregate variables whose primitive fields are
@@ -571,8 +567,8 @@ fn classify_variables(dae: &mut dae::Dae, flat: &flat::Model, inputs: &Classific
         }
 
         let kind = classification::classify_variable(var, inputs.state_vars);
-        let mut dae_var = create_dae_variable(name, var, &known_var_names);
-        inherit_scalarized_start_from_base(name, flat, &mut dae_var, &known_var_names);
+        let mut dae_var = create_dae_variable(name, var, &reference_index);
+        inherit_scalarized_start_from_base(name, flat, &mut dae_var, &reference_index);
         record_variable_start_metadata(dae, name, &dae_var);
 
         // Top-level connector members connected only to internal inputs act as
@@ -697,7 +693,7 @@ fn inherit_scalarized_start_from_base(
     name: &rumoca_core::VarName,
     flat: &flat::Model,
     dae_var: &mut dae::Variable,
-    known_var_names: &HashSet<String>,
+    reference_index: &DaeReferenceIndex,
 ) {
     if dae_var.start.is_some() {
         return;
@@ -728,7 +724,7 @@ fn inherit_scalarized_start_from_base(
     let selected_start = select_scalarized_start_expr(base_start, &base_name, name.as_str());
     dae_var.start = Some(flat_to_dae_expression(&rewrite_start_expr_missing_refs(
         &selected_start,
-        known_var_names,
+        reference_index,
     )));
     if dae_var.fixed.is_none() {
         dae_var.fixed = base_var.fixed;

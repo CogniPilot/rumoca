@@ -9,6 +9,7 @@ use std::collections::HashSet;
 
 use crate::{
     classification, flat_to_dae_expression, flat_to_dae_var_name, path_utils::strip_all_subscripts,
+    scalar_inference::DaeReferenceIndex,
 };
 
 type Dae = dae::Dae;
@@ -44,11 +45,7 @@ pub(super) fn convert_bindings_to_equations(
 ) {
     let (_directly_defined, all_defined) = super::collect_continuous_equation_lhs(flat);
     let unknowns = collect_unknowns(flat, state_vars);
-    let known_var_names: HashSet<String> = flat
-        .variables
-        .keys()
-        .map(|name| name.as_str().to_string())
-        .collect();
+    let reference_index = DaeReferenceIndex::from_flat(flat);
     let unknown_prefix_children = build_unknown_prefix_children(&unknowns);
     let internal_inputs = super::InternalInputIndex::new(flat);
     let connected_inputs_only_connected_to_inputs =
@@ -142,7 +139,7 @@ pub(super) fn convert_bindings_to_equations(
                 &var.dims,
                 &kind,
                 var.is_discrete_type,
-                &known_var_names,
+                &reference_index,
             );
         }
     }
@@ -568,9 +565,9 @@ fn add_binding_equation(
     dims: &[i64],
     kind: &VariableKind,
     is_discrete_type: bool,
-    known_var_names: &HashSet<String>,
+    reference_index: &DaeReferenceIndex,
 ) {
-    let selected_binding = select_scalar_binding_record_field_alias(name, binding, known_var_names);
+    let selected_binding = select_scalar_binding_record_field_alias(name, binding, reference_index);
     let scalar_count = super::compute_var_size(dims);
     let origin = rumoca_ir_flat::EquationOrigin::Binding {
         variable: name.as_str().to_string(),
@@ -608,7 +605,7 @@ fn add_binding_equation(
 fn select_scalar_binding_record_field_alias(
     lhs_name: &VarName,
     binding: &Expression,
-    known_var_names: &HashSet<String>,
+    reference_index: &DaeReferenceIndex,
 ) -> Expression {
     let Expression::VarRef {
         name: rhs_name,
@@ -619,6 +616,9 @@ fn select_scalar_binding_record_field_alias(
         return binding.clone();
     };
     if !subscripts.is_empty() {
+        return binding.clone();
+    }
+    if reference_index.is_known_scalar_value(rhs_name.var_name()) {
         return binding.clone();
     }
 
@@ -633,7 +633,8 @@ fn select_scalar_binding_record_field_alias(
     let selected = rumoca_core::ComponentPath::from_reference(rhs_name)
         .join(&rumoca_core::ComponentPath::from_flat_path(field_name))
         .to_flat_string();
-    let Some(selected) = crate::path_utils::resolve_known_path_suffix(&selected, known_var_names)
+    let Some(selected) =
+        crate::path_utils::resolve_known_path_suffix(&selected, reference_index.known_names())
     else {
         return binding.clone();
     };
@@ -667,6 +668,21 @@ fn create_binding_residual(name: &VarName, binding: &Expression) -> Expression {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reference_index(names: &[&str]) -> DaeReferenceIndex {
+        let mut flat = Model::new();
+        for name in names {
+            flat.add_variable(
+                VarName::new(*name),
+                flat::Variable {
+                    name: VarName::new(*name),
+                    is_primitive: true,
+                    ..Default::default()
+                },
+            );
+        }
+        DaeReferenceIndex::from_flat(&flat)
+    }
 
     #[test]
     fn test_build_unknown_prefix_children_indexes_intermediate_paths() {
@@ -805,9 +821,9 @@ mod tests {
 
     #[test]
     fn test_select_scalar_binding_record_field_alias_selects_known_field() {
-        let known_var_names = HashSet::from([
-            "mach.friction.frictionParameters.wRef".to_string(),
-            "data.frictionParameters.wRef".to_string(),
+        let reference_index = reference_index(&[
+            "mach.friction.frictionParameters.wRef",
+            "data.frictionParameters.wRef",
         ]);
         let lhs = VarName::new("mach.friction.frictionParameters.wRef");
         let binding = Expression::VarRef {
@@ -816,7 +832,7 @@ mod tests {
             span: rumoca_core::Span::DUMMY,
         };
 
-        let selected = select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names);
+        let selected = select_scalar_binding_record_field_alias(&lhs, &binding, &reference_index);
         assert_eq!(
             format!("{selected:?}"),
             format!(
@@ -832,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_select_scalar_binding_record_field_alias_resolves_misqualified_prefix() {
-        let known_var_names = HashSet::from(["aimcData.statorCoreParameters.wRef".to_string()]);
+        let reference_index = reference_index(&["aimcData.statorCoreParameters.wRef"]);
         let lhs = VarName::new("aimc.statorCoreParameters.wRef");
         let binding = Expression::VarRef {
             name: VarName::new("aimc.aimcData.statorCoreParameters").into(),
@@ -840,7 +856,7 @@ mod tests {
             span: rumoca_core::Span::DUMMY,
         };
 
-        let selected = select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names);
+        let selected = select_scalar_binding_record_field_alias(&lhs, &binding, &reference_index);
         assert_eq!(
             format!("{selected:?}"),
             format!(
@@ -852,5 +868,23 @@ mod tests {
                 }
             )
         );
+    }
+
+    #[test]
+    fn test_select_scalar_binding_record_field_alias_preserves_primitive_binding() {
+        let reference_index = reference_index(&[
+            "m",
+            "multiStarResistance.mBasic",
+            "multiStarResistance.resistor.m",
+        ]);
+        let lhs = VarName::new("multiStarResistance.resistor.m");
+        let binding = Expression::VarRef {
+            name: VarName::new("multiStarResistance.mBasic").into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        let selected = select_scalar_binding_record_field_alias(&lhs, &binding, &reference_index);
+        assert_eq!(format!("{selected:?}"), format!("{binding:?}"));
     }
 }

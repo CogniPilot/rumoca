@@ -1045,6 +1045,30 @@ fn test_function_array_input_binds_builtin_zeros_shape() {
 }
 
 #[test]
+fn test_array_constructors_accept_zero_extent() {
+    let env = VarEnv::<f64>::new();
+
+    assert_eq!(
+        eval_shaped_array_values::<f64>(
+            &builtin(BuiltinFunction::Zeros, vec![int_lit(0)]),
+            &env,
+            0
+        )
+        .expect("zeros(0) should evaluate to an empty vector"),
+        Vec::<f64>::new()
+    );
+    assert_eq!(
+        eval_shaped_array_values::<f64>(
+            &builtin(BuiltinFunction::Fill, vec![lit(2.0), int_lit(0)]),
+            &env,
+            0
+        )
+        .expect("fill(_, 0) should evaluate to an empty vector"),
+        Vec::<f64>::new()
+    );
+}
+
+#[test]
 fn test_function_array_input_rejects_wrong_shape() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();

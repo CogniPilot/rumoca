@@ -1936,4 +1936,5 @@ mod tests_equation_classification;
 mod tests_flow_sum;
 mod tests_function_param_calls;
 mod tests_regressions;
+mod tests_scalar_aliases;
 mod tests_scalar_shape;
