@@ -3,8 +3,9 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use crate::{
-    LowerError, collect_expression_read_slots, discrete_update_scalar_name,
-    normalized_discrete_update_equations,
+    LowerError, collect_expression_read_slots,
+    discrete_pre_modes::{expression_contains_lowered_pre_ref, target_has_clock_metadata},
+    discrete_update_scalar_name, normalized_discrete_update_equations,
 };
 
 pub(super) fn lower_discrete_observation_refresh(
@@ -70,7 +71,7 @@ fn discrete_observation_refresh_rows(
             continue;
         };
         let scalar_count = eq.scalar_count.max(1);
-        let safe = expression_safe_for_observation_refresh(dae_model, &eq.rhs);
+        let safe = expression_safe_for_observation_refresh(dae_model, lhs, &eq.rhs);
         let contains_pre = expression_contains_pre_operator(&eq.rhs);
         let seed = !contains_pre
             && (expression_has_observation_pulse(dae_model, &eq.rhs)
@@ -105,9 +106,12 @@ fn active_refresh_targets(
 
 fn expression_safe_for_observation_refresh(
     dae_model: &dae::Dae,
+    lhs: &rumoca_core::VarName,
     expr: &rumoca_core::Expression,
 ) -> bool {
     !expression_contains_clocked_value_operator(dae_model, expr)
+        && !(target_has_clock_metadata(dae_model, lhs.as_str())
+            && expression_contains_lowered_pre_ref(expr))
 }
 
 fn expression_has_observation_pulse(dae_model: &dae::Dae, expr: &rumoca_core::Expression) -> bool {

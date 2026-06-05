@@ -1563,14 +1563,16 @@ where
     )?;
     let event_pre_y = state.current_y.to_vec();
     let event_pre_p = state.params.to_vec();
-    apply_event_updates(
-        ctx.runtime,
-        ctx.equilibrium_model,
-        state.current_y,
-        state.params,
-        *state.current_t,
+    apply_event_updates_with_event_pre(EventUpdateInput {
+        runtime: ctx.runtime,
+        ode_model: ctx.equilibrium_model,
+        y: state.current_y,
+        p: state.params,
+        t: *state.current_t,
         tol,
-    )?;
+        event_pre_y: &event_pre_y,
+        event_pre_p: &event_pre_p,
+    })?;
     *state.current_t = EventObservation {
         runtime: ctx.runtime,
         model: ctx.model,

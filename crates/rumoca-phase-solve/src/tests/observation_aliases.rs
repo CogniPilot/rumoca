@@ -183,6 +183,54 @@ fn solve_problem_marks_event_relation_aliases_for_observation_refresh() {
 }
 
 #[test]
+fn solve_problem_does_not_observation_refresh_clocked_previous_rows() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["b_super", "u_super", "y"] {
+        dae_model
+            .variables
+            .discrete_valued
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    dae_model.clocks.intervals.insert("y".to_string(), 0.1);
+    insert_pre_parameter(&mut dae_model, "b_super");
+    insert_pre_parameter(&mut dae_model, "y");
+    dae_model.discrete.valued_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("y")),
+        rhs: rumoca_core::Expression::If {
+            branches: vec![(
+                sample_event_indicator_expr(0.0, 0.1),
+                rumoca_core::Expression::If {
+                    branches: vec![(
+                        binary(
+                            rumoca_core::OpBinary::Neq,
+                            var("b_super"),
+                            pre_var("b_super"),
+                        ),
+                        var("u_super"),
+                    )],
+                    else_branch: Box::new(rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Boolean(false),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            )],
+            else_branch: Box::new(pre_var("y")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Default::default(),
+        // MLS section 16.4: lowered previous(..) on a clocked row needs the event-entry
+        // clock history. Observation refresh does not own that history snapshot.
+        origin: "y = if b_super <> previous(b_super) then u_super else false".to_string(),
+        scalar_count: 1,
+    });
+
+    let problem = lower_solve_problem(&dae_model).expect("clocked previous row should lower");
+
+    assert_eq!(problem.discrete.observation_refresh, vec![false]);
+}
+
+#[test]
 fn solve_problem_marks_derived_clock_constructor_for_observation_refresh() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.discrete_valued.insert(
@@ -439,6 +487,7 @@ fn solve_problem_orients_residual_aliases_away_from_residual_update_target() {
         .variables
         .discrete_reals
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+    dae_model.clocks.intervals.insert("y".to_string(), 0.1);
     insert_pre_parameter(&mut dae_model, "u");
     dae_model
         .discrete
@@ -454,7 +503,7 @@ fn solve_problem_orients_residual_aliases_away_from_residual_update_target() {
         .push(dae::Equation::residual(
             binary(rumoca_core::OpBinary::Sub, var("y"), var("u")),
             Default::default(),
-            // MLS §8.3: alias residuals are equations. Since y is defined by
+            // MLS section 8.3: alias residuals are equations. Since y is defined by
             // another update row, solve-lower orients this alias toward u.
             "residual alias y = u",
         ));
@@ -483,7 +532,7 @@ fn solve_problem_orients_residual_aliases_away_from_residual_update_target() {
             .pre_modes
             .iter()
             .any(|mode| matches!(mode, solve::DiscreteEventPreMode::EventEntry)),
-        "MLS §16.4 previous(..) rows must keep tick left-limit pre values fixed"
+        "MLS section 16.4 previous(..) rows must keep tick left-limit pre values fixed"
     );
 }
 
