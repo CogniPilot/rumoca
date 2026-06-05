@@ -704,7 +704,7 @@ fn test_todae_merges_sequential_when_statements_for_same_target_in_source_order(
         span: rumoca_core::Span::DUMMY,
     } = else_branch.as_ref()
     else {
-        panic!("ordinary when lowering must preserve the initial-section value before pre(y)");
+        panic!("algorithm when lowering must preserve the initial-section value before pre(y)");
     };
     assert_eq!(initial_branches.len(), 1);
     assert!(matches!(

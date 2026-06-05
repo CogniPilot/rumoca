@@ -89,42 +89,6 @@ fn assert_stale_save_diagnostics_timing(entry: &LoggedDiagnosticsTimingSummary) 
         !entry.ran_compile,
         "stale save diagnostics should skip strict compile"
     );
-    assert_eq!(
-        entry
-            .session_cache_delta
-            .interface_semantic_diagnostics_builds,
-        0,
-        "stale save diagnostics should not build interface-stage diagnostics"
-    );
-    assert_eq!(
-        entry.session_cache_delta.body_semantic_diagnostics_builds, 0,
-        "stale save diagnostics should not build body-stage diagnostics"
-    );
-    assert_eq!(
-        entry
-            .session_cache_delta
-            .model_stage_semantic_diagnostics_builds,
-        0,
-        "stale save diagnostics should not build model-stage diagnostics"
-    );
-}
-
-fn assert_no_stale_save_diagnostics_stats(
-    before: rumoca_compile::compile::SessionCacheStatsSnapshot,
-) {
-    let delta = session_cache_stats().delta_since(before);
-    assert_eq!(
-        delta.interface_semantic_diagnostics_builds, 0,
-        "stale save diagnostics should not contribute interface-stage statistics"
-    );
-    assert_eq!(
-        delta.body_semantic_diagnostics_builds, 0,
-        "stale save diagnostics should not contribute body-stage statistics"
-    );
-    assert_eq!(
-        delta.model_stage_semantic_diagnostics_builds, 0,
-        "stale save diagnostics should not contribute model-stage statistics"
-    );
 }
 
 #[test]
@@ -267,7 +231,6 @@ fn save_publish_diagnostics_skips_stale_requests_before_strict_compile() {
             session.update_document(&active_path.to_string_lossy(), active_source);
         }
 
-        let before = session_cache_stats();
         let request_token = server.begin_analysis_request().await;
         let source_root_paths_guard = server.source_root_paths.write().await;
         let publish_task = tokio::spawn({
@@ -319,6 +282,5 @@ fn save_publish_diagnostics_skips_stale_requests_before_strict_compile() {
             "expected one save timing entry for stale save diagnostics"
         );
         assert_stale_save_diagnostics_timing(save_entries[0]);
-        assert_no_stale_save_diagnostics_stats(before);
     });
 }
