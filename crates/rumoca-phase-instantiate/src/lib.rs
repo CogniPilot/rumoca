@@ -65,7 +65,7 @@ use rumoca_ir_ast::AstIndexMap as IndexMap;
 use array_expansion::{ArrayExpansionScope, expand_array_component};
 use attributes::*;
 use dims::{
-    qualify_shape_subscripts_imports, resolve_component_dimensions, resolve_type_alias_dimensions,
+    qualify_shape_subscripts_imports, resolve_component_shape, zero_sized_structured_array_dims,
 };
 use evaluate_annotation::has_evaluate_annotation;
 use inheritance::option_location_to_span;
@@ -77,6 +77,7 @@ use nested_scope::{
     key_matches_referenced_root, resolve_component_nested_type_overrides, shift_modifications_down,
 };
 use package_constant_imports::{
+    insert_active_package_constant_modifications, remove_inserted_package_constant_modifications,
     resolved_imports_with_active_package_constants,
     resolved_imports_with_enclosing_package_constants,
 };
@@ -1054,18 +1055,28 @@ fn instantiate_class(
             tree,
             &template.resolved_imports,
             &active_package_constant_aliases,
-        );
+        )?;
         let resolved_imports =
             resolved_imports_with_enclosing_package_constants(tree, class, &component_imports);
 
-        instantiate_effective_components(
+        let injected_package_constant_modifications = insert_active_package_constant_modifications(
+            tree,
+            &active_package_constant_aliases,
+            ctx.mod_env_mut(),
+        )?;
+        let instantiate_result = instantiate_effective_components(
             tree,
             effective_components,
             &type_overrides,
             ctx,
             overlay,
             &component_imports,
-        )?;
+        );
+        remove_inserted_package_constant_modifications(
+            ctx.mod_env_mut(),
+            injected_package_constant_modifications,
+        );
+        instantiate_result?;
 
         // Rebuild merged integer params after nested component instantiation so that
         // record-field integers (e.g., cellData.nRC) are available for top-level
@@ -1153,14 +1164,14 @@ fn instantiate_effective_components(
             tree,
             resolve_effective_components_for_eval,
         );
-        if let Some(dims) = dims.as_ref()
-            && dims.contains(&0)
+        let type_info = lookup_type_info(tree, comp, &type_name);
+        if let Some(dims) =
+            zero_sized_structured_array_dims(dims.as_deref(), type_info.is_primitive)
         {
             register_zero_sized_array_component(ctx, overlay, name, dims);
             continue;
         }
 
-        let type_info = lookup_type_info(tree, comp, &type_name);
         let should_expand = !type_info.is_primitive && dims.as_ref().is_some_and(|d| !d.is_empty());
 
         if should_expand {
@@ -1717,26 +1728,6 @@ fn validated_component_type_info<'a>(
         ctx.allow_partial_instantiation,
     )?;
     Ok(type_info)
-}
-
-fn resolve_component_shape(
-    tree: &ast::ClassTree,
-    comp: &ast::Component,
-    ctx: &InstantiateContext,
-    class_def: Option<&ast::ClassDef>,
-    effective_components: &IndexMap<String, ast::Component>,
-    imports: &[(String, String)],
-) -> (Vec<i64>, Vec<ast::Subscript>) {
-    let type_dims =
-        resolve_type_alias_dimensions(tree, class_def, ctx.mod_env(), effective_components);
-    resolve_component_dimensions(
-        comp,
-        &type_dims,
-        ctx.mod_env(),
-        effective_components,
-        tree,
-        imports,
-    )
 }
 
 struct ComponentBindingInfo {

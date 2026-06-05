@@ -5,7 +5,8 @@ use super::nested_scope::remap_redeclare_class_modifier;
 use super::type_overrides::{TypeOverrideMap, find_nested_class_in_hierarchy};
 use super::{InstantiateContext, InstantiateError, InstantiateResult};
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, evaluate_component_condition, try_eval_integer_expr, try_eval_string_expr,
+    InstantiateEvalCtx, component_expr_for_structural_eval, evaluate_component_condition,
+    try_eval_integer_expr, try_eval_string_expr,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -866,6 +867,20 @@ fn resolve_modification_expr_with_depth(
         );
     }
 
+    if mode == ModificationResolveMode::Modifier
+        && let Some(resolved_ref) = resolve_single_part_sibling_expr(expr, effective_components)
+    {
+        return resolve_modification_expr_with_depth(
+            &resolved_ref,
+            mod_env,
+            effective_components,
+            tree,
+            allow_string_eval,
+            mode,
+            depth + 1,
+        );
+    }
+
     // MLS §7.2: Resolve multi-part references through sibling modifications.
     if let Some(resolved) = resolve_sibling_modification(expr, effective_components) {
         return resolve_modification_expr_with_depth(
@@ -903,6 +918,23 @@ fn resolve_single_part_ref_expr(
     }
 
     None
+}
+
+fn resolve_single_part_sibling_expr(
+    expr: &ast::Expression,
+    effective_components: &IndexMap<String, ast::Component>,
+) -> Option<ast::Expression> {
+    let ast::Expression::ComponentReference(comp_ref) = expr else {
+        return None;
+    };
+    if comp_ref.parts.len() != 1 || comp_ref.parts[0].subs.is_some() {
+        return None;
+    }
+
+    let name = comp_ref.parts[0].ident.text.as_ref();
+    let component = effective_components.get(name)?;
+    let resolved = component_expr_for_structural_eval(component)?;
+    (resolved != expr).then(|| resolved.clone())
 }
 
 /// Resolve a multi-part component reference by following sibling modifications.
@@ -1184,6 +1216,44 @@ mod tests {
             resolved,
             make_int_expr(2),
             "scalar sibling field overrides should keep existing behavior"
+        );
+    }
+
+    #[test]
+    fn test_resolve_single_part_sibling_modifier_uses_declaration_binding() {
+        let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
+        let mut momentum_dynamics = ast::Component {
+            name: "momentumDynamics".to_string(),
+            type_name: make_name("Modelica.Fluid.Types.Dynamics"),
+            variability: rumoca_core::Variability::Parameter(make_token("parameter")),
+            ..Default::default()
+        };
+        momentum_dynamics.binding = Some(make_comp_ref_expr(&["system", "momentumDynamics"]));
+        effective_components.insert("momentumDynamics".to_string(), momentum_dynamics);
+
+        let mut mod_env = ast::ModificationEnvironment::default();
+        mod_env.add(
+            ast::QualifiedName::from_ident("momentumDynamics"),
+            ast::ModificationValue::with_source_scope(
+                make_comp_ref_expr(&["momentumDynamics"]),
+                Some(make_comp_ref_expr(&["momentumDynamics"])),
+                Some(ast::QualifiedName::from_ident("pipe1")),
+            ),
+        );
+
+        let expr = make_comp_ref_expr(&["momentumDynamics"]);
+        let resolved = resolve_modification_expr(
+            &expr,
+            &mod_env,
+            &effective_components,
+            &ast::ClassTree::default(),
+            false,
+        )
+        .expect("modifier should resolve");
+
+        assert_eq!(
+            resolved,
+            make_comp_ref_expr(&["system", "momentumDynamics"])
         );
     }
 

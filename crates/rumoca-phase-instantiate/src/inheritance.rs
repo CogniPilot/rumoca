@@ -224,7 +224,7 @@ fn try_extract_value_modification(
 /// This is used after inherited components are merged so modifications can apply
 /// to transitively inherited members (MLS §7.2), e.g. `extends Mid(a(x=2))`
 /// when `a` is declared in a grandparent class.
-fn try_extract_value_modification_any(
+pub(crate) fn try_extract_value_modification_any(
     modification: &ast::ExtendModification,
     extend: &ast::Extend,
 ) -> Option<(String, ast::Expression, bool)> {

@@ -3,17 +3,19 @@ use rumoca_eval_ast::eval_instantiate::{
     InstantiateEvalCtx, expr_to_bool, expr_to_string, try_eval_state_select_expr,
 };
 
-pub(super) fn extract_component_attrs_and_binding(
-    comp: &ast::Component,
-    mod_env: &ast::ModificationEnvironment,
-    eval_ctx: &InstantiateEvalCtx<'_>,
-) -> InstantiateResult<(
+pub(super) type ComponentAttrsAndBinding = (
     ExtractedAttributes,
     Option<ast::Expression>,
     Option<ast::Expression>,
     Option<ast::QualifiedName>,
     bool,
-)> {
+);
+
+pub(super) fn extract_component_attrs_and_binding(
+    comp: &ast::Component,
+    mod_env: &ast::ModificationEnvironment,
+    eval_ctx: &InstantiateEvalCtx<'_>,
+) -> InstantiateResult<ComponentAttrsAndBinding> {
     // Pass component name so mod_env can be checked for outer modifications.
     let mut attrs = extract_attributes(comp, mod_env, &comp.name, eval_ctx)?;
     let (binding, binding_from_modification, binding_source_scope) = extract_binding(comp, mod_env);

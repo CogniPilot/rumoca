@@ -1,5 +1,5 @@
-use super::find_class_in_tree;
 use super::inheritance::resolve_effective_components_for_eval;
+use super::{InstantiateContext, find_class_in_tree};
 use rumoca_core::is_builtin_type;
 use rumoca_core::{DefId, split_path_with_indices};
 use rumoca_eval_ast::eval_instantiate::{evaluate_array_dimensions, try_eval_integer_shape_expr};
@@ -141,6 +141,39 @@ pub(super) fn resolve_component_dimensions(
     }
 
     (dims, dims_expr)
+}
+
+pub(super) fn resolve_component_shape(
+    tree: &ast::ClassTree,
+    comp: &ast::Component,
+    ctx: &InstantiateContext,
+    class_def: Option<&ast::ClassDef>,
+    effective_components: &IndexMap<String, ast::Component>,
+    imports: &[(String, String)],
+) -> (Vec<i64>, Vec<ast::Subscript>) {
+    let type_dims =
+        resolve_type_alias_dimensions(tree, class_def, ctx.mod_env(), effective_components);
+    resolve_component_dimensions(
+        comp,
+        &type_dims,
+        ctx.mod_env(),
+        effective_components,
+        tree,
+        imports,
+    )
+}
+
+pub(super) fn zero_sized_structured_array_dims(
+    dims: Option<&[i64]>,
+    is_primitive: bool,
+) -> Option<&[i64]> {
+    if !is_primitive
+        && let Some(dims) = dims
+        && dims.contains(&0)
+    {
+        return Some(dims);
+    }
+    None
 }
 
 fn shape_expr_needs_late_recompute(shape_expr: &[ast::Subscript]) -> bool {

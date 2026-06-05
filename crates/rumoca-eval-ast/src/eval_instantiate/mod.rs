@@ -845,10 +845,25 @@ fn resolve_scoped_record_field_expr(
     if let Some(expr) = scope_comp.modifications.get(field_name) {
         return Some(expr.clone());
     }
-    let type_def_id = scope_comp.type_def_id?;
-    let class = tree.get_class_by_def_id(type_def_id)?;
+    let class = class_for_component_type(scope_comp, tree)?;
     let field = class.components.get(field_name)?;
     component_expr_for_structural_eval(field).cloned()
+}
+
+fn class_for_component_type<'a>(
+    comp: &ast::Component,
+    tree: &'a ast::ClassTree,
+) -> Option<&'a ast::ClassDef> {
+    if let Some(class) = comp
+        .type_def_id
+        .and_then(|type_def_id| tree.get_class_by_def_id(type_def_id))
+    {
+        return Some(class);
+    }
+
+    let type_name = comp.type_name.to_string();
+    tree.get_class_by_qualified_name(&type_name)
+        .or_else(|| find_class_in_tree(tree, &type_name))
 }
 
 fn resolve_component_ref_from_record_defaults(
@@ -871,8 +886,7 @@ fn resolve_component_ref_from_record_defaults(
             break;
         }
 
-        let type_def_id = current.type_def_id?;
-        let class = tree.get_class_by_def_id(type_def_id)?;
+        let class = class_for_component_type(current, tree)?;
         let field_comp = class.components.get(field_name)?;
         expr = component_expr_for_structural_eval(field_comp).cloned();
         current = field_comp;
@@ -1705,9 +1719,9 @@ fn eval_user_defined_integer_function(
 
 mod component_params;
 mod function_eval;
+pub use component_params::component_expr_for_structural_eval;
 pub(super) use component_params::{
-    component_expr_for_structural_eval, component_ref_to_dotted_no_subscripts,
-    enclosing_scope_candidates,
+    component_ref_to_dotted_no_subscripts, enclosing_scope_candidates,
 };
 pub use component_params::{
     expr_to_string, extract_binding, extract_bool_params_with_mods, extract_int_params_with_mods,

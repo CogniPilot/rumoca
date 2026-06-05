@@ -63,14 +63,18 @@ pub fn try_eval_string_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) ->
 }
 
 fn parse_state_select_name(name: &str) -> Option<rumoca_core::StateSelect> {
-    match name.rsplit('.').next().unwrap_or(name) {
-        "never" => Some(rumoca_core::StateSelect::Never),
-        "avoid" => Some(rumoca_core::StateSelect::Avoid),
-        "default" => Some(rumoca_core::StateSelect::Default),
-        "prefer" => Some(rumoca_core::StateSelect::Prefer),
-        "always" => Some(rumoca_core::StateSelect::Always),
-        _ => None,
+    for (candidate, value) in [
+        ("StateSelect.never", rumoca_core::StateSelect::Never),
+        ("StateSelect.avoid", rumoca_core::StateSelect::Avoid),
+        ("StateSelect.default", rumoca_core::StateSelect::Default),
+        ("StateSelect.prefer", rumoca_core::StateSelect::Prefer),
+        ("StateSelect.always", rumoca_core::StateSelect::Always),
+    ] {
+        if rumoca_core::enum_values_equal(name, candidate) {
+            return Some(value);
+        }
     }
+    None
 }
 
 /// Evaluate a StateSelect expression using the instantiation environment.
@@ -260,9 +264,7 @@ where
 /// MLS §4.4.4 / §7.2: structural parameter values come from declaration bindings
 /// (`x = expr`) and applied modifications; `start` is only an initialization
 /// attribute for simulation variables and should be secondary for compile-time shape.
-pub(crate) fn component_expr_for_structural_eval(
-    comp: &ast::Component,
-) -> Option<&ast::Expression> {
+pub fn component_expr_for_structural_eval(comp: &ast::Component) -> Option<&ast::Expression> {
     if let Some(binding) = comp.binding.as_ref() {
         return Some(binding);
     }

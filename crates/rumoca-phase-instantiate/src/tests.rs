@@ -104,6 +104,31 @@ fn make_comp_ref_expr_at(names: &[&str], file_name: &str, start: u32, end: u32) 
     })
 }
 
+fn make_binary_expr(
+    op: rumoca_core::OpBinary,
+    lhs: ast::Expression,
+    rhs: ast::Expression,
+) -> ast::Expression {
+    ast::Expression::Binary {
+        op,
+        lhs: std::sync::Arc::new(lhs),
+        rhs: std::sync::Arc::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn make_if_expr(
+    condition: ast::Expression,
+    then_expr: ast::Expression,
+    else_expr: ast::Expression,
+) -> ast::Expression {
+    ast::Expression::If {
+        branches: vec![(condition, then_expr)],
+        else_branch: std::sync::Arc::new(else_expr),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn make_eval_ctx<'a>(
     tree: &'a ast::ClassTree,
     mod_env: &'a ast::ModificationEnvironment,
@@ -240,6 +265,66 @@ fn test_extract_attributes_resolves_state_select_parameter_reference() {
     );
 
     let attrs = extract_attributes(&comp, &mod_env, "s_rel", &eval_ctx).expect("attributes");
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
+}
+
+#[test]
+fn test_extract_attributes_resolves_state_select_if_with_typed_component_field() {
+    let system_id = DefId::new(100);
+    let mut system_class = ast::ClassDef {
+        name: make_token("System"),
+        def_id: Some(system_id),
+        ..Default::default()
+    };
+    let mut system_momentum = make_component("momentumDynamics", "Dynamics", None);
+    system_momentum.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    system_momentum.binding = Some(make_comp_ref_expr(&[
+        "Types",
+        "Dynamics",
+        "DynamicFreeInitial",
+    ]));
+    system_class
+        .components
+        .insert("momentumDynamics".to_string(), system_momentum);
+
+    let mut tree = ast::ClassTree::default();
+    tree.definitions
+        .classes
+        .insert("Modelica.Fluid.System".to_string(), system_class);
+    tree.def_map
+        .insert(system_id, "Modelica.Fluid.System".to_string());
+    tree.name_map
+        .insert("Modelica.Fluid.System".to_string(), system_id);
+
+    let mut system = make_component("system", "Modelica.Fluid.System", None);
+    system.outer = true;
+
+    let mut momentum_dynamics = make_component("momentumDynamics", "Dynamics", None);
+    momentum_dynamics.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    momentum_dynamics.binding = Some(make_comp_ref_expr(&["system", "momentumDynamics"]));
+
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("system".to_string(), system);
+    effective_components.insert("momentumDynamics".to_string(), momentum_dynamics);
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+
+    let mut comp = make_component("m_flows", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        make_if_expr(
+            make_binary_expr(
+                rumoca_core::OpBinary::Eq,
+                make_comp_ref_expr(&["momentumDynamics"]),
+                make_comp_ref_expr(&["Types", "Dynamics", "SteadyState"]),
+            ),
+            make_comp_ref_expr(&["StateSelect", "default"]),
+            make_comp_ref_expr(&["StateSelect", "prefer"]),
+        ),
+    );
+
+    let attrs = extract_attributes(&comp, &mod_env, "m_flows", &eval_ctx).expect("attributes");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
 }
