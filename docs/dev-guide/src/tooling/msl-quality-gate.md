@@ -51,14 +51,15 @@ count drops below the committed baseline for the same target set.
   reviews can inspect category coverage without manually querying the quality
   snapshot JSON.
 
-On pull requests from the same repository, CI also generates
+On pull requests, CI also generates
 `target/msl/results/msl_pr_comment.md` with `cargo xtask repo msl pr-comment` and
 publishes it as a sticky PR comment. The comment embeds the package pass-rate,
 MLS contract coverage, and OMC trace-accuracy markdown tables so reviewers can
 inspect the MSL gate without downloading artifacts first. Its top summary also
 shows deltas against the committed MSL quality baseline. Forked pull requests
-still receive the uploaded artifacts, but skip comment publication because the
-GitHub token is intentionally read-only there.
+receive the uploaded artifacts from the read-only CI run, then a separate
+`workflow_run` publisher comments from the artifact using repository write
+permissions.
 
 When a full run is promoted, use reviewed full-run data and keep the committed
 stage counts conservative enough to absorb compile-timeout jitter. Do not

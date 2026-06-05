@@ -16,6 +16,7 @@
 - [Scenario Config and VS Code](./tooling/scenario-config.md)
 - [Docs and Pages](./tooling/docs-and-pages.md)
 - [MSL Quality Gate](./tooling/msl-quality-gate.md)
+- [MSL Baseline Promotion Analysis, 2026-06-05](./tooling/msl-baseline-promotion-analysis-2026-06-05.md)
 
 # Policies
 

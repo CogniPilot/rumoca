@@ -1044,10 +1044,8 @@ pub(super) fn current_msl_quality_baseline(
         sim_ok: gate_input.sim_ok,
         sim_success_rate: sim_success_rate(gate_input.sim_ok, gate_input.sim_target_models)
             .unwrap_or(0.0),
-        // Runtime speed depends strongly on machine topology/workers; keep it informational
-        // in parity output but do not commit it into quality baselines.
-        runtime_context: None,
-        runtime_ratio_stats: None,
+        runtime_context: parity_input.and_then(|parity| parity.runtime_context.clone()),
+        runtime_ratio_stats: parity_input.and_then(|parity| parity.runtime_ratio_stats.clone()),
         trace_accuracy_stats: parity_input.and_then(|parity| parity.trace_accuracy_stats.clone()),
     }
 }
@@ -1250,6 +1248,7 @@ pub(super) fn msl_quality_regression_reasons(
     push_compile_balance_regression_reasons(&mut reasons, gate_input, baseline);
     push_sim_rate_regression_reason(&mut reasons, gate_input, baseline);
     push_trace_regression_reasons(&mut reasons, baseline, parity_input);
+    push_runtime_ratio_regression_reasons(&mut reasons, baseline, parity_input);
     reasons
 }
 
@@ -1464,6 +1463,19 @@ pub(super) fn push_runtime_ratio_regression_reasons(
             current_runtime.system_ratio_both_success.median,
             allowed_system_median,
             baseline_runtime.system_ratio_both_success.median,
+            RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0
+        ));
+    }
+
+    let allowed_wall_median = baseline_runtime.wall_ratio_both_success.median
+        * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE);
+    if current_runtime.wall_ratio_both_success.median + SIM_RATE_GATE_EPSILON < allowed_wall_median
+    {
+        reasons.push(format!(
+            "runtime wall speedup median regressed: current={:.6e} < floor={:.6e} (baseline={:.6e}, tolerance={:.1}%)",
+            current_runtime.wall_ratio_both_success.median,
+            allowed_wall_median,
+            baseline_runtime.wall_ratio_both_success.median,
             RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0
         ));
     }
