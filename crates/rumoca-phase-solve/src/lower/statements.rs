@@ -49,30 +49,28 @@ impl<'a> LowerBuilder<'a> {
         }
 
         let entry_scope = scope.clone();
-        // Branch bodies mutate builder-level caches (indexed/const bindings,
-        // empty-array tracking) in place. Those caches are consulted *before*
-        // `scope` when a later read resolves a variable, so a value written
-        // only inside a branch would shadow the conditional `select` we build
-        // in `merged_scope` and leak out unconditionally. Snapshot them here so
-        // we can drop any branch-touched entry below and let `scope` win.
-        let entry_indexed_bindings = self.local_indexed_bindings.clone();
-        let entry_const_bindings = self.local_const_bindings.clone();
-        let entry_empty_arrays = self.known_empty_local_arrays.clone();
         let mut cond_regs = Vec::with_capacity(cond_blocks.len());
         let mut branch_scopes = Vec::with_capacity(cond_blocks.len());
 
         for block in cond_blocks {
-            let cond = self.lower_expr(&block.cond, &entry_scope, call_depth)?;
+            let (cond, branch_scope) = self.with_local_lower_frame(|builder| {
+                let cond = builder.lower_expr(&block.cond, &entry_scope, call_depth)?;
+                let mut branch_scope = entry_scope.clone();
+                let _returned =
+                    builder.lower_statements(&block.stmts, &mut branch_scope, call_depth)?;
+                Ok((cond, branch_scope))
+            })?;
             cond_regs.push(cond);
-            let mut branch_scope = entry_scope.clone();
-            let _returned = self.lower_statements(&block.stmts, &mut branch_scope, call_depth)?;
             branch_scopes.push(branch_scope);
         }
 
-        let mut else_scope = entry_scope.clone();
-        if let Some(stmts) = else_block {
-            let _returned = self.lower_statements(stmts, &mut else_scope, call_depth)?;
-        }
+        let else_scope = self.with_local_lower_frame(|builder| {
+            let mut else_scope = entry_scope.clone();
+            if let Some(stmts) = else_block {
+                let _returned = builder.lower_statements(stmts, &mut else_scope, call_depth)?;
+            }
+            Ok(else_scope)
+        })?;
 
         let mut merged_scope = entry_scope.clone();
         let names = collect_scope_names(&merged_scope, &branch_scopes, &else_scope);
@@ -96,18 +94,6 @@ impl<'a> LowerBuilder<'a> {
             }
             merged_scope.insert(name, merged);
         }
-
-        // Drop every cache entry a branch added or changed: a variable assigned
-        // only conditionally is no longer a compile-time constant or a fixed
-        // indexed binding, so subsequent reads must fall through to the merged
-        // `select` registers in `merged_scope`. Entries untouched by any branch
-        // stay (they already agree with `scope`).
-        self.local_indexed_bindings
-            .retain(|key, value| entry_indexed_bindings.get(key) == Some(value));
-        self.local_const_bindings
-            .retain(|key, value| entry_const_bindings.get(key) == Some(value));
-        self.known_empty_local_arrays
-            .retain(|key| entry_empty_arrays.contains(key));
 
         *scope = merged_scope;
         Ok(false)

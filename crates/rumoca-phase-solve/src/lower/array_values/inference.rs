@@ -221,30 +221,31 @@ impl<'a> LowerBuilder<'a> {
     ) -> Vec<usize> {
         let name_path = ComponentPath::from_reference(name);
         let name = name.as_str();
-        if let Some(shape) = self.layout.shape(name) {
-            return shape.to_vec();
-        }
         if let Some(dims) = self.local_binding_dims.get(name)
             && dims.iter().all(|dim| *dim > 0)
         {
             return dims.iter().map(|dim| *dim as usize).collect();
+        }
+        if let Some(values) = scoped_indexed_binding_values(scope, &name_path) {
+            return vector_dims(values.len());
+        }
+        if let Some(values) = self.local_indexed_binding_values(name) {
+            return vector_dims(values.len());
+        }
+        if let Some(shape) = self.layout.shape(name) {
+            return shape.to_vec();
         }
         let indexed_dims =
             infer_indexed_dims(&indexed_entries_for_key(&self.indexed_bindings, name));
         if !indexed_dims.is_empty() {
             return indexed_dims;
         }
-        if let Some(values) = self.local_indexed_binding_values(name) {
-            return vector_dims(values.len());
-        }
-        scoped_indexed_binding_values(scope, &name_path)
-            .map(|values| vector_dims(values.len()))
-            .or_else(|| {
-                self.local_binding_dims.get(name).map(|dims| {
-                    dims.iter()
-                        .filter_map(|dim| (*dim >= 0).then_some(*dim as usize))
-                        .collect()
-                })
+        self.local_binding_dims
+            .get(name)
+            .map(|dims| {
+                dims.iter()
+                    .filter_map(|dim| (*dim >= 0).then_some(*dim as usize))
+                    .collect()
             })
             .unwrap_or_default()
     }

@@ -60,13 +60,21 @@ function f_noelse_scalar
   input Real a; output Real o; protected Real x;
 algorithm x := a; if x < 0 then x := -x; end if; o := x;
 end f_noelse_scalar;
+function f_noelse_dynamic
+  input Real q[4]; input Integer k; output Real o; protected Real x[4];
+algorithm x := q; if q[1] < 0 then x[1] := -q[1]; end if; o := x[k];
+end f_noelse_dynamic;
 model NoElseIfNeg
   parameter Real qp[4] = {-0.9, 0.1, -0.2, 0.3};
   Real a[4](each start = 0, each fixed = true);
   Real b(start = 0, fixed = true);
+  Real e(start = 0, fixed = true);
+  Integer k(start = 1, fixed = true);
 equation
+  k = 1;
   der(a) = f_noelse_arr(qp);
   der(b) = f_noelse_scalar(-0.7);
+  der(e) = f_noelse_dynamic(qp, k);
 end NoElseIfNeg;
 "#;
 
@@ -147,4 +155,6 @@ fn noelse_if_branch_still_fires_when_condition_true() {
     }
     // f_noelse_scalar(-0.7): -0.7 < 0 -> negate -> 0.7
     assert_eq!(der_value(report, "der(b)"), 0.7);
+    // Dynamic x[k] must read the merged conditional x[1], not the stale pre-if binding.
+    assert_eq!(der_value(report, "der(e)"), 0.9);
 }

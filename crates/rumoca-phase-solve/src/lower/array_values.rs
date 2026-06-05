@@ -35,6 +35,11 @@ pub(super) struct MatMulShape {
     pub n: usize,
 }
 
+enum LocalSubscriptResolution {
+    NotLocal,
+    Values(Vec<Reg>),
+}
+
 pub(super) fn matmul_shape_from_dims(
     lhs_dims: &[usize],
     rhs_dims: &[usize],
@@ -1051,10 +1056,10 @@ impl<'a> LowerBuilder<'a> {
     ) -> Result<Vec<Reg>, LowerError> {
         let key_path = ComponentPath::from_reference(name);
         let key = name.as_str();
-        if let Some(values) = self.local_indexed_binding_values(key) {
+        if let Some(values) = scoped_indexed_binding_values(scope, &key_path) {
             return Ok(values);
         }
-        if let Some(values) = scoped_indexed_binding_values(scope, &key_path) {
+        if let Some(values) = self.local_indexed_binding_values(key) {
             return Ok(values);
         }
         if self.known_empty_local_arrays.contains(key) {
@@ -1183,8 +1188,9 @@ impl<'a> LowerBuilder<'a> {
         // `p` against a `Real[3]` model state `p` (yielding a phantom `p[4]`).
         // Resolve against the local binding first, mirroring the local-first
         // ordering of the unsubscripted `lower_var_ref_array_like_values` path.
-        if let Some(values) = self.local_shadowed_subscript_values(name, subscripts, scope)? {
-            return Ok(values);
+        match self.local_shadowed_subscript_values(name, subscripts, scope, call_depth)? {
+            LocalSubscriptResolution::Values(values) => return Ok(values),
+            LocalSubscriptResolution::NotLocal => {}
         }
         let Some(keys) =
             self.slice_binding_keys_or_scalar_fallback(name.as_str(), subscripts, scope)?
@@ -1201,47 +1207,80 @@ impl<'a> LowerBuilder<'a> {
     }
 
     /// Resolve `name[subscripts]` against a function-scope (local) array
-    /// binding, ignoring any global model variable of the same name. Returns
-    /// `None` (so the caller falls back to global resolution) unless `name` is
-    /// a local array binding and every selected element is locally available.
+    /// binding, ignoring any global model variable of the same name. Once the
+    /// scoped local binding exists, resolution must either produce local values
+    /// or report an error; falling through to global lookup would violate
+    /// Modelica lexical shadowing.
     fn local_shadowed_subscript_values(
         &mut self,
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
         scope: &Scope,
-    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        call_depth: usize,
+    ) -> Result<LocalSubscriptResolution, LowerError> {
         let key = name.as_str();
         if subscripts.is_empty() {
-            return Ok(None);
+            return Ok(LocalSubscriptResolution::NotLocal);
         }
+        let key_path = ComponentPath::from_reference(name);
+        let Some(bindings) = scope.indexed_entries(&key_path) else {
+            if scope.contains_key(&key_path) {
+                return Err(LowerError::Unsupported {
+                    reason: format!("subscripted local binding `{key}` is not an array binding"),
+                });
+            }
+            return Ok(LocalSubscriptResolution::NotLocal);
+        };
         let Some(dims) = self.local_binding_dims.get(key).cloned() else {
-            return Ok(None);
+            return Err(LowerError::Unsupported {
+                reason: format!("subscripted local array `{key}` is missing dimension metadata"),
+            });
         };
         if dims.iter().any(|dim| *dim <= 0) {
-            return Ok(None);
-        }
-        let Some(bindings) = self
-            .local_indexed_bindings
-            .get(key)
-            .filter(|bindings| !bindings.is_empty())
-            .cloned()
-        else {
-            return Ok(None);
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "subscripted local array `{key}` has non-positive dimensions {dims:?}"
+                ),
+            });
         };
         let shape = dims.iter().map(|dim| *dim as usize).collect::<Vec<_>>();
-        let Ok(selections) = self.slice_selections(subscripts, &shape, scope) else {
-            return Ok(None);
-        };
+        if subscripts.len() == shape.len() && subscripts.iter().all(is_scalar_selector_subscript) {
+            let Some(indices) = self.compile_time_subscript_indices(subscripts)? else {
+                let value = self.lower_dynamic_subscripted_binding(
+                    key,
+                    subscripts,
+                    scope,
+                    call_depth,
+                    DynamicSubscriptSemantics::VarRef,
+                )?;
+                return Ok(LocalSubscriptResolution::Values(vec![value]));
+            };
+            if let Some(binding) = bindings.iter().find(|binding| binding.indices == indices) {
+                return Ok(LocalSubscriptResolution::Values(vec![binding.reg]));
+            }
+            return Err(LowerError::MissingBinding {
+                name: format_subscript_binding_key(key, &indices),
+            });
+        }
+        let selections = self
+            .slice_selections(subscripts, &shape, scope)
+            .map_err(|err| {
+                err.with_context(format!(
+                    "resolving subscripted local array `{key}` with shape {shape:?}"
+                ))
+            })?;
         let mut combos = Vec::new();
         collect_slice_index_combos(&selections, 0, &mut Vec::new(), &mut combos);
         let mut regs = Vec::with_capacity(combos.len());
         for combo in &combos {
             let Some(binding) = bindings.iter().find(|binding| binding.indices == *combo) else {
-                return Ok(None);
+                return Err(LowerError::MissingBinding {
+                    name: format_subscript_binding_key(key, combo),
+                });
             };
             regs.push(binding.reg);
         }
-        Ok(Some(regs))
+        Ok(LocalSubscriptResolution::Values(regs))
     }
 
     fn lower_index_array_like_values(

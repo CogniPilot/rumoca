@@ -35,6 +35,28 @@ equation
 end Shadow;
 "#;
 
+const SHADOW_MISSING_LOCAL_MODEL: &str = r#"
+within;
+function pfn_missing
+  input Real u[3];
+  output Real r[4];
+protected
+  Real p[4];
+algorithm
+  p[1] := u[1];
+  p[2] := u[2];
+  p[3] := u[3];
+  r := p[:];
+end pfn_missing;
+
+model ShadowMissingLocal
+  parameter Real p[4] = {10, 20, 30, 40};
+  Real y[4];
+equation
+  y = pfn_missing({1, 2, 3});
+end ShadowMissingLocal;
+"#;
+
 #[test]
 fn function_input_shadowing_model_state_lowers_to_solve() {
     let compiled = Compiler::new()
@@ -46,4 +68,20 @@ fn function_input_shadowing_model_state_lowers_to_solve() {
     // (`v[1]`), not the model state `p` (which is only `Real[3]`).
     lower_dae_to_solve_model(&compiled.dae)
         .expect("solve lowering must resolve the shadowed function input, not the model state");
+}
+
+#[test]
+fn incomplete_local_array_shadow_reports_error_instead_of_global_fallback() {
+    let compiled = Compiler::new()
+        .model("ShadowMissingLocal")
+        .compile_str(SHADOW_MISSING_LOCAL_MODEL, "ShadowMissingLocal.mo")
+        .expect("compile to DAE should succeed");
+
+    let err = lower_dae_to_solve_model(&compiled.dae)
+        .expect_err("solve lowering must not fall back to the shadowed model state");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("p[4]"),
+        "error should identify the missing local component, got: {err_text}"
+    );
 }
