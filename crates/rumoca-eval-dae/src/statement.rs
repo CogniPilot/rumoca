@@ -1182,7 +1182,10 @@ mod tests {
             },
             &denv,
         );
-        assert_eq!(dy.re, 0.7, "no-else if (Dual) must not run when cond is false");
+        assert_eq!(
+            dy.re, 0.7,
+            "no-else if (Dual) must not run when cond is false"
+        );
     }
 
     #[test]

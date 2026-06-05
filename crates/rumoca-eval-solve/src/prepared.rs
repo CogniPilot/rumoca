@@ -1155,6 +1155,7 @@ mod assignment_shape_tests {
         }
 
         // And the public preparation path must also complete.
-        let _ = PreparedScalarProgramBlock::new(rumoca_ir_solve::ScalarProgramBlock::new(vec![ops]));
+        let _ =
+            PreparedScalarProgramBlock::new(rumoca_ir_solve::ScalarProgramBlock::new(vec![ops]));
     }
 }

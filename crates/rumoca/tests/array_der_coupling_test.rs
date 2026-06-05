@@ -63,6 +63,10 @@ fn array_der_rows_do_not_form_spurious_coupled_scc() {
     // And it must actually evaluate to a finite, correct derivative.
     let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
         .expect("explicit ODE should lower and evaluate");
-    assert!(probe.report.error.is_none(), "eval error: {:?}", probe.report.error);
+    assert!(
+        probe.report.error.is_none(),
+        "eval error: {:?}",
+        probe.report.error
+    );
     assert!(!probe.report.has_nonfinite(), "derivatives must be finite");
 }

@@ -75,8 +75,16 @@ fn der_value(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
         .derivatives
         .iter()
         .find(|slot| slot.name == name)
-        .unwrap_or_else(|| panic!("missing derivative {name}; have: {:?}",
-            report.derivatives.iter().map(|s| s.name.clone()).collect::<Vec<_>>()))
+        .unwrap_or_else(|| {
+            panic!(
+                "missing derivative {name}; have: {:?}",
+                report
+                    .derivatives
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>()
+            )
+        })
         .value
 }
 
