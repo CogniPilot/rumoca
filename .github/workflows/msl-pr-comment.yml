@@ -94,6 +94,26 @@ jobs:
               prs = associated.data;
             }
             if (prs.length === 0) {
+              const workflowRun = context.payload.workflow_run;
+              const headFullName = workflowRun.head_repository?.full_name ?? '';
+              const headOwner = workflowRun.head_repository?.owner?.login ?? headFullName.split('/')[0];
+              const headBranch = workflowRun.head_branch;
+              if (headOwner && headBranch) {
+                core.info(`Looking up PR by head ${headOwner}:${headBranch}.`);
+                const byHead = await github.paginate(github.rest.pulls.list, {
+                  owner,
+                  repo,
+                  state: 'all',
+                  head: `${headOwner}:${headBranch}`,
+                  per_page: 100,
+                });
+                prs = byHead.filter(pr => pr.head?.sha === workflowRun.head_sha);
+                if (prs.length === 0) {
+                  prs = byHead;
+                }
+              }
+            }
+            if (prs.length === 0) {
               core.info(`No pull request found for workflow run ${context.payload.workflow_run.id}.`);
               return;
             }
