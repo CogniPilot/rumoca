@@ -3,6 +3,9 @@
 use rumoca_compile::compile::{CompiledSourceRoot, FailedPhase, PhaseResult};
 use rumoca_core::VarName;
 use rumoca_ir_dae::Dae;
+use std::path::PathBuf;
+
+use rumoca::Compiler;
 
 /// Test a simple logical Not model to understand balance
 #[test]
@@ -453,6 +456,72 @@ fn print_dae_summary(dae: &Dae) {
         dae.metadata.interface_flow_count, dae.metadata.overconstrained_interface_count
     );
     println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
+}
+
+fn cached_msl_source_roots() -> Option<Vec<String>> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/msl/ModelicaStandardLibrary-4.1.0");
+    let candidates = [
+        root.join("Complex.mo"),
+        root.join("Modelica"),
+        root.join("ModelicaReference"),
+        root.join("ModelicaServices"),
+    ];
+    candidates
+        .iter()
+        .all(|path| path.exists())
+        .then(|| {
+            candidates
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        })
+}
+
+#[test]
+#[ignore = "requires cached MSL bundle under target/msl"]
+fn test_msl_polyphase_inductance_compiles_to_dae() {
+    let Some(source_roots) = cached_msl_source_roots() else {
+        return;
+    };
+
+    let result = Compiler::new()
+        .model("Modelica.Magnetic.FundamentalWave.Examples.Components.PolyphaseInductance")
+        .source_roots(&source_roots)
+        .compile_str_dae(
+            "import Modelica;\nimport Complex;\nmodel MslEntryPoint\nend MslEntryPoint;\n",
+            "MslEntryPoint.mo",
+        )
+        .expect("PolyphaseInductance should compile through ToDae with cached MSL roots");
+
+    assert_eq!(
+        rumoca_phase_dae::balance::balance(&result.dae),
+        0,
+        "PolyphaseInductance should stay balanced once ToDae scalar inference preserves indexed Complex connector paths"
+    );
+}
+
+#[test]
+#[ignore = "requires cached MSL bundle under target/msl"]
+fn test_msl_balancing_delta_compiles_to_dae() {
+    let Some(source_roots) = cached_msl_source_roots() else {
+        return;
+    };
+
+    let result = Compiler::new()
+        .model("Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingDelta")
+        .source_roots(&source_roots)
+        .compile_str_dae(
+            "import Modelica;\nimport Complex;\nmodel MslEntryPoint\nend MslEntryPoint;\n",
+            "MslEntryPoint.mo",
+        )
+        .expect("BalancingDelta should compile through ToDae with cached MSL roots");
+
+    assert_eq!(
+        rumoca_phase_dae::balance::balance(&result.dae),
+        0,
+        "BalancingDelta should stay balanced once balance accounting recognizes scalarized descendants of array-valued equation prefixes"
+    );
 }
 
 /// Test inherited Real connector (like SI units)

@@ -138,6 +138,38 @@ impl rumoca_core::ExpressionVisitor for VarRefCollectionVisitor<'_> {
         self.walk_var_ref(name, subscripts);
     }
 
+    fn visit_index(&mut self, base: &Expression, subscripts: &[Subscript]) {
+        if let Some(base_name) = extract_var_path(base)
+            && let Some(suffix) = render_subscript_suffix(subscripts)
+        {
+            self.vars.push(CollectedVarRef {
+                name: VarName::new(format!("{}{}", base_name.as_str(), suffix)),
+                subscripts: vec![],
+            });
+            for subscript in subscripts {
+                self.visit_subscript(subscript);
+            }
+            return;
+        }
+
+        // If we cannot preserve the indexed path, do not silently collapse
+        // back to the base array path; that inflates one element to the full array.
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
+
+    fn visit_field_access(&mut self, base: &Expression, field: &str) {
+        if let Some(base_name) = extract_var_path(base) {
+            self.vars.push(CollectedVarRef {
+                name: VarName::new(format!("{}.{}", base_name.as_str(), field)),
+                subscripts: vec![],
+            });
+        }
+        // If the base path is not recoverable, stay strict and avoid collecting
+        // only the coarse base array name from a nested indexed field access.
+    }
+
     fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
         if is_reduction_builtin(function) {
             // Reduction output is scalar regardless of input size.

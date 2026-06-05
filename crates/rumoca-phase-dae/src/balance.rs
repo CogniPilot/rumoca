@@ -905,6 +905,12 @@ fn equation_references_input(
         .any(|name| name_matches_set(&name, input_names))
 }
 fn name_matches_set(name: &rumoca_core::VarName, names: &HashSet<rumoca_core::VarName>) -> bool {
+    fn has_descendant_prefix(candidate: &rumoca_core::VarName, prefix: &str) -> bool {
+        let dot_prefix = format!("{prefix}.");
+        let bracket_prefix = format!("{prefix}[");
+        candidate.as_str().starts_with(&dot_prefix) || candidate.as_str().starts_with(&bracket_prefix)
+    }
+
     if names.contains(name) {
         return true;
     }
@@ -915,18 +921,16 @@ fn name_matches_set(name: &rumoca_core::VarName, names: &HashSet<rumoca_core::Va
         if names.contains(&base) {
             return true;
         }
-        let base_prefix = format!("{base_name}.");
         if names
             .iter()
-            .any(|candidate| candidate.as_str().starts_with(&base_prefix))
+            .any(|candidate| has_descendant_prefix(candidate, &base_name))
         {
             return true;
         }
     }
-    let prefix = format!("{}.", name.as_str());
     names
         .iter()
-        .any(|candidate| candidate.as_str().starts_with(&prefix))
+        .any(|candidate| has_descendant_prefix(candidate, name.as_str()))
 }
 
 pub(crate) fn is_connection_origin(origin: &str) -> bool {
@@ -1404,6 +1408,42 @@ mod tests {
             balance(&dae),
             0,
             "the connection still supplies the second equation for coupled unknowns"
+        );
+    }
+
+    #[test]
+    fn balance_counts_array_prefix_equation_against_scalarized_descendants() {
+        let mut dae = dae::Dae::default();
+        for suffix in ["[1].re", "[1].im", "[2].re", "[2].im", "[3].re", "[3].im"] {
+            let name = format!("voltageSource.v{suffix}");
+            dae.variables.algebraics.insert(
+                rumoca_core::VarName::new(&name),
+                dae::Variable {
+                    name: rumoca_core::VarName::new(&name),
+                    ..Default::default()
+                },
+            );
+        }
+        dae.continuous.equations.push(dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(var_ref("voltageSource.v")),
+                rhs: Box::new(rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(0),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: Span::DUMMY,
+            origin: "equation from voltageSource".to_string(),
+            scalar_count: 6,
+        });
+
+        assert_eq!(
+            balance(&dae),
+            0,
+            "array prefix equations like voltageSource.v must count against scalarized descendants voltageSource.v[i].re/im"
         );
     }
 }

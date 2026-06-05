@@ -1513,10 +1513,80 @@ struct VarRefCollector<'a> {
     vars: &'a mut IndexSet<VarName>,
 }
 
+fn render_collected_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
+    let mut out = String::new();
+    for subscript in subscripts {
+        match subscript {
+            Subscript::Index { value, .. } => out.push_str(&format!("[{value}]")),
+            Subscript::Expr { expr, .. } => {
+                let Expression::Literal {
+                    value: Literal::Integer(value),
+                    ..
+                } = expr.as_ref()
+                else {
+                    return None;
+                };
+                out.push_str(&format!("[{value}]"));
+            }
+            Subscript::Colon { .. } => out.push_str("[:]"),
+        }
+    }
+    Some(out)
+}
+
+fn collect_structured_var_path(expr: &Expression) -> Option<VarName> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            let suffix = render_collected_subscript_suffix(subscripts)?;
+            Some(VarName::new(format!("{}{}", name.as_str(), suffix)))
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let base_name = collect_structured_var_path(base)?;
+            let suffix = render_collected_subscript_suffix(subscripts)?;
+            Some(VarName::new(format!("{}{}", base_name.as_str(), suffix)))
+        }
+        Expression::FieldAccess { base, field, .. } => {
+            let base_name = collect_structured_var_path(base)?;
+            Some(VarName::new(format!("{}.{}", base_name.as_str(), field)))
+        }
+        _ => None,
+    }
+}
+
 impl crate::ExpressionVisitor for VarRefCollector<'_> {
     fn visit_var_ref(&mut self, name: &Reference, subscripts: &[Subscript]) {
-        self.vars.insert(name.var_name().clone());
+        if let Some(suffix) = render_collected_subscript_suffix(subscripts) {
+            self.vars
+                .insert(VarName::new(format!("{}{}", name.as_str(), suffix)));
+        }
         self.walk_var_ref(name, subscripts);
+    }
+
+    fn visit_index(&mut self, base: &Expression, subscripts: &[Subscript]) {
+        if let Some(base_name) = collect_structured_var_path(base)
+            && let Some(suffix) = render_collected_subscript_suffix(subscripts)
+        {
+            self.vars
+                .insert(VarName::new(format!("{}{}", base_name.as_str(), suffix)));
+            for subscript in subscripts {
+                self.visit_subscript(subscript);
+            }
+            return;
+        }
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
+
+    fn visit_field_access(&mut self, base: &Expression, field: &str) {
+        if let Some(base_name) = collect_structured_var_path(base) {
+            self.vars
+                .insert(VarName::new(format!("{}.{}", base_name.as_str(), field)));
+        }
     }
 }
 

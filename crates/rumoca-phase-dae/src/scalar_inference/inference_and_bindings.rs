@@ -421,7 +421,7 @@ fn indexed_lhs_scalar_size(
     ))
 }
 
-fn render_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
+pub(crate) fn render_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
     let mut out = String::new();
     for subscript in subscripts {
         match subscript {
@@ -442,6 +442,29 @@ fn render_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
     Some(out)
 }
 
+pub(crate) fn extract_var_path(expr: &Expression) -> Option<VarName> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            let suffix = render_subscript_suffix(subscripts)?;
+            Some(VarName::new(format!("{}{}", name.as_str(), suffix)))
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let base_name = extract_var_path(base)?;
+            let suffix = render_subscript_suffix(subscripts)?;
+            Some(VarName::new(format!("{}{}", base_name.as_str(), suffix)))
+        }
+        Expression::FieldAccess { base, field, .. } => {
+            let base_name = extract_var_path(base)?;
+            Some(VarName::new(format!("{}.{}", base_name.as_str(), field)))
+        }
+        _ => None,
+    }
+}
+
 /// Extract a variable name from an LHS expression.
 ///
 /// Handles:
@@ -451,48 +474,19 @@ fn render_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
 /// - Unary minus: `-y` (common in Modelica equations)
 pub(crate) fn extract_var_from_lhs(lhs: &Expression) -> Option<VarName> {
     match lhs {
-        // Direct variable reference without subscripts
-        Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => Some(name.var_name().clone()),
         // der(x) - extract the variable from inside the derivative
         Expression::BuiltinCall { function, args, .. }
             if matches!(function, rumoca_core::BuiltinFunction::Der) && args.len() == 1 =>
         {
-            if let Expression::VarRef {
-                name, subscripts, ..
-            } = &args[0]
-                && subscripts.is_empty()
-            {
-                return Some(name.var_name().clone());
-            }
-            None
+            extract_var_path(&args[0])
         }
         // Array containing a single variable reference: [y]
         // This pattern appears in equations like `[y] = [[u1], [u2], ...]`
-        Expression::Array { elements, .. } if elements.len() == 1 => {
-            if let Expression::VarRef {
-                name, subscripts, ..
-            } = &elements[0]
-                && subscripts.is_empty()
-            {
-                return Some(name.var_name().clone());
-            }
-            None
-        }
+        Expression::Array { elements, .. } if elements.len() == 1 => extract_var_path(&elements[0]),
         // Unary minus wrapping a variable reference: -y
         // This pattern appears in equations like `-spacePhasor.i_ = TransformationMatrix * i`
-        Expression::Unary { rhs, .. } => {
-            if let Expression::VarRef {
-                name, subscripts, ..
-            } = rhs.as_ref()
-                && subscripts.is_empty()
-            {
-                return Some(name.var_name().clone());
-            }
-            None
-        }
-        _ => None,
+        Expression::Unary { rhs, .. } => extract_var_path(rhs),
+        _ => extract_var_path(lhs),
     }
 }
 

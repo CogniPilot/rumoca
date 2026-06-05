@@ -261,6 +261,75 @@ fn var_name_interner_deduplicates_repeated_workspace_reopens() {
 }
 
 #[test]
+fn collect_var_refs_preserves_indexed_field_access_path() {
+    let expr = Expression::FieldAccess {
+        base: Box::new(Expression::FieldAccess {
+            base: Box::new(Expression::Index {
+                base: Box::new(Expression::VarRef {
+                    name: VarName::new("converter").into(),
+                    subscripts: vec![],
+                    span: Span::DUMMY,
+                }),
+                subscripts: vec![Subscript::generated_index(1, Span::DUMMY)],
+                span: Span::DUMMY,
+            }),
+            field: "port_p".to_string(),
+            span: Span::DUMMY,
+        }),
+        field: "Phi".to_string(),
+        span: Span::DUMMY,
+    };
+
+    let mut refs = Vec::new();
+    expr.collect_var_refs(&mut refs);
+
+    assert_eq!(
+        refs,
+        vec![VarName::new("converter[1].port_p.Phi")],
+        "indexed field access should not collapse to the unsubscripted base array name"
+    );
+}
+
+#[test]
+fn collect_var_refs_rejects_unrenderable_indexed_field_access_base_guess() {
+    let expr = Expression::FieldAccess {
+        base: Box::new(Expression::Index {
+            base: Box::new(Expression::VarRef {
+                name: VarName::new("converter").into(),
+                subscripts: vec![],
+                span: Span::DUMMY,
+            }),
+            subscripts: vec![Subscript::Expr {
+                expr: Box::new(Expression::Binary {
+                    op: OpBinary::Add,
+                    lhs: Box::new(Expression::Literal {
+                        value: Literal::Integer(1),
+                        span: Span::DUMMY,
+                    }),
+                    rhs: Box::new(Expression::Literal {
+                        value: Literal::Integer(1),
+                        span: Span::DUMMY,
+                    }),
+                    span: Span::DUMMY,
+                }),
+                span: Span::DUMMY,
+            }],
+            span: Span::DUMMY,
+        }),
+        field: "Phi".to_string(),
+        span: Span::DUMMY,
+    };
+
+    let mut refs = Vec::new();
+    expr.collect_var_refs(&mut refs);
+
+    assert!(
+        refs.is_empty(),
+        "when the indexed field path cannot be reconstructed safely, collect_var_refs should not fall back to the whole base array"
+    );
+}
+
+#[test]
 fn var_name_interner_retains_unique_names_for_process_lifetime() {
     let sequence = INTERNER_STRESS_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let prefix = format!("__rumoca_interner_lifecycle_{sequence}_");
