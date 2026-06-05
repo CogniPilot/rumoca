@@ -71,8 +71,10 @@ fn discrete_observation_refresh_rows(
         };
         let scalar_count = eq.scalar_count.max(1);
         let safe = expression_safe_for_observation_refresh(dae_model, &eq.rhs);
-        let seed = expression_has_observation_pulse(dae_model, &eq.rhs)
-            && !expression_contains_pre_operator(&eq.rhs);
+        let contains_pre = expression_contains_pre_operator(&eq.rhs);
+        let seed = !contains_pre
+            && (expression_has_observation_pulse(dae_model, &eq.rhs)
+                || expression_has_observation_event_relation(&eq.rhs));
         let mut reads = Vec::new();
         collect_expression_read_slots(dae_model, layout, &eq.rhs, &mut reads);
         for flat_index in 0..scalar_count {
@@ -117,6 +119,15 @@ fn expression_has_observation_pulse(dae_model: &dae::Dae, expr: &rumoca_core::Ex
     checker.found
 }
 
+fn expression_has_observation_event_relation(expr: &rumoca_core::Expression) -> bool {
+    let mut checker = EventRelationChecker {
+        found: false,
+        no_event_depth: 0,
+    };
+    checker.visit_expression(expr);
+    checker.found
+}
+
 fn expression_contains_pre_operator(expr: &rumoca_core::Expression) -> bool {
     let mut checker = PreOperatorChecker { found: false };
     checker.visit_expression(expr);
@@ -146,6 +157,58 @@ impl ExpressionVisitor for PreOperatorChecker {
         for arg in args {
             self.visit_expression(arg);
         }
+    }
+}
+
+struct EventRelationChecker {
+    found: bool,
+    no_event_depth: usize,
+}
+
+impl ExpressionVisitor for EventRelationChecker {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        if !self.found {
+            self.walk_expression(expr);
+        }
+    }
+
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if *function == rumoca_core::BuiltinFunction::NoEvent {
+            self.no_event_depth += 1;
+            for arg in args {
+                self.visit_expression(arg);
+            }
+            self.no_event_depth -= 1;
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+
+    fn visit_binary(
+        &mut self,
+        op: &rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+    ) {
+        if matches!(
+            op,
+            rumoca_core::OpBinary::Ge
+                | rumoca_core::OpBinary::Gt
+                | rumoca_core::OpBinary::Le
+                | rumoca_core::OpBinary::Lt
+        ) && self.no_event_depth == 0
+        {
+            self.found = true;
+            return;
+        }
+        self.visit_expression(lhs);
+        self.visit_expression(rhs);
     }
 }
 
