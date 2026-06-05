@@ -25,6 +25,15 @@ fn builtin_function_all_entries_round_trip_by_name() {
 }
 
 #[test]
+fn builtin_function_parses_modelica_math_qualified_name() {
+    assert_eq!(
+        BuiltinFunction::from_name("Modelica.Math.asin"),
+        Some(BuiltinFunction::Asin)
+    );
+    assert_eq!(BuiltinFunction::from_name("User.Math.asin"), None);
+}
+
+#[test]
 fn var_name_reuses_interned_identity_for_equal_text() {
     let first = VarName::new("body.position.x");
     let second = VarName::from(String::from("body.position.x"));

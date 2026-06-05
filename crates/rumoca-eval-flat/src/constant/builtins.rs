@@ -10,10 +10,15 @@
 
 use super::errors::EvalError;
 use super::value::Value;
-use rumoca_core::{BuiltinFunction, Span, apply_scalar_binary_math, apply_scalar_unary_math};
+use rumoca_core::{
+    BuiltinFunction, ComponentPath, Span, apply_scalar_binary_math, apply_scalar_unary_math,
+};
 
 /// Evaluate a built-in function call.
 pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, EvalError> {
+    if let Some(short_name) = modelica_math_builtin_short_name(name) {
+        return eval_builtin(&short_name, args, span);
+    }
     if let Some(result) = eval_scalar_math_builtin(name, args, span) {
         return result;
     }
@@ -78,46 +83,30 @@ fn eval_scalar_math_builtin(
 
 /// Check if a function name is a known built-in.
 pub fn is_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "sin"
-            | "cos"
-            | "tan"
-            | "asin"
-            | "acos"
-            | "atan"
-            | "sinh"
-            | "cosh"
-            | "tanh"
-            | "exp"
-            | "log"
-            | "log10"
-            | "sqrt"
-            | "abs"
-            | "sign"
-            | "floor"
-            | "ceil"
-            | "atan2"
-            | "min"
-            | "max"
-            | "mod"
-            | "rem"
-            | "size"
-            | "ndims"
-            | "sum"
-            | "product"
-            | "fill"
-            | "zeros"
-            | "ones"
-            | "linspace"
-            | "cat"
-            | "integer"
-            | "div"
-            | "String"
-            | "isEqual"
-            | "Modelica.Math.Vectors.isEqual"
-            | "Modelica.Math.Matrices.isEqual"
-    )
+    BuiltinFunction::from_name(name).is_some()
+        || modelica_math_builtin_short_name(name).is_some()
+        || matches!(
+            name,
+            "String"
+                | "isEqual"
+                | "Modelica.Math.Vectors.isEqual"
+                | "Modelica.Math.Matrices.isEqual"
+        )
+}
+
+fn modelica_math_builtin_short_name(name: &str) -> Option<String> {
+    let path = ComponentPath::from_flat_path(name);
+    if path.len() > 2
+        && path.parts().first().is_some_and(|part| part == "Modelica")
+        && path.parts().get(1).is_some_and(|part| part == "Math")
+    {
+        return path
+            .parts()
+            .last()
+            .filter(|short_name| BuiltinFunction::from_name(short_name).is_some())
+            .cloned();
+    }
+    None
 }
 
 // Helper: single-argument math function

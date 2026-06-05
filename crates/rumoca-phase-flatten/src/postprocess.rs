@@ -32,6 +32,15 @@ pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ct
 mod def_id;
 pub(crate) use def_id::canonicalize_varrefs_via_instantiated_def_ids;
 
+#[path = "postprocess/target_def_constants.rs"]
+mod target_def_constants;
+use target_def_constants::{
+    constant_expr_preserves_array_shape, eval_constant_expr_scalar_literal,
+    eval_constant_scalar_literal, live_package_constant_alias_scalar_literal,
+    reference_has_array_shape, resolved_constant_alias_scalar_literal,
+    substitute_target_def_scalar_var_ref,
+};
+
 fn record_alias_rewrite_name(
     name: &str,
     ctx: &Context,
@@ -1217,14 +1226,44 @@ fn substitute_scalar_var_ref(
     scope: &str,
 ) -> Option<rumoca_core::Expression> {
     let key = name.as_str();
-    if live_vars.contains(key) || reference_root_is_local(name, locals) {
+    if let Some(replaced) =
+        substitute_target_def_scalar_var_ref(name, key, span, ctx, live_vars, locals, scope)
+    {
+        return Some(replaced);
+    }
+    let has_array_shape = reference_has_array_shape(name, key, ctx, scope);
+    let constant_value = resolve_constant_value_expr_for_ref(name, ctx);
+    if reference_root_is_local(name, locals) {
+        return None;
+    }
+    if live_vars.contains(key) {
+        if !has_array_shape
+            && let Some(literal) =
+                live_package_constant_alias_scalar_literal(key, constant_value, span, ctx)
+        {
+            return Some(literal);
+        }
         return None;
     }
     if inline_index_base_is_live_or_local(key, live_vars, locals) {
         return None;
     }
-    let has_array_shape = reference_has_array_shape(name, key, ctx, scope);
-    if let Some(v) = resolve_constant_value_expr_for_ref(name, ctx) {
+    if !has_array_shape && let Some(literal) = eval_constant_scalar_literal(key, span, ctx) {
+        return Some(literal);
+    }
+    if !has_array_shape
+        && let Some(value) = constant_value
+        && let Some(literal) = eval_constant_expr_scalar_literal(value, span, ctx)
+    {
+        return Some(literal);
+    }
+    if !has_array_shape
+        && let Some(value) = constant_value
+        && let Some(literal) = resolved_constant_alias_scalar_literal(value, span, ctx)
+    {
+        return Some(literal);
+    }
+    if let Some(v) = constant_value {
         if has_array_shape && !constant_expr_preserves_array_shape(v) {
             return None;
         }
@@ -1303,21 +1342,6 @@ fn substitute_resolved_constant_expr(
         &declaration_scope
     };
     substitute_known_constants_expr(expr.clone().with_span(span), ctx, live_vars, locals, scope)
-}
-
-fn constant_expr_preserves_array_shape(expr: &rumoca_core::Expression) -> bool {
-    matches!(
-        expr,
-        rumoca_core::Expression::Array { .. }
-            | rumoca_core::Expression::Tuple { .. }
-            | rumoca_core::Expression::Range { .. }
-            | rumoca_core::Expression::BuiltinCall {
-                function: rumoca_core::BuiltinFunction::Fill
-                    | rumoca_core::BuiltinFunction::Zeros
-                    | rumoca_core::BuiltinFunction::Ones,
-                ..
-            }
-    )
 }
 
 fn materialize_referenced_zero_sized_array_variables(flat: &mut flat::Model, ctx: &Context) {
@@ -1440,19 +1464,6 @@ fn scalar_parameter_literal(
             subscripts: vec![],
             span,
         })
-}
-
-fn reference_has_array_shape(
-    name: &rumoca_core::Reference,
-    key: &str,
-    ctx: &Context,
-    scope: &str,
-) -> bool {
-    reference_key_has_array_shape(key, ctx, scope)
-        || name
-            .target_def_id()
-            .and_then(|def_id| ctx.target_def_names.get(&def_id))
-            .is_some_and(|target_name| reference_key_has_array_shape(target_name, ctx, scope))
 }
 
 fn reference_key_has_array_shape(key: &str, ctx: &Context, scope: &str) -> bool {

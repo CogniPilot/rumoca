@@ -26,9 +26,100 @@ fn var_ref(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn var_ref_with_target_def(
+    display_name: &str,
+    target_path: &[&str],
+    def_id: rumoca_core::DefId,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::with_component_reference(
+            display_name,
+            rumoca_core::ComponentReference {
+                local: false,
+                span: rumoca_core::Span::DUMMY,
+                parts: target_path
+                    .iter()
+                    .map(|part| rumoca_core::ComponentRefPart {
+                        ident: (*part).to_string(),
+                        span: rumoca_core::Span::DUMMY,
+                        subs: vec![],
+                    })
+                    .collect(),
+                def_id: Some(def_id),
+            },
+        ),
+        subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn var_ref_with_component_target(
+    display_name: &str,
+    target_path: &[&str],
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::with_component_reference(
+            display_name,
+            rumoca_core::ComponentReference {
+                local: false,
+                span: rumoca_core::Span::DUMMY,
+                parts: target_path
+                    .iter()
+                    .map(|part| rumoca_core::ComponentRefPart {
+                        ident: (*part).to_string(),
+                        span: rumoca_core::Span::DUMMY,
+                        subs: vec![],
+                    })
+                    .collect(),
+                def_id: Some(rumoca_core::DefId::new(86)),
+            },
+        ),
+        subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn int_literal(value: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn real_literal(value: f64) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Real(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn modelica_pi_expr() -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Mul,
+        lhs: Box::new(int_literal(2)),
+        rhs: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Modelica.Math.asin"),
+            args: vec![real_literal(1.0)],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        }),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn data_record_constructor(name: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Modelica.Media.IdealGases.Common.DataRecord"),
+        args: vec![rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("__rumoca_named_arg__.name"),
+            args: vec![rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String(name.to_string()),
+                span: rumoca_core::Span::DUMMY,
+            }],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        }],
+        is_constructor: true,
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -644,6 +735,348 @@ fn substitutes_fully_qualified_constant_alias_in_declaration_scope() {
     assert!(!expr_contains_var_ref(start, "Pkg.Medium.X_default"));
     assert!(!expr_contains_var_ref(start, "reference_X"));
     assert!(!expr_contains_var_ref(start, "nS"));
+}
+
+#[test]
+fn substitutes_live_instance_constant_binding_through_target_def_id() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "sine.pi");
+    let target_def_id = rumoca_core::DefId::new(86);
+    let target_ref =
+        var_ref_with_target_def("sine.pi", &["Modelica", "Constants", "pi"], target_def_id);
+    let var = model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("sine.pi"))
+        .expect("variable should exist");
+    var.binding = Some(target_ref.clone());
+    var.start = Some(target_ref);
+
+    let mut ctx = Context::new();
+    ctx.target_def_names
+        .insert(target_def_id, "Modelica.Constants.pi".to_string());
+    ctx.constant_values.insert(
+        "Modelica.Constants.pi".to_string(),
+        var_ref("Modelica.Constants.pi"),
+    );
+    ctx.real_parameter_values
+        .insert("Modelica.Constants.pi".to_string(), std::f64::consts::PI);
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    let var = model
+        .variables
+        .get(&rumoca_core::VarName::new("sine.pi"))
+        .expect("variable should exist");
+    for expr in [var.binding.as_ref(), var.start.as_ref()] {
+        assert!(matches!(
+            expr,
+            Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(value),
+                ..
+            }) if (*value - std::f64::consts::PI).abs() < f64::EPSILON
+        ));
+    }
+}
+
+#[test]
+fn evaluates_target_def_scalar_constant_expression() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "sine.pi");
+    let target_def_id = rumoca_core::DefId::new(86);
+    model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("sine.pi"))
+        .expect("variable should exist")
+        .binding = Some(var_ref_with_target_def(
+        "sine.pi",
+        &["Modelica", "Constants", "pi"],
+        target_def_id,
+    ));
+
+    let mut ctx = Context::new();
+    ctx.target_def_names
+        .insert(target_def_id, "Modelica.Constants.pi".to_string());
+    ctx.constant_values
+        .insert("Modelica.Constants.pi".to_string(), modelica_pi_expr());
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("sine.pi"))
+        .expect("variable should exist")
+        .binding
+        .as_ref()
+        .expect("binding should remain");
+    assert!(matches!(
+        binding,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } if (*value - std::f64::consts::PI).abs() < f64::EPSILON
+    ));
+}
+
+#[test]
+fn evaluates_component_ref_target_scalar_without_target_def_name() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "sine.pi");
+    let target_ref = var_ref_with_component_target("sine.pi", &["Modelica", "Constants", "pi"]);
+    let var = model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("sine.pi"))
+        .expect("variable should exist");
+    var.binding = Some(target_ref.clone());
+    var.start = Some(target_ref);
+
+    let mut ctx = Context::new();
+    ctx.real_parameter_values
+        .insert("Modelica.Constants.pi".to_string(), std::f64::consts::PI);
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    let var = model
+        .variables
+        .get(&rumoca_core::VarName::new("sine.pi"))
+        .expect("variable should exist");
+    for expr in [var.binding.as_ref(), var.start.as_ref()] {
+        assert!(matches!(
+            expr,
+            Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(value),
+                ..
+            }) if (*value - std::f64::consts::PI).abs() < f64::EPSILON
+        ));
+    }
+}
+
+#[test]
+fn component_ref_target_overrides_self_target_def_name() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "sine.pi");
+    let target_ref = var_ref_with_component_target("sine.pi", &["Modelica", "Constants", "pi"]);
+    model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("sine.pi"))
+        .expect("variable should exist")
+        .binding = Some(target_ref);
+
+    let mut ctx = Context::new();
+    ctx.target_def_names
+        .insert(rumoca_core::DefId::new(86), "sine.pi".to_string());
+    ctx.real_parameter_values
+        .insert("Modelica.Constants.pi".to_string(), std::f64::consts::PI);
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("sine.pi"))
+        .expect("variable should exist")
+        .binding
+        .as_ref()
+        .expect("binding should remain");
+    assert!(matches!(
+        binding,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } if (*value - std::f64::consts::PI).abs() < f64::EPSILON
+    ));
+}
+
+#[test]
+fn target_def_substitution_preserves_record_constant_constructor() {
+    let mut model = flat::Model::new();
+    let target_def_id = rumoca_core::DefId::new(91);
+    model.equations.push(flat::Equation::new(
+        var_ref_with_target_def("medium.dryair", &["dryair"], target_def_id),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "medium".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.target_def_names
+        .insert(target_def_id, "Medium.dryair".to_string());
+    ctx.constant_values
+        .insert("Medium.dryair".to_string(), data_record_constructor("Air"));
+    ctx.enum_parameter_values.insert(
+        "Medium.dryair".to_string(),
+        "Modelica.Media.IdealGases.Common.SingleGasesData.Air".to_string(),
+    );
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    assert!(matches!(
+        &model.equations[0].residual,
+        rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor: true,
+            ..
+        } if name.as_str() == "Modelica.Media.IdealGases.Common.DataRecord"
+    ));
+}
+
+#[test]
+fn resolves_live_scalar_alias_value_before_target_def_substitution() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "sine.pi");
+    let target_ref = var_ref_with_component_target("sine.pi", &["Modelica", "Constants", "pi"]);
+    let var = model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("sine.pi"))
+        .expect("variable should exist");
+    var.binding = Some(target_ref.clone());
+    var.start = Some(target_ref);
+
+    let mut ctx = Context::new();
+    ctx.enum_parameter_values
+        .insert("sine.pi".to_string(), "Modelica.Constants.pi".to_string());
+    ctx.real_parameter_values
+        .insert("Modelica.Constants.pi".to_string(), std::f64::consts::PI);
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    let var = model
+        .variables
+        .get(&rumoca_core::VarName::new("sine.pi"))
+        .expect("variable should exist");
+    for expr in [var.binding.as_ref(), var.start.as_ref()] {
+        assert!(matches!(
+            expr,
+            Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(value),
+                ..
+            }) if (*value - std::f64::consts::PI).abs() < f64::EPSILON
+        ));
+    }
+}
+
+#[test]
+fn substitutes_live_constant_alias_to_package_scalar_literal() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "sine.pi");
+    model.equations.push(flat::Equation::new(
+        var_ref("sine.pi"),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "sine".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.constant_values
+        .insert("sine.pi".to_string(), var_ref("Modelica.Constants.pi"));
+    ctx.real_parameter_values
+        .insert("Modelica.Constants.pi".to_string(), std::f64::consts::PI);
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    assert!(matches!(
+        model.equations[0].residual,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } if (value - std::f64::consts::PI).abs() < f64::EPSILON
+    ));
+}
+
+#[test]
+fn evaluates_live_constant_alias_to_package_expression() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "sine.pi");
+    model.equations.push(flat::Equation::new(
+        var_ref("sine.pi"),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "sine".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.constant_values
+        .insert("sine.pi".to_string(), var_ref("Modelica.Constants.pi"));
+    ctx.constant_values
+        .insert("Modelica.Constants.pi".to_string(), modelica_pi_expr());
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    assert!(matches!(
+        model.equations[0].residual,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            ..
+        } if (value - std::f64::consts::PI).abs() < f64::EPSILON
+    ));
+}
+
+#[test]
+fn target_def_scalar_substitution_preserves_non_package_live_instance_ref() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "pipe1.n");
+    add_primitive_variable(&mut model, "pipe1.nFM");
+    let target_def_id = rumoca_core::DefId::new(91);
+    model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("pipe1.nFM"))
+        .expect("variable should exist")
+        .binding = Some(var_ref_with_target_def("pipe1.n", &["n"], target_def_id));
+
+    let mut ctx = Context::new();
+    ctx.target_def_names.insert(target_def_id, "n".to_string());
+    ctx.parameter_values.insert("n".to_string(), 2);
+    ctx.parameter_values.insert("pipe1.n".to_string(), 5);
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("pipe1.nFM"))
+        .expect("variable should exist")
+        .binding
+        .as_ref()
+        .expect("binding should remain");
+    assert!(matches!(
+        binding,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "pipe1.n" && subscripts.is_empty()
+    ));
+}
+
+#[test]
+fn preserves_live_model_parameter_when_target_def_name_is_qualified() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "J");
+    model
+        .variables
+        .get_mut(&rumoca_core::VarName::new("J"))
+        .expect("variable should exist")
+        .dims = vec![2, 2];
+    let target_def_id = rumoca_core::DefId::new(7);
+    model.equations.push(flat::Equation::new(
+        var_ref_with_target_def("J", &["J"], target_def_id),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.target_def_names
+        .insert(target_def_id, "TensorTargetDemo.J".to_string());
+    ctx.array_dimensions
+        .insert("TensorTargetDemo.J".to_string(), vec![2, 2]);
+    ctx.constant_values
+        .insert("TensorTargetDemo.J".to_string(), int_literal(2));
+
+    substitute_known_constants_in_flat(&mut model, &ctx);
+
+    assert!(matches!(
+        model.equations[0].residual,
+        rumoca_core::Expression::VarRef { ref name, .. } if name.as_str() == "J"
+    ));
 }
 
 #[test]

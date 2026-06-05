@@ -1004,6 +1004,14 @@ impl BuiltinFunction {
 
     /// Try to parse a function name as a builtin.
     pub fn from_name(name: &str) -> Option<Self> {
+        let path = ComponentPath::from_flat_path(name);
+        if path.len() > 2
+            && path.parts().first().is_some_and(|part| part == "Modelica")
+            && path.parts().get(1).is_some_and(|part| part == "Math")
+            && let Some(last) = path.parts().last()
+        {
+            return Self::from_name(last);
+        }
         match name {
             // Differential
             "der" => Some(Self::Der),

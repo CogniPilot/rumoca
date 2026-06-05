@@ -39,6 +39,7 @@ pub(super) fn inject_referenced_qualified_class_constants(
     overlay: &InstanceOverlay,
     ctx: &mut Context,
 ) -> Result<(), FlattenError> {
+    inject_well_known_constant_values_from_tree(tree, ctx)?;
     const WELL_KNOWN_CONSTANT_PACKAGES: &[&str] =
         &["ModelicaServices.Machine", "Modelica.Constants"];
     const MAX_PASSES: usize = 4;
@@ -106,6 +107,77 @@ pub(super) fn inject_referenced_qualified_class_constants(
             break;
         }
     }
+    Ok(())
+}
+
+fn inject_well_known_constant_values_from_tree(
+    tree: &ClassTree,
+    ctx: &mut Context,
+) -> Result<(), FlattenError> {
+    let mut eval_ctx = equations::build_eval_context(ctx, None);
+    resolve_constants_from_tree(tree, &mut eval_ctx)?;
+    for (name, value) in eval_ctx.parameters {
+        if !is_well_known_constant_value_name(&name) {
+            continue;
+        }
+        insert_evaluated_constant_value(ctx, name, value)?;
+    }
+    Ok(())
+}
+
+fn is_well_known_constant_value_name(name: &str) -> bool {
+    let path = rumoca_core::ComponentPath::from_flat_path(name);
+    path.starts_with(&rumoca_core::ComponentPath::from_flat_path(
+        "ModelicaServices.Machine",
+    )) || path.starts_with(&rumoca_core::ComponentPath::from_flat_path(
+        "Modelica.Constants",
+    ))
+}
+
+fn insert_evaluated_constant_value(
+    ctx: &mut Context,
+    name: String,
+    value: rumoca_eval_flat::constant::Value,
+) -> Result<(), FlattenError> {
+    match value {
+        rumoca_eval_flat::constant::Value::Integer(value) => {
+            insert_unique_constant(&mut ctx.parameter_values, name, value)?;
+        }
+        rumoca_eval_flat::constant::Value::Real(value) if value.is_finite() => {
+            insert_unique_constant(&mut ctx.real_parameter_values, name, value)?;
+        }
+        rumoca_eval_flat::constant::Value::Bool(value) => {
+            insert_unique_constant(&mut ctx.boolean_parameter_values, name, value)?;
+        }
+        rumoca_eval_flat::constant::Value::Enum(type_name, literal) => {
+            insert_unique_constant(
+                &mut ctx.enum_parameter_values,
+                name,
+                format!("{type_name}.{literal}"),
+            )?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn insert_unique_constant<T>(
+    values: &mut rustc_hash::FxHashMap<String, T>,
+    name: String,
+    value: T,
+) -> Result<(), FlattenError>
+where
+    T: PartialEq,
+{
+    if let Some(existing) = values.get(&name) {
+        if existing == &value {
+            return Ok(());
+        }
+        return Err(FlattenError::internal(format!(
+            "conflicting evaluated value for package constant {name}"
+        )));
+    }
+    values.insert(name, value);
     Ok(())
 }
 

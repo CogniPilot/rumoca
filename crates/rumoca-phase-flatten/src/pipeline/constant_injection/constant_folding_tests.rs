@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use super::{infer_dims_from_expr, try_eval_const_boolean_with_scope};
+use super::{
+    infer_dims_from_expr, try_eval_const_boolean_with_scope, try_eval_const_real_with_scope,
+};
 use crate::Context;
 use rumoca_ir_ast as ast;
 
@@ -56,6 +58,29 @@ fn real_binary(
         op,
         lhs: Arc::new(lhs),
         rhs: Arc::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn comp_ref(path: &str) -> ast::ComponentReference {
+    ast::ComponentReference {
+        local: false,
+        parts: crate::path_utils::split_path_with_indices(path)
+            .into_iter()
+            .map(|part| ast::ComponentRefPart {
+                ident: token(part),
+                subs: None,
+            })
+            .collect(),
+        span: rumoca_core::Span::DUMMY,
+        def_id: None,
+    }
+}
+
+fn call_expr(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
+    ast::Expression::FunctionCall {
+        comp: comp_ref(name),
+        args,
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -146,4 +171,17 @@ fn relational_constant_folding_compares_real_values() {
         try_eval_const_boolean_with_scope(&expr, &Context::default(), ""),
         Some(true)
     );
+}
+
+#[test]
+fn real_constant_folding_evaluates_modelica_math_calls() {
+    let expr = real_binary(
+        rumoca_core::OpBinary::Mul,
+        int_expr("2"),
+        call_expr("Modelica.Math.asin", vec![real_expr("1.0")]),
+    );
+
+    let value = try_eval_const_real_with_scope(&expr, &Context::default(), "")
+        .expect("expression should evaluate");
+    assert!((value - std::f64::consts::PI).abs() < f64::EPSILON);
 }
