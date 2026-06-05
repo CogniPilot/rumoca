@@ -18,6 +18,7 @@
 //! | EI010 | ConflictingInheritance | §5.6 |
 //! | EI011 | ConflictingModifications | §5.6/§7.2 |
 //! | EI012 | PartialClassInstantiation | §4.7 |
+//! | EI013 | NonEvaluableAttribute | §4.8.3 |
 //! | EI014 | RedeclareNonReplaceable | §7.3 |
 //! | EI027 | RedeclareConstraintViolation | §7.3.2 |
 //! | EI028 | RedeclareFinal | §7.2.6 |
@@ -240,6 +241,19 @@ pub enum InstantiateError {
         span: SourceSpan,
     },
 
+    /// Attribute required to be evaluable by MLS §4.8.3 could not be evaluated.
+    #[error("attribute `{attr}` for `{component}` must be evaluable")]
+    #[diagnostic(
+        code(rumoca::instantiate::EI013),
+        help("MLS §4.8.3: quantity, unit, displayUnit, fixed, and stateSelect shall be evaluable")
+    )]
+    NonEvaluableAttribute {
+        component: String,
+        attr: String,
+        #[label("attribute must be evaluable here")]
+        span: SourceSpan,
+    },
+
     /// Instantiation exceeded the configured implementation depth limit.
     #[error(
         "instantiation depth limit exceeded at `{path}`: depth {depth} is greater than configured limit {limit}"
@@ -363,6 +377,13 @@ impl InstantiateError {
         PartialClassInstantiation {
             component_path: String,
             class_name: String
+        }
+    );
+    error_constructor!(
+        non_evaluable_attribute,
+        NonEvaluableAttribute {
+            component: String,
+            attr: String
         }
     );
     error_constructor!(instantiation_cycle, InstantiationCycle { cycle: String });

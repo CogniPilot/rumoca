@@ -174,7 +174,7 @@ fn test_extract_attributes_preserves_local_fixed_with_local_start() {
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
 
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx).expect("attributes");
 
     assert!(attrs.start.is_some());
     assert_eq!(attrs.fixed, Some(true));
@@ -195,7 +195,7 @@ fn test_extract_attributes_preserves_local_fixed_with_outer_start() {
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
 
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx).expect("attributes");
 
     assert!(attrs.start.is_some());
     assert_eq!(attrs.fixed, Some(true));
@@ -216,7 +216,7 @@ fn test_extract_attributes_outer_state_select_overrides_local() {
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
 
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx).expect("attributes");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Never);
 }
@@ -239,13 +239,13 @@ fn test_extract_attributes_resolves_state_select_parameter_reference() {
         make_comp_ref_expr(&["stateSelect"]),
     );
 
-    let attrs = extract_attributes(&comp, &mod_env, "s_rel", &eval_ctx);
+    let attrs = extract_attributes(&comp, &mod_env, "s_rel", &eval_ctx).expect("attributes");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
 }
 
 #[test]
-fn test_extract_attributes_resolves_state_select_before_literal_fallback() {
+fn test_extract_attributes_resolves_state_select_parameter_before_literal_name() {
     let mut misleading_param = make_component("prefer", "StateSelect", None);
     misleading_param.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
     misleading_param.binding = Some(make_comp_ref_expr(&["StateSelect", "never"]));
@@ -260,9 +260,36 @@ fn test_extract_attributes_resolves_state_select_before_literal_fallback() {
     comp.modifications
         .insert("stateSelect".to_string(), make_comp_ref_expr(&["prefer"]));
 
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx).expect("attributes");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Never);
+}
+
+#[test]
+fn test_extract_attributes_rejects_non_evaluable_state_select() {
+    let effective_components = IndexMap::default();
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        make_comp_ref_expr(&["missingStateSelect"]),
+    );
+
+    let err = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+        .expect_err("unresolved stateSelect must fail");
+
+    match err.as_ref() {
+        InstantiateError::NonEvaluableAttribute {
+            component, attr, ..
+        } => {
+            assert_eq!(component, "x");
+            assert_eq!(attr, "stateSelect");
+        }
+        other => panic!("expected NonEvaluableAttribute, got {other:?}"),
+    }
 }
 
 #[test]
@@ -327,7 +354,8 @@ fn test_parameter_declaration_binding_promotes_builtin_default_start() {
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
 
-    let (attrs, ..) = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx);
+    let (attrs, ..) =
+        extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx).expect("attributes");
 
     assert_eq!(
         attrs.start.as_ref().map(terminal_text),
@@ -349,7 +377,8 @@ fn test_parameter_declaration_binding_does_not_override_explicit_start() {
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
 
-    let (attrs, ..) = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx);
+    let (attrs, ..) =
+        extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx).expect("attributes");
 
     assert_eq!(
         attrs.start.as_ref().map(terminal_text),
@@ -798,7 +827,7 @@ fn inherited_attribute_modification_keeps_written_source_scope() {
     let tree = ast::ClassTree::default();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let mut attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx);
+    let mut attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx).expect("attributes");
     infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
 
     assert_eq!(
@@ -827,7 +856,8 @@ fn local_attribute_modification_keeps_instance_qualification() {
     let tree = ast::ClassTree::default();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let mut attrs = extract_attributes(&comp, &mod_env, "nextstate", &eval_ctx);
+    let mut attrs =
+        extract_attributes(&comp, &mod_env, "nextstate", &eval_ctx).expect("attributes");
     infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
 
     assert!(
