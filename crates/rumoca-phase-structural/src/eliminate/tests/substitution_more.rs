@@ -913,6 +913,40 @@ fn test_eliminate_trivial_rewrites_eliminated_indexed_record_field_aggregate() {
 }
 
 #[test]
+fn test_eliminate_trivial_rewrites_dynamic_index_over_eliminated_array() {
+    let expr = Expression::VarRef {
+        name: rumoca_core::Reference::new("expr"),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(var_ref(
+            "firstActiveIndex",
+        )))],
+        span: Span::DUMMY,
+    };
+    let substitutions = [("expr[1]", 4.0), ("expr[2]", 6.0)]
+        .into_iter()
+        .map(|(name, value)| Substitution {
+            var_name: VarName::new(name),
+            expr: lit(value),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            env_keys: vec![name.to_string()],
+        })
+        .collect::<Vec<_>>();
+
+    let rewritten = apply_substitutions_to_expr(&expr, &substitutions);
+    let Expression::Index {
+        base, subscripts, ..
+    } = rewritten
+    else {
+        panic!("dynamic aggregate substitution should produce an indexed array expression");
+    };
+    assert!(
+        matches!(base.as_ref(), Expression::Array { elements, .. } if elements.len() == 2),
+        "complete scalar substitutions should materialize the eliminated array"
+    );
+    assert_eq!(subscripts.len(), 1);
+}
+
+#[test]
 fn test_eliminate_trivial_rewrites_eliminated_complex_field_parent_ref() {
     let expr = Expression::FieldAccess {
         base: Box::new(Expression::Binary {

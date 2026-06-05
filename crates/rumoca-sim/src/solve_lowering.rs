@@ -613,6 +613,77 @@ mod tests {
     }
 
     #[test]
+    fn simulation_structural_lowering_preserves_dynamic_array_alias_observation() {
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            VarName::new("expr"),
+            dae::Variable {
+                dims: vec![2],
+                ..dae::Variable::new(VarName::new("expr"))
+            },
+        );
+        dae.variables
+            .outputs
+            .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+        dae.variables.algebraics.insert(
+            VarName::new("number"),
+            dae::Variable::new(VarName::new("number")),
+        );
+        dae.variables.outputs.insert(
+            VarName::new("show"),
+            dae::Variable::new(VarName::new("show")),
+        );
+        dae.variables.parameters.insert(
+            VarName::new("firstActiveIndex"),
+            dae::Variable {
+                start: Some(int(1)),
+                ..dae::Variable::new(VarName::new("firstActiveIndex"))
+            },
+        );
+        dae.continuous
+            .equations
+            .push(eq(sub(var_idx("expr", 1), real(4.0))));
+        dae.continuous
+            .equations
+            .push(eq(sub(var_idx("expr", 2), real(6.0))));
+        dae.continuous.equations.push(eq(sub(
+            var("y"),
+            var_dynamic_idx("expr", var("firstActiveIndex")),
+        )));
+        dae.continuous
+            .equations
+            .push(eq(sub(var("number"), var("y"))));
+        dae.continuous
+            .equations
+            .push(eq(sub(var("show"), var("number"))));
+
+        let model = lower_dae_for_simulation(&dae, &SimOptions::default())
+            .expect("dynamic indexed alias chain should lower");
+        let runtime = rumoca_eval_solve::SolveRuntime::new(&model);
+        let solver_y = runtime
+            .full_solver_y(0.0, &[], &model.parameters, 1.0e-10, 32)
+            .expect("dynamic indexed alias chain should refresh");
+        let visible_values = runtime
+            .visible_values(&solver_y, &model.parameters, 0.0)
+            .expect("dynamic indexed alias chain should evaluate visible values");
+        let show_index = model
+            .visible_names
+            .iter()
+            .position(|name| name == "show")
+            .unwrap_or_else(|| {
+                panic!(
+                    "visible show value should be present: {:?}",
+                    model.visible_names
+                )
+            });
+        let show = visible_values[show_index];
+        assert!(
+            (show - 4.0).abs() <= 1.0e-10,
+            "dynamic array alias observation should evaluate through structural lowering: {show}"
+        );
+    }
+
+    #[test]
     fn simulation_structural_lowering_reports_blt_singularity() {
         let mut dae = dae::Dae::new();
         dae.variables
@@ -1128,6 +1199,14 @@ mod tests {
         Expression::VarRef {
             name: reference(name),
             subscripts: vec![Subscript::generated_index(idx, Span::DUMMY)],
+            span: Span::DUMMY,
+        }
+    }
+
+    fn var_dynamic_idx(name: &str, idx: Expression) -> Expression {
+        Expression::VarRef {
+            name: reference(name),
+            subscripts: vec![Subscript::generated_expr(Box::new(idx))],
             span: Span::DUMMY,
         }
     }

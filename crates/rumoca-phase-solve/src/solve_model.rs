@@ -320,8 +320,7 @@ fn observation_missing_binding_name(err: &LowerError) -> Option<&str> {
 fn should_skip_unsupported_observation(err: &LowerError) -> bool {
     match err {
         LowerError::Unsupported { reason } | LowerError::UnsupportedAt { reason, .. } => {
-            reason == "dynamic subscript expressions are unsupported"
-                || reason.starts_with("size() in for-loop range requires known dimension")
+            reason.starts_with("size() in for-loop range requires known dimension")
                 || reason.contains("has no actual argument or default binding")
                 || reason.starts_with("unsupported base expression for dynamic binding path:")
         }

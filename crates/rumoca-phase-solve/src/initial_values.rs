@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use rumoca_core::OpBinary;
+use rumoca_core::{ExpressionVisitor, OpBinary};
 use rumoca_eval_dae::eval::{EvalError, EvalRuntimeState};
 use rumoca_eval_dae::{
     InitialAssignment, eval_array_values, eval_expr, eval_selected_function_output_pub,
@@ -105,7 +105,9 @@ fn seed_continuous_assignments(
         let Some(assignment) = initial_assignment_from_equation(eq) else {
             continue;
         };
-        if solution_is_runtime_alias(layout, assignment.solution) {
+        if solution_is_runtime_alias(layout, assignment.solution)
+            || solution_references_runtime_tail(dae_model, assignment.solution)
+        {
             continue;
         }
         let targets = assignment_target_scalar_names(layout, assignment.target.as_str());
@@ -273,6 +275,46 @@ fn solution_is_runtime_alias(layout: &solve::VarLayout, expr: &rumoca_core::Expr
         layout.binding(alias.as_str()),
         Some(solve::ScalarSlot::Y { .. } | solve::ScalarSlot::P { .. })
     )
+}
+
+fn solution_references_runtime_tail(dae_model: &dae::Dae, expr: &rumoca_core::Expression) -> bool {
+    let mut visitor = RuntimeTailReferenceVisitor {
+        dae_model,
+        found: false,
+    };
+    visitor.visit_expression(expr);
+    visitor.found
+}
+
+struct RuntimeTailReferenceVisitor<'a> {
+    dae_model: &'a dae::Dae,
+    found: bool,
+}
+
+impl ExpressionVisitor for RuntimeTailReferenceVisitor<'_> {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        if !self.found {
+            self.walk_expression(expr);
+        }
+    }
+
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        if runtime_tail_var(self.dae_model, name.var_name()) {
+            self.found = true;
+            return;
+        }
+        self.walk_var_ref(name, subscripts);
+    }
+}
+
+fn runtime_tail_var(dae_model: &dae::Dae, name: &rumoca_core::VarName) -> bool {
+    dae_model.variables.inputs.contains_key(name)
+        || dae_model.variables.discrete_reals.contains_key(name)
+        || dae_model.variables.discrete_valued.contains_key(name)
 }
 
 fn start_value_env(
@@ -638,5 +680,47 @@ fn write_initial_slot(
             replace_if_changed(&mut params[index], value)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_tail_reference_detection_finds_dynamic_discrete_index() {
+        let mut dae_model = dae::Dae::new();
+        dae_model.variables.discrete_valued.insert(
+            rumoca_core::VarName::new("firstActiveIndex"),
+            dae::Variable::new(rumoca_core::VarName::new("firstActiveIndex")),
+        );
+        let expr = rumoca_core::Expression::Index {
+            base: Box::new(rumoca_core::Expression::Array {
+                elements: vec![real_expr(4.0), real_expr(6.0)],
+                is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
+            }),
+            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(var_ref(
+                "firstActiveIndex",
+            )))],
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        assert!(solution_references_runtime_tail(&dae_model, &expr));
+    }
+
+    fn var_ref(name: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(name),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn real_expr(value: f64) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            span: rumoca_core::Span::DUMMY,
+        }
     }
 }

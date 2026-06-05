@@ -1478,15 +1478,20 @@ impl ExpressionRewriter for RecordFieldAggregateRewriter {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> Expression {
-        if !subscripts.is_empty() {
-            return self.walk_var_ref_expression(name, subscripts, span);
-        }
+        let rewritten_subscripts = self.rewrite_subscripts(subscripts);
         if let Some(replacement) = self
             .aggregate_alias_groups
             .get(name.as_str())
             .and_then(|group| group.to_replacement_expr(span))
         {
-            return replacement;
+            return apply_aggregate_replacement_subscripts(replacement, rewritten_subscripts, span);
+        }
+        if !rewritten_subscripts.is_empty() {
+            return Expression::VarRef {
+                name: name.clone(),
+                subscripts: rewritten_subscripts,
+                span,
+            };
         }
         if let Some(array_expr) = self
             .indexed_groups
@@ -1499,6 +1504,32 @@ impl ExpressionRewriter for RecordFieldAggregateRewriter {
             .get(name.as_str())
             .and_then(|group| group.to_constructor_expr(span))
             .unwrap_or_else(|| self.walk_var_ref_expression(name, subscripts, span))
+    }
+}
+
+fn apply_aggregate_replacement_subscripts(
+    replacement: Expression,
+    subscripts: Vec<rumoca_core::Subscript>,
+    span: rumoca_core::Span,
+) -> Expression {
+    if subscripts.is_empty() {
+        return replacement;
+    }
+    match replacement {
+        Expression::VarRef {
+            name,
+            subscripts: replacement_subscripts,
+            span: replacement_span,
+        } if replacement_subscripts.is_empty() => Expression::VarRef {
+            name,
+            subscripts,
+            span: replacement_span,
+        },
+        other => Expression::Index {
+            base: Box::new(other),
+            subscripts,
+            span,
+        },
     }
 }
 
