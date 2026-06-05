@@ -181,7 +181,7 @@ pub(super) fn print_runtime_ratio_status(
 
     if let Some(baseline_runtime) = baseline.runtime_ratio_stats.as_ref() {
         println!(
-            "MSL speed metrics (informational only, not gated): system_median={:.3e} (baseline={:.3e}), wall_median={:.3e} (baseline={:.3e}), workers={}, omc_threads={}.",
+            "MSL speed gate: PASS system_median={:.3e} (baseline={:.3e}), wall_median={:.3e} (baseline={:.3e}), workers={}, omc_threads={}.",
             current_runtime.system_ratio_both_success.median,
             baseline_runtime.system_ratio_both_success.median,
             current_runtime.wall_ratio_both_success.median,
@@ -193,7 +193,7 @@ pub(super) fn print_runtime_ratio_status(
     }
 
     println!(
-        "MSL speed metrics (informational only, not gated): system_median={:.3e}, wall_median={:.3e}, workers={}, omc_threads={}.",
+        "MSL speed metrics: observed system_median={:.3e}, wall_median={:.3e}, workers={}, omc_threads={}; no runtime baseline is committed yet.",
         current_runtime.system_ratio_both_success.median,
         current_runtime.wall_ratio_both_success.median,
         fmt_opt_usize(current_workers),

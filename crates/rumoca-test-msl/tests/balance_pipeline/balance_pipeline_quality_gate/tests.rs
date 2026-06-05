@@ -67,6 +67,25 @@ fn dist(sample_count: usize, min: f64, median: f64, mean: f64, max: f64) -> MslD
     }
 }
 
+fn runtime_ratio_stats(system_median: f64, wall_median: f64) -> MslRuntimeRatioStatsBaseline {
+    MslRuntimeRatioStatsBaseline {
+        system_ratio_both_success: MslDistributionStats {
+            sample_count: 8,
+            min: system_median * 0.5,
+            median: system_median,
+            mean: system_median * 1.1,
+            max: system_median * 1.5,
+        },
+        wall_ratio_both_success: MslDistributionStats {
+            sample_count: 8,
+            min: wall_median * 0.5,
+            median: wall_median,
+            mean: wall_median * 1.1,
+            max: wall_median * 1.5,
+        },
+    }
+}
+
 fn panic_message(payload: &Box<dyn Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<String>() {
         return message.clone();
@@ -185,6 +204,44 @@ fn current_quality_snapshot_records_parity_omc_version() {
     assert_eq!(
         snapshot.get("omc_version").and_then(Value::as_str),
         Some("OpenModelica 1.26.1")
+    );
+}
+
+#[test]
+fn current_quality_snapshot_records_runtime_ratio_stats() {
+    let summary = valid_summary_template();
+    let parity = MslParityGateInput {
+        total_models: Some(1),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
+        runtime_context: Some(MslParityRuntimeContext {
+            workers_used: Some(3),
+            omc_threads: Some(1),
+        }),
+        runtime_ratio_stats: Some(runtime_ratio_stats(5.0, 4.0)),
+        trace_accuracy_stats: None,
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
+    };
+
+    let snapshot = current_msl_quality_snapshot_json(&summary, Some(&parity), false)
+        .expect("snapshot should serialize");
+    assert_eq!(
+        snapshot
+            .pointer("/runtime_context/workers_used")
+            .and_then(Value::as_u64),
+        Some(3)
+    );
+    assert_eq!(
+        snapshot
+            .pointer("/runtime_ratio_stats/system_ratio_both_success/median")
+            .and_then(Value::as_f64),
+        Some(5.0)
+    );
+    assert_eq!(
+        snapshot
+            .pointer("/runtime_ratio_stats/wall_ratio_both_success/median")
+            .and_then(Value::as_f64),
+        Some(4.0)
     );
 }
 
@@ -704,70 +761,14 @@ fn trace_accuracy_deviation_migrated_to_near() -> MslTraceAccuracyStatsBaseline 
 #[test]
 fn runtime_ratio_regression_reason_triggers_on_large_drop() {
     let baseline = MslQualityBaseline {
-        quality_gate_version: MSL_QUALITY_GATE_VERSION,
-        run_scope: MSL_QUALITY_RUN_SCOPE_FULL.to_string(),
-        git_commit: "baseline".to_string(),
-        msl_version: "v4.1.0".to_string(),
-        omc_version: Some("OpenModelica 1.26.1".to_string()),
-        sim_timeout_seconds: 10.0,
-        simulatable_attempted: 10,
-        parse_models: 10,
-        flatten_models: 10,
-        dae_models: 10,
-        compiled_models: 10,
-        solve_models: 8,
-        balanced_models: 10,
-        unbalanced_models: 0,
-        partial_models: 0,
-        balance_denominator: 10,
-        initial_balanced_models: 10,
-        initial_unbalanced_models: 0,
-        sim_target_models: 10,
-        sim_attempted: 10,
-        ic_attempted: 10,
-        ic_ok: 8,
-        ic_solver_fail: 2,
-        sim_ok: 8,
-        sim_success_rate: 0.8,
-        runtime_context: None,
-        runtime_ratio_stats: Some(MslRuntimeRatioStatsBaseline {
-            system_ratio_both_success: MslDistributionStats {
-                sample_count: 8,
-                min: 0.9,
-                median: 2.0,
-                mean: 2.1,
-                max: 3.0,
-            },
-            wall_ratio_both_success: MslDistributionStats {
-                sample_count: 8,
-                min: 0.8,
-                median: 1.5,
-                mean: 1.6,
-                max: 2.6,
-            },
-        }),
-        trace_accuracy_stats: None,
+        runtime_ratio_stats: Some(runtime_ratio_stats(2.0, 1.5)),
+        ..baseline_quality_template()
     };
     let parity = MslParityGateInput {
         total_models: Some(10),
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
-        runtime_ratio_stats: Some(MslRuntimeRatioStatsBaseline {
-            system_ratio_both_success: MslDistributionStats {
-                sample_count: 8,
-                min: 0.4,
-                median: 1.0,
-                mean: 1.1,
-                max: 1.8,
-            },
-            wall_ratio_both_success: MslDistributionStats {
-                sample_count: 8,
-                min: 0.3,
-                median: 1.0,
-                mean: 1.1,
-                max: 1.7,
-            },
-        }),
+        runtime_ratio_stats: Some(runtime_ratio_stats(1.0, 1.0)),
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -775,11 +776,41 @@ fn runtime_ratio_regression_reason_triggers_on_large_drop() {
 
     let mut reasons = Vec::new();
     push_runtime_ratio_regression_reasons(&mut reasons, &baseline, Some(&parity));
-    assert_eq!(reasons.len(), 1);
+    assert_eq!(reasons.len(), 2);
     assert!(
         reasons
             .iter()
             .any(|reason| reason.contains("runtime system speedup median"))
+    );
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("runtime wall speedup median"))
+    );
+}
+
+#[test]
+fn msl_quality_regression_reasons_include_runtime_ratio_drop() {
+    let mut baseline = baseline_quality_template();
+    baseline.trace_accuracy_stats = Some(trace_accuracy_baseline());
+    baseline.runtime_ratio_stats = Some(runtime_ratio_stats(2.0, 1.5));
+    let parity = MslParityGateInput {
+        total_models: Some(10),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
+        runtime_context: None,
+        runtime_ratio_stats: Some(runtime_ratio_stats(1.0, 1.5)),
+        trace_accuracy_stats: Some(trace_accuracy_baseline()),
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
+    };
+
+    let reasons =
+        msl_quality_regression_reasons(gate_input_with_sim_rate(8, 10), &baseline, Some(&parity));
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("runtime system speedup median")),
+        "expected runtime regression in reasons: {reasons:#?}"
     );
 }
 
