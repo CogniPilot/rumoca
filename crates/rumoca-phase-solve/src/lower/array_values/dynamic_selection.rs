@@ -16,6 +16,11 @@ impl<'a> LowerBuilder<'a> {
         if indices.is_empty() {
             return Ok(None);
         }
+        let indexed_key = format_subscript_binding_key(base_key.as_str(), &indices);
+        let indexed_path = ComponentPath::from_flat_path(&indexed_key);
+        if let Some(value) = scope.get(&indexed_path).copied() {
+            return Ok(Some(value));
+        }
         if let Some(value) =
             self.local_indexed_bindings
                 .get(base_key.as_str())
@@ -26,12 +31,6 @@ impl<'a> LowerBuilder<'a> {
                         .map(|binding| binding.reg)
                 })
         {
-            return Ok(Some(value));
-        }
-
-        let indexed_key = format_subscript_binding_key(base_key.as_str(), &indices);
-        let indexed_path = ComponentPath::from_flat_path(&indexed_key);
-        if let Some(value) = scope.get(&indexed_path).copied() {
             return Ok(Some(value));
         }
         if let Some(mut values) =

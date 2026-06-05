@@ -191,10 +191,17 @@ fn collect_equation_unknowns(
 ) -> HashSet<usize> {
     let mut result = HashSet::new();
 
-    let mut der_states = HashSet::new();
-    eq.rhs.collect_state_variables(&mut der_states);
-    for name in der_states {
-        for idx in der_resolver.resolve_name_all(name.as_str()) {
+    // Collect `der(state)` unknowns from the residual, preserving any
+    // subscripts on the differentiated operand. Using the un-subscripted base
+    // name here (e.g. `der(p[1])` -> `p`) would resolve to *every* `der(p[i])`
+    // via the array fallback in `resolve_name_all`, spuriously coupling the
+    // scalar `der(p[i]) = v[i]` rows into one SCC that tearing then finds
+    // structurally singular. Resolving with the subscript pins each row to its
+    // own scalar `der` unknown.
+    let mut der_collector = DerOperandCollector::default();
+    der_collector.visit_expression(&eq.rhs);
+    for (name, subscripts) in der_collector.operands {
+        for idx in der_resolver.resolve_var_ref_all(&name, &subscripts) {
             result.insert(idx);
         }
     }
@@ -238,6 +245,34 @@ fn equation_contains_derivative(expr: &rumoca_core::Expression) -> bool {
     let mut checker = DerivativeCallChecker { found: false };
     checker.visit_expression(expr);
     checker.found
+}
+
+/// Collects the operand of every `der(...)` call in an expression, keeping the
+/// operand's name and subscripts so the structural incidence can resolve the
+/// exact scalar `der` unknown (e.g. `der(p[2])` -> `p[2]`) instead of the
+/// un-subscripted base.
+#[derive(Default)]
+struct DerOperandCollector {
+    operands: Vec<(rumoca_core::Reference, Vec<rumoca_core::Subscript>)>,
+}
+
+impl ExpressionVisitor for DerOperandCollector {
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if *function == rumoca_core::BuiltinFunction::Der
+            && let Some(rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            }) = args.first()
+        {
+            self.operands.push((name.clone(), subscripts.clone()));
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
 }
 
 struct DerivativeCallChecker {

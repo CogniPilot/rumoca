@@ -53,17 +53,24 @@ impl<'a> LowerBuilder<'a> {
         let mut branch_scopes = Vec::with_capacity(cond_blocks.len());
 
         for block in cond_blocks {
-            let cond = self.lower_expr(&block.cond, &entry_scope, call_depth)?;
+            let (cond, branch_scope) = self.with_local_lower_frame(|builder| {
+                let cond = builder.lower_expr(&block.cond, &entry_scope, call_depth)?;
+                let mut branch_scope = entry_scope.clone();
+                let _returned =
+                    builder.lower_statements(&block.stmts, &mut branch_scope, call_depth)?;
+                Ok((cond, branch_scope))
+            })?;
             cond_regs.push(cond);
-            let mut branch_scope = entry_scope.clone();
-            let _returned = self.lower_statements(&block.stmts, &mut branch_scope, call_depth)?;
             branch_scopes.push(branch_scope);
         }
 
-        let mut else_scope = entry_scope.clone();
-        if let Some(stmts) = else_block {
-            let _returned = self.lower_statements(stmts, &mut else_scope, call_depth)?;
-        }
+        let else_scope = self.with_local_lower_frame(|builder| {
+            let mut else_scope = entry_scope.clone();
+            if let Some(stmts) = else_block {
+                let _returned = builder.lower_statements(stmts, &mut else_scope, call_depth)?;
+            }
+            Ok(else_scope)
+        })?;
 
         let mut merged_scope = entry_scope.clone();
         let names = collect_scope_names(&merged_scope, &branch_scopes, &else_scope);

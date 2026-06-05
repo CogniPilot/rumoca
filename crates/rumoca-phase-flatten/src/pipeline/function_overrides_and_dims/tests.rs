@@ -174,6 +174,90 @@ fn named_arg(expr: &Expression) -> Option<(&str, &Expression)> {
 }
 
 #[test]
+fn fully_qualified_sibling_package_call_is_not_aliased_to_self() {
+    // Regression: a function `A.Quat.inverse` that calls the fully-qualified
+    // sibling `B.Quat.inverse` must NOT have that call rewritten to its own
+    // package (`A.Quat.inverse`). The two packages share the leaf package name
+    // `Quat`, so the alias-matched fallback in `resolve_override_function_name`
+    // previously re-resolved the call's leaf (`inverse`) inside the caller's
+    // own package, aliasing the cross-package call to itself.
+    let a_def = DefId::new(1);
+    let a_quat_def = DefId::new(2);
+    let a_inverse_def = DefId::new(3);
+    let b_def = DefId::new(4);
+    let b_quat_def = DefId::new(5);
+    let b_inverse_def = DefId::new(6);
+
+    let mut a_inverse = class("inverse", ClassType::Function);
+    a_inverse.def_id = Some(a_inverse_def);
+    let mut a_quat = class("Quat", ClassType::Package);
+    a_quat.def_id = Some(a_quat_def);
+    a_quat.classes.insert("inverse".to_string(), a_inverse);
+    let mut a = class("A", ClassType::Package);
+    a.def_id = Some(a_def);
+    a.classes.insert("Quat".to_string(), a_quat);
+
+    let mut b_inverse = class("inverse", ClassType::Function);
+    b_inverse.def_id = Some(b_inverse_def);
+    let mut b_quat = class("Quat", ClassType::Package);
+    b_quat.def_id = Some(b_quat_def);
+    b_quat.classes.insert("inverse".to_string(), b_inverse);
+    let mut b = class("B", ClassType::Package);
+    b.def_id = Some(b_def);
+    b.classes.insert("Quat".to_string(), b_quat);
+
+    let mut tree = ClassTree::new();
+    tree.definitions.classes.insert("A".to_string(), a);
+    tree.definitions.classes.insert("B".to_string(), b);
+    for (def_id, name) in [
+        (a_def, "A"),
+        (a_quat_def, "A.Quat"),
+        (a_inverse_def, "A.Quat.inverse"),
+        (b_def, "B"),
+        (b_quat_def, "B.Quat"),
+        (b_inverse_def, "B.Quat.inverse"),
+    ] {
+        tree.def_map.insert(def_id, name.to_string());
+        tree.name_map.insert(name.to_string(), def_id);
+    }
+
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    // The caller's own package (`A.Quat`) is supplied as the (inactive) override
+    // package, mirroring `rewrite_function_extends_aliases_in_function`. Its
+    // alias is the leaf segment `Quat`, which also matches the call's parent.
+    let override_packages = vec![override_target_with_active(
+        "A.Quat",
+        a_quat_def,
+        ClassType::Package,
+        false,
+    )];
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+
+    let mut expr = Expression::FunctionCall {
+        name: rumoca_core::Reference::with_component_reference(
+            "B.Quat.inverse",
+            core_comp_ref(&["B", "Quat", "inverse"]),
+        ),
+        args: Vec::new(),
+        is_constructor: false,
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut expr, &ctx);
+
+    let Expression::FunctionCall { name, .. } = expr else {
+        panic!("expected function call");
+    };
+    assert_eq!(name.as_str(), "B.Quat.inverse");
+}
+
+#[test]
 fn canonicalizes_single_part_function_call_from_target_def_id() {
     let package_def = DefId::new(1);
     let function_def = DefId::new(2);

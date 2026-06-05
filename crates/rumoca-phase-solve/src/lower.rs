@@ -63,7 +63,7 @@ pub(super) struct IndexedBinding {
 
 pub(super) type IndexedBindingMap = Arc<IndexMap<ComponentPath, Vec<IndexedBinding>>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LocalIndexedBinding {
     reg: Reg,
     indices: Vec<usize>,
@@ -902,18 +902,26 @@ impl<'a> LowerBuilder<'a> {
         subscript_regs: &[Reg],
         scope: &Scope,
     ) -> Option<Reg> {
-        let candidates = self
-            .local_indexed_bindings
-            .get(base_key)?
-            .iter()
-            .filter(|entry| entry.indices.len() == subscript_regs.len())
-            .cloned()
-            .collect::<Vec<_>>();
+        let base_path = ComponentPath::from_flat_path(base_key);
+        let candidates = if let Some(bindings) = scope.indexed_entries(&base_path) {
+            bindings
+                .iter()
+                .filter(|entry| entry.indices.len() == subscript_regs.len())
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            self.local_indexed_bindings
+                .get(base_key)?
+                .iter()
+                .filter(|entry| entry.indices.len() == subscript_regs.len())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         if candidates.is_empty() {
             return None;
         }
         let mut merged = scope
-            .get(&ComponentPath::from_flat_path(base_key))
+            .get(&base_path)
             .copied()
             .unwrap_or_else(|| self.emit_const(0.0));
         for candidate in candidates {

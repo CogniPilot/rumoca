@@ -1171,6 +1171,18 @@ pub(crate) fn resolve_override_function_name(
 
     let package_alias = scope.parent_ident()?;
     let package = ctx.override_package(package_alias)?;
+    // Only resolve through the alias-matched package when the call's actual
+    // source package is unknown (a genuinely relative reference) or is part of
+    // that package's chain. A fully-qualified call into a *different* package
+    // that merely shares its leaf identifier with the alias (e.g.
+    // `A.Quat.f` calling `B.Quat.f` from within `A.Quat`) must NOT be rewritten
+    // to the caller's own package — that would alias the call to itself. The
+    // earlier resolution blocks apply this same chain guard.
+    if let Some(source_package_def_id) = reference_source_package_def_id(reference, ctx)
+        && !ctx.package_chain_contains_def_id(package, source_package_def_id)
+    {
+        return None;
+    }
     resolve_function_in_package_chain_exposed(ctx.tree, ctx.class_index, package, function_leaf)
         .filter(|resolved| resolved != reference.as_str())
 }

@@ -1114,6 +1114,81 @@ mod tests {
     }
 
     #[test]
+    fn repro_noelse_scalar_if_does_not_run_unconditionally() {
+        let mut env = VarEnv::<f64>::new();
+        let mut functions = indexmap::IndexMap::new();
+
+        // function f(a) -> o:  x := a; if x < 0 then x := -x; end if; o := x;
+        let mut f = rumoca_core::Function::new("Pkg.f", Default::default());
+        f.add_input(rumoca_core::FunctionParam::new("a", "Real"));
+        f.add_output(rumoca_core::FunctionParam::new("o", "Real"));
+        f.add_local(rumoca_core::FunctionParam::new("x", "Real"));
+        f.body = vec![
+            rumoca_core::Statement::Assignment {
+                comp: comp_ref("x"),
+                value: var("a"),
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Statement::If {
+                cond_blocks: vec![rumoca_core::StatementBlock {
+                    cond: rumoca_core::Expression::Binary {
+                        op: rumoca_core::OpBinary::Lt,
+                        lhs: Box::new(var("x")),
+                        rhs: Box::new(real(0.0)),
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                    stmts: vec![rumoca_core::Statement::Assignment {
+                        comp: comp_ref("x"),
+                        value: rumoca_core::Expression::Unary {
+                            op: rumoca_core::OpUnary::Minus,
+                            rhs: Box::new(var("x")),
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        span: rumoca_core::Span::DUMMY,
+                    }],
+                }],
+                else_block: None,
+                span: rumoca_core::Span::DUMMY,
+            },
+            rumoca_core::Statement::Assignment {
+                comp: comp_ref("o"),
+                value: var("x"),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ];
+        functions.insert("Pkg.f".to_string(), f);
+        env.functions = std::sync::Arc::new(functions);
+
+        let y = eval::eval_expr_or_default(
+            &rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.f"),
+                args: vec![real(0.7)],
+                is_constructor: false,
+                span: rumoca_core::Span::DUMMY,
+            },
+            &env,
+        );
+        assert_eq!(y, 0.7, "no-else if must not run when condition is false");
+
+        // Same call but with the Dual (AD) float type, as used by sim/inspect.
+        let mut denv = VarEnv::<crate::dual::Dual>::new();
+        denv.functions = env.functions.clone();
+        let dy = eval::eval_expr_or_default(
+            &rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::new("Pkg.f"),
+                args: vec![real(0.7)],
+                is_constructor: false,
+                span: rumoca_core::Span::DUMMY,
+            },
+            &denv,
+        );
+        assert_eq!(
+            dy.re, 0.7,
+            "no-else if (Dual) must not run when cond is false"
+        );
+    }
+
+    #[test]
     fn user_function_body_missing_binding_returns_nan_instead_of_zero() {
         let mut env = VarEnv::<f64>::new();
         let mut functions = indexmap::IndexMap::new();

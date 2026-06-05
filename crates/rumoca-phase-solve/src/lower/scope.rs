@@ -92,11 +92,7 @@ impl Scope {
     }
 
     pub(super) fn indexed_values(&self, path: &ComponentPath) -> Option<Vec<Reg>> {
-        let bindings = self
-            .frames
-            .iter()
-            .rev()
-            .find_map(|frame| frame.indexed_bindings.get(path))?;
+        let bindings = self.indexed_entries(path)?;
         if bindings.is_empty() {
             return None;
         }
@@ -115,6 +111,14 @@ impl Scope {
         values.retain(|(indices, _)| indices.len() == rank);
         values.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
         Some(values.into_iter().map(|(_, reg)| reg).collect())
+    }
+
+    pub(super) fn indexed_entries(&self, path: &ComponentPath) -> Option<&[LocalIndexedBinding]> {
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|frame| frame.indexed_bindings.get(path))
+            .map(Vec::as_slice)
     }
 
     pub(super) fn insert_path(&mut self, path: ComponentPath, reg: Reg) -> Option<Reg> {
