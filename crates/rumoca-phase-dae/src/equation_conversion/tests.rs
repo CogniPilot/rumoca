@@ -543,6 +543,55 @@ fn test_discrete_alias_assignment_preserves_indexed_lhs_target() {
 }
 
 #[test]
+fn test_discrete_alias_assignment_orients_indexed_component_instance() {
+    let mut dae_model = dae::Dae::new();
+    for name in ["pipe.mediums[1].phase", "pipe.mediums[1].state.phase"] {
+        let var_name = rumoca_core::VarName::new(name);
+        dae_model
+            .variables
+            .discrete_valued
+            .insert(var_name.clone(), dae::Variable::new(var_name));
+    }
+
+    let mut flat_model = flat::Model::new();
+    flat_model.equations.push(flat::Equation::new(
+        residual(
+            var_ref("pipe.mediums[1].phase"),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(1),
+                span: rumoca_core::Span::DUMMY,
+            },
+        ),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "pipe.mediums[1]".to_string(),
+        },
+    ));
+    flat_model.equations.push(flat::Equation::new(
+        residual(
+            var_ref("pipe.mediums[1].phase"),
+            var_ref("pipe.mediums[1].state.phase"),
+        ),
+        Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "pipe.mediums[1]".to_string(),
+        },
+    ));
+
+    let counts = collect_discrete_valued_lhs_target_counts(&dae_model, &flat_model);
+    let assignments = collect_explicit_discrete_assignments(
+        &flat_model.equations[1].residual,
+        &dae_model,
+        &counts,
+    )
+    .unwrap()
+    .expect("indexed component alias assignment");
+
+    assert!(assignments.contains_key(&rumoca_core::VarName::new("pipe.mediums[1].state.phase")));
+    assert!(!assignments.contains_key(&rumoca_core::VarName::new("pipe.mediums[1].phase")));
+}
+
+#[test]
 fn test_output_has_component_equation_matches_unsubscripted_base() {
     let outputs_with_component_eqs: HashSet<rumoca_core::VarName> =
         [rumoca_core::VarName::new("y")].into_iter().collect();

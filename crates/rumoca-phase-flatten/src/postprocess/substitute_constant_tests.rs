@@ -195,6 +195,42 @@ fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
 }
 
 #[test]
+fn collapse_index_refs_collapses_array_of_record_projection_to_known_var() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "circular_pipe.mediums[1].state.h");
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::Index {
+                base: Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("circular_pipe.mediums.state"),
+                    subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                subscripts: vec![rumoca_core::Subscript::generated_index(
+                    1,
+                    rumoca_core::Span::DUMMY,
+                )],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            field: "h".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "circular_pipe".to_string(),
+        },
+    ));
+
+    collapse_index_refs_to_known_varrefs(&mut model);
+
+    assert!(matches!(
+        &model.equations[0].residual,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "circular_pipe.mediums[1].state.h" && subscripts.is_empty()
+    ));
+}
+
+#[test]
 fn collapse_index_refs_collapses_indexed_var_ref_to_known_scalar_var() {
     let mut model = flat::Model::new();
     add_primitive_variable(&mut model, "arr[1]");

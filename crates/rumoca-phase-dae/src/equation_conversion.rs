@@ -1286,7 +1286,7 @@ fn collect_oriented_discrete_alias_assignment(
     if lhs_target == rhs_target {
         return Ok(None);
     }
-    if lhs_target.as_str().contains('[') {
+    if !exact_discrete_valued_target_exists(dae, &lhs_target) {
         return Ok(None);
     }
     if !is_discrete_valued_target(dae, &lhs_target) || !is_discrete_valued_target(dae, &rhs_target)
@@ -1311,6 +1311,12 @@ fn collect_oriented_discrete_alias_assignment(
     let mut result = HashMap::new();
     result.insert(rhs_target, lhs.clone());
     Ok(Some(result))
+}
+
+fn exact_discrete_valued_target_exists(dae: &dae::Dae, target: &rumoca_core::VarName) -> bool {
+    dae.variables
+        .discrete_valued
+        .contains_key(&flat_to_dae_var_name(target))
 }
 
 fn lookup_discrete_lhs_count(
