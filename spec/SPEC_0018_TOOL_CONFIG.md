@@ -18,10 +18,9 @@ Tools need configurable behavior:
 
 Configuration and behavior knobs MUST reach the code through a discoverable,
 self-documenting channel. The `RUMOCA_*` environment-variable surface is
-**literal zero** and is enforced by an architecture test that scans **all
-first-party source — Rust and editor/JS alike** (`*.rs`, `*.ts`, `*.mjs`,
-`*.cjs`, `*.js`); any `RUMOCA_*` env-var use (a quoted `"RUMOCA_…"` literal or a
-`…env.RUMOCA_…` access) fails the build.
+**literal zero** across first-party Rust and editor/JS source (`*.rs`, `*.ts`,
+`*.mjs`, `*.cjs`, `*.js`); quoted `"RUMOCA_…"` literals or `…env.RUMOCA_…`
+accesses fail the build.
 
 | Need | Required channel | Why |
 |---|---|---|
@@ -36,22 +35,17 @@ first-party source — Rust and editor/JS alike** (`*.rs`, `*.ts`, `*.mjs`,
   configuration or behavior — in Rust **or** in editor/JS code. Pick a channel
   from the table above.
 - A child process that genuinely cannot accept argv gets a fixed-path file, not
-  an environment variable. Examples: `cargo xtask verify msl-parity` serializes
-  its flags to `target/msl/parity-config.json` for the `rumoca-test-msl` libtest
-  harness; the VS Code smoke runners write their parameters into the launched
-  `.code-workspace` settings (`rumoca.benchmark.*`), which the extension-host
-  test suites read via `getConfiguration` and the extension forwards to
-  `rumoca-lsp` as CLI flags.
+  an environment variable. Examples: `cargo xtask verify msl-parity` writes
+  `target/msl/parity-config.json` for libtest; VS Code smoke runners write
+  `.code-workspace` settings that the extension forwards to `rumoca-lsp` flags.
 - Standard, non-Rumoca environment variables a tool merely passes through
   (`MODELICAPATH`, `GITHUB_ACTIONS`, `ELECTRON_DISABLE_SANDBOX`, …) are not
   configuration knobs and are out of scope for this rule.
 
 **Enforcement:** `crates/rumoca/tests/architecture_hardening/env_var_registry.rs`
-(`test_rumoca_env_vars_are_registered`) scans every source file under the
-workspace (excluding build output, dependencies, and vendored trees). Adding a
-`RUMOCA_*` name to its `REGISTERED_ENV_VARS` allowlist is a deliberate,
-reviewable policy exception with written rationale — not the default escape
-hatch.
+(`test_rumoca_env_vars_are_registered`) scans workspace source files, excluding
+build output, dependencies, and vendored trees. Adding a `RUMOCA_*` name to its
+allowlist is a deliberate, reviewable policy exception with written rationale.
 
 ### Model / Simulation / Visualization Configuration
 
@@ -137,8 +131,7 @@ Editor run controls MUST operate on `rum.toml` scenario files, not on Modelica
 source files. A play/run action executes the scenario's declared task. A
 settings action edits the same scenario. Separate editor toolbar actions for
 simulation versus template generation are intentionally avoided; the task owns
-that
-choice.
+that choice.
 
 Simulation scenarios choose their presentation separately from solver pacing:
 
@@ -159,18 +152,14 @@ Simulation scenarios choose their presentation separately from solver pacing:
   describe control help rows with `keys` and `action` strings. These fields are
   presentation metadata only; actual signal routing stays under `[input]`,
   `[locals]`, `[derived]`, and `[signals]`.
-- `[viewer.onboard_camera]` configures the live viewer's onboard camera pose.
-  Supported modes are `planar_xy_heading` for ground vehicles exposing planar
-  `x`/`y`/heading signals and `quaternion_flu` for 6-DOF vehicles exposing
-  position plus scalar-first quaternion signals. The block names viewer JSON
-  signals, so each referenced signal MUST also be routed under
-  `[signals.viewer]`. Optional `mount`, `forward`, and `up` arrays are
-  vehicle-local 3-vectors. Viewer world space is the Three.js basis: world
-  `Y` is up, the ground plane is world `X/Z`, and planar `x`/`y` map to world
-  `X`/`Z` respectively. For `planar_xy_heading`, zero heading uses vehicle
-  local `+X` as forward and `+Y` as up; positive heading is a rotation about
-  world `+Y`, with the viewer applying `-heading` to align the configured
-  vehicle-local `mount`, `forward`, and `up` vectors into world space.
+- `[viewer.onboard_camera]` configures the live viewer's onboard camera pose:
+  `planar_xy_heading` for planar `x`/`y`/heading signals or `quaternion_flu`
+  for position plus scalar-first quaternion signals. Referenced viewer JSON
+  signals MUST be routed under `[signals.viewer]`; optional `mount`, `forward`,
+  and `up` arrays are vehicle-local 3-vectors. Viewer world space uses Three.js
+  coordinates (`Y` up, ground `X/Z`, planar `x`/`y` to world `X`/`Z`). For
+  `planar_xy_heading`, zero heading uses local `+X` forward and `+Y` up;
+  positive heading rotates about world `+Y`, and the viewer applies `-heading`.
 - If `[viewer].mode` is omitted, editors infer `external_web` only when the
   scenario contains an HTTP transport, explicit input routing, signals, locals,
   derived signals, reset behavior, or external-interface coupling. Otherwise
