@@ -199,6 +199,87 @@ fn lower_discrete_rhs_holds_vector_clocked_sample_elements_between_ticks() {
 }
 
 #[test]
+fn lower_discrete_rhs_samples_internal_vector_current_elements_at_initial_clock_tick() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("u"),
+        dae::Variable {
+            dims: vec![2],
+            ..scalar_var("u")
+        },
+    );
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("y"),
+        dae::Variable {
+            dims: vec![2],
+            ..scalar_var("y")
+        },
+    );
+    insert_pre_parameter(&mut dae_model, "u", &[2]);
+    dae_model.clocks.intervals.insert("clock".to_string(), 0.02);
+    dae_model.discrete.real_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("y")),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new(rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME).into(),
+            args: vec![
+                rumoca_core::Expression::VarRef {
+                    name: rumoca_core::VarName::new("u").into(),
+                    subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
+                },
+                rumoca_core::Expression::VarRef {
+                    name: rumoca_core::VarName::new("clock").into(),
+                    subscripts: vec![],
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Default::default(),
+        origin: "y = __rumoca_sample(u, clock)".to_string(),
+        scalar_count: 2,
+    });
+
+    let layout = build_var_layout(&dae_model);
+    let rows = lower_discrete_rhs(&dae_model, &layout)
+        .expect("internal vector clocked sample should lower element-wise");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_y_value(&layout, &mut y, "u[1]", 10.0);
+    set_y_value(&layout, &mut y, "u[2]", 20.0);
+    set_p_value(&layout, &mut p, "__pre__.u[1]", 3.0);
+    set_p_value(&layout, &mut p, "__pre__.u[2]", 4.0);
+    let Some(ScalarSlot::P {
+        index: initial_index,
+        ..
+    }) = layout.binding(crate::layout::INITIAL_EVENT_PARAMETER_NAME)
+    else {
+        panic!("initial event flag should be represented in the solve layout");
+    };
+
+    p[initial_index] = 1.0;
+    let (_, initial_first) = eval_linear_ops(&rows[0], &y, &p, 0.0);
+    let (_, initial_second) = eval_linear_ops(&rows[1], &y, &p, 0.0);
+    p[initial_index] = 0.0;
+    let (_, ordinary_first) = eval_linear_ops(&rows[0], &y, &p, 0.02);
+    let (_, ordinary_second) = eval_linear_ops(&rows[1], &y, &p, 0.02);
+
+    assert_eq!(initial_first.expect("first initial output"), 10.0);
+    assert_eq!(
+        initial_second.expect("second initial output"),
+        20.0,
+        "internal vector sample must read the current source element at the initial tick"
+    );
+    assert_eq!(ordinary_first.expect("first ordinary output"), 3.0);
+    assert_eq!(
+        ordinary_second.expect("second ordinary output"),
+        4.0,
+        "internal vector sample must read the matching pre source element after initialization"
+    );
+}
+
+#[test]
 fn lower_discrete_rhs_reads_previous_array_from_pre_slots() {
     let mut dae_model = dae::Dae::default();
     for name in ["u", "y"] {

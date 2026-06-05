@@ -614,26 +614,35 @@ fn lower_array_sample_expression_rows(
     scalar_count: usize,
     ctx: &RowLoweringContext<'_>,
 ) -> Result<Option<ComputeNode>, LowerError> {
-    let rumoca_core::Expression::BuiltinCall {
-        function: rumoca_core::BuiltinFunction::Sample,
-        args,
-        ..
-    } = &equation.rhs
-    else {
+    let Some((args, span)) = sample_expression_args(&equation.rhs) else {
         return Ok(None);
     };
-    if !matches!(args.as_slice(), [_] | [_, _]) {
-        return Ok(None);
+    if !matches!(args, [_] | [_, _]) {
+        return Err(LowerError::ContractViolation {
+            reason: format!(
+                "array-valued sample update requires 1 or 2 arguments, got {}",
+                args.len()
+            ),
+            span,
+        });
     }
-    let Some(targets) = scalar_update_targets(equation, scalar_count, ctx.layout) else {
-        return Ok(None);
-    };
+    let targets = scalar_update_targets(equation, scalar_count, ctx.layout).ok_or_else(|| {
+        unsupported_at(
+            "array-valued sample update target does not have matching scalar bindings",
+            span,
+        )
+    })?;
 
     let probe = lower_builder_for_context(ctx, row_namespace);
     let scope = Scope::new();
     let dims = probe.infer_expr_dims(&args[0], &scope);
     if dims.iter().product::<usize>() != scalar_count {
-        return Ok(None);
+        return Err(unsupported_at(
+            format!(
+                "array-valued sample source shape {dims:?} does not match scalar count {scalar_count}"
+            ),
+            span,
+        ));
     }
 
     let mut rows = Vec::with_capacity(scalar_count);
@@ -649,6 +658,22 @@ fn lower_array_sample_expression_rows(
     Ok(Some(ComputeNode::ScalarPrograms(
         ScalarProgramBlock::with_source_span(rows, equation.span),
     )))
+}
+
+fn sample_expression_args(
+    expr: &rumoca_core::Expression,
+) -> Option<(&[rumoca_core::Expression], rumoca_core::Span)> {
+    match expr {
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sample,
+            args,
+            span,
+        } => Some((args, *span)),
+        rumoca_core::Expression::FunctionCall {
+            name, args, span, ..
+        } if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME => Some((args, *span)),
+        _ => None,
+    }
 }
 
 fn scalar_update_targets(
