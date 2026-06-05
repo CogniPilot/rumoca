@@ -1223,7 +1223,7 @@ impl<'a> LowerBuilder<'a> {
             return Ok(LocalSubscriptResolution::NotLocal);
         }
         let key_path = ComponentPath::from_reference(name);
-        let Some(bindings) = scope.indexed_entries(&key_path) else {
+        let Some(dims) = self.local_binding_dims.get(key).cloned() else {
             if scope.contains_key(&key_path) {
                 return Err(LowerError::Unsupported {
                     reason: format!("subscripted local binding `{key}` is not an array binding"),
@@ -1231,9 +1231,14 @@ impl<'a> LowerBuilder<'a> {
             }
             return Ok(LocalSubscriptResolution::NotLocal);
         };
-        let Some(dims) = self.local_binding_dims.get(key).cloned() else {
+        let Some(bindings) = scope.indexed_entries(&key_path) else {
+            if let Some(indices) = self.compile_time_subscript_indices(subscripts)? {
+                return Err(LowerError::MissingBinding {
+                    name: format_subscript_binding_key(key, &indices),
+                });
+            }
             return Err(LowerError::Unsupported {
-                reason: format!("subscripted local array `{key}` is missing dimension metadata"),
+                reason: format!("subscripted local array `{key}` has no assigned elements"),
             });
         };
         if dims.iter().any(|dim| *dim <= 0) {

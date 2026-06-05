@@ -57,6 +57,24 @@ equation
 end ShadowMissingLocal;
 "#;
 
+const SHADOW_UNASSIGNED_LOCAL_MODEL: &str = r#"
+within;
+function pfn_unassigned
+  output Real r;
+protected
+  Real p[1];
+algorithm
+  r := p[1];
+end pfn_unassigned;
+
+model ShadowUnassignedLocal
+  parameter Real p[1] = {42};
+  Real y;
+equation
+  y = pfn_unassigned();
+end ShadowUnassignedLocal;
+"#;
+
 #[test]
 fn function_input_shadowing_model_state_lowers_to_solve() {
     let compiled = Compiler::new()
@@ -83,5 +101,21 @@ fn incomplete_local_array_shadow_reports_error_instead_of_global_fallback() {
     assert!(
         err_text.contains("p[4]"),
         "error should identify the missing local component, got: {err_text}"
+    );
+}
+
+#[test]
+fn declared_unassigned_local_array_shadow_reports_error_instead_of_global_fallback() {
+    let compiled = Compiler::new()
+        .model("ShadowUnassignedLocal")
+        .compile_str(SHADOW_UNASSIGNED_LOCAL_MODEL, "ShadowUnassignedLocal.mo")
+        .expect("compile to DAE should succeed");
+
+    let err = lower_dae_to_solve_model(&compiled.dae)
+        .expect_err("solve lowering must not fall back to the shadowed model parameter");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("p[1]"),
+        "error should identify the unassigned local component, got: {err_text}"
     );
 }
