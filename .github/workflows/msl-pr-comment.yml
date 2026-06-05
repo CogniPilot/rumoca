@@ -1,0 +1,124 @@
+name: Publish MSL PR Comment
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  publish:
+    name: Publish MSL PR Comment
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download MSL compatibility artifact
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const run_id = context.payload.workflow_run.id;
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              owner,
+              repo,
+              run_id,
+              per_page: 100,
+            });
+            const artifact = artifacts.find(item =>
+              item.name === 'msl-compatibility-report' && !item.expired
+            );
+            if (!artifact) {
+              core.info(`No msl-compatibility-report artifact found for workflow run ${run_id}.`);
+              return;
+            }
+            const zip = await github.rest.actions.downloadArtifact({
+              owner,
+              repo,
+              artifact_id: artifact.id,
+              archive_format: 'zip',
+            });
+            fs.mkdirSync('target/msl-pr-comment', { recursive: true });
+            fs.writeFileSync(
+              'target/msl-pr-comment/msl-compatibility-report.zip',
+              Buffer.from(zip.data)
+            );
+
+      - name: Extract MSL compatibility artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f target/msl-pr-comment/msl-compatibility-report.zip ]]; then
+            echo "No MSL compatibility artifact downloaded; skipping."
+            exit 0
+          fi
+          unzip -q target/msl-pr-comment/msl-compatibility-report.zip -d target/msl-pr-comment
+          find target/msl-pr-comment -maxdepth 3 -type f | sort
+
+      - name: Publish MSL PR summary comment
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const candidates = [
+              'target/msl-pr-comment/results/msl_pr_comment.md',
+              'target/msl-pr-comment/msl_pr_comment.md',
+              'target/msl-pr-comment/target/msl/results/msl_pr_comment.md',
+            ];
+            const path = candidates.find(candidate => fs.existsSync(candidate));
+            if (!path) {
+              core.info('Skipping MSL PR summary comment; msl_pr_comment.md was not in the artifact.');
+              return;
+            }
+
+            const marker = '<!-- rumoca-msl-quality-summary -->';
+            const body = fs.readFileSync(path, 'utf8');
+            if (!body.includes(marker)) {
+              core.setFailed(`Refusing to publish ${path}: missing ${marker}`);
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            let prs = context.payload.workflow_run.pull_requests ?? [];
+            if (prs.length === 0) {
+              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner,
+                repo,
+                commit_sha: context.payload.workflow_run.head_sha,
+              });
+              prs = associated.data;
+            }
+            if (prs.length === 0) {
+              core.info(`No pull request found for workflow run ${context.payload.workflow_run.id}.`);
+              return;
+            }
+            const issue_number = prs[0].number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const previous = comments.find(comment =>
+              comment.user?.type === 'Bot' && comment.body?.includes(marker)
+            );
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: previous.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
