@@ -179,6 +179,74 @@ fn solve_problem_records_continuous_row_targets_for_projectors() {
 }
 
 #[test]
+fn initialization_projection_plan_includes_unfixed_states() {
+    let mut dae_model = dae::Dae::default();
+    let mut x = scalar_var("x");
+    x.fixed = Some(false);
+    dae_model.variables.states.insert("x".into(), x);
+    let mut xf = scalar_var("xf");
+    xf.fixed = Some(true);
+    dae_model.variables.states.insert("xf".into(), xf);
+    dae_model
+        .variables
+        .algebraics
+        .insert("z".into(), scalar_var("z"));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        binary(rumoca_core::OpBinary::Sub, der(var("x")), int_expr(0)),
+        Default::default(),
+        "derivative row for x",
+    ));
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        binary(rumoca_core::OpBinary::Sub, der(var("xf")), int_expr(0)),
+        Default::default(),
+        "derivative row for xf",
+    ));
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            binary(rumoca_core::OpBinary::Sub, var("x"), int_expr(1)),
+            Default::default(),
+            "unfixed state initialization",
+        ));
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            binary(rumoca_core::OpBinary::Sub, var("xf"), int_expr(2)),
+            Default::default(),
+            "fixed state initialization",
+        ));
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            binary(rumoca_core::OpBinary::Sub, var("z"), int_expr(3)),
+            Default::default(),
+            "algebraic initialization",
+        ));
+
+    let problem = lower_solve_problem(&dae_model).expect("initialization plan should lower");
+    let projected = problem
+        .initialization
+        .projection_plan
+        .blocks
+        .iter()
+        .flat_map(|block| block.y_indices.iter().copied())
+        .collect::<BTreeSet<_>>();
+
+    assert!(
+        projected.contains(&0),
+        "unfixed state x should be projected"
+    );
+    assert!(
+        !projected.contains(&1),
+        "fixed state xf should remain pinned by its start equation"
+    );
+    assert!(projected.contains(&2), "algebraic z should be projected");
+}
+
+#[test]
 fn solve_problem_records_scaled_algebraic_residual_target() {
     let mut dae_model = dae::Dae::default();
     dae_model

@@ -1160,49 +1160,16 @@ fn project_initial_unknowns(
     current_t: f64,
     tol: f64,
 ) -> Result<(), SimError> {
-    let projection_indices = initial_projection_indices(model);
     project_initial_variables_with_plan(
         equilibrium_model,
         current_y,
         params,
         current_t,
-        &projection_indices,
+        model.initialization_projection_indices(),
         &model.problem.initialization.projection_plan,
         tol,
     )
     .map_err(SimError::from)
-}
-
-fn initial_projection_indices(model: &solve::SolveModel) -> Vec<usize> {
-    let layout = &model.problem.solve_layout;
-    let state_count = layout.state_scalar_count();
-    let algebraic_end = state_count + layout.algebraic_scalar_count();
-    let meta_by_slot = solve_variable_meta_by_solver_slot(model);
-    (0..layout.solver_scalar_count())
-        .filter_map(|idx| {
-            if idx >= state_count && idx < algebraic_end {
-                return Some(idx);
-            }
-            let meta = meta_by_slot.get(idx).copied().flatten()?;
-            (idx < state_count && !meta.is_state && meta.fixed != Some(true)).then_some(idx)
-        })
-        .collect()
-}
-
-fn solve_variable_meta_by_solver_slot(
-    model: &solve::SolveModel,
-) -> Vec<Option<&solve::SolveVariableMeta>> {
-    let layout = &model.problem.solve_layout;
-    let mut meta_by_slot = vec![None; layout.solver_scalar_count()];
-    for meta in &model.variable_meta {
-        let Some(idx) = layout.solver_idx_for_target(&meta.name) else {
-            continue;
-        };
-        if let Some(slot) = meta_by_slot.get_mut(idx) {
-            *slot = Some(meta);
-        }
-    }
-    meta_by_slot
 }
 
 struct EventObservation<'a> {
