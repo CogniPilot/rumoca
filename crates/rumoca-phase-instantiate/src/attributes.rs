@@ -1,9 +1,13 @@
 use super::*;
-use rumoca_eval_ast::eval_instantiate::{expr_to_bool, expr_to_string, parse_state_select};
+use rumoca_eval_ast::eval_instantiate::{
+    InstantiateEvalCtx, expr_to_bool, expr_to_string, parse_state_select,
+    try_eval_state_select_expr,
+};
 
 pub(super) fn extract_component_attrs_and_binding(
     comp: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
+    eval_ctx: &InstantiateEvalCtx<'_>,
 ) -> (
     ExtractedAttributes,
     Option<ast::Expression>,
@@ -12,7 +16,7 @@ pub(super) fn extract_component_attrs_and_binding(
     bool,
 ) {
     // Pass component name so mod_env can be checked for outer modifications.
-    let mut attrs = extract_attributes(comp, mod_env, &comp.name);
+    let mut attrs = extract_attributes(comp, mod_env, &comp.name, eval_ctx);
     let (binding, binding_from_modification, binding_source_scope) = extract_binding(comp, mod_env);
     let binding_source = if binding_from_modification {
         let binding_path = ast::QualifiedName::from_ident(&comp.name);
@@ -303,6 +307,7 @@ pub(super) fn extract_attributes(
     comp: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
     comp_name: &str,
+    eval_ctx: &InstantiateEvalCtx<'_>,
 ) -> ExtractedAttributes {
     let mut source_scopes = IndexMap::default();
     let start_path = ast::QualifiedName::from_ident(comp_name).child("start");
@@ -339,7 +344,7 @@ pub(super) fn extract_attributes(
             .get_attr(comp_name, "displayUnit")
             .and_then(expr_to_string),
         state_select: outer_state_select
-            .map(parse_state_select)
+            .map(|expr| eval_state_select_attr(expr, eval_ctx))
             .unwrap_or_default(),
     };
 
@@ -359,7 +364,7 @@ pub(super) fn extract_attributes(
                 attrs.display_unit = expr_to_string(value)
             }
             "stateSelect" if !has_outer_state_select => {
-                attrs.state_select = parse_state_select(value)
+                attrs.state_select = eval_state_select_attr(value, eval_ctx)
             }
             _ => {}
         }
@@ -371,4 +376,11 @@ pub(super) fn extract_attributes(
     }
 
     attrs
+}
+
+fn eval_state_select_attr(
+    expr: &ast::Expression,
+    eval_ctx: &InstantiateEvalCtx<'_>,
+) -> rumoca_core::StateSelect {
+    try_eval_state_select_expr(eval_ctx, expr).unwrap_or_else(|| parse_state_select(expr))
 }

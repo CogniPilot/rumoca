@@ -1711,7 +1711,8 @@ pub(super) use component_params::{
 };
 pub use component_params::{
     expr_to_string, extract_binding, extract_bool_params_with_mods, extract_int_params_with_mods,
-    parse_state_select, propagate_record_alias_integer_params, try_eval_string_expr,
+    parse_state_select, propagate_record_alias_integer_params, try_eval_state_select_expr,
+    try_eval_string_expr,
 };
 pub use function_eval::{
     evaluate_array_dimensions, generate_array_indices, try_eval_integer_shape_expr,

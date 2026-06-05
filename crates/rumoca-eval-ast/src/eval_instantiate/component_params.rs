@@ -62,22 +62,54 @@ pub fn try_eval_string_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) ->
     Some(value)
 }
 
-/// Parse a rumoca_core::StateSelect value from an expression.
-pub fn parse_state_select(expr: &ast::Expression) -> rumoca_core::StateSelect {
-    // rumoca_core::StateSelect is typically a qualified name like rumoca_core::StateSelect.prefer
+/// Parse a literal rumoca_core::StateSelect value from an expression.
+fn parse_state_select_literal(expr: &ast::Expression) -> Option<rumoca_core::StateSelect> {
+    // StateSelect is an enumeration literal such as StateSelect.prefer.
     if let ast::Expression::ComponentReference(comp_ref) = expr
         && let Some(last) = comp_ref.parts.last()
     {
-        match &*last.ident.text {
-            "never" => return rumoca_core::StateSelect::Never,
-            "avoid" => return rumoca_core::StateSelect::Avoid,
-            "default" => return rumoca_core::StateSelect::Default,
-            "prefer" => return rumoca_core::StateSelect::Prefer,
-            "always" => return rumoca_core::StateSelect::Always,
-            _ => {}
-        }
+        return parse_state_select_name(last.ident.text.as_ref());
     }
-    rumoca_core::StateSelect::Default
+    None
+}
+
+fn parse_state_select_name(name: &str) -> Option<rumoca_core::StateSelect> {
+    match name.rsplit('.').next().unwrap_or(name) {
+        "never" => Some(rumoca_core::StateSelect::Never),
+        "avoid" => Some(rumoca_core::StateSelect::Avoid),
+        "default" => Some(rumoca_core::StateSelect::Default),
+        "prefer" => Some(rumoca_core::StateSelect::Prefer),
+        "always" => Some(rumoca_core::StateSelect::Always),
+        _ => None,
+    }
+}
+
+/// Evaluate a StateSelect expression using the instantiation environment.
+pub fn try_eval_state_select_expr(
+    ctx: &InstantiateEvalCtx,
+    expr: &ast::Expression,
+) -> Option<rumoca_core::StateSelect> {
+    let InstantiateEvalCtx {
+        tree,
+        mod_env,
+        effective_components,
+        resolve_class_components,
+    } = ctx;
+    let value = get_enum_value_with_depth(
+        expr,
+        mod_env,
+        effective_components,
+        tree,
+        *resolve_class_components,
+        None,
+        0,
+    )?;
+    parse_state_select_name(value.as_str()).or_else(|| parse_state_select_literal(expr))
+}
+
+/// Parse a rumoca_core::StateSelect value from an expression.
+pub fn parse_state_select(expr: &ast::Expression) -> rumoca_core::StateSelect {
+    parse_state_select_literal(expr).unwrap_or_default()
 }
 
 /// Extract binding from declaration or modification.

@@ -1753,8 +1753,14 @@ fn prepare_component_binding_info(
     ctx: &mut InstantiateContext,
     effective_components: &IndexMap<String, ast::Component>,
 ) -> InstantiateResult<ComponentBindingInfo> {
+    let eval_ctx = InstantiateEvalCtx {
+        tree,
+        mod_env: ctx.mod_env(),
+        effective_components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    };
     let (mut attrs, mut binding, binding_source, binding_source_scope, binding_from_modification) =
-        extract_component_attrs_and_binding(comp, ctx.mod_env());
+        extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx);
     infer_local_attribute_source_scopes(ctx, comp, &mut attrs);
     let start_from_declaration_binding =
         !binding_from_modification && binding.is_some() && attrs.start == binding;
