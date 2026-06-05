@@ -29,6 +29,7 @@ mod condition_lowering;
 mod connector_input_analysis;
 mod convert;
 mod dae_lowering;
+mod discretized_partition;
 mod equation_conversion;
 mod errors;
 mod fold_start_values;
@@ -374,6 +375,9 @@ fn finalize_lowered_dae(
 
     run_todae_phase(todae_subphase_timing, "runtime_precompute", || {
         populate_runtime_precompute(dae)
+    })?;
+    run_todae_phase(todae_subphase_timing, "discretized_partition", || {
+        discretized_partition::lower_clocked_discretized_partitions(dae).map(|_| ())
     })?;
     run_todae_phase(todae_subphase_timing, "condition_variable_finalize", || {
         finalize_canonical_condition_variables(dae);
