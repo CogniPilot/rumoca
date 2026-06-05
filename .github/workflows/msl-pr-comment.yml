@@ -14,7 +14,10 @@ permissions:
 jobs:
   publish:
     name: Publish MSL PR Comment
-    if: github.event.workflow_run.event == 'pull_request'
+    if: |
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.conclusion != 'skipped'
     runs-on: ubuntu-24.04
     steps:
       - name: Download MSL compatibility artifact
