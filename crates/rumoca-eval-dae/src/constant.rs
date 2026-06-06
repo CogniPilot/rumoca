@@ -96,9 +96,7 @@ where
             eval_binary_const(op, lhs, rhs)
         }
         Expression::BuiltinCall { function, args, .. } => eval_builtin(*function, args, lookup),
-        Expression::FunctionCall { name, args, .. } => {
-            eval_named_function(name.last_segment(), args, lookup)
-        }
+        Expression::FunctionCall { name, args, .. } => eval_named_function(name, args, lookup),
         Expression::If {
             branches,
             else_branch,
@@ -199,10 +197,18 @@ where
     }
 }
 
-fn eval_named_function<F>(short_name: &str, args: &[Expression], lookup: &F) -> Option<ConstValue>
+fn eval_named_function<F>(name: &Reference, args: &[Expression], lookup: &F) -> Option<ConstValue>
 where
     F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
 {
+    if name.as_str().starts_with(NAMED_FUNCTION_ARG_PREFIX) {
+        return eval_const_expr_with(args.first()?, lookup);
+    }
+    if is_real_fft_sample_points_name(name.as_str()) {
+        return eval_real_fft_sample_points(args, lookup)
+            .map(|value| ConstValue::Real(value as f64));
+    }
+    let short_name = name.last_segment();
     if short_name == "substring" {
         return eval_substring(args, lookup).map(ConstValue::String);
     }
@@ -211,6 +217,45 @@ where
     }
     let function = BuiltinFunction::from_name(short_name)?;
     eval_builtin(function, args, lookup)
+}
+
+const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
+
+pub fn is_real_fft_sample_points_name(name: &str) -> bool {
+    rumoca_core::top_level_last_segment(name) == "realFFTsamplePoints"
+}
+
+pub fn real_fft_sample_points(f_max: f64, f_resolution: f64, f_max_factor: f64) -> Option<i64> {
+    if f_resolution <= 0.0 || f_max <= f_resolution || f_max_factor < 1.0 {
+        return None;
+    }
+    let ns1 = 2 * (f_max * f_max_factor / f_resolution).ceil() as i64;
+    let mut ns = if ns1 % 2 == 0 { ns1 } else { ns1 + 1 };
+    loop {
+        let mut reduced = ns;
+        for factor in [2, 3, 5] {
+            while reduced % factor == 0 {
+                reduced /= factor;
+            }
+        }
+        if reduced <= 1 {
+            return Some(ns);
+        }
+        ns += 2;
+    }
+}
+
+fn eval_real_fft_sample_points<F>(args: &[Expression], lookup: &F) -> Option<i64>
+where
+    F: Fn(&Reference, &[Subscript]) -> Option<ConstValue>,
+{
+    let f_max = numeric_arg(args, lookup, 0)?;
+    let f_resolution = numeric_arg(args, lookup, 1)?;
+    let f_max_factor = args
+        .get(2)
+        .and_then(|expr| eval_scalar_const_expr_with(expr, lookup))
+        .unwrap_or(5.0);
+    real_fft_sample_points(f_max, f_resolution, f_max_factor)
 }
 
 fn numeric_arg<F>(args: &[Expression], lookup: &F, index: usize) -> Option<f64>
@@ -271,4 +316,51 @@ fn scalar_to_bool(value: f64) -> Option<bool> {
 
 fn scalar_almost_eq(lhs: f64, rhs: f64) -> bool {
     (lhs - rhs).abs() <= 1.0e-12 * (1.0 + lhs.abs().max(rhs.abs()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{Literal, Span};
+
+    fn lit_real(value: f64) -> Expression {
+        Expression::Literal {
+            value: Literal::Real(value),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn named_arg(name: &str, value: Expression) -> Expression {
+        Expression::FunctionCall {
+            name: Reference::new(format!("{NAMED_FUNCTION_ARG_PREFIX}{name}")),
+            args: vec![value],
+            is_constructor: true,
+            span: Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn eval_real_fft_sample_points_named_factor() {
+        let expr = Expression::FunctionCall {
+            name: Reference::new("Modelica.Math.FastFourierTransform.realFFTsamplePoints"),
+            args: vec![
+                lit_real(4.0),
+                lit_real(0.2),
+                named_arg("f_max_factor", lit_real(5.0)),
+            ],
+            is_constructor: false,
+            span: Span::DUMMY,
+        };
+
+        let value = eval_scalar_const_expr(&expr, &HashMap::new())
+            .expect("realFFTsamplePoints should constant fold");
+        assert_eq!(value, 200.0);
+    }
+
+    #[test]
+    fn real_fft_sample_points_rejects_invalid_resolution() {
+        assert_eq!(real_fft_sample_points(4.0, 0.0, 5.0), None);
+        assert_eq!(real_fft_sample_points(4.0, 4.0, 5.0), None);
+        assert_eq!(real_fft_sample_points(4.0, 0.2, 0.0), None);
+    }
 }

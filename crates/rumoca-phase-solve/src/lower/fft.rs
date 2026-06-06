@@ -160,7 +160,7 @@ impl<'a> LowerBuilder<'a> {
             };
             return self.eval_compile_time_expr(value, const_scope);
         }
-        if !is_real_fft_sample_points_name(name.as_str()) {
+        if !rumoca_eval_dae::constant::is_real_fft_sample_points_name(name.as_str()) {
             return Err(LowerError::Unsupported {
                 reason: "unsupported expression in for-loop range".to_string(),
             });
@@ -171,12 +171,11 @@ impl<'a> LowerBuilder<'a> {
             .get(2)
             .map(|expr| self.eval_compile_time_expr(expr, const_scope))
             .unwrap_or_else(|| Ok(5.0))?;
-        if f_resolution <= 0.0 || f_max <= f_resolution || f_max_factor < 1.0 {
-            return Err(LowerError::Unsupported {
+        rumoca_eval_dae::constant::real_fft_sample_points(f_max, f_resolution, f_max_factor)
+            .map(|value| value as f64)
+            .ok_or_else(|| LowerError::Unsupported {
                 reason: "invalid realFFTsamplePoints structural arguments".to_string(),
-            });
-        }
-        Ok(real_fft_sample_points(f_max, f_resolution, f_max_factor) as f64)
+            })
     }
 
     pub(super) fn lower_mean(&mut self, values: &[Reg]) -> Reg {
@@ -287,25 +286,4 @@ fn is_real_fft_name(name: &str) -> bool {
 
 fn is_raw_real_fft_name(name: &str) -> bool {
     rumoca_core::top_level_last_segment(name) == "rawRealFFT"
-}
-
-fn is_real_fft_sample_points_name(name: &str) -> bool {
-    rumoca_core::top_level_last_segment(name) == "realFFTsamplePoints"
-}
-
-fn real_fft_sample_points(f_max: f64, f_resolution: f64, f_max_factor: f64) -> i64 {
-    let ns1 = 2 * (f_max * f_max_factor / f_resolution).ceil() as i64;
-    let mut ns = if ns1 % 2 == 0 { ns1 } else { ns1 + 1 };
-    loop {
-        let mut reduced = ns;
-        for factor in [2, 3, 5] {
-            while reduced % factor == 0 {
-                reduced /= factor;
-            }
-        }
-        if reduced <= 1 {
-            return ns;
-        }
-        ns += 2;
-    }
 }
