@@ -1181,17 +1181,28 @@ fn continuous_definition_expressions(
         .collect::<IndexSet<_>>();
     let mut definitions = IndexMap::new();
     for eq in &dae_model.continuous.equations {
-        if let Some(lhs) = eq.lhs.as_ref() {
-            if let Some(scalars) = continuous_vars.get(lhs) {
-                for scalar_name in scalars {
-                    add_continuous_definition(&mut definitions, scalar_name, eq.rhs.clone());
-                }
-            }
+        if add_lhs_continuous_definitions(&mut definitions, &continuous_vars, eq) {
             continue;
         }
         collect_residual_continuous_definitions(&eq.rhs, &continuous_names, &mut definitions);
     }
     definitions
+}
+
+fn add_lhs_continuous_definitions(
+    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+    continuous_vars: &IndexMap<rumoca_core::VarName, Vec<String>>,
+    eq: &dae::Equation,
+) -> bool {
+    let Some(lhs) = eq.lhs.as_ref() else {
+        return false;
+    };
+    if let Some(scalars) = continuous_vars.get(lhs) {
+        for scalar_name in scalars {
+            add_continuous_definition(definitions, scalar_name, eq.rhs.clone());
+        }
+    }
+    true
 }
 
 fn add_continuous_definition(
