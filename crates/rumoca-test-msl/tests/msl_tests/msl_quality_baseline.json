@@ -1,7 +1,7 @@
 {
   "quality_gate_version": 1,
   "run_scope": "full",
-  "git_commit": "5f0d4597f9c6f479aa3013c16f7d755bc6bea6e9",
+  "git_commit": "da1c0af494160bb66356c7353023c787a518a072",
   "msl_version": "v4.1.0",
   "omc_version": "OpenModelica 1.26.7~1-g2b913cc",
   "sim_timeout_seconds": 10.0,
@@ -31,51 +31,51 @@
   "runtime_ratio_stats": {
     "system_ratio_both_success": {
       "sample_count": 153,
-      "min": 0.005657028072557579,
-      "median": 1.38776152131111,
-      "mean": 3.032025669699829,
-      "max": 20.77775857469291
+      "min": 0.004933406601743542,
+      "median": 1.3350998545503554,
+      "mean": 3.1047490237522677,
+      "max": 27.971362279459605
     },
     "wall_ratio_both_success": {
       "sample_count": 153,
-      "min": 0.540941623118538,
-      "median": 48.88808372985529,
-      "mean": 77.92055764013836,
-      "max": 367.7669828396727
+      "min": 0.5059215429835874,
+      "median": 46.65917247999487,
+      "mean": 77.54050993703771,
+      "max": 401.1787412727124
     }
   },
   "trace_accuracy_stats": {
     "models_compared": 147,
     "missing_trace_models": 1,
     "skipped_models": 8,
-    "agreement_high": 110,
-    "agreement_high_percent": 74.82993197278911,
-    "agreement_minor": 14,
-    "agreement_minor_percent": 9.523809523809524,
+    "agreement_high": 111,
+    "agreement_high_percent": 75.51020408163265,
+    "agreement_minor": 13,
+    "agreement_minor_percent": 8.843537414965986,
     "agreement_deviation": 23,
     "agreement_deviation_percent": 15.64625850340136,
     "total_channels_compared": 4327,
-    "bad_channels_total": 578,
+    "bad_channels_total": 577,
     "severe_channels_total": 114,
-    "bad_channels_percent": 13.357984746937833,
+    "bad_channels_percent": 13.334874046683614,
     "severe_channels_percent": 2.634619828980818,
-    "violation_mass_total": 170.51476790853755,
-    "violation_mass_mean_per_model": 1.1599644075410718,
-    "violation_mass_mean_per_channel": 0.03940715690051711,
-    "models_with_bad_channel": 33,
+    "violation_mass_total": 170.1810554031128,
+    "violation_mass_mean_per_model": 1.1576942544429445,
+    "violation_mass_mean_per_channel": 0.03933003360367756,
+    "models_with_bad_channel": 32,
     "models_with_severe_channel": 12,
-    "models_with_any_channel_deviation": 33,
-    "models_with_any_channel_deviation_percent": 22.448979591836736,
+    "models_with_any_channel_deviation": 32,
+    "models_with_any_channel_deviation_percent": 21.768707482993197,
     "max_model_channel_deviation_percent": 100.0,
     "bounded_normalized_l1": {
       "sample_count": 147,
       "min": 0.0,
       "median": 0.00022252824793486512,
-      "mean": 0.04417614441260008,
-      "max": 0.999963463956564
+      "mean": 0.044176107224784565,
+      "max": 0.999961163345098
     },
-    "mean_model_mean_channel_bounded_normalized_l1": 0.05068359209258059,
-    "max_model_max_channel_bounded_normalized_l1": 0.999999999999966,
+    "mean_model_mean_channel_bounded_normalized_l1": 0.05056959336757724,
+    "max_model_max_channel_bounded_normalized_l1": 0.9999999999965972,
     "model_mean_channel_bounded_normalized_l1": null,
     "model_max_channel_bounded_normalized_l1": null,
     "initial_condition": {
@@ -93,11 +93,11 @@
       "near_channels_percent": 0.623988906863878,
       "deviation_channels_percent": 5.061243355673677,
       "severe_channels_percent": 1.178645712965103,
-      "violation_mass_total": 81.768770347087,
-      "violation_mass_mean_per_model": 0.5562501384155578,
-      "violation_mass_mean_per_channel": 0.018897335416474925,
-      "mean_channel_bounded_normalized_error": 0.029618808934810805,
-      "max_channel_bounded_normalized_error": 0.999999999999
+      "violation_mass_total": 81.76877034688901,
+      "violation_mass_mean_per_model": 0.556250138414211,
+      "violation_mass_mean_per_channel": 0.01889733541642917,
+      "mean_channel_bounded_normalized_error": 0.029618484316041357,
+      "max_channel_bounded_normalized_error": 0.9999999999
     },
     "state_selection": {
       "models_compared": 147,

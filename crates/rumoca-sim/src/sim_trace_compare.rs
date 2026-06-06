@@ -7,6 +7,9 @@ const THRESHOLD_COMPARE_EPS: f64 = 1.0e-12;
 const RANGE_LOW_QUANTILE: f64 = 0.05;
 const RANGE_HIGH_QUANTILE: f64 = 0.95;
 const NORMALIZATION_SCALE_EPS: f64 = 1.0e-12;
+// Continuous flat-reference channels need a roundoff scale separate from the
+// nonzero guard used only to keep normalization finite.
+const CONTINUOUS_ROUNDOFF_ERROR_SCALE_FLOOR: f64 = 1.0e-10;
 pub const HIGH_AGREEMENT_CHANNEL_THRESHOLD: f64 = 0.05;
 pub const MINOR_AGREEMENT_CHANNEL_THRESHOLD: f64 = 0.20;
 pub const MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE: f64 = 0.80;
@@ -677,11 +680,7 @@ fn compare_channel(
 
     let mean_abs_error = integral_abs_error / integral_duration;
     let reference_range = robust_reference_range(&ref_samples).unwrap_or(0.0);
-    let normalization_scale = if use_step_hold {
-        reference_range.max(1.0).max(NORMALIZATION_SCALE_EPS)
-    } else {
-        reference_range.max(NORMALIZATION_SCALE_EPS)
-    };
+    let normalization_scale = channel_normalization_scale(reference_range, use_step_hold);
     let normalized_l1_error = mean_abs_error / normalization_scale;
     let bounded_normalized_l1_error = normalized_l1_error / (1.0 + normalized_l1_error);
     let initial_abs_error = initial_abs_error(&samples);
@@ -712,6 +711,15 @@ fn compare_channel(
         initial_abs_error,
         initial_bounded_normalized_error,
     })
+}
+
+fn channel_normalization_scale(reference_range: f64, use_step_hold: bool) -> f64 {
+    if use_step_hold {
+        return reference_range.max(1.0).max(NORMALIZATION_SCALE_EPS);
+    }
+    reference_range
+        .max(CONTINUOUS_ROUNDOFF_ERROR_SCALE_FLOOR)
+        .max(NORMALIZATION_SCALE_EPS)
 }
 
 fn initial_abs_error(samples: &[(f64, Option<f64>, Option<f64>)]) -> Option<f64> {
@@ -1099,8 +1107,25 @@ mod tests {
         )
         .expect("channel should compare");
         assert!(metric.normalized_l1_error.is_finite());
-        assert!(metric.normalized_l1_error > 1.0e10);
-        assert!((metric.bounded_normalized_l1_error - 1.0).abs() < 1.0e-10);
+        assert!(metric.normalized_l1_error > 1.0e9);
+        assert!(metric.bounded_normalized_l1_error >= SEVERE_CHANNEL_MAX_THRESHOLD);
+    }
+
+    #[test]
+    fn continuous_constant_reference_roundoff_stays_high_agreement() {
+        let metric = compare_channel(
+            "u",
+            &[0.0, 0.5, 1.0],
+            &[Some(2.0), Some(2.0 + 1.0e-12), Some(2.0 - 1.0e-12)],
+            &[0.0, 0.5, 1.0],
+            &[Some(2.0), Some(2.0), Some(2.0)],
+            false,
+        )
+        .expect("channel should compare");
+
+        assert_eq!(metric.shape, TraceDeviationShape::WithinTolerance);
+        assert!(metric.normalization_scale >= CONTINUOUS_ROUNDOFF_ERROR_SCALE_FLOOR);
+        assert!(metric.bounded_normalized_l1_error <= HIGH_AGREEMENT_CHANNEL_THRESHOLD);
     }
 
     #[test]
