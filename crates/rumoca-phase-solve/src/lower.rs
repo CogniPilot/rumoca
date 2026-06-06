@@ -46,6 +46,10 @@ pub use expression_rows::{
 };
 use function_projection::format_subscript_binding_key;
 use helpers::*;
+pub(crate) use initial_residual::{
+    InitialResidualEquation, InitialResidualSource, initial_residual_equations_with_sources,
+    lower_initial_residual_from_equations,
+};
 pub use initial_residual::{initial_residual_equations, lower_initial_residual};
 use scope::*;
 

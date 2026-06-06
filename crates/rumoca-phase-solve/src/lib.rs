@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 use rumoca_core::ExpressionVisitor;
 use rumoca_ir_dae as dae;
@@ -45,7 +45,7 @@ pub(crate) use discrete_pre_modes::expression_contains_event_entry_pre_operator;
 use layout::INITIAL_EVENT_PARAMETER_NAME;
 pub use layout::{build_var_layout, build_var_layout_with_solver_len};
 use lower::{
-    LowerError, lower_discrete_rhs, lower_initial_residual, lower_initial_update_rhs,
+    LowerError, lower_discrete_rhs, lower_initial_update_rhs,
     lower_residual_rows_and_targets_from_equations, lower_root_conditions,
 };
 use lower::{
@@ -366,38 +366,64 @@ fn lower_initialization_system(
     layout: &solve::VarLayout,
     solve_layout: &solve::SolveLayout,
 ) -> Result<solve::InitializationSolveSystem, LowerError> {
-    let residual_equations = lower::initial_residual_equations(dae_model, layout);
+    let residual_equations = lower::initial_residual_equations_with_sources(dae_model, layout)
+        .map_err(|err| lower_problem_context(err, "collect initial residual equations"))?;
+    let residual_equation_refs = residual_equations
+        .iter()
+        .map(|row| row.equation)
+        .enumerate()
+        .collect::<Vec<_>>();
     let row_targets =
-        lower_continuous_row_targets(dae_model, residual_equations.iter().copied(), layout)
+        lower_continuous_row_targets(dae_model, residual_equation_refs.iter().copied(), layout)
             .map_err(|err| lower_problem_context(err, "lower initial row targets"))?;
     let update_equations = lower::initial_condition_update_equations(dae_model);
     let update_targets = lower_update_targets_from_equations(dae_model, layout, &update_equations)
         .map_err(|err| lower_problem_context(err, "lower initial update targets"))?;
 
-    let residual_rows = lower_initial_residual(dae_model, layout)
-        .map_err(|err| lower_problem_context(err, "lower initial residual rows"))?;
+    let residual_rows = lower::lower_initial_residual_from_equations(
+        dae_model,
+        layout,
+        residual_equation_refs.iter().copied(),
+    )
+    .map_err(|err| lower_problem_context(err, "lower initial residual rows"))?;
+    let initialization_rows = initialization_residual_scalar_rows(&residual_equations);
+    let residual_spans = program_spans_for_equations(&residual_equation_refs);
     let projection_indices = initial_projection_indices_for_layout(dae_model, solve_layout);
-    let projection_plan = lower_projection_plan(
+    let projection_plan = lower_initial_projection_plan(
         &residual_rows,
+        &residual_spans,
         &row_targets,
         &projection_indices,
         0..residual_rows.len(),
+        &initialization_rows,
     )?;
 
     Ok(solve::InitializationSolveSystem {
         row_targets,
         projection_indices,
         projection_plan,
-        residual: solve::ScalarProgramBlock::with_program_spans(
-            residual_rows,
-            program_spans_for_equations(&residual_equations),
-        ),
+        residual: solve::ScalarProgramBlock::with_program_spans(residual_rows, residual_spans),
         update_rhs: solve::ScalarProgramBlock::new(
             lower_initial_update_rhs(dae_model, layout)
                 .map_err(|err| lower_problem_context(err, "lower initial update rows"))?,
         ),
         update_targets,
     })
+}
+
+fn initialization_residual_scalar_rows(
+    residual_equations: &[lower::InitialResidualEquation<'_>],
+) -> BTreeSet<usize> {
+    let mut rows = BTreeSet::new();
+    let mut row_idx = 0;
+    for residual_equation in residual_equations {
+        let row_count = residual_equation.equation.scalar_count.max(1);
+        if residual_equation.source == lower::InitialResidualSource::Initialization {
+            rows.extend(row_idx..row_idx + row_count);
+        }
+        row_idx += row_count;
+    }
+    rows
 }
 
 fn initial_projection_indices_for_layout(
@@ -626,6 +652,82 @@ fn lower_projection_plan(
     projection_indices: &[usize],
     row_indices: std::ops::Range<usize>,
 ) -> Result<solve::AlgebraicProjectionPlan, LowerError> {
+    let row_to_vars = projection_row_to_vars(rows, row_targets, projection_indices, row_indices);
+    let projection_incidence = algebraic_projection_incidence(&row_to_vars);
+    let blocks = projection_blt_blocks(&projection_incidence)?;
+    Ok(solve::AlgebraicProjectionPlan {
+        blocks: lower_blt_projection_blocks(&blocks, row_targets, &projection_incidence),
+    })
+}
+
+fn lower_initial_projection_plan(
+    rows: &[Vec<solve::LinearOp>],
+    row_spans: &[rumoca_core::Span],
+    row_targets: &[Option<solve::ScalarSlot>],
+    projection_indices: &[usize],
+    row_indices: std::ops::Range<usize>,
+    initialization_rows: &BTreeSet<usize>,
+) -> Result<solve::AlgebraicProjectionPlan, LowerError> {
+    validate_initial_projection_row_spans(rows, row_spans)?;
+    let row_to_vars = projection_row_to_vars(rows, row_targets, projection_indices, row_indices);
+    let projection_set = projection_indices.iter().copied().collect::<BTreeSet<_>>();
+    let mut blocks = initialization_alias_projection_blocks(
+        rows,
+        row_spans,
+        &row_to_vars,
+        initialization_rows,
+        &projection_set,
+    )?;
+    let covered_rows = blocks
+        .iter()
+        .flat_map(|block| block.rows.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let covered_y_indices = blocks
+        .iter()
+        .flat_map(|block| block.y_indices.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let remaining_row_to_vars =
+        remaining_projection_row_to_vars(&row_to_vars, &covered_rows, &covered_y_indices);
+    let projection_incidence = algebraic_projection_incidence(&remaining_row_to_vars);
+    let blt_blocks = projection_blt_blocks(&projection_incidence)?;
+    blocks.extend(lower_blt_projection_blocks(
+        &blt_blocks,
+        row_targets,
+        &projection_incidence,
+    ));
+    Ok(solve::AlgebraicProjectionPlan {
+        blocks: merge_overlapping_projection_blocks(blocks),
+    })
+}
+
+fn validate_initial_projection_row_spans(
+    rows: &[Vec<solve::LinearOp>],
+    row_spans: &[rumoca_core::Span],
+) -> Result<(), LowerError> {
+    if rows.len() == row_spans.len() {
+        return Ok(());
+    }
+    let span = match row_spans.iter().copied().find(|span| !span.is_dummy()) {
+        Some(span) => span,
+        // The malformed span table is source-free when it has no real spans.
+        None => rumoca_core::Span::DUMMY,
+    };
+    Err(LowerError::ContractViolation {
+        reason: format!(
+            "initial projection row span count {} does not match row count {}",
+            row_spans.len(),
+            rows.len()
+        ),
+        span,
+    })
+}
+
+fn projection_row_to_vars(
+    rows: &[Vec<solve::LinearOp>],
+    row_targets: &[Option<solve::ScalarSlot>],
+    projection_indices: &[usize],
+    row_indices: std::ops::Range<usize>,
+) -> BTreeMap<usize, BTreeSet<usize>> {
     let mut row_to_vars = BTreeMap::<usize, BTreeSet<usize>>::new();
     let projection_set = projection_indices.iter().copied().collect::<BTreeSet<_>>();
 
@@ -644,12 +746,105 @@ fn lower_projection_plan(
         }
         row_to_vars.insert(row_idx, y_indices);
     }
+    row_to_vars
+}
 
-    let projection_incidence = algebraic_projection_incidence(&row_to_vars);
-    let blocks = projection_blt_blocks(&projection_incidence)?;
-    Ok(solve::AlgebraicProjectionPlan {
-        blocks: lower_blt_projection_blocks(&blocks, row_targets, &projection_incidence),
-    })
+fn remaining_projection_row_to_vars(
+    row_to_vars: &BTreeMap<usize, BTreeSet<usize>>,
+    covered_rows: &BTreeSet<usize>,
+    covered_y_indices: &BTreeSet<usize>,
+) -> BTreeMap<usize, BTreeSet<usize>> {
+    row_to_vars
+        .iter()
+        .filter(|(row_idx, _)| !covered_rows.contains(row_idx))
+        .filter_map(|(row_idx, y_indices)| {
+            let remaining = y_indices
+                .difference(covered_y_indices)
+                .copied()
+                .collect::<BTreeSet<_>>();
+            (!remaining.is_empty()).then_some((*row_idx, remaining))
+        })
+        .collect()
+}
+
+fn initialization_alias_projection_blocks(
+    rows: &[Vec<solve::LinearOp>],
+    row_spans: &[rumoca_core::Span],
+    row_to_vars: &BTreeMap<usize, BTreeSet<usize>>,
+    initialization_rows: &BTreeSet<usize>,
+    projection_set: &BTreeSet<usize>,
+) -> Result<Vec<solve::AlgebraicProjectionBlock>, LowerError> {
+    let affine_rows_by_y =
+        affine_projection_rows_by_y(rows, row_spans, row_to_vars, projection_set)?;
+    let mut blocks = Vec::new();
+    for row_idx in initialization_rows {
+        let Some(seed_y_indices) = row_to_vars.get(row_idx) else {
+            continue;
+        };
+        let block = initialization_alias_projection_block(
+            *row_idx,
+            seed_y_indices,
+            row_to_vars,
+            &affine_rows_by_y,
+        );
+        merge_projection_block(&mut blocks, block);
+    }
+    Ok(blocks)
+}
+
+fn initialization_alias_projection_block(
+    seed_row: usize,
+    seed_y_indices: &BTreeSet<usize>,
+    row_to_vars: &BTreeMap<usize, BTreeSet<usize>>,
+    affine_rows_by_y: &BTreeMap<usize, IndexSet<usize>>,
+) -> solve::AlgebraicProjectionBlock {
+    let mut rows = IndexSet::from([seed_row]);
+    let mut y_indices = seed_y_indices.iter().copied().collect::<IndexSet<_>>();
+    let mut pending_y_indices = seed_y_indices.iter().copied().collect::<Vec<_>>();
+    while let Some(y_index) = pending_y_indices.pop() {
+        let Some(affine_rows) = affine_rows_by_y.get(&y_index) else {
+            continue;
+        };
+        for row_idx in affine_rows {
+            if !rows.insert(*row_idx) {
+                continue;
+            }
+            if let Some(row_y_indices) = row_to_vars.get(row_idx) {
+                for row_y_index in row_y_indices {
+                    if y_indices.insert(*row_y_index) {
+                        pending_y_indices.push(*row_y_index);
+                    }
+                }
+            }
+        }
+    }
+    solve::AlgebraicProjectionBlock {
+        rows: rows.into_iter().collect(),
+        y_indices: y_indices.into_iter().collect(),
+        causal_steps: Vec::new(),
+    }
+}
+
+fn affine_projection_rows_by_y(
+    rows: &[Vec<solve::LinearOp>],
+    row_spans: &[rumoca_core::Span],
+    row_to_vars: &BTreeMap<usize, BTreeSet<usize>>,
+    projection_set: &BTreeSet<usize>,
+) -> Result<BTreeMap<usize, IndexSet<usize>>, LowerError> {
+    let mut rows_by_y = BTreeMap::<usize, IndexSet<usize>>::new();
+    for (row_idx, y_indices) in row_to_vars {
+        if y_indices.len() > 2 {
+            continue;
+        }
+        let span = row_spans[*row_idx];
+        if !row_is_affine_projection_constraint(&rows[*row_idx], projection_set, span)? {
+            continue;
+        }
+        for y_index in y_indices {
+            rows_by_y.entry(*y_index).or_default().insert(*row_idx);
+        }
+    }
+    Ok(rows_by_y)
 }
 
 fn projection_blt_blocks(
@@ -702,6 +897,249 @@ fn collect_algebraic_y_indices_for_row(
         stack.extend(def_use.inputs.iter().copied());
     }
     y_indices
+}
+
+fn row_is_affine_projection_constraint(
+    row: &[solve::LinearOp],
+    projection_set: &BTreeSet<usize>,
+    span: rumoca_core::Span,
+) -> Result<bool, LowerError> {
+    let mut regs = BTreeMap::<solve::Reg, ProjectionAffinity>::new();
+    let mut outputs = Vec::new();
+    for op in row {
+        match *op {
+            solve::LinearOp::StoreOutput { src } => {
+                outputs.push(reg_projection_affinity(&regs, src, span)?);
+            }
+            _ => {
+                let Some((dst, affinity)) =
+                    linear_op_projection_affinity(op, &regs, projection_set, span)?
+                else {
+                    continue;
+                };
+                regs.insert(dst, affinity);
+            }
+        }
+    }
+    Ok(!outputs.is_empty()
+        && outputs
+            .iter()
+            .any(|affinity| affinity.depends_on_projection_y)
+        && outputs
+            .iter()
+            .all(|affinity| affinity.affine_in_projection_y))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProjectionAffinity {
+    depends_on_projection_y: bool,
+    affine_in_projection_y: bool,
+}
+
+impl ProjectionAffinity {
+    fn y_free() -> Self {
+        Self {
+            depends_on_projection_y: false,
+            affine_in_projection_y: true,
+        }
+    }
+
+    fn projection_y() -> Self {
+        Self {
+            depends_on_projection_y: true,
+            affine_in_projection_y: true,
+        }
+    }
+
+    fn nonlinear(inputs: &[Self]) -> Self {
+        let depends_on_projection_y = inputs
+            .iter()
+            .any(|affinity| affinity.depends_on_projection_y);
+        Self {
+            depends_on_projection_y,
+            affine_in_projection_y: !depends_on_projection_y,
+        }
+    }
+
+    fn add_sub(lhs: Self, rhs: Self) -> Self {
+        Self {
+            depends_on_projection_y: lhs.depends_on_projection_y || rhs.depends_on_projection_y,
+            affine_in_projection_y: lhs.affine_in_projection_y && rhs.affine_in_projection_y,
+        }
+    }
+
+    fn mul(lhs: Self, rhs: Self) -> Self {
+        let one_side_y_free = !lhs.depends_on_projection_y || !rhs.depends_on_projection_y;
+        Self {
+            depends_on_projection_y: lhs.depends_on_projection_y || rhs.depends_on_projection_y,
+            affine_in_projection_y: lhs.affine_in_projection_y
+                && rhs.affine_in_projection_y
+                && one_side_y_free,
+        }
+    }
+
+    fn div(lhs: Self, rhs: Self) -> Self {
+        Self {
+            depends_on_projection_y: lhs.depends_on_projection_y || rhs.depends_on_projection_y,
+            affine_in_projection_y: lhs.affine_in_projection_y
+                && rhs.affine_in_projection_y
+                && !rhs.depends_on_projection_y,
+        }
+    }
+}
+
+fn linear_op_projection_affinity(
+    op: &solve::LinearOp,
+    regs: &BTreeMap<solve::Reg, ProjectionAffinity>,
+    projection_set: &BTreeSet<usize>,
+    span: rumoca_core::Span,
+) -> Result<Option<(solve::Reg, ProjectionAffinity)>, LowerError> {
+    use solve::LinearOp as Op;
+    let lowered = match *op {
+        Op::Const { dst, .. } | Op::LoadTime { dst } | Op::LoadP { dst, .. } => {
+            (dst, ProjectionAffinity::y_free())
+        }
+        Op::LoadY { dst, index } => {
+            let affinity = if projection_set.contains(&index) {
+                ProjectionAffinity::projection_y()
+            } else {
+                ProjectionAffinity::y_free()
+            };
+            (dst, affinity)
+        }
+        Op::LoadSeed { dst, .. } => (dst, ProjectionAffinity::y_free()),
+        Op::Move { dst, src } => (dst, reg_projection_affinity(regs, src, span)?),
+        Op::Unary { dst, op, arg } => {
+            let arg = reg_projection_affinity(regs, arg, span)?;
+            let affinity = match op {
+                solve::UnaryOp::Neg => arg,
+                _ => ProjectionAffinity::nonlinear(&[arg]),
+            };
+            (dst, affinity)
+        }
+        Op::Binary { dst, op, lhs, rhs } => {
+            let lhs = reg_projection_affinity(regs, lhs, span)?;
+            let rhs = reg_projection_affinity(regs, rhs, span)?;
+            let affinity = match op {
+                solve::BinaryOp::Add | solve::BinaryOp::Sub => {
+                    ProjectionAffinity::add_sub(lhs, rhs)
+                }
+                solve::BinaryOp::Mul => ProjectionAffinity::mul(lhs, rhs),
+                solve::BinaryOp::Div => ProjectionAffinity::div(lhs, rhs),
+                solve::BinaryOp::Pow
+                | solve::BinaryOp::And
+                | solve::BinaryOp::Or
+                | solve::BinaryOp::Atan2
+                | solve::BinaryOp::Min
+                | solve::BinaryOp::Max => ProjectionAffinity::nonlinear(&[lhs, rhs]),
+            };
+            (dst, affinity)
+        }
+        Op::Compare { dst, lhs, rhs, .. } => {
+            let lhs = reg_projection_affinity(regs, lhs, span)?;
+            let rhs = reg_projection_affinity(regs, rhs, span)?;
+            (dst, ProjectionAffinity::nonlinear(&[lhs, rhs]))
+        }
+        Op::Select {
+            dst,
+            cond,
+            if_true,
+            if_false,
+        } => {
+            let cond = reg_projection_affinity(regs, cond, span)?;
+            let if_true = reg_projection_affinity(regs, if_true, span)?;
+            let if_false = reg_projection_affinity(regs, if_false, span)?;
+            (
+                dst,
+                ProjectionAffinity::nonlinear(&[cond, if_true, if_false]),
+            )
+        }
+        Op::LinearSolveComponent {
+            dst,
+            matrix_start,
+            rhs_start,
+            n,
+            ..
+        } => {
+            let inputs = projection_affinities_for_reg_ranges(
+                regs,
+                [(matrix_start, n * n), (rhs_start, n)].into_iter(),
+                span,
+            )?;
+            (dst, ProjectionAffinity::nonlinear(&inputs))
+        }
+        Op::TableBounds { dst, table_id, .. } => {
+            let table_id = reg_projection_affinity(regs, table_id, span)?;
+            (dst, ProjectionAffinity::nonlinear(&[table_id]))
+        }
+        Op::TableLookup {
+            dst,
+            table_id,
+            column,
+            input,
+        }
+        | Op::TableLookupSlope {
+            dst,
+            table_id,
+            column,
+            input,
+        } => {
+            let table_id = reg_projection_affinity(regs, table_id, span)?;
+            let column = reg_projection_affinity(regs, column, span)?;
+            let input = reg_projection_affinity(regs, input, span)?;
+            (
+                dst,
+                ProjectionAffinity::nonlinear(&[table_id, column, input]),
+            )
+        }
+        Op::TableNextEvent {
+            dst,
+            table_id,
+            time,
+        } => {
+            let table_id = reg_projection_affinity(regs, table_id, span)?;
+            let time = reg_projection_affinity(regs, time, span)?;
+            (dst, ProjectionAffinity::nonlinear(&[table_id, time]))
+        }
+        Op::RandomInitialState { dst, .. }
+        | Op::RandomResult { dst, .. }
+        | Op::RandomState { dst, .. }
+        | Op::ImpureRandomInit { dst, .. }
+        | Op::ImpureRandom { dst, .. }
+        | Op::ImpureRandomInteger { dst, .. } => (
+            dst,
+            ProjectionAffinity::nonlinear(&[ProjectionAffinity::projection_y()]),
+        ),
+        Op::StoreOutput { .. } => return Ok(None),
+    };
+    Ok(Some(lowered))
+}
+
+fn projection_affinities_for_reg_ranges(
+    regs: &BTreeMap<solve::Reg, ProjectionAffinity>,
+    ranges: impl Iterator<Item = (solve::Reg, usize)>,
+    span: rumoca_core::Span,
+) -> Result<Vec<ProjectionAffinity>, LowerError> {
+    let mut affinities = Vec::new();
+    for (start, len) in ranges {
+        for reg in reg_range(start, len) {
+            affinities.push(reg_projection_affinity(regs, reg, span)?);
+        }
+    }
+    Ok(affinities)
+}
+
+fn reg_projection_affinity(
+    regs: &BTreeMap<solve::Reg, ProjectionAffinity>,
+    reg: solve::Reg,
+    span: rumoca_core::Span,
+) -> Result<ProjectionAffinity, LowerError> {
+    regs.get(&reg)
+        .copied()
+        .ok_or_else(|| LowerError::ContractViolation {
+            reason: format!("projection row references undefined register {reg}"),
+            span,
+        })
 }
 
 #[derive(Debug)]
@@ -928,9 +1366,11 @@ fn projection_blocks_overlap(
     lhs: &solve::AlgebraicProjectionBlock,
     rhs: &solve::AlgebraicProjectionBlock,
 ) -> bool {
-    lhs.y_indices
-        .iter()
-        .any(|index| rhs.y_indices.binary_search(index).is_ok())
+    lhs.rows.iter().any(|row| rhs.rows.contains(row))
+        || lhs
+            .y_indices
+            .iter()
+            .any(|index| rhs.y_indices.contains(index))
 }
 
 fn combine_projection_blocks(
@@ -948,11 +1388,12 @@ fn combine_projection_blocks(
     }
 }
 
-fn merge_unique(mut lhs: Vec<usize>, rhs: Vec<usize>) -> Vec<usize> {
-    lhs.extend(rhs);
-    lhs.sort_unstable();
-    lhs.dedup();
-    lhs
+fn merge_unique(lhs: Vec<usize>, rhs: Vec<usize>) -> Vec<usize> {
+    lhs.into_iter()
+        .chain(rhs)
+        .collect::<IndexSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn lower_algebraic_loop_projection_block(

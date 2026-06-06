@@ -224,6 +224,141 @@ fn algebraic_projection_plan_merges_blocks_that_share_row_targets() {
     );
 }
 
+#[test]
+fn initialization_projection_plan_closes_affine_aliases_from_initial_rows() {
+    let rows = vec![
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 2 },
+            solve::LinearOp::Const { dst: 1, value: 1.0 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::LoadP { dst: 1, index: 0 },
+            solve::LinearOp::LoadY { dst: 2, index: 2 },
+            solve::LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 1,
+                rhs: 2,
+            },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 3,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 1 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 3 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Mul,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 3 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Add,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::LoadY { dst: 3, index: 4 },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 2,
+                rhs: 3,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ],
+    ];
+    let row_targets = vec![None; rows.len()];
+    let row_spans = (0..rows.len())
+        .map(|idx| {
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId(31), idx * 10, idx * 10 + 5)
+        })
+        .collect::<Vec<_>>();
+    let plan = super::lower_initial_projection_plan(
+        &rows,
+        &row_spans,
+        &row_targets,
+        &[0, 1, 2, 3, 4],
+        0..rows.len(),
+        &BTreeSet::from([0]),
+    )
+    .expect("initial projection plan should lower");
+
+    let alias_block = plan
+        .blocks
+        .iter()
+        .find(|block| block.rows == vec![0, 1, 2])
+        .expect("initial row should close over affine aliases");
+    assert_eq!(alias_block.y_indices, vec![2, 1, 0]);
+    assert!(
+        !alias_block.rows.contains(&3),
+        "nonlinear row should remain outside the initial alias closure"
+    );
+    assert!(
+        !alias_block.rows.contains(&4),
+        "three-variable affine row should remain outside the direct alias closure"
+    );
+}
+
+#[test]
+fn initialization_projection_plan_reports_row_source_span() {
+    let source_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(32), 18, 34);
+    let rows = vec![vec![
+        solve::LinearOp::LoadY { dst: 0, index: 0 },
+        solve::LinearOp::Binary {
+            dst: 1,
+            op: solve::BinaryOp::Add,
+            lhs: 0,
+            rhs: 99,
+        },
+        solve::LinearOp::StoreOutput { src: 1 },
+    ]];
+    let err = super::lower_initial_projection_plan(
+        &rows,
+        &[source_span],
+        &[None],
+        &[0],
+        0..rows.len(),
+        &BTreeSet::from([0]),
+    )
+    .expect_err("undefined lowered register should be reported as a contract error");
+
+    assert_eq!(err.source_span(), Some(source_span));
+    assert!(
+        err.reason().contains("undefined register 99"),
+        "unexpected error: {err}"
+    );
+}
+
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new(name).into(),
