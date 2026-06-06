@@ -3,8 +3,8 @@
 //! This is the last DAE-aware step before runtime backends. Backends should
 //! receive only `rumoca-ir-solve` data.
 
-use indexmap::IndexMap;
-use rumoca_core::{Literal, OpBinary, OpUnary};
+use indexmap::{IndexMap, IndexSet};
+use rumoca_core::{ExpressionVisitor, Literal, OpBinary, OpUnary};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use std::sync::Arc;
@@ -1039,6 +1039,7 @@ fn build_variable_meta(
     dae_model: &dae::Dae,
     visible_names: &[String],
 ) -> Vec<solve::SolveVariableMeta> {
+    let event_discontinuous_names = event_discontinuous_scalar_names(dae_model);
     let vars = dae_model
         .variables
         .states
@@ -1084,6 +1085,15 @@ fn build_variable_meta(
     for (name, var, role, is_state) in vars {
         let (value_type, variability, time_domain) = variable_meta_classification(role, is_state);
         for scalar_name in scalar_names(name.as_str(), var) {
+            let time_domain = if continuous_real_role_is_event_discontinuous(
+                role,
+                &scalar_name,
+                &event_discontinuous_names,
+            ) {
+                Some("event-discontinuous".to_string())
+            } else {
+                time_domain.clone()
+            };
             by_scalar.insert(
                 scalar_name.clone(),
                 solve::SolveVariableMeta {
@@ -1109,6 +1119,313 @@ fn build_variable_meta(
         .iter()
         .filter_map(|name| by_scalar.get(name).cloned())
         .collect()
+}
+
+fn continuous_real_role_is_event_discontinuous(
+    role: &str,
+    scalar_name: &str,
+    event_discontinuous_names: &IndexSet<String>,
+) -> bool {
+    matches!(role, "algebraic" | "output" | "input")
+        && event_discontinuous_names.contains(scalar_name)
+}
+
+fn event_discontinuous_scalar_names(dae_model: &dae::Dae) -> IndexSet<String> {
+    let event_discrete_names = event_discrete_scalar_names(dae_model);
+    let mut definitions = continuous_definition_expressions(dae_model);
+    let mut event_discontinuous = IndexSet::new();
+    loop {
+        let before = event_discontinuous.len();
+        for (scalar_name, exprs) in &definitions {
+            if event_discontinuous.contains(scalar_name) {
+                continue;
+            }
+            if exprs.iter().any(|expr| {
+                expression_is_event_discontinuous(expr, &event_discrete_names, &event_discontinuous)
+            }) {
+                event_discontinuous.insert(scalar_name.clone());
+            }
+        }
+        if event_discontinuous.len() == before {
+            return event_discontinuous;
+        }
+        definitions.retain(|name, _| !event_discontinuous.contains(name));
+    }
+}
+
+fn event_discrete_scalar_names(dae_model: &dae::Dae) -> IndexSet<String> {
+    dae_model
+        .variables
+        .discrete_reals
+        .iter()
+        .chain(dae_model.variables.discrete_valued.iter())
+        .flat_map(|(name, var)| scalar_names(name.as_str(), var))
+        .collect()
+}
+
+fn continuous_definition_expressions(
+    dae_model: &dae::Dae,
+) -> IndexMap<String, Vec<rumoca_core::Expression>> {
+    let continuous_vars = dae_model
+        .variables
+        .states
+        .iter()
+        .chain(dae_model.variables.algebraics.iter())
+        .chain(dae_model.variables.outputs.iter())
+        .chain(dae_model.variables.inputs.iter())
+        .map(|(name, var)| (name.clone(), scalar_names(name.as_str(), var)))
+        .collect::<IndexMap<_, _>>();
+    let continuous_names = continuous_vars
+        .values()
+        .flat_map(|names| names.iter().cloned())
+        .collect::<IndexSet<_>>();
+    let mut definitions = IndexMap::new();
+    for eq in &dae_model.continuous.equations {
+        if let Some(lhs) = eq.lhs.as_ref() {
+            if let Some(scalars) = continuous_vars.get(lhs) {
+                for scalar_name in scalars {
+                    add_continuous_definition(&mut definitions, scalar_name, eq.rhs.clone());
+                }
+            }
+            continue;
+        }
+        collect_residual_continuous_definitions(&eq.rhs, &continuous_names, &mut definitions);
+    }
+    definitions
+}
+
+fn add_continuous_definition(
+    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+    scalar_name: &str,
+    expr: rumoca_core::Expression,
+) {
+    definitions
+        .entry(scalar_name.to_string())
+        .or_default()
+        .push(expr);
+}
+
+fn collect_residual_continuous_definitions(
+    expr: &rumoca_core::Expression,
+    continuous_names: &IndexSet<String>,
+    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+) -> IndexSet<String> {
+    match expr {
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs,
+            rhs,
+            ..
+        } => collect_sub_residual_definitions(lhs, rhs, continuous_names, definitions),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => collect_if_residual_definitions(branches, else_branch, continuous_names, definitions),
+        _ => IndexSet::new(),
+    }
+}
+
+fn collect_sub_residual_definitions(
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    continuous_names: &IndexSet<String>,
+    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+) -> IndexSet<String> {
+    let mut targets = IndexSet::new();
+    for scalar_name in continuous_ref_scalar_names(lhs, continuous_names) {
+        add_continuous_definition(definitions, &scalar_name, rhs.clone());
+        targets.insert(scalar_name);
+    }
+    for scalar_name in continuous_ref_scalar_names(rhs, continuous_names) {
+        add_continuous_definition(definitions, &scalar_name, lhs.clone());
+        targets.insert(scalar_name);
+    }
+    targets
+}
+
+fn collect_if_residual_definitions(
+    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &rumoca_core::Expression,
+    continuous_names: &IndexSet<String>,
+    definitions: &mut IndexMap<String, Vec<rumoca_core::Expression>>,
+) -> IndexSet<String> {
+    let mut guards = Vec::new();
+    let mut targets = IndexSet::new();
+    for (condition, branch_expr) in branches {
+        guards.push(condition.clone());
+        targets.extend(collect_residual_continuous_definitions(
+            branch_expr,
+            continuous_names,
+            definitions,
+        ));
+    }
+    targets.extend(collect_residual_continuous_definitions(
+        else_branch,
+        continuous_names,
+        definitions,
+    ));
+    for scalar_name in &targets {
+        for guard in &guards {
+            add_continuous_definition(definitions, scalar_name, guard.clone());
+        }
+    }
+    targets
+}
+
+fn continuous_ref_scalar_names(
+    expr: &rumoca_core::Expression,
+    continuous_names: &IndexSet<String>,
+) -> Vec<String> {
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return Vec::new();
+    };
+    event_dependency_ref_names(name, subscripts)
+        .into_iter()
+        .flat_map(|candidate| matching_scalar_names(continuous_names, &candidate))
+        .collect()
+}
+
+fn matching_scalar_names(names: &IndexSet<String>, candidate: &str) -> Vec<String> {
+    if names.contains(candidate) {
+        return vec![candidate.to_string()];
+    }
+    names
+        .iter()
+        .filter(|name| dae::component_base_name(name).as_deref() == Some(candidate))
+        .cloned()
+        .collect()
+}
+
+fn expression_is_event_discontinuous(
+    expr: &rumoca_core::Expression,
+    event_discrete_names: &IndexSet<String>,
+    event_discontinuous_names: &IndexSet<String>,
+) -> bool {
+    let mut checker = EventDiscontinuityChecker {
+        event_discrete_names,
+        event_discontinuous_names,
+        found: false,
+        no_event_depth: 0,
+    };
+    checker.visit_expression(expr);
+    checker.found
+}
+
+struct EventDiscontinuityChecker<'a> {
+    event_discrete_names: &'a IndexSet<String>,
+    event_discontinuous_names: &'a IndexSet<String>,
+    found: bool,
+    no_event_depth: usize,
+}
+
+impl ExpressionVisitor for EventDiscontinuityChecker<'_> {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        if !self.found {
+            self.walk_expression(expr);
+        }
+    }
+
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        let names = event_dependency_ref_names(name, subscripts);
+        if names.iter().any(|name| {
+            event_name_set_contains(self.event_discrete_names, name)
+                || event_name_set_contains(self.event_discontinuous_names, name)
+        }) {
+            self.found = true;
+            return;
+        }
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
+        }
+    }
+
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if *function == rumoca_core::BuiltinFunction::NoEvent {
+            self.no_event_depth += 1;
+            for arg in args {
+                self.visit_expression(arg);
+            }
+            self.no_event_depth -= 1;
+            return;
+        }
+        if self.no_event_depth == 0
+            && matches!(
+                function,
+                rumoca_core::BuiltinFunction::Div
+                    | rumoca_core::BuiltinFunction::Mod
+                    | rumoca_core::BuiltinFunction::Rem
+                    | rumoca_core::BuiltinFunction::Ceil
+                    | rumoca_core::BuiltinFunction::Floor
+                    | rumoca_core::BuiltinFunction::Integer
+                    | rumoca_core::BuiltinFunction::Delay
+            )
+        {
+            self.found = true;
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+
+    fn visit_binary(
+        &mut self,
+        op: &rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+    ) {
+        if self.no_event_depth == 0
+            && matches!(
+                op,
+                rumoca_core::OpBinary::Ge
+                    | rumoca_core::OpBinary::Gt
+                    | rumoca_core::OpBinary::Le
+                    | rumoca_core::OpBinary::Lt
+            )
+        {
+            self.found = true;
+            return;
+        }
+        self.visit_expression(lhs);
+        self.visit_expression(rhs);
+    }
+}
+
+fn event_dependency_ref_names(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+) -> Vec<String> {
+    let base = name
+        .as_str()
+        .strip_prefix("__pre__.")
+        .unwrap_or_else(|| name.as_str())
+        .to_string();
+    let mut names = vec![base.clone()];
+    if !subscripts.is_empty()
+        && let Some(indices) = crate::literal_positive_indices(subscripts)
+    {
+        names.push(dae::format_subscript_key(&base, &indices));
+    }
+    names
+}
+
+fn event_name_set_contains(names: &IndexSet<String>, candidate: &str) -> bool {
+    names.contains(candidate)
+        || names
+            .iter()
+            .any(|name| dae::component_base_name(name).as_deref() == Some(candidate))
 }
 
 fn variable_meta_classification(

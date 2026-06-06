@@ -844,6 +844,123 @@ fn lower_skips_visible_observation_with_dynamic_subscript() {
 }
 
 #[test]
+fn variable_meta_marks_relation_driven_real_output_event_discontinuous() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(var("y")),
+            rhs: Box::new(rumoca_core::Expression::If {
+                branches: vec![(
+                    rumoca_core::Expression::Binary {
+                        op: rumoca_core::OpBinary::Lt,
+                        lhs: Box::new(var("time")),
+                        rhs: Box::new(real_expr(0.5)),
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                    real_expr(1.0),
+                )],
+                else_branch: Box::new(real_expr(0.0)),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+        origin: "relation driven output".to_string(),
+        scalar_count: 1,
+    });
+
+    let meta = build_variable_meta(&dae_model, &["y".to_string()]);
+
+    assert_eq!(meta.len(), 1);
+    assert_eq!(meta[0].variability.as_deref(), Some("continuous"));
+    assert_eq!(meta[0].time_domain.as_deref(), Some("event-discontinuous"));
+}
+
+#[test]
+fn variable_meta_marks_guarded_residual_output_event_discontinuous() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
+    dae_model.variables.discrete_valued.insert(
+        rumoca_core::VarName::new("c"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("c"),
+            dims: vec![5],
+            ..Default::default()
+        },
+    );
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: rumoca_core::Expression::If {
+            branches: vec![(indexed_var("c", 5), sub(var("y"), real_expr(1.0)))],
+            else_branch: Box::new(sub(var("y"), real_expr(0.0))),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+        origin: "event guarded residual".to_string(),
+        scalar_count: 1,
+    });
+
+    let meta = build_variable_meta(&dae_model, &["y".to_string()]);
+
+    assert_eq!(meta.len(), 1);
+    assert_eq!(meta[0].variability.as_deref(), Some("continuous"));
+    assert_eq!(meta[0].time_domain.as_deref(), Some("event-discontinuous"));
+}
+
+#[test]
+fn variable_meta_propagates_event_discontinuity_through_algebraic_dependency() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("a"), scalar_var("a"));
+    dae_model
+        .variables
+        .outputs
+        .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("a")),
+        rhs: rumoca_core::Expression::If {
+            branches: vec![(
+                rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Ge,
+                    lhs: Box::new(var("time")),
+                    rhs: Box::new(real_expr(0.0)),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                real_expr(1.0),
+            )],
+            else_branch: Box::new(real_expr(0.0)),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+        origin: "relation driven algebraic".to_string(),
+        scalar_count: 1,
+    });
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("y")),
+        rhs: var("a"),
+        span: rumoca_core::Span::DUMMY,
+        origin: "dependent output".to_string(),
+        scalar_count: 1,
+    });
+
+    let meta = build_variable_meta(&dae_model, &["y".to_string()]);
+
+    assert_eq!(meta.len(), 1);
+    assert_eq!(meta[0].time_domain.as_deref(), Some("event-discontinuous"));
+}
+
+#[test]
 fn lower_supports_visible_observation_with_array_literal_size_range() {
     let mut dae_model = dae::Dae::default();
     dae_model
