@@ -425,7 +425,6 @@ pub(super) fn function_param_size(param: &rumoca_core::FunctionParam) -> Option<
     param.dims.iter().try_fold(1usize, |acc, dim| {
         usize::try_from(*dim)
             .ok()
-            .filter(|dim| *dim > 0)
             .and_then(|dim| acc.checked_mul(dim))
     })
 }

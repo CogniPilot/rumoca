@@ -28,6 +28,21 @@ fn component_ref(name: &str) -> rumoca_core::ComponentReference {
     }
 }
 
+fn indexed_component_ref(name: &str, index: i64) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span: rumoca_core::Span::DUMMY,
+        parts: vec![rumoca_core::ComponentRefPart {
+            ident: name.to_string(),
+            span: rumoca_core::Span::DUMMY,
+            subs: vec![rumoca_core::Subscript::generated_expr(Box::new(int_expr(
+                index,
+            )))],
+        }],
+        def_id: None,
+    }
+}
+
 fn indexed_var(name: &str, index: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new(name).into(),
@@ -111,6 +126,13 @@ fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_cor
         op: OpBinary::Sub,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn tuple_expr(elements: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
+    rumoca_core::Expression::Tuple {
+        elements,
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -671,6 +693,65 @@ fn lower_refines_parameter_start_from_array_max_dependency() {
     };
 
     assert!((prepared.parameters[index] - 0.01).abs() <= 1.0e-12);
+}
+
+#[test]
+fn lower_applies_tuple_function_initial_equation_to_parameter_array_outputs() {
+    let mut dae_model = dae::Dae::default();
+    let mut r = scalar_var("filter.r");
+    r.dims = vec![2];
+    dae_model.variables.parameters.insert(r.name.clone(), r);
+    dae_model
+        .variables
+        .parameters
+        .insert("filter.a".into(), scalar_var("filter.a"));
+
+    let mut function = rumoca_core::Function::new("Pkg.lowPass", rumoca_core::Span::DUMMY);
+    function.add_output(rumoca_core::FunctionParam::new("r", "Real").with_dims(vec![2]));
+    function.add_output(rumoca_core::FunctionParam::new("a", "Real"));
+    function.body = vec![
+        rumoca_core::Statement::Assignment {
+            comp: indexed_component_ref("r", 1),
+            value: real_expr(2.0),
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Statement::Assignment {
+            comp: indexed_component_ref("r", 2),
+            value: real_expr(3.0),
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Statement::Assignment {
+            comp: component_ref("a"),
+            value: real_expr(5.0),
+            span: rumoca_core::Span::DUMMY,
+        },
+    ];
+    dae_model
+        .symbols
+        .functions
+        .insert(function.name.clone(), function);
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            sub(
+                tuple_expr(vec![var("filter.r"), var("filter.a")]),
+                call_expr("Pkg.lowPass", Vec::new()),
+            ),
+            rumoca_core::Span::DUMMY,
+            "(filter.r, filter.a) = Pkg.lowPass()",
+        ));
+
+    let prepared = lower_dae_to_solve_model(&dae_model)
+        .expect("tuple function initial equation should seed parameter slots");
+
+    let value = |name: &str| match prepared.problem.layout.binding(name) {
+        Some(rumoca_ir_solve::ScalarSlot::P { index, .. }) => prepared.parameters[index],
+        other => panic!("expected parameter slot for {name}, got {other:?}"),
+    };
+    assert_eq!(value("filter.r[1]"), 2.0);
+    assert_eq!(value("filter.r[2]"), 3.0);
+    assert_eq!(value("filter.a"), 5.0);
 }
 
 #[test]

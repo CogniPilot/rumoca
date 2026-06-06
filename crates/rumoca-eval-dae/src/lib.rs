@@ -37,4 +37,6 @@ pub use eval::{
     try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime,
     try_build_runtime_parameter_tail_env_with_runtime, try_refresh_env_solver_and_parameter_values,
 };
-pub use initial_assignments::{InitialAssignment, initial_assignment_from_equation};
+pub use initial_assignments::{
+    InitialAssignment, initial_assignment_from_equation, initial_assignments_from_equation,
+};

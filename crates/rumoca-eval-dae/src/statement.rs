@@ -400,6 +400,13 @@ fn apply_selected_function_outputs<T: SimFloat>(
                 });
             if !dims.is_empty()
                 && let Some(total) = total
+                && total == 0
+            {
+                assigned_outputs += 1;
+                continue;
+            }
+            if !dims.is_empty()
+                && let Some(total) = total
                 && total > 1
             {
                 let values = eval_selected_function_output_array(

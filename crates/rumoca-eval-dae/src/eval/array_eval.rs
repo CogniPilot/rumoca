@@ -1215,7 +1215,6 @@ fn function_param_size(param: &rumoca_core::FunctionParam) -> usize {
         .try_fold(1usize, |acc, dim| {
             usize::try_from(*dim)
                 .ok()
-                .filter(|dim| *dim > 0)
                 .and_then(|dim| acc.checked_mul(dim))
         })
         .unwrap_or(0)
@@ -1340,7 +1339,7 @@ pub(super) fn infer_runtime_expr_dims<T: SimFloat>(
                 output
                     .dims
                     .iter()
-                    .filter_map(|dim| usize::try_from(*dim).ok().filter(|dim| *dim > 0))
+                    .filter_map(|dim| usize::try_from(*dim).ok())
                     .collect::<Vec<_>>()
             })
             .filter(|dims| !dims.is_empty())
@@ -1360,7 +1359,7 @@ fn runtime_vector_dims(len: usize) -> Vec<usize> {
 fn infer_declared_or_value_dims(dims: &[i64], value_count: usize) -> Vec<usize> {
     let declared = dims
         .iter()
-        .map(|dim| usize::try_from(*dim).ok().filter(|dim| *dim > 0))
+        .map(|dim| usize::try_from(*dim).ok())
         .collect::<Option<Vec<_>>>();
     if let Some(declared) = declared
         && !declared.is_empty()

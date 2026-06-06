@@ -223,9 +223,9 @@ fn eval_function_shape_expr<T: SimFloat>(
                 });
             }
         };
-        if dim <= 0 {
+        if dim < 0 {
             return Err(EvalError::UnsupportedExpression {
-                kind: "non-positive function shape dimension",
+                kind: "negative function shape dimension",
             });
         }
         dims.push(dim);
@@ -235,7 +235,7 @@ fn eval_function_shape_expr<T: SimFloat>(
 
 fn eval_shape_expr_dim<T: SimFloat>(expr: &Expression, env: &VarEnv<T>) -> Result<i64, EvalError> {
     let value = eval_expr::<T>(expr, env)?.real().round();
-    if !value.is_finite() || value < 1.0 || value > i64::MAX as f64 {
+    if !value.is_finite() || value < 0.0 || value > i64::MAX as f64 {
         return Err(EvalError::UnsupportedExpression {
             kind: "invalid function shape dimension",
         });
@@ -293,9 +293,10 @@ fn copy_array_literal_vector_entries<T: SimFloat>(
     caller_env: &VarEnv<T>,
 ) -> Result<bool, EvalError> {
     if elements.is_empty() {
-        return Ok(false);
+        return bind_empty_array_literal_input(local_env, param);
     }
-    if let Some(expected) = concrete_param_size(&param.dims)
+    if param.shape_expr.is_empty()
+        && let Some(expected) = concrete_param_size(&param.dims)
         && expected != elements.len()
     {
         return Err(EvalError::ShapeMismatch {
@@ -332,6 +333,39 @@ fn copy_array_literal_vector_entries<T: SimFloat>(
         dims.insert(format!("{param_name}.{field}"), shape);
     }
     Ok(true)
+}
+
+fn bind_empty_array_literal_input<T: SimFloat>(
+    local_env: &mut VarEnv<T>,
+    param: &FunctionParam,
+) -> Result<bool, EvalError> {
+    let dims = if let Some(expected) = concrete_param_size(&param.dims) {
+        if expected != 0 {
+            return Err(EvalError::ShapeMismatch {
+                context: "function array input",
+                expected,
+                actual: 0,
+            });
+        }
+        param.dims.clone()
+    } else if accepts_empty_vector_literal(param) {
+        vec![0]
+    } else if !param.shape_expr.is_empty() {
+        return Err(EvalError::ShapeMismatch {
+            context: "function array input rank",
+            expected: param.shape_expr.len(),
+            actual: 1,
+        });
+    } else {
+        return Ok(false);
+    };
+    std::sync::Arc::make_mut(&mut local_env.dims).insert(param.name.clone(), dims);
+    Ok(true)
+}
+
+fn accepts_empty_vector_literal(param: &FunctionParam) -> bool {
+    param.dims.len() == 1 && param.dims[0] < 0
+        || param.dims.is_empty() && param.shape_expr.len() == 1
 }
 
 fn copy_array_literal_matrix_entries<T: SimFloat>(
@@ -381,7 +415,8 @@ fn copy_array_literal_matrix_entries<T: SimFloat>(
     if max_cols == 0 {
         return Ok(false);
     }
-    if let Some(expected) = concrete_param_size(&param.dims)
+    if param.shape_expr.is_empty()
+        && let Some(expected) = concrete_param_size(&param.dims)
         && expected != actual
     {
         return Err(EvalError::ShapeMismatch {
@@ -729,11 +764,6 @@ fn fill_dynamic_array_input_dims_from_count(
         });
     }
     let inferred = value_count / known_product;
-    if inferred == 0 {
-        return Err(EvalError::UnsupportedExpression {
-            kind: "empty dynamic function array input",
-        });
-    }
     dims[dynamic_indices[0]] = inferred as i64;
     Ok(())
 }
@@ -788,7 +818,7 @@ fn infer_array_arg_dims<T: SimFloat>(
 }
 
 fn validate_array_input_dims(dims: &[i64], value_count: usize) -> Result<(), EvalError> {
-    if dims.is_empty() || dims.iter().any(|dim| *dim <= 0) {
+    if dims.is_empty() || dims.iter().any(|dim| *dim < 0) {
         return Err(EvalError::UnsupportedExpression {
             kind: "function array input shape",
         });
@@ -813,7 +843,6 @@ fn concrete_param_size(dims: &[i64]) -> Option<usize> {
     dims.iter().try_fold(1usize, |acc, dim| {
         usize::try_from(*dim)
             .ok()
-            .filter(|dim| *dim > 0)
             .and_then(|dim| acc.checked_mul(dim))
     })
 }
@@ -1289,6 +1318,9 @@ fn collect_function_array_output<T: SimFloat>(
     let expected = concrete_param_size(&dims).ok_or(EvalError::UnsupportedExpression {
         kind: "function array output shape",
     })?;
+    if expected == 0 {
+        return Ok(Vec::new());
+    }
     let values =
         array_values_from_env_name_generic(output.name.as_str(), local_env).ok_or_else(|| {
             EvalError::MissingBinding {

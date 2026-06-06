@@ -109,8 +109,8 @@ fn expression_safe_for_observation_refresh(
     lhs: &rumoca_core::VarName,
     expr: &rumoca_core::Expression,
 ) -> bool {
-    !expression_contains_clocked_value_operator(dae_model, expr)
-        && !(target_has_clock_metadata(dae_model, lhs.as_str())
+    !(expression_contains_clocked_value_operator(dae_model, expr)
+        || target_has_clock_metadata(dae_model, lhs.as_str())
             && expression_contains_lowered_pre_ref(expr))
 }
 

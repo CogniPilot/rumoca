@@ -1002,6 +1002,104 @@ fn test_eval_function_dynamic_vector_input_binds_expression_shape() {
 }
 
 #[test]
+fn test_nested_multi_output_function_skips_zero_sized_output_scalar_selection() {
+    let mut env = VarEnv::<f64>::new();
+    let mut functions = IndexMap::new();
+
+    let mut inner = Function::new("Pkg.inner", rumoca_core::Span::DUMMY);
+    inner.add_input(
+        FunctionParam::new("u", "Real")
+            .with_dims(vec![0])
+            .with_shape_expr(vec![Subscript::generated_colon(rumoca_core::Span::DUMMY)]),
+    );
+    inner.add_input(FunctionParam::new("empty_source", "Real").with_dims(vec![0]));
+    inner.add_output(
+        FunctionParam::new("y", "Real")
+            .with_dims(vec![0])
+            .with_shape_expr(vec![Subscript::generated_expr(Box::new(builtin(
+                BuiltinFunction::Size,
+                vec![var("u"), int_lit(1)],
+            )))]),
+    );
+    inner.add_output(
+        FunctionParam::new("empty", "Real")
+            .with_dims(vec![0])
+            .with_shape_expr(vec![Subscript::generated_expr(Box::new(builtin(
+                BuiltinFunction::Size,
+                vec![var("empty_source"), int_lit(1)],
+            )))]),
+    );
+    inner.body = vec![Statement::For {
+        indices: vec![rumoca_core::ForIndex {
+            ident: "i".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(builtin(BuiltinFunction::Size, vec![var("u"), int_lit(1)])),
+                span: rumoca_core::Span::DUMMY,
+            },
+        }],
+        equations: vec![Statement::Assignment {
+            comp: rumoca_core::ComponentReference {
+                local: false,
+                span: rumoca_core::Span::DUMMY,
+                parts: vec![rumoca_core::ComponentRefPart {
+                    ident: "y".to_string(),
+                    span: rumoca_core::Span::DUMMY,
+                    subs: vec![Subscript::generated_expr(Box::new(var("i")))],
+                }],
+                def_id: None,
+            },
+            value: rumoca_core::Expression::Index {
+                base: Box::new(var("u")),
+                subscripts: vec![Subscript::generated_expr(Box::new(var("i")))],
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: rumoca_core::Span::DUMMY,
+        }],
+        span: rumoca_core::Span::DUMMY,
+    }];
+    functions.insert("Pkg.inner".to_string(), inner);
+
+    let mut outer = Function::new("Pkg.outer", rumoca_core::Span::DUMMY);
+    outer.add_output(FunctionParam::new("y", "Real").with_dims(vec![2]));
+    outer.add_output(FunctionParam::new("empty", "Real").with_dims(vec![0]));
+    outer.body = vec![Statement::FunctionCall {
+        comp: comp_ref("Pkg.inner"),
+        args: vec![
+            arr(vec![lit(7.0), lit(11.0)], false),
+            arr(Vec::new(), false),
+        ],
+        outputs: vec![comp_ref("y"), comp_ref("empty")],
+        span: rumoca_core::Span::DUMMY,
+    }];
+    functions.insert("Pkg.outer".to_string(), outer);
+    env.functions = Arc::new(functions);
+
+    let inner_args = vec![
+        arr(vec![lit(7.0), lit(11.0)], false),
+        arr(Vec::new(), false),
+    ];
+    assert_eq!(
+        eval_user_function_array_output_pub(&VarName::new("Pkg.inner"), &inner_args, &env)
+            .expect("inner dynamic output should evaluate"),
+        vec![7.0, 11.0]
+    );
+    assert_eq!(
+        eval_expr_or_default::<f64>(&fn_call("Pkg.inner.y[1]", inner_args.clone()), &env),
+        7.0
+    );
+    assert_eq!(
+        eval_expr_or_default::<f64>(&fn_call("Pkg.inner.y[2]", inner_args), &env),
+        11.0
+    );
+    assert_eq!(
+        eval_array_values::<f64>(&fn_call("Pkg.outer", Vec::new()), &env),
+        vec![7.0, 11.0]
+    );
+}
+
+#[test]
 fn test_eval_array_values_cross_product() {
     let mut env = VarEnv::<f64>::new();
     env.dims = Arc::new(IndexMap::from([

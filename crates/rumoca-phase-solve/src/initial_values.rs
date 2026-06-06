@@ -5,9 +5,9 @@ use rumoca_core::{ExpressionVisitor, OpBinary};
 use rumoca_eval_dae::eval::{EvalError, EvalRuntimeState};
 use rumoca_eval_dae::{
     InitialAssignment, eval_array_values, eval_expr, eval_selected_function_output_pub,
-    initial_assignment_from_equation, map_var_to_env, resolve_function_call_outputs_pub,
-    seed_pre_values_in_env_runtime, set_array_entries, set_pre_value_in_env,
-    try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime,
+    initial_assignment_from_equation, initial_assignments_from_equation, map_var_to_env,
+    resolve_function_call_outputs_pub, seed_pre_values_in_env_runtime, set_array_entries,
+    set_pre_value_in_env, try_build_runtime_parameter_tail_env_with_declared_slots_and_runtime,
 };
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -33,38 +33,18 @@ pub(crate) fn apply_initial_equations_to_start_values(
     let max_passes = init_eq_count.max(aliases.len()).clamp(1, 32);
     for _ in 0..max_passes {
         let mut changed = false;
-        for eq in &dae_model.initialization.equations {
-            let Some(assignment) = initial_assignment_from_equation(eq) else {
-                continue;
+        {
+            let mut context = InitialEquationPassContext {
+                dae_model,
+                layout,
+                params,
+                initial_y,
+                env: &mut env,
+                pinned: &mut pinned,
             };
-            if solution_is_runtime_alias(layout, assignment.solution) {
-                continue;
+            for eq in &dae_model.initialization.equations {
+                changed |= apply_initial_equation_assignments(&mut context, eq)?;
             }
-            let targets = assignment_target_scalar_names(layout, assignment.target.as_str());
-            let values = initial_assignment_values(
-                assignment.solution,
-                &env,
-                assignment.target.as_str(),
-                &targets,
-            )
-            .map_err(|source| SolveModelLowerError::Evaluation {
-                context: format!("initial assignment for `{}`", assignment.target),
-                source,
-                span: assignment.solution.span().or(Some(eq.span)),
-            })?;
-            changed |= pin_initial_assignment_targets(&targets, &mut pinned);
-            changed |= apply_initial_assignment_values(
-                InitialAssignmentApplyContext {
-                    dae_model,
-                    layout,
-                    params,
-                    initial_y,
-                    env: &mut env,
-                },
-                &assignment,
-                &targets,
-                &values,
-            );
         }
         changed |= seed_continuous_assignments(
             dae_model,
@@ -89,6 +69,59 @@ pub(crate) fn apply_initial_equations_to_start_values(
         }
     }
     Ok(())
+}
+
+struct InitialEquationPassContext<'a> {
+    dae_model: &'a dae::Dae,
+    layout: &'a solve::VarLayout,
+    params: &'a mut [f64],
+    initial_y: &'a mut [f64],
+    env: &'a mut rumoca_eval_dae::VarEnv<f64>,
+    pinned: &'a mut HashSet<String>,
+}
+
+fn apply_initial_equation_assignments(
+    context: &mut InitialEquationPassContext<'_>,
+    eq: &dae::Equation,
+) -> Result<bool, SolveModelLowerError> {
+    let mut changed = false;
+    for assignment in initial_assignments_from_equation(eq) {
+        if solution_is_runtime_alias(context.layout, assignment.solution) {
+            continue;
+        }
+        changed |= apply_initial_equation_assignment(context, eq, &assignment)?;
+    }
+    Ok(changed)
+}
+
+fn apply_initial_equation_assignment(
+    context: &mut InitialEquationPassContext<'_>,
+    eq: &dae::Equation,
+    assignment: &InitialAssignment<'_>,
+) -> Result<bool, SolveModelLowerError> {
+    let targets = assignment_target_scalar_names(context.layout, assignment.target.as_str());
+    let values =
+        initial_assignment_values(assignment, context.env, &targets).map_err(|source| {
+            SolveModelLowerError::Evaluation {
+                context: format!("initial assignment for `{}`", assignment.target),
+                source,
+                span: assignment.solution.span().or(Some(eq.span)),
+            }
+        })?;
+    let mut changed = pin_initial_assignment_targets(&targets, context.pinned);
+    changed |= apply_initial_assignment_values(
+        InitialAssignmentApplyContext {
+            dae_model: context.dae_model,
+            layout: context.layout,
+            params: &mut *context.params,
+            initial_y: &mut *context.initial_y,
+            env: &mut *context.env,
+        },
+        assignment,
+        &targets,
+        &values,
+    );
+    Ok(changed)
 }
 
 fn seed_continuous_assignments(
@@ -117,19 +150,15 @@ fn seed_continuous_assignments(
         {
             continue;
         }
-        let values = initial_assignment_values(
-            assignment.solution,
-            env,
-            assignment.target.as_str(),
-            &targets,
-        )
-        .map_err(|source| SolveModelLowerError::Evaluation {
-            context: format!(
-                "continuous initial seed assignment for `{}`",
-                assignment.target
-            ),
-            source,
-            span: assignment.solution.span().or(Some(eq.span)),
+        let values = initial_assignment_values(&assignment, env, &targets).map_err(|source| {
+            SolveModelLowerError::Evaluation {
+                context: format!(
+                    "continuous initial seed assignment for `{}`",
+                    assignment.target
+                ),
+                source,
+                span: assignment.solution.span().or(Some(eq.span)),
+            }
         })?;
         if values.iter().any(|value| !value.is_finite()) {
             continue;
@@ -389,44 +418,91 @@ fn layout_scalar_names(layout: &solve::VarLayout, target: &str) -> Vec<String> {
 }
 
 fn initial_assignment_values(
-    solution: &rumoca_core::Expression,
+    assignment: &InitialAssignment<'_>,
     env: &rumoca_eval_dae::VarEnv<f64>,
-    target: &str,
     targets: &[String],
 ) -> Result<Vec<f64>, EvalError> {
     let size = targets.len().max(1);
     let values = if size <= 1 {
-        vec![eval_expr::<f64>(solution, env)?]
+        selected_initial_tuple_function_values(assignment, env, targets)
+            .map(Ok)
+            .unwrap_or_else(|| {
+                eval_expr::<f64>(assignment.solution, env).map(|value| vec![value])
+            })?
     } else {
-        selected_initial_function_values(solution, env, target, targets)
+        selected_initial_tuple_function_values(assignment, env, targets)
+            .or_else(|| selected_initial_function_values(assignment, env, targets))
             .or_else(|| {
-                let values = eval_array_values::<f64>(solution, env);
+                let values = eval_array_values::<f64>(assignment.solution, env);
                 (!values.is_empty()).then_some(values)
             })
             .map(Ok)
-            .unwrap_or_else(|| eval_expr::<f64>(solution, env).map(|value| vec![value]))?
+            .unwrap_or_else(|| {
+                eval_expr::<f64>(assignment.solution, env).map(|value| vec![value])
+            })?
     };
     Ok(expand_values_to_size(values, size.max(1)))
 }
 
 fn selected_initial_function_values(
-    solution: &rumoca_core::Expression,
+    assignment: &InitialAssignment<'_>,
     env: &rumoca_eval_dae::VarEnv<f64>,
-    target: &str,
     targets: &[String],
 ) -> Option<Vec<f64>> {
-    let rumoca_core::Expression::FunctionCall { name, args, .. } = solution else {
+    if assignment.solution_output_index.is_some() {
+        return None;
+    }
+    let rumoca_core::Expression::FunctionCall { name, args, .. } = assignment.solution else {
         return None;
     };
     let (resolved, outputs) = resolve_function_call_outputs_pub(name, env)?;
     let [output] = outputs.as_slice() else {
         return None;
     };
+    selected_initial_output_values(
+        &resolved,
+        output,
+        args,
+        env,
+        assignment.target.as_str(),
+        targets,
+    )
+}
+
+fn selected_initial_tuple_function_values(
+    assignment: &InitialAssignment<'_>,
+    env: &rumoca_eval_dae::VarEnv<f64>,
+    targets: &[String],
+) -> Option<Vec<f64>> {
+    let output_index = assignment.solution_output_index?;
+    let rumoca_core::Expression::FunctionCall { name, args, .. } = assignment.solution else {
+        return None;
+    };
+    let (resolved, outputs) = resolve_function_call_outputs_pub(name, env)?;
+    let output = outputs.get(output_index)?;
+    selected_initial_output_values(
+        &resolved,
+        output,
+        args,
+        env,
+        assignment.target.as_str(),
+        targets,
+    )
+}
+
+fn selected_initial_output_values(
+    resolved: &rumoca_core::VarName,
+    output: &str,
+    args: &[rumoca_core::Expression],
+    env: &rumoca_eval_dae::VarEnv<f64>,
+    target: &str,
+    targets: &[String],
+) -> Option<Vec<f64>> {
     let suffixes = target_selection_suffixes(target, targets)?;
     Some(
         suffixes
             .iter()
-            .map(|suffix| eval_selected_function_output_pub(&resolved, output, suffix, args, env))
+            .map(|suffix| eval_selected_function_output_pub(resolved, output, suffix, args, env))
             .collect(),
     )
 }
