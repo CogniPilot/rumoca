@@ -160,7 +160,7 @@ impl<'a> LowerBuilder<'a> {
             };
             return self.eval_compile_time_expr(value, const_scope);
         }
-        if !rumoca_eval_dae::constant::is_real_fft_sample_points_name(name.as_str()) {
+        if name.last_segment() != "realFFTsamplePoints" {
             return Err(LowerError::Unsupported {
                 reason: "unsupported expression in for-loop range".to_string(),
             });

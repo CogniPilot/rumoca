@@ -378,7 +378,7 @@ const TEXTUAL_MODEL_PATH_RECOVERY_DEBT: &[(&str, usize)] = &[
         1,
     ),
     ("crates/rumoca-phase-solve/src/lower/expression_rows.rs", 1),
-    ("crates/rumoca-phase-solve/src/lower/fft.rs", 3),
+    ("crates/rumoca-phase-solve/src/lower/fft.rs", 2),
     (
         "crates/rumoca-phase-solve/src/lower/function_calls/runtime_intrinsics.rs",
         2,

@@ -204,7 +204,7 @@ where
     if name.as_str().starts_with(NAMED_FUNCTION_ARG_PREFIX) {
         return eval_const_expr_with(args.first()?, lookup);
     }
-    if is_real_fft_sample_points_name(name.as_str()) {
+    if name.last_segment() == "realFFTsamplePoints" {
         return eval_real_fft_sample_points(args, lookup)
             .map(|value| ConstValue::Real(value as f64));
     }
@@ -220,10 +220,6 @@ where
 }
 
 const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
-
-pub fn is_real_fft_sample_points_name(name: &str) -> bool {
-    rumoca_core::top_level_last_segment(name) == "realFFTsamplePoints"
-}
 
 pub fn real_fft_sample_points(f_max: f64, f_resolution: f64, f_max_factor: f64) -> Option<i64> {
     if f_resolution <= 0.0 || f_max <= f_resolution || f_max_factor < 1.0 {
