@@ -114,27 +114,6 @@ pub(super) fn linear_index_for_static_subscripts(
     Some(linear + 1)
 }
 
-pub(super) fn array_literal_shape(elements: &[Expression], is_matrix: bool) -> ExpressionShape {
-    if elements.is_empty() {
-        return if is_matrix {
-            ExpressionShape::Matrix(0, 0)
-        } else {
-            ExpressionShape::Vector(0)
-        };
-    }
-    if let Expression::Array {
-        elements: first_row,
-        ..
-    } = &elements[0]
-    {
-        ExpressionShape::Matrix(elements.len(), first_row.len())
-    } else if !is_matrix {
-        ExpressionShape::Vector(elements.len())
-    } else {
-        ExpressionShape::Matrix(1, elements.len())
-    }
-}
-
 pub(super) fn shape_scalar_count(shape: ExpressionShape) -> Option<usize> {
     match shape {
         ExpressionShape::Scalar => Some(1),

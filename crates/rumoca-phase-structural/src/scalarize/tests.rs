@@ -29,6 +29,22 @@ fn var_sub(name: &str, subscripts: Vec<Subscript>) -> Expression {
     }
 }
 
+fn expr_index(base: Expression, subscripts: Vec<Subscript>) -> Expression {
+    Expression::Index {
+        base: Box::new(base),
+        subscripts,
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn field(base: Expression, field: &str) -> Expression {
+    Expression::FieldAccess {
+        base: Box::new(base),
+        field: field.to_string(),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn real(value: f64) -> Expression {
     Expression::Literal {
         value: Literal::Real(value),
@@ -878,6 +894,214 @@ fn scalarize_column_slice_var_ref_projects_colon_subscript() {
         Some(VarName::new("y[3]"))
     );
     assert_eq!(dae_model.continuous.equations[2].rhs, var_idx("A", &[3, 2]));
+}
+
+#[test]
+fn scalarize_field_access_slice_projects_index_base() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.algebraics.insert(
+        VarName::new("rectifier.vAC"),
+        variable("rectifier.vAC", &[3]),
+    );
+    for i in 1..=3 {
+        let name = format!("rectifier.ac.pin[{i}].v");
+        dae_model
+            .variables
+            .algebraics
+            .insert(VarName::new(&name), variable(&name, &[]));
+    }
+    dae_model.continuous.equations.push(eq(
+        "rectifier.vAC",
+        field(
+            expr_index(
+                var("rectifier.ac.pin"),
+                vec![Subscript::generated_colon(rumoca_core::Span::DUMMY)],
+            ),
+            "v",
+        ),
+        3,
+    ));
+
+    scalarize_equations(&mut dae_model);
+
+    assert_eq!(dae_model.continuous.equations.len(), 3);
+    assert_eq!(
+        dae_model.continuous.equations[0].lhs,
+        Some(VarName::new("rectifier.vAC[1]"))
+    );
+    assert_eq!(
+        dae_model.continuous.equations[0].rhs,
+        var("rectifier.ac.pin[1].v")
+    );
+    assert_eq!(
+        dae_model.continuous.equations[1].lhs,
+        Some(VarName::new("rectifier.vAC[2]"))
+    );
+    assert_eq!(
+        dae_model.continuous.equations[1].rhs,
+        var("rectifier.ac.pin[2].v")
+    );
+    assert_eq!(
+        dae_model.continuous.equations[2].lhs,
+        Some(VarName::new("rectifier.vAC[3]"))
+    );
+    assert_eq!(
+        dae_model.continuous.equations[2].rhs,
+        var("rectifier.ac.pin[3].v")
+    );
+}
+
+#[test]
+fn scalarize_field_access_slice_projects_declared_field_array() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(VarName::new("sum.re"), variable("sum.re", &[3]));
+    dae_model.variables.algebraics.insert(
+        VarName::new("transferFunction.aw.re"),
+        variable("transferFunction.aw.re", &[3]),
+    );
+    dae_model.continuous.equations.push(eq(
+        "sum.re",
+        field(
+            expr_index(
+                var("transferFunction.aw"),
+                vec![Subscript::generated_colon(rumoca_core::Span::DUMMY)],
+            ),
+            "re",
+        ),
+        3,
+    ));
+
+    scalarize_equations(&mut dae_model);
+
+    assert_eq!(dae_model.continuous.equations.len(), 3);
+    assert_eq!(
+        dae_model.continuous.equations[0].rhs,
+        var_sub(
+            "transferFunction.aw.re",
+            vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)]
+        )
+    );
+    assert_eq!(
+        dae_model.continuous.equations[1].rhs,
+        var_sub(
+            "transferFunction.aw.re",
+            vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)]
+        )
+    );
+    assert_eq!(
+        dae_model.continuous.equations[2].rhs,
+        var_sub(
+            "transferFunction.aw.re",
+            vec![Subscript::generated_index(3, rumoca_core::Span::DUMMY)]
+        )
+    );
+}
+
+#[test]
+fn scalarize_field_access_scalar_index_projects_declared_field_array() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(VarName::new("sum.re"), variable("sum.re", &[]));
+    dae_model.variables.algebraics.insert(
+        VarName::new("transferFunction.aw.re"),
+        variable("transferFunction.aw.re", &[3]),
+    );
+    dae_model.continuous.equations.push(eq(
+        "sum.re",
+        field(
+            expr_index(
+                var("transferFunction.aw"),
+                vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)],
+            ),
+            "re",
+        ),
+        1,
+    ));
+
+    scalarize_equations(&mut dae_model);
+
+    assert_eq!(dae_model.continuous.equations.len(), 1);
+    assert_eq!(
+        dae_model.continuous.equations[0].rhs,
+        var_sub(
+            "transferFunction.aw.re",
+            vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)]
+        )
+    );
+}
+
+#[test]
+fn scalarize_expression_rows_expands_vector_elements_in_array_literals() {
+    let ctx = ExpressionScalarizationContext {
+        var_dims: HashMap::from([("x".to_string(), vec![3])]),
+        structural_values: HashMap::new(),
+        complex_fields: HashMap::new(),
+        component_index_map: HashMap::new(),
+        function_output_index_map: HashMap::new(),
+    };
+    let expr = array(vec![real(0.0), var("x")]);
+
+    let rows = scalarize_expression_rows(&expr, 4, &ctx);
+
+    assert_eq!(rows[0], real(0.0));
+    assert_eq!(
+        rows[1],
+        var_sub(
+            "x",
+            vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)]
+        )
+    );
+    assert_eq!(
+        rows[2],
+        var_sub(
+            "x",
+            vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)]
+        )
+    );
+    assert_eq!(
+        rows[3],
+        var_sub(
+            "x",
+            vec![Subscript::generated_index(3, rumoca_core::Span::DUMMY)]
+        )
+    );
+}
+
+#[test]
+fn scalarize_indexed_array_literal_projects_vector_element() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(VarName::new("y"), variable("y", &[]));
+    dae_model
+        .variables
+        .algebraics
+        .insert(VarName::new("x"), variable("x", &[3]));
+    dae_model.continuous.equations.push(eq(
+        "y",
+        expr_index(
+            array(vec![real(0.0), var("x")]),
+            vec![Subscript::generated_index(3, rumoca_core::Span::DUMMY)],
+        ),
+        1,
+    ));
+
+    scalarize_equations(&mut dae_model);
+
+    assert_eq!(dae_model.continuous.equations.len(), 1);
+    assert_eq!(
+        dae_model.continuous.equations[0].rhs,
+        var_sub(
+            "x",
+            vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)]
+        )
+    );
 }
 
 #[test]

@@ -560,6 +560,7 @@ fn test_complete_scalar_alias_group_rewrites_aggregate_function_argument() {
             expr: var_ref("vehicle.omega[1]"),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
+            aggregate_dims: vec![3],
             env_keys: Vec::new(),
         },
         Substitution {
@@ -567,6 +568,7 @@ fn test_complete_scalar_alias_group_rewrites_aggregate_function_argument() {
             expr: var_ref("vehicle.omega[2]"),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
+            aggregate_dims: vec![3],
             env_keys: Vec::new(),
         },
         Substitution {
@@ -574,6 +576,7 @@ fn test_complete_scalar_alias_group_rewrites_aggregate_function_argument() {
             expr: var_ref("vehicle.omega[3]"),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
+            aggregate_dims: vec![3],
             env_keys: Vec::new(),
         },
     ];
@@ -597,6 +600,7 @@ fn test_single_scalar_alias_does_not_rewrite_aggregate_argument() {
         expr: var_ref("vehicle.omega[1]"),
         var_dims: Vec::new(),
         replacement_dims: Vec::new(),
+        aggregate_dims: vec![3],
         env_keys: Vec::new(),
     }];
     let result = apply_substitutions_to_expr(&expr, &substitutions);
@@ -612,6 +616,40 @@ fn test_single_scalar_alias_does_not_rewrite_aggregate_argument() {
 }
 
 #[test]
+fn test_partial_scalar_alias_group_does_not_rewrite_subscripted_aggregate_ref() {
+    let expr = var_ref_idx("CriticalDamping.uu", 3);
+    let substitutions = [
+        Substitution {
+            var_name: VarName::new("CriticalDamping.uu[1]"),
+            expr: var_ref("u_div_u_nominal"),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            aggregate_dims: vec![4],
+            env_keys: Vec::new(),
+        },
+        Substitution {
+            var_name: VarName::new("CriticalDamping.uu[2]"),
+            expr: var_ref("CriticalDamping.x[1]"),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            aggregate_dims: vec![4],
+            env_keys: Vec::new(),
+        },
+    ];
+    let result = apply_substitutions_to_expr(&expr, &substitutions);
+
+    assert!(
+        matches!(
+            result,
+            Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "CriticalDamping.uu"
+                    && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Index { value: 3, .. }])
+        ),
+        "partial scalar aliases for a four-element aggregate must not fabricate a two-element replacement"
+    );
+}
+
+#[test]
 fn test_substitute_var_projects_subscripted_aggregate_ref_through_aggregate_alias() {
     let expr = var_ref_idx("aimc.rotorCage.electroMagneticConverter.i", 2);
     let result = apply_substitutions_to_expr(
@@ -621,6 +659,7 @@ fn test_substitute_var_projects_subscripted_aggregate_ref_through_aggregate_alia
             expr: var_ref("aimc.rotorCage.i"),
             var_dims: vec![3],
             replacement_dims: vec![3],
+            aggregate_dims: vec![3],
             env_keys: Vec::new(),
         }],
     );

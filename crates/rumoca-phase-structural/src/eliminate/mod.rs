@@ -70,6 +70,8 @@ pub struct Substitution {
     pub var_dims: Vec<i64>,
     /// Dimensions of the replacement expression, if known.
     pub replacement_dims: Vec<i64>,
+    /// Declared dimensions of the aggregate that owns this scalar substitution.
+    pub aggregate_dims: Vec<i64>,
     /// Environment keys for this variable (e.g., `["z"]` or `["z[1]", "z[2]"]`).
     pub env_keys: Vec<String>,
 }
@@ -914,10 +916,18 @@ pub(super) fn substitution_for_var(dae: &Dae, var_name: VarName, expr: Expressio
     Substitution {
         var_dims: dae_var_dims(dae, &var_name),
         replacement_dims: replacement_expr_dims(dae, &expr),
+        aggregate_dims: aggregate_dims_for_substitution(dae, &var_name),
         env_keys: vec![var_name.as_str().to_string()],
         var_name,
         expr,
     }
+}
+
+fn aggregate_dims_for_substitution(dae: &Dae, var_name: &VarName) -> Vec<i64> {
+    let Some((base, _)) = scalar_var_name_key(var_name) else {
+        return dae_var_dims(dae, var_name);
+    };
+    dae_var_dims(dae, &VarName::new(base))
 }
 
 fn replacement_expr_dims(dae: &Dae, expr: &Expression) -> Vec<i64> {
@@ -1234,18 +1244,30 @@ fn apply_record_field_aggregate_substitutions(
 
 #[derive(Debug, Clone, Default)]
 struct AggregateAliasSubstitutionGroup {
-    dims: Vec<usize>,
+    dims: Option<Vec<usize>>,
     replacement_base: Option<String>,
     values: IndexMap<Vec<usize>, Expression>,
+    invalid: bool,
 }
 
 impl AggregateAliasSubstitutionGroup {
-    fn insert(&mut self, indices: Vec<usize>, expr: Expression) {
-        if indices.len() > self.dims.len() {
-            self.dims.resize(indices.len(), 0);
+    fn insert(&mut self, indices: Vec<usize>, dims: Vec<usize>, expr: Expression) {
+        if indices.len() != dims.len()
+            || indices
+                .iter()
+                .zip(dims.iter())
+                .any(|(index, dim)| *index == 0 || *index > *dim)
+        {
+            self.invalid = true;
+            return;
         }
-        for (idx, value) in indices.iter().enumerate() {
-            self.dims[idx] = self.dims[idx].max(*value);
+        match &self.dims {
+            Some(existing) if existing != &dims => {
+                self.invalid = true;
+                return;
+            }
+            None => self.dims = Some(dims),
+            Some(_) => {}
         }
         self.replacement_base =
             replacement_aggregate_base(&expr, &indices, self.replacement_base.as_deref());
@@ -1253,8 +1275,11 @@ impl AggregateAliasSubstitutionGroup {
     }
 
     fn to_replacement_expr(&self, span: rumoca_core::Span) -> Option<Expression> {
-        let expected_len = self.expected_len();
-        if self.dims.is_empty() || expected_len <= 1 || self.values.len() != expected_len {
+        if self.invalid {
+            return None;
+        }
+        let expected_len = self.expected_len()?;
+        if expected_len <= 1 || self.values.len() != expected_len {
             return None;
         }
         if let Some(base) = &self.replacement_base {
@@ -1267,23 +1292,24 @@ impl AggregateAliasSubstitutionGroup {
         self.array_expr_at_depth(0, &mut Vec::new())
     }
 
-    fn expected_len(&self) -> usize {
-        self.dims.iter().product()
+    fn expected_len(&self) -> Option<usize> {
+        Some(self.dims.as_ref()?.iter().copied().product())
     }
 
     fn array_expr_at_depth(&self, depth: usize, current: &mut Vec<usize>) -> Option<Expression> {
-        if depth >= self.dims.len() {
+        let dims = self.dims.as_ref()?;
+        if depth >= dims.len() {
             return self.values.get(current).cloned();
         }
-        let mut elements = Vec::with_capacity(self.dims[depth]);
-        for index in 1..=self.dims[depth] {
+        let mut elements = Vec::with_capacity(dims[depth]);
+        for index in 1..=dims[depth] {
             current.push(index);
             elements.push(self.array_expr_at_depth(depth + 1, current)?);
             current.pop();
         }
         Some(Expression::Array {
             elements,
-            is_matrix: depth == 0 && self.dims.len() == 2,
+            is_matrix: depth == 0 && dims.len() == 2,
             span: rumoca_core::Span::DUMMY,
         })
     }
@@ -1307,12 +1333,24 @@ fn aggregate_alias_substitution_groups(
         let Some((base, indices)) = scalar_var_name_key(&substitution.var_name) else {
             continue;
         };
+        let Some(dims) = positive_usize_dims(&substitution.aggregate_dims) else {
+            continue;
+        };
         groups
             .entry(base.to_string())
             .or_insert_with(AggregateAliasSubstitutionGroup::default)
-            .insert(indices, substitution.expr.clone());
+            .insert(indices, dims, substitution.expr.clone());
     }
     groups
+}
+
+fn positive_usize_dims(dims: &[i64]) -> Option<Vec<usize>> {
+    let dims = dims
+        .iter()
+        .copied()
+        .map(|dim| usize::try_from(dim).ok().filter(|value| *value > 0))
+        .collect::<Option<Vec<_>>>()?;
+    (!dims.is_empty()).then_some(dims)
 }
 
 fn scalar_var_name_key(var_name: &VarName) -> Option<(&str, Vec<usize>)> {

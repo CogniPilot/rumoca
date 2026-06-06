@@ -897,6 +897,7 @@ fn test_eliminate_trivial_rewrites_eliminated_indexed_record_field_aggregate() {
             expr: lit(value),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
+            aggregate_dims: Vec::new(),
             env_keys: vec![name.to_string()],
         })
         .collect::<Vec<_>>();
@@ -928,6 +929,7 @@ fn test_eliminate_trivial_rewrites_dynamic_index_over_eliminated_array() {
             expr: lit(value),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
+            aggregate_dims: vec![2],
             env_keys: vec![name.to_string()],
         })
         .collect::<Vec<_>>();
@@ -965,6 +967,7 @@ fn test_eliminate_trivial_rewrites_eliminated_complex_field_parent_ref() {
             expr: lit(value),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
+            aggregate_dims: Vec::new(),
             env_keys: vec![name.to_string()],
         })
         .collect::<Vec<_>>();
@@ -1015,6 +1018,7 @@ fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
         expr: var_ref("source"),
         var_dims: Vec::new(),
         replacement_dims: Vec::new(),
+        aggregate_dims: Vec::new(),
         env_keys: vec!["alias".to_string()],
     }];
     apply_elimination_substitutions_to_dae(&mut dae, &substitutions);

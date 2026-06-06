@@ -213,7 +213,7 @@ pub fn build_complex_field_map(dae: &Dae) -> HashMap<String, [Option<String>; 2]
 /// - `Array { elements }` → return `elements[i-1]`
 /// - `VarRef { name, subscripts: [] }` for array vars → add `Subscript::generated_index(i, rumoca_core::Span::DUMMY)`
 /// - `FunctionCall { is_constructor: true }` → project positional constructor arg `i`
-/// - `Binary/Unary/BuiltinCall/If/FunctionCall/Index` → recurse into children
+/// - `Binary/Unary/BuiltinCall/If/FunctionCall/Index/FieldAccess` → recurse into children
 /// - Scalars (Literal, etc.) → broadcast unchanged
 pub struct IndexProjectionContext<'a> {
     i: usize,
@@ -293,6 +293,223 @@ impl<'a> IndexProjectionContext<'a> {
         fallback.clone()
     }
 
+    fn component_field_key(
+        &self,
+        base: &Expression,
+        field: &str,
+    ) -> Option<(String, Vec<Subscript>)> {
+        match base {
+            Expression::VarRef {
+                name, subscripts, ..
+            } => Some((format!("{}.{}", name.as_str(), field), subscripts.clone())),
+            Expression::Index {
+                base, subscripts, ..
+            } => {
+                let Expression::VarRef {
+                    name,
+                    subscripts: base_subscripts,
+                    ..
+                } = base.as_ref()
+                else {
+                    return None;
+                };
+                if !base_subscripts.is_empty() {
+                    return None;
+                }
+                Some((format!("{}.{}", name.as_str(), field), subscripts.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    fn component_field_dims(&self, key: &str) -> Option<Vec<i64>> {
+        let by_index = self.component_index_map.get(key)?;
+        let extent = by_index.keys().copied().max()?;
+        Some(vec![i64::try_from(extent).ok()?])
+    }
+
+    fn declared_field_shape(&self, key: &str, subscripts: &[Subscript]) -> Option<ExpressionShape> {
+        let dims = self.var_dims.get(key)?;
+        apply_subscripts_to_dims(dims, subscripts, self.structural_values)
+            .map(|dims| shape_from_dims(&dims))
+    }
+
+    fn component_field_shape(&self, base: &Expression, field: &str) -> Option<ExpressionShape> {
+        let (key, subscripts) = self.component_field_key(base, field)?;
+        if let Some(shape) = self.declared_field_shape(&key, &subscripts) {
+            return Some(shape);
+        }
+        let dims = self.component_field_dims(&key)?;
+        apply_subscripts_to_dims(&dims, &subscripts, self.structural_values)
+            .map(|dims| shape_from_dims(&dims))
+    }
+
+    fn project_field_subscripts(
+        &self,
+        dims: &[i64],
+        subscripts: &[Subscript],
+    ) -> Option<Vec<Subscript>> {
+        if let Some(projected) =
+            project_subscripted_dims(dims, subscripts, self.i, self.structural_values)
+        {
+            return Some(projected);
+        }
+        if apply_subscripts_to_dims(dims, subscripts, self.structural_values)
+            .is_some_and(|dims| dims.is_empty())
+        {
+            return Some(subscripts.to_vec());
+        }
+        None
+    }
+
+    fn project_declared_field_access(
+        &self,
+        key: &str,
+        subscripts: &[Subscript],
+    ) -> Option<Expression> {
+        let dims = self.var_dims.get(key)?;
+        let projected_subscripts = self.project_field_subscripts(dims, subscripts)?;
+        Some(Expression::VarRef {
+            name: rumoca_core::Reference::new(key.to_string()),
+            subscripts: projected_subscripts,
+            span: rumoca_core::Span::DUMMY,
+        })
+    }
+
+    fn project_component_field_access(&self, base: &Expression, field: &str) -> Option<Expression> {
+        let (key, subscripts) = self.component_field_key(base, field)?;
+        if let Some(expr) = self.project_declared_field_access(&key, &subscripts) {
+            return Some(expr);
+        }
+        let dims = self.component_field_dims(&key)?;
+        let projected_subscripts = self.project_field_subscripts(&dims, &subscripts)?;
+        let [Subscript::Index { value, .. }] = projected_subscripts.as_slice() else {
+            return None;
+        };
+        let index = usize::try_from(*value).ok()?;
+        let projected_name = self.component_index_map.get(&key)?.get(&index)?;
+        Some(Expression::VarRef {
+            name: rumoca_core::Reference::new(projected_name.clone()),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        })
+    }
+
+    fn project_index_expr(&self, base: &Expression, subscripts: &[Subscript]) -> Expression {
+        if let Some(dims) = self.expression_dims(base)
+            && let Some(projected_subscripts) =
+                project_subscripted_dims(&dims, subscripts, self.i, self.structural_values)
+        {
+            return Expression::Index {
+                base: Box::new(base.clone()),
+                subscripts: projected_subscripts,
+                span: rumoca_core::Span::DUMMY,
+            };
+        }
+
+        Expression::Index {
+            base: Box::new(self.project(base)),
+            subscripts: subscripts.to_vec(),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn array_literal_shape(&self, elements: &[Expression], is_matrix: bool) -> ExpressionShape {
+        if elements.is_empty() {
+            return if is_matrix {
+                ExpressionShape::Matrix(0, 0)
+            } else {
+                ExpressionShape::Vector(0)
+            };
+        }
+        if let Expression::Array {
+            elements: first_row,
+            ..
+        } = &elements[0]
+        {
+            return ExpressionShape::Matrix(elements.len(), first_row.len());
+        }
+        if is_matrix {
+            return ExpressionShape::Matrix(1, elements.len());
+        }
+        let Some(count) = elements.iter().try_fold(0usize, |count, element| {
+            shape_scalar_count(self.expression_shape(element)).map(|size| count + size)
+        }) else {
+            return ExpressionShape::Other;
+        };
+        ExpressionShape::Vector(count)
+    }
+
+    fn project_array_literal_scalar(
+        &self,
+        elements: &[Expression],
+        is_matrix: bool,
+        scalar_index: usize,
+    ) -> Option<Expression> {
+        if scalar_index == 0 {
+            return None;
+        }
+
+        let first = elements.first()?;
+        let Expression::Array {
+            elements: first_row,
+            ..
+        } = first
+        else {
+            return self.project_vector_literal_scalar(elements, is_matrix, scalar_index);
+        };
+        let cols = first_row.len();
+        if cols == 0 {
+            return None;
+        }
+
+        let flat = scalar_index - 1;
+        let row = flat / cols;
+        let col = flat % cols;
+        let Expression::Array {
+            elements: row_elements,
+            ..
+        } = elements.get(row)?
+        else {
+            return None;
+        };
+        row_elements.get(col).cloned()
+    }
+
+    fn project_vector_literal_scalar(
+        &self,
+        elements: &[Expression],
+        is_matrix: bool,
+        scalar_index: usize,
+    ) -> Option<Expression> {
+        let mut offset = 0usize;
+        for element in elements {
+            let count = shape_scalar_count(self.expression_shape(element))?;
+            if scalar_index > offset + count {
+                offset += count;
+                continue;
+            }
+            let local_index = scalar_index - offset;
+            return Some(self.project_vector_literal_element(element, count, local_index));
+        }
+        if is_matrix {
+            return elements.get(scalar_index - 1).cloned();
+        }
+        None
+    }
+
+    fn project_vector_literal_element(
+        &self,
+        element: &Expression,
+        count: usize,
+        local_index: usize,
+    ) -> Expression {
+        if count == 1 {
+            return element.clone();
+        }
+        self.project_at(element, local_index)
+    }
+
     fn expression_shape(&self, expr: &Expression) -> ExpressionShape {
         match expr {
             Expression::Literal { value: _, .. } => ExpressionShape::Scalar,
@@ -303,7 +520,7 @@ impl<'a> IndexProjectionContext<'a> {
                 elements,
                 is_matrix,
                 ..
-            } => array_literal_shape(elements, *is_matrix),
+            } => self.array_literal_shape(elements, *is_matrix),
             Expression::Unary { rhs, .. } => self.expression_shape(rhs),
             Expression::Binary { op, lhs, rhs, .. } => {
                 let lhs_shape = self.expression_shape(lhs);
@@ -345,6 +562,9 @@ impl<'a> IndexProjectionContext<'a> {
                 })
                 .map(|dims| shape_from_dims(&dims))
                 .unwrap_or(ExpressionShape::Other),
+            Expression::FieldAccess { base, field, .. } => self
+                .component_field_shape(base, field)
+                .unwrap_or(ExpressionShape::Scalar),
             _ => ExpressionShape::Other,
         }
     }
@@ -633,6 +853,13 @@ impl<'a> IndexProjectionContext<'a> {
                     span: rumoca_core::Span::DUMMY,
                 }
             }
+            Expression::FieldAccess { base, field, .. } => self
+                .project_component_field_access(base, field)
+                .unwrap_or_else(|| Expression::FieldAccess {
+                    base: Box::new(self.lower_scalar_linear_algebra(base)),
+                    field: field.clone(),
+                    span: rumoca_core::Span::DUMMY,
+                }),
             Expression::ArrayComprehension {
                 expr,
                 indices,
@@ -656,7 +883,8 @@ impl<'a> IndexProjectionContext<'a> {
                 elements,
                 is_matrix,
                 ..
-            } => project_array_literal_scalar(elements, *is_matrix, self.i)
+            } => self
+                .project_array_literal_scalar(elements, *is_matrix, self.i)
                 .unwrap_or_else(|| expr.clone()),
             Expression::VarRef {
                 name, subscripts, ..
@@ -740,11 +968,14 @@ impl<'a> IndexProjectionContext<'a> {
             }
             Expression::Index {
                 base, subscripts, ..
-            } => Expression::Index {
-                base: Box::new(self.project(base)),
-                subscripts: subscripts.clone(),
-                span: rumoca_core::Span::DUMMY,
-            },
+            } => self.project_index_expr(base, subscripts),
+            Expression::FieldAccess { base, field, .. } => self
+                .project_component_field_access(base, field)
+                .unwrap_or_else(|| Expression::FieldAccess {
+                    base: Box::new(self.project(base)),
+                    field: field.clone(),
+                    span: rumoca_core::Span::DUMMY,
+                }),
             _ => expr.clone(),
         }
     }
@@ -902,47 +1133,6 @@ fn sum_terms(terms: impl IntoIterator<Item = Expression>) -> Expression {
         };
     };
     iter.fold(first, add_expr)
-}
-
-fn project_array_literal_scalar(
-    elements: &[Expression],
-    is_matrix: bool,
-    scalar_index: usize,
-) -> Option<Expression> {
-    if scalar_index == 0 {
-        return None;
-    }
-
-    let first = elements.first()?;
-    let Expression::Array {
-        elements: first_row,
-        ..
-    } = first
-    else {
-        if !is_matrix {
-            return elements.get(scalar_index - 1).cloned();
-        }
-        // MLS §10.4: a single-row matrix literal is encoded as `is_matrix=true`
-        // with scalar elements. Preserve the written row order on the compiled
-        // scalarization path so it matches interpreted array evaluation.
-        return elements.get(scalar_index - 1).cloned();
-    };
-    let cols = first_row.len();
-    if cols == 0 {
-        return None;
-    }
-
-    let flat = scalar_index - 1;
-    let row = flat / cols;
-    let col = flat % cols;
-    let Expression::Array {
-        elements: row_elements,
-        ..
-    } = elements.get(row)?
-    else {
-        return None;
-    };
-    row_elements.get(col).cloned()
 }
 
 pub fn index_into_expr(
