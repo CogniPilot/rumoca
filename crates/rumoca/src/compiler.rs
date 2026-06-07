@@ -133,9 +133,8 @@ fn render_solve_template_with_name(
 }
 
 impl CompilationResult {
-    fn template_json_with_solve(&self) -> Result<Value, CompilerError> {
-        let dae = scalarized_dae(&self.dae);
-        dae_to_template_json_with_solve(&dae).map_err(CompilerError::TemplateError)
+    fn template_json_dae_only(&self) -> Result<Value, CompilerError> {
+        dae_to_template_json(&self.dae).map_err(CompilerError::TemplateError)
     }
 
     fn is_prunable_child(child: &Value) -> bool {
@@ -319,7 +318,7 @@ impl CompilationResult {
 
     /// Render the DAE using a template string.
     pub fn render_template_str(&self, template: &str) -> Result<String, CompilerError> {
-        let dae_json = self.template_json_with_solve()?;
+        let dae_json = self.template_json_dae_only()?;
         render_dae_template_with_json(&dae_json, template).map_err(CompilerError::TemplateError)
     }
 
@@ -331,7 +330,7 @@ impl CompilationResult {
         template: &str,
         model_name: &str,
     ) -> Result<String, CompilerError> {
-        let dae_json = self.template_json_with_solve()?;
+        let dae_json = self.template_json_dae_only()?;
         render_dae_template_with_json_and_name(&dae_json, template, model_name)
             .map_err(CompilerError::TemplateError)
     }
@@ -1298,6 +1297,32 @@ mod tests {
                 "expected algebraic `{expected}` in template output; got:\n{rendered}"
             );
         }
+    }
+
+    #[test]
+    fn test_dae_template_rendering_does_not_lower_solve_ir() {
+        let source = r#"
+            model DaeOnlyTemplate
+              parameter Real p = 2;
+              Real x[2](start = {1, 2});
+            equation
+              der(x) = {-p * x[1], -p * x[2]};
+            end DaeOnlyTemplate;
+        "#;
+
+        let result = Compiler::new()
+            .model("DaeOnlyTemplate")
+            .compile_str(source, "DaeOnlyTemplate.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_with_name_and_ir(
+                "{{ dae.f_x | length }} {{ dae.x.x.dims | join(\",\") }}",
+                "DaeOnlyTemplate",
+                TemplateIr::Dae,
+            )
+            .expect("DAE template should render from native DAE context");
+
+        assert_eq!(rendered.trim(), "1 2");
     }
 
     #[test]
