@@ -281,10 +281,31 @@ impl Resolver {
         let Some((resolved_def_id, _qualified_name)) =
             self.resolve_component_reference_full_path(comp, scope)
         else {
+            self.resolve_partial_replaceable_package_function_reference(comp, scope);
             return;
         };
 
         comp.def_id = Some(resolved_def_id);
+    }
+
+    fn resolve_partial_replaceable_package_function_reference(
+        &mut self,
+        comp: &mut ComponentReference,
+        scope: ScopeId,
+    ) {
+        let Some(first_part) = comp.parts.first().map(|part| part.ident.text.as_ref()) else {
+            return;
+        };
+        let Some(first_def_id) = comp
+            .def_id
+            .or_else(|| self.resolve_function_first_part(first_part, scope))
+        else {
+            return;
+        };
+
+        if comp.parts.len() > 1 && self.partial_type_root_ids.contains(&first_def_id) {
+            comp.def_id = Some(first_def_id);
+        }
     }
 
     fn enclosing_class_qualified_name(&self, scope: ScopeId) -> Option<&str> {

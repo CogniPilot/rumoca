@@ -1,8 +1,8 @@
 use super::*;
 use rumoca_core::Token;
 use rumoca_ir_ast::{
-    ComponentRefPart, ComponentReference, Expression, InstanceData, InstanceId, ParsedTree,
-    QualifiedName, Subscript, TerminalType,
+    ComponentRefPart, ComponentReference, Connection, Expression, InstanceData, InstanceId,
+    ParsedTree, QualifiedName, Subscript, TerminalType,
 };
 use rumoca_phase_parse::parse_to_ast;
 use rumoca_phase_resolve::resolve;
@@ -988,6 +988,145 @@ fn test_typecheck_instanced_populates_user_defined_type_ids() {
     assert!(
         !m_inst.type_id.is_unknown(),
         "instanced enum type should resolve"
+    );
+}
+
+fn add_test_instance(
+    overlay: &mut InstanceOverlay,
+    qualified_name: &str,
+    component: &Component,
+    binding: Option<Expression>,
+) {
+    let instance_id = overlay.alloc_id();
+    overlay.add_component(InstanceData {
+        instance_id,
+        qualified_name: QualifiedName::from_dotted(qualified_name),
+        type_id: component.type_id.unwrap_or(TypeId::UNKNOWN),
+        type_name: component.type_name.to_string(),
+        type_def_id: component.type_def_id,
+        source_location: component.location.clone(),
+        dims: component.shape.iter().map(|&dim| dim as i64).collect(),
+        dims_expr: component.shape_expr.clone(),
+        variability: component.variability.clone(),
+        causality: component.causality.clone(),
+        flow: matches!(component.connection, Connection::Flow(_)),
+        stream: matches!(component.connection, Connection::Stream(_)),
+        binding,
+        is_primitive: true,
+        is_final: component.is_final,
+        is_protected: component.is_protected,
+        ..Default::default()
+    });
+}
+
+fn make_comp_ref(name: &str) -> ComponentReference {
+    ComponentReference {
+        local: false,
+        parts: vec![ComponentRefPart {
+            ident: Token {
+                text: Arc::from(name),
+                ..Default::default()
+            },
+            subs: None,
+        }],
+        span: rumoca_core::Span::DUMMY,
+        def_id: None,
+    }
+}
+
+#[test]
+fn test_typecheck_instanced_evaluates_enum_alias_dependent_dimensions() {
+    let source = r#"
+        type ModelStructure = enumeration(av_vb, a_v_b);
+
+        model Pipe
+            parameter ModelStructure modelStructure = ModelStructure.av_vb;
+            parameter Boolean useLumpedPressure = false;
+            parameter Integer n = 2;
+            final parameter Integer nFM =
+                if useLumpedPressure then nFMLumped else nFMDistributed;
+            final parameter Integer nFMDistributed =
+                if modelStructure == ModelStructure.a_v_b then n + 1 else n;
+            final parameter Integer nFMLumped =
+                if modelStructure == ModelStructure.a_v_b then 2 else 1;
+            Real pathLengths[nFM];
+        end Pipe;
+
+        model Network
+            parameter ModelStructure pipeModelStructure = ModelStructure.av_vb;
+            Pipe pipe1(final modelStructure = pipeModelStructure);
+        end Network;
+    "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let tree = resolved.into_inner();
+    let pipe = tree
+        .definitions
+        .classes
+        .get("Pipe")
+        .expect("Pipe class should exist");
+    let network = tree
+        .definitions
+        .classes
+        .get("Network")
+        .expect("Network class should exist");
+
+    let mut overlay = InstanceOverlay::new();
+    add_test_instance(
+        &mut overlay,
+        "pipeModelStructure",
+        network.components.get("pipeModelStructure").unwrap(),
+        Some(
+            network
+                .components
+                .get("pipeModelStructure")
+                .unwrap()
+                .binding
+                .clone()
+                .expect("pipeModelStructure binding"),
+        ),
+    );
+    add_test_instance(
+        &mut overlay,
+        "pipe1.modelStructure",
+        pipe.components.get("modelStructure").unwrap(),
+        Some(Expression::ComponentReference(make_comp_ref(
+            "pipeModelStructure",
+        ))),
+    );
+    for name in [
+        "useLumpedPressure",
+        "n",
+        "nFM",
+        "nFMDistributed",
+        "nFMLumped",
+        "pathLengths",
+    ] {
+        let component = pipe
+            .components
+            .get(name)
+            .expect("Pipe component should exist");
+        add_test_instance(
+            &mut overlay,
+            &format!("pipe1.{name}"),
+            component,
+            component.binding.clone(),
+        );
+    }
+
+    typecheck_instanced(&tree, &mut overlay, "Network")
+        .expect("typecheck_instanced should evaluate enum-dependent dimensions");
+
+    let path_lengths = overlay
+        .components
+        .values()
+        .find(|data| data.qualified_name.to_flat_string() == "pipe1.pathLengths")
+        .expect("pathLengths instance");
+    assert_eq!(
+        path_lengths.dims,
+        vec![2],
+        "nFM should evaluate through the enum-valued modelStructure alias"
     );
 }
 

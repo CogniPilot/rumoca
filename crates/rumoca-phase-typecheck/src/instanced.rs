@@ -99,11 +99,13 @@ impl TypeChecker {
             }
 
             if let Some(ref binding) = instance_data.binding
-                && let Some(value) = rumoca_eval_ast::eval::extract_enum_value(binding)
+                && let Some(value) =
+                    rumoca_eval_ast::eval::eval_enum_with_scope(binding, &self.eval_ctx, &scope)
             {
                 self.eval_ctx.enums.insert(name.clone(), value);
             } else if let Some(ref start) = instance_data.start
-                && let Some(value) = rumoca_eval_ast::eval::extract_enum_value(start)
+                && let Some(value) =
+                    rumoca_eval_ast::eval::eval_enum_with_scope(start, &self.eval_ctx, &scope)
             {
                 self.eval_ctx.enums.insert(name.clone(), value);
             }

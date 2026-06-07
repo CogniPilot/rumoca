@@ -1036,32 +1036,13 @@ fn extract_component_path(expr: &Expression) -> Option<String> {
     }
 }
 
-/// Extract an enumeration value from an expression.
-///
-/// Enumeration literals are represented as ComponentReferences with qualified paths,
-/// e.g., `Modelica.Blocks.Types.AnalogFilter.CriticalDamping`. This extracts the
-/// full path as a string for comparison.
-pub fn extract_enum_value(expr: &Expression) -> Option<String> {
-    match expr {
-        Expression::ComponentReference(cr) if cr.parts.len() >= 2 => {
-            // Enum literals have at least 2 parts (TypeName.LiteralName)
-            // and no subscripts on any part
-            let all_simple = cr.parts.iter().all(|p| p.subs.is_none());
-            if all_simple {
-                Some(
-                    cr.parts
-                        .iter()
-                        .map(|p| p.ident.text.as_ref())
-                        .collect::<Vec<_>>()
-                        .join("."),
-                )
-            } else {
-                None
-            }
-        }
-        Expression::Parenthesized { inner, .. } => extract_enum_value(inner),
-        _ => None,
-    }
+/// Evaluate an enumeration-valued expression using scope-aware parameter lookup.
+pub fn eval_enum_with_scope(
+    expr: &Expression,
+    ctx: &TypeCheckEvalContext,
+    scope: &str,
+) -> Option<String> {
+    get_enum_expr_value(expr, ctx, scope)
 }
 
 /// Look up an enumeration value with scope-aware progressive lookup.

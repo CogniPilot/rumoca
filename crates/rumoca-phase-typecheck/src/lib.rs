@@ -1796,15 +1796,15 @@ impl TypeChecker {
             // This handles cases like `n = size(table, 1)` after table dims are known
             let int_progress = self.reevaluate_integer_parameters(overlay);
 
-            // Pass 4: Re-evaluate boolean and real parameters that may now be computable
+            // Pass 4: Re-evaluate boolean, real, and enum parameters that may now be computable
             // This enables if-expression evaluation for dimension inference
-            let bool_real_progress = self.reevaluate_boolean_and_real_parameters(overlay);
+            let value_progress = self.reevaluate_boolean_real_and_enum_parameters(overlay);
 
             let made_progress = alias_progress
                 || explicit_progress
                 || colon_progress
                 || int_progress
-                || bool_real_progress;
+                || value_progress;
             if !made_progress {
                 break;
             }
