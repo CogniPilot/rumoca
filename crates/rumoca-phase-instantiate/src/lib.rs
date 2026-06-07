@@ -42,6 +42,7 @@ mod dims;
 mod errors;
 mod evaluate_annotation;
 mod inheritance;
+mod instance_sections;
 mod mod_env;
 mod nested_scope;
 mod package_constant_imports;
@@ -68,7 +69,9 @@ use dims::{
     qualify_shape_subscripts_imports, resolve_component_dimensions, resolve_type_alias_dimensions,
 };
 use evaluate_annotation::has_evaluate_annotation;
-use inheritance::option_location_to_span;
+use instance_sections::{
+    algorithms_to_instance, equations_to_instance_cloned, equations_to_instance_without_connections,
+};
 use mod_env::{
     PopulateModEnvInput, populate_modification_environment, propagate_record_binding_to_fields,
 };
@@ -937,69 +940,6 @@ pub fn instantiate_model_with_options(
     instantiate_model_with_outcome_options(tree, model_name, options).into_result()
 }
 
-/// Convert algorithm statements to instance statements.
-fn algorithms_to_instance(
-    algorithms: &[Vec<rumoca_ir_ast::Statement>],
-    origin: &ast::QualifiedName,
-    source_map: &rumoca_core::SourceMap,
-) -> Vec<Vec<ast::InstanceStatement>> {
-    algorithms
-        .iter()
-        .map(|stmts| {
-            stmts
-                .iter()
-                .map(|stmt| ast::InstanceStatement {
-                    statement: stmt.clone(),
-                    origin: origin.clone(),
-                    span: option_location_to_span(stmt.get_location(), source_map),
-                })
-                .collect()
-        })
-        .collect()
-}
-
-/// Convert borrowed equations to instance equations (cloning each equation).
-fn equations_to_instance_cloned(
-    equations: &[ast::Equation],
-    origin: &ast::QualifiedName,
-    source_map: &rumoca_core::SourceMap,
-) -> Vec<ast::InstanceEquation> {
-    equations
-        .iter()
-        .map(|eq| {
-            let span = option_location_to_span(eq.get_location(), source_map);
-            ast::InstanceEquation {
-                equation: eq.clone(),
-                origin: origin.clone(),
-                span,
-            }
-        })
-        .collect()
-}
-
-/// Convert non-connection equations to instance equations in one pass.
-///
-/// This avoids cloning an intermediate `Vec<ast::Equation>` before creating
-/// `ast::InstanceEquation` values.
-fn equations_to_instance_without_connections(
-    equations: &[ast::Equation],
-    origin: &ast::QualifiedName,
-    source_map: &rumoca_core::SourceMap,
-) -> Vec<ast::InstanceEquation> {
-    equations
-        .iter()
-        .filter(|eq| !connections::is_connect_equation(eq))
-        .map(|eq| {
-            let span = option_location_to_span(eq.get_location(), source_map);
-            ast::InstanceEquation {
-                equation: eq.clone(),
-                origin: origin.clone(),
-                span,
-            }
-        })
-        .collect()
-}
-
 /// Instantiate a class and all its components.
 fn instantiate_class(
     tree: &ast::ClassTree,
@@ -1087,20 +1027,33 @@ fn instantiate_class(
         )?;
 
         // Convert regular equations in one pass without intermediate equation vectors.
-        let instance_equations =
-            equations_to_instance_without_connections(all_equations, &qualified_name, source_map);
-        let instance_initial_equations =
-            equations_to_instance_cloned(&template.initial_equations, &qualified_name, source_map);
+        let instance_equations = equations_to_instance_without_connections(
+            ctx,
+            all_equations,
+            &qualified_name,
+            source_map,
+        );
+        let instance_initial_equations = equations_to_instance_cloned(
+            ctx,
+            &template.initial_equations,
+            &qualified_name,
+            source_map,
+        );
         let instance_algorithms =
-            algorithms_to_instance(&template.algorithms, &qualified_name, source_map);
-        let instance_initial_algorithms =
-            algorithms_to_instance(&template.initial_algorithms, &qualified_name, source_map);
+            algorithms_to_instance(ctx, &template.algorithms, &qualified_name, source_map);
+        let instance_initial_algorithms = algorithms_to_instance(
+            ctx,
+            &template.initial_algorithms,
+            &qualified_name,
+            source_map,
+        );
 
         let class_data = ast::ClassInstanceData {
             instance_id,
             class_def_id: class.def_id,
             qualified_name: qualified_name.clone(),
             source_scope: class_declaration_source_scope(ctx, class),
+            source_scope_id: class.scope_id,
             equations: instance_equations,
             initial_equations: instance_initial_equations,
             algorithms: instance_algorithms,

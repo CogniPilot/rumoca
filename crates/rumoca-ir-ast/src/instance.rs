@@ -11,8 +11,8 @@ use crate::AstIndexMap as IndexMap;
 use indexmap::IndexSet;
 use rumoca_core::{
     ComponentPath, ComponentRefPart as CoreComponentRefPart,
-    ComponentReference as CoreComponentReference, DefId, Span, Subscript as CoreSubscript, TypeId,
-    split_path_with_indices,
+    ComponentReference as CoreComponentReference, DefId, ScopeId, Span, Subscript as CoreSubscript,
+    TypeId, split_path_with_indices,
 };
 use serde::{Deserialize, Serialize};
 
@@ -767,6 +767,9 @@ pub struct ClassInstanceData {
     /// Lexical scope of the class declaration that produced this instance.
     #[serde(default)]
     pub source_scope: Option<QualifiedName>,
+    /// Resolved lexical scope of the class declaration that produced this instance.
+    #[serde(default)]
+    pub source_scope_id: Option<ScopeId>,
     /// Equations from this instance (not inherited).
     pub equations: Vec<InstanceEquation>,
     /// Initial equations from this instance.
@@ -793,6 +796,10 @@ pub struct InstanceEquation {
     pub equation: Equation,
     /// Origin of this equation (qualified name of the class it came from).
     pub origin: QualifiedName,
+    /// Lexical source scope containing this equation.
+    pub source_scope: Option<QualifiedName>,
+    /// Resolved lexical source scope containing this equation.
+    pub source_scope_id: Option<ScopeId>,
     /// Source span for error reporting. Never loses source location.
     pub span: Span,
 }
@@ -804,6 +811,10 @@ pub struct InstanceStatement {
     pub statement: Statement,
     /// Origin of this statement (qualified name of the class it came from).
     pub origin: QualifiedName,
+    /// Lexical source scope containing this statement.
+    pub source_scope: Option<QualifiedName>,
+    /// Resolved lexical source scope containing this statement.
+    pub source_scope_id: Option<ScopeId>,
     /// Source span for error reporting. Never loses source location.
     pub span: Span,
 }

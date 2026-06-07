@@ -1,26 +1,26 @@
 {
   "quality_gate_version": 1,
   "run_scope": "full",
-  "git_commit": "ab9225d1863474e9b693a59dfe63b9d0e9d960ac",
+  "git_commit": "0417ad4075534447927ae098bbce1a89c585b6ce",
   "msl_version": "v4.1.0",
   "omc_version": "OpenModelica 1.26.8",
   "sim_timeout_seconds": 10.0,
   "simulatable_attempted": 566,
   "parse_models": 566,
   "flatten_models": 562,
-  "dae_models": 484,
-  "compiled_models": 484,
-  "solve_models": 390,
-  "balanced_models": 471,
+  "dae_models": 487,
+  "compiled_models": 487,
+  "solve_models": 391,
+  "balanced_models": 474,
   "unbalanced_models": 0,
   "partial_models": 13,
-  "balance_denominator": 471,
-  "initial_balanced_models": 471,
+  "balance_denominator": 474,
+  "initial_balanced_models": 474,
   "initial_unbalanced_models": 0,
   "sim_target_models": 566,
-  "sim_attempted": 395,
-  "ic_attempted": 251,
-  "ic_ok": 230,
+  "sim_attempted": 397,
+  "ic_attempted": 252,
+  "ic_ok": 231,
   "ic_solver_fail": 21,
   "sim_ok": 156,
   "sim_success_rate": 0.2756183745583039,
@@ -31,17 +31,17 @@
   "runtime_ratio_stats": {
     "system_ratio_both_success": {
       "sample_count": 152,
-      "min": 0.005479505144664007,
-      "median": 1.2878910820436271,
-      "mean": 3.0654567643522856,
-      "max": 29.195522753061784
+      "min": 0.004895041410760062,
+      "median": 1.2814271528976156,
+      "mean": 3.0464429925179237,
+      "max": 29.54669101996773
     },
     "wall_ratio_both_success": {
       "sample_count": 152,
-      "min": 0.5298297807650117,
-      "median": 47.29490867814335,
-      "mean": 75.67592347592428,
-      "max": 387.00032171175894
+      "min": 0.47807184509019746,
+      "median": 49.67533672417805,
+      "mean": 77.39336516724826,
+      "max": 439.38021249243536
     }
   },
   "trace_accuracy_stats": {
@@ -119,11 +119,11 @@
     "total_models": 566,
     "parse_models": 566,
     "flatten_models": 562,
-    "dae_models": 484,
-    "compiled_models": 484,
-    "solve_models": 390,
-    "balanced_models": 471,
-    "initial_balanced_models": 471,
+    "dae_models": 487,
+    "compiled_models": 487,
+    "solve_models": 391,
+    "balanced_models": 474,
+    "initial_balanced_models": 474,
     "state_selection": {
       "models_compared": 146,
       "exact_state_set_match_models": 134,
@@ -139,21 +139,21 @@
     },
     "omc_assertion_failure_models": 0,
     "sim_target_models": 566,
-    "sim_attempted": 395,
-    "ic_attempted": 251,
-    "ic_ok": 230,
+    "sim_attempted": 397,
+    "ic_attempted": 252,
+    "ic_ok": 231,
     "ic_solver_fail": 21,
     "sim_ok": 156,
     "sim_nan": 0,
-    "sim_solver_fail": 234,
-    "sim_timeout": 5,
+    "sim_solver_fail": 235,
+    "sim_timeout": 6,
     "error_code_counts": {},
     "unsupported_feature_counts": {},
     "unsupported_feature_counts_by_backend": {},
     "phase_failure_counts": {
       "Flatten": 1,
       "Instantiate": 1,
-      "ToDae": 78,
+      "ToDae": 75,
       "Typecheck": 2
     }
   },
@@ -187,12 +187,12 @@
       "models": 339,
       "compiled": 338,
       "solve_ir": 236,
-      "balanced": 315,
+      "balanced": 316,
       "sim_ok": 61,
       "phase_counts": {
         "Instantiate": 1,
-        "Success": 315,
-        "ToDae": 23
+        "Success": 316,
+        "ToDae": 22
       },
       "error_code_counts": {}
     },
@@ -208,25 +208,24 @@
       "error_code_counts": {}
     },
     "FUNC": {
-      "models": 3,
-      "compiled": 3,
+      "models": 1,
+      "compiled": 1,
       "solve_ir": 1,
       "balanced": 1,
       "sim_ok": 1,
       "phase_counts": {
-        "Success": 1,
-        "ToDae": 2
+        "Success": 1
       },
       "error_code_counts": {}
     },
     "OTHER": {
-      "models": 134,
-      "compiled": 134,
-      "solve_ir": 75,
-      "balanced": 90,
+      "models": 136,
+      "compiled": 136,
+      "solve_ir": 76,
+      "balanced": 92,
       "sim_ok": 31,
       "phase_counts": {
-        "Success": 90,
+        "Success": 92,
         "ToDae": 44
       },
       "error_code_counts": {}

@@ -1,8 +1,8 @@
 use super::*;
-use rumoca_core::{ClassType, DefId, Span, Token};
+use rumoca_core::{ClassType, ComponentPath, DefId, Span, Token};
 use rumoca_ir_ast::{
     ClassDef, ClassInstanceData, ClassTree, Component, ComponentRefPart, ComponentReference,
-    Extend, Name, QualifiedName,
+    Extend, Name, QualifiedName, ScopeKind,
 };
 use std::sync::Arc;
 
@@ -304,6 +304,75 @@ fn canonicalizes_single_part_function_call_from_target_def_id() {
     };
     assert_eq!(name.as_str(), "Pkg.specificEnthalpy_pTX");
     assert_eq!(name.target_def_id(), Some(function_def));
+}
+
+#[test]
+fn concrete_package_component_ref_is_not_canonicalized_to_inherited_partial_name() {
+    let partial_package_def = DefId::new(1);
+    let partial_function_def = DefId::new(2);
+    let concrete_package_def = DefId::new(3);
+
+    let mut partial_function = class("temperature_psX", ClassType::Function);
+    partial_function.def_id = Some(partial_function_def);
+    let mut partial_package = class("PartialMedium", ClassType::Package);
+    partial_package.def_id = Some(partial_package_def);
+    partial_package
+        .classes
+        .insert("temperature_psX".to_string(), partial_function);
+
+    let mut concrete_package = class("Air_pT", ClassType::Package);
+    concrete_package.def_id = Some(concrete_package_def);
+    concrete_package.extends.push(Extend {
+        base_name: Name::from_string("PartialMedium"),
+        base_def_id: Some(partial_package_def),
+        ..Extend::default()
+    });
+
+    let mut tree = ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("PartialMedium".to_string(), partial_package);
+    tree.definitions
+        .classes
+        .insert("Air_pT".to_string(), concrete_package);
+    tree.def_map
+        .insert(partial_package_def, "PartialMedium".to_string());
+    tree.def_map.insert(
+        partial_function_def,
+        "PartialMedium.temperature_psX".to_string(),
+    );
+    tree.def_map
+        .insert(concrete_package_def, "Air_pT".to_string());
+
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let override_packages = Vec::new();
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+
+    let mut component_ref = core_comp_ref(&["Air_pT", "temperature_psX"]);
+    component_ref.def_id = Some(partial_function_def);
+    let mut expr = Expression::FunctionCall {
+        name: rumoca_core::Reference::with_component_reference(
+            "Air_pT.temperature_psX",
+            component_ref,
+        ),
+        args: Vec::new(),
+        is_constructor: false,
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut expr, &ctx);
+
+    let Expression::FunctionCall { name, .. } = expr else {
+        panic!("expected function call");
+    };
+    assert_eq!(name.as_str(), "Air_pT.temperature_psX");
+    assert_eq!(name.target_def_id(), Some(partial_function_def));
 }
 
 #[test]
@@ -804,7 +873,8 @@ fn component_scope_inherits_type_extends_redeclare_function() {
     });
 
     let override_map =
-        build_component_override_map(&overlay, &tree, &class_index, "ControlledPump");
+        build_component_override_map(&overlay, &tree, &class_index, "ControlledPump")
+            .expect("component override map");
     let (_, override_functions) = override_context_for_scope("pump", &override_map);
     let target = override_functions
         .get("flowCharacteristic")
@@ -958,31 +1028,69 @@ fn root_class_scope_inherits_member_function_receiver_types() {
     let base_def = DefId::new(3);
     let alias_def = DefId::new(4);
 
+    let mut tree = ClassTree::new();
+    let world_scope = tree
+        .scope_tree
+        .create_scope(tree.scope_tree.global(), ScopeKind::Class);
+    let base_scope = tree
+        .scope_tree
+        .create_scope(tree.scope_tree.global(), ScopeKind::Class);
+    let alias_scope = tree
+        .scope_tree
+        .create_scope(tree.scope_tree.global(), ScopeKind::Class);
+    let gravity_scope = tree
+        .scope_tree
+        .create_scope(world_scope, ScopeKind::Function);
+
+    tree.scope_tree.add_member(
+        tree.scope_tree.global(),
+        ComponentPath::from_flat_path("World"),
+        world_def,
+    );
+    tree.scope_tree.add_member(
+        tree.scope_tree.global(),
+        ComponentPath::from_flat_path("BasePointMass"),
+        base_def,
+    );
+    tree.scope_tree.add_member(
+        tree.scope_tree.global(),
+        ComponentPath::from_flat_path("AliasPointMass"),
+        alias_def,
+    );
+    tree.scope_tree.add_member(
+        world_scope,
+        ComponentPath::from_flat_path("gravityAcceleration"),
+        gravity_def,
+    );
+
     let mut world = class("World", ClassType::Model);
     world.def_id = Some(world_def);
+    world.scope_id = Some(world_scope);
     world.classes.insert(
         "gravityAcceleration".to_string(),
         ClassDef {
             def_id: Some(gravity_def),
+            scope_id: Some(gravity_scope),
             ..class("gravityAcceleration", ClassType::Function)
         },
     );
 
     let mut base_point_mass = class("BasePointMass", ClassType::Model);
     base_point_mass.def_id = Some(base_def);
+    base_point_mass.scope_id = Some(base_scope);
     base_point_mass
         .components
         .insert("world".to_string(), component("world", "World", world_def));
 
     let mut alias_point_mass = class("AliasPointMass", ClassType::Model);
     alias_point_mass.def_id = Some(alias_def);
+    alias_point_mass.scope_id = Some(alias_scope);
     alias_point_mass.extends.push(Extend {
         base_name: Name::from_string("BasePointMass"),
         base_def_id: Some(base_def),
         ..Extend::default()
     });
 
-    let mut tree = ClassTree::new();
     tree.definitions.classes.insert("World".to_string(), world);
     tree.definitions
         .classes
@@ -1000,12 +1108,14 @@ fn root_class_scope_inherits_member_function_receiver_types() {
     overlay.add_class(ClassInstanceData {
         qualified_name: QualifiedName::new(),
         source_scope: Some(QualifiedName::from_ident("AliasPointMass")),
+        source_scope_id: Some(alias_scope),
         ..ClassInstanceData::default()
     });
 
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let override_map =
-        build_component_override_map(&overlay, &tree, &class_index, "AliasPointMass");
+        build_component_override_map(&overlay, &tree, &class_index, "AliasPointMass")
+            .expect("component override map");
     let (_, override_functions) = override_context_for_scope("", &override_map);
     let marker = MemberFunctionCallMarker {
         tree: &tree,
@@ -1384,6 +1494,66 @@ fn marks_member_function_calls_through_component_type_aliases() {
             .def_id,
         Some(gravity_def)
     );
+}
+
+#[test]
+fn root_package_alias_marks_member_function_calls() {
+    let (tree, ids) = concrete_override_chain_tree();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let alias_target = override_target("AliasMedium", ids.alias_pkg, ClassType::Package);
+    let component_override_map = root_component_override_map(&OverrideTarget {
+        alias: "Medium".to_string(),
+        ..alias_target
+    });
+    let (_, override_functions) = override_context_for_scope("", &component_override_map);
+    let marker = MemberFunctionCallMarker {
+        tree: &tree,
+        class_index: &class_index,
+        override_functions: &override_functions,
+    };
+
+    assert_eq!(
+        marker
+            .mark_component_function_call(comp_ref(&["Medium", "density"]))
+            .def_id,
+        Some(ids.concrete_density)
+    );
+}
+
+#[test]
+fn active_package_alias_rewrites_inherited_partial_function_call() {
+    let (tree, ids) = concrete_override_chain_tree();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let override_packages = vec![OverrideTarget {
+        alias: "Medium".to_string(),
+        ..override_target("AliasMedium", ids.alias_pkg, ClassType::Package)
+    }];
+    let override_functions = OverrideFunctionMap::default();
+    let mut expr = Expression::FunctionCall {
+        name: rumoca_core::Reference::with_component_reference(
+            "PartialMedium.density",
+            rumoca_core::ComponentReference {
+                def_id: Some(ids.partial_density),
+                ..core_comp_ref(&["PartialMedium", "density"])
+            },
+        ),
+        args: vec![core_var("state")],
+        is_constructor: false,
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression(
+        &mut expr,
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+
+    let Expression::FunctionCall { name, .. } = expr else {
+        panic!("expected rewritten function call");
+    };
+    assert_eq!(name.as_str(), "AliasMedium.density");
 }
 
 #[test]

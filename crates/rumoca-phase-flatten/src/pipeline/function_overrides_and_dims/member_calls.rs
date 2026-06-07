@@ -70,6 +70,8 @@ pub(crate) fn mark_member_function_calls_in_instance_equation(
             override_functions,
         ),
         origin: inst_eq.origin.clone(),
+        source_scope: inst_eq.source_scope.clone(),
+        source_scope_id: inst_eq.source_scope_id,
         span: inst_eq.span,
     }
 }
@@ -90,6 +92,8 @@ pub(crate) fn mark_member_function_calls_in_instance_statements(
                 override_functions,
             ),
             origin: statement.origin.clone(),
+            source_scope: statement.source_scope.clone(),
+            source_scope_id: statement.source_scope_id,
             span: statement.span,
         })
         .collect()

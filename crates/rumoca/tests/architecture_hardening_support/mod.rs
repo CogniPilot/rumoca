@@ -342,7 +342,7 @@ const TEXTUAL_MODEL_PATH_RECOVERY_DEBT: &[(&str, usize)] = &[
     ),
     (
         "crates/rumoca-phase-flatten/src/pipeline/function_overrides_and_dims.rs",
-        12,
+        9,
     ),
     (
         "crates/rumoca-phase-flatten/src/pipeline/function_overrides_and_dims/flat_rewrite.rs",
