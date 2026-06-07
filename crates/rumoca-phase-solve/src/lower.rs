@@ -1951,6 +1951,11 @@ impl<'a> LowerBuilder<'a> {
         let Some(base_expr) = args.first() else {
             return Ok(self.emit_const(1.0));
         };
+        let inferred_dims = self.infer_expr_dims(base_expr, scope);
+        if !inferred_dims.is_empty() && inferred_dims.iter().all(|dim| *dim > 0) {
+            return self.lower_size_from_dims(&inferred_dims, args, scope, call_depth);
+        }
+
         let base_key = dynamic_binding_base_key(base_expr).map_err(|err| {
             err.with_fallback_span(base_expr.span().unwrap_or(rumoca_core::Span::DUMMY))
         })?;
@@ -1965,21 +1970,7 @@ impl<'a> LowerBuilder<'a> {
             return Ok(self.emit_const(1.0));
         }
 
-        let dim_reg = if args.len() > 1 {
-            let raw = self.lower_expr(&args[1], scope, call_depth)?;
-            self.emit_round(raw)
-        } else {
-            self.emit_const(1.0)
-        };
-
-        let mut value = self.emit_const(1.0);
-        for (idx, dim) in dims.iter().enumerate().rev() {
-            let dim_idx = self.emit_const((idx + 1) as f64);
-            let cond = self.emit_compare(CompareOp::Eq, dim_reg, dim_idx);
-            let dim_val = self.emit_const(*dim as f64);
-            value = self.emit_select(cond, dim_val, value);
-        }
-        Ok(value)
+        self.lower_size_from_dims(&dims, args, scope, call_depth)
     }
 }
 

@@ -199,3 +199,51 @@ fn lower_expression_uses_function_local_size_in_fill_dimension() {
     let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
     assert!((read_reg(&regs, lowered.result) - 3.0).abs() <= 1e-12);
 }
+
+#[test]
+fn lower_expression_uses_actual_matrix_shape_for_function_input_size() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("sourceTable"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("sourceTable"),
+            dims: vec![7, 2],
+            fixed: Some(true),
+            ..Default::default()
+        },
+    );
+
+    let mut row_count = rumoca_core::Function::new("My.rowCount", Default::default());
+    row_count.inputs.push(
+        rumoca_core::FunctionParam::new("table", "Real")
+            .with_dims(vec![0, 2])
+            .with_shape_expr(vec![
+                rumoca_core::Subscript::generated_colon(rumoca_core::Span::DUMMY),
+                rumoca_core::Subscript::generated_index(2, rumoca_core::Span::DUMMY),
+            ]),
+    );
+    row_count.outputs.push(function_param("rows"));
+    row_count.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("rows"),
+        value: size_expr(var("table"), 1),
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.rowCount"), row_count);
+
+    let layout = build_var_layout(&dae_model);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.rowCount").into(),
+        args: vec![var("sourceTable")],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("size() should use the actual matrix shape bound to the function input");
+
+    let p = vec![0.0; layout.p_scalars()];
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &p, 0.0);
+    assert!((read_reg(&regs, lowered.result) - 7.0).abs() <= 1e-12);
+}

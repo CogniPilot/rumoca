@@ -104,6 +104,28 @@ impl<'a> LowerBuilder<'a> {
             });
         }
 
+        if projection.indices.is_empty() && projection.output_field.is_none() {
+            let values = self.lower_user_function_call_named_output_values(
+                &projection.base_function_name,
+                &projection.output_name,
+                args,
+                caller_scope,
+                call_depth,
+            )?;
+            let [reg] = values.as_slice() else {
+                return Err(LowerError::InvalidFunction {
+                    name: projection.base_function_name.as_str().to_string(),
+                    reason: format!(
+                        "projected scalar output `{}` resolved to {} values",
+                        projection.output_name,
+                        values.len()
+                    ),
+                }
+                .with_fallback_span(span));
+            };
+            return Ok(*reg);
+        }
+
         self.with_local_lower_frame(|this| {
             let bindings = this.bind_function_inputs_for_name(
                 projection.base_function_name.as_str(),
