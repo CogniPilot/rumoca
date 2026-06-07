@@ -1,7 +1,7 @@
 use super::ToDaeError;
 use super::expression_identity::UniqueExpressions;
 use super::{eval_scalar_const_expr, extract_time_event_instant};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -916,7 +916,107 @@ fn build_clock_equivalence_graph(
             add_clock_equivalence_edges(target, source, constants, candidates, &mut graph);
         }
     }
+    add_shared_no_argument_clock_guard_edges(dae_model, constants, candidates, &mut graph);
     graph
+}
+
+fn add_shared_no_argument_clock_guard_edges(
+    dae_model: &dae::Dae,
+    constants: &HashMap<String, f64>,
+    candidates: &HashSet<String>,
+    graph: &mut HashMap<String, Vec<String>>,
+) {
+    let mut guarded_targets = IndexMap::<rumoca_core::Span, IndexSet<String>>::new();
+    for eq in dae_model
+        .continuous
+        .equations
+        .iter()
+        .chain(dae_model.discrete.real_updates.iter())
+        .chain(dae_model.discrete.valued_updates.iter())
+    {
+        let Some(lhs) = eq.lhs.as_ref() else {
+            continue;
+        };
+        let Some(target) = canonical_var_name_key(lhs, &[], constants) else {
+            continue;
+        };
+        if !candidates.contains(&target) {
+            continue;
+        }
+        let clock_spans = no_argument_clock_guard_spans(&eq.rhs);
+        for span in clock_spans {
+            guarded_targets
+                .entry(span)
+                .or_default()
+                .insert(target.clone());
+        }
+    }
+    for targets in guarded_targets.values() {
+        let mut targets = targets.iter();
+        let Some(first) = targets.next() else {
+            continue;
+        };
+        for target in targets {
+            insert_clock_equivalence_edge(graph, first, target);
+            insert_clock_equivalence_edge(graph, target, first);
+        }
+    }
+}
+
+fn no_argument_clock_guard_spans(expr: &rumoca_core::Expression) -> Vec<rumoca_core::Span> {
+    let mut collector = NoArgumentClockGuardCollector {
+        in_if_condition: false,
+        spans: Vec::new(),
+    };
+    collector.visit_expression(expr);
+    collector.spans
+}
+
+struct NoArgumentClockGuardCollector {
+    in_if_condition: bool,
+    spans: Vec<rumoca_core::Span>,
+}
+
+impl ExpressionVisitor for NoArgumentClockGuardCollector {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        if self.in_if_condition
+            && let rumoca_core::Expression::FunctionCall {
+                name, args, span, ..
+            } = expr
+            && name.last_segment() == "Clock"
+            && args.is_empty()
+        {
+            let clock_span = if *span != rumoca_core::Span::DUMMY {
+                Some(*span)
+            } else {
+                name.component_ref()
+                    .map(|component_ref| component_ref.span)
+                    .filter(|span| *span != rumoca_core::Span::DUMMY)
+            };
+            if let Some(span) = clock_span
+                && !self.spans.contains(&span)
+            {
+                self.spans.push(span);
+            }
+            return;
+        }
+        self.walk_expression(expr);
+    }
+
+    fn visit_if(
+        &mut self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        else_branch: &rumoca_core::Expression,
+    ) {
+        for (condition, value) in branches {
+            let old = self.in_if_condition;
+            self.in_if_condition = true;
+            self.visit_expression(condition);
+            self.in_if_condition = old;
+            self.visit_expression(value);
+        }
+        self.visit_expression(else_branch);
+    }
 }
 
 fn add_clock_equivalence_edges(

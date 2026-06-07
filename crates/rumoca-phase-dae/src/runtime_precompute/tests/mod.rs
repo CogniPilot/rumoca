@@ -41,6 +41,15 @@ fn clock_call(interval: f64) -> rumoca_core::Expression {
     }
 }
 
+fn no_argument_clock_call(span: Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("Clock").into(),
+        args: vec![],
+        is_constructor: false,
+        span,
+    }
+}
+
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new(name).into(),
@@ -103,6 +112,18 @@ fn initial_call() -> rumoca_core::Expression {
         function: rumoca_core::BuiltinFunction::Initial,
         args: vec![],
         span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn if_then_else(
+    condition: rumoca_core::Expression,
+    value: rumoca_core::Expression,
+    else_value: rumoca_core::Expression,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::If {
+        branches: vec![(condition, value)],
+        else_branch: Box::new(else_value),
+        span: Span::DUMMY,
     }
 }
 
@@ -972,6 +993,56 @@ fn test_runtime_precompute_assigns_implicit_sample_interval_from_unique_schedule
     populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
     assert_eq!(dae_model.clocks.schedules.len(), 1);
     assert!((dae_model.clocks.intervals["simTime"] - 0.1).abs() <= 1e-12);
+}
+
+#[test]
+fn test_runtime_precompute_propagates_no_argument_clock_guard_timing() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["u", "dummy", "b"] {
+        dae_model.variables.discrete_valued.insert(
+            rumoca_core::VarName::new(name),
+            dae::Variable::new(rumoca_core::VarName::new(name)),
+        );
+    }
+    let clock_span = Span::from_offsets(rumoca_core::SourceId::DUMMY, 1_000, 1_005);
+    dae_model.discrete.valued_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("u")),
+        rhs: clock_call(0.02),
+        span: Span::DUMMY,
+        origin: "u = Clock(0.02)".to_string(),
+        scalar_count: 1,
+    });
+    dae_model.discrete.valued_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("dummy")),
+        rhs: if_then_else(
+            no_argument_clock_call(clock_span),
+            var("u"),
+            var("__pre__.dummy"),
+        ),
+        span: Span::DUMMY,
+        origin: "when Clock() then dummy = u".to_string(),
+        scalar_count: 1,
+    });
+    dae_model.discrete.valued_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("b")),
+        rhs: if_then_else(
+            no_argument_clock_call(clock_span),
+            rumoca_core::Expression::Unary {
+                op: rumoca_core::OpUnary::Not,
+                rhs: Box::new(var("__pre__.__pre__.b")),
+                span: Span::DUMMY,
+            },
+            var("__pre__.b"),
+        ),
+        span: Span::DUMMY,
+        origin: "when Clock() then b = not previous(b)".to_string(),
+        scalar_count: 1,
+    });
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert!((dae_model.clocks.intervals["dummy"] - 0.02).abs() <= 1e-12);
+    assert!((dae_model.clocks.intervals["b"] - 0.02).abs() <= 1e-12);
 }
 
 #[test]

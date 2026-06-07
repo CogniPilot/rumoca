@@ -92,24 +92,34 @@ fn is_discrete_when_memory_target(var: &flat::Variable) -> bool {
 }
 
 /// Convert an explicit when assignment/reinit to a DAE equation with scalar count.
+#[derive(Debug)]
+struct ConvertedWhenEquation {
+    equation: dae::Equation,
+    inactive_rhs: dae::WhenEquationInactiveRhs,
+}
+
 fn build_when_assignment_eq(
     target: &rumoca_core::VarName,
     rhs: &rumoca_core::Expression,
     span: Span,
     origin: &str,
+    inactive_rhs: dae::WhenEquationInactiveRhs,
     flat: &flat::Model,
-) -> Option<dae::Equation> {
+) -> Option<ConvertedWhenEquation> {
     let scalar_count = when_target_scalar_count(target, flat);
     if scalar_count == 0 {
         return None;
     }
-    Some(dae::Equation::explicit_with_scalar_count(
-        flat_to_dae_var_name(target),
-        flat_to_dae_expression(rhs),
-        span,
-        origin.to_string(),
-        scalar_count,
-    ))
+    Some(ConvertedWhenEquation {
+        equation: dae::Equation::explicit_with_scalar_count(
+            flat_to_dae_var_name(target),
+            flat_to_dae_expression(rhs),
+            span,
+            origin.to_string(),
+            scalar_count,
+        ),
+        inactive_rhs,
+    })
 }
 
 fn build_when_function_call_output_eqs(
@@ -118,7 +128,7 @@ fn build_when_function_call_output_eqs(
     span: Span,
     origin: &str,
     flat: &flat::Model,
-) -> Result<Vec<dae::Equation>, ToDaeError> {
+) -> Result<Vec<ConvertedWhenEquation>, ToDaeError> {
     let rumoca_core::Expression::FunctionCall {
         name,
         args,
@@ -166,7 +176,14 @@ fn build_when_function_call_output_eqs(
             span,
         };
         let output_origin = format!("{origin}: multi-output assignment to {target}");
-        if let Some(eq) = build_when_assignment_eq(target, &rhs, span, &output_origin, flat) {
+        if let Some(eq) = build_when_assignment_eq(
+            target,
+            &rhs,
+            span,
+            &output_origin,
+            dae::WhenEquationInactiveRhs::Pre,
+            flat,
+        ) {
             equations.push(eq);
         }
     }
@@ -175,17 +192,17 @@ fn build_when_function_call_output_eqs(
 
 /// Insert a converted when-equation into a target map, rejecting duplicate targets.
 fn insert_when_assignment(
-    assignments: &mut IndexMap<rumoca_core::VarName, dae::Equation>,
-    equation: dae::Equation,
+    assignments: &mut IndexMap<rumoca_core::VarName, ConvertedWhenEquation>,
+    converted: ConvertedWhenEquation,
 ) -> Result<(), ToDaeError> {
-    let Some(target) = equation.lhs.clone() else {
+    let Some(target) = converted.equation.lhs.clone() else {
         return Err(ToDaeError::internal(
             "internal error: when-equation conversion produced equation without LHS",
         ));
     };
     let target = dae_to_flat_var_name(&target);
 
-    if assignments.insert(target.clone(), equation).is_some() {
+    if assignments.insert(target.clone(), converted).is_some() {
         return Err(ToDaeError::internal(format!(
             "MLS §8.3.5 violation: duplicate assignment to '{}' in when-equation branch",
             target
@@ -199,7 +216,7 @@ fn collect_when_assignments(
     equations: &[flat::WhenEquation],
     state_vars: &IndexSet<rumoca_core::VarName>,
     flat: &flat::Model,
-) -> Result<IndexMap<rumoca_core::VarName, dae::Equation>, ToDaeError> {
+) -> Result<IndexMap<rumoca_core::VarName, ConvertedWhenEquation>, ToDaeError> {
     let mut assignments = IndexMap::new();
     for equation in equations {
         for converted in convert_when_equation(equation, state_vars, flat)? {
@@ -214,9 +231,9 @@ fn build_conditional_when_rhs(
     target: &rumoca_core::VarName,
     branches: &[(
         rumoca_core::Expression,
-        IndexMap<rumoca_core::VarName, dae::Equation>,
+        IndexMap<rumoca_core::VarName, ConvertedWhenEquation>,
     )],
-    else_branch: &IndexMap<rumoca_core::VarName, dae::Equation>,
+    else_branch: &IndexMap<rumoca_core::VarName, ConvertedWhenEquation>,
     state_vars: &IndexSet<rumoca_core::VarName>,
     flat: &flat::Model,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
@@ -226,7 +243,7 @@ fn build_conditional_when_rhs(
         .map(|(condition, assignments)| {
             let rhs = assignments
                 .get(target)
-                .map(|eq| dae_to_flat_expression(&eq.rhs))
+                .map(|converted| dae_to_flat_expression(&converted.equation.rhs))
                 .unwrap_or_else(|| fallback.clone());
             (condition.clone(), rhs)
         })
@@ -234,7 +251,7 @@ fn build_conditional_when_rhs(
 
     let else_rhs = else_branch
         .get(target)
-        .map(|eq| dae_to_flat_expression(&eq.rhs))
+        .map(|converted| dae_to_flat_expression(&converted.equation.rhs))
         .unwrap_or(fallback);
 
     Ok(rumoca_core::Expression::If {
@@ -252,7 +269,7 @@ fn convert_conditional_when_equation(
     origin: &str,
     state_vars: &IndexSet<rumoca_core::VarName>,
     flat: &flat::Model,
-) -> Result<Vec<dae::Equation>, ToDaeError> {
+) -> Result<Vec<ConvertedWhenEquation>, ToDaeError> {
     let converted_branches = branches
         .iter()
         .map(|(condition, equations)| {
@@ -284,8 +301,15 @@ fn convert_conditional_when_equation(
             flat,
         )?;
         let conditional_origin = format!("conditional when assignment to {} ({})", target, origin);
-        if let Some(eq) = build_when_assignment_eq(target, &rhs, span, &conditional_origin, flat) {
-            converted.push(eq);
+        let inactive_rhs = if state_vars.contains(target) {
+            dae::WhenEquationInactiveRhs::Current
+        } else {
+            dae::WhenEquationInactiveRhs::Pre
+        };
+        if let Some(converted_eq) =
+            build_when_assignment_eq(target, &rhs, span, &conditional_origin, inactive_rhs, flat)
+        {
+            converted.push(converted_eq);
         }
     }
 
@@ -306,7 +330,8 @@ pub(crate) fn convert_when_clause(
 
     for weq in &when.equations {
         for dae_eq in convert_when_equation(weq, state_vars, flat)? {
-            dae_when.equations.push(dae_eq);
+            dae_when.equations.push(dae_eq.equation);
+            dae_when.equation_inactive_rhs.push(dae_eq.inactive_rhs);
         }
     }
     collect_when_actions(&when.equations, &when.condition, &mut dae_when.actions)?;
@@ -411,16 +436,23 @@ fn convert_when_equation(
     weq: &flat::WhenEquation,
     state_vars: &IndexSet<rumoca_core::VarName>,
     flat: &flat::Model,
-) -> Result<Vec<dae::Equation>, ToDaeError> {
+) -> Result<Vec<ConvertedWhenEquation>, ToDaeError> {
     match weq {
         flat::WhenEquation::Assign {
             target,
             value,
             span,
             origin,
-        } => Ok(build_when_assignment_eq(target, value, *span, origin, flat)
-            .into_iter()
-            .collect()),
+        } => Ok(build_when_assignment_eq(
+            target,
+            value,
+            *span,
+            origin,
+            dae::WhenEquationInactiveRhs::Pre,
+            flat,
+        )
+        .into_iter()
+        .collect()),
         flat::WhenEquation::Reinit {
             state,
             value,
@@ -431,9 +463,16 @@ fn convert_when_equation(
             if !state_vars.contains(state) {
                 return Err(ToDaeError::reinit_non_state(state.as_str(), *span));
             }
-            Ok(build_when_assignment_eq(state, value, *span, origin, flat)
-                .into_iter()
-                .collect())
+            Ok(build_when_assignment_eq(
+                state,
+                value,
+                *span,
+                origin,
+                dae::WhenEquationInactiveRhs::Current,
+                flat,
+            )
+            .into_iter()
+            .collect())
         }
         flat::WhenEquation::Assert { .. } | flat::WhenEquation::Terminate { .. } => {
             // Assert and Terminate don't produce equations
@@ -482,9 +521,22 @@ mod tests {
             Span::default(),
             "test".to_string(),
         );
-        insert_when_assignment(&mut assignments, eq.clone()).expect("first insert should succeed");
-        let err =
-            insert_when_assignment(&mut assignments, eq).expect_err("duplicate insert should fail");
+        insert_when_assignment(
+            &mut assignments,
+            ConvertedWhenEquation {
+                equation: eq.clone(),
+                inactive_rhs: dae::WhenEquationInactiveRhs::Pre,
+            },
+        )
+        .expect("first insert should succeed");
+        let err = insert_when_assignment(
+            &mut assignments,
+            ConvertedWhenEquation {
+                equation: eq,
+                inactive_rhs: dae::WhenEquationInactiveRhs::Pre,
+            },
+        )
+        .expect_err("duplicate insert should fail");
         assert!(err.to_string().contains("duplicate assignment"));
     }
 
@@ -505,9 +557,16 @@ mod tests {
             },
         );
 
-        let eq = build_when_assignment_eq(&target, &rhs, Span::default(), "test", &flat)
-            .expect("array target should produce explicit equation");
-        assert_eq!(eq.scalar_count, 3);
+        let eq = build_when_assignment_eq(
+            &target,
+            &rhs,
+            Span::default(),
+            "test",
+            dae::WhenEquationInactiveRhs::Pre,
+            &flat,
+        )
+        .expect("array target should produce explicit equation");
+        assert_eq!(eq.equation.scalar_count, 3);
     }
 
     #[test]

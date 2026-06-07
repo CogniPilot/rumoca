@@ -6,7 +6,7 @@ pub(crate) fn discrete_pre_mode_for_equation(
     dae_model: &dae::Dae,
     eq: &dae::Equation,
 ) -> solve::DiscreteEventPreMode {
-    if clocked_target_reads_pre(dae_model, eq) || lowered_previous_origin_reads_pre(eq) {
+    if clocked_target_reads_pre(dae_model, eq) {
         return solve::DiscreteEventPreMode::EventEntry;
     }
     // DAE lowering rewrites Modelica pre(..), edge(..), change(..), sample(..),
@@ -26,10 +26,11 @@ fn clocked_target_reads_pre(dae_model: &dae::Dae, eq: &dae::Equation) -> bool {
         return false;
     };
     target_has_clock_metadata(dae_model, lhs.as_str())
-        && expression_contains_event_entry_pre_operator(dae_model, &eq.rhs)
+        && (expression_contains_event_entry_pre_operator(dae_model, &eq.rhs)
+            || expression_contains_lowered_pre_ref(&eq.rhs))
 }
 
-fn target_has_clock_metadata(dae_model: &dae::Dae, name: &str) -> bool {
+pub(crate) fn target_has_clock_metadata(dae_model: &dae::Dae, name: &str) -> bool {
     dae_model.clocks.intervals.contains_key(name)
         || dae_model.clocks.timings.contains_key(name)
         || dae::component_base_name(name).is_some_and(|base| {
@@ -38,11 +39,7 @@ fn target_has_clock_metadata(dae_model: &dae::Dae, name: &str) -> bool {
         })
 }
 
-fn lowered_previous_origin_reads_pre(eq: &dae::Equation) -> bool {
-    eq.origin.contains("previous(") && expression_contains_lowered_pre_ref(&eq.rhs)
-}
-
-fn expression_contains_lowered_pre_ref(expr: &rumoca_core::Expression) -> bool {
+pub(crate) fn expression_contains_lowered_pre_ref(expr: &rumoca_core::Expression) -> bool {
     struct LoweredPreChecker {
         contains: bool,
     }

@@ -297,7 +297,7 @@ pub fn to_dae_with_options(
     run_todae_phase(todae_subphase_timing, "when_conversion", || {
         for when in &flat.when_clauses {
             let dae_when = convert_when_clause(when, state_vars, flat)?;
-            route_discrete_event_equations(&mut dae, &dae_when);
+            route_discrete_event_equations(&mut dae, &dae_when)?;
         }
         Ok::<(), ToDaeError>(())
     })?;
