@@ -1,7 +1,7 @@
 {
   "quality_gate_version": 1,
   "run_scope": "full",
-  "git_commit": "e2e34b90d8dc397474082d624e1ae5c3771751eb",
+  "git_commit": "86407a53e73d094fd59928cbae730cc5e550dc5d",
   "msl_version": "v4.1.0",
   "omc_version": "OpenModelica 1.26.8",
   "sim_timeout_seconds": 10.0,
@@ -20,8 +20,8 @@
   "sim_target_models": 566,
   "sim_attempted": 393,
   "ic_attempted": 247,
-  "ic_ok": 225,
-  "ic_solver_fail": 22,
+  "ic_ok": 226,
+  "ic_solver_fail": 21,
   "sim_ok": 153,
   "sim_success_rate": 0.2703180212014134,
   "runtime_context": {
@@ -31,17 +31,17 @@
   "runtime_ratio_stats": {
     "system_ratio_both_success": {
       "sample_count": 150,
-      "min": 0.005528173964780386,
-      "median": 1.2979276412188812,
-      "mean": 3.0487889614615553,
-      "max": 29.54581353448959
+      "min": 0.0057372821175448565,
+      "median": 1.2919245608887109,
+      "mean": 3.0718883790268223,
+      "max": 28.499674382185553
     },
     "wall_ratio_both_success": {
       "sample_count": 150,
-      "min": 0.5335560879695533,
-      "median": 49.335279406963835,
-      "mean": 78.67595320819564,
-      "max": 428.67249526171906
+      "min": 0.5517786597955487,
+      "median": 49.72569467152199,
+      "mean": 78.6477123957729,
+      "max": 442.5856089339531
     }
   },
   "trace_accuracy_stats": {
@@ -141,8 +141,8 @@
     "sim_target_models": 566,
     "sim_attempted": 393,
     "ic_attempted": 247,
-    "ic_ok": 225,
-    "ic_solver_fail": 22,
+    "ic_ok": 226,
+    "ic_solver_fail": 21,
     "sim_ok": 153,
     "sim_nan": 0,
     "sim_solver_fail": 235,

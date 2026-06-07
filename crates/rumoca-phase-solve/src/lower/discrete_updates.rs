@@ -128,6 +128,10 @@ fn collect_normalized_discrete_update_equation(
         alias_edges.extend(edges);
         return;
     }
+    if let Some(edges) = residual_discrete_alias_edges(dae_model, &rewritten) {
+        alias_edges.extend(edges);
+        return;
+    }
 
     let normalized = normalize_discrete_update_equation(
         dae_model,
@@ -322,6 +326,27 @@ fn explicit_discrete_alias_edges(
     let lhs = eq.lhs.as_ref()?;
     let rhs = plain_discrete_target_name(dae_model, &eq.rhs)?;
     discrete_alias_edges(dae_model, lhs, &rhs, eq.scalar_count.max(1), eq)
+}
+
+fn residual_discrete_alias_edges(
+    dae_model: &dae::Dae,
+    eq: &dae::Equation,
+) -> Option<Vec<DiscreteAliasEdge>> {
+    if eq.lhs.is_some() {
+        return None;
+    }
+    let rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = &eq.rhs
+    else {
+        return None;
+    };
+    let lhs = plain_discrete_target_name(dae_model, lhs)?;
+    let rhs = plain_discrete_target_name(dae_model, rhs)?;
+    discrete_alias_edges(dae_model, &lhs, &rhs, eq.scalar_count.max(1), eq)
 }
 
 fn discrete_alias_edges(
