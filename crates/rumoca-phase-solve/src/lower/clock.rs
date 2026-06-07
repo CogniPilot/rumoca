@@ -1,7 +1,7 @@
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve::{BinaryOp, CompareOp, Reg, UnaryOp};
 
-use super::helpers::intrinsic_short_name;
+use super::helpers::{binding_base_key, intrinsic_short_name};
 use super::{LowerBuilder, LowerError, Scope, ValueMode};
 
 impl<'a> LowerBuilder<'a> {
@@ -201,11 +201,10 @@ impl<'a> LowerBuilder<'a> {
         match expr {
             // MLS §16.5.1: interval(v) returns the associated clock interval for
             // the clocked variable v when that metadata is known at runtime.
-            rumoca_core::Expression::VarRef {
-                name, subscripts, ..
-            } if subscripts.is_empty() => Ok(self
-                .clock_intervals
-                .and_then(|intervals| intervals.get(name.as_str()).copied())
+            rumoca_core::Expression::VarRef { .. }
+            | rumoca_core::Expression::Index { .. }
+            | rumoca_core::Expression::FieldAccess { .. } => Ok(self
+                .clock_interval_metadata(expr)
                 .map(|value| self.emit_const(value))),
             rumoca_core::Expression::FunctionCall { name, args, .. } => {
                 let short = intrinsic_short_name(name.as_str());
@@ -234,12 +233,11 @@ impl<'a> LowerBuilder<'a> {
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
         match expr {
-            rumoca_core::Expression::VarRef {
-                name, subscripts, ..
-            } if subscripts.is_empty() => {
+            rumoca_core::Expression::VarRef { .. }
+            | rumoca_core::Expression::Index { .. }
+            | rumoca_core::Expression::FieldAccess { .. } => {
                 let phase = self
-                    .clock_timings
-                    .and_then(|timings| timings.get(name.as_str()))
+                    .clock_timing_metadata(expr)
                     .map_or(0.0, |timing| timing.phase_seconds);
                 Ok(self.emit_const(phase))
             }
@@ -284,6 +282,19 @@ impl<'a> LowerBuilder<'a> {
         })
     }
 
+    fn clock_interval_metadata(&self, expr: &rumoca_core::Expression) -> Option<f64> {
+        let intervals = self.clock_intervals?;
+        clock_component_metadata(expr, intervals).copied()
+    }
+
+    fn clock_timing_metadata(
+        &self,
+        expr: &rumoca_core::Expression,
+    ) -> Option<&'a dae::ClockSchedule> {
+        let timings = self.clock_timings?;
+        clock_component_metadata(expr, timings)
+    }
+
     pub(super) fn lower_scaled_clock_interval(
         &mut self,
         args: &[rumoca_core::Expression],
@@ -322,4 +333,26 @@ impl<'a> LowerBuilder<'a> {
         };
         self.lower_clock_interval_expr(base_expr, scope, call_depth)
     }
+}
+
+fn clock_base_metadata_key(expr: &rumoca_core::Expression) -> Option<String> {
+    match expr {
+        rumoca_core::Expression::VarRef { name, .. } => Some(name.as_str().to_string()),
+        rumoca_core::Expression::Index { base, .. } => clock_base_metadata_key(base),
+        rumoca_core::Expression::FieldAccess { .. } => binding_base_key(expr).ok(),
+        _ => None,
+    }
+}
+
+fn clock_component_metadata<'m, T>(
+    expr: &rumoca_core::Expression,
+    metadata: &'m indexmap::IndexMap<String, T>,
+) -> Option<&'m T> {
+    if let Ok(key) = binding_base_key(expr)
+        && let Some(value) = metadata.get(key.as_str())
+    {
+        return Some(value);
+    }
+    let key = clock_base_metadata_key(expr)?;
+    metadata.get(key.as_str())
 }
