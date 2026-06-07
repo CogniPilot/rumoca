@@ -201,6 +201,59 @@ fn lower_expression_uses_function_local_size_in_fill_dimension() {
 }
 
 #[test]
+fn lower_expression_unrolls_for_loop_over_qualified_real_fft_sample_points() {
+    let mut dae_model = dae::Dae::default();
+    let mut count = rumoca_core::Function::new("My.fftPointCount", Default::default());
+    count.outputs.push(function_param("out"));
+    count.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: real_lit(0.0),
+        span: rumoca_core::Span::DUMMY,
+    });
+    count.body.push(rumoca_core::Statement::For {
+        indices: vec![rumoca_core::ForIndex {
+            ident: "i".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new(
+                        "Modelica.Math.FastFourierTransform.realFFTsamplePoints",
+                    )
+                    .into(),
+                    args: vec![real_lit(4.0), real_lit(1.0)],
+                    is_constructor: false,
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                span: rumoca_core::Span::DUMMY,
+            },
+        }],
+        equations: vec![rumoca_core::Statement::Assignment {
+            comp: component_ref("out"),
+            value: add(var("out"), real_lit(1.0)),
+            span: rumoca_core::Span::DUMMY,
+        }],
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.fftPointCount"), count);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.fftPointCount").into(),
+        args: vec![],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
+        .expect("qualified realFFTsamplePoints should be a structural function");
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 40.0).abs() <= 1e-12);
+}
+
+#[test]
 fn lower_expression_uses_actual_matrix_shape_for_function_input_size() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.parameters.insert(

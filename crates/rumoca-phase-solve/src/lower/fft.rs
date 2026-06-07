@@ -160,7 +160,7 @@ impl<'a> LowerBuilder<'a> {
             };
             return self.eval_compile_time_expr(value, const_scope);
         }
-        if !is_real_fft_sample_points_name(name.as_str()) {
+        if name.last_segment() != "realFFTsamplePoints" {
             return Err(LowerError::Unsupported {
                 reason: "unsupported expression in for-loop range".to_string(),
             });
@@ -287,10 +287,6 @@ fn is_real_fft_name(name: &str) -> bool {
 
 fn is_raw_real_fft_name(name: &str) -> bool {
     rumoca_core::top_level_last_segment(name) == "rawRealFFT"
-}
-
-fn is_real_fft_sample_points_name(name: &str) -> bool {
-    rumoca_core::top_level_last_segment(name) == "realFFTsamplePoints"
 }
 
 fn real_fft_sample_points(f_max: f64, f_resolution: f64, f_max_factor: f64) -> i64 {
