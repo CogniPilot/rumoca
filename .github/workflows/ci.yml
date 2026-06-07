@@ -546,25 +546,45 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          omc_version="1.26.8-1"
+          expected_omc_version="OpenModelica ${omc_version%-1}"
           if command -v omc >/dev/null 2>&1; then
-            echo "OpenModelica already available:"
-            omc --version
-            exit 0
+            current_omc_version="$(omc --version)"
+            echo "OpenModelica already available: $current_omc_version"
+            if [[ "$current_omc_version" == "$expected_omc_version" ]]; then
+              exit 0
+            fi
+            echo "Replacing OpenModelica with pinned CI version $expected_omc_version"
           fi
           sudo apt-get update
-          sudo apt-get install -y ca-certificates curl gnupg
-          sudo curl -fsSL http://build.openmodelica.org/apt/openmodelica.asc | \
-            sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
-          codename="$(
-            . /etc/os-release
-            echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}"
-          )"
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] \
-            https://build.openmodelica.org/apt ${codename} stable" | \
-            sudo tee /etc/apt/sources.list.d/openmodelica.list >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends omc
-          omc --version
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            clang \
+            cmake \
+            curl \
+            libexpat1-dev \
+            liblapack-dev \
+            unzip \
+            zip
+          omc_deb_dir="$(mktemp -d)"
+          trap 'rm -rf "$omc_deb_dir"' EXIT
+          omc_deb_base="https://build.openmodelica.org/apt/pool/contrib-noble"
+          for package in \
+            "omc-common_${omc_version}_all.deb" \
+            "libomcsimulation_${omc_version}_amd64.deb" \
+            "libomc_${omc_version}_amd64.deb" \
+            "omc_${omc_version}_amd64.deb"
+          do
+            curl -fsSL -o "$omc_deb_dir/$package" "$omc_deb_base/$package"
+          done
+          sudo apt-get install -y --no-install-recommends "$omc_deb_dir"/*.deb
+          installed_omc_version="$(omc --version)"
+          if [[ "$installed_omc_version" != "$expected_omc_version" ]]; then
+            echo "Expected $expected_omc_version, got $installed_omc_version" >&2
+            exit 1
+          fi
+          echo "$installed_omc_version"
 
       - name: Clean stale MSL results
         shell: bash
