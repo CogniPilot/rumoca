@@ -1,7 +1,7 @@
 {
   "quality_gate_version": 1,
   "run_scope": "full",
-  "git_commit": "86407a53e73d094fd59928cbae730cc5e550dc5d",
+  "git_commit": "f673a2febfe59ef67e0a23f9e307490ca5248f76",
   "msl_version": "v4.1.0",
   "omc_version": "OpenModelica 1.26.8",
   "sim_timeout_seconds": 10.0,
@@ -10,7 +10,7 @@
   "flatten_models": 562,
   "dae_models": 477,
   "compiled_models": 477,
-  "solve_models": 388,
+  "solve_models": 387,
   "balanced_models": 464,
   "unbalanced_models": 0,
   "partial_models": 13,
@@ -20,26 +20,26 @@
   "sim_target_models": 566,
   "sim_attempted": 393,
   "ic_attempted": 247,
-  "ic_ok": 226,
-  "ic_solver_fail": 21,
+  "ic_ok": 225,
+  "ic_solver_fail": 22,
   "sim_ok": 153,
   "sim_success_rate": 0.2703180212014134,
   "runtime_context": {
-    "workers_used": 14,
+    "workers_used": 3,
     "omc_threads": 1
   },
   "runtime_ratio_stats": {
     "system_ratio_both_success": {
       "sample_count": 150,
       "min": 0.0057372821175448565,
-      "median": 1.2919245608887109,
+      "median": 0.9960132,
       "mean": 3.0718883790268223,
       "max": 28.499674382185553
     },
     "wall_ratio_both_success": {
       "sample_count": 150,
       "min": 0.5517786597955487,
-      "median": 49.72569467152199,
+      "median": 49.05,
       "mean": 78.6477123957729,
       "max": 442.5856089339531
     }
@@ -121,7 +121,7 @@
     "flatten_models": 562,
     "dae_models": 477,
     "compiled_models": 477,
-    "solve_models": 388,
+    "solve_models": 387,
     "balanced_models": 464,
     "initial_balanced_models": 464,
     "state_selection": {
@@ -141,8 +141,8 @@
     "sim_target_models": 566,
     "sim_attempted": 393,
     "ic_attempted": 247,
-    "ic_ok": 226,
-    "ic_solver_fail": 21,
+    "ic_ok": 225,
+    "ic_solver_fail": 22,
     "sim_ok": 153,
     "sim_nan": 0,
     "sim_solver_fail": 235,
@@ -188,7 +188,7 @@
     "CONN_STRM": {
       "models": 339,
       "compiled": 338,
-      "solve_ir": 236,
+      "solve_ir": 235,
       "balanced": 311,
       "sim_ok": 61,
       "phase_counts": {
