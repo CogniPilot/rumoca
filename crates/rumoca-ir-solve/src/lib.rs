@@ -22,7 +22,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 6;
+pub const SOLVE_SCHEMA_VERSION: u16 = 7;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ExternalTables {
@@ -554,6 +554,7 @@ mod tests {
                 LinearOp::Const { dst: 0, value: 0.0 },
                 LinearOp::StoreOutput { src: 0 },
             ]]),
+            projection_indices: Vec::new(),
             projection_plan: AlgebraicProjectionPlan::default(),
             update_rhs: ScalarProgramBlock::default(),
             update_targets: Vec::new(),
@@ -1049,6 +1050,17 @@ impl SolveProblem {
             self.initialization.update_rhs.len(),
             self.initialization.update_targets.len(),
         )?;
+        validate_indices(
+            "initialization.projection_indices",
+            &self.initialization.projection_indices,
+            self.solve_layout.solver_scalar_count(),
+        )?;
+        validate_projection_plan(
+            "initialization.projection_plan",
+            &self.initialization.projection_plan,
+            self.initialization.residual.len(),
+            self.solve_layout.solver_scalar_count(),
+        )?;
         self.discrete
             .runtime_assignment_rhs
             .validate_shape_contract("discrete.runtime_assignment_rhs")?;
@@ -1097,6 +1109,42 @@ fn validate_count(
     })
 }
 
+fn validate_indices(
+    context: &'static str,
+    indices: &[usize],
+    upper_bound: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    for &index in indices {
+        if index < upper_bound {
+            continue;
+        }
+        return Err(SolveProblemShapeContractError::SolverIndexOutOfBounds {
+            context,
+            index,
+            upper_bound,
+            span: Span::DUMMY,
+        });
+    }
+    Ok(())
+}
+
+fn validate_projection_plan(
+    context: &'static str,
+    plan: &AlgebraicProjectionPlan,
+    row_upper_bound: usize,
+    y_upper_bound: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    for block in &plan.blocks {
+        validate_indices(context, &block.rows, row_upper_bound)?;
+        validate_indices(context, &block.y_indices, y_upper_bound)?;
+        for step in &block.causal_steps {
+            validate_indices(context, &[step.row], row_upper_bound)?;
+            validate_indices(context, &[step.y_index], y_upper_bound)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SolveProblemShapeContractError {
     SchemaVersion {
@@ -1123,6 +1171,12 @@ pub enum SolveProblemShapeContractError {
         dimension: &'static str,
         span: Span,
     },
+    SolverIndexOutOfBounds {
+        context: &'static str,
+        index: usize,
+        upper_bound: usize,
+        span: Span,
+    },
 }
 
 impl SolveProblemShapeContractError {
@@ -1132,7 +1186,8 @@ impl SolveProblemShapeContractError {
             Self::Layout(err) => err.span(),
             Self::ScalarProgramSpanMismatch { span, .. }
             | Self::ScalarProgramCountMismatch { span, .. }
-            | Self::ZeroTensorDimension { span, .. } => *span,
+            | Self::ZeroTensorDimension { span, .. }
+            | Self::SolverIndexOutOfBounds { span, .. } => *span,
         }
     }
 }
@@ -1196,6 +1251,7 @@ pub struct ContinuousSolveArtifacts {
 pub struct InitializationSolveSystem {
     pub residual: ScalarProgramBlock,
     pub row_targets: Vec<Option<ScalarSlot>>,
+    pub projection_indices: Vec<usize>,
     #[serde(default)]
     pub projection_plan: AlgebraicProjectionPlan,
     #[serde(default)]
@@ -1413,6 +1469,10 @@ impl SolveModel {
 
     pub fn solver_scalar_count(&self) -> usize {
         self.problem.solve_layout.solver_scalar_count()
+    }
+
+    pub fn initialization_projection_indices(&self) -> &[usize] {
+        &self.problem.initialization.projection_indices
     }
 }
 

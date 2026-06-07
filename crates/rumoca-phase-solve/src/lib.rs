@@ -376,7 +376,7 @@ fn lower_initialization_system(
 
     let residual_rows = lower_initial_residual(dae_model, layout)
         .map_err(|err| lower_problem_context(err, "lower initial residual rows"))?;
-    let projection_indices = initial_projection_indices_for_layout(solve_layout);
+    let projection_indices = initial_projection_indices_for_layout(dae_model, solve_layout);
     let projection_plan = lower_projection_plan(
         &residual_rows,
         &row_targets,
@@ -386,6 +386,7 @@ fn lower_initialization_system(
 
     Ok(solve::InitializationSolveSystem {
         row_targets,
+        projection_indices,
         projection_plan,
         residual: solve::ScalarProgramBlock::with_program_spans(
             residual_rows,
@@ -399,10 +400,24 @@ fn lower_initialization_system(
     })
 }
 
-fn initial_projection_indices_for_layout(solve_layout: &solve::SolveLayout) -> Vec<usize> {
+fn initial_projection_indices_for_layout(
+    dae_model: &dae::Dae,
+    solve_layout: &solve::SolveLayout,
+) -> Vec<usize> {
     let state_count = solve_layout.state_scalar_count();
     let algebraic_end = state_count + solve_layout.algebraic_scalar_count();
-    (state_count..algebraic_end).collect()
+    let mut indices = dae_model
+        .variables
+        .states
+        .iter()
+        .filter(|(_, var)| var.fixed != Some(true))
+        .flat_map(|(name, var)| collect_scalar_names(std::iter::once((name, var))))
+        .filter_map(|name| solve_layout.solver_idx_for_target(&name))
+        .collect::<Vec<_>>();
+    indices.extend(state_count..algebraic_end);
+    indices.sort_unstable();
+    indices.dedup();
+    indices
 }
 
 pub fn lower_solve_artifacts(

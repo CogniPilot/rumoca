@@ -54,6 +54,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
             initialization: InitializationSolveSystem {
                 residual: zero_rb.clone(),
                 row_targets: Vec::new(),
+                projection_indices: Vec::new(),
                 projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
                 update_rhs: ScalarProgramBlock::default(),
                 update_targets: Vec::new(),

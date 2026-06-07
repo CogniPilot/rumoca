@@ -465,6 +465,7 @@ fn simulate_seeds_algebraics_from_initial_residual_before_runtime_projection() {
     install_dense_algebraic_projection_plan(&mut model);
     model.problem.initialization.residual =
         solve::ScalarProgramBlock::new(vec![zero_row(), z_minus_one()]);
+    model.problem.initialization.projection_indices = vec![1];
     model.initial_y = vec![0.0, 0.0];
     model.visible_names = vec!["z".to_string()];
 
@@ -503,6 +504,7 @@ fn initialization_projects_demoted_state_layout_slots() {
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     model.problem.initialization.residual = solve::ScalarProgramBlock::new(vec![z_minus_one()]);
     model.problem.initialization.row_targets = vec![Some(solve::scalar_slot_y(1))];
+    model.problem.initialization.projection_indices = vec![1];
     model.initial_y = vec![0.0, 0.0];
     model.variable_meta = vec![
         solve::SolveVariableMeta {
@@ -541,28 +543,37 @@ fn initialization_projects_demoted_state_layout_slots() {
 }
 
 #[test]
-fn initial_projection_indices_preserve_true_state_slots() {
+fn solve_model_initial_projection_indices_use_solve_ir_slots() {
     let mut model = solve::SolveModel::default();
     model.problem.solve_layout.solver_maps.names = vec![
         "x".to_string(),
+        "xf".to_string(),
         "d".to_string(),
         "z".to_string(),
         "o".to_string(),
     ];
     model.problem.solve_layout.solver_maps.name_to_idx = indexmap::IndexMap::from([
         ("x".to_string(), 0),
-        ("d".to_string(), 1),
-        ("z".to_string(), 2),
-        ("o".to_string(), 3),
+        ("xf".to_string(), 1),
+        ("d".to_string(), 2),
+        ("z".to_string(), 3),
+        ("o".to_string(), 4),
     ]);
-    model.problem.solve_layout.state_scalar_count = 2;
+    model.problem.solve_layout.state_scalar_count = 3;
     model.problem.solve_layout.algebraic_scalar_count = 1;
     model.problem.solve_layout.output_scalar_count = 1;
+    model.problem.initialization.projection_indices = vec![0, 2, 3];
     model.variable_meta = vec![
         solve::SolveVariableMeta {
             name: "x".to_string(),
             is_state: true,
             fixed: Some(false),
+            ..Default::default()
+        },
+        solve::SolveVariableMeta {
+            name: "xf".to_string(),
+            is_state: true,
+            fixed: Some(true),
             ..Default::default()
         },
         solve::SolveVariableMeta {
@@ -585,7 +596,7 @@ fn initial_projection_indices_preserve_true_state_slots() {
         },
     ];
 
-    assert_eq!(initial_projection_indices(&model), vec![1, 2]);
+    assert_eq!(model.initialization_projection_indices(), vec![0, 2, 3]);
 }
 
 #[test]
@@ -654,6 +665,7 @@ fn simulate_runs_solve_ir_initial_updates_after_initial_projection() {
     install_dense_algebraic_projection_plan(&mut model);
     model.problem.initialization.residual =
         solve::ScalarProgramBlock::new(vec![zero_row(), z_minus_two()]);
+    model.problem.initialization.projection_indices = vec![1];
     model.problem.initialization.update_rhs =
         solve::ScalarProgramBlock::new(vec![z_greater_one_condition_row()]);
     model.problem.initialization.update_targets = vec![solve::scalar_slot_p(0)];
