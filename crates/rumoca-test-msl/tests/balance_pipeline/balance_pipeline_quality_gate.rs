@@ -990,6 +990,14 @@ pub(super) fn ensure_required_msl_parity_references(summary: &MslSummary) -> io:
     Ok(())
 }
 
+pub(super) fn current_omc_parity_workers() -> usize {
+    omc_parity_workers()
+}
+
+pub(super) fn current_omc_parity_threads() -> usize {
+    omc_parity_threads()
+}
+
 fn simulation_parity_cache_has_required_metrics(path: &Path) -> io::Result<bool> {
     if !path.is_file() {
         return Ok(false);
