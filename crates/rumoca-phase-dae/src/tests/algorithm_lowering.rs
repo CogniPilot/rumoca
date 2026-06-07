@@ -459,6 +459,31 @@ fn collect_edge_guard_names(expr: &rumoca_core::Expression, names: &mut Vec<Stri
     }
 }
 
+#[derive(Default)]
+struct InitialCallFinder {
+    found: bool,
+}
+
+impl rumoca_core::ExpressionVisitor for InitialCallFinder {
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if *function == rumoca_core::BuiltinFunction::Initial && args.is_empty() {
+            self.found = true;
+            return;
+        }
+        self.walk_builtin_call(function, args);
+    }
+}
+
+fn contains_initial_call(expr: &rumoca_core::Expression) -> bool {
+    let mut finder = InitialCallFinder::default();
+    rumoca_core::ExpressionVisitor::visit_expression(&mut finder, expr);
+    finder.found
+}
+
 fn build_supported_algorithm_slice_row_model() -> Model {
     let mut flat = Model::new();
     flat.add_variable(
@@ -1396,6 +1421,73 @@ fn test_todae_lowers_vector_when_algorithm_condition_to_scalar_event_guard() {
     assert!(
         !matches!(guard, rumoca_core::Expression::Array { .. }),
         "vector when guard must be a scalar Boolean expression, got {guard:?}"
+    );
+}
+
+#[test]
+fn test_todae_lowers_vector_when_algorithm_initial_condition_directly() {
+    let mut flat = Model::new();
+    for name in ["tick", "y"] {
+        add_discrete_valued(&mut flat, name);
+    }
+
+    flat.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::When {
+            blocks: vec![rumoca_core::StatementBlock {
+                cond: rumoca_core::Expression::Array {
+                    elements: vec![
+                        rumoca_core::Expression::BuiltinCall {
+                            function: rumoca_core::BuiltinFunction::Initial,
+                            args: vec![],
+                            span: rumoca_core::Span::DUMMY,
+                        },
+                        make_var_ref("tick"),
+                    ],
+                    is_matrix: false,
+                    span: rumoca_core::Span::DUMMY,
+                },
+                stmts: vec![rumoca_core::Statement::Assignment {
+                    comp: make_comp_ref("y"),
+                    value: rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Boolean(true),
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                    span: rumoca_core::Span::DUMMY,
+                }],
+            }],
+            span: rumoca_core::Span::DUMMY,
+        }],
+        Span::DUMMY,
+        "vector initial when algorithm".to_string(),
+    ));
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("vector initial when algorithm should lower");
+
+    let eq = dae
+        .discrete
+        .valued_updates
+        .iter()
+        .find(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "y"))
+        .expect("missing lowered y event equation");
+    let rumoca_core::Expression::If { branches, .. } = &eq.rhs else {
+        panic!("expected guarded event assignment, got {:?}", eq.rhs);
+    };
+    let [(guard, _)] = branches.as_slice() else {
+        panic!("expected one merged vector condition guard, got {branches:?}");
+    };
+
+    let mut edge_names = Vec::new();
+    collect_edge_guard_names(guard, &mut edge_names);
+    assert_eq!(edge_names, vec!["tick".to_string()]);
+    assert!(
+        contains_initial_call(guard),
+        "explicit vector initial() when guard must stay active during initialization, got {guard:?}"
     );
 }
 
