@@ -593,12 +593,11 @@ jobs:
           rm -rf target/msl/results
 
       - name: Run full MSL quality gate
-        # Keep the full parity run conservative on shared GitHub runners (lower
-        # peak memory pressure and fewer host-level cancellations during
-        # compile/sim worker fan-out).
+        # Keep the committed MSL quality baseline and CI run in the same
+        # stage/parity worker context. Simulation still has its own memory cap.
         run: >
           cargo xtask verify msl-parity
-          --stage-parallelism 3
+          --stage-parallelism 14
           --sim-parallelism 3
           --sim-worker-memory-mb 2048
           --sim-total-memory-mb 6144
