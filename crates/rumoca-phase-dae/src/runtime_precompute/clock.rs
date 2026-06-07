@@ -10,6 +10,8 @@ use rumoca_core::ExpressionVisitor;
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::{ImplicitSampleChecker, VarRefWithSubscriptsCollector};
 
+use crate::condition_activation;
+
 mod event_clock;
 mod timing_inference;
 
@@ -385,21 +387,41 @@ impl SyntheticRootConditionCollector<'_> {
         }
         self.suppress_events = previous;
     }
+
+    fn visit_expr_with_suppression(&mut self, expr: &rumoca_core::Expression, suppress: bool) {
+        let previous = self.suppress_events;
+        self.suppress_events = suppress;
+        self.visit_expression(expr);
+        self.suppress_events = previous;
+    }
 }
 
 impl ExpressionVisitor for SyntheticRootConditionCollector<'_> {
     fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
         match expr {
-            rumoca_core::Expression::If { branches, .. } => {
-                for (cond, _) in branches {
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                let mut else_suppressed = self.suppress_events;
+                for (cond, value) in branches {
+                    let condition_activation = condition_activation::runtime_activation(cond);
+                    let cond_suppressed = else_suppressed || condition_activation.is_some();
                     push_relation_root_if_event_condition(
                         cond,
-                        self.suppress_events,
+                        cond_suppressed,
                         self.constants,
                         self.out,
                     );
+                    self.visit_expr_with_suppression(cond, cond_suppressed);
+                    self.visit_expr_with_suppression(
+                        value,
+                        else_suppressed || matches!(condition_activation, Some(false)),
+                    );
+                    else_suppressed |= matches!(condition_activation, Some(true));
                 }
-                self.walk_expression(expr);
+                self.visit_expr_with_suppression(else_branch, else_suppressed);
             }
             rumoca_core::Expression::Binary { .. } => {
                 push_relation_root_if_event_condition(
@@ -424,7 +446,9 @@ impl ExpressionVisitor for SyntheticRootConditionCollector<'_> {
                         rumoca_core::BuiltinFunction::Abs | rumoca_core::BuiltinFunction::Sign
                     ) =>
             {
-                if let Some(arg) = args.first() {
+                if let Some(arg) = args.first()
+                    && eval_scalar_const_expr(arg, self.constants).is_none()
+                {
                     self.out.push(arg.clone());
                 }
                 self.walk_expression(expr);
@@ -444,6 +468,9 @@ fn push_relation_root_if_event_condition(
         return;
     }
     if let Some(root) = relation_root_expression(expr) {
+        if eval_scalar_const_expr(&root, constants).is_some() {
+            return;
+        }
         out.push(root);
     }
 }

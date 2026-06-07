@@ -25,6 +25,7 @@ mod analysis;
 mod appendix_b_validation;
 pub mod balance;
 mod binding_conversion;
+mod condition_activation;
 mod condition_lowering;
 mod connector_input_analysis;
 mod convert;

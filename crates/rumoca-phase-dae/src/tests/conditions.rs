@@ -53,6 +53,15 @@ fn gt(lhs: Expression, rhs: Expression) -> Expression {
     }
 }
 
+fn and(lhs: Expression, rhs: Expression) -> Expression {
+    Expression::Binary {
+        op: rumoca_core::OpBinary::And,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn ge(lhs: Expression, rhs: Expression) -> Expression {
     Expression::Binary {
         op: rumoca_core::OpBinary::Ge,
@@ -75,6 +84,14 @@ fn if_expr(condition: Expression, when_true: Expression, when_false: Expression)
     Expression::If {
         branches: vec![(condition, when_true)],
         else_branch: Box::new(when_false),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn not(expr: Expression) -> Expression {
+    Expression::Unary {
+        op: rumoca_core::OpUnary::Not,
+        rhs: Box::new(expr),
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -331,6 +348,97 @@ fn test_todae_suppresses_noevent_if_conditions_from_relation() {
             .discrete_valued
             .contains_key(&VarName::new("c")),
         "noEvent conditions must not create canonical condition variables"
+    );
+}
+
+#[test]
+fn test_todae_suppresses_initial_only_branch_relations_from_runtime_roots() {
+    let mut flat = Model::new();
+    flat.add_variable(VarName::new("x"), scalar_var("x"));
+    flat.add_variable(VarName::new("u"), input_var("u"));
+
+    let initial_only_relation = gt(var_ref("u"), int(0));
+    let runtime_relation = gt(var_ref("u"), int(1));
+    flat.add_equation(residual_eq(
+        var_ref("x"),
+        if_expr(
+            builtin_call(BuiltinFunction::Initial, vec![]),
+            if_expr(initial_only_relation.clone(), int(1), int(0)),
+            if_expr(runtime_relation.clone(), int(2), int(3)),
+        ),
+        "initial_guarded_relation",
+    ));
+
+    let dae_model = to_dae_unbalanced_ok(&flat);
+    let relation_set = relation_debug_set(&dae_model);
+
+    assert!(
+        !relation_set.contains(&format!("{initial_only_relation:?}")),
+        "relations reachable only while initial() is true must not become runtime roots"
+    );
+    assert!(
+        relation_set.contains(&format!("{runtime_relation:?}")),
+        "relations reachable after initialization must remain runtime roots"
+    );
+}
+
+#[test]
+fn test_todae_suppresses_initial_only_condition_relations_from_runtime_roots() {
+    let mut flat = Model::new();
+    flat.add_variable(VarName::new("x"), scalar_var("x"));
+    flat.add_variable(VarName::new("u"), input_var("u"));
+
+    let initial_only_relation = gt(var_ref("u"), int(0));
+    flat.add_equation(residual_eq(
+        var_ref("x"),
+        if_expr(
+            and(
+                builtin_call(BuiltinFunction::Initial, vec![]),
+                initial_only_relation.clone(),
+            ),
+            int(1),
+            int(0),
+        ),
+        "initial_condition_relation",
+    ));
+
+    let dae_model = to_dae_unbalanced_ok(&flat);
+    let relation_set = relation_debug_set(&dae_model);
+
+    assert!(
+        !relation_set.contains(&format!("{initial_only_relation:?}")),
+        "relations inside conditions that are runtime-false due to initial() must not become roots"
+    );
+}
+
+#[test]
+fn test_todae_suppresses_not_initial_else_relations_from_runtime_roots() {
+    let mut flat = Model::new();
+    flat.add_variable(VarName::new("x"), scalar_var("x"));
+    flat.add_variable(VarName::new("u"), input_var("u"));
+
+    let runtime_relation = gt(var_ref("u"), int(1));
+    let initial_only_relation = gt(var_ref("u"), int(0));
+    flat.add_equation(residual_eq(
+        var_ref("x"),
+        if_expr(
+            not(builtin_call(BuiltinFunction::Initial, vec![])),
+            if_expr(runtime_relation.clone(), int(2), int(3)),
+            if_expr(initial_only_relation.clone(), int(1), int(0)),
+        ),
+        "not_initial_guarded_relation",
+    ));
+
+    let dae_model = to_dae_unbalanced_ok(&flat);
+    let relation_set = relation_debug_set(&dae_model);
+
+    assert!(
+        relation_set.contains(&format!("{runtime_relation:?}")),
+        "not initial() branch relations are active during runtime"
+    );
+    assert!(
+        !relation_set.contains(&format!("{initial_only_relation:?}")),
+        "else relations guarded by not initial() must not become runtime roots"
     );
 }
 

@@ -77,6 +77,35 @@ fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_cor
     }
 }
 
+fn and(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::And,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn if_expr(
+    condition: rumoca_core::Expression,
+    when_true: rumoca_core::Expression,
+    when_false: rumoca_core::Expression,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::If {
+        branches: vec![(condition, when_true)],
+        else_branch: Box::new(when_false),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn initial_call() -> rumoca_core::Expression {
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Initial,
+        args: vec![],
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn dae_with_if_condition(cond: rumoca_core::Expression) -> dae::Dae {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.states.insert(
@@ -93,6 +122,179 @@ fn dae_with_if_condition(cond: rumoca_core::Expression) -> dae::Dae {
         "test_if_condition",
     ));
     dae_model
+}
+
+#[test]
+fn test_runtime_precompute_suppresses_initial_only_synthetic_roots() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.states.insert(
+        rumoca_core::VarName::new("x"),
+        dae::Variable::new(rumoca_core::VarName::new("x")),
+    );
+    let initial_only_relation = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Gt,
+        lhs: Box::new(var("x")),
+        rhs: Box::new(lit(0.25)),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let runtime_relation = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Gt,
+        lhs: Box::new(var("x")),
+        rhs: Box::new(lit(0.5)),
+        span: rumoca_core::Span::DUMMY,
+    };
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        if_expr(
+            initial_call(),
+            if_expr(initial_only_relation.clone(), lit(1.0), lit(2.0)),
+            if_expr(runtime_relation.clone(), lit(3.0), lit(4.0)),
+        ),
+        Span::DUMMY,
+        "initial_guarded_synthetic_root",
+    ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    let initial_root = clock::relation_root_expression(&initial_only_relation)
+        .expect("initial relation should have root form");
+    let runtime_root =
+        clock::relation_root_expression(&runtime_relation).expect("runtime relation has root form");
+    assert!(
+        !dae_model
+            .events
+            .synthetic_root_conditions
+            .iter()
+            .any(|root| rumoca_core::expressions_semantically_equal(root, &initial_root)),
+        "relations reachable only while initial() is true must not become runtime synthetic roots"
+    );
+    assert!(
+        dae_model
+            .events
+            .synthetic_root_conditions
+            .iter()
+            .any(|root| rumoca_core::expressions_semantically_equal(root, &runtime_root)),
+        "runtime branch relations must remain synthetic roots"
+    );
+}
+
+#[test]
+fn test_runtime_precompute_suppresses_initial_only_condition_synthetic_roots() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.states.insert(
+        rumoca_core::VarName::new("x"),
+        dae::Variable::new(rumoca_core::VarName::new("x")),
+    );
+    let initial_only_relation = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Gt,
+        lhs: Box::new(var("x")),
+        rhs: Box::new(lit(0.25)),
+        span: rumoca_core::Span::DUMMY,
+    };
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        if_expr(
+            and(initial_call(), initial_only_relation.clone()),
+            lit(1.0),
+            lit(0.0),
+        ),
+        Span::DUMMY,
+        "initial_condition_synthetic_root",
+    ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    let initial_root = clock::relation_root_expression(&initial_only_relation)
+        .expect("initial relation should have root form");
+    assert!(
+        !dae_model
+            .events
+            .synthetic_root_conditions
+            .iter()
+            .any(|root| rumoca_core::expressions_semantically_equal(root, &initial_root)),
+        "relations inside runtime-false initial() conditions must not become synthetic roots"
+    );
+}
+
+#[test]
+fn test_runtime_precompute_suppresses_initial_only_time_events() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .discrete
+        .real_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("y"),
+            if_expr(
+                initial_call(),
+                if_expr(time_gt(0.25), lit(1.0), lit(2.0)),
+                if_expr(time_gt(0.5), lit(3.0), lit(4.0)),
+            ),
+            Span::DUMMY,
+            "initial_guarded_time_event",
+        ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert_eq!(
+        dae_model.events.scheduled_time_events,
+        vec![0.5],
+        "time events reachable only during initialization must not be scheduled for simulation"
+    );
+}
+
+#[test]
+fn test_runtime_precompute_suppresses_initial_only_condition_time_events() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .discrete
+        .real_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("y"),
+            if_expr(and(initial_call(), time_gt(0.25)), lit(1.0), lit(0.0)),
+            Span::DUMMY,
+            "initial_condition_time_event",
+        ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert!(
+        dae_model.events.scheduled_time_events.is_empty(),
+        "time events inside runtime-false initial() conditions must not be scheduled"
+    );
+}
+
+#[test]
+fn test_runtime_precompute_skips_compile_time_synthetic_roots() {
+    let mut dae_model = dae::Dae::default();
+    let mut parameter = dae::Variable::new(rumoca_core::VarName::new("p"));
+    parameter.start = Some(lit(0.2));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("p"), parameter);
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        if_expr(
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Gt,
+                lhs: Box::new(rumoca_core::Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Abs,
+                    args: vec![var("p")],
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                rhs: Box::new(lit(0.1)),
+                span: rumoca_core::Span::DUMMY,
+            },
+            lit(1.0),
+            lit(0.0),
+        ),
+        Span::DUMMY,
+        "compile_time_synthetic_root",
+    ));
+
+    populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+    assert!(
+        dae_model.events.synthetic_root_conditions.is_empty(),
+        "parameter-only synthetic roots cannot cross during simulation"
+    );
 }
 
 fn less_than_with_token(_token_number: u32) -> rumoca_core::Expression {

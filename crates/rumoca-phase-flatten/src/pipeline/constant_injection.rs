@@ -1,6 +1,10 @@
 use super::*;
 use crate::record_constant_arrays::try_extract_record_array_constructor_constant;
 
+mod component_binding_values;
+
+pub(crate) use component_binding_values::collect_component_binding_values;
+
 const NAMED_CONSTRUCTOR_ARG_PREFIX: &str = "__rumoca_named_arg__.";
 
 pub(crate) fn inject_class_extends_constants(
@@ -1682,47 +1686,6 @@ pub(crate) fn build_structural_eval_context(
     collect_component_binding_values(overlay, &mut eval_ctx)?;
 
     Ok(eval_ctx)
-}
-
-/// Evaluate component bindings and start values, adding resolved values to the eval context.
-///
-/// Only uses start values as fallback for parameters and constants.
-/// Non-parameter variables' start values are initial conditions, not compile-time
-/// constants, and must not be used for structural equation evaluation (MLS §8.6).
-pub(crate) fn collect_component_binding_values(
-    overlay: &InstanceOverlay,
-    eval_ctx: &mut rumoca_eval_flat::constant::EvalContext,
-) -> Result<(), FlattenError> {
-    for (_def_id, instance_data) in &overlay.components {
-        let qualified_name = instance_data.qualified_name.to_flat_string();
-
-        if eval_ctx.get(&qualified_name).is_some() {
-            continue;
-        }
-
-        if let Some(binding) = &instance_data.binding {
-            let flat_binding = qualify_expression(binding, &QualifiedName::new())?;
-            if let Ok(val) = rumoca_eval_flat::constant::eval_expr(&flat_binding, eval_ctx) {
-                eval_ctx.add_parameter(qualified_name.clone(), val);
-                continue;
-            }
-        }
-
-        // Only use start values for parameters/constants as default values.
-        // Non-parameter variables' start values are initial conditions that
-        // must not be treated as compile-time constants.
-        let is_param_or_const = matches!(
-            instance_data.variability,
-            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
-        );
-        if is_param_or_const && let Some(start) = &instance_data.start {
-            let flat_start = qualify_expression(start, &QualifiedName::new())?;
-            if let Ok(val) = rumoca_eval_flat::constant::eval_expr(&flat_start, eval_ctx) {
-                eval_ctx.add_parameter(qualified_name, val);
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Try to evaluate a simple equation as a structural Boolean assignment.

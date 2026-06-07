@@ -6,6 +6,8 @@
 use rumoca_core::{ExpressionRewriter, ExpressionVisitor, Span};
 use rumoca_ir_dae as dae;
 
+use crate::condition_activation;
+
 const DEFAULT_CONDITION_VAR_NAME: &str = "c";
 const GENERATED_CONDITION_VAR_PREFIX: &str = "__rumoca_c";
 
@@ -533,8 +535,12 @@ impl ExpressionVisitor for ConditionCandidateCollector<'_> {
         branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
         else_branch: &rumoca_core::Expression,
     ) {
+        let mut else_suppressed = self.suppress_events;
         for (condition, value) in branches {
-            let cond_suppressed = self.suppress_events || is_event_suppressed_wrapper(condition);
+            let condition_activation = condition_activation::runtime_activation(condition);
+            let cond_suppressed = else_suppressed
+                || condition_activation.is_some()
+                || is_event_suppressed_wrapper(condition);
             // MLS Appendix B B.1d: canonical conditions live on relation(v), so
             // event combinators like edge/change contribute their underlying
             // relational guard via the builtin walk below, not as wrapper roots.
@@ -545,9 +551,13 @@ impl ExpressionVisitor for ConditionCandidateCollector<'_> {
                 self.insert_candidate(condition.clone());
             }
             self.visit_with_suppression(condition, cond_suppressed);
-            self.visit_expression(value);
+            self.visit_with_suppression(
+                value,
+                else_suppressed || matches!(condition_activation, Some(false)),
+            );
+            else_suppressed |= matches!(condition_activation, Some(true));
         }
-        self.visit_expression(else_branch);
+        self.visit_with_suppression(else_branch, else_suppressed);
     }
 
     fn visit_builtin_call(
