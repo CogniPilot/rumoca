@@ -970,10 +970,10 @@ fn discrete_channel_names(trace: &SimTrace) -> HashSet<String> {
             .variability
             .as_deref()
             .is_some_and(|v| v.eq_ignore_ascii_case("discrete"))
-            || entry
-                .time_domain
-                .as_deref()
-                .is_some_and(|d| d.eq_ignore_ascii_case("event-discrete"))
+            || entry.time_domain.as_deref().is_some_and(|d| {
+                d.eq_ignore_ascii_case("event-discrete")
+                    || d.eq_ignore_ascii_case("event-discontinuous")
+            })
             || entry
                 .role
                 .as_deref()
@@ -1248,6 +1248,37 @@ mod tests {
         assert!(
             metric.bounded_normalized_l1_error < 1.0e-12,
             "step-hold should avoid synthetic mid-step interpolation error for discrete channels"
+        );
+    }
+
+    #[test]
+    fn event_discontinuous_real_channel_uses_step_hold_interpolation() {
+        let rumoca = SimTrace {
+            model_name: Some("M".to_string()),
+            times: vec![0.0, 1.0],
+            names: vec!["y".to_string()],
+            data: vec![vec![Some(0.0), Some(1.0)]],
+            variable_meta: Some(vec![SimTraceVariableMeta {
+                name: "y".to_string(),
+                role: Some("output".to_string()),
+                value_type: Some("Real".to_string()),
+                variability: Some("continuous".to_string()),
+                time_domain: Some("event-discontinuous".to_string()),
+            }]),
+        };
+        let omc = SimTrace {
+            model_name: Some("M".to_string()),
+            times: vec![0.0, 0.5, 1.0],
+            names: vec!["y".to_string()],
+            data: vec![vec![Some(0.0), Some(0.0), Some(1.0)]],
+            variable_meta: None,
+        };
+
+        let metric = compare_model_traces("M", &rumoca, &omc)
+            .expect("event-discontinuous Real trace should compare");
+        assert!(
+            metric.bounded_normalized_l1_score < 1.0e-12,
+            "event-discontinuous Real channels should avoid synthetic linear ramp error"
         );
     }
 
