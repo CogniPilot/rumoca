@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Subcommand};
+use serde::Serialize;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Cursor, Read, Write};
@@ -585,19 +586,30 @@ fn run_verify_suite(root: &Path, suite: VerifySuite, early_exit: bool) -> Result
     // hide later results (and force a full re-run). `--early-exit` restores the
     // fail-fast behavior. Either way the suite fails if any step failed.
     let mut failures: Vec<(&str, anyhow::Error)> = Vec::new();
+    let mut timing_steps = Vec::new();
+    let suite_started = Instant::now();
     for step in steps {
-        if let Err(error) = run_rum_step(root, step) {
+        let step_outcome = run_timed_rum_step(root, step);
+        timing_steps.push(step_outcome.timing);
+        if let Some(error) = step_outcome.error {
             if early_exit {
-                return Err(error.context(format!("verify step `{}` failed", step.label)));
+                failures.push((step.label, error));
+                break;
             }
             eprintln!("verify step `{}` FAILED: {error:#}", step.label);
             failures.push((step.label, error));
         }
     }
+    let timing_report = VerifyTimingReport::new(suite, suite_started.elapsed(), timing_steps);
+    write_verify_timing_report(root, &timing_report)?;
 
     if failures.is_empty() {
         println!("`{}` suite passed.", suite.label());
         return Ok(());
+    }
+    if early_exit && failures.len() == 1 {
+        let (label, error) = failures.remove(0);
+        return Err(error.context(format!("verify step `{label}` failed")));
     }
 
     let labels = failures
@@ -613,6 +625,25 @@ fn run_verify_suite(root: &Path, suite: VerifySuite, early_exit: bool) -> Result
     );
 }
 
+struct VerifyStepOutcome {
+    timing: VerifyTimingStep,
+    error: Option<anyhow::Error>,
+}
+
+fn run_timed_rum_step(root: &Path, step: &VerifyStep) -> VerifyStepOutcome {
+    let started = Instant::now();
+    match run_rum_step(root, step) {
+        Ok(()) => VerifyStepOutcome {
+            timing: VerifyTimingStep::new(step, "pass", started.elapsed()),
+            error: None,
+        },
+        Err(error) => VerifyStepOutcome {
+            timing: VerifyTimingStep::new(step, "fail", started.elapsed()),
+            error: Some(error),
+        },
+    }
+}
+
 fn run_rum_step(root: &Path, step: &VerifyStep) -> Result<()> {
     println!(
         "Running {}: `cargo xtask {}`",
@@ -623,6 +654,94 @@ fn run_rum_step(root: &Path, step: &VerifyStep) -> Result<()> {
     let mut cmd = Command::new(xtask_exe);
     cmd.args(step.args).current_dir(root);
     run_status(cmd)
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyTimingReport {
+    suite: String,
+    success: bool,
+    total_elapsed_seconds: f64,
+    steps: Vec<VerifyTimingStep>,
+}
+
+impl VerifyTimingReport {
+    fn new(suite: VerifySuite, elapsed: Duration, steps: Vec<VerifyTimingStep>) -> Self {
+        Self {
+            suite: suite.label().to_string(),
+            success: steps.iter().all(|step| step.status == "pass"),
+            total_elapsed_seconds: elapsed_seconds(elapsed),
+            steps,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyTimingStep {
+    label: String,
+    command: String,
+    status: String,
+    elapsed_seconds: f64,
+}
+
+impl VerifyTimingStep {
+    fn new(step: &VerifyStep, status: &str, elapsed: Duration) -> Self {
+        Self {
+            label: step.label.to_string(),
+            command: format!("cargo xtask {}", step.args.join(" ")),
+            status: status.to_string(),
+            elapsed_seconds: elapsed_seconds(elapsed),
+        }
+    }
+}
+
+fn elapsed_seconds(elapsed: Duration) -> f64 {
+    elapsed.as_secs_f64()
+}
+
+fn write_verify_timing_report(root: &Path, report: &VerifyTimingReport) -> Result<()> {
+    let output_dir = root.join("target/verify-timings");
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let stem = report
+        .suite
+        .strip_prefix("verify ")
+        .unwrap_or(report.suite.as_str());
+    let json_path = output_dir.join(format!("{stem}.json"));
+    let markdown_path = output_dir.join(format!("{stem}.md"));
+    let json = serde_json::to_string_pretty(report).context("failed to serialize verify timing")?;
+    fs::write(&json_path, json)
+        .with_context(|| format!("failed to write {}", json_path.display()))?;
+    fs::write(&markdown_path, render_verify_timing_markdown(report))
+        .with_context(|| format!("failed to write {}", markdown_path.display()))?;
+    println!(
+        "Verify timing report written to {} and {}",
+        json_path.display(),
+        markdown_path.display()
+    );
+    Ok(())
+}
+
+fn render_verify_timing_markdown(report: &VerifyTimingReport) -> String {
+    let mut lines = vec![
+        format!("# {}", report.suite),
+        String::new(),
+        format!("- success: {}", report.success),
+        format!(
+            "- total_elapsed_seconds: {:.3}",
+            report.total_elapsed_seconds
+        ),
+        String::new(),
+        "| Step | Status | Seconds | Command |".to_string(),
+        "|---|---:|---:|---|".to_string(),
+    ];
+    for step in &report.steps {
+        lines.push(format!(
+            "| {} | {} | {:.3} | `{}` |",
+            step.label, step.status, step.elapsed_seconds, step.command
+        ));
+    }
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 fn cached_msl_source_root(root: &Path) -> Result<PathBuf> {
@@ -1457,10 +1576,12 @@ where
 mod tests {
     use super::{
         MslCiEnvironment, MslHotspotModelResult, MslHotspotSummary, VERIFY_SUITE_STEPS,
-        VerifySuite, hottest_compile_model, hottest_sim_model, msl_cache_layout_valid,
-        should_log_process_tables,
+        VerifySuite, VerifyTimingReport, VerifyTimingStep, hottest_compile_model,
+        hottest_sim_model, msl_cache_layout_valid, render_verify_timing_markdown,
+        should_log_process_tables, write_verify_timing_report,
     };
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn step_argvs(suite: VerifySuite) -> Vec<Vec<&'static str>> {
         VERIFY_SUITE_STEPS
@@ -1509,6 +1630,62 @@ mod tests {
         assert!(steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
         assert!(steps.contains(&vec!["verify", "msl-parity"]));
         assert_eq!(steps.last(), Some(&vec!["verify", "msl-parity"]));
+    }
+
+    #[test]
+    fn verify_timing_markdown_preserves_step_order() {
+        let report = VerifyTimingReport::new(
+            VerifySuite::Quick,
+            Duration::from_millis(1500),
+            vec![
+                VerifyTimingStep {
+                    label: "lint".to_string(),
+                    command: "cargo xtask verify lint".to_string(),
+                    status: "pass".to_string(),
+                    elapsed_seconds: 0.5,
+                },
+                VerifyTimingStep {
+                    label: "workspace tests".to_string(),
+                    command: "cargo xtask verify workspace".to_string(),
+                    status: "fail".to_string(),
+                    elapsed_seconds: 1.0,
+                },
+            ],
+        );
+
+        let markdown = render_verify_timing_markdown(&report);
+        assert!(markdown.contains("# verify quick"));
+        assert!(markdown.contains("- success: false"));
+        assert!(
+            markdown.find("| lint | pass | 0.500 |").unwrap()
+                < markdown.find("| workspace tests | fail | 1.000 |").unwrap()
+        );
+    }
+
+    #[test]
+    fn verify_timing_report_writes_fixed_target_artifacts() {
+        let root = tempfile::tempdir().expect("temp root");
+        let report = VerifyTimingReport::new(
+            VerifySuite::Quick,
+            Duration::from_secs(1),
+            vec![VerifyTimingStep {
+                label: "lint".to_string(),
+                command: "cargo xtask verify lint".to_string(),
+                status: "pass".to_string(),
+                elapsed_seconds: 1.0,
+            }],
+        );
+
+        write_verify_timing_report(root.path(), &report).expect("write timing report");
+
+        let json_path = root.path().join("target/verify-timings/quick.json");
+        let markdown_path = root.path().join("target/verify-timings/quick.md");
+        assert!(json_path.is_file());
+        assert!(markdown_path.is_file());
+        let json = std::fs::read_to_string(json_path).expect("read timing json");
+        assert!(json.contains(r#""suite": "verify quick""#));
+        let markdown = std::fs::read_to_string(markdown_path).expect("read timing markdown");
+        assert!(markdown.contains("| lint | pass | 1.000 |"));
     }
 
     #[test]
