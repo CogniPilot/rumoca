@@ -173,7 +173,7 @@ pub fn lower_discrete_rhs(
                 discrete_valued_names: &dae_model.variables.discrete_valued,
                 variable_starts: &dae_model.metadata.variable_starts,
                 structural_bindings: Some(&structural_bindings),
-                guard_target_start_before_first_clock_tick: false,
+                guard_target_start_before_first_clock_tick: true,
             },
             false,
         )?,

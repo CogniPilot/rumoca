@@ -449,6 +449,66 @@ fn lower_runtime_assignment_inherits_rhs_clock_for_target_start_guard() {
 }
 
 #[test]
+fn lower_discrete_rhs_keeps_clocked_alias_target_start_before_first_target_tick() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .discrete_valued
+        .insert(rumoca_core::VarName::new("source"), scalar_var("source"));
+    dae_model
+        .variables
+        .discrete_valued
+        .insert(rumoca_core::VarName::new("target"), scalar_var("target"));
+    dae_model.clocks.timings.insert(
+        "target".to_string(),
+        dae::ClockSchedule {
+            period_seconds: 0.02,
+            phase_seconds: 0.04,
+            source_span: rumoca_core::Span::DUMMY,
+        },
+    );
+    dae_model.metadata.variable_starts.insert(
+        "target".to_string(),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(-1),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+    dae_model.discrete.valued_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("source")),
+        rhs: rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new("target").into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Default::default(),
+        origin: "connection equation: source = target".to_string(),
+        scalar_count: 1,
+    });
+
+    let layout = build_var_layout(&dae_model);
+    let rows = lower_discrete_rhs(&dae_model, &layout)
+        .expect("clocked discrete alias assignment should lower");
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "source", 2.0);
+    set_p_value(&layout, &mut p, "target", -1.0);
+
+    let (_, before_first_tick) = eval_linear_ops(&rows[0], &[], &p, 0.0);
+    let (_, at_first_tick) = eval_linear_ops(&rows[0], &[], &p, 0.04);
+
+    assert_eq!(
+        before_first_tick.expect("alias output before first target tick"),
+        -1.0,
+        "clocked alias targets must keep their start value before their first tick"
+    );
+    assert_eq!(
+        at_first_tick.expect("alias output at first target tick"),
+        2.0,
+        "clocked alias targets must follow the source at their first tick"
+    );
+}
+
+#[test]
 fn lower_expression_supports_size_builtin_for_known_array_dims() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.states.insert(
