@@ -99,6 +99,127 @@ fn solve_problem_marks_runtime_assignment_dependent_discretes_for_observation_re
 }
 
 #[test]
+fn solve_problem_marks_event_relation_aliases_for_observation_refresh() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("table_u"), scalar_var("table_u"));
+    for name in [
+        "to_boolean.y",
+        "table.y",
+        "sample.u",
+        "sample.clock",
+        "sample.y",
+    ] {
+        dae_model
+            .variables
+            .discrete_valued
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    dae_model
+        .discrete
+        .valued_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("to_boolean.y"),
+            binary(
+                rumoca_core::OpBinary::Ge,
+                var("table_u"),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(0.5),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ),
+            Default::default(),
+            "to_boolean.y = table_u >= 0.5",
+        ));
+    dae_model
+        .discrete
+        .valued_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("table.y"),
+            var("to_boolean.y"),
+            Default::default(),
+            "table.y = to_boolean.y",
+        ));
+    dae_model
+        .discrete
+        .valued_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("sample.u"),
+            var("table.y"),
+            Default::default(),
+            "sample.u = table.y",
+        ));
+    dae_model
+        .discrete
+        .valued_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::VarName::new("sample.y"),
+            internal_sample_call(vec![var("sample.u"), var("sample.clock")]),
+            Default::default(),
+            "sample.y = sample(sample.u, sample.clock)",
+        ));
+
+    let problem = lower_solve_problem(&dae_model).expect("event relation aliases should lower");
+    let refresh_for = |name: &str| {
+        let slot = problem
+            .layout
+            .binding(name)
+            .unwrap_or_else(|| panic!("{name} should have a solve slot"));
+        let row_idx = problem
+            .discrete
+            .update_targets
+            .iter()
+            .position(|target| *target == slot)
+            .unwrap_or_else(|| panic!("{name} should have an update row"));
+        problem.discrete.observation_refresh[row_idx]
+    };
+
+    assert!(refresh_for("to_boolean.y"));
+    assert!(refresh_for("table.y"));
+    assert!(refresh_for("sample.u"));
+    assert!(!refresh_for("sample.y"));
+}
+
+#[test]
+fn solve_problem_does_not_observation_refresh_no_event_relation_aliases() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+    dae_model
+        .variables
+        .discrete_valued
+        .insert(rumoca_core::VarName::new("b"), scalar_var("b"));
+    dae_model.discrete.valued_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("b")),
+        rhs: rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::NoEvent,
+            args: vec![binary(
+                rumoca_core::OpBinary::Ge,
+                var("u"),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(0.0),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            )],
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Default::default(),
+        // MLS §3.7.4: noEvent takes Real elementary relations literally,
+        // so this relation must not seed event observation refresh.
+        origin: "b = noEvent(u >= 0)".to_string(),
+        scalar_count: 1,
+    });
+
+    let problem = lower_solve_problem(&dae_model).expect("noEvent relation alias should lower");
+
+    assert_eq!(problem.discrete.observation_refresh, vec![false]);
+}
+
+#[test]
 fn solve_problem_marks_derived_clock_constructor_for_observation_refresh() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.discrete_valued.insert(
@@ -181,6 +302,54 @@ fn solve_problem_marks_hold_dependencies_for_observation_refresh() {
     // MLS §16.5.1: hold() is a continuous-time zero-order hold. It is safe to
     // refresh for observations once its source clocked value has settled.
     assert_eq!(problem.discrete.observation_refresh, vec![true, true, true]);
+}
+
+#[test]
+fn solve_problem_does_not_observation_refresh_clocked_previous_rows() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["b_super", "u_super", "y"] {
+        dae_model
+            .variables
+            .discrete_valued
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    dae_model.clocks.intervals.insert("y".to_string(), 0.1);
+    insert_pre_parameter(&mut dae_model, "b_super");
+    insert_pre_parameter(&mut dae_model, "y");
+    dae_model.discrete.valued_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("y")),
+        rhs: rumoca_core::Expression::If {
+            branches: vec![(
+                sample_event_indicator_expr(0.0, 0.1),
+                rumoca_core::Expression::If {
+                    branches: vec![(
+                        binary(
+                            rumoca_core::OpBinary::Neq,
+                            var("b_super"),
+                            pre_var("b_super"),
+                        ),
+                        var("u_super"),
+                    )],
+                    else_branch: Box::new(rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Boolean(false),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            )],
+            else_branch: Box::new(pre_var("y")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Default::default(),
+        // MLS section 16.4: lowered previous(..) on a clocked row needs the event-entry
+        // clock history. Observation refresh does not own that history snapshot.
+        origin: "y = if b_super <> previous(b_super) then u_super else false".to_string(),
+        scalar_count: 1,
+    });
+
+    let problem = lower_solve_problem(&dae_model).expect("clocked previous row should lower");
+
+    assert_eq!(problem.discrete.observation_refresh, vec![false]);
 }
 
 #[test]
@@ -355,6 +524,7 @@ fn solve_problem_orients_residual_aliases_away_from_residual_update_target() {
         .variables
         .discrete_reals
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+    dae_model.clocks.intervals.insert("y".to_string(), 0.1);
     insert_pre_parameter(&mut dae_model, "u");
     dae_model
         .discrete

@@ -447,11 +447,15 @@ fn mul(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_cor
 }
 
 fn residual(rhs: rumoca_core::Expression) -> dae::Equation {
+    residual_with_origin(rhs, "test residual")
+}
+
+fn residual_with_origin(rhs: rumoca_core::Expression, origin: &str) -> dae::Equation {
     dae::Equation {
         lhs: None,
         rhs,
         span: Default::default(),
-        origin: "test residual".to_string(),
+        origin: origin.to_string(),
         scalar_count: 1,
     }
 }
@@ -538,6 +542,77 @@ fn lower_discrete_rhs_recovers_if_residual_assignment_value() {
     let (_, output) = eval_linear_ops(&rows[0], &[], &[0.0], 0.0);
 
     assert_eq!(output, Some(2.0));
+}
+
+#[test]
+fn normalized_discrete_updates_orient_residual_alias_chain_once() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["a", "b", "c", "d"] {
+        dae_model
+            .variables
+            .discrete_reals
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    for (lhs, rhs) in [("a", "b"), ("b", "c"), ("c", "d")] {
+        dae_model.discrete.real_updates.push(residual_with_origin(
+            sub(var(lhs), var(rhs)),
+            &format!("connection equation: {lhs} = {rhs}"),
+        ));
+    }
+
+    let equations = super::normalized_discrete_update_equations(&dae_model);
+    let mut lhs_counts = IndexMap::<String, usize>::new();
+    let mut aliases = IndexMap::<String, String>::new();
+    for equation in &equations {
+        let lhs = equation.lhs.as_ref().expect("alias equation has target");
+        *lhs_counts.entry(lhs.as_str().to_string()).or_default() += 1;
+        let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = &equation.rhs
+        else {
+            panic!("alias equation should preserve VarRef RHS");
+        };
+        assert!(subscripts.is_empty());
+        aliases.insert(lhs.as_str().to_string(), name.as_str().to_string());
+    }
+
+    assert_eq!(lhs_counts.values().copied().max(), Some(1));
+    assert_eq!(aliases.get("b").map(String::as_str), Some("a"));
+    assert_eq!(aliases.get("c").map(String::as_str), Some("b"));
+    assert_eq!(aliases.get("d").map(String::as_str), Some("c"));
+}
+
+#[test]
+fn normalized_discrete_updates_preserve_explicit_difference_assignment() {
+    let mut dae_model = dae::Dae::default();
+    for name in ["a", "b", "x"] {
+        dae_model
+            .variables
+            .discrete_reals
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    dae_model.discrete.real_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("x")),
+        rhs: sub(var("a"), var("b")),
+        span: Default::default(),
+        origin: "x = a - b".to_string(),
+        scalar_count: 1,
+    });
+
+    let equations = super::normalized_discrete_update_equations(&dae_model);
+
+    assert_eq!(equations.len(), 1);
+    assert_eq!(equations[0].lhs.as_ref().map(|lhs| lhs.as_str()), Some("x"));
+    assert!(
+        matches!(
+            equations[0].rhs,
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                ..
+            }
+        ),
+        "explicit difference assignments must not be treated as residual aliases"
+    );
 }
 
 #[test]

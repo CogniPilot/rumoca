@@ -580,6 +580,9 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(values);
         }
+        if output.dims.is_empty() {
+            return function_output_values(output, scope);
+        }
         if let Some(values) = self.local_indexed_binding_values(&output.name) {
             return Ok(values);
         }

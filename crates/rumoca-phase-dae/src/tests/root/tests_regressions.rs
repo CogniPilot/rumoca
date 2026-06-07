@@ -598,6 +598,13 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
             .any(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("r"))),
         "algorithm when-assigned Real output must be routed to f_z"
     );
+    assert_eq!(
+        dae.clocks.schedules.len(),
+        1,
+        "algorithm when sample assignment must produce a periodic runtime schedule"
+    );
+    assert!((dae.clocks.schedules[0].period_seconds - 0.1).abs() <= 1e-12);
+    assert!(dae.clocks.schedules[0].phase_seconds.abs() <= 1e-12);
 }
 
 fn sequential_when_same_target_model() -> Model {
@@ -704,7 +711,7 @@ fn test_todae_merges_sequential_when_statements_for_same_target_in_source_order(
         span: rumoca_core::Span::DUMMY,
     } = else_branch.as_ref()
     else {
-        panic!("ordinary when lowering must preserve the initial-section value before pre(y)");
+        panic!("algorithm when lowering must preserve the initial-section value before pre(y)");
     };
     assert_eq!(initial_branches.len(), 1);
     assert!(matches!(

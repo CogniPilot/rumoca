@@ -27,7 +27,7 @@ use rumoca_core::{
 use serde::ser::{SerializeStruct, SerializeTuple};
 use serde::{Deserialize, Serialize};
 
-pub const DAE_SCHEMA_VERSION: u16 = 2;
+pub const DAE_SCHEMA_VERSION: u16 = 3;
 
 mod event_threshold;
 mod expr_query;
@@ -1013,6 +1013,13 @@ fn default_scalar_count() -> usize {
     1
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WhenEquationInactiveRhs {
+    #[default]
+    Pre,
+    Current,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1445,6 +1452,8 @@ pub struct WhenClause {
     pub condition: Expression,
     /// Equations active when triggered.
     pub equations: Vec<Equation>,
+    /// Inactive-guard value for each equation in `equations`.
+    pub equation_inactive_rhs: Vec<WhenEquationInactiveRhs>,
     /// Runtime actions active when triggered.
     pub actions: Vec<DaeEventAction>,
     /// Source span for error reporting.
@@ -1459,6 +1468,7 @@ impl WhenClause {
         Self {
             condition,
             equations: Vec::new(),
+            equation_inactive_rhs: Vec::new(),
             actions: Vec::new(),
             span,
             origin: origin.into(),

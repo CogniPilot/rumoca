@@ -41,3 +41,29 @@ pub(super) fn is_time_var_ref(expr: &rumoca_core::Expression) -> bool {
 pub(super) fn size_binding_key(name: &str, dim: usize) -> String {
     format!("{SIZE_BINDING_PREFIX}{name}.{dim}")
 }
+
+impl<'a> LowerBuilder<'a> {
+    pub(in crate::lower) fn lower_size_from_dims(
+        &mut self,
+        dims: &[usize],
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        let dim_reg = if args.len() > 1 {
+            let raw = self.lower_expr(&args[1], scope, call_depth)?;
+            self.emit_round(raw)
+        } else {
+            self.emit_const(1.0)
+        };
+
+        let mut value = self.emit_const(1.0);
+        for (idx, dim) in dims.iter().enumerate().rev() {
+            let dim_idx = self.emit_const((idx + 1) as f64);
+            let cond = self.emit_compare(CompareOp::Eq, dim_reg, dim_idx);
+            let dim_val = self.emit_const(*dim as f64);
+            value = self.emit_select(cond, dim_val, value);
+        }
+        Ok(value)
+    }
+}

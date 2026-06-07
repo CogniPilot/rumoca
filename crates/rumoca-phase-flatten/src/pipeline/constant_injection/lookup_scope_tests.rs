@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
 use super::{
-    inject_alias_component_package_constants, lookup_with_scope, try_eval_const_boolean_with_scope,
-    try_eval_const_flat_expr_with_scope, try_eval_const_integer_with_scope,
-    try_eval_structural_equation,
+    collect_component_binding_values, inject_alias_component_package_constants, lookup_with_scope,
+    try_eval_const_boolean_with_scope, try_eval_const_flat_expr_with_scope,
+    try_eval_const_integer_with_scope, try_eval_structural_equation,
 };
 use crate::Context;
 use rumoca_core::{ClassType, DefId, Literal, OpBinary, Token, Variability};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::{
-    ClassDef, ClassDefIndex, Component, ComponentRefPart, ComponentReference, QualifiedName,
+    ClassDef, ClassDefIndex, Component, ComponentRefPart, ComponentReference, InstanceData,
+    InstanceId, InstanceOverlay, QualifiedName,
 };
 
 #[test]
@@ -257,6 +258,31 @@ fn const_field_access_resolves_package_constant_value() {
             span: rumoca_core::Span::DUMMY,
         })
     );
+}
+
+#[test]
+fn component_binding_collection_uses_only_structural_components() {
+    let mut overlay = InstanceOverlay::new();
+    overlay.add_component(InstanceData {
+        instance_id: InstanceId::new(1),
+        qualified_name: QualifiedName::from_dotted("M.x"),
+        variability: Variability::Empty,
+        binding: Some(real_expr("1.0")),
+        ..InstanceData::default()
+    });
+    overlay.add_component(InstanceData {
+        instance_id: InstanceId::new(2),
+        qualified_name: QualifiedName::from_dotted("M.p"),
+        variability: Variability::Parameter(Token::default()),
+        binding: Some(real_expr("2.0")),
+        ..InstanceData::default()
+    });
+    let mut eval_ctx = rumoca_eval_flat::constant::EvalContext::default();
+
+    collect_component_binding_values(&overlay, &mut eval_ctx).unwrap();
+
+    assert!(eval_ctx.get("M.x").is_none());
+    assert!(eval_ctx.get("M.p").is_some());
 }
 
 #[test]

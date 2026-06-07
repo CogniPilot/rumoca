@@ -25,6 +25,7 @@ mod analysis;
 mod appendix_b_validation;
 pub mod balance;
 mod binding_conversion;
+mod condition_activation;
 mod condition_lowering;
 mod connector_input_analysis;
 mod convert;
@@ -296,7 +297,7 @@ pub fn to_dae_with_options(
     run_todae_phase(todae_subphase_timing, "when_conversion", || {
         for when in &flat.when_clauses {
             let dae_when = convert_when_clause(when, state_vars, flat)?;
-            route_discrete_event_equations(&mut dae, &dae_when);
+            route_discrete_event_equations(&mut dae, &dae_when)?;
         }
         Ok::<(), ToDaeError>(())
     })?;

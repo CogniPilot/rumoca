@@ -97,6 +97,9 @@ impl rumoca_core::ExpressionRewriter for BooleanAliasUnfolder<'_> {
 }
 
 fn when_guard_scalar_activation_expr(dae: &Dae, when_condition: &Expression) -> Expression {
+    if is_direct_initial_condition(when_condition) {
+        return when_condition.clone();
+    }
     let unfolded = unfold_boolean_aliases_in_expr(dae, when_condition);
     if is_clock_constructor_condition(&unfolded) {
         return unfolded;
@@ -122,6 +125,17 @@ fn when_guard_scalar_activation_expr(dae: &Dae, when_condition: &Expression) -> 
             span,
         },
     }
+}
+
+fn is_direct_initial_condition(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Initial,
+            args,
+            ..
+        } if args.is_empty()
+    )
 }
 
 fn is_clock_constructor_condition(expr: &Expression) -> bool {

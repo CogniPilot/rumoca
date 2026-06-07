@@ -520,7 +520,7 @@ pub(super) fn infer_clock_timing_from_function_call_expr(
     visiting: &mut HashSet<String>,
 ) -> Option<(f64, f64)> {
     let short = name.last_segment();
-    if short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME && args.len() >= 2 {
+    if is_sample_timing_function_name(short) && args.len() >= 2 {
         return infer_clock_timing_next(&args[1], constants, sources, remaining_depth, visiting)
             .or_else(|| {
                 infer_sample_start_interval_timing(
@@ -680,56 +680,20 @@ pub(super) struct ClockConstructorExprCollector<'a> {
 }
 
 impl ExpressionVisitor for ClockConstructorExprCollector<'_> {
-    fn visit_builtin_call(
-        &mut self,
-        function: &rumoca_core::BuiltinFunction,
-        args: &[rumoca_core::Expression],
-    ) {
-        if static_sample_start_interval_timing(function, args, self.constants).is_some() {
-            // MLS §16.5.1: sample(start, interval) defines a periodic time
-            // event and must participate in the runtime event schedule.
-            self.out.push(rumoca_core::Expression::BuiltinCall {
-                function: *function,
-                args: args.to_vec(),
-                span: rumoca_core::Span::DUMMY,
-            });
-        }
-        for arg in args {
-            self.visit_expression(arg);
-        }
-    }
-
-    fn visit_function_call(
-        &mut self,
-        name: &rumoca_core::Reference,
-        args: &[rumoca_core::Expression],
-        is_constructor: bool,
-    ) {
-        let short = name.last_segment();
-        if short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
-            if sample_start_interval_timing(args, self.constants).is_some() {
-                self.out.push(rumoca_core::Expression::FunctionCall {
-                    name: name.clone(),
-                    args: args.to_vec(),
-                    is_constructor,
-                    span: rumoca_core::Span::DUMMY,
-                });
-            }
-            for arg in args {
-                self.visit_expression(arg);
-            }
-            return;
-        }
-        if is_clock_constructor_function_name(short) {
-            self.out.push(rumoca_core::Expression::FunctionCall {
-                name: name.clone(),
-                args: args.to_vec(),
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        match expr {
+            rumoca_core::Expression::BuiltinCall {
+                function,
+                args,
+                span,
+            } => self.visit_builtin_call_with_span(*function, args, *span),
+            rumoca_core::Expression::FunctionCall {
+                name,
+                args,
                 is_constructor,
-                span: rumoca_core::Span::DUMMY,
-            });
-        }
-        for arg in args {
-            self.visit_expression(arg);
+                span,
+            } => self.visit_function_call_with_span(name, args, *is_constructor, *span),
+            _ => self.walk_expression(expr),
         }
     }
 
@@ -754,6 +718,63 @@ impl ExpressionVisitor for ClockConstructorExprCollector<'_> {
     }
 }
 
+impl ClockConstructorExprCollector<'_> {
+    fn visit_builtin_call_with_span(
+        &mut self,
+        function: rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+    ) {
+        if static_sample_start_interval_timing(&function, args, self.constants).is_some() {
+            // MLS §16.5.1: sample(start, interval) defines a periodic time
+            // event and must participate in the runtime event schedule.
+            self.out.push(rumoca_core::Expression::BuiltinCall {
+                function,
+                args: args.to_vec(),
+                span,
+            });
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+
+    fn visit_function_call_with_span(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[rumoca_core::Expression],
+        is_constructor: bool,
+        span: rumoca_core::Span,
+    ) {
+        let short = name.last_segment();
+        if is_sample_timing_function_name(short) {
+            if sample_start_interval_timing(args, self.constants).is_some() {
+                self.out.push(rumoca_core::Expression::FunctionCall {
+                    name: name.clone(),
+                    args: args.to_vec(),
+                    is_constructor,
+                    span,
+                });
+            }
+            for arg in args {
+                self.visit_expression(arg);
+            }
+            return;
+        }
+        if is_clock_constructor_function_name(short) {
+            self.out.push(rumoca_core::Expression::FunctionCall {
+                name: name.clone(),
+                args: args.to_vec(),
+                is_constructor,
+                span,
+            });
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+}
+
 pub(super) fn static_sample_start_interval_timing(
     function: &rumoca_core::BuiltinFunction,
     args: &[rumoca_core::Expression],
@@ -763,6 +784,12 @@ pub(super) fn static_sample_start_interval_timing(
         return None;
     }
     sample_start_interval_timing(args, constants)
+}
+
+fn is_sample_timing_function_name(short: &str) -> bool {
+    short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+        || rumoca_core::source_temporal_function_short_name(short)
+            .is_some_and(|name| name == "sample")
 }
 
 pub(super) fn sample_start_interval_timing(

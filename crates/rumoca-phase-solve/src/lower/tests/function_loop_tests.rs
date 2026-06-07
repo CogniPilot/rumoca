@@ -199,3 +199,104 @@ fn lower_expression_uses_function_local_size_in_fill_dimension() {
     let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
     assert!((read_reg(&regs, lowered.result) - 3.0).abs() <= 1e-12);
 }
+
+#[test]
+fn lower_expression_unrolls_for_loop_over_qualified_real_fft_sample_points() {
+    let mut dae_model = dae::Dae::default();
+    let mut count = rumoca_core::Function::new("My.fftPointCount", Default::default());
+    count.outputs.push(function_param("out"));
+    count.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("out"),
+        value: real_lit(0.0),
+        span: rumoca_core::Span::DUMMY,
+    });
+    count.body.push(rumoca_core::Statement::For {
+        indices: vec![rumoca_core::ForIndex {
+            ident: "i".to_string(),
+            range: rumoca_core::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(rumoca_core::Expression::FunctionCall {
+                    name: rumoca_core::VarName::new(
+                        "Modelica.Math.FastFourierTransform.realFFTsamplePoints",
+                    )
+                    .into(),
+                    args: vec![real_lit(4.0), real_lit(1.0)],
+                    is_constructor: false,
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                span: rumoca_core::Span::DUMMY,
+            },
+        }],
+        equations: vec![rumoca_core::Statement::Assignment {
+            comp: component_ref("out"),
+            value: add(var("out"), real_lit(1.0)),
+            span: rumoca_core::Span::DUMMY,
+        }],
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.fftPointCount"), count);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.fftPointCount").into(),
+        args: vec![],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
+        .expect("qualified realFFTsamplePoints should be a structural function");
+
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+    assert!((read_reg(&regs, lowered.result) - 40.0).abs() <= 1e-12);
+}
+
+#[test]
+fn lower_expression_uses_actual_matrix_shape_for_function_input_size() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("sourceTable"),
+        dae::Variable {
+            name: rumoca_core::VarName::new("sourceTable"),
+            dims: vec![7, 2],
+            fixed: Some(true),
+            ..Default::default()
+        },
+    );
+
+    let mut row_count = rumoca_core::Function::new("My.rowCount", Default::default());
+    row_count.inputs.push(
+        rumoca_core::FunctionParam::new("table", "Real")
+            .with_dims(vec![0, 2])
+            .with_shape_expr(vec![
+                rumoca_core::Subscript::generated_colon(rumoca_core::Span::DUMMY),
+                rumoca_core::Subscript::generated_index(2, rumoca_core::Span::DUMMY),
+            ]),
+    );
+    row_count.outputs.push(function_param("rows"));
+    row_count.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("rows"),
+        value: size_expr(var("table"), 1),
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model
+        .symbols
+        .functions
+        .insert(rumoca_core::VarName::new("My.rowCount"), row_count);
+
+    let layout = build_var_layout(&dae_model);
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::VarName::new("My.rowCount").into(),
+        args: vec![var("sourceTable")],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("size() should use the actual matrix shape bound to the function input");
+
+    let p = vec![0.0; layout.p_scalars()];
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &p, 0.0);
+    assert!((read_reg(&regs, lowered.result) - 7.0).abs() <= 1e-12);
+}

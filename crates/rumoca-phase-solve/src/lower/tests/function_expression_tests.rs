@@ -988,6 +988,91 @@ fn lower_expression_projects_single_output_function_by_output_name() {
 }
 
 #[test]
+fn lower_expression_projects_multi_output_scalar_inside_binary() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+
+    let mut pair = rumoca_core::Function::new("My.pair", rumoca_core::Span::DUMMY);
+    pair.inputs.push(function_param("u"));
+    pair.outputs.push(function_param("first"));
+    pair.outputs.push(function_param("second"));
+    pair.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("first"),
+        value: real_lit(0.0),
+        span: rumoca_core::Span::DUMMY,
+    });
+    pair.body.push(rumoca_core::Statement::Assignment {
+        comp: component_ref("second"),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(var("u")),
+            rhs: Box::new(real_lit(1.0)),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: rumoca_core::Span::DUMMY,
+    });
+    pair.body.push(rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Gt,
+                lhs: Box::new(var("u")),
+                rhs: Box::new(real_lit(0.0)),
+                span: rumoca_core::Span::DUMMY,
+            },
+            stmts: vec![rumoca_core::Statement::Assignment {
+                comp: component_ref("second"),
+                value: rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Add,
+                    lhs: Box::new(var("u")),
+                    rhs: Box::new(real_lit(1.0)),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                span: rumoca_core::Span::DUMMY,
+            }],
+        }],
+        else_block: Some(vec![rumoca_core::Statement::Assignment {
+            comp: component_ref("second"),
+            value: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(var("u")),
+                rhs: Box::new(real_lit(2.0)),
+                span: rumoca_core::Span::DUMMY,
+            },
+            span: rumoca_core::Span::DUMMY,
+        }]),
+        span: rumoca_core::Span::DUMMY,
+    });
+    dae_model.symbols.functions.insert(pair.name.clone(), pair);
+
+    let expr = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Mul,
+        lhs: Box::new(rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("My.pair.second").into(),
+            args: vec![var("u")],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        }),
+        rhs: Box::new(real_lit(10.0)),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let layout = build_var_layout(&dae_model);
+    let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect("projected multi-output scalar should lower inside binary expressions");
+
+    let mut y = vec![0.0; layout.y_scalars()];
+    set_y_value(&layout, &mut y, "u", 1.0);
+    let (regs, _output) = eval_linear_ops(&lowered.ops, &y, &[], 0.0);
+    let compiled = read_reg(&regs, lowered.result);
+    assert!(
+        (compiled - 20.0).abs() <= 1e-12,
+        "compiled projected output was {compiled}"
+    );
+}
+
+#[test]
 fn lower_expression_projects_record_field_from_forwarded_function_result() {
     let mut dae_model = dae::Dae::default();
     dae_model

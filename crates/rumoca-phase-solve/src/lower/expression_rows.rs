@@ -614,31 +614,40 @@ fn lower_array_sample_expression_rows(
     scalar_count: usize,
     ctx: &RowLoweringContext<'_>,
 ) -> Result<Option<ComputeNode>, LowerError> {
-    let rumoca_core::Expression::BuiltinCall {
-        function: rumoca_core::BuiltinFunction::Sample,
-        args,
-        ..
-    } = &equation.rhs
-    else {
+    let Some((args, span)) = sample_expression_args(&equation.rhs) else {
         return Ok(None);
     };
-    if !matches!(args.as_slice(), [_] | [_, _]) {
-        return Ok(None);
+    if !matches!(args, [_] | [_, _]) {
+        return Err(LowerError::ContractViolation {
+            reason: format!(
+                "array-valued sample update requires 1 or 2 arguments, got {}",
+                args.len()
+            ),
+            span,
+        });
     }
-    let Some(targets) = scalar_update_targets(equation, scalar_count, ctx.layout) else {
-        return Ok(None);
-    };
+    let targets = scalar_update_targets(equation, scalar_count, ctx.layout).ok_or_else(|| {
+        unsupported_at(
+            "array-valued sample update target does not have matching scalar bindings",
+            span,
+        )
+    })?;
 
     let probe = lower_builder_for_context(ctx, row_namespace);
     let scope = Scope::new();
     let dims = probe.infer_expr_dims(&args[0], &scope);
     if dims.iter().product::<usize>() != scalar_count {
-        return Ok(None);
+        return Err(unsupported_at(
+            format!(
+                "array-valued sample source shape {dims:?} does not match scalar count {scalar_count}"
+            ),
+            span,
+        ));
     }
 
     let mut rows = Vec::with_capacity(scalar_count);
     for (flat_index, target) in targets.into_iter().enumerate() {
-        let expr = scalar_sample_expression(args, &dims, flat_index)?;
+        let expr = scalar_sample_expression(args, &dims, flat_index, span)?;
         rows.push(lower_expression_row(
             &expr,
             scalar_row_namespace(row_namespace, flat_index),
@@ -649,6 +658,22 @@ fn lower_array_sample_expression_rows(
     Ok(Some(ComputeNode::ScalarPrograms(
         ScalarProgramBlock::with_source_span(rows, equation.span),
     )))
+}
+
+fn sample_expression_args(
+    expr: &rumoca_core::Expression,
+) -> Option<(&[rumoca_core::Expression], rumoca_core::Span)> {
+    match expr {
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sample,
+            args,
+            span,
+        } => Some((args, *span)),
+        rumoca_core::Expression::FunctionCall {
+            name, args, span, ..
+        } if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME => Some((args, *span)),
+        _ => None,
+    }
 }
 
 fn scalar_update_targets(
@@ -674,15 +699,16 @@ fn scalar_sample_expression(
     args: &[rumoca_core::Expression],
     dims: &[usize],
     flat_index: usize,
+    span: rumoca_core::Span,
 ) -> Result<rumoca_core::Expression, LowerError> {
-    let scalar_value = indexed_sample_value(&args[0], dims, flat_index)?;
+    let scalar_value = indexed_sample_value(&args[0], dims, flat_index, span)?;
     let mut scalar_args = Vec::with_capacity(args.len());
     scalar_args.push(scalar_value);
     scalar_args.extend(args.iter().skip(1).cloned());
     Ok(rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Sample,
         args: scalar_args,
-        span: rumoca_core::Span::DUMMY,
+        span,
     })
 }
 
@@ -690,22 +716,22 @@ fn indexed_sample_value(
     value: &rumoca_core::Expression,
     dims: &[usize],
     flat_index: usize,
+    span: rumoca_core::Span,
 ) -> Result<rumoca_core::Expression, LowerError> {
     let dims_i64 = dims.iter().map(|dim| *dim as i64).collect::<Vec<_>>();
     let Some(subscripts) = dae::flat_index_to_subscripts(&dims_i64, flat_index) else {
-        return Err(LowerError::Unsupported {
-            reason: format!("sample array index {flat_index} is outside shape {dims:?}"),
-        });
+        return Err(unsupported_at(
+            format!("sample array index {flat_index} is outside shape {dims:?}"),
+            span,
+        ));
     };
     Ok(rumoca_core::Expression::Index {
         base: Box::new(value.clone()),
         subscripts: subscripts
             .into_iter()
-            .map(|idx| {
-                rumoca_core::Subscript::generated_index(idx as i64, rumoca_core::Span::DUMMY)
-            })
+            .map(|idx| rumoca_core::Subscript::generated_index(idx as i64, span))
             .collect(),
-        span: rumoca_core::Span::DUMMY,
+        span,
     })
 }
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "layout": {
     "bindings": {
       "x": {
@@ -267,6 +267,7 @@
         }
       }
     ],
+    "projection_indices": [],
     "projection_plan": {
       "blocks": []
     },

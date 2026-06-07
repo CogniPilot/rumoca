@@ -62,6 +62,77 @@ fn lower_discrete_rhs_holds_shift_sample_value_until_target_tick() {
 }
 
 #[test]
+fn lower_discrete_rhs_uses_base_clock_for_indexed_shift_sample_value_form() {
+    let mut dae_model = dae::Dae::default();
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("u"),
+        dae::Variable {
+            dims: vec![2],
+            ..scalar_var("u")
+        },
+    );
+    dae_model
+        .variables
+        .discrete_reals
+        .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
+    dae_model.clocks.intervals.insert("u".to_string(), 0.02);
+    dae_model.discrete.real_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("y")),
+        rhs: rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::VarName::new("shiftSample").into(),
+            args: vec![
+                rumoca_core::Expression::Index {
+                    base: Box::new(rumoca_core::Expression::VarRef {
+                        name: rumoca_core::VarName::new("u").into(),
+                        subscripts: vec![],
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    subscripts: vec![rumoca_core::Subscript::Index {
+                        value: 2,
+                        span: rumoca_core::Span::DUMMY,
+                    }],
+                    span: rumoca_core::Span::DUMMY,
+                },
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(3),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(2),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ],
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Default::default(),
+        origin: "y = shiftSample(u[2], 3, 2)".to_string(),
+        scalar_count: 1,
+    });
+
+    let layout = build_var_layout(&dae_model);
+    let rows = lower_discrete_rhs(&dae_model, &layout)
+        .expect("indexed value-form shiftSample should lower from base clock metadata");
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "u[2]", 4.0);
+    set_p_value(&layout, &mut p, "y", 9.0);
+
+    let (_, source_tick_output) = eval_linear_ops(&rows[0], &[], &p, 0.0);
+    let (_, shifted_tick_output) = eval_linear_ops(&rows[0], &[], &p, 0.03);
+
+    assert_eq!(
+        source_tick_output.expect("source tick row output"),
+        9.0,
+        "indexed value-form shiftSample must hold y before the shifted target tick"
+    );
+    assert_eq!(
+        shifted_tick_output.expect("shifted tick row output"),
+        4.0,
+        "indexed value-form shiftSample must use the indexed source at the shifted target tick"
+    );
+}
+
+#[test]
 fn lower_discrete_rhs_uses_source_phase_for_back_sample_value_form() {
     let mut dae_model = dae::Dae::default();
     dae_model
@@ -445,6 +516,66 @@ fn lower_runtime_assignment_inherits_rhs_clock_for_target_start_guard() {
         at_first_source_tick.expect("runtime assignment output at first source tick"),
         2.0,
         "clocked runtime-tail aliases must follow the source at the inherited source clock tick"
+    );
+}
+
+#[test]
+fn lower_discrete_rhs_keeps_clocked_alias_target_start_before_first_target_tick() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .discrete_valued
+        .insert(rumoca_core::VarName::new("source"), scalar_var("source"));
+    dae_model
+        .variables
+        .discrete_valued
+        .insert(rumoca_core::VarName::new("target"), scalar_var("target"));
+    dae_model.clocks.timings.insert(
+        "target".to_string(),
+        dae::ClockSchedule {
+            period_seconds: 0.02,
+            phase_seconds: 0.04,
+            source_span: rumoca_core::Span::DUMMY,
+        },
+    );
+    dae_model.metadata.variable_starts.insert(
+        "target".to_string(),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(-1),
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+    dae_model.discrete.valued_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("source")),
+        rhs: rumoca_core::Expression::VarRef {
+            name: rumoca_core::VarName::new("target").into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Default::default(),
+        origin: "connection equation: source = target".to_string(),
+        scalar_count: 1,
+    });
+
+    let layout = build_var_layout(&dae_model);
+    let rows = lower_discrete_rhs(&dae_model, &layout)
+        .expect("clocked discrete alias assignment should lower");
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(&layout, &mut p, "source", 2.0);
+    set_p_value(&layout, &mut p, "target", -1.0);
+
+    let (_, before_first_tick) = eval_linear_ops(&rows[0], &[], &p, 0.0);
+    let (_, at_first_tick) = eval_linear_ops(&rows[0], &[], &p, 0.04);
+
+    assert_eq!(
+        before_first_tick.expect("alias output before first target tick"),
+        -1.0,
+        "clocked alias targets must keep their start value before their first tick"
+    );
+    assert_eq!(
+        at_first_tick.expect("alias output at first target tick"),
+        2.0,
+        "clocked alias targets must follow the source at their first tick"
     );
 }
 

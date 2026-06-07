@@ -1,7 +1,7 @@
 use super::ToDaeError;
 use super::expression_identity::UniqueExpressions;
 use super::{eval_scalar_const_expr, extract_time_event_instant};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -9,6 +9,8 @@ use std::fmt::Write as _;
 use rumoca_core::ExpressionVisitor;
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::{ImplicitSampleChecker, VarRefWithSubscriptsCollector};
+
+use crate::condition_activation;
 
 mod event_clock;
 mod timing_inference;
@@ -68,12 +70,7 @@ pub(super) fn compute_clock_runtime_metadata(
     }
 
     let mut clock_constructor_exprs = Vec::new();
-    for eq in dae_model
-        .discrete
-        .real_updates
-        .iter()
-        .chain(dae_model.discrete.valued_updates.iter())
-    {
+    for eq in clock_runtime_equations(dae_model) {
         let mut equation_constructors = Vec::new();
         collect_clock_constructor_exprs(&eq.rhs, compile_time_scalars, &mut equation_constructors);
         extend_unique_expressions(&mut clock_constructor_exprs, equation_constructors);
@@ -178,10 +175,7 @@ fn empty_clock_runtime_metadata() -> ClockRuntimeMetadata {
     )
 }
 
-fn contains_clock_runtime_constructs(
-    dae_model: &dae::Dae,
-    constants: &HashMap<String, f64>,
-) -> bool {
+fn clock_runtime_equations(dae_model: &dae::Dae) -> impl Iterator<Item = &dae::Equation> {
     dae_model
         .continuous
         .equations
@@ -190,6 +184,13 @@ fn contains_clock_runtime_constructs(
         .chain(dae_model.discrete.real_updates.iter())
         .chain(dae_model.discrete.valued_updates.iter())
         .chain(dae_model.conditions.equations.iter())
+}
+
+fn contains_clock_runtime_constructs(
+    dae_model: &dae::Dae,
+    constants: &HashMap<String, f64>,
+) -> bool {
+    clock_runtime_equations(dae_model)
         .any(|eq| expression_contains_clock_runtime_construct(&eq.rhs, constants))
 }
 
@@ -385,21 +386,41 @@ impl SyntheticRootConditionCollector<'_> {
         }
         self.suppress_events = previous;
     }
+
+    fn visit_expr_with_suppression(&mut self, expr: &rumoca_core::Expression, suppress: bool) {
+        let previous = self.suppress_events;
+        self.suppress_events = suppress;
+        self.visit_expression(expr);
+        self.suppress_events = previous;
+    }
 }
 
 impl ExpressionVisitor for SyntheticRootConditionCollector<'_> {
     fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
         match expr {
-            rumoca_core::Expression::If { branches, .. } => {
-                for (cond, _) in branches {
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                let mut else_suppressed = self.suppress_events;
+                for (cond, value) in branches {
+                    let condition_activation = condition_activation::runtime_activation(cond);
+                    let cond_suppressed = else_suppressed || condition_activation.is_some();
                     push_relation_root_if_event_condition(
                         cond,
-                        self.suppress_events,
+                        cond_suppressed,
                         self.constants,
                         self.out,
                     );
+                    self.visit_expr_with_suppression(cond, cond_suppressed);
+                    self.visit_expr_with_suppression(
+                        value,
+                        else_suppressed || matches!(condition_activation, Some(false)),
+                    );
+                    else_suppressed |= matches!(condition_activation, Some(true));
                 }
-                self.walk_expression(expr);
+                self.visit_expr_with_suppression(else_branch, else_suppressed);
             }
             rumoca_core::Expression::Binary { .. } => {
                 push_relation_root_if_event_condition(
@@ -424,7 +445,9 @@ impl ExpressionVisitor for SyntheticRootConditionCollector<'_> {
                         rumoca_core::BuiltinFunction::Abs | rumoca_core::BuiltinFunction::Sign
                     ) =>
             {
-                if let Some(arg) = args.first() {
+                if let Some(arg) = args.first()
+                    && eval_scalar_const_expr(arg, self.constants).is_none()
+                {
                     self.out.push(arg.clone());
                 }
                 self.walk_expression(expr);
@@ -444,6 +467,9 @@ fn push_relation_root_if_event_condition(
         return;
     }
     if let Some(root) = relation_root_expression(expr) {
+        if eval_scalar_const_expr(&root, constants).is_some() {
+            return;
+        }
         out.push(root);
     }
 }
@@ -889,7 +915,107 @@ fn build_clock_equivalence_graph(
             add_clock_equivalence_edges(target, source, constants, candidates, &mut graph);
         }
     }
+    add_shared_no_argument_clock_guard_edges(dae_model, constants, candidates, &mut graph);
     graph
+}
+
+fn add_shared_no_argument_clock_guard_edges(
+    dae_model: &dae::Dae,
+    constants: &HashMap<String, f64>,
+    candidates: &HashSet<String>,
+    graph: &mut HashMap<String, Vec<String>>,
+) {
+    let mut guarded_targets = IndexMap::<rumoca_core::Span, IndexSet<String>>::new();
+    for eq in dae_model
+        .continuous
+        .equations
+        .iter()
+        .chain(dae_model.discrete.real_updates.iter())
+        .chain(dae_model.discrete.valued_updates.iter())
+    {
+        let Some(lhs) = eq.lhs.as_ref() else {
+            continue;
+        };
+        let Some(target) = canonical_var_name_key(lhs, &[], constants) else {
+            continue;
+        };
+        if !candidates.contains(&target) {
+            continue;
+        }
+        let clock_spans = no_argument_clock_guard_spans(&eq.rhs);
+        for span in clock_spans {
+            guarded_targets
+                .entry(span)
+                .or_default()
+                .insert(target.clone());
+        }
+    }
+    for targets in guarded_targets.values() {
+        let mut targets = targets.iter();
+        let Some(first) = targets.next() else {
+            continue;
+        };
+        for target in targets {
+            insert_clock_equivalence_edge(graph, first, target);
+            insert_clock_equivalence_edge(graph, target, first);
+        }
+    }
+}
+
+fn no_argument_clock_guard_spans(expr: &rumoca_core::Expression) -> Vec<rumoca_core::Span> {
+    let mut collector = NoArgumentClockGuardCollector {
+        in_if_condition: false,
+        spans: Vec::new(),
+    };
+    collector.visit_expression(expr);
+    collector.spans
+}
+
+struct NoArgumentClockGuardCollector {
+    in_if_condition: bool,
+    spans: Vec<rumoca_core::Span>,
+}
+
+impl ExpressionVisitor for NoArgumentClockGuardCollector {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        if self.in_if_condition
+            && let rumoca_core::Expression::FunctionCall {
+                name, args, span, ..
+            } = expr
+            && name.last_segment() == "Clock"
+            && args.is_empty()
+        {
+            let clock_span = if *span != rumoca_core::Span::DUMMY {
+                Some(*span)
+            } else {
+                name.component_ref()
+                    .map(|component_ref| component_ref.span)
+                    .filter(|span| *span != rumoca_core::Span::DUMMY)
+            };
+            if let Some(span) = clock_span
+                && !self.spans.contains(&span)
+            {
+                self.spans.push(span);
+            }
+            return;
+        }
+        self.walk_expression(expr);
+    }
+
+    fn visit_if(
+        &mut self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        else_branch: &rumoca_core::Expression,
+    ) {
+        for (condition, value) in branches {
+            let old = self.in_if_condition;
+            self.in_if_condition = true;
+            self.visit_expression(condition);
+            self.in_if_condition = old;
+            self.visit_expression(value);
+        }
+        self.visit_expression(else_branch);
+    }
 }
 
 fn add_clock_equivalence_edges(

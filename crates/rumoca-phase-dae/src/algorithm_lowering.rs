@@ -33,6 +33,13 @@ enum DiscreteEquationBucket {
     DiscreteValued,
 }
 
+#[derive(Clone, Copy)]
+enum WhenInactiveRhs {
+    Current,
+    Pre,
+    InitialValueThenPre,
+}
+
 fn discrete_variable_equation_bucket_for_lhs(
     dae: &Dae,
     lhs: &VarName,
@@ -93,9 +100,9 @@ fn guarded_when_rhs_with_guard(
     guard: &Expression,
     lhs: &VarName,
     rhs: &Expression,
-    use_pre_else: bool,
+    inactive_rhs: WhenInactiveRhs,
 ) -> Expression {
-    let else_expr = when_inactive_rhs(lhs, use_pre_else);
+    let else_expr = when_inactive_rhs(lhs, inactive_rhs);
     Expression::If {
         branches: vec![(guard.clone(), rhs.clone())],
         else_branch: Box::new(else_expr),
@@ -103,13 +110,20 @@ fn guarded_when_rhs_with_guard(
     }
 }
 
-fn when_inactive_rhs(lhs: &VarName, use_pre_else: bool) -> Expression {
-    if use_pre_else {
-        // MLS §8.3.5.1 / §8.6: an ordinary when-equation is inactive at the
-        // initial event unless explicitly driven by initial equations or
-        // initial algorithms, so the current initial-section value must win
-        // over the startup left-limit pre-store when the guard is false.
-        return Expression::If {
+fn when_inactive_rhs(lhs: &VarName, inactive_rhs: WhenInactiveRhs) -> Expression {
+    match inactive_rhs {
+        WhenInactiveRhs::Current => Expression::VarRef {
+            name: lhs.clone().into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        },
+        // MLS §8.3.5.1 / §8.6: inactive ordinary when-equations hold the
+        // previous event value, including during initialization.
+        WhenInactiveRhs::Pre => pre_target_expr(lhs),
+        // Initial algorithms can assign discrete targets before runtime event
+        // iteration, so algorithm when-statements preserve that initial value
+        // when their runtime guard is false.
+        WhenInactiveRhs::InitialValueThenPre => Expression::If {
             branches: vec![(
                 Expression::BuiltinCall {
                     function: BuiltinFunction::Initial,
@@ -132,39 +146,47 @@ fn when_inactive_rhs(lhs: &VarName, use_pre_else: bool) -> Expression {
                 span: rumoca_core::Span::DUMMY,
             }),
             span: rumoca_core::Span::DUMMY,
-        };
-    }
-
-    Expression::VarRef {
-        name: lhs.clone().into(),
-        subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        },
     }
 }
 
 pub(super) fn route_discrete_event_equations(
     dae: &mut Dae,
     when_clause: &rumoca_ir_dae::WhenClause,
-) {
+) -> Result<(), ToDaeError> {
     dae.events
         .event_actions
         .extend(when_clause.actions.iter().cloned());
     let when_condition = dae_to_flat_expression(&when_clause.condition);
     let guard = when_guard_activation_expr(dae, &when_condition);
-    for eq in &when_clause.equations {
+    if when_clause.equations.len() != when_clause.equation_inactive_rhs.len() {
+        return Err(ToDaeError::internal(format!(
+            "when-clause equation metadata must stay aligned: {} equations, {} inactive RHS entries",
+            when_clause.equations.len(),
+            when_clause.equation_inactive_rhs.len()
+        )));
+    }
+    for (eq, equation_inactive_rhs) in when_clause
+        .equations
+        .iter()
+        .zip(when_clause.equation_inactive_rhs.iter())
+    {
         let Some(lhs) = &eq.lhs else {
             continue;
         };
         let lhs = dae_to_flat_var_name(lhs);
         let rhs = dae_to_flat_expression(&eq.rhs);
-        let use_pre_else = !eq.origin.starts_with("reinit");
+        let inactive_rhs = match equation_inactive_rhs {
+            rumoca_ir_dae::WhenEquationInactiveRhs::Current => WhenInactiveRhs::Current,
+            rumoca_ir_dae::WhenEquationInactiveRhs::Pre => WhenInactiveRhs::Pre,
+        };
         let guarded = rumoca_ir_dae::Equation::explicit_with_scalar_count(
             flat_to_dae_var_name(&lhs),
             flat_to_dae_expression(&guarded_when_rhs_with_guard(
                 &guard,
                 &lhs,
                 &rhs,
-                use_pre_else,
+                inactive_rhs,
             )),
             eq.span,
             format!("guarded {}", eq.origin),
@@ -178,6 +200,7 @@ pub(super) fn route_discrete_event_equations(
             None => {}
         }
     }
+    Ok(())
 }
 
 fn is_connection_equation_origin(origin: &str) -> bool {
@@ -1498,7 +1521,10 @@ fn lower_when_target_branches_to_event_equations(
             flat_to_dae_var_name(&target),
             flat_to_dae_expression(&Expression::If {
                 branches: assignment.branches,
-                else_branch: Box::new(when_inactive_rhs(&target, true)),
+                else_branch: Box::new(when_inactive_rhs(
+                    &target,
+                    WhenInactiveRhs::InitialValueThenPre,
+                )),
                 span: rumoca_core::Span::DUMMY,
             }),
             span,

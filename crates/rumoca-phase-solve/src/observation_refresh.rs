@@ -3,8 +3,9 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use crate::{
-    LowerError, collect_expression_read_slots, discrete_update_scalar_name,
-    normalized_discrete_update_equations,
+    LowerError, collect_expression_read_slots,
+    discrete_pre_modes::{expression_contains_lowered_pre_ref, target_has_clock_metadata},
+    discrete_update_scalar_name, normalized_discrete_update_equations,
 };
 
 pub(super) fn lower_discrete_observation_refresh(
@@ -70,9 +71,11 @@ fn discrete_observation_refresh_rows(
             continue;
         };
         let scalar_count = eq.scalar_count.max(1);
-        let safe = expression_safe_for_observation_refresh(dae_model, &eq.rhs);
-        let seed = expression_has_observation_pulse(dae_model, &eq.rhs)
-            && !expression_contains_pre_operator(&eq.rhs);
+        let safe = expression_safe_for_observation_refresh(dae_model, lhs, &eq.rhs);
+        let contains_pre = expression_contains_pre_operator(&eq.rhs);
+        let seed = !contains_pre
+            && (expression_has_observation_pulse(dae_model, &eq.rhs)
+                || expression_has_observation_event_relation(&eq.rhs));
         let mut reads = Vec::new();
         collect_expression_read_slots(dae_model, layout, &eq.rhs, &mut reads);
         for flat_index in 0..scalar_count {
@@ -103,15 +106,27 @@ fn active_refresh_targets(
 
 fn expression_safe_for_observation_refresh(
     dae_model: &dae::Dae,
+    lhs: &rumoca_core::VarName,
     expr: &rumoca_core::Expression,
 ) -> bool {
-    !expression_contains_clocked_value_operator(dae_model, expr)
+    !(expression_contains_clocked_value_operator(dae_model, expr)
+        || target_has_clock_metadata(dae_model, lhs.as_str())
+            && expression_contains_lowered_pre_ref(expr))
 }
 
 fn expression_has_observation_pulse(dae_model: &dae::Dae, expr: &rumoca_core::Expression) -> bool {
     let mut checker = ObservationPulseChecker {
         dae_model,
         found: false,
+    };
+    checker.visit_expression(expr);
+    checker.found
+}
+
+fn expression_has_observation_event_relation(expr: &rumoca_core::Expression) -> bool {
+    let mut checker = EventRelationChecker {
+        found: false,
+        no_event_depth: 0,
     };
     checker.visit_expression(expr);
     checker.found
@@ -146,6 +161,59 @@ impl ExpressionVisitor for PreOperatorChecker {
         for arg in args {
             self.visit_expression(arg);
         }
+    }
+}
+
+struct EventRelationChecker {
+    found: bool,
+    no_event_depth: usize,
+}
+
+impl ExpressionVisitor for EventRelationChecker {
+    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
+        if !self.found {
+            self.walk_expression(expr);
+        }
+    }
+
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if *function == rumoca_core::BuiltinFunction::NoEvent {
+            self.no_event_depth += 1;
+            for arg in args {
+                self.visit_expression(arg);
+            }
+            self.no_event_depth -= 1;
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+
+    fn visit_binary(
+        &mut self,
+        op: &rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+    ) {
+        if self.no_event_depth == 0
+            && matches!(
+                op,
+                rumoca_core::OpBinary::Lt
+                    | rumoca_core::OpBinary::Le
+                    | rumoca_core::OpBinary::Gt
+                    | rumoca_core::OpBinary::Ge
+            )
+        {
+            self.found = true;
+            return;
+        }
+        self.visit_expression(lhs);
+        self.visit_expression(rhs);
     }
 }
 

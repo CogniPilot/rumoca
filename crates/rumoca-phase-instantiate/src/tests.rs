@@ -104,6 +104,19 @@ fn make_comp_ref_expr_at(names: &[&str], file_name: &str, start: u32, end: u32) 
     })
 }
 
+fn make_binary_expr(
+    op: rumoca_core::OpBinary,
+    lhs: ast::Expression,
+    rhs: ast::Expression,
+) -> ast::Expression {
+    ast::Expression::Binary {
+        op,
+        lhs: std::sync::Arc::new(lhs),
+        rhs: std::sync::Arc::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn make_component(name: &str, type_name: &str, type_def_id: Option<DefId>) -> ast::Component {
     ast::Component {
         name: name.to_string(),
@@ -282,6 +295,65 @@ fn test_parameter_declaration_binding_does_not_override_explicit_start() {
         attrs.start.as_ref().map(terminal_text),
         Some("2"),
         "explicit start must win over declaration binding"
+    );
+}
+
+#[test]
+fn test_continuous_declaration_binding_preserves_runtime_expression() {
+    let mut phi_rel = make_component("phi_rel", "Real", None);
+    phi_rel.start = make_int_expr(0);
+
+    let mut phi_rel0 = make_component("phi_rel0", "Real", None);
+    phi_rel0.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    phi_rel0.binding = Some(make_int_expr(0));
+
+    let binding = make_binary_expr(
+        rumoca_core::OpBinary::Sub,
+        make_comp_ref_expr(&["phi_rel"]),
+        make_comp_ref_expr(&["phi_rel0"]),
+    );
+    let mut phi_diff = make_component("phi_diff", "Real", None);
+    phi_diff.binding = Some(binding.clone());
+
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("phi_rel".to_string(), phi_rel);
+    effective_components.insert("phi_rel0".to_string(), phi_rel0);
+    let tree = ast::ClassTree::default();
+    let mut ctx = InstantiateContext::new();
+
+    let info =
+        prepare_component_binding_info(&tree, &phi_diff, &mut ctx, &effective_components, false)
+            .expect("continuous binding should prepare");
+
+    assert_eq!(
+        info.binding.as_ref(),
+        Some(&binding),
+        "continuous declaration bindings must not be evaluated from sibling start values"
+    );
+}
+
+#[test]
+fn test_parameter_declaration_binding_still_resolves_structural_expression() {
+    let mut n = make_component("n", "Integer", None);
+    n.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    n.binding = Some(make_int_expr(5));
+
+    let mut p = make_component("p", "Integer", None);
+    p.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    p.binding = Some(make_comp_ref_expr(&["n"]));
+
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("n".to_string(), n);
+    let tree = ast::ClassTree::default();
+    let mut ctx = InstantiateContext::new();
+
+    let info = prepare_component_binding_info(&tree, &p, &mut ctx, &effective_components, true)
+        .expect("parameter binding should prepare");
+
+    assert_eq!(
+        info.binding.as_ref().map(terminal_text),
+        Some("5"),
+        "structural parameter declaration bindings should still resolve"
     );
 }
 

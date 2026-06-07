@@ -1594,13 +1594,19 @@ fn instantiate_component(
 
     handle_inner_outer(tree, comp, ctx, overlay, &qualified_name, &type_name)?;
 
+    let TypeInfo {
+        class_def,
+        is_primitive,
+        is_discrete: is_discrete_type,
+    } = validated_component_type_info(tree, comp, ctx, &qualified_name, &type_name)?;
+
     let ComponentBindingInfo {
         mut attrs,
         binding,
         binding_source,
         binding_source_scope,
         binding_from_modification,
-    } = prepare_component_binding_info(tree, comp, ctx, effective_components)?;
+    } = prepare_component_binding_info(tree, comp, ctx, effective_components, is_discrete_type)?;
 
     // Extract flow/stream from connection prefix (MLS §9.3)
     // Also inherit from parent for record fields (e.g., `flow Complex i` → i.re and i.im are flow)
@@ -1610,11 +1616,6 @@ fn instantiate_component(
         rumoca_ir_ast::Connection::Empty => (ctx.inherited_flow(), ctx.inherited_stream()),
     };
 
-    let TypeInfo {
-        class_def,
-        is_primitive,
-        is_discrete: is_discrete_type,
-    } = validated_component_type_info(tree, comp, ctx, &qualified_name, &type_name)?;
     validate_final_type_attribute_overrides(tree, class_def, comp, ctx.mod_env())?;
     merge_type_hierarchy_string_attributes(tree, class_def, &mut attrs);
 
@@ -1752,13 +1753,17 @@ fn prepare_component_binding_info(
     comp: &ast::Component,
     ctx: &mut InstantiateContext,
     effective_components: &IndexMap<String, ast::Component>,
+    is_discrete_type: bool,
 ) -> InstantiateResult<ComponentBindingInfo> {
     let (mut attrs, mut binding, binding_source, binding_source_scope, binding_from_modification) =
         extract_component_attrs_and_binding(comp, ctx.mod_env());
     infer_local_attribute_source_scopes(ctx, comp, &mut attrs);
     let start_from_declaration_binding =
         !binding_from_modification && binding.is_some() && attrs.start == binding;
-    if !binding_from_modification && let Some(declaration_binding) = binding.as_ref() {
+    if !binding_from_modification
+        && declaration_binding_allows_structural_resolution(comp, is_discrete_type)
+        && let Some(declaration_binding) = binding.as_ref()
+    {
         let resolved_binding = mod_env::resolve_declaration_binding_expr(
             declaration_binding,
             ctx.mod_env(),
@@ -1777,6 +1782,17 @@ fn prepare_component_binding_info(
         binding_source_scope,
         binding_from_modification,
     })
+}
+
+fn declaration_binding_allows_structural_resolution(
+    comp: &ast::Component,
+    is_discrete_type: bool,
+) -> bool {
+    matches!(
+        comp.variability,
+        rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+    ) || comp.is_structural
+        || is_discrete_type
 }
 
 struct NestedComponentRequest<'a> {

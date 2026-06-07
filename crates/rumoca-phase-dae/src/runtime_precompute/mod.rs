@@ -1,6 +1,7 @@
 //! Precompute runtime metadata on DAE so solver backends can stay thin.
 
 use super::ToDaeError;
+use crate::condition_activation;
 use rumoca_core::timing::{maybe_elapsed_seconds, maybe_start_timer_if};
 use rumoca_core::{ExpressionRewriter, ExpressionVisitor};
 use rumoca_ir_dae as dae;
@@ -655,22 +656,42 @@ impl TimeDiscontinuityEventCollector<'_> {
         }
         self.suppress_events = previous;
     }
+
+    fn visit_expr_with_suppression(&mut self, expr: &rumoca_core::Expression, suppress: bool) {
+        let previous = self.suppress_events;
+        self.suppress_events = suppress;
+        self.visit_expression(expr);
+        self.suppress_events = previous;
+    }
 }
 
 impl ExpressionVisitor for TimeDiscontinuityEventCollector<'_> {
     fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
         match expr {
-            rumoca_core::Expression::If { branches, .. } => {
-                for (cond, _) in branches {
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                let mut else_suppressed = self.suppress_events;
+                for (cond, value) in branches {
+                    let condition_activation = condition_activation::runtime_activation(cond);
+                    let cond_suppressed = else_suppressed || condition_activation.is_some();
                     maybe_push_time_event_condition(
                         cond,
-                        self.suppress_events,
+                        cond_suppressed,
                         self.constants,
                         self.seen,
                         self.out,
                     );
+                    self.visit_expr_with_suppression(cond, cond_suppressed);
+                    self.visit_expr_with_suppression(
+                        value,
+                        else_suppressed || matches!(condition_activation, Some(false)),
+                    );
+                    else_suppressed |= matches!(condition_activation, Some(true));
                 }
-                self.walk_expression(expr);
+                self.visit_expr_with_suppression(else_branch, else_suppressed);
             }
             rumoca_core::Expression::Binary { .. } => {
                 maybe_push_time_event_condition(
