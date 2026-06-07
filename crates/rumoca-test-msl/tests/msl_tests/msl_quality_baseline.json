@@ -1,7 +1,7 @@
 {
   "quality_gate_version": 1,
   "run_scope": "full",
-  "git_commit": "ee4c6a4d2e87b718582b4a752351b40eee1a187d",
+  "git_commit": "e2e34b90d8dc397474082d624e1ae5c3771751eb",
   "msl_version": "v4.1.0",
   "omc_version": "OpenModelica 1.26.8",
   "sim_timeout_seconds": 10.0,
@@ -31,17 +31,17 @@
   "runtime_ratio_stats": {
     "system_ratio_both_success": {
       "sample_count": 150,
-      "min": 0.0057487444704330875,
-      "median": 1.3184520331470688,
-      "mean": 3.1045129319898987,
-      "max": 29.57772899798825
+      "min": 0.005528173964780386,
+      "median": 1.2979276412188812,
+      "mean": 3.0487889614615553,
+      "max": 29.54581353448959
     },
     "wall_ratio_both_success": {
       "sample_count": 150,
-      "min": 0.5538601184342429,
-      "median": 50.501289875303605,
-      "mean": 79.60404271786109,
-      "max": 443.4237226270778
+      "min": 0.5335560879695533,
+      "median": 49.335279406963835,
+      "mean": 78.67595320819564,
+      "max": 428.67249526171906
     }
   },
   "trace_accuracy_stats": {
@@ -50,18 +50,18 @@
     "skipped_models": 8,
     "agreement_high": 110,
     "agreement_high_percent": 76.92307692307692,
-    "agreement_minor": 16,
-    "agreement_minor_percent": 11.188811188811188,
-    "agreement_deviation": 17,
-    "agreement_deviation_percent": 11.888111888111888,
+    "agreement_minor": 17,
+    "agreement_minor_percent": 11.888111888111888,
+    "agreement_deviation": 16,
+    "agreement_deviation_percent": 11.188811188811188,
     "total_channels_compared": 4272,
-    "bad_channels_total": 335,
+    "bad_channels_total": 323,
     "severe_channels_total": 41,
-    "bad_channels_percent": 7.841760299625468,
+    "bad_channels_percent": 7.560861423220974,
     "severe_channels_percent": 0.9597378277153558,
-    "violation_mass_total": 77.60541432554747,
-    "violation_mass_mean_per_model": 0.5426952050737586,
-    "violation_mass_mean_per_channel": 0.01816606140579295,
+    "violation_mass_total": 76.10737185128814,
+    "violation_mass_mean_per_model": 0.5322193835754415,
+    "violation_mass_mean_per_channel": 0.017815396032604902,
     "models_with_bad_channel": 27,
     "models_with_severe_channel": 8,
     "models_with_any_channel_deviation": 27,
@@ -71,10 +71,10 @@
       "sample_count": 143,
       "min": 0.0,
       "median": 0.0005891019338316123,
-      "mean": 0.0213689621737917,
+      "mean": 0.021046542421688928,
       "max": 0.8130359750308557
     },
-    "mean_model_mean_channel_bounded_normalized_l1": 0.0333940364261242,
+    "mean_model_mean_channel_bounded_normalized_l1": 0.032796638423225846,
     "max_model_max_channel_bounded_normalized_l1": 0.999999999999998,
     "model_mean_channel_bounded_normalized_l1": null,
     "model_max_channel_bounded_normalized_l1": null,
@@ -93,10 +93,10 @@
       "near_channels_percent": 0.5149812734082397,
       "deviation_channels_percent": 4.190074906367041,
       "severe_channels_percent": 0.4447565543071161,
-      "violation_mass_total": 56.58243738409449,
-      "violation_mass_mean_per_model": 0.3956813803083531,
-      "violation_mass_mean_per_channel": 0.013244952571183168,
-      "mean_channel_bounded_normalized_error": 0.02220900645493384,
+      "violation_mass_total": 56.622985770260016,
+      "violation_mass_mean_per_model": 0.39596493545636374,
+      "violation_mass_mean_per_channel": 0.013254444234611426,
+      "mean_channel_bounded_normalized_error": 0.022218498118362098,
       "max_channel_bounded_normalized_error": 0.999999999999998
     },
     "state_selection": {

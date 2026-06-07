@@ -598,6 +598,13 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
             .any(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("r"))),
         "algorithm when-assigned Real output must be routed to f_z"
     );
+    assert_eq!(
+        dae.clocks.schedules.len(),
+        1,
+        "algorithm when sample assignment must produce a periodic runtime schedule"
+    );
+    assert!((dae.clocks.schedules[0].period_seconds - 0.1).abs() <= 1e-12);
+    assert!(dae.clocks.schedules[0].phase_seconds.abs() <= 1e-12);
 }
 
 fn sequential_when_same_target_model() -> Model {

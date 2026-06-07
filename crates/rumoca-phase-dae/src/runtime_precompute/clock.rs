@@ -70,12 +70,7 @@ pub(super) fn compute_clock_runtime_metadata(
     }
 
     let mut clock_constructor_exprs = Vec::new();
-    for eq in dae_model
-        .discrete
-        .real_updates
-        .iter()
-        .chain(dae_model.discrete.valued_updates.iter())
-    {
+    for eq in clock_runtime_equations(dae_model) {
         let mut equation_constructors = Vec::new();
         collect_clock_constructor_exprs(&eq.rhs, compile_time_scalars, &mut equation_constructors);
         extend_unique_expressions(&mut clock_constructor_exprs, equation_constructors);
@@ -180,10 +175,7 @@ fn empty_clock_runtime_metadata() -> ClockRuntimeMetadata {
     )
 }
 
-fn contains_clock_runtime_constructs(
-    dae_model: &dae::Dae,
-    constants: &HashMap<String, f64>,
-) -> bool {
+fn clock_runtime_equations(dae_model: &dae::Dae) -> impl Iterator<Item = &dae::Equation> {
     dae_model
         .continuous
         .equations
@@ -192,6 +184,13 @@ fn contains_clock_runtime_constructs(
         .chain(dae_model.discrete.real_updates.iter())
         .chain(dae_model.discrete.valued_updates.iter())
         .chain(dae_model.conditions.equations.iter())
+}
+
+fn contains_clock_runtime_constructs(
+    dae_model: &dae::Dae,
+    constants: &HashMap<String, f64>,
+) -> bool {
+    clock_runtime_equations(dae_model)
         .any(|eq| expression_contains_clock_runtime_construct(&eq.rhs, constants))
 }
 
