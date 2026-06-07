@@ -155,6 +155,9 @@ impl DefIdVarRefIndex {
         {
             return resolve_best_owner_scoped_candidate(raw, raw_leaf, candidates, owner);
         }
+        if name.target_def_id().is_some() {
+            return None;
+        }
         if is_class_qualified_reference(name) {
             let candidates = self.by_leaf.get(raw_leaf)?;
             return resolve_best_owner_scoped_candidate(raw, raw_leaf, candidates, owner);

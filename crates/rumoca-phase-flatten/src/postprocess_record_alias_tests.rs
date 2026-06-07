@@ -105,6 +105,47 @@ fn def_id_canonicalization_rewrites_class_qualified_ref_by_owner_scope() {
 }
 
 #[test]
+fn def_id_canonicalization_preserves_resolved_package_constant_refs() {
+    let mut model = flat::Model::new();
+    let instantiated_constant_def = rumoca_core::DefId::new(3651);
+    let package_constant_def = rumoca_core::DefId::new(86);
+
+    model.add_variable(
+        rumoca_core::VarName::new("sine.pi"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("sine.pi"),
+            component_ref: Some(component_ref_with_def_id(
+                "sine.pi",
+                instantiated_constant_def,
+            )),
+            binding: Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "Modelica.Constants.pi",
+                    component_ref_with_def_id("Modelica.Constants.pi", package_constant_def),
+                ),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+
+    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+
+    let binding = model
+        .variables
+        .get(&rumoca_core::VarName::new("sine.pi"))
+        .and_then(|var| var.binding.as_ref())
+        .expect("binding should remain present");
+    let rumoca_core::Expression::VarRef { name, .. } = binding else {
+        panic!("expected varref binding");
+    };
+    assert_eq!(name.as_str(), "Modelica.Constants.pi");
+    assert_eq!(name.target_def_id(), Some(package_constant_def));
+}
+
+#[test]
 fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
     let mut model = flat::Model::new();
     model.add_variable(
