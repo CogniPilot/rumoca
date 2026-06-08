@@ -9,8 +9,6 @@ pub(super) struct ModelWorkerQueue<'a> {
     pub(super) explicit_sim_target: bool,
     pub(super) cpu_core_id: Option<usize>,
     pub(super) memory_tokens: Option<std::sync::Arc<ResourceTokenLimiter>>,
-    pub(super) cpu_tokens: std::sync::Arc<ResourceTokenLimiter>,
-    pub(super) cpu_costs: &'a HashMap<String, usize>,
     pub(super) startup_barrier: std::sync::Arc<std::sync::Barrier>,
     pub(super) scheduler_stats: SchedulerStatsCollector,
     pub(super) next_model: &'a AtomicUsize,
@@ -26,7 +24,6 @@ struct SchedulerStatsInner {
     models_started: AtomicUsize,
     active_workers: AtomicUsize,
     max_active_workers: AtomicUsize,
-    cpu_token_wait_nanos: std::sync::atomic::AtomicU64,
     memory_token_wait_nanos: std::sync::atomic::AtomicU64,
     active_model_wall_nanos: std::sync::atomic::AtomicU64,
 }
@@ -37,7 +34,6 @@ pub(super) struct SchedulerTimingInputs {
     pub(super) effective_worker_threads: usize,
     pub(super) worker_count: usize,
     pub(super) pinned_worker_count: usize,
-    pub(super) cpu_token_capacity: usize,
     pub(super) compile_memory_token_capacity_mb: Option<usize>,
     pub(super) compile_memory_model_cost_mb: Option<usize>,
     pub(super) elapsed_seconds: f64,
@@ -55,7 +51,6 @@ impl SchedulerStatsCollector {
                 models_started: AtomicUsize::new(0),
                 active_workers: AtomicUsize::new(0),
                 max_active_workers: AtomicUsize::new(0),
-                cpu_token_wait_nanos: std::sync::atomic::AtomicU64::new(0),
                 memory_token_wait_nanos: std::sync::atomic::AtomicU64::new(0),
                 active_model_wall_nanos: std::sync::atomic::AtomicU64::new(0),
             }),
@@ -64,13 +59,6 @@ impl SchedulerStatsCollector {
 
     fn record_model_started(&self) {
         self.inner.models_started.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn record_cpu_wait(&self, elapsed: Duration) {
-        self.inner.cpu_token_wait_nanos.fetch_add(
-            duration_nanos(elapsed),
-            std::sync::atomic::Ordering::Relaxed,
-        );
     }
 
     fn record_memory_wait(&self, elapsed: Duration) {
@@ -99,14 +87,12 @@ impl SchedulerStatsCollector {
             effective_worker_threads: inputs.effective_worker_threads,
             worker_count: inputs.worker_count,
             pinned_worker_count: inputs.pinned_worker_count,
-            cpu_token_capacity: inputs.cpu_token_capacity,
+            cpu_token_capacity: 0,
             compile_memory_token_capacity_mb: inputs.compile_memory_token_capacity_mb,
             compile_memory_model_cost_mb: inputs.compile_memory_model_cost_mb,
             models_started: self.inner.models_started.load(Ordering::Relaxed),
             max_active_workers: self.inner.max_active_workers.load(Ordering::Relaxed),
-            cpu_token_wait_seconds: nanos_to_seconds(
-                self.inner.cpu_token_wait_nanos.load(Ordering::Relaxed),
-            ),
+            cpu_token_wait_seconds: 0.0,
             compile_memory_token_wait_seconds: nanos_to_seconds(
                 self.inner.memory_token_wait_nanos.load(Ordering::Relaxed),
             ),
@@ -191,9 +177,6 @@ pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
                 }
             }
         }
-        let cpu_cost = queue.cpu_costs.get(name).copied().unwrap_or(1).max(1);
-        let (_cpu_permit, cpu_wait) = queue.cpu_tokens.acquire_timed(cpu_cost);
-        queue.scheduler_stats.record_cpu_wait(cpu_wait);
         let _active_model = queue.scheduler_stats.enter_active_model();
         let selected_for_simulation = queue
             .sim_target_names
@@ -716,7 +699,6 @@ pub(super) fn run_streaming_compile_and_render_chunk(
     if log_parallelism {
         println!("Simulation execution parallelism: {simulation_threads}");
     }
-    let cpu_tokens = pipeline_cpu_token_limiter(simulation_threads);
 
     let pipeline_start = Instant::now();
     let compile_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -745,7 +727,6 @@ pub(super) fn run_streaming_compile_and_render_chunk(
             names_chunk,
             compile_threads: simulation_threads,
             budget_secs: model_budget_secs,
-            cpu_tokens: std::sync::Arc::clone(&cpu_tokens),
             run_simulation: context.run_simulation,
             sim_target_names: context.sim_target_names,
         },
@@ -862,7 +843,6 @@ pub(super) fn run_compile_only_chunk(
                 names_chunk,
                 compile_threads: simulation_threads,
                 budget_secs: model_budget_secs,
-                cpu_tokens: pipeline_cpu_token_limiter(simulation_threads),
                 run_simulation: false,
                 sim_target_names: None,
             },

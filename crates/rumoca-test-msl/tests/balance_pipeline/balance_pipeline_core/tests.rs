@@ -244,16 +244,9 @@ fn stream_compile_chunk_with_model_budgets_reports_all_indices() {
     ];
     let mut received = Vec::new();
 
-    stream_compile_chunk_with_model_budgets(
-        &compiler,
-        &names,
-        2,
-        10.0,
-        pipeline_cpu_token_limiter(2),
-        |idx, entry| {
-            received.push((idx, entry.model_name));
-        },
-    );
+    stream_compile_chunk_with_model_budgets(&compiler, &names, 2, 10.0, |idx, entry| {
+        received.push((idx, entry.model_name));
+    });
 
     received.sort_by_key(|(idx, _)| *idx);
     let received_names: Vec<String> = received.into_iter().map(|(_, name)| name).collect();

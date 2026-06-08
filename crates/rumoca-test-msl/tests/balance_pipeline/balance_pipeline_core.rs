@@ -1051,9 +1051,7 @@ fn prepare_model_worker_request(
 struct CompileResourcePlan<'a> {
     budget_secs: f64,
     memory_tokens: Option<std::sync::Arc<ResourceTokenLimiter>>,
-    cpu_tokens: std::sync::Arc<ResourceTokenLimiter>,
     memory_costs_mb: &'a HashMap<String, usize>,
-    cpu_costs: &'a HashMap<String, usize>,
 }
 
 fn send_compile_chunk_with_model_budgets<T: FocusedClosureCompiler + Sync + Send + 'static>(
@@ -1075,14 +1073,12 @@ fn send_compile_chunk_with_model_budgets<T: FocusedClosureCompiler + Sync + Send
                 .memory_tokens
                 .as_ref()
                 .map(|tokens| tokens.acquire(memory_cost_mb));
-            let cpu_cost = resources.cpu_costs.get(name).copied().unwrap_or(1).max(1);
-            let cpu_permit = resources.cpu_tokens.acquire(cpu_cost);
             let entry = compile_model_with_budget_timeout(
                 source_root,
                 name,
                 resources.budget_secs,
                 _memory_permit,
-                Some(cpu_permit),
+                None,
             );
             let _ = tx.send((idx, entry));
         });
@@ -1106,14 +1102,12 @@ fn send_compile_chunk_sequential_with_model_budgets<
             .memory_tokens
             .as_ref()
             .map(|tokens| tokens.acquire(memory_cost_mb));
-        let cpu_cost = resources.cpu_costs.get(name).copied().unwrap_or(1).max(1);
-        let cpu_permit = resources.cpu_tokens.acquire(cpu_cost);
         let entry = compile_model_with_budget_timeout(
             source_root,
             name,
             resources.budget_secs,
             _memory_permit,
-            Some(cpu_permit),
+            None,
         );
         let _ = result_tx.send((idx, entry));
     }
@@ -1124,7 +1118,6 @@ fn stream_compile_chunk_with_model_budgets<T, F>(
     names_chunk: &[String],
     compile_threads: usize,
     budget_secs: f64,
-    cpu_tokens: std::sync::Arc<ResourceTokenLimiter>,
     consume: F,
 ) -> f64
 where
@@ -1133,13 +1126,10 @@ where
 {
     let memory_tokens = compile_memory_token_limiter();
     let memory_costs_mb = compile_model_memory_costs_for_names(names_chunk);
-    let cpu_costs = compile_model_cpu_costs_for_names(names_chunk);
     let resources = CompileResourcePlan {
         budget_secs,
         memory_tokens: memory_tokens.clone(),
-        cpu_tokens,
         memory_costs_mb: &memory_costs_mb,
-        cpu_costs: &cpu_costs,
     };
     let effective_compile_threads =
         worker_threads_for_model_count(compile_threads, names_chunk.len());
@@ -1190,7 +1180,6 @@ struct SourceRootCompileQueue<'a> {
     names_chunk: &'a [String],
     compile_threads: usize,
     budget_secs: f64,
-    cpu_tokens: std::sync::Arc<ResourceTokenLimiter>,
     run_simulation: bool,
     sim_target_names: Option<&'a HashSet<String>>,
 }
@@ -1213,12 +1202,10 @@ where
         names_chunk,
         compile_threads,
         budget_secs,
-        cpu_tokens,
         run_simulation,
         sim_target_names,
     } = plan;
     let memory_tokens = compile_memory_token_limiter();
-    let cpu_costs = compile_model_cpu_costs_for_names(names_chunk);
     let effective_compile_threads =
         worker_threads_for_model_count(compile_threads, names_chunk.len());
     let result_queue_bound = streaming_queue_bound(effective_compile_threads, names_chunk.len());
@@ -1258,10 +1245,8 @@ where
             let result_tx = result_tx.clone();
             let next_model = std::sync::Arc::clone(&next_model);
             let memory_tokens = memory_tokens.clone();
-            let cpu_tokens = std::sync::Arc::clone(&cpu_tokens);
             let startup_barrier = std::sync::Arc::clone(&startup_barrier);
             let scheduler_stats = scheduler_stats.clone();
-            let cpu_costs = &cpu_costs;
             worker_handles.push(scope.spawn(move || {
                 run_model_worker_queue(ModelWorkerQueue {
                     source_root_path,
@@ -1272,8 +1257,6 @@ where
                     explicit_sim_target: sim_targets_file_override().is_some(),
                     cpu_core_id,
                     memory_tokens,
-                    cpu_tokens,
-                    cpu_costs,
                     startup_barrier,
                     scheduler_stats,
                     next_model: next_model.as_ref(),
@@ -1293,7 +1276,6 @@ where
             effective_worker_threads: effective_compile_threads,
             worker_count,
             pinned_worker_count: pinned_workers,
-            cpu_token_capacity: cpu_tokens.capacity(),
             compile_memory_token_capacity_mb: memory_tokens
                 .as_ref()
                 .map(|tokens| tokens.capacity()),
