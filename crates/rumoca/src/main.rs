@@ -907,6 +907,24 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
         None => None,
     };
 
+    // An explicit `[transport.http].asset_dir` (resolved relative to the config
+    // file) overrides the scene-parent default, letting several examples share
+    // one `/assets/` root (e.g. examples/assets).
+    if let Some(asset_dir) = config
+        .transport
+        .as_ref()
+        .and_then(|t| t.http.as_ref())
+        .and_then(|h| h.asset_dir.as_deref())
+    {
+        let dir = Path::new(asset_dir);
+        let full = if dir.is_absolute() {
+            dir.to_path_buf()
+        } else {
+            config_dir.join(dir)
+        };
+        scene_asset_dir = Some(full);
+    }
+
     Ok(rumoca_sim::runner::run(rumoca_sim::runner::SimArgs {
         model_source,
         model_path: Some(model_path),

@@ -180,6 +180,10 @@ pub struct HttpConfig {
     pub port: u16,
     #[serde(default)]
     pub scene: Option<String>,
+    /// Directory served at `/assets/...`, resolved relative to the config file.
+    /// Defaults to the scene script's parent directory when unset.
+    #[serde(default)]
+    pub asset_dir: Option<String>,
 }
 
 // ── Viewer presentation ───────────────────────────────────────────────────

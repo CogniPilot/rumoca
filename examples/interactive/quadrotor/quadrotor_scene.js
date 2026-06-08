@@ -330,7 +330,7 @@ ctx.onInit = async function(api) {
   s.propGroups = [];
 
   const loader = new api.GLTFLoader();
-  const gltf = await loader.loadAsync("/assets/drone.glb");
+  const gltf = await loader.loadAsync("/assets/models/drone.glb");
   const model = gltf.scene;
   model.name = "drone_glb";
 

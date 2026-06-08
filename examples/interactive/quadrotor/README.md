@@ -13,9 +13,12 @@ controller in the same simulation, plus a Three.js viewer.
 | `../../../target/cmm/CMM-v0.0.1/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
 | `rum.acro.toml` | Config — `QuadrotorAcro` closed-loop Modelica model |
 | `quadrotor_scene.js` | Three.js scene |
-| `drone.glb` | CC-BY-4.0 quadrotor model used by the scene |
-| `skybox/` | CC-BY-SA-3.0 `arid2` skybox used by the scene |
-| `sand_pbr/` | CC0 tileable PBR sand texture maps used by the ground plane |
+| `../../assets/models/drone.glb` | CC-BY-4.0 quadrotor model used by the scene |
+| `../../assets/skybox/` | CC-BY-SA-3.0 `arid2` skybox used by the scene |
+| `../../assets/sand_pbr/` | CC0 tileable PBR sand texture maps used by the ground plane |
+
+Skybox, PBR textures, and glb models are served from the shared
+[`examples/assets/`](../../assets) root (`[transport.http].asset_dir = "../../assets"`).
 
 ## Running
 
@@ -131,7 +134,7 @@ The viewer uses the `arid2` skybox from `skiingpenguins' skybox pack`:
 - Original context: created for the first-person shooter engine `Cube 2: Sauerbraten`
 
 The original attribution readme is preserved at
-`skybox/README_skiingpenguins_arid2.txt`.
+`../../assets/skybox/README_skiingpenguins_arid2.txt`.
 
 ## Ground Texture Attribution
 

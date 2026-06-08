@@ -213,6 +213,8 @@ reset_locals = true
 [transport.http]
 port = 8080
 scene = "fixedwing_scene.js"
+# Skybox, PBR textures, and glb models live in the shared examples/assets root.
+asset_dir = "../../assets"
 
 [transport.websocket]
 port = 8081

@@ -171,7 +171,7 @@ ctx.onInit = async function (api) {
   s.aircraft = aircraft;
 
   const loader = new api.GLTFLoader();
-  const gltf = await loader.loadAsync("/assets/airplane.glb");
+  const gltf = await loader.loadAsync("/assets/models/airplane.glb");
   const model = gltf.scene;
 
   // Scale so 1 GLB unit = 0.16 m (the scale the gear contact offsets in the

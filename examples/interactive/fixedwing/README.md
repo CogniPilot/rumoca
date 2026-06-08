@@ -24,9 +24,12 @@ get slow.
 | `../../../target/cmm/CMM-v0.0.1/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
 | `rum.toml` | Config — `FixedWing` closed-loop Modelica model |
 | `fixedwing_scene.js` | Three.js scene — desert environment + rigged airplane |
-| `airplane.glb` | Aircraft model with riggable control-surface pivots |
-| `skybox/` | `arid2` desert skybox (shared with the quadrotor example) |
-| `sand_pbr/` | Tileable PBR sand texture maps for the ground |
+| `../../assets/models/airplane.glb` | Aircraft model with riggable control-surface pivots |
+| `../../assets/skybox/` | `arid2` desert skybox (shared with the quadrotor example) |
+| `../../assets/sand_pbr/` | Tileable PBR sand texture maps for the ground |
+
+Skybox, PBR textures, and glb models are served from the shared
+[`examples/assets/`](../../assets) root (`[transport.http].asset_dir = "../../assets"`).
 
 ## Running
 
