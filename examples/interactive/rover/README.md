@@ -85,3 +85,17 @@ loop applies them to the stepper each frame. No external process.
 
 The Three.js scene uses the same desert environment as the quadrotor
 example.
+
+## 3D Model Attribution
+
+The viewer loads a model from Poly Pizza:
+
+- Title: `Buggy`
+- Source: <https://poly.pizza/m/eZ_13w7qZh7>
+- Author: Nick Slough
+- License: CC-BY-3.0 (<http://creativecommons.org/licenses/by/3.0/>)
+
+Credit text:
+
+This work is based on "Buggy" (<https://poly.pizza/m/eZ_13w7qZh7>) by Nick
+Slough licensed under CC-BY-3.0 (<http://creativecommons.org/licenses/by/3.0/>).
