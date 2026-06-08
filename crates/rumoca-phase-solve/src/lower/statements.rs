@@ -154,13 +154,14 @@ impl<'a> LowerBuilder<'a> {
         // Every (base, indices) a branch or the else-branch assigns differently
         // from the entry state needs a merged value.
         let mut candidates: IndexSet<(String, Vec<usize>)> = IndexSet::new();
-        for store in branch_indexed.iter().chain(std::iter::once(else_indexed)) {
-            for (base, entries) in store {
-                for entry in entries {
-                    if lookup(entry_indexed, base, &entry.indices) != Some(entry.reg) {
-                        candidates.insert((base.clone(), entry.indices.clone()));
-                    }
-                }
+        let assigned_entries = branch_indexed
+            .iter()
+            .chain(std::iter::once(else_indexed))
+            .flat_map(|store| store.iter())
+            .flat_map(|(base, entries)| entries.iter().map(move |entry| (base, entry)));
+        for (base, entry) in assigned_entries {
+            if lookup(entry_indexed, base, &entry.indices) != Some(entry.reg) {
+                candidates.insert((base.clone(), entry.indices.clone()));
             }
         }
 
@@ -168,10 +169,13 @@ impl<'a> LowerBuilder<'a> {
             let mut merged = lookup(else_indexed, &base, &indices)
                 .or_else(|| lookup(entry_indexed, &base, &indices))
                 .unwrap_or_else(|| self.emit_const(0.0));
-            for (cond, store) in cond_regs.iter().zip(branch_indexed.iter()).rev() {
-                if let Some(reg) = lookup(store, &base, &indices) {
-                    merged = self.emit_select(*cond, reg, merged);
-                }
+            let branch_values = cond_regs
+                .iter()
+                .zip(branch_indexed.iter())
+                .rev()
+                .filter_map(|(cond, store)| lookup(store, &base, &indices).map(|reg| (cond, reg)));
+            for (cond, reg) in branch_values {
+                merged = self.emit_select(*cond, reg, merged);
             }
             upsert_local_indexed_binding(
                 self.local_indexed_bindings.entry(base).or_default(),

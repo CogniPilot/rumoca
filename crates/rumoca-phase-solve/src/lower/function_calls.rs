@@ -1413,26 +1413,26 @@ impl<'a> LowerBuilder<'a> {
         call_depth: usize,
     ) -> Result<(), LowerError> {
         for param in function.outputs.iter().chain(function.locals.iter()) {
-            if param.default.is_none() {
-                // A function output/local that shadows a caller variable of the
-                // same name (e.g. a library `product` whose output is `X` called
-                // from a model whose state is also `X`) must start fresh. Drop any
-                // inherited caller bindings for this name first; otherwise stale
-                // caller elements (e.g. `X[11..13]` of a larger caller array) leak
-                // into reads of this function's array output.
-                if !param.dims.is_empty() {
-                    super::function_projection::clear_indexed_scope_bindings(scope, &param.name);
-                    scope.shift_remove(&ComponentPath::from_flat_path(&param.name));
-                    self.local_indexed_bindings
-                        .shift_remove(param.name.as_str());
-                }
-                self.initialize_declared_function_param(param);
+            if param.default.is_some() {
+                let values = self.initial_function_param_values(param, scope, call_depth)?;
+                self.bind_assignment_values_with_dims(scope, &param.name, &values, &param.dims);
+                self.bind_local_array_shape(&param.name, &param.dims, values.len());
+                self.bind_initial_function_param_const(param);
                 continue;
             }
-            let values = self.initial_function_param_values(param, scope, call_depth)?;
-            self.bind_assignment_values_with_dims(scope, &param.name, &values, &param.dims);
-            self.bind_local_array_shape(&param.name, &param.dims, values.len());
-            self.bind_initial_function_param_const(param);
+            // A function output/local that shadows a caller variable of the
+            // same name (e.g. a library `product` whose output is `X` called
+            // from a model whose state is also `X`) must start fresh. Drop any
+            // inherited caller bindings for this name first; otherwise stale
+            // caller elements (e.g. `X[11..13]` of a larger caller array) leak
+            // into reads of this function's array output.
+            if !param.dims.is_empty() {
+                super::function_projection::clear_indexed_scope_bindings(scope, &param.name);
+                scope.shift_remove(&ComponentPath::from_flat_path(&param.name));
+                self.local_indexed_bindings
+                    .shift_remove(param.name.as_str());
+            }
+            self.initialize_declared_function_param(param);
         }
         Ok(())
     }
