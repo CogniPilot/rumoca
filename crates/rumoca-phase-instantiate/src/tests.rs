@@ -388,7 +388,9 @@ fn test_equations_to_instance_without_connections_filters_connect_equations() {
 
     let source_map = rumoca_core::SourceMap::new();
     let origin = ast::QualifiedName::from_ident("M");
-    let converted = equations_to_instance_without_connections(&equations, &origin, &source_map);
+    let ctx = InstantiateContext::new();
+    let converted =
+        equations_to_instance_without_connections(&ctx, &equations, &origin, &source_map);
 
     assert_eq!(converted.len(), 1);
     assert!(matches!(

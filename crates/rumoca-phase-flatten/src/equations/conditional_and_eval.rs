@@ -1787,6 +1787,8 @@ mod tests {
                 }],
             },
             origin: QualifiedName::from_dotted("M"),
+            source_scope: None,
+            source_scope_id: None,
             span: rumoca_core::Span::DUMMY,
         };
 
@@ -1828,6 +1830,8 @@ mod tests {
                 }],
             },
             origin: QualifiedName::from_dotted("M"),
+            source_scope: None,
+            source_scope_id: None,
             span: rumoca_core::Span::DUMMY,
         };
 

@@ -556,57 +556,40 @@ fn component_class_override_is_active(
         || top_level_last_segment(&target_ref.name) != class_override.alias.as_str()
 }
 
-fn class_instance_scope_name(class_data: &rumoca_ir_ast::ClassInstanceData) -> Option<String> {
-    if let Some(source_scope) = &class_data.source_scope {
-        return Some(source_scope.to_flat_string());
-    }
-    class_data
-        .equations
-        .first()
-        .map(|eq| eq.origin.to_flat_string())
-        .or_else(|| {
-            class_data
-                .initial_equations
-                .first()
-                .map(|eq| eq.origin.to_flat_string())
-        })
-        .or_else(|| {
-            class_data
-                .algorithms
-                .first()
-                .and_then(|alg| alg.first().map(|stmt| stmt.origin.to_flat_string()))
-        })
-        .or_else(|| {
-            class_data
-                .initial_algorithms
-                .first()
-                .and_then(|alg| alg.first().map(|stmt| stmt.origin.to_flat_string()))
-        })
-}
-
 pub(crate) fn class_instance_component_overrides(
     class_data: &rumoca_ir_ast::ClassInstanceData,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) -> rustc_hash::FxHashMap<String, OverrideTarget> {
+) -> Result<rustc_hash::FxHashMap<String, OverrideTarget>, FlattenError> {
     let mut overrides = rustc_hash::FxHashMap::default();
-    let Some(class_scope) = class_instance_scope_name(class_data) else {
-        return overrides;
-    };
-    let Some(class_def) = class_index.get_by_qualified_name(&class_scope) else {
-        return overrides;
+    let class_scope = class_data.source_scope.as_ref().ok_or_else(|| {
+        missing_class_instance_override_scope_error(class_data, tree, "class function overrides")
+    })?;
+    let class_scope_id = class_data.source_scope_id.ok_or_else(|| {
+        missing_class_instance_override_scope_error(class_data, tree, "class function overrides")
+    })?;
+    if tree.scope_tree.get(class_scope_id).is_none() {
+        return Err(missing_class_instance_override_scope_error(
+            class_data,
+            tree,
+            "class function overrides",
+        ));
+    }
+    let class_scope_name = class_scope.to_flat_string();
+    let Some(class_def) = class_index.get_by_qualified_name(&class_scope_name) else {
+        return Ok(overrides);
     };
     let mut visited_classes = FxHashSet::default();
     collect_component_constructor_aliases_for_class(
         tree,
         class_index,
         class_def,
-        &class_scope,
+        &class_scope_name,
         false,
         &mut visited_classes,
         &mut overrides,
     );
-    overrides
+    Ok(overrides)
 }
 
 pub(crate) fn build_component_override_map(
@@ -614,7 +597,7 @@ pub(crate) fn build_component_override_map(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     model_name: &str,
-) -> ComponentOverrideMap {
+) -> Result<ComponentOverrideMap, FlattenError> {
     let mut map = ComponentOverrideMap::default();
     insert_component_overrides(
         &mut map,
@@ -625,7 +608,7 @@ pub(crate) fn build_component_override_map(
         insert_component_overrides(
             &mut map,
             class_data.qualified_name.to_component_path(),
-            class_instance_component_overrides(class_data, tree, class_index),
+            class_instance_component_overrides(class_data, tree, class_index)?,
         );
     }
     let mut constructor_cache = ConstructorOverrideCache::default();
@@ -636,7 +619,46 @@ pub(crate) fn build_component_override_map(
             component_overrides_with_cache(instance, tree, class_index, &mut constructor_cache),
         );
     }
-    map
+    Ok(map)
+}
+
+fn missing_class_instance_override_scope_error(
+    class_data: &rumoca_ir_ast::ClassInstanceData,
+    tree: &ClassTree,
+    context: &str,
+) -> FlattenError {
+    let span = class_data
+        .class_def_id
+        .and_then(|def_id| class_index_span(tree, def_id))
+        .or_else(|| class_data.equations.first().map(|eq| eq.span))
+        .or_else(|| class_data.initial_equations.first().map(|eq| eq.span))
+        .or_else(|| {
+            class_data
+                .algorithms
+                .first()
+                .and_then(|alg| alg.first().map(|stmt| stmt.span))
+        })
+        .or_else(|| {
+            class_data
+                .initial_algorithms
+                .first()
+                .and_then(|alg| alg.first().map(|stmt| stmt.span))
+        })
+        .unwrap_or(rumoca_core::Span::DUMMY);
+    FlattenError::missing_source_scope(class_data.qualified_name.to_flat_string(), context, span)
+}
+
+fn class_index_span(tree: &ClassTree, def_id: rumoca_core::DefId) -> Option<rumoca_core::Span> {
+    let class_def = tree.get_class_by_def_id(def_id)?;
+    let location = &class_def.location;
+    if location.file_name.is_empty() || location.start >= location.end {
+        return None;
+    }
+    Some(tree.source_map.location_to_span(
+        &location.file_name,
+        location.start as usize,
+        location.end as usize,
+    ))
 }
 
 fn insert_component_overrides(
@@ -697,9 +719,8 @@ pub(crate) fn override_context_for_component_path(
                 package_aliases.insert(alias, packages.len());
                 packages.push(target.clone());
             }
-        } else if !function_overrides.contains_key(alias) {
-            function_overrides.insert(alias.to_string(), target.clone());
         }
+        update_function_override_entry(function_overrides, alias, target);
     }
 
     let estimated_overrides = override_scope_entry_count(scope_path, component_override_map);
@@ -734,6 +755,22 @@ pub(crate) fn override_context_for_component_path(
         }
     }
     (packages, function_overrides)
+}
+
+fn update_function_override_entry(
+    function_overrides: &mut OverrideFunctionMap,
+    alias: &str,
+    target: &OverrideTarget,
+) {
+    match function_overrides.get(alias) {
+        Some(existing) if target.active && !existing.active => {
+            function_overrides.insert(alias.to_string(), target.clone());
+        }
+        Some(_) => {}
+        None => {
+            function_overrides.insert(alias.to_string(), target.clone());
+        }
+    }
 }
 
 fn update_package_override_slot(
@@ -1579,10 +1616,10 @@ fn canonical_function_name_from_component_ref(
         return Some(component_name);
     }
 
-    let (package_name, function_leaf) = split_last_top_level_component_ref(component_ref)?;
+    let (package_name, function_leaf) = component_ref_package_and_leaf(component_ref)?;
     let package_def = ctx.class_index.get_by_qualified_name(&package_name)?;
     let package = OverrideTarget {
-        alias: top_level_last_segment(&package_name).to_string(),
+        alias: String::new(),
         name: package_name,
         def_id: package_def.def_id?,
         class_type: package_def.class_type.clone(),
@@ -1592,7 +1629,7 @@ fn canonical_function_name_from_component_ref(
     resolve_function_in_package_chain_exposed(ctx.tree, ctx.class_index, &package, function_leaf)
 }
 
-fn split_last_top_level_component_ref(
+fn component_ref_package_and_leaf(
     component_ref: &rumoca_core::ComponentReference,
 ) -> Option<(String, &str)> {
     let mut parts = component_ref.parts.as_slice();
@@ -1612,6 +1649,9 @@ fn canonical_function_name_from_target_def_id(
     is_constructor: bool,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> Option<String> {
+    if component_ref_names_exposed_function(reference, ctx) {
+        return None;
+    }
     let def_id = reference.target_def_id()?;
     let class_def = ctx.class_index.get(def_id)?;
     let can_canonicalize = if is_constructor {
@@ -1620,6 +1660,43 @@ fn canonical_function_name_from_target_def_id(
         class_def.class_type == rumoca_core::ClassType::Function && !class_def.partial
     };
     can_canonicalize.then(|| ctx.tree.def_map.get(&def_id).cloned())?
+}
+
+fn component_ref_names_exposed_function(
+    reference: &rumoca_core::Reference,
+    ctx: &FunctionOverrideRewriteContext<'_>,
+) -> bool {
+    let Some(component_ref) = reference.component_ref() else {
+        return false;
+    };
+    let component_name = ComponentPath::from_component_reference(component_ref).to_flat_string();
+    if component_name != reference.as_str() {
+        return false;
+    }
+    if let Some(class_def) = ctx.class_index.get_by_qualified_name(&component_name) {
+        return class_def.class_type == rumoca_core::ClassType::Function;
+    }
+
+    let Some((package_name, function_leaf)) = component_ref_package_and_leaf(component_ref) else {
+        return false;
+    };
+    let Some(package_def) = ctx.class_index.get_by_qualified_name(&package_name) else {
+        return false;
+    };
+    let Some(package_def_id) = package_def.def_id else {
+        return false;
+    };
+    let package = OverrideTarget {
+        alias: String::new(),
+        name: package_name,
+        def_id: package_def_id,
+        class_type: package_def.class_type.clone(),
+        active: false,
+        modifier_args: Vec::new(),
+    };
+    resolve_function_in_package_chain_exposed(ctx.tree, ctx.class_index, &package, function_leaf)
+        .as_deref()
+        == Some(component_name.as_str())
 }
 
 pub(crate) fn rewrite_function_overrides_in_expression_with_ctx(

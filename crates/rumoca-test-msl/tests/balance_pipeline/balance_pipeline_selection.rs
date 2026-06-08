@@ -134,20 +134,6 @@ fn prior_model_schedule_score(metrics: PriorModelScheduleMetrics) -> u64 {
         .unwrap_or_else(|| prior_model_complexity_score(metrics.complexity) as u64)
 }
 
-fn compile_model_cpu_tokens_from_metrics(metrics: PriorModelScheduleMetrics) -> usize {
-    if metrics.timed_out {
-        return usize::MAX;
-    }
-    match metrics.compile_millis {
-        Some(millis) if millis >= 15_000 => usize::MAX,
-        Some(millis) if millis >= 10_000 => 4,
-        Some(millis) if millis >= 5_000 => 2,
-        Some(_) => 1,
-        None if prior_model_complexity_score(metrics.complexity) >= 20_000 => 2,
-        None => 1,
-    }
-}
-
 pub(super) fn compile_model_memory_mb_from_complexity_score(
     complexity_score: usize,
     fallback_mb: usize,
@@ -190,22 +176,6 @@ pub(super) fn compile_model_memory_costs_for_names(names: &[String]) -> HashMap<
                 .map(|complexity| compile_model_memory_mb_from_complexity(complexity, fallback_mb))
                 .unwrap_or(fallback_mb);
             (name.clone(), cost_mb)
-        })
-        .collect()
-}
-
-pub(super) fn compile_model_cpu_costs_for_names(names: &[String]) -> HashMap<String, usize> {
-    let metrics_by_model =
-        prior_results_file().and_then(|path| load_prior_model_schedule_metrics(&path));
-    names
-        .iter()
-        .map(|name| {
-            let tokens = metrics_by_model
-                .as_ref()
-                .and_then(|entries| entries.get(name).copied())
-                .map(compile_model_cpu_tokens_from_metrics)
-                .unwrap_or(1);
-            (name.clone(), tokens)
         })
         .collect()
 }
@@ -1145,18 +1115,6 @@ mod tests {
                 .get("Modelica.Blocks.Examples.TimeoutAtFlatten")
                 .and_then(|metrics| metrics.compile_millis),
             Some(13_542)
-        );
-        assert_eq!(
-            metrics
-                .get("Modelica.Blocks.Examples.TimeoutAtFlatten")
-                .map(|metrics| compile_model_cpu_tokens_from_metrics(*metrics)),
-            Some(usize::MAX)
-        );
-        assert_ne!(
-            metrics
-                .get("Modelica.Blocks.Examples.SolveTimeout")
-                .map(|metrics| compile_model_cpu_tokens_from_metrics(*metrics)),
-            Some(usize::MAX)
         );
         assert!(
             prior_model_schedule_score(

@@ -68,6 +68,19 @@ impl ResourceTokenLimiter {
         }
     }
 
+    fn acquire_timed(
+        self: &std::sync::Arc<Self>,
+        requested: usize,
+    ) -> (ResourceTokenPermit, Duration) {
+        let started = Instant::now();
+        let permit = self.acquire(requested);
+        (permit, started.elapsed())
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     #[cfg(test)]
     fn available_for_tests(&self) -> usize {
         *self
@@ -393,6 +406,7 @@ struct CompileRenderOutput {
     batch_size: usize,
     chunk_count: usize,
     worker_threads: usize,
+    scheduler: MslSchedulerTimings,
 }
 
 struct ParsedMslBatch {
@@ -1037,9 +1051,7 @@ fn prepare_model_worker_request(
 struct CompileResourcePlan<'a> {
     budget_secs: f64,
     memory_tokens: Option<std::sync::Arc<ResourceTokenLimiter>>,
-    cpu_tokens: std::sync::Arc<ResourceTokenLimiter>,
     memory_costs_mb: &'a HashMap<String, usize>,
-    cpu_costs: &'a HashMap<String, usize>,
 }
 
 fn send_compile_chunk_with_model_budgets<T: FocusedClosureCompiler + Sync + Send + 'static>(
@@ -1061,14 +1073,12 @@ fn send_compile_chunk_with_model_budgets<T: FocusedClosureCompiler + Sync + Send
                 .memory_tokens
                 .as_ref()
                 .map(|tokens| tokens.acquire(memory_cost_mb));
-            let cpu_cost = resources.cpu_costs.get(name).copied().unwrap_or(1).max(1);
-            let cpu_permit = resources.cpu_tokens.acquire(cpu_cost);
             let entry = compile_model_with_budget_timeout(
                 source_root,
                 name,
                 resources.budget_secs,
                 _memory_permit,
-                Some(cpu_permit),
+                None,
             );
             let _ = tx.send((idx, entry));
         });
@@ -1092,14 +1102,12 @@ fn send_compile_chunk_sequential_with_model_budgets<
             .memory_tokens
             .as_ref()
             .map(|tokens| tokens.acquire(memory_cost_mb));
-        let cpu_cost = resources.cpu_costs.get(name).copied().unwrap_or(1).max(1);
-        let cpu_permit = resources.cpu_tokens.acquire(cpu_cost);
         let entry = compile_model_with_budget_timeout(
             source_root,
             name,
             resources.budget_secs,
             _memory_permit,
-            Some(cpu_permit),
+            None,
         );
         let _ = result_tx.send((idx, entry));
     }
@@ -1110,7 +1118,6 @@ fn stream_compile_chunk_with_model_budgets<T, F>(
     names_chunk: &[String],
     compile_threads: usize,
     budget_secs: f64,
-    cpu_tokens: std::sync::Arc<ResourceTokenLimiter>,
     consume: F,
 ) -> f64
 where
@@ -1119,13 +1126,10 @@ where
 {
     let memory_tokens = compile_memory_token_limiter();
     let memory_costs_mb = compile_model_memory_costs_for_names(names_chunk);
-    let cpu_costs = compile_model_cpu_costs_for_names(names_chunk);
     let resources = CompileResourcePlan {
         budget_secs,
         memory_tokens: memory_tokens.clone(),
-        cpu_tokens,
         memory_costs_mb: &memory_costs_mb,
-        cpu_costs: &cpu_costs,
     };
     let effective_compile_threads =
         worker_threads_for_model_count(compile_threads, names_chunk.len());
@@ -1176,16 +1180,20 @@ struct SourceRootCompileQueue<'a> {
     names_chunk: &'a [String],
     compile_threads: usize,
     budget_secs: f64,
-    cpu_tokens: std::sync::Arc<ResourceTokenLimiter>,
     run_simulation: bool,
     sim_target_names: Option<&'a HashSet<String>>,
+}
+
+struct SourceRootCompileOutput {
+    elapsed_seconds: f64,
+    scheduler: MslSchedulerTimings,
 }
 
 fn stream_source_root_compile_with_model_budgets<F>(
     _source_root: &std::sync::Arc<CompiledSourceRoot>,
     plan: SourceRootCompileQueue<'_>,
     consume: F,
-) -> f64
+) -> SourceRootCompileOutput
 where
     F: FnMut(usize, MslModelResult) + Send,
 {
@@ -1194,12 +1202,10 @@ where
         names_chunk,
         compile_threads,
         budget_secs,
-        cpu_tokens,
         run_simulation,
         sim_target_names,
     } = plan;
     let memory_tokens = compile_memory_token_limiter();
-    let cpu_costs = compile_model_cpu_costs_for_names(names_chunk);
     let effective_compile_threads =
         worker_threads_for_model_count(compile_threads, names_chunk.len());
     let result_queue_bound = streaming_queue_bound(effective_compile_threads, names_chunk.len());
@@ -1225,6 +1231,7 @@ where
         };
         let core_plan = cpu_core_plan(worker_count);
         let pinned_workers = core_plan.iter().filter(|core| core.is_some()).count();
+        let scheduler_stats = SchedulerStatsCollector::new();
         if worker_count < requested_worker_count {
             println!(
                 "  Model worker count capped at {worker_count}/{requested_worker_count} available logical CPU cores"
@@ -1238,9 +1245,8 @@ where
             let result_tx = result_tx.clone();
             let next_model = std::sync::Arc::clone(&next_model);
             let memory_tokens = memory_tokens.clone();
-            let cpu_tokens = std::sync::Arc::clone(&cpu_tokens);
             let startup_barrier = std::sync::Arc::clone(&startup_barrier);
-            let cpu_costs = &cpu_costs;
+            let scheduler_stats = scheduler_stats.clone();
             worker_handles.push(scope.spawn(move || {
                 run_model_worker_queue(ModelWorkerQueue {
                     source_root_path,
@@ -1251,9 +1257,8 @@ where
                     explicit_sim_target: sim_targets_file_override().is_some(),
                     cpu_core_id,
                     memory_tokens,
-                    cpu_tokens,
-                    cpu_costs,
                     startup_barrier,
+                    scheduler_stats,
                     next_model: next_model.as_ref(),
                     result_tx,
                 });
@@ -1265,7 +1270,22 @@ where
         }
         let compile_seconds = compile_start.elapsed().as_secs_f64();
         consumer.join().expect("compile stream consumer panicked");
-        compile_seconds
+        let scheduler = scheduler_stats.snapshot(SchedulerTimingInputs {
+            selected_model_count: names_chunk.len(),
+            requested_worker_threads: compile_threads,
+            effective_worker_threads: effective_compile_threads,
+            worker_count,
+            pinned_worker_count: pinned_workers,
+            compile_memory_token_capacity_mb: memory_tokens
+                .as_ref()
+                .map(|tokens| tokens.capacity()),
+            compile_memory_model_cost_mb: memory_tokens.as_ref().map(|_| compile_model_memory_mb()),
+            elapsed_seconds: compile_seconds,
+        });
+        SourceRootCompileOutput {
+            elapsed_seconds: compile_seconds,
+            scheduler,
+        }
     })
 }
 
@@ -1374,6 +1394,7 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
     timings.compile_batch_size = chunked_output.batch_size;
     timings.compile_chunk_count = chunked_output.chunk_count;
     timings.worker_threads = chunked_output.worker_threads;
+    timings.scheduler = chunked_output.scheduler;
     update_phase_timing_totals(&mut timings);
     timings.frontend_compile_seconds =
         timings.parse_seconds + timings.session_build_seconds + timings.compile_seconds;

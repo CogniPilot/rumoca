@@ -53,8 +53,8 @@ trace-agreeing models:
 
 These values support a stable median-based speed gate more than a mean-based
 gate. Mean speedup is more sensitive to outlier models and tiny OMC simulation
-times, while the existing spec already defines a 20% median tolerance for system
-and wall runtime ratios.
+times, while the existing spec defines a median tolerance for system and wall
+runtime ratios.
 
 The 2026-06-05 artifacts cannot directly promote runtime speed baselines because
 the generated `msl_quality_current.json` snapshots did not serialize

@@ -30,6 +30,7 @@ struct SourceScopeRange {
     start: u32,
     end: u32,
     scope: ast::QualifiedName,
+    scope_id: Option<rumoca_core::ScopeId>,
 }
 
 impl SourceScopeIndex {
@@ -59,6 +60,7 @@ impl SourceScopeIndex {
                     start: class.location.start,
                     end: class.location.end,
                     scope: class_scope.clone(),
+                    scope_id: class.scope_id,
                 });
             }
             self.collect_component_scopes(class, &class_scope);
@@ -102,6 +104,21 @@ impl SourceScopeIndex {
             .min_by_key(|range| range.end.saturating_sub(range.start))
             .map(|range| range.scope.clone())
     }
+
+    fn scope_id_for_location(&self, location: &Location) -> Option<rumoca_core::ScopeId> {
+        if !has_source_range(location) {
+            return None;
+        }
+        self.class_ranges
+            .iter()
+            .filter(|range| {
+                range.file_name == location.file_name
+                    && range.start <= location.start
+                    && location.end <= range.end
+            })
+            .min_by_key(|range| range.end.saturating_sub(range.start))
+            .and_then(|range| range.scope_id)
+    }
 }
 
 fn has_source_range(location: &Location) -> bool {
@@ -128,4 +145,18 @@ pub(super) fn expression_source_scope(
 ) -> Option<ast::QualifiedName> {
     ctx.source_scope_index
         .scope_for_location(expr.get_location()?)
+}
+
+pub(super) fn location_source_scope(
+    ctx: &InstantiateContext,
+    location: Option<&Location>,
+) -> Option<ast::QualifiedName> {
+    ctx.source_scope_index.scope_for_location(location?)
+}
+
+pub(super) fn location_source_scope_id(
+    ctx: &InstantiateContext,
+    location: Option<&Location>,
+) -> Option<rumoca_core::ScopeId> {
+    ctx.source_scope_index.scope_id_for_location(location?)
 }

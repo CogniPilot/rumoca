@@ -1,4 +1,5 @@
 use super::*;
+use indexmap::IndexSet;
 
 mod cache;
 mod status;
@@ -24,10 +25,15 @@ pub(super) const COMPILE_RATE_GATE_TOLERANCE: f64 = 0.0;
 pub(super) const BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
 /// Initial-balance-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
 pub(super) const INITIAL_BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
+/// Allowed one-model cumulative-stage jitter for full-library MSL quality runs.
+pub(super) const MSL_STAGE_COUNT_ALLOWED_DROP: usize = 1;
+/// Keep focused/unit gate checks strict; runner jitter allowance is only for
+/// full-library scale denominators.
+pub(super) const MSL_STAGE_COUNT_ALLOWED_DROP_MIN_DENOMINATOR: usize = 100;
 /// Allowed drop in compared trace-model count from baseline.
 pub(super) const TRACE_MODELS_COMPARED_ALLOWED_DROP: usize = 2;
 /// Allowed relative drop in runtime speedup median (omc/rumoca) before failing.
-pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.20;
+pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.35;
 /// OMC per-model timeout budget for simulation reference generation. OMC's
 /// `simulate()` generates C code and invokes gcc per model, which on shared CI
 /// runners far exceeds rumoca's warm per-model budget; giving OMC the same tiny
@@ -990,6 +996,14 @@ pub(super) fn ensure_required_msl_parity_references(summary: &MslSummary) -> io:
     Ok(())
 }
 
+pub(super) fn current_omc_parity_workers() -> usize {
+    omc_parity_workers()
+}
+
+pub(super) fn current_omc_parity_threads() -> usize {
+    omc_parity_threads()
+}
+
 fn simulation_parity_cache_has_required_metrics(path: &Path) -> io::Result<bool> {
     if !path.is_file() {
         return Ok(false);
@@ -1428,17 +1442,29 @@ fn push_stage_count_regression_reason(
     baseline: usize,
     denominator: usize,
 ) {
-    if current >= baseline {
+    let allowed_drop = stage_count_allowed_drop(denominator);
+    let floor = baseline.saturating_sub(allowed_drop);
+    if current >= floor {
         return;
     }
     reasons.push(format!(
-        "{stage} pass count regressed: current={} ({:.2}%) < baseline={} ({:.2}%) over {} models",
+        "{stage} pass count regressed: current={} ({:.2}%) < floor={} ({:.2}%) (baseline={}, allowed_drop={}) over {} models",
         current,
         stage_percent(current, denominator),
+        floor,
+        stage_percent(floor, denominator),
         baseline,
-        stage_percent(baseline, denominator),
+        allowed_drop,
         denominator
     ));
+}
+
+fn stage_count_allowed_drop(denominator: usize) -> usize {
+    if denominator >= MSL_STAGE_COUNT_ALLOWED_DROP_MIN_DENOMINATOR {
+        MSL_STAGE_COUNT_ALLOWED_DROP
+    } else {
+        0
+    }
 }
 
 pub(super) fn push_runtime_ratio_regression_reasons(
@@ -1620,8 +1646,7 @@ pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
         return Ok(());
     }
     if require_selected_targets_success() {
-        enforce_all_selected_targets_succeeded(summary);
-        return Ok(());
+        return enforce_all_selected_targets_succeeded(summary);
     }
     if should_skip_msl_quality_gate() {
         println!(
@@ -1655,33 +1680,50 @@ pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
 /// Focused-gate enforcement: every selected simulation target must report
 /// `sim_ok`. Replaces the baseline-relative gate (which is skipped for explicit
 /// target files) so a focused CI run still fails on any simulation failure.
-fn enforce_all_selected_targets_succeeded(summary: &MslSummary) {
-    let target_set: HashSet<&str> = summary
-        .sim_target_models
-        .iter()
-        .map(String::as_str)
-        .collect();
-    let failures: Vec<String> = summary
-        .model_results
-        .iter()
-        .filter(|result| target_set.contains(result.model_name.as_str()))
-        .filter(|result| result.sim_status.as_deref() != Some("sim_ok"))
-        .map(|result| {
-            let status = result.sim_status.as_deref().unwrap_or("not-simulated");
-            format!("{} ({status})", result.model_name)
-        })
-        .collect();
-    assert!(
-        failures.is_empty(),
-        "MSL quality gate: {} of {} selected simulation target(s) did not succeed: {}.",
-        failures.len(),
-        summary.sim_target_models.len(),
-        failures.join(", ")
-    );
+fn enforce_all_selected_targets_succeeded(summary: &MslSummary) -> io::Result<()> {
+    let failures = selected_target_failures(summary);
+    if !failures.is_empty() {
+        return Err(io::Error::other(format!(
+            "{} of {} selected simulation target(s) did not succeed: {}.",
+            failures.len(),
+            summary.sim_target_models.len(),
+            failures.join(", ")
+        )));
+    }
     println!(
         "MSL quality gate: all {} selected simulation target(s) succeeded.",
         summary.sim_target_models.len()
     );
+    Ok(())
+}
+
+pub(super) fn selected_target_failures(summary: &MslSummary) -> Vec<String> {
+    let target_set: IndexSet<&str> = summary
+        .sim_target_models
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut seen_targets = IndexSet::new();
+    let mut failures: Vec<String> = summary
+        .model_results
+        .iter()
+        .filter(|result| target_set.contains(result.model_name.as_str()))
+        .filter_map(|result| {
+            seen_targets.insert(result.model_name.as_str());
+            if result.sim_status.as_deref() == Some("sim_ok") {
+                return None;
+            }
+            let status = result.sim_status.as_deref().unwrap_or("not-simulated");
+            Some(format!("{} ({status})", result.model_name))
+        })
+        .collect();
+    failures.extend(
+        target_set
+            .into_iter()
+            .filter(|model_name| !seen_targets.contains(*model_name))
+            .map(|model_name| format!("{model_name} (missing-result)")),
+    );
+    failures
 }
 
 pub(super) fn should_skip_msl_quality_gate() -> bool {

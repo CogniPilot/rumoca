@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Subcommand};
+use serde::Serialize;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Cursor, Read, Write};
@@ -16,6 +17,13 @@ use std::time::{Duration, Instant};
 use crate::{
     command_exists, exe_name, lsp_benchmark_cmd, modelica_dependency_cache, msl_flamegraph_cmd,
     run_status, run_status_quiet, test_cmd, vscode_cmd,
+};
+
+mod msl_cargo_setup_timing;
+
+use msl_cargo_setup_timing::{
+    MslCargoSetupStepMetadata, MslCargoSetupTimingStep, run_msl_cargo_setup_step,
+    write_msl_cargo_setup_timing_report,
 };
 
 const MSL_VERSION: &str = "4.1.0";
@@ -129,7 +137,7 @@ impl VerifyMslParityArgs {
         if self.include_modelica_test {
             config.insert("include_modelica_test".into(), true.into());
         }
-        if self.require_selected_targets_success {
+        if self.requires_selected_targets_success() {
             config.insert("require_selected_targets_success".into(), true.into());
         }
         if !self.sim_match.is_empty() {
@@ -154,6 +162,13 @@ impl VerifyMslParityArgs {
             config.insert("sim_total_memory_mb".into(), value.into());
         }
         serde_json::Value::Object(config)
+    }
+
+    fn requires_selected_targets_success(&self) -> bool {
+        self.require_selected_targets_success
+            || self.sim_targets_file.is_some()
+            || !self.sim_match.is_empty()
+            || self.sim_limit.is_some()
     }
 }
 
@@ -199,7 +214,7 @@ pub(crate) enum VerifyCommand {
     EditorMsl(VerifyEditorRuntimeArgs),
     /// Full local/CI verification suite, including the long MSL parity gate
     Full(VerifySuiteArgs),
-    /// CI-equivalent verification suite except for the long full-MSL parity gate
+    /// Risk-focused verification suite for local development
     Quick(VerifySuiteArgs),
     /// Verify the primary binaries build
     Binaries,
@@ -228,6 +243,20 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
         include_in_full: true,
         include_in_quick: true,
     },
+    // MSL parity is the highest-signal gate for compiler/simulator changes, so
+    // it runs before lower-risk heavyweight surfaces.
+    VerifyStep {
+        label: "MSL parity",
+        args: &["verify", "msl-parity"],
+        include_in_full: true,
+        include_in_quick: true,
+    },
+    VerifyStep {
+        label: "architecture/file-size gates",
+        args: &["verify", "architecture"],
+        include_in_full: true,
+        include_in_quick: true,
+    },
     VerifyStep {
         label: "workspace tests",
         args: &["verify", "workspace"],
@@ -238,31 +267,31 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
         label: "example smoke tests",
         args: &["verify", "examples"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "binary build",
         args: &["verify", "binaries"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "template runtime checks",
         args: &["verify", "template-runtimes"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "coverage run",
         args: &["coverage", "run"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "coverage report",
         args: &["coverage", "report"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "coverage gate",
@@ -273,35 +302,29 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
             "3.0",
         ],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "docs",
         args: &["verify", "docs"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "VS Code gate",
         args: &["vscode", "test"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "WASM gate",
         args: &["wasm", "test"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "full-MSL LSP/editor gate",
         args: &["verify", "lsp-msl-completion-timings"],
-        include_in_full: true,
-        include_in_quick: true,
-    },
-    VerifyStep {
-        label: "MSL parity",
-        args: &["verify", "msl-parity"],
         include_in_full: true,
         include_in_quick: false,
     },
@@ -585,19 +608,30 @@ fn run_verify_suite(root: &Path, suite: VerifySuite, early_exit: bool) -> Result
     // hide later results (and force a full re-run). `--early-exit` restores the
     // fail-fast behavior. Either way the suite fails if any step failed.
     let mut failures: Vec<(&str, anyhow::Error)> = Vec::new();
+    let mut timing_steps = Vec::new();
+    let suite_started = Instant::now();
     for step in steps {
-        if let Err(error) = run_rum_step(root, step) {
+        let step_outcome = run_timed_rum_step(root, step);
+        timing_steps.push(step_outcome.timing);
+        if let Some(error) = step_outcome.error {
             if early_exit {
-                return Err(error.context(format!("verify step `{}` failed", step.label)));
+                failures.push((step.label, error));
+                break;
             }
             eprintln!("verify step `{}` FAILED: {error:#}", step.label);
             failures.push((step.label, error));
         }
     }
+    let timing_report = VerifyTimingReport::new(suite, suite_started.elapsed(), timing_steps);
+    write_verify_timing_report(root, &timing_report)?;
 
     if failures.is_empty() {
         println!("`{}` suite passed.", suite.label());
         return Ok(());
+    }
+    if early_exit && failures.len() == 1 {
+        let (label, error) = failures.remove(0);
+        return Err(error.context(format!("verify step `{label}` failed")));
     }
 
     let labels = failures
@@ -613,6 +647,25 @@ fn run_verify_suite(root: &Path, suite: VerifySuite, early_exit: bool) -> Result
     );
 }
 
+struct VerifyStepOutcome {
+    timing: VerifyTimingStep,
+    error: Option<anyhow::Error>,
+}
+
+fn run_timed_rum_step(root: &Path, step: &VerifyStep) -> VerifyStepOutcome {
+    let started = Instant::now();
+    match run_rum_step(root, step) {
+        Ok(()) => VerifyStepOutcome {
+            timing: VerifyTimingStep::new(step, "pass", started.elapsed()),
+            error: None,
+        },
+        Err(error) => VerifyStepOutcome {
+            timing: VerifyTimingStep::new(step, "fail", started.elapsed()),
+            error: Some(error),
+        },
+    }
+}
+
 fn run_rum_step(root: &Path, step: &VerifyStep) -> Result<()> {
     println!(
         "Running {}: `cargo xtask {}`",
@@ -623,6 +676,94 @@ fn run_rum_step(root: &Path, step: &VerifyStep) -> Result<()> {
     let mut cmd = Command::new(xtask_exe);
     cmd.args(step.args).current_dir(root);
     run_status(cmd)
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyTimingReport {
+    suite: String,
+    success: bool,
+    total_elapsed_seconds: f64,
+    steps: Vec<VerifyTimingStep>,
+}
+
+impl VerifyTimingReport {
+    fn new(suite: VerifySuite, elapsed: Duration, steps: Vec<VerifyTimingStep>) -> Self {
+        Self {
+            suite: suite.label().to_string(),
+            success: steps.iter().all(|step| step.status == "pass"),
+            total_elapsed_seconds: elapsed_seconds(elapsed),
+            steps,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyTimingStep {
+    label: String,
+    command: String,
+    status: String,
+    elapsed_seconds: f64,
+}
+
+impl VerifyTimingStep {
+    fn new(step: &VerifyStep, status: &str, elapsed: Duration) -> Self {
+        Self {
+            label: step.label.to_string(),
+            command: format!("cargo xtask {}", step.args.join(" ")),
+            status: status.to_string(),
+            elapsed_seconds: elapsed_seconds(elapsed),
+        }
+    }
+}
+
+fn elapsed_seconds(elapsed: Duration) -> f64 {
+    elapsed.as_secs_f64()
+}
+
+fn write_verify_timing_report(root: &Path, report: &VerifyTimingReport) -> Result<()> {
+    let output_dir = root.join("target/verify-timings");
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let stem = report
+        .suite
+        .strip_prefix("verify ")
+        .unwrap_or(report.suite.as_str());
+    let json_path = output_dir.join(format!("{stem}.json"));
+    let markdown_path = output_dir.join(format!("{stem}.md"));
+    let json = serde_json::to_string_pretty(report).context("failed to serialize verify timing")?;
+    fs::write(&json_path, json)
+        .with_context(|| format!("failed to write {}", json_path.display()))?;
+    fs::write(&markdown_path, render_verify_timing_markdown(report))
+        .with_context(|| format!("failed to write {}", markdown_path.display()))?;
+    println!(
+        "Verify timing report written to {} and {}",
+        json_path.display(),
+        markdown_path.display()
+    );
+    Ok(())
+}
+
+fn render_verify_timing_markdown(report: &VerifyTimingReport) -> String {
+    let mut lines = vec![
+        format!("# {}", report.suite),
+        String::new(),
+        format!("- success: {}", report.success),
+        format!(
+            "- total_elapsed_seconds: {:.3}",
+            report.total_elapsed_seconds
+        ),
+        String::new(),
+        "| Step | Status | Seconds | Command |".to_string(),
+        "|---|---:|---:|---|".to_string(),
+    ];
+    for step in &report.steps {
+        lines.push(format!(
+            "| {} | {} | {:.3} | `{}` |",
+            step.label, step.status, step.elapsed_seconds, step.command
+        ));
+    }
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 fn cached_msl_source_root(root: &Path) -> Result<PathBuf> {
@@ -1102,7 +1243,23 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
     write_parity_config(root, args)?;
     let _cleanup = MslResultsCleanupGuard::new(ci_env.results_dir.clone(), ci_env.clean_results);
     let _monitor = MslResourceMonitor::start(ci_env.clone());
+    let mut cargo_setup_steps = Vec::new();
 
+    let result = run_msl_quality_gate_cargo_commands(root, &mut cargo_setup_steps);
+    let write_result = write_msl_cargo_setup_timing_report(&ci_env.results_dir, &cargo_setup_steps);
+    if result.is_ok() {
+        write_result?;
+    } else if let Err(error) = write_result {
+        eprintln!("failed to write MSL Cargo setup timing report: {error:#}");
+    }
+    result
+}
+
+fn run_msl_quality_gate_cargo_commands(
+    root: &Path,
+    cargo_setup_steps: &mut Vec<MslCargoSetupTimingStep>,
+) -> Result<()> {
+    let target_dir = cargo_target_dir(root);
     let mut build_sim_worker = Command::new("cargo");
     build_sim_worker
         .arg("build")
@@ -1113,7 +1270,19 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
         .arg("--bin")
         .arg("rumoca-sim-worker")
         .current_dir(root);
-    run_status_logged(build_sim_worker)?;
+    let result = run_msl_cargo_setup_step(
+        cargo_setup_steps,
+        MslCargoSetupStepMetadata::new(
+            "build rumoca-sim-worker",
+            "build",
+            "rumoca-test-msl",
+            "release",
+            Vec::new(),
+            &target_dir,
+        ),
+        build_sim_worker,
+    );
+    result?;
 
     let mut build_msl_tools = Command::new("cargo");
     build_msl_tools
@@ -1125,7 +1294,19 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
         .arg("--bin")
         .arg("rumoca-msl-tools")
         .current_dir(root);
-    run_status_logged(build_msl_tools)?;
+    let result = run_msl_cargo_setup_step(
+        cargo_setup_steps,
+        MslCargoSetupStepMetadata::new(
+            "build rumoca-msl-tools",
+            "build",
+            "xtask",
+            "release",
+            Vec::new(),
+            &target_dir,
+        ),
+        build_msl_tools,
+    );
+    result?;
 
     let mut gate = Command::new("cargo");
     gate.arg("test")
@@ -1142,12 +1323,18 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
         .arg("--nocapture")
         .env("RUST_BACKTRACE", "full")
         .current_dir(root);
-    run_status_logged(gate)
-}
-
-fn run_status_logged(command: Command) -> Result<()> {
-    println!("Running command: {command:?}");
-    run_status(command)
+    run_msl_cargo_setup_step(
+        cargo_setup_steps,
+        MslCargoSetupStepMetadata::new(
+            "run release MSL test",
+            "test",
+            "rumoca-test-msl",
+            "release",
+            vec!["msl-full-test".to_string()],
+            &target_dir,
+        ),
+        gate,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1456,11 +1643,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        MslCiEnvironment, MslHotspotModelResult, MslHotspotSummary, VERIFY_SUITE_STEPS,
-        VerifySuite, hottest_compile_model, hottest_sim_model, msl_cache_layout_valid,
-        should_log_process_tables,
+        MslCargoSetupTimingStep, MslCiEnvironment, MslHotspotModelResult, MslHotspotSummary,
+        VERIFY_SUITE_STEPS, VerifyMslParityArgs, VerifySuite, VerifyTimingReport, VerifyTimingStep,
+        hottest_compile_model, hottest_sim_model, msl_cache_layout_valid,
+        render_verify_timing_markdown, should_log_process_tables,
+        write_msl_cargo_setup_timing_report, write_verify_timing_report,
     };
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn step_argvs(suite: VerifySuite) -> Vec<Vec<&'static str>> {
         VERIFY_SUITE_STEPS
@@ -1471,36 +1661,32 @@ mod tests {
     }
 
     #[test]
-    fn quick_suite_runs_ci_surface_without_msl_parity() {
+    fn quick_suite_runs_format_tests_architecture_and_msl_parity() {
         let steps = step_argvs(VerifySuite::Quick);
         assert_eq!(
             steps,
             vec![
                 vec!["verify", "lint"],
+                vec!["verify", "msl-parity"],
+                vec!["verify", "architecture"],
                 vec!["verify", "workspace"],
-                vec!["verify", "examples"],
-                vec!["verify", "binaries"],
-                vec!["verify", "template-runtimes"],
-                vec!["coverage", "run"],
-                vec!["coverage", "report"],
-                vec![
-                    "coverage",
-                    "gate",
-                    "--allowed-workspace-line-coverage-drop",
-                    "3.0"
-                ],
-                vec!["verify", "docs"],
-                vec!["vscode", "test"],
-                vec!["wasm", "test"],
-                vec!["verify", "lsp-msl-completion-timings"],
             ]
         );
-        assert!(!steps.contains(&vec!["verify", "msl-parity"]));
+        assert!(!steps.contains(&vec!["verify", "examples"]));
+        assert!(!steps.contains(&vec!["verify", "binaries"]));
+        assert!(!steps.contains(&vec!["verify", "template-runtimes"]));
+        assert!(!steps.contains(&vec!["verify", "docs"]));
+        assert!(!steps.contains(&vec!["vscode", "test"]));
+        assert!(!steps.contains(&vec!["coverage", "run"]));
+        assert!(!steps.contains(&vec!["wasm", "test"]));
+        assert!(!steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
     }
 
     #[test]
-    fn full_suite_includes_msl_parity() {
+    fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
         let steps = step_argvs(VerifySuite::Full);
+        assert_eq!(steps.get(1), Some(&vec!["verify", "msl-parity"]));
+        assert!(steps.contains(&vec!["verify", "architecture"]));
         assert!(steps.contains(&vec!["verify", "workspace"]));
         assert!(steps.contains(&vec!["verify", "examples"]));
         assert!(steps.contains(&vec!["verify", "binaries"]));
@@ -1508,7 +1694,132 @@ mod tests {
         assert!(steps.contains(&vec!["coverage", "run"]));
         assert!(steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
         assert!(steps.contains(&vec!["verify", "msl-parity"]));
-        assert_eq!(steps.last(), Some(&vec!["verify", "msl-parity"]));
+    }
+
+    #[test]
+    fn focused_msl_match_requires_selected_targets_success() {
+        let args = VerifyMslParityArgs {
+            sim_match: vec!["Modelica.Blocks.Examples.BooleanNetwork1".to_string()],
+            sim_match_exact: true,
+            ..VerifyMslParityArgs::default()
+        };
+        let config = args.to_parity_config_json();
+
+        assert_eq!(
+            config
+                .get("require_selected_targets_success")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            config
+                .get("sim_match_exact")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn verify_timing_markdown_preserves_step_order() {
+        let report = VerifyTimingReport::new(
+            VerifySuite::Quick,
+            Duration::from_millis(1500),
+            vec![
+                VerifyTimingStep {
+                    label: "lint".to_string(),
+                    command: "cargo xtask verify lint".to_string(),
+                    status: "pass".to_string(),
+                    elapsed_seconds: 0.5,
+                },
+                VerifyTimingStep {
+                    label: "workspace tests".to_string(),
+                    command: "cargo xtask verify workspace".to_string(),
+                    status: "fail".to_string(),
+                    elapsed_seconds: 1.0,
+                },
+            ],
+        );
+
+        let markdown = render_verify_timing_markdown(&report);
+        assert!(markdown.contains("# verify quick"));
+        assert!(markdown.contains("- success: false"));
+        assert!(
+            markdown.find("| lint | pass | 0.500 |").unwrap()
+                < markdown.find("| workspace tests | fail | 1.000 |").unwrap()
+        );
+    }
+
+    #[test]
+    fn verify_timing_report_writes_fixed_target_artifacts() {
+        let root = tempfile::tempdir().expect("temp root");
+        let report = VerifyTimingReport::new(
+            VerifySuite::Quick,
+            Duration::from_secs(1),
+            vec![VerifyTimingStep {
+                label: "lint".to_string(),
+                command: "cargo xtask verify lint".to_string(),
+                status: "pass".to_string(),
+                elapsed_seconds: 1.0,
+            }],
+        );
+
+        write_verify_timing_report(root.path(), &report).expect("write timing report");
+
+        let json_path = root.path().join("target/verify-timings/quick.json");
+        let markdown_path = root.path().join("target/verify-timings/quick.md");
+        assert!(json_path.is_file());
+        assert!(markdown_path.is_file());
+        let json = std::fs::read_to_string(json_path).expect("read timing json");
+        assert!(json.contains(r#""suite": "verify quick""#));
+        let markdown = std::fs::read_to_string(markdown_path).expect("read timing markdown");
+        assert!(markdown.contains("| lint | pass | 1.000 |"));
+    }
+
+    #[test]
+    fn msl_cargo_setup_timing_report_writes_fixed_result_artifacts() {
+        let root = tempfile::tempdir().expect("temp root");
+        let results_dir = root.path().join("target/msl/results");
+        let steps = vec![
+            MslCargoSetupTimingStep {
+                label: "build rumoca-sim-worker".to_string(),
+                cargo_action: "build".to_string(),
+                package: "rumoca-test-msl".to_string(),
+                profile: "release".to_string(),
+                features: Vec::new(),
+                target_dir: root.path().join("target").display().to_string(),
+                command: "\"cargo\" \"build\"".to_string(),
+                status: "pass".to_string(),
+                elapsed_seconds: 0.2,
+            },
+            MslCargoSetupTimingStep {
+                label: "run release MSL test".to_string(),
+                cargo_action: "test".to_string(),
+                package: "rumoca-test-msl".to_string(),
+                profile: "release".to_string(),
+                features: vec!["msl-full-test".to_string()],
+                target_dir: root.path().join("target").display().to_string(),
+                command: "\"cargo\" \"test\"".to_string(),
+                status: "fail".to_string(),
+                elapsed_seconds: 1.3,
+            },
+        ];
+
+        write_msl_cargo_setup_timing_report(&results_dir, &steps)
+            .expect("write MSL Cargo setup timing report");
+
+        let json_path = results_dir.join("msl_cargo_setup_timing.json");
+        let markdown_path = results_dir.join("msl_cargo_setup_timing.md");
+        assert!(json_path.is_file());
+        assert!(markdown_path.is_file());
+        let json = std::fs::read_to_string(json_path).expect("read setup timing json");
+        assert!(json.contains(r#""success": false"#));
+        assert!(json.contains(r#""label": "build rumoca-sim-worker""#));
+        assert!(json.contains(r#""package": "rumoca-test-msl""#));
+        assert!(json.contains(r#""features": ["#));
+        let markdown = std::fs::read_to_string(markdown_path).expect("read setup timing markdown");
+        assert!(markdown.contains("# MSL Cargo Setup Timing"));
+        assert!(markdown.contains("| run release MSL test | fail | 1.300 | rumoca-test-msl |"));
+        assert!(markdown.contains("| release | msl-full-test |"));
     }
 
     #[test]

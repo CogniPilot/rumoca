@@ -870,6 +870,162 @@ end UsesMediumAlias;
 }
 
 #[test]
+fn test_redeclare_package_modifier_resolves_rhs_in_modifier_scope() {
+    let source = r#"
+package Interfaces
+  partial package PartialMedium
+  end PartialMedium;
+end Interfaces;
+
+package TableBased
+  extends Interfaces.PartialMedium;
+end TableBased;
+
+model B
+  replaceable package Medium = Interfaces.PartialMedium;
+end B;
+
+model C
+  package Medium = TableBased;
+  B b(redeclare package Medium = Medium);
+end C;
+"#;
+    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+    let tree = resolve_parsed(ast)
+        .expect("resolution should succeed")
+        .into_inner();
+    let model = tree.definitions.classes.get("C").expect("C should exist");
+    let component = model.components.get("b").expect("b should exist");
+    let modification = component
+        .modifications
+        .get("Medium")
+        .expect("Medium redeclare should be preserved");
+    let rumoca_ir_ast::Expression::ClassModification { target, .. } = modification else {
+        panic!("expected redeclare package value to be a class modification");
+    };
+    let def_id = target
+        .def_id
+        .expect("redeclare package RHS should resolve to enclosing Medium");
+    let resolved = tree
+        .def_map
+        .get(&def_id)
+        .expect("resolved Medium def_id should exist in def_map");
+
+    assert_eq!(resolved, "C.Medium");
+    assert_eq!(target.to_string(), "Medium");
+}
+
+#[test]
+fn test_replaceable_medium_member_calls_resolve_through_forwarded_redeclare() {
+    let source = r#"
+package Interfaces
+  partial package PartialMedium
+replaceable function setState_pTX
+  input Real p;
+  input Real T;
+  output Real state;
+algorithm
+  state := p + T;
+end setState_pTX;
+replaceable function density
+  input Real state;
+  output Real d;
+algorithm
+  d := state;
+end density;
+  end PartialMedium;
+end Interfaces;
+
+package TableBased
+  extends Interfaces.PartialMedium;
+end TableBased;
+
+model Boundary
+  replaceable package Medium = Interfaces.PartialMedium;
+  Real d;
+equation
+  d = Medium.density(Medium.setState_pTX(1.0, 2.0));
+end Boundary;
+
+model Network
+  replaceable package Medium = TableBased constrainedby Interfaces.PartialMedium;
+  Boundary source(redeclare package Medium = Medium);
+end Network;
+"#;
+    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+    resolve_parsed(ast).expect("resolution should succeed");
+}
+
+#[test]
+fn test_extends_redeclared_replaceable_medium_member_calls_resolve() {
+    let source = r#"
+package Interfaces
+  partial package PartialMedium
+replaceable function setState_pTX
+  input Real p;
+  input Real T;
+  output Real state;
+algorithm
+  state := p + T;
+end setState_pTX;
+replaceable function density
+  input Real state;
+  output Real d;
+algorithm
+  d := state;
+end density;
+  end PartialMedium;
+  partial package PartialTwoPhaseMedium
+extends PartialMedium;
+replaceable function saturationPressure
+  input Real T;
+  output Real p;
+algorithm
+  p := T;
+end saturationPressure;
+  end PartialTwoPhaseMedium;
+end Interfaces;
+
+package TableBased
+  extends Interfaces.PartialTwoPhaseMedium;
+end TableBased;
+
+partial model Base
+  replaceable package Medium = Interfaces.PartialMedium;
+end Base;
+
+model Derived
+  extends Base(
+    redeclare replaceable package Medium = TableBased
+      constrainedby Interfaces.PartialTwoPhaseMedium);
+  Real p = Medium.saturationPressure(1.0);
+end Derived;
+"#;
+    let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+    let tree = resolve_parsed(ast)
+        .expect("resolution should succeed")
+        .into_inner();
+    let model = tree
+        .definitions
+        .classes
+        .get("Derived")
+        .expect("Derived should exist");
+    let component = model.components.get("p").expect("p should exist");
+    let binding = component.binding.as_ref().expect("p should have a binding");
+    let rumoca_ir_ast::Expression::FunctionCall { comp, .. } = binding else {
+        panic!("expected Medium.saturationPressure call");
+    };
+    let def_id = comp
+        .def_id
+        .expect("deferred medium call should be anchored to replaceable package root");
+    let resolved = tree
+        .def_map
+        .get(&def_id)
+        .expect("resolved Medium def_id should exist in def_map");
+    assert_eq!(resolved, "Base.Medium");
+}
+
+#[test]
 fn test_inherited_medium_alias_function_call_preserves_source_scope() {
     let source = r#"
 package Interfaces

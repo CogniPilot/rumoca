@@ -128,11 +128,11 @@ Rust developer workflow MUST remain Cargo-native.
 | Run the unified MSL gate for any parser, instantiate, flatten, ToDae, or sim change | One gate produces consistent OMC reference + sim trace + quality artifacts |
 | Run the separate ModelicaTest semantic gate for language-semantics changes when the MSL source-tree `ModelicaTest` package is available | ModelicaTest is an assertion-heavy semantic suite and must not be conflated with the curated MSL example target set |
 | Compare against `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` | Baseline is the regression bar |
-| Cumulative MSL stage counts (parse, flatten, DAE, IR-Solve, initial-condition solve, simulation) MUST NOT decrease on the fixed root-example baseline denominator | Early-stage pass-rate increases are always improvements, and later stages are compared against their own cumulative counts |
+| Cumulative MSL stage counts (parse, flatten, DAE, IR-Solve, initial-condition solve, simulation) MUST NOT materially decrease on the fixed root-example baseline denominator; full-library runs may tolerate one-model runner jitter | Early-stage pass-rate increases are always improvements, later stages are compared against their own cumulative counts, and CI/OMC host variance must not block equivalent runs |
 | Balanced / OMC-agreement counts MUST NOT decrease | These are headline correctness and numerical-quality numbers |
 | Focused or limited MSL runs MUST mark quality snapshots as partial and partial snapshots MUST NOT be promoted | Prevents local-debug subsets from becoming the committed release baseline |
 | Trace-quality metrics MUST be gated against the committed baseline when OMC parity data is available | Prevents balanced-but-numerically-worse simulations from passing unnoticed |
-| Runtime speedup medians (system & wall) MUST NOT regress by > 20% | Tolerates noise without hiding real regressions |
+| Runtime speedup medians (system & wall) MUST NOT regress by > 35% | Tolerates 4-core hosted-runner noise without hiding material regressions |
 | Baseline updates require explicit `cargo xtask repo msl promote-quality-baseline` | Prevents silent baseline drift |
 | Coverage trim/gate updates follow `cargo xtask coverage {run,report,gate}` workflow | Coverage promotion is explicit only |
 

@@ -4,6 +4,10 @@ use super::*;
 // Human-readable simulation/timing/failure reporting
 // =============================================================================
 
+const MSL_PARITY_TIMING_VERSION: u32 = 1;
+const MSL_PARITY_TIMING_JSON_REL: &str = "msl_parity_timing.json";
+const MSL_PARITY_TIMING_MARKDOWN_REL: &str = "msl_parity_timing.md";
+
 pub(super) fn print_simulation_results(summary: &MslSummary) {
     println!("Simulation Results:");
     println!("  - Attempted: {}", summary.sim_attempted);
@@ -118,56 +122,438 @@ fn print_profiler_follow_ups(summary: &MslSummary) {
     println!();
 }
 
-pub(super) fn print_final_stats(summary: &MslSummary) {
-    let write_start = Instant::now();
-    write_msl_results(summary).expect("Failed to write results");
-    let json_write_seconds = write_start.elapsed().as_secs_f64();
-    println!("  - JSON results write: {:.2}s", json_write_seconds);
-    println!(
-        "  - Core + JSON write subtotal: {:.2}s",
-        summary.timings.core_pipeline_seconds + json_write_seconds
-    );
-    assert_valid_msl_summary(summary);
-    if summary.sim_attempted == 0 {
-        enforce_msl_quality_gate(summary).expect("Failed to run MSL quality gate");
-    } else {
-        let parity_start = Instant::now();
-        let _parity_watchdog = StageAbortWatchdog::new("parity_stage", 7200);
-        println!("MSL parity stage: ensuring OMC references + trace comparison...");
-        ensure_required_msl_parity_references(summary)
-            .expect("Failed to ensure required OMC parity references");
-        write_msl_package_trace_accuracy_report(summary)
-            .expect("Failed to write MSL package trace accuracy report");
-        println!(
-            "MSL parity stage: completed in {:.2}s",
-            parity_start.elapsed().as_secs_f64()
-        );
-        let quality_snapshot_start = Instant::now();
-        let _snapshot_watchdog = StageAbortWatchdog::new("quality_snapshot_write", 300);
-        println!("MSL parity stage: writing current quality snapshot...");
-        write_current_msl_quality_snapshot(summary)
-            .expect("Failed to write current MSL quality snapshot");
-        println!(
-            "MSL parity stage: quality snapshot written in {:.2}s",
-            quality_snapshot_start.elapsed().as_secs_f64()
-        );
-        if should_skip_msl_quality_gate() {
-            println!(
-                "MSL quality gate: baseline delta checks skipped for focused/non-baseline run (committed target scope, explicit target file, subset, or non-default sim set)."
-            );
-            enforce_msl_quality_gate(summary).expect("Failed to run MSL quality gate");
-        } else {
-            let quality_gate_start = Instant::now();
-            let _quality_gate_watchdog = StageAbortWatchdog::new("quality_gate_eval", 300);
-            println!("MSL quality gate: evaluating baseline deltas...");
-            enforce_msl_quality_gate(summary).expect("Failed to run MSL quality gate");
-            println!(
-                "MSL quality gate: completed in {:.2}s",
-                quality_gate_start.elapsed().as_secs_f64()
-            );
+#[derive(Debug, Clone, Serialize)]
+struct MslParityTimingReport {
+    version: u32,
+    git_commit: String,
+    msl_version: String,
+    success: bool,
+    harness_total_seconds: f64,
+    core_pipeline: MslPhaseTimings,
+    counts: MslParityTimingCounts,
+    workers: MslParityTimingWorkers,
+    hotspots: MslParityTimingHotspots,
+    stages: Vec<MslParityTimingStage>,
+}
+
+impl MslParityTimingReport {
+    fn new(summary: &MslSummary) -> Self {
+        Self {
+            version: MSL_PARITY_TIMING_VERSION,
+            git_commit: summary.git_commit.clone(),
+            msl_version: summary.msl_version.clone(),
+            success: false,
+            harness_total_seconds: summary.timings.core_pipeline_seconds,
+            core_pipeline: summary.timings.clone(),
+            counts: MslParityTimingCounts::from_summary(summary),
+            workers: MslParityTimingWorkers::current(summary),
+            hotspots: MslParityTimingHotspots::from_summary(summary),
+            stages: Vec::new(),
         }
     }
 
+    fn record_stage(&mut self, label: &str, status: &str, elapsed: Duration) {
+        let elapsed_seconds = elapsed.as_secs_f64();
+        self.harness_total_seconds += elapsed_seconds;
+        self.stages.push(MslParityTimingStage {
+            label: label.to_string(),
+            status: status.to_string(),
+            elapsed_seconds,
+        });
+    }
+
+    fn mark_success(&mut self) {
+        self.success = self.stages.iter().all(|stage| stage.status == "pass");
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MslParityTimingCounts {
+    total_models: usize,
+    compiled_models: usize,
+    solve_models: usize,
+    balanced_models: usize,
+    sim_target_models: usize,
+    sim_attempted: usize,
+    sim_ok: usize,
+    sim_solver_fail: usize,
+    sim_timeout: usize,
+    ic_attempted: usize,
+    ic_ok: usize,
+    trace_files_written: usize,
+    trace_write_errors: usize,
+}
+
+impl MslParityTimingCounts {
+    fn from_summary(summary: &MslSummary) -> Self {
+        Self {
+            total_models: summary.total_models,
+            compiled_models: summary.compiled_models,
+            solve_models: solve_model_count(summary),
+            balanced_models: summary.balanced_models,
+            sim_target_models: summary.sim_target_models.len(),
+            sim_attempted: summary.sim_attempted,
+            sim_ok: summary.sim_ok,
+            sim_solver_fail: summary.sim_solver_fail,
+            sim_timeout: summary.sim_timeout,
+            ic_attempted: summary.ic_attempted,
+            ic_ok: summary.ic_ok,
+            trace_files_written: trace_file_count(summary),
+            trace_write_errors: trace_write_error_count(summary),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MslParityTimingWorkers {
+    rumoca_workers: usize,
+    omc_workers: usize,
+    omc_threads: usize,
+}
+
+impl MslParityTimingWorkers {
+    fn current(summary: &MslSummary) -> Self {
+        Self {
+            rumoca_workers: summary.timings.worker_threads,
+            omc_workers: current_omc_parity_workers(),
+            omc_threads: current_omc_parity_threads(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MslParityTimingHotspots {
+    hottest_compile_model: Option<MslParityTimingHotspot>,
+    hottest_sim_model: Option<MslParityTimingHotspot>,
+}
+
+impl MslParityTimingHotspots {
+    fn from_summary(summary: &MslSummary) -> Self {
+        Self {
+            hottest_compile_model: hottest_compile_model(summary)
+                .map(MslParityTimingHotspot::from_model_seconds),
+            hottest_sim_model: hottest_sim_model(summary)
+                .map(MslParityTimingHotspot::from_model_seconds),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MslParityTimingHotspot {
+    model: String,
+    seconds: f64,
+}
+
+impl MslParityTimingHotspot {
+    fn from_model_seconds((model, seconds): (&str, f64)) -> Self {
+        Self {
+            model: model.to_string(),
+            seconds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MslParityTimingStage {
+    label: String,
+    status: String,
+    elapsed_seconds: f64,
+}
+
+fn trace_file_count(summary: &MslSummary) -> usize {
+    summary
+        .model_results
+        .iter()
+        .filter(|result| result.sim_trace_file.is_some())
+        .count()
+}
+
+fn trace_write_error_count(summary: &MslSummary) -> usize {
+    summary
+        .model_results
+        .iter()
+        .filter(|result| result.sim_trace_error.is_some())
+        .count()
+}
+
+fn solve_model_count(summary: &MslSummary) -> usize {
+    summary
+        .model_results
+        .iter()
+        .filter(|result| result.ir_solve_file.is_some() || result.ir_solve_seconds.is_some())
+        .count()
+}
+
+fn run_timed_parity_stage<F>(
+    report: &mut MslParityTimingReport,
+    label: &str,
+    mut run: F,
+) -> io::Result<()>
+where
+    F: FnMut() -> io::Result<()>,
+{
+    let started = Instant::now();
+    match run() {
+        Ok(()) => {
+            report.record_stage(label, "pass", started.elapsed());
+            Ok(())
+        }
+        Err(error) => {
+            report.record_stage(label, "fail", started.elapsed());
+            Err(error)
+        }
+    }
+}
+
+fn run_timed_parity_stage_or_panic<F>(
+    report: &mut MslParityTimingReport,
+    label: &str,
+    context: &str,
+    run: F,
+) where
+    F: FnMut() -> io::Result<()>,
+{
+    if let Err(error) = run_timed_parity_stage(report, label, run) {
+        write_msl_parity_timing_report(report).expect("Failed to write MSL parity timing report");
+        panic!("{context}: {error}");
+    }
+}
+
+fn write_msl_parity_timing_report(report: &MslParityTimingReport) -> io::Result<()> {
+    let json_path = msl_results_dir().join(MSL_PARITY_TIMING_JSON_REL);
+    let markdown_path = msl_results_dir().join(MSL_PARITY_TIMING_MARKDOWN_REL);
+    if let Some(parent) = json_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(report).map_err(|error| {
+        io::Error::other(format!(
+            "failed to serialize MSL parity timing JSON: {error}"
+        ))
+    })?;
+    fs::write(&json_path, json)?;
+    fs::write(&markdown_path, render_msl_parity_timing_markdown(report))?;
+    println!(
+        "MSL parity timing report written to {} and {}",
+        json_path.display(),
+        markdown_path.display()
+    );
+    Ok(())
+}
+
+fn render_msl_parity_timing_markdown(report: &MslParityTimingReport) -> String {
+    let mut lines = vec![
+        "# MSL Parity Timing".to_string(),
+        String::new(),
+        format!("- success: {}", report.success),
+        format!("- git_commit: {}", report.git_commit),
+        format!("- msl_version: {}", report.msl_version),
+        format!(
+            "- harness_total_seconds: {:.3}",
+            report.harness_total_seconds
+        ),
+        String::new(),
+        "| Stage | Status | Seconds |".to_string(),
+        "|---|---:|---:|".to_string(),
+        format!(
+            "| core pipeline | pass | {:.3} |",
+            report.core_pipeline.core_pipeline_seconds
+        ),
+    ];
+    for stage in &report.stages {
+        lines.push(format!(
+            "| {} | {} | {:.3} |",
+            stage.label, stage.status, stage.elapsed_seconds
+        ));
+    }
+    push_msl_parity_counts_markdown(&mut lines, &report.counts);
+    push_msl_parity_workers_markdown(&mut lines, &report.workers);
+    push_msl_parity_scheduler_markdown(&mut lines, &report.core_pipeline.scheduler);
+    push_msl_parity_hotspots_markdown(&mut lines, &report.hotspots);
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn push_msl_parity_counts_markdown(lines: &mut Vec<String>, counts: &MslParityTimingCounts) {
+    lines.extend([
+        String::new(),
+        "## Counts".to_string(),
+        String::new(),
+        format!("- total_models: {}", counts.total_models),
+        format!("- compiled_models: {}", counts.compiled_models),
+        format!("- solve_models: {}", counts.solve_models),
+        format!("- balanced_models: {}", counts.balanced_models),
+        format!("- sim_target_models: {}", counts.sim_target_models),
+        format!("- sim_attempted: {}", counts.sim_attempted),
+        format!("- sim_ok: {}", counts.sim_ok),
+        format!("- sim_solver_fail: {}", counts.sim_solver_fail),
+        format!("- sim_timeout: {}", counts.sim_timeout),
+        format!("- ic_attempted: {}", counts.ic_attempted),
+        format!("- ic_ok: {}", counts.ic_ok),
+        format!("- trace_files_written: {}", counts.trace_files_written),
+        format!("- trace_write_errors: {}", counts.trace_write_errors),
+    ]);
+}
+
+fn push_msl_parity_workers_markdown(lines: &mut Vec<String>, workers: &MslParityTimingWorkers) {
+    lines.extend([
+        String::new(),
+        "## Workers".to_string(),
+        String::new(),
+        format!("- rumoca_workers: {}", workers.rumoca_workers),
+        format!("- omc_workers: {}", workers.omc_workers),
+        format!("- omc_threads: {}", workers.omc_threads),
+    ]);
+}
+
+fn push_msl_parity_scheduler_markdown(lines: &mut Vec<String>, scheduler: &MslSchedulerTimings) {
+    lines.extend([
+        String::new(),
+        "## Rumoca Scheduler".to_string(),
+        String::new(),
+        format!("- selected_model_count: {}", scheduler.selected_model_count),
+        format!(
+            "- requested_worker_threads: {}",
+            scheduler.requested_worker_threads
+        ),
+        format!(
+            "- effective_worker_threads: {}",
+            scheduler.effective_worker_threads
+        ),
+        format!("- worker_count: {}", scheduler.worker_count),
+        format!("- pinned_worker_count: {}", scheduler.pinned_worker_count),
+        format!("- cpu_token_capacity: {}", scheduler.cpu_token_capacity),
+        format!(
+            "- compile_memory_token_capacity_mb: {}",
+            option_usize_label(scheduler.compile_memory_token_capacity_mb)
+        ),
+        format!(
+            "- compile_memory_model_cost_mb: {}",
+            option_usize_label(scheduler.compile_memory_model_cost_mb)
+        ),
+        format!("- models_started: {}", scheduler.models_started),
+        format!("- max_active_workers: {}", scheduler.max_active_workers),
+        format!(
+            "- cpu_token_wait_seconds: {:.3}",
+            scheduler.cpu_token_wait_seconds
+        ),
+        format!(
+            "- compile_memory_token_wait_seconds: {:.3}",
+            scheduler.compile_memory_token_wait_seconds
+        ),
+        format!(
+            "- active_model_wall_seconds: {:.3}",
+            scheduler.active_model_wall_seconds
+        ),
+        format!(
+            "- worker_slot_wall_seconds: {:.3}",
+            scheduler.worker_slot_wall_seconds
+        ),
+        format!(
+            "- worker_slot_idle_seconds: {:.3}",
+            scheduler.worker_slot_idle_seconds
+        ),
+    ]);
+}
+
+fn push_msl_parity_hotspots_markdown(lines: &mut Vec<String>, hotspots: &MslParityTimingHotspots) {
+    lines.extend([String::new(), "## Hotspots".to_string(), String::new()]);
+    if let Some(hotspot) = &hotspots.hottest_compile_model {
+        lines.push(format!(
+            "- hottest_compile_model: {} ({:.3}s)",
+            hotspot.model, hotspot.seconds
+        ));
+    }
+    if let Some(hotspot) = &hotspots.hottest_sim_model {
+        lines.push(format!(
+            "- hottest_sim_model: {} ({:.3}s)",
+            hotspot.model, hotspot.seconds
+        ));
+    }
+}
+
+fn option_usize_label(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "disabled".to_string())
+}
+
+fn last_stage_seconds(report: &MslParityTimingReport) -> f64 {
+    report
+        .stages
+        .last()
+        .map_or(0.0, |stage| stage.elapsed_seconds)
+}
+
+fn run_simulation_parity_stages(summary: &MslSummary, report: &mut MslParityTimingReport) {
+    let parity_start = Instant::now();
+    let _parity_watchdog = StageAbortWatchdog::new("parity_stage", 7200);
+    println!("MSL parity stage: ensuring OMC references + trace comparison...");
+    run_timed_parity_stage_or_panic(
+        report,
+        "omc_reference_and_trace_compare",
+        "Failed to ensure required OMC parity references",
+        || ensure_required_msl_parity_references(summary),
+    );
+    run_timed_parity_stage_or_panic(
+        report,
+        "package_trace_accuracy_report",
+        "Failed to write MSL package trace accuracy report",
+        || write_msl_package_trace_accuracy_report(summary).map(|_| ()),
+    );
+    println!(
+        "MSL parity stage: completed in {:.2}s",
+        parity_start.elapsed().as_secs_f64()
+    );
+}
+
+fn run_quality_snapshot_stage(summary: &MslSummary, report: &mut MslParityTimingReport) {
+    let _snapshot_watchdog = StageAbortWatchdog::new("quality_snapshot_write", 300);
+    println!("MSL parity stage: writing current quality snapshot...");
+    run_timed_parity_stage_or_panic(
+        report,
+        "quality_snapshot_write",
+        "Failed to write current MSL quality snapshot",
+        || write_current_msl_quality_snapshot(summary),
+    );
+    println!(
+        "MSL parity stage: quality snapshot written in {:.2}s",
+        last_stage_seconds(report)
+    );
+}
+
+fn run_quality_gate_stage(summary: &MslSummary, report: &mut MslParityTimingReport) {
+    if should_skip_msl_quality_gate() {
+        println!(
+            "MSL quality gate: baseline delta checks skipped for focused/non-baseline run (committed target scope, explicit target file, subset, or non-default sim set)."
+        );
+        run_timed_parity_stage_or_panic(
+            report,
+            "quality_gate_eval_partial",
+            "Failed to run MSL quality gate",
+            || enforce_msl_quality_gate(summary),
+        );
+        return;
+    }
+    let _quality_gate_watchdog = StageAbortWatchdog::new("quality_gate_eval", 300);
+    println!("MSL quality gate: evaluating baseline deltas...");
+    run_timed_parity_stage_or_panic(
+        report,
+        "quality_gate_eval",
+        "Failed to run MSL quality gate",
+        || enforce_msl_quality_gate(summary),
+    );
+    println!(
+        "MSL quality gate: completed in {:.2}s",
+        last_stage_seconds(report)
+    );
+}
+
+fn finalize_msl_parity_timing_report(report: &mut MslParityTimingReport) {
+    report.mark_success();
+    write_msl_parity_timing_report(report).expect("Failed to write MSL parity timing report");
+}
+
+fn print_simulatable_compilation_rate(summary: &MslSummary) {
     let attempted_standalone = summary.compiled_models
         + summary.resolve_failed
         + summary.instantiate_failed
@@ -188,6 +574,36 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
         "Non-simulatable non-partial models (excluded from simulatable denominator): {}",
         summary.non_sim_models
     );
+}
+
+pub(super) fn print_final_stats(summary: &MslSummary) {
+    let write_start = Instant::now();
+    write_msl_results(summary).expect("Failed to write results");
+    let json_write_seconds = write_start.elapsed().as_secs_f64();
+    let mut timing_report = MslParityTimingReport::new(summary);
+    timing_report.record_stage(
+        "results_json_write",
+        "pass",
+        Duration::from_secs_f64(json_write_seconds),
+    );
+    println!("  - JSON results write: {:.2}s", json_write_seconds);
+    println!(
+        "  - Core + JSON write subtotal: {:.2}s",
+        summary.timings.core_pipeline_seconds + json_write_seconds
+    );
+    assert_valid_msl_summary(summary);
+    if require_selected_targets_success() && !selected_target_failures(summary).is_empty() {
+        run_quality_gate_stage(summary, &mut timing_report);
+        finalize_msl_parity_timing_report(&mut timing_report);
+        return;
+    }
+    if summary.sim_attempted > 0 {
+        run_simulation_parity_stages(summary, &mut timing_report);
+        run_quality_snapshot_stage(summary, &mut timing_report);
+    }
+    run_quality_gate_stage(summary, &mut timing_report);
+    finalize_msl_parity_timing_report(&mut timing_report);
+    print_simulatable_compilation_rate(summary);
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -216,6 +632,25 @@ pub(super) fn print_timing_breakdown(summary: &MslSummary) {
         );
     }
     println!("  - Worker threads: {}", summary.timings.worker_threads);
+    println!(
+        "  - Scheduler workers: requested={}, effective={}, spawned={}, pinned={}, max_active={}",
+        summary.timings.scheduler.requested_worker_threads,
+        summary.timings.scheduler.effective_worker_threads,
+        summary.timings.scheduler.worker_count,
+        summary.timings.scheduler.pinned_worker_count,
+        summary.timings.scheduler.max_active_workers
+    );
+    println!(
+        "  - Scheduler waits: cpu_tokens={:.3}s, memory_tokens={:.3}s",
+        summary.timings.scheduler.cpu_token_wait_seconds,
+        summary.timings.scheduler.compile_memory_token_wait_seconds
+    );
+    println!(
+        "  - Scheduler worker slots: active={:.3}s, total={:.3}s, idle={:.3}s",
+        summary.timings.scheduler.active_model_wall_seconds,
+        summary.timings.scheduler.worker_slot_wall_seconds,
+        summary.timings.scheduler.worker_slot_idle_seconds
+    );
     println!(
         "  - Compile-scope throughput: {:.2} models/s",
         summary.total_models as f64 / summary.timings.frontend_compile_seconds.max(f64::EPSILON)
@@ -420,5 +855,106 @@ fn print_common_undefined_variables(summary: &MslSummary) {
         for (var, count) in sorted_vars.iter().take(10) {
             println!("  {} ({}x)", var, count);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn timing_report_for_render_test() -> MslParityTimingReport {
+        let mut report = MslParityTimingReport {
+            version: MSL_PARITY_TIMING_VERSION,
+            git_commit: "abc123".to_string(),
+            msl_version: "v4.1.0".to_string(),
+            success: false,
+            harness_total_seconds: 2.0,
+            core_pipeline: MslPhaseTimings {
+                core_pipeline_seconds: 2.0,
+                scheduler: MslSchedulerTimings {
+                    selected_model_count: 566,
+                    requested_worker_threads: 16,
+                    effective_worker_threads: 14,
+                    worker_count: 14,
+                    pinned_worker_count: 14,
+                    cpu_token_capacity: 0,
+                    compile_memory_token_capacity_mb: Some(24_000),
+                    compile_memory_model_cost_mb: Some(1_200),
+                    models_started: 566,
+                    max_active_workers: 13,
+                    cpu_token_wait_seconds: 0.0,
+                    compile_memory_token_wait_seconds: 0.5,
+                    active_model_wall_seconds: 128.0,
+                    worker_slot_wall_seconds: 140.0,
+                    worker_slot_idle_seconds: 12.0,
+                },
+                ..MslPhaseTimings::default()
+            },
+            counts: MslParityTimingCounts {
+                total_models: 566,
+                compiled_models: 487,
+                solve_models: 391,
+                balanced_models: 474,
+                sim_target_models: 566,
+                sim_attempted: 397,
+                sim_ok: 156,
+                sim_solver_fail: 235,
+                sim_timeout: 6,
+                ic_attempted: 252,
+                ic_ok: 231,
+                trace_files_written: 155,
+                trace_write_errors: 0,
+            },
+            workers: MslParityTimingWorkers {
+                rumoca_workers: 14,
+                omc_workers: 14,
+                omc_threads: 1,
+            },
+            hotspots: MslParityTimingHotspots {
+                hottest_compile_model: Some(MslParityTimingHotspot {
+                    model: "Modelica.X".to_string(),
+                    seconds: 24.0,
+                }),
+                hottest_sim_model: None,
+            },
+            stages: Vec::new(),
+        };
+        report.record_stage(
+            "omc_reference_and_trace_compare",
+            "pass",
+            Duration::from_millis(1500),
+        );
+        report.mark_success();
+        report
+    }
+
+    #[test]
+    fn parity_timing_markdown_contains_core_stages_counts_and_workers() {
+        let markdown = render_msl_parity_timing_markdown(&timing_report_for_render_test());
+        assert!(markdown.contains("| core pipeline | pass | 2.000 |"));
+        assert!(markdown.contains("| omc_reference_and_trace_compare | pass | 1.500 |"));
+        assert!(markdown.contains("- sim_ok: 156"));
+        assert!(markdown.contains("- rumoca_workers: 14"));
+        assert!(markdown.contains("## Rumoca Scheduler"));
+        assert!(markdown.contains("- requested_worker_threads: 16"));
+        assert!(markdown.contains("- max_active_workers: 13"));
+        assert!(markdown.contains("- compile_memory_token_capacity_mb: 24000"));
+        assert!(markdown.contains("- hottest_compile_model: Modelica.X (24.000s)"));
+    }
+
+    #[test]
+    fn timed_parity_stage_records_failure_before_returning_error() {
+        let mut report = timing_report_for_render_test();
+        let error = run_timed_parity_stage(&mut report, "quality_gate_eval", || {
+            Err(io::Error::other("gate failed"))
+        })
+        .expect_err("stage should fail");
+        assert_eq!(error.to_string(), "gate failed");
+        let stage = report
+            .stages
+            .last()
+            .expect("failed stage should be recorded");
+        assert_eq!(stage.label, "quality_gate_eval");
+        assert_eq!(stage.status, "fail");
     }
 }

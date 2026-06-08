@@ -331,7 +331,7 @@ pub fn flatten_ref_with_options(
         .collect();
     let mut flat = flat::Model::new();
     let component_override_map =
-        build_component_override_map(overlay, tree, &class_index, model_name);
+        build_component_override_map(overlay, tree, &class_index, model_name)?;
 
     initialize_flat_metadata(&mut flat, overlay);
     process_component_instances_for_flatten(

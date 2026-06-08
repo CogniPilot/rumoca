@@ -1355,21 +1355,25 @@ fn process_class_instance_body(
     let class_scope = class_data.qualified_name.to_component_path();
     let (override_packages, override_functions) =
         override_context_for_component_path(&class_scope, component_override_map);
-
-    // MLS §13.2: Set the import map for this class instance so that
-    // qualification resolves imported short names (e.g., `pi` → `Modelica.Constants.pi`)
-    // instead of incorrectly prefixing them with the component path.
-    set_class_instance_imports(
-        ctx,
-        class_data,
-        tree,
-        class_index,
-        &override_package_names(&override_packages),
-        &override_aliases_for_component_path(&class_scope, component_override_map),
-    );
+    let override_package_names = override_package_names(&override_packages);
+    let override_aliases =
+        override_aliases_for_component_path(&class_scope, component_override_map);
 
     // Convert regular equations.
     for inst_eq in &class_data.equations {
+        set_class_instance_imports_for_scope(
+            ctx,
+            class_data,
+            tree,
+            class_index,
+            ImportScope {
+                source_scope: inst_eq.source_scope.as_ref(),
+                source_scope_id: inst_eq.source_scope_id,
+                span: inst_eq.span,
+            },
+            &override_package_names,
+            &override_aliases,
+        )?;
         let inst_eq = mark_member_function_calls_in_instance_equation(
             inst_eq,
             tree,
@@ -1416,6 +1420,19 @@ fn process_class_instance_body(
 
     // Convert initial equations (when-equations are rejected per EQN-006).
     for inst_eq in &class_data.initial_equations {
+        set_class_instance_imports_for_scope(
+            ctx,
+            class_data,
+            tree,
+            class_index,
+            ImportScope {
+                source_scope: inst_eq.source_scope.as_ref(),
+                source_scope_id: inst_eq.source_scope_id,
+                span: inst_eq.span,
+            },
+            &override_package_names,
+            &override_aliases,
+        )?;
         let inst_eq = mark_member_function_calls_in_instance_equation(
             inst_eq,
             tree,
@@ -1457,8 +1474,17 @@ fn process_class_instance_body(
     }
 
     // Convert algorithms (preserve structure per SPEC_0020)
-    let imports = &ctx.current_imports;
     for inst_algs in &class_data.algorithms {
+        set_class_instance_imports_for_statement_block(
+            ctx,
+            class_data,
+            tree,
+            class_index,
+            inst_algs,
+            &override_package_names,
+            &override_aliases,
+        )?;
+        let imports = &ctx.current_imports;
         let inst_algs = mark_member_function_calls_in_instance_statements(
             inst_algs,
             tree,
@@ -1479,6 +1505,16 @@ fn process_class_instance_body(
 
     // Convert initial algorithms
     for inst_algs in &class_data.initial_algorithms {
+        set_class_instance_imports_for_statement_block(
+            ctx,
+            class_data,
+            tree,
+            class_index,
+            inst_algs,
+            &override_package_names,
+            &override_aliases,
+        )?;
+        let imports = &ctx.current_imports;
         let inst_algs = mark_member_function_calls_in_instance_statements(
             inst_algs,
             tree,
@@ -1498,65 +1534,6 @@ fn process_class_instance_body(
     }
 
     Ok(())
-}
-
-fn set_class_instance_imports(
-    ctx: &mut Context,
-    class_data: &ClassInstanceData,
-    tree: &ClassTree,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-    override_packages: &[String],
-    override_aliases: &[(String, String)],
-) {
-    let mut imports: crate::qualify::ImportMap =
-        class_data.resolved_imports.iter().cloned().collect();
-    add_package_override_aliases(class_index, override_aliases, &mut imports);
-    if let Some(class_name) = class_scope_name_for_instance(class_data) {
-        crate::qualify::collect_lexical_package_aliases(
-            tree,
-            class_index,
-            &class_name,
-            &mut imports,
-        );
-    }
-    if let Some(source_scope) = class_data.source_scope.as_ref() {
-        crate::qualify::collect_lexical_constant_aliases_for_source_scope_with_packages(
-            tree,
-            class_index,
-            source_scope,
-            override_packages,
-            &mut imports,
-        );
-    }
-    ctx.current_imports = imports;
-}
-
-fn class_scope_name_for_instance(class_data: &ClassInstanceData) -> Option<String> {
-    if let Some(source_scope) = &class_data.source_scope {
-        return Some(source_scope.to_flat_string());
-    }
-    class_data
-        .equations
-        .first()
-        .map(|eq| eq.origin.to_flat_string())
-        .or_else(|| {
-            class_data
-                .initial_equations
-                .first()
-                .map(|eq| eq.origin.to_flat_string())
-        })
-        .or_else(|| {
-            class_data
-                .algorithms
-                .first()
-                .and_then(|alg| alg.first().map(|stmt| stmt.origin.to_flat_string()))
-        })
-        .or_else(|| {
-            class_data
-                .initial_algorithms
-                .first()
-                .and_then(|alg| alg.first().map(|stmt| stmt.origin.to_flat_string()))
-        })
 }
 
 /// Flatten an algorithm section.

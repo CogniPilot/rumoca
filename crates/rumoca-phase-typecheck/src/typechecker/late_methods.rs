@@ -368,12 +368,12 @@ impl TypeChecker {
         progress
     }
 
-    /// Re-evaluate boolean and real parameters that may now be computable.
+    /// Re-evaluate boolean, real, and enum parameters that may now be computable.
     ///
-    /// Returns true if any new values were computed. Boolean values enable
-    /// if-expression evaluation for dimension inference. Real values enable
-    /// `integer(realParam)` evaluation.
-    pub(crate) fn reevaluate_boolean_and_real_parameters(
+    /// Returns true if any new values were computed. Boolean and enum values
+    /// enable if-expression evaluation for dimension inference. Real values
+    /// enable `integer(realParam)` evaluation.
+    pub(crate) fn reevaluate_boolean_real_and_enum_parameters(
         &mut self,
         overlay: &InstanceOverlay,
     ) -> bool {
@@ -390,6 +390,10 @@ impl TypeChecker {
 
             if !self.eval_ctx.reals.contains_key(&name) {
                 progress |= self.try_eval_real(instance_data, &name, &scope);
+            }
+
+            if !self.eval_ctx.enums.contains_key(&name) {
+                progress |= self.try_eval_enum(instance_data, &name, &scope);
             }
         }
 
@@ -435,6 +439,28 @@ impl TypeChecker {
             .and_then(|s| rumoca_eval_ast::eval::eval_real_with_scope(s, &self.eval_ctx, scope));
         if let Some(value) = binding_val.or(start_val) {
             self.eval_ctx.reals.insert(name.to_string(), value);
+            return true;
+        }
+        false
+    }
+
+    /// Try to evaluate an enum value from binding or start.
+    pub(crate) fn try_eval_enum(
+        &mut self,
+        data: &rumoca_ir_ast::InstanceData,
+        name: &str,
+        scope: &str,
+    ) -> bool {
+        let binding_val = data
+            .binding
+            .as_ref()
+            .and_then(|b| rumoca_eval_ast::eval::eval_enum_with_scope(b, &self.eval_ctx, scope));
+        let start_val = data
+            .start
+            .as_ref()
+            .and_then(|s| rumoca_eval_ast::eval::eval_enum_with_scope(s, &self.eval_ctx, scope));
+        if let Some(value) = binding_val.or(start_val) {
+            self.eval_ctx.enums.insert(name.to_string(), value);
             return true;
         }
         false

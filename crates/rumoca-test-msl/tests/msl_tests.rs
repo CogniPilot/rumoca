@@ -543,6 +543,40 @@ struct MslModelResult {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct MslSchedulerTimings {
+    #[serde(default)]
+    selected_model_count: usize,
+    #[serde(default)]
+    requested_worker_threads: usize,
+    #[serde(default)]
+    effective_worker_threads: usize,
+    #[serde(default)]
+    worker_count: usize,
+    #[serde(default)]
+    pinned_worker_count: usize,
+    #[serde(default)]
+    cpu_token_capacity: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compile_memory_token_capacity_mb: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compile_memory_model_cost_mb: Option<usize>,
+    #[serde(default)]
+    models_started: usize,
+    #[serde(default)]
+    max_active_workers: usize,
+    #[serde(default)]
+    cpu_token_wait_seconds: f64,
+    #[serde(default)]
+    compile_memory_token_wait_seconds: f64,
+    #[serde(default)]
+    active_model_wall_seconds: f64,
+    #[serde(default)]
+    worker_slot_wall_seconds: f64,
+    #[serde(default)]
+    worker_slot_idle_seconds: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct MslPhaseTimings {
     parse_seconds: f64,
     session_build_seconds: f64,
@@ -554,6 +588,8 @@ struct MslPhaseTimings {
     compile_chunk_count: usize,
     #[serde(default)]
     worker_threads: usize,
+    #[serde(default)]
+    scheduler: MslSchedulerTimings,
     #[serde(default)]
     compile_instantiate_seconds: f64,
     #[serde(default)]
