@@ -34,6 +34,7 @@ toml = { workspace = true }
 lsp-types = { workspace = true }
 dirs = "5.0"
 flate2 = "1.0"
+indexmap = { workspace = true }
 rayon = { workspace = true }
 tar = "0.4"
 tempfile = { workspace = true }

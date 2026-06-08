@@ -427,6 +427,8 @@ enum RepoMslCommand {
     CompatibilityReport(msl_tools::compatibility_report::Args),
     /// Report: diff rumoca balance output against the OMC reference
     CompareBalance(msl_tools::compare_balance::Args),
+    /// Report: compare per-model phase/sim/trace transitions between two MSL result dirs
+    TransitionDiff(msl_tools::transition_diff::Args),
     /// Report: assemble the MSL quality summary posted as the CI PR comment
     PrComment(msl_tools::pr_comment::Args),
 
@@ -544,6 +546,7 @@ fn cmd_repo(args: RepoArgs) -> Result<()> {
             }
             RepoMslCommand::Flamegraph(args) => msl_flamegraph_cmd::run(args, &repo_root()),
             RepoMslCommand::CompareBalance(args) => msl_tools::compare_balance::run(args),
+            RepoMslCommand::TransitionDiff(args) => msl_tools::transition_diff::run(args),
             RepoMslCommand::CompatibilityReport(args) => msl_tools::compatibility_report::run(args),
             RepoMslCommand::ModelicaTestCatalog(args) => {
                 msl_tools::modelica_test_catalog::run(args)
