@@ -19,6 +19,13 @@ use crate::{
     run_status, run_status_quiet, test_cmd, vscode_cmd,
 };
 
+mod msl_cargo_setup_timing;
+
+use msl_cargo_setup_timing::{
+    MslCargoSetupStepMetadata, MslCargoSetupTimingStep, run_msl_cargo_setup_step,
+    write_msl_cargo_setup_timing_report,
+};
+
 const MSL_VERSION: &str = "4.1.0";
 const MSL_RELEASE_ZIP_URL: &str = "https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip";
 const MSL_MODELICA_DIR_NAME: &str = "Modelica 4.1.0";
@@ -1246,6 +1253,7 @@ fn run_msl_quality_gate_cargo_commands(
     root: &Path,
     cargo_setup_steps: &mut Vec<MslCargoSetupTimingStep>,
 ) -> Result<()> {
+    let target_dir = cargo_target_dir(root);
     let mut build_sim_worker = Command::new("cargo");
     build_sim_worker
         .arg("build")
@@ -1258,7 +1266,14 @@ fn run_msl_quality_gate_cargo_commands(
         .current_dir(root);
     let result = run_msl_cargo_setup_step(
         cargo_setup_steps,
-        "build rumoca-sim-worker",
+        MslCargoSetupStepMetadata::new(
+            "build rumoca-sim-worker",
+            "build",
+            "rumoca-test-msl",
+            "release",
+            Vec::new(),
+            &target_dir,
+        ),
         build_sim_worker,
     );
     result?;
@@ -1273,8 +1288,18 @@ fn run_msl_quality_gate_cargo_commands(
         .arg("--bin")
         .arg("rumoca-msl-tools")
         .current_dir(root);
-    let result =
-        run_msl_cargo_setup_step(cargo_setup_steps, "build rumoca-msl-tools", build_msl_tools);
+    let result = run_msl_cargo_setup_step(
+        cargo_setup_steps,
+        MslCargoSetupStepMetadata::new(
+            "build rumoca-msl-tools",
+            "build",
+            "xtask",
+            "release",
+            Vec::new(),
+            &target_dir,
+        ),
+        build_msl_tools,
+    );
     result?;
 
     let mut gate = Command::new("cargo");
@@ -1292,104 +1317,18 @@ fn run_msl_quality_gate_cargo_commands(
         .arg("--nocapture")
         .env("RUST_BACKTRACE", "full")
         .current_dir(root);
-    run_msl_cargo_setup_step(cargo_setup_steps, "run release MSL test", gate)
-}
-
-fn run_status_logged(command: Command) -> Result<()> {
-    println!("Running command: {command:?}");
-    run_status(command)
-}
-
-#[derive(Debug, Serialize)]
-struct MslCargoSetupTimingReport {
-    success: bool,
-    total_elapsed_seconds: f64,
-    steps: Vec<MslCargoSetupTimingStep>,
-}
-
-impl MslCargoSetupTimingReport {
-    fn new(steps: Vec<MslCargoSetupTimingStep>) -> Self {
-        let total_elapsed_seconds = steps.iter().map(|step| step.elapsed_seconds).sum();
-        Self {
-            success: steps.iter().all(|step| step.status == "pass"),
-            total_elapsed_seconds,
-            steps,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct MslCargoSetupTimingStep {
-    label: String,
-    command: String,
-    status: String,
-    elapsed_seconds: f64,
-}
-
-fn run_msl_cargo_setup_step(
-    steps: &mut Vec<MslCargoSetupTimingStep>,
-    label: &str,
-    command: Command,
-) -> Result<()> {
-    let command_display = format!("{command:?}");
-    let started = Instant::now();
-    let result = run_status_logged(command);
-    steps.push(MslCargoSetupTimingStep {
-        label: label.to_string(),
-        command: command_display,
-        status: if result.is_ok() { "pass" } else { "fail" }.to_string(),
-        elapsed_seconds: elapsed_seconds(started.elapsed()),
-    });
-    result
-}
-
-fn write_msl_cargo_setup_timing_report(
-    results_dir: &Path,
-    steps: &[MslCargoSetupTimingStep],
-) -> Result<()> {
-    let report = MslCargoSetupTimingReport::new(steps.to_vec());
-    fs::create_dir_all(results_dir)
-        .with_context(|| format!("failed to create {}", results_dir.display()))?;
-    let json_path = results_dir.join("msl_cargo_setup_timing.json");
-    let markdown_path = results_dir.join("msl_cargo_setup_timing.md");
-    let json = serde_json::to_string_pretty(&report)
-        .context("failed to serialize MSL Cargo setup timing")?;
-    fs::write(&json_path, json)
-        .with_context(|| format!("failed to write {}", json_path.display()))?;
-    fs::write(
-        &markdown_path,
-        render_msl_cargo_setup_timing_markdown(&report),
-    )
-    .with_context(|| format!("failed to write {}", markdown_path.display()))?;
-    println!(
-        "MSL Cargo setup timing report written to {} and {}",
-        json_path.display(),
-        markdown_path.display()
-    );
-    Ok(())
-}
-
-fn render_msl_cargo_setup_timing_markdown(report: &MslCargoSetupTimingReport) -> String {
-    let mut lines = vec![
-        "# MSL Cargo Setup Timing".to_string(),
-        String::new(),
-        format!("- success: {}", report.success),
-        format!(
-            "- total_elapsed_seconds: {:.3}",
-            report.total_elapsed_seconds
+    run_msl_cargo_setup_step(
+        cargo_setup_steps,
+        MslCargoSetupStepMetadata::new(
+            "run release MSL test",
+            "test",
+            "rumoca-test-msl",
+            "release",
+            vec!["msl-full-test".to_string()],
+            &target_dir,
         ),
-        String::new(),
-        "| Step | Status | Seconds | Command |".to_string(),
-        "|---|---|---:|---|".to_string(),
-    ];
-    lines.extend(report.steps.iter().map(|step| {
-        format!(
-            "| {} | {} | {:.3} | `{}` |",
-            step.label, step.status, step.elapsed_seconds, step.command
-        )
-    }));
-    lines.push(String::new());
-    lines.join("\n")
+        gate,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1835,12 +1774,22 @@ mod tests {
         let steps = vec![
             MslCargoSetupTimingStep {
                 label: "build rumoca-sim-worker".to_string(),
+                cargo_action: "build".to_string(),
+                package: "rumoca-test-msl".to_string(),
+                profile: "release".to_string(),
+                features: Vec::new(),
+                target_dir: root.path().join("target").display().to_string(),
                 command: "\"cargo\" \"build\"".to_string(),
                 status: "pass".to_string(),
                 elapsed_seconds: 0.2,
             },
             MslCargoSetupTimingStep {
                 label: "run release MSL test".to_string(),
+                cargo_action: "test".to_string(),
+                package: "rumoca-test-msl".to_string(),
+                profile: "release".to_string(),
+                features: vec!["msl-full-test".to_string()],
+                target_dir: root.path().join("target").display().to_string(),
                 command: "\"cargo\" \"test\"".to_string(),
                 status: "fail".to_string(),
                 elapsed_seconds: 1.3,
@@ -1857,9 +1806,12 @@ mod tests {
         let json = std::fs::read_to_string(json_path).expect("read setup timing json");
         assert!(json.contains(r#""success": false"#));
         assert!(json.contains(r#""label": "build rumoca-sim-worker""#));
+        assert!(json.contains(r#""package": "rumoca-test-msl""#));
+        assert!(json.contains(r#""features": ["#));
         let markdown = std::fs::read_to_string(markdown_path).expect("read setup timing markdown");
         assert!(markdown.contains("# MSL Cargo Setup Timing"));
-        assert!(markdown.contains("| run release MSL test | fail | 1.300 |"));
+        assert!(markdown.contains("| run release MSL test | fail | 1.300 | rumoca-test-msl |"));
+        assert!(markdown.contains("| release | msl-full-test |"));
     }
 
     #[test]
