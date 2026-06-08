@@ -1,0 +1,283 @@
+source_roots = ["../../../target/cmm/CMM-v0.0.1"]
+
+[rumoca]
+version = "1"
+task = "simulate"
+
+# ── Model ────────────────────────────────────────────────────────────────────
+# Closed-loop fixed-wing: FixedWingPlant (aero on RigidBody6DOF) + FixedWingFBW
+# (attitude-stabilized fly-by-wire), composed in `FixedWing`.
+[model]
+file = "FixedWingSIL.mo"
+name = "FixedWing"
+
+[sim]
+dt = 0.01
+mode = "realtime"
+solver = "rk-like"
+
+# ── Input routing ────────────────────────────────────────────────────────────
+# Plane-style mapping: arrows fly the aircraft (pitch/roll), A/D is rudder,
+# W/S is throttle. A plugged-in gamepad takes over automatically.
+[input]
+mode = "auto"
+
+[input.keyboard.decay]
+factor = 0.85
+ref_dt = 0.016
+targets = [
+    "roll_cmd",
+    "pitch_cmd",
+    "yaw_cmd",
+    "throttle_input",
+]
+
+[input.keyboard.keys.ArrowUp]
+action = "set"
+target = "pitch_cmd"
+value = 0.5
+
+[input.keyboard.keys.ArrowDown]
+action = "set"
+target = "pitch_cmd"
+value = -0.5
+
+[input.keyboard.keys.ArrowRight]
+action = "set"
+target = "roll_cmd"
+value = 0.6
+
+[input.keyboard.keys.ArrowLeft]
+action = "set"
+target = "roll_cmd"
+value = -0.6
+
+[input.keyboard.keys.d]
+action = "set"
+target = "yaw_cmd"
+value = 0.6
+
+[input.keyboard.keys.a]
+action = "set"
+target = "yaw_cmd"
+value = -0.6
+
+[input.keyboard.integrators.throttle]
+clamp = [
+    0.0,
+    1.0,
+]
+rate = 0.7
+source = "local:throttle_input"
+write = "throttle"
+
+[input.keyboard.keys.w]
+action = "set"
+target = "throttle_input"
+value = 1.0
+
+[input.keyboard.keys.s]
+action = "set"
+target = "throttle_input"
+value = -1.0
+
+[input.keyboard.keys.Space]
+action = "toggle"
+debounce_ms = 500
+precondition = "throttle <= 0.05"
+state = "armed"
+
+[input.keyboard.keys.r]
+action = "signal"
+signal = "reset"
+
+[input.keyboard.keys.q]
+action = "signal"
+signal = "quit"
+
+# Gamepad: right stick = pitch/roll, left stick X = rudder, left stick Y = throttle.
+[input.gamepad.axes.pitch]
+source = "RightStickY"
+write = "pitch_cmd"
+
+[input.gamepad.axes.roll]
+source = "RightStickX"
+write = "roll_cmd"
+
+[input.gamepad.axes.yaw]
+source = "LeftStickX"
+write = "yaw_cmd"
+
+[input.gamepad.integrators.throttle]
+clamp = [
+    0.0,
+    1.0,
+]
+deadband = 0.1
+rate = 0.7
+source = "LeftStickY"
+write = "throttle"
+
+[input.gamepad.buttons.arm]
+action = "toggle"
+debounce_ms = 500
+precondition = "throttle <= 0.05"
+source = "Start"
+state = "armed"
+
+[input.gamepad.buttons.reset]
+action = "signal"
+signal = "reset"
+source = "South"
+
+# ── Locals (input-engine state) ──────────────────────────────────────────────
+[locals.armed]
+default = false
+type = "bool"
+
+[locals.roll_cmd]
+default = 0.0
+type = "float"
+
+[locals.pitch_cmd]
+default = 0.0
+type = "float"
+
+[locals.yaw_cmd]
+default = 0.0
+type = "float"
+
+[locals.throttle]
+default = 0.0
+type = "float"
+
+[locals.throttle_input]
+default = 0.0
+type = "float"
+
+# ── Signal wiring ────────────────────────────────────────────────────────────
+[signals.stepper_inputs]
+stick_roll = "local:roll_cmd"
+stick_pitch = "local:pitch_cmd"
+stick_yaw = "local:yaw_cmd"
+stick_throttle = "local:throttle"
+
+[signals.stepper_inputs.armed]
+from = "local:armed"
+when_false = 0.0
+when_true = 1.0
+
+[signals.viewer]
+px = "stepper:position[1]"
+py = "stepper:position[2]"
+pz = "stepper:position[3]"
+ail_rad = "stepper:ail_rad"
+elev_rad = "stepper:elev_rad"
+rud_rad = "stepper:rud_rad"
+throttle = "stepper:thr_out"
+airspeed = "stepper:airspeed"
+alpha = "stepper:alpha_deg"
+armed = "local:armed"
+stick_roll = "local:roll_cmd"
+stick_pitch = "local:pitch_cmd"
+stick_yaw = "local:yaw_cmd"
+stick_throttle = "local:throttle"
+t = "stepper:time"
+frame = "runtime:frame_num"
+input_mode = "runtime:input_mode"
+wall_ms = "runtime:wall_ms"
+
+[signals.viewer.q0]
+default = 1.0
+from = "stepper:quat[1]"
+
+[signals.viewer.q1]
+default = 0.0
+from = "stepper:quat[2]"
+
+[signals.viewer.q2]
+default = 0.0
+from = "stepper:quat[3]"
+
+[signals.viewer.q3]
+default = 0.0
+from = "stepper:quat[4]"
+
+# ── Reset ────────────────────────────────────────────────────────────────────
+[reset]
+on_signal = "reset"
+rebuild_stepper = true
+reset_locals = true
+
+# ── Transport + viewer ───────────────────────────────────────────────────────
+[transport.http]
+port = 8080
+scene = "fixedwing_scene.js"
+
+[transport.websocket]
+port = 8081
+
+[viewer]
+mode = "external_web"
+show_armed = true
+status_title = "Aircraft"
+
+[[viewer.controls.keyboard]]
+keys = "Up / Down"
+action = "Pitch (elevator)"
+
+[[viewer.controls.keyboard]]
+keys = "Left / Right"
+action = "Roll (ailerons)"
+
+[[viewer.controls.keyboard]]
+keys = "A / D"
+action = "Yaw (rudder)"
+
+[[viewer.controls.keyboard]]
+keys = "W / S"
+action = "Throttle"
+
+[[viewer.controls.keyboard]]
+keys = "Space"
+action = "Arm / Disarm"
+
+[[viewer.controls.keyboard]]
+keys = "R"
+action = "Reset"
+
+[[viewer.controls.keyboard]]
+keys = "T"
+action = "Realtime"
+
+[[viewer.controls.keyboard]]
+keys = "C"
+action = "Camera"
+
+[[viewer.controls.keyboard]]
+keys = "H"
+action = "HUD"
+
+[[viewer.controls.keyboard]]
+keys = "Q"
+action = "Quit"
+
+[[viewer.controls.gamepad]]
+keys = "Right stick"
+action = "Pitch / Roll"
+
+[[viewer.controls.gamepad]]
+keys = "Left stick X"
+action = "Yaw (rudder)"
+
+[[viewer.controls.gamepad]]
+keys = "Left stick Y"
+action = "Throttle"
+
+[[viewer.controls.gamepad]]
+keys = "Start"
+action = "Arm / Disarm"
+
+[[viewer.controls.gamepad]]
+keys = "A / South"
+action = "Reset"
