@@ -252,6 +252,12 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
         include_in_quick: true,
     },
     VerifyStep {
+        label: "architecture/file-size gates",
+        args: &["verify", "architecture"],
+        include_in_full: true,
+        include_in_quick: true,
+    },
+    VerifyStep {
         label: "workspace tests",
         args: &["verify", "workspace"],
         include_in_full: true,
@@ -261,19 +267,19 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
         label: "example smoke tests",
         args: &["verify", "examples"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "binary build",
         args: &["verify", "binaries"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "template runtime checks",
         args: &["verify", "template-runtimes"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "coverage run",
@@ -302,13 +308,13 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
         label: "docs",
         args: &["verify", "docs"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "VS Code gate",
         args: &["vscode", "test"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "WASM gate",
@@ -1655,21 +1661,22 @@ mod tests {
     }
 
     #[test]
-    fn quick_suite_runs_risk_focused_surface_with_msl_parity() {
+    fn quick_suite_runs_format_tests_architecture_and_msl_parity() {
         let steps = step_argvs(VerifySuite::Quick);
         assert_eq!(
             steps,
             vec![
                 vec!["verify", "lint"],
                 vec!["verify", "msl-parity"],
+                vec!["verify", "architecture"],
                 vec!["verify", "workspace"],
-                vec!["verify", "examples"],
-                vec!["verify", "binaries"],
-                vec!["verify", "template-runtimes"],
-                vec!["verify", "docs"],
-                vec!["vscode", "test"],
             ]
         );
+        assert!(!steps.contains(&vec!["verify", "examples"]));
+        assert!(!steps.contains(&vec!["verify", "binaries"]));
+        assert!(!steps.contains(&vec!["verify", "template-runtimes"]));
+        assert!(!steps.contains(&vec!["verify", "docs"]));
+        assert!(!steps.contains(&vec!["vscode", "test"]));
         assert!(!steps.contains(&vec!["coverage", "run"]));
         assert!(!steps.contains(&vec!["wasm", "test"]));
         assert!(!steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
@@ -1679,6 +1686,7 @@ mod tests {
     fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
         let steps = step_argvs(VerifySuite::Full);
         assert_eq!(steps.get(1), Some(&vec!["verify", "msl-parity"]));
+        assert!(steps.contains(&vec!["verify", "architecture"]));
         assert!(steps.contains(&vec!["verify", "workspace"]));
         assert!(steps.contains(&vec!["verify", "examples"]));
         assert!(steps.contains(&vec!["verify", "binaries"]));
