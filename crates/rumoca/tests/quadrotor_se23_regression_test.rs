@@ -30,9 +30,12 @@ use rumoca_sim::{SimOptions, eval_dae_at};
 /// directory, or `None` when the cache is absent (so the test skips locally
 /// without the cache, matching the other CMM-dependent regressions).
 fn cached_lie_groups() -> Option<PathBuf> {
-    let lie_groups = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/cmm/CMM-v0.0.2/LieGroups");
-    lie_groups.join("package.mo").is_file().then_some(lie_groups)
+    let lie_groups =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cmm/CMM-v0.0.2/LieGroups");
+    lie_groups
+        .join("package.mo")
+        .is_file()
+        .then_some(lie_groups)
 }
 
 fn der_value(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
