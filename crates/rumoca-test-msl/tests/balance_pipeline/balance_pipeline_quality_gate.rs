@@ -1,4 +1,5 @@
 use super::*;
+use indexmap::IndexSet;
 
 mod cache;
 mod status;
@@ -1628,8 +1629,7 @@ pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
         return Ok(());
     }
     if require_selected_targets_success() {
-        enforce_all_selected_targets_succeeded(summary);
-        return Ok(());
+        return enforce_all_selected_targets_succeeded(summary);
     }
     if should_skip_msl_quality_gate() {
         println!(
@@ -1663,33 +1663,50 @@ pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
 /// Focused-gate enforcement: every selected simulation target must report
 /// `sim_ok`. Replaces the baseline-relative gate (which is skipped for explicit
 /// target files) so a focused CI run still fails on any simulation failure.
-fn enforce_all_selected_targets_succeeded(summary: &MslSummary) {
-    let target_set: HashSet<&str> = summary
-        .sim_target_models
-        .iter()
-        .map(String::as_str)
-        .collect();
-    let failures: Vec<String> = summary
-        .model_results
-        .iter()
-        .filter(|result| target_set.contains(result.model_name.as_str()))
-        .filter(|result| result.sim_status.as_deref() != Some("sim_ok"))
-        .map(|result| {
-            let status = result.sim_status.as_deref().unwrap_or("not-simulated");
-            format!("{} ({status})", result.model_name)
-        })
-        .collect();
-    assert!(
-        failures.is_empty(),
-        "MSL quality gate: {} of {} selected simulation target(s) did not succeed: {}.",
-        failures.len(),
-        summary.sim_target_models.len(),
-        failures.join(", ")
-    );
+fn enforce_all_selected_targets_succeeded(summary: &MslSummary) -> io::Result<()> {
+    let failures = selected_target_failures(summary);
+    if !failures.is_empty() {
+        return Err(io::Error::other(format!(
+            "{} of {} selected simulation target(s) did not succeed: {}.",
+            failures.len(),
+            summary.sim_target_models.len(),
+            failures.join(", ")
+        )));
+    }
     println!(
         "MSL quality gate: all {} selected simulation target(s) succeeded.",
         summary.sim_target_models.len()
     );
+    Ok(())
+}
+
+pub(super) fn selected_target_failures(summary: &MslSummary) -> Vec<String> {
+    let target_set: IndexSet<&str> = summary
+        .sim_target_models
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut seen_targets = IndexSet::new();
+    let mut failures: Vec<String> = summary
+        .model_results
+        .iter()
+        .filter(|result| target_set.contains(result.model_name.as_str()))
+        .filter_map(|result| {
+            seen_targets.insert(result.model_name.as_str());
+            if result.sim_status.as_deref() == Some("sim_ok") {
+                return None;
+            }
+            let status = result.sim_status.as_deref().unwrap_or("not-simulated");
+            Some(format!("{} ({status})", result.model_name))
+        })
+        .collect();
+    failures.extend(
+        target_set
+            .into_iter()
+            .filter(|model_name| !seen_targets.contains(*model_name))
+            .map(|model_name| format!("{model_name} (missing-result)")),
+    );
+    failures
 }
 
 pub(super) fn should_skip_msl_quality_gate() -> bool {

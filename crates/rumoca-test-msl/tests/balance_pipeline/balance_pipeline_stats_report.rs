@@ -523,6 +523,11 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
         summary.timings.core_pipeline_seconds + json_write_seconds
     );
     assert_valid_msl_summary(summary);
+    if require_selected_targets_success() && !selected_target_failures(summary).is_empty() {
+        run_quality_gate_stage(summary, &mut timing_report);
+        finalize_msl_parity_timing_report(&mut timing_report);
+        return;
+    }
     if summary.sim_attempted > 0 {
         run_simulation_parity_stages(summary, &mut timing_report);
         run_quality_snapshot_stage(summary, &mut timing_report);

@@ -130,7 +130,7 @@ impl VerifyMslParityArgs {
         if self.include_modelica_test {
             config.insert("include_modelica_test".into(), true.into());
         }
-        if self.require_selected_targets_success {
+        if self.requires_selected_targets_success() {
             config.insert("require_selected_targets_success".into(), true.into());
         }
         if !self.sim_match.is_empty() {
@@ -155,6 +155,13 @@ impl VerifyMslParityArgs {
             config.insert("sim_total_memory_mb".into(), value.into());
         }
         serde_json::Value::Object(config)
+    }
+
+    fn requires_selected_targets_success(&self) -> bool {
+        self.require_selected_targets_success
+            || self.sim_targets_file.is_some()
+            || !self.sim_match.is_empty()
+            || self.sim_limit.is_some()
     }
 }
 
@@ -1576,9 +1583,9 @@ where
 mod tests {
     use super::{
         MslCiEnvironment, MslHotspotModelResult, MslHotspotSummary, VERIFY_SUITE_STEPS,
-        VerifySuite, VerifyTimingReport, VerifyTimingStep, hottest_compile_model,
-        hottest_sim_model, msl_cache_layout_valid, render_verify_timing_markdown,
-        should_log_process_tables, write_verify_timing_report,
+        VerifyMslParityArgs, VerifySuite, VerifyTimingReport, VerifyTimingStep,
+        hottest_compile_model, hottest_sim_model, msl_cache_layout_valid,
+        render_verify_timing_markdown, should_log_process_tables, write_verify_timing_report,
     };
     use std::path::PathBuf;
     use std::time::Duration;
@@ -1630,6 +1637,29 @@ mod tests {
         assert!(steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
         assert!(steps.contains(&vec!["verify", "msl-parity"]));
         assert_eq!(steps.last(), Some(&vec!["verify", "msl-parity"]));
+    }
+
+    #[test]
+    fn focused_msl_match_requires_selected_targets_success() {
+        let args = VerifyMslParityArgs {
+            sim_match: vec!["Modelica.Blocks.Examples.BooleanNetwork1".to_string()],
+            sim_match_exact: true,
+            ..VerifyMslParityArgs::default()
+        };
+        let config = args.to_parity_config_json();
+
+        assert_eq!(
+            config
+                .get("require_selected_targets_success")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            config
+                .get("sim_match_exact")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]

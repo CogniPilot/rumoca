@@ -160,6 +160,54 @@ fn valid_summary_template() -> MslSummary {
 }
 
 #[test]
+fn selected_target_failures_report_non_sim_ok_models() {
+    let mut summary = valid_summary_template();
+    summary.sim_target_models = vec!["A".to_string(), "B".to_string()];
+    let mut ok = phase_error_result("A".to_string(), "Success", None, None);
+    ok.sim_status = Some("sim_ok".to_string());
+    let mut fail = phase_error_result("B".to_string(), "Success", None, None);
+    fail.sim_status = Some("sim_solver_fail".to_string());
+    summary.model_results = vec![ok, fail];
+
+    assert_eq!(
+        selected_target_failures(&summary),
+        vec!["B (sim_solver_fail)".to_string()]
+    );
+}
+
+#[test]
+fn selected_target_failures_report_missing_results_in_target_order() {
+    let mut summary = valid_summary_template();
+    summary.sim_target_models = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+    let mut ok = phase_error_result("A".to_string(), "Success", None, None);
+    ok.sim_status = Some("sim_ok".to_string());
+    summary.model_results = vec![ok];
+
+    assert_eq!(
+        selected_target_failures(&summary),
+        vec![
+            "B (missing-result)".to_string(),
+            "C (missing-result)".to_string()
+        ]
+    );
+}
+
+#[test]
+fn selected_target_gate_returns_error_instead_of_asserting() {
+    let mut summary = valid_summary_template();
+    summary.sim_target_models = vec!["A".to_string()];
+    let mut fail = phase_error_result("A".to_string(), "Success", None, None);
+    fail.sim_status = Some("sim_solver_fail".to_string());
+    summary.model_results = vec![fail];
+
+    let error = enforce_all_selected_targets_succeeded(&summary)
+        .expect_err("focused selected-target failure should be returned");
+    let message = error.to_string();
+    assert!(message.contains("1 of 1 selected simulation target(s) did not succeed"));
+    assert!(message.contains("A (sim_solver_fail)"));
+}
+
+#[test]
 fn current_quality_snapshot_marks_only_partial_runs() {
     let summary = valid_summary_template();
     let full = current_msl_quality_snapshot_json(&summary, None, false)
