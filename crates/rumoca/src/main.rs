@@ -816,6 +816,37 @@ fn configured_model_name(
 }
 
 #[cfg(feature = "runner")]
+/// Resolve the viewer scene script (read from `[transport.http].scene`) and the
+/// directory served at `/assets/...`. The asset dir defaults to the scene
+/// script's parent, overridden by an explicit `[transport.http].asset_dir`
+/// (both resolved relative to the config file), letting several examples share
+/// one `/assets/` root (e.g. `examples/assets`).
+fn resolve_scene_and_asset_dir(
+    config: &rumoca_sim::runner::config::SimulationConfig,
+    config_dir: &Path,
+) -> Result<(Option<String>, Option<std::path::PathBuf>)> {
+    let http = config.transport.as_ref().and_then(|t| t.http.as_ref());
+
+    let mut scene_asset_dir = None;
+    let scene_script = match http.and_then(|h| h.scene.clone()) {
+        Some(rel) => {
+            let scene_full = resolve_path(config_dir, &rel);
+            scene_asset_dir = scene_full.parent().map(Path::to_path_buf);
+            Some(
+                std::fs::read_to_string(&scene_full)
+                    .with_context(|| format!("Read scene script: {}", scene_full.display()))?,
+            )
+        }
+        None => None,
+    };
+
+    if let Some(asset_dir) = http.and_then(|h| h.asset_dir.as_deref()) {
+        scene_asset_dir = Some(resolve_path(config_dir, asset_dir));
+    }
+
+    Ok((scene_script, scene_asset_dir))
+}
+
 fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
     let config_path = args.config.as_deref().ok_or_else(|| {
         anyhow::anyhow!("rumoca sim requires MODELICA_FILE or --config <rum.toml>")
@@ -883,47 +914,7 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
         });
     }
 
-    // Scene comes from [transport.http].scene in the scenario config.
-    let scene_ref = config
-        .transport
-        .as_ref()
-        .and_then(|t| t.http.as_ref())
-        .and_then(|h| h.scene.clone());
-    let mut scene_asset_dir = None;
-    let scene_script = match scene_ref {
-        Some(rel) => {
-            let scene_path = Path::new(&rel);
-            let scene_full = if scene_path.is_absolute() {
-                scene_path.to_path_buf()
-            } else {
-                config_dir.join(scene_path)
-            };
-            scene_asset_dir = scene_full.parent().map(Path::to_path_buf);
-            Some(
-                std::fs::read_to_string(&scene_full)
-                    .with_context(|| format!("Read scene script: {}", scene_full.display()))?,
-            )
-        }
-        None => None,
-    };
-
-    // An explicit `[transport.http].asset_dir` (resolved relative to the config
-    // file) overrides the scene-parent default, letting several examples share
-    // one `/assets/` root (e.g. examples/assets).
-    if let Some(asset_dir) = config
-        .transport
-        .as_ref()
-        .and_then(|t| t.http.as_ref())
-        .and_then(|h| h.asset_dir.as_deref())
-    {
-        let dir = Path::new(asset_dir);
-        let full = if dir.is_absolute() {
-            dir.to_path_buf()
-        } else {
-            config_dir.join(dir)
-        };
-        scene_asset_dir = Some(full);
-    }
+    let (scene_script, scene_asset_dir) = resolve_scene_and_asset_dir(&config, config_dir)?;
 
     Ok(rumoca_sim::runner::run(rumoca_sim::runner::SimArgs {
         model_source,
