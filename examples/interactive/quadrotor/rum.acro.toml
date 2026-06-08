@@ -1,4 +1,4 @@
-source_roots = ["../../../target/cmm/CMM-v0.0.1"]
+source_roots = ["../../../target/cmm/CMM-v0.0.2"]
 [rumoca]
 version = "1"
 task = "simulate"
@@ -208,6 +208,8 @@ solver = "rk-like"
 [transport.http]
 port = 8080
 scene = "quadrotor_scene.js"
+# Skybox, PBR textures, and glb models live in the shared examples/assets root.
+asset_dir = "../../assets"
 
 [transport.websocket]
 port = 8081

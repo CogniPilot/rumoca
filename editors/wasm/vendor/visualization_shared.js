@@ -1732,7 +1732,7 @@ ctx.onFrame = (api) => {
       </div>
       <div class="field">
         <label for="workspaceSourceRootPaths">Workspace Modelica Path</label>
-        <textarea id="workspaceSourceRootPaths" placeholder="target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0&#10;target/cmm/CMM-v0.0.1">${escapeHtml(workspaceSourceRootPaths.join('\n'))}</textarea>
+        <textarea id="workspaceSourceRootPaths" placeholder="target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0&#10;target/cmm/CMM-v0.0.2">${escapeHtml(workspaceSourceRootPaths.join('\n'))}</textarea>
         <div class="hint">Saved to rumoca.sourceRootPaths at workspace scope. Use repository-relative paths for settings you want to commit.</div>
       </div>
       ${inheritedSourceRootsMarkup}
@@ -1742,7 +1742,7 @@ ctx.onFrame = (api) => {
       </div>
       <div class="field">
         <label for="sourceRootPaths">Scenario Source Root Paths</label>
-        <textarea id="sourceRootPaths" placeholder="../../target/cmm/CMM-v0.0.1"></textarea>
+        <textarea id="sourceRootPaths" placeholder="../../target/cmm/CMM-v0.0.2"></textarea>
         <div class="hint">Saved in this .rum scenario and appended only for this configured model run.</div>
       </div>
     </div>

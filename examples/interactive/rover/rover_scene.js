@@ -9,7 +9,7 @@
 //   wheel_rpm        — rear-wheel angular velocity [rad/s] (rolling)
 //   front_wheel_yaw  — front steering angle [rad]
 
-// GLB jeep from poly.pizza — https://poly.pizza/m/eZ_13w7qZh7 (CC-BY).
+// "Buggy" by Nick Slough (poly.pizza) — https://poly.pizza/m/eZ_13w7qZh7, CC-BY 3.0.
 // The GLB has 101 un-transformed nodes (geometry baked in world coords),
 // so we load it, then for each wheel node: compute its bbox centroid,
 // shift geometry so the centroid is at origin, wrap in a pivot Group at

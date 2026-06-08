@@ -195,8 +195,8 @@ jobs:
         continue-on-error: true
         id: cmm-cache
         with:
-          path: target/cmm/CMM-v0.0.1
-          key: cmm-v0.0.1-bb7fb2033bf97e7d4e62f7e62097e0b206dfefac0562d0d0756922bb08f30469
+          path: target/cmm/CMM-v0.0.2
+          key: cmm-v0.0.2-ec233a25a0875d2ba1d07f4199a25c8eeb86694d3f9867394d2ae50e41574508
 
       - name: Ensure MSL
         shell: bash

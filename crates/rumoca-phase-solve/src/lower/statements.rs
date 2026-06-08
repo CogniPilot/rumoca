@@ -5,8 +5,8 @@ use rumoca_ir_solve::{BinaryOp, Reg, ScalarSlot};
 use super::function_projection::format_subscript_binding_key;
 use super::helpers::*;
 use super::{
-    BREAK_FLAG_BINDING, LowerBuilder, LowerError, RETURN_FLAG_BINDING, Scope, size_binding_key,
-    upsert_local_indexed_binding,
+    BREAK_FLAG_BINDING, LocalIndexedBinding, LowerBuilder, LowerError, RETURN_FLAG_BINDING, Scope,
+    size_binding_key, upsert_local_indexed_binding,
 };
 
 const MAX_INLINE_WHILE_ITERS: usize = 128;
@@ -49,27 +49,36 @@ impl<'a> LowerBuilder<'a> {
         }
 
         let entry_scope = scope.clone();
+        // Each branch lowers inside `with_local_lower_frame`, which rolls back
+        // the builder-level `local_indexed_bindings` cache afterwards. Snapshot
+        // the entry state so array elements a branch reassigns can be merged
+        // back as conditional selects below (see `merge_branch_indexed_bindings`).
+        let entry_indexed = self.local_indexed_bindings.clone();
         let mut cond_regs = Vec::with_capacity(cond_blocks.len());
         let mut branch_scopes = Vec::with_capacity(cond_blocks.len());
+        let mut branch_indexed = Vec::with_capacity(cond_blocks.len());
 
         for block in cond_blocks {
-            let (cond, branch_scope) = self.with_local_lower_frame(|builder| {
+            let (cond, branch_scope, indexed) = self.with_local_lower_frame(|builder| {
                 let cond = builder.lower_expr(&block.cond, &entry_scope, call_depth)?;
                 let mut branch_scope = entry_scope.clone();
                 let _returned =
                     builder.lower_statements(&block.stmts, &mut branch_scope, call_depth)?;
-                Ok((cond, branch_scope))
+                let indexed = builder.local_indexed_bindings.clone();
+                Ok((cond, branch_scope, indexed))
             })?;
             cond_regs.push(cond);
             branch_scopes.push(branch_scope);
+            branch_indexed.push(indexed);
         }
 
-        let else_scope = self.with_local_lower_frame(|builder| {
+        let (else_scope, else_indexed) = self.with_local_lower_frame(|builder| {
             let mut else_scope = entry_scope.clone();
             if let Some(stmts) = else_block {
                 let _returned = builder.lower_statements(stmts, &mut else_scope, call_depth)?;
             }
-            Ok(else_scope)
+            let indexed = builder.local_indexed_bindings.clone();
+            Ok((else_scope, indexed))
         })?;
 
         let mut merged_scope = entry_scope.clone();
@@ -96,7 +105,84 @@ impl<'a> LowerBuilder<'a> {
         }
 
         *scope = merged_scope;
+
+        // The scalar merge above rebuilt scope-level bindings, but the
+        // builder-level `local_indexed_bindings` cache (consulted when an
+        // inlined function's array output is captured) was rolled back by each
+        // branch frame. Reconstruct array elements assigned inside branches so
+        // a partially-filled array (e.g. a small-angle guard that writes only
+        // some Lie-algebra components per branch) survives intact.
+        self.merge_branch_indexed_bindings(
+            &entry_indexed,
+            &cond_regs,
+            &branch_indexed,
+            &else_indexed,
+        );
+
         Ok(false)
+    }
+
+    /// Re-merge builder-level indexed array-element bindings after if-branches.
+    ///
+    /// `with_local_lower_frame` rolls back `local_indexed_bindings` for every
+    /// branch, so an element assigned only inside branches (e.g. a small-angle
+    /// guard that fills part of a Lie-algebra vector) would otherwise vanish
+    /// from the cache the function inliner reads when capturing an array output.
+    /// For each (base, indices) any branch assigns, rebuild the value as a
+    /// `select` over the branch conditions — defaulting to the else-branch
+    /// value, then the entry value, then 0 — mirroring the scalar scope merge.
+    /// Elements assigned in only some branches therefore become conditional
+    /// (never an unconditional leak).
+    fn merge_branch_indexed_bindings(
+        &mut self,
+        entry_indexed: &IndexMap<String, Vec<LocalIndexedBinding>>,
+        cond_regs: &[Reg],
+        branch_indexed: &[IndexMap<String, Vec<LocalIndexedBinding>>],
+        else_indexed: &IndexMap<String, Vec<LocalIndexedBinding>>,
+    ) {
+        fn lookup(
+            store: &IndexMap<String, Vec<LocalIndexedBinding>>,
+            base: &str,
+            indices: &[usize],
+        ) -> Option<Reg> {
+            store
+                .get(base)
+                .and_then(|entries| entries.iter().find(|entry| entry.indices == indices))
+                .map(|entry| entry.reg)
+        }
+
+        // Every (base, indices) a branch or the else-branch assigns differently
+        // from the entry state needs a merged value.
+        let mut candidates: IndexSet<(String, Vec<usize>)> = IndexSet::new();
+        let assigned_entries = branch_indexed
+            .iter()
+            .chain(std::iter::once(else_indexed))
+            .flat_map(|store| store.iter())
+            .flat_map(|(base, entries)| entries.iter().map(move |entry| (base, entry)));
+        for (base, entry) in assigned_entries {
+            if lookup(entry_indexed, base, &entry.indices) != Some(entry.reg) {
+                candidates.insert((base.clone(), entry.indices.clone()));
+            }
+        }
+
+        for (base, indices) in candidates {
+            let mut merged = lookup(else_indexed, &base, &indices)
+                .or_else(|| lookup(entry_indexed, &base, &indices))
+                .unwrap_or_else(|| self.emit_const(0.0));
+            let branch_values = cond_regs
+                .iter()
+                .zip(branch_indexed.iter())
+                .rev()
+                .filter_map(|(cond, store)| lookup(store, &base, &indices).map(|reg| (cond, reg)));
+            for (cond, reg) in branch_values {
+                merged = self.emit_select(*cond, reg, merged);
+            }
+            upsert_local_indexed_binding(
+                self.local_indexed_bindings.entry(base).or_default(),
+                &indices,
+                merged,
+            );
+        }
     }
 
     fn compile_time_if_selection<'b>(

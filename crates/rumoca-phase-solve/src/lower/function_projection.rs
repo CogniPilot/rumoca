@@ -315,7 +315,7 @@ pub(super) fn format_subscript_binding_key(base: &str, indices: &[usize]) -> Str
     }
 }
 
-fn clear_indexed_scope_bindings(scope: &mut Scope, target: &str) {
+pub(super) fn clear_indexed_scope_bindings(scope: &mut Scope, target: &str) {
     let prefix = format!("{target}[");
     let keys = scope
         .keys()
