@@ -207,7 +207,7 @@ pub(crate) enum VerifyCommand {
     EditorMsl(VerifyEditorRuntimeArgs),
     /// Full local/CI verification suite, including the long MSL parity gate
     Full(VerifySuiteArgs),
-    /// CI-equivalent verification suite except for the long full-MSL parity gate
+    /// Risk-focused verification suite for local development
     Quick(VerifySuiteArgs),
     /// Verify the primary binaries build
     Binaries,
@@ -233,6 +233,14 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     VerifyStep {
         label: "lint",
         args: &["verify", "lint"],
+        include_in_full: true,
+        include_in_quick: true,
+    },
+    // MSL parity is the highest-signal gate for compiler/simulator changes, so
+    // it runs before lower-risk heavyweight surfaces.
+    VerifyStep {
+        label: "MSL parity",
+        args: &["verify", "msl-parity"],
         include_in_full: true,
         include_in_quick: true,
     },
@@ -264,13 +272,13 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
         label: "coverage run",
         args: &["coverage", "run"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "coverage report",
         args: &["coverage", "report"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "coverage gate",
@@ -281,7 +289,7 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
             "3.0",
         ],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "docs",
@@ -299,17 +307,11 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
         label: "WASM gate",
         args: &["wasm", "test"],
         include_in_full: true,
-        include_in_quick: true,
+        include_in_quick: false,
     },
     VerifyStep {
         label: "full-MSL LSP/editor gate",
         args: &["verify", "lsp-msl-completion-timings"],
-        include_in_full: true,
-        include_in_quick: true,
-    },
-    VerifyStep {
-        label: "MSL parity",
-        args: &["verify", "msl-parity"],
         include_in_full: true,
         include_in_quick: false,
     },
@@ -1714,36 +1716,30 @@ mod tests {
     }
 
     #[test]
-    fn quick_suite_runs_ci_surface_without_msl_parity() {
+    fn quick_suite_runs_risk_focused_surface_with_msl_parity() {
         let steps = step_argvs(VerifySuite::Quick);
         assert_eq!(
             steps,
             vec![
                 vec!["verify", "lint"],
+                vec!["verify", "msl-parity"],
                 vec!["verify", "workspace"],
                 vec!["verify", "examples"],
                 vec!["verify", "binaries"],
                 vec!["verify", "template-runtimes"],
-                vec!["coverage", "run"],
-                vec!["coverage", "report"],
-                vec![
-                    "coverage",
-                    "gate",
-                    "--allowed-workspace-line-coverage-drop",
-                    "3.0"
-                ],
                 vec!["verify", "docs"],
                 vec!["vscode", "test"],
-                vec!["wasm", "test"],
-                vec!["verify", "lsp-msl-completion-timings"],
             ]
         );
-        assert!(!steps.contains(&vec!["verify", "msl-parity"]));
+        assert!(!steps.contains(&vec!["coverage", "run"]));
+        assert!(!steps.contains(&vec!["wasm", "test"]));
+        assert!(!steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
     }
 
     #[test]
-    fn full_suite_includes_msl_parity() {
+    fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
         let steps = step_argvs(VerifySuite::Full);
+        assert_eq!(steps.get(1), Some(&vec!["verify", "msl-parity"]));
         assert!(steps.contains(&vec!["verify", "workspace"]));
         assert!(steps.contains(&vec!["verify", "examples"]));
         assert!(steps.contains(&vec!["verify", "binaries"]));
@@ -1751,7 +1747,6 @@ mod tests {
         assert!(steps.contains(&vec!["coverage", "run"]));
         assert!(steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
         assert!(steps.contains(&vec!["verify", "msl-parity"]));
-        assert_eq!(steps.last(), Some(&vec!["verify", "msl-parity"]));
     }
 
     #[test]

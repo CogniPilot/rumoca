@@ -12,8 +12,141 @@ pub(super) struct ModelWorkerQueue<'a> {
     pub(super) cpu_tokens: std::sync::Arc<ResourceTokenLimiter>,
     pub(super) cpu_costs: &'a HashMap<String, usize>,
     pub(super) startup_barrier: std::sync::Arc<std::sync::Barrier>,
+    pub(super) scheduler_stats: SchedulerStatsCollector,
     pub(super) next_model: &'a AtomicUsize,
     pub(super) result_tx: std::sync::mpsc::SyncSender<(usize, MslModelResult)>,
+}
+
+#[derive(Clone)]
+pub(super) struct SchedulerStatsCollector {
+    inner: std::sync::Arc<SchedulerStatsInner>,
+}
+
+struct SchedulerStatsInner {
+    models_started: AtomicUsize,
+    active_workers: AtomicUsize,
+    max_active_workers: AtomicUsize,
+    cpu_token_wait_nanos: std::sync::atomic::AtomicU64,
+    memory_token_wait_nanos: std::sync::atomic::AtomicU64,
+    active_model_wall_nanos: std::sync::atomic::AtomicU64,
+}
+
+pub(super) struct SchedulerTimingInputs {
+    pub(super) selected_model_count: usize,
+    pub(super) requested_worker_threads: usize,
+    pub(super) effective_worker_threads: usize,
+    pub(super) worker_count: usize,
+    pub(super) pinned_worker_count: usize,
+    pub(super) cpu_token_capacity: usize,
+    pub(super) compile_memory_token_capacity_mb: Option<usize>,
+    pub(super) compile_memory_model_cost_mb: Option<usize>,
+    pub(super) elapsed_seconds: f64,
+}
+
+struct ActiveModelGuard<'a> {
+    stats: &'a SchedulerStatsCollector,
+    started: Instant,
+}
+
+impl SchedulerStatsCollector {
+    pub(super) fn new() -> Self {
+        Self {
+            inner: std::sync::Arc::new(SchedulerStatsInner {
+                models_started: AtomicUsize::new(0),
+                active_workers: AtomicUsize::new(0),
+                max_active_workers: AtomicUsize::new(0),
+                cpu_token_wait_nanos: std::sync::atomic::AtomicU64::new(0),
+                memory_token_wait_nanos: std::sync::atomic::AtomicU64::new(0),
+                active_model_wall_nanos: std::sync::atomic::AtomicU64::new(0),
+            }),
+        }
+    }
+
+    fn record_model_started(&self) {
+        self.inner.models_started.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_cpu_wait(&self, elapsed: Duration) {
+        self.inner.cpu_token_wait_nanos.fetch_add(
+            duration_nanos(elapsed),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    fn record_memory_wait(&self, elapsed: Duration) {
+        self.inner.memory_token_wait_nanos.fetch_add(
+            duration_nanos(elapsed),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    fn enter_active_model(&self) -> ActiveModelGuard<'_> {
+        let active = self.inner.active_workers.fetch_add(1, Ordering::Relaxed) + 1;
+        update_atomic_max(&self.inner.max_active_workers, active);
+        ActiveModelGuard {
+            stats: self,
+            started: Instant::now(),
+        }
+    }
+
+    pub(super) fn snapshot(&self, inputs: SchedulerTimingInputs) -> MslSchedulerTimings {
+        let worker_slot_wall_seconds = inputs.elapsed_seconds * inputs.worker_count as f64;
+        let active_model_wall_seconds =
+            nanos_to_seconds(self.inner.active_model_wall_nanos.load(Ordering::Relaxed));
+        MslSchedulerTimings {
+            selected_model_count: inputs.selected_model_count,
+            requested_worker_threads: inputs.requested_worker_threads,
+            effective_worker_threads: inputs.effective_worker_threads,
+            worker_count: inputs.worker_count,
+            pinned_worker_count: inputs.pinned_worker_count,
+            cpu_token_capacity: inputs.cpu_token_capacity,
+            compile_memory_token_capacity_mb: inputs.compile_memory_token_capacity_mb,
+            compile_memory_model_cost_mb: inputs.compile_memory_model_cost_mb,
+            models_started: self.inner.models_started.load(Ordering::Relaxed),
+            max_active_workers: self.inner.max_active_workers.load(Ordering::Relaxed),
+            cpu_token_wait_seconds: nanos_to_seconds(
+                self.inner.cpu_token_wait_nanos.load(Ordering::Relaxed),
+            ),
+            compile_memory_token_wait_seconds: nanos_to_seconds(
+                self.inner.memory_token_wait_nanos.load(Ordering::Relaxed),
+            ),
+            active_model_wall_seconds,
+            worker_slot_wall_seconds,
+            worker_slot_idle_seconds: (worker_slot_wall_seconds - active_model_wall_seconds)
+                .max(0.0),
+        }
+    }
+}
+
+impl Drop for ActiveModelGuard<'_> {
+    fn drop(&mut self) {
+        self.stats
+            .inner
+            .active_workers
+            .fetch_sub(1, Ordering::Relaxed);
+        self.stats.inner.active_model_wall_nanos.fetch_add(
+            duration_nanos(self.started.elapsed()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+fn duration_nanos(duration: Duration) -> u64 {
+    duration.as_nanos().min(u64::MAX as u128) as u64
+}
+
+fn nanos_to_seconds(nanos: u64) -> f64 {
+    Duration::from_nanos(nanos).as_secs_f64()
+}
+
+fn update_atomic_max(maximum: &AtomicUsize, value: usize) {
+    let mut current = maximum.load(Ordering::Relaxed);
+    while value > current {
+        match maximum.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(next) => current = next,
+        }
+    }
 }
 
 pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
@@ -29,11 +162,16 @@ pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
             }
             return;
         };
+        queue.scheduler_stats.record_model_started();
         if _worker_memory_permit.is_none() {
-            _worker_memory_permit = queue
-                .memory_tokens
-                .as_ref()
-                .map(|tokens| tokens.acquire(compile_model_memory_mb()));
+            _worker_memory_permit = match queue.memory_tokens.as_ref() {
+                Some(tokens) => {
+                    let (permit, elapsed) = tokens.acquire_timed(compile_model_memory_mb());
+                    queue.scheduler_stats.record_memory_wait(elapsed);
+                    Some(permit)
+                }
+                None => None,
+            };
         }
         if worker.is_none() {
             match ModelWorkerDaemon::spawn(
@@ -54,7 +192,9 @@ pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
             }
         }
         let cpu_cost = queue.cpu_costs.get(name).copied().unwrap_or(1).max(1);
-        let _cpu_permit = queue.cpu_tokens.acquire(cpu_cost);
+        let (_cpu_permit, cpu_wait) = queue.cpu_tokens.acquire_timed(cpu_cost);
+        queue.scheduler_stats.record_cpu_wait(cpu_wait);
+        let _active_model = queue.scheduler_stats.enter_active_model();
         let selected_for_simulation = queue
             .sim_target_names
             .is_some_and(|names| names.contains(name));
@@ -113,6 +253,7 @@ pub(super) struct StreamingChunkOutput {
     model_results: Vec<MslModelResult>,
     compile_seconds: f64,
     drain_seconds: f64,
+    scheduler: MslSchedulerTimings,
 }
 
 pub(super) enum StreamingPreparedEntry {
@@ -597,7 +738,7 @@ pub(super) fn run_streaming_compile_and_render_chunk(
         queue_stage_label("compile", chunk_idx, chunk_count),
         compile_timeout_secs,
     );
-    let compile_seconds = stream_source_root_compile_with_model_budgets(
+    let compile_output = stream_source_root_compile_with_model_budgets(
         source_root,
         SourceRootCompileQueue {
             source_root_path,
@@ -617,6 +758,7 @@ pub(super) fn run_streaming_compile_and_render_chunk(
     let _ = compile_progress_logger.join();
 
     let pipeline_seconds = pipeline_start.elapsed().as_secs_f64();
+    let compile_seconds = compile_output.elapsed_seconds;
     let drain_seconds = (pipeline_seconds - compile_seconds).max(0.0);
     let mut ordered_results: Vec<Option<MslModelResult>> = std::iter::repeat_with(|| None)
         .take(names_chunk.len())
@@ -634,6 +776,7 @@ pub(super) fn run_streaming_compile_and_render_chunk(
         model_results,
         compile_seconds,
         drain_seconds,
+        scheduler: compile_output.scheduler,
     }
 }
 
@@ -702,7 +845,7 @@ pub(super) fn run_compile_only_chunk(
     let mut ordered_results: Vec<Option<MslModelResult>> = std::iter::repeat_with(|| None)
         .take(names_chunk.len())
         .collect();
-    let compile_seconds = {
+    let compile_output = {
         let compile_timeout_secs = global_queue_compile_timeout_secs(
             names_chunk.len(),
             simulation_threads,
@@ -731,6 +874,7 @@ pub(super) fn run_compile_only_chunk(
     compile_in_flight.store(false, Ordering::Relaxed);
     let _ = compile_progress_logger.join();
     let pipeline_seconds = chunk_compile_start.elapsed().as_secs_f64();
+    let compile_seconds = compile_output.elapsed_seconds;
 
     if log_parallelism {
         println!("Compile-only result conversion streamed during compile");
@@ -745,6 +889,7 @@ pub(super) fn run_compile_only_chunk(
         model_results,
         compile_seconds,
         drain_seconds,
+        scheduler: compile_output.scheduler,
     }
 }
 
@@ -765,6 +910,7 @@ pub(super) fn run_chunked_compile_and_render(
             batch_size: 0,
             chunk_count: 0,
             worker_threads: 0,
+            scheduler: MslSchedulerTimings::default(),
         };
     }
     let effective_worker_threads = worker_threads_for_model_count(worker_threads, compile_count);
@@ -829,6 +975,7 @@ pub(super) fn run_chunked_compile_and_render(
         batch_size,
         chunk_count,
         worker_threads: effective_worker_threads,
+        scheduler: output.scheduler,
     }
 }
 

@@ -365,47 +365,116 @@ fn render_msl_parity_timing_markdown(report: &MslParityTimingReport) -> String {
             stage.label, stage.status, stage.elapsed_seconds
         ));
     }
+    push_msl_parity_counts_markdown(&mut lines, &report.counts);
+    push_msl_parity_workers_markdown(&mut lines, &report.workers);
+    push_msl_parity_scheduler_markdown(&mut lines, &report.core_pipeline.scheduler);
+    push_msl_parity_hotspots_markdown(&mut lines, &report.hotspots);
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn push_msl_parity_counts_markdown(lines: &mut Vec<String>, counts: &MslParityTimingCounts) {
     lines.extend([
         String::new(),
         "## Counts".to_string(),
         String::new(),
-        format!("- total_models: {}", report.counts.total_models),
-        format!("- compiled_models: {}", report.counts.compiled_models),
-        format!("- solve_models: {}", report.counts.solve_models),
-        format!("- balanced_models: {}", report.counts.balanced_models),
-        format!("- sim_target_models: {}", report.counts.sim_target_models),
-        format!("- sim_attempted: {}", report.counts.sim_attempted),
-        format!("- sim_ok: {}", report.counts.sim_ok),
-        format!("- sim_solver_fail: {}", report.counts.sim_solver_fail),
-        format!("- sim_timeout: {}", report.counts.sim_timeout),
-        format!("- ic_attempted: {}", report.counts.ic_attempted),
-        format!("- ic_ok: {}", report.counts.ic_ok),
-        format!(
-            "- trace_files_written: {}",
-            report.counts.trace_files_written
-        ),
-        format!("- trace_write_errors: {}", report.counts.trace_write_errors),
+        format!("- total_models: {}", counts.total_models),
+        format!("- compiled_models: {}", counts.compiled_models),
+        format!("- solve_models: {}", counts.solve_models),
+        format!("- balanced_models: {}", counts.balanced_models),
+        format!("- sim_target_models: {}", counts.sim_target_models),
+        format!("- sim_attempted: {}", counts.sim_attempted),
+        format!("- sim_ok: {}", counts.sim_ok),
+        format!("- sim_solver_fail: {}", counts.sim_solver_fail),
+        format!("- sim_timeout: {}", counts.sim_timeout),
+        format!("- ic_attempted: {}", counts.ic_attempted),
+        format!("- ic_ok: {}", counts.ic_ok),
+        format!("- trace_files_written: {}", counts.trace_files_written),
+        format!("- trace_write_errors: {}", counts.trace_write_errors),
+    ]);
+}
+
+fn push_msl_parity_workers_markdown(lines: &mut Vec<String>, workers: &MslParityTimingWorkers) {
+    lines.extend([
         String::new(),
         "## Workers".to_string(),
         String::new(),
-        format!("- rumoca_workers: {}", report.workers.rumoca_workers),
-        format!("- omc_workers: {}", report.workers.omc_workers),
-        format!("- omc_threads: {}", report.workers.omc_threads),
+        format!("- rumoca_workers: {}", workers.rumoca_workers),
+        format!("- omc_workers: {}", workers.omc_workers),
+        format!("- omc_threads: {}", workers.omc_threads),
     ]);
-    if let Some(hotspot) = &report.hotspots.hottest_compile_model {
+}
+
+fn push_msl_parity_scheduler_markdown(lines: &mut Vec<String>, scheduler: &MslSchedulerTimings) {
+    lines.extend([
+        String::new(),
+        "## Rumoca Scheduler".to_string(),
+        String::new(),
+        format!("- selected_model_count: {}", scheduler.selected_model_count),
+        format!(
+            "- requested_worker_threads: {}",
+            scheduler.requested_worker_threads
+        ),
+        format!(
+            "- effective_worker_threads: {}",
+            scheduler.effective_worker_threads
+        ),
+        format!("- worker_count: {}", scheduler.worker_count),
+        format!("- pinned_worker_count: {}", scheduler.pinned_worker_count),
+        format!("- cpu_token_capacity: {}", scheduler.cpu_token_capacity),
+        format!(
+            "- compile_memory_token_capacity_mb: {}",
+            option_usize_label(scheduler.compile_memory_token_capacity_mb)
+        ),
+        format!(
+            "- compile_memory_model_cost_mb: {}",
+            option_usize_label(scheduler.compile_memory_model_cost_mb)
+        ),
+        format!("- models_started: {}", scheduler.models_started),
+        format!("- max_active_workers: {}", scheduler.max_active_workers),
+        format!(
+            "- cpu_token_wait_seconds: {:.3}",
+            scheduler.cpu_token_wait_seconds
+        ),
+        format!(
+            "- compile_memory_token_wait_seconds: {:.3}",
+            scheduler.compile_memory_token_wait_seconds
+        ),
+        format!(
+            "- active_model_wall_seconds: {:.3}",
+            scheduler.active_model_wall_seconds
+        ),
+        format!(
+            "- worker_slot_wall_seconds: {:.3}",
+            scheduler.worker_slot_wall_seconds
+        ),
+        format!(
+            "- worker_slot_idle_seconds: {:.3}",
+            scheduler.worker_slot_idle_seconds
+        ),
+    ]);
+}
+
+fn push_msl_parity_hotspots_markdown(lines: &mut Vec<String>, hotspots: &MslParityTimingHotspots) {
+    lines.extend([String::new(), "## Hotspots".to_string(), String::new()]);
+    if let Some(hotspot) = &hotspots.hottest_compile_model {
         lines.push(format!(
             "- hottest_compile_model: {} ({:.3}s)",
             hotspot.model, hotspot.seconds
         ));
     }
-    if let Some(hotspot) = &report.hotspots.hottest_sim_model {
+    if let Some(hotspot) = &hotspots.hottest_sim_model {
         lines.push(format!(
             "- hottest_sim_model: {} ({:.3}s)",
             hotspot.model, hotspot.seconds
         ));
     }
-    lines.push(String::new());
-    lines.join("\n")
+}
+
+fn option_usize_label(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "disabled".to_string())
 }
 
 fn last_stage_seconds(report: &MslParityTimingReport) -> f64 {
@@ -563,6 +632,25 @@ pub(super) fn print_timing_breakdown(summary: &MslSummary) {
         );
     }
     println!("  - Worker threads: {}", summary.timings.worker_threads);
+    println!(
+        "  - Scheduler workers: requested={}, effective={}, spawned={}, pinned={}, max_active={}",
+        summary.timings.scheduler.requested_worker_threads,
+        summary.timings.scheduler.effective_worker_threads,
+        summary.timings.scheduler.worker_count,
+        summary.timings.scheduler.pinned_worker_count,
+        summary.timings.scheduler.max_active_workers
+    );
+    println!(
+        "  - Scheduler waits: cpu_tokens={:.3}s, memory_tokens={:.3}s",
+        summary.timings.scheduler.cpu_token_wait_seconds,
+        summary.timings.scheduler.compile_memory_token_wait_seconds
+    );
+    println!(
+        "  - Scheduler worker slots: active={:.3}s, total={:.3}s, idle={:.3}s",
+        summary.timings.scheduler.active_model_wall_seconds,
+        summary.timings.scheduler.worker_slot_wall_seconds,
+        summary.timings.scheduler.worker_slot_idle_seconds
+    );
     println!(
         "  - Compile-scope throughput: {:.2} models/s",
         summary.total_models as f64 / summary.timings.frontend_compile_seconds.max(f64::EPSILON)
@@ -783,6 +871,23 @@ mod tests {
             harness_total_seconds: 2.0,
             core_pipeline: MslPhaseTimings {
                 core_pipeline_seconds: 2.0,
+                scheduler: MslSchedulerTimings {
+                    selected_model_count: 566,
+                    requested_worker_threads: 16,
+                    effective_worker_threads: 14,
+                    worker_count: 14,
+                    pinned_worker_count: 14,
+                    cpu_token_capacity: 14,
+                    compile_memory_token_capacity_mb: Some(24_000),
+                    compile_memory_model_cost_mb: Some(1_200),
+                    models_started: 566,
+                    max_active_workers: 13,
+                    cpu_token_wait_seconds: 0.25,
+                    compile_memory_token_wait_seconds: 0.5,
+                    active_model_wall_seconds: 128.0,
+                    worker_slot_wall_seconds: 140.0,
+                    worker_slot_idle_seconds: 12.0,
+                },
                 ..MslPhaseTimings::default()
             },
             counts: MslParityTimingCounts {
@@ -830,6 +935,10 @@ mod tests {
         assert!(markdown.contains("| omc_reference_and_trace_compare | pass | 1.500 |"));
         assert!(markdown.contains("- sim_ok: 156"));
         assert!(markdown.contains("- rumoca_workers: 14"));
+        assert!(markdown.contains("## Rumoca Scheduler"));
+        assert!(markdown.contains("- requested_worker_threads: 16"));
+        assert!(markdown.contains("- max_active_workers: 13"));
+        assert!(markdown.contains("- compile_memory_token_capacity_mb: 24000"));
         assert!(markdown.contains("- hottest_compile_model: Modelica.X (24.000s)"));
     }
 
