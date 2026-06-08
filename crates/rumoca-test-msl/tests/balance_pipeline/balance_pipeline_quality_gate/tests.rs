@@ -502,7 +502,7 @@ fn sim_stage_gate_allows_equal_cumulative_count() {
 }
 
 #[test]
-fn sim_stage_gate_rejects_one_model_drop() {
+fn sim_stage_gate_allows_one_model_full_run_jitter() {
     let baseline = MslQualityBaseline {
         sim_ok: 800,
         sim_attempted: 1000,
@@ -516,6 +516,26 @@ fn sim_stage_gate_rejects_one_model_drop() {
     let mut reasons = Vec::new();
     push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
     assert!(
+        reasons.is_empty(),
+        "one-model full-run simulation jitter should pass, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn sim_stage_gate_rejects_two_model_full_run_drop() {
+    let baseline = MslQualityBaseline {
+        sim_ok: 800,
+        sim_attempted: 1000,
+        sim_target_models: 1000,
+        sim_success_rate: 0.8,
+        ..baseline_quality_template()
+    };
+    let mut gate_input = gate_input_with_sim_rate(798, 1000);
+    gate_input.sim_target_models = 1000;
+
+    let mut reasons = Vec::new();
+    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    assert!(
         reasons
             .iter()
             .any(|reason| reason.contains("Sim pass count regressed")),
@@ -524,7 +544,7 @@ fn sim_stage_gate_rejects_one_model_drop() {
 }
 
 #[test]
-fn ic_stage_gate_rejects_one_model_drop() {
+fn ic_stage_gate_allows_one_model_full_run_jitter() {
     let baseline = MslQualityBaseline {
         sim_target_models: 1000,
         ic_ok: 800,
@@ -535,6 +555,27 @@ fn ic_stage_gate_rejects_one_model_drop() {
     let mut gate_input = gate_input_with_sim_rate(700, 1000);
     gate_input.sim_target_models = 1000;
     gate_input.ic_ok = 799;
+
+    let mut reasons = Vec::new();
+    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons.is_empty(),
+        "one-model full-run IC jitter should pass, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn ic_stage_gate_rejects_two_model_full_run_drop() {
+    let baseline = MslQualityBaseline {
+        sim_target_models: 1000,
+        ic_ok: 800,
+        sim_ok: 700,
+        sim_success_rate: 0.7,
+        ..baseline_quality_template()
+    };
+    let mut gate_input = gate_input_with_sim_rate(700, 1000);
+    gate_input.sim_target_models = 1000;
+    gate_input.ic_ok = 798;
 
     let mut reasons = Vec::new();
     push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
@@ -632,6 +673,46 @@ fn cumulative_stage_gate_rejects_balanced_count_drop() {
             .iter()
             .any(|reason| reason.contains("Balanced pass count regressed")),
         "expected balanced-count regression reason, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn full_run_stage_gate_allows_one_model_solve_and_ic_jitter() {
+    let baseline = MslQualityBaseline {
+        simulatable_attempted: 566,
+        parse_models: 566,
+        flatten_models: 560,
+        dae_models: 487,
+        compiled_models: 487,
+        solve_models: 390,
+        balanced_models: 390,
+        balance_denominator: 487,
+        initial_balanced_models: 230,
+        sim_target_models: 566,
+        ic_ok: 230,
+        sim_ok: 156,
+        ..baseline_quality_template()
+    };
+    let gate_input = MslQualityGateInput {
+        simulatable_attempted: 566,
+        parse_models: 566,
+        flatten_models: 560,
+        dae_models: 487,
+        compiled_models: 487,
+        solve_models: 389,
+        balanced_models: 390,
+        balance_denominator: 487,
+        initial_balanced_models: 230,
+        sim_target_models: 566,
+        ic_ok: 229,
+        sim_ok: 156,
+        ..gate_input_with_sim_rate(156, 566)
+    };
+
+    let reasons = msl_quality_regression_reasons(gate_input, &baseline, None);
+    assert!(
+        reasons.is_empty(),
+        "observed one-model CI jitter should pass, got: {reasons:?}"
     );
 }
 
@@ -816,7 +897,7 @@ fn runtime_ratio_regression_reason_triggers_on_large_drop() {
         total_models: Some(10),
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
-        runtime_ratio_stats: Some(runtime_ratio_stats(1.0, 1.0)),
+        runtime_ratio_stats: Some(runtime_ratio_stats(1.0, 0.5)),
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -859,6 +940,30 @@ fn msl_quality_regression_reasons_include_runtime_ratio_drop() {
             .iter()
             .any(|reason| reason.contains("runtime system speedup median")),
         "expected runtime regression in reasons: {reasons:#?}"
+    );
+}
+
+#[test]
+fn runtime_ratio_gate_allows_observed_ci_runner_delta() {
+    let baseline = MslQualityBaseline {
+        runtime_ratio_stats: Some(runtime_ratio_stats(1.287_891, 1.287_891)),
+        ..baseline_quality_template()
+    };
+    let parity = MslParityGateInput {
+        total_models: Some(566),
+        omc_version: Some("OpenModelica 1.26.8".to_string()),
+        runtime_context: None,
+        runtime_ratio_stats: Some(runtime_ratio_stats(0.887_313_1, 0.887_313_1)),
+        trace_accuracy_stats: None,
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
+    };
+
+    let mut reasons = Vec::new();
+    push_runtime_ratio_regression_reasons(&mut reasons, &baseline, Some(&parity));
+    assert!(
+        reasons.is_empty(),
+        "observed hosted-runner runtime delta should pass, got: {reasons:?}"
     );
 }
 

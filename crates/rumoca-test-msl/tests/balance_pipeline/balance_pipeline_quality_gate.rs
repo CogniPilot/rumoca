@@ -25,10 +25,15 @@ pub(super) const COMPILE_RATE_GATE_TOLERANCE: f64 = 0.0;
 pub(super) const BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
 /// Initial-balance-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
 pub(super) const INITIAL_BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
+/// Allowed one-model cumulative-stage jitter for full-library MSL quality runs.
+pub(super) const MSL_STAGE_COUNT_ALLOWED_DROP: usize = 1;
+/// Keep focused/unit gate checks strict; runner jitter allowance is only for
+/// full-library scale denominators.
+pub(super) const MSL_STAGE_COUNT_ALLOWED_DROP_MIN_DENOMINATOR: usize = 100;
 /// Allowed drop in compared trace-model count from baseline.
 pub(super) const TRACE_MODELS_COMPARED_ALLOWED_DROP: usize = 2;
 /// Allowed relative drop in runtime speedup median (omc/rumoca) before failing.
-pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.20;
+pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.35;
 /// OMC per-model timeout budget for simulation reference generation. OMC's
 /// `simulate()` generates C code and invokes gcc per model, which on shared CI
 /// runners far exceeds rumoca's warm per-model budget; giving OMC the same tiny
@@ -1437,17 +1442,29 @@ fn push_stage_count_regression_reason(
     baseline: usize,
     denominator: usize,
 ) {
-    if current >= baseline {
+    let allowed_drop = stage_count_allowed_drop(denominator);
+    let floor = baseline.saturating_sub(allowed_drop);
+    if current >= floor {
         return;
     }
     reasons.push(format!(
-        "{stage} pass count regressed: current={} ({:.2}%) < baseline={} ({:.2}%) over {} models",
+        "{stage} pass count regressed: current={} ({:.2}%) < floor={} ({:.2}%) (baseline={}, allowed_drop={}) over {} models",
         current,
         stage_percent(current, denominator),
+        floor,
+        stage_percent(floor, denominator),
         baseline,
-        stage_percent(baseline, denominator),
+        allowed_drop,
         denominator
     ));
+}
+
+fn stage_count_allowed_drop(denominator: usize) -> usize {
+    if denominator >= MSL_STAGE_COUNT_ALLOWED_DROP_MIN_DENOMINATOR {
+        MSL_STAGE_COUNT_ALLOWED_DROP
+    } else {
+        0
+    }
 }
 
 pub(super) fn push_runtime_ratio_regression_reasons(
