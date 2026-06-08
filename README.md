@@ -176,7 +176,7 @@ The repository includes VS Code workspace settings for common open modes:
 
 These settings use repository-relative `rumoca.sourceRootPaths` entries such
 as `target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0` and
-`target/cmm/CMM-v0.0.1`. The extension resolves those paths against the
+`target/cmm/CMM-v0.0.2`. The extension resolves those paths against the
 workspace root before sending them to the LSP.
 
 Scenario TOMLs may also declare top-level `source_roots` for dependencies that

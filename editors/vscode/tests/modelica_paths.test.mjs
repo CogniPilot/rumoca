@@ -38,7 +38,7 @@ test("resolveSourceRootPaths resolves configured relative entries against a work
   const homeDir = path.join(path.sep, "tmp", "rumoca-home");
   const workspaceDir = path.join(path.sep, "tmp", "rumoca-workspace");
   const sources = resolveSourceRootPaths(
-    ["target/msl/Modelica", "target/cmm/CMM-v0.0.1"],
+    ["target/msl/Modelica", "target/cmm/CMM-v0.0.2"],
     {},
     homeDir,
     workspaceDir,
@@ -46,7 +46,7 @@ test("resolveSourceRootPaths resolves configured relative entries against a work
 
   assert.deepEqual(sources.configuredPaths, [
     path.join(workspaceDir, "target", "msl", "Modelica"),
-    path.join(workspaceDir, "target", "cmm", "CMM-v0.0.1"),
+    path.join(workspaceDir, "target", "cmm", "CMM-v0.0.2"),
   ]);
 });
 

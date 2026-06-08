@@ -15,7 +15,7 @@ workspace settings safe to commit:
 {
   "rumoca.sourceRootPaths": [
     "target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0",
-    "target/cmm/CMM-v0.0.1"
+    "target/cmm/CMM-v0.0.2"
   ]
 }
 ```

@@ -20,8 +20,8 @@ get slow.
 | File | Role |
 |---|---|
 | `FixedWingSIL.mo` | 6-DOF aero plant, `FixedWingFBW` controller, and `FixedWing` wrapper |
-| `../../../target/cmm/CMM-v0.0.1/LieGroup/package.mo` | SO(3) attitude utilities |
-| `../../../target/cmm/CMM-v0.0.1/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
+| `../../../target/cmm/CMM-v0.0.2/LieGroup/package.mo` | SO(3) attitude utilities |
+| `../../../target/cmm/CMM-v0.0.2/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
 | `rum.toml` | Config — `FixedWing` closed-loop Modelica model |
 | `fixedwing_scene.js` | Three.js scene — desert environment + rigged airplane |
 | `../../assets/models/airplane.glb` | Aircraft model with riggable control-surface pivots |

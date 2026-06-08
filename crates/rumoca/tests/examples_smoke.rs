@@ -13,7 +13,7 @@ fn example_root() -> PathBuf {
 }
 
 fn cached_cmm_root() -> Option<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cmm/CMM-v0.0.1");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cmm/CMM-v0.0.2");
     root.join("LieGroup/package.mo").is_file().then_some(root)
 }
 
@@ -525,7 +525,7 @@ fn quadrotor_acro_solve_preserves_tensor_structure_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro tensor regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.1; run `rum repo cmm ensure`"
+             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
         );
         return;
     };
@@ -595,7 +595,7 @@ fn quadrotor_acro_config_creates_rk_stepper_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro config runtime regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.1; run `rum repo cmm ensure`"
+             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
         );
         return;
     };
@@ -634,7 +634,7 @@ fn quadrotor_acro_roll_command_generates_body_rate_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro roll response regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.1; run `rum repo cmm ensure`"
+             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
         );
         return;
     };
@@ -694,7 +694,7 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
     let Some(result) = compile_quadrotor_acro_config_if_cmm_available() else {
         eprintln!(
             "skipping QuadrotorAcro attitude regression: requires cached CMM at \
-             target/cmm/CMM-v0.0.1; run `rum repo cmm ensure`"
+             target/cmm/CMM-v0.0.2; run `rum repo cmm ensure`"
         );
         return;
     };

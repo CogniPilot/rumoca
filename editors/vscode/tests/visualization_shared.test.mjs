@@ -520,7 +520,7 @@ test("shared simulation settings helpers normalize state and build host handlers
       outputDir: "",
       sourceRootPaths: ["Fallback"],
     },
-    workspaceSourceRootPaths: ["target/cmm/CMM-v0.0.1"],
+    workspaceSourceRootPaths: ["target/cmm/CMM-v0.0.2"],
     fallbackCodegen: {
       mode: "custom-target",
       builtinTargetId: "casadi-sx",
@@ -541,7 +541,7 @@ test("shared simulation settings helpers normalize state and build host handlers
     outputDir: "",
     sourceRootOverrides: ["Fallback"],
   });
-  assert.deepEqual(builtState.workspaceSourceRootPaths, ["target/cmm/CMM-v0.0.1"]);
+  assert.deepEqual(builtState.workspaceSourceRootPaths, ["target/cmm/CMM-v0.0.2"]);
   assert.deepEqual(builtState.codegen, {
     mode: "custom-target",
     builtinTargetId: "casadi-sx",

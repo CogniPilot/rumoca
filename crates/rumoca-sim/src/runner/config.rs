@@ -475,7 +475,7 @@ bfbs = []
         assert_eq!(cfg.effective_pacing_mode(), SimPacingMode::Realtime);
         assert_eq!(
             cfg.source_roots,
-            vec!["../../../target/cmm/CMM-v0.0.1".to_string()]
+            vec!["../../../target/cmm/CMM-v0.0.2".to_string()]
         );
         assert_eq!(cfg.model.as_ref().unwrap().name, "QuadrotorAcro");
         assert!(cfg.locals.contains_key("armed"));

@@ -9,8 +9,8 @@ controller in the same simulation, plus a Three.js viewer.
 | File | Role |
 |---|---|
 | `QuadrotorSIL.mo` | 6-DOF plant, `AcroRatePID`, and `QuadrotorAcro` wrapper |
-| `../../../target/cmm/CMM-v0.0.1/LieGroup/package.mo` | SO(3) attitude utilities |
-| `../../../target/cmm/CMM-v0.0.1/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
+| `../../../target/cmm/CMM-v0.0.2/LieGroup/package.mo` | SO(3) attitude utilities |
+| `../../../target/cmm/CMM-v0.0.2/RigidBody/package.mo` | Reusable rigid-body 6-DOF model |
 | `rum.acro.toml` | Config — `QuadrotorAcro` closed-loop Modelica model |
 | `quadrotor_scene.js` | Three.js scene |
 | `../../assets/models/drone.glb` | CC-BY-4.0 quadrotor model used by the scene |

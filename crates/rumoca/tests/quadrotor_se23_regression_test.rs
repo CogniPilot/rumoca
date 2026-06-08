@@ -15,13 +15,25 @@
 //!      so the control read `X[1]` as the caller's `X[11]`.
 //!
 //! Both made the body-rate derivatives diverge (`der(X[12])` jumped from 0 to
-//! ~10x `der(X[11])`). The model fixtures live under `tests/fixtures/` so this
-//! guards the actual model, not a hand-written approximation.
+//! ~10x `der(X[11])`). The model fixture lives under `tests/fixtures/` and the
+//! `LieGroups` library is pulled from the cached CMM release (via
+//! `cargo xtask repo cmm ensure`), so this guards the actual model against the
+//! real library, not a hand-written approximation.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, eval_dae_at};
+
+/// The `LieGroups` library ships in the cached CogniPilot Modelica Models
+/// (CMM) release, pulled by `cargo xtask repo cmm ensure`. Resolve its package
+/// directory, or `None` when the cache is absent (so the test skips locally
+/// without the cache, matching the other CMM-dependent regressions).
+fn cached_lie_groups() -> Option<PathBuf> {
+    let lie_groups = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/cmm/CMM-v0.0.2/LieGroups");
+    lie_groups.join("package.mo").is_file().then_some(lie_groups)
+}
 
 fn der_value(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
     report
@@ -43,8 +55,14 @@ fn der_value(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
 
 #[test]
 fn quadrotor_se23_13state_initial_derivatives_are_stable() {
+    let Some(lie_groups) = cached_lie_groups() else {
+        eprintln!(
+            "skipping SE_2(3) 13-state quadrotor regression: requires cached CMM at \
+             target/cmm/CMM-v0.0.2; run `cargo xtask repo cmm ensure`"
+        );
+        return;
+    };
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quadrotor_se23");
-    let lie_groups = fixtures.join("LieGroups");
     let model = fixtures.join("QuadrotorSquare13_fn.mo");
 
     let compiled = Compiler::new()
