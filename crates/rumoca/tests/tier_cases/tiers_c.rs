@@ -129,7 +129,7 @@ mod tier_10h6_range_subscript_der {
 
         // der(x[2:n]) should count as 3 scalars (4-2+1=3), not 1
         assert_eq!(
-            rumoca_phase_dae::balance::balance(&dae),
+            rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
             0,
             "der(x[2:n]) should count as 3 scalar equations (range 2:4 = 3 elements); \
              f_x scalar counts: {:?}",
@@ -235,7 +235,7 @@ mod tier_10h6_range_subscript_der {
 
         // der(x_scaled[2:nx]) where nx=size(a,1)-1=2, range 2:2 = 1 element
         assert_eq!(
-            rumoca_phase_dae::balance::balance(&dae),
+            rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
             0,
             "der(x_scaled[2:nx]) with nx=size(a,1)-1=2 should count as 1 scalar; \
              f_x scalar counts: {:?}",
@@ -353,7 +353,7 @@ mod tier_10h6_range_subscript_der {
         // der(x[1:(nx-1)]) where nx=3, range 1:2 = 2 elements
         // Total: 1 + 2 = 3 scalar equations for 3 scalar unknowns
         assert_eq!(
-            rumoca_phase_dae::balance::balance(&dae),
+            rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
             0,
             "der(x[1:(nx-1)]) with nx=3 should count as 2 scalar equations; \
              f_x scalar counts: {:?}",

@@ -1524,6 +1524,96 @@ fn test_infer_equation_scalar_count_record_array_range_lhs_uses_full_slice_size(
 }
 
 #[test]
+fn test_infer_equation_scalar_count_structured_range_subscript_uses_slice_size() {
+    let mut flat = Model::new();
+    let transformer_i_ref = rumoca_core::ComponentReference {
+        local: false,
+        span: rumoca_core::Span::DUMMY,
+        parts: vec![
+            rumoca_core::ComponentRefPart {
+                ident: "transformerL".to_string(),
+                span: rumoca_core::Span::DUMMY,
+                subs: vec![],
+            },
+            rumoca_core::ComponentRefPart {
+                ident: "i".to_string(),
+                span: rumoca_core::Span::DUMMY,
+                subs: vec![],
+            },
+        ],
+        def_id: None,
+    };
+
+    flat.add_variable(
+        VarName::new("m"),
+        flat::Variable {
+            name: VarName::new("m"),
+            is_primitive: true,
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(Expression::Literal {
+                value: Literal::Integer(3),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            ..Default::default()
+        },
+    );
+    flat.add_variable(
+        VarName::new("transformerL.i"),
+        flat::Variable {
+            name: VarName::new("transformerL.i"),
+            component_ref: Some(transformer_i_ref.clone()),
+            dims: vec![3],
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+
+    let residual = Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                "transformerL.i",
+                transformer_i_ref,
+            ),
+            subscripts: vec![rumoca_core::Subscript::expr(
+                Box::new(Expression::Range {
+                    start: Box::new(Expression::Literal {
+                        value: Literal::Integer(1),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    step: None,
+                    end: Box::new(Expression::VarRef {
+                        name: VarName::new("m").into(),
+                        subscripts: vec![],
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                rumoca_core::Span::DUMMY,
+            )],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        rhs: Box::new(Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Zeros,
+            args: vec![Expression::VarRef {
+                name: VarName::new("m").into(),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let prefix_counts = build_prefix_counts(&flat);
+    let scalar_count = infer_equation_scalar_count(&residual, &flat, &prefix_counts);
+    assert_eq!(
+        scalar_count, 3,
+        "structured range subscripts should count as vector slices"
+    );
+}
+
+#[test]
 fn test_infer_equation_scalar_count_record_array_range_uses_parameter_start_fallback() {
     let mut flat = Model::new();
 
@@ -1715,7 +1805,7 @@ fn test_todae_inactive_ordinary_when_equation_uses_pre_during_initialization() {
         .discrete
         .valued_updates
         .iter()
-        .find(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("y")))
+        .find(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "y"))
         .expect("expected guarded ordinary when update for y");
     let rumoca_core::Expression::If { else_branch, .. } = &eq.rhs else {
         panic!("expected guarded ordinary when update to lower to an If expression");

@@ -12,7 +12,7 @@ fn solve_problem_marks_sample_event_indicator_closure_for_observation_refresh() 
         .discrete_valued
         .insert(rumoca_core::VarName::new("derived"), scalar_var("derived"));
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("pulse")),
+        lhs: Some(rumoca_core::VarName::new("pulse").into()),
         rhs: sample_event_indicator_expr(0.0, 0.5),
         span: Default::default(),
         // MLS §16.5.1: sample(start, interval) is an event indicator,
@@ -21,7 +21,7 @@ fn solve_problem_marks_sample_event_indicator_closure_for_observation_refresh() 
         scalar_count: 1,
     });
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("derived")),
+        lhs: Some(rumoca_core::VarName::new("derived").into()),
         rhs: rumoca_core::Expression::Unary {
             op: rumoca_core::OpUnary::Not,
             rhs: Box::new(var("pulse")),
@@ -194,7 +194,7 @@ fn solve_problem_does_not_observation_refresh_no_event_relation_aliases() {
         .discrete_valued
         .insert(rumoca_core::VarName::new("b"), scalar_var("b"));
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("b")),
+        lhs: Some(rumoca_core::VarName::new("b").into()),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::NoEvent,
             args: vec![binary(
@@ -227,7 +227,7 @@ fn solve_problem_marks_derived_clock_constructor_for_observation_refresh() {
         scalar_var("clock_active"),
     );
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("clock_active")),
+        lhs: Some(rumoca_core::VarName::new("clock_active").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("subSample").into(),
             args: vec![
@@ -272,7 +272,7 @@ fn solve_problem_marks_hold_dependencies_for_observation_refresh() {
             .insert(rumoca_core::VarName::new(name), scalar_var(name));
     }
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("pulse")),
+        lhs: Some(rumoca_core::VarName::new("pulse").into()),
         rhs: sample_event_indicator_expr(0.0, 0.5),
         span: Default::default(),
         origin: "pulse = sample(0, 0.5)".to_string(),
@@ -317,7 +317,7 @@ fn solve_problem_does_not_observation_refresh_clocked_previous_rows() {
     insert_pre_parameter(&mut dae_model, "b_super");
     insert_pre_parameter(&mut dae_model, "y");
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::If {
             branches: vec![(
                 sample_event_indicator_expr(0.0, 0.1),
@@ -368,7 +368,7 @@ fn solve_problem_does_not_observation_refresh_internal_sample_value_rows() {
         .discrete_valued
         .insert(rumoca_core::VarName::new("sampled"), scalar_var("sampled"));
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("sampled")),
+        lhs: Some(rumoca_core::VarName::new("sampled").into()),
         rhs: function_call(
             rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME,
             vec![var("u"), var("clock")],
@@ -457,7 +457,7 @@ fn solve_problem_orients_discrete_aliases_away_from_updated_array_target() {
         .discrete_reals
         .insert(rumoca_core::VarName::new("u2"), scalar_var("u2"));
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y[1]")),
+        lhs: Some(rumoca_core::VarName::new("y[1]").into()),
         rhs: var("u1"),
         span: Default::default(),
         // MLS §8.3: alias equations are equations, not ordered writes.
@@ -466,7 +466,7 @@ fn solve_problem_orients_discrete_aliases_away_from_updated_array_target() {
         scalar_count: 1,
     });
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::Array {
             elements: vec![
                 rumoca_core::Expression::Literal {
@@ -486,7 +486,7 @@ fn solve_problem_orients_discrete_aliases_away_from_updated_array_target() {
         scalar_count: 2,
     });
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y[2]")),
+        lhs: Some(rumoca_core::VarName::new("y[2]").into()),
         rhs: var("u2"),
         span: Default::default(),
         origin: "alias y[2] = u2".to_string(),
@@ -583,7 +583,7 @@ fn solve_problem_orients_plain_aliases_to_keep_discrete_targets_unique() {
             .insert(rumoca_core::VarName::new(name), scalar_var(name));
     }
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("a")),
+        lhs: Some(rumoca_core::VarName::new("a").into()),
         rhs: var("b"),
         span: Default::default(),
         // MLS §8.3: alias equations define equality constraints. Solve-lower
@@ -593,7 +593,7 @@ fn solve_problem_orients_plain_aliases_to_keep_discrete_targets_unique() {
         scalar_count: 1,
     });
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("a")),
+        lhs: Some(rumoca_core::VarName::new("a").into()),
         rhs: var("c"),
         span: Default::default(),
         origin: "alias a = c".to_string(),
@@ -651,7 +651,7 @@ fn build_var_layout_populates_shapes_for_all_array_variable_categories() {
         .discrete_reals
         .insert(rumoca_core::VarName::new("z"), array_var("z", &[3]));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
 
     // Y-slot variables
     assert!(

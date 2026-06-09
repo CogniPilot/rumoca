@@ -1,12 +1,14 @@
 use super::*;
 
 mod component_alias_injection;
+mod component_member_scope;
 mod constant_injection;
 mod constant_terminals;
 mod context_and_tests;
 #[cfg(test)]
 mod context_tests;
 mod dim_recovery;
+mod enum_dimensions;
 mod flatten_pipeline;
 mod function_overrides_and_dims;
 mod import_scopes;

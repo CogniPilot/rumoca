@@ -51,7 +51,7 @@ end BoundaryWithDelta;
         .expect("model should compile");
 
     let dae = &result.dae;
-    let detail = rumoca_phase_dae::balance::balance_detail(dae);
+    let detail = rumoca_phase_dae::balance::balance_detail(dae).expect("valid DAE balance fixture");
     let unknown_scalars = detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns;
     let boundary_flow_zero_scalars: usize = dae
         .continuous
@@ -82,7 +82,7 @@ end BoundaryWithDelta;
         "effective interface-flow contribution must not double-count flows already closed by explicit flow=0 equations"
     );
     assert_eq!(
-        rumoca_phase_dae::balance::balance(dae),
+        rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture"),
         0,
         "interface-flow terms must not overconstrain already-closed systems"
     );

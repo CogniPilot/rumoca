@@ -22,6 +22,7 @@ pub mod scalarize;
 mod tarjan;
 pub mod tearing;
 mod types;
+mod variable_scope;
 
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};
 pub use eliminate::{EliminationResult, Substitution};

@@ -8,6 +8,8 @@ use rumoca_ir_dae::{
     expr_refers_to_var,
 };
 
+use crate::StructuralError;
+
 type BuiltinFunction = rumoca_core::BuiltinFunction;
 type Dae = dae::Dae;
 type Equation = dae::Equation;
@@ -24,6 +26,8 @@ use symbolic::{
     build_der_value_map, expand_der_in_expr_full, symbolic_time_derivative, truncate_debug,
     try_extract_der_value,
 };
+mod row_shape;
+use row_shape::{dae_variable_size, required_dae_variable_size, residual_scalar_width};
 mod dummy_state_metadata;
 pub use dummy_state_metadata::{
     constrained_dummy_state_defining_exprs, constrained_dummy_state_names,
@@ -614,13 +618,14 @@ fn state_has_standalone_der_equation(
     dae: &Dae,
     state_name: &VarName,
     state_names: &[VarName],
-) -> bool {
-    let required_rows = dae_variable_size(dae, state_name).unwrap_or(1);
-    let matched_rows = dae.continuous.equations.iter().fold(0usize, |rows, eq| {
+) -> Result<bool, StructuralError> {
+    let required_rows = required_dae_variable_size(dae, state_name)?;
+    let mut matched_rows = 0usize;
+    for eq in &dae.continuous.equations {
         if let Some(alias) = try_extract_derivative_alias(eq, state_name)
             && !state_names.contains(&alias)
         {
-            return rows;
+            continue;
         }
         let der_states = derivative_states_in_eq(&eq.rhs, state_names);
         if der_states.len() == 1
@@ -628,11 +633,10 @@ fn state_has_standalone_der_equation(
             && try_extract_der_value(&eq.rhs, state_name)
                 .is_some_and(|value| !expr_contains_der_of(&value, state_name))
         {
-            return rows + residual_scalar_width(dae, &eq.rhs);
+            matched_rows += residual_scalar_width(dae, &eq.rhs)?;
         }
-        rows
-    });
-    matched_rows >= required_rows
+    }
+    Ok(matched_rows >= required_rows)
 }
 
 pub fn eq_contains_any_state_der(rhs: &Expression, state_names: &[VarName]) -> bool {
@@ -693,99 +697,6 @@ fn der_arg_is_not_plain_state(args: &[Expression], state_name_set: &HashSet<Stri
     }
 }
 
-fn dae_variable_size(dae: &Dae, name: &VarName) -> Option<usize> {
-    dae.variables
-        .states
-        .get(name)
-        .or_else(|| dae.variables.algebraics.get(name))
-        .or_else(|| dae.variables.outputs.get(name))
-        .or_else(|| dae.variables.inputs.get(name))
-        .or_else(|| dae.variables.parameters.get(name))
-        .or_else(|| dae.variables.constants.get(name))
-        .or_else(|| dae.variables.discrete_reals.get(name))
-        .or_else(|| dae.variables.discrete_valued.get(name))
-        .map(Variable::size)
-}
-
-fn residual_scalar_width(dae: &Dae, expr: &Expression) -> usize {
-    expression_dims_for_row_count(dae, expr)
-        .and_then(|dims| {
-            dims.iter()
-                .try_fold(1usize, |acc, dim| (*dim > 0).then_some(acc * *dim as usize))
-        })
-        .unwrap_or(1)
-}
-
-fn expression_dims_for_row_count(dae: &Dae, expr: &Expression) -> Option<Vec<i64>> {
-    match expr {
-        Expression::VarRef {
-            name, subscripts, ..
-        } => var_ref_dims_after_subscripts(dae, name.var_name(), subscripts),
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Der,
-            args,
-            ..
-        } => args
-            .first()
-            .and_then(|arg| expression_dims_for_row_count(dae, arg)),
-        Expression::Array {
-            elements,
-            is_matrix,
-            ..
-        } => array_dims_for_row_count(elements, *is_matrix),
-        Expression::Binary { lhs, rhs, .. } => expression_dims_for_row_count(dae, lhs)
-            .filter(|dims| !dims.is_empty())
-            .or_else(|| expression_dims_for_row_count(dae, rhs).filter(|dims| !dims.is_empty())),
-        Expression::Unary { rhs, .. } => expression_dims_for_row_count(dae, rhs),
-        Expression::Index {
-            base, subscripts, ..
-        } => expression_dims_for_row_count(dae, base)
-            .map(|dims| dims_after_subscript_count(dims, subscripts.len())),
-        _ => None,
-    }
-}
-
-fn var_ref_dims_after_subscripts(
-    dae: &Dae,
-    name: &VarName,
-    subscripts: &[Subscript],
-) -> Option<Vec<i64>> {
-    dae_variable_dims(dae, name).map(|dims| dims_after_subscript_count(dims, subscripts.len()))
-}
-
-fn dae_variable_dims(dae: &Dae, name: &VarName) -> Option<Vec<i64>> {
-    dae.variables
-        .states
-        .get(name)
-        .or_else(|| dae.variables.algebraics.get(name))
-        .or_else(|| dae.variables.outputs.get(name))
-        .or_else(|| dae.variables.inputs.get(name))
-        .or_else(|| dae.variables.parameters.get(name))
-        .or_else(|| dae.variables.constants.get(name))
-        .or_else(|| dae.variables.discrete_reals.get(name))
-        .or_else(|| dae.variables.discrete_valued.get(name))
-        .map(|var| var.dims.clone())
-}
-
-fn dims_after_subscript_count(dims: Vec<i64>, n_subscripts: usize) -> Vec<i64> {
-    if n_subscripts >= dims.len() {
-        Vec::new()
-    } else {
-        dims.into_iter().skip(n_subscripts).collect()
-    }
-}
-
-fn array_dims_for_row_count(elements: &[Expression], is_matrix: bool) -> Option<Vec<i64>> {
-    if !is_matrix {
-        return Some(vec![elements.len() as i64]);
-    }
-    let cols = match elements.first()? {
-        Expression::Array { elements, .. } => elements.len(),
-        _ => return None,
-    };
-    Some(vec![elements.len() as i64, cols as i64])
-}
-
 /// Direct-assignment demotion runs before scalarization. If a scalar state is
 /// defined using an unsliced vector reference (e.g. `x = -i` where `i` is
 /// array-valued), demotion is ambiguous and can corrupt index/alias structure.
@@ -809,7 +720,8 @@ impl ExpressionVisitor for UnslicedVectorRefChecker<'_> {
 
     fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
         if subscripts.is_empty()
-            && dae_variable_size(self.dae, name.var_name()).is_some_and(|size| size > 1)
+            && dae_variable_size(self.dae, name.var_name())
+                .is_ok_and(|size| size.is_some_and(|size| size > 1))
         {
             self.found = true;
             return;
@@ -1120,25 +1032,23 @@ pub fn demote_exact_alias_component_states(dae: &mut Dae) -> usize {
 /// representative per multi-state alias component earlier in prepare. The only
 /// remaining structural case here is `state = non_state` with no standalone
 /// `der(state)` row.
-pub fn demote_alias_states_without_der(dae: &mut Dae) -> usize {
+pub fn demote_alias_states_without_der(dae: &mut Dae) -> Result<usize, StructuralError> {
     let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
     if state_names.is_empty() {
-        return 0;
+        return Ok(0);
     }
 
     let state_name_set: HashSet<String> = state_names
         .iter()
         .map(|name| name.as_str().to_string())
         .collect();
-    let has_der: HashMap<String, bool> = state_names
-        .iter()
-        .map(|name| {
-            (
-                name.as_str().to_string(),
-                state_has_standalone_der_equation(dae, name, &state_names),
-            )
-        })
-        .collect();
+    let mut has_der: HashMap<String, bool> = HashMap::new();
+    for name in &state_names {
+        has_der.insert(
+            name.as_str().to_string(),
+            state_has_standalone_der_equation(dae, name, &state_names)?,
+        );
+    }
 
     let mut adjacency: HashMap<String, HashSet<String>> = HashMap::new();
     for (a, b) in dae
@@ -1160,7 +1070,7 @@ pub fn demote_alias_states_without_der(dae: &mut Dae) -> usize {
             .insert(a.as_str().to_string());
     }
     if adjacency.is_empty() {
-        return 0;
+        return Ok(0);
     }
 
     let mut visited = HashSet::new();
@@ -1172,14 +1082,18 @@ pub fn demote_alias_states_without_der(dae: &mut Dae) -> usize {
         }
         let component = collect_alias_connected_names(&adjacency, &start);
         visited.extend(component.iter().cloned());
-        let component_has_der = component
-            .iter()
-            .any(|name| has_der.get(name).copied().unwrap_or(false));
+        let mut component_has_der = false;
+        for name in &component {
+            if state_name_set.contains(name.as_str()) && has_der_for_state_name(&has_der, name)? {
+                component_has_der = true;
+                break;
+            }
+        }
         for name in component {
             if !state_name_set.contains(name.as_str()) {
                 continue;
             }
-            if !component_has_der || !has_der.get(name.as_str()).copied().unwrap_or(false) {
+            if !component_has_der || !has_der_for_state_name(&has_der, name.as_str())? {
                 to_demote.insert(name);
             }
         }
@@ -1194,7 +1108,20 @@ pub fn demote_alias_states_without_der(dae: &mut Dae) -> usize {
             demoted += 1;
         }
     }
-    demoted
+    Ok(demoted)
+}
+
+fn has_der_for_state_name(
+    has_der: &HashMap<String, bool>,
+    name: &str,
+) -> Result<bool, StructuralError> {
+    has_der
+        .get(name)
+        .copied()
+        .ok_or_else(|| StructuralError::ContractViolation {
+            reason: format!("state derivative metadata missing for `{name}`"),
+            span: rumoca_core::Span::DUMMY,
+        })
 }
 
 fn collect_alias_connected_names(
@@ -1269,7 +1196,7 @@ fn extract_state_direct_assignment_equation(
     if let Some(lhs) = &eq.lhs {
         return state_name_set
             .contains(lhs.as_str())
-            .then(|| (lhs.clone(), eq.rhs.clone()));
+            .then(|| (lhs.var_name().clone(), eq.rhs.clone()));
     }
     if expression_contains_any_der_call(&eq.rhs) {
         return None;
@@ -1578,7 +1505,7 @@ fn expression_contains_any_der_call(expr: &Expression) -> bool {
 
 fn equation_defining_expr_for_unknown(eq: &Equation, unknown_name: &VarName) -> Option<Expression> {
     if let Some(lhs) = eq.lhs.as_ref()
-        && lhs == unknown_name
+        && lhs.var_name() == unknown_name
     {
         if expression_contains_any_der_call(&eq.rhs) {
             return None;

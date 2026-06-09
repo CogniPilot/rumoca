@@ -8,8 +8,8 @@ pub(super) struct Scope {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ScopeFrame {
-    bindings: IndexMap<ComponentPath, Reg>,
-    indexed_bindings: IndexMap<ComponentPath, Vec<LocalIndexedBinding>>,
+    bindings: IndexMap<ComponentReferenceKey, Reg>,
+    indexed_bindings: IndexMap<ComponentReferenceKey, Vec<LocalIndexedBinding>>,
 }
 
 impl Scope {
@@ -40,38 +40,36 @@ impl Scope {
         result
     }
 
-    pub(super) fn get(&self, path: &ComponentPath) -> Option<&Reg> {
+    pub(super) fn get(&self, key: &ComponentReferenceKey) -> Option<&Reg> {
         self.frames
             .iter()
             .rev()
-            .find_map(|frame| frame.bindings.get(path))
+            .find_map(|frame| frame.bindings.get(key))
     }
 
-    pub(super) fn contains_key(&self, path: &ComponentPath) -> bool {
-        self.get(path).is_some()
+    pub(super) fn contains_key(&self, key: &ComponentReferenceKey) -> bool {
+        self.get(key).is_some()
     }
 
-    pub(super) fn insert(&mut self, path: ComponentPath, reg: Reg) -> Option<Reg> {
-        self.insert_path(path, reg)
+    pub(super) fn insert(&mut self, key: ComponentReferenceKey, reg: Reg) -> Option<Reg> {
+        self.insert_key(key, reg)
     }
 
-    pub(super) fn insert_scoped(&mut self, path: ComponentPath, reg: Reg) -> Option<Reg> {
+    pub(super) fn insert_scoped(&mut self, key: ComponentReferenceKey, reg: Reg) -> Option<Reg> {
         let frame = self.current_frame_mut();
-        upsert_scope_indexed_binding(&mut frame.indexed_bindings, &path, reg);
-        frame.bindings.insert(path, reg)
+        frame.bindings.insert(key, reg)
     }
 
-    pub(super) fn shift_remove(&mut self, path: &ComponentPath) -> Option<Reg> {
+    pub(super) fn shift_remove(&mut self, key: &ComponentReferenceKey) -> Option<Reg> {
         for frame in self.frames.iter_mut().rev() {
-            if frame.bindings.contains_key(path) {
-                remove_scope_indexed_binding(&mut frame.indexed_bindings, path);
-                return frame.bindings.shift_remove(path);
+            if frame.bindings.contains_key(key) {
+                return frame.bindings.shift_remove(key);
             }
         }
         None
     }
 
-    pub(super) fn keys(&self) -> Vec<ComponentPath> {
+    pub(super) fn keys(&self) -> Vec<ComponentReferenceKey> {
         let mut keys = IndexSet::new();
         for frame in &self.frames {
             for key in frame.bindings.keys() {
@@ -81,7 +79,7 @@ impl Scope {
         keys.into_iter().collect()
     }
 
-    pub(super) fn iter(&self) -> Vec<(ComponentPath, Reg)> {
+    pub(super) fn iter(&self) -> Vec<(ComponentReferenceKey, Reg)> {
         let mut entries = IndexMap::new();
         for frame in &self.frames {
             for (key, reg) in &frame.bindings {
@@ -91,8 +89,8 @@ impl Scope {
         entries.into_iter().collect()
     }
 
-    pub(super) fn indexed_values(&self, path: &ComponentPath) -> Option<Vec<Reg>> {
-        let bindings = self.indexed_entries(path)?;
+    pub(super) fn indexed_values(&self, key: &ComponentReferenceKey) -> Option<Vec<Reg>> {
+        let bindings = self.indexed_entries(key)?;
         if bindings.is_empty() {
             return None;
         }
@@ -113,23 +111,50 @@ impl Scope {
         Some(values.into_iter().map(|(_, reg)| reg).collect())
     }
 
-    pub(super) fn indexed_entries(&self, path: &ComponentPath) -> Option<&[LocalIndexedBinding]> {
+    pub(super) fn indexed_entries(
+        &self,
+        key: &ComponentReferenceKey,
+    ) -> Option<&[LocalIndexedBinding]> {
         self.frames
             .iter()
             .rev()
-            .find_map(|frame| frame.indexed_bindings.get(path))
+            .find_map(|frame| frame.indexed_bindings.get(key))
             .map(Vec::as_slice)
     }
 
-    pub(super) fn insert_path(&mut self, path: ComponentPath, reg: Reg) -> Option<Reg> {
+    pub(super) fn insert_key(&mut self, key: ComponentReferenceKey, reg: Reg) -> Option<Reg> {
         let frame_index = self
             .frames
             .iter()
-            .rposition(|frame| frame.bindings.contains_key(&path))
+            .rposition(|frame| frame.bindings.contains_key(&key))
             .unwrap_or(0);
         let frame = &mut self.frames[frame_index];
-        upsert_scope_indexed_binding(&mut frame.indexed_bindings, &path, reg);
-        frame.bindings.insert(path, reg)
+        frame.bindings.insert(key, reg)
+    }
+
+    pub(super) fn insert_indexed(
+        &mut self,
+        base_key: &ComponentReferenceKey,
+        indices: &[usize],
+        reg: Reg,
+    ) {
+        let frame_index = self
+            .frames
+            .iter()
+            .rposition(|frame| frame.bindings.contains_key(base_key))
+            .unwrap_or(0);
+        let frame = &mut self.frames[frame_index];
+        upsert_local_indexed_binding(
+            frame.indexed_bindings.entry(base_key.clone()).or_default(),
+            indices,
+            reg,
+        );
+    }
+
+    pub(super) fn clear_indexed(&mut self, base_key: &ComponentReferenceKey) {
+        for frame in self.frames.iter_mut().rev() {
+            frame.indexed_bindings.shift_remove(base_key);
+        }
     }
 
     pub(super) fn current_frame_mut(&mut self) -> &mut ScopeFrame {
@@ -154,43 +179,67 @@ pub(super) fn upsert_local_indexed_binding(
     }
 }
 
-fn upsert_scope_indexed_binding(
-    indexed_bindings: &mut IndexMap<ComponentPath, Vec<LocalIndexedBinding>>,
-    path: &ComponentPath,
-    reg: Reg,
-) {
-    let Some((base, indices)) = parse_indexed_binding_path(path) else {
-        return;
-    };
-    upsert_local_indexed_binding(indexed_bindings.entry(base).or_default(), &indices, reg);
+pub(super) fn generated_scope_key(name: impl Into<String>) -> ComponentReferenceKey {
+    ComponentReferenceKey::generated(name)
 }
 
-fn remove_scope_indexed_binding(
-    indexed_bindings: &mut IndexMap<ComponentPath, Vec<LocalIndexedBinding>>,
-    path: &ComponentPath,
-) {
-    let Some((base, indices)) = parse_indexed_binding_path(path) else {
-        return;
-    };
-    if let Some(entries) = indexed_bindings.get_mut(&base) {
-        entries.retain(|entry| entry.indices != indices);
-        if entries.is_empty() {
-            indexed_bindings.shift_remove(&base);
-        }
+pub(super) fn generated_scope_key_name(key: &ComponentReferenceKey) -> Option<&str> {
+    match key {
+        ComponentReferenceKey::Generated { name } => Some(name.as_str()),
+        ComponentReferenceKey::Source { .. } => None,
     }
 }
 
-fn parse_indexed_binding_path(path: &ComponentPath) -> Option<(ComponentPath, Vec<usize>)> {
-    let (base, indices) = parse_indexed_binding_key(path.as_str())?;
-    Some((ComponentPath::from_flat_path(&base), indices))
+pub(super) fn generated_scope_key_suffix<'a>(
+    key: &'a ComponentReferenceKey,
+    prefix: &str,
+) -> Option<&'a str> {
+    generated_scope_key_name(key)?.strip_prefix(prefix)
 }
 
-pub(super) fn component_field_path(base_path: &ComponentPath, field: &str) -> ComponentPath {
-    base_path.join_part_slice(&[field.to_string()])
+pub(super) fn scope_key_direct_child_suffix(
+    key: &ComponentReferenceKey,
+    prefix: &ComponentReferenceKey,
+) -> Option<String> {
+    match (key, prefix) {
+        (
+            ComponentReferenceKey::Generated { name },
+            ComponentReferenceKey::Generated { name: prefix },
+        ) => {
+            let suffix = name
+                .as_str()
+                .strip_prefix(&format!("{}.", prefix.as_str()))?;
+            (!suffix.contains('.') && !suffix.contains('[')).then(|| suffix.to_string())
+        }
+        (
+            ComponentReferenceKey::Source { parts, .. },
+            ComponentReferenceKey::Source { parts: prefix, .. },
+        ) => {
+            let suffix = parts.strip_prefix(prefix.as_slice())?;
+            (suffix.len() == 1 && suffix[0].subscripts.is_empty()).then(|| suffix[0].ident.clone())
+        }
+        _ => None,
+    }
 }
 
-pub(super) fn scope_field_available(scope: &Scope, base_path: &ComponentPath, field: &str) -> bool {
-    scope.contains_key(&component_field_path(base_path, field))
+pub(super) fn component_field_key(
+    base_key: &ComponentReferenceKey,
+    field: &str,
+) -> Option<ComponentReferenceKey> {
+    match base_key {
+        ComponentReferenceKey::Source { .. } => None,
+        ComponentReferenceKey::Generated { name } => Some(ComponentReferenceKey::generated(
+            format!("{}.{}", name.as_str(), field),
+        )),
+    }
+}
+
+pub(super) fn scope_field_available(
+    scope: &Scope,
+    base_key: &ComponentReferenceKey,
+    field: &str,
+) -> bool {
+    component_field_key(base_key, field).is_some_and(|key| scope.contains_key(&key))
 }
 
 pub(super) fn field_access_expr(
@@ -242,7 +291,7 @@ pub(super) struct LocalLowerFrame {
     pub(super) local_binding_dims: IndexMap<String, Vec<i64>>,
     pub(super) known_empty_local_arrays: IndexSet<String>,
     pub(super) local_const_bindings: IndexMap<String, f64>,
-    pub(super) function_closures: IndexMap<ComponentPath, FunctionClosure>,
+    pub(super) function_closures: IndexMap<ComponentReferenceKey, FunctionClosure>,
 }
 
 #[derive(Debug, Clone)]

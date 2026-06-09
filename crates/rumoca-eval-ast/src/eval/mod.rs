@@ -1340,8 +1340,7 @@ fn infer_matrix_row_dims(
     let mut expected_rows = None;
     let mut cols = 0usize;
     for element in elements {
-        let dims =
-            infer_dimensions_from_binding_with_scope(element, ctx, scope).unwrap_or_default();
+        let dims = infer_dimensions_from_binding_with_scope(element, ctx, scope)?;
         let (entry_rows, entry_cols) = matrix_entry_dims(&dims, single_entry)?;
         match expected_rows {
             Some(expected) if expected != entry_rows => return None,
@@ -1350,7 +1349,7 @@ fn infer_matrix_row_dims(
         }
         cols += entry_cols;
     }
-    Some((expected_rows.unwrap_or(0), cols))
+    Some((expected_rows?, cols))
 }
 
 fn matrix_entry_dims(dims: &[usize], single_entry: bool) -> Option<(usize, usize)> {

@@ -15,7 +15,7 @@ fn test_eliminate_bare_varref() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 1);
     assert_eq!(result.substitutions[0].var_name.as_str(), "z");
     assert!(dae.continuous.equations.is_empty());
@@ -59,7 +59,7 @@ fn test_boundary_zero_unknown_removed() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     // Both removed: eq2 has 0 unknowns, eq1 has 1 unknown (z=1.0).
     assert_eq!(result.n_eliminated, 2);
     assert!(dae.continuous.equations.is_empty());
@@ -134,7 +134,7 @@ fn test_boundary_zero_unknown_alias_equation_becomes_substitution() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     let alias_sub = result
         .substitutions
         .iter()
@@ -199,7 +199,7 @@ fn test_boundary_cascade_resolution() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 2);
     assert!(dae.continuous.equations.is_empty());
     assert!(dae.variables.algebraics.is_empty());
@@ -235,7 +235,7 @@ fn test_boundary_skips_ode_equations() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 0);
     assert_eq!(dae.continuous.equations.len(), 1);
 }
@@ -291,7 +291,7 @@ fn test_boundary_eliminates_derivative_dependent_output_alias() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 1);
     assert_eq!(result.substitutions.len(), 1);
     assert_eq!(result.substitutions[0].var_name.as_str(), "y");
@@ -329,7 +329,7 @@ fn test_boundary_eliminates_control_flow_solution_equation() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 1);
     assert_eq!(dae.continuous.equations.len(), 0);
     assert!(!dae.variables.algebraics.contains_key(&VarName::new("y")));
@@ -385,7 +385,7 @@ fn test_boundary_eliminates_single_unknown_connection_after_substitution() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     // y is a non-trivial output (if-expression) — preserved in the DAE.
     // u cannot be eliminated because y also remains live in the connection
     // equation, keeping both unknowns alive.
@@ -414,7 +414,7 @@ fn test_boundary_keeps_connection_eq_touching_runtime_discrete_target() {
     // Runtime-discrete partition assignment target (f_m/f_z lhs) marks `y`
     // as a runtime-discrete target that must not lose alias edges.
     dae.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(VarName::new("y")),
+        lhs: Some(VarName::new("y").into()),
         rhs: Expression::Literal {
             value: Literal::Boolean(false),
             span: rumoca_core::Span::DUMMY,
@@ -438,7 +438,7 @@ fn test_boundary_keeps_connection_eq_touching_runtime_discrete_target() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 0);
     assert_eq!(dae.continuous.equations.len(), 1);
     assert!(dae.variables.outputs.contains_key(&VarName::new("y")));
@@ -481,14 +481,14 @@ fn test_boundary_keeps_zero_unknown_runtime_discrete_assignment_used_by_f_m() {
         scalar_count: 1,
     });
     dae.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(VarName::new("Counter.enable")),
+        lhs: Some(VarName::new("Counter.enable").into()),
         rhs: var_ref("Enable.y"),
         span: Span::DUMMY,
         origin: "explicit connection equation: Counter.enable = Enable.y".to_string(),
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 0);
     assert_eq!(
         dae.continuous.equations.len(),
@@ -539,7 +539,7 @@ fn test_eliminate_trivial_accepts_runtime_known_assignment_tail_after_output_ali
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert!(
         result.blt_error.is_none(),
         "runtime-known assignment rows should not make BLT lowering fail"
@@ -577,7 +577,7 @@ fn test_eliminate_trivial_keeps_sampled_value_source_unknown() {
         scalar_count: 1,
     });
     dae.discrete.real_updates.push(dae::Equation {
-        lhs: Some(VarName::new("clk")),
+        lhs: Some(VarName::new("clk").into()),
         rhs: Expression::FunctionCall {
             name: rumoca_core::Reference::new("Clock"),
             args: vec![lit(0.1)],
@@ -589,7 +589,7 @@ fn test_eliminate_trivial_keeps_sampled_value_source_unknown() {
         scalar_count: 1,
     });
     dae.discrete.real_updates.push(dae::Equation {
-        lhs: Some(VarName::new("y")),
+        lhs: Some(VarName::new("y").into()),
         rhs: Expression::BuiltinCall {
             function: BuiltinFunction::Sample,
             args: vec![var_ref("u"), var_ref("clk")],
@@ -600,7 +600,7 @@ fn test_eliminate_trivial_keeps_sampled_value_source_unknown() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 0);
     assert_eq!(dae.continuous.equations.len(), 1);
     assert!(

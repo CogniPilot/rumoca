@@ -35,6 +35,22 @@ impl FocusedClosureCompiler for FakeFocusedCompiler {
     }
 }
 
+fn empty_compilation_result() -> CompilationResult {
+    let dae = dae::Dae::default();
+    let balance_detail =
+        rumoca_phase_dae::balance::balance_detail(&dae).expect("empty DAE metadata is valid");
+    CompilationResult {
+        flat: flat::Model::default(),
+        dae,
+        balance_detail,
+        experiment_start_time: None,
+        experiment_stop_time: None,
+        experiment_tolerance: None,
+        experiment_interval: None,
+        experiment_solver: None,
+    }
+}
+
 #[test]
 fn compile_chunk_progress_loop_exits_promptly_after_flag_clears() {
     let compile_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -114,15 +130,7 @@ fn finalize_compile_entry_preserves_under_budget_compile_outcome() {
 fn finalize_compile_entry_preserves_full_sim_timeout_after_successful_compile() {
     let entry = finalize_compile_entry(
         "Modelica.Blocks.Examples.PID_Controller",
-        ModelCompileOutcome::Phase(PhaseResult::Success(Box::new(CompilationResult {
-            flat: flat::Model::default(),
-            dae: dae::Dae::default(),
-            experiment_start_time: None,
-            experiment_stop_time: None,
-            experiment_tolerance: None,
-            experiment_interval: None,
-            experiment_solver: None,
-        }))),
+        ModelCompileOutcome::Phase(PhaseResult::Success(Box::new(empty_compilation_result()))),
         2.5,
         10.0,
         None,
@@ -179,15 +187,8 @@ fn compile_perf_retention_keeps_slow_profiles_and_deletes_fast_successes() {
         profile_path: slow_profile.clone(),
         relative_path: "perf/compile/slow.perf.data".to_string(),
     };
-    let success = ModelCompileOutcome::Phase(PhaseResult::Success(Box::new(CompilationResult {
-        flat: flat::Model::default(),
-        dae: dae::Dae::default(),
-        experiment_start_time: None,
-        experiment_stop_time: None,
-        experiment_tolerance: None,
-        experiment_interval: None,
-        experiment_solver: None,
-    })));
+    let success =
+        ModelCompileOutcome::Phase(PhaseResult::Success(Box::new(empty_compilation_result())));
 
     let retained = retain_compile_perf_profile(Some(&slow_artifacts), 6.0, &success);
 

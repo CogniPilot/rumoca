@@ -375,10 +375,15 @@ fn remap_when_equations(equations: &mut [flat::WhenEquation], ctx: &RenameContex
                 *state = remap_var_name(state, ctx.rename_map);
                 remap_expression(value, ctx);
             }
-            flat::WhenEquation::Assert { condition, .. } => {
+            flat::WhenEquation::Assert {
+                condition, message, ..
+            } => {
                 remap_expression(condition, ctx);
+                remap_expression(message, ctx);
             }
-            flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::Terminate { message, .. } => {
+                remap_expression(message, ctx);
+            }
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,

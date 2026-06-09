@@ -110,7 +110,7 @@ pub(super) fn flattened_preview_for_model(
         result.dae.discrete.real_updates.len(),
         result.dae.discrete.valued_updates.len(),
         result.dae.variables.discrete_valued.len(),
-        dae_balance(&result.dae)
+        result.balance_detail.balance()
     ));
     lines.push(format!("f_x ({}):", result.dae.continuous.equations.len()));
     for (idx, eq) in result.dae.continuous.equations.iter().take(6).enumerate() {

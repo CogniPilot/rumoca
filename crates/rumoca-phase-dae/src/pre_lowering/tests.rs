@@ -86,6 +86,7 @@ fn discrete_valued_var(name: &str) -> dae::Variable {
         description: None,
         causality: dae::VariableCausality::Local,
         is_tunable: false,
+        origin: dae::VariableOrigin::Source,
     }
 }
 
@@ -277,7 +278,7 @@ fn test_lower_pre_rewrites_relation_edge_to_condition_memory() -> Result<(), ToD
     };
     dae.conditions.relations.push(relation.clone());
     dae.conditions.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("c")),
+        lhs: Some(rumoca_core::VarName::new("c").into()),
         rhs: relation.clone(),
         span: rumoca_core::Span::DUMMY,
         origin: "condition variable".to_string(),
@@ -290,7 +291,10 @@ fn test_lower_pre_rewrites_relation_edge_to_condition_memory() -> Result<(), ToD
             span: rumoca_core::Span::DUMMY,
         },
         kind: dae::DaeEventActionKind::Terminate {
-            message: "edge fired".to_string(),
+            message: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("edge fired".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
         },
         span: rumoca_core::Span::DUMMY,
         origin: "when x < 0".to_string(),
@@ -385,6 +389,7 @@ fn test_lower_pre_creates_parameter() -> Result<(), ToDaeError> {
             description: None,
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.continuous.equations.push(dae::Equation::residual(
@@ -517,6 +522,7 @@ fn test_lower_pre_normalizes_encoded_integer_subscript_target() -> Result<(), To
             description: None,
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.continuous.equations.push(dae::Equation::residual(
@@ -676,6 +682,7 @@ fn test_lower_pre_keeps_existing_pre_parameter_metadata() -> Result<(), ToDaeErr
             description: None,
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.variables.parameters.insert(
@@ -702,6 +709,7 @@ fn test_lower_pre_keeps_existing_pre_parameter_metadata() -> Result<(), ToDaeErr
             description: Some("first pass metadata".to_string()),
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.continuous.equations.push(dae::Equation::residual(
@@ -780,6 +788,7 @@ fn test_lower_pre_rewrites_expression_variables_to_pre_parameters() -> Result<()
                 description: None,
                 causality: dae::VariableCausality::Local,
                 is_tunable: false,
+                origin: dae::VariableOrigin::Source,
             },
         );
     }
@@ -924,6 +933,7 @@ fn test_lower_pre_preserves_index_subscripts() -> Result<(), ToDaeError> {
             description: None,
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.discrete.real_updates.push(dae::Equation::residual(
@@ -1091,6 +1101,7 @@ fn test_lower_pre_rewrites_record_field_target() -> Result<(), ToDaeError> {
             description: None,
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.discrete.valued_updates.push(dae::Equation::residual(

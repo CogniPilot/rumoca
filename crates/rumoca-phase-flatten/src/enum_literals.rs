@@ -309,10 +309,15 @@ fn canonicalize_when_equations(
             flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
                 canonicalize_expr(value, enum_literals, variable_names);
             }
-            flat::WhenEquation::Assert { condition, .. } => {
+            flat::WhenEquation::Assert {
+                condition, message, ..
+            } => {
                 canonicalize_expr(condition, enum_literals, variable_names);
+                canonicalize_expr(message, enum_literals, variable_names);
             }
-            flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::Terminate { message, .. } => {
+                canonicalize_expr(message, enum_literals, variable_names);
+            }
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,

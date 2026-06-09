@@ -11,6 +11,12 @@ use crate::static_subscripts::try_constant_integer;
 
 type LowerResult<T> = Result<T, FlattenError>;
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LoweringContext<'a> {
+    pub(crate) def_map: Option<&'a IndexMap<DefId, String>>,
+    pub(crate) instance_name: Option<&'a str>,
+}
+
 pub(crate) fn expression_from_ast(expr: &ast::Expression) -> LowerResult<rumoca_core::Expression> {
     expression_from_ast_with_def_map(expr, None)
 }
@@ -19,28 +25,41 @@ pub(crate) fn expression_from_ast_with_def_map(
     expr: &ast::Expression,
     def_map: Option<&IndexMap<DefId, String>>,
 ) -> LowerResult<rumoca_core::Expression> {
+    expression_from_ast_with_context(
+        expr,
+        LoweringContext {
+            def_map,
+            instance_name: None,
+        },
+    )
+}
+
+pub(crate) fn expression_from_ast_with_context(
+    expr: &ast::Expression,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
     match expr {
         ast::Expression::Empty { span } => Ok(rumoca_core::Expression::Empty { span: *span }),
 
         ast::Expression::Binary { op, lhs, rhs, .. } => Ok(rumoca_core::Expression::Binary {
             op: op.clone(),
-            lhs: Box::new(expression_from_ast_with_def_map(lhs, def_map)?),
-            rhs: Box::new(expression_from_ast_with_def_map(rhs, def_map)?),
+            lhs: Box::new(expression_from_ast_with_context(lhs, context)?),
+            rhs: Box::new(expression_from_ast_with_context(rhs, context)?),
             span: expr.span(),
         }),
 
         ast::Expression::Unary { op, rhs, .. } => Ok(rumoca_core::Expression::Unary {
             op: op.clone(),
-            rhs: Box::new(expression_from_ast_with_def_map(rhs, def_map)?),
+            rhs: Box::new(expression_from_ast_with_context(rhs, context)?),
             span: expr.span(),
         }),
 
         ast::Expression::ComponentReference(cr) => {
-            expression_from_component_ref_with_def_map(cr, def_map)
+            expression_from_component_ref_with_def_map(cr, context.def_map)
         }
 
         ast::Expression::FunctionCall { comp, args, .. } => {
-            convert_function_call_with_def_map(comp, args, def_map)
+            convert_function_call_with_context(comp, args, context)
         }
 
         ast::Expression::Terminal {
@@ -56,37 +75,37 @@ pub(crate) fn expression_from_ast_with_def_map(
             branches,
             else_branch,
             ..
-        } => convert_if_with_def_map(branches, else_branch, expr.span(), def_map),
+        } => convert_if_with_context(branches, else_branch, expr.span(), context),
 
         ast::Expression::Array {
             elements,
             is_matrix,
             ..
         } => Ok(rumoca_core::Expression::Array {
-            elements: convert_expr_vec_with_def_map(elements, def_map)?,
+            elements: convert_expr_vec_with_context(elements, context)?,
             is_matrix: *is_matrix,
             span: expr.span(),
         }),
 
         ast::Expression::Tuple { elements, .. } => Ok(rumoca_core::Expression::Tuple {
-            elements: convert_expr_vec_with_def_map(elements, def_map)?,
+            elements: convert_expr_vec_with_context(elements, context)?,
             span: expr.span(),
         }),
 
         ast::Expression::Range {
             start, step, end, ..
         } => Ok(rumoca_core::Expression::Range {
-            start: Box::new(expression_from_ast_with_def_map(start, def_map)?),
+            start: Box::new(expression_from_ast_with_context(start, context)?),
             step: step
                 .as_ref()
-                .map(|s| expression_from_ast_with_def_map(s, def_map).map(Box::new))
+                .map(|s| expression_from_ast_with_context(s, context).map(Box::new))
                 .transpose()?,
-            end: Box::new(expression_from_ast_with_def_map(end, def_map)?),
+            end: Box::new(expression_from_ast_with_context(end, context)?),
             span: expr.span(),
         }),
 
         ast::Expression::Parenthesized { inner, .. } => {
-            expression_from_ast_with_def_map(inner, def_map)
+            expression_from_ast_with_context(inner, context)
         }
 
         ast::Expression::ArrayComprehension {
@@ -94,26 +113,26 @@ pub(crate) fn expression_from_ast_with_def_map(
             indices,
             filter,
             ..
-        } => convert_array_comprehension_with_def_map(expr, indices, filter, expr.span(), def_map),
+        } => convert_array_comprehension_with_context(expr, indices, filter, expr.span(), context),
 
         ast::Expression::ClassModification {
             target,
             modifications,
             ..
-        } => convert_class_modification_with_def_map(target, modifications, def_map),
+        } => convert_class_modification_with_context(target, modifications, context),
 
         ast::Expression::NamedArgument { value, .. } => {
-            expression_from_ast_with_def_map(value, def_map)
+            expression_from_ast_with_context(value, context)
         }
 
         ast::Expression::Modification { value, .. } => {
-            expression_from_ast_with_def_map(value, def_map)
+            expression_from_ast_with_context(value, context)
         }
 
         ast::Expression::ArrayIndex {
             base, subscripts, ..
         } => {
-            let base_flat = Box::new(expression_from_ast_with_def_map(base, def_map)?);
+            let base_flat = Box::new(expression_from_ast_with_context(base, context)?);
             let flat_subs = subscripts
                 .iter()
                 .map(subscript_from_ast)
@@ -127,7 +146,7 @@ pub(crate) fn expression_from_ast_with_def_map(
 
         ast::Expression::FieldAccess { base, field, .. } => {
             Ok(rumoca_core::Expression::FieldAccess {
-                base: Box::new(expression_from_ast_with_def_map(base, def_map)?),
+                base: Box::new(expression_from_ast_with_context(base, context)?),
                 field: field.clone(),
                 span: expr.span(),
             })
@@ -143,26 +162,42 @@ pub(crate) fn statement_from_ast_with_def_map(
     statement_from_ast_with_def_map_and_source_map(stmt, def_map, None)
 }
 
+#[cfg(test)]
 pub(crate) fn statement_from_ast_with_def_map_and_source_map(
     stmt: &ast::Statement,
     def_map: Option<&IndexMap<DefId, String>>,
     source_map: Option<&SourceMap>,
 ) -> LowerResult<rumoca_core::Statement> {
+    statement_from_ast_with_context_and_source_map(
+        stmt,
+        LoweringContext {
+            def_map,
+            instance_name: None,
+        },
+        source_map,
+    )
+}
+
+pub(crate) fn statement_from_ast_with_context_and_source_map(
+    stmt: &ast::Statement,
+    context: LoweringContext<'_>,
+    source_map: Option<&SourceMap>,
+) -> LowerResult<rumoca_core::Statement> {
     let span = ast_statement_span(stmt, source_map);
-    statement_from_ast_with_span(stmt, def_map, source_map, span)
+    statement_from_ast_with_span(stmt, context, source_map, span)
 }
 
 fn statement_from_ast_with_span(
     stmt: &ast::Statement,
-    def_map: Option<&IndexMap<DefId, String>>,
+    context: LoweringContext<'_>,
     source_map: Option<&SourceMap>,
     span: Span,
 ) -> LowerResult<rumoca_core::Statement> {
     match stmt {
         ast::Statement::Empty => Ok(rumoca_core::Statement::Empty { span }),
         ast::Statement::Assignment { comp, value } => Ok(rumoca_core::Statement::Assignment {
-            comp: component_reference_from_ast_with_def_map(comp, def_map)?,
-            value: expression_from_ast_with_def_map(value, def_map)?,
+            comp: component_reference_from_ast_with_def_map(comp, context.def_map)?,
+            value: expression_from_ast_with_context(value, context)?,
             span,
         }),
         ast::Statement::Return { .. } => Ok(rumoca_core::Statement::Return { span }),
@@ -170,19 +205,19 @@ fn statement_from_ast_with_span(
         ast::Statement::For { indices, equations } => Ok(rumoca_core::Statement::For {
             indices: indices
                 .iter()
-                .map(|index| for_index_from_ast_with_def_map(index, def_map))
+                .map(|index| for_index_from_ast_with_context(index, context))
                 .collect::<LowerResult<Vec<_>>>()?,
             equations: equations
                 .iter()
                 .map(|inner| {
-                    statement_from_ast_with_def_map_and_source_map(inner, def_map, source_map)
+                    statement_from_ast_with_context_and_source_map(inner, context, source_map)
                 })
                 .collect::<LowerResult<Vec<_>>>()?,
             span,
         }),
         ast::Statement::While(block) => Ok(rumoca_core::Statement::While {
-            block: statement_block_from_ast_with_def_map_and_source_map(
-                block, def_map, source_map,
+            block: statement_block_from_ast_with_context_and_source_map(
+                block, context, source_map,
             )?,
             span,
         }),
@@ -192,7 +227,7 @@ fn statement_from_ast_with_span(
         } => if_statement_from_ast(
             cond_blocks,
             else_block.as_deref(),
-            def_map,
+            context,
             source_map,
             span,
         ),
@@ -200,7 +235,7 @@ fn statement_from_ast_with_span(
             blocks: blocks
                 .iter()
                 .map(|block| {
-                    statement_block_from_ast_with_def_map_and_source_map(block, def_map, source_map)
+                    statement_block_from_ast_with_context_and_source_map(block, context, source_map)
                 })
                 .collect::<LowerResult<Vec<_>>>()?,
             span,
@@ -210,14 +245,14 @@ fn statement_from_ast_with_span(
             args,
             outputs,
         } => Ok(rumoca_core::Statement::FunctionCall {
-            comp: function_component_ref_from_ast(comp, def_map)?,
+            comp: function_component_ref_from_ast(comp, context.def_map)?,
             args: args
                 .iter()
-                .map(|arg| expression_from_ast_with_def_map(arg, def_map))
+                .map(|arg| expression_from_ast_with_context(arg, context))
                 .collect::<LowerResult<Vec<_>>>()?,
             outputs: outputs
                 .iter()
-                .map(|output| output_component_reference_from_ast(output, def_map))
+                .map(|output| output_component_reference_from_ast(output, context.def_map))
                 .collect::<LowerResult<Vec<_>>>()?
                 .into_iter()
                 .flatten()
@@ -225,8 +260,8 @@ fn statement_from_ast_with_span(
             span,
         }),
         ast::Statement::Reinit { variable, value } => Ok(rumoca_core::Statement::Reinit {
-            variable: component_reference_from_ast_with_def_map(variable, def_map)?,
-            value: expression_from_ast_with_def_map(value, def_map)?,
+            variable: component_reference_from_ast_with_def_map(variable, context.def_map)?,
+            value: expression_from_ast_with_context(value, context)?,
             span,
         }),
         ast::Statement::Assert {
@@ -234,11 +269,11 @@ fn statement_from_ast_with_span(
             message,
             level,
         } => Ok(rumoca_core::Statement::Assert {
-            condition: expression_from_ast_with_def_map(condition, def_map)?,
-            message: Box::new(expression_from_ast_with_def_map(message, def_map)?),
+            condition: expression_from_ast_with_context(condition, context)?,
+            message: Box::new(expression_from_ast_with_context(message, context)?),
             level: level
                 .as_ref()
-                .map(|expr| expression_from_ast_with_def_map(expr, def_map))
+                .map(|expr| expression_from_ast_with_context(expr, context))
                 .transpose()?
                 .map(Box::new),
             span,
@@ -249,7 +284,7 @@ fn statement_from_ast_with_span(
 fn if_statement_from_ast(
     cond_blocks: &[ast::StatementBlock],
     else_block: Option<&[ast::Statement]>,
-    def_map: Option<&IndexMap<DefId, String>>,
+    context: LoweringContext<'_>,
     source_map: Option<&SourceMap>,
     span: Span,
 ) -> LowerResult<rumoca_core::Statement> {
@@ -257,7 +292,7 @@ fn if_statement_from_ast(
         cond_blocks: cond_blocks
             .iter()
             .map(|block| {
-                statement_block_from_ast_with_def_map_and_source_map(block, def_map, source_map)
+                statement_block_from_ast_with_context_and_source_map(block, context, source_map)
             })
             .collect::<LowerResult<Vec<_>>>()?,
         else_block: else_block
@@ -265,7 +300,7 @@ fn if_statement_from_ast(
                 stmts
                     .iter()
                     .map(|inner| {
-                        statement_from_ast_with_def_map_and_source_map(inner, def_map, source_map)
+                        statement_from_ast_with_context_and_source_map(inner, context, source_map)
                     })
                     .collect::<LowerResult<Vec<_>>>()
             })
@@ -299,27 +334,27 @@ fn ast_statement_span(stmt: &ast::Statement, source_map: Option<&SourceMap>) -> 
     })
 }
 
-fn for_index_from_ast_with_def_map(
+fn for_index_from_ast_with_context(
     index: &ast::ForIndex,
-    def_map: Option<&IndexMap<DefId, String>>,
+    context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::ForIndex> {
     Ok(rumoca_core::ForIndex {
         ident: index.ident.text.to_string(),
-        range: expression_from_ast_with_def_map(&index.range, def_map)?,
+        range: expression_from_ast_with_context(&index.range, context)?,
     })
 }
 
-fn statement_block_from_ast_with_def_map_and_source_map(
+fn statement_block_from_ast_with_context_and_source_map(
     block: &ast::StatementBlock,
-    def_map: Option<&IndexMap<DefId, String>>,
+    context: LoweringContext<'_>,
     source_map: Option<&SourceMap>,
 ) -> LowerResult<rumoca_core::StatementBlock> {
     Ok(rumoca_core::StatementBlock {
-        cond: expression_from_ast_with_def_map(&block.cond, def_map)?,
+        cond: expression_from_ast_with_context(&block.cond, context)?,
         stmts: block
             .stmts
             .iter()
-            .map(|stmt| statement_from_ast_with_def_map_and_source_map(stmt, def_map, source_map))
+            .map(|stmt| statement_from_ast_with_context_and_source_map(stmt, context, source_map))
             .collect::<LowerResult<Vec<_>>>()?,
     })
 }
@@ -614,26 +649,51 @@ fn is_quoted_identifier(name: &str) -> bool {
     name.starts_with('\'') && name.ends_with('\'') && name.len() >= 2
 }
 
+#[cfg(test)]
 fn convert_function_call_with_def_map(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     def_map: Option<&IndexMap<DefId, String>>,
 ) -> LowerResult<rumoca_core::Expression> {
+    convert_function_call_with_context(
+        comp,
+        args,
+        LoweringContext {
+            def_map,
+            instance_name: None,
+        },
+    )
+}
+
+fn convert_function_call_with_context(
+    comp: &ast::ComponentReference,
+    args: &[ast::Expression],
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    if is_get_instance_name_call(comp) {
+        return lower_get_instance_name_call(args, context, comp.span);
+    }
+
     if comp.parts.len() == 1 {
         let func_name = &comp.parts[0].ident.text;
+        if rumoca_core::predefined_component_type(func_name.as_ref())
+            == Some(rumoca_core::PredefinedComponentType::String)
+        {
+            return predefined_type_constructor_call(comp, args, context);
+        }
         if let Some(builtin) = rumoca_core::BuiltinFunction::from_name(func_name) {
             return Ok(rumoca_core::Expression::BuiltinCall {
                 function: builtin,
                 args: args
                     .iter()
-                    .map(|a| expression_from_ast_with_def_map(a, def_map))
+                    .map(|a| expression_from_ast_with_context(a, context))
                     .collect::<LowerResult<Vec<_>>>()?,
-                span: rumoca_core::Span::DUMMY,
+                span: comp.span,
             });
         }
     }
 
-    let function_ref = match resolved_function_call_reference(comp, def_map) {
+    let function_ref = match resolved_function_call_reference(comp, context.def_map) {
         Some(function_ref) => function_ref,
         None => Reference::from_component_reference(component_reference_from_ast(comp)?),
     };
@@ -642,10 +702,56 @@ fn convert_function_call_with_def_map(
         name: function_ref,
         args: args
             .iter()
-            .map(|a| convert_call_arg_with_def_map(a, def_map))
+            .map(|a| convert_call_arg_with_context(a, context))
             .collect::<LowerResult<Vec<_>>>()?,
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span: comp.span,
+    })
+}
+
+fn predefined_type_constructor_call(
+    comp: &ast::ComponentReference,
+    args: &[ast::Expression],
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    Ok(rumoca_core::Expression::FunctionCall {
+        name: Reference::from_component_reference(component_reference_from_ast_with_def_map(
+            comp,
+            context.def_map,
+        )?),
+        args: args
+            .iter()
+            .map(|a| convert_call_arg_with_context(a, context))
+            .collect::<LowerResult<Vec<_>>>()?,
+        is_constructor: true,
+        span: comp.span,
+    })
+}
+
+fn is_get_instance_name_call(comp: &ast::ComponentReference) -> bool {
+    comp.parts.len() == 1 && comp.parts[0].ident.text.as_ref() == "getInstanceName"
+}
+
+fn lower_get_instance_name_call(
+    args: &[ast::Expression],
+    context: LoweringContext<'_>,
+    span: Span,
+) -> LowerResult<rumoca_core::Expression> {
+    if !args.is_empty() {
+        return Err(FlattenError::unsupported_equation(
+            "getInstanceName() takes no arguments",
+            span,
+        ));
+    }
+    let instance_name = context.instance_name.ok_or_else(|| {
+        FlattenError::unsupported_equation(
+            "getInstanceName() requires a model/block instance scope",
+            span,
+        )
+    })?;
+    Ok(rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::String(instance_name.to_string()),
+        span,
     })
 }
 
@@ -744,63 +850,63 @@ fn convert_terminal(
 
 fn convert_comprehension_indices(
     indices: &[ast::ForIndex],
-    def_map: Option<&IndexMap<DefId, String>>,
+    context: LoweringContext<'_>,
 ) -> LowerResult<Vec<rumoca_core::ComprehensionIndex>> {
     indices
         .iter()
         .map(|index| {
             Ok(rumoca_core::ComprehensionIndex {
                 name: index.ident.text.to_string(),
-                range: expression_from_ast_with_def_map(&index.range, def_map)?,
+                range: expression_from_ast_with_context(&index.range, context)?,
             })
         })
         .collect()
 }
 
-fn convert_expr_vec_with_def_map(
+fn convert_expr_vec_with_context(
     exprs: &[ast::Expression],
-    def_map: Option<&IndexMap<DefId, String>>,
+    context: LoweringContext<'_>,
 ) -> LowerResult<Vec<rumoca_core::Expression>> {
     exprs
         .iter()
-        .map(|expr| expression_from_ast_with_def_map(expr, def_map))
+        .map(|expr| expression_from_ast_with_context(expr, context))
         .collect()
 }
 
-fn convert_if_with_def_map(
+fn convert_if_with_context(
     branches: &[(ast::Expression, ast::Expression)],
     else_branch: &ast::Expression,
     span: Span,
-    def_map: Option<&IndexMap<DefId, String>>,
+    context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
     Ok(rumoca_core::Expression::If {
         branches: branches
             .iter()
             .map(|(cond, then_expr)| {
                 Ok((
-                    expression_from_ast_with_def_map(cond, def_map)?,
-                    expression_from_ast_with_def_map(then_expr, def_map)?,
+                    expression_from_ast_with_context(cond, context)?,
+                    expression_from_ast_with_context(then_expr, context)?,
                 ))
             })
             .collect::<LowerResult<Vec<_>>>()?,
-        else_branch: Box::new(expression_from_ast_with_def_map(else_branch, def_map)?),
+        else_branch: Box::new(expression_from_ast_with_context(else_branch, context)?),
         span,
     })
 }
 
-fn convert_array_comprehension_with_def_map(
+fn convert_array_comprehension_with_context(
     expr: &ast::Expression,
     indices: &[ast::ForIndex],
     filter: &Option<std::sync::Arc<ast::Expression>>,
     span: Span,
-    def_map: Option<&IndexMap<DefId, String>>,
+    context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
     Ok(rumoca_core::Expression::ArrayComprehension {
-        expr: Box::new(expression_from_ast_with_def_map(expr, def_map)?),
-        indices: convert_comprehension_indices(indices, def_map)?,
+        expr: Box::new(expression_from_ast_with_context(expr, context)?),
+        indices: convert_comprehension_indices(indices, context)?,
         filter: filter
             .as_ref()
-            .map(|cond| expression_from_ast_with_def_map(cond, def_map).map(Box::new))
+            .map(|cond| expression_from_ast_with_context(cond, context).map(Box::new))
             .transpose()?,
         span,
     })
@@ -820,21 +926,14 @@ fn wrap_named_constructor_arg(
     }
 }
 
-fn convert_constructor_arg_with_def_map(
+fn convert_call_arg_with_context(
     expr: &ast::Expression,
-    def_map: Option<&IndexMap<DefId, String>>,
-) -> LowerResult<rumoca_core::Expression> {
-    convert_call_arg_with_def_map(expr, def_map)
-}
-
-fn convert_call_arg_with_def_map(
-    expr: &ast::Expression,
-    def_map: Option<&IndexMap<DefId, String>>,
+    context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
     match expr {
         ast::Expression::NamedArgument { name, value, .. } => Ok(wrap_named_constructor_arg(
             &name.text,
-            expression_from_ast_with_def_map(value, def_map)?,
+            expression_from_ast_with_context(value, context)?,
         )),
         ast::Expression::Modification { target, value, .. } => {
             let arg_name = target
@@ -845,21 +944,21 @@ fn convert_call_arg_with_def_map(
                 .join(".");
             Ok(wrap_named_constructor_arg(
                 &arg_name,
-                expression_from_ast_with_def_map(value, def_map)?,
+                expression_from_ast_with_context(value, context)?,
             ))
         }
-        _ => expression_from_ast_with_def_map(expr, def_map),
+        _ => expression_from_ast_with_context(expr, context),
     }
 }
 
-fn convert_class_modification_with_def_map(
+fn convert_class_modification_with_context(
     target: &ast::ComponentReference,
     modifications: &[ast::Expression],
-    def_map: Option<&IndexMap<DefId, String>>,
+    context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
     let constructor_name = target
         .def_id
-        .and_then(|def_id| def_map.and_then(|map| map.get(&def_id).cloned()))
+        .and_then(|def_id| context.def_map.and_then(|map| map.get(&def_id).cloned()))
         .map_or_else(
             || {
                 component_reference_from_ast(target)
@@ -875,7 +974,7 @@ fn convert_class_modification_with_def_map(
         name: Reference::from_component_reference(constructor_ref),
         args: modifications
             .iter()
-            .map(|expr| convert_constructor_arg_with_def_map(expr, def_map))
+            .map(|expr| convert_call_arg_with_context(expr, context))
             .collect::<LowerResult<Vec<_>>>()?,
         is_constructor: true,
         span: target.span,
@@ -912,6 +1011,66 @@ mod tests {
             span: Span::DUMMY,
             def_id: None,
         })
+    }
+
+    fn function_ref(name: &str) -> ast::ComponentReference {
+        ast::ComponentReference {
+            local: false,
+            parts: vec![part(name)],
+            span: Span::DUMMY,
+            def_id: None,
+        }
+    }
+
+    #[test]
+    fn get_instance_name_lowers_to_instance_string_literal() {
+        let expr = convert_function_call_with_context(
+            &function_ref("getInstanceName"),
+            &[],
+            LoweringContext {
+                def_map: None,
+                instance_name: Some("Vehicle.engine.controller"),
+            },
+        )
+        .unwrap();
+
+        let rumoca_core::Expression::Literal { value, .. } = expr else {
+            panic!("expected literal");
+        };
+        assert_eq!(
+            value,
+            rumoca_core::Literal::String("Vehicle.engine.controller".to_string())
+        );
+    }
+
+    #[test]
+    fn get_instance_name_requires_instance_scope() {
+        let err = convert_function_call_with_context(
+            &function_ref("getInstanceName"),
+            &[],
+            LoweringContext::default(),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("requires a model/block instance scope")
+        );
+    }
+
+    #[test]
+    fn get_instance_name_rejects_arguments() {
+        let err = convert_function_call_with_context(
+            &function_ref("getInstanceName"),
+            &[ast_var("x")],
+            LoweringContext {
+                def_map: None,
+                instance_name: Some("Vehicle.engine.controller"),
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("takes no arguments"));
     }
 
     #[test]

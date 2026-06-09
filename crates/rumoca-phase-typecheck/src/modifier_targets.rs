@@ -1,4 +1,5 @@
-use rumoca_core::{DefId, TypeId};
+use crate::{TypeCheckError, TypeCheckResult};
+use rumoca_core::{DefId, SourceMap, Span, TypeId};
 use rumoca_ir_ast::{ClassTree, Component, TypeTable};
 use std::collections::{HashMap, HashSet};
 
@@ -18,21 +19,47 @@ pub(crate) fn build_component_modifier_member_types(
     type_table: &TypeTable,
     type_ids_by_def_id: &HashMap<DefId, TypeId>,
     type_suffix_index: &HashMap<String, Option<TypeId>>,
-) -> HashMap<DefId, HashMap<String, TypeId>> {
+    source_map: &SourceMap,
+) -> TypeCheckResult<HashMap<DefId, HashMap<String, TypeId>>> {
     let mut cache = HashMap::new();
     let mut visiting = HashSet::new();
+    let ctx = ComponentModifierMemberTypeContext {
+        tree,
+        type_table,
+        type_ids_by_def_id,
+        type_suffix_index,
+        source_map,
+    };
     for def_id in tree.def_map.keys().copied() {
-        let _ = collect_component_modifier_member_types(
-            tree,
-            type_table,
-            type_ids_by_def_id,
-            type_suffix_index,
-            def_id,
-            &mut cache,
-            &mut visiting,
-        );
+        let _ = collect_component_modifier_member_types(&ctx, def_id, &mut cache, &mut visiting)?;
     }
-    cache
+    Ok(cache)
+}
+
+pub(crate) fn build_component_modifier_member_types_for_def_ids<I>(
+    tree: &ClassTree,
+    type_table: &TypeTable,
+    type_ids_by_def_id: &HashMap<DefId, TypeId>,
+    type_suffix_index: &HashMap<String, Option<TypeId>>,
+    source_map: &SourceMap,
+    root_def_ids: I,
+) -> TypeCheckResult<HashMap<DefId, HashMap<String, TypeId>>>
+where
+    I: IntoIterator<Item = DefId>,
+{
+    let mut cache = HashMap::new();
+    let mut visiting = HashSet::new();
+    let ctx = ComponentModifierMemberTypeContext {
+        tree,
+        type_table,
+        type_ids_by_def_id,
+        type_suffix_index,
+        source_map,
+    };
+    for def_id in root_def_ids {
+        let _ = collect_component_modifier_member_types(&ctx, def_id, &mut cache, &mut visiting)?;
+    }
+    Ok(cache)
 }
 
 fn collect_component_modifier_targets(
@@ -75,38 +102,39 @@ fn collect_component_modifier_targets(
     Some(names)
 }
 
+struct ComponentModifierMemberTypeContext<'a> {
+    tree: &'a ClassTree,
+    type_table: &'a TypeTable,
+    type_ids_by_def_id: &'a HashMap<DefId, TypeId>,
+    type_suffix_index: &'a HashMap<String, Option<TypeId>>,
+    source_map: &'a SourceMap,
+}
+
 fn collect_component_modifier_member_types(
-    tree: &ClassTree,
-    type_table: &TypeTable,
-    type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    type_suffix_index: &HashMap<String, Option<TypeId>>,
+    ctx: &ComponentModifierMemberTypeContext<'_>,
     def_id: DefId,
     cache: &mut HashMap<DefId, HashMap<String, TypeId>>,
     visiting: &mut HashSet<DefId>,
-) -> Option<HashMap<String, TypeId>> {
+) -> TypeCheckResult<Option<HashMap<String, TypeId>>> {
     if let Some(existing) = cache.get(&def_id) {
-        return Some(existing.clone());
+        return Ok(Some(existing.clone()));
     }
     if !visiting.insert(def_id) {
-        return Some(HashMap::new());
+        return Ok(Some(HashMap::new()));
     }
 
-    let class = tree.get_class_by_def_id(def_id)?;
+    let Some(class) = ctx.tree.get_class_by_def_id(def_id) else {
+        return Ok(None);
+    };
     let mut member_types = HashMap::<String, TypeId>::new();
 
     for ext in &class.extends {
         let Some(base_def_id) = ext.base_def_id else {
             continue;
         };
-        if let Some(base_member_types) = collect_component_modifier_member_types(
-            tree,
-            type_table,
-            type_ids_by_def_id,
-            type_suffix_index,
-            base_def_id,
-            cache,
-            visiting,
-        ) {
+        if let Some(base_member_types) =
+            collect_component_modifier_member_types(ctx, base_def_id, cache, visiting)?
+        {
             member_types.extend(base_member_types);
         }
         for break_name in &ext.break_names {
@@ -117,16 +145,17 @@ fn collect_component_modifier_member_types(
     for (member_name, member_comp) in &class.components {
         let member_type_id = resolve_component_type_for_modifier_members(
             member_comp,
-            type_table,
-            type_ids_by_def_id,
-            type_suffix_index,
-        );
+            ctx.type_table,
+            ctx.type_ids_by_def_id,
+            ctx.type_suffix_index,
+            ctx.source_map,
+        )?;
         member_types.insert(member_name.clone(), member_type_id);
     }
 
     visiting.remove(&def_id);
     cache.insert(def_id, member_types.clone());
-    Some(member_types)
+    Ok(Some(member_types))
 }
 
 fn resolve_component_type_for_modifier_members(
@@ -134,16 +163,39 @@ fn resolve_component_type_for_modifier_members(
     type_table: &TypeTable,
     type_ids_by_def_id: &HashMap<DefId, TypeId>,
     type_suffix_index: &HashMap<String, Option<TypeId>>,
-) -> TypeId {
+    source_map: &SourceMap,
+) -> TypeCheckResult<TypeId> {
     if let Some(type_def_id) = component.type_def_id
         && let Some(type_id) = type_ids_by_def_id.get(&type_def_id)
     {
-        return *type_id;
+        return Ok(*type_id);
     }
 
     let type_name = component.type_name.to_string();
     type_table
         .lookup(&type_name)
         .or_else(|| type_suffix_index.get(&type_name).copied().flatten())
-        .unwrap_or(TypeId::UNKNOWN)
+        .ok_or_else(|| {
+            Box::new(TypeCheckError::undefined_type(
+                type_name,
+                name_span(source_map, &component.type_name),
+            ))
+        })
+}
+
+fn name_span(source_map: &SourceMap, name: &rumoca_ir_ast::Name) -> Span {
+    let Some(first) = name.name.first() else {
+        return Span::DUMMY;
+    };
+    let last = name.name.last().unwrap_or(first);
+    let file_name = if !first.location.file_name.is_empty() {
+        first.location.file_name.as_str()
+    } else {
+        last.location.file_name.as_str()
+    };
+    source_map.location_to_span(
+        file_name,
+        first.location.start as usize,
+        last.location.end as usize,
+    )
 }

@@ -8,7 +8,8 @@ use rustc_hash::FxHashMap;
 use std::collections::HashSet;
 
 use crate::{
-    classification, flat_to_dae_expression, flat_to_dae_var_name, path_utils::strip_all_subscripts,
+    classification, flat_to_dae_expression_with_refs, flat_to_dae_var_name,
+    path_utils::strip_all_subscripts,
 };
 
 type Dae = dae::Dae;
@@ -18,6 +19,20 @@ type Expression = rumoca_core::Expression;
 type Literal = rumoca_core::Literal;
 type Model = flat::Model;
 type VarName = rumoca_core::VarName;
+
+struct BindingEquationContext<'a> {
+    dae: &'a mut Dae,
+    flat: &'a Model,
+    known_var_names: &'a HashSet<String>,
+}
+
+struct BindingEquationSpec<'a> {
+    name: &'a VarName,
+    binding: &'a Expression,
+    dims: &'a [i64],
+    kind: &'a VariableKind,
+    is_discrete_type: bool,
+}
 
 /// Convert variable bindings to equations (MLS §4.4.1).
 /// A declaration `Real y = expr` is equivalent to `Real y; equation y = expr;`
@@ -135,14 +150,20 @@ pub(super) fn convert_bindings_to_equations(
         }
 
         if let Some(binding) = &var.binding {
-            add_binding_equation(
+            let mut binding_context = BindingEquationContext {
                 dae,
-                name,
-                binding,
-                &var.dims,
-                &kind,
-                var.is_discrete_type,
-                &known_var_names,
+                flat,
+                known_var_names: &known_var_names,
+            };
+            add_binding_equation(
+                &mut binding_context,
+                BindingEquationSpec {
+                    name,
+                    binding,
+                    dims: &var.dims,
+                    kind: &kind,
+                    is_discrete_type: var.is_discrete_type,
+                },
             );
         }
     }
@@ -561,48 +582,41 @@ fn should_skip_variable_binding(
 }
 
 /// Add a binding equation to the appropriate DAE equation list.
-fn add_binding_equation(
-    dae: &mut Dae,
-    name: &VarName,
-    binding: &Expression,
-    dims: &[i64],
-    kind: &VariableKind,
-    is_discrete_type: bool,
-    known_var_names: &HashSet<String>,
-) {
-    let selected_binding = select_scalar_binding_record_field_alias(name, binding, known_var_names);
-    let scalar_count = super::compute_var_size(dims);
+fn add_binding_equation(ctx: &mut BindingEquationContext<'_>, spec: BindingEquationSpec<'_>) {
+    let selected_binding =
+        select_scalar_binding_record_field_alias(spec.name, spec.binding, ctx.known_var_names);
+    let scalar_count = super::compute_var_size(spec.dims);
     let origin = rumoca_ir_flat::EquationOrigin::Binding {
-        variable: name.as_str().to_string(),
+        variable: spec.name.as_str().to_string(),
     }
     .to_string();
 
-    if *kind == VariableKind::Discrete {
+    if *spec.kind == VariableKind::Discrete {
         let explicit = dae::Equation::explicit_with_scalar_count(
-            flat_to_dae_var_name(name),
-            flat_to_dae_expression(&selected_binding),
+            flat_to_dae_var_name(spec.name),
+            flat_to_dae_expression_with_refs(&selected_binding, ctx.flat),
             Span::DUMMY,
             origin,
             scalar_count,
         );
-        if is_discrete_type {
-            dae.discrete.valued_updates.push(explicit);
+        if spec.is_discrete_type {
+            ctx.dae.discrete.valued_updates.push(explicit);
         } else {
-            dae.discrete.real_updates.push(explicit);
+            ctx.dae.discrete.real_updates.push(explicit);
         }
         return;
     }
 
-    let residual = create_binding_residual(name, &selected_binding);
+    let residual = create_binding_residual(spec.name, &selected_binding);
     let dae_eq = dae::Equation::residual_array(
-        flat_to_dae_expression(&residual),
+        flat_to_dae_expression_with_refs(&residual, ctx.flat),
         Span::DUMMY,
         origin,
         scalar_count,
     );
 
     // All continuous equations go into f_x (MLS B.1a) — no ODE/algebraic/output split.
-    dae.continuous.equations.push(dae_eq);
+    ctx.dae.continuous.equations.push(dae_eq);
 }
 
 fn select_scalar_binding_record_field_alias(

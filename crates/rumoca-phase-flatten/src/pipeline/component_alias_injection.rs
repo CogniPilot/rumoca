@@ -476,10 +476,9 @@ fn component_static_cache_key(
 }
 
 fn component_scope_has_array_index(comp: &rumoca_ir_ast::InstanceData) -> bool {
-    comp.qualified_name
-        .parts
-        .iter()
-        .any(|(name, subs)| !subs.is_empty() || name.contains('['))
+    comp.qualified_name.parts.iter().any(|(name, subs)| {
+        !subs.is_empty() || rumoca_core::split_trailing_subscript_suffix(name).is_some()
+    })
 }
 
 fn replay_component_static_cache(

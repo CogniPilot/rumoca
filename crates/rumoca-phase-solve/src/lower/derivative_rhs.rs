@@ -58,7 +58,9 @@ impl DerivativeRhsAnalysis {
     }
 }
 
-pub(crate) fn analyze_derivative_rhs(dae_model: &dae::Dae) -> DerivativeRhsAnalysis {
+pub(crate) fn analyze_derivative_rhs(
+    dae_model: &dae::Dae,
+) -> Result<DerivativeRhsAnalysis, LowerError> {
     let states = collect_state_scalars(dae_model);
     let state_names = states
         .iter()
@@ -66,11 +68,11 @@ pub(crate) fn analyze_derivative_rhs(dae_model: &dae::Dae) -> DerivativeRhsAnaly
         .collect::<Vec<_>>();
     let structural_bindings = compile_time::structural_bindings(dae_model);
     let (equations, equation_flags) =
-        collect_derivative_equations(dae_model, &state_names, &structural_bindings);
+        collect_derivative_equations(dae_model, &state_names, &structural_bindings)?;
     let direct_equations = collect_direct_derivative_equations(&equations);
     let direct_assignments = collect_direct_assignments(dae_model, &equation_flags);
     let (component_roots, components) = derivative_state_components(&states, &equations);
-    DerivativeRhsAnalysis {
+    Ok(DerivativeRhsAnalysis {
         states,
         equations,
         direct_equations,
@@ -79,14 +81,14 @@ pub(crate) fn analyze_derivative_rhs(dae_model: &dae::Dae) -> DerivativeRhsAnaly
         components,
         structural_bindings,
         equation_flags,
-    }
+    })
 }
 
 pub(super) fn lower_derivative_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<ComputeBlock, LowerError> {
-    let analysis = analyze_derivative_rhs(dae_model);
+    let analysis = analyze_derivative_rhs(dae_model)?;
     lower_derivative_rhs_with_analysis(dae_model, layout, &analysis)
 }
 
@@ -174,7 +176,7 @@ pub(super) fn lower_derivative_rhs_scalar_programs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let analysis = analyze_derivative_rhs(dae_model);
+    let analysis = analyze_derivative_rhs(dae_model)?;
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
     let lowering_ctx = DerivativeRhsLoweringContext {
         equations: &analysis.equations,
@@ -222,8 +224,10 @@ struct DerivativeRhsLoweringContext<'a> {
     indexed_bindings: &'a IndexedBindingMap,
 }
 
-pub(super) fn state_derivative_equation_flags(dae_model: &dae::Dae) -> Vec<bool> {
-    analyze_derivative_rhs(dae_model).equation_flags
+pub(super) fn state_derivative_equation_flags(
+    dae_model: &dae::Dae,
+) -> Result<Vec<bool>, LowerError> {
+    Ok(analyze_derivative_rhs(dae_model)?.equation_flags)
 }
 
 fn lower_state_derivative_row(
@@ -679,6 +683,7 @@ fn row_builder<'a>(
             triggered_clock_conditions: Some(&dae_model.clocks.triggered_conditions),
             discrete_valued_names: Some(&dae_model.variables.discrete_valued),
             variable_starts: Some(&dae_model.metadata.variable_starts),
+            dae_variables: Some(&dae_model.variables),
             indexed_bindings: Some(indexed_bindings),
             is_initial_mode: false,
         },

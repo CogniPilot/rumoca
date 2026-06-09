@@ -1,18 +1,23 @@
 use super::*;
-use rumoca_eval_ast::eval_instantiate::{expr_to_bool, expr_to_string, parse_state_select};
+use rumoca_eval_ast::eval_instantiate::{
+    InstantiateEvalCtx, eval_state_select_expr, expr_to_bool, expr_to_string, parse_state_select,
+};
+
+pub(super) struct ComponentAttrsAndBinding {
+    pub(super) attrs: ExtractedAttributes,
+    pub(super) binding: Option<ast::Expression>,
+    pub(super) binding_source: Option<ast::Expression>,
+    pub(super) binding_source_scope: Option<ast::QualifiedName>,
+    pub(super) binding_from_modification: bool,
+}
 
 pub(super) fn extract_component_attrs_and_binding(
     comp: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
-) -> (
-    ExtractedAttributes,
-    Option<ast::Expression>,
-    Option<ast::Expression>,
-    Option<ast::QualifiedName>,
-    bool,
-) {
+    eval_ctx: &InstantiateEvalCtx<'_>,
+) -> InstantiateResult<ComponentAttrsAndBinding> {
     // Pass component name so mod_env can be checked for outer modifications.
-    let mut attrs = extract_attributes(comp, mod_env, &comp.name);
+    let mut attrs = extract_attributes(comp, mod_env, &comp.name, eval_ctx)?;
     let (binding, binding_from_modification, binding_source_scope) = extract_binding(comp, mod_env);
     let binding_source = if binding_from_modification {
         let binding_path = ast::QualifiedName::from_ident(&comp.name);
@@ -32,13 +37,13 @@ pub(super) fn extract_component_attrs_and_binding(
         attrs.start = binding.clone();
     }
 
-    (
+    Ok(ComponentAttrsAndBinding {
         attrs,
         binding,
         binding_source,
         binding_source_scope,
         binding_from_modification,
-    )
+    })
 }
 
 pub(super) fn infer_local_attribute_source_scopes(
@@ -303,7 +308,8 @@ pub(super) fn extract_attributes(
     comp: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
     comp_name: &str,
-) -> ExtractedAttributes {
+    eval_ctx: &InstantiateEvalCtx<'_>,
+) -> InstantiateResult<ExtractedAttributes> {
     let mut source_scopes = IndexMap::default();
     let start_path = ast::QualifiedName::from_ident(comp_name).child("start");
     let start_from_mod_env = mod_env.get(&start_path).map(|value| {
@@ -322,6 +328,10 @@ pub(super) fn extract_attributes(
     };
 
     let outer_state_select = mod_env.get_attr(comp_name, "stateSelect");
+    let outer_state_select = match outer_state_select {
+        Some(value) => Some(parse_required_state_select(value, eval_ctx)?),
+        None => None,
+    };
     let has_outer_state_select = outer_state_select.is_some();
     let mut attrs = ExtractedAttributes {
         start_is_explicit: start_from_mod_env.is_some(),
@@ -338,9 +348,7 @@ pub(super) fn extract_attributes(
         display_unit: mod_env
             .get_attr(comp_name, "displayUnit")
             .and_then(expr_to_string),
-        state_select: outer_state_select
-            .map(parse_state_select)
-            .unwrap_or_default(),
+        state_select: outer_state_select.unwrap_or_default(),
     };
 
     for (name, value) in &comp.modifications {
@@ -359,7 +367,7 @@ pub(super) fn extract_attributes(
                 attrs.display_unit = expr_to_string(value)
             }
             "stateSelect" if !has_outer_state_select => {
-                attrs.state_select = parse_state_select(value)
+                attrs.state_select = parse_required_state_select(value, eval_ctx)?
             }
             _ => {}
         }
@@ -370,5 +378,20 @@ pub(super) fn extract_attributes(
         attrs.start_is_explicit = comp.start_is_modification;
     }
 
-    attrs
+    Ok(attrs)
+}
+
+fn parse_required_state_select(
+    value: &ast::Expression,
+    eval_ctx: &InstantiateEvalCtx<'_>,
+) -> InstantiateResult<rumoca_core::StateSelect> {
+    parse_state_select(value)
+        .or_else(|| eval_state_select_expr(eval_ctx, value))
+        .ok_or_else(|| {
+            Box::new(InstantiateError::InvalidTypeAttribute {
+                attribute: "stateSelect".to_string(),
+                value: value.to_string(),
+                span: rumoca_core::span_to_source_span(value.span()),
+            })
+        })
 }

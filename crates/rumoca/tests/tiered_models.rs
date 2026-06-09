@@ -139,7 +139,7 @@ fn compile(source: &str, model_name: &str) -> Result<CompileResult, String> {
         inputs: dae.variables.inputs.len(),
         outputs: dae.variables.outputs.len(),
         f_x_count: dae.continuous.equations.len(),
-        balance: rumoca_phase_dae::balance::balance(&dae),
+        balance: rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
         dae,
     })
 }

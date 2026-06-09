@@ -140,8 +140,8 @@ pub mod codegen {
 
 /// Read-only DAE analysis helpers exposed through the compile facade.
 pub mod analysis {
-    pub use rumoca_phase_dae::balance::{BalanceDetail, equations_unknowns};
-    pub use rumoca_phase_dae::{balance, balance_detail, is_balanced};
+    pub use rumoca_phase_dae::balance::BalanceDetail;
+    pub use rumoca_phase_dae::{balance, balance_detail, equations_unknowns, is_balanced};
 }
 
 /// Structural-analysis primitives (BLT sorting, scalarization).

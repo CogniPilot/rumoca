@@ -5,6 +5,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         call_name: &str,
         args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
@@ -22,12 +23,9 @@ impl<'a> LowerBuilder<'a> {
                 )))
             }
             "Modelica.Math.Random.Utilities.automaticLocalSeed" | "automaticLocalSeed" => {
-                let seed = literal_string(args.first())
-                    .map(|path| i64::from(rumoca_eval_dae::modelica_strings_hash_string(path)))
-                    .unwrap_or_else(|| {
-                        let counter = self.alloc_call_site().saturating_add(1);
-                        rumoca_eval_dae::deterministic_automatic_global_seed(counter)
-                    });
+                let seed = i64::from(rumoca_eval_dae::modelica_strings_hash_string(
+                    required_automatic_local_seed_path(args.first(), span)?,
+                ));
                 Ok(Some(self.emit_const(seed as f64)))
             }
             "Modelica.Math.Random.Utilities.initializeImpureRandom" | "initializeImpureRandom" => {
@@ -119,7 +117,7 @@ impl<'a> LowerBuilder<'a> {
                 };
                 let local_seed = self.lower_optional_arg(args, 0, scope, call_depth)?;
                 let global_seed = self.lower_optional_arg(args, 1, scope, call_depth)?;
-                let state_len = random_projection_state_len(generator, projection, args);
+                let state_len = random_projection_state_len(generator, projection, args)?;
                 Ok(Some(self.emit_random_initial_state(
                     generator,
                     local_seed,
@@ -183,27 +181,25 @@ impl<'a> LowerBuilder<'a> {
 
     pub(in crate::lower) fn lower_random_array_values(
         &mut self,
-        call_name: &str,
+        call_name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
-        let call_path = rumoca_core::ComponentPath::from_flat_path(call_name);
-        if let Some(output_name) = call_path.parts().last()
-            && let Some(base_name) = call_path
-                .prefix(call_path.len().saturating_sub(1))
-                .map(|path| path.to_flat_string())
-            && let Some((generator, kind)) = random_intrinsic_kind(&base_name)
+        if let Some(projection) = self.lookup_function_output_projection(call_name)
+            && let Some((generator, kind)) =
+                random_intrinsic_kind(projection.base_function_name.as_str())
         {
             return self.lower_projected_random_array_values(
                 generator,
                 kind,
-                output_name.as_str(),
+                &projection,
                 args,
                 scope,
                 call_depth,
             );
         }
+        let call_name = call_name.as_str();
         let Some((generator, kind)) = random_intrinsic_kind(call_name) else {
             return Ok(None);
         };
@@ -241,25 +237,18 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         generator: RandomGenerator,
         kind: RandomIntrinsicKind,
-        output_name: &str,
+        projection: &FunctionOutputProjection,
         args: &[rumoca_core::Expression],
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
-        match (kind, output_name) {
+        match (kind, projection.output_name.as_str()) {
             (RandomIntrinsicKind::InitialState, "state") => {
                 let local_seed = self.lower_optional_arg(args, 0, scope, call_depth)?;
                 let global_seed = self.lower_optional_arg(args, 1, scope, call_depth)?;
-                let state_len = if args.get(2).is_some() {
-                    // Argument 2 (state length) was provided: it must be a compile-time integer
-                    // literal. A non-literal state length would corrupt the random state slot.
-                    random_state_len_arg(args).expect(
-                        "random state length argument (index 2) must be a compile-time integer \
-                         literal — a non-constant value produces a corrupt random state slot",
-                    )
-                } else {
-                    // No state length argument: fall back to generator default.
-                    random_generator_state_len(generator)
+                let state_len = match random_state_len_arg(args)? {
+                    Some(len) => len,
+                    None => random_generator_state_len(generator),
                 };
                 Ok(Some(
                     (0..state_len)
@@ -475,4 +464,19 @@ impl<'a> LowerBuilder<'a> {
         }
         acc
     }
+}
+
+fn required_automatic_local_seed_path(
+    expr: Option<&rumoca_core::Expression>,
+    call_span: rumoca_core::Span,
+) -> Result<&str, LowerError> {
+    literal_string(expr).ok_or_else(|| {
+        let span = expr
+            .and_then(rumoca_core::Expression::span)
+            .unwrap_or(call_span);
+        unsupported_at(
+            "automaticLocalSeed requires a String path literal; getInstanceName must be lowered before solve IR",
+            span,
+        )
+    })
 }

@@ -84,6 +84,7 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
             description: Some(format!("pre() of {}", target.source_name.as_str())),
             causality: dae::VariableCausality::CalculatedParameter,
             is_tunable: false,
+            origin: dae::VariableOrigin::Generated,
         };
         pre_params.insert(pre_param_name, pre_var);
     }
@@ -98,7 +99,7 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
         }
     }
 
-    let relation_memories = relation_memory_exprs(dae);
+    let relation_memories = relation_memory_exprs(dae)?;
 
     rewrite_equations(
         &mut dae.continuous.equations,
@@ -425,16 +426,15 @@ impl DaeVisitor for ScalarizedFieldCandidateCollector<'_> {
 }
 
 fn scalarized_field_name_matches(candidate: &str, prefix: &str, field: &str) -> bool {
-    let Some(rest) = candidate.strip_prefix(prefix) else {
+    let path = rumoca_core::ComponentPath::from_flat_path(candidate);
+    let Some((candidate_field, prefix_parts)) = path.parts().split_last() else {
         return false;
     };
-    let Some(rest) = rest.strip_prefix('[') else {
+    if candidate_field.as_str() != field {
         return false;
-    };
-    let Some(subscripts) = rest.strip_suffix(&format!(".{field}")) else {
-        return false;
-    };
-    subscripts.ends_with(']')
+    }
+    let candidate_prefix = rumoca_core::ComponentPath::from_parts(prefix_parts.iter().cloned());
+    rumoca_core::component_path_base_name(candidate_prefix.as_str()).as_deref() == Some(prefix)
 }
 
 fn find_variable<'a>(dae: &'a dae::Dae, name: &rumoca_core::VarName) -> Option<&'a dae::Variable> {
@@ -542,7 +542,7 @@ fn rewrite_equations(
 
 fn relation_memory_exprs(
     dae_model: &dae::Dae,
-) -> Vec<(rumoca_core::Expression, rumoca_core::Expression)> {
+) -> Result<Vec<(rumoca_core::Expression, rumoca_core::Expression)>, ToDaeError> {
     let mut memories = Vec::new();
     let mut relation_offset = 0usize;
     for equation in &dae_model.conditions.equations {
@@ -567,44 +567,139 @@ fn relation_memory_exprs(
                     scalar_index,
                     scalar_count,
                     equation.span,
-                ),
+                )?,
             ));
         }
         relation_offset += scalar_count;
     }
-    memories
+    Ok(memories)
 }
 
 fn relation_memory_scalar_expr(
     dae_model: &dae::Dae,
-    lhs: &rumoca_core::VarName,
+    lhs: &rumoca_core::Reference,
     flat_index: usize,
     scalar_count: usize,
     span: rumoca_core::Span,
-) -> rumoca_core::Expression {
-    if scalar_count <= 1 {
-        return rumoca_core::Expression::VarRef {
-            name: lhs.clone().into(),
-            subscripts: Vec::new(),
-            span,
-        };
-    }
-    let dims = dae_model
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    let target = relation_memory_target(lhs, span)?;
+    let var = dae_model
         .variables
         .discrete_valued
-        .get(lhs)
-        .or_else(|| dae_model.variables.discrete_reals.get(lhs))
-        .map(|var| var.dims.as_slice())
-        .unwrap_or(&[]);
+        .get(&target.variable_name)
+        .or_else(|| {
+            dae_model
+                .variables
+                .discrete_reals
+                .get(&target.variable_name)
+        })
+        .ok_or_else(|| {
+            ToDaeError::runtime_contract_violation_at(
+                format!(
+                    "relation memory target `{}` has scalar_count={} but no DAE variable metadata",
+                    lhs.as_str(),
+                    scalar_count
+                ),
+                span,
+            )
+        })?;
+    let name = reference_for_variable_origin(&target.variable_name, var);
+    if scalar_count <= 1 {
+        return Ok(rumoca_core::Expression::VarRef {
+            name,
+            subscripts: target.subscripts,
+            span,
+        });
+    }
+    if !target.subscripts.is_empty() {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "relation memory target `{}` has both explicit lhs subscripts and scalar_count={}",
+                lhs.as_str(),
+                scalar_count
+            ),
+            span,
+        ));
+    }
+    let dims = var.dims.as_slice();
     let subscripts = dae::flat_index_to_subscripts(dims, flat_index)
-        .unwrap_or_else(|| vec![flat_index.saturating_add(1)])
+        .ok_or_else(|| {
+            ToDaeError::runtime_contract_violation_at(
+                format!(
+                    "relation memory target `{}` cannot map flat index {} of {} through dims {:?}",
+                    lhs.as_str(),
+                    flat_index,
+                    scalar_count,
+                    dims
+                ),
+                span,
+            )
+        })?
         .into_iter()
         .map(|index| rumoca_core::Subscript::generated_index(index as i64, span))
         .collect();
-    rumoca_core::Expression::VarRef {
-        name: lhs.clone().into(),
+    Ok(rumoca_core::Expression::VarRef {
+        name,
         subscripts,
         span,
+    })
+}
+
+struct RelationMemoryTarget {
+    variable_name: rumoca_core::VarName,
+    subscripts: Vec<rumoca_core::Subscript>,
+}
+
+fn relation_memory_target(
+    lhs: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+) -> Result<RelationMemoryTarget, ToDaeError> {
+    let Some(component_ref) = lhs.component_ref() else {
+        return Ok(RelationMemoryTarget {
+            variable_name: lhs.var_name().clone(),
+            subscripts: Vec::new(),
+        });
+    };
+    let Some(last_part) = component_ref.parts.last() else {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "relation memory target `{}` has empty component reference",
+                lhs.as_str()
+            ),
+            span,
+        ));
+    };
+    let mut base_ref = component_ref.clone();
+    let Some(base_part) = base_ref.parts.last_mut() else {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "relation memory target `{}` has empty component reference",
+                lhs.as_str()
+            ),
+            span,
+        ));
+    };
+    let subscripts = std::mem::take(&mut base_part.subs);
+    let variable_name = if base_ref.parts.len() == 1 {
+        rumoca_core::VarName::new(last_part.ident.clone())
+    } else {
+        rumoca_core::VarName::new(
+            rumoca_core::ComponentPath::from_component_reference(&base_ref).to_flat_string(),
+        )
+    };
+    Ok(RelationMemoryTarget {
+        variable_name,
+        subscripts,
+    })
+}
+
+fn reference_for_variable_origin(
+    name: &rumoca_core::VarName,
+    var: &dae::Variable,
+) -> rumoca_core::Reference {
+    match var.origin {
+        dae::VariableOrigin::Generated => rumoca_core::Reference::generated(name.as_str()),
+        dae::VariableOrigin::Source => name.clone().into(),
     }
 }
 
@@ -802,7 +897,7 @@ impl PreExpressionRewriter<'_> {
         span: rumoca_core::Span,
     ) -> rumoca_core::Expression {
         rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::new(rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME),
+            name: rumoca_core::Reference::generated(rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME),
             args: self.rewrite_expressions(args),
             is_constructor: false,
             span,
@@ -819,7 +914,7 @@ impl PreExpressionRewriter<'_> {
             return rewrite_pre_expr_value(arg, self.targets);
         }
         rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::new("previous"),
+            name: rumoca_core::Reference::generated("previous"),
             args: Vec::new(),
             is_constructor,
             span,
@@ -896,7 +991,7 @@ fn pre_var_ref(
     span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::new(format!("__pre__.{}", name.as_str())),
+        name: rumoca_core::Reference::generated(format!("__pre__.{}", name.as_str())),
         subscripts: subscripts.to_vec(),
         span,
     }
@@ -996,37 +1091,20 @@ fn pre_target_parts_from_name(
 fn split_encoded_integer_subscripts(path: &str) -> (String, Vec<rumoca_core::Subscript>) {
     let mut base = path;
     let mut reversed_groups = Vec::new();
-    while let Some(stripped) = base.strip_suffix(']') {
-        let Some(open_idx) = stripped.rfind('[') else {
-            break;
-        };
-        let index_text = &stripped[open_idx + 1..];
-        let Some(group) = parse_encoded_integer_subscript_group(index_text) else {
-            break;
-        };
-        reversed_groups.push(group);
-        base = &stripped[..open_idx];
+    while let Some(scalar) = rumoca_core::parse_scalar_name(base) {
+        reversed_groups.push(scalar.indices);
+        base = scalar.base;
     }
     reversed_groups.reverse();
     (
         base.to_string(),
-        reversed_groups.into_iter().flatten().collect(),
+        reversed_groups
+            .into_iter()
+            .flatten()
+            .map(|index| rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY))
+            .collect(),
     )
 }
 
-fn parse_encoded_integer_subscript_group(index_text: &str) -> Option<Vec<rumoca_core::Subscript>> {
-    index_text
-        .split(',')
-        .map(|part| {
-            let index = part.trim().parse::<i64>().ok()?;
-            Some(rumoca_core::Subscript::generated_index(
-                index,
-                rumoca_core::Span::DUMMY,
-            ))
-        })
-        .collect()
-}
-
-#[cfg(test)]
 #[cfg(test)]
 mod tests;

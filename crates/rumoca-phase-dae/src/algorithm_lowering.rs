@@ -1,7 +1,8 @@
 use super::*;
 use crate::when_guard::when_guard_activation_expr;
 use crate::{
-    dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression, flat_to_dae_var_name,
+    dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression,
+    flat_to_dae_expression_with_refs, flat_to_dae_var_name,
 };
 mod current_value_rewrite;
 mod for_lowering;
@@ -174,7 +175,7 @@ pub(super) fn route_discrete_event_equations(
         let Some(lhs) = &eq.lhs else {
             continue;
         };
-        let lhs = dae_to_flat_var_name(lhs);
+        let lhs = dae_to_flat_var_name(lhs.var_name());
         let rhs = dae_to_flat_expression(&eq.rhs);
         let inactive_rhs = match equation_inactive_rhs {
             rumoca_ir_dae::WhenEquationInactiveRhs::Current => WhenInactiveRhs::Current,
@@ -346,7 +347,7 @@ fn process_collision_equation(
 
     flipped_once.insert(flip_edge_key(&equation.origin, lhs, &rhs_target));
     let mut flipped = equation;
-    flipped.lhs = Some(flat_to_dae_var_name(&resolved_target));
+    flipped.lhs = Some(flat_to_dae_var_name(&resolved_target).into());
     flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
         name: lhs.clone().into(),
         subscripts: vec![],
@@ -476,7 +477,7 @@ fn drain_grouped_discrete_assignments(
     for equation in equations.drain(..) {
         if let Some(lhs) = equation.lhs.as_ref() {
             grouped
-                .entry(dae_to_flat_var_name(lhs))
+                .entry(dae_to_flat_var_name(lhs.var_name()))
                 .or_default()
                 .push(equation);
         } else {
@@ -524,7 +525,7 @@ fn reroute_connection_aliases_for_defined_targets(
                 continue;
             }
             let mut flipped = equation.clone();
-            flipped.lhs = Some(flat_to_dae_var_name(&rhs_target));
+            flipped.lhs = Some(flat_to_dae_var_name(&rhs_target).into());
             flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
                 name: lhs.clone().into(),
                 subscripts: vec![],
@@ -1505,6 +1506,7 @@ fn merge_algorithm_when_statement_branches(
 
 fn lower_when_target_branches_to_event_equations(
     dae: &Dae,
+    flat: &Model,
     targets: WhenAssignmentBranches,
     algorithm_span: Span,
     algorithm_origin: &str,
@@ -1519,14 +1521,17 @@ fn lower_when_target_branches_to_event_equations(
         };
         let eq = rumoca_ir_dae::Equation::explicit_with_scalar_count(
             flat_to_dae_var_name(&target),
-            flat_to_dae_expression(&Expression::If {
-                branches: assignment.branches,
-                else_branch: Box::new(when_inactive_rhs(
-                    &target,
-                    WhenInactiveRhs::InitialValueThenPre,
-                )),
-                span: rumoca_core::Span::DUMMY,
-            }),
+            flat_to_dae_expression_with_refs(
+                &Expression::If {
+                    branches: assignment.branches,
+                    else_branch: Box::new(when_inactive_rhs(
+                        &target,
+                        WhenInactiveRhs::InitialValueThenPre,
+                    )),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                flat,
+            ),
             span,
             format!("algorithm when-assignment ({algorithm_origin})"),
             lookup_algorithm_target_scalar_count(dae, &target, span, allow_parameter_targets)?,
@@ -1568,6 +1573,7 @@ fn lower_algorithm_to_equations(
 
     for eq in lower_when_target_branches_to_event_equations(
         dae,
+        flat,
         when_assignments,
         algorithm.span,
         &algorithm.origin,
@@ -1602,6 +1608,7 @@ fn lower_algorithm_to_equations(
                 span,
                 origin,
             },
+            flat,
             &algorithm.origin,
             allow_parameter_targets,
         )?;
@@ -1618,7 +1625,7 @@ fn route_lowered_when_equation(
     let Some(lhs) = eq.lhs.as_ref() else {
         return;
     };
-    let lhs = dae_to_flat_var_name(lhs);
+    let lhs = dae_to_flat_var_name(lhs.var_name());
     match discrete_equation_bucket_for_lhs(dae, &lhs) {
         Some(DiscreteEquationBucket::DiscreteValued) => lowered.f_m.push(eq),
         Some(DiscreteEquationBucket::DiscreteReal) => lowered.f_z.push(eq),
@@ -1637,6 +1644,7 @@ fn route_lowered_main_algorithm_assignment(
     dae: &Dae,
     lowered: &mut LoweredAlgorithmPartitions,
     assignment: LoweredMainAlgorithmAssignment,
+    flat: &Model,
     algorithm_origin: &str,
     allow_parameter_target: bool,
 ) -> Result<(), String> {
@@ -1652,7 +1660,7 @@ fn route_lowered_main_algorithm_assignment(
         // B.1b/B.1c update partitions, so keep these out of continuous f_x.
         let eq = rumoca_ir_dae::Equation::explicit_with_scalar_count(
             flat_to_dae_var_name(&target),
-            flat_to_dae_expression(&value),
+            flat_to_dae_expression_with_refs(&value, flat),
             span,
             format!("{} ({})", origin, algorithm_origin),
             lookup_algorithm_target_scalar_count(dae, &target, span, allow_parameter_target)?,
@@ -1677,7 +1685,7 @@ fn route_lowered_main_algorithm_assignment(
                 .main
                 .push(rumoca_ir_dae::Equation::explicit_with_scalar_count(
                     target_key,
-                    flat_to_dae_expression(&value),
+                    flat_to_dae_expression_with_refs(&value, flat),
                     span,
                     format!("{} ({})", origin, algorithm_origin),
                     lookup_algorithm_target_scalar_count(dae, &target, span, true)?,
@@ -1699,7 +1707,7 @@ fn route_lowered_main_algorithm_assignment(
     };
 
     lowered.main.push(rumoca_ir_dae::Equation::residual_array(
-        flat_to_dae_expression(&residual),
+        flat_to_dae_expression_with_refs(&residual, flat),
         span,
         format!("{} ({})", origin, algorithm_origin),
         lookup_algorithm_target_scalar_count(dae, &target, span, allow_parameter_target)?,

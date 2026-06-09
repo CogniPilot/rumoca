@@ -87,6 +87,12 @@ pub enum StructuralError {
     /// An IC plan referenced an unknown that cannot be mapped to the solver vector.
     #[error("invalid IC plan: unresolved unknown `{name}`")]
     InvalidIcPlanUnknown { name: String },
+    /// DAE IR metadata required by structural analysis is missing or inconsistent.
+    #[error("invalid structural IR contract: {reason}")]
+    ContractViolation {
+        reason: String,
+        span: rumoca_core::Span,
+    },
 }
 
 impl StructuralError {
@@ -102,7 +108,10 @@ impl StructuralError {
                 .iter()
                 .copied()
                 .find(|span| *span != rumoca_core::Span::DUMMY),
-            Self::EmptySystem | Self::InvalidIcPlanUnknown { .. } => None,
+            Self::ContractViolation { span, .. } if !span.is_dummy() => Some(*span),
+            Self::EmptySystem
+            | Self::InvalidIcPlanUnknown { .. }
+            | Self::ContractViolation { .. } => None,
         }
     }
 }

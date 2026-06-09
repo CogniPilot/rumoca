@@ -322,11 +322,11 @@ pub fn top_level_path_contains_segment(path: &str, segment: &str) -> bool {
 /// - `resistor[1]` -> `resistor`
 /// - `p` -> `p`
 pub fn strip_array_index(segment: &str) -> &str {
-    if let Some(bracket_pos) = segment.find('[') {
-        &segment[..bracket_pos]
-    } else {
-        segment
+    let mut base = segment;
+    while let Some((next_base, _subscript)) = split_trailing_subscript_suffix(base) {
+        base = next_base;
     }
+    base
 }
 
 /// Return the first top-level path segment with array indices removed.

@@ -1011,18 +1011,18 @@ fn test_todae_lowers_when_algorithm_for_loop_with_subscripted_targets() {
         .real_updates
         .iter()
         .chain(dae.discrete.valued_updates.iter())
-        .filter_map(|eq| eq.lhs.clone())
+        .filter_map(|eq| eq.lhs.as_ref().map(|lhs| lhs.as_str().to_string()))
         .collect();
     assert!(
-        lowered_lhs.contains(&rumoca_core::VarName::new("y[1]")),
+        lowered_lhs.iter().any(|lhs| lhs == "y[1]"),
         "expected lowered indexed event target y[1], got {lowered_lhs:?}"
     );
     assert!(
-        lowered_lhs.contains(&rumoca_core::VarName::new("y[2]")),
+        lowered_lhs.iter().any(|lhs| lhs == "y[2]"),
         "expected lowered indexed event target y[2], got {lowered_lhs:?}"
     );
     assert!(
-        !lowered_lhs.contains(&rumoca_core::VarName::new("y")),
+        !lowered_lhs.iter().any(|lhs| lhs == "y"),
         "indexed when targets must not collapse to the whole array name"
     );
 }

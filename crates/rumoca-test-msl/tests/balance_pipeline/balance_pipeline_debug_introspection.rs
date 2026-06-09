@@ -255,6 +255,7 @@ pub(super) fn print_compiled_debug_with_limit(
     println!(
         "Success! {}",
         rumoca_phase_dae::balance::balance_detail(dae)
+            .expect("debug introspection requires valid DAE metadata")
     );
     println!(
         "active_discrete_scalar_count = {}",

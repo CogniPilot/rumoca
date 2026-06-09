@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn test_full_path_name_runtime_special_is_numeric_placeholder() {
+fn test_full_path_name_runtime_special_is_not_numeric_placeholder() {
     let env = VarEnv::<f64>::new();
-    let value = eval_expr_or_default::<f64>(
+    let result = eval_expr::<f64>(
         &fn_call(
             "Modelica.Utilities.Files.fullPathName",
             vec![rumoca_core::Expression::Literal {
@@ -13,5 +13,10 @@ fn test_full_path_name_runtime_special_is_numeric_placeholder() {
         ),
         &env,
     );
-    assert_eq!(value, 0.0);
+    assert_eq!(
+        result,
+        Err(EvalError::UnsupportedExpression {
+            kind: "string/file intrinsic"
+        })
+    );
 }

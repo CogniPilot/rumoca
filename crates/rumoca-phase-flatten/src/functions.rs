@@ -207,7 +207,8 @@ fn class_by_name_or_def_id<'a>(
 fn function_param_type_alias_dims(
     class_index: &ast::ClassDefIndex<'_>,
     component: &ast::Component,
-) -> Vec<i64> {
+    source_map: &rumoca_core::SourceMap,
+) -> Result<Vec<i64>, FlattenError> {
     const MAX_DEPTH: usize = 16;
     let type_name = component.type_name.to_string();
     let mut current = class_by_name_or_def_id(class_index, &type_name, component.type_name.def_id);
@@ -227,7 +228,11 @@ fn function_param_type_alias_dims(
             break;
         }
 
-        dims.extend(subscripts_to_param_dims(&class_def.array_subscripts));
+        dims.extend(subscripts_to_param_dims(
+            &class_def.array_subscripts,
+            class_def.name.text.as_ref(),
+            source_map,
+        )?);
 
         let Some(base) = class_def.extends.first() else {
             break;
@@ -239,7 +244,7 @@ fn function_param_type_alias_dims(
         current = class_by_name_or_def_id(class_index, &base_name, base.base_def_id);
     }
 
-    dims
+    Ok(dims)
 }
 
 /// Collect all user function calls from a flat::Model.
@@ -334,10 +339,15 @@ fn collect_from_when_equation(eq: &rumoca_ir_flat::WhenEquation, calls: &mut Fun
         flat::WhenEquation::Reinit { value, .. } => {
             collect_from_expression(value, calls);
         }
-        flat::WhenEquation::Assert { condition, .. } => {
+        flat::WhenEquation::Assert {
+            condition, message, ..
+        } => {
             collect_from_expression(condition, calls);
+            collect_from_expression(message, calls);
         }
-        flat::WhenEquation::Terminate { .. } => {}
+        flat::WhenEquation::Terminate { message, .. } => {
+            collect_from_expression(message, calls);
+        }
         flat::WhenEquation::Conditional {
             branches,
             else_branch,
@@ -704,10 +714,15 @@ fn canonicalize_when_equations(
             flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
                 *value = rewriter.rewrite_expression(value);
             }
-            flat::WhenEquation::Assert { condition, .. } => {
+            flat::WhenEquation::Assert {
+                condition, message, ..
+            } => {
                 *condition = rewriter.rewrite_expression(condition);
+                *message = rewriter.rewrite_expression(message);
             }
-            flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::Terminate { message, .. } => {
+                *message = rewriter.rewrite_expression(message);
+            }
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,
@@ -1636,6 +1651,7 @@ fn convert_function<'tree>(
                 def_map: Some(&filtered_def_map),
                 initial_locals: &function_locals,
                 source_map: Some(source_map),
+                instance_name: None,
             },
             algorithms::AlgorithmSectionMetadata::new(span, qualified_name.to_string()),
         )?;
@@ -1663,7 +1679,7 @@ fn convert_function<'tree>(
     // Extract derivative annotations (MLS §12.7.1)
     func.derivatives = extract_derivative_annotations(&class_def.annotation);
 
-    rewrite_function_extends_aliases_in_function(&mut func, tree, class_index);
+    rewrite_function_extends_aliases_in_function(&mut func, tree, class_index)?;
     if !class_def.partial && is_executable_flat_function(&func) {
         validate_function_outputs_assigned(&func)?;
     }

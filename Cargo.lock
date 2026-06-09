@@ -3485,6 +3485,7 @@ dependencies = [
 name = "rumoca-phase-codegen"
 version = "0.8.13"
 dependencies = [
+ "indexmap",
  "miette",
  "minijinja",
  "rumoca-core",

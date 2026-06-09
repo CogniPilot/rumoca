@@ -30,14 +30,14 @@ fn test_eval_function_call_selected_complex_output_with_array_literal_input() {
         false,
     );
     assert_eq!(
-        eval_expr_or_default::<f64>(
+        eval_expr_value::<f64>(
             &fn_call("Pkg.pickFirstComplex.result.re", vec![arg.clone()]),
             &env
         ),
         2.0
     );
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.pickFirstComplex.result.im", vec![arg]), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.pickFirstComplex.result.im", vec![arg]), &env),
         -3.0
     );
 }
@@ -100,14 +100,14 @@ fn test_eval_function_call_selected_complex_sum_with_slice_field_access() {
         false,
     );
     assert_eq!(
-        eval_expr_or_default::<f64>(
+        eval_expr_value::<f64>(
             &fn_call("Pkg.sumComplex.result.re", vec![arg.clone()]),
             &env
         ),
         2.0
     );
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.sumComplex.result.im", vec![arg]), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.sumComplex.result.im", vec![arg]), &env),
         -3.0
     );
 }
@@ -124,7 +124,7 @@ fn test_eval_builtin_sum_with_encoded_slice_field_varref_name() {
     env.set("v[3].re", -5.0);
 
     let expr = fn_call("sum", vec![var("v[:].re")]);
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), -2.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), -2.0);
 }
 
 #[test]
@@ -134,7 +134,8 @@ fn test_eval_array_values_record_field_varref_reads_indexed_record_elements() {
     env.set("cellData.rcData[1].R", 0.2);
     env.set("cellData.rcData[2].R", 0.1);
 
-    let values = eval_array_values::<f64>(&var("cellData.rcData.R"), &env);
+    let values = eval_array_values::<f64>(&var("cellData.rcData.R"), &env)
+        .expect("record field array values should evaluate");
     assert_eq!(values.len(), 2);
     assert!((values[0] - 0.2).abs() < 1.0e-12);
     assert!((values[1] - 0.1).abs() < 1.0e-12);
@@ -148,7 +149,7 @@ fn test_eval_builtin_sum_record_field_varref_reads_indexed_record_elements() {
     env.set("cellData.rcData[2].R", 0.1);
 
     let expr = fn_call("sum", vec![var("cellData.rcData.R")]);
-    assert!((eval_expr_or_default::<f64>(&expr, &env) - 0.3).abs() < 1.0e-12);
+    assert!((eval_expr_value::<f64>(&expr, &env) - 0.3).abs() < 1.0e-12);
 }
 
 #[test]
@@ -199,7 +200,7 @@ fn test_eval_function_call_selected_complex_sum_with_encoded_slice_varref() {
         false,
     );
     assert!(
-        (eval_expr_or_default::<f64>(
+        (eval_expr_value::<f64>(
             &fn_call("Pkg.sumComplexEncoded.result.re", vec![arg.clone()]),
             &env
         ) + 2.0)
@@ -207,7 +208,7 @@ fn test_eval_function_call_selected_complex_sum_with_encoded_slice_varref() {
             < 1.0e-12
     );
     assert!(
-        (eval_expr_or_default::<f64>(&fn_call("Pkg.sumComplexEncoded.result.im", vec![arg]), &env)
+        (eval_expr_value::<f64>(&fn_call("Pkg.sumComplexEncoded.result.im", vec![arg]), &env)
             - 3.0)
             .abs()
             < 1.0e-12

@@ -373,7 +373,7 @@ fn test_scalarize_phantom_vector_equations_preserves_event_assignment_lhs() {
     assert_eq!(dae.discrete.valued_updates.len(), 2);
     for (k, eq) in dae.discrete.valued_updates.iter().enumerate() {
         assert_eq!(
-            eq.lhs.as_ref().map(rumoca_core::VarName::as_str),
+            eq.lhs.as_ref().map(|lhs| lhs.as_str()),
             Some(format!("switch.off[{}]", k + 1).as_str())
         );
         let names = all_var_names(&eq.rhs);

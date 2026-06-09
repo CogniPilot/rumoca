@@ -19,11 +19,57 @@ mod explicit_residual_tests;
 mod function_expression_tests;
 mod function_loop_tests;
 mod intrinsics;
+mod projection_derivative_tests;
 mod projection_runtime_tests;
 mod root_condition_tests;
 
 fn scalar_var(name: &str) -> dae::Variable {
-    dae::Variable::new(rumoca_core::VarName::new(name))
+    dae::Variable {
+        component_ref: Some(test_component_ref_from_name(name)),
+        ..dae::Variable::new(rumoca_core::VarName::new(name))
+    }
+}
+
+fn array_var(name: &str, dims: &[i64]) -> dae::Variable {
+    dae::Variable {
+        component_ref: Some(test_component_ref_from_name(name)),
+        dims: dims.to_vec(),
+        ..dae::Variable::new(rumoca_core::VarName::new(name))
+    }
+}
+
+fn test_component_ref_from_name(name: &str) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span: rumoca_core::Span::DUMMY,
+        parts: rumoca_core::split_path_with_indices(name)
+            .into_iter()
+            .map(test_component_ref_part_from_segment)
+            .collect(),
+        def_id: None,
+    }
+}
+
+fn test_component_ref_part_from_segment(segment: &str) -> rumoca_core::ComponentRefPart {
+    match rumoca_core::parse_scalar_name(segment) {
+        Some(scalar) => rumoca_core::ComponentRefPart {
+            ident: scalar.base.to_string(),
+            span: rumoca_core::Span::DUMMY,
+            subs: scalar
+                .indices
+                .iter()
+                .copied()
+                .map(|index| {
+                    rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY)
+                })
+                .collect(),
+        },
+        None => rumoca_core::ComponentRefPart {
+            ident: segment.to_string(),
+            span: rumoca_core::Span::DUMMY,
+            subs: Vec::new(),
+        },
+    }
 }
 
 fn insert_pre_parameter(dae_model: &mut dae::Dae, name: &str, dims: &[i64]) {
@@ -345,7 +391,7 @@ fn function_param_with_dims(name: &str, dims: &[i64]) -> rumoca_core::FunctionPa
 
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::VarName::new(name).into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
         subscripts: vec![],
         span: rumoca_core::Span::DUMMY,
     }
@@ -353,7 +399,7 @@ fn var(name: &str) -> rumoca_core::Expression {
 
 fn var_index(name: &str, index: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::VarName::new(name).into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
         subscripts: vec![rumoca_core::Subscript::generated_index(
             index,
             rumoca_core::Span::DUMMY,
@@ -364,7 +410,7 @@ fn var_index(name: &str, index: i64) -> rumoca_core::Expression {
 
 fn var_index_expr(name: &str, index: rumoca_core::Expression) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::VarName::new(name).into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
         subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(index))],
         span: rumoca_core::Span::DUMMY,
     }
@@ -390,7 +436,7 @@ fn pre_var(name: &str) -> rumoca_core::Expression {
 
 fn indexed_var(name: &str, index: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::VarName::new(name).into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
         subscripts: vec![rumoca_core::Subscript::generated_index(
             index,
             rumoca_core::Span::DUMMY,
@@ -536,7 +582,7 @@ fn lower_discrete_rhs_recovers_if_residual_assignment_value() {
             span: rumoca_core::Span::DUMMY,
         }));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("conditional residual discrete update should lower");
     let (_, output) = eval_linear_ops(&rows[0], &[], &[0.0], 0.0);
@@ -560,7 +606,8 @@ fn normalized_discrete_updates_orient_residual_alias_chain_once() {
         ));
     }
 
-    let equations = super::normalized_discrete_update_equations(&dae_model);
+    let equations =
+        super::normalized_discrete_update_equations(&dae_model).expect("normalization succeeds");
     let mut lhs_counts = IndexMap::<String, usize>::new();
     let mut aliases = IndexMap::<String, String>::new();
     for equation in &equations {
@@ -592,14 +639,15 @@ fn normalized_discrete_updates_preserve_explicit_difference_assignment() {
             .insert(rumoca_core::VarName::new(name), scalar_var(name));
     }
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("x")),
+        lhs: Some(rumoca_core::VarName::new("x").into()),
         rhs: sub(var("a"), var("b")),
         span: Default::default(),
         origin: "x = a - b".to_string(),
         scalar_count: 1,
     });
 
-    let equations = super::normalized_discrete_update_equations(&dae_model);
+    let equations =
+        super::normalized_discrete_update_equations(&dae_model).expect("normalization succeeds");
 
     assert_eq!(equations.len(), 1);
     assert_eq!(equations[0].lhs.as_ref().map(|lhs| lhs.as_str()), Some("x"));
@@ -645,7 +693,7 @@ fn lower_discrete_rhs_expands_vectorized_update_rows() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::Array {
             elements: vec![
                 rumoca_core::Expression::Literal {
@@ -667,7 +715,7 @@ fn lower_discrete_rhs_expands_vectorized_update_rows() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("vectorized update should lower");
     let (_, first) = eval_linear_ops(&rows[0], &[], &[0.0, 0.0], 0.0);
     let (_, second) = eval_linear_ops(&rows[1], &[], &[0.0, 0.0], 0.0);
@@ -730,7 +778,7 @@ fn lower_discrete_rhs_uses_first_output_for_array_function_expression() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("My.memoryLike").into(),
             args: vec![],
@@ -745,7 +793,7 @@ fn lower_discrete_rhs_uses_first_output_for_array_function_expression() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("array-valued first function output should lower");
     let (_, first) = eval_linear_ops(&rows[0], &[], &[0.0, 0.0], 0.0);
@@ -809,7 +857,7 @@ fn lower_discrete_rhs_projects_array_function_output_by_position() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::Index {
             base: Box::new(rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::VarName::new("My.memoryLike").into(),
@@ -831,7 +879,7 @@ fn lower_discrete_rhs_projects_array_function_output_by_position() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("array-valued positional output projection should lower");
     let (_, first) = eval_linear_ops(&rows[0], &[], &[0.0, 0.0], 0.0);
@@ -895,7 +943,7 @@ fn lower_discrete_rhs_recovers_dynamic_function_output_shape_from_assignments() 
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("My.dynamicMemoryLike").into(),
             args: vec![],
@@ -911,7 +959,7 @@ fn lower_discrete_rhs_recovers_dynamic_function_output_shape_from_assignments() 
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("indexed assignments should define dynamic output shape");
     let (_, first) = eval_linear_ops(&rows[0], &[], &[0.0, 0.0], 0.0);
@@ -1006,7 +1054,7 @@ fn lower_expression_indexes_array_literal_with_dynamic_subscript() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
         .expect("dynamic array literal lookup should lower");
     let (regs, _) = eval_linear_ops(&lowered.ops, &[2.0], &[], 0.0);
@@ -1106,7 +1154,7 @@ fn lower_residual_scalarizes_indexed_record_array_fields() {
             2,
         ));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("array-of-record residual fields should lower through field then index");
     let mut y = vec![0.0; layout.y_scalars()];
@@ -1183,7 +1231,7 @@ fn lower_expression_indexes_if_array_value_with_dynamic_subscript() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
         .expect("dynamic lookup into if-selected array value should lower");
     let (true_regs, _) = eval_linear_ops(&lowered.ops, &[1.0, 2.0], &[], 0.0);
@@ -1214,7 +1262,7 @@ fn lower_discrete_rhs_indexes_if_array_value_with_dynamic_slice() {
     );
 
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::Index {
             base: Box::new(rumoca_core::Expression::If {
                 branches: vec![(
@@ -1270,7 +1318,7 @@ fn lower_discrete_rhs_indexes_if_array_value_with_dynamic_slice() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("dynamic slice from if-selected array value should lower");
     let (_, true_first) = eval_linear_ops(&rows[0], &[1.0, 2.0], &[], 0.0);
@@ -1312,7 +1360,7 @@ fn lower_discrete_rhs_expands_fill_branch_in_array_if_expression() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::If {
             branches: vec![(
                 rumoca_core::Expression::Literal {
@@ -1354,7 +1402,7 @@ fn lower_discrete_rhs_expands_fill_branch_in_array_if_expression() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("fill branch should lower");
     let y = vec![3.5, 0.0, 0.0];
     let (_, first) = eval_linear_ops(&rows[0], &y, &[], 0.0);
@@ -1368,7 +1416,7 @@ fn lower_discrete_rhs_expands_fill_branch_in_array_if_expression() {
 #[test]
 fn lower_discrete_rhs_expands_previous_range_slice_in_array_if_expression() {
     let dae_model = previous_range_slice_array_if_model();
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("range slice branch should lower");
     let mut p = vec![0.0; layout.p_scalars()];
     set_p_value(&layout, &mut p, "u", 4.0);
@@ -1390,7 +1438,7 @@ fn previous_range_slice_array_if_model() -> dae::Dae {
     insert_previous_range_slice_variables(&mut dae_model);
     let previous_slice = previous_range_slice_expr();
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: previous_range_slice_branch_expr(previous_slice),
         span: Default::default(),
         // MLS §10.5 and §16.4: array subscripts may select ranges, and
@@ -1508,7 +1556,7 @@ fn lower_discrete_rhs_preserves_pre_array_branch_values() {
     );
     insert_pre_parameter(&mut dae_model, "y", &[2]);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::If {
             branches: vec![(
                 rumoca_core::Expression::Literal {
@@ -1540,7 +1588,7 @@ fn lower_discrete_rhs_preserves_pre_array_branch_values() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("pre(array) branch should lower");
     let (_, first) = eval_linear_ops(&rows[0], &[], &[5.0, 6.0], 0.0);
     let (_, second) = eval_linear_ops(&rows[1], &[], &[5.0, 6.0], 0.0);

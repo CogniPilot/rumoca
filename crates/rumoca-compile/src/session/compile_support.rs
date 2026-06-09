@@ -461,12 +461,19 @@ fn collect_active_refs_from_flat_when_equation(
             value.collect_var_refs(&mut refs);
             active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         }
-        flat::WhenEquation::Assert { condition, .. } => {
+        flat::WhenEquation::Assert {
+            condition, message, ..
+        } => {
             let mut refs = HashSet::new();
             condition.collect_var_refs(&mut refs);
+            message.collect_var_refs(&mut refs);
             active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         }
-        flat::WhenEquation::Terminate { .. } => {}
+        flat::WhenEquation::Terminate { message, .. } => {
+            let mut refs = HashSet::new();
+            message.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        }
         flat::WhenEquation::Conditional {
             branches,
             else_branch,
@@ -533,12 +540,12 @@ fn dae_compilation_result_from_artifact(
     artifact: DaeModelArtifactData,
     experiment_settings: ExperimentSettings,
     source_map: SourceMap,
-) -> DaeCompilationResult {
+) -> Result<DaeCompilationResult, rumoca_phase_dae::BalanceError> {
     let has_unbound_fixed_parameters = artifact.flat.has_unbound_fixed_parameters();
     let active_discrete_scalar_count = active_discrete_scalar_count(&artifact.flat, &artifact.dae);
-    let balance_detail = rumoca_phase_dae::balance_detail(&artifact.dae);
+    let balance_detail = rumoca_phase_dae::balance_detail(&artifact.dae)?;
 
-    DaeCompilationResult {
+    Ok(DaeCompilationResult {
         flat: artifact.flat,
         dae: artifact.dae,
         source_map: Some(source_map),
@@ -550,7 +557,7 @@ fn dae_compilation_result_from_artifact(
         experiment_tolerance: experiment_settings.tolerance,
         experiment_interval: experiment_settings.interval,
         experiment_solver: experiment_settings.solver,
-    }
+    })
 }
 
 pub(super) fn dae_phase_result_from_dae(
@@ -561,13 +568,18 @@ pub(super) fn dae_phase_result_from_dae(
     let experiment_settings = experiment_settings_for_model(tree, model_name);
 
     match dae_outcome {
-        DaeModelOutcome::Success(artifact) => {
-            DaePhaseResult::Success(Box::new(dae_compilation_result_from_artifact(
-                *artifact,
-                experiment_settings,
-                tree.source_map.clone(),
-            )))
-        }
+        DaeModelOutcome::Success(artifact) => match dae_compilation_result_from_artifact(
+            *artifact,
+            experiment_settings,
+            tree.source_map.clone(),
+        ) {
+            Ok(result) => DaePhaseResult::Success(Box::new(result)),
+            Err(error) => DaePhaseResult::Failed {
+                phase: FailedPhase::ToDae,
+                error: format!("{error}"),
+                error_code: None,
+            },
+        },
         DaeModelOutcome::NeedsInner {
             missing_inners,
             missing_spans,
@@ -675,9 +687,21 @@ pub(super) fn compile_phase_result_from_dae(
         }
     };
 
+    let balance_detail = match rumoca_phase_dae::balance_detail(&artifact.dae) {
+        Ok(detail) => detail,
+        Err(error) => {
+            return PhaseResult::Failed {
+                phase: FailedPhase::ToDae,
+                error: format!("{error}"),
+                error_code: None,
+            };
+        }
+    };
+
     PhaseResult::Success(Box::new(CompilationResult {
         flat: unwrap_or_clone_arc(artifact.flat),
         dae: unwrap_or_clone_arc(artifact.dae),
+        balance_detail,
         experiment_start_time: experiment_settings.start_time,
         experiment_stop_time: experiment_settings.stop_time,
         experiment_tolerance: experiment_settings.tolerance,

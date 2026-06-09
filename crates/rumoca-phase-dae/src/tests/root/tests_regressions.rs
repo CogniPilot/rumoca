@@ -376,10 +376,10 @@ fn test_todae_routes_clocked_binding_out_of_fx_even_without_discrete_type_flag()
         "clocked binding must not be emitted as continuous residual in f_x"
     );
     assert!(
-        dae.discrete
-            .real_updates
-            .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("usedFactor"))),
+        dae.discrete.real_updates.iter().any(|eq| eq
+            .lhs
+            .as_ref()
+            .is_some_and(|lhs| lhs.as_str() == "usedFactor")),
         "clocked binding must be routed to discrete-real updates"
     );
 }
@@ -435,7 +435,7 @@ fn test_todae_routes_discrete_valued_clocked_binding_to_fm() {
         dae.discrete
             .valued_updates
             .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("ticks"))),
+            .any(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "ticks")),
         "clocked discrete-valued binding must be emitted as explicit f_m assignment"
     );
 }
@@ -595,7 +595,7 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
         dae.discrete
             .real_updates
             .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("r"))),
+            .any(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "r")),
         "algorithm when-assigned Real output must be routed to f_z"
     );
     assert_eq!(
@@ -670,7 +670,7 @@ fn test_todae_merges_sequential_when_statements_for_same_target_in_source_order(
         .discrete
         .valued_updates
         .iter()
-        .find(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("y")))
+        .find(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "y"))
         .expect("expected lowered discrete equation for y");
     let rumoca_core::Expression::If {
         branches,
@@ -1247,7 +1247,7 @@ fn test_top_level_connector_members_use_component_anchoring() {
 
     let dae = to_dae(&flat).expect("to_dae should succeed");
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "component-anchored and unanchored connector sets should both balance"
     );
@@ -1364,7 +1364,7 @@ fn test_connected_discrete_input_alias_keeps_discrete_partition() {
         "connected discrete input alias must contribute one discrete-valued equation"
     );
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "discrete connected input aliases must not affect continuous balance"
     );
@@ -1426,7 +1426,7 @@ fn test_discrete_input_connected_to_local_output_counts_as_local_unknown() {
         "locally driven discrete input should remain in m"
     );
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "a local output-to-input discrete connection should count both the input unknown and its connection row"
     );
@@ -1490,7 +1490,7 @@ fn test_discrete_input_alias_chain_to_local_output_counts_as_local_unknown() {
         "a transitive local-output alias set must not be marked input-only"
     );
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "all discrete inputs in a local-output alias chain should count as local unknowns"
     );
@@ -1543,7 +1543,7 @@ fn test_connected_real_input_propagates_discrete_partition_from_peer() {
         "connected real input should not remain continuous algebraic"
     );
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "discrete connection propagation should avoid continuous balance deficits"
     );

@@ -1,12 +1,11 @@
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::ComponentPath;
 use rumoca_ir_solve::{BinaryOp, Reg, ScalarSlot};
 
 use super::function_projection::format_subscript_binding_key;
 use super::helpers::*;
 use super::{
     BREAK_FLAG_BINDING, LocalIndexedBinding, LowerBuilder, LowerError, RETURN_FLAG_BINDING, Scope,
-    size_binding_key, upsert_local_indexed_binding,
+    generated_scope_key, generated_scope_key_name, size_binding_key, upsert_local_indexed_binding,
 };
 
 const MAX_INLINE_WHILE_ITERS: usize = 128;
@@ -209,7 +208,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &mut Scope,
         call_depth: usize,
     ) -> Result<bool, LowerError> {
-        let break_key = ComponentPath::from_flat_path(BREAK_FLAG_BINDING);
+        let break_key = generated_scope_key(BREAK_FLAG_BINDING);
         let saved_break = scope.get(&break_key).copied();
 
         let mut const_scope = self.local_const_bindings.clone();
@@ -231,7 +230,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &mut Scope,
         call_depth: usize,
     ) -> Result<bool, LowerError> {
-        let break_key = ComponentPath::from_flat_path(BREAK_FLAG_BINDING);
+        let break_key = generated_scope_key(BREAK_FLAG_BINDING);
         let saved_break = scope.get(&break_key).copied();
         for _ in 0..MAX_INLINE_WHILE_ITERS {
             let cond = self.lower_expr(&block.cond, scope, call_depth)?;
@@ -275,7 +274,7 @@ impl<'a> LowerBuilder<'a> {
         for value in iter_values {
             let iter_reg = self.emit_const(value);
             let returned = scope.with_frame(|scope| {
-                scope.insert_scoped(ComponentPath::from_flat_path(&iter.ident), iter_reg);
+                scope.insert_scoped(generated_scope_key(&iter.ident), iter_reg);
                 const_scope.insert(iter.ident.clone(), value);
                 let result = self.lower_for_iterations(
                     indices,
@@ -582,7 +581,7 @@ impl<'a> LowerBuilder<'a> {
             name, subscripts, ..
         } = expr
         else {
-            let dims = self.infer_expr_dims(expr, &Scope::new());
+            let dims = self.infer_expr_dims(expr, &Scope::new())?;
             return dims
                 .get(dim.saturating_sub(1))
                 .copied()
@@ -619,7 +618,7 @@ impl<'a> LowerBuilder<'a> {
             rumoca_core::Statement::Empty { .. } => Ok(false),
             rumoca_core::Statement::Return { .. } => {
                 let returned = self.emit_const(1.0);
-                scope.insert(ComponentPath::from_flat_path(RETURN_FLAG_BINDING), returned);
+                scope.insert(generated_scope_key(RETURN_FLAG_BINDING), returned);
                 Ok(true)
             }
             rumoca_core::Statement::Assignment { comp, value, .. } => {
@@ -647,10 +646,12 @@ impl<'a> LowerBuilder<'a> {
                         &target.base,
                         indices,
                         values,
-                    );
+                        comp.span,
+                    )?;
                     self.bind_indexed_assignment_values(scope, &target.base, indices, &values)?;
                 } else {
-                    let values = self.guard_assignment_after_return(scope, &target.base, values);
+                    let values =
+                        self.guard_assignment_after_return(scope, &target.base, values, comp.span)?;
                     self.bind_assignment_values(scope, &target.base, &values);
                     self.bind_record_constructor_assignment_fields(
                         scope,
@@ -680,7 +681,7 @@ impl<'a> LowerBuilder<'a> {
             } => self.lower_function_call_statement(comp, args, outputs, *span, scope, call_depth),
             rumoca_core::Statement::Break { .. } => {
                 scope.insert(
-                    ComponentPath::from_flat_path(BREAK_FLAG_BINDING),
+                    generated_scope_key(BREAK_FLAG_BINDING),
                     self.emit_const(1.0),
                 );
                 Ok(true)
@@ -729,7 +730,7 @@ impl<'a> LowerBuilder<'a> {
             .iter()
             .into_iter()
             .filter_map(|(key, reg)| {
-                key.as_str()
+                generated_scope_key_name(&key)?
                     .strip_prefix(source_prefix.as_str())
                     .map(|suffix| (suffix.to_string(), reg))
             })
@@ -762,22 +763,22 @@ impl<'a> LowerBuilder<'a> {
         self.clear_record_component_bindings(scope, target);
         for (suffix, reg) in scope_components {
             let target_key = format!("{target}.{suffix}");
-            scope.insert(ComponentPath::from_flat_path(&target_key), reg);
+            scope.insert(generated_scope_key(&target_key), reg);
             self.copy_component_shape(&format!("{source}.{suffix}"), &target_key);
         }
         for (source_key, suffix, slot) in layout_components {
             let target_key = format!("{target}.{suffix}");
-            let target_path = ComponentPath::from_flat_path(&target_key);
-            if scope.contains_key(&target_path) {
+            let target_scope_key = generated_scope_key(&target_key);
+            if scope.contains_key(&target_scope_key) {
                 continue;
             }
-            scope.insert(target_path, self.emit_slot_load(slot)?);
+            scope.insert(target_scope_key, self.emit_slot_load(slot)?);
             self.copy_component_shape(&source_key, &target_key);
         }
         for (source_key, suffix) in direct_components {
             let target_key = format!("{target}.{suffix}");
-            let target_path = ComponentPath::from_flat_path(&target_key);
-            if scope.contains_key(&target_path) {
+            let target_scope_key = generated_scope_key(&target_key);
+            if scope.contains_key(&target_scope_key) {
                 continue;
             }
             if let Some(values) =
@@ -806,8 +807,12 @@ impl<'a> LowerBuilder<'a> {
         for field in fields {
             let projected = record_if_field_expression(value, &field)?;
             let values = self.lower_array_like_values(&projected, scope, call_depth)?;
-            let values =
-                self.guard_assignment_after_return(scope, &format!("{target}.{field}"), values);
+            let values = self.guard_assignment_after_return(
+                scope,
+                &format!("{target}.{field}"),
+                values,
+                value.span().unwrap_or(rumoca_core::Span::DUMMY),
+            )?;
             self.bind_assignment_values(scope, &format!("{target}.{field}"), &values);
         }
         Ok(true)
@@ -840,7 +845,7 @@ impl<'a> LowerBuilder<'a> {
         self.clear_record_component_bindings(caller_scope, target);
         for component in materialized.components {
             let target_key = format!("{target}.{}", component.suffix);
-            caller_scope.insert(ComponentPath::from_flat_path(&target_key), component.reg);
+            caller_scope.insert(generated_scope_key(&target_key), component.reg);
             if let Some(dims) = component.dims {
                 self.local_binding_dims.insert(target_key.clone(), dims);
                 self.set_known_empty_local_array(&target_key, component.known_empty);
@@ -866,7 +871,10 @@ impl<'a> LowerBuilder<'a> {
         let scope_keys = scope
             .keys()
             .into_iter()
-            .filter(|key| key.as_str() == target || key.as_str().starts_with(&target_prefix))
+            .filter(|key| {
+                generated_scope_key_name(key)
+                    .is_some_and(|name| name == target || name.starts_with(&target_prefix))
+            })
             .collect::<Vec<_>>();
         for key in scope_keys {
             scope.shift_remove(&key);
@@ -952,7 +960,7 @@ impl<'a> LowerBuilder<'a> {
 
         let function_name = comp.to_var_name();
         if let Some(reg) =
-            self.lower_runtime_string_special_intrinsic(function_name.as_str(), args)?
+            self.lower_runtime_string_special_intrinsic(function_name.as_str(), args, span)?
         {
             for output in outputs {
                 self.bind_statement_output_values(scope, output, &[reg])?;
@@ -1181,10 +1189,16 @@ impl<'a> LowerBuilder<'a> {
                 &target.base,
                 indices,
                 values.to_vec(),
-            );
+                comp.span,
+            )?;
             self.bind_indexed_assignment_values(scope, &target.base, indices, &values)
         } else {
-            let values = self.guard_assignment_after_return(scope, &target.base, values.to_vec());
+            let values = self.guard_assignment_after_return(
+                scope,
+                &target.base,
+                values.to_vec(),
+                comp.span,
+            )?;
             self.bind_assignment_values(scope, &target.base, &values);
             Ok(())
         }
@@ -1195,16 +1209,17 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         target: &str,
         values: Vec<Reg>,
-    ) -> Vec<Reg> {
+        span: rumoca_core::Span,
+    ) -> Result<Vec<Reg>, LowerError> {
         let Some(guard) = self.assignment_control_guard(scope) else {
-            return values;
+            return Ok(values);
         };
         values
             .into_iter()
             .enumerate()
             .map(|(idx, new_value)| {
-                let old_value = old_assignment_value(self, scope, target, idx);
-                self.emit_select(guard, old_value, new_value)
+                let old_value = old_assignment_value(scope, target, idx, span)?;
+                Ok(self.emit_select(guard, old_value, new_value))
             })
             .collect()
     }
@@ -1215,22 +1230,23 @@ impl<'a> LowerBuilder<'a> {
         target: &str,
         indices: &[usize],
         values: Vec<Reg>,
-    ) -> Vec<Reg> {
+        span: rumoca_core::Span,
+    ) -> Result<Vec<Reg>, LowerError> {
         let Some(guard) = self.assignment_control_guard(scope) else {
-            return values;
+            return Ok(values);
         };
         values
             .into_iter()
             .map(|new_value| {
-                let old_value = old_indexed_assignment_value(self, scope, target, indices);
-                self.emit_select(guard, old_value, new_value)
+                let old_value = old_indexed_assignment_value(scope, target, indices, span)?;
+                Ok(self.emit_select(guard, old_value, new_value))
             })
             .collect()
     }
 
     fn assignment_control_guard(&mut self, scope: &Scope) -> Option<Reg> {
-        let return_key = ComponentPath::from_flat_path(RETURN_FLAG_BINDING);
-        let break_key = ComponentPath::from_flat_path(BREAK_FLAG_BINDING);
+        let return_key = generated_scope_key(RETURN_FLAG_BINDING);
+        let break_key = generated_scope_key(BREAK_FLAG_BINDING);
         match (
             scope.get(&return_key).copied(),
             scope.get(&break_key).copied(),
@@ -1260,7 +1276,8 @@ impl<'a> LowerBuilder<'a> {
         };
 
         let key = format_subscript_binding_key(target, indices);
-        scope.insert(ComponentPath::from_flat_path(&key), *value);
+        scope.insert(generated_scope_key(&key), *value);
+        scope.insert_indexed(&generated_scope_key(target), indices, *value);
         upsert_local_indexed_binding(
             self.local_indexed_bindings
                 .entry(target.to_string())
@@ -1270,7 +1287,7 @@ impl<'a> LowerBuilder<'a> {
         );
         self.known_empty_local_arrays.shift_remove(target);
         if indices.iter().all(|index| *index == 1) {
-            scope.insert(ComponentPath::from_flat_path(target), *value);
+            scope.insert(generated_scope_key(target), *value);
         }
         Ok(())
     }
@@ -1331,8 +1348,13 @@ fn start_metadata_refers_to_key(expr: &rumoca_core::Expression, key: &str) -> bo
     binding_base_key(expr).is_ok_and(|start_key| start_key == key)
 }
 
-fn is_control_flag(name: &ComponentPath) -> bool {
-    matches!(name.as_str(), RETURN_FLAG_BINDING | BREAK_FLAG_BINDING)
+fn is_control_flag(name: &rumoca_ir_solve::ComponentReferenceKey) -> bool {
+    match name {
+        rumoca_ir_solve::ComponentReferenceKey::Generated { name } => {
+            matches!(name.as_str(), RETURN_FLAG_BINDING | BREAK_FLAG_BINDING)
+        }
+        rumoca_ir_solve::ComponentReferenceKey::Source { .. } => false,
+    }
 }
 
 fn record_if_assignment_fields(value: &rumoca_core::Expression) -> Option<Vec<String>> {
@@ -1444,41 +1466,50 @@ fn merge_while_iteration_scope(
 }
 
 fn old_assignment_value(
-    builder: &mut LowerBuilder<'_>,
     scope: &Scope,
     target: &str,
     idx: usize,
-) -> Reg {
+    span: rumoca_core::Span,
+) -> Result<Reg, LowerError> {
     let indexed_key = format_subscript_binding_key(target, &[idx + 1]);
-    let indexed_path = ComponentPath::from_flat_path(&indexed_key);
-    let target_path = ComponentPath::from_flat_path(target);
+    let indexed_key = generated_scope_key(&indexed_key);
+    let target_key = generated_scope_key(target);
     scope
-        .get(&indexed_path)
-        .or_else(|| (idx == 0).then(|| scope.get(&target_path)).flatten())
+        .get(&indexed_key)
+        .or_else(|| (idx == 0).then(|| scope.get(&target_key)).flatten())
         .copied()
-        .unwrap_or_else(|| builder.emit_const(0.0))
+        .ok_or_else(|| missing_guarded_assignment_binding(target, span))
 }
 
 fn old_indexed_assignment_value(
-    builder: &mut LowerBuilder<'_>,
     scope: &Scope,
     target: &str,
     indices: &[usize],
-) -> Reg {
+    span: rumoca_core::Span,
+) -> Result<Reg, LowerError> {
     let indexed_key = format_subscript_binding_key(target, indices);
-    let indexed_path = ComponentPath::from_flat_path(&indexed_key);
-    let target_path = ComponentPath::from_flat_path(target);
+    let indexed_scope_key = generated_scope_key(&indexed_key);
+    let target_key = generated_scope_key(target);
     scope
-        .get(&indexed_path)
+        .get(&indexed_scope_key)
         .or_else(|| {
             indices
                 .iter()
                 .all(|index| *index == 1)
-                .then(|| scope.get(&target_path))
+                .then(|| scope.get(&target_key))
                 .flatten()
         })
         .copied()
-        .unwrap_or_else(|| builder.emit_const(0.0))
+        .ok_or_else(|| missing_guarded_assignment_binding(indexed_key.as_str(), span))
+}
+
+fn missing_guarded_assignment_binding(target: &str, span: rumoca_core::Span) -> LowerError {
+    LowerError::ContractViolation {
+        reason: format!(
+            "guarded assignment to `{target}` requires an existing binding to preserve on return/break"
+        ),
+        span,
+    }
 }
 
 fn concrete_dims_width(dims: &[i64]) -> Option<usize> {

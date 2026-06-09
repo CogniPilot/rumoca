@@ -17,7 +17,7 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         }
         let indexed_key = format_subscript_binding_key(base_key.as_str(), &indices);
-        let indexed_path = ComponentPath::from_flat_path(&indexed_key);
+        let indexed_path = generated_scope_key(&indexed_key);
         if let Some(value) = scope.get(&indexed_path).copied() {
             return Ok(Some(value));
         }
@@ -91,7 +91,7 @@ impl<'a> LowerBuilder<'a> {
         ) {
             return Ok(None);
         }
-        let dims = self.infer_expr_dims(base, scope);
+        let dims = self.infer_expr_dims(base, scope)?;
         if dims.is_empty() || subscripts.len() > dims.len() {
             return Ok(None);
         }
@@ -261,30 +261,6 @@ impl<'a> LowerBuilder<'a> {
         Ok(Some(keys))
     }
 
-    pub(in crate::lower) fn slice_binding_keys_or_scalar_fallback(
-        &self,
-        base_name: &str,
-        subscripts: &[rumoca_core::Subscript],
-        scope: &Scope,
-    ) -> Result<Option<Vec<String>>, LowerError> {
-        match self.slice_binding_keys(base_name, subscripts, scope) {
-            Ok(keys) => Ok(keys),
-            Err(_) if self.subscripts_select_scalar(base_name, subscripts) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }
-
-    pub(in crate::lower) fn subscripts_select_scalar(
-        &self,
-        base_name: &str,
-        subscripts: &[rumoca_core::Subscript],
-    ) -> bool {
-        let Some(shape) = self.layout.shape(base_name) else {
-            return false;
-        };
-        subscripts.len() == shape.len() && subscripts.iter().all(is_scalar_selector_subscript)
-    }
-
     pub(in crate::lower) fn slice_selections(
         &self,
         subscripts: &[rumoca_core::Subscript],
@@ -329,8 +305,7 @@ impl<'a> LowerBuilder<'a> {
         dim: usize,
         scope: &Scope,
     ) -> Result<Vec<usize>, LowerError> {
-        let _ = scope;
-        let const_scope = IndexMap::new();
+        let const_scope = self.compile_time_slice_bindings(scope);
         let indices = match expr {
             rumoca_core::Expression::Range {
                 start, step, end, ..
@@ -359,6 +334,12 @@ impl<'a> LowerBuilder<'a> {
         };
         validate_slice_indices(&indices, dim)?;
         Ok(indices)
+    }
+
+    fn compile_time_slice_bindings(&self, _scope: &Scope) -> IndexMap<String, f64> {
+        let mut bindings = self.structural_bindings.clone();
+        bindings.extend(self.local_const_bindings.clone());
+        bindings
     }
 
     pub(in crate::lower) fn lower_field_access_array_like_values(
@@ -544,6 +525,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
@@ -567,7 +549,14 @@ impl<'a> LowerBuilder<'a> {
                 )
                 .map(Some);
         }
-        self.lower_user_function_call_output_values(name, args, caller_scope, call_depth, Some(0))
+        self.lower_user_function_call_output_values(
+            name,
+            args,
+            span,
+            caller_scope,
+            call_depth,
+            Some(0),
+        )
     }
 
     pub(in crate::lower) fn scoped_function_output_values(
@@ -604,7 +593,10 @@ impl<'a> LowerBuilder<'a> {
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
-        let rumoca_core::Expression::FunctionCall { name, args, .. } = base else {
+        let rumoca_core::Expression::FunctionCall {
+            name, args, span, ..
+        } = base
+        else {
             return Ok(None);
         };
         let Some(function) = self.lookup_function(name) else {
@@ -614,6 +606,7 @@ impl<'a> LowerBuilder<'a> {
             return self.lower_single_output_function_index_values(
                 name,
                 args,
+                *span,
                 subscripts,
                 caller_scope,
                 call_depth,
@@ -632,6 +625,7 @@ impl<'a> LowerBuilder<'a> {
         self.lower_user_function_call_output_values(
             name,
             args,
+            *span,
             caller_scope,
             call_depth,
             Some(output_number - 1),
@@ -642,6 +636,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
         subscripts: &[rumoca_core::Subscript],
         caller_scope: &Scope,
         call_depth: usize,
@@ -655,18 +650,14 @@ impl<'a> LowerBuilder<'a> {
         let Some(output) = function.outputs.first() else {
             return Ok(None);
         };
-        let dims = output
-            .dims
-            .iter()
-            .map(|dim| usize::try_from(*dim).ok().filter(|value| *value > 0))
-            .collect::<Option<Vec<_>>>()
-            .unwrap_or_default();
+        let dims = function_output_dims(name, output)?;
         let Some(flat_index) = flat_index_for_subscripts(&dims, &indices) else {
             return Ok(None);
         };
         let Some(values) = self.lower_user_function_call_output_values(
             name,
             args,
+            span,
             caller_scope,
             call_depth,
             Some(0),
@@ -681,6 +672,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
         caller_scope: &Scope,
         call_depth: usize,
         output_index: Option<usize>,
@@ -689,7 +681,7 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         }
         let Some(function) = self.lookup_function(name).cloned() else {
-            if let Some(closure) = self.lookup_function_closure(name).cloned() {
+            if let Some(closure) = self.lookup_function_closure(name, span)?.cloned() {
                 let reg = self.lower_function_closure_call(
                     &closure,
                     args,
@@ -1036,7 +1028,7 @@ impl<'a> LowerBuilder<'a> {
         if let Some(values) = self.local_indexed_binding_values(&field_key) {
             return Some(values);
         }
-        let field_path = ComponentPath::from_flat_path(&field_key);
+        let field_path = generated_scope_key(&field_key);
         if let Some(values) = scoped_indexed_binding_values(scope, &field_path) {
             return Some(values);
         }
@@ -1091,7 +1083,7 @@ impl<'a> LowerBuilder<'a> {
             let iter_reg = self.emit_const(value);
             ctx.scope.push_frame();
             ctx.scope
-                .insert_scoped(ComponentPath::from_flat_path(&iter.name), iter_reg);
+                .insert_scoped(generated_scope_key(&iter.name), iter_reg);
             ctx.const_scope.insert(iter.name.clone(), value);
             let result = self.collect_array_comprehension_values(expr, depth + 1, ctx, out);
             ctx.const_scope.shift_remove(&iter.name);
@@ -1207,12 +1199,40 @@ impl<'a> LowerBuilder<'a> {
         if entries.is_empty() {
             return Ok(None);
         }
-        let flat = sorted_flat_entries(&entries);
+        self.lower_indexed_entries_values(key, &entries)
+    }
+
+    pub(in crate::lower) fn lower_indexed_binding_values_for_reference(
+        &mut self,
+        reference: &rumoca_core::Reference,
+        span: rumoca_core::Span,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let key = reference.as_str();
+        if let Some(values) = self.lower_direct_assignment_values_for_key(key, &Scope::new(), 0)? {
+            return Ok(Some(values));
+        }
+        let entries = indexed_entries_for_reference(&self.indexed_bindings, reference, span)?;
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        self.lower_indexed_entries_values(key, &entries)
+    }
+
+    pub(in crate::lower) fn lower_indexed_entries_values(
+        &mut self,
+        key: &str,
+        entries: &[IndexedBinding],
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let flat = sorted_flat_entries(entries);
         if flat.is_empty() {
             return Ok(None);
         }
         let mut values = Vec::with_capacity(flat.len());
         for entry in flat {
+            if entry.indices.is_empty() {
+                values.push(self.emit_slot_load(entry.slot)?);
+                continue;
+            }
             let scalar_key = format_subscript_binding_key(key, &entry.indices);
             if let Some(mut direct_values) =
                 self.lower_direct_assignment_values_for_key(&scalar_key, &Scope::new(), 0)?
@@ -1258,4 +1278,23 @@ impl<'a> LowerBuilder<'a> {
         }
         Ok(result)
     }
+}
+
+fn function_output_dims(
+    function_name: &rumoca_core::Reference,
+    output: &rumoca_core::FunctionParam,
+) -> Result<Vec<usize>, LowerError> {
+    output
+        .dims
+        .iter()
+        .map(|dim| {
+            usize::try_from(*dim).map_err(|_| LowerError::ContractViolation {
+                reason: format!(
+                    "function `{function_name}` output `{}` has invalid dimension `{dim}`",
+                    output.name
+                ),
+                span: output.span,
+            })
+        })
+        .collect()
 }

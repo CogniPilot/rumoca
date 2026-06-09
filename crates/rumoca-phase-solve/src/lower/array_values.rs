@@ -161,6 +161,23 @@ fn infer_dims_from_index_sets(index_sets: impl IntoIterator<Item = Vec<usize>>) 
     dims
 }
 
+fn expr_span_from_subscripts(subscripts: &[rumoca_core::Subscript]) -> rumoca_core::Span {
+    subscripts
+        .iter()
+        .map(rumoca_core::Subscript::span)
+        .find(|span| !span.is_dummy())
+        .unwrap_or(rumoca_core::Span::DUMMY)
+}
+
+fn indexed_entry_matches_selections(entry: &IndexedBinding, selections: &[Vec<usize>]) -> bool {
+    entry.indices.len() == selections.len()
+        && entry
+            .indices
+            .iter()
+            .zip(selections)
+            .all(|(index, selection)| selection.contains(index))
+}
+
 fn collect_indexed_record_field_keys(
     base_key: &str,
     field: &str,
@@ -318,7 +335,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
-        let dims = self.infer_expr_dims(base, scope);
+        let dims = self.infer_expr_dims(base, scope)?;
         if dims.is_empty() {
             if let Some([index]) = static_subscript_indices(subscripts)?.as_deref() {
                 let values = self.lower_array_like_values(base, scope, call_depth)?;
@@ -389,7 +406,7 @@ impl<'a> LowerBuilder<'a> {
         Ok(Some(merged))
     }
 
-    fn lower_structural_index_selector(
+    pub(in crate::lower) fn lower_structural_index_selector(
         &mut self,
         subscript: &rumoca_core::Subscript,
         scope: &Scope,
@@ -572,13 +589,14 @@ impl<'a> LowerBuilder<'a> {
             name,
             args,
             is_constructor: false,
-            ..
+            span,
         } = expr
             && self
                 .lookup_function(name)
                 .is_some_and(|function| function.outputs.len() > 1)
-            && let Some(values) =
-                self.lower_user_function_call_output_values(name, args, scope, call_depth, None)?
+            && let Some(values) = self.lower_user_function_call_output_values(
+                name, args, *span, scope, call_depth, None,
+            )?
         {
             return Ok(values);
         }
@@ -608,9 +626,7 @@ impl<'a> LowerBuilder<'a> {
                 None => Ok(Vec::new()),
             };
         }
-        if let Some(values) =
-            self.lower_random_array_values(name.as_str(), args, scope, call_depth)?
-        {
+        if let Some(values) = self.lower_random_array_values(name, args, scope, call_depth)? {
             return Ok(values);
         }
         if let Some(values) =
@@ -621,9 +637,13 @@ impl<'a> LowerBuilder<'a> {
         if self.is_record_constructor_call(name, is_constructor) {
             return self.lower_record_constructor_values(name, args, scope, call_depth);
         }
-        if let Some(values) =
-            self.lower_user_function_call_array_values(name, args, scope, call_depth)?
-        {
+        if let Some(values) = self.lower_user_function_call_array_values(
+            name,
+            args,
+            fallback.span().unwrap_or(rumoca_core::Span::DUMMY),
+            scope,
+            call_depth,
+        )? {
             return Ok(values);
         }
         Ok(vec![self.lower_expr(fallback, scope, call_depth)?])
@@ -759,13 +779,14 @@ impl<'a> LowerBuilder<'a> {
                 name,
                 args,
                 is_constructor: false,
-                ..
+                span,
             } = expr
             && self
                 .lookup_function(name)
                 .is_some_and(|function| function.outputs.len() > 1)
-            && let Some(values) =
-                self.lower_user_function_call_output_values(name, args, scope, call_depth, None)?
+            && let Some(values) = self.lower_user_function_call_output_values(
+                name, args, *span, scope, call_depth, None,
+            )?
         {
             return Ok(ArrayOperand {
                 dims: vector_dims(values.len()),
@@ -817,7 +838,7 @@ impl<'a> LowerBuilder<'a> {
         let dims = if self.expr_uses_flat_call_or_tuple_width(expr) {
             vector_dims(values.len())
         } else {
-            self.infer_expr_dims(expr, scope)
+            self.infer_expr_dims(expr, scope)?
         };
         if !dims.is_empty() {
             let expected = shape_size(&dims);
@@ -1054,7 +1075,19 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Vec<Reg>, LowerError> {
-        let key_path = ComponentPath::from_reference(name);
+        let generated_key = generated_scope_key(name.as_str());
+        if let Some(values) = scoped_indexed_binding_values(scope, &generated_key) {
+            return Ok(values);
+        }
+        if let Some(values) = self.local_indexed_binding_values(name.as_str()) {
+            return Ok(values);
+        }
+        if let Some(reg) = scope.get(&generated_key).copied() {
+            return Ok(vec![reg]);
+        }
+
+        let key_path =
+            self.scope_key_from_reference(name, expr.span().unwrap_or(rumoca_core::Span::DUMMY))?;
         let key = name.as_str();
         if let Some(values) = scoped_indexed_binding_values(scope, &key_path) {
             return Ok(values);
@@ -1083,7 +1116,10 @@ impl<'a> LowerBuilder<'a> {
         if let Some(values) = self.lower_direct_assignment_values_for_key(key, scope, call_depth)? {
             return Ok(values);
         }
-        if let Some(values) = self.lower_indexed_binding_values(key)? {
+        if let Some(values) = self.lower_indexed_binding_values_for_reference(
+            name,
+            expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+        )? {
             return Ok(values);
         }
         if let Some(values) = self.lower_record_field_array_values(key)? {
@@ -1134,15 +1170,14 @@ impl<'a> LowerBuilder<'a> {
 
     fn lower_scalarized_component_values(
         &mut self,
-        base_path: &ComponentPath,
+        base_key: &ComponentReferenceKey,
         scope: &Scope,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
         let mut values = scope
             .iter()
             .into_iter()
-            .filter_map(|(path, reg)| {
-                let suffix = path.strip_prefix(base_path)?;
-                (suffix.len() == 1).then_some((path, reg))
+            .filter_map(|(key, reg)| {
+                scope_key_direct_child_suffix(&key, base_key).map(|_| (key, reg))
             })
             .collect::<IndexMap<_, _>>();
 
@@ -1151,21 +1186,19 @@ impl<'a> LowerBuilder<'a> {
             .bindings()
             .keys()
             .filter_map(|name| {
-                let path = ComponentPath::from_flat_path(name);
-                let suffix = path.strip_prefix(base_path)?;
-                (suffix.len() == 1 && !values.contains_key(&path)).then_some(path)
+                let key = generated_scope_key(name);
+                scope_key_direct_child_suffix(&key, base_key)?;
+                (!values.contains_key(&key)).then_some((key, name.clone()))
             })
             .collect::<Vec<_>>();
 
-        for path in child_paths {
-            let slot =
-                self.layout
-                    .binding(path.as_str())
-                    .ok_or_else(|| LowerError::MissingBinding {
-                        name: path.to_flat_string(),
-                    })?;
+        for (key, name) in child_paths {
+            let slot = self
+                .layout
+                .binding(&name)
+                .ok_or(LowerError::MissingBinding { name })?;
             let reg = self.emit_slot_load(slot)?;
-            values.insert(path, reg);
+            values.insert(key, reg);
         }
 
         if values.is_empty() {
@@ -1192,18 +1225,60 @@ impl<'a> LowerBuilder<'a> {
             LocalSubscriptResolution::Values(values) => return Ok(values),
             LocalSubscriptResolution::NotLocal => {}
         }
-        let Some(keys) =
-            self.slice_binding_keys_or_scalar_fallback(name.as_str(), subscripts, scope)?
-        else {
+        if let Some(values) = self.lower_indexed_reference_slice_values(
+            name,
+            subscripts,
+            expr_span_from_subscripts(subscripts),
+            scope,
+        )? {
+            return Ok(values);
+        }
+        let Some(keys) = self.slice_binding_keys(name.as_str(), subscripts, scope)? else {
             // MLS §10.5: a scalar subscript selects one array element. The
             // array-like lowering path is used by element-wise intrinsics too,
             // so a non-slice selection must fall back to scalar VarRef lowering
             // instead of being rejected as a dynamic array slice.
-            return Ok(vec![
-                self.lower_var_ref(name, subscripts, scope, call_depth)?,
-            ]);
+            return Ok(vec![self.lower_var_ref(
+                name,
+                subscripts,
+                expr_span_from_subscripts(subscripts),
+                scope,
+                call_depth,
+            )?]);
         };
         self.load_binding_keys(&keys)
+    }
+
+    fn lower_indexed_reference_slice_values(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+        scope: &Scope,
+    ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let entries = indexed_entries_for_reference(&self.indexed_bindings, name, span)?;
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let dims = infer_indexed_dims(&entries);
+        if dims.is_empty() {
+            return Ok(None);
+        }
+        let selections = self.slice_selections(subscripts, &dims, scope)?;
+        let selected_entries = sorted_flat_entries(&entries)
+            .into_iter()
+            .filter(|entry| indexed_entry_matches_selections(entry, &selections))
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected_entries.is_empty() {
+            return Err(LowerError::Unsupported {
+                reason: format!(
+                    "array slice for `{}` selected no indexed solve-layout bindings",
+                    name.as_str()
+                ),
+            });
+        }
+        self.lower_indexed_entries_values(name.as_str(), &selected_entries)
     }
 
     /// Resolve `name[subscripts]` against a function-scope (local) array
@@ -1222,7 +1297,14 @@ impl<'a> LowerBuilder<'a> {
         if subscripts.is_empty() {
             return Ok(LocalSubscriptResolution::NotLocal);
         }
-        let key_path = ComponentPath::from_reference(name);
+        let generated_key_path = generated_scope_key(key);
+        let key_path = if scope.contains_key(&generated_key_path)
+            || scope.indexed_entries(&generated_key_path).is_some()
+        {
+            generated_key_path
+        } else {
+            self.scope_key_from_reference(name, expr_span_from_subscripts(subscripts))?
+        };
         let Some(dims) = self.local_binding_dims.get(key).cloned() else {
             if scope.contains_key(&key_path) {
                 return Err(LowerError::Unsupported {
@@ -1241,18 +1323,16 @@ impl<'a> LowerBuilder<'a> {
                 reason: format!("subscripted local array `{key}` has no assigned elements"),
             });
         };
-        if dims.iter().any(|dim| *dim <= 0) {
+        if dims.iter().any(|dim| *dim < 0) {
             return Err(LowerError::Unsupported {
-                reason: format!(
-                    "subscripted local array `{key}` has non-positive dimensions {dims:?}"
-                ),
+                reason: format!("subscripted local array `{key}` has negative dimensions {dims:?}"),
             });
         };
         let shape = dims.iter().map(|dim| *dim as usize).collect::<Vec<_>>();
         if subscripts.len() == shape.len() && subscripts.iter().all(is_scalar_selector_subscript) {
             let Some(indices) = self.compile_time_subscript_indices(subscripts)? else {
                 let value = self.lower_dynamic_subscripted_binding(
-                    key,
+                    DynamicBindingTarget::generated(key),
                     subscripts,
                     scope,
                     call_depth,
@@ -1312,9 +1392,7 @@ impl<'a> LowerBuilder<'a> {
             return Ok(vec![self.lower_expr(base, scope, call_depth)?]);
         }
         let base_key = dynamic_binding_base_key(base)?;
-        if let Some(keys) =
-            self.slice_binding_keys_or_scalar_fallback(base_key.as_str(), subscripts, scope)?
-        {
+        if let Some(keys) = self.slice_binding_keys(base_key.as_str(), subscripts, scope)? {
             return self.load_binding_keys(&keys);
         }
         Ok(vec![self.lower_index(base, subscripts, scope, call_depth)?])

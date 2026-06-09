@@ -44,8 +44,9 @@ fn required_equation_residual_or_rhs(
 }
 
 /// Render element `index` (1-based) of an expression. If the expression is an
-/// `Array { elements }`, extracts `elements[index-1]` and renders it.
-/// Otherwise renders the whole expression (scalar broadcast).
+/// `Array { elements }`, flattens nested array constructors in row-major order
+/// and renders the requested scalar element. Otherwise renders the whole
+/// expression for scalar broadcast semantics.
 ///
 /// Usage in templates:
 /// ```jinja
@@ -57,18 +58,14 @@ pub(super) fn render_expr_at_index_function(
     config: Value,
 ) -> RenderResult {
     let cfg = ExprConfig::from_value(&config);
-    let idx = index.as_usize().unwrap_or(1);
+    let idx = index.as_usize().filter(|idx| *idx > 0).ok_or_else(|| {
+        render_err(format!(
+            "render_expr_at_index requires a positive index, got {index}"
+        ))
+    })?;
 
-    // If expression is an Array, flatten nested arrays (row-major) and pick element idx.
-    if get_field(&expr, "Array").is_ok() {
-        let mut flat_elems: Vec<Value> = Vec::new();
-        collect_array_elements_flat(&expr, &mut flat_elems);
-        if idx >= 1
-            && idx <= flat_elems.len()
-            && let Some(elem) = flat_elems.get(idx - 1)
-        {
-            return render_expression(elem, &cfg);
-        }
+    if let Some(rendered) = render_array_expr_at_index_checked(&expr, idx, &cfg)? {
+        return Ok(rendered);
     }
 
     // If expression is a whole-array VarRef (e.g. A_d_rp), index into the generated
@@ -297,7 +294,7 @@ pub(super) fn alg_rhs_for_var_or_self_function(
     let name_str = var_name.to_string().trim_matches('"').to_string();
 
     let Ok(iter) = equations.try_iter() else {
-        return Ok(var_name_to_symbol(&name_str, &cfg));
+        return var_name_to_symbol(&name_str, &cfg);
     };
     for eq in iter {
         if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name_str, &cfg)? {
@@ -305,7 +302,7 @@ pub(super) fn alg_rhs_for_var_or_self_function(
         }
     }
 
-    Ok(var_name_to_symbol(&name_str, &cfg))
+    var_name_to_symbol(&name_str, &cfg)
 }
 
 /// Extract RHS for embedded discrete updates.
@@ -342,11 +339,11 @@ pub(super) fn discrete_rhs_for_var_function(
         }
     }
 
-    if let Some(synthesized) = synthesize_discrete_statespace_rhs(&name, &dae, &cfg) {
+    if let Some(synthesized) = synthesize_discrete_statespace_rhs(&name, &dae, &cfg)? {
         return Ok(synthesized);
     }
 
-    Ok(var_name_to_symbol(&name, &cfg))
+    var_name_to_symbol(&name, &cfg)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -761,7 +758,7 @@ fn render_matrix_expr_at_indices(
     cfg: &ExprConfig,
 ) -> Result<Option<String>, minijinja::Error> {
     if let Ok(var_ref) = get_field(expr, "VarRef") {
-        return Ok(render_var_ref_with_indices(&var_ref, &[row, col], cfg));
+        return render_var_ref_with_indices(&var_ref, &[row, col], cfg);
     }
 
     if get_field(expr, "Array").is_ok() {
@@ -828,15 +825,17 @@ fn render_var_ref_with_indices(
     var_ref: &Value,
     indices: &[usize],
     cfg: &ExprConfig,
-) -> Option<String> {
-    let subscripts = get_field(var_ref, "subscripts").ok()?;
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(subscripts) = get_field(var_ref, "subscripts") else {
+        return no_render_match();
+    };
     if subscripts.len().unwrap_or(0) != 0 {
-        return None;
+        return no_render_match();
     }
 
     let raw_name = var_ref_base_name(var_ref);
     if raw_name.is_empty() {
-        return None;
+        return no_render_match();
     }
 
     let index_text = indices
@@ -846,12 +845,12 @@ fn render_var_ref_with_indices(
         .join(",");
     let indexed_ref = format!("{raw_name}[{index_text}]");
     if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &indexed_ref) {
-        return Some(symbol);
+        return Ok(Some(symbol));
     }
 
-    let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+    let name = super::emitted_symbol(&raw_name, cfg)?;
     if cfg.subscript_underscore {
-        return Some(format!(
+        return Ok(Some(format!(
             "{}_{}",
             name,
             indices
@@ -859,17 +858,17 @@ fn render_var_ref_with_indices(
                 .map(|idx| idx.to_string())
                 .collect::<Vec<_>>()
                 .join("_")
-        ));
+        )));
     }
     if cfg.one_based_index {
-        return Some(format!("{name}[{index_text}]"));
+        return Ok(Some(format!("{name}[{index_text}]")));
     }
 
     if indices.len() == 1 {
-        return Some(format!("{}[{}]", name, indices[0] - 1));
+        return Ok(Some(format!("{}[{}]", name, indices[0] - 1)));
     }
 
-    None
+    no_render_match()
 }
 
 /// Extract the algebraic RHS from a single equation if it matches `0 = var_name - expr`.
@@ -1338,24 +1337,23 @@ fn render_array_expr_at_index_checked(
     index: usize,
     cfg: &ExprConfig,
 ) -> Result<Option<String>, minijinja::Error> {
-    if let Ok(array) = get_field(expr, "Array") {
-        let Ok(elements) = get_field(&array, "elements") else {
-            return no_render_match();
+    if get_field(expr, "Array").is_ok() {
+        let mut flat_elems = Vec::new();
+        collect_array_elements_flat(expr, &mut flat_elems);
+        let Some(elem) = index
+            .checked_sub(1)
+            .and_then(|flat_index| flat_elems.get(flat_index))
+        else {
+            return Err(render_err(format!(
+                "array expression scalar index {index} is outside flattened size {}",
+                flat_elems.len()
+            )));
         };
-        let Some(len) = elements.len() else {
-            return no_render_match();
-        };
-        if index == 0 || index > len {
-            return no_render_match();
-        }
-        let Ok(elem) = elements.get_item(&minijinja::Value::from(index - 1)) else {
-            return no_render_match();
-        };
-        return render_expression(&elem, cfg).map(Some);
+        return render_expression(elem, cfg).map(Some);
     }
 
     if let Ok(var_ref) = get_field(expr, "VarRef") {
-        return Ok(try_render_indexed_var_ref(&var_ref, index, cfg));
+        return try_render_indexed_var_ref(&var_ref, index, cfg);
     }
 
     if let Ok(binary) = get_field(expr, "Binary") {
@@ -1432,34 +1430,43 @@ fn render_array_expr_at_index_or_scalar_checked(
     render_expression(expr, cfg).map(Some)
 }
 
-fn try_render_indexed_var_ref(var_ref: &Value, index: usize, cfg: &ExprConfig) -> Option<String> {
-    let subscripts = get_field(var_ref, "subscripts").ok()?;
+fn try_render_indexed_var_ref(
+    var_ref: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(subscripts) = get_field(var_ref, "subscripts") else {
+        return no_render_match();
+    };
     if subscripts.len().unwrap_or(0) != 0 {
-        return None;
+        return no_render_match();
     }
 
-    let raw_name = get_field(var_ref, "name")
+    let Some(raw_name) = get_field(var_ref, "name")
         .ok()
         .map(|n| {
             get_field(&n, "0")
                 .map(|v| super::value_to_string(&v))
                 .unwrap_or_else(|_| super::value_to_string(&n))
         })
-        .filter(|name| !name.is_empty())?;
+        .filter(|name| !name.is_empty())
+    else {
+        return no_render_match();
+    };
 
     if cfg.subscript_underscore {
         let indexed_ref = format!("{raw_name}[{index}]");
         if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &indexed_ref) {
-            return Some(symbol);
+            return Ok(Some(symbol));
         }
-        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
-        Some(format!("{name}_{index}"))
+        let name = super::emitted_symbol(&raw_name, cfg)?;
+        Ok(Some(format!("{name}_{index}")))
     } else if cfg.one_based_index {
-        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
-        Some(format!("{name}[{index}]"))
+        let name = super::emitted_symbol(&raw_name, cfg)?;
+        Ok(Some(format!("{name}[{index}]")))
     } else {
-        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
-        Some(format!("{}[{}]", name, index - 1))
+        let name = super::emitted_symbol(&raw_name, cfg)?;
+        Ok(Some(format!("{}[{}]", name, index - 1)))
     }
 }
 
@@ -1887,17 +1894,17 @@ fn list_any(list: &Value, mut predicate: impl FnMut(Value) -> bool) -> bool {
 }
 
 /// Convert a source reference into the emitted symbol configured by the template.
-pub(super) fn var_name_to_symbol(name: &str, cfg: &ExprConfig) -> String {
+pub(super) fn var_name_to_symbol(name: &str, cfg: &ExprConfig) -> RenderResult {
     if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), name) {
-        return symbol;
+        return Ok(symbol);
     }
     if let Some((base, subscripts)) = rumoca_core::split_trailing_subscript_suffix(name) {
         let suffix = subscripts.replace(',', "_").replace(' ', "");
-        let base_symbol = super::emitted_symbol_or_fallback(base, cfg);
-        return format!("{base_symbol}_{suffix}");
+        let base_symbol = super::emitted_symbol(base, cfg)?;
+        return Ok(format!("{base_symbol}_{suffix}"));
     }
 
-    super::emitted_symbol_or_fallback(name, cfg)
+    super::emitted_symbol(name, cfg)
 }
 
 #[cfg(test)]
@@ -1920,11 +1927,11 @@ mod tests {
     fn var_name_to_symbol_uses_balanced_trailing_subscript() {
         let cfg = ExprConfig::default();
 
-        assert_eq!(var_name_to_symbol("x[3]", &cfg), "x_3");
+        assert_eq!(var_name_to_symbol("x[3]", &cfg).unwrap(), "x_3");
         assert_eq!(
-            var_name_to_symbol("arr[index.with.dot].x[4]", &cfg),
+            var_name_to_symbol("arr[index.with.dot].x[4]", &cfg).unwrap(),
             "arr_index_with_dot_x_4"
         );
-        assert_eq!(var_name_to_symbol("x[3", &cfg), "x_3");
+        assert_eq!(var_name_to_symbol("x[3", &cfg).unwrap(), "x_3");
     }
 }

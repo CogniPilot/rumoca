@@ -14,9 +14,8 @@ use crate::errors::ToDaeError;
 use crate::name_resolution;
 use crate::path_utils::{
     get_top_level_prefix, normalized_top_level_names, path_is_in_top_level_set,
-    subscript_fallback_chain,
 };
-use crate::{flat_to_dae_expression, flat_to_dae_var_name, remap_flat_for_equations};
+use crate::{flat_to_dae_expression_with_refs, flat_to_dae_var_name, remap_flat_for_equations};
 
 pub(super) fn is_input_input_connection(eq: &flat::Equation, dae: &dae::Dae) -> bool {
     // Only check connection equations
@@ -177,12 +176,12 @@ fn output_alias_skip_reason(
                     .variables
                     .discrete_reals
                     .contains_key(&flat_to_dae_var_name(candidate))
-                || ctx.flat.variables.get(candidate).is_some_and(|var| {
-                    var.is_discrete_type
-                        || matches!(var.variability, rumoca_core::Variability::Discrete(_))
-                })
         })
         .is_some()
+            || ctx.flat.variables.get(name).is_some_and(|var| {
+                var.is_discrete_type
+                    || matches!(var.variability, rumoca_core::Variability::Discrete(_))
+            })
     };
     if is_discrete_signal(&output_name) || peer_name.as_ref().is_some_and(is_discrete_signal) {
         return None;
@@ -191,21 +190,7 @@ fn output_alias_skip_reason(
     // Preserve internal input aliases (e.g. connector inputs in component internals).
     // Dropping these aliases disconnects discrete signal paths.
     let preserve_internal_input_alias = peer_name.as_ref().is_some_and(|peer| {
-        let peer_is_discrete =
-            name_resolution::resolve_var_name_with_subscript_fallback(peer, |candidate| {
-                dae.variables
-                    .discrete_valued
-                    .contains_key(&flat_to_dae_var_name(candidate))
-                    || dae
-                        .variables
-                        .discrete_reals
-                        .contains_key(&flat_to_dae_var_name(candidate))
-                    || ctx.flat.variables.get(candidate).is_some_and(|var| {
-                        var.is_discrete_type
-                            || matches!(var.variability, rumoca_core::Variability::Discrete(_))
-                    })
-            })
-            .is_some();
+        let peer_is_discrete = is_discrete_signal(peer);
         let peer_is_component_consumed =
             name_resolution::resolve_name_against_set(peer, ctx.non_connection_rhs_var_refs)
                 .is_some();
@@ -291,9 +276,9 @@ fn output_has_component_equation(
     if outputs_with_component_eqs.contains(output_name) {
         return true;
     }
-    subscript_fallback_chain(output_name.as_str())
-        .into_iter()
-        .any(|candidate| outputs_with_component_eqs.contains(&candidate))
+    rumoca_core::component_path_base_name(output_name.as_str())
+        .map(rumoca_core::VarName::new)
+        .is_some_and(|base| outputs_with_component_eqs.contains(&base))
 }
 
 fn collect_top_level_overconstrained_connectors(flat: &flat::Model) -> IndexSet<String> {
@@ -372,13 +357,18 @@ fn classify_equation_scalar_count(
         return eq.scalar_count.max(1);
     }
     if matches!(eq.origin, flat::EquationOrigin::FlowSum { .. }) {
-        return super::infer_flow_sum_scalar_count(&eq.residual, flat, prefix_counts)
-            .unwrap_or_else(|| eq.scalar_count.max(inferred_scalar_count.max(1)));
+        return match super::infer_flow_sum_scalar_count(&eq.residual, flat, prefix_counts) {
+            Some(flow_sum_count) => flow_sum_count,
+            None => eq.scalar_count.max(inferred_scalar_count.max(1)),
+        };
     }
     if matches!(eq.origin, flat::EquationOrigin::Connection { .. }) {
         return eq.scalar_count.max(1);
     }
-    lhs_scalar_count.unwrap_or_else(|| eq.scalar_count.max(inferred_scalar_count.max(1)))
+    match lhs_scalar_count {
+        Some(count) => count,
+        None => eq.scalar_count.max(inferred_scalar_count.max(1)),
+    }
 }
 
 /// Convert flat equations to DAE form and add them to the unified f_x vector.
@@ -829,21 +819,18 @@ fn record_field_variables<'a>(
     let mut field_vars = flat
         .variables
         .values()
-        .filter(|field_var| {
-            field_var.component_ref.as_ref().is_some_and(|field_ref| {
-                component_ref_matches_record_field(lhs_component_ref, field_ref, field)
-            })
+        .filter_map(|field_var| {
+            let field_ref = field_var.component_ref.as_ref()?;
+            component_ref_matches_record_field(lhs_component_ref, field_ref, field)
+                .then_some((field_var, field_ref))
         })
         .collect::<Vec<_>>();
 
-    field_vars.sort_by_key(|field_var| {
-        field_var
-            .component_ref
-            .as_ref()
-            .map(|field_ref| record_field_sort_key(lhs_component_ref, field_ref))
-            .unwrap_or_default()
-    });
-    Ok(field_vars)
+    field_vars.sort_by_key(|(_, field_ref)| record_field_sort_key(lhs_component_ref, field_ref));
+    Ok(field_vars
+        .into_iter()
+        .map(|(field_var, _)| field_var)
+        .collect())
 }
 
 fn record_field_expansion_error(
@@ -917,6 +904,7 @@ pub(crate) fn expand_record_field_equation(
 
 fn route_classified_equation(
     dae: &mut dae::Dae,
+    flat: &flat::Model,
     eq: &flat::Equation,
     dae_eq: dae::Equation,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
@@ -930,6 +918,7 @@ fn route_classified_equation(
             Some(ResidualDiscreteBucket::DiscreteValued) => {
                 if !push_explicit_discrete_assignments(
                     dae,
+                    flat,
                     &dae_eq,
                     true,
                     discrete_valued_lhs_counts,
@@ -949,8 +938,13 @@ fn route_classified_equation(
 
     match discrete_bucket {
         Some(ResidualDiscreteBucket::DiscreteValued) => {
-            if !push_explicit_discrete_assignments(dae, &dae_eq, true, discrete_valued_lhs_counts)?
-            {
+            if !push_explicit_discrete_assignments(
+                dae,
+                flat,
+                &dae_eq,
+                true,
+                discrete_valued_lhs_counts,
+            )? {
                 dae.discrete.valued_updates.push(dae_eq);
             }
         }
@@ -1056,29 +1050,99 @@ fn append_rendered_subscripts(
     rumoca_core::VarName::new(format!("{name}[{rendered}]"))
 }
 
-fn explicit_assignment_target(expr: &rumoca_core::Expression) -> Option<rumoca_core::VarName> {
+struct ExplicitAssignmentTarget {
+    name: rumoca_core::VarName,
+    has_subscripts: bool,
+}
+
+fn explicit_lhs_reference_from_target(
+    target: &rumoca_core::VarName,
+    flat: &flat::Model,
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::Reference, ToDaeError> {
+    if let Some(variable) = flat.variables.get(target)
+        && let Some(component_ref) = variable.component_ref.clone()
+    {
+        return Ok(rumoca_core::Reference::with_component_reference(
+            target.as_str(),
+            component_ref,
+        ));
+    }
+    if let Some(scalar_name) = rumoca_core::parse_scalar_name(target.as_str())
+        && let Some(variable) = flat
+            .variables
+            .get(&rumoca_core::VarName::new(scalar_name.base))
+        && let Some(component_ref) = variable.component_ref.clone()
+    {
+        return Ok(rumoca_core::Reference::with_component_reference(
+            target.as_str(),
+            component_reference_with_scalar_indices(
+                component_ref,
+                &scalar_name.indices,
+                variable.source_span,
+            ),
+        ));
+    }
+    Err(ToDaeError::RuntimeContractViolation {
+        detail: format!(
+            "explicit discrete assignment target `{target}` lost structured component-reference metadata"
+        ),
+        span: rumoca_core::span_to_source_span(
+            flat.variables
+                .get(target)
+                .map(|variable| variable.source_span)
+                .unwrap_or(span),
+        ),
+    })
+}
+
+fn component_reference_with_scalar_indices(
+    mut component_ref: rumoca_core::ComponentReference,
+    indices: &[i64],
+    span: rumoca_core::Span,
+) -> rumoca_core::ComponentReference {
+    if let Some(part) = component_ref.parts.last_mut() {
+        part.subs.extend(
+            indices
+                .iter()
+                .map(|index| rumoca_core::Subscript::generated_index(*index, span)),
+        );
+    }
+    component_ref
+}
+
+fn explicit_assignment_target(expr: &rumoca_core::Expression) -> Option<ExplicitAssignmentTarget> {
     match expr {
         // MLS Appendix B B.1c with MLS Chapter 10 indexing: explicit discrete
         // assignments must preserve the full indexed/field-qualified target.
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
-        } => Some(append_rendered_subscripts(name.as_str(), subscripts)),
+        } => Some(ExplicitAssignmentTarget {
+            name: append_rendered_subscripts(name.as_str(), subscripts),
+            has_subscripts: !subscripts.is_empty(),
+        }),
         rumoca_core::Expression::Index {
             base, subscripts, ..
         } => {
             let base = explicit_assignment_target(base)?;
-            Some(append_rendered_subscripts(base.as_str(), subscripts))
+            Some(ExplicitAssignmentTarget {
+                name: append_rendered_subscripts(base.name.as_str(), subscripts),
+                has_subscripts: base.has_subscripts || !subscripts.is_empty(),
+            })
         }
         rumoca_core::Expression::FieldAccess { base, field, .. } => {
             let base = explicit_assignment_target(base)?;
-            Some(rumoca_core::VarName::new(format!(
-                "{}.{}",
-                base.as_str(),
-                field
-            )))
+            Some(ExplicitAssignmentTarget {
+                name: rumoca_core::VarName::new(format!("{}.{}", base.name.as_str(), field)),
+                has_subscripts: base.has_subscripts,
+            })
         }
         _ => None,
     }
+}
+
+fn explicit_assignment_target_name(expr: &rumoca_core::Expression) -> Option<rumoca_core::VarName> {
+    explicit_assignment_target(expr).map(|target| target.name)
 }
 
 fn collect_explicit_discrete_assignments(
@@ -1131,7 +1195,7 @@ fn collect_binary_explicit_discrete_assignments(
     if is_numeric_zero(rhs) {
         return collect_zero_rhs_discrete_assignment(lhs, dae, discrete_valued_lhs_counts);
     }
-    let Some(name) = explicit_assignment_target(lhs) else {
+    let Some(name) = explicit_assignment_target_name(lhs) else {
         return Ok(None);
     };
     let mut result = HashMap::new();
@@ -1149,7 +1213,7 @@ fn collect_zero_rhs_discrete_assignment(
     {
         return Ok(Some(assignments));
     }
-    let Some(target) = explicit_assignment_target(expr) else {
+    let Some(target) = explicit_assignment_target_name(expr) else {
         return Ok(None);
     };
     let mut result = HashMap::new();
@@ -1283,33 +1347,40 @@ fn collect_oriented_discrete_alias_assignment(
     let Some(rhs_target) = explicit_assignment_target(rhs) else {
         return Ok(None);
     };
-    if lhs_target == rhs_target {
+    if lhs_target.name == rhs_target.name {
         return Ok(None);
     }
-    if lhs_target.as_str().contains('[') {
+    if lhs_target.has_subscripts {
         return Ok(None);
     }
-    if !is_discrete_valued_target(dae, &lhs_target) || !is_discrete_valued_target(dae, &rhs_target)
+    if !is_discrete_valued_target(dae, &lhs_target.name)
+        || !is_discrete_valued_target(dae, &rhs_target.name)
     {
         return Ok(None);
     }
 
-    let lhs_definitions = lookup_discrete_lhs_count(&lhs_target, discrete_valued_lhs_counts)
+    let lhs_definitions = lookup_discrete_lhs_count(&lhs_target.name, discrete_valued_lhs_counts)
         .ok_or_else(|| ToDaeError::RuntimeContractViolation {
-            detail: format!("missing discrete-valued LHS definition count for `{lhs_target}`"),
-            span: rumoca_core::span_to_source_span(lhs.span().unwrap_or(rumoca_core::Span::DUMMY)),
-        })?;
-    let rhs_definitions = lookup_discrete_lhs_count(&rhs_target, discrete_valued_lhs_counts)
+        detail: format!(
+            "missing discrete-valued LHS definition count for `{}`",
+            lhs_target.name
+        ),
+        span: rumoca_core::span_to_source_span(lhs.span().unwrap_or(rumoca_core::Span::DUMMY)),
+    })?;
+    let rhs_definitions = lookup_discrete_lhs_count(&rhs_target.name, discrete_valued_lhs_counts)
         .ok_or_else(|| ToDaeError::RuntimeContractViolation {
-            detail: format!("missing discrete-valued LHS definition count for `{rhs_target}`"),
-            span: rumoca_core::span_to_source_span(rhs.span().unwrap_or(rumoca_core::Span::DUMMY)),
-        })?;
+        detail: format!(
+            "missing discrete-valued LHS definition count for `{}`",
+            rhs_target.name
+        ),
+        span: rumoca_core::span_to_source_span(rhs.span().unwrap_or(rumoca_core::Span::DUMMY)),
+    })?;
     if lhs_definitions <= 1 || rhs_definitions != 0 {
         return Ok(None);
     }
 
     let mut result = HashMap::new();
-    result.insert(rhs_target, lhs.clone());
+    result.insert(rhs_target.name, lhs.clone());
     Ok(Some(result))
 }
 
@@ -1317,24 +1388,13 @@ fn lookup_discrete_lhs_count(
     target: &rumoca_core::VarName,
     counts: &HashMap<rumoca_core::VarName, usize>,
 ) -> Option<usize> {
-    counts.get(target).copied().or_else(|| {
-        subscript_fallback_chain(target.as_str())
-            .into_iter()
-            .find_map(|fallback| counts.get(&fallback).copied())
-    })
+    counts.get(target).copied()
 }
 
 fn is_discrete_valued_target(dae: &dae::Dae, target: &rumoca_core::VarName) -> bool {
     dae.variables
         .discrete_valued
         .contains_key(&flat_to_dae_var_name(target))
-        || subscript_fallback_chain(target.as_str())
-            .into_iter()
-            .any(|candidate| {
-                dae.variables
-                    .discrete_valued
-                    .contains_key(&flat_to_dae_var_name(&candidate))
-            })
 }
 
 fn push_unique_target(
@@ -1351,7 +1411,7 @@ fn push_unique_target(
 fn discrete_target_scalar_count(
     dae: &dae::Dae,
     target: &rumoca_core::VarName,
-    fallback_scalar_count: usize,
+    equation_scalar_count: usize,
 ) -> usize {
     if let Some(variable) = dae
         .variables
@@ -1361,22 +1421,12 @@ fn discrete_target_scalar_count(
         return variable.size().max(1);
     }
 
-    // Subscripted assignments should count as scalar updates.
-    for candidate in subscript_fallback_chain(target.as_str()) {
-        if dae
-            .variables
-            .discrete_valued
-            .contains_key(&flat_to_dae_var_name(&candidate))
-        {
-            return 1;
-        }
-    }
-
-    fallback_scalar_count.max(1)
+    equation_scalar_count.max(1)
 }
 
 fn push_explicit_discrete_assignments(
     dae: &mut dae::Dae,
+    flat: &flat::Model,
     equation: &dae::Equation,
     discrete_valued: bool,
     discrete_valued_lhs_counts: &HashMap<rumoca_core::VarName, usize>,
@@ -1398,8 +1448,8 @@ fn push_explicit_discrete_assignments(
             equation.scalar_count.max(1)
         };
         let explicit = dae::Equation::explicit_with_scalar_count(
-            flat_to_dae_var_name(&target),
-            flat_to_dae_expression(&rhs),
+            explicit_lhs_reference_from_target(&target, flat, equation.span)?,
+            flat_to_dae_expression_with_refs(&rhs, flat),
             equation.span,
             format!("explicit {}", equation.origin),
             scalar_count,
@@ -1461,12 +1511,12 @@ pub(super) fn classify_equations(
                 stats.record_kept(&expanded_eq.origin);
             }
             let dae_eq = dae::Equation::residual_array(
-                flat_to_dae_expression(&expanded_eq.residual),
+                flat_to_dae_expression_with_refs(&expanded_eq.residual, flat),
                 expanded_eq.span,
                 expanded_eq.origin.to_string(),
                 scalar_count,
             );
-            route_classified_equation(dae, expanded_eq, dae_eq, &discrete_valued_lhs_counts)?;
+            route_classified_equation(dae, flat, expanded_eq, dae_eq, &discrete_valued_lhs_counts)?;
         }
         if dae.continuous.equations.len() == fx_index_before + 1 {
             flat_to_fx_index.insert(flat_idx, fx_index_before);

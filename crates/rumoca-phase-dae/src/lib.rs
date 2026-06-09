@@ -52,9 +52,11 @@ use algorithm_lowering::{
 };
 use analysis::{classification, definition_analysis, discrete_partition, variable_analysis};
 use condition_lowering::{finalize_canonical_condition_variables, populate_canonical_conditions};
+pub use convert::attach_dae_reference_metadata;
 pub(crate) use convert::{
-    dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression, flat_to_dae_function_map,
-    flat_to_dae_var_name, remap_flat_for_equations,
+    dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression,
+    flat_to_dae_expression_with_refs, flat_to_dae_function_map, flat_to_dae_var_name,
+    remap_flat_for_equations,
 };
 use dae_lowering::sort_parameters_by_start_dependency;
 use indexmap::{IndexMap, IndexSet};
@@ -83,7 +85,7 @@ use variable_analysis::{
 };
 use when_conversion::convert_when_clause;
 
-pub use balance::{balance, balance_detail, is_balanced};
+pub use balance::{BalanceError, balance, balance_detail, equations_unknowns, is_balanced};
 pub use dae_lowering::{
     CodegenDae, insert_array_size_args_dae, lower_record_function_params_dae,
     prepare_dae_for_codegen, scalarize_phantom_vector_equations,
@@ -240,6 +242,7 @@ pub fn to_dae_with_options(
     dae.metadata.is_partial = flat.is_partial;
     dae.metadata.class_type = flat.class_type.clone();
     dae.metadata.model_description = flat.model_description.clone();
+    dae.metadata.symbol_ancestry = flat.symbol_ancestry.clone();
 
     let classification_indexes = build_variable_classification_indexes(flat);
     let prefix_children = &classification_indexes.prefix_children;
@@ -312,15 +315,19 @@ pub fn to_dae_with_options(
         || canonicalize_discrete_assignment_equations(&mut dae),
     )?;
     dae.symbols.enum_literal_ordinals = flat.enum_literal_ordinals.clone();
+    run_todae_phase(todae_subphase_timing, "enum_literal_ordinals", || {
+        dae_lowering::lower_enum_literal_refs_to_ordinals(&mut dae);
+    });
     run_todae_phase(
         todae_subphase_timing,
         "fixed_start_initial_equations",
-        || {
-            initial::add_fixed_start_initial_equations(&mut dae);
-        },
-    );
+        || initial::add_fixed_start_initial_equations(&mut dae),
+    )?;
     run_todae_phase(todae_subphase_timing, "canonical_conditions", || {
         populate_canonical_conditions(&mut dae);
+    });
+    run_todae_phase(todae_subphase_timing, "condition_variable_finalize", || {
+        finalize_canonical_condition_variables(&mut dae);
     });
     // MLS §3.7.5: Lower pre() operator calls to dedicated parameter symbols.
     // This must run after equation construction but before parameter sorting,
@@ -376,13 +383,13 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "runtime_precompute", || {
         populate_runtime_precompute(dae)
     })?;
-    run_todae_phase(todae_subphase_timing, "condition_variable_finalize", || {
-        finalize_canonical_condition_variables(dae);
-    });
     run_todae_phase(todae_subphase_timing, "temporal_lowering_finalize", || {
         pre_lowering::lower_pre_operator(dae)?;
         sort_parameters_by_start_dependency(dae);
         Ok::<(), ToDaeError>(())
+    })?;
+    run_todae_phase(todae_subphase_timing, "reference_metadata", || {
+        attach_dae_reference_metadata(dae)
     })?;
     run_todae_phase(todae_subphase_timing, "appendix_b_validation", || {
         appendix_b_validation::validate_appendix_b_invariants(dae)
@@ -424,8 +431,8 @@ fn finalize_lowered_dae(
         })?;
     }
 
-    if options.error_on_unbalanced && !dae.metadata.is_partial && balance::balance(dae) != 0 {
-        let (equations, unknowns) = balance::equations_unknowns(dae);
+    if options.error_on_unbalanced && !dae.metadata.is_partial && balance::balance(dae)? != 0 {
+        let (equations, unknowns) = balance::equations_unknowns(dae)?;
         return Err(ToDaeError::unbalanced(equations, unknowns));
     }
 

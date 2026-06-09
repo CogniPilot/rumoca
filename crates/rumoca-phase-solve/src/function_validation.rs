@@ -62,24 +62,19 @@ fn resolve_dae_function_by_key<'a>(
             return true;
         }
 
-        if output.dims.iter().any(|dim| *dim <= 0) {
+        if output.dims.iter().any(|dim| *dim < 0)
+            || (!output.shape_expr.is_empty() && output.dims.iter().any(|dim| *dim <= 0))
+        {
             return true;
         }
 
-        let total = output
-            .dims
-            .iter()
-            .try_fold(1usize, |acc, dim| {
-                if *dim <= 0 {
-                    None
-                } else {
-                    acc.checked_mul(*dim as usize)
-                }
-            })
-            .unwrap_or(0);
-        if total == 0 {
+        let Some(total) = output.dims.iter().try_fold(1usize, |acc, dim| {
+            usize::try_from(*dim)
+                .ok()
+                .and_then(|dim| acc.checked_mul(dim))
+        }) else {
             return false;
-        }
+        };
 
         if indices.len() == 1 {
             let idx = indices[0];
@@ -93,7 +88,7 @@ fn resolve_dae_function_by_key<'a>(
         indices
             .iter()
             .zip(output.dims.iter())
-            .all(|(idx, dim)| *dim > 0 && *idx >= 1 && *idx <= *dim as usize)
+            .all(|(idx, dim)| *dim >= 0 && *idx >= 1 && *idx <= *dim as usize)
     }
 
     rumoca_core::find_map_top_level_splits_rev(requested, |base_name, suffix| {
@@ -126,26 +121,9 @@ fn short_function_name(name: &str) -> &str {
     rumoca_core::top_level_last_segment(name)
 }
 
-fn component_function_short_name(comp: &ComponentReference) -> &str {
-    comp.last_ident().unwrap_or_default()
-}
-
 fn is_runtime_intrinsic_short_name(short: &str) -> bool {
-    if short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
-        return true;
-    }
-    matches!(
-        short,
-        "assert"
-            | "terminate"
-            | "cardinality"
-            | "String"
-            | "array"
-            | "getInstanceName"
-            | "fullPathName"
-            | "loadResource"
-            | "isValidTable"
-    )
+    short == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+        || eval::is_runtime_special_function_short_name(short)
 }
 
 fn is_builtin_or_runtime_special_key(name: &str) -> bool {
@@ -432,14 +410,16 @@ pub(super) fn validate_flat_expr_function_calls(
                 function_param_aliases,
             )?;
         }
-        // Handled by validate_access_like_expression above, which returns Some(result)
-        // for these variants, causing an early return before this match is reached.
         Expression::Range { .. }
         | Expression::Index { .. }
         | Expression::FieldAccess { .. }
-        | Expression::ArrayComprehension { .. } => unreachable!(
-            "access-like expression variants are dispatched by validate_access_like_expression"
-        ),
+        | Expression::ArrayComprehension { .. } => {
+            return Err(FunctionValidationError {
+                name: "<expression>".to_string(),
+                reason: "access-like expression reached function-call validation dispatcher"
+                    .to_string(),
+            });
+        }
         Expression::VarRef { .. }
         | Expression::Literal { value: _, .. }
         | Expression::Empty { .. } => {}
@@ -810,7 +790,10 @@ pub(super) fn validate_statement_function_call(
     function_param_aliases: &HashSet<VarName>,
 ) -> Result<(), FunctionValidationError> {
     let name = comp.to_var_name();
-    let short_name = component_function_short_name(comp);
+    let short_name = comp.last_ident().ok_or_else(|| FunctionValidationError {
+        name: name.to_string(),
+        reason: "function call has no callee identifier".to_string(),
+    })?;
 
     if matches!(short_name, "assert" | "terminate") {
         // Assertion-style calls frequently contain string helper calls in
@@ -1162,17 +1145,24 @@ mod tests {
             VarName::new("x"),
             dae::Variable {
                 name: rumoca_core::VarName::new("x"),
-                start: Some(Expression::FunctionCall {
-                    name: rumoca_core::VarName::new(
-                        "Modelica.Math.Random.Generators.Xorshift64star.random.stateOut[1]",
-                    )
-                    .into(),
-                    args: vec![Expression::VarRef {
-                        name: rumoca_core::VarName::new("state").into(),
-                        subscripts: vec![],
+                start: Some(Expression::Index {
+                    base: Box::new(Expression::FunctionCall {
+                        name: rumoca_core::VarName::new(
+                            "Modelica.Math.Random.Generators.Xorshift64star.random.stateOut",
+                        )
+                        .into(),
+                        args: vec![Expression::VarRef {
+                            name: rumoca_core::VarName::new("state").into(),
+                            subscripts: vec![],
+                            span: rumoca_core::Span::DUMMY,
+                        }],
+                        is_constructor: false,
                         span: rumoca_core::Span::DUMMY,
-                    }],
-                    is_constructor: false,
+                    }),
+                    subscripts: vec![rumoca_core::Subscript::generated_index(
+                        1,
+                        rumoca_core::Span::DUMMY,
+                    )],
                     span: rumoca_core::Span::DUMMY,
                 }),
                 ..Default::default()

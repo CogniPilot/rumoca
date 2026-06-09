@@ -609,8 +609,7 @@ fn summarize_dae_success(
     compile_seconds: f64,
 ) -> WorkerModelResult {
     let detail = &result.balance_detail;
-    let (scalar_equations, scalar_unknowns) =
-        rumoca_compile::analysis::equations_unknowns(result.dae.as_ref());
+    let (scalar_equations, scalar_unknowns) = detail.equations_unknowns();
     let scalar_equations = scalar_equations as i64;
     let scalar_unknowns = scalar_unknowns as i64;
     let (
