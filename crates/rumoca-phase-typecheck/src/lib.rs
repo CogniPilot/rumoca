@@ -30,16 +30,16 @@ mod instanced;
 mod modifier_targets;
 mod typechecker;
 
-use rumoca_core::{DefId, ScopeId, Span, TypeId};
+use rumoca_core::{ComponentPath, DefId, ScopeId, Span, TypeId};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics, PhaseError, PrimaryLabel, SourceMap,
     find_last_top_level_dot, has_top_level_dot, parent_scope, split_first_top_level,
     top_level_last_segment,
 };
 use rumoca_ir_ast::{
-    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceOverlay,
-    ResolvedTree, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable,
-    TypedTree,
+    ClassDef, ClassDefIndex, ClassKind, ClassTree, Component, EnumerationType, Expression,
+    InstanceOverlay, ResolvedTree, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType,
+    TypeTable, TypedTree,
 };
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -792,6 +792,14 @@ impl TypeChecker {
         }
     }
 
+    fn span_for_location(&self, location: &rumoca_core::Location) -> Span {
+        self.source_map.location_to_span(
+            &location.file_name,
+            location.start as usize,
+            location.end as usize,
+        )
+    }
+
     fn resolve_overlay_type_root(
         &self,
         tree: &ClassTree,
@@ -875,19 +883,43 @@ impl TypeChecker {
     /// the eval context's `enum_sizes` map with type name → literal count mappings.
     /// Also resolves import aliases so that `import L = ...Logic` makes `L` usable
     /// as a dimension.
-    fn collect_enum_sizes(tree: &ClassTree, ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext) {
-        // Scan all classes in the name_map for enumeration types
-        for (name, &def_id) in &tree.name_map {
-            let size = Self::enum_literal_count(tree, def_id);
+    fn collect_enum_sizes(&mut self, tree: &ClassTree) -> TypeCheckResult<()> {
+        let class_index = ClassDefIndex::from_tree(tree);
+        let mut class_entries = Vec::new();
+        for def_id in class_index.def_ids() {
+            let class_def = class_index
+                .get(def_id)
+                .expect("ClassDefIndex::def_ids must only return indexed class definitions");
+            let Some(name) = class_index.qualified_name(def_id) else {
+                return Err(Box::new(TypeCheckError::phase_diagnostic(
+                    "ET001",
+                    format!("missing resolved class name metadata for DefId {def_id:?}"),
+                    "name resolution must preserve class DefId name metadata for enum dimensions",
+                    self.span_for_location(&class_def.name.location),
+                )));
+            };
+            class_entries.push((name.to_string(), def_id));
+        }
+        class_entries.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
+
+        for (name, def_id) in class_entries {
+            let size = class_index
+                .get(def_id)
+                .expect("ClassDefIndex::qualified_name entries must resolve to class definitions")
+                .enum_literals
+                .len();
             if size == 0 {
                 continue;
             }
-            ctx.enum_sizes.insert(name.clone(), size);
+            self.eval_ctx.enum_sizes.insert(name.clone(), size);
             // Also add short name (last segment after dot)
-            let short = top_level_last_segment(name);
-            ctx.enum_sizes.entry(short.to_string()).or_insert(size);
+            let short = top_level_last_segment(&name);
+            self.eval_ctx
+                .enum_sizes
+                .entry(short.to_string())
+                .or_insert(size);
             // Populate enum ordinals (MLS §4.9.5: ordinal is 1-based position)
-            Self::collect_enum_ordinals(tree, def_id, name, ctx);
+            Self::collect_enum_ordinals(&class_index, def_id, &name, &mut self.eval_ctx);
         }
 
         // Scan all scope imports for aliases that resolve to enum types
@@ -897,16 +929,20 @@ impl TypeChecker {
                 continue;
             };
             for import in &scope.imports {
-                Self::collect_enum_from_import(tree, import, ctx);
+                Self::collect_enum_from_import(&class_index, import, &mut self.eval_ctx);
             }
         }
+        Ok(())
     }
 
-    /// Return the number of enum literals for a class, or 0 if not an enum type.
-    fn enum_literal_count(tree: &ClassTree, def_id: rumoca_core::DefId) -> usize {
-        tree.get_class_by_def_id(def_id)
-            .map(|c| c.enum_literals.len())
-            .unwrap_or(0)
+    /// Return the number of enum literals for an indexed class.
+    fn enum_literal_count(
+        class_index: &ClassDefIndex<'_>,
+        def_id: rumoca_core::DefId,
+    ) -> Option<usize> {
+        class_index
+            .get(def_id)
+            .map(|class| class.enum_literals.len())
     }
 
     /// Populate enum ordinals for all literals of an enumeration type.
@@ -918,14 +954,14 @@ impl TypeChecker {
     ///
     /// Also adds short forms without the full prefix.
     fn collect_enum_ordinals(
-        tree: &ClassTree,
+        class_index: &ClassDefIndex<'_>,
         def_id: rumoca_core::DefId,
         type_name: &str,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        let Some(class) = tree.get_class_by_def_id(def_id) else {
-            return;
-        };
+        let class = class_index
+            .get(def_id)
+            .expect("enum ordinal collection requires an indexed enum class definition");
         for (i, literal) in class.enum_literals.iter().enumerate() {
             let ordinal = (i + 1) as i64; // 1-based per MLS §4.9.5
             let lit_name = &*literal.ident.text;
@@ -942,7 +978,7 @@ impl TypeChecker {
 
     /// Check if an import resolves to an enumeration type and add it to enum_sizes.
     fn collect_enum_from_import(
-        tree: &ClassTree,
+        class_index: &ClassDefIndex<'_>,
         import: &ScopeImport,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
@@ -959,11 +995,12 @@ impl TypeChecker {
                 .collect(),
         };
         for (name, def_id) in pairs {
-            let size = Self::enum_literal_count(tree, def_id);
-            if size > 0 {
+            if let Some(size) = Self::enum_literal_count(class_index, def_id)
+                && size > 0
+            {
                 ctx.enum_sizes.entry(name.clone()).or_insert(size);
                 // Also populate ordinals for import aliases
-                Self::collect_enum_ordinals(tree, def_id, &name, ctx);
+                Self::collect_enum_ordinals(class_index, def_id, &name, ctx);
             }
         }
     }
@@ -1292,6 +1329,110 @@ impl TypeChecker {
         }
     }
 
+    /// Re-evaluate component-scoped extends modifiers inside the dimension fixpoint.
+    ///
+    /// MLS §7.2/§7.3 modifications are part of instantiation. When an extends
+    /// modifier depends on a sibling array dimension, such as
+    /// `extends SIMO(final nout=size(columns, 1))`, it cannot be evaluated until
+    /// colon dimensions for `columns[:]` have been inferred.
+    fn reevaluate_component_scoped_extends_modification_constants(
+        tree: &ClassTree,
+        overlay: &InstanceOverlay,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) -> bool {
+        let mut progress = false;
+        for instance_data in overlay.components.values() {
+            let comp_scope = instance_data.qualified_name.to_component_path();
+            if comp_scope.is_root() {
+                continue;
+            }
+            let type_name = instance_data.type_name.as_str();
+            if type_name.is_empty() {
+                continue;
+            }
+
+            for ancestor in Self::collect_ancestor_classes(tree, type_name) {
+                progress |= Self::reevaluate_class_extends_modification_constants_for_scope(
+                    &comp_scope,
+                    ancestor,
+                    ctx,
+                );
+            }
+        }
+        progress
+    }
+
+    fn reevaluate_class_extends_modification_constants_for_scope(
+        comp_scope: &ComponentPath,
+        class_def: &ClassDef,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) -> bool {
+        let mut progress = false;
+        for ext in &class_def.extends {
+            for ext_mod in &ext.modifications {
+                if ext_mod.redeclare {
+                    continue;
+                }
+                progress |=
+                    Self::reevaluate_extends_modification_expr(comp_scope, &ext_mod.expr, ctx);
+            }
+        }
+        progress
+    }
+
+    fn reevaluate_extends_modification_expr(
+        comp_scope: &ComponentPath,
+        expr: &Expression,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) -> bool {
+        let Expression::Modification { target, value, .. } = expr else {
+            return false;
+        };
+        let Some(target_path) = Self::component_reference_path(target) else {
+            return false;
+        };
+        let full_path = comp_scope.join(&target_path).to_flat_string();
+        let scope_name = comp_scope.to_flat_string();
+
+        let mut progress = false;
+        if let Some(val) = rumoca_eval_ast::eval::eval_integer_with_scope(value, ctx, &scope_name)
+            && ctx.integers.get(full_path.as_str()).copied() != Some(val)
+        {
+            ctx.integers.insert(full_path.clone(), val);
+            progress = true;
+        }
+        if let Some(val) = rumoca_eval_ast::eval::eval_boolean_with_scope(value, ctx, &scope_name)
+            && ctx.booleans.get(full_path.as_str()).copied() != Some(val)
+        {
+            ctx.booleans.insert(full_path.clone(), val);
+            progress = true;
+        }
+        if let Some(val) =
+            rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(value, ctx, &scope_name)
+            && ctx.dimensions.get(full_path.as_str()) != Some(&val)
+        {
+            ctx.dimensions.insert(full_path, val);
+            progress = true;
+        }
+        progress
+    }
+
+    fn component_reference_path(
+        reference: &rumoca_ir_ast::ComponentReference,
+    ) -> Option<ComponentPath> {
+        if reference.parts.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::with_capacity(reference.parts.len());
+        for part in &reference.parts {
+            if part.subs.as_ref().is_some_and(|subs| !subs.is_empty()) {
+                return None;
+            }
+            parts.push(part.ident.text.to_string());
+        }
+        Some(ComponentPath::from_parts(parts))
+    }
+
     /// Walk an extends-modification expression and record scalar/dimension overrides.
     fn extract_extends_modification_expr(
         alias: &str,
@@ -1522,7 +1663,7 @@ impl TypeChecker {
 
         let ancestors = Self::collect_ancestor_classes(tree, type_name);
         for ancestor in ancestors {
-            Self::extract_class_extends_redeclare_constants_for_scope(
+            Self::extract_class_extends_constants_for_scope(
                 tree,
                 ancestor,
                 &comp_scope,
@@ -1545,7 +1686,7 @@ impl TypeChecker {
     /// `comp_scope = voltage.term`, class has
     /// `extends Interfaces.TerminalDC(redeclare package PhaseSystem = ...);`
     /// -> populate `voltage.term.PhaseSystem.*`.
-    fn extract_class_extends_redeclare_constants_for_scope(
+    fn extract_class_extends_constants_for_scope(
         tree: &ClassTree,
         class_def: &ClassDef,
         comp_scope: &str,
@@ -1553,6 +1694,7 @@ impl TypeChecker {
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         for ext in &class_def.extends {
+            Self::extract_extends_modification_constants(comp_scope, ext, ctx);
             Self::extract_nested_extends_redeclare_constants(
                 tree,
                 comp_scope,
@@ -1779,6 +1921,7 @@ impl TypeChecker {
     /// 4. Re-evaluates boolean and real parameters
     fn evaluate_all_dimensions_multi_pass(
         &mut self,
+        tree: &ClassTree,
         overlay: &mut InstanceOverlay,
         record_aliases: &[(String, String)],
     ) {
@@ -1792,17 +1935,26 @@ impl TypeChecker {
             // Pass 2: Infer colon dimensions from bindings
             let colon_progress = self.infer_colon_dimensions_single_pass(overlay);
 
-            // Pass 3: Re-evaluate integer parameters that may now be computable
+            // Pass 3: Re-evaluate inherited extends modifier parameters that
+            // may depend on dimensions inferred earlier in this pass.
+            let extends_progress = Self::reevaluate_component_scoped_extends_modification_constants(
+                tree,
+                overlay,
+                &mut self.eval_ctx,
+            );
+
+            // Pass 4: Re-evaluate integer parameters that may now be computable
             // This handles cases like `n = size(table, 1)` after table dims are known
             let int_progress = self.reevaluate_integer_parameters(overlay);
 
-            // Pass 4: Re-evaluate boolean, real, and enum parameters that may now be computable
+            // Pass 5: Re-evaluate boolean, real, and enum parameters that may now be computable
             // This enables if-expression evaluation for dimension inference
             let value_progress = self.reevaluate_boolean_real_and_enum_parameters(overlay);
 
             let made_progress = alias_progress
                 || explicit_progress
                 || colon_progress
+                || extends_progress
                 || int_progress
                 || value_progress;
             if !made_progress {

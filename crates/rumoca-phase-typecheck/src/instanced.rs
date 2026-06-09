@@ -15,13 +15,15 @@ impl TypeChecker {
         self.populate_overlay_type_roots(tree, overlay, &type_table);
         self.resolve_overlay_component_types(overlay, &type_table);
         self.collect_overlay_eval_values(overlay);
-        self.collect_instanced_eval_constants(tree, overlay, model_name);
+        if !self.collect_instanced_eval_constants(tree, overlay, model_name) {
+            return;
+        }
         let record_aliases = Self::collect_record_aliases(overlay);
 
         // MLS §10.1: array dimensions must be evaluable at translation time.
         // Evaluate explicit and colon dimensions in one loop because they can
         // depend on each other through bindings and size(..) expressions.
-        self.evaluate_all_dimensions_multi_pass(overlay, &record_aliases);
+        self.evaluate_all_dimensions_multi_pass(tree, overlay, &record_aliases);
         self.validate_dimensions(overlay);
         self.check_instanced_component_modifiers(tree, model_name, &type_table);
         self.check_instanced_equations(tree, overlay, model_name, &type_table);
@@ -124,8 +126,11 @@ impl TypeChecker {
         tree: &ClassTree,
         overlay: &InstanceOverlay,
         model_name: &str,
-    ) {
-        Self::collect_enum_sizes(tree, &mut self.eval_ctx);
+    ) -> bool {
+        if let Err(error) = self.collect_enum_sizes(tree) {
+            self.emit_typecheck_error(*error);
+            return false;
+        }
         Self::collect_import_constants(tree, &mut self.eval_ctx);
         Self::collect_model_extends_redeclare_constants(tree, model_name, &mut self.eval_ctx);
         Self::collect_nested_class_constants(tree, model_name, &mut self.eval_ctx);
@@ -134,6 +139,7 @@ impl TypeChecker {
         Self::collect_enclosing_class_constants(tree, model_name, &mut self.eval_ctx);
         Self::collect_function_defs(tree, &mut self.eval_ctx);
         Self::collect_instance_class_override_constants(tree, overlay, &mut self.eval_ctx);
+        true
     }
 
     fn check_instanced_component_modifiers(
