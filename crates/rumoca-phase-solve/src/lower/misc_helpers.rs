@@ -43,6 +43,60 @@ pub(super) fn size_binding_key(name: &str, dim: usize) -> String {
 }
 
 impl<'a> LowerBuilder<'a> {
+    pub(super) fn lower_current_update_target_start_before_first_clock_tick(
+        &mut self,
+        value: Reg,
+        expression: &rumoca_core::Expression,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Reg, LowerError> {
+        let Some(target_name) = self.current_update_target_start_guard_name() else {
+            return Ok(value);
+        };
+        let Some(phase_seconds) = self.start_guard_phase_seconds(target_name.as_str(), expression)
+        else {
+            return Ok(value);
+        };
+        let Some(start_expr) = self
+            .variable_starts
+            .and_then(|starts| starts.get(target_name.as_str()))
+            .cloned()
+        else {
+            return Ok(value);
+        };
+
+        let time = self.emit_load_time();
+        let phase = self.emit_const(phase_seconds);
+        let tol = self.emit_const(1.0e-9);
+        let first_tick_boundary = self.emit_binary(BinaryOp::Sub, phase, tol);
+        let before_first_tick = self.emit_compare(CompareOp::Lt, time, first_tick_boundary);
+        let start_value = self.lower_expr(&start_expr, scope, call_depth)?;
+        Ok(self.emit_select(before_first_tick, start_value, value))
+    }
+
+    fn current_update_target_start_guard_name(&self) -> Option<String> {
+        let target = self.current_update_target?;
+        let starts = self.variable_starts?;
+        self.layout.bindings().iter().find_map(|(name, slot)| {
+            (*slot == target && starts.contains_key(name.as_str())).then(|| name.clone())
+        })
+    }
+
+    fn start_guard_phase_seconds(
+        &self,
+        target_name: &str,
+        expression: &rumoca_core::Expression,
+    ) -> Option<f64> {
+        let timings = self.clock_timings?;
+        if let Some(timing) = timings.get(target_name) {
+            return Some(timing.phase_seconds);
+        }
+        let source_name = binding_base_key(expression).ok()?;
+        timings
+            .get(source_name.as_str())
+            .map(|timing| timing.phase_seconds)
+    }
+
     pub(in crate::lower) fn lower_size_from_dims(
         &mut self,
         dims: &[usize],

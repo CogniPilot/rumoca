@@ -95,7 +95,9 @@ fn lower_expression_handles_projected_complex_function_output_field_from_if_cons
         .insert(rumoca_core::VarName::new("My.powerOfJ"), power_of_j);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.powerOfJ.x.im").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.powerOfJ.x.im",
+        )),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(1),
             span: rumoca_core::Span::DUMMY,
@@ -170,7 +172,9 @@ fn lower_expression_handles_projected_complex_output_from_unflagged_constructor_
         .insert(rumoca_core::VarName::new("My.powerOfJ"), power_of_j);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.powerOfJ.x.im").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.powerOfJ.x.im",
+        )),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(1),
             span: rumoca_core::Span::DUMMY,
@@ -262,7 +266,9 @@ fn lower_expression_handles_projected_complex_output_with_constructor_defaults_a
         .insert(rumoca_core::VarName::new("My.powerOfJ"), power_of_j);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.powerOfJ.x.im").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.powerOfJ.x.im",
+        )),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(3),
             span: rumoca_core::Span::DUMMY,
@@ -289,7 +295,9 @@ fn lower_residual_applies_state_then_algebraic_sign() {
         .insert(rumoca_core::VarName::new("z"), scalar_var("z"));
     dae_model.continuous.equations.push(dae::Equation::residual(
         rumoca_core::Expression::VarRef {
-            name: rumoca_core::VarName::new("x").into(),
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "x",
+            )),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         },
@@ -298,7 +306,9 @@ fn lower_residual_applies_state_then_algebraic_sign() {
     ));
     dae_model.continuous.equations.push(dae::Equation::residual(
         rumoca_core::Expression::VarRef {
-            name: rumoca_core::VarName::new("z").into(),
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "z",
+            )),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         },
@@ -306,7 +316,7 @@ fn lower_residual_applies_state_then_algebraic_sign() {
         "algebraic row",
     ));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout).expect("lowering residual should succeed");
     assert_eq!(rows.len(), 2);
 
@@ -337,7 +347,9 @@ fn lower_expression_inlines_user_function_if_statement() {
                 cond: rumoca_core::Expression::Binary {
                     op: rumoca_core::OpBinary::Ge,
                     lhs: Box::new(rumoca_core::Expression::VarRef {
-                        name: rumoca_core::VarName::new("u").into(),
+                        name: rumoca_core::Reference::from_component_reference(
+                            test_component_ref_from_name("u"),
+                        ),
                         subscripts: vec![],
                         span: rumoca_core::Span::DUMMY,
                     }),
@@ -350,7 +362,9 @@ fn lower_expression_inlines_user_function_if_statement() {
                 stmts: vec![rumoca_core::Statement::Assignment {
                     comp: component_ref("out"),
                     value: rumoca_core::Expression::VarRef {
-                        name: rumoca_core::VarName::new("u").into(),
+                        name: rumoca_core::Reference::from_component_reference(
+                            test_component_ref_from_name("u"),
+                        ),
                         subscripts: vec![],
                         span: rumoca_core::Span::DUMMY,
                     },
@@ -363,7 +377,9 @@ fn lower_expression_inlines_user_function_if_statement() {
                 value: rumoca_core::Expression::Unary {
                     op: rumoca_core::OpUnary::Minus,
                     rhs: Box::new(rumoca_core::Expression::VarRef {
-                        name: rumoca_core::VarName::new("u").into(),
+                        name: rumoca_core::Reference::from_component_reference(
+                            test_component_ref_from_name("u"),
+                        ),
                         subscripts: vec![],
                         span: rumoca_core::Span::DUMMY,
                     }),
@@ -387,9 +403,13 @@ fn lower_expression_inlines_user_function_if_statement() {
         .insert(rumoca_core::VarName::new("My.absLike"), abs_like);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.absLike").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.absLike",
+        )),
         args: vec![rumoca_core::Expression::VarRef {
-            name: rumoca_core::VarName::new("x").into(),
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "x",
+            )),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         }],
@@ -397,7 +417,7 @@ fn lower_expression_inlines_user_function_if_statement() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
         .expect("if-statement function should lower");
 
@@ -490,7 +510,9 @@ fn lower_expression_inlines_user_function_break_statement() {
         .insert(rumoca_core::VarName::new("My.breakLike"), break_like);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.breakLike").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.breakLike",
+        )),
         args: vec![rumoca_core::Expression::Array {
             elements: vec![var("a"), var("b")],
             is_matrix: false,
@@ -500,7 +522,7 @@ fn lower_expression_inlines_user_function_break_statement() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
         .expect("break-statement function should lower");
 
@@ -508,6 +530,64 @@ fn lower_expression_inlines_user_function_break_statement() {
     let (regs_no_break, _) = eval_linear_ops(&lowered.ops, &[1.0, 1.0], &[], 0.0);
     assert_eq!(read_reg(&regs_break, lowered.result), 0.0);
     assert!(read_reg(&regs_no_break, lowered.result) > 0.0);
+}
+
+#[test]
+fn lower_expression_rejects_guarded_assignment_without_prior_binding() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+
+    let mut maybe_return = rumoca_core::Function::new("My.maybeReturn", rumoca_core::Span::DUMMY);
+    maybe_return.inputs.push(function_param("u"));
+    maybe_return.outputs.push(function_param("out"));
+    maybe_return.body = vec![
+        rumoca_core::Statement::If {
+            cond_blocks: vec![rumoca_core::StatementBlock {
+                cond: rumoca_core::Expression::Binary {
+                    op: rumoca_core::OpBinary::Gt,
+                    lhs: Box::new(var("u")),
+                    rhs: Box::new(real_lit(0.0)),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                stmts: vec![rumoca_core::Statement::Return {
+                    span: rumoca_core::Span::DUMMY,
+                }],
+            }],
+            else_block: None,
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Statement::Assignment {
+            comp: component_ref("out"),
+            value: real_lit(1.0),
+            span: rumoca_core::Span::DUMMY,
+        },
+    ];
+    dae_model
+        .symbols
+        .functions
+        .insert(maybe_return.name.clone(), maybe_return);
+
+    let expr = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.maybeReturn",
+        )),
+        args: vec![var("u")],
+        is_constructor: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let err = lower_expression(&expr, &layout, &dae_model.symbols.functions)
+        .expect_err("uninitialized function output must not be synthesized as zero");
+
+    assert!(
+        err.reason().contains("requires an existing binding"),
+        "unexpected error: {}",
+        err.reason()
+    );
 }
 
 #[test]
@@ -555,12 +635,16 @@ fn lower_expression_inlines_user_function_for_statement() {
                     value: rumoca_core::Expression::Binary {
                         op: rumoca_core::OpBinary::Add,
                         lhs: Box::new(rumoca_core::Expression::VarRef {
-                            name: rumoca_core::VarName::new("out").into(),
+                            name: rumoca_core::Reference::from_component_reference(
+                                test_component_ref_from_name("out"),
+                            ),
                             subscripts: vec![],
                             span: rumoca_core::Span::DUMMY,
                         }),
                         rhs: Box::new(rumoca_core::Expression::VarRef {
-                            name: rumoca_core::VarName::new("u").into(),
+                            name: rumoca_core::Reference::from_component_reference(
+                                test_component_ref_from_name("u"),
+                            ),
                             subscripts: vec![],
                             span: rumoca_core::Span::DUMMY,
                         }),
@@ -585,9 +669,13 @@ fn lower_expression_inlines_user_function_for_statement() {
         .insert(rumoca_core::VarName::new("My.repeatAccum"), repeat_accum);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.repeatAccum").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.repeatAccum",
+        )),
         args: vec![rumoca_core::Expression::VarRef {
-            name: rumoca_core::VarName::new("x").into(),
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "x",
+            )),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         }],
@@ -595,7 +683,7 @@ fn lower_expression_inlines_user_function_for_statement() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
         .expect("for-statement function should lower");
 
@@ -640,7 +728,9 @@ fn lower_expression_inlines_function_row_slice_from_scoped_matrix_input() {
         .insert(rumoca_core::VarName::new("My.pickRow"), pick_row);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.pickRow").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.pickRow",
+        )),
         args: vec![
             rumoca_core::Expression::Array {
                 elements: (1..=9)
@@ -738,13 +828,15 @@ fn lower_expression_inlines_user_function_while_statement() {
         .insert(rumoca_core::VarName::new("My.repeatWhile"), repeat_while);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.repeatWhile").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.repeatWhile",
+        )),
         args: vec![var("x")],
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     };
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&expr, &layout, &dae_model.symbols.functions)
         .expect("while-statement function should lower");
 
@@ -802,7 +894,9 @@ fn lower_expression_uses_constant_function_input_in_for_range() {
         .insert(rumoca_core::VarName::new("My.loopToN"), loop_to_n);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.loopToN").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.loopToN",
+        )),
         args: vec![int_lit(4)],
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
@@ -866,7 +960,9 @@ fn lower_expression_uses_for_index_in_function_assignment_target() {
         .insert(rumoca_core::VarName::new("My.fillArray"), fill_array);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.fillArray").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.fillArray",
+        )),
         args: vec![],
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
@@ -935,7 +1031,9 @@ fn lower_expression_reads_prior_indexed_function_local_matrix_assignment() {
         .insert(rumoca_core::VarName::new("My.fillMatrix"), fill_matrix);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.fillMatrix").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.fillMatrix",
+        )),
         args: vec![],
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
@@ -991,7 +1089,9 @@ fn lower_expression_ignores_side_effect_function_statement_without_outputs() {
         .insert(rumoca_core::VarName::new("My.sideEffect"), side_effect);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.sideEffect").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.sideEffect",
+        )),
         args: vec![real_lit(2.0)],
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
@@ -1004,7 +1104,7 @@ fn lower_expression_ignores_side_effect_function_statement_without_outputs() {
 }
 
 #[test]
-fn lower_expression_binds_runtime_special_function_statement_outputs() {
+fn lower_expression_rejects_unlowered_runtime_special_function_statement_outputs() {
     let mut dae_model = dae::Dae::default();
     let read_line = rumoca_core::Function {
         name: rumoca_core::VarName::new("My.readLineWrapper"),
@@ -1045,20 +1145,21 @@ fn lower_expression_binds_runtime_special_function_statement_outputs() {
         .insert(rumoca_core::VarName::new("My.readLineWrapper"), read_line);
 
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.readLineWrapper").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.readLineWrapper",
+        )),
         args: vec![],
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     };
 
-    let lowered = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
-        .expect("runtime special function statement outputs should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert!((read_reg(&regs, lowered.result) - 1.0).abs() <= 1e-12);
+    let err = lower_expression(&expr, &VarLayout::default(), &dae_model.symbols.functions)
+        .expect_err("unlowered runtime special statement output should fail");
+    assert!(err.reason().contains("readLine must be lowered"), "{err}");
 }
 
 #[test]
-fn lower_expression_array_and_range_match_runtime_scalar_semantics() {
+fn lower_expression_scalar_position_aggregates_follow_spec_0008() {
     let layout = VarLayout::default();
     let array_expr = rumoca_core::Expression::Array {
         elements: vec![rumoca_core::Expression::Literal {
@@ -1085,10 +1186,26 @@ fn lower_expression_array_and_range_match_runtime_scalar_semantics() {
         }),
         span: rumoca_core::Span::DUMMY,
     };
-    let lowered =
-        lower_expression(&range_expr, &layout, &IndexMap::new()).expect("range should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert!(read_reg(&regs, lowered.result).abs() < 1e-12);
+    // SPEC_0008: a range in scalar position must fail loudly instead of
+    // lowering to a silent 0.0.
+    let err = lower_expression(&range_expr, &layout, &IndexMap::new())
+        .expect_err("range in scalar position must not lower");
+    assert!(
+        err.reason().contains("range expression in scalar position"),
+        "{err}"
+    );
+
+    let empty_array = rumoca_core::Expression::Array {
+        elements: vec![],
+        is_matrix: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let err = lower_expression(&empty_array, &layout, &IndexMap::new())
+        .expect_err("empty array in scalar position must not lower");
+    assert!(
+        err.reason().contains("array expression with 0 elements"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -1098,11 +1215,15 @@ fn lower_expression_maps_namespaced_intrinsic_function_call() {
         .variables
         .states
         .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("Modelica.Math.sin").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "Modelica.Math.sin",
+        )),
         args: vec![rumoca_core::Expression::VarRef {
-            name: rumoca_core::VarName::new("x").into(),
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "x",
+            )),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         }],
@@ -1138,7 +1259,9 @@ fn lower_expression_binds_scalarized_record_function_inputs() {
     outer.body.push(rumoca_core::Statement::Assignment {
         comp: component_ref("y"),
         value: rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::VarName::new("My.recordInputSum").into(),
+            name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+                "My.recordInputSum",
+            )),
             args: vec![var("state")],
             is_constructor: false,
             span: rumoca_core::Span::DUMMY,
@@ -1164,9 +1287,11 @@ fn lower_expression_binds_scalarized_record_function_inputs() {
         .algebraics
         .insert(rumoca_core::VarName::new("state.T"), scalar_var("state.T"));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let expr = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new("My.forwardRecordInput").into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(
+            "My.forwardRecordInput",
+        )),
         args: vec![var("state")],
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,

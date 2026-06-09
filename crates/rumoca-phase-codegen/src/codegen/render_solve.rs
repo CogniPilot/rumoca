@@ -34,8 +34,8 @@ pub(super) fn render_matmul_mlir_function(
     node_id: Value,
     output_offset: Value,
 ) -> Result<String, minijinja::Error> {
-    let id = node_id.as_usize().unwrap_or(0);
-    let offset = output_offset.as_usize().unwrap_or(0);
+    let id = required_usize_arg(&node_id, "MatMul node_id")?;
+    let offset = required_usize_arg(&output_offset, "MatMul output_offset")?;
 
     let lhs_ops = get_field(&node, "lhs_ops")?;
     let lhs_start = solve_field_usize(&node, "lhs_start")?;
@@ -258,8 +258,8 @@ pub(super) fn render_linsolve_mlir_function(
     node_id: Value,
     output_offset: Value,
 ) -> Result<String, minijinja::Error> {
-    let id = node_id.as_usize().unwrap_or(0);
-    let offset = output_offset.as_usize().unwrap_or(0);
+    let id = required_usize_arg(&node_id, "LinSolve node_id")?;
+    let offset = required_usize_arg(&output_offset, "LinSolve output_offset")?;
 
     let setup_ops = get_field(&node, "setup_ops")?;
     let matrix_start = solve_field_usize(&node, "matrix_start")?;
@@ -316,6 +316,12 @@ pub(super) fn render_linsolve_mlir_function(
     }
 
     Ok(out)
+}
+
+fn required_usize_arg(value: &Value, context: &'static str) -> Result<usize, minijinja::Error> {
+    value
+        .as_usize()
+        .ok_or_else(|| render_err(format!("{context} must be a non-negative integer")))
 }
 
 fn emit_linear_ops_mlir(ops: &Value, pfx: &str, out: &mut String) -> Result<(), minijinja::Error> {

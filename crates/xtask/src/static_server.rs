@@ -81,7 +81,7 @@ fn handle_http_request(
             501,
             "Not Implemented",
             "text/plain",
-            b"proxy endpoint is not supported in rum",
+            b"proxy endpoint is not supported in xtask",
         );
     }
 

@@ -906,6 +906,7 @@ fn compile_requested_model(
     })?;
     Ok(HighLevelCompilationResult {
         dae: result.dae,
+        balance_detail: result.balance_detail,
         flat: result.flat,
         resolved,
     })

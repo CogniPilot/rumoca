@@ -1131,6 +1131,79 @@ fn test_typecheck_instanced_evaluates_enum_alias_dependent_dimensions() {
 }
 
 #[test]
+fn test_typecheck_instanced_evaluates_component_scoped_extends_modifier_dimensions() {
+    let source = r#"
+        partial block Base
+            parameter Integer nout = 1;
+            Real y[nout];
+        end Base;
+
+        block Table
+            extends Base(final nout = size(columns, 1));
+            parameter Integer columns[:] = 2:2;
+        end Table;
+
+        model Test
+            Table table;
+        end Test;
+    "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let tree = resolved.into_inner();
+    let base = tree
+        .definitions
+        .classes
+        .get("Base")
+        .expect("Base class should exist");
+    let table = tree
+        .definitions
+        .classes
+        .get("Table")
+        .expect("Table class should exist");
+    let test = tree
+        .definitions
+        .classes
+        .get("Test")
+        .expect("Test class should exist");
+    let mut overlay = InstanceOverlay::new();
+    add_test_instance(
+        &mut overlay,
+        "table",
+        test.components.get("table").expect("table component"),
+        None,
+    );
+
+    let columns = table.components.get("columns").expect("columns component");
+    add_test_instance(
+        &mut overlay,
+        "table.columns",
+        columns,
+        columns.binding.clone(),
+    );
+    add_test_instance(
+        &mut overlay,
+        "table.y",
+        base.components.get("y").expect("inherited y component"),
+        None,
+    );
+
+    typecheck_instanced(&tree, &mut overlay, "Test")
+        .expect("typecheck_instanced should evaluate scoped extends modifier dimensions");
+
+    let y = overlay
+        .components
+        .values()
+        .find(|data| data.qualified_name.to_flat_string() == "table.y")
+        .expect("table.y instance");
+    assert_eq!(
+        y.dims,
+        vec![1],
+        "inherited y[nout] should use nout from the component-scoped extends modifier"
+    );
+}
+
+#[test]
 fn test_typecheck_instanced_resolves_unique_suffix_type_name() {
     let source = r#"
         package A

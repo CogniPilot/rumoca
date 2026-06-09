@@ -331,7 +331,7 @@ fn guarded_dynamic_assignment(
     Expression::If {
         branches: vec![(condition, value.clone())],
         else_branch: Box::new(Expression::VarRef {
-            name: base_target.clone().into(),
+            name: super::structured_target_reference(base_target),
             subscripts: subscripts.to_vec(),
             span: rumoca_core::Span::DUMMY,
         }),

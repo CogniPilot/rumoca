@@ -240,8 +240,11 @@ jobs:
         if: runner.os != 'Linux'
         run: cargo xtask verify examples
 
+      # `!cancelled()` keeps the test step running when the example smoke step
+      # fails, so a smoke regression cannot hide test failures (the job still
+      # fails on the smoke step).
       - name: Run tests (Linux monitored)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !cancelled()
         env:
           REQUIRE_MSL_FMT_DRIFT: "1"
         shell: bash
@@ -263,7 +266,7 @@ jobs:
           cargo xtask verify workspace
 
       - name: Run tests
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && !cancelled()
         env:
           REQUIRE_MSL_FMT_DRIFT: "1"
         run: cargo xtask verify workspace
@@ -542,20 +545,17 @@ jobs:
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
+      # Track the latest OpenModelica from the official Ubuntu apt repository
+      # (same channel developers install locally) instead of pinning .deb
+      # versions. The quality-gate context check compares the *numeric release*
+      # only (1.27.0~dev.beta.1 ≡ 1.27.0), so channel rebuilds don't trip the
+      # gate; an actual release bump fails loudly until the baseline is
+      # re-promoted from a CI artifact of the new version.
       - name: Install OpenModelica
         shell: bash
         run: |
           set -euo pipefail
-          omc_version="1.26.8-1"
-          expected_omc_version="OpenModelica ${omc_version%-1}"
-          if command -v omc >/dev/null 2>&1; then
-            current_omc_version="$(omc --version)"
-            echo "OpenModelica already available: $current_omc_version"
-            if [[ "$current_omc_version" == "$expected_omc_version" ]]; then
-              exit 0
-            fi
-            echo "Replacing OpenModelica with pinned CI version $expected_omc_version"
-          fi
+          omc_channel="stable"
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
@@ -563,28 +563,19 @@ jobs:
             clang \
             cmake \
             curl \
+            gnupg \
             libexpat1-dev \
             liblapack-dev \
+            lsb-release \
             unzip \
             zip
-          omc_deb_dir="$(mktemp -d)"
-          trap 'rm -rf "$omc_deb_dir"' EXIT
-          omc_deb_base="https://build.openmodelica.org/apt/pool/contrib-noble"
-          for package in \
-            "omc-common_${omc_version}_all.deb" \
-            "libomcsimulation_${omc_version}_amd64.deb" \
-            "libomc_${omc_version}_amd64.deb" \
-            "omc_${omc_version}_amd64.deb"
-          do
-            curl -fsSL -o "$omc_deb_dir/$package" "$omc_deb_base/$package"
-          done
-          sudo apt-get install -y --no-install-recommends "$omc_deb_dir"/*.deb
-          installed_omc_version="$(omc --version)"
-          if [[ "$installed_omc_version" != "$expected_omc_version" ]]; then
-            echo "Expected $expected_omc_version, got $installed_omc_version" >&2
-            exit 1
-          fi
-          echo "$installed_omc_version"
+          curl -fsSL https://build.openmodelica.org/apt/openmodelica.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt $(lsb_release -cs) $omc_channel" \
+            | sudo tee /etc/apt/sources.list.d/openmodelica.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends omc
+          omc --version
 
       - name: Clean stale MSL results
         shell: bash

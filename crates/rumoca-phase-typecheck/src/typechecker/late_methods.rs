@@ -538,6 +538,23 @@ impl TypeChecker {
         false
     }
 
+    /// The first dimension expression that evaluates to a negative value,
+    /// if any. Distinguishes "evaluated but invalid" from "unevaluable" for
+    /// the MLS §10.1 dimension diagnostic.
+    fn negative_dimension_value(&self, instance_data: &rumoca_ir_ast::InstanceData) -> Option<i64> {
+        let scope = Self::instance_component_path(&instance_data.qualified_name)
+            .parent()
+            .unwrap_or_else(ComponentPath::root)
+            .to_flat_string();
+        instance_data.dims_expr.iter().find_map(|sub| {
+            let rumoca_ir_ast::Subscript::Expression(expr) = sub else {
+                return None;
+            };
+            rumoca_eval_ast::eval::eval_integer_with_scope(expr, &self.eval_ctx, &scope)
+                .filter(|value| *value < 0)
+        })
+    }
+
     /// Validate that all array dimensions have been evaluated (MLS §10.1).
     ///
     /// This checks all primitive components that have dimension expressions
@@ -593,11 +610,23 @@ impl TypeChecker {
                 (true, false) => {
                     "colon dimension could not be inferred from binding".to_string()
                 }
-                (false, _) => format!(
-                    "dimension expression could not be evaluated: {:?}",
-                    instance_data.dims_expr
-                ),
+                // A dimension that evaluates to a negative value must be
+                // diagnosed as invalid, not as "could not be evaluated" —
+                // the wrong diagnosis sends the user hunting an evaluation
+                // problem that doesn't exist.
+                (false, _) => match self.negative_dimension_value(instance_data) {
+                    Some(value) => format!(
+                        "dimension expression evaluates to {value}, but array \
+                         dimensions must be non-negative (MLS §10.1)"
+                    ),
+                    None => format!(
+                        "dimension expression could not be evaluated: {:?}",
+                        instance_data.dims_expr
+                    ),
+                },
             };
+            let invalid_value =
+                !has_colon_dim && self.negative_dimension_value(instance_data).is_some();
             let reason = base_reason;
 
             // Emit as error per MLS §10.1.
@@ -606,12 +635,14 @@ impl TypeChecker {
                 instance_data.source_location.start as usize,
                 instance_data.source_location.end as usize,
             );
+            let headline = if invalid_value {
+                "invalid array dimensions"
+            } else {
+                "unevaluable array dimensions"
+            };
             self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
                 "ET004",
-                format!(
-                    "unevaluable array dimensions for '{}': {}",
-                    var_name, reason
-                ),
+                format!("{headline} for '{var_name}': {reason}"),
                 "array dimension declaration",
                 span,
             ));
@@ -765,13 +796,13 @@ impl TypeChecker {
             if modifier_root.is_empty() {
                 continue;
             }
-            if !allowed_roots.contains(modifier_root) {
+            if !allowed_roots.contains(modifier_root.as_str()) {
                 self.emit_unknown_component_modifier(
                     comp_name,
                     comp,
                     modifier_name,
                     modifier_expr,
-                    modifier_root,
+                    modifier_root.as_str(),
                 );
                 continue;
             }
@@ -1143,53 +1174,28 @@ impl TypeChecker {
             || matches!(name, "uncertain" | "distribution")
     }
 
-    fn modifier_root_name(modifier_name: &str) -> &str {
-        let mut bracket_depth = 0usize;
-        let mut segment_end = modifier_name.len();
-        for (idx, ch) in modifier_name.char_indices() {
-            match ch {
-                '[' => bracket_depth += 1,
-                ']' => bracket_depth = bracket_depth.saturating_sub(1),
-                '.' if bracket_depth == 0 => {
-                    segment_end = idx;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        let segment = &modifier_name[..segment_end];
-        segment
-            .split_once('[')
-            .map_or(segment, |(root, _rest)| root)
+    fn modifier_root_name(modifier_name: &str) -> String {
+        let path = rumoca_core::ComponentPath::from_flat_path(modifier_name);
+        let segment = path.parts().first().map_or(modifier_name, String::as_str);
+        rumoca_core::split_trailing_subscript_suffix(segment)
+            .map_or(segment, |(root, _subscript)| root)
+            .to_string()
     }
 
     fn modifier_segments(modifier_name: &str) -> Vec<String> {
-        let mut segments = Vec::new();
-        let mut bracket_depth = 0usize;
-        let mut start = 0usize;
-        for (idx, ch) in modifier_name.char_indices() {
-            match ch {
-                '[' => bracket_depth += 1,
-                ']' => bracket_depth = bracket_depth.saturating_sub(1),
-                '.' if bracket_depth == 0 => {
-                    segments.push(Self::normalize_modifier_segment(&modifier_name[start..idx]));
-                    start = idx + 1;
-                }
-                _ => {}
-            }
-        }
-        segments.push(Self::normalize_modifier_segment(&modifier_name[start..]));
-        segments
-            .into_iter()
+        rumoca_core::ComponentPath::from_flat_path(modifier_name)
+            .parts()
+            .iter()
+            .map(String::as_str)
+            .map(Self::normalize_modifier_segment)
             .filter(|segment| !segment.is_empty())
             .collect()
     }
 
     fn normalize_modifier_segment(segment: &str) -> String {
         let trimmed = segment.trim();
-        let root = trimmed
-            .split_once('[')
-            .map_or(trimmed, |(prefix, _rest)| prefix);
+        let root = rumoca_core::split_trailing_subscript_suffix(trimmed)
+            .map_or(trimmed, |(prefix, _subscript)| prefix);
         root.trim().to_string()
     }
 

@@ -232,6 +232,7 @@ pub(crate) struct AlgorithmSectionContext<'a> {
     pub(crate) def_map: Option<&'a crate::ResolveDefMap>,
     pub(crate) initial_locals: &'a HashSet<String>,
     pub(crate) source_map: Option<&'a SourceMap>,
+    pub(crate) instance_name: Option<&'a str>,
 }
 
 pub(crate) struct AlgorithmSectionMetadata {
@@ -264,9 +265,12 @@ pub(crate) fn flatten_algorithm_section(
     let qualified_statements: Vec<rumoca_core::Statement> = qualified_ast
         .iter()
         .map(|stmt| {
-            ast_lower::statement_from_ast_with_def_map_and_source_map(
+            ast_lower::statement_from_ast_with_context_and_source_map(
                 stmt,
-                context.def_map,
+                ast_lower::LoweringContext {
+                    def_map: context.def_map,
+                    instance_name: context.instance_name,
+                },
                 context.source_map,
             )
         })

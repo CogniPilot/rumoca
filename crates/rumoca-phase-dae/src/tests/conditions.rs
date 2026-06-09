@@ -1,32 +1,31 @@
 use super::*;
 use rumoca_core::Span;
 use rumoca_ir_flat as flat;
-use std::collections::HashSet;
 
 fn scalar_var(name: &str) -> flat::Variable {
-    flat::Variable {
+    crate::test_support::with_component_ref(flat::Variable {
         name: VarName::new(name),
         is_primitive: true,
         ..Default::default()
-    }
+    })
 }
 
 fn input_var(name: &str) -> flat::Variable {
-    flat::Variable {
+    crate::test_support::with_component_ref(flat::Variable {
         name: VarName::new(name),
         causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
         is_primitive: true,
         ..Default::default()
-    }
+    })
 }
 
 fn parameter_var(name: &str) -> flat::Variable {
-    flat::Variable {
+    crate::test_support::with_component_ref(flat::Variable {
         name: VarName::new(name),
         variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
         is_primitive: true,
         ..Default::default()
-    }
+    })
 }
 
 fn var_ref(name: &str) -> Expression {
@@ -130,13 +129,12 @@ fn to_dae_unbalanced_ok(model: &Model) -> Dae {
     .expect("ToDAE conversion should succeed")
 }
 
-fn relation_debug_set(dae_model: &Dae) -> HashSet<String> {
+fn relations_contain(dae_model: &Dae, expected: &Expression) -> bool {
     dae_model
         .conditions
         .relations
         .iter()
-        .map(|expr| format!("{expr:?}"))
-        .collect()
+        .any(|relation| rumoca_core::expressions_semantically_equal(relation, expected))
 }
 
 #[test]
@@ -156,17 +154,23 @@ fn test_todae_populates_relation_and_fc_from_if_conditions() {
 
     assert_eq!(dae_model.conditions.relations.len(), 1);
     assert_eq!(dae_model.conditions.equations.len(), 1);
-    assert_eq!(
-        format!("{:?}", dae_model.conditions.relations[0]),
-        format!("{condition:?}")
+    assert!(
+        rumoca_core::expressions_semantically_equal(&dae_model.conditions.relations[0], &condition),
+        "relation should match the source condition"
     );
-    assert_eq!(
-        format!("{:?}", dae_model.conditions.equations[0].lhs),
-        format!("{:?}", Some(VarName::new("c[1]")))
-    );
-    assert_eq!(
-        format!("{:?}", dae_model.conditions.equations[0].rhs),
-        format!("{condition:?}")
+    let lhs = dae_model.conditions.equations[0]
+        .lhs
+        .as_ref()
+        .expect("condition equation should have a generated lhs");
+    assert_eq!(lhs.as_str(), "c[1]");
+    assert!(lhs.is_generated());
+    assert!(lhs.component_ref().is_some());
+    assert!(
+        rumoca_core::expressions_semantically_equal(
+            &dae_model.conditions.equations[0].rhs,
+            &condition
+        ),
+        "condition equation rhs should match the source condition"
     );
     assert!(
         dae_model
@@ -233,6 +237,14 @@ fn test_todae_keeps_parameter_only_if_conditions_out_of_event_memory() {
             .contains_key(&VarName::new("c")),
         "time-invariant if conditions should not allocate Appendix B condition memory"
     );
+    // Enum literal references lower to their ordinals during conversion, so
+    // the directly evaluable runtime form is `mode == 2`.
+    let lowered_condition = Expression::Binary {
+        op: rumoca_core::OpBinary::Eq,
+        lhs: Box::new(var_ref("mode")),
+        rhs: Box::new(int(2)),
+        span: rumoca_core::Span::DUMMY,
+    };
     assert!(
         matches!(
             &dae_model.continuous.equations[0].rhs,
@@ -240,7 +252,10 @@ fn test_todae_keeps_parameter_only_if_conditions_out_of_event_memory() {
                 if matches!(
                     rhs.as_ref(),
                     rumoca_core::Expression::If { branches, .. }
-                        if rumoca_core::expressions_semantically_equal(&branches[0].0, &condition)
+                        if rumoca_core::expressions_semantically_equal(
+                            &branches[0].0,
+                            &lowered_condition,
+                        )
                 )
         ),
         "the parameter condition should remain directly evaluable by initialization lowering"
@@ -275,10 +290,13 @@ fn test_todae_condition_memory_does_not_shadow_user_c() {
             .contains_key(&VarName::new("__rumoca_c")),
         "compiler-generated condition memory must avoid user variable names"
     );
-    assert_eq!(
-        format!("{:?}", dae_model.conditions.equations[0].lhs),
-        format!("{:?}", Some(VarName::new("__rumoca_c[1]")))
-    );
+    let lhs = dae_model.conditions.equations[0]
+        .lhs
+        .as_ref()
+        .expect("condition equation should have a generated lhs");
+    assert_eq!(lhs.as_str(), "__rumoca_c[1]");
+    assert!(lhs.is_generated());
+    assert!(lhs.component_ref().is_some());
 }
 
 #[test]
@@ -309,10 +327,13 @@ fn test_todae_condition_memory_does_not_shadow_user_c_component() {
             .contains_key(&VarName::new("__rumoca_c")),
         "compiler-generated condition memory must avoid user component prefixes"
     );
-    assert_eq!(
-        format!("{:?}", dae_model.conditions.equations[0].lhs),
-        format!("{:?}", Some(VarName::new("__rumoca_c[1]")))
-    );
+    let lhs = dae_model.conditions.equations[0]
+        .lhs
+        .as_ref()
+        .expect("condition equation should have a generated lhs");
+    assert_eq!(lhs.as_str(), "__rumoca_c[1]");
+    assert!(lhs.is_generated());
+    assert!(lhs.component_ref().is_some());
 }
 
 #[test]
@@ -370,14 +391,13 @@ fn test_todae_suppresses_initial_only_branch_relations_from_runtime_roots() {
     ));
 
     let dae_model = to_dae_unbalanced_ok(&flat);
-    let relation_set = relation_debug_set(&dae_model);
 
     assert!(
-        !relation_set.contains(&format!("{initial_only_relation:?}")),
+        !relations_contain(&dae_model, &initial_only_relation),
         "relations reachable only while initial() is true must not become runtime roots"
     );
     assert!(
-        relation_set.contains(&format!("{runtime_relation:?}")),
+        relations_contain(&dae_model, &runtime_relation),
         "relations reachable after initialization must remain runtime roots"
     );
 }
@@ -403,10 +423,9 @@ fn test_todae_suppresses_initial_only_condition_relations_from_runtime_roots() {
     ));
 
     let dae_model = to_dae_unbalanced_ok(&flat);
-    let relation_set = relation_debug_set(&dae_model);
 
     assert!(
-        !relation_set.contains(&format!("{initial_only_relation:?}")),
+        !relations_contain(&dae_model, &initial_only_relation),
         "relations inside conditions that are runtime-false due to initial() must not become roots"
     );
 }
@@ -430,14 +449,13 @@ fn test_todae_suppresses_not_initial_else_relations_from_runtime_roots() {
     ));
 
     let dae_model = to_dae_unbalanced_ok(&flat);
-    let relation_set = relation_debug_set(&dae_model);
 
     assert!(
-        relation_set.contains(&format!("{runtime_relation:?}")),
+        relations_contain(&dae_model, &runtime_relation),
         "not initial() branch relations are active during runtime"
     );
     assert!(
-        !relation_set.contains(&format!("{initial_only_relation:?}")),
+        !relations_contain(&dae_model, &initial_only_relation),
         "else relations guarded by not initial() must not become runtime roots"
     );
 }
@@ -462,9 +480,9 @@ fn test_todae_keeps_smooth_if_conditions_event_generating() {
         1,
         "smooth is not noEvent; relations inside smooth may still generate events"
     );
-    assert_eq!(
-        format!("{:?}", dae_model.conditions.relations[0]),
-        format!("{condition:?}")
+    assert!(
+        rumoca_core::expressions_semantically_equal(&dae_model.conditions.relations[0], &condition),
+        "relation should match the source condition"
     );
     assert!(
         matches!(
@@ -525,12 +543,12 @@ fn test_todae_populates_relation_from_discrete_boolean_relation_assignment() {
     flat.add_variable(VarName::new("threshold"), scalar_var("threshold"));
     flat.add_variable(
         VarName::new("hit"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("hit"),
             is_primitive: true,
             is_discrete_type: true,
             ..Default::default()
-        },
+        }),
     );
 
     let condition = ge(var_ref("u"), var_ref("threshold"));
@@ -547,16 +565,16 @@ fn test_todae_populates_relation_from_discrete_boolean_relation_assignment() {
         1,
         "Boolean relation assignments such as GreaterEqualThreshold.y must produce an event root"
     );
-    assert_eq!(
-        format!("{:?}", dae_model.conditions.relations[0]),
-        format!("{condition:?}")
+    assert!(
+        rumoca_core::expressions_semantically_equal(&dae_model.conditions.relations[0], &condition),
+        "relation should match the source condition"
     );
     assert!(
         dae_model
             .conditions
             .equations
             .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&VarName::new("c[1]"))),
+            .any(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "c[1]")),
         "the relation must have Appendix B condition memory"
     );
 }
@@ -589,12 +607,11 @@ fn test_todae_includes_when_condition_and_nested_conditional_when_conditions() {
     flat.when_clauses.push(when_clause);
 
     let dae_model = to_dae_unbalanced_ok(&flat);
-    let relation_set = relation_debug_set(&dae_model);
 
     assert_eq!(dae_model.conditions.relations.len(), 2);
     assert_eq!(dae_model.conditions.equations.len(), 2);
-    assert!(relation_set.contains(&format!("{when_condition:?}")));
-    assert!(relation_set.contains(&format!("{nested_condition:?}")));
+    assert!(relations_contain(&dae_model, &when_condition));
+    assert!(relations_contain(&dae_model, &nested_condition));
 }
 
 #[test]

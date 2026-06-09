@@ -45,8 +45,8 @@ use rumoca_compile::codegen::{
     render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
-    Dae, DaeCompilationResult as CompileDaeCompilationResult, FailedPhase, FlatModel, PhaseResult,
-    ResolvedTree, Session, SessionConfig, SourceRootKind,
+    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
+    Session, SessionConfig, SourceRootKind,
 };
 use rumoca_compile::parsing::collect_compile_unit_source_files;
 use rumoca_compile::source_roots::{
@@ -64,6 +64,8 @@ use crate::error::CompilerError;
 pub struct CompilationResult {
     /// The DAE representation.
     pub dae: Dae,
+    /// Detailed continuous balance inputs validated during DAE construction.
+    pub balance_detail: dae_analysis::BalanceDetail,
     /// The flat model (intermediate).
     pub flat: FlatModel,
     /// The resolved tree (intermediate, before instantiation and typechecking).
@@ -86,10 +88,11 @@ pub enum TemplateIr {
 ///
 /// For scalar-only models this is a no-op on the resulting DAE, so it is
 /// safe to apply unconditionally before template rendering.
-fn scalarized_dae(dae: &Dae) -> Dae {
+fn scalarized_dae(dae: &Dae) -> Result<Dae, CodegenError> {
     let mut dae = dae.clone();
-    rumoca_compile::phase_structural::scalarize_equations(&mut dae);
-    dae
+    rumoca_compile::phase_structural::scalarize_equations(&mut dae)
+        .map_err(|err| CodegenError::template(err.to_string()))?;
+    Ok(dae)
 }
 
 fn dae_to_template_json_with_solve(dae_model: &Dae) -> Result<Value, CodegenError> {
@@ -120,7 +123,7 @@ fn render_solve_template_with_name(
     template: &str,
     model_name: &str,
 ) -> Result<String, CodegenError> {
-    let dae = scalarized_dae(dae_model);
+    let dae = scalarized_dae(dae_model)?;
     let mut dae_json = dae_to_template_json_with_solve(&dae)?;
     dae_json
         .as_object_mut()
@@ -372,12 +375,12 @@ impl CompilationResult {
 
     /// Equation balance (equations - unknowns).
     pub fn balance(&self) -> i64 {
-        dae_analysis::balance(&self.dae)
+        self.balance_detail.balance()
     }
 
     /// Whether equation/unknown balance is exact.
     pub fn is_balanced(&self) -> bool {
-        dae_analysis::is_balanced(&self.dae)
+        self.balance_detail.is_balanced()
     }
 
     /// Convert the DAE to JSON.
@@ -569,13 +572,31 @@ impl Compiler {
 
         let files = collect_compile_unit_source_files(path)
             .map_err(|e| CompilerError::ParseError(format!("{}", e)))?;
+        // The directory scan can yield the requested file under a different
+        // spelling (`./Solo.mo` vs `Solo.mo`), so compare canonical paths —
+        // a raw `Path` comparison registers the file twice and reports it as
+        // a duplicate class of itself.
+        let requested_canonical = path.canonicalize().ok();
         for sibling in files {
-            if sibling == path {
+            if sibling == path
+                || (requested_canonical.is_some()
+                    && sibling.canonicalize().ok() == requested_canonical)
+            {
                 continue;
             }
             let sibling_path = sibling.to_string_lossy().to_string();
-            let sibling_source = fs::read_to_string(&sibling)
-                .map_err(|e| CompilerError::io_error(&sibling_path, e.to_string()))?;
+            // A sibling the user never referenced must not poison the
+            // compile: skip unreadable files with a warning. If the model
+            // actually needs the file, resolution reports the missing names.
+            let sibling_source = match fs::read_to_string(&sibling) {
+                Ok(sibling_source) => sibling_source,
+                Err(error) => {
+                    eprintln!(
+                        "[rumoca] warning: skipping unreadable sibling source `{sibling_path}`: {error}"
+                    );
+                    continue;
+                }
+            };
             let _ = session.update_document(&sibling_path, &sibling_source);
         }
 
@@ -674,19 +695,10 @@ impl Compiler {
                 }
                 *result
             }
-            Some(PhaseResult::NeedsInner { .. }) => {
-                return Err(CompilerError::InstantiateError(failure_summary));
-            }
-            Some(PhaseResult::Failed { phase, .. }) => {
-                let err = match phase {
-                    FailedPhase::Instantiate => CompilerError::InstantiateError(failure_summary),
-                    FailedPhase::Typecheck => CompilerError::TypeCheckError(failure_summary),
-                    FailedPhase::Flatten => CompilerError::FlattenError(failure_summary),
-                    FailedPhase::ToDae => CompilerError::ToDaeError(failure_summary),
-                };
-                return Err(err);
-            }
-            None => {
+            // Phase failures carry spanned diagnostics through
+            // `report.failures`; render them like any other compile
+            // diagnostics instead of flattening to a string.
+            Some(PhaseResult::NeedsInner { .. }) | Some(PhaseResult::Failed { .. }) | None => {
                 return Err(CompilerError::CompileDiagnosticsError {
                     summary: failure_summary,
                     failures: report.failures,
@@ -717,11 +729,12 @@ impl Compiler {
                 "[rumoca]   Continuous equations (f_x): {}",
                 result.dae.continuous.equations.len()
             );
-            eprintln!("[rumoca]   Balance: {}", dae_analysis::balance(&result.dae));
+            eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
         }
 
         Ok(CompilationResult {
             dae: result.dae,
+            balance_detail: result.balance_detail,
             flat: result.flat,
             resolved,
         })
@@ -833,10 +846,7 @@ impl Compiler {
                 "[rumoca]   Continuous equations (f_x): {}",
                 result.dae.continuous.equations.len()
             );
-            eprintln!(
-                "[rumoca]   Balance: {}",
-                dae_analysis::balance(result.dae.as_ref())
-            );
+            eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
         }
 
         Ok(*result)
@@ -911,6 +921,144 @@ mod tests {
             }
             other => panic!("expected structured compile diagnostics, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_typecheck_failure_carries_spanned_diagnostics_to_the_cli() {
+        // Phase failures must reach the CLI as structured diagnostics with
+        // the error's real source label, not a stringified summary anchored
+        // at the class header ("phase failed").
+        let source = r#"
+            model BadDim
+                constant Integer n = -1;
+                Real x[n];
+            equation
+                der(x[1]) = 1;
+            end BadDim;
+        "#;
+
+        let err = Compiler::new()
+            .model("BadDim")
+            .compile_str(source, "BadDim.mo")
+            .expect_err("unevaluable dimensions must fail typecheck");
+
+        match err {
+            CompilerError::CompileDiagnosticsError {
+                failures,
+                source_map,
+                ..
+            } => {
+                assert!(source_map.is_some(), "source map required for rendering");
+                let failure = failures
+                    .iter()
+                    .find(|failure| failure.error_code.as_deref() == Some("ET004"))
+                    .unwrap_or_else(|| panic!("expected an ET004 failure: {failures:?}"));
+                let label = failure
+                    .primary_label
+                    .as_ref()
+                    .expect("typecheck failure must carry its own source label");
+                assert_ne!(
+                    label.message.as_deref(),
+                    Some("phase failed"),
+                    "label must be the diagnostic's own span, not the class-header fallback"
+                );
+            }
+            other => panic!("expected structured compile diagnostics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_failure_does_not_cascade_into_later_phases() {
+        // One user error must produce one diagnostic: an unresolved reference
+        // is reported by resolve (ER002) and must not be re-reported by
+        // flatten/ToDae (ED008 etc.) after the pipeline runs on anyway.
+        let source = r#"
+            model Cascade
+                Real x;
+            equation
+                x = y + 1;
+            end Cascade;
+        "#;
+
+        let err = Compiler::new()
+            .model("Cascade")
+            .compile_str(source, "Cascade.mo")
+            .expect_err("unresolved reference must fail compile");
+
+        match err {
+            CompilerError::CompileDiagnosticsError { failures, .. } => {
+                assert!(
+                    failures
+                        .iter()
+                        .any(|failure| failure.error_code.as_deref() == Some("ER002")),
+                    "resolve failure must be reported: {failures:?}"
+                );
+                assert!(
+                    failures.iter().all(|failure| failure.phase.is_none()),
+                    "no later phase may run (and re-report) after a resolve \
+                     failure in the target's files: {failures:?}"
+                );
+            }
+            other => panic!("expected structured compile diagnostics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_file_tolerates_path_spelling_variants() {
+        // The directory scan yields the requested file under its own
+        // spelling; a different but equivalent argument spelling (`./`
+        // segment, bare relative name) must not register the file twice and
+        // report EM001 "duplicate class" against itself.
+        let temp = tempdir().expect("tempdir");
+        let solo = temp.path().join("Solo.mo");
+        fs::write(
+            &solo,
+            r#"
+            model Solo
+                Real x(start=0, fixed=true);
+            equation
+                der(x) = 1;
+            end Solo;
+            "#,
+        )
+        .expect("write solo");
+
+        let dotted = format!("{}/./Solo.mo", temp.path().display());
+        let result = Compiler::new().model("Solo").compile_file(&dotted);
+        assert!(
+            result.is_ok(),
+            "equivalent path spelling must not self-duplicate: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_compile_file_skips_unreadable_sibling_sources() {
+        // A non-UTF-8 sibling the user never referenced must not poison the
+        // compile of an unrelated file in the same directory.
+        let temp = tempdir().expect("tempdir");
+        let solo = temp.path().join("Solo.mo");
+        fs::write(
+            &solo,
+            r#"
+            model Solo
+                Real x(start=0, fixed=true);
+            equation
+                der(x) = 1;
+            end Solo;
+            "#,
+        )
+        .expect("write solo");
+        fs::write(temp.path().join("junk.mo"), [0xff, 0xfe, 0xff]).expect("write junk");
+
+        let result = Compiler::new()
+            .model("Solo")
+            .compile_file(&solo.to_string_lossy());
+        assert!(
+            result.is_ok(),
+            "unreadable sibling must be skipped, not fatal: {:?}",
+            result.err()
+        );
     }
 
     #[test]

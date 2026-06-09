@@ -70,7 +70,7 @@ fn eval_assignment_statement<T: SimFloat>(
         && let Some(dims) = env.dims.get(name.as_str()).cloned()
         && !dims.is_empty()
     {
-        let values = eval::eval_array_values(value, env);
+        let values = eval::eval_array_values(value, env)?;
         if values.len() > 1 {
             eval::set_array_entries(env, &name, &dims, &values);
             return Ok(());
@@ -174,7 +174,7 @@ fn materialize_constructor_assignment<T: SimFloat>(
             let value = eval::eval_statement_value(arg, env)?;
             env.set(&field, value);
         } else {
-            let values = eval::eval_array_values(arg, env);
+            let values = eval::eval_array_values(arg, env)?;
             let expected =
                 concrete_array_size(&input.dims).ok_or(EvalError::UnsupportedExpression {
                     kind: "constructor field with dynamic shape",
@@ -198,7 +198,6 @@ fn concrete_array_size(dims: &[i64]) -> Option<usize> {
     dims.iter().try_fold(1usize, |acc, dim| {
         usize::try_from(*dim)
             .ok()
-            .filter(|dim| *dim > 0)
             .and_then(|dim| acc.checked_mul(dim))
     })
 }
@@ -382,12 +381,13 @@ fn apply_selected_function_outputs<T: SimFloat>(
         let Some(output_name) = output_names.get(idx) else {
             break;
         };
-        let Some((target_key, target_suffix)) = output_target_to_string(target, env)? else {
+        let Some((target_key, target_indices)) = output_target_to_key_and_indices(target, env)?
+        else {
             maybe_log_unsupported_output_target(trace_algorithm_calls, func_name, idx, target);
             continue;
         };
 
-        if target_suffix.is_empty() {
+        if target_indices.is_empty() {
             let dims = match env.dims.get(target_key.as_str()) {
                 Some(dims) => dims.clone(),
                 None => Vec::new(),
@@ -408,7 +408,7 @@ fn apply_selected_function_outputs<T: SimFloat>(
                     args,
                     env,
                     total,
-                );
+                )?;
                 eval::set_array_entries(env, &target_key, &dims, &values);
                 assigned_outputs += 1;
                 continue;
@@ -418,10 +418,10 @@ fn apply_selected_function_outputs<T: SimFloat>(
         let value = eval::eval_selected_function_output_pub(
             &resolved_name,
             output_name,
-            &target_suffix,
+            &target_indices,
             args,
             env,
-        );
+        )?;
         env.set(&target_key, value);
         maybe_log_timetable_assignment(trace_algorithm_calls, &target_key, value.real());
         assigned_outputs += 1;
@@ -444,18 +444,22 @@ fn eval_selected_function_output_array<T: SimFloat>(
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
     total: usize,
-) -> Vec<T> {
+) -> Result<Vec<T>, EvalError> {
     let mut values = Vec::with_capacity(total);
     for i in 1..=total {
         values.push(eval::eval_selected_function_output_pub(
             resolved_name,
             output_name,
-            &format!("[{i}]"),
+            &[i64::try_from(i).map_err(|_| EvalError::ShapeMismatch {
+                context: "function output array index",
+                expected: i,
+                actual: i64::MAX as usize,
+            })?],
             args,
             env,
-        ));
+        )?);
     }
-    values
+    Ok(values)
 }
 
 fn eval_function_call_statement<T: SimFloat>(
@@ -472,9 +476,9 @@ fn eval_function_call_statement<T: SimFloat>(
         return Ok(());
     }
 
-    let result = eval::eval_function_call_pub(&func_name, args, env);
+    let result = eval::eval_function_call_pub(&func_name, args, env)?;
     if outputs.len() == 1
-        && let Some((target_key, _)) = output_target_to_string(&outputs[0], env)?
+        && let Some((target_key, _)) = output_target_to_key_and_indices(&outputs[0], env)?
     {
         env.set(&target_key, result);
     }
@@ -554,37 +558,37 @@ fn component_ref_to_string<T: SimFloat>(
     Ok(rendered.join("."))
 }
 
-fn subscripts_to_string<T: SimFloat>(
+fn subscripts_to_indices<T: SimFloat>(
     subscripts: &[rumoca_core::Subscript],
     env: &VarEnv<T>,
-) -> Result<Option<String>, EvalError> {
+) -> Result<Option<Vec<i64>>, EvalError> {
     if subscripts.is_empty() {
-        return Ok(Some(String::new()));
+        return Ok(Some(Vec::new()));
     }
-    let mut values: Vec<String> = Vec::with_capacity(subscripts.len());
+    let mut values: Vec<i64> = Vec::with_capacity(subscripts.len());
     for sub in subscripts {
         match sub {
-            rumoca_core::Subscript::Index { value: i, .. } => values.push(i.to_string()),
+            rumoca_core::Subscript::Index { value: i, .. } => values.push(*i),
             rumoca_core::Subscript::Expr { expr, .. } => {
-                values.push(eval::eval_expr::<T>(expr, env)?.real().round().to_string());
+                values.push(eval::eval_expr::<T>(expr, env)?.real().round() as i64);
             }
             rumoca_core::Subscript::Colon { .. } => return Ok(None),
         }
     }
-    Ok(Some(format!("[{}]", values.join(","))))
+    Ok(Some(values))
 }
 
-fn output_target_to_string<T: SimFloat>(
+fn output_target_to_key_and_indices<T: SimFloat>(
     comp: &rumoca_core::ComponentReference,
     env: &VarEnv<T>,
-) -> Result<Option<(String, String)>, EvalError> {
+) -> Result<Option<(String, Vec<i64>)>, EvalError> {
     let Some(last) = comp.parts.last() else {
         return Ok(None);
     };
-    let Some(suffix) = subscripts_to_string(&last.subs, env)? else {
+    let Some(indices) = subscripts_to_indices(&last.subs, env)? else {
         return Ok(None);
     };
-    Ok(Some((component_ref_to_string(comp, env)?, suffix)))
+    Ok(Some((component_ref_to_string(comp, env)?, indices)))
 }
 
 /// Extract a for-loop range as (start, end) integers.
@@ -609,14 +613,21 @@ pub fn eval_algorithms<T: SimFloat>(_dae: &rumoca_ir_dae::Dae, _env: &mut VarEnv
 mod tests {
     use super::*;
 
-    fn comp_ref(name: &str) -> rumoca_core::ComponentReference {
+    fn env_value<T: crate::sim_float::SimFloat>(env: &VarEnv<T>, name: &str) -> T {
+        match env.require(name) {
+            Ok(value) => value,
+            Err(err) => panic!("test env binding should exist: {err}"),
+        }
+    }
+
+    fn comp_ref(parts: &[&str]) -> rumoca_core::ComponentReference {
         rumoca_core::ComponentReference {
             local: false,
             span: rumoca_core::Span::DUMMY,
-            parts: rumoca_core::split_path_with_indices(name)
-                .into_iter()
+            parts: parts
+                .iter()
                 .map(|ident| rumoca_core::ComponentRefPart {
-                    ident: ident.to_string(),
+                    ident: (*ident).to_string(),
                     span: rumoca_core::Span::DUMMY,
                     subs: vec![],
                 })
@@ -657,8 +668,8 @@ mod tests {
     fn test_for_loop_subscript_uses_local_index() {
         let mut env = VarEnv::<f64>::new();
         env.set("n", 2.0);
-        env.set("tbl[1]", 10.0);
-        env.set("tbl[2]", 20.0);
+        eval::set_array_entries(&mut env, "tbl", &[2], &[10.0, 20.0]);
+        std::sync::Arc::make_mut(&mut env.dims).insert("tbl".to_string(), vec![2]);
         env.set("y", 0.0);
 
         let for_stmt = rumoca_core::Statement::For {
@@ -672,8 +683,12 @@ mod tests {
                 },
             }],
             equations: vec![rumoca_core::Statement::Assignment {
-                comp: comp_ref("y"),
-                value: var("tbl[i]"),
+                comp: comp_ref(&["y"]),
+                value: rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("tbl"),
+                    subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(var("i")))],
+                    span: rumoca_core::Span::DUMMY,
+                },
                 span: rumoca_core::Span::DUMMY,
             }],
 
@@ -681,7 +696,7 @@ mod tests {
         };
 
         eval_statements(&[for_stmt], &mut env).expect("for statement should evaluate");
-        assert_eq!(env.get("y"), 20.0);
+        assert_eq!(env_value(&env, "y"), 20.0);
     }
 
     #[test]
@@ -689,7 +704,7 @@ mod tests {
         let mut env = VarEnv::<f64>::new();
         env.set("y", 7.0);
         let stmt = rumoca_core::Statement::Assignment {
-            comp: comp_ref("y"),
+            comp: comp_ref(&["y"]),
             value: var("missing"),
             span: rumoca_core::Span::DUMMY,
         };
@@ -702,7 +717,7 @@ mod tests {
                 name: "missing".to_string()
             }
         );
-        assert_eq!(env.get("y"), 7.0);
+        assert_eq!(env_value(&env, "y"), 7.0);
     }
 
     #[test]
@@ -713,15 +728,15 @@ mod tests {
         std::sync::Arc::make_mut(&mut env.dims).insert("in_c.beta".to_string(), vec![2]);
 
         let stmt = rumoca_core::Statement::Assignment {
-            comp: comp_ref("out_c"),
+            comp: comp_ref(&["out_c"]),
             value: var("in_c"),
             span: rumoca_core::Span::DUMMY,
         };
 
         eval_statements(&[stmt], &mut env).expect("record alias assignment should evaluate");
 
-        assert_eq!(env.get("out_c.alpha"), 2.0);
-        assert_eq!(env.get("out_c.beta"), 3.0);
+        assert_eq!(env_value(&env, "out_c.alpha"), 2.0);
+        assert_eq!(env_value(&env, "out_c.beta"), 3.0);
         assert_eq!(env.dims.get("out_c.beta"), Some(&vec![2]));
     }
 
@@ -739,7 +754,7 @@ mod tests {
                 },
             }],
             equations: vec![rumoca_core::Statement::Assignment {
-                comp: comp_ref("y"),
+                comp: comp_ref(&["y"]),
                 value: real(1.0),
                 span: rumoca_core::Span::DUMMY,
             }],
@@ -754,7 +769,7 @@ mod tests {
                 name: "missing".to_string()
             }
         );
-        assert_eq!(env.get("y"), 0.0);
+        assert!(env.get_optional("y").is_none());
     }
 
     #[test]
@@ -771,7 +786,7 @@ mod tests {
                     span: rumoca_core::Span::DUMMY,
                 },
                 stmts: vec![rumoca_core::Statement::Assignment {
-                    comp: comp_ref("i"),
+                    comp: comp_ref(&["i"]),
                     value: rumoca_core::Expression::Binary {
                         op: rumoca_core::OpBinary::Add,
                         lhs: Box::new(var("i")),
@@ -785,7 +800,7 @@ mod tests {
         };
 
         eval_statements(&[while_stmt], &mut env).expect("finite while should evaluate");
-        assert_eq!(env.get("i"), 3.0);
+        assert_eq!(env_value(&env, "i"), 3.0);
     }
 
     #[test]
@@ -798,7 +813,7 @@ mod tests {
                 cond: bool_lit(true),
                 stmts: vec![
                     rumoca_core::Statement::Assignment {
-                        comp: comp_ref("i"),
+                        comp: comp_ref(&["i"]),
                         value: rumoca_core::Expression::Binary {
                             op: rumoca_core::OpBinary::Add,
                             lhs: Box::new(var("i")),
@@ -828,7 +843,7 @@ mod tests {
         };
 
         eval_statements(&[while_stmt], &mut env).expect("break should terminate while");
-        assert_eq!(env.get("i"), 3.0);
+        assert_eq!(env_value(&env, "i"), 3.0);
     }
 
     #[test]
@@ -865,13 +880,13 @@ mod tests {
         f.add_output(rumoca_core::FunctionParam::new("y2", "Real"));
         f.body = vec![
             rumoca_core::Statement::Assignment {
-                comp: comp_ref("y1"),
+                comp: comp_ref(&["y1"]),
                 value: var("u"),
 
                 span: rumoca_core::Span::DUMMY,
             },
             rumoca_core::Statement::Assignment {
-                comp: comp_ref("y2"),
+                comp: comp_ref(&["y2"]),
                 value: rumoca_core::Expression::Binary {
                     op: rumoca_core::OpBinary::Mul,
                     lhs: Box::new(var("u")),
@@ -890,9 +905,9 @@ mod tests {
 
         eval_statements(
             &[rumoca_core::Statement::FunctionCall {
-                comp: comp_ref("Pkg.multi"),
+                comp: comp_ref(&["Pkg", "multi"]),
                 args: vec![real(2.5)],
-                outputs: vec![comp_ref("out1"), comp_ref("out2")],
+                outputs: vec![comp_ref(&["out1"]), comp_ref(&["out2"])],
 
                 span: rumoca_core::Span::DUMMY,
             }],
@@ -900,8 +915,8 @@ mod tests {
         )
         .expect("function call statement should evaluate");
 
-        assert_eq!(env.get("out1"), 2.5);
-        assert_eq!(env.get("out2"), 5.0);
+        assert_eq!(env_value(&env, "out1"), 2.5);
+        assert_eq!(env_value(&env, "out2"), 5.0);
     }
 
     #[test]
@@ -915,7 +930,7 @@ mod tests {
         f.add_output(rumoca_core::FunctionParam::new("y2", "Real"));
         f.body = vec![
             rumoca_core::Statement::Assignment {
-                comp: comp_ref("y1"),
+                comp: comp_ref(&["y1"]),
                 value: rumoca_core::Expression::VarRef {
                     name: rumoca_core::Reference::new("table"),
                     subscripts: vec![
@@ -928,7 +943,7 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             },
             rumoca_core::Statement::Assignment {
-                comp: comp_ref("y2"),
+                comp: comp_ref(&["y2"]),
                 value: rumoca_core::Expression::VarRef {
                     name: rumoca_core::Reference::new("table"),
                     subscripts: vec![
@@ -944,17 +959,14 @@ mod tests {
         functions.insert("Pkg.pickTable".to_string(), f);
         env.functions = std::sync::Arc::new(functions);
 
-        env.set("srcTable[1,1]", 0.0);
-        env.set("srcTable[1,2]", 2.1);
-        env.set("srcTable[2,1]", 1.0);
-        env.set("srcTable[2,2]", 4.2);
+        eval::set_array_entries(&mut env, "srcTable", &[2, 2], &[0.0, 2.1, 1.0, 4.2]);
         std::sync::Arc::make_mut(&mut env.dims).insert("srcTable".to_string(), vec![2, 2]);
 
         eval_statements(
             &[rumoca_core::Statement::FunctionCall {
-                comp: comp_ref("Pkg.pickTable"),
+                comp: comp_ref(&["Pkg", "pickTable"]),
                 args: vec![var("srcTable")],
-                outputs: vec![comp_ref("out1"), comp_ref("out2")],
+                outputs: vec![comp_ref(&["out1"]), comp_ref(&["out2"])],
 
                 span: rumoca_core::Span::DUMMY,
             }],
@@ -962,8 +974,8 @@ mod tests {
         )
         .expect("function call statement should evaluate");
 
-        assert_eq!(env.get("out1"), 2.1);
-        assert_eq!(env.get("out2"), 4.2);
+        assert_eq!(env_value(&env, "out1"), 2.1);
+        assert_eq!(env_value(&env, "out2"), 4.2);
     }
 
     #[test]
@@ -977,7 +989,7 @@ mod tests {
         f.add_output(rumoca_core::FunctionParam::new("y3", "Integer"));
         f.body = vec![
             rumoca_core::Statement::Assignment {
-                comp: comp_ref("y2"),
+                comp: comp_ref(&["y2"]),
                 value: rumoca_core::Expression::VarRef {
                     name: rumoca_core::Reference::new("seedIn"),
                     subscripts: vec![rumoca_core::Subscript::generated_index(
@@ -990,7 +1002,7 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             },
             rumoca_core::Statement::Assignment {
-                comp: comp_ref("y3"),
+                comp: comp_ref(&["y3"]),
                 value: rumoca_core::Expression::VarRef {
                     name: rumoca_core::Reference::new("seedIn"),
                     subscripts: vec![rumoca_core::Subscript::generated_index(
@@ -1007,9 +1019,7 @@ mod tests {
         env.functions = std::sync::Arc::new(functions);
 
         env.set("seedState", 23.0);
-        env.set("seedState[1]", 23.0);
-        env.set("seedState[2]", 87.0);
-        env.set("seedState[3]", 187.0);
+        eval::set_array_entries(&mut env, "seedState", &[3], &[23.0, 87.0, 187.0]);
         std::sync::Arc::make_mut(&mut env.dims).insert("seedState".to_string(), vec![3]);
         eval::clear_pre_values();
         eval::set_pre_value("seedState", 3933.0);
@@ -1019,13 +1029,13 @@ mod tests {
 
         eval_statements(
             &[rumoca_core::Statement::FunctionCall {
-                comp: comp_ref("Pkg.pickSeedTail"),
+                comp: comp_ref(&["Pkg", "pickSeedTail"]),
                 args: vec![rumoca_core::Expression::BuiltinCall {
                     function: rumoca_core::BuiltinFunction::Pre,
                     args: vec![var("seedState")],
                     span: rumoca_core::Span::DUMMY,
                 }],
-                outputs: vec![comp_ref("out2"), comp_ref("out3")],
+                outputs: vec![comp_ref(&["out2"]), comp_ref(&["out3"])],
 
                 span: rumoca_core::Span::DUMMY,
             }],
@@ -1033,8 +1043,8 @@ mod tests {
         )
         .expect("function call statement should evaluate");
 
-        assert_eq!(env.get("out2"), 14964.0);
-        assert_eq!(env.get("out3"), 1467.0);
+        assert_eq!(env_value(&env, "out2"), 14964.0);
+        assert_eq!(env_value(&env, "out3"), 1467.0);
         eval::clear_pre_values();
     }
 
@@ -1048,7 +1058,7 @@ mod tests {
         f.add_local(rumoca_core::FunctionParam::new("x", "Real").with_dims(vec![3]));
         f.body = vec![
             rumoca_core::Statement::Assignment {
-                comp: comp_ref("x"),
+                comp: comp_ref(&["x"]),
                 value: rumoca_core::Expression::Array {
                     elements: vec![real(1.0), real(2.0), real(3.0)],
                     is_matrix: false,
@@ -1058,7 +1068,7 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             },
             rumoca_core::Statement::Assignment {
-                comp: comp_ref("y"),
+                comp: comp_ref(&["y"]),
                 value: real(0.0),
 
                 span: rumoca_core::Span::DUMMY,
@@ -1079,7 +1089,7 @@ mod tests {
                     },
                 }],
                 equations: vec![rumoca_core::Statement::Assignment {
-                    comp: comp_ref("y"),
+                    comp: comp_ref(&["y"]),
                     value: rumoca_core::Expression::Binary {
                         op: rumoca_core::OpBinary::Add,
                         lhs: Box::new(var("y")),
@@ -1101,7 +1111,7 @@ mod tests {
         functions.insert("Pkg.sumArray".to_string(), f);
         env.functions = std::sync::Arc::new(functions);
 
-        let y = eval::eval_expr_or_default(
+        let y = eval::eval_expr(
             &rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::Reference::new("Pkg.sumArray"),
                 args: vec![],
@@ -1109,7 +1119,8 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             },
             &env,
-        );
+        )
+        .unwrap();
         assert_eq!(y, 6.0);
     }
 
@@ -1125,7 +1136,7 @@ mod tests {
         f.add_local(rumoca_core::FunctionParam::new("x", "Real"));
         f.body = vec![
             rumoca_core::Statement::Assignment {
-                comp: comp_ref("x"),
+                comp: comp_ref(&["x"]),
                 value: var("a"),
                 span: rumoca_core::Span::DUMMY,
             },
@@ -1138,7 +1149,7 @@ mod tests {
                         span: rumoca_core::Span::DUMMY,
                     },
                     stmts: vec![rumoca_core::Statement::Assignment {
-                        comp: comp_ref("x"),
+                        comp: comp_ref(&["x"]),
                         value: rumoca_core::Expression::Unary {
                             op: rumoca_core::OpUnary::Minus,
                             rhs: Box::new(var("x")),
@@ -1151,7 +1162,7 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             },
             rumoca_core::Statement::Assignment {
-                comp: comp_ref("o"),
+                comp: comp_ref(&["o"]),
                 value: var("x"),
                 span: rumoca_core::Span::DUMMY,
             },
@@ -1159,7 +1170,7 @@ mod tests {
         functions.insert("Pkg.f".to_string(), f);
         env.functions = std::sync::Arc::new(functions);
 
-        let y = eval::eval_expr_or_default(
+        let y = eval::eval_expr(
             &rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::Reference::new("Pkg.f"),
                 args: vec![real(0.7)],
@@ -1167,13 +1178,14 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             },
             &env,
-        );
+        )
+        .unwrap();
         assert_eq!(y, 0.7, "no-else if must not run when condition is false");
 
         // Same call but with the Dual (AD) float type, as used by sim/inspect.
         let mut denv = VarEnv::<crate::dual::Dual>::new();
         denv.functions = env.functions.clone();
-        let dy = eval::eval_expr_or_default(
+        let dy = eval::eval_expr(
             &rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::Reference::new("Pkg.f"),
                 args: vec![real(0.7)],
@@ -1181,7 +1193,8 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             },
             &denv,
-        );
+        )
+        .unwrap();
         assert_eq!(
             dy.re, 0.7,
             "no-else if (Dual) must not run when cond is false"
@@ -1189,21 +1202,21 @@ mod tests {
     }
 
     #[test]
-    fn user_function_body_missing_binding_returns_nan_instead_of_zero() {
+    fn user_function_body_missing_binding_returns_error_instead_of_defaulting() {
         let mut env = VarEnv::<f64>::new();
         let mut functions = indexmap::IndexMap::new();
 
         let mut f = rumoca_core::Function::new("Pkg.bad", Default::default());
         f.add_output(rumoca_core::FunctionParam::new("y", "Real"));
         f.body = vec![rumoca_core::Statement::Assignment {
-            comp: comp_ref("y"),
+            comp: comp_ref(&["y"]),
             value: var("missing"),
             span: rumoca_core::Span::DUMMY,
         }];
         functions.insert("Pkg.bad".to_string(), f);
         env.functions = std::sync::Arc::new(functions);
 
-        let y = eval::eval_expr_or_default(
+        let result = eval::eval_expr::<f64>(
             &rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::Reference::new("Pkg.bad"),
                 args: vec![],
@@ -1213,6 +1226,11 @@ mod tests {
             &env,
         );
 
-        assert!(y.is_nan());
+        assert_eq!(
+            result,
+            Err(EvalError::MissingBinding {
+                name: "missing".to_string()
+            })
+        );
     }
 }

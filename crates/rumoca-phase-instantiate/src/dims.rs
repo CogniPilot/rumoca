@@ -1,5 +1,7 @@
 use super::find_class_in_tree;
+use super::inheritance::location_to_span;
 use super::inheritance::resolve_effective_components_for_eval;
+use super::{InstantiateError, InstantiateResult};
 use rumoca_core::is_builtin_type;
 use rumoca_core::{DefId, split_path_with_indices};
 use rumoca_eval_ast::eval_instantiate::{evaluate_array_dimensions, try_eval_integer_shape_expr};
@@ -65,10 +67,10 @@ pub(super) fn resolve_type_alias_dimensions(
     class_def: Option<&ast::ClassDef>,
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
-) -> Vec<i64> {
+) -> InstantiateResult<Vec<i64>> {
     let subscripts = collect_type_alias_subscripts(tree, class_def);
     if subscripts.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     evaluate_array_dimensions(
@@ -79,7 +81,19 @@ pub(super) fn resolve_type_alias_dimensions(
         tree,
         resolve_effective_components_for_eval,
     )
-    .unwrap_or_default()
+    .ok_or_else(|| {
+        let name = class_def
+            .map(|class| class.name.text.to_string())
+            .unwrap_or_else(|| "<anonymous type alias>".to_string());
+        let span = class_def
+            .map(|class| location_to_span(&class.location, &tree.source_map))
+            .unwrap_or(rumoca_core::Span::DUMMY);
+        Box::new(InstantiateError::structural_param_error(
+            name,
+            "cannot evaluate type-alias array dimensions",
+            span,
+        ))
+    })
 }
 
 pub(super) fn resolve_component_dimensions(
@@ -528,7 +542,8 @@ mod tests {
             class_def,
             &ast::ModificationEnvironment::default(),
             &IndexMap::default(),
-        );
+        )
+        .expect("type alias dimensions should resolve");
         assert_eq!(dims, vec![4]);
     }
 }

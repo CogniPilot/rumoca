@@ -217,6 +217,10 @@ pub(crate) fn get_unop_string(op: &Value, cfg: &ExprConfig) -> RenderResult {
 
 fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
     let raw_name = render_name_field(var_ref, "name", "VarRef")?;
+    let source_ref = var_ref_source_ref(&raw_name, var_ref)?;
+    if let Some(relation) = condition_alias_relation(cfg.condition_aliases.as_ref(), &source_ref)? {
+        return render_expression(&relation, cfg);
+    }
 
     let subscripts = render_subscripts(var_ref, cfg)?;
     if subscripts.is_empty() {
@@ -228,7 +232,7 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         {
             return Ok(value.clone());
         }
-        Ok(super::emitted_symbol_or_fallback(&raw_name, cfg))
+        super::emitted_symbol(&raw_name, cfg)
     } else if cfg.subscript_underscore {
         // Underscore style: x[1] -> x_1, x[1,2] -> x_1_2.
         let compact_subscripts = subscripts.replace(' ', "");
@@ -236,12 +240,98 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_ref) {
             return Ok(symbol);
         }
-        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+        let name = super::emitted_symbol(&raw_name, cfg)?;
         Ok(format!("{}_{}", name, compact_subscripts.replace(',', "_")))
     } else {
-        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+        let name = super::emitted_symbol(&raw_name, cfg)?;
         Ok(format!("{}[{}]", name, subscripts))
     }
+}
+
+fn var_ref_source_ref(raw_name: &str, var_ref: &Value) -> RenderResult {
+    let subscripts = render_source_subscripts(var_ref)?;
+    if subscripts.is_empty() {
+        Ok(raw_name.to_string())
+    } else {
+        Ok(format!("{raw_name}[{subscripts}]"))
+    }
+}
+
+fn render_source_subscripts(var_ref: &Value) -> RenderResult {
+    let Some(subs) = get_field(var_ref, "subscripts").ok() else {
+        return Ok(String::new());
+    };
+    let len = subs
+        .len()
+        .ok_or_else(|| render_err("VarRef subscripts field is not a sequence"))?;
+    if len == 0 {
+        return Ok(String::new());
+    }
+
+    let cfg = ExprConfig {
+        one_based_index: true,
+        ..Default::default()
+    };
+    let mut sub_strs = Vec::with_capacity(len);
+    for i in 0..len {
+        let sub = subs
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("VarRef subscript {i} is inaccessible: {err}")))?;
+        if sub.is_undefined() || sub.is_none() {
+            return Err(render_err(format!("VarRef subscript {i} is missing")));
+        }
+        sub_strs.push(render_subscript(&sub, &cfg)?);
+    }
+    Ok(sub_strs.join(","))
+}
+
+fn condition_alias_relation(
+    aliases: Option<&Value>,
+    source_ref: &str,
+) -> Result<Option<Value>, minijinja::Error> {
+    let Some(aliases) = aliases else {
+        return no_condition_alias_relation();
+    };
+    let len = aliases
+        .len()
+        .ok_or_else(|| render_err("condition_aliases field is not a sequence"))?;
+    for i in 0..len {
+        let alias = aliases.get_item(&Value::from(i)).map_err(|err| {
+            render_err(format!(
+                "condition_aliases entry {i} is inaccessible: {err}"
+            ))
+        })?;
+        if alias.is_undefined() || alias.is_none() {
+            return Err(render_err(format!(
+                "condition_aliases entry {i} is missing"
+            )));
+        }
+        let condition = get_field(&alias, "condition").map_err(|err| {
+            render_err(format!(
+                "condition_aliases entry {i} missing condition: {err}"
+            ))
+        })?;
+        let condition_ref = condition_source_ref(&condition)?;
+        if condition_ref == source_ref {
+            return get_field(&alias, "relation").map(Some).map_err(|err| {
+                render_err(format!(
+                    "condition_aliases entry {i} missing relation: {err}"
+                ))
+            });
+        }
+    }
+    no_condition_alias_relation()
+}
+
+fn no_condition_alias_relation() -> Result<Option<Value>, minijinja::Error> {
+    Ok(Option::None)
+}
+
+fn condition_source_ref(condition: &Value) -> Result<String, minijinja::Error> {
+    let var_ref = get_field(condition, "VarRef")
+        .map_err(|err| render_err(format!("condition alias is not a VarRef: {err}")))?;
+    let raw_name = render_name_field(&var_ref, "name", "condition alias VarRef")?;
+    var_ref_source_ref(&raw_name, &var_ref)
 }
 
 fn render_name_field(value: &Value, field: &str, context: &str) -> RenderResult {
@@ -340,10 +430,26 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
             return render_expression(&inner, cfg);
         }
         "Sample" => {
-            // sample(start, interval) is a clocked partition builtin.
-            // In continuous simulation, treat as always-true (MLS §16.3).
-            require_min_arg_count(builtin, 2, "BuiltinCall Sample")?;
-            return Ok(cfg.true_val.clone());
+            let args_val = get_field(builtin, "args")?;
+            match args_val.len() {
+                Some(0) => {
+                    return Err(render_err("BuiltinCall Sample missing required argument 0"));
+                }
+                Some(1) => {
+                    let inner = required_arg(&args_val, 0, "BuiltinCall Sample")?;
+                    return render_expression(&inner, cfg);
+                }
+                Some(count) => {
+                    return Err(render_err(format!(
+                        "BuiltinCall Sample with {count} arguments must be lowered before template rendering"
+                    )));
+                }
+                None => {
+                    return Err(render_err(
+                        "BuiltinCall Sample args field is not a sequence",
+                    ));
+                }
+            }
         }
         "Clock" => {
             // Clock() constructor (MLS §16.3). In continuous simulation
@@ -637,7 +743,7 @@ fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(render_builtin_python(builtin, &args, cfg));
     }
 
-    let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+    let name = super::emitted_symbol(&raw_name, cfg)?;
 
     let args = render_args(func_call, cfg)?;
     Ok(format!("{}({})", name, args))
@@ -1026,7 +1132,9 @@ fn render_field_access(fa: &Value, cfg: &ExprConfig) -> RenderResult {
 
 #[cfg(test)]
 mod tests {
-    use super::render_c_float_literal;
+    use super::{render_c_float_literal, render_expression};
+    use crate::codegen::ExprConfig;
+    use minijinja::Value;
 
     #[test]
     fn test_render_c_float_literal_preserves_scientific_notation() {
@@ -1038,5 +1146,58 @@ mod tests {
     fn test_render_c_float_literal_adds_fraction_to_integer_text() {
         assert_eq!(render_c_float_literal("1"), "1.0f");
         assert_eq!(render_c_float_literal("1.25"), "1.25f");
+    }
+
+    #[test]
+    fn test_render_expr_can_inline_condition_aliases_at_backend_boundary() {
+        let condition_ref = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::generated_component(
+                "c",
+                Vec::new(),
+                rumoca_core::Span::DUMMY,
+            ),
+            subscripts: vec![rumoca_core::Subscript::generated_index(
+                1,
+                rumoca_core::Span::DUMMY,
+            )],
+            span: rumoca_core::Span::DUMMY,
+        };
+        let relation = rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Lt,
+            lhs: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::generated_component(
+                    "time",
+                    Vec::new(),
+                    rumoca_core::Span::DUMMY,
+                ),
+                subscripts: Vec::new(),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            rhs: Box::new(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(1),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            span: rumoca_core::Span::DUMMY,
+        };
+        let aliases = serde_json::json!([
+            {
+                "condition": {
+                    "VarRef": {
+                        "name": {
+                            "name": "c[1]",
+                            "generated": true
+                        }
+                    }
+                },
+                "relation": relation
+            }
+        ]);
+        let cfg = ExprConfig {
+            condition_aliases: Some(Value::from_serialize(aliases)),
+            ..ExprConfig::default()
+        };
+
+        let rendered = render_expression(&Value::from_serialize(&condition_ref), &cfg).unwrap();
+        assert_eq!(rendered, "(time < 1)");
     }
 }

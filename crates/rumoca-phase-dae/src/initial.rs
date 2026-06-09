@@ -1,12 +1,12 @@
 //! Initial-equation conversion for ToDAE.
 
 use indexmap::IndexMap;
-use rumoca_core::{Expression, Literal, Span, VarName};
+use rumoca_core::{Expression, Literal, Reference, Span, VarName};
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 
-use crate::{ToDaeError, flat_to_dae_expression, remap_flat_for_equations};
+use crate::{ToDaeError, flat_to_dae_expression_with_refs, remap_flat_for_equations};
 
 /// Determine scalar count for one initial equation.
 ///
@@ -52,7 +52,7 @@ where
                 continue;
             };
             let dae_eq = dae::Equation::residual_array(
-                flat_to_dae_expression(&expanded_eq.residual),
+                flat_to_dae_expression_with_refs(&expanded_eq.residual, flat),
                 expanded_eq.span,
                 expanded_eq.origin.to_string(),
                 scalar_count,
@@ -74,18 +74,19 @@ where
 /// DAE owns the semantic initialization problem. Solver-facing row blocks and
 /// worklists are derived later from this partition; they must not rediscover
 /// fixed-start constraints independently.
-pub(crate) fn add_fixed_start_initial_equations(dae: &mut dae::Dae) {
+pub(crate) fn add_fixed_start_initial_equations(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     let mut equations = Vec::new();
-    collect_fixed_start_equations(&dae.variables.states, &mut equations);
-    collect_fixed_start_equations(&dae.variables.algebraics, &mut equations);
-    collect_fixed_start_equations(&dae.variables.outputs, &mut equations);
+    collect_fixed_start_equations(&dae.variables.states, &mut equations)?;
+    collect_fixed_start_equations(&dae.variables.algebraics, &mut equations)?;
+    collect_fixed_start_equations(&dae.variables.outputs, &mut equations)?;
     dae.initialization.equations.extend(equations);
+    Ok(())
 }
 
 fn collect_fixed_start_equations(
     variables: &IndexMap<VarName, dae::Variable>,
     equations: &mut Vec<dae::Equation>,
-) {
+) -> Result<(), ToDaeError> {
     for (name, var) in variables {
         if var.fixed != Some(true) {
             continue;
@@ -93,24 +94,46 @@ fn collect_fixed_start_equations(
         if var.size() == 0 {
             continue;
         }
-        equations.push(fixed_start_equation(name, var));
+        equations.push(fixed_start_equation(name, var)?);
     }
+    Ok(())
 }
 
-fn fixed_start_equation(name: &VarName, var: &dae::Variable) -> dae::Equation {
+fn fixed_start_equation(name: &VarName, var: &dae::Variable) -> Result<dae::Equation, ToDaeError> {
     let span = var.start_attribute_span().unwrap_or(var.source_span);
+    let lhs = fixed_start_lhs_reference(name, var, span)?;
     // MLS §8.6: Real start attribute defaults to 0.0 when not explicitly set.
     let rhs = var
         .start
         .clone()
         .unwrap_or_else(|| default_real_start(span));
-    dae::Equation::explicit_with_scalar_count(
-        name.clone(),
+    Ok(dae::Equation::explicit_with_scalar_count(
+        lhs,
         rhs,
         span,
         format!("fixed start initialization for {}", name.as_str()),
         var.size(),
-    )
+    ))
+}
+
+fn fixed_start_lhs_reference(
+    name: &VarName,
+    var: &dae::Variable,
+    span: Span,
+) -> Result<Reference, ToDaeError> {
+    let Some(component_ref) = var.component_ref.clone() else {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "fixed-start variable `{}` has no structured component reference",
+                name.as_str()
+            ),
+            span,
+        ));
+    };
+    Ok(Reference::with_component_reference(
+        name.as_str(),
+        component_ref,
+    ))
 }
 
 fn default_real_start(span: Span) -> Expression {
@@ -123,7 +146,7 @@ fn default_real_start(span: Span) -> Expression {
 #[cfg(test)]
 mod tests {
     use super::{fixed_start_equation, initial_equation_scalar_count};
-    use rumoca_core::{Expression, Literal, Span, VarName};
+    use rumoca_core::{ComponentRefPart, ComponentReference, Expression, Literal, Span, VarName};
     use rumoca_ir_dae as dae;
 
     #[test]
@@ -146,12 +169,14 @@ mod tests {
     fn fixed_start_equation_uses_default_real_start_when_missing() {
         let mut var = dae::Variable {
             name: VarName::new("x"),
+            component_ref: Some(component_ref("x")),
             fixed: Some(true),
             ..Default::default()
         };
-        let eq = fixed_start_equation(&VarName::new("x"), &var);
+        let eq = fixed_start_equation(&VarName::new("x"), &var)
+            .expect("fixed-start equation should preserve component reference");
 
-        assert_eq!(eq.lhs.as_ref().map(VarName::as_str), Some("x"));
+        assert_eq!(eq.lhs.as_ref().map(|lhs| lhs.as_str()), Some("x"));
         assert!(matches!(
             eq.rhs,
             Expression::Literal {
@@ -161,7 +186,21 @@ mod tests {
         ));
 
         var.dims = vec![3];
-        let eq = fixed_start_equation(&VarName::new("x"), &var);
+        let eq = fixed_start_equation(&VarName::new("x"), &var)
+            .expect("array fixed-start equation should preserve component reference");
         assert_eq!(eq.scalar_count, 3);
+    }
+
+    fn component_ref(name: &str) -> ComponentReference {
+        ComponentReference {
+            local: false,
+            span: Span::DUMMY,
+            parts: vec![ComponentRefPart {
+                ident: name.to_string(),
+                span: Span::DUMMY,
+                subs: Vec::new(),
+            }],
+            def_id: None,
+        }
     }
 }

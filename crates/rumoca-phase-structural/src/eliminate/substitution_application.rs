@@ -9,7 +9,7 @@ pub(super) fn equation_analysis_expr(eq: &rumoca_ir_dae::Equation) -> Expression
     };
     subtraction(
         Expression::VarRef {
-            name: rumoca_core::Reference::from_var_name(lhs.clone()),
+            name: lhs.clone(),
             subscripts: Vec::new(),
             span: rumoca_core::Span::DUMMY,
         },
@@ -26,7 +26,10 @@ pub(super) fn apply_substitutions_to_remaining_once(
         return;
     }
     for (i, eq) in dae.continuous.equations.iter_mut().enumerate() {
-        if eliminated_eq_flags.get(i).copied().unwrap_or(false) {
+        if *eliminated_eq_flags
+            .get(i)
+            .expect("eliminated equation flags must cover every continuous equation")
+        {
             continue;
         }
         let rhs = apply_substitutions_in_order(&eq.rhs, substitutions);
@@ -35,7 +38,7 @@ pub(super) fn apply_substitutions_to_remaining_once(
             continue;
         };
         let lhs_expr = Expression::VarRef {
-            name: rumoca_core::Reference::from_var_name(lhs.clone()),
+            name: lhs.clone(),
             subscripts: Vec::new(),
             span: rumoca_core::Span::DUMMY,
         };
@@ -203,7 +206,7 @@ fn apply_substitutions_to_equation(
         return;
     };
     let lhs_expr = Expression::VarRef {
-        name: rumoca_core::Reference::from_var_name(lhs.clone()),
+        name: lhs.clone(),
         subscripts: Vec::new(),
         span: rumoca_core::Span::DUMMY,
     };

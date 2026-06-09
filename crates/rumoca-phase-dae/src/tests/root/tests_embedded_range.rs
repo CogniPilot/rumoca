@@ -5,12 +5,12 @@ fn test_classify_equations_embedded_range_zero_dimension_is_elided() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("ports_mXi_flow"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("ports_mXi_flow"),
             dims: vec![1, 0],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: rumoca_core::Expression::Binary {

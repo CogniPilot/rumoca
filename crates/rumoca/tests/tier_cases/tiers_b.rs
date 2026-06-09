@@ -1186,7 +1186,8 @@ algorithm
 end AlgArrayOutput;
 "#;
         let r = assert_compiles(source, "AlgArrayOutput");
-        let detail = rumoca_phase_dae::balance::balance_detail(&r.dae);
+        let detail =
+            rumoca_phase_dae::balance::balance_detail(&r.dae).expect("valid DAE balance fixture");
         assert_eq!(
             detail.algorithm_outputs, 0,
             "Lowered model algorithms should not contribute algorithm_outputs directly"
@@ -1346,6 +1347,16 @@ mod tier_10h4_subscripted_record_scalar_count {
     type Model = flat::Model;
     type VarName = rumoca_core::VarName;
 
+    /// Fixtures mirror flatten output, which always carries the structured
+    /// component reference alongside the rendered flat name.
+    fn with_component_ref(mut variable: flat::Variable) -> flat::Variable {
+        variable.component_ref = rumoca_core::component_reference_from_flat_name(
+            &variable.name,
+            rumoca_core::Span::DUMMY,
+        );
+        variable
+    }
+
     /// Helper to create a residual equation: lhs - rhs = 0
     fn make_residual_eq(lhs: Expression, rhs: Expression) -> Equation {
         Equation {
@@ -1366,6 +1377,32 @@ mod tier_10h4_subscripted_record_scalar_count {
     fn var(name: &str) -> Expression {
         Expression::VarRef {
             name: VarName::new(name).into(),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    /// An indexed record-element reference shaped like flatten output: the
+    /// index lives in the structured component part (`bw[1]`) and the
+    /// reference resolves to the record component's def-id, never an index
+    /// rendered into a name-encoded path string without structure.
+    fn var_indexed(name: &str, index: i64, def_id: rumoca_core::DefId) -> Expression {
+        let mut component_ref = rumoca_core::component_reference_from_flat_name(
+            &VarName::new(name),
+            rumoca_core::Span::DUMMY,
+        )
+        .expect("fixture name must form a component reference");
+        component_ref
+            .parts
+            .last_mut()
+            .expect("fixture component reference must have parts")
+            .subs = vec![rumoca_core::Subscript::generated_index(
+            index,
+            rumoca_core::Span::DUMMY,
+        )];
+        component_ref.def_id = Some(def_id);
+        Expression::VarRef {
+            name: rumoca_core::Reference::from_component_reference(component_ref),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         }
@@ -1397,46 +1434,41 @@ mod tier_10h4_subscripted_record_scalar_count {
         //   bw[1] - 0 = 0 (record-level subscripted equation, should count as 2)
         //   y.re - bw.re = 0 (references bw.re so it gets classified)
         //   y.im - bw.im = 0 (references bw.im so it gets classified)
+        // Flatten output carries def-ids: the record components (`bw`, `y`)
+        // and their fields, with field ancestry pointing at the component.
+        let bw_def = rumoca_core::DefId(1);
+        let y_def = rumoca_core::DefId(4);
+        let fields = [
+            ("bw.re", rumoca_core::DefId(2), bw_def, false),
+            ("bw.im", rumoca_core::DefId(3), bw_def, false),
+            ("y.re", rumoca_core::DefId(5), y_def, true),
+            ("y.im", rumoca_core::DefId(6), y_def, true),
+        ];
         let mut flat = Model::new();
-        flat.add_variable(
-            VarName::new("bw.re"),
-            flat::Variable {
-                name: VarName::new("bw.re"),
-                dims: vec![1],
+        for (name, def_id, parent_def, output) in fields {
+            let var_name = VarName::new(name);
+            let mut variable = with_component_ref(flat::Variable {
+                name: var_name.clone(),
+                dims: if output { vec![] } else { vec![1] },
+                causality: if output {
+                    rumoca_core::Causality::Output(Default::default())
+                } else {
+                    rumoca_core::Causality::Empty
+                },
                 is_primitive: true,
                 ..Default::default()
-            },
-        );
-        flat.add_variable(
-            VarName::new("bw.im"),
-            flat::Variable {
-                name: VarName::new("bw.im"),
-                dims: vec![1],
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-        flat.add_variable(
-            VarName::new("y.re"),
-            flat::Variable {
-                name: VarName::new("y.re"),
-                causality: rumoca_core::Causality::Output(Default::default()),
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
-        flat.add_variable(
-            VarName::new("y.im"),
-            flat::Variable {
-                name: VarName::new("y.im"),
-                causality: rumoca_core::Causality::Output(Default::default()),
-                is_primitive: true,
-                ..Default::default()
-            },
-        );
+            });
+            variable
+                .component_ref
+                .as_mut()
+                .expect("fixture component reference must exist")
+                .def_id = Some(def_id);
+            flat.add_variable(var_name, variable);
+            flat.symbol_ancestry.insert(def_id, vec![parent_def]);
+        }
 
         // Record-level subscripted equation: bw[1] = 0 → should count as 2 scalars
-        flat.add_equation(make_residual_eq(var("bw[1]"), int(0)));
+        flat.add_equation(make_residual_eq(var_indexed("bw", 1, bw_def), int(0)));
         // Output equations referencing bw fields
         flat.add_equation(make_residual_eq(var("y.re"), var("bw.re")));
         flat.add_equation(make_residual_eq(var("y.im"), var("bw.im")));
@@ -1473,7 +1505,7 @@ mod tier_10h4_subscripted_record_scalar_count {
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            rumoca_phase_dae::balance::balance(&dae),
+            rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
             0,
             "balance should be 0 (4 scalars = 4 unknowns)"
         );
@@ -1494,6 +1526,16 @@ mod tier_10h5_connected_toplevel_input {
     type Expression = rumoca_core::Expression;
     type Model = flat::Model;
     type VarName = rumoca_core::VarName;
+
+    /// Fixtures mirror flatten output, which always carries the structured
+    /// component reference alongside the rendered flat name.
+    fn with_component_ref(mut variable: flat::Variable) -> flat::Variable {
+        variable.component_ref = rumoca_core::component_reference_from_flat_name(
+            &variable.name,
+            rumoca_core::Span::DUMMY,
+        );
+        variable
+    }
 
     fn make_connection_eq(lhs_name: &str, rhs_name: &str) -> Equation {
         Equation {
@@ -1562,65 +1604,65 @@ mod tier_10h5_connected_toplevel_input {
         // Top-level input connector fields (like ComplexInput u)
         flat.add_variable(
             VarName::new("u.re"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("u.re"),
                 causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
-            },
+            }),
         );
         flat.add_variable(
             VarName::new("u.im"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("u.im"),
                 causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Sub-component input fields (like division.u1)
         flat.add_variable(
             VarName::new("division.u1.re"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("division.u1.re"),
                 causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
-            },
+            }),
         );
         flat.add_variable(
             VarName::new("division.u1.im"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("division.u1.im"),
                 causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Output fields
         flat.add_variable(
             VarName::new("y.re"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("y.re"),
                 causality: rumoca_core::Causality::Output(Default::default()),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
         flat.add_variable(
             VarName::new("y.im"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("y.im"),
                 causality: rumoca_core::Causality::Output(Default::default()),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Register "u" as a top-level connector
@@ -1672,7 +1714,7 @@ mod tier_10h5_connected_toplevel_input {
         // Balance: 4 equations, 4 unknowns (2 algebraics + 2 outputs)
         assert_eq!(dae.continuous.equations.len(), 4);
         assert_eq!(
-            rumoca_phase_dae::balance::balance(&dae),
+            rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
             0,
             "balance should be 0"
         );

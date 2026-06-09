@@ -483,6 +483,7 @@ impl From<String> for VarName {
 pub struct Reference {
     name: VarName,
     component_ref: Option<ComponentReference>,
+    generated: bool,
 }
 
 impl Reference {
@@ -490,6 +491,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: None,
+            generated: false,
         }
     }
 
@@ -497,6 +499,41 @@ impl Reference {
         Self {
             name,
             component_ref: None,
+            generated: false,
+        }
+    }
+
+    pub fn generated(name: impl Into<String>) -> Self {
+        Self {
+            name: VarName::new(name),
+            component_ref: None,
+            generated: true,
+        }
+    }
+
+    pub fn generated_component(
+        ident: impl Into<String>,
+        subscripts: Vec<Subscript>,
+        span: Span,
+    ) -> Self {
+        Self::generated_component_reference(ComponentReference {
+            local: false,
+            span,
+            parts: vec![ComponentRefPart {
+                ident: ident.into(),
+                span,
+                subs: subscripts,
+            }],
+            def_id: None,
+        })
+    }
+
+    pub fn generated_component_reference(component_ref: ComponentReference) -> Self {
+        let name = ComponentPath::from_component_reference(&component_ref).to_flat_string();
+        Self {
+            name: VarName::new(name),
+            component_ref: Some(component_ref),
+            generated: true,
         }
     }
 
@@ -504,6 +541,7 @@ impl Reference {
         Self {
             name,
             component_ref: self.component_ref.clone(),
+            generated: self.generated,
         }
     }
 
@@ -514,6 +552,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: Some(component_ref),
+            generated: false,
         }
     }
 
@@ -522,6 +561,7 @@ impl Reference {
         Self {
             name: VarName::new(name),
             component_ref: Some(component_ref),
+            generated: false,
         }
     }
 
@@ -539,6 +579,10 @@ impl Reference {
 
     pub fn component_ref(&self) -> Option<&ComponentReference> {
         self.component_ref.as_ref()
+    }
+
+    pub fn is_generated(&self) -> bool {
+        self.generated
     }
 
     pub fn component_scope(&self) -> Option<ComponentReferenceScope<'_>> {
@@ -574,7 +618,9 @@ impl Reference {
 
 impl PartialEq for Reference {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.component_ref == other.component_ref
+        self.name == other.name
+            && self.component_ref == other.component_ref
+            && self.generated == other.generated
     }
 }
 
@@ -583,6 +629,12 @@ struct ReferenceWire {
     name: VarName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     component_ref: Option<ComponentReference>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    generated: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Serialize for Reference {
@@ -590,17 +642,18 @@ impl Serialize for Reference {
     where
         S: Serializer,
     {
-        if serializer.is_human_readable() && self.component_ref.is_none() {
+        if serializer.is_human_readable() && self.component_ref.is_none() && !self.generated {
             return self.name.serialize(serializer);
         }
 
         if !serializer.is_human_readable() {
-            return (&self.name, &self.component_ref).serialize(serializer);
+            return (&self.name, &self.component_ref, &self.generated).serialize(serializer);
         }
 
         ReferenceWire {
             name: self.name.clone(),
             component_ref: self.component_ref.clone(),
+            generated: self.generated,
         }
         .serialize(serializer)
     }
@@ -612,11 +665,12 @@ impl<'de> Deserialize<'de> for Reference {
         D: Deserializer<'de>,
     {
         if !deserializer.is_human_readable() {
-            let (name, component_ref) =
-                <(VarName, Option<ComponentReference>)>::deserialize(deserializer)?;
+            let (name, component_ref, generated) =
+                <(VarName, Option<ComponentReference>, bool)>::deserialize(deserializer)?;
             return Ok(Self {
                 name,
                 component_ref,
+                generated,
             });
         }
 
@@ -631,10 +685,12 @@ impl<'de> Deserialize<'de> for Reference {
             HumanReference::Name(name) => Ok(Self {
                 name,
                 component_ref: None,
+                generated: false,
             }),
             HumanReference::Wire(wire) => Ok(Self {
                 name: wire.name,
                 component_ref: wire.component_ref,
+                generated: wire.generated,
             }),
         }
     }
@@ -877,7 +933,8 @@ pub enum BuiltinFunction {
     Change,
     /// Reinitialize state: reinit(x, expr)
     Reinit,
-    /// Sample clock: sample(start, interval)
+    /// Overloaded sample operator: sample(start, interval) event tick or
+    /// sample(u[, clock]) clocked value sample.
     Sample,
     /// Initial condition: initial() - true during initialization
     Initial,
@@ -1624,7 +1681,13 @@ fn var_refs_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
     else {
         return false;
     };
-    lhs_name == rhs_name && subscripts_semantically_equal(lhs_subscripts, rhs_subscripts)
+    // Flat names are globally unique — `flat::Model::variables` is keyed by
+    // VarName and flatten's name simplification fails loudly on rename
+    // collisions — so two references denote the same variable iff their
+    // rendered names match; attached resolution metadata (spans, def-ids,
+    // component structure) does not change the meaning.
+    lhs_name.var_name() == rhs_name.var_name()
+        && subscripts_semantically_equal(lhs_subscripts, rhs_subscripts)
 }
 
 fn builtin_calls_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {

@@ -1,9 +1,9 @@
 use super::{
     BuiltinFunction, ComponentPath, ComponentRefPart, ComponentReference, DefId, Expression,
     Function, FunctionParam, FunctionParamShapeContractError, FunctionShapeContractError, Literal,
-    OpBinary, Reference, Span, Subscript, VarName, expressions_semantically_equal,
-    parse_scalar_name, scoped_component_path_candidates, split_trailing_subscript_suffix,
-    strip_trailing_subscript_suffix,
+    OpBinary, Reference, Span, Subscript, VarName, component_path_base_name,
+    expressions_semantically_equal, parse_scalar_name, scoped_component_path_candidates,
+    split_trailing_subscript_suffix, strip_trailing_subscript_suffix,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -347,4 +347,23 @@ fn trailing_subscript_split_uses_balanced_final_group() {
     assert_eq!(split_trailing_subscript_suffix("a.b[2"), None);
     assert_eq!(split_trailing_subscript_suffix("[2]"), None);
     assert_eq!(split_trailing_subscript_suffix("x][1]"), None);
+}
+
+#[test]
+fn component_path_base_name_strips_balanced_subscripts_only() {
+    assert_eq!(
+        component_path_base_name("bus[data.medium].pin[1].v"),
+        Some("bus.pin.v".to_string())
+    );
+    assert_eq!(
+        component_path_base_name("record_array[1].field[2]"),
+        Some("record_array.field".to_string())
+    );
+    assert_eq!(component_path_base_name("a.b"), Some("a.b".to_string()));
+    assert_eq!(component_path_base_name("a..b"), None);
+    assert_eq!(component_path_base_name(".a"), None);
+    assert_eq!(component_path_base_name("a."), None);
+    assert_eq!(component_path_base_name("a[1"), None);
+    assert_eq!(component_path_base_name("a]"), None);
+    assert_eq!(component_path_base_name("[1].a"), None);
 }

@@ -697,6 +697,7 @@ pub(super) fn convert_phase_result(name: String, phase_result: PhaseResult) -> M
             phase,
             error,
             error_code,
+            ..
         } => {
             let mut phase_str = match phase {
                 FailedPhase::Instantiate => "Instantiate",
@@ -716,7 +717,8 @@ pub(super) fn summarize_success_result(
     name: String,
     result: &rumoca_compile::compile::CompilationResult,
 ) -> MslModelResult {
-    let detail = rumoca_phase_dae::balance::balance_detail(&result.dae);
+    let detail = rumoca_phase_dae::balance::balance_detail(&result.dae)
+        .expect("MSL success summary requires valid DAE metadata");
     let discrete_scalars = active_discrete_scalar_count(&result.flat, &result.dae);
     summarize_dae_success_fields(name, &result.dae, &detail, discrete_scalars)
 }
@@ -739,7 +741,7 @@ fn summarize_dae_success_fields(
     detail: &rumoca_phase_dae::balance::BalanceDetail,
     discrete_scalars: i64,
 ) -> MslModelResult {
-    let (scalar_equations, scalar_unknowns) = rumoca_phase_dae::balance::equations_unknowns(dae);
+    let (scalar_equations, scalar_unknowns) = detail.equations_unknowns();
     let scalar_equations = scalar_equations as i64;
     let scalar_unknowns = scalar_unknowns as i64;
     let init_check = initialization_balance_check(dae, scalar_unknowns, scalar_equations);

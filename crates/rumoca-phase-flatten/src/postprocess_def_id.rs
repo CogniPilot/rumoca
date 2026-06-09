@@ -153,21 +153,25 @@ impl DefIdVarRefIndex {
         if let Some(def_id) = name.target_def_id()
             && let Some(candidates) = self.by_def_id.get(&def_id)
         {
-            return resolve_best_owner_scoped_candidate(raw, raw_leaf, candidates, owner);
+            return resolve_best_owner_scoped_candidate(name, raw_leaf, candidates, owner);
         }
         if name.target_def_id().is_some() {
             return None;
         }
         if is_class_qualified_reference(name) {
             let candidates = self.by_leaf.get(raw_leaf)?;
-            return resolve_best_owner_scoped_candidate(raw, raw_leaf, candidates, owner);
+            return resolve_best_owner_scoped_candidate(name, raw_leaf, candidates, owner);
         }
         None
     }
 }
 
 fn indexed_var_ref(name: &rumoca_core::VarName, var: &flat::Variable) -> IndexedVarRef {
-    let path = rumoca_core::ComponentPath::from_flat_path(name.as_str());
+    let path = var
+        .component_ref
+        .as_ref()
+        .map(rumoca_core::ComponentPath::from_component_reference)
+        .unwrap_or_else(|| rumoca_core::ComponentPath::from_flat_path(name.as_str()));
     IndexedVarRef {
         name: name.as_str().to_string(),
         leaf: indexed_var_leaf(name, var).to_string(),
@@ -183,21 +187,27 @@ fn indexed_var_leaf<'a>(name: &'a rumoca_core::VarName, var: &'a flat::Variable)
 }
 
 fn resolve_best_owner_scoped_candidate(
-    raw: &str,
+    name: &rumoca_core::Reference,
     raw_leaf: &str,
     candidates: &[IndexedVarRef],
     owner: Option<&str>,
 ) -> Option<String> {
+    let raw = name.as_str();
     let owner_path = owner.map(rumoca_core::ComponentPath::from_flat_path);
+    let raw_path = name
+        .component_ref()
+        .map(rumoca_core::ComponentPath::from_component_reference)
+        .unwrap_or_else(|| rumoca_core::ComponentPath::from_flat_path(raw));
     let mut scored = candidates
         .iter()
         .filter(|candidate| candidate.leaf == raw_leaf)
         .filter_map(|candidate| {
-            let score = owner_path
+            let owner_score = owner_path
                 .as_ref()
                 .map(|owner| owner_scope_score(owner, &candidate.path))
                 .unwrap_or_else(|| (candidates.len() == 1).then_some(0))?;
-            Some((score, candidate))
+            let suffix_score = path_suffix_score(&raw_path, &candidate.path);
+            Some(((owner_score, suffix_score), candidate))
         })
         .collect::<Vec<_>>();
     scored.sort_by_key(|(score, _)| *score);
@@ -210,14 +220,30 @@ fn resolve_best_owner_scoped_candidate(
     (!ambiguous && best.name.as_str() != raw).then(|| best.name.clone())
 }
 
+fn path_suffix_score(
+    raw_path: &rumoca_core::ComponentPath,
+    candidate_path: &rumoca_core::ComponentPath,
+) -> usize {
+    raw_path
+        .parts()
+        .iter()
+        .rev()
+        .zip(candidate_path.parts().iter().rev())
+        .take_while(|(raw, candidate)| raw == candidate)
+        .count()
+}
+
 fn owner_scope_score(
     owner_path: &rumoca_core::ComponentPath,
     candidate_path: &rumoca_core::ComponentPath,
 ) -> Option<usize> {
     let candidate_scope = candidate_path.prefix(candidate_path.len().saturating_sub(1))?;
-    owner_path
-        .starts_with(&candidate_scope)
-        .then_some(candidate_scope.len())
+    if owner_path.starts_with(&candidate_scope) {
+        return Some(candidate_scope.len());
+    }
+    candidate_scope
+        .starts_with(owner_path)
+        .then_some(owner_path.len())
 }
 
 fn is_class_qualified_reference(name: &rumoca_core::Reference) -> bool {
@@ -298,8 +324,11 @@ fn canonicalize_def_id_when_equations(
             flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
                 canonicalize_def_id_expr(value, index, known_variables, None);
             }
-            flat::WhenEquation::Assert { condition, .. } => {
+            flat::WhenEquation::Assert {
+                condition, message, ..
+            } => {
                 canonicalize_def_id_expr(condition, index, known_variables, None);
+                canonicalize_def_id_expr(message, index, known_variables, None);
             }
             flat::WhenEquation::Conditional {
                 branches,
@@ -315,7 +344,9 @@ fn canonicalize_def_id_when_equations(
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 canonicalize_def_id_expr(function, index, known_variables, None);
             }
-            flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::Terminate { message, .. } => {
+                canonicalize_def_id_expr(message, index, known_variables, None);
+            }
         }
     }
 }

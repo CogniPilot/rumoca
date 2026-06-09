@@ -43,9 +43,12 @@ end Not;
                 "Continuous equations (f_x): {}",
                 dae.continuous.equations.len()
             );
-            println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
+            println!(
+                "Balance: {}",
+                rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture")
+            );
             assert_eq!(
-                rumoca_phase_dae::balance::balance(dae),
+                rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture"),
                 0,
                 "Simple Not should be balanced"
             );
@@ -110,9 +113,12 @@ end Not;
                 "Continuous equations (f_x): {}",
                 dae.continuous.equations.len()
             );
-            println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
+            println!(
+                "Balance: {}",
+                rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture")
+            );
             assert_eq!(
-                rumoca_phase_dae::balance::balance(dae),
+                rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture"),
                 0,
                 "Connector-style Not should be balanced"
             );
@@ -167,7 +173,10 @@ end TestOutput;
                 "Continuous equations (f_x): {}",
                 dae.continuous.equations.len()
             );
-            println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
+            println!(
+                "Balance: {}",
+                rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture")
+            );
             // This model has: 0 states, 0 algebraics (y is output),
             // 1 input (u - not unknown), 1 output (y - not unknown)
             // 1 algebraic equation
@@ -210,7 +219,10 @@ end PartialModel;
             );
             println!("ODE equations: {}", dae.continuous.equations.len());
             println!("Algebraic equations: {}", dae.continuous.equations.len());
-            println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
+            println!(
+                "Balance: {}",
+                rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture")
+            );
             // Partial models ARE expected to be unbalanced
             // They should be excluded from balance checking
         }
@@ -288,15 +300,15 @@ end QuasiStatic;
 
 fn assert_quasistatic_ground_balanced(dae: &rumoca_ir_dae::Dae) {
     print_quasistatic_ground_balance_details(dae);
-    if rumoca_phase_dae::balance::balance(dae) != 0 {
+    if rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture") != 0 {
         println!(
             "\nBUG: Balance should be 0, but is {}",
-            rumoca_phase_dae::balance::balance(dae)
+            rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture")
         );
         println!("The overconstrained_interface_count is double-counting the root equation");
     }
     assert_eq!(
-        rumoca_phase_dae::balance::balance(dae),
+        rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture"),
         0,
         "QuasiStatic.Ground should be balanced"
     );
@@ -370,7 +382,10 @@ fn print_quasistatic_balance_calculation(dae: &rumoca_ir_dae::Dae, f_x_scalar: u
         dae.metadata.interface_flow_count,
         dae.metadata.overconstrained_interface_count
     );
-    println!("  Balance: {}", rumoca_phase_dae::balance::balance(dae));
+    println!(
+        "  Balance: {}",
+        rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture")
+    );
 }
 
 /// QuasiStatic model source for VoltageSource test
@@ -412,7 +427,7 @@ fn test_quasistatic_voltage_source_balance() {
             println!("\n=== QuasiStatic.VoltageSource ===");
             print_dae_summary(dae);
             // Source uses Connections.root() - balance may be +1 if root eq is generated
-            if rumoca_phase_dae::balance::balance(dae) != 0 {
+            if rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture") != 0 {
                 println!("Analysis: Source uses Connections.root() without explicit isRoot()");
             }
         }
@@ -452,7 +467,10 @@ fn print_dae_summary(dae: &Dae) {
         "Interface: flow={}, overconstrained={}",
         dae.metadata.interface_flow_count, dae.metadata.overconstrained_interface_count
     );
-    println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
+    println!(
+        "Balance: {}",
+        rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture")
+    );
 }
 
 /// Test inherited Real connector (like SI units)
@@ -506,9 +524,12 @@ end Gain;
                 "Continuous equations (f_x): {}",
                 dae.continuous.equations.len()
             );
-            println!("Balance: {}", rumoca_phase_dae::balance::balance(dae));
+            println!(
+                "Balance: {}",
+                rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture")
+            );
             assert_eq!(
-                rumoca_phase_dae::balance::balance(dae),
+                rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture"),
                 0,
                 "Gain should be balanced"
             );
@@ -581,7 +602,7 @@ end TestEquationDefinedInput;
                 "medium.p should be an algebraic unknown"
             );
             assert_eq!(
-                rumoca_phase_dae::balance::balance(dae),
+                rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture"),
                 0,
                 "Model with equation-defined internal inputs should be balanced"
             );

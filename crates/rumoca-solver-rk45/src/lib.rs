@@ -1363,7 +1363,9 @@ mod tests {
         model.problem.events.action_conditions = const_scalar_program_block(1.0);
         model.problem.events.actions = vec![solve::SolveEventAction {
             kind: solve::SolveEventActionKind::Terminate,
-            message: Some("finished".to_string()),
+            message: solve::SolveEventMessage {
+                parts: vec![solve::SolveEventMessagePart::Text("finished".to_string())],
+            },
             span: Default::default(),
             origin: "terminate(\"finished\")".to_string(),
         }];

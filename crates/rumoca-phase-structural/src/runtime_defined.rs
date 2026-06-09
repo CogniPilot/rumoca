@@ -39,7 +39,7 @@ fn runtime_defined_impl(dae_model: &dae::Dae, include_discrete: bool) -> IndexSe
         .chain(dae_model.discrete.valued_updates.iter())
     {
         if let Some(lhs) = eq.lhs.as_ref() {
-            extend_target(dae_model, &mut defined, lhs, include_discrete);
+            extend_target(dae_model, &mut defined, lhs.var_name(), include_discrete);
         }
         for target in binary_var_refs(&eq.rhs) {
             extend_target(dae_model, &mut defined, target, include_discrete);

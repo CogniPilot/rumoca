@@ -3,29 +3,25 @@ use super::*;
 fn scalar_var(name: &str) -> dae::Variable {
     dae::Variable {
         name: rumoca_core::VarName::new(name),
+        component_ref: Some(test_component_ref_from_name(name)),
         ..Default::default()
     }
 }
 
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::VarName::new(name).into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
         subscripts: Vec::new(),
         span: rumoca_core::Span::DUMMY,
     }
 }
 
 fn component_ref(name: &str) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: false,
-        span: rumoca_core::Span::DUMMY,
-        parts: vec![rumoca_core::ComponentRefPart {
-            ident: name.to_string(),
-            span: rumoca_core::Span::DUMMY,
-            subs: Vec::new(),
-        }],
-        def_id: None,
-    }
+    test_component_ref_from_name(name)
+}
+
+fn test_component_ref_from_name(name: &str) -> rumoca_core::ComponentReference {
+    crate::test_support::component_ref_from_name(name)
 }
 
 fn indexed_var(name: &str, index: i64) -> rumoca_core::Expression {
@@ -451,13 +447,10 @@ fn lower_rejects_missing_binding_in_explicit_start_guess() {
     let err = lower_dae_to_solve_model(&dae_model)
         .expect_err("malformed explicit start expression should fail lowering");
 
-    assert!(matches!(
-        err,
-        SolveModelLowerError::Evaluation {
-            source: EvalError::MissingBinding { ref name },
-            ..
-        } if name == "missing"
-    ));
+    let SolveModelLowerError::Evaluation { source, .. } = &err else {
+        panic!("explicit start should report an evaluation error: {err:?}");
+    };
+    assert_eq!(source.missing_binding_name(), Some("missing"));
     assert_eq!(err.source_span(), Some(start_span));
 }
 
@@ -847,7 +840,7 @@ fn variable_meta_propagates_event_discontinuity_through_algebraic_dependency() {
         .outputs
         .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("a")),
+        lhs: Some(rumoca_core::VarName::new("a").into()),
         rhs: rumoca_core::Expression::If {
             branches: vec![(
                 rumoca_core::Expression::Binary {
@@ -866,7 +859,7 @@ fn variable_meta_propagates_event_discontinuity_through_algebraic_dependency() {
         scalar_count: 1,
     });
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: var("a"),
         span: rumoca_core::Span::DUMMY,
         origin: "dependent output".to_string(),
@@ -1389,7 +1382,7 @@ fn dynamic_boolean_time_table_dae() -> dae::Dae {
 }
 
 fn dynamic_boolean_time_table_matrix() -> rumoca_core::Expression {
-    let first_row = array_expr(vec![var("table1.table[1]"), real_expr(0.0)], true);
+    let first_row = array_expr(vec![indexed_var("table1.table", 1), real_expr(0.0)], true);
     rumoca_core::Expression::If {
         branches: vec![(
             rumoca_core::Expression::Binary {
@@ -1402,7 +1395,10 @@ fn dynamic_boolean_time_table_matrix() -> rumoca_core::Expression {
                 vec![
                     first_row,
                     array_expr(
-                        vec![var("table1.table"), dynamic_external_time_table_toggles()],
+                        vec![
+                            var("table1.table"),
+                            dynamic_external_time_table_toggles("table1.n"),
+                        ],
                         true,
                     ),
                 ],
@@ -1444,7 +1440,7 @@ fn dynamic_external_time_table_matrix() -> rumoca_core::Expression {
                 vec![
                     first_row,
                     array_expr(
-                        vec![var("table"), dynamic_external_time_table_toggles()],
+                        vec![var("table"), dynamic_external_time_table_toggles("n")],
                         false,
                     ),
                 ],
@@ -1459,7 +1455,7 @@ fn dynamic_external_time_table_matrix() -> rumoca_core::Expression {
     }
 }
 
-fn dynamic_external_time_table_toggles() -> rumoca_core::Expression {
+fn dynamic_external_time_table_toggles(n_name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::ArrayComprehension {
         expr: Box::new(rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Mod,
@@ -1471,7 +1467,7 @@ fn dynamic_external_time_table_toggles() -> rumoca_core::Expression {
             range: rumoca_core::Expression::Range {
                 start: Box::new(int_expr(1)),
                 step: None,
-                end: Box::new(var("n")),
+                end: Box::new(var(n_name)),
                 span: rumoca_core::Span::DUMMY,
             },
         }],
@@ -1495,7 +1491,8 @@ fn default_parameters_build_external_time_table_from_dynamic_matrix_start() {
     let env = build_runtime_parameter_tail_env_with_runtime(&dae_model, &params, 0.0, runtime);
     let tables = external_table_data_for_parameter_values_in(&env, &params);
     let next = rumoca_eval_dae::eval::eval_time_table_next_event_value_in(table_id, 0.0, &tables);
-    let high = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 2.0, &tables);
+    let high = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 2.0, &tables)
+        .expect("table lookup");
 
     assert!(table_id > 0.0);
     assert!((next - 1.0).abs() <= 1.0e-12, "next={next}");
@@ -1511,8 +1508,10 @@ fn default_parameters_build_boolean_time_table_with_duplicate_first_knot() {
     let table_id = *params.last().expect("table_id parameter");
     let env = build_runtime_parameter_tail_env_with_runtime(&dae_model, &params, 0.0, runtime);
     let tables = external_table_data_for_parameter_values_in(&env, &params);
-    let before = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 0.049, &tables);
-    let after = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 0.050001, &tables);
+    let before = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 0.049, &tables)
+        .expect("table lookup before duplicate knot");
+    let after = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 0.050001, &tables)
+        .expect("table lookup after duplicate knot");
 
     assert!(table_id > 0.0);
     assert!((before - 0.0).abs() <= 1.0e-12, "before={before}");
@@ -1546,7 +1545,8 @@ fn default_parameters_build_external_time_table_from_constructor_marked_call_wit
     let table_id = *params.last().expect("table_id parameter");
     let env = build_runtime_parameter_tail_env_with_runtime(&dae_model, &params, 0.0, runtime);
     let tables = external_table_data_for_parameter_values_in(&env, &params);
-    let after = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 0.050001, &tables);
+    let after = rumoca_eval_dae::eval::eval_table_lookup_value_in(table_id, 1.0, 0.050001, &tables)
+        .expect("table lookup after duplicate knot");
 
     assert!(table_id > 0.0);
     assert!((after - 1.0).abs() <= 1.0e-12, "after={after}");
@@ -1627,10 +1627,10 @@ fn insert_initial_random_distribution_chain_equations(dae_model: &mut dae::Dae) 
             rumoca_core::VarName::new("localSeed"),
             call_expr(
                 "Modelica.Math.Random.Utilities.automaticLocalSeed",
-                vec![call_expr("getInstanceName", Vec::new())],
+                vec![string_expr("initial_random_distribution_chain_model")],
             ),
             Default::default(),
-            "localSeed = automaticLocalSeed(getInstanceName())",
+            "localSeed = automaticLocalSeed(\"initial_random_distribution_chain_model\")",
         ));
     dae_model
         .initialization

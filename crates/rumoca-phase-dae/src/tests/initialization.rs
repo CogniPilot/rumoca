@@ -26,10 +26,24 @@ fn der_of(name: &str) -> Expression {
 fn real_var(name: &str, fixed: Option<bool>, start: Option<Expression>) -> flat::Variable {
     flat::Variable {
         name: VarName::new(name),
+        component_ref: Some(component_ref(name)),
         is_primitive: true,
         fixed,
         start,
         ..Default::default()
+    }
+}
+
+fn component_ref(name: &str) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span: Span::DUMMY,
+        parts: vec![rumoca_core::ComponentRefPart {
+            ident: name.to_string(),
+            span: Span::DUMMY,
+            subs: Vec::new(),
+        }],
+        def_id: None,
     }
 }
 

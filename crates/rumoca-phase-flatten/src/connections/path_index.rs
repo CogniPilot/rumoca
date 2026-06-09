@@ -227,8 +227,11 @@ pub(super) fn path_has_explicit_index(path: &str) -> bool {
 ///
 /// Example: `"[1][2]" -> vec!["[1]", "[2]"]`.
 fn extract_index_groups(indices: &str) -> Vec<String> {
+    if indices.is_empty() {
+        return Vec::new();
+    }
     balanced_index_groups(indices)
-        .unwrap_or_default()
+        .expect("index pattern must contain balanced bracket groups")
         .into_iter()
         .map(str::to_string)
         .collect()

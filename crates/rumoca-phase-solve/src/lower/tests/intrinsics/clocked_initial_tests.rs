@@ -13,7 +13,7 @@ fn lower_discrete_rhs_holds_shift_sample_value_until_target_tick() {
         .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
     dae_model.clocks.intervals.insert("u".to_string(), 0.02);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("shiftSample").into(),
             args: vec![
@@ -39,7 +39,7 @@ fn lower_discrete_rhs_holds_shift_sample_value_until_target_tick() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("value-form shiftSample(var, factor, resolution) should lower");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -77,7 +77,7 @@ fn lower_discrete_rhs_uses_base_clock_for_indexed_shift_sample_value_form() {
         .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
     dae_model.clocks.intervals.insert("u".to_string(), 0.02);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("shiftSample").into(),
             args: vec![
@@ -110,7 +110,7 @@ fn lower_discrete_rhs_uses_base_clock_for_indexed_shift_sample_value_form() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("indexed value-form shiftSample should lower from base clock metadata");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -153,7 +153,7 @@ fn lower_discrete_rhs_uses_source_phase_for_back_sample_value_form() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("backSample").into(),
             args: vec![
@@ -179,7 +179,7 @@ fn lower_discrete_rhs_uses_source_phase_for_back_sample_value_form() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("value-form backSample(var, factor, resolution) should lower");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -229,7 +229,7 @@ fn lower_discrete_rhs_uses_back_sample_source_start_before_first_source_tick() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("backSample").into(),
             args: vec![
@@ -255,7 +255,7 @@ fn lower_discrete_rhs_uses_back_sample_source_start_before_first_source_tick() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("value-form backSample(var, factor, resolution) should lower");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -304,7 +304,7 @@ fn lower_discrete_rhs_uses_hold_source_start_before_first_source_tick() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("hold").into(),
             args: vec![rumoca_core::Expression::VarRef {
@@ -320,7 +320,7 @@ fn lower_discrete_rhs_uses_hold_source_start_before_first_source_tick() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("hold(var) should lower");
     let mut p = vec![0.0; layout.p_scalars()];
     set_p_value(&layout, &mut p, "u", 2.0);
@@ -364,7 +364,7 @@ fn lower_discrete_rhs_uses_hold_start_during_initial_event_at_first_tick() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("hold").into(),
             args: vec![rumoca_core::Expression::VarRef {
@@ -380,7 +380,7 @@ fn lower_discrete_rhs_uses_hold_start_during_initial_event_at_first_tick() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("hold(var) should lower");
     let mut p = vec![0.0; layout.p_scalars()];
     set_p_value(&layout, &mut p, "u", 2.0);
@@ -429,7 +429,7 @@ fn lower_runtime_assignment_keeps_clocked_target_start_before_first_tick() {
         },
     );
     let equation = dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("target")),
+        lhs: Some(rumoca_core::VarName::new("target").into()),
         rhs: rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("source").into(),
             subscripts: vec![],
@@ -440,7 +440,7 @@ fn lower_runtime_assignment_keeps_clocked_target_start_before_first_tick() {
         scalar_count: 1,
     };
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_runtime_assignment_rhs(&dae_model, &layout, &[equation])
         .expect("clocked runtime alias should lower");
     let y = [2.0];
@@ -487,7 +487,7 @@ fn lower_runtime_assignment_inherits_rhs_clock_for_target_start_guard() {
         },
     );
     let equation = dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("target")),
+        lhs: Some(rumoca_core::VarName::new("target").into()),
         rhs: rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("source").into(),
             subscripts: vec![],
@@ -498,7 +498,7 @@ fn lower_runtime_assignment_inherits_rhs_clock_for_target_start_guard() {
         scalar_count: 1,
     };
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_runtime_assignment_rhs(&dae_model, &layout, &[equation])
         .expect("clocked runtime alias should lower");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -546,7 +546,7 @@ fn lower_discrete_rhs_keeps_clocked_alias_target_start_before_first_target_tick(
         },
     );
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("source")),
+        lhs: Some(rumoca_core::VarName::new("source").into()),
         rhs: rumoca_core::Expression::VarRef {
             name: rumoca_core::VarName::new("target").into(),
             subscripts: vec![],
@@ -557,7 +557,7 @@ fn lower_discrete_rhs_keeps_clocked_alias_target_start_before_first_target_tick(
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("clocked discrete alias assignment should lower");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -590,7 +590,7 @@ fn lower_expression_supports_size_builtin_for_known_array_dims() {
             ..Default::default()
         },
     );
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Size,
         args: vec![
@@ -910,7 +910,7 @@ fn lower_initial_residual_includes_dae_initialization_equations() {
             rumoca_core::Span::DUMMY,
             "fixed start initialization for x",
         ));
-    let layout = crate::build_var_layout(&dae_model);
+    let layout = crate::build_var_layout(&dae_model).expect("test DAE layout should build");
 
     let rows = lower_initial_residual(&dae_model, &layout)
         .expect("initial residual should include DAE initialization equations");
@@ -977,7 +977,7 @@ fn lower_initial_residual_does_not_treat_initial_rows_as_derivative_rows() {
             "fixed start initialization for x",
             2,
         ));
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
 
     let rows = lower_initial_residual(&dae_model, &layout)
         .expect("array state initialization rows should lower");
@@ -1004,7 +1004,7 @@ fn lower_initial_residual_keeps_derivative_rows_with_algebraic_targets() {
         .continuous
         .equations
         .push(residual(sub(var("y"), der(var("x")))));
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
 
     let rows = lower_initial_residual(&dae_model, &layout)
         .expect("algebraic derivative row should stay in initial residual");
@@ -1052,7 +1052,7 @@ fn lower_initial_residual_includes_parameter_only_initial_equations() {
             rumoca_core::Span::DUMMY,
             "parameter initial equation",
         ));
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let mut p = vec![0.0; layout.p_scalars()];
     set_p_value(&layout, &mut p, "p", 3.0);
 
@@ -1144,7 +1144,7 @@ fn lower_expression_prefers_qualified_normal_quantile_intrinsic_over_function_bo
         .functions
         .insert(quantile.name.clone(), quantile);
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let mut p = vec![0.0; layout.p_scalars()];
     set_p_value(&layout, &mut p, "u", 0.5);
     set_p_value(&layout, &mut p, "mu", 0.0);

@@ -141,11 +141,11 @@ fn expr_has_unsubscripted_var_ref(expr: &rumoca_core::Expression, name: &str) ->
 fn add_primitive_real(flat: &mut Model, name: &str) {
     flat.add_variable(
         VarName::new(name),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new(name),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 }
 
@@ -156,26 +156,26 @@ fn add_fixed_false_parameter(flat: &mut Model, name: &str) {
 fn add_parameter_with_fixed(flat: &mut Model, name: &str, fixed: Option<bool>) {
     flat.add_variable(
         VarName::new(name),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new(name),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             fixed,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 }
 
 fn add_discrete_valued(flat: &mut Model, name: &str) {
     flat.add_variable(
         VarName::new(name),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new(name),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 }
 
@@ -183,22 +183,22 @@ fn add_tick_z_y_discrete_fixture(flat: &mut Model) {
     add_discrete_valued(flat, "tick");
     flat.add_variable(
         VarName::new("z"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("z"),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("y"),
             dims: vec![2],
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 }
 
@@ -278,44 +278,44 @@ fn build_top_level_assignment_before_loop_model() -> Model {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("y"),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("y0"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("y0"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("x"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("x"),
             dims: vec![2],
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("t"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("t"),
             dims: vec![2],
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.algorithms.push(flat::Algorithm::new(
         vec![
@@ -488,7 +488,7 @@ fn build_supported_algorithm_slice_row_model() -> Model {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("int_addr"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("int_addr"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(rumoca_core::Expression::Literal {
@@ -498,11 +498,11 @@ fn build_supported_algorithm_slice_row_model() -> Model {
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("n_data"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("n_data"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(rumoca_core::Expression::Literal {
@@ -512,34 +512,34 @@ fn build_supported_algorithm_slice_row_model() -> Model {
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("mem"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("mem"),
             dims: vec![2, 3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("mem_word"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("mem_word"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("nextstate"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("nextstate"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let full_row =
@@ -804,12 +804,12 @@ fn test_todae_lowers_model_algorithm_for_loop_with_subscripted_targets() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("y"),
             dims: vec![2],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     flat.algorithms.push(flat::Algorithm::new(
@@ -881,22 +881,22 @@ fn test_todae_lowers_model_algorithm_dynamic_scalar_index_assignment() {
     add_primitive_real(&mut flat, "u");
     flat.add_variable(
         VarName::new("iTick"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("iTick"),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("buf"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("buf"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     flat.algorithms.push(flat::Algorithm::new(
@@ -946,22 +946,22 @@ fn test_todae_lowers_when_algorithm_for_loop_with_subscripted_targets() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("tick"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("tick"),
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("y"),
             dims: vec![2],
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     flat.algorithms.push(flat::Algorithm::new(
@@ -1011,18 +1011,18 @@ fn test_todae_lowers_when_algorithm_for_loop_with_subscripted_targets() {
         .real_updates
         .iter()
         .chain(dae.discrete.valued_updates.iter())
-        .filter_map(|eq| eq.lhs.clone())
+        .filter_map(|eq| eq.lhs.as_ref().map(|lhs| lhs.as_str().to_string()))
         .collect();
     assert!(
-        lowered_lhs.contains(&rumoca_core::VarName::new("y[1]")),
+        lowered_lhs.iter().any(|lhs| lhs == "y[1]"),
         "expected lowered indexed event target y[1], got {lowered_lhs:?}"
     );
     assert!(
-        lowered_lhs.contains(&rumoca_core::VarName::new("y[2]")),
+        lowered_lhs.iter().any(|lhs| lhs == "y[2]"),
         "expected lowered indexed event target y[2], got {lowered_lhs:?}"
     );
     assert!(
-        !lowered_lhs.contains(&rumoca_core::VarName::new("y")),
+        !lowered_lhs.iter().any(|lhs| lhs == "y"),
         "indexed when targets must not collapse to the whole array name"
     );
 }
@@ -1621,7 +1621,7 @@ fn test_todae_accepts_model_algorithm_for_loop_with_constant_array_binding_range
     add_primitive_real(&mut flat, "y");
     flat.add_variable(
         VarName::new("switched"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("switched"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(rumoca_core::Expression::Array {
@@ -1641,7 +1641,7 @@ fn test_todae_accepts_model_algorithm_for_loop_with_constant_array_binding_range
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     flat.algorithms.push(flat::Algorithm::new(
@@ -1688,7 +1688,7 @@ fn test_todae_lowers_supported_algorithm_slice_row_read_to_scalar_refs() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("int_addr"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("int_addr"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(rumoca_core::Expression::Literal {
@@ -1698,11 +1698,11 @@ fn test_todae_lowers_supported_algorithm_slice_row_read_to_scalar_refs() {
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("n_data"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("n_data"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(rumoca_core::Expression::Literal {
@@ -1712,25 +1712,25 @@ fn test_todae_lowers_supported_algorithm_slice_row_read_to_scalar_refs() {
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("mem"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("mem"),
             dims: vec![2, 3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("nextstate"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("nextstate"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     flat.algorithms.push(flat::Algorithm::new(

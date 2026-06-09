@@ -1382,7 +1382,7 @@ fn apply_observation_discrete_refresh_pass(
             y,
             p,
             ctx.tol,
-        );
+        )?;
     }
     Ok(changed)
 }

@@ -11,17 +11,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 
-pub(super) fn phase_result_to_failure(
+pub(super) fn phase_result_to_failures(
     tree: &ast::ClassTree,
     model_name: &str,
     result: &PhaseResult,
-) -> Option<ModelFailureDiagnostic> {
+) -> Vec<ModelFailureDiagnostic> {
     match result {
-        PhaseResult::Success(_) => None,
+        PhaseResult::Success(_) => Vec::new(),
         PhaseResult::NeedsInner {
             missing_inners,
             missing_spans,
-        } => Some(ModelFailureDiagnostic {
+        } => vec![ModelFailureDiagnostic {
             model_name: model_name.to_string(),
             phase: Some(FailedPhase::Instantiate),
             error_code: None,
@@ -30,32 +30,27 @@ pub(super) fn phase_result_to_failure(
                 missing_inners.join(", ")
             ),
             primary_label: missing_inner_primary_label(tree, model_name, missing_spans),
-        }),
+        }],
         PhaseResult::Failed {
             phase,
             error,
             error_code,
-        } => Some(ModelFailureDiagnostic {
-            model_name: model_name.to_string(),
-            phase: Some(*phase),
-            error_code: error_code.clone(),
-            error: error.clone(),
-            primary_label: class_primary_label(tree, model_name, "phase failed"),
-        }),
+            diagnostics,
+        } => failed_phase_failures(tree, model_name, *phase, error, error_code, diagnostics),
     }
 }
 
-pub(super) fn dae_phase_result_to_failure(
+pub(super) fn dae_phase_result_to_failures(
     tree: &ast::ClassTree,
     model_name: &str,
     result: &DaePhaseResult,
-) -> Option<ModelFailureDiagnostic> {
+) -> Vec<ModelFailureDiagnostic> {
     match result {
-        DaePhaseResult::Success(_) => None,
+        DaePhaseResult::Success(_) => Vec::new(),
         DaePhaseResult::NeedsInner {
             missing_inners,
             missing_spans,
-        } => Some(ModelFailureDiagnostic {
+        } => vec![ModelFailureDiagnostic {
             model_name: model_name.to_string(),
             phase: Some(FailedPhase::Instantiate),
             error_code: None,
@@ -64,19 +59,54 @@ pub(super) fn dae_phase_result_to_failure(
                 missing_inners.join(", ")
             ),
             primary_label: missing_inner_primary_label(tree, model_name, missing_spans),
-        }),
+        }],
         DaePhaseResult::Failed {
             phase,
             error,
             error_code,
-        } => Some(ModelFailureDiagnostic {
-            model_name: model_name.to_string(),
-            phase: Some(*phase),
-            error_code: error_code.clone(),
-            error: error.clone(),
-            primary_label: class_primary_label(tree, model_name, "phase failed"),
-        }),
+            diagnostics,
+        } => failed_phase_failures(tree, model_name, *phase, error, error_code, diagnostics),
     }
+}
+
+/// One failure per spanned phase diagnostic when the phase produced them, so
+/// the CLI renders each error at its real source location; otherwise a single
+/// failure anchored at the model class header.
+fn failed_phase_failures(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    phase: FailedPhase,
+    error: &str,
+    error_code: &Option<String>,
+    diagnostics: &[CommonDiagnostic],
+) -> Vec<ModelFailureDiagnostic> {
+    let spanned: Vec<ModelFailureDiagnostic> = diagnostics
+        .iter()
+        .filter_map(|diag| {
+            let label = diag
+                .labels
+                .iter()
+                .find(|label| label.primary)
+                .or_else(|| diag.labels.first())?;
+            Some(ModelFailureDiagnostic {
+                model_name: model_name.to_string(),
+                phase: Some(phase),
+                error_code: diag.code.clone(),
+                error: diag.message.clone(),
+                primary_label: Some(label.clone()),
+            })
+        })
+        .collect();
+    if !spanned.is_empty() {
+        return spanned;
+    }
+    vec![ModelFailureDiagnostic {
+        model_name: model_name.to_string(),
+        phase: Some(phase),
+        error_code: error_code.clone(),
+        error: error.to_string(),
+        primary_label: class_primary_label(tree, model_name, "phase failed"),
+    }]
 }
 
 pub(super) fn class_primary_span(tree: &ast::ClassTree, model_name: &str) -> Option<Span> {

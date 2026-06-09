@@ -35,7 +35,7 @@ mod session_impl_query_indexes;
 use lru_cache::{LruMap, SessionLruCache};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::experiment::{ExperimentSettings, experiment_settings_for_model};
 use crate::instrumentation::{
@@ -130,8 +130,8 @@ use reachability::{ReachabilityPlanner, ReachableModelClosure};
 mod strict_compile_diagnostics;
 use strict_compile_diagnostics::{
     class_primary_span, collect_parse_error_diagnostics, collect_parse_failures_for_files,
-    collect_resolve_failures_for_files, collect_target_source_files, dae_phase_result_to_failure,
-    default_tree_span, document_parse_diagnostics, phase_result_to_failure, same_path,
+    collect_resolve_failures_for_files, collect_target_source_files, dae_phase_result_to_failures,
+    default_tree_span, document_parse_diagnostics, phase_result_to_failures, same_path,
 };
 mod session_impl_caches;
 mod session_impl_diagnostics;
@@ -1573,6 +1573,8 @@ pub struct CompilationResult {
     pub flat: flat::Model,
     /// The final DAE representation.
     pub dae: dae::Dae,
+    /// Detailed continuous balance inputs validated during DAE construction.
+    pub balance_detail: rumoca_phase_dae::balance::BalanceDetail,
     /// Optional simulation start time from `annotation(experiment(StartTime=...))`
     /// on the compiled root class.
     pub experiment_start_time: Option<f64>,
@@ -1751,7 +1753,7 @@ pub(crate) fn format_strict_failure_summary(
 impl CompilationResult {
     /// Check if the model is balanced (equal equations and unknowns).
     pub fn is_balanced(&self) -> bool {
-        rumoca_phase_dae::is_balanced(&self.dae)
+        self.balance_detail.is_balanced()
     }
 }
 
@@ -1766,6 +1768,10 @@ pub(crate) enum DaePhaseResult {
         phase: FailedPhase,
         error: String,
         error_code: Option<String>,
+        /// Structured spanned diagnostics from the failing phase, when the
+        /// phase produces them (typecheck today). Empty means only the
+        /// stringified `error` is available.
+        diagnostics: Vec<CommonDiagnostic>,
     },
 }
 
@@ -1808,6 +1814,11 @@ pub enum PhaseResult {
         phase: FailedPhase,
         error: String,
         error_code: Option<String>,
+        /// Structured spanned diagnostics from the failing phase, when the
+        /// phase produces them (typecheck today). Empty means only the
+        /// stringified `error` is available.
+        #[serde(default)]
+        diagnostics: Vec<CommonDiagnostic>,
     },
 }
 

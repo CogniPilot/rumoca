@@ -1,7 +1,8 @@
 use super::*;
 use crate::when_guard::when_guard_activation_expr;
 use crate::{
-    dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression, flat_to_dae_var_name,
+    dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression,
+    flat_to_dae_expression_with_refs, flat_to_dae_var_name,
 };
 mod current_value_rewrite;
 mod for_lowering;
@@ -113,7 +114,7 @@ fn guarded_when_rhs_with_guard(
 fn when_inactive_rhs(lhs: &VarName, inactive_rhs: WhenInactiveRhs) -> Expression {
     match inactive_rhs {
         WhenInactiveRhs::Current => Expression::VarRef {
-            name: lhs.clone().into(),
+            name: structured_target_reference(lhs),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         },
@@ -131,7 +132,7 @@ fn when_inactive_rhs(lhs: &VarName, inactive_rhs: WhenInactiveRhs) -> Expression
                     span: rumoca_core::Span::DUMMY,
                 },
                 Expression::VarRef {
-                    name: lhs.clone().into(),
+                    name: structured_target_reference(lhs),
                     subscripts: vec![],
                     span: rumoca_core::Span::DUMMY,
                 },
@@ -139,7 +140,7 @@ fn when_inactive_rhs(lhs: &VarName, inactive_rhs: WhenInactiveRhs) -> Expression
             else_branch: Box::new(Expression::BuiltinCall {
                 function: BuiltinFunction::Pre,
                 args: vec![Expression::VarRef {
-                    name: lhs.clone().into(),
+                    name: structured_target_reference(lhs),
                     subscripts: vec![],
                     span: rumoca_core::Span::DUMMY,
                 }],
@@ -174,14 +175,14 @@ pub(super) fn route_discrete_event_equations(
         let Some(lhs) = &eq.lhs else {
             continue;
         };
-        let lhs = dae_to_flat_var_name(lhs);
+        let lhs = dae_to_flat_var_name(lhs.var_name());
         let rhs = dae_to_flat_expression(&eq.rhs);
         let inactive_rhs = match equation_inactive_rhs {
             rumoca_ir_dae::WhenEquationInactiveRhs::Current => WhenInactiveRhs::Current,
             rumoca_ir_dae::WhenEquationInactiveRhs::Pre => WhenInactiveRhs::Pre,
         };
         let guarded = rumoca_ir_dae::Equation::explicit_with_scalar_count(
-            flat_to_dae_var_name(&lhs),
+            crate::convert::structured_target_reference(&flat_to_dae_var_name(&lhs)),
             flat_to_dae_expression(&guarded_when_rhs_with_guard(
                 &guard,
                 &lhs,
@@ -346,9 +347,9 @@ fn process_collision_equation(
 
     flipped_once.insert(flip_edge_key(&equation.origin, lhs, &rhs_target));
     let mut flipped = equation;
-    flipped.lhs = Some(flat_to_dae_var_name(&resolved_target));
+    flipped.lhs = Some(flat_to_dae_var_name(&resolved_target).into());
     flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
-        name: lhs.clone().into(),
+        name: structured_target_reference(lhs),
         subscripts: vec![],
         span: rumoca_core::Span::DUMMY,
     });
@@ -476,7 +477,7 @@ fn drain_grouped_discrete_assignments(
     for equation in equations.drain(..) {
         if let Some(lhs) = equation.lhs.as_ref() {
             grouped
-                .entry(dae_to_flat_var_name(lhs))
+                .entry(dae_to_flat_var_name(lhs.var_name()))
                 .or_default()
                 .push(equation);
         } else {
@@ -524,9 +525,9 @@ fn reroute_connection_aliases_for_defined_targets(
                 continue;
             }
             let mut flipped = equation.clone();
-            flipped.lhs = Some(flat_to_dae_var_name(&rhs_target));
+            flipped.lhs = Some(flat_to_dae_var_name(&rhs_target).into());
             flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
-                name: lhs.clone().into(),
+                name: structured_target_reference(lhs),
                 subscripts: vec![],
                 span: rumoca_core::Span::DUMMY,
             });
@@ -937,22 +938,25 @@ fn resolve_multi_output_selection_names(
 fn pre_target_expr(target: &VarName) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Pre,
-        args: vec![Expression::VarRef {
-            name: target.clone().into(),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        }],
+        args: vec![current_target_expr(target)],
         span: rumoca_core::Span::DUMMY,
     }
 }
 
+/// Rendered algorithm target names are internal bookkeeping keys; any
+/// reference emitted into equations must carry the structured component
+/// reference so DAE resolution never has to parse names. Targets whose
+/// rendered subscripts are not static integers stay unstructured and fail
+/// resolution loudly.
 fn current_target_expr(target: &VarName) -> Expression {
     Expression::VarRef {
-        name: target.clone().into(),
+        name: structured_target_reference(target),
         subscripts: vec![],
         span: rumoca_core::Span::DUMMY,
     }
 }
+
+pub(crate) use crate::convert::structured_target_reference;
 
 fn normalize_algorithm_current_value(
     dae: &Dae,
@@ -1505,6 +1509,7 @@ fn merge_algorithm_when_statement_branches(
 
 fn lower_when_target_branches_to_event_equations(
     dae: &Dae,
+    flat: &Model,
     targets: WhenAssignmentBranches,
     algorithm_span: Span,
     algorithm_origin: &str,
@@ -1518,15 +1523,18 @@ fn lower_when_target_branches_to_event_equations(
             assignment.span
         };
         let eq = rumoca_ir_dae::Equation::explicit_with_scalar_count(
-            flat_to_dae_var_name(&target),
-            flat_to_dae_expression(&Expression::If {
-                branches: assignment.branches,
-                else_branch: Box::new(when_inactive_rhs(
-                    &target,
-                    WhenInactiveRhs::InitialValueThenPre,
-                )),
-                span: rumoca_core::Span::DUMMY,
-            }),
+            crate::convert::structured_target_reference(&flat_to_dae_var_name(&target)),
+            flat_to_dae_expression_with_refs(
+                &Expression::If {
+                    branches: assignment.branches,
+                    else_branch: Box::new(when_inactive_rhs(
+                        &target,
+                        WhenInactiveRhs::InitialValueThenPre,
+                    )),
+                    span: rumoca_core::Span::DUMMY,
+                },
+                flat,
+            ),
             span,
             format!("algorithm when-assignment ({algorithm_origin})"),
             lookup_algorithm_target_scalar_count(dae, &target, span, allow_parameter_targets)?,
@@ -1568,6 +1576,7 @@ fn lower_algorithm_to_equations(
 
     for eq in lower_when_target_branches_to_event_equations(
         dae,
+        flat,
         when_assignments,
         algorithm.span,
         &algorithm.origin,
@@ -1602,6 +1611,7 @@ fn lower_algorithm_to_equations(
                 span,
                 origin,
             },
+            flat,
             &algorithm.origin,
             allow_parameter_targets,
         )?;
@@ -1618,7 +1628,7 @@ fn route_lowered_when_equation(
     let Some(lhs) = eq.lhs.as_ref() else {
         return;
     };
-    let lhs = dae_to_flat_var_name(lhs);
+    let lhs = dae_to_flat_var_name(lhs.var_name());
     match discrete_equation_bucket_for_lhs(dae, &lhs) {
         Some(DiscreteEquationBucket::DiscreteValued) => lowered.f_m.push(eq),
         Some(DiscreteEquationBucket::DiscreteReal) => lowered.f_z.push(eq),
@@ -1637,6 +1647,7 @@ fn route_lowered_main_algorithm_assignment(
     dae: &Dae,
     lowered: &mut LoweredAlgorithmPartitions,
     assignment: LoweredMainAlgorithmAssignment,
+    flat: &Model,
     algorithm_origin: &str,
     allow_parameter_target: bool,
 ) -> Result<(), String> {
@@ -1651,8 +1662,8 @@ fn route_lowered_main_algorithm_assignment(
         // MLS Appendix B stores discrete Real and discrete-valued variables in
         // B.1b/B.1c update partitions, so keep these out of continuous f_x.
         let eq = rumoca_ir_dae::Equation::explicit_with_scalar_count(
-            flat_to_dae_var_name(&target),
-            flat_to_dae_expression(&value),
+            crate::convert::structured_target_reference(&flat_to_dae_var_name(&target)),
+            flat_to_dae_expression_with_refs(&value, flat),
             span,
             format!("{} ({})", origin, algorithm_origin),
             lookup_algorithm_target_scalar_count(dae, &target, span, allow_parameter_target)?,
@@ -1676,8 +1687,8 @@ fn route_lowered_main_algorithm_assignment(
             lowered
                 .main
                 .push(rumoca_ir_dae::Equation::explicit_with_scalar_count(
-                    target_key,
-                    flat_to_dae_expression(&value),
+                    crate::convert::structured_target_reference(&target_key),
+                    flat_to_dae_expression_with_refs(&value, flat),
                     span,
                     format!("{} ({})", origin, algorithm_origin),
                     lookup_algorithm_target_scalar_count(dae, &target, span, true)?,
@@ -1687,7 +1698,7 @@ fn route_lowered_main_algorithm_assignment(
     }
 
     let lhs = Expression::VarRef {
-        name: target.clone().into(),
+        name: structured_target_reference(&target),
         subscripts: vec![],
         span: rumoca_core::Span::DUMMY,
     };
@@ -1699,7 +1710,7 @@ fn route_lowered_main_algorithm_assignment(
     };
 
     lowered.main.push(rumoca_ir_dae::Equation::residual_array(
-        flat_to_dae_expression(&residual),
+        flat_to_dae_expression_with_refs(&residual, flat),
         span,
         format!("{} ({})", origin, algorithm_origin),
         lookup_algorithm_target_scalar_count(dae, &target, span, allow_parameter_target)?,

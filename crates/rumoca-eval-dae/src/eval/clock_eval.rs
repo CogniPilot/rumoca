@@ -6,8 +6,8 @@ pub(super) struct ClockTiming {
     pub(super) phase: f64,
 }
 
-pub(super) fn eval_time_seconds<T: SimFloat>(env: &VarEnv<T>) -> f64 {
-    env.get("time").real()
+pub(super) fn eval_time_seconds<T: SimFloat>(env: &VarEnv<T>) -> Result<f64, EvalError> {
+    Ok(env.require("time")?.real())
 }
 
 fn is_clock_tick(time: f64, period: f64, phase: f64) -> bool {
@@ -26,12 +26,15 @@ fn is_clock_tick(time: f64, period: f64, phase: f64) -> bool {
     (shifted - nearest).abs() <= tol
 }
 
-pub(super) fn clock_tick_value<T: SimFloat>(env: &VarEnv<T>, timing: ClockTiming) -> T {
-    T::from_bool(is_clock_tick(
-        eval_time_seconds(env),
+pub(super) fn clock_tick_value<T: SimFloat>(
+    env: &VarEnv<T>,
+    timing: ClockTiming,
+) -> Result<T, EvalError> {
+    Ok(T::from_bool(is_clock_tick(
+        eval_time_seconds(env)?,
         timing.period,
         timing.phase,
-    ))
+    )))
 }
 
 pub(super) fn valid_positive_period(period: f64) -> Option<f64> {
@@ -41,16 +44,19 @@ pub(super) fn valid_positive_period(period: f64) -> Option<f64> {
 pub(super) fn eval_positive_factor<T: SimFloat>(
     arg: Option<&rumoca_core::Expression>,
     env: &VarEnv<T>,
-) -> Option<f64> {
-    let raw = arg.map(|expr| eval_expr_or_default::<T>(expr, env).real())?;
+) -> Result<Option<f64>, EvalError> {
+    let Some(expr) = arg else {
+        return Ok(None);
+    };
+    let raw = eval_expr::<T>(expr, env)?.real();
     let rounded = raw.round();
-    (rounded.is_finite() && rounded > 0.0).then_some(rounded)
+    Ok((rounded.is_finite() && rounded > 0.0).then_some(rounded))
 }
 
 pub(super) fn infer_clock_timing_from_expr<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
-) -> Option<ClockTiming> {
+) -> Result<Option<ClockTiming>, EvalError> {
     match expr {
         rumoca_core::Expression::FunctionCall { name, args, .. } => {
             let short_name = rumoca_core::top_level_last_segment(name.as_str());
@@ -66,89 +72,121 @@ pub(super) fn infer_clock_timing_from_expr<T: SimFloat>(
                 .get(name.as_str())
                 .and_then(|period| valid_positive_period(*period))
                 .map(|period| ClockTiming { period, phase: 0.0 })
+                .map(Some)
+                .ok_or(EvalError::UnsupportedExpression {
+                    kind: "clock timing",
+                })
+                .or(Ok(None))
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 
 pub(super) fn infer_clock_counter_form<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
-) -> Option<f64> {
+) -> Result<Option<f64>, EvalError> {
     let rumoca_core::Expression::FunctionCall { name, args, .. } = expr else {
-        return None;
+        return Ok(None);
     };
     let short_name = rumoca_core::top_level_last_segment(name.as_str());
     if short_name != "Clock" || args.len() != 1 {
-        return None;
+        return Ok(None);
     }
 
-    let raw = eval_expr_or_default::<T>(&args[0], env).real();
+    let raw = eval_expr::<T>(&args[0], env)?.real();
     let rounded = raw.round();
     let tol = 1.0e-9 * rounded.abs().max(1.0);
     if !rounded.is_finite() || rounded <= 0.0 || (raw - rounded).abs() > tol {
-        return None;
+        return Ok(None);
     }
-    Some(rounded)
+    Ok(Some(rounded))
 }
 
 pub(super) fn infer_clock_timing_from_call<T: SimFloat>(
     short_name: &str,
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
-) -> Option<ClockTiming> {
+) -> Result<Option<ClockTiming>, EvalError> {
     match short_name {
         "Clock" => {
-            let first = args.first()?;
-            if let Some(base) = infer_clock_timing_from_expr(first, env) {
-                return Some(base);
+            let Some(first) = args.first() else {
+                return Ok(None);
+            };
+            if let Some(base) = infer_clock_timing_from_expr(first, env)? {
+                return Ok(Some(base));
             }
 
             if args.len() >= 2 {
-                let count = eval_expr_or_default::<T>(first, env).real();
-                let resolution = eval_expr_or_default::<T>(&args[1], env).real();
+                let count = eval_expr::<T>(first, env)?.real();
+                let resolution = eval_expr::<T>(&args[1], env)?.real();
                 if resolution.is_finite() && resolution > 0.0 {
-                    return valid_positive_period(count / resolution)
-                        .map(|period| ClockTiming { period, phase: 0.0 });
+                    return Ok(valid_positive_period(count / resolution)
+                        .map(|period| ClockTiming { period, phase: 0.0 }));
                 }
             }
 
-            let period = eval_expr_or_default::<T>(first, env).real();
-            valid_positive_period(period).map(|period| ClockTiming { period, phase: 0.0 })
+            let period = eval_expr::<T>(first, env)?.real();
+            Ok(valid_positive_period(period).map(|period| ClockTiming { period, phase: 0.0 }))
         }
         "subSample" => {
             // MLS exact-clock construction pattern used by PeriodicExactClock:
             // c = subSample(Clock(factor), resolutionFactor)
             // corresponds to period = factor / resolutionFactor.
-            if let Some(counter) = args
-                .first()
-                .and_then(|expr| infer_clock_counter_form(expr, env))
-            {
-                let resolution = eval_positive_factor(args.get(1), env).unwrap_or(1.0);
-                return valid_positive_period(counter / resolution)
-                    .map(|period| ClockTiming { period, phase: 0.0 });
+            if let Some(counter) = match args.first() {
+                Some(expr) => infer_clock_counter_form(expr, env)?,
+                None => None,
+            } {
+                let resolution = eval_positive_factor(args.get(1), env)?.unwrap_or(1.0);
+                return Ok(valid_positive_period(counter / resolution)
+                    .map(|period| ClockTiming { period, phase: 0.0 }));
             }
 
-            let base = infer_clock_constructor_timing_from_expr(args.first()?, env)?;
-            let factor = eval_positive_factor(args.get(1), env).unwrap_or(1.0);
-            valid_positive_period(base.period * factor).map(|period| ClockTiming {
-                period,
-                phase: base.phase,
-            })
+            let Some(base) = infer_clock_constructor_timing_from_expr(
+                args.first().ok_or(EvalError::UnsupportedExpression {
+                    kind: "clock constructor",
+                })?,
+                env,
+            )?
+            else {
+                return Ok(None);
+            };
+            let factor = eval_positive_factor(args.get(1), env)?.unwrap_or(1.0);
+            Ok(
+                valid_positive_period(base.period * factor).map(|period| ClockTiming {
+                    period,
+                    phase: base.phase,
+                }),
+            )
         }
         "superSample" => {
-            let base = infer_clock_constructor_timing_from_expr(args.first()?, env)?;
-            let factor = eval_positive_factor(args.get(1), env).unwrap_or(1.0);
-            valid_positive_period(base.period / factor).map(|period| ClockTiming {
-                period,
-                phase: base.phase,
-            })
+            let Some(base) = infer_clock_constructor_timing_from_expr(
+                args.first().ok_or(EvalError::UnsupportedExpression {
+                    kind: "clock constructor",
+                })?,
+                env,
+            )?
+            else {
+                return Ok(None);
+            };
+            let factor = eval_positive_factor(args.get(1), env)?.unwrap_or(1.0);
+            Ok(
+                valid_positive_period(base.period / factor).map(|period| ClockTiming {
+                    period,
+                    phase: base.phase,
+                }),
+            )
         }
         "shiftSample" | "backSample" => {
-            let base = infer_clock_constructor_timing_from_expr(args.first()?, env)?;
-            let shift = eval_expr_or_default::<T>(args.get(1).unwrap_or(args.first()?), env).real();
+            let first = args.first().ok_or(EvalError::UnsupportedExpression {
+                kind: "clock constructor",
+            })?;
+            let Some(base) = infer_clock_constructor_timing_from_expr(first, env)? else {
+                return Ok(None);
+            };
+            let shift = eval_expr::<T>(args.get(1).unwrap_or(first), env)?.real();
             let offset = if args.len() >= 3 {
-                let resolution = eval_expr_or_default::<T>(&args[2], env).real();
+                let resolution = eval_expr::<T>(&args[2], env)?.real();
                 if resolution.is_finite() && resolution != 0.0 {
                     // MLS §16.5.2: shiftSample/backSample shift by a fraction
                     // of interval(u), not by an absolute number of seconds.
@@ -164,18 +202,18 @@ pub(super) fn infer_clock_timing_from_call<T: SimFloat>(
             } else {
                 base.phase - offset
             };
-            valid_positive_period(base.period).map(|period| ClockTiming { period, phase })
+            Ok(valid_positive_period(base.period).map(|period| ClockTiming { period, phase }))
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 
 fn infer_clock_constructor_timing_from_expr<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
-) -> Option<ClockTiming> {
+) -> Result<Option<ClockTiming>, EvalError> {
     let rumoca_core::Expression::FunctionCall { name, args, .. } = expr else {
-        return None;
+        return Ok(None);
     };
     let short_name = rumoca_core::top_level_last_segment(name.as_str());
     infer_clock_timing_from_call(short_name, args, env)
@@ -184,20 +222,24 @@ fn infer_clock_constructor_timing_from_expr<T: SimFloat>(
 pub(super) fn eval_builtin_sample<T: SimFloat>(
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
-) -> T {
+) -> Result<T, EvalError> {
     match args {
-        [] => T::zero(),
-        [value] => eval_expr_or_default::<T>(value, env),
-        [value, clock, ..] if infer_clock_timing_from_expr(clock, env).is_some() => {
-            eval_expr_or_default::<T>(value, env)
+        [] => Err(EvalError::UnsupportedExpression {
+            kind: "sample arity",
+        }),
+        [value] => eval_expr::<T>(value, env),
+        [value, clock, ..] if infer_clock_timing_from_expr(clock, env)?.is_some() => {
+            eval_expr::<T>(value, env)
         }
         [_internal_id, start, interval, ..] => {
             // Internal lowered representation may encode sample identifiers as
             // the first argument: sample(id, start, interval).
-            let start_t = eval_expr_or_default::<T>(start, env).real();
-            let period = eval_expr_or_default::<T>(interval, env).real();
+            let start_t = eval_expr::<T>(start, env)?.real();
+            let period = eval_expr::<T>(interval, env)?.real();
             let Some(period) = valid_positive_period(period) else {
-                return T::zero();
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "sample interval",
+                });
             };
             let timing = ClockTiming {
                 period,
@@ -206,10 +248,12 @@ pub(super) fn eval_builtin_sample<T: SimFloat>(
             clock_tick_value(env, timing)
         }
         [start, interval, ..] => {
-            let start_t = eval_expr_or_default::<T>(start, env).real();
-            let period = eval_expr_or_default::<T>(interval, env).real();
+            let start_t = eval_expr::<T>(start, env)?.real();
+            let period = eval_expr::<T>(interval, env)?.real();
             let Some(period) = valid_positive_period(period) else {
-                return T::zero();
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "sample interval",
+                });
             };
             let timing = ClockTiming {
                 period,
@@ -223,6 +267,6 @@ pub(super) fn eval_builtin_sample<T: SimFloat>(
 pub fn infer_clock_timing_seconds(
     expr: &rumoca_core::Expression,
     env: &VarEnv<f64>,
-) -> Option<(f64, f64)> {
-    infer_clock_timing_from_expr(expr, env).map(|timing| (timing.period, timing.phase))
+) -> Result<Option<(f64, f64)>, EvalError> {
+    Ok(infer_clock_timing_from_expr(expr, env)?.map(|timing| (timing.period, timing.phase)))
 }

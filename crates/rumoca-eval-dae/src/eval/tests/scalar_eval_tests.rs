@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn test_eval_binary_add() {
     let expr = binop(rumoca_core::OpBinary::Add, lit(2.0), lit(3.0));
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), 5.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), 5.0);
 }
 
 #[test]
@@ -13,7 +13,7 @@ fn test_eval_unary_minus() {
         rhs: Box::new(lit(5.0)),
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), -5.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), -5.0);
 }
 
 #[test]
@@ -23,7 +23,7 @@ fn test_eval_unary_not() {
         rhs: Box::new(bool_lit(true)),
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), 0.0);
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn test_eval_builtin_sin() {
         args: vec![lit(0.0)],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), 0.0);
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn test_eval_builtin_cos() {
         args: vec![lit(0.0)],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), 1.0);
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn test_eval_builtin_sqrt() {
         args: vec![lit(9.0)],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), 3.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), 3.0);
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn test_eval_builtin_mod_uses_floor_semantics() {
         args: vec![lit(-7.0), lit(3.0)],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), 2.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), 2.0);
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn test_eval_builtin_rem_keeps_truncating_semantics() {
         args: vec![lit(-7.0), lit(3.0)],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), -1.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), -1.0);
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn test_eval_builtin_exp() {
         args: vec![lit(0.0)],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), 1.0);
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn test_eval_builtin_abs() {
         args: vec![lit(-3.0)],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), 3.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), 3.0);
 }
 
 #[test]
@@ -103,14 +103,14 @@ fn test_eval_builtin_min_max() {
         args: vec![lit(3.0), lit(5.0)],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&min_expr, &VarEnv::new()), 3.0);
+    assert_eq!(eval_expr_value::<f64>(&min_expr, &VarEnv::new()), 3.0);
 
     let max_expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Max,
         args: vec![lit(3.0), lit(5.0)],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&max_expr, &VarEnv::new()), 5.0);
+    assert_eq!(eval_expr_value::<f64>(&max_expr, &VarEnv::new()), 5.0);
 }
 
 #[test]
@@ -123,28 +123,28 @@ fn test_eval_builtin_one_arg_array_reductions() {
         args: vec![var("x")],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&min_expr, &env), -2.0);
+    assert_eq!(eval_expr_value::<f64>(&min_expr, &env), -2.0);
 
     let max_expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Max,
         args: vec![var("x")],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&max_expr, &env), 4.0);
+    assert_eq!(eval_expr_value::<f64>(&max_expr, &env), 4.0);
 
     let sum_expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Sum,
         args: vec![var("x")],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&sum_expr, &env), 5.0);
+    assert_eq!(eval_expr_value::<f64>(&sum_expr, &env), 5.0);
 
     let product_expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Product,
         args: vec![var("x")],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&product_expr, &env), -24.0);
+    assert_eq!(eval_expr_value::<f64>(&product_expr, &env), -24.0);
 }
 
 #[test]
@@ -161,7 +161,7 @@ fn test_eval_builtin_max_abs_single_arg_array_reduction() {
         }],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&max_abs_expr, &env), 3.5);
+    assert_eq!(eval_expr_value::<f64>(&max_abs_expr, &env), 3.5);
 }
 
 #[test]
@@ -208,7 +208,7 @@ fn test_eval_builtin_sum_single_arg_array_preserves_dual_ad() {
         args: vec![var("x")],
         span: rumoca_core::Span::DUMMY,
     };
-    let y = eval_expr_or_default::<Dual>(&sum_expr, &env);
+    let y = eval_expr_value::<Dual>(&sum_expr, &env);
     assert!((y.re - 4.0).abs() < 1e-12);
     assert!((y.du - 1.5).abs() < 1e-12);
 }
@@ -220,7 +220,7 @@ fn test_eval_if_true() {
         else_branch: Box::new(lit(2.0)),
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), 1.0);
 }
 
 #[test]
@@ -230,16 +230,16 @@ fn test_eval_if_false() {
         else_branch: Box::new(lit(2.0)),
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &VarEnv::new()), 2.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &VarEnv::new()), 2.0);
 }
 
 #[test]
 fn test_eval_comparison() {
     let lt = binop(rumoca_core::OpBinary::Lt, lit(1.0), lit(2.0));
-    assert_eq!(eval_expr_or_default::<f64>(&lt, &VarEnv::new()), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&lt, &VarEnv::new()), 1.0);
 
     let gt = binop(rumoca_core::OpBinary::Gt, lit(1.0), lit(2.0));
-    assert_eq!(eval_expr_or_default::<f64>(&gt, &VarEnv::new()), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&gt, &VarEnv::new()), 0.0);
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn test_eval_der_lookup() {
         args: vec![var("x")],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), 5.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), 5.0);
 }
 
 #[test]
@@ -270,7 +270,7 @@ fn test_eval_complex_expression() {
             span: rumoca_core::Span::DUMMY,
         },
     );
-    let result = eval_expr_or_default::<f64>(&expr, &env);
+    let result = eval_expr_value::<f64>(&expr, &env);
     assert!((result - 5.0).abs() < 1e-10);
 }
 
@@ -283,7 +283,7 @@ fn test_eval_field_access_on_var_ref_uses_flat_field_name() {
         field: "re".to_string(),
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), 2.5);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), 2.5);
 }
 
 #[test]
@@ -312,8 +312,8 @@ fn test_eval_field_access_on_constructor_complex_components() {
         field: "im".to_string(),
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&re_expr, &env), 3.0);
-    assert_eq!(eval_expr_or_default::<f64>(&im_expr, &env), 4.0);
+    assert_eq!(eval_expr_value::<f64>(&re_expr, &env), 3.0);
+    assert_eq!(eval_expr_value::<f64>(&im_expr, &env), 4.0);
 }
 
 #[test]
@@ -336,7 +336,7 @@ fn test_eval_field_access_after_array_literal_index() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), 9.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), 9.0);
 }
 
 #[test]
@@ -348,7 +348,7 @@ fn test_eval_constructor_call_scalar_fallback_uses_first_argument() {
         is_constructor: true,
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), 9.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), 9.0);
 }
 
 #[test]
@@ -428,9 +428,9 @@ fn test_eval_field_access_constructor_named_args_bind_by_name() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    let p_ref_value = eval_expr_or_default::<f64>(&p_ref, &env);
-    let v_ref_value = eval_expr_or_default::<f64>(&v_ref, &env);
-    let gc_ref_value = eval_expr_or_default::<f64>(&gc_ref, &env);
+    let p_ref_value = eval_expr_value::<f64>(&p_ref, &env);
+    let v_ref_value = eval_expr_value::<f64>(&v_ref, &env);
+    let gc_ref_value = eval_expr_value::<f64>(&gc_ref, &env);
 
     assert!((p_ref_value - 410.0).abs() < 1e-12);
     assert!((v_ref_value - 387.9).abs() < 1e-12);
@@ -444,7 +444,7 @@ fn test_eval_dual_x_squared() {
     env.set("x", Dual::new(3.0, 1.0));
 
     let expr = binop(rumoca_core::OpBinary::Mul, var("x"), var("x"));
-    let result = eval_expr_or_default::<Dual>(&expr, &env);
+    let result = eval_expr_value::<Dual>(&expr, &env);
     assert!((result.re - 9.0).abs() < 1e-12);
     assert!((result.du - 6.0).abs() < 1e-12);
 }
@@ -456,7 +456,7 @@ fn test_lift_env() {
     env.set("y", 5.0);
 
     let dual_env: VarEnv<Dual> = lift_env(&env);
-    let x = dual_env.get("x");
+    let x = env_value(&dual_env, "x");
     assert_eq!(x.re, 3.0);
     assert_eq!(x.du, 0.0);
 }
@@ -467,14 +467,14 @@ fn test_modelica_constants_in_build_env() {
     let env = build_env(&dae, &[], &[], 0.0);
 
     // Full qualified names (MLS §3.7.3 — short aliases resolved at flatten time via imports)
-    assert!((env.get("Modelica.Constants.pi") - std::f64::consts::PI).abs() < 1e-15);
-    assert!((env.get("Modelica.Constants.e") - std::f64::consts::E).abs() < 1e-15);
-    assert!((env.get("Modelica.Constants.g_n") - 9.80665).abs() < 1e-10);
-    assert!(env.get("Modelica.Constants.inf").is_infinite());
-    assert!((env.get("Modelica.ComplexMath.j.re") - 0.0).abs() < 1e-15);
-    assert!((env.get("Modelica.ComplexMath.j.im") - 1.0).abs() < 1e-15);
-    assert!((env.get("j.re") - 0.0).abs() < 1e-15);
-    assert!((env.get("j.im") - 1.0).abs() < 1e-15);
+    assert!((env_value(&env, "Modelica.Constants.pi") - std::f64::consts::PI).abs() < 1e-15);
+    assert!((env_value(&env, "Modelica.Constants.e") - std::f64::consts::E).abs() < 1e-15);
+    assert!((env_value(&env, "Modelica.Constants.g_n") - 9.80665).abs() < 1e-10);
+    assert!(env_value(&env, "Modelica.Constants.inf").is_infinite());
+    assert!((env_value(&env, "Modelica.ComplexMath.j.re") - 0.0).abs() < 1e-15);
+    assert!((env_value(&env, "Modelica.ComplexMath.j.im") - 1.0).abs() < 1e-15);
+    assert!((env_value(&env, "j.re") - 0.0).abs() < 1e-15);
+    assert!((env_value(&env, "j.im") - 1.0).abs() < 1e-15);
 }
 
 #[test]
@@ -493,62 +493,22 @@ fn test_modelica_constants_do_not_override_dae_values() {
 
     let env = build_env(&dae, &[], &[], 0.0);
     // DAE-provided value should win over the fallback
-    assert!((env.get("Modelica.Constants.pi") - 3.0).abs() < 1e-15);
+    assert!((env_value(&env, "Modelica.Constants.pi") - 3.0).abs() < 1e-15);
 }
 
 #[test]
-fn test_normalize_subscript_arithmetic() {
-    let env = VarEnv::<f64>::new();
+fn test_eval_var_ref_no_subscripts_accepts_exact_scalarized_key_only() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("arr[1]", 8.5);
+
     assert_eq!(
-        normalize_var_name::<f64>("x[(2 - 1)]", &env),
-        Some("x[1]".to_string())
+        eval_var_ref_no_subscripts::<f64>("arr[1]", &env).expect("exact scalarized key"),
+        Some(8.5)
     );
     assert_eq!(
-        normalize_var_name::<f64>("x[(3 + 1)]", &env),
-        Some("x[4]".to_string())
+        eval_var_ref_no_subscripts::<f64>("arr", &env).expect("no aggregate recovery"),
+        None
     );
-    assert_eq!(
-        normalize_var_name::<f64>("x[(2 * 3)]", &env),
-        Some("x[6]".to_string())
-    );
-    // Plain integer subscripts are already normalized
-    assert_eq!(normalize_var_name::<f64>("x[1]", &env), None);
-}
-
-#[test]
-fn test_normalize_subscript_variable() {
-    let mut env = VarEnv::<f64>::new();
-    env.set("n", 2.0);
-    assert_eq!(
-        normalize_var_name::<f64>("x[n]", &env),
-        Some("x[2]".to_string())
-    );
-}
-
-#[test]
-fn test_eval_var_ref_subscript_expression() {
-    let mut env = VarEnv::<f64>::new();
-    env.set("x[1]", 42.0);
-    env.set("x[2]", 99.0);
-    env.set("n", 2.0);
-    // x[(2 - 1)] should resolve to x[1] = 42.0
-    assert_eq!(eval_var_ref_no_subscripts::<f64>("x[(2 - 1)]", &env), 42.0);
-    // x[n] should resolve to x[2] = 99.0
-    assert_eq!(eval_var_ref_no_subscripts::<f64>("x[n]", &env), 99.0);
-}
-
-#[test]
-fn test_eval_var_ref_unity_subscript_falls_back_to_base_name() {
-    let mut env = VarEnv::<f64>::new();
-    env.set("arr", 7.5);
-    assert_eq!(eval_var_ref_no_subscripts::<f64>("arr[1]", &env), 7.5);
-}
-
-#[test]
-fn test_eval_var_ref_non_unity_subscript_does_not_fall_back_to_base_name() {
-    let mut env = VarEnv::<f64>::new();
-    env.set("arr", 7.5);
-    assert_eq!(eval_var_ref_no_subscripts::<f64>("arr[2]", &env), 0.0);
 }
 
 #[test]
@@ -567,7 +527,12 @@ fn test_eval_function_call_requires_exact_key_for_qualified_call() {
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     };
-    assert!(eval_expr_or_default::<f64>(&expr, &env).is_nan());
+    assert_eq!(
+        eval_expr::<f64>(&expr, &env),
+        Err(EvalError::MissingFunction {
+            name: "Pkg.localFn".to_string()
+        })
+    );
 }
 
 #[test]
@@ -586,7 +551,12 @@ fn test_eval_function_call_requires_exact_key_for_short_call() {
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     };
-    assert!(eval_expr_or_default::<f64>(&expr, &env).is_nan());
+    assert_eq!(
+        eval_expr::<f64>(&expr, &env),
+        Err(EvalError::MissingFunction {
+            name: "localFn".to_string()
+        })
+    );
 }
 
 #[test]
@@ -605,7 +575,7 @@ fn test_eval_function_call_matches_exact_user_key() {
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), 11.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), 11.0);
 }
 
 #[test]
@@ -638,7 +608,7 @@ fn test_eval_function_call_named_args_bind_by_name() {
             named_ctor_arg("A", lit(5.0)),
         ],
     );
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), 10.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), 10.0);
 }
 
 #[test]
@@ -670,11 +640,11 @@ fn test_eval_function_call_defaults_can_reference_prior_inputs() {
     env.functions = std::sync::Arc::new(funcs);
 
     let expr = fn_call("Pkg.defaults", vec![named_ctor_arg("a", lit(2.0))]);
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), 4.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), 4.0);
 }
 
 #[test]
-fn test_eval_function_call_selected_outputs_and_indexed_assignments() {
+fn test_eval_function_call_uses_structured_indexed_output_selection() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
@@ -714,12 +684,21 @@ fn test_eval_function_call_selected_outputs_and_indexed_assignments() {
 
     let args = vec![arr(vec![int_lit(1), int_lit(2), int_lit(3)], false)];
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.randomLike", args.clone()), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.randomLike", args.clone()), &env),
         0.25
     );
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.randomLike.seedOut[2]", args), &env),
-        22.0
+        eval_expr::<f64>(
+            &index_expr(fn_call("Pkg.randomLike.seedOut", args.clone()), 2),
+            &env
+        ),
+        Ok(22.0)
+    );
+    assert_eq!(
+        eval_expr::<f64>(&fn_call("Pkg.randomLike.seedOut[2]", vec![]), &env),
+        Err(EvalError::MissingFunction {
+            name: "Pkg.randomLike.seedOut[2]".to_string()
+        })
     );
 }
 
@@ -752,7 +731,7 @@ fn test_eval_array_values_collects_function_array_output() {
 
     assert_eq!(
         eval_array_values::<f64>(&fn_call("Pkg.vector", vec![]), &env),
-        vec![2.0, 3.0, 5.0]
+        Ok(vec![2.0, 3.0, 5.0])
     );
 }
 
@@ -787,9 +766,12 @@ fn test_statement_constructor_assignment_materializes_record_fields() {
 
     assert_eq!(
         eval_array_values::<f64>(&var("R.T"), &env),
-        vec![1.0, 2.0, 3.0]
+        Ok(vec![1.0, 2.0, 3.0])
     );
-    assert_eq!(eval_array_values::<f64>(&var("R.w"), &env), vec![4.0, 5.0]);
+    assert_eq!(
+        eval_array_values::<f64>(&var("R.w"), &env),
+        Ok(vec![4.0, 5.0])
+    );
 }
 
 #[test]
@@ -826,7 +808,10 @@ fn test_eval_field_access_array_values_selects_record_function_output() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    assert_eq!(eval_array_values::<f64>(&expr, &env), vec![1.0, 0.0, 0.0]);
+    assert_eq!(
+        eval_array_values::<f64>(&expr, &env),
+        Ok(vec![1.0, 0.0, 0.0])
+    );
 }
 
 #[test]
@@ -973,7 +958,7 @@ fn test_record_function_output_preserves_matrix_product_field_shape() {
 
     assert_eq!(
         eval_array_values::<f64>(&expr, &env),
-        vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        Ok(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
     );
 }
 
@@ -1006,14 +991,10 @@ fn test_shaped_matrix_product_rejects_unshaped_function_output() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    assert!(matches!(
+    assert_eq!(
         eval_shaped_array_values::<f64>(&expr, &env, 9),
-        Err(EvalError::ShapeMismatch {
-            context: "shaped array value",
-            expected: 9,
-            actual: 1,
-        })
-    ));
+        Err(EvalError::UnsupportedExpression { kind: "array" })
+    );
 }
 
 #[test]
@@ -1040,7 +1021,7 @@ fn test_function_array_input_binds_builtin_zeros_shape() {
             ),
             &env
         ),
-        vec![0.0, 0.0, 0.0]
+        Ok(vec![0.0, 0.0, 0.0])
     );
 }
 
@@ -1082,7 +1063,7 @@ fn test_function_array_input_rejects_wrong_shape() {
 }
 
 #[test]
-fn test_eval_function_call_selection_suffix_rejects_malformed_indices() {
+fn test_eval_function_call_selection_suffix_requires_declared_output_name() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();
 
@@ -1099,13 +1080,14 @@ fn test_eval_function_call_selection_suffix_rejects_malformed_indices() {
     funcs.insert("Pkg.randomLikeMalformed".to_string(), random_like);
     env.functions = std::sync::Arc::new(funcs);
 
-    assert!(
-        eval_expr_or_default::<f64>(
+    assert_eq!(
+        eval_expr::<f64>(
             &fn_call("Pkg.randomLikeMalformed.seedOut[idx.re]", vec![]),
             &env
-        )
-        .is_nan(),
-        "malformed selection suffix must not resolve through dotted bracket text"
+        ),
+        Err(EvalError::MissingFunction {
+            name: "Pkg.randomLikeMalformed.seedOut[idx.re]".to_string()
+        })
     );
 }
 
@@ -1134,11 +1116,11 @@ fn test_eval_function_call_selected_complex_output_components() {
     env.functions = std::sync::Arc::new(funcs);
 
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.powerOfJ.x.re", vec![]), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.powerOfJ.x.re", vec![]), &env),
         2.0
     );
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.powerOfJ.x.im", vec![]), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.powerOfJ.x.im", vec![]), &env),
         -3.0
     );
 }
@@ -1168,11 +1150,11 @@ fn test_eval_function_call_selected_complex_output_from_single_arg_constructor()
     env.functions = std::sync::Arc::new(funcs);
 
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.singleArgComplex.x.re", vec![]), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.singleArgComplex.x.re", vec![]), &env),
         1.0
     );
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.singleArgComplex.x.im", vec![]), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.singleArgComplex.x.im", vec![]), &env),
         0.0
     );
 }
@@ -1207,11 +1189,11 @@ fn test_eval_function_call_selected_complex_output_from_plain_complex_call() {
     env.functions = std::sync::Arc::new(funcs);
 
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.plainComplex.x.re", vec![]), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.plainComplex.x.re", vec![]), &env),
         2.0
     );
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.plainComplex.x.im", vec![]), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.plainComplex.x.im", vec![]), &env),
         -3.0
     );
 }
@@ -1242,11 +1224,11 @@ fn test_eval_function_call_selected_complex_output_uses_component_var_ref() {
     env.set("j.im", 1.0);
 
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.negJ.x.re", vec![]), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.negJ.x.re", vec![]), &env),
         0.0
     );
     assert_eq!(
-        eval_expr_or_default::<f64>(&fn_call("Pkg.negJ.x.im", vec![]), &env),
+        eval_expr_value::<f64>(&fn_call("Pkg.negJ.x.im", vec![]), &env),
         -1.0
     );
 }
@@ -1321,7 +1303,7 @@ fn test_eval_function_closure_partial_application_binds_function_input() {
         "Pkg.wrapper",
         vec![fn_call("Pkg.target", vec![lit(2.0), lit(3.0)]), lit(5.0)],
     );
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), 10.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), 10.0);
 }
 
 #[test]
@@ -1383,7 +1365,7 @@ fn test_eval_function_closure_propagates_through_nested_function_arguments() {
         "Pkg.outer",
         vec![fn_call("Pkg.target", vec![lit(2.0), lit(3.0)]), lit(5.0)],
     );
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), 10.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), 10.0);
 }
 
 #[test]
@@ -1409,7 +1391,7 @@ fn test_eval_user_function_binds_record_input_fields_from_varref_argument() {
     env.set("arg.T", 350.0);
 
     let expr = fn_call("Pkg.stateMetric", vec![var("arg")]);
-    assert!((eval_expr_or_default::<f64>(&expr, &env) - 101675.0).abs() < 1e-9);
+    assert!((eval_expr_value::<f64>(&expr, &env) - 101675.0).abs() < 1e-9);
     assert!((eval_expr::<f64>(&expr, &env).expect("strict eval") - 101675.0).abs() < 1e-9);
 }
 
@@ -1524,7 +1506,7 @@ fn test_eval_user_function_binds_record_input_fields_from_field_access_argument(
             span: rumoca_core::Span::DUMMY,
         }],
     );
-    assert!((eval_expr_or_default::<f64>(&expr, &env) - 200500.0).abs() < 1e-9);
+    assert!((eval_expr_value::<f64>(&expr, &env) - 200500.0).abs() < 1e-9);
 }
 
 #[test]
@@ -1565,11 +1547,11 @@ fn test_eval_function_record_field_array_uses_first_element_in_scalar_context() 
         span: rumoca_core::Span::DUMMY,
     };
 
-    assert!((eval_expr_or_default::<f64>(&expr, &env) - 0.25).abs() < 1e-9);
+    assert!((eval_expr_value::<f64>(&expr, &env) - 0.25).abs() < 1e-9);
 }
 
 #[test]
-fn test_eval_function_call_unknown_user_function_returns_nan() {
+fn test_eval_function_call_unknown_user_function_returns_error() {
     let env = VarEnv::<f64>::new();
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new("exlin"),
@@ -1577,8 +1559,33 @@ fn test_eval_function_call_unknown_user_function_returns_nan() {
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     };
-    let got = eval_expr_or_default::<f64>(&expr, &env);
-    assert!(got.is_nan());
+    assert_eq!(
+        eval_expr::<f64>(&expr, &env),
+        Err(EvalError::MissingFunction {
+            name: "exlin".to_string()
+        })
+    );
+}
+
+#[test]
+fn test_eval_function_call_unassigned_output_rejects_instead_of_defaulting_zero() {
+    let mut env = VarEnv::<f64>::new();
+    let mut funcs = IndexMap::new();
+
+    let mut f = rumoca_core::Function::new("Pkg.unassigned", Default::default());
+    f.add_output(rumoca_core::FunctionParam::new("y", "Real"));
+    f.body = vec![rumoca_core::Statement::Empty {
+        span: rumoca_core::Span::DUMMY,
+    }];
+    funcs.insert("Pkg.unassigned".to_string(), f);
+    env.functions = std::sync::Arc::new(funcs);
+
+    assert_eq!(
+        eval_expr::<f64>(&fn_call("Pkg.unassigned", vec![]), &env),
+        Err(EvalError::MissingBinding {
+            name: "y".to_string()
+        })
+    );
 }
 
 #[test]
@@ -1600,7 +1607,7 @@ fn test_eval_function_call_external_stub_falls_back_to_special_handler() {
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&all_true, &env), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&all_true, &env), 1.0);
 
     let one_false = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new("Modelica.Math.BooleanVectors.andTrue"),
@@ -1608,7 +1615,7 @@ fn test_eval_function_call_external_stub_falls_back_to_special_handler() {
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&one_false, &env), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&one_false, &env), 0.0);
 }
 
 #[test]
@@ -1648,5 +1655,5 @@ fn test_runtime_special_function_precedence_over_user_body() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    assert_eq!(eval_expr_or_default::<f64>(&expr, &env), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&expr, &env), 1.0);
 }

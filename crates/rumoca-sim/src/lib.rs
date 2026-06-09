@@ -420,24 +420,27 @@ pub fn runtime_defined_continuous_unknown_names(dae_model: &dae::Dae) -> IndexSe
     rumoca_phase_structural::runtime_defined_continuous_unknown_names(dae_model)
 }
 
-pub fn compiled_layout_binding_debug(dae_model: &dae::Dae, name: &str) -> Option<String> {
-    let layout = rumoca_phase_solve::build_var_layout(dae_model);
-    layout.binding(name).map(|slot| format!("{slot:?}"))
+pub fn compiled_layout_binding_debug(
+    dae_model: &dae::Dae,
+    name: &str,
+) -> Result<Option<String>, rumoca_phase_solve::LowerError> {
+    let layout = rumoca_phase_solve::build_var_layout(dae_model)?;
+    Ok(layout.binding(name).map(|slot| format!("{slot:?}")))
 }
 
 pub fn compiled_layout_related_bindings_debug(
     dae_model: &dae::Dae,
     prefix: &str,
-) -> Vec<(String, String)> {
-    let layout = rumoca_phase_solve::build_var_layout(dae_model);
-    layout
+) -> Result<Vec<(String, String)>, rumoca_phase_solve::LowerError> {
+    let layout = rumoca_phase_solve::build_var_layout(dae_model)?;
+    Ok(layout
         .bindings()
         .iter()
         .filter(|(binding_name, _)| {
             binding_name.starts_with(prefix) && binding_name.as_str() != prefix
         })
         .map(|(binding_name, slot)| (binding_name.to_string(), format!("{slot:?}")))
-        .collect()
+        .collect())
 }
 
 pub use interactive_stepper::InteractiveStepper;

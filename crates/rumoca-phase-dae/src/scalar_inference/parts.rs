@@ -38,7 +38,7 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
             let size = if var_ref.subscripts.is_empty() {
                 compute_var_size(&var.dims)
             } else {
-                compute_subscripted_size(&var.dims, &var_ref.subscripts)
+                compute_subscripted_size_with_context(&var.dims, &var_ref.subscripts, flat)?
             };
             any_found = true;
             max_size = max_size.max(size);

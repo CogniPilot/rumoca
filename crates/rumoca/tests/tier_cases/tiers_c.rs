@@ -12,6 +12,16 @@ mod tier_10h6_range_subscript_der {
     type VarName = rumoca_core::VarName;
     type Variability = rumoca_core::Variability;
 
+    /// Fixtures mirror flatten output, which always carries the structured
+    /// component reference alongside the rendered flat name.
+    fn with_component_ref(mut variable: flat::Variable) -> flat::Variable {
+        variable.component_ref = rumoca_core::component_reference_from_flat_name(
+            &variable.name,
+            rumoca_core::Span::DUMMY,
+        );
+        variable
+    }
+
     fn make_residual_eq(lhs: Expression, rhs: Expression) -> Equation {
         Equation {
             residual: Expression::Binary {
@@ -58,6 +68,54 @@ mod tier_10h6_range_subscript_der {
         }
     }
 
+    fn binary_sub(lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    /// A range-subscripted reference shaped like flatten output: a structured
+    /// base reference with the range in the `VarRef` subscripts, never a
+    /// range rendered into the flat name string.
+    fn var_range(name: &str, start: Expression, end: Expression) -> Expression {
+        Expression::VarRef {
+            name: rumoca_core::Reference::from_component_reference(
+                rumoca_core::component_reference_from_flat_name(
+                    &VarName::new(name),
+                    rumoca_core::Span::DUMMY,
+                )
+                .expect("fixture name must form a component reference"),
+            ),
+            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
+                Expression::Range {
+                    start: Box::new(start),
+                    step: None,
+                    end: Box::new(end),
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ))],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    /// A single expression-subscripted reference shaped like flatten output.
+    fn var_subscripted(name: &str, subscript: Expression) -> Expression {
+        Expression::VarRef {
+            name: rumoca_core::Reference::from_component_reference(
+                rumoca_core::component_reference_from_flat_name(
+                    &VarName::new(name),
+                    rumoca_core::Span::DUMMY,
+                )
+                .expect("fixture name must form a component reference"),
+            ),
+            subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(subscript))],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
     /// MLS §10.6.1: Range subscripts like `der(x[2:n])` should count as n-1
     /// scalar equations, not 1. The range `[2:n]` selects elements 2 through n,
     /// producing n-2+1 = n-1 scalars.
@@ -78,18 +136,18 @@ mod tier_10h6_range_subscript_der {
         // State variable: x with dims [4]
         flat.add_variable(
             VarName::new("x"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("x"),
                 dims: vec![4],
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Parameter: n = 4
         flat.add_variable(
             VarName::new("n"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("n"),
                 variability: Variability::Parameter(Default::default()),
                 binding: Some(Expression::Literal {
@@ -98,25 +156,28 @@ mod tier_10h6_range_subscript_der {
                 }),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Input: u
         flat.add_variable(
             VarName::new("u"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("u"),
                 causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Equation 1: der(x[1]) - u = 0 (1 scalar)
         flat.add_equation(make_residual_eq(der(var("x[1]")), var("u")));
 
         // Equation 2: der(x[2:n]) - x[1:(n - 1)] = 0 (should be 3 scalars)
-        flat.add_equation(make_residual_eq(der(var("x[2:n]")), var("x[1:(n - 1)]")));
+        flat.add_equation(make_residual_eq(
+            der(var_range("x", int(2), var("n"))),
+            var_range("x", int(1), binary_sub(var("n"), int(1))),
+        ));
 
         let dae = to_dae(&flat).unwrap();
 
@@ -129,7 +190,7 @@ mod tier_10h6_range_subscript_der {
 
         // der(x[2:n]) should count as 3 scalars (4-2+1=3), not 1
         assert_eq!(
-            rumoca_phase_dae::balance::balance(&dae),
+            rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
             0,
             "der(x[2:n]) should count as 3 scalar equations (range 2:4 = 3 elements); \
              f_x scalar counts: {:?}",
@@ -158,7 +219,7 @@ mod tier_10h6_range_subscript_der {
         // Parameter array: a with dims [3]
         flat.add_variable(
             VarName::new("a"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("a"),
                 variability: Variability::Parameter(Default::default()),
                 dims: vec![3],
@@ -169,13 +230,13 @@ mod tier_10h6_range_subscript_der {
                 }),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Parameter: nx = size(a, 1) - 1 (binding is a Binary expression)
         flat.add_variable(
             VarName::new("nx"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("nx"),
                 variability: Variability::Parameter(Default::default()),
                 binding: Some(Expression::Binary {
@@ -190,29 +251,29 @@ mod tier_10h6_range_subscript_der {
                 }),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // State: x_scaled with dims [2]
         flat.add_variable(
             VarName::new("x_scaled"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("x_scaled"),
                 dims: vec![2],
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Input: u
         flat.add_variable(
             VarName::new("u"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("u"),
                 causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Equation 1: der(x_scaled[1]) = u (1 scalar)
@@ -220,8 +281,8 @@ mod tier_10h6_range_subscript_der {
 
         // Equation 2: der(x_scaled[2:nx]) = x_scaled[1:(nx-1)] (range 2:2 = 1 scalar)
         flat.add_equation(make_residual_eq(
-            der(var("x_scaled[2:nx]")),
-            var("x_scaled[1:(nx - 1)]"),
+            der(var_range("x_scaled", int(2), var("nx"))),
+            var_range("x_scaled", int(1), binary_sub(var("nx"), int(1))),
         ));
 
         let dae = to_dae(&flat).unwrap();
@@ -235,7 +296,7 @@ mod tier_10h6_range_subscript_der {
 
         // der(x_scaled[2:nx]) where nx=size(a,1)-1=2, range 2:2 = 1 element
         assert_eq!(
-            rumoca_phase_dae::balance::balance(&dae),
+            rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
             0,
             "der(x_scaled[2:nx]) with nx=size(a,1)-1=2 should count as 1 scalar; \
              f_x scalar counts: {:?}",
@@ -261,7 +322,7 @@ mod tier_10h6_range_subscript_der {
         // Parameter: nx = 3
         flat.add_variable(
             VarName::new("nx"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("nx"),
                 variability: Variability::Parameter(Default::default()),
                 binding: Some(Expression::Literal {
@@ -270,75 +331,43 @@ mod tier_10h6_range_subscript_der {
                 }),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // State: x with dims [3]
         flat.add_variable(
             VarName::new("x"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("x"),
                 dims: vec![3],
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Input: u
         flat.add_variable(
             VarName::new("u"),
-            flat::Variable {
+            with_component_ref(flat::Variable {
                 name: VarName::new("u"),
                 causality: rumoca_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
 
         // Equation 1: der(x[nx]) = u (1 scalar, last element)
         flat.add_equation(make_residual_eq(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![Expression::VarRef {
-                    name: VarName::new("x[nx]").into(),
-                    subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
-                }],
-                span: rumoca_core::Span::DUMMY,
-            },
-            Expression::VarRef {
-                name: VarName::new("u").into(),
-                subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            },
+            der(var_subscripted("x", var("nx"))),
+            var("u"),
         ));
 
         // Equation 2: der(x[1:(nx - 1)]) = zeros(nx - 1) (range 1:2 = 2 scalars)
         flat.add_equation(make_residual_eq(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![Expression::VarRef {
-                    name: VarName::new("x[1:(nx - 1)]").into(),
-                    subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
-                }],
-                span: rumoca_core::Span::DUMMY,
-            },
+            der(var_range("x", int(1), binary_sub(var("nx"), int(1)))),
             Expression::BuiltinCall {
                 function: BuiltinFunction::Zeros,
-                args: vec![Expression::Binary {
-                    op: rumoca_core::OpBinary::Sub,
-                    lhs: Box::new(Expression::VarRef {
-                        name: VarName::new("nx").into(),
-                        subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    rhs: Box::new(Expression::Literal {
-                        value: Literal::Integer(1),
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    span: rumoca_core::Span::DUMMY,
-                }],
+                args: vec![binary_sub(var("nx"), int(1))],
                 span: rumoca_core::Span::DUMMY,
             },
         ));
@@ -353,7 +382,7 @@ mod tier_10h6_range_subscript_der {
         // der(x[1:(nx-1)]) where nx=3, range 1:2 = 2 elements
         // Total: 1 + 2 = 3 scalar equations for 3 scalar unknowns
         assert_eq!(
-            rumoca_phase_dae::balance::balance(&dae),
+            rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
             0,
             "der(x[1:(nx-1)]) with nx=3 should count as 2 scalar equations; \
              f_x scalar counts: {:?}",

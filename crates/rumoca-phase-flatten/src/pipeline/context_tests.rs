@@ -45,6 +45,16 @@ mod tests {
         }
     }
 
+    fn fill_expr(value: i64, dims: &[i64]) -> Expression {
+        let mut args = vec![int_lit(value)];
+        args.extend(dims.iter().copied().map(int_lit));
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args,
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
     fn size_dim_expr(name: &str, dim: i64) -> Expression {
         Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Size,
@@ -775,6 +785,59 @@ mod tests {
             vec![4]
         );
         assert_eq!(ctx.array_dimensions.get("a.x"), Some(&vec![4]));
+    }
+
+    #[test]
+    fn colon_component_dimensions_accept_zero_sized_binding_shape() {
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+        let table_name = rumoca_core::VarName::new("table");
+        flat.add_variable(
+            table_name.clone(),
+            flat::Variable {
+                name: table_name.clone(),
+                dims: vec![0, 2],
+                binding: Some(fill_expr(0, &[0, 2])),
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        overlay.components.insert(
+            InstanceId::new(1),
+            InstanceData {
+                instance_id: InstanceId::new(1),
+                qualified_name: QualifiedName::from_dotted("table"),
+                dims_expr: vec![
+                    ast::Subscript::Range {
+                        token: rumoca_core::Token::default(),
+                    },
+                    ast::Subscript::Range {
+                        token: rumoca_core::Token::default(),
+                    },
+                ],
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("zero-sized binding shape should satisfy colon dimensions");
+
+        assert!(!changed);
+        assert_eq!(
+            flat.variables
+                .get(&table_name)
+                .expect("table variable")
+                .dims,
+            vec![0, 2]
+        );
+        assert_eq!(ctx.array_dimensions.get("table"), Some(&vec![0, 2]));
     }
 
     #[test]

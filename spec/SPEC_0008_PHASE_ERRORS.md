@@ -67,6 +67,37 @@ the use site or by the owning spec. They MUST NOT mask errors, unresolved
 references, malformed IR, shape/type mismatches, or missing compiler analysis
 results.
 
+### Option vs Result in Semantic Code
+
+`Option<T>` is allowed only when absence is a valid semantic outcome or when a
+helper is explicitly a non-authoritative pattern recognizer. Examples include
+"this expression is not a record constructor", "this optional annotation is not
+present", or "this backend display hook has no configured label".
+
+Required semantic data MUST use `Result<T, PhaseError>` or an invariant
+`expect(...)`/`panic!(...)` instead of `Option<T>` when absence would mean one
+of the following:
+
+- an MLS-mandated construct is malformed;
+- name lookup, type information, dimensions, bindings, or function metadata
+  were required by the current phase contract;
+- an earlier phase promised the IR was resolved, shaped, lowered, or
+  structurally consistent;
+- continuing would require inventing a scalar shape, zero value, false guard,
+  empty collection, dummy span, first enum variant, textual path, or synthetic
+  component.
+
+Best-effort helpers MUST make their uncertainty explicit in their name or API
+(`try_*`, `maybe_*`, `*_if_present`). Their callers MUST NOT collapse `None`
+into a semantic default when the next operation needs the missing data. Instead
+split the code into a best-effort probe and a required `Result` path at the
+first point where the MLS or IR-stage contract requires the data.
+
+For dimensions, `[]` means scalar only when a prior type/shape fact proves the
+expression is scalar. It MUST NOT also mean "unknown shape". Shape inference
+APIs that can fail to determine required shape must return a distinct
+unknown/error result.
+
 ### Error Propagation Mechanism
 
 Three mechanisms are used; choosing the wrong one defeats the fail-fast contract.

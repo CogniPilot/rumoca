@@ -302,7 +302,7 @@ impl ExpressionVisitor for DerivativeCallChecker {
 }
 
 pub(crate) fn collect_equation_lhs_unknown(
-    lhs: Option<&rumoca_core::VarName>,
+    lhs: Option<&rumoca_core::Reference>,
     resolver: &ScalarUnknownResolver,
     cols: &mut HashSet<usize>,
 ) {
@@ -441,18 +441,22 @@ impl ScalarUnknownResolver {
     }
 }
 
-fn subscript_index_value(sub: &rumoca_core::Subscript) -> Option<i64> {
+fn subscript_index_value(sub: &rumoca_core::Subscript) -> Option<usize> {
     match sub {
-        rumoca_core::Subscript::Index { value: i, .. } => Some(*i),
+        rumoca_core::Subscript::Index { value: i, .. } => {
+            usize::try_from(*i).ok().filter(|index| *index > 0)
+        }
         rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(i),
                 ..
-            } => Some(*i),
+            } => usize::try_from(*i).ok().filter(|index| *index > 0),
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(v),
                 ..
-            } if v.is_finite() && v.fract() == 0.0 => Some(*v as i64),
+            } if v.is_finite() && v.fract() == 0.0 => {
+                usize::try_from(*v as i64).ok().filter(|index| *index > 0)
+            }
             _ => None,
         },
         rumoca_core::Subscript::Colon { .. } => None,
@@ -467,11 +471,11 @@ fn canonical_var_ref_key(
         return Some(name.as_str().to_string());
     }
 
-    let mut index_parts = Vec::with_capacity(subscripts.len());
+    let mut indices = Vec::with_capacity(subscripts.len());
     for sub in subscripts {
-        index_parts.push(subscript_index_value(sub)?.to_string());
+        indices.push(subscript_index_value(sub)?);
     }
-    Some(format!("{}[{}]", name.as_str(), index_parts.join(",")))
+    Some(dae::format_subscript_key(name.as_str(), &indices))
 }
 
 pub(crate) fn collect_expression_unknowns(

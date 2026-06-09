@@ -69,6 +69,17 @@ fn condition_memory_ref(name: &str, index: i64) -> rumoca_core::Expression {
     }
 }
 
+fn condition_lhs(name: &str, index: i64) -> rumoca_core::Reference {
+    rumoca_core::Reference::generated_component(
+        name,
+        vec![rumoca_core::Subscript::generated_index(
+            index,
+            rumoca_core::Span::DUMMY,
+        )],
+        rumoca_core::Span::DUMMY,
+    )
+}
+
 fn embedded_condition_memory_ref(name: &str, index: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new(format!("{name}[{index}]")).into(),
@@ -490,7 +501,7 @@ fn test_runtime_precompute_uses_relation_root_instead_of_duplicate_synthetic_roo
     let mut dae_model = dae_with_if_condition(condition.clone());
     dae_model.conditions.relations = vec![condition.clone()];
     dae_model.conditions.equations = vec![dae::Equation::explicit(
-        rumoca_core::VarName::new("c[1]"),
+        condition_lhs("c", 1),
         condition,
         Span::DUMMY,
         "condition equation from test",
@@ -554,7 +565,7 @@ fn test_runtime_precompute_skips_time_vs_parameter_synthetic_roots() {
     let mut dae_model = dae_with_if_condition(cond.clone());
     dae_model.conditions.relations = vec![cond.clone()];
     dae_model.conditions.equations = vec![dae::Equation::explicit(
-        rumoca_core::VarName::new("c[1]"),
+        condition_lhs("c", 1),
         cond.clone(),
         Span::DUMMY,
         "condition equation from test".to_string(),
@@ -600,13 +611,13 @@ fn test_runtime_precompute_renumbers_condition_partition_after_prune() {
     dae_model.conditions.relations = vec![time_only.clone(), root_cond.clone()];
     dae_model.conditions.equations = vec![
         dae::Equation::explicit(
-            rumoca_core::VarName::new("c[1]"),
+            condition_lhs("c", 1),
             time_only,
             Span::DUMMY,
             "condition equation from test",
         ),
         dae::Equation::explicit(
-            rumoca_core::VarName::new("c[2]"),
+            condition_lhs("c", 2),
             root_cond.clone(),
             Span::DUMMY,
             "condition equation from test",
@@ -618,8 +629,11 @@ fn test_runtime_precompute_renumbers_condition_partition_after_prune() {
     assert_eq!(dae_model.conditions.relations, vec![root_cond.clone()]);
     assert_eq!(dae_model.conditions.equations.len(), 1);
     assert_eq!(
-        dae_model.conditions.equations[0].lhs.as_ref(),
-        Some(&rumoca_core::VarName::new("c[1]")),
+        dae_model.conditions.equations[0]
+            .lhs
+            .as_ref()
+            .map(rumoca_core::Reference::as_str),
+        Some("c[1]"),
         "surviving condition equations must be renumbered after pruning"
     );
     assert_eq!(dae_model.conditions.equations[0].rhs, root_cond);
@@ -638,13 +652,13 @@ fn test_runtime_precompute_reindexes_existing_condition_memory_after_prune() {
     dae_model.conditions.relations = vec![time_only.clone(), root_cond.clone()];
     dae_model.conditions.equations = vec![
         dae::Equation::explicit(
-            rumoca_core::VarName::new("c[1]"),
+            condition_lhs("c", 1),
             time_only,
             Span::DUMMY,
             "condition equation from test",
         ),
         dae::Equation::explicit(
-            rumoca_core::VarName::new("c[2]"),
+            condition_lhs("c", 2),
             root_cond.clone(),
             Span::DUMMY,
             "condition equation from test",
@@ -718,19 +732,19 @@ fn test_runtime_precompute_reindexes_nested_condition_memory_in_fc_after_prune()
     dae_model.conditions.relations = vec![time_only.clone(), root_cond, nested_cond];
     dae_model.conditions.equations = vec![
         dae::Equation::explicit(
-            rumoca_core::VarName::new("c[1]"),
+            condition_lhs("c", 1),
             time_only,
             Span::DUMMY,
             "condition equation from test",
         ),
         dae::Equation::explicit(
-            rumoca_core::VarName::new("c[2]"),
+            condition_lhs("c", 2),
             dae_model.conditions.relations[1].clone(),
             Span::DUMMY,
             "condition equation from test",
         ),
         dae::Equation::explicit(
-            rumoca_core::VarName::new("c[3]"),
+            condition_lhs("c", 3),
             dae_model.conditions.relations[2].clone(),
             Span::DUMMY,
             "condition equation from nested condition",
@@ -1006,14 +1020,14 @@ fn test_runtime_precompute_propagates_no_argument_clock_guard_timing() {
     }
     let clock_span = Span::from_offsets(rumoca_core::SourceId::DUMMY, 1_000, 1_005);
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("u")),
+        lhs: Some(rumoca_core::VarName::new("u").into()),
         rhs: clock_call(0.02),
         span: Span::DUMMY,
         origin: "u = Clock(0.02)".to_string(),
         scalar_count: 1,
     });
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("dummy")),
+        lhs: Some(rumoca_core::VarName::new("dummy").into()),
         rhs: if_then_else(
             no_argument_clock_call(clock_span),
             var("u"),
@@ -1024,7 +1038,7 @@ fn test_runtime_precompute_propagates_no_argument_clock_guard_timing() {
         scalar_count: 1,
     });
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("b")),
+        lhs: Some(rumoca_core::VarName::new("b").into()),
         rhs: if_then_else(
             no_argument_clock_call(clock_span),
             rumoca_core::Expression::Unary {
@@ -1380,7 +1394,7 @@ fn test_runtime_precompute_records_per_variable_clock_phase() {
         dae::Variable::new(rumoca_core::VarName::new("y")),
     );
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("u")),
+        lhs: Some(rumoca_core::VarName::new("u").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("shiftSample").into(),
             args: vec![clock_call(0.02), lit(4.0), lit(3.0)],
@@ -1392,7 +1406,7 @@ fn test_runtime_precompute_records_per_variable_clock_phase() {
         scalar_count: 1,
     });
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("backSample").into(),
             args: vec![var("u"), lit(4.0), lit(3.0)],

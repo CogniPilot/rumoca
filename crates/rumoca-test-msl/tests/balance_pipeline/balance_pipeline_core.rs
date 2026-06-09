@@ -498,6 +498,7 @@ fn compile_timeout_phase_result(
         phase: failed_phase,
         error: timeout_message(model_name, elapsed_secs, phase_timeout_secs, active_phase),
         error_code: Some(MODEL_ATTEMPT_TIMEOUT_ERROR_CODE.to_string()),
+        diagnostics: Vec::new(),
     }
 }
 
@@ -661,6 +662,7 @@ fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send + '
                 phase: FailedPhase::ToDae,
                 error: format!("failed to spawn model worker: {err}"),
                 error_code: Some(MODEL_ATTEMPT_TIMEOUT_ERROR_CODE.to_string()),
+                diagnostics: Vec::new(),
             }),
             0.0,
             budget_secs,
@@ -701,6 +703,7 @@ fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send + '
                 phase: FailedPhase::ToDae,
                 error: "model worker disconnected before reporting a result".to_string(),
                 error_code: Some(MODEL_ATTEMPT_TIMEOUT_ERROR_CODE.to_string()),
+                diagnostics: Vec::new(),
             }),
             0.0,
             budget_secs,
@@ -721,6 +724,7 @@ fn model_worker_failure_entry(
             phase: FailedPhase::ToDae,
             error: error.into(),
             error_code: Some(error_code.to_string()),
+            diagnostics: Vec::new(),
         }),
         0.0,
         budget_secs,

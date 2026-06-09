@@ -5,24 +5,24 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("test.p"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("test.p"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("test.conn.field"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("test.conn.field"),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             connected: true,
             dims: vec![2, 3],
             ..Default::default()
-        },
+        }),
     );
 
     add_component_equation(&mut flat, "test.conn[1].field[2]", make_var_ref("test.p"));

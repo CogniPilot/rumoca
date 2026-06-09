@@ -1020,7 +1020,7 @@ mod tests {
     #[test]
     fn full_ad_seeds_parameter_slots_after_solver_y_slots() {
         let dae = decay_dae();
-        let layout = build_var_layout(&dae);
+        let layout = build_var_layout(&dae).expect("test DAE layout should build");
         let rows = lower_residual_full_ad(&dae, &layout).expect("lower full AD");
 
         assert!(
@@ -1035,7 +1035,7 @@ mod tests {
     #[test]
     fn solver_ad_keeps_parameters_unseeded_for_diffsol_jacobian() {
         let dae = decay_dae();
-        let layout = build_var_layout(&dae);
+        let layout = build_var_layout(&dae).expect("test DAE layout should build");
         let rows = lower_residual_ad(&dae, &layout).expect("lower solver AD");
 
         assert!(

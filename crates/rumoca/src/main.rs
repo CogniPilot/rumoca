@@ -1818,6 +1818,26 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         Some(p) => PathBuf::from(p),
         None => PathBuf::from(format!("{}_results.html", run.model)),
     };
+    // `-o` must honor the requested format: writing HTML into a `.csv` file
+    // silently hands the user a broken artifact.
+    let extension = out_path
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("html") | None => {}
+        Some("csv") => {
+            rumoca_sim::report::write_csv_results(&sim, &out_path)?;
+            println!("{}", out_path.display());
+            return Ok(());
+        }
+        Some(other) => {
+            anyhow::bail!(
+                "unsupported simulation output extension `.{other}` for `{}`: \
+                 use `.html` for the report or `.csv` for raw results",
+                out_path.display()
+            );
+        }
+    }
     let request_summary = SimulationRequestSummary {
         solver: run.solver_label.to_string(),
         t_start: opts.t_start,

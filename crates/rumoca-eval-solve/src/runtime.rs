@@ -17,8 +17,8 @@ use crate::runtime_events::{
     visible_values_with_context,
 };
 use crate::{
-    self as solve_eval, PreparedComputeBlock, PreparedScalarProgramBlock, RowEvalContext,
-    to_scalar_program_block,
+    self as solve_eval, EvalSolveError, PreparedComputeBlock, PreparedScalarProgramBlock,
+    RowEvalContext, to_scalar_program_block,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1680,8 +1680,8 @@ pub fn apply_discrete_slot_value(
     y: &mut [f64],
     p: &mut [f64],
     tol: f64,
-) -> bool {
-    solve_eval::apply_scalar_slot_value(target, value, y, p, tol).unwrap_or(false)
+) -> Result<bool, EvalSolveError> {
+    solve_eval::apply_scalar_slot_value(target, value, y, p, tol)
 }
 
 #[cfg(test)]

@@ -318,7 +318,7 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
     _resolve_context: &str,
     ancestors: &[&ClassDef],
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     const MAX_PASSES: usize = 5;
     for _pass in 0..MAX_PASSES {
         let prev = ctx.parameter_values.len()
@@ -328,7 +328,7 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
             + ctx.enum_parameter_values.len()
             + ctx.constant_values.len();
         for ancestor in ancestors {
-            let ancestor_scope = class_scope_name(tree, ancestor);
+            let ancestor_scope = class_scope_name(tree, ancestor)?;
             for ext in &ancestor.extends {
                 extract_extends_modification_constants(
                     tree,
@@ -351,14 +351,37 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
             break;
         }
     }
+    Ok(())
 }
 
-fn class_scope_name(tree: &ClassTree, class_def: &ClassDef) -> String {
-    class_def
-        .def_id
-        .and_then(|def_id| tree.def_map.get(&def_id))
-        .cloned()
-        .unwrap_or_else(|| class_def.name.text.to_string())
+fn class_scope_name(tree: &ClassTree, class_def: &ClassDef) -> Result<String, FlattenError> {
+    let span = class_def_span(tree, class_def);
+    let def_id = class_def.def_id.ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            class_def.name.text.to_string(),
+            "ancestor constant injection",
+            span,
+        )
+    })?;
+    tree.def_map.get(&def_id).cloned().ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            class_def.name.text.to_string(),
+            "ancestor constant injection",
+            span,
+        )
+    })
+}
+
+fn class_def_span(tree: &ClassTree, class_def: &ClassDef) -> rumoca_core::Span {
+    if class_def.location.file_name.is_empty() || class_def.location.start >= class_def.location.end
+    {
+        return rumoca_core::Span::DUMMY;
+    }
+    tree.source_map.location_to_span(
+        &class_def.location.file_name,
+        class_def.location.start as usize,
+        class_def.location.end as usize,
+    )
 }
 
 /// Extract integer constants and array dimensions from a class definition (MLS §4.5).
@@ -1936,6 +1959,11 @@ pub(crate) struct Context {
     /// "battery2.cellData.nRC" to "cellData2.nRC".
     pub record_aliases:
         rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
+    /// Direct instance members keyed by their parent instance scope.
+    ///
+    /// Flatten qualification uses this to apply MLS §5.3 direct-member lookup
+    /// before imports without recovering hierarchy from rendered flat names.
+    pub(crate) component_members: super::component_member_scope::ComponentMemberScopes,
     /// VCG isRoot results: path -> true if this node is the root of its component (MLS §9.4).
     pub vcg_is_root: rustc_hash::FxHashMap<String, bool>,
     /// VCG rooted results: path -> true if this node is on the "rooted" side (MLS §9.4).
@@ -1954,6 +1982,8 @@ pub(crate) struct Context {
     /// Canonical class scope path for the class instance currently being flattened.
     /// Derived from `def_map` via the owning class DefId.
     pub current_class_scope_path: Option<String>,
+    /// Unqualified name of the simulated root model/block for MLS getInstanceName().
+    pub simulated_root_name: Option<String>,
 }
 
 #[cfg(test)]

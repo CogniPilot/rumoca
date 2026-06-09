@@ -2,13 +2,13 @@ use std::collections::HashSet;
 
 use indexmap::IndexSet;
 
-use crate::{EquationRef, UnknownId, tear_algebraic_loop};
+use crate::{EquationRef, StructuralError, UnknownId, tear_algebraic_loop};
 
 use super::{
     Dae, DerivativeNameMatcher, Substitution, VarName, algebraic_or_output_unknown,
     apply_substitutions_in_order, can_eliminate_scalar_unknown, can_use_equation_for_elimination,
-    equation_has_state_derivative, expr_contains_var, normalize_unknown_for_dae,
-    stable_solution_for_unknown, substitution_for_var,
+    equation_has_state_derivative, expr_contains_var, stable_solution_for_unknown,
+    substitution_for_var,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -22,19 +22,19 @@ pub(super) fn tear_and_eliminate_loop_block(
     eliminated_eq_indices: &mut Vec<usize>,
     eliminated_eq_flags: &mut [bool],
     eliminated_var_names: &mut Vec<VarName>,
-) {
-    let Some(var_names) = loop_elimination_unknowns(dae, unknowns, runtime_protected_unknowns)
+) -> Result<(), StructuralError> {
+    let Some(var_names) = loop_elimination_unknowns(dae, unknowns, runtime_protected_unknowns)?
     else {
-        return;
+        return Ok(());
     };
     let eq_indices: Vec<usize> = equations.iter().map(|eq| eq.0).collect();
     if !loop_equations_can_be_torn(dae, &eq_indices, state_derivative_matcher) {
-        return;
+        return Ok(());
     }
 
     let local_eq_unknowns = loop_local_incidence(dae, &eq_indices, &var_names, substitutions);
     let Some(tearing) = tear_algebraic_loop(var_names.len(), &local_eq_unknowns) else {
-        return;
+        return Ok(());
     };
 
     let mut loop_substitutions = Vec::new();
@@ -47,45 +47,50 @@ pub(super) fn tear_and_eliminate_loop_block(
             eliminated_eq_flags.len()
         );
         if eliminated_eq_flags[eq_idx] {
-            return;
+            return Ok(());
         }
         let var_name = var_names[local_var].clone();
         let eq_rhs = apply_substitutions_in_order(
             &dae.continuous.equations[eq_idx].rhs,
             &trial_substitutions,
         );
-        let Some(solution) = stable_solution_for_unknown(dae, &eq_rhs, &var_name) else {
-            return;
+        let Some(solution) = stable_solution_for_unknown(dae, &eq_rhs, &var_name)? else {
+            return Ok(());
         };
         trial_substitutions.push(substitution_for_var(
             dae,
             var_name.clone(),
             solution.clone(),
-        ));
+        )?);
         loop_substitutions.push((eq_idx, var_name, solution));
     }
 
     for (eq_idx, var_name, solution) in loop_substitutions {
-        substitutions.push(substitution_for_var(dae, var_name.clone(), solution));
+        substitutions.push(substitution_for_var(dae, var_name.clone(), solution)?);
         eliminated_eq_indices.push(eq_idx);
         eliminated_eq_flags[eq_idx] = true;
         eliminated_var_names.push(var_name);
     }
+    Ok(())
 }
 
 fn loop_elimination_unknowns(
     dae: &Dae,
     unknowns: &[UnknownId],
     runtime_protected_unknowns: &IndexSet<String>,
-) -> Option<Vec<VarName>> {
-    unknowns
-        .iter()
-        .map(|unknown| {
-            let var_name = normalize_unknown_for_dae(dae, algebraic_or_output_unknown(unknown)?);
-            can_eliminate_scalar_unknown(dae, &var_name, runtime_protected_unknowns)
-                .then_some(var_name)
-        })
-        .collect()
+) -> Result<Option<Vec<VarName>>, StructuralError> {
+    let mut var_names = Vec::with_capacity(unknowns.len());
+    for unknown in unknowns {
+        let Some(raw_var_name) = algebraic_or_output_unknown(unknown) else {
+            return Ok(None);
+        };
+        let var_name = raw_var_name.clone();
+        if !can_eliminate_scalar_unknown(dae, &var_name, runtime_protected_unknowns)? {
+            return Ok(None);
+        }
+        var_names.push(var_name);
+    }
+    Ok(Some(var_names))
 }
 
 fn loop_equations_can_be_torn(

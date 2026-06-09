@@ -855,6 +855,7 @@ impl Session {
                 phase,
                 error,
                 error_code,
+                ..
             } => {
                 if let Some(code) = error_code {
                     Err(anyhow::anyhow!("{} error [{}]: {}", phase, code, error))
@@ -886,6 +887,7 @@ impl Session {
                 phase,
                 error,
                 error_code,
+                ..
             } => {
                 if let Some(code) = error_code {
                     Err(anyhow::anyhow!("{} error [{}]: {}", phase, code, error))
@@ -1213,9 +1215,11 @@ impl Session {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let requested = dae_phase_result_requested_message(model_name, &requested_result);
-        if let Some(failure) = dae_phase_result_to_failure(tree, model_name, &requested_result) {
-            failures.push(failure);
-        }
+        failures.extend(dae_phase_result_to_failures(
+            tree,
+            model_name,
+            &requested_result,
+        ));
         if !failures.is_empty() {
             return Err(format_strict_failure_summary(
                 model_name, requested, &failures, 8,
@@ -1310,9 +1314,11 @@ impl Session {
         let requested_result =
             compile_model_dae_internal_with_options(tree, model_name, self.instantiation_options);
         let requested = dae_phase_result_requested_message(model_name, &requested_result);
-        if let Some(failure) = dae_phase_result_to_failure(tree, model_name, &requested_result) {
-            failures.push(failure);
-        }
+        failures.extend(dae_phase_result_to_failures(
+            tree,
+            model_name,
+            &requested_result,
+        ));
         if !failures.is_empty() {
             return Err(format_strict_failure_summary(
                 model_name, requested, &failures, 8,
@@ -1372,13 +1378,23 @@ impl Session {
             &tree.source_map,
             &target_source_files,
         );
-        let target_has_resolve_failures = !resolve_failures.is_empty();
         failures.extend(resolve_failures);
+        // Resolve errors in the target's own files make every later phase a
+        // cascade (unresolved references re-reported as ED008 etc.), so stop
+        // here: one user error, one diagnostic.
+        if !failures.is_empty() {
+            return StrictCompileReport {
+                requested_model: model_name.to_string(),
+                requested_result: None,
+                summary: CompilationSummary::default(),
+                failures,
+                source_map: Some(tree.source_map.clone()),
+            };
+        }
         if !use_compile_cache {
             return finalize_strict_compile_report_from_uncached_targets(
                 tree,
                 model_name,
-                target_has_resolve_failures,
                 failures,
                 &closure.compile_targets,
                 self.instantiation_options,
@@ -1390,13 +1406,7 @@ impl Session {
             ResolveBuildMode::StrictCompileRecovery,
             &closure.compile_targets,
         );
-        finalize_strict_compile_report(
-            tree,
-            model_name,
-            target_has_resolve_failures,
-            failures,
-            results,
-        )
+        finalize_strict_compile_report(tree, model_name, failures, results)
     }
 
     /// Compile a model with an explicit compilation mode.

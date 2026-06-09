@@ -12,7 +12,7 @@ fn default_zero_eval_surface_does_not_grow() {
         DefaultZeroSurface {
             file: "eval/builtin_table.rs",
             source: include_str!("../builtin_table.rs"),
-            expected_matches: 5,
+            expected_matches: 3,
         },
         DefaultZeroSurface {
             file: "eval/clock_eval.rs",
@@ -27,22 +27,22 @@ fn default_zero_eval_surface_does_not_grow() {
         DefaultZeroSurface {
             file: "eval/eval_expr_impl.rs",
             source: include_str!("../eval_expr_impl.rs"),
-            expected_matches: 31,
+            expected_matches: 14,
         },
         DefaultZeroSurface {
             file: "eval/builtin_runtime.rs",
             source: include_str!("../builtin_runtime.rs"),
-            expected_matches: 13,
+            expected_matches: 7,
         },
         DefaultZeroSurface {
             file: "eval/mod.rs",
             source: include_str!("../mod.rs"),
-            expected_matches: 14,
+            expected_matches: 3,
         },
         DefaultZeroSurface {
             file: "eval/special.rs",
             source: include_str!("../special.rs"),
-            expected_matches: 18,
+            expected_matches: 6,
         },
         DefaultZeroSurface {
             file: "eval/table_eval.rs",
@@ -71,7 +71,7 @@ fn production_statement_eval_does_not_call_default_evaluator() {
         .expect("statement source should include production section");
 
     assert!(
-        !production_source.contains("eval_expr_or_default"),
+        !production_source.contains("eval_expr_value"),
         "production algorithm statement evaluation must use fallible expression evaluation"
     );
 }
@@ -170,6 +170,101 @@ fn eval_expr_rejects_colon_subscript_in_scalar_var_ref() {
         eval_expr::<f64>(&indexed, &VarEnv::new()),
         Err(EvalError::UnsupportedExpression {
             kind: "colon subscript",
+        })
+    );
+}
+
+#[test]
+fn try_eval_array_like_rejects_cat_dim2_row_mismatch() {
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: BuiltinFunction::Cat,
+        args: vec![
+            int_lit(2),
+            arr(
+                vec![
+                    arr(vec![lit(1.0), lit(2.0)], false),
+                    arr(vec![lit(3.0), lit(4.0)], false),
+                ],
+                true,
+            ),
+            arr(vec![arr(vec![lit(5.0)], false)], true),
+        ],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_array_like_values::<f64>(&expr, &VarEnv::new()),
+        Err(EvalError::ShapeMismatch {
+            context: "cat rows",
+            expected: 2,
+            actual: 1,
+        })
+    );
+}
+
+#[test]
+fn try_eval_array_like_rejects_invalid_cat_dimension() {
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: BuiltinFunction::Cat,
+        args: vec![
+            lit(1.5),
+            arr(vec![lit(1.0), lit(2.0)], false),
+            arr(vec![lit(3.0), lit(4.0)], false),
+        ],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_array_like_values::<f64>(&expr, &VarEnv::new()),
+        Err(EvalError::UnsupportedExpression {
+            kind: "cat dimension",
+        })
+    );
+}
+
+#[test]
+fn eval_array_like_rejects_missing_array_constructor_dimensions() {
+    assert_eq!(
+        eval_array_like_values::<f64>(&builtin(BuiltinFunction::Zeros, vec![]), &VarEnv::new()),
+        Err(EvalError::UnsupportedExpression {
+            kind: "zeros arguments",
+        })
+    );
+    assert_eq!(
+        eval_array_like_values::<f64>(&builtin(BuiltinFunction::Ones, vec![]), &VarEnv::new()),
+        Err(EvalError::UnsupportedExpression {
+            kind: "ones arguments",
+        })
+    );
+    assert_eq!(
+        eval_array_like_values::<f64>(
+            &builtin(BuiltinFunction::Fill, vec![lit(1.0)]),
+            &VarEnv::new()
+        ),
+        Err(EvalError::UnsupportedExpression {
+            kind: "fill arguments",
+        })
+    );
+}
+
+#[test]
+fn eval_array_like_rejects_invalid_array_constructor_dimensions() {
+    assert_eq!(
+        eval_array_like_values::<f64>(
+            &builtin(BuiltinFunction::Zeros, vec![lit(1.5)]),
+            &VarEnv::new(),
+        ),
+        Err(EvalError::UnsupportedExpression {
+            kind: "array constructor dimension",
+        })
+    );
+    assert_eq!(
+        eval_array_like_values::<f64>(
+            &builtin(BuiltinFunction::Ones, vec![lit(-1.0)]),
+            &VarEnv::new(),
+        ),
+        Err(EvalError::UnsupportedExpression {
+            kind: "array constructor dimension",
         })
     );
 }
@@ -384,8 +479,10 @@ fn eval_expr_rejects_ragged_external_table_data() {
 
     assert_eq!(
         eval_expr::<f64>(&constructor, &VarEnv::new()),
-        Err(EvalError::UnsupportedExpression {
-            kind: "external table data",
+        Err(EvalError::ShapeMismatch {
+            context: "matrix literal",
+            expected: 2,
+            actual: 1,
         })
     );
 }
@@ -534,6 +631,43 @@ fn eval_expr_rejects_zero_step_range_in_checked_array_builtin() {
 }
 
 #[test]
+fn eval_expr_rejects_malformed_builtin_arity_with_span() {
+    let span =
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("arity.mo"), 4, 12);
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: BuiltinFunction::Atan2,
+        args: vec![lit(1.0)],
+        span,
+    };
+
+    let err = eval_expr::<f64>(&expr, &VarEnv::new()).expect_err("atan2 arity must fail");
+    assert_eq!(
+        err,
+        EvalError::UnsupportedExpression {
+            kind: "builtin arity",
+        }
+        .with_span_if_missing(span)
+    );
+    assert_eq!(err.source_span(), Some(span));
+}
+
+#[test]
+fn eval_expr_rejects_malformed_homotopy_arity() {
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: BuiltinFunction::Homotopy,
+        args: vec![],
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_expr::<f64>(&expr, &VarEnv::new()),
+        Err(EvalError::UnsupportedExpression {
+            kind: "homotopy arity",
+        })
+    );
+}
+
+#[test]
 fn eval_expr_accepts_valid_range_in_checked_array_builtin() {
     let range = rumoca_core::Expression::Range {
         start: Box::new(int_lit(1)),
@@ -592,6 +726,55 @@ fn eval_expr_rejects_ragged_interleaved_matrix_column() {
 }
 
 #[test]
+fn eval_array_values_rejects_ragged_matrix_literal_rows() {
+    let expr = arr(
+        vec![
+            arr(vec![lit(1.0), lit(2.0)], false),
+            arr(vec![lit(3.0)], false),
+        ],
+        true,
+    );
+
+    assert_eq!(
+        eval_array_values::<f64>(&expr, &VarEnv::new()),
+        Err(EvalError::ShapeMismatch {
+            context: "matrix literal",
+            expected: 2,
+            actual: 1,
+        })
+    );
+}
+
+#[test]
+fn eval_matrix_values_rejects_declared_dimension_value_count_mismatch() {
+    let mut env = VarEnv::<f64>::new();
+    set_array_entries(&mut env, "x", &[3], &[1.0, 2.0, 3.0]);
+    env.dims = Arc::new(IndexMap::from([("x".to_string(), vec![2, 2])]));
+
+    assert_eq!(
+        eval_matrix_values::<f64>(&var("x"), &env),
+        Err(EvalError::ShapeMismatch {
+            context: "declared array dimensions",
+            expected: 4,
+            actual: 3,
+        })
+    );
+}
+
+#[test]
+fn eval_matrix_values_rejects_missing_declared_dimensions() {
+    let mut env = VarEnv::<f64>::new();
+    set_array_entries(&mut env, "x", &[4], &[1.0, 2.0, 3.0, 4.0]);
+
+    assert_eq!(
+        eval_matrix_values::<f64>(&var("x"), &env),
+        Err(EvalError::MissingBinding {
+            name: "x dimensions".to_string(),
+        })
+    );
+}
+
+#[test]
 fn eval_expr_accepts_singleton_interleaved_matrix_column() {
     let matrix = arr(vec![arr(vec![lit(1.0), lit(2.0)], false), lit(3.0)], true);
     let sum = rumoca_core::Expression::BuiltinCall {
@@ -644,7 +827,7 @@ fn eval_expr_rejects_missing_external_table_lookup_input() {
             int_lit(1),
         ],
     );
-    let table_id = eval_expr_or_default::<f64>(&constructor, &env);
+    let table_id = eval_expr_value::<f64>(&constructor, &env);
     env.set("table_id", table_id);
 
     let lookup = fn_call("getTable1DValue", vec![var("table_id"), int_lit(1)]);
@@ -671,7 +854,7 @@ fn eval_expr_rejects_out_of_range_external_table_lookup_column() {
             int_lit(1),
         ],
     );
-    let table_id = eval_expr_or_default::<f64>(&constructor, &env);
+    let table_id = eval_expr_value::<f64>(&constructor, &env);
     env.set("table_id", table_id);
 
     let lookup = fn_call(
@@ -701,7 +884,7 @@ fn eval_expr_rejects_fractional_external_table_lookup_column() {
             int_lit(1),
         ],
     );
-    let table_id = eval_expr_or_default::<f64>(&constructor, &env);
+    let table_id = eval_expr_value::<f64>(&constructor, &env);
     env.set("table_id", table_id);
 
     let lookup = fn_call("getTable1DValue", vec![var("table_id"), lit(1.5), lit(1.0)]);
@@ -728,7 +911,7 @@ fn eval_expr_accepts_valid_external_table_lookup_column() {
             int_lit(1),
         ],
     );
-    let table_id = eval_expr_or_default::<f64>(&constructor, &env);
+    let table_id = eval_expr_value::<f64>(&constructor, &env);
     env.set("table_id", table_id);
 
     let lookup = fn_call(
@@ -767,7 +950,7 @@ fn fallible_external_table_helpers_reject_invalid_lookup_column() {
             int_lit(1),
         ],
     );
-    let table_id = eval_expr_or_default::<f64>(&constructor, &env);
+    let table_id = eval_expr_value::<f64>(&constructor, &env);
     let tables = external_table_data_for_parameter_values_in(&env, &[table_id]);
 
     assert_eq!(
@@ -794,7 +977,7 @@ fn fallible_external_table_helpers_accept_valid_registered_table() {
             int_lit(1),
         ],
     );
-    let table_id = eval_expr_or_default::<f64>(&constructor, &env);
+    let table_id = eval_expr_value::<f64>(&constructor, &env);
     let tables = external_table_data_for_parameter_values_in(&env, &[table_id]);
 
     assert_eq!(

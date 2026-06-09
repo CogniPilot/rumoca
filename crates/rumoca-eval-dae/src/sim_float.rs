@@ -63,7 +63,6 @@ pub trait SimFloat:
     fn zero() -> Self;
     fn one() -> Self;
     fn infinity() -> Self;
-    fn nan() -> Self;
     fn epsilon() -> Self;
 }
 
@@ -185,9 +184,6 @@ impl SimFloat for f64 {
     }
     fn infinity() -> Self {
         f64::INFINITY
-    }
-    fn nan() -> Self {
-        f64::NAN
     }
     fn epsilon() -> Self {
         f64::EPSILON
@@ -419,12 +415,6 @@ impl SimFloat for Dual {
     fn infinity() -> Self {
         Dual {
             re: f64::INFINITY,
-            du: 0.0,
-        }
-    }
-    fn nan() -> Self {
-        Dual {
-            re: f64::NAN,
             du: 0.0,
         }
     }

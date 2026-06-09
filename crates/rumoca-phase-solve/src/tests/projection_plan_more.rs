@@ -152,7 +152,7 @@ fn solve_problem_records_continuous_row_targets_for_projectors() {
         "force residual-form equation",
     ));
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("height")),
+        lhs: Some(rumoca_core::VarName::new("height").into()),
         rhs: binary(
             rumoca_core::OpBinary::Sub,
             var("height"),
@@ -290,7 +290,7 @@ fn solve_problem_expands_scalarized_record_residual_targets() {
             .insert(rumoca_core::VarName::new(name), scalar_var(name));
     }
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("state")),
+        lhs: Some(rumoca_core::VarName::new("state").into()),
         rhs: var("source"),
         span: Default::default(),
         origin: "scalarized record assignment".to_string(),
@@ -324,7 +324,7 @@ fn scalarized_record_target_names_ignore_only_top_level_nested_suffixes() {
             .algebraics
             .insert(rumoca_core::VarName::new(name), scalar_var(name));
     }
-    let layout = layout::build_var_layout(&dae_model);
+    let layout = layout::build_var_layout(&dae_model).expect("test DAE layout should build");
 
     let names = scalarized_record_target_names("state", &layout).expect("state targets");
     assert!(names.contains(&"state.p".to_string()));
@@ -373,7 +373,7 @@ fn solve_problem_expands_array_explicit_residual_rows() {
         .algebraics
         .insert(rumoca_core::VarName::new("u"), array_var("u", &[2]));
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: var("u"),
         span: rumoca_core::Span::DUMMY,
         origin: "array explicit equation".to_string(),
@@ -620,7 +620,7 @@ fn solve_problem_lowers_runtime_tail_alias_assignments_from_continuous_rows() {
         .discrete_reals
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("table_y")),
+        lhs: Some(rumoca_core::VarName::new("table_y").into()),
         rhs: rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
             span: rumoca_core::Span::DUMMY,
@@ -630,7 +630,7 @@ fn solve_problem_lowers_runtime_tail_alias_assignments_from_continuous_rows() {
         scalar_count: 1,
     });
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("table_y")),
+        lhs: Some(rumoca_core::VarName::new("table_y").into()),
         rhs: var("u"),
         span: Default::default(),
         // MLS §8.3: connection aliases are equations. A runtime-tail
@@ -668,7 +668,7 @@ fn solve_problem_excludes_runtime_tail_aliases_from_implicit_rows() {
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
 
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("table_y")),
+        lhs: Some(rumoca_core::VarName::new("table_y").into()),
         rhs: rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
             span: rumoca_core::Span::DUMMY,
@@ -678,7 +678,7 @@ fn solve_problem_excludes_runtime_tail_aliases_from_implicit_rows() {
         scalar_count: 1,
     });
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("table_y")),
+        lhs: Some(rumoca_core::VarName::new("table_y").into()),
         rhs: var("u"),
         span: Default::default(),
         // MLS Appendix B B.1: runtime-tail aliases constrain discrete/input
@@ -688,7 +688,7 @@ fn solve_problem_excludes_runtime_tail_aliases_from_implicit_rows() {
         scalar_count: 1,
     });
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("clock_y")),
+        lhs: Some(rumoca_core::VarName::new("clock_y").into()),
         rhs: rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(2.0),
             span: rumoca_core::Span::DUMMY,
@@ -725,7 +725,7 @@ fn solve_problem_keeps_discrete_update_aliases_in_implicit_rows() {
         .discrete_reals
         .insert(rumoca_core::VarName::new("clock_c"), scalar_var("clock_c"));
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("clock_y")),
+        lhs: Some(rumoca_core::VarName::new("clock_y").into()),
         rhs: var("clock_c"),
         span: Default::default(),
         // MLS Appendix B B.1b: a discrete variable with its own event
@@ -735,7 +735,7 @@ fn solve_problem_keeps_discrete_update_aliases_in_implicit_rows() {
         scalar_count: 1,
     });
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("clock_c")),
+        lhs: Some(rumoca_core::VarName::new("clock_c").into()),
         rhs: rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(1.0),
             span: rumoca_core::Span::DUMMY,
@@ -773,7 +773,7 @@ fn solve_problem_keeps_static_runtime_tail_color_aliases_out_of_refresh_rows() {
         array_var("world.y_label.cylinders.color", &[2, 3]),
     );
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("world.axisColor_x")),
+        lhs: Some(rumoca_core::VarName::new("world.axisColor_x").into()),
         rhs: rumoca_core::Expression::Array {
             elements: vec![int_expr(0), int_expr(0), int_expr(255)],
             is_matrix: false,
@@ -784,14 +784,14 @@ fn solve_problem_keeps_static_runtime_tail_color_aliases_out_of_refresh_rows() {
         scalar_count: 3,
     });
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("world.axisColor_y")),
+        lhs: Some(rumoca_core::VarName::new("world.axisColor_y").into()),
         rhs: var("world.axisColor_x"),
         span: rumoca_core::Span::DUMMY,
         origin: "static axis color binding".to_string(),
         scalar_count: 3,
     });
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("world.y_label.cylinders.color")),
+        lhs: Some(rumoca_core::VarName::new("world.y_label.cylinders.color").into()),
         rhs: var("world.axisColor_y"),
         span: rumoca_core::Span::DUMMY,
         origin: "component array color binding".to_string(),
@@ -856,7 +856,7 @@ fn solve_problem_accepts_lowered_pre_parameter_rows() {
     }
     insert_pre_parameter(&mut dae_model, "aux");
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: pre_var("aux"),
         span: Default::default(),
         // DAE lowering rewrites pre(aux) to a __pre__.aux parameter before
@@ -887,7 +887,7 @@ fn solve_problem_marks_clocked_target_pre_rows_as_event_entry() {
     dae_model.clocks.intervals.insert("y".to_string(), 0.1);
     insert_pre_parameter(&mut dae_model, "u");
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: pre_var("u"),
         span: Default::default(),
         // Clocked rows read the previous clock tick value for the whole tick;
@@ -922,14 +922,14 @@ fn solve_problem_marks_condition_memory_pre_rows_as_fixed_pre() {
         .insert(rumoca_core::VarName::new("hit"), scalar_var("hit"));
     insert_pre_parameter(&mut dae_model, "c[1]");
     dae_model.conditions.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("c[1]")),
+        lhs: Some(rumoca_core::VarName::new("c[1]").into()),
         rhs: var("u"),
         span: Default::default(),
         origin: "condition memory".to_string(),
         scalar_count: 1,
     });
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("hit")),
+        lhs: Some(rumoca_core::VarName::new("hit").into()),
         rhs: rumoca_core::Expression::If {
             branches: vec![(
                 pre_var("c[1]"),
@@ -974,7 +974,7 @@ fn solve_problem_marks_sample_guarded_discrete_rows_as_fixed_pre() {
         .insert(rumoca_core::VarName::new("z"), scalar_var("z"));
     insert_pre_parameter(&mut dae_model, "z");
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("z")),
+        lhs: Some(rumoca_core::VarName::new("z").into()),
         rhs: rumoca_core::Expression::If {
             branches: vec![(
                 sample_event_indicator_expr(0.0, 0.1),
@@ -1019,7 +1019,7 @@ fn solve_problem_marks_change_guarded_discrete_rows_as_fixed_pre() {
     insert_pre_parameter(&mut dae_model, "x");
     insert_pre_parameter(&mut dae_model, "latched");
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("latched")),
+        lhs: Some(rumoca_core::VarName::new("latched").into()),
         rhs: rumoca_core::Expression::If {
             branches: vec![(change_lowered_expr(var("x"), pre_var("x")), var("x"))],
             else_branch: Box::new(pre_var("latched")),
@@ -1053,7 +1053,7 @@ fn solve_problem_lowers_change_against_left_limit_parameter() {
     }
     insert_pre_parameter(&mut dae_model, "clock");
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("flag")),
+        lhs: Some(rumoca_core::VarName::new("flag").into()),
         rhs: change_lowered_expr(var("clock"), pre_var("clock")),
         span: Default::default(),
         // MLS §3.7.3: change(v) observes v <> pre(v), where pre(v) is the
@@ -1108,7 +1108,7 @@ fn solve_problem_lowers_indexed_change_against_left_limit_parameter() {
         .discrete_valued
         .insert(rumoca_core::VarName::new("flag"), scalar_var("flag"));
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("flag")),
+        lhs: Some(rumoca_core::VarName::new("flag").into()),
         rhs: change_lowered_expr(
             rumoca_core::Expression::Index {
                 base: Box::new(var("clock")),
@@ -1165,7 +1165,10 @@ fn solve_problem_preserves_runtime_event_actions() {
     dae_model.events.event_actions.push(dae::DaeEventAction {
         condition: true_expr.clone(),
         kind: dae::DaeEventActionKind::Assert {
-            message: "assert failed".to_string(),
+            message: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("assert failed".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
         },
         span: rumoca_core::Span::DUMMY,
         origin: "assert action".to_string(),
@@ -1173,7 +1176,10 @@ fn solve_problem_preserves_runtime_event_actions() {
     dae_model.events.event_actions.push(dae::DaeEventAction {
         condition: true_expr,
         kind: dae::DaeEventActionKind::Terminate {
-            message: "finished".to_string(),
+            message: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("finished".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
         },
         span: rumoca_core::Span::DUMMY,
         origin: "terminate action".to_string(),

@@ -1260,7 +1260,7 @@ fn resolve_override_member_name(
     reference: &rumoca_core::Reference,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> Option<String> {
-    if reference_component_ref_is_instance_path(reference, ctx.class_index) {
+    if reference_component_ref_is_instance_path(reference, ctx) {
         return None;
     }
     if let Some(resolved) = resolve_override_member_projection_name(reference, ctx) {
@@ -1325,21 +1325,28 @@ fn resolve_override_member_projection_name(
 
 fn reference_component_ref_is_instance_path(
     reference: &rumoca_core::Reference,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> bool {
-    canonical_instance_reference_name(reference, class_index).is_some()
+    canonical_instance_reference_name(reference, ctx).is_some()
 }
 
 fn canonical_instance_reference_name(
     reference: &rumoca_core::Reference,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> Option<rumoca_core::Reference> {
     let component_ref = reference.component_ref()?;
-    let component_name = ComponentPath::from_component_reference(component_ref).to_flat_string();
-    (component_name != reference.as_str()
-        && class_index.get_by_qualified_name(&component_name).is_none()
+    let component_path = ComponentPath::from_component_reference(component_ref);
+    let component_name = component_path.to_flat_string();
+    let is_known_instance_path = ctx
+        .component_members
+        .is_some_and(|scope| scope.contains_component_path(&component_path));
+    ((is_known_instance_path || component_name != reference.as_str())
+        && ctx
+            .class_index
+            .get_by_qualified_name(&component_name)
+            .is_none()
         && parent_scope(&component_name)
-            .is_none_or(|scope| class_index.get_by_qualified_name(scope).is_none()))
+            .is_none_or(|scope| ctx.class_index.get_by_qualified_name(scope).is_none()))
     .then(|| {
         rumoca_core::Reference::with_component_reference(component_name, component_ref.clone())
     })
@@ -1398,6 +1405,7 @@ pub(crate) struct FunctionOverrideRewriteContext<'a> {
     class_index: &'a rumoca_ir_ast::ClassDefIndex<'a>,
     override_packages: &'a [OverrideTarget],
     override_functions: &'a OverrideFunctionMap,
+    component_members: Option<&'a component_member_scope::ComponentMemberScopes>,
     active_scope: ComponentPath,
     local_def_ids: FxHashSet<rumoca_core::DefId>,
     lexical_package_def_id: Option<rumoca_core::DefId>,
@@ -1418,6 +1426,7 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
             class_index,
             override_packages,
             override_functions,
+            component_members: None,
             active_scope: ComponentPath::root(),
             local_def_ids: FxHashSet::default(),
             lexical_package_def_id: None,
@@ -1427,6 +1436,14 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
 
     fn with_active_scope(mut self, active_scope: ComponentPath) -> Self {
         self.active_scope = active_scope;
+        self
+    }
+
+    fn with_component_member_scope(
+        mut self,
+        component_members: &'a component_member_scope::ComponentMemberScopes,
+    ) -> Self {
+        self.component_members = Some(component_members);
         self
     }
 
@@ -1805,9 +1822,7 @@ impl ExpressionRewriter for FunctionOverrideExpressionRewriter<'_> {
                     span: *span,
                 };
             }
-            if let Some(canonical_name) =
-                canonical_instance_reference_name(name, self.ctx.class_index)
-            {
+            if let Some(canonical_name) = canonical_instance_reference_name(name, self.ctx) {
                 return Expression::VarRef {
                     name: canonical_name,
                     subscripts: rewritten_subscripts,
