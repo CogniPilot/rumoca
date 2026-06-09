@@ -1,0 +1,28 @@
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+file = "perch_replay.mo"
+name = "PerchReplay"
+
+[viewer]
+mode = "results_panel"
+
+[sim]
+solver = "auto"
+t_end = 1.5
+
+[[plot.views]]
+id = "states_time"
+title = "States vs Time"
+type = "timeseries"
+x = "time"
+y = ["*states"]
+
+[[plot.views]]
+id = "perch_3d"
+script_path = "workflows/3_casadi_perch/perch_visual.js"
+title = "3D"
+type = "3d"
+y = []
