@@ -1,0 +1,20 @@
+version = 1
+ir = "dae"
+name = "symforce"
+description = "SymForce Python symbolic DAE export"
+execution_mode = "symbolic"
+deployment_class = "symbolic"
+readiness_level = 1
+
+[capabilities]
+residual_equations = true
+scalar_fallback = true
+initialization = true
+events = true
+forward_ad = true
+dynamic_control_flow = true
+
+
+[[files]]
+path = "{{ model_name }}_symforce.py"
+template = "symforce.py.jinja"

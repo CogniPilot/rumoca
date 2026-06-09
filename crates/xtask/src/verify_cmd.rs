@@ -517,6 +517,8 @@ fn run_template_runtime_checks(root: &Path) -> Result<()> {
         .arg("--test")
         .arg("sympy_template_regression")
         .arg("--test")
+        .arg("symforce_template_regression")
+        .arg("--test")
         .arg("backend_template_runtime_regression")
         .arg("--")
         .arg("--nocapture")
@@ -538,6 +540,7 @@ fn trim_template_runtime_artifacts(root: &Path) -> Result<()> {
         "template_target_ci",
         "standalone_template_regression",
         "sympy_template_regression",
+        "symforce_template_regression",
         "backend_template_runtime_regression",
     ];
     for entry in fs::read_dir(&deps_dir)
