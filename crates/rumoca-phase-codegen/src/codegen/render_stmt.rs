@@ -42,7 +42,7 @@ pub(crate) fn render_equation(eq: &Value, cfg: &ExprConfig) -> RenderResult {
         && !lhs_val.is_none()
         && !lhs_val.is_undefined()
     {
-        let lhs_str = render_explicit_lhs(&lhs_val, cfg);
+        let lhs_str = render_explicit_lhs(&lhs_val, cfg)?;
         let rhs_str = eq
             .get_attr("rhs")
             .and_then(|v| render_expression(&v, cfg))
@@ -102,9 +102,9 @@ pub(crate) fn render_flat_equation(eq: &Value, cfg: &ExprConfig) -> RenderResult
 }
 
 /// Render the LHS of an explicit equation (VarName).
-fn render_explicit_lhs(lhs: &Value, cfg: &ExprConfig) -> String {
+fn render_explicit_lhs(lhs: &Value, cfg: &ExprConfig) -> RenderResult {
     let raw = super::render_expr::render_serialized_name(lhs);
-    super::emitted_symbol_or_fallback(&raw, cfg)
+    super::emitted_symbol(&raw, cfg)
 }
 
 /// Check if a Binary expression's op is Sub or SubElem.
@@ -362,50 +362,43 @@ fn extract_for_loop_index(
     indices: &Option<Value>,
     cfg: &ExprConfig,
 ) -> Result<(String, ForRange), minijinja::Error> {
-    let default = (
-        "i".to_string(),
-        ForRange::StartEnd {
-            start: "1".to_string(),
-            end: "1".to_string(),
-        },
-    );
-
     let Some(indices_val) = indices else {
-        return Ok(default);
+        return Err(render_err("for statement missing iterator indices"));
     };
-    let Ok(first) = indices_val.get_item(&Value::from(0)) else {
-        return Ok(default);
-    };
+    let first = indices_val.get_item(&Value::from(0)).map_err(|err| {
+        render_err(format!(
+            "for statement first iterator is inaccessible: {err}"
+        ))
+    })?;
+    if first.is_none() || first.is_undefined() {
+        return Err(render_err("for statement first iterator is missing"));
+    }
 
     let ident = first
         .get_attr("ident")
-        .ok()
-        .map(|i| {
+        .map_err(|err| render_err(format!("for iterator missing identifier: {err}")))
+        .and_then(|i| {
             // Try AST Token form (ident.text) first
             if let Ok(text) = i.get_attr("text") {
                 let s = text.to_string();
                 if !s.is_empty() {
-                    return s;
+                    return Ok(s);
                 }
             }
             // Fall back to DAE string form (plain String value)
             let s = i.to_string();
             let trimmed = s.trim_matches('"').to_string();
             if trimmed.is_empty() {
-                "i".to_string()
+                Err(render_err("for iterator identifier rendered empty"))
             } else {
-                trimmed
+                Ok(trimmed)
             }
-        })
-        .unwrap_or_else(|| "i".to_string());
+        })?;
 
     let range = if let Ok(range_val) = first.get_attr("range") {
         extract_for_range(&range_val, cfg)?
     } else {
-        ForRange::StartEnd {
-            start: "1".to_string(),
-            end: "1".to_string(),
-        }
+        return Err(render_err("for iterator missing range"));
     };
 
     Ok((ident, range))
@@ -426,10 +419,6 @@ fn extract_for_range(range_val: &Value, cfg: &ExprConfig) -> Result<ForRange, mi
     }
     // Fallback: render as raw expression
     let raw = render_ast_expression(range_val, cfg)?;
-    // Try to parse colon-separated range from the rendered string
-    if let Some(parts) = parse_colon_range(&raw) {
-        return Ok(parts);
-    }
     Ok(ForRange::Raw(raw))
 }
 
@@ -441,11 +430,11 @@ fn extract_for_range_from_ast_range(
     let start = range_node
         .get_attr("start")
         .and_then(|s| render_ast_expression(&s, cfg))
-        .unwrap_or_else(|_| "1".to_string());
+        .map_err(|err| render_err(format!("for range start failed to render: {err}")))?;
     let end = range_node
         .get_attr("end")
         .and_then(|e| render_ast_expression(&e, cfg))
-        .unwrap_or_else(|_| "1".to_string());
+        .map_err(|err| render_err(format!("for range end failed to render: {err}")))?;
     let step = range_node.get_attr("step").ok();
 
     if let Some(ref step_val) = step
@@ -463,23 +452,6 @@ fn extract_for_range_from_ast_range(
     }
 }
 
-/// Try to parse a colon-separated range string like "1:13" or "1:2:13".
-fn parse_colon_range(s: &str) -> Option<ForRange> {
-    let parts: Vec<&str> = s.split(':').collect();
-    match parts.len() {
-        2 => Some(ForRange::StartEnd {
-            start: parts[0].trim().to_string(),
-            end: parts[1].trim().to_string(),
-        }),
-        3 => Some(ForRange::StartStepEnd {
-            start: parts[0].trim().to_string(),
-            step: parts[1].trim().to_string(),
-            end: parts[2].trim().to_string(),
-        }),
-        _ => None,
-    }
-}
-
 /// Render a while loop statement.
 fn render_while_statement(while_stmt: &Value, cfg: &ExprConfig, indent: &str) -> RenderResult {
     let mut result = String::new();
@@ -487,7 +459,7 @@ fn render_while_statement(while_stmt: &Value, cfg: &ExprConfig, indent: &str) ->
     let cond = while_stmt
         .get_attr("cond")
         .and_then(|c| render_ast_expression(&c, cfg))
-        .unwrap_or_else(|_| "true".to_string());
+        .map_err(|err| render_err(format!("while condition failed to render: {err}")))?;
     let stmts = statement_block_statements(while_stmt);
 
     match cfg.if_style {
@@ -577,7 +549,11 @@ fn render_if_branch(
     let cond = block
         .get_attr("cond")
         .and_then(|c| render_ast_expression(&c, cfg))
-        .unwrap_or_else(|_| "true".to_string());
+        .map_err(|err| {
+            render_err(format!(
+                "if branch {index} condition failed to render: {err}"
+            ))
+        })?;
     let stmts = statement_block_statements(block);
 
     match cfg.if_style {
@@ -777,7 +753,7 @@ fn render_assert_statement(assert: &Value, cfg: &ExprConfig, indent: &str) -> Re
 /// Render an AST ComponentReference to a string.
 fn render_component_ref(comp: &Value, cfg: &ExprConfig) -> RenderResult {
     if let Some(s) = comp.as_str() {
-        return Ok(super::emitted_symbol_or_fallback(s, cfg));
+        return super::emitted_symbol(s, cfg);
     }
 
     let parts_val = get_field(comp, "parts")
@@ -806,7 +782,7 @@ fn render_component_ref(comp: &Value, cfg: &ExprConfig) -> RenderResult {
             "ComponentReference resolved to empty name: {comp}"
         )));
     }
-    Ok(super::emitted_symbol_or_fallback(&joined, cfg))
+    super::emitted_symbol(&joined, cfg)
 }
 
 /// Render a single component reference part (identifier + optional subscripts).

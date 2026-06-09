@@ -94,7 +94,7 @@ fn lower_discrete_rhs_holds_clocked_sample_between_clock_ticks() {
     );
     dae_model.clocks.intervals.insert("clock".to_string(), 0.02);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sample,
             args: vec![
@@ -116,7 +116,7 @@ fn lower_discrete_rhs_holds_clocked_sample_between_clock_ticks() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("clocked sample value should lower with target hold");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -153,7 +153,7 @@ fn lower_discrete_rhs_holds_vector_clocked_sample_elements_between_ticks() {
     insert_pre_parameter(&mut dae_model, "u", &[2]);
     dae_model.clocks.intervals.insert("clock".to_string(), 0.02);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sample,
             args: vec![
@@ -178,7 +178,7 @@ fn lower_discrete_rhs_holds_vector_clocked_sample_elements_between_ticks() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("vector clocked sample should lower as scalar sample rows");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -218,7 +218,7 @@ fn lower_discrete_rhs_samples_internal_vector_current_elements_at_initial_clock_
     insert_pre_parameter(&mut dae_model, "u", &[2]);
     dae_model.clocks.intervals.insert("clock".to_string(), 0.02);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new(rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME).into(),
             args: vec![
@@ -241,7 +241,7 @@ fn lower_discrete_rhs_samples_internal_vector_current_elements_at_initial_clock_
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("internal vector clocked sample should lower element-wise");
     let mut y = vec![0.0; layout.y_scalars()];
@@ -293,7 +293,7 @@ fn lower_discrete_rhs_reads_previous_array_from_pre_slots() {
     }
     insert_pre_parameter(&mut dae_model, "u", &[2]);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("previous").into(),
             args: vec![rumoca_core::Expression::VarRef {
@@ -309,7 +309,7 @@ fn lower_discrete_rhs_reads_previous_array_from_pre_slots() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("array-valued previous() should lower element-wise");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -348,7 +348,7 @@ fn lower_discrete_rhs_samples_current_value_at_initial_clock_tick() {
     );
     dae_model.clocks.intervals.insert("clock".to_string(), 0.02);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sample,
             args: vec![
@@ -370,7 +370,7 @@ fn lower_discrete_rhs_samples_current_value_at_initial_clock_tick() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("clocked sample value should lower with target hold");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -416,7 +416,7 @@ fn lower_discrete_rhs_uses_dynamic_clock_var_for_sample_clock() {
         .insert(rumoca_core::VarName::new("clock"), scalar_var("clock"));
     insert_pre_parameter(&mut dae_model, "u", &[]);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sample,
             args: vec![
@@ -438,7 +438,7 @@ fn lower_discrete_rhs_uses_dynamic_clock_var_for_sample_clock() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("sample(value, dynamic clock variable) should lower");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -476,7 +476,7 @@ fn lower_discrete_rhs_treats_sample_parameter_interval_as_periodic_tick() {
         .discrete_valued
         .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sample,
             args: vec![
@@ -498,7 +498,7 @@ fn lower_discrete_rhs_treats_sample_parameter_interval_as_periodic_tick() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("MLS §16.5.1 sample(start, interval) should lower with parameter interval");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -633,7 +633,7 @@ fn lower_expression_maps_random_automatic_seed_runtime_specials() {
         name: rumoca_core::VarName::new("Modelica.Math.Random.Utilities.automaticLocalSeed").into(),
         args: vec![rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String("Controller.noise1".to_string()),
-            span: rumoca_core::Span::DUMMY,
+            span: rumoca_core::Span::from_offsets(rumoca_core::SourceId(92), 10, 29),
         }],
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
@@ -645,7 +645,8 @@ fn lower_expression_maps_random_automatic_seed_runtime_specials() {
 }
 
 #[test]
-fn lower_expression_maps_full_path_name_runtime_special_to_placeholder() {
+fn lower_expression_rejects_unlowered_full_path_name_runtime_special() {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(91), 10, 40);
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("Modelica.Utilities.Files.fullPathName").into(),
         args: vec![rumoca_core::Expression::Literal {
@@ -653,16 +654,16 @@ fn lower_expression_maps_full_path_name_runtime_special_to_placeholder() {
             span: rumoca_core::Span::DUMMY,
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
-    let lowered = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
-        .expect("Modelica.Utilities.Files.fullPathName should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert_eq!(read_reg(&regs, lowered.result), 0.0);
+    let err = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
+        .expect_err("unlowered fullPathName should be rejected");
+    assert_eq!(err.source_span(), Some(span));
 }
 
 #[test]
-fn lower_expression_maps_streams_read_line_runtime_special_to_placeholder() {
+fn lower_expression_rejects_unlowered_streams_read_line_runtime_special() {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(91), 50, 90);
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("Modelica.Utilities.Streams.readLine").into(),
         args: vec![rumoca_core::Expression::Literal {
@@ -670,12 +671,11 @@ fn lower_expression_maps_streams_read_line_runtime_special_to_placeholder() {
             span: rumoca_core::Span::DUMMY,
         }],
         is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
+        span,
     };
-    let lowered = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
-        .expect("Modelica.Utilities.Streams.readLine should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-    assert_eq!(read_reg(&regs, lowered.result), 0.0);
+    let err = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
+        .expect_err("unlowered readLine should be rejected");
+    assert_eq!(err.source_span(), Some(span));
 }
 
 #[test]
@@ -702,7 +702,7 @@ fn lower_expression_maps_stream_connector_intrinsics_to_source_value() {
 }
 
 #[test]
-fn lower_expression_maps_advanced_string_scanner_runtime_special_to_placeholder() {
+fn lower_expression_rejects_unlowered_advanced_string_scanner_runtime_specials() {
     for name in [
         "Modelica.Utilities.Strings.Advanced.scanInteger",
         "Modelica.Utilities.Strings.Advanced.skipWhiteSpace",
@@ -722,10 +722,9 @@ fn lower_expression_maps_advanced_string_scanner_runtime_special_to_placeholder(
             is_constructor: false,
             span: rumoca_core::Span::DUMMY,
         };
-        let lowered = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
-            .unwrap_or_else(|err| panic!("{name} should lower: {err}"));
-        let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-        assert_eq!(read_reg(&regs, lowered.result), 0.0);
+        let err = lower_expression(&expr, &VarLayout::default(), &IndexMap::new())
+            .expect_err("unlowered scanner intrinsic should be rejected");
+        assert!(err.reason().contains("must be lowered"), "{name}: {err}");
     }
 }
 
@@ -764,9 +763,8 @@ fn lower_expression_prefers_find_last_runtime_special_over_user_function_body() 
     let expr = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("Modelica.Utilities.Strings.findLast").into(),
         args: vec![
-            rumoca_core::Expression::VarRef {
-                name: rumoca_core::VarName::new("fileName").into(),
-                subscripts: vec![],
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("file.csv".to_string()),
                 span: rumoca_core::Span::DUMMY,
             },
             rumoca_core::Expression::Literal {
@@ -784,16 +782,10 @@ fn lower_expression_prefers_find_last_runtime_special_over_user_function_body() 
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     };
-    let mut dae_model = dae::Dae::default();
-    dae_model.variables.parameters.insert(
-        rumoca_core::VarName::new("fileName"),
-        scalar_var("fileName"),
-    );
-    let layout = build_var_layout(&dae_model);
-    let lowered = lower_expression(&expr, &layout, &functions)
+    let lowered = lower_expression(&expr, &VarLayout::default(), &functions)
         .expect("findLast should lower through runtime special override");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[0.0], &[], 0.0);
-    assert_eq!(read_reg(&regs, lowered.result), 0.0);
+    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
+    assert_eq!(read_reg(&regs, lowered.result), 5.0);
 }
 
 #[test]
@@ -855,7 +847,7 @@ fn lower_expression_supports_synchronous_value_intrinsics() {
         .variables
         .discrete_reals
         .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
 
     let previous = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::VarName::new("previous").into(),
@@ -909,7 +901,7 @@ fn lower_discrete_rhs_supports_interval_intrinsic_for_clocked_varref_metadata() 
         .insert(rumoca_core::VarName::new("PI.u"), scalar_var("PI.u"));
     dae_model.clocks.intervals.insert("PI.u".to_string(), 0.1);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("PI.Ts")),
+        lhs: Some(rumoca_core::VarName::new("PI.Ts").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("interval").into(),
             args: vec![rumoca_core::Expression::VarRef {
@@ -926,7 +918,7 @@ fn lower_discrete_rhs_supports_interval_intrinsic_for_clocked_varref_metadata() 
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("interval(varref) should lower");
     let (_, output) = eval_linear_ops(&rows[0], &[], &[], 0.0);
 
@@ -946,7 +938,7 @@ fn lower_discrete_rhs_preserves_super_sample_value_form_for_clocked_varref() {
         .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
     dae_model.clocks.intervals.insert("u".to_string(), 0.02);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("superSample").into(),
             args: vec![
@@ -968,7 +960,7 @@ fn lower_discrete_rhs_preserves_super_sample_value_form_for_clocked_varref() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("value-form superSample(var, factor) should lower as value");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -1002,7 +994,7 @@ fn lower_discrete_rhs_uses_target_timing_for_inferred_clock_constructor() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::If {
             branches: vec![(
                 rumoca_core::Expression::BuiltinCall {
@@ -1033,7 +1025,7 @@ fn lower_discrete_rhs_uses_target_timing_for_inferred_clock_constructor() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("inferred Clock() should use target timing metadata");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -1074,7 +1066,7 @@ fn lower_discrete_rhs_uses_triggered_condition_for_event_clock_constructor() {
         .triggered_conditions
         .push(condition.clone());
     dae_model.discrete.valued_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("tick")),
+        lhs: Some(rumoca_core::VarName::new("tick").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("Clock").into(),
             args: vec![condition],
@@ -1086,7 +1078,7 @@ fn lower_discrete_rhs_uses_triggered_condition_for_event_clock_constructor() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("event Clock() should lower");
     let mut p = vec![0.0; layout.p_scalars()];
 

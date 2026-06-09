@@ -94,7 +94,7 @@ fn synthesize_scalar_component_modification_binding(
             .map(|ident| ast::ComponentRefPart { ident, subs: None })
             .collect(),
         def_id: comp.type_name.def_id,
-        span: first_modification_span(comp)?,
+        span: first_modification_span(comp),
     };
     let modifications: Vec<ast::Expression> = comp
         .modifications
@@ -116,13 +116,14 @@ fn synthesize_scalar_component_modification_binding(
         each_flags: vec![false; modification_count],
         final_flags: vec![false; modification_count],
         redeclare_flags: vec![false; modification_count],
-        span: first_modification_span(comp)?,
+        span: first_modification_span(comp),
     })
 }
 
-fn first_modification_span(comp: &ast::Component) -> Option<rumoca_core::Span> {
+fn first_modification_span(comp: &ast::Component) -> rumoca_core::Span {
     comp.modifications
         .values()
         .next()
         .map(ast::Expression::span)
+        .unwrap_or(rumoca_core::Span::DUMMY)
 }

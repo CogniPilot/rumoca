@@ -19,18 +19,29 @@ fn minus_op() -> OpUnary {
 }
 
 fn substitute_var(expr: &Expression, var: &VarName, replacement: &Expression) -> Expression {
+    let substitution = test_substitution(var.as_str(), replacement.clone());
     SubstituteVarRewriter {
-        var,
+        substitution: &substitution,
         replacement,
-        var_dims: &[],
-        replacement_dims: &[],
+        replacement_dims: &substitution.replacement_dims,
     }
     .rewrite_expression(expr)
 }
 
+fn test_substitution(name: &str, expr: Expression) -> Substitution {
+    Substitution {
+        var_name: VarName::new(name),
+        var_ref: Some(reference(name)),
+        expr,
+        var_dims: Vec::new(),
+        replacement_dims: Vec::new(),
+        env_keys: vec![name.to_string()],
+    }
+}
+
 fn var_ref(name: &str) -> Expression {
     Expression::VarRef {
-        name: rumoca_core::Reference::new(name),
+        name: reference(name),
         subscripts: vec![],
         span: rumoca_core::Span::DUMMY,
     }
@@ -38,12 +49,97 @@ fn var_ref(name: &str) -> Expression {
 
 fn var_ref_idx(name: &str, idx: i64) -> Expression {
     Expression::VarRef {
-        name: rumoca_core::Reference::new(name),
+        name: reference(name),
         subscripts: vec![rumoca_core::Subscript::generated_index(
             idx,
             rumoca_core::Span::DUMMY,
         )],
         span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn real(value: f64) -> Expression {
+    Expression::Literal {
+        value: Literal::Real(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn array(elements: Vec<Expression>) -> Expression {
+    Expression::Array {
+        elements,
+        is_matrix: false,
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn der(expr: Expression) -> Expression {
+    Expression::BuiltinCall {
+        function: BuiltinFunction::Der,
+        args: vec![expr],
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
+    Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn residual(lhs: Expression, rhs: Expression, scalar_count: usize, origin: &str) -> dae::Equation {
+    dae::Equation {
+        lhs: None,
+        rhs: binary(OpBinary::Sub, lhs, rhs),
+        span: Span::DUMMY,
+        origin: origin.to_string(),
+        scalar_count,
+    }
+}
+
+fn reference(path: &str) -> rumoca_core::Reference {
+    rumoca_core::Reference::from_component_reference(component_ref(path))
+}
+
+fn component_var(path: &str) -> dae::Variable {
+    let mut var = dae::Variable::new(VarName::new(path));
+    var.component_ref = Some(component_ref(path));
+    var
+}
+
+fn component_ref(path: &str) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span: Span::DUMMY,
+        parts: rumoca_core::split_path_with_indices(path)
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .map(component_ref_part)
+            .collect(),
+        def_id: None,
+    }
+}
+
+fn component_ref_part(part: &str) -> rumoca_core::ComponentRefPart {
+    let scalar = rumoca_core::parse_scalar_name(part);
+    rumoca_core::ComponentRefPart {
+        ident: scalar
+            .as_ref()
+            .map_or(part, |scalar| scalar.base)
+            .to_string(),
+        span: Span::DUMMY,
+        subs: scalar
+            .map(|scalar| {
+                scalar
+                    .indices
+                    .into_iter()
+                    .map(|index| rumoca_core::Subscript::generated_index(index, Span::DUMMY))
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -512,6 +608,34 @@ fn test_substitute_var_does_not_project_scalarized_alias_as_aggregate() {
 }
 
 #[test]
+fn test_substitute_var_rewrites_exact_indexed_component_without_use_site_component_ref() {
+    let expr = Expression::VarRef {
+        name: rumoca_core::Reference::new("vehicle.motor[1].tau_inv"),
+        subscripts: vec![],
+        span: Span::DUMMY,
+    };
+    let substitutions = [Substitution {
+        var_name: VarName::new("vehicle.motor[1].tau_inv"),
+        var_ref: Some(reference("vehicle.motor[1].tau_inv")),
+        expr: var_ref("vehicle.motor[1].tau_inv_mid"),
+        var_dims: Vec::new(),
+        replacement_dims: Vec::new(),
+        env_keys: Vec::new(),
+    }];
+
+    let result = apply_substitutions_to_expr(&expr, &substitutions);
+
+    assert!(
+        matches!(
+            result,
+            Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "vehicle.motor[1].tau_inv_mid" && subscripts.is_empty()
+        ),
+        "exact eliminated indexed component refs must substitute even if a use site lost component_ref metadata"
+    );
+}
+
+#[test]
 fn test_substitute_var_matches_subscripted_aggregate_ref_to_scalarized_unknown() {
     let expr = var_ref_idx("aimc.rotorCage.electroMagneticConverter.i", 2);
     let result = substitute_var(
@@ -557,6 +681,7 @@ fn test_complete_scalar_alias_group_rewrites_aggregate_function_argument() {
     let substitutions = [
         Substitution {
             var_name: VarName::new("vehicle.attitude.omega[1]"),
+            var_ref: Some(reference("vehicle.attitude.omega[1]")),
             expr: var_ref("vehicle.omega[1]"),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
@@ -564,6 +689,7 @@ fn test_complete_scalar_alias_group_rewrites_aggregate_function_argument() {
         },
         Substitution {
             var_name: VarName::new("vehicle.attitude.omega[2]"),
+            var_ref: Some(reference("vehicle.attitude.omega[2]")),
             expr: var_ref("vehicle.omega[2]"),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
@@ -571,6 +697,7 @@ fn test_complete_scalar_alias_group_rewrites_aggregate_function_argument() {
         },
         Substitution {
             var_name: VarName::new("vehicle.attitude.omega[3]"),
+            var_ref: Some(reference("vehicle.attitude.omega[3]")),
             expr: var_ref("vehicle.omega[3]"),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
@@ -590,10 +717,52 @@ fn test_complete_scalar_alias_group_rewrites_aggregate_function_argument() {
 }
 
 #[test]
+fn test_complete_scalar_alias_group_without_exact_var_ref_rewrites_aggregate_function_argument() {
+    let expr = var_ref("vehicle.attitude.omega");
+    let substitutions = [
+        Substitution {
+            var_name: VarName::new("vehicle.attitude.omega[1]"),
+            var_ref: None,
+            expr: var_ref("vehicle.omega[1]"),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            env_keys: Vec::new(),
+        },
+        Substitution {
+            var_name: VarName::new("vehicle.attitude.omega[2]"),
+            var_ref: None,
+            expr: var_ref("vehicle.omega[2]"),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            env_keys: Vec::new(),
+        },
+        Substitution {
+            var_name: VarName::new("vehicle.attitude.omega[3]"),
+            var_ref: None,
+            expr: var_ref("vehicle.omega[3]"),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            env_keys: Vec::new(),
+        },
+    ];
+    let result = apply_substitutions_to_expr(&expr, &substitutions);
+
+    assert!(
+        matches!(
+            result,
+            Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "vehicle.omega" && subscripts.is_empty()
+        ),
+        "complete scalar alias groups from scalarized names should rewrite aggregate vector arguments"
+    );
+}
+
+#[test]
 fn test_single_scalar_alias_does_not_rewrite_aggregate_argument() {
     let expr = var_ref("vehicle.attitude.omega");
     let substitutions = [Substitution {
         var_name: VarName::new("vehicle.attitude.omega[1]"),
+        var_ref: Some(reference("vehicle.attitude.omega[1]")),
         expr: var_ref("vehicle.omega[1]"),
         var_dims: Vec::new(),
         replacement_dims: Vec::new(),
@@ -612,12 +781,36 @@ fn test_single_scalar_alias_does_not_rewrite_aggregate_argument() {
 }
 
 #[test]
+fn test_scalarized_alias_without_exact_var_ref_does_not_rewrite_aggregate_argument() {
+    let expr = var_ref("vehicle.attitude.omega");
+    let substitutions = [Substitution {
+        var_name: VarName::new("vehicle.attitude.omega[1]"),
+        var_ref: None,
+        expr: var_ref("vehicle.omega[1]"),
+        var_dims: Vec::new(),
+        replacement_dims: Vec::new(),
+        env_keys: Vec::new(),
+    }];
+    let result = apply_substitutions_to_expr(&expr, &substitutions);
+
+    assert!(
+        matches!(
+            result,
+            Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "vehicle.attitude.omega" && subscripts.is_empty()
+        ),
+        "a scalarized alias target without exact metadata must not collapse an aggregate argument"
+    );
+}
+
+#[test]
 fn test_substitute_var_projects_subscripted_aggregate_ref_through_aggregate_alias() {
     let expr = var_ref_idx("aimc.rotorCage.electroMagneticConverter.i", 2);
     let result = apply_substitutions_to_expr(
         &expr,
         &[Substitution {
             var_name: VarName::new("aimc.rotorCage.electroMagneticConverter.i"),
+            var_ref: Some(reference("aimc.rotorCage.electroMagneticConverter.i")),
             expr: var_ref("aimc.rotorCage.i"),
             var_dims: vec![3],
             replacement_dims: vec![3],
@@ -633,6 +826,65 @@ fn test_substitute_var_projects_subscripted_aggregate_ref_through_aggregate_alia
                     && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Index { value: 2, .. }])
         ),
         "aggregate alias substitution must rewrite existing subscripted refs before removing the aggregate"
+    );
+}
+
+#[test]
+fn test_complete_scalar_alias_group_rewrites_dynamic_aggregate_slice() {
+    let expr = Expression::VarRef {
+        name: reference("transformerL.i"),
+        subscripts: vec![rumoca_core::Subscript::generated_expr(Box::new(
+            Expression::Range {
+                start: Box::new(Expression::Literal {
+                    value: Literal::Integer(1),
+                    span: Span::DUMMY,
+                }),
+                step: None,
+                end: Box::new(var_ref("m")),
+                span: Span::DUMMY,
+            },
+        ))],
+        span: Span::DUMMY,
+    };
+    let substitutions = [
+        Substitution {
+            var_name: VarName::new("transformerL.i[1]"),
+            var_ref: Some(reference("transformerL.i[1]")),
+            expr: var_ref("transformerL.plug_p.pin[1].i"),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            env_keys: Vec::new(),
+        },
+        Substitution {
+            var_name: VarName::new("transformerL.i[2]"),
+            var_ref: Some(reference("transformerL.i[2]")),
+            expr: var_ref("transformerL.plug_p.pin[2].i"),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            env_keys: Vec::new(),
+        },
+        Substitution {
+            var_name: VarName::new("transformerL.i[3]"),
+            var_ref: Some(reference("transformerL.i[3]")),
+            expr: var_ref("transformerL.plug_p.pin[3].i"),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            env_keys: Vec::new(),
+        },
+    ];
+
+    let result = apply_substitutions_to_expr(&expr, &substitutions);
+
+    assert!(
+        matches!(
+            result,
+            Expression::Index { base, subscripts, .. }
+                if matches!(
+                    base.as_ref(),
+                    Expression::Array { elements, .. } if elements.len() == 3
+                ) && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Expr { .. }])
+        ),
+        "complete scalar alias groups should preserve a dynamic aggregate slice as an index over structured replacement values"
     );
 }
 
@@ -901,7 +1153,7 @@ fn build_test_dae_3eq() -> Dae {
 #[test]
 fn test_eliminate_trivial_simple() {
     let mut dae = build_test_dae_3eq();
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert!(result.blt_error.is_none());
     assert_eq!(result.n_eliminated, 1);
@@ -909,6 +1161,81 @@ fn test_eliminate_trivial_simple() {
     assert_eq!(result.substitutions[0].var_name.as_str(), "z");
     assert_eq!(dae.continuous.equations.len(), 1);
     assert!(!dae.variables.algebraics.contains_key(&VarName::new("z")));
+}
+
+#[test]
+fn test_eliminate_trivial_preserves_scalarized_matrix_derivative_rows() {
+    let mut dae = Dae::new();
+    let mut r = dae::Variable::new(VarName::new("R"));
+    r.dims = vec![3, 3];
+    dae.variables.states.insert(VarName::new("R"), r);
+    let mut skew = dae::Variable::new(VarName::new("skew"));
+    skew.dims = vec![3, 3];
+    dae.variables.algebraics.insert(VarName::new("skew"), skew);
+
+    dae.continuous.equations.push(residual(
+        var_ref("skew"),
+        array(vec![
+            array(vec![real(0.0), real(-1.0), real(0.0)]),
+            array(vec![real(1.0), real(0.0), real(0.0)]),
+            array(vec![real(0.0), real(0.0), real(0.0)]),
+        ]),
+        9,
+        "binding equation for skew",
+    ));
+    dae.continuous.equations.push(residual(
+        der(var_ref("R")),
+        binary(OpBinary::Mul, var_ref("R"), var_ref("skew")),
+        9,
+        "top-level model equation",
+    ));
+
+    crate::scalarize::scalarize_equations(&mut dae).unwrap();
+    let result = eliminate_trivial(&mut dae).expect("elimination should not fail structurally");
+
+    assert!(
+        result.blt_error.is_none(),
+        "scalarized matrix derivative rows must remain matchable: {:?}",
+        result.blt_error
+    );
+    assert_eq!(dae.continuous.equations.len(), 9);
+    for row in 1..=3 {
+        for col in 1..=3 {
+            assert!(
+                dae.continuous.equations.iter().any(|eq| {
+                    expr_contains_der_of(&eq.rhs, &VarName::new(format!("R[{row},{col}]")))
+                }),
+                "missing derivative row for R[{row},{col}]"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_eliminate_trivial_reports_missing_replacement_metadata() {
+    let mut dae = Dae::new();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("z")),
+            rhs: Box::new(var_ref("missing")),
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "bad_metadata".to_string(),
+        scalar_count: 1,
+    });
+
+    let err = eliminate_trivial(&mut dae).expect_err("missing metadata should fail structural IR");
+    assert!(matches!(
+        err,
+        StructuralError::ContractViolation { reason, .. }
+            if reason.contains("missing DAE variable metadata for `missing`")
+    ));
 }
 
 #[test]
@@ -933,7 +1260,7 @@ fn test_eliminate_trivial_reports_blt_singularity() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert!(matches!(
         result.blt_error,
@@ -1006,7 +1333,7 @@ fn test_eliminate_trivial_chain() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert_eq!(result.n_eliminated, 2);
     assert_eq!(dae.continuous.equations.len(), 1);
@@ -1036,7 +1363,7 @@ fn test_eliminate_trivial_alias_pair_two_unknowns() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 1);
     assert_eq!(result.substitutions.len(), 1);
     assert_eq!(dae.continuous.equations.len(), 0);
@@ -1070,12 +1397,58 @@ fn test_eliminate_trivial_alias_pair_prefers_output_elimination() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 1);
     assert_eq!(result.substitutions.len(), 1);
     assert_eq!(result.substitutions[0].var_name.as_str(), "y");
     assert!(!dae.variables.outputs.contains_key(&VarName::new("y")));
     assert!(dae.variables.algebraics.contains_key(&VarName::new("z")));
+}
+
+#[test]
+fn test_eliminate_trivial_alias_keeps_output_with_own_definition() {
+    let mut dae = Dae::new();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+    dae.variables
+        .outputs
+        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("y")),
+            rhs: Box::new(real(2.0)),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "output_definition".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("z")),
+            rhs: Box::new(var_ref("y")),
+            span: rumoca_core::Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "alias_to_defined_output".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .any(|sub| sub.var_name.as_str() == "z")
+    );
+    assert!(dae.variables.outputs.contains_key(&VarName::new("y")));
+    assert!(!dae.variables.algebraics.contains_key(&VarName::new("z")));
 }
 
 #[test]
@@ -1102,7 +1475,7 @@ fn test_eliminate_trivial_keeps_fixed_alias_unknown() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 1);
     assert_eq!(result.substitutions.len(), 1);
     assert_eq!(result.substitutions[0].var_name.as_str(), "z");

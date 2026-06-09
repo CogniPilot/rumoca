@@ -172,9 +172,9 @@ fn load_profiled_model(
         result.dae.variables.algebraics.len(),
         result.dae.continuous.equations.len()
     );
-    let detail = balance_detail(&result.dae);
+    let detail = balance_detail(&result.dae)?;
     println!("Balance detail:\n{detail}");
-    println!("Balance result: {}", balance(&result.dae));
+    println!("Balance result: {}", balance(&result.dae)?);
     debug_log_balance_summary(&result.dae);
     debug_log_unknown_summary(&result.dae);
     if let Some(artifact_dir) = artifact_dir {
@@ -257,7 +257,7 @@ fn format_elapsed_summary(elapsed: &[std::time::Duration]) -> String {
     )
 }
 
-fn inspect_dae_names(dae: &Dae, names: &[String]) {
+fn inspect_dae_names(dae: &Dae, names: &[String]) -> Result<()> {
     for name in names {
         let key = VarName::new(name);
         println!("Inspect name: {name}");
@@ -275,10 +275,11 @@ fn inspect_dae_names(dae: &Dae, names: &[String]) {
             "discrete_valued",
             dae.variables.discrete_valued.get_key_value(&key),
         );
-        inspect_layout_binding(dae, name);
+        inspect_layout_binding(dae, name)?;
         inspect_dae_name_uses(dae, name);
         inspect_dae_function_matches(dae, name);
     }
+    Ok(())
 }
 
 fn inspect_dae_function_matches(dae: &Dae, needle: &str) {
@@ -361,13 +362,14 @@ fn inspect_dae_name_uses(dae: &Dae, name: &str) {
     }
 }
 
-fn inspect_layout_binding(dae: &Dae, name: &str) {
-    if let Some(slot) = compiled_layout_binding_debug(dae, name) {
+fn inspect_layout_binding(dae: &Dae, name: &str) -> Result<()> {
+    if let Some(slot) = compiled_layout_binding_debug(dae, name)? {
         println!("  compiled_layout binding {name}: {slot:?}");
     }
-    for (binding_name, slot) in compiled_layout_related_bindings_debug(dae, name) {
+    for (binding_name, slot) in compiled_layout_related_bindings_debug(dae, name)? {
         println!("  compiled_layout related {binding_name}: {slot:?}");
     }
+    Ok(())
 }
 
 fn inspect_var_collection_uses<'a>(
@@ -459,7 +461,7 @@ fn main() -> Result<()> {
     )?;
 
     if !args.inspect_names.is_empty() {
-        inspect_dae_names(&result.dae, &args.inspect_names);
+        inspect_dae_names(&result.dae, &args.inspect_names)?;
     }
 
     if matches!(args.mode, ProfileMode::Compile) {

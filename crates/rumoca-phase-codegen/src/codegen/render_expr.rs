@@ -228,7 +228,7 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         {
             return Ok(value.clone());
         }
-        Ok(super::emitted_symbol_or_fallback(&raw_name, cfg))
+        super::emitted_symbol(&raw_name, cfg)
     } else if cfg.subscript_underscore {
         // Underscore style: x[1] -> x_1, x[1,2] -> x_1_2.
         let compact_subscripts = subscripts.replace(' ', "");
@@ -236,10 +236,10 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &source_ref) {
             return Ok(symbol);
         }
-        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+        let name = super::emitted_symbol(&raw_name, cfg)?;
         Ok(format!("{}_{}", name, compact_subscripts.replace(',', "_")))
     } else {
-        let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+        let name = super::emitted_symbol(&raw_name, cfg)?;
         Ok(format!("{}[{}]", name, subscripts))
     }
 }
@@ -637,7 +637,7 @@ fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(render_builtin_python(builtin, &args, cfg));
     }
 
-    let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+    let name = super::emitted_symbol(&raw_name, cfg)?;
 
     let args = render_args(func_call, cfg)?;
     Ok(format!("{}({})", name, args))

@@ -33,7 +33,7 @@ pub struct ScopeTree {
 pub struct Scope {
     pub kind: ScopeKind,
     pub parent: Option<ScopeId>,
-    pub members: IndexMap<ComponentPath, DefId>,
+    pub members: IndexMap<ComponentReference, DefId>,
     pub imports: Vec<Import>,
 }
 
@@ -78,12 +78,13 @@ let def_id = scope_tree.lookup_excluding(scope_id, name, Some(self_def_id));
 - Assuming scope IDs are sequential (use `ScopeId` opaque type)
 - Keying scope members by raw strings, `VarName`, or rendered flat names
 - Hashing display text, `String`, `&str`, `VarName`, rendered
-  `ComponentPath`, or rendered `ComponentReference` to stand in for
+  `ComponentReference`, or any compatibility path wrapper to stand in for
   declaration identity
 
-Scope lookup keys are structured component-reference paths while resolution is
-in progress. Once a declaration has been resolved, downstream semantic maps use
-`DefId` as specified by SPEC_0001. Post-resolution string hashing is
+Scope lookup keys are structured component references while resolution is in
+progress. Once a declaration has been resolved, downstream semantic maps use
+`DefId` as specified by SPEC_0001, or a purpose-built structured key whose
+identity is derived from already-resolved IR. Post-resolution string hashing is
 prohibited for compiler identity. Rendered names may be cached for diagnostics,
 serialization, and display, but they are not scope identity.
 

@@ -10,9 +10,15 @@ Several patterns were found that violate the fail-fast contract: builtins with m
 silently emit `0.0` instead of returning an error; a missing record field in function-call lowering
 silently synthesises a fake `Real` parameter, producing semantically incorrect Solve-IR; and
 `Connections.potentialRoot` silently accepts priority `0` when the second argument is not an integer
-literal.  The vast majority of remaining `unwrap_or*` calls are either in display/diagnostic code
-(where a fallback string is acceptable) or in span-recovery paths (where `Span::DUMMY` is the
-agreed sentinel).
+literal.
+
+This document is a point-in-time audit. The governing policy is `SPEC_0008`.
+Current policy is stricter than "warn and continue": when the MLS or an IR
+stage contract requires semantic data, the code must return a phase-local
+`Result` error or use an explicit invariant panic. `Option` is acceptable only
+for true optional semantics or non-authoritative `try_*` probes whose callers
+do not collapse `None` into a guessed semantic default. In particular, `[]`
+must mean proven scalar shape, not unknown shape.
 
 ---
 
@@ -43,7 +49,7 @@ agreed sentinel).
 | 21 | `rumoca-phase-solve/src/lower/derivative_rhs.rs` | 1989 | `declared_function_output_dims(dae_model, name).unwrap_or_default()` — unknown function output dims become `[]` (scalar), which may be wrong for array-returning functions | **Med** | Return a diagnostic when `declared_function_output_dims` returns `None` for a name that appears in a differentiated expression |
 | 22 | `rumoca-phase-dae/src/initial.rs` | 105 | `var.start.clone().unwrap_or_else(|| default_real_start(span))` — if no `start` attribute is set for a fixed-initialization variable, the default `0.0` is used silently | **Low** | This is correct per MLS §8.6 ("start default is 0 for Real"); document with citation |
 | 23 | Multiple files (`rumoca-phase-solve/src/lower.rs`, `rumoca-phase-dae/src/algorithm_lowering.rs`, etc.) | Various | `expr.span().unwrap_or(Span::DUMMY)` — dozens of span recovery sites return a dummy span; this does not affect IR correctness but makes error messages point to the wrong location | **Low** | Acceptable pattern; ensure `Span::DUMMY` is rendered as "unknown location" in diagnostics |
-| 24 | `rumoca-phase-solve/src/lower/array_values/inference.rs` | 17–18, 34, 40, 74, 237–284, 324–390 | Dimension inference returns `unwrap_or_default()` (i.e. `Vec::new()`, scalar) whenever array shape is unknown — propagates scalar assumption through codegen | **Med** | Add a diagnostic warning (or debug-assert) when a non-trivial expression yields unknown dims; callers consuming the result for scalarisation should treat `Vec::new()` as "could not infer, not necessarily scalar" |
+| 24 | `rumoca-phase-solve/src/lower/array_values/inference.rs` | 17–18, 34, 40, 74, 237–284, 324–390 | Dimension inference returns `unwrap_or_default()` (i.e. `Vec::new()`, scalar) whenever array shape is unknown — propagates scalar assumption through codegen | **High** | Split best-effort shape probes from required shape lowering. Callers that need shape for register allocation, indexing, scalarization, or tensor preservation must receive `Result` and fail instead of treating unknown as scalar |
 | 25 | `rumoca-phase-solve/src/lower/function_calls.rs` | 559 | `unwrap_or_else(|| random_generator_state_len(generator))` — if `random_state_len_arg` returns `None`, a fallback generator state length is used silently; wrong length would corrupt the random state slot | **Med** | Assert or return `Err` if the arg cannot be evaluated for a context where the length is critical |
 
 ---
@@ -58,7 +64,7 @@ gated behind `debug_assert!` rather than always-on `assert!`:
 | `tearing_elimination.rs:44` bounds check for `eq_idx` | `debug_assert!(eq_idx < eliminated_eq_flags.len())` | Called in a tight loop over BLT blocks; the invariant is established by construction so `debug_assert!` catches regressions in testing without paying in release |
 | `derivative_rhs.rs:107,179` component map lookup | `debug_assert!(analysis.components.contains_key(&root))` | Per-state in the derivative RHS assembly loop; always-on would be O(n_states) map lookups |
 | `lib.rs:490` `state_derivative_rows` bounds | `debug_assert!(row_idx < state_derivative_rows.len())` | Iterated over all equations; always-on would slow down the filter pass |
-| `inference.rs` array dimension fallback | `debug_assert!(inferred_dims.is_some() || expr_is_trivially_scalar(expr))` | Called during Solve-IR lowering for every expression node |
+| `inference.rs` array dimension fallback | Use `Result` on required-shape paths; reserve `debug_assert!` only for internally proven hot-loop invariants | Called during Solve-IR lowering for every expression node |
 
 For the **High severity** items (items 1–9 above) no gating is needed: the conditions they check
 are either impossible in correct code (so the assert never fires in the hot path) or infrequent
@@ -108,7 +114,7 @@ are either impossible in correct code (so the assert never fires in the hot path
 14. `derivative_rhs.rs:109,181` — replace `unwrap_or_else` with `expect`.
 15. `clock.rs:843` — validate that conflicting timings are detected before `or_insert`.
 16. `derivative_rhs.rs:1989` — emit diagnostic for unknown function output dims in differentiated exprs.
-17. `inference.rs` — add medium-verbosity diagnostic when dims inference falls back to scalar for non-trivial exprs.
+17. `inference.rs` — make required-shape inference return `Result`; unknown shape must not fall back to scalar for non-trivial expressions.
 18. `function_calls.rs:559` — assert or propagate error for random state length inference failure.
 
 ### Low Priority (defensive assertions for future development safety)

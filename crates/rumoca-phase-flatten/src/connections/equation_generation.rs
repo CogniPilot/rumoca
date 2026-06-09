@@ -23,20 +23,15 @@ fn resolve_flow_var_scalar_count(flat: &flat::Model, var: &rumoca_core::VarName)
     if subscripted_base_var(var, flat).is_some() {
         return Some(1);
     }
-    strip_embedded_array_indices(var.as_str()).and_then(|base| {
-        if var.as_str().contains('[') {
-            Some(1)
-        } else {
-            flat.variables
-                .get(&rumoca_core::VarName::new(base))
-                .map(compute_var_scalar_count)
-        }
-    })
+    strip_embedded_array_indices(var.as_str()).map(|_| 1)
 }
 
 pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
     let parts = split_path_with_indices(path);
-    if !parts.iter().any(|p| p.contains('[')) {
+    if !parts
+        .iter()
+        .any(|part| rumoca_core::split_trailing_subscript_suffix(part).is_some())
+    {
         return None;
     }
     Some(

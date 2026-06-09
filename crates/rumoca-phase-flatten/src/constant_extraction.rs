@@ -404,10 +404,15 @@ pub(super) fn collect_when_equation_class_scopes(
         flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
             collect_expression_class_scopes(value, live_vars, def_map, scopes)
         }
-        flat::WhenEquation::Assert { condition, .. } => {
-            collect_expression_class_scopes(condition, live_vars, def_map, scopes)
+        flat::WhenEquation::Assert {
+            condition, message, ..
+        } => {
+            collect_expression_class_scopes(condition, live_vars, def_map, scopes);
+            collect_expression_class_scopes(message, live_vars, def_map, scopes);
         }
-        flat::WhenEquation::Terminate { .. } => {}
+        flat::WhenEquation::Terminate { message, .. } => {
+            collect_expression_class_scopes(message, live_vars, def_map, scopes);
+        }
         flat::WhenEquation::Conditional {
             branches,
             else_branch,

@@ -91,7 +91,7 @@ fn build_condition_equation(
     condition_name: &str,
 ) -> dae::Equation {
     dae::Equation::explicit(
-        rumoca_core::VarName::new(format!("{condition_name}[{condition_index}]")),
+        generated_condition_reference(condition_name, condition_index, candidate.span),
         candidate.expr.clone(),
         candidate.span,
         format!("condition equation from {}", candidate.source),
@@ -117,6 +117,7 @@ fn declare_condition_variable(dae_model: &mut dae::Dae, condition_name: &str) {
                 is_matrix: false,
                 span: rumoca_core::Span::DUMMY,
             }),
+            origin: dae::VariableOrigin::Generated,
             ..Default::default()
         },
     );
@@ -151,6 +152,7 @@ fn declare_condition_pre_parameter(dae_model: &mut dae::Dae, condition_name: &st
             description: Some(format!("pre() of {condition_name}")),
             causality: dae::VariableCausality::CalculatedParameter,
             is_tunable: false,
+            origin: dae::VariableOrigin::Generated,
         });
 }
 
@@ -181,11 +183,27 @@ fn generated_condition_variable_name(dae_model: &dae::Dae) -> Option<String> {
 
 fn rename_condition_equations(dae_model: &mut dae::Dae, condition_name: &str) {
     for (idx, eq) in dae_model.conditions.equations.iter_mut().enumerate() {
-        eq.lhs = Some(rumoca_core::VarName::new(format!(
-            "{condition_name}[{}]",
-            idx.saturating_add(1)
-        )));
+        eq.lhs = Some(generated_condition_reference(
+            condition_name,
+            idx.saturating_add(1),
+            eq.span,
+        ));
     }
+}
+
+fn generated_condition_reference(
+    condition_name: &str,
+    condition_index: usize,
+    span: Span,
+) -> rumoca_core::Reference {
+    rumoca_core::Reference::generated_component(
+        condition_name,
+        vec![rumoca_core::Subscript::generated_index(
+            condition_index as i64,
+            span,
+        )],
+        span,
+    )
 }
 
 fn dae_variable_name_exists(dae_model: &dae::Dae, name: &str) -> bool {
@@ -411,7 +429,7 @@ fn is_sample_tick_condition(expr: &rumoca_core::Expression) -> bool {
 
 fn c_var_ref(condition_name: &str, condition_index: usize, span: Span) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::new(condition_name),
+        name: rumoca_core::Reference::generated_component(condition_name, Vec::new(), span),
         subscripts: vec![rumoca_core::Subscript::generated_index(
             condition_index as i64,
             span,

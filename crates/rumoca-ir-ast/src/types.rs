@@ -89,22 +89,25 @@ impl TypeTable {
 
     /// Get the TypeId for Real.
     pub fn real(&self) -> TypeId {
-        self.lookup("Real").unwrap_or(TypeId::UNKNOWN)
+        self.lookup("Real").expect("primitive Real not registered")
     }
 
     /// Get the TypeId for Integer.
     pub fn integer(&self) -> TypeId {
-        self.lookup("Integer").unwrap_or(TypeId::UNKNOWN)
+        self.lookup("Integer")
+            .expect("primitive Integer not registered")
     }
 
     /// Get the TypeId for Boolean.
     pub fn boolean(&self) -> TypeId {
-        self.lookup("Boolean").unwrap_or(TypeId::UNKNOWN)
+        self.lookup("Boolean")
+            .expect("primitive Boolean not registered")
     }
 
     /// Get the TypeId for String.
     pub fn string(&self) -> TypeId {
-        self.lookup("String").unwrap_or(TypeId::UNKNOWN)
+        self.lookup("String")
+            .expect("primitive String not registered")
     }
 
     /// Get the number of types in the table.

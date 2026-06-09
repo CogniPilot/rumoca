@@ -149,8 +149,9 @@ pub(crate) fn apply_discrete_value(
     y: &mut [f64],
     p: &mut [f64],
     tol: f64,
-) -> bool {
+) -> Result<bool, SimError> {
     apply_discrete_slot_value(target, value, y, p, tol)
+        .map_err(|err| SimError::SolveIr(err.to_string()))
 }
 
 fn project_algebraics_callback(

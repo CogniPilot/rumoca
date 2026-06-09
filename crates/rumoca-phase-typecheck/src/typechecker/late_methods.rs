@@ -765,13 +765,13 @@ impl TypeChecker {
             if modifier_root.is_empty() {
                 continue;
             }
-            if !allowed_roots.contains(modifier_root) {
+            if !allowed_roots.contains(modifier_root.as_str()) {
                 self.emit_unknown_component_modifier(
                     comp_name,
                     comp,
                     modifier_name,
                     modifier_expr,
-                    modifier_root,
+                    modifier_root.as_str(),
                 );
                 continue;
             }
@@ -1143,53 +1143,28 @@ impl TypeChecker {
             || matches!(name, "uncertain" | "distribution")
     }
 
-    fn modifier_root_name(modifier_name: &str) -> &str {
-        let mut bracket_depth = 0usize;
-        let mut segment_end = modifier_name.len();
-        for (idx, ch) in modifier_name.char_indices() {
-            match ch {
-                '[' => bracket_depth += 1,
-                ']' => bracket_depth = bracket_depth.saturating_sub(1),
-                '.' if bracket_depth == 0 => {
-                    segment_end = idx;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        let segment = &modifier_name[..segment_end];
-        segment
-            .split_once('[')
-            .map_or(segment, |(root, _rest)| root)
+    fn modifier_root_name(modifier_name: &str) -> String {
+        let path = rumoca_core::ComponentPath::from_flat_path(modifier_name);
+        let segment = path.parts().first().map_or(modifier_name, String::as_str);
+        rumoca_core::split_trailing_subscript_suffix(segment)
+            .map_or(segment, |(root, _subscript)| root)
+            .to_string()
     }
 
     fn modifier_segments(modifier_name: &str) -> Vec<String> {
-        let mut segments = Vec::new();
-        let mut bracket_depth = 0usize;
-        let mut start = 0usize;
-        for (idx, ch) in modifier_name.char_indices() {
-            match ch {
-                '[' => bracket_depth += 1,
-                ']' => bracket_depth = bracket_depth.saturating_sub(1),
-                '.' if bracket_depth == 0 => {
-                    segments.push(Self::normalize_modifier_segment(&modifier_name[start..idx]));
-                    start = idx + 1;
-                }
-                _ => {}
-            }
-        }
-        segments.push(Self::normalize_modifier_segment(&modifier_name[start..]));
-        segments
-            .into_iter()
+        rumoca_core::ComponentPath::from_flat_path(modifier_name)
+            .parts()
+            .iter()
+            .map(String::as_str)
+            .map(Self::normalize_modifier_segment)
             .filter(|segment| !segment.is_empty())
             .collect()
     }
 
     fn normalize_modifier_segment(segment: &str) -> String {
         let trimmed = segment.trim();
-        let root = trimmed
-            .split_once('[')
-            .map_or(trimmed, |(prefix, _rest)| prefix);
+        let root = rumoca_core::split_trailing_subscript_suffix(trimmed)
+            .map_or(trimmed, |(prefix, _subscript)| prefix);
         root.trim().to_string()
     }
 

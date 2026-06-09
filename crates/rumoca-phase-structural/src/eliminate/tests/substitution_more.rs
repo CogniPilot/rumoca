@@ -24,7 +24,7 @@ fn test_eliminate_trivial_keeps_runtime_partition_defined_output() {
     });
 
     dae.discrete.real_updates.push(dae::Equation {
-        lhs: Some(VarName::new("y")),
+        lhs: Some(VarName::new("y").into()),
         rhs: Expression::Binary {
             op: sub_op(),
             lhs: Box::new(var_ref("y")),
@@ -36,7 +36,7 @@ fn test_eliminate_trivial_keeps_runtime_partition_defined_output() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 0);
     assert!(
         result.substitutions.is_empty(),
@@ -103,7 +103,7 @@ fn test_eliminate_trivial_keeps_branch_local_analog_helper_unknown() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert!(
         result
@@ -127,7 +127,7 @@ fn test_eliminate_trivial_keeps_lhs_homotopy_unknown() {
         .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
 
     dae.continuous.equations.push(dae::Equation {
-        lhs: Some(VarName::new("z")),
+        lhs: Some(VarName::new("z").into()),
         rhs: Expression::BuiltinCall {
             function: BuiltinFunction::Homotopy,
             args: vec![var_ref("x"), lit(1.0)],
@@ -138,14 +138,14 @@ fn test_eliminate_trivial_keeps_lhs_homotopy_unknown() {
         scalar_count: 1,
     });
     dae.continuous.equations.push(dae::Equation {
-        lhs: Some(VarName::new("x")),
+        lhs: Some(VarName::new("x").into()),
         rhs: lit(2.0),
         span: Span::DUMMY,
         origin: "x assignment".to_string(),
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert!(
         result
@@ -169,7 +169,7 @@ fn test_eliminate_trivial_applies_substitutions_to_initial_equations() {
         .insert(VarName::new("b"), dae::Variable::new(VarName::new("b")));
 
     dae.continuous.equations.push(dae::Equation {
-        lhs: Some(VarName::new("a")),
+        lhs: Some(VarName::new("a").into()),
         rhs: lit(1.0),
         span: Span::DUMMY,
         origin: "a assignment".to_string(),
@@ -188,7 +188,7 @@ fn test_eliminate_trivial_applies_substitutions_to_initial_equations() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert!(
         result
@@ -245,7 +245,7 @@ fn test_eliminate_trivial_blt_keeps_fixed_alias_unknown_against_state() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     assert!(
         dae.variables.algebraics.contains_key(&VarName::new("y")),
@@ -312,7 +312,7 @@ fn test_eliminate_trivial_direct_assignment_with_multiple_live_unknowns() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 1);
     assert_eq!(result.substitutions.len(), 1);
     assert_eq!(result.substitutions[0].var_name.as_str(), "z");
@@ -372,7 +372,7 @@ fn test_eliminate_trivial_allows_output_if_assignment() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
 
     // Non-trivial output expressions (if-then-else) should be preserved so
     // they remain visible in codegen output.
@@ -430,7 +430,7 @@ fn test_eliminate_trivial_handles_singleton_array_alias_equation() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 2);
     assert!(
         result
@@ -489,7 +489,7 @@ fn test_eliminate_trivial_derstate_kept() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 0);
     assert_eq!(dae.continuous.equations.len(), 1);
 }
@@ -521,7 +521,7 @@ fn test_eliminate_trivial_eliminates_array_alias_equations() {
         scalar_count: 3,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 1);
     assert_eq!(dae.continuous.equations.len(), 0);
     assert!(dae.variables.algebraics.contains_key(&VarName::new("arr")));
@@ -560,14 +560,14 @@ fn test_eliminate_trivial_keeps_discrete_path_connection_array_alias() {
         scalar_count: 3,
     });
     dae.discrete.real_updates.push(dae::Equation {
-        lhs: Some(VarName::new("plug.pin.i")),
+        lhs: Some(VarName::new("plug.pin.i").into()),
         rhs: var_ref("source"),
         span: Span::DUMMY,
         origin: "when".to_string(),
         scalar_count: 3,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 0);
     assert_eq!(dae.continuous.equations.len(), 1);
     assert!(dae.variables.algebraics.contains_key(&VarName::new("arr")));
@@ -615,7 +615,7 @@ fn test_eliminate_trivial_preserves_event_referenced_array_alias() {
             span: rumoca_core::Span::DUMMY,
         });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 1);
     assert!(
         dae.variables
@@ -658,7 +658,7 @@ fn test_eliminate_trivial_eliminates_output_array_alias_equations() {
         scalar_count: 3,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 1);
     assert_eq!(dae.continuous.equations.len(), 0);
     assert!(
@@ -673,13 +673,13 @@ fn test_eliminate_trivial_eliminates_output_array_alias_equations() {
 fn test_eliminate_trivial_drops_unknown_free_record_shell_alias() {
     let mut dae = Dae::new();
 
-    let mut lhs_field = dae::Variable::new(VarName::new("a.R.w"));
+    let mut lhs_field = component_var("a.R.w");
     lhs_field.dims = vec![3];
     dae.variables
         .algebraics
         .insert(VarName::new("a.R.w"), lhs_field);
 
-    let mut rhs_field = dae::Variable::new(VarName::new("b.R.w"));
+    let mut rhs_field = component_var("b.R.w");
     rhs_field.dims = vec![3];
     dae.variables
         .algebraics
@@ -710,7 +710,7 @@ fn test_eliminate_trivial_drops_unknown_free_record_shell_alias() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 2);
     assert!(
         dae.continuous.equations.is_empty(),
@@ -722,7 +722,7 @@ fn test_eliminate_trivial_drops_unknown_free_record_shell_alias() {
 fn test_eliminate_trivial_keeps_indexed_output_assignment() {
     let mut dae = Dae::new();
 
-    let mut out = dae::Variable::new(VarName::new("out"));
+    let mut out = component_var("out");
     out.dims = vec![3];
     dae.variables.outputs.insert(VarName::new("out"), out);
 
@@ -739,7 +739,7 @@ fn test_eliminate_trivial_keeps_indexed_output_assignment() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(result.n_eliminated, 0);
     assert_eq!(dae.continuous.equations.len(), 1);
     assert!(dae.variables.outputs.contains_key(&VarName::new("out")));
@@ -751,16 +751,16 @@ fn test_eliminate_trivial_preserves_indexed_flow_reference() {
 
     dae.variables.algebraics.insert(
         VarName::new("sineVoltage.sineVoltage[1].p.i"),
-        dae::Variable::new(VarName::new("sineVoltage.sineVoltage[1].p.i")),
+        component_var("sineVoltage.sineVoltage[1].p.i"),
     );
 
-    let mut array_alias = dae::Variable::new(VarName::new("sineVoltage.i"));
+    let mut array_alias = component_var("sineVoltage.i");
     array_alias.dims = vec![3];
     dae.variables
         .algebraics
         .insert(VarName::new("sineVoltage.i"), array_alias);
 
-    let mut pin_alias = dae::Variable::new(VarName::new("sineVoltage.plug_p.pin.i"));
+    let mut pin_alias = component_var("sineVoltage.plug_p.pin.i");
     pin_alias.dims = vec![3];
     dae.variables
         .algebraics
@@ -791,7 +791,7 @@ fn test_eliminate_trivial_preserves_indexed_flow_reference() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     assert_eq!(
         result.substitutions[0].var_name.as_str(),
         "sineVoltage.plug_p.pin.i"
@@ -815,6 +815,93 @@ fn test_eliminate_trivial_preserves_indexed_flow_reference() {
     };
     assert_eq!(rhs_name.as_str(), "sineVoltage.i");
     assert_eq!(subscripts.len(), 1);
+}
+
+#[test]
+fn test_eliminate_trivial_rewrites_indexed_component_scalar_in_derivative_rhs() {
+    let mut dae = Dae::new();
+
+    let mut omega = component_var("vehicle.motor[1].omega");
+    omega.start = Some(lit(0.0));
+    dae.variables
+        .states
+        .insert(VarName::new("vehicle.motor[1].omega"), omega);
+    dae.variables.algebraics.insert(
+        VarName::new("vehicle.motor[1].tau_inv"),
+        component_var("vehicle.motor[1].tau_inv"),
+    );
+    dae.variables.parameters.insert(
+        VarName::new("vehicle.motor[1].tau_inv_mid"),
+        component_var("vehicle.motor[1].tau_inv_mid"),
+    );
+    dae.variables.parameters.insert(
+        VarName::new("vehicle.motor[1].omega_error"),
+        component_var("vehicle.motor[1].omega_error"),
+    );
+
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("vehicle.motor[1].tau_inv")),
+            rhs: Box::new(var_ref("vehicle.motor[1].tau_inv_mid")),
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "indexed component scalar assignment".to_string(),
+        scalar_count: 1,
+    });
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(der(var_ref("vehicle.motor[1].omega"))),
+            rhs: Box::new(Expression::Binary {
+                op: mul_op(),
+                lhs: Box::new(Expression::VarRef {
+                    name: rumoca_core::Reference::new("vehicle.motor[1].tau_inv"),
+                    subscripts: vec![],
+                    span: Span::DUMMY,
+                }),
+                rhs: Box::new(var_ref("vehicle.motor[1].omega_error")),
+                span: Span::DUMMY,
+            }),
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+        origin: "indexed component derivative".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
+
+    assert!(
+        result
+            .substitutions
+            .iter()
+            .any(|sub| sub.var_name.as_str() == "vehicle.motor[1].tau_inv"),
+        "indexed component scalar assignment should be eliminated"
+    );
+    assert!(
+        !dae.variables
+            .algebraics
+            .contains_key(&VarName::new("vehicle.motor[1].tau_inv")),
+        "eliminated indexed component scalar should be removed"
+    );
+    let ode = dae
+        .continuous
+        .equations
+        .iter()
+        .find(|eq| eq.origin == "indexed component derivative")
+        .expect("derivative equation should remain");
+    assert!(
+        !contains_exact_var_ref(&ode.rhs, "vehicle.motor[1].tau_inv"),
+        "derivative RHS must not retain an eliminated indexed component scalar"
+    );
+    assert!(
+        contains_exact_var_ref(&ode.rhs, "vehicle.motor[1].tau_inv_mid"),
+        "derivative RHS should use the assignment replacement"
+    );
 }
 
 #[test]
@@ -861,7 +948,7 @@ fn test_eliminate_trivial_skips_substitution_to_unsliced_multiscalar_solution() 
         scalar_count: 1,
     });
 
-    let _ = eliminate_trivial(&mut dae);
+    eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     let flow_eq = dae
         .continuous
         .equations
@@ -894,6 +981,7 @@ fn test_eliminate_trivial_rewrites_eliminated_indexed_record_field_aggregate() {
         .into_iter()
         .map(|(name, value)| Substitution {
             var_name: VarName::new(name),
+            var_ref: Some(reference(name)),
             expr: lit(value),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
@@ -928,6 +1016,7 @@ fn test_eliminate_trivial_rewrites_eliminated_complex_field_parent_ref() {
         .into_iter()
         .map(|(name, value)| Substitution {
             var_name: VarName::new(name),
+            var_ref: Some(reference(name)),
             expr: lit(value),
             var_dims: Vec::new(),
             replacement_dims: Vec::new(),
@@ -950,14 +1039,14 @@ fn test_eliminate_trivial_rewrites_eliminated_complex_field_parent_ref() {
 fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
     let mut dae = Dae::new();
     dae.discrete.real_updates.push(dae::Equation {
-        lhs: Some(VarName::new("z")),
+        lhs: Some(VarName::new("z").into()),
         rhs: var_ref("alias"),
         span: Span::DUMMY,
         origin: "f_z".to_string(),
         scalar_count: 1,
     });
     dae.conditions.equations.push(dae::Equation {
-        lhs: Some(VarName::new("c")),
+        lhs: Some(VarName::new("c").into()),
         rhs: var_ref("alias"),
         span: Span::DUMMY,
         origin: "f_c".to_string(),
@@ -970,7 +1059,10 @@ fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
     dae.events.event_actions.push(dae::DaeEventAction {
         condition: var_ref("alias"),
         kind: dae::DaeEventActionKind::Terminate {
-            message: "stop".to_string(),
+            message: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("stop".to_string()),
+                span: Span::DUMMY,
+            },
         },
         span: Span::DUMMY,
         origin: "assert".to_string(),
@@ -978,6 +1070,7 @@ fn test_apply_elimination_substitutions_rewrites_dae_runtime_partitions() {
 
     let substitutions = [Substitution {
         var_name: VarName::new("alias"),
+        var_ref: Some(reference("alias")),
         expr: var_ref("source"),
         var_dims: Vec::new(),
         replacement_dims: Vec::new(),
@@ -1052,7 +1145,7 @@ fn test_eliminate_structurally_singular_boundary_resolution() {
         scalar_count: 1,
     });
 
-    let result = eliminate_trivial(&mut dae);
+    let result = eliminate_trivial(&mut dae).expect("structural elimination should succeed");
     // Phase A: eq1 solves a=1.0 (1 unknown), eq2 becomes 0-unknown → removed.
     assert_eq!(result.n_eliminated, 2);
     assert_eq!(dae.continuous.equations.len(), 0);

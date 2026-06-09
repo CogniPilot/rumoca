@@ -694,8 +694,12 @@ fn maybe_realign_single_relaxed_drop_unknown(
     if dropped_eq.len() != 1 || dropped_var.len() != 1 {
         return dropped_var.clone();
     }
-    let row_idx = dropped_eq.iter().copied().next().unwrap_or(0);
-    let current_unknown = dropped_var.iter().copied().next().unwrap_or(0);
+    let (Some(row_idx), Some(current_unknown)) = (
+        dropped_eq.iter().copied().next(),
+        dropped_var.iter().copied().next(),
+    ) else {
+        return dropped_var.clone();
+    };
     let row_unknowns = match incidence.eq_unknowns.get(row_idx) {
         Some(cols) => cols,
         None => return dropped_var.clone(),
@@ -1685,7 +1689,7 @@ mod tests {
         m.dims = vec![3, 4];
         dae.variables.algebraics.insert(VarName::new("M"), m);
         dae.continuous.equations.push(dae::Equation {
-            lhs: Some(VarName::new("M[1,2]")),
+            lhs: Some(VarName::new("M[1,2]").into()),
             rhs: lit(2.0),
             span: Span::DUMMY,
             origin: "explicit matrix scalar assignment".to_string(),

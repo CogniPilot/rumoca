@@ -8,8 +8,9 @@
 //! which handles the recursive tree walking with configurable operator syntax.
 
 use crate::errors::{CodegenError, render_err};
+use indexmap::{IndexMap, IndexSet};
 use minijinja::{Environment, UndefinedBehavior, Value};
-use rumoca_core::{Expression, Reference, Span};
+use rumoca_core::{Expression, ExpressionVisitor, Span, Subscript};
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
@@ -57,6 +58,7 @@ pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenErr
         })?;
     let enum_type_names = enum_type_names_from_ordinals(dae);
     let symbol_refs = source_refs_from_dae(dae, &enum_type_names);
+    let symbol_aliases = symbol_aliases_from_dae(dae)?;
     let condition_aliases =
         condition_aliases_from_dae(dae).map_err(|e| CodegenError::SerializationFailed {
             message: format!("condition_aliases: {e}"),
@@ -82,6 +84,12 @@ pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenErr
         })?,
     );
     object.insert(
+        "symbol_aliases".to_string(),
+        serde_json::to_value(symbol_aliases).map_err(|e| CodegenError::SerializationFailed {
+            message: format!("symbol_aliases: {e}"),
+        })?,
+    );
+    object.insert(
         "condition_aliases".to_string(),
         serde_json::Value::Array(condition_aliases),
     );
@@ -96,7 +104,7 @@ fn condition_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, 
         .map(|(lhs, relation)| {
             Ok(serde_json::json!({
                 "condition": Expression::VarRef {
-                    name: Reference::from_var_name(lhs.clone()),
+                    name: lhs.clone(),
                     subscripts: Vec::new(),
                     span: Span::DUMMY,
                 },
@@ -110,7 +118,7 @@ fn condition_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, 
 /// E.g., from `Modelica.Blocks.Types.Smoothness.LinearSegments` to
 /// `Modelica.Blocks.Types.Smoothness`.
 fn enum_type_names_from_ordinals(dae: &dae::Dae) -> Vec<String> {
-    let mut seen = HashSet::new();
+    let mut seen = IndexSet::new();
     let mut result = Vec::new();
     for name in dae.symbols.enum_literal_ordinals.keys() {
         if let Some((type_name, _literal_name)) = rumoca_core::split_last_top_level(name)
@@ -123,7 +131,7 @@ fn enum_type_names_from_ordinals(dae: &dae::Dae) -> Vec<String> {
 }
 
 fn source_refs_from_dae(dae: &dae::Dae, enum_type_names: &[String]) -> Vec<String> {
-    let mut refs = HashSet::new();
+    let mut refs = IndexSet::new();
 
     for vars in [
         &dae.variables.states,
@@ -173,7 +181,7 @@ fn source_refs_from_dae(dae: &dae::Dae, enum_type_names: &[String]) -> Vec<Strin
 fn add_function_output_projection_refs(
     func_name: &str,
     func: &rumoca_core::Function,
-    refs: &mut HashSet<String>,
+    refs: &mut IndexSet<String>,
 ) {
     for output in &func.outputs {
         let dims: Vec<usize> = output
@@ -197,7 +205,7 @@ fn add_function_output_projection_refs(
     }
 }
 
-fn add_source_refs_for_var(name: &str, dims: &[i64], refs: &mut HashSet<String>) {
+fn add_source_refs_for_var(name: &str, dims: &[i64], refs: &mut IndexSet<String>) {
     refs.insert(name.to_string());
 
     let dims: Vec<usize> = dims
@@ -216,6 +224,152 @@ fn add_source_refs_for_var(name: &str, dims: &[i64], refs: &mut HashSet<String>)
             source_subscript_suffix(&dims, flat_index)
         ));
     }
+}
+
+fn symbol_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, CodegenError> {
+    let mut declared_refs = IndexSet::new();
+    for vars in [
+        &dae.variables.states,
+        &dae.variables.algebraics,
+        &dae.variables.inputs,
+        &dae.variables.outputs,
+        &dae.variables.parameters,
+        &dae.variables.constants,
+        &dae.variables.discrete_reals,
+        &dae.variables.discrete_valued,
+    ] {
+        for (name, var) in vars {
+            add_source_refs_for_var(name.as_str(), &var.dims, &mut declared_refs);
+        }
+    }
+
+    let mut aliases = IndexMap::<String, String>::new();
+    for vars in [
+        &dae.variables.states,
+        &dae.variables.algebraics,
+        &dae.variables.inputs,
+        &dae.variables.outputs,
+        &dae.variables.parameters,
+        &dae.variables.constants,
+        &dae.variables.discrete_reals,
+        &dae.variables.discrete_valued,
+    ] {
+        for (name, var) in vars {
+            add_symbol_aliases_for_variable_exprs(
+                name.as_str(),
+                var,
+                &declared_refs,
+                &mut aliases,
+            )?;
+        }
+    }
+
+    Ok(aliases
+        .into_iter()
+        .map(|(alias, target)| {
+            serde_json::json!({
+                "alias": alias,
+                "target": target,
+            })
+        })
+        .collect())
+}
+
+fn add_symbol_aliases_for_variable_exprs(
+    owner_name: &str,
+    var: &dae::Variable,
+    declared_refs: &IndexSet<String>,
+    aliases: &mut IndexMap<String, String>,
+) -> Result<(), CodegenError> {
+    for expr in [
+        var.start.as_ref(),
+        var.min.as_ref(),
+        var.max.as_ref(),
+        var.nominal.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        add_symbol_aliases_for_expr(owner_name, expr, declared_refs, aliases)?;
+    }
+    Ok(())
+}
+
+fn add_symbol_aliases_for_expr(
+    owner_name: &str,
+    expr: &Expression,
+    declared_refs: &IndexSet<String>,
+    aliases: &mut IndexMap<String, String>,
+) -> Result<(), CodegenError> {
+    let mut collector = dae::VarRefWithSubscriptsCollector::new();
+    collector.visit_expression(expr);
+    for (name, subscripts) in collector.into_refs() {
+        let Some(target_base) =
+            resolve_attribute_expr_alias_target(owner_name, name.as_str(), declared_refs)
+        else {
+            continue;
+        };
+        insert_symbol_alias(aliases, name.as_str().to_string(), target_base.clone())?;
+        let Some(indices) = literal_positive_indices(&subscripts) else {
+            continue;
+        };
+        let alias = dae::format_subscript_key(name.as_str(), &indices);
+        let target = dae::format_subscript_key(&target_base, &indices);
+        if declared_refs.contains(&target) {
+            insert_symbol_alias(aliases, alias, target)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_attribute_expr_alias_target(
+    owner_name: &str,
+    reference: &str,
+    declared_refs: &IndexSet<String>,
+) -> Option<String> {
+    if declared_refs.contains(reference) || rumoca_core::split_last_top_level(reference).is_some() {
+        return None;
+    }
+    let (owner_scope, _) = rumoca_core::split_last_top_level(owner_name)?;
+    let candidate = format!("{owner_scope}.{reference}");
+    declared_refs.contains(&candidate).then_some(candidate)
+}
+
+fn insert_symbol_alias(
+    aliases: &mut IndexMap<String, String>,
+    alias: String,
+    target: String,
+) -> Result<(), CodegenError> {
+    if alias == target {
+        return Ok(());
+    }
+    if let Some(existing) = aliases.get(&alias) {
+        if existing == &target {
+            return Ok(());
+        }
+        return Err(CodegenError::SerializationFailed {
+            message: format!(
+                "conflicting emitted symbol aliases for `{alias}`: `{existing}` and `{target}`"
+            ),
+        });
+    }
+    aliases.insert(alias, target);
+    Ok(())
+}
+
+fn literal_positive_indices(subscripts: &[Subscript]) -> Option<Vec<usize>> {
+    if subscripts.is_empty() {
+        return None;
+    }
+    subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            Subscript::Index { value, .. } => {
+                usize::try_from(*value).ok().filter(|value| *value > 0)
+            }
+            Subscript::Expr { .. } | Subscript::Colon { .. } => None,
+        })
+        .collect()
 }
 
 fn symbol_ref_priority(reference: &str) -> (usize, usize) {
@@ -277,28 +431,31 @@ impl SymbolAllocator {
         &mut self,
         candidates: &[String],
         candidate_counts: &HashMap<String, usize>,
-    ) -> String {
+    ) -> RenderResult {
         for candidate in candidates {
-            if candidate_counts.get(candidate).copied().unwrap_or(0) <= 1 && self.try_use(candidate)
-            {
-                return candidate.clone();
+            let count = candidate_counts.get(candidate).copied().ok_or_else(|| {
+                render_err(format!(
+                    "symbol candidate `{candidate}` missing from allocation count table"
+                ))
+            })?;
+            if count <= 1 && self.try_use(candidate) {
+                return Ok(candidate.clone());
             }
         }
 
         for candidate in candidates {
             if self.try_use(candidate) {
-                return candidate.clone();
+                return Ok(candidate.clone());
             }
         }
 
         let base = candidates
             .last()
-            .cloned()
-            .unwrap_or_else(|| "value".to_string());
+            .ok_or_else(|| render_err("symbol allocation requires at least one candidate"))?;
         for idx in 2.. {
             let candidate = format!("{base}_{idx}");
             if self.try_use(&candidate) {
-                return candidate;
+                return Ok(candidate);
             }
         }
         unreachable!("exhausted usize suffix range while allocating a unique codegen name")
@@ -328,23 +485,27 @@ impl SymbolAllocator {
     }
 }
 
-fn allocate_symbols_function(symbol_refs: Value, policy: Value) -> Value {
+fn allocate_symbols_function(symbol_refs: Value, policy: Value) -> Result<Value, minijinja::Error> {
     let policy = SymbolPolicy::from_value(&policy);
     let references = value_list_strings(&symbol_refs);
-    let symbols = allocate_symbols_for_refs(references, policy);
-    Value::from_serialize(symbols)
+    let symbols = allocate_symbols_for_refs(references, policy)?;
+    Ok(Value::from_serialize(symbols))
 }
 
-fn target_symbols_function(symbol_refs: Value, policy: Value) -> Value {
+fn target_symbols_function(
+    symbol_refs: Value,
+    policy: Value,
+    symbol_aliases: Value,
+) -> Result<Value, minijinja::Error> {
     let policy = SymbolPolicy::from_value(&policy);
     let references = value_list_strings(&symbol_refs);
     let mut requests = references
         .into_iter()
         .map(|reference| {
-            let candidates = symbol_candidates(&reference, &policy);
-            (reference, candidates)
+            let candidates = symbol_candidates(&reference, &policy)?;
+            Ok((reference, candidates))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, minijinja::Error>>()?;
 
     requests.sort_by(|(a_ref, a_candidates), (b_ref, b_candidates)| {
         symbol_ref_priority(a_ref)
@@ -370,18 +531,26 @@ fn target_symbols_function(symbol_refs: Value, policy: Value) -> Value {
     }
 
     let mut allocator = SymbolAllocator::new(policy);
-    let mut out = HashMap::new();
+    let mut out = IndexMap::new();
     for (reference, candidates) in requests {
-        let symbol = allocator.allocate(&candidates, &candidate_counts);
+        let symbol = allocator.allocate(&candidates, &candidate_counts)?;
         out.insert(reference, symbol);
     }
-    Value::from_serialize(out)
+    for (alias, target) in value_symbol_aliases(&symbol_aliases)? {
+        let symbol = out.get(&target).cloned().ok_or_else(|| {
+            render_err(format!(
+                "symbol alias `{alias}` targets unknown source reference `{target}`"
+            ))
+        })?;
+        out.insert(alias, symbol);
+    }
+    Ok(Value::from_serialize(out))
 }
 
 fn allocate_symbols_for_refs(
     mut references: Vec<String>,
     policy: SymbolPolicy,
-) -> HashMap<String, String> {
+) -> Result<IndexMap<String, String>, minijinja::Error> {
     references.sort_by(|a, b| {
         symbol_ref_priority(a)
             .cmp(&symbol_ref_priority(b))
@@ -392,10 +561,10 @@ fn allocate_symbols_for_refs(
     let requests = references
         .into_iter()
         .map(|reference| {
-            let candidates = symbol_candidates(&reference, &policy);
-            (reference, candidates)
+            let candidates = symbol_candidates(&reference, &policy)?;
+            Ok((reference, candidates))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, minijinja::Error>>()?;
 
     let mut candidate_counts = HashMap::<String, usize>::new();
     for (_, candidates) in &requests {
@@ -408,15 +577,18 @@ fn allocate_symbols_for_refs(
     }
 
     let mut allocator = SymbolAllocator::new(policy);
-    let mut out = HashMap::new();
+    let mut out = IndexMap::new();
     for (reference, candidates) in requests {
-        let symbol = allocator.allocate(&candidates, &candidate_counts);
+        let symbol = allocator.allocate(&candidates, &candidate_counts)?;
         out.insert(reference, symbol);
     }
-    out
+    Ok(out)
 }
 
-fn symbol_candidates(modelica_ref: &str, policy: &SymbolPolicy) -> Vec<String> {
+fn symbol_candidates(
+    modelica_ref: &str,
+    policy: &SymbolPolicy,
+) -> Result<Vec<String>, minijinja::Error> {
     let (base_ref, subscript) = split_modelica_subscript(modelica_ref);
     let suffix = subscript.map(|s| scalarized_subscript_suffix(s, &policy.separator));
     let segments = split_modelica_path(base_ref);
@@ -424,8 +596,7 @@ fn symbol_candidates(modelica_ref: &str, policy: &SymbolPolicy) -> Vec<String> {
     for start in (0..segments.len()).rev() {
         let base = segments[start..]
             .iter()
-            .map(|segment| readable_identifier_segment(segment))
-            .filter(|segment| !segment.is_empty())
+            .filter_map(|segment| readable_identifier_segment(segment))
             .collect::<Vec<_>>()
             .join(&policy.separator);
         if base.is_empty() {
@@ -439,14 +610,12 @@ fn symbol_candidates(modelica_ref: &str, policy: &SymbolPolicy) -> Vec<String> {
     }
 
     if candidates.is_empty() {
-        candidates.push(with_optional_suffix(
-            "value",
-            suffix.as_deref(),
-            &policy.separator,
-        ));
+        return Err(render_err(format!(
+            "source reference `{modelica_ref}` does not contain any valid identifier segment"
+        )));
     }
     candidates.dedup();
-    candidates
+    Ok(candidates)
 }
 
 fn split_modelica_subscript(reference: &str) -> (&str, Option<&str>) {
@@ -475,7 +644,7 @@ fn split_modelica_path(name: &str) -> Vec<&str> {
     segments
 }
 
-fn readable_identifier_segment(segment: &str) -> String {
+fn readable_identifier_segment(segment: &str) -> Option<String> {
     let mut out = String::with_capacity(segment.len());
     let mut last_was_underscore = false;
     for ch in segment.chars() {
@@ -494,11 +663,7 @@ fn readable_identifier_segment(segment: &str) -> String {
     while out.ends_with('_') {
         out.pop();
     }
-    if out.is_empty() {
-        "value".to_string()
-    } else {
-        out
-    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn scalarized_subscript_suffix(subscript: &str, separator: &str) -> String {
@@ -517,13 +682,12 @@ fn with_optional_suffix(base: &str, suffix: Option<&str>, separator: &str) -> St
     }
 }
 
-fn symbol_function(symbols: Value, name: Value) -> String {
+fn symbol_function(symbols: Value, name: Value) -> RenderResult {
     let name = value_to_string(&name);
-    lookup_symbol_value(Some(&symbols), &name).unwrap_or_else(|| {
-        symbol_candidates(&name, &SymbolPolicy::language_neutral())
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| "value".to_string())
+    lookup_symbol_value(Some(&symbols), &name).ok_or_else(|| {
+        render_err(format!(
+            "missing emitted symbol for source reference `{name}`"
+        ))
     })
 }
 
@@ -537,14 +701,19 @@ pub(crate) fn lookup_symbol_value(symbols: Option<&Value>, name: &str) -> Option
         .filter(|value| !value.is_empty())
 }
 
-pub(crate) fn emitted_symbol_or_fallback(reference: &str, cfg: &ExprConfig) -> String {
-    lookup_symbol_value(cfg.symbols.as_ref(), reference).unwrap_or_else(|| {
-        if cfg.sanitize_dots || cfg.subscript_underscore {
-            sanitize_name(reference)
-        } else {
-            escape_reserved_keyword(reference)
-        }
-    })
+pub(crate) fn emitted_symbol(reference: &str, cfg: &ExprConfig) -> RenderResult {
+    if let Some(symbols) = cfg.symbols.as_ref() {
+        return lookup_symbol_value(Some(symbols), reference).ok_or_else(|| {
+            render_err(format!(
+                "missing emitted symbol for source reference `{reference}`"
+            ))
+        });
+    }
+    if cfg.sanitize_dots || cfg.subscript_underscore {
+        Ok(sanitize_name(reference))
+    } else {
+        Ok(escape_reserved_keyword(reference))
+    }
 }
 
 fn dae_template_value(dae: &dae::Dae) -> Result<Value, CodegenError> {
@@ -1250,6 +1419,31 @@ fn value_list_strings(value: &Value) -> Vec<String> {
     out
 }
 
+fn value_symbol_aliases(value: &Value) -> Result<Vec<(String, String)>, minijinja::Error> {
+    let Some(len) = value.len() else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let item = value
+            .get_item(&Value::from(i))
+            .map_err(|err| render_err(format!("symbol alias entry {i} is not readable: {err}")))?;
+        let alias = get_field(&item, "alias")
+            .map(|value| value_to_string(&value))
+            .map_err(|err| render_err(format!("symbol alias entry {i} missing alias: {err}")))?;
+        let target = get_field(&item, "target")
+            .map(|value| value_to_string(&value))
+            .map_err(|err| render_err(format!("symbol alias entry {i} missing target: {err}")))?;
+        if alias.is_empty() || target.is_empty() {
+            return Err(render_err(format!(
+                "symbol alias entry {i} must have non-empty alias and target"
+            )));
+        }
+        out.push((alias, target));
+    }
+    Ok(out)
+}
+
 fn subscripts_for_flat_index(dims: &[usize], flat_index: usize) -> Vec<usize> {
     if dims.is_empty() {
         return Vec::new();
@@ -1289,7 +1483,10 @@ fn source_ref_function(name: Value, dims: Value, flat_index: Value) -> String {
     if dims.is_empty() {
         return name;
     }
-    let index = flat_index.as_usize().unwrap_or(1).max(1);
+    let index = flat_index
+        .as_usize()
+        .expect("source_ref flat index must be numeric")
+        .max(1);
     format!("{}[{}]", name, source_subscript_suffix(&dims, index))
 }
 

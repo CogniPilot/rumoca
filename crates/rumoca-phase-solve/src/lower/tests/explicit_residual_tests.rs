@@ -17,7 +17,7 @@ fn lower_residual_lowers_explicit_algebraic_equation_as_lhs_minus_rhs() {
         "y = 2",
     ));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout).expect("explicit residual should lower");
     let (_, output_at_zero) = eval_linear_ops(&rows[0], &[0.0], &[], 0.0);
     let (_, output_at_solution) = eval_linear_ops(&rows[0], &[2.0], &[], 0.0);

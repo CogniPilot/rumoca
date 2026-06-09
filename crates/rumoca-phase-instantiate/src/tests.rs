@@ -83,6 +83,19 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
     })
 }
 
+fn make_eval_ctx<'a>(
+    tree: &'a ast::ClassTree,
+    mod_env: &'a ast::ModificationEnvironment,
+    effective_components: &'a IndexMap<String, ast::Component>,
+) -> InstantiateEvalCtx<'a> {
+    InstantiateEvalCtx {
+        tree,
+        mod_env,
+        effective_components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    }
+}
+
 fn make_comp_ref_expr_at(names: &[&str], file_name: &str, start: u32, end: u32) -> ast::Expression {
     ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,
@@ -170,7 +183,12 @@ fn test_extract_attributes_preserves_local_fixed_with_local_start() {
     comp.modifications
         .insert("fixed".to_string(), make_bool_expr(true));
 
-    let attrs = extract_attributes(&comp, &ast::ModificationEnvironment::new(), "x");
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+        .expect("valid attributes should extract");
 
     assert!(attrs.start.is_some());
     assert_eq!(attrs.fixed, Some(true));
@@ -188,7 +206,11 @@ fn test_extract_attributes_preserves_local_fixed_with_outer_start() {
         ast::ModificationValue::simple(make_int_expr(2)),
     );
 
-    let attrs = extract_attributes(&comp, &mod_env, "x");
+    let tree = ast::ClassTree::default();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+        .expect("valid attributes should extract");
 
     assert!(attrs.start.is_some());
     assert_eq!(attrs.fixed, Some(true));
@@ -197,18 +219,77 @@ fn test_extract_attributes_preserves_local_fixed_with_outer_start() {
 #[test]
 fn test_extract_attributes_outer_state_select_overrides_local() {
     let mut comp = make_component("x", "Real", None);
-    comp.modifications
-        .insert("stateSelect".to_string(), make_comp_ref_expr(&["prefer"]));
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        make_comp_ref_expr(&["StateSelect", "prefer"]),
+    );
 
     let mut mod_env = ast::ModificationEnvironment::new();
     mod_env.add(
         ast::QualifiedName::from_dotted("x.stateSelect"),
-        ast::ModificationValue::simple(make_comp_ref_expr(&["never"])),
+        ast::ModificationValue::simple(make_comp_ref_expr(&["StateSelect", "never"])),
     );
 
-    let attrs = extract_attributes(&comp, &mod_env, "x");
+    let tree = ast::ClassTree::default();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+        .expect("valid attributes should extract");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Never);
+}
+
+#[test]
+fn test_extract_attributes_evaluates_state_select_parameter() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        make_comp_ref_expr(&["stateSelect"]),
+    );
+
+    let mut state_select = make_component("stateSelect", "StateSelect", None);
+    state_select.binding = Some(make_comp_ref_expr(&["StateSelect", "prefer"]));
+    let mut effective_components = IndexMap::default();
+    effective_components.insert("stateSelect".to_string(), state_select);
+
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+        .expect("valid attributes should extract");
+
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
+}
+
+#[test]
+fn test_lookup_type_info_accepts_predefined_state_select() {
+    let tree = ast::ClassTree::new();
+    let comp = make_component("stateSelect", "StateSelect", None);
+
+    let info = lookup_type_info(&tree, &comp, "StateSelect")
+        .expect("predefined StateSelect type should resolve through the type table");
+
+    assert!(info.class_def.is_none());
+    assert!(!info.is_primitive);
+    assert!(info.is_discrete);
+}
+
+#[test]
+fn test_extract_attributes_rejects_invalid_state_select() {
+    let mut comp = make_component("x", "Real", None);
+    comp.modifications.insert(
+        "stateSelect".to_string(),
+        make_comp_ref_expr(&["sometimes"]),
+    );
+
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let err = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+        .expect_err("invalid stateSelect literal should fail");
+
+    assert!(err.to_string().contains("stateSelect"));
 }
 
 #[test]
@@ -269,11 +350,15 @@ fn test_parameter_declaration_binding_promotes_builtin_default_start() {
     comp.start = make_int_expr(0);
     comp.binding = Some(make_int_expr(5));
 
-    let (attrs, ..) =
-        extract_component_attrs_and_binding(&comp, &ast::ModificationEnvironment::new());
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let result = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx)
+        .expect("valid attributes should extract");
 
     assert_eq!(
-        attrs.start.as_ref().map(terminal_text),
+        result.attrs.start.as_ref().map(terminal_text),
         Some("5"),
         "parameter declaration binding should provide start when no explicit start exists"
     );
@@ -288,11 +373,15 @@ fn test_parameter_declaration_binding_does_not_override_explicit_start() {
         .insert("start".to_string(), make_int_expr(2));
     comp.binding = Some(make_int_expr(5));
 
-    let (attrs, ..) =
-        extract_component_attrs_and_binding(&comp, &ast::ModificationEnvironment::new());
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::new();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let result = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx)
+        .expect("valid attributes should extract");
 
     assert_eq!(
-        attrs.start.as_ref().map(terminal_text),
+        result.attrs.start.as_ref().map(terminal_text),
         Some("2"),
         "explicit start must win over declaration binding"
     );
@@ -795,7 +884,12 @@ fn inherited_attribute_modification_keeps_written_source_scope() {
         ),
     ]);
 
-    let mut attrs = extract_attributes(&comp, &ast::ModificationEnvironment::new(), "x");
+    let mod_env = ast::ModificationEnvironment::new();
+    let tree = ast::ClassTree::default();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let mut attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx)
+        .expect("valid attributes should extract");
     infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
 
     assert_eq!(
@@ -820,7 +914,12 @@ fn local_attribute_modification_keeps_instance_qualification() {
         comp.clone(),
     )]);
 
-    let mut attrs = extract_attributes(&comp, &ast::ModificationEnvironment::new(), "nextstate");
+    let mod_env = ast::ModificationEnvironment::new();
+    let tree = ast::ClassTree::default();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let mut attrs = extract_attributes(&comp, &mod_env, "nextstate", &eval_ctx)
+        .expect("valid attributes should extract");
     infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
 
     assert!(

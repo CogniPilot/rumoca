@@ -15,7 +15,7 @@ fn test_eval_pre_uses_seeded_previous_value_for_varref() {
         args: vec![var("x")],
         span: rumoca_core::Span::DUMMY,
     };
-    let value = eval_expr_or_default::<f64>(&pre_x, &eval_env);
+    let value = eval_expr_value::<f64>(&pre_x, &eval_env);
     assert!((value - 1.5).abs() < 1e-12);
 
     clear_pre_values();
@@ -25,8 +25,8 @@ fn test_eval_pre_uses_seeded_previous_value_for_varref() {
 fn test_eval_pre_uses_seeded_previous_value_for_indexed_varref_and_dual() {
     clear_pre_values();
     let mut seed_env = VarEnv::<f64>::new();
-    seed_env.set("x[1]", 2.25);
-    seed_env.set("x", 2.25);
+    set_array_entries(&mut seed_env, "x", &[1], &[2.25]);
+    seed_env.dims = std::sync::Arc::new(IndexMap::from([("x".to_string(), vec![1])]));
     seed_pre_values_from_env(&seed_env);
 
     let indexed = rumoca_core::Expression::BuiltinCall {
@@ -44,9 +44,9 @@ fn test_eval_pre_uses_seeded_previous_value_for_indexed_varref_and_dual() {
 
     let mut eval_env = VarEnv::<Dual>::new();
     eval_env.runtime = seed_env.runtime.clone();
-    eval_env.set("x[1]", Dual::new(8.0, 3.0));
-    eval_env.set("x", Dual::new(8.0, 3.0));
-    let value = eval_expr_or_default::<Dual>(&indexed, &eval_env);
+    set_array_entries(&mut eval_env, "x", &[1], &[Dual::new(8.0, 3.0)]);
+    eval_env.dims = std::sync::Arc::new(IndexMap::from([("x".to_string(), vec![1])]));
+    let value = eval_expr_value::<Dual>(&indexed, &eval_env);
     assert!((value.re - 2.25).abs() < 1e-12);
     assert!(value.du.abs() < 1e-12);
 
@@ -75,8 +75,8 @@ fn test_eval_builtin_edge_and_change_use_pre_seeded_values() {
         args: vec![var("b")],
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(eval_expr_or_default::<f64>(&edge_expr, &env), 1.0);
-    assert_eq!(eval_expr_or_default::<f64>(&change_expr, &env), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&edge_expr, &env), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&change_expr, &env), 1.0);
 
     clear_pre_values();
     let mut seed_env = VarEnv::<f64>::new();
@@ -86,8 +86,8 @@ fn test_eval_builtin_edge_and_change_use_pre_seeded_values() {
     let mut env = VarEnv::<f64>::new();
     env.runtime = seed_env.runtime.clone();
     env.set("b", 1.0);
-    assert_eq!(eval_expr_or_default::<f64>(&edge_expr, &env), 0.0);
-    assert_eq!(eval_expr_or_default::<f64>(&change_expr, &env), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&edge_expr, &env), 0.0);
+    assert_eq!(eval_expr_value::<f64>(&change_expr, &env), 0.0);
 
     clear_pre_values();
 }
@@ -120,7 +120,7 @@ fn test_eval_builtin_edge_on_relational_expr_uses_pre_seeded_values() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    assert_eq!(eval_expr_or_default::<f64>(&edge_expr, &env), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&edge_expr, &env), 1.0);
 
     clear_pre_values();
 }
@@ -165,7 +165,7 @@ fn test_eval_builtin_edge_on_sample_conjunction_uses_left_limit_sample_false() {
 
     // MLS §16.5.1 / Appendix B: sample(start, interval) is false on the
     // event left-limit, so edge(sampling and sample(...)) must fire at the tick.
-    assert_eq!(eval_expr_or_default::<f64>(&edge_expr, &env), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&edge_expr, &env), 1.0);
 
     clear_pre_values();
 }
@@ -189,7 +189,7 @@ fn test_eval_builtin_edge_on_initial_is_true_during_initial_event() {
 
     // MLS §8.6: initial() is false on the event left-limit, so edge(initial())
     // must fire once at startup for lowered when {initial(), ...} guards.
-    assert_eq!(eval_expr_or_default::<f64>(&edge_expr, &env), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&edge_expr, &env), 1.0);
 
     clear_pre_values();
 }
@@ -220,7 +220,7 @@ fn test_eval_builtin_edge_on_time_ge_next_event_uses_left_limit_time() {
 
     // MLS Appendix B / SPEC_0022 SIM-001: time-event guards such as
     // edge(time >= t_next) must see a false left-limit and fire at t=t_next.
-    assert_eq!(eval_expr_or_default::<f64>(&edge_expr, &env), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&edge_expr, &env), 1.0);
 
     clear_pre_values();
 }
@@ -245,7 +245,7 @@ fn test_eval_builtin_change_on_logic_ordinal_detects_non_boolean_transition() {
 
     // MLS §3.7.2: change(v) detects discrete value changes, not just boolean
     // truth-value flips. Digital logic ordinals such as 1 -> 3 must fire.
-    assert_eq!(eval_expr_or_default::<f64>(&change_expr, &env), 1.0);
+    assert_eq!(eval_expr_value::<f64>(&change_expr, &env), 1.0);
 
     clear_pre_values();
 }
@@ -257,10 +257,7 @@ fn test_eval_lowered_pre_parameter_reads_pre_store_before_stale_env_binding() {
     set_pre_value_in_env(&env, "reset", 3.0);
     env.set("__pre__.reset", 0.0);
 
-    assert_eq!(
-        eval_expr_or_default::<f64>(&var("__pre__.reset"), &env),
-        3.0
-    );
+    assert_eq!(eval_expr_value::<f64>(&var("__pre__.reset"), &env), 3.0);
 
     clear_pre_values();
 }

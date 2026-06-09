@@ -535,7 +535,8 @@ fn test_demote_alias_states_without_der_moves_demotions_in_name_order() {
     dae.continuous.equations.push(eq(sub(var("z"), var("b"))));
     dae.continuous.equations.push(eq(sub(var("a"), var("b"))));
 
-    let demoted = demote_alias_states_without_der(&mut dae);
+    let demoted =
+        demote_alias_states_without_der(&mut dae).expect("state alias demotion should succeed");
 
     assert_eq!(demoted, 2);
     let algebraic_names: Vec<&str> = dae
@@ -973,7 +974,8 @@ fn test_index_reduction_differentiates_vector_function_constraint_with_structure
         )
         .is_some()
     );
-    let changed = index_reduce_missing_state_derivatives_once(&mut dae);
+    let changed = index_reduce_missing_state_derivatives_once(&mut dae)
+        .expect("index reduction should succeed");
 
     assert_eq!(changed, 1);
     assert!(
@@ -1045,6 +1047,9 @@ fn test_index_reduction_accepts_coupled_vector_constraint_rows() {
     dae.variables
         .algebraics
         .insert(VarName::new("distance"), distance);
+    let mut vy = Variable::new(VarName::new("vy"));
+    vy.dims = vec![3];
+    dae.variables.algebraics.insert(VarName::new("vy"), vy);
 
     dae.continuous
         .equations
@@ -1062,7 +1067,8 @@ fn test_index_reduction_accepts_coupled_vector_constraint_rows() {
         .equations
         .push(eq(sub(var_idx("vy", 3), der_idx("y", 3))));
 
-    let changed = index_reduce_missing_state_derivatives_once(&mut dae);
+    let changed = index_reduce_missing_state_derivatives_once(&mut dae)
+        .expect("index reduction should succeed");
 
     assert_eq!(changed, 1);
     let differentiated = &dae.continuous.equations[1].rhs;

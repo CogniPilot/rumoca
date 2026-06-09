@@ -58,7 +58,7 @@ pub(super) fn lower_root_conditions(
 pub(super) fn lower_root_relation_memory_targets(
     dae_model: &dae::Dae,
     layout: &VarLayout,
-) -> Vec<Option<rumoca_ir_solve::ScalarSlot>> {
+) -> Result<Vec<Option<rumoca_ir_solve::ScalarSlot>>, LowerError> {
     let mut targets = Vec::with_capacity(
         dae_model.conditions.relations.len()
             + dae_model.events.synthetic_root_conditions.len()
@@ -69,14 +69,14 @@ pub(super) fn lower_root_relation_memory_targets(
             dae_model,
             layout,
             relation_idx,
-        ));
+        )?);
     }
     targets.extend(vec![
         None;
         dae_model.events.synthetic_root_conditions.len()
             + dae_model.clocks.triggered_conditions.len()
     ]);
-    targets
+    Ok(targets)
 }
 
 fn lower_root_condition_row(
@@ -117,57 +117,76 @@ fn lower_root_condition_row(
 fn condition_memory_expr_for_relation(
     dae_model: &dae::Dae,
     relation_idx: usize,
-) -> Option<rumoca_core::Expression> {
+) -> Result<Option<rumoca_core::Expression>, LowerError> {
     let mut offset = 0usize;
     for eq in &dae_model.conditions.equations {
         let scalar_count = eq.scalar_count.max(1);
         if relation_idx < offset + scalar_count {
-            let lhs = eq.lhs.as_ref()?;
+            let Some(lhs) = eq.lhs.as_ref() else {
+                return Ok(None);
+            };
             let flat_index = relation_idx - offset;
-            return Some(condition_memory_scalar_expr(
+            return Ok(Some(condition_memory_scalar_expr(
                 dae_model,
-                lhs,
+                lhs.var_name(),
                 flat_index,
                 scalar_count,
-            ));
+                eq.span,
+            )?));
         }
         offset += scalar_count;
     }
-    None
+    Ok(None)
 }
 
 fn condition_memory_slot_for_relation(
     dae_model: &dae::Dae,
     layout: &VarLayout,
     relation_idx: usize,
-) -> Option<rumoca_ir_solve::ScalarSlot> {
-    let condition_memory = condition_memory_expr_for_relation(dae_model, relation_idx)?;
+) -> Result<Option<rumoca_ir_solve::ScalarSlot>, LowerError> {
+    let Some(condition_memory) = condition_memory_expr_for_relation(dae_model, relation_idx)?
+    else {
+        return Ok(None);
+    };
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
     } = condition_memory
     else {
-        return None;
+        return Ok(None);
     };
     let key = if subscripts.is_empty() {
         name.to_string()
     } else {
+        let indices = generated_index_subscripts(&subscripts)?;
         format!(
             "{}[{}]",
             name,
-            subscripts
-                .iter()
-                .filter_map(|subscript| match subscript {
-                    rumoca_core::Subscript::Index { value, .. } => Some(*value),
-                    rumoca_core::Subscript::Colon { .. } | rumoca_core::Subscript::Expr { .. } => {
-                        None
-                    }
-                })
+            indices
+                .into_iter()
                 .map(|value| value.to_string())
                 .collect::<Vec<_>>()
                 .join(",")
         )
     };
-    layout.binding(&key)
+    Ok(layout.binding(&key))
+}
+
+fn generated_index_subscripts(
+    subscripts: &[rumoca_core::Subscript],
+) -> Result<Vec<i64>, LowerError> {
+    subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } => Ok(*value),
+            rumoca_core::Subscript::Colon { span } | rumoca_core::Subscript::Expr { span, .. } => {
+                Err(LowerError::ContractViolation {
+                    reason: "relation memory target contains a non-index generated subscript"
+                        .to_string(),
+                    span: *span,
+                })
+            }
+        })
+        .collect()
 }
 
 fn condition_memory_scalar_expr(
@@ -175,33 +194,46 @@ fn condition_memory_scalar_expr(
     lhs: &rumoca_core::VarName,
     flat_index: usize,
     scalar_count: usize,
-) -> rumoca_core::Expression {
+    span: rumoca_core::Span,
+) -> Result<rumoca_core::Expression, LowerError> {
     if scalar_count <= 1 {
-        return rumoca_core::Expression::VarRef {
+        return Ok(rumoca_core::Expression::VarRef {
             name: lhs.clone().into(),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
-        };
+            span,
+        });
     }
-    let dims = dae_model
+    let Some(dims) = dae_model
         .variables
         .discrete_valued
         .get(lhs)
         .or_else(|| dae_model.variables.discrete_reals.get(lhs))
         .map(|var| var.dims.as_slice())
-        .unwrap_or(&[]);
-    let subscripts = dae::flat_index_to_subscripts(dims, flat_index)
-        .unwrap_or_else(|| vec![flat_index.saturating_add(1)])
+    else {
+        return Err(LowerError::ContractViolation {
+            reason: format!(
+                "relation memory target `{lhs}` has scalar_count={scalar_count} but no DAE variable metadata"
+            ),
+            span,
+        });
+    };
+    let Some(indices) = dae::flat_index_to_subscripts(dims, flat_index) else {
+        return Err(LowerError::ContractViolation {
+            reason: format!(
+                "relation memory target `{lhs}` cannot map flat index {flat_index} of {scalar_count} through dims {dims:?}"
+            ),
+            span,
+        });
+    };
+    let subscripts = indices
         .into_iter()
-        .map(|index| {
-            rumoca_core::Subscript::generated_index(index as i64, rumoca_core::Span::DUMMY)
-        })
+        .map(|index| rumoca_core::Subscript::generated_index(index as i64, span))
         .collect();
-    rumoca_core::Expression::VarRef {
+    Ok(rumoca_core::Expression::VarRef {
         name: lhs.clone().into(),
         subscripts,
-        span: rumoca_core::Span::DUMMY,
-    }
+        span,
+    })
 }
 
 fn lower_synthetic_root_condition_row(

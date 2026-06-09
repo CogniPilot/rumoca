@@ -451,25 +451,27 @@ fn record_array_length(base: &str, flat: &Model) -> Option<usize> {
 }
 
 fn infer_record_array_length_from_indexed_fields(base: &str, flat: &Model) -> Option<usize> {
-    let indexed_prefix = format!("{base}[");
     let mut max_index = 0usize;
 
     for name in flat.variables.keys() {
-        let Some(rest) = name.as_str().strip_prefix(&indexed_prefix) else {
-            continue;
-        };
-        let Some(bracket_end) = rest.find(']') else {
-            continue;
-        };
-        let first_index_text = rest[..bracket_end]
-            .split(',')
-            .next()
-            .map(str::trim)
-            .unwrap_or_default();
-        let Ok(first_index) = first_index_text.parse::<usize>() else {
-            continue;
-        };
-        max_index = max_index.max(first_index);
+        let mut prefix = String::new();
+        for segment in rumoca_core::ComponentPath::from_flat_path(name.as_str()).parts() {
+            if !prefix.is_empty() {
+                prefix.push('.');
+            }
+            prefix.push_str(rumoca_core::strip_array_index(segment));
+            if prefix != base {
+                continue;
+            }
+            let Some(first_index) = rumoca_core::parse_scalar_name(segment)
+                .and_then(|scalar_name| scalar_name.indices.first().copied())
+                .and_then(|index| usize::try_from(index).ok())
+                .filter(|index| *index > 0)
+            else {
+                continue;
+            };
+            max_index = max_index.max(first_index);
+        }
     }
 
     (max_index > 0).then_some(max_index)
@@ -1297,9 +1299,17 @@ fn validate_when_equation_functions(
             validate_flat_expression_functions(value, flat, *span, reachable_calls, None)?
         }
         rumoca_ir_flat::WhenEquation::Assert {
-            condition, span, ..
-        } => validate_flat_expression_functions(condition, flat, *span, reachable_calls, None)?,
-        rumoca_ir_flat::WhenEquation::Terminate { .. } => {}
+            condition,
+            message,
+            span,
+            ..
+        } => {
+            validate_flat_expression_functions(condition, flat, *span, reachable_calls, None)?;
+            validate_flat_expression_functions(message, flat, *span, reachable_calls, None)?;
+        }
+        rumoca_ir_flat::WhenEquation::Terminate { message, span, .. } => {
+            validate_flat_expression_functions(message, flat, *span, reachable_calls, None)?;
+        }
         rumoca_ir_flat::WhenEquation::Conditional {
             branches,
             else_branch,

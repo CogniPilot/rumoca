@@ -36,7 +36,7 @@ fn dae_record_param_lowering_uses_constructor_signature_metadata() {
         .functions
         .insert(VarName::new("Pkg.f"), function_with_record_input());
     dae.continuous.equations.push(rumoca_ir_dae::Equation {
-        lhs: Some(VarName::new("x")),
+        lhs: Some(VarName::new("x").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: VarName::new("Pkg.f").into(),
             args: vec![var_ref("rec")],
@@ -86,7 +86,7 @@ fn prepare_dae_for_codegen_does_not_mutate_simulation_dae() {
         .functions
         .insert(VarName::new("Pkg.f"), function_with_record_input());
     dae.continuous.equations.push(rumoca_ir_dae::Equation {
-        lhs: Some(VarName::new("x")),
+        lhs: Some(VarName::new("x").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: VarName::new("Pkg.f").into(),
             args: vec![var_ref("rec")],
@@ -128,7 +128,7 @@ fn dae_record_param_lowering_leaves_unknown_record_metadata_unexpanded() {
         .functions
         .insert(VarName::new("Pkg.f"), function_with_record_input());
     dae.continuous.equations.push(rumoca_ir_dae::Equation {
-        lhs: Some(VarName::new("x")),
+        lhs: Some(VarName::new("x").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: VarName::new("Pkg.f").into(),
             args: vec![rumoca_core::Expression::Literal {

@@ -1,23 +1,23 @@
 use super::super::render_expr::get_field;
-use super::{ExprConfig, var_name_to_symbol};
-use minijinja::Value;
+use super::{ExprConfig, no_render_match, var_name_to_symbol};
+use minijinja::{Error, Value};
 
 pub(super) fn synthesize_discrete_statespace_rhs(
     var_name: &str,
     dae: &Value,
     cfg: &ExprConfig,
-) -> Option<String> {
+) -> Result<Option<String>, Error> {
     if let Some(prefix) = state_space_member_prefix(var_name, "e") {
         let setpoint = format!("{prefix}.setpoint");
         let measurement = format!("{prefix}.measurement");
         if has_var_in_dae_map(dae, "y", &setpoint) && has_var_in_dae_map(dae, "y", &measurement) {
-            return Some(format!(
+            return Ok(Some(format!(
                 "({}) - ({})",
-                var_name_to_symbol(&setpoint, cfg),
-                var_name_to_symbol(&measurement, cfg)
-            ));
+                var_name_to_symbol(&setpoint, cfg)?,
+                var_name_to_symbol(&measurement, cfg)?
+            )));
         }
-        return None;
+        return no_render_match();
     }
 
     if let Some(prefix) = state_space_member_prefix(var_name, "u_k") {
@@ -25,30 +25,32 @@ pub(super) fn synthesize_discrete_statespace_rhs(
         let e_name = format!("{prefix}.e");
         let c_name = format!("{prefix}.C_d");
         let d_name = format!("{prefix}.D_d");
-        let e_expr = current_error_expr(prefix, dae, cfg);
-        let n = get_first_dim_for_var_in_dae(dae, &x_name)?;
+        let e_expr = current_error_expr(prefix, dae, cfg)?;
+        let Some(n) = get_first_dim_for_var_in_dae(dae, &x_name) else {
+            return no_render_match();
+        };
         if !has_var_in_dae_map(dae, "z", &x_name)
             || !has_var_in_dae_map(dae, "z", &e_name)
             || !has_var_in_dae_map(dae, "p", &c_name)
             || !has_var_in_dae_map(dae, "p", &d_name)
         {
-            return None;
+            return no_render_match();
         }
 
         let mut terms = Vec::new();
         for j in 1..=n {
             terms.push(format!(
                 "({} * pre_{})",
-                indexed_alias(&c_name, j, cfg),
-                indexed_alias(&x_name, j, cfg)
+                indexed_alias(&c_name, j, cfg)?,
+                indexed_alias(&x_name, j, cfg)?
             ));
         }
         terms.push(format!(
             "({} * {})",
-            var_name_to_symbol(&d_name, cfg),
+            var_name_to_symbol(&d_name, cfg)?,
             e_expr
         ));
-        return Some(terms.join(" + "));
+        return Ok(Some(terms.join(" + ")));
     }
 
     if let Some((prefix, i)) = parse_indexed_suffix(var_name, ".x") {
@@ -56,17 +58,19 @@ pub(super) fn synthesize_discrete_statespace_rhs(
         let e_name = format!("{prefix}.e");
         let a_name = format!("{prefix}.A_d");
         let b_name = format!("{prefix}.B_d");
-        let e_expr = current_error_expr(prefix, dae, cfg);
-        let n = get_first_dim_for_var_in_dae(dae, &x_name)?;
+        let e_expr = current_error_expr(prefix, dae, cfg)?;
+        let Some(n) = get_first_dim_for_var_in_dae(dae, &x_name) else {
+            return no_render_match();
+        };
         if i < 1 || i > n {
-            return None;
+            return no_render_match();
         }
         if !has_var_in_dae_map(dae, "z", &x_name)
             || !has_var_in_dae_map(dae, "z", &e_name)
             || !has_var_in_dae_map(dae, "p", &a_name)
             || !has_var_in_dae_map(dae, "p", &b_name)
         {
-            return None;
+            return no_render_match();
         }
 
         let mut terms = Vec::new();
@@ -74,15 +78,19 @@ pub(super) fn synthesize_discrete_statespace_rhs(
             let flat_idx = (i - 1) * n + j;
             terms.push(format!(
                 "({} * pre_{})",
-                indexed_alias(&a_name, flat_idx, cfg),
-                indexed_alias(&x_name, j, cfg)
+                indexed_alias(&a_name, flat_idx, cfg)?,
+                indexed_alias(&x_name, j, cfg)?
             ));
         }
-        terms.push(format!("({} * {})", indexed_alias(&b_name, i, cfg), e_expr));
-        return Some(terms.join(" + "));
+        terms.push(format!(
+            "({} * {})",
+            indexed_alias(&b_name, i, cfg)?,
+            e_expr
+        ));
+        return Ok(Some(terms.join(" + ")));
     }
 
-    None
+    no_render_match()
 }
 
 fn state_space_member_prefix<'a>(name: &'a str, member: &str) -> Option<&'a str> {
@@ -104,7 +112,7 @@ fn parse_indexed_suffix<'a>(name: &'a str, suffix: &str) -> Option<(&'a str, usi
     Some((prefix, idx))
 }
 
-fn indexed_alias(base_name: &str, idx: usize, cfg: &ExprConfig) -> String {
+fn indexed_alias(base_name: &str, idx: usize, cfg: &ExprConfig) -> Result<String, Error> {
     var_name_to_symbol(&format!("{base_name}[{idx}]"), cfg)
 }
 
@@ -141,15 +149,15 @@ fn get_first_dim_for_var_in_dae(dae: &Value, var_name: &str) -> Option<usize> {
     None
 }
 
-fn current_error_expr(prefix: &str, dae: &Value, cfg: &ExprConfig) -> String {
+fn current_error_expr(prefix: &str, dae: &Value, cfg: &ExprConfig) -> Result<String, Error> {
     let setpoint = format!("{prefix}.setpoint");
     let measurement = format!("{prefix}.measurement");
     if has_var_in_dae_map(dae, "y", &setpoint) && has_var_in_dae_map(dae, "y", &measurement) {
-        return format!(
+        return Ok(format!(
             "({} - {})",
-            var_name_to_symbol(&setpoint, cfg),
-            var_name_to_symbol(&measurement, cfg)
-        );
+            var_name_to_symbol(&setpoint, cfg)?,
+            var_name_to_symbol(&measurement, cfg)?
+        ));
     }
     var_name_to_symbol(&format!("{prefix}.e"), cfg)
 }

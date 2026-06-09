@@ -21,6 +21,23 @@ fn component_ref(name: &str) -> rumoca_core::ComponentReference {
     }
 }
 
+fn component_ref_path(path: &str) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span: rumoca_core::Span::DUMMY,
+        parts: rumoca_core::ComponentPath::from_flat_path(path)
+            .parts()
+            .iter()
+            .map(|ident| rumoca_core::ComponentRefPart {
+                ident: ident.clone(),
+                span: rumoca_core::Span::DUMMY,
+                subs: vec![],
+            })
+            .collect(),
+        def_id: None,
+    }
+}
+
 fn component_ref_with_def_id(
     path: &str,
     def_id: rumoca_core::DefId,
@@ -102,6 +119,50 @@ fn def_id_canonicalization_rewrites_class_qualified_ref_by_owner_scope() {
         panic!("expected varref binding");
     };
     assert_eq!(name.as_str(), "inertia1.rotorWith3DEffects.e");
+}
+
+#[test]
+fn def_id_canonicalization_resolves_descendant_from_component_equation_owner() {
+    let mut model = flat::Model::new();
+    for name in [
+        "tank.medium.state.p",
+        "tank.heatTransfer.states[1].p",
+        "pump.medium.state.p",
+    ] {
+        model.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                component_ref: Some(component_ref_path(name)),
+                is_primitive: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    model.add_equation(flat::Equation::new(
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                "Modelica.Media.CompressibleLiquids.LinearWater_pT_Ambient.state.p",
+                component_ref_path(
+                    "Modelica.Media.CompressibleLiquids.LinearWater_pT_Ambient.state.p",
+                ),
+            ),
+            subscripts: vec![],
+            span: rumoca_core::Span::DUMMY,
+        },
+        rumoca_core::Span::DUMMY,
+        flat::EquationOrigin::ComponentEquation {
+            component: "tank".to_string(),
+        },
+    ));
+
+    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+
+    let rumoca_core::Expression::VarRef { name, .. } = &model.equations[0].residual else {
+        panic!("expected varref residual");
+    };
+    assert_eq!(name.as_str(), "tank.medium.state.p");
 }
 
 #[test]

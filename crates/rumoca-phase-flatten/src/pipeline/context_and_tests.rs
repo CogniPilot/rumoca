@@ -1,3 +1,4 @@
+use super::enum_dimensions::{enum_type_dimension, infer_enum_range_dimensions};
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -39,6 +40,7 @@ impl Context {
             non_structural_params: std::collections::HashSet::new(),
             functions: rustc_hash::FxHashMap::default(),
             record_aliases: rustc_hash::FxHashMap::default(),
+            component_members: super::component_member_scope::ComponentMemberScopes::default(),
             vcg_is_root: rustc_hash::FxHashMap::default(),
             vcg_rooted: rustc_hash::FxHashMap::default(),
             cardinality_counts: rustc_hash::FxHashMap::default(),
@@ -46,6 +48,17 @@ impl Context {
             current_imports: crate::qualify::ImportMap::default(),
             class_def_ids: std::sync::Arc::new(rustc_hash::FxHashSet::default()),
             current_class_scope_path: None,
+            simulated_root_name: None,
+        }
+    }
+
+    pub(crate) fn instance_name_for_prefix(&self, prefix: &QualifiedName) -> Option<String> {
+        let root = self.simulated_root_name.as_ref()?;
+        let suffix = prefix.to_flat_string();
+        if suffix.is_empty() {
+            Some(root.clone())
+        } else {
+            Some(format!("{root}.{suffix}"))
         }
     }
 
@@ -156,13 +169,13 @@ impl Context {
         if let Some(dim) = resolved_dims
             .as_ref()
             .and_then(|dims| dims.get(index).copied())
-            .filter(|dim| *dim > 0)
+            .filter(|dim| *dim >= 0)
         {
             return Ok(dim);
         }
 
         if (flat_var.dims.len() > 1 || flat_var.dims.iter().any(|dim| *dim > 1))
-            && let Some(dim) = flat_var.dims.get(index).copied().filter(|dim| *dim > 0)
+            && let Some(dim) = flat_var.dims.get(index).copied().filter(|dim| *dim >= 0)
         {
             return Ok(dim);
         }
@@ -174,7 +187,7 @@ impl Context {
                 span,
             ));
         };
-        if dim <= 0 {
+        if dim < 0 {
             return Err(FlattenError::unresolved_component_dimension(
                 var_name,
                 ":".to_string(),
@@ -1491,8 +1504,15 @@ fn process_class_instance_body(
             class_index,
             &override_functions,
         );
-        let mut flat_alg =
-            flatten_algorithm_section(&inst_algs, prefix, imports, def_map, &tree.source_map)?;
+        let instance_name = ctx.instance_name_for_prefix(prefix);
+        let mut flat_alg = flatten_algorithm_section(
+            &inst_algs,
+            prefix,
+            imports,
+            def_map,
+            &tree.source_map,
+            instance_name.as_deref(),
+        )?;
         rewrite_function_overrides_in_algorithm(
             &mut flat_alg,
             tree,
@@ -1521,8 +1541,15 @@ fn process_class_instance_body(
             class_index,
             &override_functions,
         );
-        let mut flat_alg =
-            flatten_algorithm_section(&inst_algs, prefix, imports, def_map, &tree.source_map)?;
+        let instance_name = ctx.instance_name_for_prefix(prefix);
+        let mut flat_alg = flatten_algorithm_section(
+            &inst_algs,
+            prefix,
+            imports,
+            def_map,
+            &tree.source_map,
+            instance_name.as_deref(),
+        )?;
         rewrite_function_overrides_in_algorithm(
             &mut flat_alg,
             tree,
@@ -1546,6 +1573,7 @@ pub(crate) fn flatten_algorithm_section(
     imports: &qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
     source_map: &rumoca_core::SourceMap,
+    instance_name: Option<&str>,
 ) -> Result<Algorithm, FlattenError> {
     // Get span from first statement if available
     let span = statements.first().map(|s| s.span).unwrap_or(Span::DUMMY);
@@ -1565,6 +1593,7 @@ pub(crate) fn flatten_algorithm_section(
             def_map,
             initial_locals: &no_locals,
             source_map: Some(source_map),
+            instance_name,
         },
         algorithms::AlgorithmSectionMetadata::new(span, origin),
     )
@@ -1584,6 +1613,7 @@ pub(crate) struct ComponentInstanceProcess<'a, 'tree> {
     pub(crate) class_index: &'a rumoca_ir_ast::ClassDefIndex<'tree>,
     pub(crate) import_cache: &'a mut ImportCaches<'tree>,
     pub(crate) scope_index: &'a OverlayScopeIndex<'a>,
+    pub(crate) component_members: &'a component_member_scope::ComponentMemberScopes,
 }
 
 pub(crate) fn process_component_instance(
@@ -1628,10 +1658,11 @@ pub(crate) fn process_component_instance(
         &override_packages,
         &override_functions,
         &receiver_scope,
+        request.component_members,
     );
     request.flat.variable_type_names.insert(
         var_name.clone(),
-        variables::flat_output_type_name(request.instance_data, request.tree),
+        variables::flat_output_type_name(request.instance_data, request.tree)?,
     );
     if request.instance_data.is_final {
         request
@@ -1711,8 +1742,7 @@ pub(crate) fn qualify_expression_imports_with_def_map(
     } else {
         imports
     };
-    let qualified = qualify::qualify_expression_with_imports(expr, prefix, opts, imports);
-    crate::ast_lower::expression_from_ast_with_def_map(&qualified, def_map)
+    qualify_expression_with_effective_imports(expr, prefix, imports, def_map, opts, None)
 }
 
 /// Like `qualify_expression_imports_with_def_map`, but receives flatten context
@@ -1724,9 +1754,49 @@ pub(crate) fn qualify_expression_imports_with_def_map_ctx(
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
-    _ctx: &Context,
+    ctx: &Context,
 ) -> Result<rumoca_core::Expression, FlattenError> {
-    qualify_expression_imports_with_def_map(expr, prefix, imports, def_map)
+    let opts = qualify::QualifyOptions {
+        preserve_def_id: true,
+        ..qualify::QualifyOptions::default()
+    };
+    let def_filtered_imports;
+    let imports = if let Some(def_map) = def_map {
+        def_filtered_imports = imports_without_shadowed_aliases(expr, imports, def_map);
+        &def_filtered_imports
+    } else {
+        imports
+    };
+    let scoped_imports = super::component_member_scope::imports_without_instance_member_aliases(
+        expr, prefix, imports, ctx,
+    );
+    let instance_name = ctx.instance_name_for_prefix(prefix);
+    qualify_expression_with_effective_imports(
+        expr,
+        prefix,
+        &scoped_imports,
+        def_map,
+        opts,
+        instance_name.as_deref(),
+    )
+}
+
+fn qualify_expression_with_effective_imports(
+    expr: &ast::Expression,
+    prefix: &QualifiedName,
+    imports: &qualify::ImportMap,
+    def_map: Option<&crate::ResolveDefMap>,
+    opts: qualify::QualifyOptions,
+    instance_name: Option<&str>,
+) -> Result<rumoca_core::Expression, FlattenError> {
+    let qualified = qualify::qualify_expression_with_imports(expr, prefix, opts, imports);
+    crate::ast_lower::expression_from_ast_with_context(
+        &qualified,
+        crate::ast_lower::LoweringContext {
+            def_map,
+            instance_name,
+        },
+    )
 }
 
 fn imports_without_shadowed_aliases(
@@ -1882,86 +1952,6 @@ fn collect_subscript_shadowed_import_aliases(
     if let ast::Subscript::Expression(expr) = subscript {
         collect_shadowed_import_aliases(expr, imports, def_map, shadowed);
     }
-}
-
-fn enum_type_dimension(expr: &ast::Expression, tree: &ClassTree) -> Option<i64> {
-    let ast::Expression::ComponentReference(reference) = expr else {
-        return None;
-    };
-    enum_literal_count_for_reference(reference, tree).and_then(|count| i64::try_from(count).ok())
-}
-
-fn infer_enum_range_dimensions(expr: &Expression, tree: &ClassTree) -> Option<Vec<i64>> {
-    let Expression::Range {
-        start, step, end, ..
-    } = expr
-    else {
-        return None;
-    };
-    if step.is_some() {
-        return None;
-    }
-    let (start_type, start_ordinal) = enum_literal_ordinal(start, tree)?;
-    let (end_type, end_ordinal) = enum_literal_ordinal(end, tree)?;
-    if start_type != end_type {
-        return None;
-    }
-    let len = if end_ordinal >= start_ordinal {
-        end_ordinal - start_ordinal + 1
-    } else {
-        0
-    };
-    Some(vec![len])
-}
-
-fn enum_literal_ordinal(expr: &Expression, tree: &ClassTree) -> Option<(rumoca_core::DefId, i64)> {
-    let Expression::VarRef {
-        name, subscripts, ..
-    } = expr
-    else {
-        return None;
-    };
-    if !subscripts.is_empty() {
-        return None;
-    }
-    let reference = name.component_ref()?;
-    let literal = reference.parts.last()?.ident.as_str();
-    let enum_class = enum_class_for_literal_reference(reference, tree)?;
-    let enum_def_id = enum_class.def_id?;
-    let ordinal = enum_class
-        .enum_literals
-        .iter()
-        .position(|candidate| candidate.ident.text.as_ref() == literal)? as i64
-        + 1;
-    Some((enum_def_id, ordinal))
-}
-
-fn enum_class_for_literal_reference<'a>(
-    reference: &rumoca_core::ComponentReference,
-    tree: &'a ClassTree,
-) -> Option<&'a ast::ClassDef> {
-    if reference.parts.len() < 2 {
-        return None;
-    }
-    let first_def_id = reference.def_id?;
-    let mut class = tree.get_class_by_def_id(first_def_id)?;
-    if !class.enum_literals.is_empty() {
-        return Some(class);
-    }
-    for part in &reference.parts[1..reference.parts.len() - 1] {
-        class = class.classes.get(part.ident.as_str())?;
-    }
-    (!class.enum_literals.is_empty()).then_some(class)
-}
-
-fn enum_literal_count_for_reference(
-    reference: &ast::ComponentReference,
-    tree: &ClassTree,
-) -> Option<usize> {
-    let def_id = reference.def_id?;
-    tree.get_class_by_def_id(def_id)
-        .map(|class| class.enum_literals.len())
-        .filter(|count| *count > 0)
 }
 
 #[cfg(test)]

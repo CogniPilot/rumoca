@@ -761,6 +761,7 @@ pub(crate) fn process_component_instances_for_flatten(
     component_override_map: &ComponentOverrideMap,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
+    component_members: &component_member_scope::ComponentMemberScopes,
 ) -> Result<(), FlattenError> {
     let mut import_cache = ImportCaches::default();
     let scope_index = OverlayScopeIndex::new(overlay);
@@ -776,6 +777,7 @@ pub(crate) fn process_component_instances_for_flatten(
             class_index,
             import_cache: &mut import_cache,
             scope_index: &scope_index,
+            component_members,
         })?;
         track_top_level_component_markers(flat, instance_data);
     }
@@ -834,7 +836,7 @@ pub(crate) fn prepare_context_for_equation_flattening(
     ctx.seed_flat_parameter_constant_keys(flat);
     inject_model_nested_class_constants(tree, class_index, model_name, ctx);
     inject_model_extends_redeclare_constants(tree, class_index, model_name, ctx);
-    inject_enclosing_class_constants(tree, model_name, ctx);
+    inject_enclosing_class_constants(tree, class_index, model_name, ctx)?;
     inject_component_instance_nested_class_constants(tree, class_index, overlay, ctx);
     // Re-apply parameter lookup from materialized flat variables after
     // class/package constant injection so record rebindings override injected
@@ -927,7 +929,7 @@ pub(crate) fn finalize_flat_model(
 
     seed_flat_functions_from_context(ctx, flat);
     functions::collect_functions(flat, tree, class_index)?;
-    rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index);
+    rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index)?;
     functions::collect_functions(flat, tree, class_index)?;
     mark_record_constructor_calls(flat, tree);
     functions::lower_record_function_params(flat);
@@ -959,6 +961,7 @@ pub(crate) fn finalize_flat_model(
         tree,
         class_index,
         component_override_map,
+        &ctx.component_members,
     )?;
     if collected_new_functions {
         mark_record_constructor_calls(flat, tree);
@@ -973,8 +976,8 @@ pub(crate) fn finalize_flat_model(
         substitute_known_constants_in_flat(flat, ctx);
         mark_record_constructor_calls(flat, tree);
         collapse_index_refs_to_known_varrefs(flat);
-        canonicalize_varrefs_via_instantiated_def_ids(flat);
     }
+    canonicalize_varrefs_via_instantiated_def_ids(flat);
     functions::canonicalize_collected_function_calls(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
@@ -994,13 +997,20 @@ fn collect_rewritten_functions_to_fixed_point(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     component_override_map: &ComponentOverrideMap,
+    component_members: &component_member_scope::ComponentMemberScopes,
 ) -> Result<bool, FlattenError> {
     const FUNCTION_REWRITE_FIXED_POINT_LIMIT: usize = 8;
 
     let initial_function_count = flat.functions.len();
     for _ in 0..FUNCTION_REWRITE_FIXED_POINT_LIMIT {
         let function_count_before = flat.functions.len();
-        rewrite_function_overrides_in_flat_model(flat, tree, class_index, component_override_map);
+        rewrite_function_overrides_in_flat_model(
+            flat,
+            tree,
+            class_index,
+            component_override_map,
+            component_members,
+        )?;
         functions::collect_functions(flat, tree, class_index)?;
         if flat.functions.len() == function_count_before {
             return Ok(flat.functions.len() != initial_function_count);

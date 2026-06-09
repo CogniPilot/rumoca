@@ -513,7 +513,8 @@ mod tests {
             ));
 
         let exprs = collect_dynamic_time_event_exprs(&dae_model);
-        let layout = crate::layout::build_var_layout(&dae_model);
+        let layout =
+            crate::layout::build_var_layout(&dae_model).expect("test DAE layout should build");
         let rows = crate::lower::lower_dynamic_time_event_rhs(&dae_model, &layout, &exprs)
             .expect("dynamic modulo event row should lower");
         let block = rumoca_ir_solve::ScalarProgramBlock::new(rows);

@@ -65,7 +65,7 @@ pub(crate) fn run_structure_dump(dae: &Dae, model: &str, solver_mode: SimSolverM
             // each unmatched unknown (likely cause + the f_x rows referencing it)
             // so the failure is actionable without hand-reading the DAE.
             println!("structure: model `{model}`");
-            if let Some(diagnosis) = rumoca_sim::diagnose_structural_singularity(dae, &opts) {
+            if let Ok(Some(diagnosis)) = rumoca_sim::diagnose_structural_singularity(dae, &opts) {
                 print_singularity_diagnosis(&diagnosis);
             }
             return Err(anyhow::Error::msg(error));

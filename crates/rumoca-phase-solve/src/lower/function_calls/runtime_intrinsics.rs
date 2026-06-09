@@ -103,24 +103,40 @@ pub(in crate::lower) fn random_projection_state_len(
     generator: RandomGenerator,
     projection: &FunctionOutputProjection,
     args: &[rumoca_core::Expression],
-) -> usize {
-    projection
-        .indices
-        .first()
-        .copied()
-        .unwrap_or(0)
-        .max(random_state_len_arg(args).unwrap_or_else(|| random_generator_state_len(generator)))
+) -> Result<usize, LowerError> {
+    let declared_len = match random_state_len_arg(args)? {
+        Some(len) => len,
+        None => random_generator_state_len(generator),
+    };
+    Ok(match projection.indices.first().copied() {
+        Some(projected_idx) => projected_idx.max(declared_len),
+        None => declared_len,
+    })
 }
 
-pub(in crate::lower) fn random_state_len_arg(args: &[rumoca_core::Expression]) -> Option<usize> {
+pub(in crate::lower) fn random_state_len_arg(
+    args: &[rumoca_core::Expression],
+) -> Result<Option<usize>, LowerError> {
+    let Some(expr) = args.get(2) else {
+        return Ok(None);
+    };
     let rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
-        span: rumoca_core::Span::DUMMY,
-    } = args.get(2)?
+        ..
+    } = expr
     else {
-        return None;
+        return Err(unsupported_at(
+            "random state length argument must be an Integer literal",
+            expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+        ));
     };
-    usize::try_from((*value).max(1)).ok()
+    let len = usize::try_from((*value).max(1)).map_err(|_| {
+        unsupported_at(
+            "random state length argument is outside the supported range",
+            expr.span().unwrap_or(rumoca_core::Span::DUMMY),
+        )
+    })?;
+    Ok(Some(len))
 }
 
 pub(in crate::lower) fn random_generator_state_len(generator: RandomGenerator) -> usize {
@@ -166,35 +182,71 @@ pub(in crate::lower) fn parse_complex_operator_projection(
 pub(in crate::lower) fn lower_runtime_string_special_value(
     call_name: &str,
     args: &[rumoca_core::Expression],
-) -> Option<f64> {
-    match intrinsic_short_name(call_name) {
-        "getInstanceName" | "fullPathName" | "loadResource" | "readLine" | "substring"
-        | "scanBoolean" | "scanDelimiter" | "scanIdentifier" | "scanInteger" | "scanNoToken"
-        | "scanReal" | "scanString" | "scanToken" | "skipWhiteSpace" => Some(0.0),
-        "isValidTable" => Some(1.0),
-        "writeRealMatrix" => Some(1.0),
-        "isEmpty" => Some(
-            literal_string(args.first())
-                .map_or(0.0, |s| if s.trim().is_empty() { 1.0 } else { 0.0 }),
-        ),
-        "hashString" => Some(literal_string(args.first()).map_or(0.0, |value| {
-            rumoca_eval_dae::modelica_strings_hash_string(value) as f64
-        })),
-        "length" => literal_string(args.first()).map(|s| s.chars().count() as f64),
-        "find" | "findLast" => Some(find_string_special_value(
-            intrinsic_short_name(call_name),
-            literal_string(args.first()),
-            literal_string(args.get(1)),
+    call_span: rumoca_core::Span,
+) -> Result<Option<f64>, LowerError> {
+    let short_name = intrinsic_short_name(call_name);
+    match rumoca_core::modelica_string_intrinsic_short_name(short_name) {
+        Some(rumoca_core::ModelicaStringIntrinsic::RequiresLowering) => Err(unsupported_at(
+            format!(
+                "{} must be lowered to a typed literal or runtime operation before solve lowering",
+                short_name
+            ),
+            call_span,
         )),
-        _ => None,
+        Some(rumoca_core::ModelicaStringIntrinsic::IsEmpty) => Ok(Some(
+            if required_literal_string(args.first(), call_span)?
+                .trim()
+                .is_empty()
+            {
+                1.0
+            } else {
+                0.0
+            },
+        )),
+        Some(rumoca_core::ModelicaStringIntrinsic::HashString) => Ok(Some(
+            rumoca_eval_dae::modelica_strings_hash_string(required_literal_string(
+                args.first(),
+                call_span,
+            )?) as f64,
+        )),
+        Some(rumoca_core::ModelicaStringIntrinsic::Length) => Ok(Some(
+            required_literal_string(args.first(), call_span)?
+                .chars()
+                .count() as f64,
+        )),
+        Some(
+            intrinsic @ (rumoca_core::ModelicaStringIntrinsic::Find
+            | rumoca_core::ModelicaStringIntrinsic::FindLast),
+        ) => Ok(Some(find_string_special_value(
+            intrinsic == rumoca_core::ModelicaStringIntrinsic::FindLast,
+            required_literal_string(args.first(), call_span)?,
+            required_literal_string(args.get(1), call_span)?,
+        ))),
+        None => match short_name {
+            "isValidTable" => Ok(Some(1.0)),
+            "writeRealMatrix" => Ok(Some(1.0)),
+            _ => Ok(None),
+        },
     }
+}
+
+fn required_literal_string(
+    expr: Option<&rumoca_core::Expression>,
+    call_span: rumoca_core::Span,
+) -> Result<&str, LowerError> {
+    literal_string(expr).ok_or_else(|| {
+        let span = expr
+            .and_then(rumoca_core::Expression::span)
+            .unwrap_or(call_span);
+        unsupported_at("string intrinsic requires a literal String argument", span)
+    })
 }
 
 pub(in crate::lower) fn literal_string(expr: Option<&rumoca_core::Expression>) -> Option<&str> {
     match expr {
         Some(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::String(value),
-            span: rumoca_core::Span::DUMMY,
+            ..
         }) => Some(value.as_str()),
         _ => None,
     }
@@ -211,29 +263,24 @@ pub(in crate::lower) fn non_numeric_record_metadata(expr: &rumoca_core::Expressi
 }
 
 pub(in crate::lower) fn find_string_special_value(
-    short_name: &str,
-    haystack: Option<&str>,
-    needle: Option<&str>,
+    find_last: bool,
+    haystack: &str,
+    needle: &str,
 ) -> f64 {
-    let (Some(haystack), Some(needle)) = (haystack, needle) else {
-        return 0.0;
-    };
-    let idx = match short_name {
-        "find" => haystack.find(needle),
-        "findLast" => haystack.rfind(needle),
-        _ => None,
+    let idx = if find_last {
+        haystack.rfind(needle)
+    } else {
+        haystack.find(needle)
     };
     idx.map(|i| i.saturating_add(1) as f64).unwrap_or(0.0)
 }
 
-pub(in crate::lower) fn exact_dim_value_count(dims: &[i64]) -> usize {
-    dims.iter()
-        .try_fold(1usize, |acc, dim| {
-            usize::try_from(*dim)
-                .ok()
-                .and_then(|dim| acc.checked_mul(dim))
-        })
-        .unwrap_or_else(|| dims_scalar_count(dims))
+pub(in crate::lower) fn exact_dim_value_count(
+    dims: &[i64],
+    context: impl Into<String>,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    dims_scalar_count(dims, context, span)
 }
 
 pub(in crate::lower) fn bind_singleton_array_actual_to_scalar_formal(
@@ -245,7 +292,7 @@ pub(in crate::lower) fn bind_singleton_array_actual_to_scalar_formal(
     if inferred_dims.iter().product::<usize>() != 1 || values.len() != 1 {
         return false;
     }
-    scope.insert(ComponentPath::from_flat_path(name), values[0]);
+    scope.insert(generated_scope_key(name), values[0]);
     true
 }
 

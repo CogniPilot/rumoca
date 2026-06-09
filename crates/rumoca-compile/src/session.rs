@@ -1573,6 +1573,8 @@ pub struct CompilationResult {
     pub flat: flat::Model,
     /// The final DAE representation.
     pub dae: dae::Dae,
+    /// Detailed continuous balance inputs validated during DAE construction.
+    pub balance_detail: rumoca_phase_dae::balance::BalanceDetail,
     /// Optional simulation start time from `annotation(experiment(StartTime=...))`
     /// on the compiled root class.
     pub experiment_start_time: Option<f64>,
@@ -1751,7 +1753,7 @@ pub(crate) fn format_strict_failure_summary(
 impl CompilationResult {
     /// Check if the model is balanced (equal equations and unknowns).
     pub fn is_balanced(&self) -> bool {
-        rumoca_phase_dae::is_balanced(&self.dae)
+        self.balance_detail.is_balanced()
     }
 }
 

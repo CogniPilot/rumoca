@@ -534,7 +534,8 @@ fn compile_to_dae(
             (compiled.dae, 1.0)
         }
     };
-    rumoca_phase_structural::scalarize::scalarize_equations(&mut dae);
+    rumoca_phase_structural::scalarize::scalarize_equations(&mut dae)
+        .map_err(|error| format!("structural scalarization failed: {error}"))?;
     Ok((dae, t_end))
 }
 

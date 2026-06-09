@@ -64,6 +64,8 @@ use crate::error::CompilerError;
 pub struct CompilationResult {
     /// The DAE representation.
     pub dae: Dae,
+    /// Detailed continuous balance inputs validated during DAE construction.
+    pub balance_detail: dae_analysis::BalanceDetail,
     /// The flat model (intermediate).
     pub flat: FlatModel,
     /// The resolved tree (intermediate, before instantiation and typechecking).
@@ -86,10 +88,11 @@ pub enum TemplateIr {
 ///
 /// For scalar-only models this is a no-op on the resulting DAE, so it is
 /// safe to apply unconditionally before template rendering.
-fn scalarized_dae(dae: &Dae) -> Dae {
+fn scalarized_dae(dae: &Dae) -> Result<Dae, CodegenError> {
     let mut dae = dae.clone();
-    rumoca_compile::phase_structural::scalarize_equations(&mut dae);
-    dae
+    rumoca_compile::phase_structural::scalarize_equations(&mut dae)
+        .map_err(|err| CodegenError::template(err.to_string()))?;
+    Ok(dae)
 }
 
 fn dae_to_template_json_with_solve(dae_model: &Dae) -> Result<Value, CodegenError> {
@@ -120,7 +123,7 @@ fn render_solve_template_with_name(
     template: &str,
     model_name: &str,
 ) -> Result<String, CodegenError> {
-    let dae = scalarized_dae(dae_model);
+    let dae = scalarized_dae(dae_model)?;
     let mut dae_json = dae_to_template_json_with_solve(&dae)?;
     dae_json
         .as_object_mut()
@@ -372,12 +375,12 @@ impl CompilationResult {
 
     /// Equation balance (equations - unknowns).
     pub fn balance(&self) -> i64 {
-        dae_analysis::balance(&self.dae)
+        self.balance_detail.balance()
     }
 
     /// Whether equation/unknown balance is exact.
     pub fn is_balanced(&self) -> bool {
-        dae_analysis::is_balanced(&self.dae)
+        self.balance_detail.is_balanced()
     }
 
     /// Convert the DAE to JSON.
@@ -717,11 +720,12 @@ impl Compiler {
                 "[rumoca]   Continuous equations (f_x): {}",
                 result.dae.continuous.equations.len()
             );
-            eprintln!("[rumoca]   Balance: {}", dae_analysis::balance(&result.dae));
+            eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
         }
 
         Ok(CompilationResult {
             dae: result.dae,
+            balance_detail: result.balance_detail,
             flat: result.flat,
             resolved,
         })
@@ -833,10 +837,7 @@ impl Compiler {
                 "[rumoca]   Continuous equations (f_x): {}",
                 result.dae.continuous.equations.len()
             );
-            eprintln!(
-                "[rumoca]   Balance: {}",
-                dae_analysis::balance(result.dae.as_ref())
-            );
+            eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
         }
 
         Ok(*result)

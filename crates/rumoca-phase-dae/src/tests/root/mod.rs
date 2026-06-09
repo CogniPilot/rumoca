@@ -1357,8 +1357,11 @@ fn test_collect_vars_with_unknown_rhs_resolves_collapsed_array_member_refs() {
 fn test_empty_model() {
     let flat = Model::new();
     let dae = to_dae(&flat).unwrap();
-    assert!(crate::balance::is_balanced(&dae));
-    assert_eq!(crate::balance::balance(&dae), 0);
+    assert!(crate::balance::is_balanced(&dae).expect("valid DAE balance fixture"));
+    assert_eq!(
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
+        0
+    );
 }
 
 #[test]
@@ -1408,7 +1411,10 @@ fn test_internal_input_with_der_becomes_state() {
             .contains_key(&rumoca_core::VarName::new("medium.p")),
         "internal input with der() must not remain an external input"
     );
-    assert_eq!(crate::balance::balance(&dae), 0);
+    assert_eq!(
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
+        0
+    );
 }
 
 #[test]
@@ -1876,7 +1882,7 @@ fn test_connected_input_binding_kept_for_input_only_connection_alias() {
         "binding equation for connected input should be kept for input-only alias set"
     );
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "input-only connection aliases with a binding must stay balanced"
     );

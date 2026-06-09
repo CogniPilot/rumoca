@@ -21,7 +21,7 @@
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    ComponentReference, Expression, Function, FunctionShapeContractError, Reference, Span,
+    ComponentReference, DefId, Expression, Function, FunctionShapeContractError, Reference, Span,
     Statement, VarName, extract_algorithm_outputs,
 };
 use serde::ser::{SerializeStruct, SerializeTuple};
@@ -494,8 +494,8 @@ pub struct DaeEventAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaeEventActionKind {
-    Assert { message: String },
-    Terminate { message: String },
+    Assert { message: Expression },
+    Terminate { message: Expression },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -598,6 +598,11 @@ pub struct DaeMetadata {
     /// Optional description string from the root class declaration.
     #[serde(default)]
     pub model_description: Option<String>,
+
+    /// DefId ancestry for resolved source symbols, ordered from outermost owner
+    /// to the symbol itself. Used for structured balance and lowering queries.
+    #[serde(default)]
+    pub symbol_ancestry: IndexMap<DefId, Vec<DefId>>,
 }
 
 impl Dae {
@@ -730,6 +735,10 @@ pub struct Variable {
     /// remain fixed; all other parameters are tunable.
     #[serde(default)]
     pub is_tunable: bool,
+    /// Whether this variable corresponds to a source Modelica component or a
+    /// compiler-generated Appendix B/backend slot.
+    #[serde(default)]
+    pub origin: VariableOrigin,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -744,13 +753,21 @@ pub enum VariableCausality {
     Independent,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VariableOrigin {
+    #[default]
+    Source,
+    Generated,
+}
+
 impl Serialize for Variable {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         let include_component_ref = !serializer.is_human_readable() || self.component_ref.is_some();
-        let field_count = if include_component_ref { 19 } else { 18 };
+        let field_count = if include_component_ref { 20 } else { 19 };
         let mut state = serializer.serialize_struct("Variable", field_count)?;
         state.serialize_field("name", &self.name)?;
         if include_component_ref {
@@ -772,6 +789,7 @@ impl Serialize for Variable {
         state.serialize_field("description", &self.description)?;
         state.serialize_field("causality", &self.causality)?;
         state.serialize_field("is_tunable", &self.is_tunable)?;
+        state.serialize_field("origin", &self.origin)?;
         state.end()
     }
 }
@@ -993,8 +1011,12 @@ mod variable_shape_contract_tests {
 /// An equation in the DAE system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Equation {
-    /// Left-hand side (variable being defined, if any).
-    pub lhs: Option<VarName>,
+    /// Left-hand side reference (variable being defined, if any).
+    ///
+    /// Explicit equations preserve the structured component reference that
+    /// produced the lhs. Semantic phases must use this instead of recovering
+    /// path structure from the rendered variable name.
+    pub lhs: Option<Reference>,
     /// Right-hand side expression.
     pub rhs: Expression,
     /// Source span for error reporting. Never loses source location.
@@ -1420,7 +1442,12 @@ impl Equation {
     }
 
     /// Create a new equation in explicit form (lhs = rhs).
-    pub fn explicit(lhs: VarName, rhs: Expression, span: Span, origin: impl Into<String>) -> Self {
+    pub fn explicit(
+        lhs: impl Into<Reference>,
+        rhs: Expression,
+        span: Span,
+        origin: impl Into<String>,
+    ) -> Self {
         Self::explicit_with_scalar_count(lhs, rhs, span, origin, 1)
     }
 
@@ -1429,14 +1456,14 @@ impl Equation {
     /// The scalar count is clamped to at least 1 so callers cannot accidentally
     /// construct an explicit equation that contributes zero scalars to balance.
     pub fn explicit_with_scalar_count(
-        lhs: VarName,
+        lhs: impl Into<Reference>,
         rhs: Expression,
         span: Span,
         origin: impl Into<String>,
         scalar_count: usize,
     ) -> Self {
         Self {
-            lhs: Some(lhs),
+            lhs: Some(lhs.into()),
             rhs,
             span,
             origin: origin.into(),

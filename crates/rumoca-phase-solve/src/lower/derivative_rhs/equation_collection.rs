@@ -4,13 +4,13 @@ pub(in crate::lower) fn collect_derivative_equations(
     dae_model: &dae::Dae,
     state_names: &[String],
     structural_bindings: &IndexMap<String, f64>,
-) -> (Vec<DerivativeEquation>, Vec<bool>) {
+) -> Result<(Vec<DerivativeEquation>, Vec<bool>), LowerError> {
     let mut equations = Vec::new();
     let mut flags = Vec::with_capacity(dae_model.continuous.equations.len());
     for equation in &dae_model.continuous.equations {
         let before = equations.len();
         if let Some(projected) =
-            function_projected_residuals(&equation.rhs, dae_model, structural_bindings)
+            function_projected_residuals(&equation.rhs, dae_model, structural_bindings)?
         {
             for residual in projected {
                 append_derivative_rows_for_residual(
@@ -35,7 +35,7 @@ pub(in crate::lower) fn collect_derivative_equations(
         );
         flags.push(equations.len() > before);
     }
-    (equations, flags)
+    Ok((equations, flags))
 }
 
 pub(in crate::lower) fn append_derivative_rows_for_residual(
@@ -85,15 +85,15 @@ pub(in crate::lower) fn collect_missing_indexed_record_field_assignments(
     state_names: &[String],
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
-) -> IndexMap<String, DirectAssignmentValue> {
+) -> Result<IndexMap<String, DirectAssignmentValue>, LowerError> {
     let (_, equation_flags) =
-        collect_derivative_equations(dae_model, state_names, structural_bindings);
-    collect_direct_assignments(dae_model, &equation_flags)
+        collect_derivative_equations(dae_model, state_names, structural_bindings)?;
+    Ok(collect_direct_assignments(dae_model, &equation_flags)
         .into_iter()
         .filter(|(key, _assignment)| {
             layout.binding(key).is_none() && has_indexed_record_field_segment(key)
         })
-        .collect()
+        .collect())
 }
 
 pub(in crate::lower) fn has_indexed_record_field_segment(key: &str) -> bool {
@@ -108,7 +108,7 @@ pub(in crate::lower) fn direct_assignment_target_rhs(
     if let Some(lhs) = equation.lhs.as_ref()
         && !equation.rhs.contains_der()
     {
-        return Some((lhs.clone(), equation.rhs.clone()));
+        return Some((lhs.var_name().clone(), equation.rhs.clone()));
     }
 
     let (lhs, rhs) = split_subtraction(&equation.rhs)?;

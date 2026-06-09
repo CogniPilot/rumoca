@@ -38,7 +38,7 @@ fn lower_discrete_rhs_lowers_function_matrix_output_for_matrix_vector_product() 
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         // MLS §12.4.5 and §10.6.5: a function may return an array output,
         // and that returned matrix participates in matrix-vector products.
         rhs: mul(
@@ -55,7 +55,7 @@ fn lower_discrete_rhs_lowers_function_matrix_output_for_matrix_vector_product() 
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("function matrix output should lower as array values");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -109,7 +109,7 @@ fn lower_residual_scalarizes_function_returned_record_fields() {
     let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(44), 10, 20);
     let dae_model = function_returned_record_fields_dae(span);
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("function-returned record fields should scalarize through field projection");
     assert_eq!(rows.len(), 12);
@@ -369,7 +369,7 @@ fn lower_residual_preserves_function_record_matrix_field_shape() {
         scalar_count: 9,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("record function matrix field should lower to every scalar row");
     assert_eq!(rows.len(), 9);
@@ -468,7 +468,7 @@ fn lower_residual_rejects_function_record_matrix_field_shape_mismatch() {
         scalar_count: 9,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let err = lower_residual(&dae_model, &layout)
         .expect_err("record matrix field width mismatch should fail before solve IR exists");
     assert_eq!(err.source_span(), Some(span));
@@ -519,7 +519,7 @@ fn lower_expression_lowers_structural_singleton_subscript_as_scalar_value() {
         .discrete_reals
         .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("shiftSample").into(),
             args: vec![
@@ -543,7 +543,7 @@ fn lower_expression_lowers_structural_singleton_subscript_as_scalar_value() {
         scalar_count: 1,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("MLS §10.5 scalar array subscript should lower through clocked intrinsic");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -580,7 +580,7 @@ fn lower_discrete_rhs_lowers_matrix_matrix_multiply_as_array_rows() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: mul(var("a"), var("b")),
         span: Default::default(),
         // MLS §10.6.5: matrix * matrix yields one scalar equation per
@@ -589,7 +589,7 @@ fn lower_discrete_rhs_lowers_matrix_matrix_multiply_as_array_rows() {
         scalar_count: 4,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("matrix product should lower");
     let mut p = vec![0.0; layout.p_scalars()];
     set_p_value(&layout, &mut p, "a[1,1]", 1.0);
@@ -641,7 +641,7 @@ fn lower_discrete_rhs_respects_cat_dimension_for_matrix_columns() {
         span: rumoca_core::Span::DUMMY,
     };
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Cat,
             args: vec![
@@ -657,7 +657,7 @@ fn lower_discrete_rhs_respects_cat_dimension_for_matrix_columns() {
         scalar_count: 6,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows =
         lower_discrete_rhs(&dae_model, &layout).expect("MLS §10.4.2.1 cat dimension should lower");
     let actual = rows
@@ -686,7 +686,7 @@ fn lower_discrete_rhs_preserves_singleton_vector_rank_for_cat() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: builtin(
             rumoca_core::BuiltinFunction::Cat,
             vec![
@@ -707,7 +707,7 @@ fn lower_discrete_rhs_preserves_singleton_vector_rank_for_cat() {
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("singleton vector array literal should keep rank for cat");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -754,7 +754,7 @@ fn lower_discrete_rhs_selects_compile_time_if_array_branch_before_width_check() 
         ],
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::If {
             branches: vec![(
                 rumoca_core::Expression::Binary {
@@ -776,7 +776,7 @@ fn lower_discrete_rhs_selects_compile_time_if_array_branch_before_width_check() 
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("compile-time array condition should select shape-compatible branch");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -814,7 +814,7 @@ fn lower_discrete_rhs_lowers_scalar_array_multiply_as_broadcast_rows() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: mul(var("gain"), var("u")),
         span: Default::default(),
         // MLS §10.6.5: scalar * array scales every array element.
@@ -822,7 +822,7 @@ fn lower_discrete_rhs_lowers_scalar_array_multiply_as_broadcast_rows() {
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("scalar array product should lower");
     let mut p = vec![0.0; layout.p_scalars()];
     set_p_value(&layout, &mut p, "gain", 3.0);
@@ -867,7 +867,7 @@ fn lower_discrete_rhs_lowers_array_constructor_with_vector_elements_as_matrix() 
         span: rumoca_core::Span::DUMMY,
     };
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: mul(
             rumoca_core::Expression::Array {
                 elements: vec![
@@ -886,7 +886,7 @@ fn lower_discrete_rhs_lowers_array_constructor_with_vector_elements_as_matrix() 
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("array-valued constructor should lower as a matrix-vector product");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -959,7 +959,7 @@ fn lower_discrete_rhs_resolves_single_dynamic_function_local_matrix_dimension() 
         .functions
         .insert(matrix_fn.name.clone(), matrix_fn);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("Pkg.dynamicMatrixProduct").into(),
             args: vec![var("x")],
@@ -974,7 +974,7 @@ fn lower_discrete_rhs_resolves_single_dynamic_function_local_matrix_dimension() 
         scalar_count: 2,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("single dynamic local matrix dimension should be inferred");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -1020,7 +1020,7 @@ fn lower_discrete_rhs_uses_assigned_width_for_unknown_function_output_dims() {
         .functions
         .insert(copy_fn.name.clone(), copy_fn);
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new("Pkg.copy").into(),
             args: vec![var("x")],
@@ -1032,7 +1032,7 @@ fn lower_discrete_rhs_uses_assigned_width_for_unknown_function_output_dims() {
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("unknown-size function output should take assigned width");
     let mut p = vec![0.0; layout.p_scalars()];
@@ -1057,7 +1057,7 @@ fn lower_expression_reduces_min_max_over_array_ir_values() {
             ..scalar_var("u")
         },
     );
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let array_ref = rumoca_core::Expression::VarRef {
         name: rumoca_core::VarName::new("u").into(),
         subscripts: vec![],
@@ -1141,7 +1141,7 @@ fn lower_expression_inlines_boolean_vector_helpers_with_array_reductions() {
         is_constructor: false,
         span: rumoca_core::Span::DUMMY,
     };
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let lowered = lower_expression(&call, &layout, &dae_model.symbols.functions)
         .expect("Boolean vector helper should lower through array reductions");
     let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[0.0, 1.0], 0.0);
@@ -1172,7 +1172,7 @@ fn lower_expression_rows_emits_matmul_node_for_matrix_matrix_multiply() {
         },
     );
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
 
     // Equation: C = A * B  (scalar_count = 2*2 = 4)
     let equation = dae::Equation {
@@ -1197,6 +1197,7 @@ fn lower_expression_rows_emits_matmul_node_for_matrix_matrix_multiply() {
             triggered_clock_conditions: &triggered_clock_conditions,
             discrete_valued_names: &dae_model.variables.discrete_valued,
             variable_starts: &variable_starts,
+            dae_variables: Some(&dae_model.variables),
             structural_bindings: None,
             guard_target_start_before_first_clock_tick: false,
         },
@@ -1278,7 +1279,7 @@ fn lower_expression_rows_preserves_vector_matrix_products_as_matmul_nodes() {
             },
         );
 
-        let layout = build_var_layout(&dae_model);
+        let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
         let equation = dae::Equation {
             lhs: None,
             rhs: mul(var("A"), var("B")),
@@ -1301,6 +1302,7 @@ fn lower_expression_rows_preserves_vector_matrix_products_as_matmul_nodes() {
                 triggered_clock_conditions: &triggered_clock_conditions,
                 discrete_valued_names: &dae_model.variables.discrete_valued,
                 variable_starts: &variable_starts,
+                dae_variables: Some(&dae_model.variables),
                 structural_bindings: None,
                 guard_target_start_before_first_clock_tick: false,
             },
@@ -1354,7 +1356,7 @@ fn lower_discrete_rhs_lowers_cross_builtin_as_vector_rows() {
         },
     );
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("y")),
+        lhs: Some(rumoca_core::VarName::new("y").into()),
         rhs: builtin(
             rumoca_core::BuiltinFunction::Cross,
             vec![var("a"), var("b")],
@@ -1364,7 +1366,7 @@ fn lower_discrete_rhs_lowers_cross_builtin_as_vector_rows() {
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout).expect("cross() should lower");
     let mut p = vec![0.0; layout.p_scalars()];
     for (name, value) in [
@@ -1406,14 +1408,14 @@ fn lower_residual_shape_error_reports_equation_source_span() {
 
     let equation_span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(12), 120, 139);
     dae_model.continuous.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("A")),
+        lhs: Some(rumoca_core::VarName::new("A").into()),
         rhs: var("b"),
         span: equation_span,
         origin: "shape mismatch".to_string(),
         scalar_count: 9,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let err = lower_residual(&dae_model, &layout)
         .expect_err("matrix/vector residual mismatch should fail");
     assert_eq!(err.source_span(), Some(equation_span));
@@ -1457,7 +1459,7 @@ fn lower_residual_shape_error_prefers_operation_source_span() {
         scalar_count: 9,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let err = lower_residual(&dae_model, &layout)
         .expect_err("matrix/vector residual mismatch should fail");
     assert_eq!(err.source_span(), Some(operation_span));
@@ -1495,7 +1497,7 @@ fn lower_residual_tuple_shape_counts_flattened_element_widths() {
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout).expect("tuple shape should use flat width");
 
     assert_eq!(rows.len(), 3);
@@ -1556,7 +1558,7 @@ fn lower_residual_flattens_all_outputs_of_tuple_function_call() {
         scalar_count: 3,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_residual(&dae_model, &layout)
         .expect("multi-output function call should flatten all outputs");
     let p = vec![0.0; layout.p_scalars()];
@@ -1592,14 +1594,14 @@ fn lower_discrete_rhs_lowers_easy_array_builtins() {
         );
     }
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("skew_v")),
+        lhs: Some(rumoca_core::VarName::new("skew_v").into()),
         rhs: builtin(rumoca_core::BuiltinFunction::Skew, vec![var("v")]),
         span: rumoca_core::Span::DUMMY,
         origin: "skew vector update".to_string(),
         scalar_count: 9,
     });
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("outer_v")),
+        lhs: Some(rumoca_core::VarName::new("outer_v").into()),
         rhs: builtin(
             rumoca_core::BuiltinFunction::OuterProduct,
             vec![
@@ -1616,14 +1618,14 @@ fn lower_discrete_rhs_lowers_easy_array_builtins() {
         scalar_count: 6,
     });
     dae_model.discrete.real_updates.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("identity_2")),
+        lhs: Some(rumoca_core::VarName::new("identity_2").into()),
         rhs: builtin(rumoca_core::BuiltinFunction::Identity, vec![int_lit(2)]),
         span: rumoca_core::Span::DUMMY,
         origin: "identity update".to_string(),
         scalar_count: 4,
     });
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows =
         lower_discrete_rhs(&dae_model, &layout).expect("skew/outerProduct/identity should lower");
     let mut p = vec![0.0; layout.p_scalars()];

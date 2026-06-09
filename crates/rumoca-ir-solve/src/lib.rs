@@ -13,8 +13,9 @@ use rumoca_core::{ExternalTableData, Span};
 use serde::{Deserialize, Serialize};
 
 pub use layout::{
-    IndexedScalarSlot, ScalarSlot, VarLayout, VarLayoutShapeContractError, scalar_slot_p,
-    scalar_slot_y,
+    ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,
+    ComponentReferenceKeyPart, ComponentReferenceSubscriptKey, IndexedScalarSlot, ScalarSlot,
+    VarLayout, VarLayoutShapeContractError, scalar_slot_p, scalar_slot_y,
 };
 pub use linear_op::{BinaryOp, CompareOp, LinearOp, RandomGenerator, Reg, UnaryOp};
 pub use visitor::{
@@ -642,9 +643,7 @@ mod tests {
         let layout = make_layout(&[("body.frame.R.T", vec![3, 3])], &[]);
         let entries = layout
             .indexed_bindings()
-            .get(&rumoca_core::ComponentPath::from_flat_path(
-                "body.frame.R.T",
-            ))
+            .get(&ComponentReferenceKey::generated("body.frame.R.T"))
             .expect("array layout should expose structured scalar slots");
 
         assert_eq!(entries.len(), 9);
@@ -1284,9 +1283,20 @@ pub struct SolveEventPartition {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SolveEventAction {
     pub kind: SolveEventActionKind,
-    pub message: Option<String>,
+    pub message: SolveEventMessage,
     pub span: rumoca_core::Span,
     pub origin: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct SolveEventMessage {
+    pub parts: Vec<SolveEventMessagePart>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SolveEventMessagePart {
+    Text(String),
+    Number(Vec<LinearOp>),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

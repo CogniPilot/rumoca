@@ -19,6 +19,35 @@ pub const PREDEFINED_MODELICA_SOURCE: &str = include_str!("../modelica/Predefine
 /// Predefined primitive type class names with MLS §4.9 attribute shape.
 pub const PREDEFINED_COMPONENT_TYPES: &[&str] = &["Real", "Integer", "Boolean", "String"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PredefinedComponentType {
+    Real,
+    Integer,
+    Boolean,
+    String,
+}
+
+impl PredefinedComponentType {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Real" => Some(Self::Real),
+            "Integer" => Some(Self::Integer),
+            "Boolean" => Some(Self::Boolean),
+            "String" => Some(Self::String),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Real => "Real",
+            Self::Integer => "Integer",
+            Self::Boolean => "Boolean",
+            Self::String => "String",
+        }
+    }
+}
+
 /// Predefined enumeration type names supplied by the language.
 pub const PREDEFINED_ENUM_TYPES: &[&str] = &["StateSelect", "AssertionLevel"];
 
@@ -55,7 +84,12 @@ pub const PREDEFINED_COMPONENT_ATTRIBUTES: &[&str] = &[
 
 /// Return true if `name` is one of the MLS predefined primitive component types.
 pub fn is_predefined_component_type(name: &str) -> bool {
-    PREDEFINED_COMPONENT_TYPES.contains(&name)
+    predefined_component_type(name).is_some()
+}
+
+/// Return the MLS predefined primitive component type named by `name`.
+pub fn predefined_component_type(name: &str) -> Option<PredefinedComponentType> {
+    PredefinedComponentType::from_name(name)
 }
 
 /// Return true if user source may not redeclare `name`.
@@ -82,6 +116,41 @@ pub fn is_predefined_component_attribute(type_name: &str, attribute_name: &str) 
 /// Return true if `attribute_name` is any predefined primitive-type attribute.
 pub fn is_any_predefined_component_attribute(attribute_name: &str) -> bool {
     PREDEFINED_COMPONENT_ATTRIBUTES.contains(&attribute_name)
+}
+
+/// Standard string/file/scanner intrinsics that cannot be treated as ordinary
+/// numeric functions in DAE or solve IR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelicaStringIntrinsic {
+    /// The frontend must replace the call with a typed value or runtime op.
+    RequiresLowering,
+    /// `Modelica.Utilities.Strings.isEmpty`.
+    IsEmpty,
+    /// `Modelica.Utilities.Strings.hashString`.
+    HashString,
+    /// `Modelica.Utilities.Strings.length`.
+    Length,
+    /// `Modelica.Utilities.Strings.find`.
+    Find,
+    /// `Modelica.Utilities.Strings.findLast`.
+    FindLast,
+}
+
+/// Classify a Modelica string/file/scanner intrinsic by its short name.
+pub fn modelica_string_intrinsic_short_name(short_name: &str) -> Option<ModelicaStringIntrinsic> {
+    match short_name {
+        "getInstanceName" | "fullPathName" | "loadResource" | "readLine" | "substring"
+        | "scanBoolean" | "scanDelimiter" | "scanIdentifier" | "scanInteger" | "scanNoToken"
+        | "scanReal" | "scanString" | "scanToken" | "skipWhiteSpace" => {
+            Some(ModelicaStringIntrinsic::RequiresLowering)
+        }
+        "isEmpty" => Some(ModelicaStringIntrinsic::IsEmpty),
+        "hashString" => Some(ModelicaStringIntrinsic::HashString),
+        "length" => Some(ModelicaStringIntrinsic::Length),
+        "find" => Some(ModelicaStringIntrinsic::Find),
+        "findLast" => Some(ModelicaStringIntrinsic::FindLast),
+        _ => None,
+    }
 }
 
 /// Modification names accepted by the parser on primitive typed components.

@@ -1,12 +1,13 @@
 use super::{IndexedBinding, LowerBuilder, LowerError, Scope};
 use indexmap::IndexMap;
-use rumoca_core::ComponentPath;
+use rumoca_ir_dae as dae;
+use rumoca_ir_solve::ComponentReferenceKey;
 use rumoca_ir_solve::Reg;
 use rumoca_ir_solve::VarLayout;
 
 pub(super) fn build_indexed_binding_map(
     layout: &VarLayout,
-) -> IndexMap<ComponentPath, Vec<IndexedBinding>> {
+) -> IndexMap<ComponentReferenceKey, Vec<IndexedBinding>> {
     layout
         .indexed_bindings()
         .iter()
@@ -26,13 +27,49 @@ pub(super) fn build_indexed_binding_map(
 }
 
 pub(super) fn indexed_entries_for_key(
-    grouped: &IndexMap<ComponentPath, Vec<IndexedBinding>>,
+    grouped: &IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>,
     key: &str,
 ) -> Vec<IndexedBinding> {
     grouped
-        .get(&ComponentPath::from_flat_path(key))
+        .get(&ComponentReferenceKey::generated(key))
         .cloned()
         .unwrap_or_default()
+}
+
+pub(super) fn indexed_entries_for_reference(
+    grouped: &IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>,
+    reference: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+) -> Result<Vec<IndexedBinding>, LowerError> {
+    if reference.is_generated() {
+        return Ok(grouped
+            .get(&ComponentReferenceKey::generated(reference.as_str()))
+            .cloned()
+            .unwrap_or_default());
+    }
+    let Some(component_ref) = reference.component_ref() else {
+        let generated_key = ComponentReferenceKey::generated(reference.as_str());
+        if !grouped.contains_key(&generated_key) {
+            return Ok(Vec::new());
+        }
+        return Err(LowerError::ContractViolation {
+            reason: format!(
+                "indexed solve-layout lookup for `{}` lost structured component-reference metadata",
+                reference.as_str()
+            ),
+            span,
+        });
+    };
+    let key = ComponentReferenceKey::from_component_reference(component_ref).map_err(|err| {
+        LowerError::ContractViolation {
+            reason: format!(
+                "indexed solve-layout lookup for `{}` has non-static component reference",
+                reference.as_str()
+            ),
+            span: err.span,
+        }
+    })?;
+    Ok(grouped.get(&key).cloned().unwrap_or_default())
 }
 
 pub(super) fn parse_indexed_binding_key(key: &str) -> Option<(String, Vec<usize>)> {
@@ -120,14 +157,23 @@ pub(super) fn infer_indexed_dims(entries: &[IndexedBinding]) -> Vec<usize> {
     Vec::new()
 }
 
-pub(super) fn dims_scalar_count(dims: &[i64]) -> usize {
-    let count = dims.iter().try_fold(1usize, |acc, dim| {
-        usize::try_from(*dim)
-            .ok()
-            .filter(|dim| *dim > 0)?
-            .checked_mul(acc)
-    });
-    count.unwrap_or(1).max(1)
+pub(super) fn dims_scalar_count(
+    dims: &[i64],
+    context: impl Into<String>,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    let context = context.into();
+    dims.iter().try_fold(1usize, |acc, dim| {
+        let dim = usize::try_from(*dim).map_err(|_| LowerError::ContractViolation {
+            reason: format!("{context} has negative dimension `{dim}`"),
+            span,
+        })?;
+        acc.checked_mul(dim)
+            .ok_or_else(|| LowerError::ContractViolation {
+                reason: format!("{context} dimension product overflows usize"),
+                span,
+            })
+    })
 }
 
 pub(super) fn resolve_array_dims_for_value_count(dims: &[i64], value_count: usize) -> Vec<i64> {
@@ -303,16 +349,7 @@ pub(super) fn append_subscripts_to_key(
         indices.push(lower_subscript_index(sub)?);
     }
 
-    if indices.len() == 1 {
-        return Ok(format!("{base}[{}]", indices[0]));
-    }
-
-    let suffix = indices
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    Ok(format!("{base}[{suffix}]"))
+    Ok(dae::format_subscript_key(&base, &indices))
 }
 
 pub(super) fn constructor_positional_field_index(field: &str) -> Option<usize> {
@@ -477,13 +514,9 @@ pub(super) fn compile_time_var_key(
     let mut indices = Vec::with_capacity(subscripts.len());
     for sub in subscripts {
         let index = compile_time_subscript_index(sub, const_scope)?;
-        indices.push(index.to_string());
+        indices.push(index);
     }
-    if indices.len() == 1 {
-        Ok(format!("{}[{}]", name, indices[0]))
-    } else {
-        Ok(format!("{}[{}]", name, indices.join(",")))
-    }
+    Ok(dae::format_subscript_key(name, &indices))
 }
 
 pub(super) fn compile_time_subscript_index(
@@ -726,9 +759,19 @@ pub(super) fn statement_tag(statement: &rumoca_core::Statement) -> &'static str 
 }
 
 pub(super) fn resolve_intrinsic_builtin(name: &str) -> Option<rumoca_core::BuiltinFunction> {
-    rumoca_core::BuiltinFunction::from_name(name).or_else(|| {
-        rumoca_core::BuiltinFunction::from_name(rumoca_core::top_level_last_segment(name))
-    })
+    if let Some(builtin) = rumoca_core::BuiltinFunction::from_name(name) {
+        return Some(builtin);
+    }
+    let builtin =
+        rumoca_core::BuiltinFunction::from_name(rumoca_core::top_level_last_segment(name))?;
+    is_qualified_standard_math_intrinsic(name, builtin).then_some(builtin)
+}
+
+fn is_qualified_standard_math_intrinsic(name: &str, builtin: rumoca_core::BuiltinFunction) -> bool {
+    let Some(short) = name.strip_prefix("Modelica.Math.") else {
+        return false;
+    };
+    !short.contains('.') && rumoca_core::BuiltinFunction::from_name(short) == Some(builtin)
 }
 
 pub(super) fn intrinsic_short_name(name: &str) -> &str {
@@ -743,7 +786,7 @@ pub(super) fn collect_scope_names(
     entry: &Scope,
     branches: &[Scope],
     else_scope: &Scope,
-) -> Vec<ComponentPath> {
+) -> Vec<ComponentReferenceKey> {
     let mut names = entry.keys();
     for scoped in branches.iter().chain(std::iter::once(else_scope)) {
         names.extend(
@@ -760,7 +803,7 @@ pub(super) fn merge_branch_select(
     builder: &mut LowerBuilder<'_>,
     cond: Reg,
     branch_scope: &Scope,
-    name: &ComponentPath,
+    name: &ComponentReferenceKey,
     merged: Reg,
 ) -> Reg {
     match branch_scope.get(name).copied() {

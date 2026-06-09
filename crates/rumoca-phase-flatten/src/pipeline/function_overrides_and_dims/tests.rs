@@ -174,6 +174,73 @@ fn named_arg(expr: &Expression) -> Option<(&str, &Expression)> {
 }
 
 #[test]
+fn active_package_member_rewrite_keeps_structured_instance_path() {
+    let package_def = DefId::new(1);
+    let state_def = DefId::new(2);
+    let mut state = class("state", ClassType::Record);
+    state.def_id = Some(state_def);
+    let mut package = class("ConcreteMedium", ClassType::Package);
+    package.def_id = Some(package_def);
+    package.classes.insert("state".to_string(), state);
+
+    let mut tree = ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("ConcreteMedium".to_string(), package);
+    tree.def_map
+        .insert(package_def, "ConcreteMedium".to_string());
+    tree.def_map
+        .insert(state_def, "ConcreteMedium.state".to_string());
+
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let override_packages = vec![override_target(
+        "ConcreteMedium",
+        package_def,
+        ClassType::Package,
+    )];
+    let override_functions = OverrideFunctionMap::default();
+    let mut component_members = component_member_scope::ComponentMemberScopes::default();
+    component_members
+        .insert_component_member_path(&ComponentPath::from_flat_path("tank.medium.state.p"));
+    let ctx = FunctionOverrideRewriteContext::new(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    )
+    .with_component_member_scope(&component_members);
+    let mut expr = Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(core_comp_ref(&[
+            "tank", "medium", "state",
+        ])),
+        subscripts: vec![],
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut expr, &ctx);
+
+    let Expression::VarRef { name, .. } = expr else {
+        panic!("expected var ref");
+    };
+    assert_eq!(name.as_str(), "tank.medium.state");
+
+    let mut field_expr = Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(core_comp_ref(&[
+            "tank", "medium", "state", "p",
+        ])),
+        subscripts: vec![],
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut field_expr, &ctx);
+
+    let Expression::VarRef { name, .. } = field_expr else {
+        panic!("expected var ref");
+    };
+    assert_eq!(name.as_str(), "tank.medium.state.p");
+}
+
+#[test]
 fn fully_qualified_sibling_package_call_is_not_aliased_to_self() {
     // Regression: a function `A.Quat.inverse` that calls the fully-qualified
     // sibling `B.Quat.inverse` must NOT have that call rewritten to its own
@@ -889,7 +956,8 @@ fn inherited_function_body_rewrites_self_package_calls_to_exposed_package() {
     let (tree, mut function) = inherited_function_alias_rewrite_fixture();
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
 
-    rewrite_function_extends_aliases_in_function(&mut function, &tree, &class_index);
+    rewrite_function_extends_aliases_in_function(&mut function, &tree, &class_index)
+        .expect("function alias rewrite");
 
     let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
         panic!("expected assignment");
@@ -1289,7 +1357,9 @@ fn replaceable_package_function_prefers_concrete_override_chain() {
         &tree,
         &class_index,
         &component_override_map,
-    );
+        &component_member_scope::ComponentMemberScopes::default(),
+    )
+    .expect("function override rewrite");
 
     let function_name = rumoca_core::VarName::new("PartialMedium.density_phX");
     let Some(function) = flat.functions.get(&function_name) else {

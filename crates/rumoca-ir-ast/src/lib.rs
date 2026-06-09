@@ -256,6 +256,21 @@ impl<'tree> ClassDefIndex<'tree> {
         self.local_names.get(&def_id).copied()
     }
 
+    pub fn symbol_def_ids(&self) -> impl Iterator<Item = DefId> + '_ {
+        self.local_names.keys().copied()
+    }
+
+    pub fn def_ancestry(&self, def_id: DefId) -> Vec<DefId> {
+        let mut chain = Vec::new();
+        let mut current = Some(def_id);
+        while let Some(id) = current {
+            chain.push(id);
+            current = self.parent_def_id(id);
+        }
+        chain.reverse();
+        chain
+    }
+
     fn insert_class_tree(
         &mut self,
         class_def: &'tree ClassDef,

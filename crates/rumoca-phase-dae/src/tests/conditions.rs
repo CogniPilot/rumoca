@@ -160,10 +160,13 @@ fn test_todae_populates_relation_and_fc_from_if_conditions() {
         format!("{:?}", dae_model.conditions.relations[0]),
         format!("{condition:?}")
     );
-    assert_eq!(
-        format!("{:?}", dae_model.conditions.equations[0].lhs),
-        format!("{:?}", Some(VarName::new("c[1]")))
-    );
+    let lhs = dae_model.conditions.equations[0]
+        .lhs
+        .as_ref()
+        .expect("condition equation should have a generated lhs");
+    assert_eq!(lhs.as_str(), "c[1]");
+    assert!(lhs.is_generated());
+    assert!(lhs.component_ref().is_some());
     assert_eq!(
         format!("{:?}", dae_model.conditions.equations[0].rhs),
         format!("{condition:?}")
@@ -275,10 +278,13 @@ fn test_todae_condition_memory_does_not_shadow_user_c() {
             .contains_key(&VarName::new("__rumoca_c")),
         "compiler-generated condition memory must avoid user variable names"
     );
-    assert_eq!(
-        format!("{:?}", dae_model.conditions.equations[0].lhs),
-        format!("{:?}", Some(VarName::new("__rumoca_c[1]")))
-    );
+    let lhs = dae_model.conditions.equations[0]
+        .lhs
+        .as_ref()
+        .expect("condition equation should have a generated lhs");
+    assert_eq!(lhs.as_str(), "__rumoca_c[1]");
+    assert!(lhs.is_generated());
+    assert!(lhs.component_ref().is_some());
 }
 
 #[test]
@@ -309,10 +315,13 @@ fn test_todae_condition_memory_does_not_shadow_user_c_component() {
             .contains_key(&VarName::new("__rumoca_c")),
         "compiler-generated condition memory must avoid user component prefixes"
     );
-    assert_eq!(
-        format!("{:?}", dae_model.conditions.equations[0].lhs),
-        format!("{:?}", Some(VarName::new("__rumoca_c[1]")))
-    );
+    let lhs = dae_model.conditions.equations[0]
+        .lhs
+        .as_ref()
+        .expect("condition equation should have a generated lhs");
+    assert_eq!(lhs.as_str(), "__rumoca_c[1]");
+    assert!(lhs.is_generated());
+    assert!(lhs.component_ref().is_some());
 }
 
 #[test]
@@ -556,7 +565,7 @@ fn test_todae_populates_relation_from_discrete_boolean_relation_assignment() {
             .conditions
             .equations
             .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&VarName::new("c[1]"))),
+            .any(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "c[1]")),
         "the relation must have Appendix B condition memory"
     );
 }
