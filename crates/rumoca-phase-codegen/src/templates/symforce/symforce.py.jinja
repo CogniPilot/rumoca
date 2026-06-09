@@ -1,0 +1,435 @@
+from __future__ import annotations
+
+import builtins
+from typing import Any, Dict, Optional
+
+import symforce
+
+if not getattr(symforce, "_have_imported_symbolic", False):
+    symforce.set_symbolic_api("symengine")
+symforce.set_log_level("warning")
+if not getattr(symforce, "_have_used_epsilon", False):
+    symforce.set_epsilon_to_symbol()
+
+import symforce.symbolic as sf
+from symforce import codegen
+from symforce.values import Values
+
+{%- set symforce_symbol_policy = {
+    "separator": "_",
+    "generated_prefixes": ["der_", "pre_"],
+    "reserved": [
+        "Any", "Dict", "False", "None", "Optional", "True", "Values", "and", "as", "assert",
+        "async", "await", "break", "builtins", "class", "codegen", "continue", "def", "del",
+        "der", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+        "in", "inputs", "is", "lambda", "metadata", "model", "nonlocal", "not", "or",
+        "outputs", "pass", "pre", "raise", "return", "sf", "symforce", "t", "time", "try",
+        "while", "with", "yield"
+    ]
+} %}
+{%- set symbols = target_symbols(dae.symbol_refs, symforce_symbol_policy) %}
+{%- set cfg = {
+    "prefix": "",
+    "power": "**",
+    "modelica_builtins": true,
+    "mul_elem_fn": "_mul_elem",
+    "and_op": "sf.And",
+    "or_op": "sf.Or",
+    "not_op": "sf.Not",
+    "if_style": "function",
+    "if_else_fn": "if_else",
+    "python_range": true,
+    "subscript_underscore": true,
+    "sum_fn": "_sum",
+    "symbols": symbols
+} %}
+
+
+def _sf_attr(name: str, fallback):
+    return getattr(sf, name, fallback)
+
+
+if not hasattr(sf, "And"):
+    sf.And = lambda lhs, rhs: lhs & rhs
+if not hasattr(sf, "Or"):
+    sf.Or = lambda lhs, rhs: lhs | rhs
+if not hasattr(sf, "Not"):
+    sf.Not = lambda value: ~value
+
+
+def _symbol(name: str):
+    return sf.Symbol(name)
+
+
+def _matrix_from_elements(dims, elements):
+    if not dims:
+        return elements[0]
+    if len(dims) == 1:
+        return sf.Matrix(int(dims[0]), 1, elements)
+    if len(dims) == 2:
+        return sf.Matrix(int(dims[0]), int(dims[1]), elements)
+    return sf.Matrix(len(elements), 1, elements)
+
+
+def _column(entries):
+    return sf.Matrix(len(entries), 1, entries) if entries else sf.Matrix(0, 1, [])
+
+
+def _sum(values):
+    if isinstance(values, sf.Matrix):
+        return builtins.sum(values)
+    if isinstance(values, (list, tuple)):
+        return builtins.sum(values)
+    return values
+
+
+def _mul_elem(lhs, rhs):
+    if hasattr(lhs, "multiply_elementwise"):
+        return lhs.multiply_elementwise(rhs)
+    if hasattr(rhs, "multiply_elementwise"):
+        return rhs.multiply_elementwise(lhs)
+    return lhs * rhs
+
+
+def size(value, dim=None):
+    shape = getattr(value, "shape", None)
+    if shape is None:
+        try:
+            return len(value)
+        except TypeError:
+            return 1
+    if dim is None:
+        return shape
+    return shape[int(dim) - 1]
+
+
+def if_else(condition, then_value, else_value):
+    if condition is True:
+        return then_value
+    if condition is False:
+        return else_value
+    piecewise = getattr(sf, "Piecewise", None)
+    if piecewise is not None:
+        return piecewise((then_value, condition), (else_value, True))
+    return then_value if bool(condition) else else_value
+
+
+def pre(value):
+    return _PRE_BY_SYMBOL.get(str(value), value)
+
+
+def der(value):
+    key = str(value)
+    if key in _DER_BY_SYMBOL:
+        return _DER_BY_SYMBOL[key]
+    raise ValueError(f"der() called on non-state variable: {value}")
+
+
+abs = _sf_attr("Abs", builtins.abs)
+sign = _sf_attr("sign", lambda value: value / abs(value))
+sqrt = _sf_attr("sqrt", None)
+sin = _sf_attr("sin", None)
+cos = _sf_attr("cos", None)
+tan = _sf_attr("tan", None)
+asin = _sf_attr("asin", None)
+acos = _sf_attr("acos", None)
+atan = _sf_attr("atan", None)
+atan2 = _sf_attr("atan2", None)
+sinh = _sf_attr("sinh", None)
+cosh = _sf_attr("cosh", None)
+tanh = _sf_attr("tanh", None)
+exp = _sf_attr("exp", None)
+log = _sf_attr("log", None)
+log10 = lambda value: log(value, 10)
+floor = _sf_attr("floor", None)
+ceil = _sf_attr("ceiling", _sf_attr("ceil", None))
+min = _sf_attr("Min", builtins.min)
+max = _sf_attr("Max", builtins.max)
+sum = _sum
+zeros = lambda *dims: sf.Matrix.zeros(*(int(dim) for dim in dims))
+ones = lambda *dims: sf.Matrix.ones(*(int(dim) for dim in dims))
+identity = lambda dim: sf.Matrix.eye(int(dim))
+transpose = lambda value: sf.Matrix(value).T
+cross = lambda lhs, rhs: sf.Matrix(lhs).cross(sf.Matrix(rhs))
+div = lambda lhs, rhs: floor(lhs / rhs)
+mod = lambda lhs, rhs: lhs % rhs
+rem = mod
+
+_DER_BY_SYMBOL: Dict[str, Any] = {}
+_PRE_BY_SYMBOL: Dict[str, Any] = {}
+{%- macro declare_symbolic_var(name, var, scope_name) %}
+{%- if var.dims %}
+        {{ symbol(symbols, name) }}_elements = [
+{%- for i in range(var.dims | product) %}
+            _symbol("{{ source_ref(name, var.dims, i + 1) }}"),
+{%- endfor %}
+        ]
+{%- for i in range(var.dims | product) %}
+        {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {{ symbol(symbols, name) }}_elements[{{ i }}]
+{%- endfor %}
+        {{ symbol(symbols, name) }} = _matrix_from_elements([{{ var.dims | join(", ") }}], {{ symbol(symbols, name) }}_elements)
+{%- else %}
+        {{ symbol(symbols, name) }} = _symbol("{{ name }}")
+{%- endif %}
+        {{ scope_name }}["{{ name | sanitize }}"] = {{ symbol(symbols, name) }}
+{%- endmacro %}
+{%- macro declare_derivative_var(name, var, scope_name) %}
+{%- if var.dims %}
+        der_{{ symbol(symbols, name) }}_elements = [
+{%- for i in range(var.dims | product) %}
+            _symbol("der({{ source_ref(name, var.dims, i + 1) }})"),
+{%- endfor %}
+        ]
+{%- for i in range(var.dims | product) %}
+        der_{{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = der_{{ symbol(symbols, name) }}_elements[{{ i }}]
+        _DER_BY_SYMBOL[str({{ symbol(symbols, source_ref(name, var.dims, i + 1)) }})] = der_{{ symbol(symbols, source_ref(name, var.dims, i + 1)) }}
+{%- endfor %}
+        der_{{ symbol(symbols, name) }} = _matrix_from_elements([{{ var.dims | join(", ") }}], der_{{ symbol(symbols, name) }}_elements)
+        _DER_BY_SYMBOL[str({{ symbol(symbols, name) }})] = der_{{ symbol(symbols, name) }}
+{%- else %}
+        der_{{ symbol(symbols, name) }} = _symbol("der({{ name }})")
+        _DER_BY_SYMBOL[str({{ symbol(symbols, name) }})] = der_{{ symbol(symbols, name) }}
+{%- endif %}
+        {{ scope_name }}["{{ name | sanitize }}"] = der_{{ symbol(symbols, name) }}
+{%- endmacro %}
+{%- macro declare_pre_var(name, var, scope_name) %}
+{%- if var.dims %}
+        pre_{{ symbol(symbols, name) }}_elements = [
+{%- for i in range(var.dims | product) %}
+            _symbol("pre({{ source_ref(name, var.dims, i + 1) }})"),
+{%- endfor %}
+        ]
+{%- for i in range(var.dims | product) %}
+        pre_{{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = pre_{{ symbol(symbols, name) }}_elements[{{ i }}]
+        _PRE_BY_SYMBOL[str({{ symbol(symbols, source_ref(name, var.dims, i + 1)) }})] = pre_{{ symbol(symbols, source_ref(name, var.dims, i + 1)) }}
+{%- endfor %}
+        pre_{{ symbol(symbols, name) }} = _matrix_from_elements([{{ var.dims | join(", ") }}], pre_{{ symbol(symbols, name) }}_elements)
+        _PRE_BY_SYMBOL[str({{ symbol(symbols, name) }})] = pre_{{ symbol(symbols, name) }}
+{%- else %}
+        pre_{{ symbol(symbols, name) }} = _symbol("pre({{ name }})")
+        _PRE_BY_SYMBOL[str({{ symbol(symbols, name) }})] = pre_{{ symbol(symbols, name) }}
+{%- endif %}
+        {{ scope_name }}["{{ name | sanitize }}"] = pre_{{ symbol(symbols, name) }}
+{%- endmacro %}
+{%- macro scalar_names(vars) -%}
+[{% for name, var in vars | items %}{% if var.dims %}{% for i in range(var.dims | product) %}"{{ source_ref(name, var.dims, i + 1) }}",{% endfor %}{% else %}"{{ name }}",{% endif %}{% endfor %}]
+{%- endmacro -%}
+{%- for func_name, func in dae.functions | items %}
+
+
+def {{ func_name | sanitize }}({% for p in func.inputs %}{{ p.name | sanitize }}{% if p.default %}={{ render_expr(p.default, cfg) }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %}):
+{%- for p in func.locals %}
+    {{ p.name | sanitize }} = {% if p.default %}{{ render_expr(p.default, cfg) }}{% else %}0{% endif %}
+{%- endfor %}
+{%- if func.outputs | length > 0 %}
+    {{ func.outputs[0].name | sanitize }} = 0
+{%- endif %}
+{%- if func.body | length > 0 %}
+{{ render_statements(func.body, cfg, "    ") }}
+{%- endif %}
+{%- if func.outputs | length > 0 %}
+    return {{ func.outputs[0].name | sanitize }}
+{%- else %}
+    return None
+{%- endif %}
+{%- endfor %}
+
+
+def create_model() -> Dict[str, Any]:
+    _DER_BY_SYMBOL.clear()
+    _PRE_BY_SYMBOL.clear()
+
+    inputs = Values()
+    outputs = Values()
+    metadata = {
+        "model_name": "{{ model_name }}",
+        "description": None,
+        "states": {{ scalar_names(dae.x) }},
+        "algebraics": {{ scalar_names(dae.y) }},
+        "inputs": {{ scalar_names(dae.u) }},
+        "outputs": {{ scalar_names(dae.w) }},
+        "parameters": {{ scalar_names(dae.p) }},
+        "discrete_reals": {{ scalar_names(dae.z) }},
+        "discrete_valued": {{ scalar_names(dae.m) }},
+    }
+
+    time = _symbol("time")
+    t = time
+    inputs["time"] = time
+
+    with inputs.scope("states"):
+{%- if dae.x | length > 0 %}
+{%- for name, var in dae.x | items %}{{ declare_symbolic_var(name, var, "inputs") }}{% endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    with inputs.scope("derivatives"):
+{%- if dae.x | length > 0 %}
+{%- for name, var in dae.x | items %}{{ declare_derivative_var(name, var, "inputs") }}{% endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    with inputs.scope("algebraics"):
+{%- if dae.y | length > 0 %}
+{%- for name, var in dae.y | items %}{{ declare_symbolic_var(name, var, "inputs") }}{% endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    with inputs.scope("model_outputs"):
+{%- if dae.w | length > 0 %}
+{%- for name, var in dae.w | items %}{{ declare_symbolic_var(name, var, "inputs") }}{% endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    with inputs.scope("external_inputs"):
+{%- if dae.u | length > 0 %}
+{%- for name, var in dae.u | items %}{{ declare_symbolic_var(name, var, "inputs") }}{% endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    with inputs.scope("parameters"):
+{%- if dae.p | length > 0 %}
+{%- for name, var in dae.p | items %}{{ declare_symbolic_var(name, var, "inputs") }}{% endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    with inputs.scope("constants"):
+{%- if dae.constants | length > 0 %}
+{%- for name, var in dae.constants | items %}{{ declare_symbolic_var(name, var, "inputs") }}{% endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    with inputs.scope("discrete_reals"):
+{%- if dae.z | length > 0 %}
+{%- for name, var in dae.z | items %}{{ declare_symbolic_var(name, var, "inputs") }}{% endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    with inputs.scope("discrete_valued"):
+{%- if dae.m | length > 0 %}
+{%- for name, var in dae.m | items %}{{ declare_symbolic_var(name, var, "inputs") }}{% endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    with inputs.scope("pre"):
+{%- if dae.z | length > 0 or dae.m | length > 0 %}
+{%- for name, var in dae.z | items %}{{ declare_pre_var(name, var, "inputs") }}{% endfor %}
+{%- for name, var in dae.m | items %}{{ declare_pre_var(name, var, "inputs") }}{% endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    with inputs.scope("conditions"):
+{%- if dae.condition_aliases | length > 0 %}
+{%- for alias in dae.condition_aliases %}
+        {{ alias.condition.VarRef.name | sanitize }} = _symbol("{{ alias.condition.VarRef.name }}")
+        inputs["{{ alias.condition.VarRef.name | sanitize }}"] = {{ alias.condition.VarRef.name | sanitize }}
+{%- endfor %}
+{%- else %}
+        pass
+{%- endif %}
+
+    f_x = _column([
+{%- for eq in dae.f_x %}
+        {{ render_expr(eq.rhs, cfg) }},
+{%- endfor %}
+    ])
+    outputs["f_x"] = f_x
+
+    initial_residuals = _column([
+{%- for eq in dae.initial_equations %}
+        {{ render_expr(eq.rhs, cfg) }},
+{%- endfor %}
+    ])
+    outputs["initial_residuals"] = initial_residuals
+
+    f_z = _column([
+{%- for eq in dae.f_z %}
+        {{ render_expr(eq.rhs, cfg) }},
+{%- endfor %}
+    ])
+    outputs["f_z"] = f_z
+
+    f_m = _column([
+{%- for eq in dae.f_m %}
+        {{ render_expr(eq.rhs, cfg) }},
+{%- endfor %}
+    ])
+    outputs["f_m"] = f_m
+
+    relation_residuals = _column([
+{%- for alias in dae.condition_aliases %}
+        {{ render_expr(alias.relation, cfg) }},
+{%- endfor %}
+    ])
+    outputs["relation_residuals"] = relation_residuals
+
+    return {
+        "inputs": inputs,
+        "outputs": outputs,
+        "metadata": metadata,
+        "f_x": f_x,
+        "initial_residuals": initial_residuals,
+        "f_z": f_z,
+        "f_m": f_m,
+        "relation_residuals": relation_residuals,
+    }
+
+
+def make_residual_codegen(
+    config: Optional[Any] = None,
+    name: str = "{{ model_name | sanitize }}_dae_residual",
+) -> codegen.Codegen:
+    model = create_model()
+    if config is None:
+        config = codegen.CppConfig()
+    return codegen.Codegen(
+        inputs=model["inputs"],
+        outputs=Values(f_x=model["f_x"]),
+        config=config,
+        name=name,
+        return_key="f_x",
+    )
+
+
+def make_residual_jacobian_codegen(
+    which_args=None,
+    config: Optional[Any] = None,
+    name: str = "{{ model_name | sanitize }}_dae_residual_jacobians",
+) -> codegen.Codegen:
+    return make_residual_codegen(config=config).with_jacobians(
+        which_args=which_args,
+        include_results=True,
+        name=name,
+    )
+
+
+def generate_residual_code(
+    output_dir=None,
+    config: Optional[Any] = None,
+    namespace: str = "sym",
+    name: str = "{{ model_name | sanitize }}_dae_residual",
+):
+    residual_codegen = make_residual_codegen(config=config, name=name)
+    return residual_codegen.generate_function(
+        output_dir=output_dir,
+        namespace=namespace,
+        generated_file_name=name,
+    )
+
+
+if __name__ == "__main__":
+    model = create_model()
+    print("SymForce DAE model: {{ model_name }}")
+    print("states:", model["metadata"]["states"])
+    print("parameters:", model["metadata"]["parameters"])
+    print("residual rows:", model["f_x"].shape[0])
