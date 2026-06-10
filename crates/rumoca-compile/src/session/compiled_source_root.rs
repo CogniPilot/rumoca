@@ -282,15 +282,19 @@ impl CompiledSourceRoot {
             &tree.source_map,
             &target_source_files,
         );
-        let target_has_resolve_failures = !failures.is_empty();
+        // Resolve errors in the target's own files make every later phase a
+        // cascade, so stop here: one user error, one diagnostic.
+        if !failures.is_empty() {
+            return StrictCompileReport {
+                requested_model: model_name.to_string(),
+                requested_result: None,
+                summary: CompilationSummary::default(),
+                failures,
+                source_map: Some(tree.source_map.clone()),
+            };
+        }
         let results = self.compile_targets_with_cache(&closure.compile_targets);
-        finalize_strict_compile_report(
-            tree,
-            model_name,
-            target_has_resolve_failures,
-            failures,
-            results,
-        )
+        finalize_strict_compile_report(tree, model_name, failures, results)
     }
 
     /// Compile the requested model strictly against its reachable closure
@@ -307,11 +311,19 @@ impl CompiledSourceRoot {
             &tree.source_map,
             &target_source_files,
         );
-        let target_has_resolve_failures = !failures.is_empty();
+        // Same cascade gate as the cached path above.
+        if !failures.is_empty() {
+            return StrictCompileReport {
+                requested_model: model_name.to_string(),
+                requested_result: None,
+                summary: CompilationSummary::default(),
+                failures,
+                source_map: Some(tree.source_map.clone()),
+            };
+        }
         finalize_strict_compile_report_from_uncached_targets(
             tree,
             model_name,
-            target_has_resolve_failures,
             failures,
             &closure.compile_targets,
             InstantiateOptions::default(),
@@ -342,9 +354,11 @@ impl CompiledSourceRoot {
 
         let requested_result = compile_model_dae_internal(tree, model_name);
         let requested = dae_phase_result_requested_message(model_name, &requested_result);
-        if let Some(failure) = dae_phase_result_to_failure(tree, model_name, &requested_result) {
-            failures.push(failure);
-        }
+        failures.extend(dae_phase_result_to_failures(
+            tree,
+            model_name,
+            &requested_result,
+        ));
         if !failures.is_empty() {
             return Err(format_strict_failure_summary(
                 model_name, requested, &failures, 8,

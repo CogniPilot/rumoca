@@ -290,6 +290,13 @@ impl ToDaeError {
     }
 }
 
+impl From<crate::balance::BalanceError> for ToDaeError {
+    fn from(error: crate::balance::BalanceError) -> Self {
+        let span = error.source_span().unwrap_or(Span::DUMMY);
+        ToDaeError::runtime_contract_violation_at(error.to_string(), span)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,7 +5,7 @@ fn test_todae_inherits_scalarized_element_start_from_array_base() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("arr"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("arr"),
             dims: vec![2],
             start: Some(make_var_ref(
@@ -14,16 +14,16 @@ fn test_todae_inherits_scalarized_element_start_from_array_base() {
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("arr[1]"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("arr[1]"),
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.enum_literal_ordinals.insert(
         "Modelica.Electrical.Digital.Interfaces.Logic.'U'".to_string(),
@@ -68,23 +68,23 @@ fn test_todae_keeps_non_primitive_leaf_outputs() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("leafOut"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("leafOut"),
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: false,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("u"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("u"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
@@ -121,12 +121,12 @@ fn test_classify_equations_non_linearized_embedded_subscript_keeps_slice_size() 
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("matrix"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("matrix"),
             dims: vec![2, 3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
@@ -178,11 +178,11 @@ fn test_todae_classifies_clocked_flat_assignment_as_discrete_real_and_routes_to_
     let name = VarName::new("d");
     flat.add_variable(
         name.clone(),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: name.clone(),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
@@ -240,11 +240,11 @@ fn test_todae_routes_if_lhs_clocked_assignment_with_supersample_to_f_z() {
     for name in ["u", "d"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -330,15 +330,15 @@ fn test_todae_routes_clocked_binding_out_of_fx_even_without_discrete_type_flag()
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("u"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("u"),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("usedFactor"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("usedFactor"),
             binding: Some(Expression::FunctionCall {
                 name: VarName::new("superSample").into(),
@@ -351,7 +351,7 @@ fn test_todae_routes_clocked_binding_out_of_fx_even_without_discrete_type_flag()
             is_discrete_type: false,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let dae = to_dae_with_options(
@@ -376,10 +376,10 @@ fn test_todae_routes_clocked_binding_out_of_fx_even_without_discrete_type_flag()
         "clocked binding must not be emitted as continuous residual in f_x"
     );
     assert!(
-        dae.discrete
-            .real_updates
-            .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("usedFactor"))),
+        dae.discrete.real_updates.iter().any(|eq| eq
+            .lhs
+            .as_ref()
+            .is_some_and(|lhs| lhs.as_str() == "usedFactor")),
         "clocked binding must be routed to discrete-real updates"
     );
 }
@@ -389,15 +389,15 @@ fn test_todae_routes_discrete_valued_clocked_binding_to_fm() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("u"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("u"),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("ticks"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("ticks"),
             binding: Some(Expression::FunctionCall {
                 name: VarName::new("superSample").into(),
@@ -414,7 +414,7 @@ fn test_todae_routes_discrete_valued_clocked_binding_to_fm() {
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let dae = to_dae_with_options(
@@ -435,87 +435,9 @@ fn test_todae_routes_discrete_valued_clocked_binding_to_fm() {
         dae.discrete
             .valued_updates
             .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("ticks"))),
+            .any(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "ticks")),
         "clocked discrete-valued binding must be emitted as explicit f_m assignment"
     );
-}
-
-#[test]
-fn test_todae_routes_clocked_tuple_assignment_to_f_z() {
-    let mut flat = Model::new();
-    flat.add_variable(
-        VarName::new("noise"),
-        flat::Variable {
-            name: VarName::new("noise"),
-            is_primitive: true,
-            ..Default::default()
-        },
-    );
-    flat.add_variable(
-        VarName::new("seedState"),
-        flat::Variable {
-            name: VarName::new("seedState"),
-            dims: vec![3],
-            is_discrete_type: true,
-            is_primitive: true,
-            ..Default::default()
-        },
-    );
-    flat.add_equation(rumoca_ir_flat::Equation {
-        residual: Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(Expression::Tuple {
-                elements: vec![make_var_ref("noise"), make_var_ref("seedState")],
-                span: rumoca_core::Span::DUMMY,
-            }),
-            rhs: Box::new(Expression::FunctionCall {
-                name: VarName::new("hold").into(),
-                args: vec![Expression::FunctionCall {
-                    name: VarName::new("previous").into(),
-                    args: vec![make_var_ref("seedState")],
-                    is_constructor: false,
-                    span: rumoca_core::Span::DUMMY,
-                }],
-                is_constructor: false,
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        },
-        span: Span::DUMMY,
-        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
-            component: "clocked".to_string(),
-        },
-        scalar_count: 4,
-    });
-
-    let dae = to_dae_with_options(
-        &flat,
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    )
-    .expect("clocked tuple assignment should convert");
-
-    assert!(
-        dae.variables
-            .discrete_reals
-            .contains_key(&rumoca_core::VarName::new("noise"))
-    );
-    assert!(
-        dae.variables
-            .discrete_valued
-            .contains_key(&rumoca_core::VarName::new("seedState"))
-    );
-    assert!(
-        dae.continuous.equations.is_empty(),
-        "clocked tuple assignment should not remain in f_x"
-    );
-    assert_eq!(
-        dae.discrete.real_updates.len(),
-        1,
-        "clocked tuple assignment should be routed to f_z"
-    );
-    assert_eq!(dae.discrete.real_updates[0].scalar_count, 4);
 }
 
 #[test]
@@ -523,7 +445,7 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("samplePeriod"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("samplePeriod"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(Expression::Literal {
@@ -532,16 +454,16 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
             }),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("r"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("r"),
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let mut algorithm = flat::Algorithm::new(Vec::new(), Span::DUMMY, "algorithm");
@@ -595,7 +517,7 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
         dae.discrete
             .real_updates
             .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("r"))),
+            .any(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "r")),
         "algorithm when-assigned Real output must be routed to f_z"
     );
     assert_eq!(
@@ -612,12 +534,12 @@ fn sequential_when_same_target_model() -> Model {
     for name in ["c1", "c2", "y"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_discrete_type: true,
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -670,7 +592,7 @@ fn test_todae_merges_sequential_when_statements_for_same_target_in_source_order(
         .discrete
         .valued_updates
         .iter()
-        .find(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("y")))
+        .find(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "y"))
         .expect("expected lowered discrete equation for y");
     let rumoca_core::Expression::If {
         branches,
@@ -742,17 +664,17 @@ fn add_tick_based_discrete_vars(flat: &mut Model) {
     for name in ["counter", "startOutput"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_discrete_type: true,
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
     flat.add_variable(
         VarName::new("startTick"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("startTick"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             binding: Some(Expression::Literal {
@@ -761,7 +683,7 @@ fn add_tick_based_discrete_vars(flat: &mut Model) {
             }),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 }
 
@@ -968,7 +890,7 @@ fn test_todae_keeps_time_guarded_discrete_output_binding_and_alias_consumer() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("Enable.stepTime"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("Enable.stepTime"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_primitive: true,
@@ -977,27 +899,27 @@ fn test_todae_keeps_time_guarded_discrete_output_binding_and_alias_consumer() {
                 span: rumoca_core::Span::DUMMY,
             }),
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("Enable.y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("Enable.y"),
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: false,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("Counter.enable"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("Counter.enable"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: false,
             ..Default::default()
-        },
+        }),
     );
 
     flat.add_equation(rumoca_ir_flat::Equation {
@@ -1084,7 +1006,7 @@ fn test_todae_converts_non_primitive_leaf_discrete_binding_to_f_m() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("Enable.stepTime"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("Enable.stepTime"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_primitive: true,
@@ -1093,11 +1015,11 @@ fn test_todae_converts_non_primitive_leaf_discrete_binding_to_f_m() {
                 span: rumoca_core::Span::DUMMY,
             }),
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("Enable.y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("Enable.y"),
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             is_discrete_type: true,
@@ -1117,17 +1039,17 @@ fn test_todae_converts_non_primitive_leaf_discrete_binding_to_f_m() {
                 span: rumoca_core::Span::DUMMY,
             }),
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("Counter.enable"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("Counter.enable"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: false,
             ..Default::default()
-        },
+        }),
     );
 
     flat.add_equation(rumoca_ir_flat::Equation {
@@ -1192,7 +1114,7 @@ fn test_top_level_connector_members_use_component_anchoring() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 variability: rumoca_core::Variability::Empty,
                 causality,
@@ -1200,7 +1122,7 @@ fn test_top_level_connector_members_use_component_anchoring() {
                 connected: true,
                 from_expandable_connector,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1247,7 +1169,7 @@ fn test_top_level_connector_members_use_component_anchoring() {
 
     let dae = to_dae(&flat).expect("to_dae should succeed");
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "component-anchored and unanchored connector sets should both balance"
     );
@@ -1258,12 +1180,12 @@ fn test_classify_equations_linearized_embedded_subscript_is_scalarized() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("interp"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("interp"),
             dims: vec![1, 4],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     for idx in 1..=4 {
         flat.add_equation(rumoca_ir_flat::Equation {
@@ -1315,25 +1237,25 @@ fn test_connected_discrete_input_alias_keeps_discrete_partition() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("inner.flag"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("inner.flag"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("inner.flagAlias"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("inner.flagAlias"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     add_connection_equation(&mut flat, "inner.flagAlias", "inner.flag");
@@ -1364,7 +1286,7 @@ fn test_connected_discrete_input_alias_keeps_discrete_partition() {
         "connected discrete input alias must contribute one discrete-valued equation"
     );
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "discrete connected input aliases must not affect continuous balance"
     );
@@ -1375,25 +1297,25 @@ fn test_discrete_input_connected_to_local_output_counts_as_local_unknown() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("source.y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("source.y"),
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("sink.u"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("sink.u"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let mut algorithm = flat::Algorithm::new(Vec::new(), Span::DUMMY, "algorithm");
@@ -1426,7 +1348,7 @@ fn test_discrete_input_connected_to_local_output_counts_as_local_unknown() {
         "locally driven discrete input should remain in m"
     );
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "a local output-to-input discrete connection should count both the input unknown and its connection row"
     );
@@ -1437,26 +1359,26 @@ fn test_discrete_input_alias_chain_to_local_output_counts_as_local_unknown() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("source.y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("source.y"),
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     for name in ["relay.u", "sink.u"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
                 variability: rumoca_core::Variability::Empty,
                 is_discrete_type: true,
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1490,7 +1412,7 @@ fn test_discrete_input_alias_chain_to_local_output_counts_as_local_unknown() {
         "a transitive local-output alias set must not be marked input-only"
     );
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "all discrete inputs in a local-output alias chain should count as local unknowns"
     );
@@ -1501,23 +1423,23 @@ fn test_connected_real_input_propagates_discrete_partition_from_peer() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("inner.clocked"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("inner.clocked"),
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("inner.u"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("inner.u"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     add_connection_equation(&mut flat, "inner.u", "inner.clocked");
@@ -1543,7 +1465,7 @@ fn test_connected_real_input_propagates_discrete_partition_from_peer() {
         "connected real input should not remain continuous algebraic"
     );
     assert_eq!(
-        crate::balance::balance(&dae),
+        crate::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "discrete connection propagation should avoid continuous balance deficits"
     );
@@ -1554,7 +1476,7 @@ fn test_when_clause_guard_for_var_condition_uses_edge_activation() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("flag"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("flag"),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_discrete_type: true,
@@ -1564,11 +1486,11 @@ fn test_when_clause_guard_for_var_condition_uses_edge_activation() {
                 span: rumoca_core::Span::DUMMY,
             }),
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("x"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("x"),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_primitive: true,
@@ -1577,7 +1499,7 @@ fn test_when_clause_guard_for_var_condition_uses_edge_activation() {
                 span: rumoca_core::Span::DUMMY,
             }),
             ..Default::default()
-        },
+        }),
     );
 
     let mut when_clause = flat::WhenClause::new(make_var_ref("flag"), Span::DUMMY);
@@ -1619,7 +1541,7 @@ fn test_when_clause_guard_for_clock_condition_uses_clock_tick_directly() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("y2"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("y2"),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_discrete_type: true,
@@ -1629,7 +1551,7 @@ fn test_when_clause_guard_for_clock_condition_uses_clock_tick_directly() {
                 span: rumoca_core::Span::DUMMY,
             }),
             ..Default::default()
-        },
+        }),
     );
 
     let clock_call = Expression::FunctionCall {
@@ -1689,7 +1611,7 @@ fn test_when_clause_guard_for_vector_var_conditions_uses_edge_activation_per_ele
     for name in ["trigger", "reset"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
                 is_discrete_type: true,
@@ -1699,12 +1621,12 @@ fn test_when_clause_guard_for_vector_var_conditions_uses_edge_activation_per_ele
                     span: rumoca_core::Span::DUMMY,
                 }),
                 ..Default::default()
-            },
+            }),
         );
     }
     flat.add_variable(
         VarName::new("y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("y"),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_primitive: true,
@@ -1713,7 +1635,7 @@ fn test_when_clause_guard_for_vector_var_conditions_uses_edge_activation_per_ele
                 span: rumoca_core::Span::DUMMY,
             }),
             ..Default::default()
-        },
+        }),
     );
 
     let mut when_clause = flat::WhenClause::new(
@@ -1835,29 +1757,29 @@ fn build_when_condition_alias_model(use_alias_guard: bool) -> Model {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("x"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("x"),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("belowGround"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("belowGround"),
             variability: rumoca_core::Variability::Discrete(rumoca_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("z"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("z"),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     flat.add_equation(rumoca_ir_flat::Equation {
@@ -1959,39 +1881,106 @@ fn test_when_boolean_alias_guard_matches_inline_relational_guard() {
         }),
         span: rumoca_core::Span::DUMMY,
     };
-    assert_eq!(
-        format!("{direct_guard:?}"),
-        format!("{expected_edge_guard:?}"),
+    assert!(
+        rumoca_core::expressions_semantically_equal(direct_guard, &expected_edge_guard),
         "MLS §8.3.5.1: direct relational when-guards should fire on false->true edges"
     );
-    assert_eq!(
-        format!("{alias_guard:?}"),
-        format!("{expected_edge_guard:?}"),
+    assert!(
+        rumoca_core::expressions_semantically_equal(alias_guard, &expected_edge_guard),
         "MLS §8.3.5.1: boolean alias guards should lower to the same edge-wrapped relation"
     );
 
-    let edge_alias_condition = format!(
-        "{:?}",
-        rumoca_core::Expression::BuiltinCall {
-            function: rumoca_core::BuiltinFunction::Edge,
-            args: vec![flat_to_dae_expression(&make_var_ref("belowGround"))],
-            span: rumoca_core::Span::DUMMY,
-        }
-    );
-    let relation_set = alias_dae
-        .conditions
-        .relations
-        .iter()
-        .map(|expr| format!("{expr:?}"))
-        .collect::<std::collections::HashSet<_>>();
+    let edge_alias_condition = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Edge,
+        args: vec![flat_to_dae_expression(&make_var_ref("belowGround"))],
+        span: rumoca_core::Span::DUMMY,
+    };
     assert!(
-        relation_set.contains(&format!("{expected_guard:?}")),
+        alias_dae
+            .conditions
+            .relations
+            .iter()
+            .any(|relation| rumoca_core::expressions_semantically_equal(relation, &expected_guard)),
         "alias model should expose the relational guard to canonical condition roots"
     );
     assert!(
-        !relation_set.contains(&edge_alias_condition),
+        !alias_dae.conditions.relations.iter().any(|relation| {
+            rumoca_core::expressions_semantically_equal(relation, &edge_alias_condition)
+        }),
         "alias model should not lower when-guard to edge(belowGround)"
     );
 }
 
+mod clocked_tuple_tests;
 mod regression_more_tests;
+
+/// A scalar parameter binding that references a known variable must keep
+/// that reference; the record-field start alias selection used to graft the
+/// LHS leaf onto the RHS and suffix-resolve to an unrelated variable
+/// (`resistor.m = multiStar.mBasic` became the top-level `m`, so MSL
+/// PowerConverters models evaluated `fill(300.15, m)` with the wrong phase
+/// count).
+#[test]
+fn test_scalar_binding_to_known_variable_keeps_reference() {
+    let mut flat = Model::new();
+    for (name, value) in [("m", 3), ("multiStar.mBasic", 1)] {
+        let var_name = VarName::new(name);
+        flat.add_variable(
+            var_name.clone(),
+            crate::test_support::with_component_ref(flat::Variable {
+                name: var_name,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(Expression::Literal {
+                    value: rumoca_core::Literal::Integer(value),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                is_primitive: true,
+                ..Default::default()
+            }),
+        );
+    }
+    let target = VarName::new("multiStar.resistor.m");
+    flat.add_variable(
+        target.clone(),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: target.clone(),
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(Expression::VarRef {
+                name: rumoca_core::Reference::from_component_reference(
+                    rumoca_core::component_reference_from_flat_name(
+                        &VarName::new("multiStar.mBasic"),
+                        rumoca_core::Span::DUMMY,
+                    )
+                    .expect("fixture name must form a component reference"),
+                ),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..Default::default()
+        }),
+    );
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("scalar parameter bindings should convert");
+
+    let var = dae
+        .variables
+        .parameters
+        .get(&target)
+        .expect("target parameter should exist in DAE");
+    let start = var.start.as_ref().expect("binding becomes parameter start");
+    let Expression::VarRef { name, .. } = start else {
+        panic!("expected a variable reference start, got {start:?}");
+    };
+    assert_eq!(
+        name.var_name().as_str(),
+        "multiStar.mBasic",
+        "binding reference must not be grafted onto an unrelated variable"
+    );
+}

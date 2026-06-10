@@ -145,10 +145,15 @@ fn redirect_when_equations(
                 redirect_var_name(state, outer_to_inner);
                 redirect_flat_expr(value, outer_to_inner);
             }
-            flat::WhenEquation::Assert { condition, .. } => {
+            flat::WhenEquation::Assert {
+                condition, message, ..
+            } => {
                 redirect_flat_expr(condition, outer_to_inner);
+                redirect_flat_expr(message, outer_to_inner);
             }
-            flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::Terminate { message, .. } => {
+                redirect_flat_expr(message, outer_to_inner);
+            }
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,

@@ -551,14 +551,7 @@ mod tests {
     fn test_infer_dims_single_row_matrix_literal() {
         let ctx = TypeCheckEvalContext::new();
         let expr = Expression::Array {
-            elements: vec![
-                Expression::Empty {
-                    span: rumoca_core::Span::DUMMY,
-                },
-                Expression::Empty {
-                    span: rumoca_core::Span::DUMMY,
-                },
-            ],
+            elements: vec![make_real_literal(0.0), make_real_literal(1.0)],
             is_matrix: true,
             span: rumoca_core::Span::DUMMY,
         };
@@ -571,27 +564,13 @@ mod tests {
         let expr = Expression::Array {
             elements: vec![
                 Expression::Array {
-                    elements: vec![
-                        Expression::Empty {
-                            span: rumoca_core::Span::DUMMY,
-                        },
-                        Expression::Empty {
-                            span: rumoca_core::Span::DUMMY,
-                        },
-                    ],
+                    elements: vec![make_real_literal(0.0), make_real_literal(1.0)],
                     is_matrix: true,
 
                     span: rumoca_core::Span::DUMMY,
                 },
                 Expression::Array {
-                    elements: vec![
-                        Expression::Empty {
-                            span: rumoca_core::Span::DUMMY,
-                        },
-                        Expression::Empty {
-                            span: rumoca_core::Span::DUMMY,
-                        },
-                    ],
+                    elements: vec![make_real_literal(2.0), make_real_literal(3.0)],
                     is_matrix: true,
 
                     span: rumoca_core::Span::DUMMY,
@@ -601,6 +580,33 @@ mod tests {
             span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(infer_dimensions_from_binding(&expr, &ctx), Some(vec![2, 2]));
+    }
+
+    #[test]
+    fn test_infer_dims_matrix_literal_with_scalar_real_entries() {
+        let ctx = TypeCheckEvalContext::new();
+        let expr = Expression::Array {
+            elements: vec![
+                Expression::Array {
+                    elements: vec![make_real_literal(0.0), make_real_literal(0.595)],
+                    is_matrix: true,
+                    span: rumoca_core::Span::DUMMY,
+                },
+                Expression::Array {
+                    elements: vec![make_real_literal(1.0), make_real_literal(1.0)],
+                    is_matrix: true,
+                    span: rumoca_core::Span::DUMMY,
+                },
+            ],
+            is_matrix: true,
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        assert_eq!(
+            infer_dimensions_from_binding(&expr, &ctx),
+            Some(vec![2, 2]),
+            "MLS matrix constructors made from scalar entries have matrix shape"
+        );
     }
 
     #[test]

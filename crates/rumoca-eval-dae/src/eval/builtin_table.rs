@@ -3,28 +3,6 @@ use crate::dual::Dual;
 
 const NO_NEXT_TIME_EVENT: f64 = f64::MAX;
 
-pub(super) fn eval_builtin_sum<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> T {
-    if args.len() == 1 {
-        return eval_array_like_values(&args[0], env)
-            .into_iter()
-            .fold(T::zero(), |acc, v| acc + v);
-    }
-    args.iter().fold(T::zero(), |acc, expr| {
-        acc + eval_expr_or_default::<T>(expr, env)
-    })
-}
-
-pub(super) fn eval_builtin_product<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> T {
-    if args.len() == 1 {
-        return eval_array_like_values(&args[0], env)
-            .into_iter()
-            .fold(T::one(), |acc, v| acc * v);
-    }
-    args.iter().fold(T::one(), |acc, expr| {
-        acc * eval_expr_or_default::<T>(expr, env)
-    })
-}
-
 /// Resolve a user-defined function by exact qualified name.
 ///
 /// Function names must be resolved before runtime evaluation.
@@ -42,18 +20,18 @@ pub(super) fn resolve_function_closure<'a, T: SimFloat>(
     env.function_closures.get(name)
 }
 
-fn eval_table_id_arg<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> f64 {
-    match args.first() {
-        Some(expr) => eval_expr_or_default::<T>(expr, env).real(),
-        None => 0.0,
-    }
+fn eval_table_id_arg<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> Result<f64, EvalError> {
+    let expr = args.first().ok_or(EvalError::UnsupportedExpression {
+        kind: "external table id",
+    })?;
+    Ok(eval_expr::<T>(expr, env)?.real())
 }
 
-fn eval_table_col_arg<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> f64 {
-    match args.get(1) {
-        Some(expr) => eval_expr_or_default::<T>(expr, env).real(),
-        None => 1.0,
-    }
+fn eval_table_col_arg<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> Result<f64, EvalError> {
+    let expr = args.get(1).ok_or(EvalError::UnsupportedExpression {
+        kind: "external table column",
+    })?;
+    Ok(eval_expr::<T>(expr, env)?.real())
 }
 
 fn table_col_index_from_real(col_arg: f64) -> usize {
@@ -88,10 +66,11 @@ pub fn eval_table_bound_value_in(
     table_id: f64,
     max: bool,
     tables: &[rumoca_core::ExternalTableData],
-) -> f64 {
-    let Some(spec) = lookup_external_table_in(table_id, tables) else {
-        return 0.0;
-    };
+) -> Result<f64, EvalError> {
+    let spec =
+        lookup_external_table_in(table_id, tables).ok_or_else(|| EvalError::MissingBinding {
+            name: format!("external table {table_id}"),
+        })?;
     eval_table_bound_spec(&spec, max)
 }
 
@@ -104,16 +83,14 @@ pub fn try_eval_table_bound_value_in(
     try_eval_table_bound_spec(&spec, max)
 }
 
-fn eval_table_bound_spec(spec: &ExternalTableSpec, max: bool) -> f64 {
-    try_eval_table_bound_spec(spec, max).unwrap_or_else(default_missing_table_bound)
+fn eval_table_bound_spec(spec: &ExternalTableSpec, max: bool) -> Result<f64, EvalError> {
+    try_eval_table_bound_spec(spec, max).ok_or(EvalError::UnsupportedExpression {
+        kind: "external table bounds",
+    })
 }
 
 fn try_eval_table_bound_spec(spec: &ExternalTableSpec, max: bool) -> Option<f64> {
     table_x_bounds(spec).map(|(min, upper)| if max { upper } else { min })
-}
-
-fn default_missing_table_bound() -> f64 {
-    0.0
 }
 
 pub fn eval_table_lookup_value_in(
@@ -121,10 +98,11 @@ pub fn eval_table_lookup_value_in(
     col_arg: f64,
     x: f64,
     tables: &[rumoca_core::ExternalTableData],
-) -> f64 {
-    let Some(spec) = lookup_external_table_in(table_id, tables) else {
-        return 0.0;
-    };
+) -> Result<f64, EvalError> {
+    let spec =
+        lookup_external_table_in(table_id, tables).ok_or_else(|| EvalError::MissingBinding {
+            name: format!("external table {table_id}"),
+        })?;
     eval_table_lookup_spec(&spec, col_arg, x)
 }
 
@@ -138,7 +116,11 @@ pub fn try_eval_table_lookup_value_in(
     try_eval_table_lookup_spec(&spec, col_arg, x)
 }
 
-fn eval_table_lookup_spec<T: SimFloat>(spec: &ExternalTableSpec, col_arg: f64, x: T) -> T {
+fn eval_table_lookup_spec<T: SimFloat>(
+    spec: &ExternalTableSpec,
+    col_arg: f64,
+    x: T,
+) -> Result<T, EvalError> {
     let col_idx = table_col_index_from_real(col_arg);
     eval_table_1d_lookup(spec, col_idx, x)
 }
@@ -149,7 +131,7 @@ fn try_eval_table_lookup_spec<T: SimFloat>(
     x: T,
 ) -> Option<T> {
     let col_idx = checked_table_col_index(spec, col_arg)?;
-    Some(eval_table_1d_lookup(spec, col_idx, x))
+    eval_table_1d_lookup(spec, col_idx, x).ok()
 }
 
 pub fn eval_table_lookup_slope_value_in(
@@ -157,10 +139,11 @@ pub fn eval_table_lookup_slope_value_in(
     col_arg: f64,
     x: f64,
     tables: &[rumoca_core::ExternalTableData],
-) -> f64 {
-    let Some(spec) = lookup_external_table_in(table_id, tables) else {
-        return 0.0;
-    };
+) -> Result<f64, EvalError> {
+    let spec =
+        lookup_external_table_in(table_id, tables).ok_or_else(|| EvalError::MissingBinding {
+            name: format!("external table {table_id}"),
+        })?;
     eval_table_lookup_slope_spec(&spec, col_arg, x)
 }
 
@@ -174,14 +157,22 @@ pub fn try_eval_table_lookup_slope_value_in(
     try_eval_table_lookup_slope_spec(&spec, col_arg, x)
 }
 
-fn eval_table_lookup_slope_spec(spec: &ExternalTableSpec, col_arg: f64, x: f64) -> f64 {
+fn eval_table_lookup_slope_spec(
+    spec: &ExternalTableSpec,
+    col_arg: f64,
+    x: f64,
+) -> Result<f64, EvalError> {
     let col_idx = table_col_index_from_real(col_arg);
-    eval_table_1d_lookup(spec, col_idx, Dual::new(x, 1.0)).du
+    Ok(eval_table_1d_lookup(spec, col_idx, Dual::new(x, 1.0))?.du)
 }
 
 fn try_eval_table_lookup_slope_spec(spec: &ExternalTableSpec, col_arg: f64, x: f64) -> Option<f64> {
     let col_idx = checked_table_col_index(spec, col_arg)?;
-    Some(eval_table_1d_lookup(spec, col_idx, Dual::new(x, 1.0)).du)
+    Some(
+        eval_table_1d_lookup(spec, col_idx, Dual::new(x, 1.0))
+            .ok()?
+            .du,
+    )
 }
 
 pub fn eval_time_table_next_event_value_in(
@@ -247,70 +238,85 @@ fn eval_time_table_next_event_spec(spec: &ExternalTableSpec, time_in: f64) -> f6
         .unwrap_or(NO_NEXT_TIME_EVENT)
 }
 
-fn eval_table_bounds_call<T: SimFloat>(args: &[Expression], env: &VarEnv<T>, max: bool) -> T {
-    let table_id = eval_table_id_arg(args, env);
-    let Some(spec) = lookup_external_table_in_registry(&env.runtime.external_tables, table_id)
-    else {
-        return T::zero();
-    };
-    T::from_f64(eval_table_bound_spec(&spec, max))
+fn eval_table_bounds_call<T: SimFloat>(
+    args: &[Expression],
+    env: &VarEnv<T>,
+    max: bool,
+) -> Result<T, EvalError> {
+    let table_id = eval_table_id_arg(args, env)?;
+    let spec = lookup_external_table_in_registry(&env.runtime.external_tables, table_id)
+        .ok_or_else(|| EvalError::MissingBinding {
+            name: format!("external table {table_id}"),
+        })?;
+    let value = try_eval_table_bound_spec(&spec, max).ok_or(EvalError::UnsupportedExpression {
+        kind: "external table bounds",
+    })?;
+    Ok(T::from_f64(value))
 }
 
 fn eval_table_lookup_call<T: SimFloat>(
     args: &[Expression],
     env: &VarEnv<T>,
     input_arg_idx: usize,
-) -> T {
-    let table_id = eval_table_id_arg(args, env);
-    let Some(spec) = lookup_external_table_in_registry(&env.runtime.external_tables, table_id)
-    else {
-        return T::zero();
-    };
-    let col_arg = eval_table_col_arg(args, env);
-    let col_idx = table_col_index_from_real(col_arg);
-    let x = args
-        .get(input_arg_idx)
-        .map(|e| eval_expr_or_default::<T>(e, env))
-        .unwrap_or_else(T::zero);
+) -> Result<T, EvalError> {
+    let table_id = eval_table_id_arg(args, env)?;
+    let spec = lookup_external_table_in_registry(&env.runtime.external_tables, table_id)
+        .ok_or_else(|| EvalError::MissingBinding {
+            name: format!("external table {table_id}"),
+        })?;
+    let col_arg = eval_table_col_arg(args, env)?;
+    let col_idx =
+        checked_table_col_index(&spec, col_arg).ok_or(EvalError::UnsupportedExpression {
+            kind: "external table column",
+        })?;
+    let x = eval_expr::<T>(
+        args.get(input_arg_idx)
+            .ok_or(EvalError::UnsupportedExpression {
+                kind: "external table input",
+            })?,
+        env,
+    )?;
     eval_table_1d_lookup_with_runtime(&spec, col_idx, x, Some(&env.runtime))
 }
 
-fn eval_time_table_next_event_call<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> T {
-    let table_id = eval_table_id_arg(args, env);
-    let time_in = args
-        .get(1)
-        .map(|e| eval_expr_or_default::<T>(e, env).real())
-        .unwrap_or_else(default_missing_time_table_input);
-    let Some(spec) = lookup_external_table_in_registry(&env.runtime.external_tables, table_id)
-    else {
-        return T::from_f64(NO_NEXT_TIME_EVENT);
-    };
-    T::from_f64(eval_time_table_next_event_spec(&spec, time_in))
-}
-
-fn default_missing_time_table_input() -> f64 {
-    0.0
+fn eval_time_table_next_event_call<T: SimFloat>(
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> Result<T, EvalError> {
+    let table_id = eval_table_id_arg(args, env)?;
+    let time_in = eval_expr::<T>(
+        args.get(1).ok_or(EvalError::UnsupportedExpression {
+            kind: "time table input",
+        })?,
+        env,
+    )?
+    .real();
+    let spec = lookup_external_table_in_registry(&env.runtime.external_tables, table_id)
+        .ok_or_else(|| EvalError::MissingBinding {
+            name: format!("external table {table_id}"),
+        })?;
+    Ok(T::from_f64(eval_time_table_next_event_spec(&spec, time_in)))
 }
 
 pub(super) fn eval_external_table_function<T: SimFloat>(
     short_name: &str,
     args: &[Expression],
     env: &VarEnv<T>,
-) -> Option<T> {
+) -> Result<Option<T>, EvalError> {
     match short_name {
         "ExternalCombiTimeTable" => eval_table_constructor(args, env, true),
         "ExternalCombiTable1D" => eval_table_constructor(args, env, false),
-        "getTimeTableTmax" => Some(eval_table_bounds_call(args, env, true)),
-        "getTimeTableTmin" => Some(eval_table_bounds_call(args, env, false)),
+        "getTimeTableTmax" => eval_table_bounds_call(args, env, true).map(Some),
+        "getTimeTableTmin" => eval_table_bounds_call(args, env, false).map(Some),
         "getTimeTableValueNoDer" | "getTimeTableValueNoDer2" | "getTimeTableValue" => {
-            Some(eval_table_lookup_call(args, env, 2))
+            eval_table_lookup_call(args, env, 2).map(Some)
         }
-        "getNextTimeEvent" => Some(eval_time_table_next_event_call(args, env)),
-        "getTable1DAbscissaUmax" => Some(eval_table_bounds_call(args, env, true)),
-        "getTable1DAbscissaUmin" => Some(eval_table_bounds_call(args, env, false)),
+        "getNextTimeEvent" => eval_time_table_next_event_call(args, env).map(Some),
+        "getTable1DAbscissaUmax" => eval_table_bounds_call(args, env, true).map(Some),
+        "getTable1DAbscissaUmin" => eval_table_bounds_call(args, env, false).map(Some),
         "getTable1DValueNoDer" | "getTable1DValueNoDer2" | "getTable1DValue" => {
-            Some(eval_table_lookup_call(args, env, 2))
+            eval_table_lookup_call(args, env, 2).map(Some)
         }
-        _ => None,
+        _ => Ok(None),
     }
 }

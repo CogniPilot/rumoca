@@ -489,7 +489,8 @@ fn vcg_endpoint_matches_node(endpoint: &str, candidate: &str) -> bool {
         .zip(candidate_parts)
         .all(|(endpoint_part, candidate_part)| {
             strip_array_index(endpoint_part) == strip_array_index(candidate_part)
-                && (!endpoint_part.contains('[') || endpoint_part == candidate_part)
+                && (rumoca_core::split_trailing_subscript_suffix(endpoint_part).is_none()
+                    || endpoint_part == candidate_part)
         })
 }
 

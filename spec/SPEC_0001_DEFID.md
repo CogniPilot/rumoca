@@ -4,7 +4,8 @@
 ACCEPTED
 
 ## Summary
-Every declaration in the Rumoca compiler receives a unique `DefId` that remains stable across compilation phases.
+Rumoca uses source declaration `DefId`s for resolved declarations and
+instance-unique identity for post-instantiation Flat/DAE runtime components.
 
 ## Specification
 
@@ -20,11 +21,33 @@ impl DefId {
 }
 ```
 
+### Identity Domains
+
+| Identity | Owner/Where | Rule |
+|---|---|---|
+| Source declaration `DefId` | Resolve / class tree | One id per syntactic declaration |
+| Instance identity | Flat, DAE, Solve, Sim | One id/key per concrete runtime component instance |
+| Rendered name | Diagnostics, serialization, display | Never compiler semantic identity |
+
+Source declaration identity and instance identity are different domains. A
+component declaration inside a reusable class has one source declaration
+`DefId`, but each instantiation of that declaration is a different runtime
+component and MUST have unique post-instantiation identity.
+
 ### Assignment Rules
-1. DefIds are assigned during the resolve phase
-2. Each syntactic declaration gets exactly one DefId
-3. DefIds are local to a compilation unit (not globally unique)
-4. DefId(0) is reserved for the root/global scope
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| DefIds are assigned during resolve for source/class-tree declarations | Resolve | Declaration lookup needs stable ids |
+| Each syntactic declaration gets exactly one source declaration DefId | Resolve | Source declarations are not duplicated |
+| Flat/DAE runtime components use instance-unique identity | Flatten and later | Reused classes create distinct unknowns |
+| `DefId(0)` is reserved for root/global scope | Core ids | Stable sentinel |
+| DefIds are local to a compilation unit | Whole compiler | No cross-unit global registry |
+
+Instance-unique identity may be represented by a dedicated instance `DefId`, or
+by a small structured key whose identity fields are all `DefId` /
+`InstanceId`-like opaque ids. Rendered names, flat paths, and
+component-reference display text are not valid identity fields.
 
 ### What Gets a DefId
 - Class definitions (model, block, connector, record, function, etc.)
@@ -42,10 +65,11 @@ impl DefId {
 
 ### Semantic Identity Keys
 
-**Hard rule:** compiler semantic identity is `DefId` based. Compiler data
-structures that identify declarations MUST key by `DefId`, or by a small
-structured key whose semantic identity fields are all `DefId` values. After name
-resolution, string hashing is not permitted for compiler semantic identity.
+**Hard rule:** compiler semantic identity is resolved-id based. Compiler data
+structures that identify declarations MUST key by `DefId`; compiler data
+structures that identify concrete post-instantiation components MUST key by an
+instance-unique resolved id/key. After name resolution, string hashing is not
+permitted for compiler semantic identity.
 Rendered strings, `VarName`, flat names, component-reference display text, and
 other textual names are display/source/protocol data, not semantic identity.
 
@@ -57,10 +81,11 @@ after resolution, that is a phase-boundary bug: move the `DefId` to that point
 and key by `DefId`.
 
 Allowed semantic keys after resolution:
-- `DefId`
-- Tuples or structs whose identity fields are `DefId` values
-- Opaque local indices that are allocated from `DefId`-keyed tables and cannot
-  be reconstructed from rendered text
+- `DefId` for source declarations
+- Instance `DefId` for concrete Flat/DAE runtime components
+- Tuples or structs whose identity fields are `DefId` / `InstanceId` values
+- Opaque local indices allocated from resolved-id-keyed tables and not
+  reconstructable from rendered text
 
 Allowed exceptions:
 - Name-resolution scopes before a declaration has been resolved. These must use
@@ -76,6 +101,18 @@ or function parameter, the lookup key is the declaration's `DefId`. Re-parsing
 or hashing a rendered name to recover identity is prohibited. If the code only
 has a textual name at that point, carry the `DefId` forward instead of
 recreating identity from text.
+
+For flattened component instances, source declaration DefId and instance
+identity are distinct concepts. A variable such as `a.y` and a sibling variable
+`b.y` may originate from the same source declaration `y`, but they are different
+runtime unknowns and MUST have different post-instantiation identity. Downstream
+DAE/Solve/Sim code must key or compare such variables by the instance identity,
+not by the reused source declaration DefId.
+
+If downstream code needs to answer "does this instance originate from this
+source declaration?", it must use explicit ancestry metadata such as
+`symbol_ancestry`, not string prefix checks or equality on reused source
+declaration ids.
 
 ## Rationale
 - Inspired by Rust compiler's `DefId` which provides stable cross-crate references

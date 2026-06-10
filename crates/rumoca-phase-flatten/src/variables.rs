@@ -123,10 +123,25 @@ fn resolve_flat_output_type_name(tree: &ast::ClassTree, mut type_id: TypeId) -> 
     None
 }
 
-pub(crate) fn flat_output_type_name(instance: &ast::InstanceData, tree: &ast::ClassTree) -> String {
-    resolve_flat_output_type_name(tree, instance.type_id)
+pub(crate) fn flat_output_type_name(
+    instance: &ast::InstanceData,
+    tree: &ast::ClassTree,
+) -> Result<String, FlattenError> {
+    if let Some(type_name) = resolve_flat_output_type_name(tree, instance.type_id)
         .or_else(|| (!instance.type_name.is_empty()).then(|| instance.type_name.clone()))
-        .unwrap_or_else(|| "Real".to_string())
+    {
+        return Ok(type_name);
+    }
+
+    let span = tree.source_map.location_to_span(
+        &instance.source_location.file_name,
+        instance.source_location.start as usize,
+        instance.source_location.end as usize,
+    );
+    Err(FlattenError::unresolved_variable_type(
+        instance.qualified_name.to_flat_string(),
+        span,
+    ))
 }
 
 /// Create a flat::Variable from instance data.

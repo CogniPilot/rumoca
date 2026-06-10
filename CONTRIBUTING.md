@@ -4,16 +4,16 @@ Contributions are welcome.
 
 ## Setup
 
-Install the `rum` developer CLI once:
+Install the `xtask` developer CLI launcher once:
 
 ```bash
 cargo xtask repo cli install
 ```
 
-That installs `rum`, installs shell completions for the detected shell, and uses your cargo bin directory, usually `~/.cargo/bin`.
-If that directory is not already on `PATH`, `rum` will print shell-specific fixups.
+That installs the `xtask` launcher, installs shell completions for the detected shell, and uses your cargo bin directory, usually `~/.cargo/bin`.
+If that directory is not already on `PATH`, `xtask` will print shell-specific fixups.
 
-If you want `rum` to write the persistent PATH update for you:
+If you want `xtask` to write the persistent PATH update for you:
 
 ```bash
 cargo xtask repo cli install --path
@@ -122,7 +122,7 @@ Project specifications live under [`spec/`](spec/).
 ## Practical Expectations
 
 - Run the smallest verification gate that actually covers your change.
-- Prefer `rum` commands over ad hoc local scripts so local and CI workflows stay aligned.
+- Prefer `cargo xtask` commands over ad hoc local scripts so local and CI workflows stay aligned.
 - Keep contributor-facing command examples in docs synchronized with the actual CLI.
 - Include a PR size budget in the pull-request body:
   - production lines added/deleted,

@@ -3,61 +3,65 @@ use super::*;
 pub(super) fn eval_table_matrix_arg<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
-) -> Option<Vec<Vec<f64>>> {
+) -> Result<Option<Vec<Vec<f64>>>, EvalError> {
     match expr {
         rumoca_core::Expression::Array { elements, .. } => {
             if elements.is_empty() {
-                return Some(Vec::new());
+                return Ok(Some(Vec::new()));
             }
 
             if elements
                 .iter()
                 .all(|e| matches!(e, rumoca_core::Expression::Array { .. }))
             {
-                return Some(
-                    eval_matrix_literal_rows(elements, env)
+                return Ok(Some(
+                    eval_matrix_literal_rows(elements, env)?
                         .into_iter()
                         .map(|row| row.into_iter().map(|value| value.real()).collect())
                         .collect(),
-                );
+                ));
             }
 
-            let values = eval_array_values::<T>(expr, env);
+            let values = eval_array_values::<T>(expr, env)?;
             if values.is_empty() {
-                return Some(Vec::new());
+                return Ok(Some(Vec::new()));
             }
-            Some(vec![values.iter().map(|v| v.real()).collect()])
+            Ok(Some(vec![values.iter().map(|v| v.real()).collect()]))
         }
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() => {
-            let Some(flat_values) = array_values_from_env_name(name.as_str(), env) else {
-                return env
+            let Some(flat_values) = array_values_from_env_name(name.as_str(), env)? else {
+                return Ok(env
                     .start_exprs
                     .get(name.as_str())
-                    .and_then(|start_expr| eval_table_matrix_arg(start_expr, env));
+                    .map(|start_expr| eval_table_matrix_arg(start_expr, env))
+                    .transpose()?
+                    .flatten());
             };
-            Some(table_matrix_from_flat_values(
+            Ok(Some(table_matrix_from_flat_values(
                 name.as_str(),
                 flat_values,
                 env,
-            ))
+            )?))
         }
         rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            let name = flattened_field_access_name(base, field)?;
-            let flat_values = eval_field_access_array_values(base, field, env)?;
-            Some(table_matrix_from_flat_values(
+            let Some(name) = flattened_field_access_name(base, field) else {
+                return Ok(None);
+            };
+            let flat_values = try_eval_field_access_array_values(base, field, env)?;
+            Ok(Some(table_matrix_from_flat_values(
                 name.as_str(),
                 flat_values.into_iter().map(|value| value.real()).collect(),
                 env,
-            ))
+            )?))
         }
         rumoca_core::Expression::If {
             branches,
             else_branch,
             ..
         } => eval_table_if_matrix_arg(branches, else_branch, env),
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -65,9 +69,9 @@ fn eval_table_if_matrix_arg<T: SimFloat>(
     branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
     else_branch: &rumoca_core::Expression,
     env: &VarEnv<T>,
-) -> Option<Vec<Vec<f64>>> {
+) -> Result<Option<Vec<Vec<f64>>>, EvalError> {
     for (condition, value) in branches {
-        if eval_expr_or_default::<T>(condition, env).to_bool() {
+        if eval_expr::<T>(condition, env)?.to_bool() {
             return eval_table_matrix_arg(value, env);
         }
     }
@@ -78,64 +82,70 @@ fn table_matrix_from_flat_values<T: SimFloat>(
     name: &str,
     flat_values: Vec<f64>,
     env: &VarEnv<T>,
-) -> Vec<Vec<f64>> {
-    if let Some(start_matrix) = richer_table_start_matrix(name, flat_values.len(), env) {
-        return start_matrix;
+) -> Result<Vec<Vec<f64>>, EvalError> {
+    if let Some(start_matrix) = richer_table_start_matrix(name, flat_values.len(), env)? {
+        return Ok(start_matrix);
     }
     if flat_values.is_empty() {
         if let Some(start_expr) = env.start_exprs.get(name)
-            && let Some(start_matrix) = eval_table_matrix_arg(start_expr, env)
+            && let Some(start_matrix) = eval_table_matrix_arg(start_expr, env)?
         {
-            return start_matrix;
+            return Ok(start_matrix);
         }
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let raw_dims = declared_dims_or_scalar(name, env);
-    let inferred = infer_dims_from_values(&raw_dims, flat_values.len());
+    let raw_dims = declared_dims(name, env)?;
+    let inferred = infer_dims_from_values(&raw_dims, flat_values.len())?;
     if inferred.len() >= 2 {
-        let rows = inferred[0].max(1);
-        let cols = inferred[1].max(1);
-        return reshape_flat_matrix(&flat_values, rows, cols);
+        return reshape_flat_matrix(&flat_values, inferred[0], inferred[1]);
     }
-    vec![flat_values]
+    Ok(vec![flat_values])
 }
 
 fn richer_table_start_matrix<T: SimFloat>(
     name: &str,
     flat_len: usize,
     env: &VarEnv<T>,
-) -> Option<Vec<Vec<f64>>> {
-    let start_expr = env.start_exprs.get(name)?;
+) -> Result<Option<Vec<Vec<f64>>>, EvalError> {
+    let Some(start_expr) = env.start_exprs.get(name) else {
+        return Ok(None);
+    };
     if matches!(start_expr, rumoca_core::Expression::VarRef { name: start_name, .. } if start_name.as_str() == name)
     {
-        return None;
+        return Ok(None);
     }
-    let start_matrix = eval_table_matrix_arg(start_expr, env)?;
+    let Some(start_matrix) = eval_table_matrix_arg(start_expr, env)? else {
+        return Ok(None);
+    };
     let start_len = start_matrix.iter().map(Vec::len).sum::<usize>();
-    (start_len > flat_len).then_some(start_matrix)
+    Ok((start_len > flat_len).then_some(start_matrix))
 }
 
 fn map_selected_table_column(
     columns: &[usize],
     requested_output_col: usize,
     data_col_count: usize,
-) -> usize {
+) -> Result<usize, EvalError> {
     if data_col_count == 0 {
-        return 0;
+        return Err(EvalError::UnsupportedExpression {
+            kind: "external table data columns",
+        });
     }
     if columns.is_empty() {
-        return requested_output_col
+        return Ok(requested_output_col
             .saturating_add(1)
-            .min(data_col_count.saturating_sub(1));
+            .min(data_col_count.saturating_sub(1)));
     }
     let mapped = columns
         .get(requested_output_col)
         .copied()
         .or_else(|| columns.last().copied())
-        .unwrap_or(1);
-    mapped
+        .ok_or(EvalError::UnsupportedExpression {
+            kind: "external table columns",
+        })?;
+    Ok(mapped
         .saturating_sub(1)
-        .min(data_col_count.saturating_sub(1))
+        .min(data_col_count.saturating_sub(1)))
 }
 
 pub(super) fn table_x_bounds(spec: &ExternalTableSpec) -> Option<(f64, f64)> {
@@ -203,7 +213,7 @@ pub(super) fn eval_table_1d_lookup<T: SimFloat>(
     spec: &ExternalTableSpec,
     requested_output_col: usize,
     x: T,
-) -> T {
+) -> Result<T, EvalError> {
     eval_table_1d_lookup_with_runtime(spec, requested_output_col, x, None)
 }
 
@@ -212,20 +222,30 @@ pub(super) fn eval_table_1d_lookup_with_runtime<T: SimFloat>(
     requested_output_col: usize,
     x: T,
     runtime: Option<&EvalRuntimeState>,
-) -> T {
+) -> Result<T, EvalError> {
     if spec.data.is_empty() {
-        return T::zero();
+        return Err(EvalError::UnsupportedExpression {
+            kind: "external table data",
+        });
     }
-    let data_col_count = spec.data.first().map(|r| r.len()).unwrap_or(0);
+    let data_col_count = spec
+        .data
+        .first()
+        .ok_or(EvalError::UnsupportedExpression {
+            kind: "external table data",
+        })?
+        .len();
     if data_col_count < 2 {
-        return T::zero();
+        return Err(EvalError::UnsupportedExpression {
+            kind: "external table data columns",
+        });
     }
 
-    let output_col = map_selected_table_column(&spec.columns, requested_output_col, data_col_count);
-    let (x_min, x_max) = match table_x_bounds(spec) {
-        Some(bounds) => bounds,
-        None => return T::zero(),
-    };
+    let output_col =
+        map_selected_table_column(&spec.columns, requested_output_col, data_col_count)?;
+    let (x_min, x_max) = table_x_bounds(spec).ok_or(EvalError::UnsupportedExpression {
+        kind: "external table bounds",
+    })?;
 
     let (x_real, out_of_range, preserve_dual_x) =
         apply_extrapolation_policy(runtime, x.real(), x_min, x_max, spec.extrapolation);
@@ -235,7 +255,7 @@ pub(super) fn eval_table_1d_lookup_with_runtime<T: SimFloat>(
         T::from_f64(x_real)
     };
     if spec.data.len() == 1 {
-        return T::from_f64(spec.data[0][output_col]);
+        return Ok(T::from_f64(spec.data[0][output_col]));
     }
 
     let last_idx = spec.data.len() - 1;
@@ -258,47 +278,53 @@ pub(super) fn eval_table_1d_lookup_with_runtime<T: SimFloat>(
 
     if spec.smoothness == 3 && !out_of_range {
         if x_real >= x_max {
-            return T::from_f64(spec.data[last_idx][output_col]);
+            return Ok(T::from_f64(spec.data[last_idx][output_col]));
         }
-        return T::from_f64(y0);
+        return Ok(T::from_f64(y0));
     }
 
     if (x1 - x0).abs() <= f64::EPSILON {
-        return T::from_f64(y0);
+        return Ok(T::from_f64(y0));
     }
 
     let alpha = (x_eval - T::from_f64(x0)) / T::from_f64(x1 - x0);
-    T::from_f64(y0) + alpha * T::from_f64(y1 - y0)
+    Ok(T::from_f64(y0) + alpha * T::from_f64(y1 - y0))
 }
 
 pub(super) fn eval_table_constructor<T: SimFloat>(
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
     is_time_table: bool,
-) -> Option<T> {
+) -> Result<Option<T>, EvalError> {
     let table_arg_idx = 2usize;
     let columns_arg_idx = if is_time_table { 4 } else { 3 };
     let smoothness_idx = if is_time_table { 5 } else { 4 };
     let extrapolation_idx = if is_time_table { 6 } else { 5 };
 
-    let table_matrix = eval_table_matrix_arg(
-        external_table_constructor_arg(args, "table", table_arg_idx)?,
-        env,
-    )?;
+    let Some(table_arg) = external_table_constructor_arg(args, "table", table_arg_idx) else {
+        return Ok(None);
+    };
+    let Some(table_matrix) = eval_table_matrix_arg(table_arg, env)? else {
+        return Ok(None);
+    };
     if table_matrix.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let columns = eval_columns_arg(
         external_table_constructor_arg(args, "columns", columns_arg_idx),
         env,
-    );
-    let smoothness = external_table_constructor_arg(args, "smoothness", smoothness_idx)
-        .map(|e| eval_expr_or_default::<T>(e, env).real().round() as i64)
-        .unwrap_or(1);
-    let extrapolation = external_table_constructor_arg(args, "extrapolation", extrapolation_idx)
-        .map(|e| eval_expr_or_default::<T>(e, env).real().round() as i64)
-        .unwrap_or(1);
+    )?;
+    let smoothness = optional_integer_arg(
+        external_table_constructor_arg(args, "smoothness", smoothness_idx),
+        env,
+        1,
+    )?;
+    let extrapolation = optional_integer_arg(
+        external_table_constructor_arg(args, "extrapolation", extrapolation_idx),
+        env,
+        1,
+    )?;
 
     let spec = ExternalTableSpec {
         data: table_matrix,
@@ -307,5 +333,16 @@ pub(super) fn eval_table_constructor<T: SimFloat>(
         extrapolation,
     };
     let id = register_external_table_in(&env.runtime.external_tables, spec);
-    Some(T::from_f64(id as f64))
+    Ok(Some(T::from_f64(id as f64)))
+}
+
+fn optional_integer_arg<T: SimFloat>(
+    expr: Option<&rumoca_core::Expression>,
+    env: &VarEnv<T>,
+    default: i64,
+) -> Result<i64, EvalError> {
+    let Some(expr) = expr else {
+        return Ok(default);
+    };
+    Ok(eval_expr::<T>(expr, env)?.real().round() as i64)
 }

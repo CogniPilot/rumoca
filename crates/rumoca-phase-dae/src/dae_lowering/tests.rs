@@ -373,7 +373,7 @@ fn test_scalarize_phantom_vector_equations_preserves_event_assignment_lhs() {
     assert_eq!(dae.discrete.valued_updates.len(), 2);
     for (k, eq) in dae.discrete.valued_updates.iter().enumerate() {
         assert_eq!(
-            eq.lhs.as_ref().map(rumoca_core::VarName::as_str),
+            eq.lhs.as_ref().map(|lhs| lhs.as_str()),
             Some(format!("switch.off[{}]", k + 1).as_str())
         );
         let names = all_var_names(&eq.rhs);
@@ -464,8 +464,21 @@ fn test_canonicalizes_trailing_embedded_subscript_to_var_ref_subscript() {
     dae.variables
         .algebraics
         .insert(rumoca_core::VarName::new("battery.pin.v"), voltage);
+    // Flatten output carries the structured component reference; bare
+    // name-encoded source references are not canonicalized.
+    let structured_ref = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(
+            rumoca_core::component_reference_from_flat_name(
+                &rumoca_core::VarName::new("battery.pin.v[1]"),
+                rumoca_core::Span::DUMMY,
+            )
+            .expect("fixture name must form a component reference"),
+        ),
+        subscripts: vec![],
+        span: rumoca_core::Span::DUMMY,
+    };
     dae.continuous.equations.push(dae::Equation::residual(
-        var_ref("battery.pin.v[1]"),
+        structured_ref,
         Span::DUMMY,
         "connection equation: battery.pin.v[1] = other.v[1]",
     ));

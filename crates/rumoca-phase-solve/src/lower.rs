@@ -1,16 +1,21 @@
 //! Lower flat expressions and DAE residual rows to linear ops.
+//!
+//! SPEC_0021 file-size exception: this facade coordinates solve lowering
+//! submodules and still owns shared lowering dispatch. split plan: continue
+//! moving projection, branch, and row-family logic into focused submodules.
 
 use std::sync::Arc;
 
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{ComponentPath, VarName};
+use rumoca_core::VarName;
 use rumoca_ir_dae as dae;
-use rumoca_ir_solve::{BinaryOp, CompareOp, ComputeBlock, LinearOp, Reg, UnaryOp};
+use rumoca_ir_solve::{
+    BinaryOp, CompareOp, ComponentReferenceKey, ComputeBlock, LinearOp, Reg, UnaryOp,
+};
 use rumoca_ir_solve::{ScalarSlot, VarLayout};
 
-use crate::layout::INITIAL_EVENT_PARAMETER_NAME;
-
 mod array_values;
+mod builtin_methods;
 mod clock;
 mod compile_time;
 mod cse;
@@ -27,7 +32,11 @@ mod helpers;
 mod initial_residual;
 mod root_conditions;
 mod scope;
+mod source_refs;
 mod statements;
+#[cfg(test)]
+#[path = "lower/tests/test_fixtures.rs"]
+mod test_fixtures;
 #[cfg(test)]
 mod tests;
 
@@ -48,8 +57,14 @@ use function_projection::format_subscript_binding_key;
 use helpers::*;
 pub use initial_residual::{initial_residual_equations, lower_initial_residual};
 use scope::*;
+use source_refs::*;
 
 const MAX_FUNCTION_INLINE_DEPTH: usize = 64;
+/// Projected function-call scalars larger than this many expression nodes are
+/// not inlined; the call is kept for runtime evaluation instead. Textual
+/// inlining duplicates argument expressions per use, which grows
+/// exponentially across nested array-valued calls without a size cutoff.
+const MAX_FUNCTION_PROJECTION_NODES: usize = 4096;
 pub(crate) const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
 pub(super) const SIZE_BINDING_PREFIX: &str = "__rumoca_size__.";
 const RETURN_FLAG_BINDING: &str = "__rumoca_returned__";
@@ -61,7 +76,7 @@ pub(super) struct IndexedBinding {
     indices: Vec<usize>,
 }
 
-pub(super) type IndexedBindingMap = Arc<IndexMap<ComponentPath, Vec<IndexedBinding>>>;
+pub(super) type IndexedBindingMap = Arc<IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LocalIndexedBinding {
@@ -132,7 +147,7 @@ pub fn lower_derivative_rhs(
 
 pub(crate) fn analyze_derivative_rhs(
     dae_model: &dae::Dae,
-) -> derivative_rhs::DerivativeRhsAnalysis {
+) -> Result<derivative_rhs::DerivativeRhsAnalysis, LowerError> {
     derivative_rhs::analyze_derivative_rhs(dae_model)
 }
 
@@ -151,7 +166,9 @@ pub fn lower_derivative_rhs_scalar_programs(
     derivative_rhs::lower_derivative_rhs_scalar_programs(dae_model, layout)
 }
 
-pub(crate) fn state_derivative_equation_flags(dae_model: &dae::Dae) -> Vec<bool> {
+pub(crate) fn state_derivative_equation_flags(
+    dae_model: &dae::Dae,
+) -> Result<Vec<bool>, LowerError> {
     derivative_rhs::state_derivative_equation_flags(dae_model)
 }
 
@@ -159,7 +176,7 @@ pub fn lower_discrete_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let equations = normalized_discrete_update_equations(dae_model);
+    let equations = normalized_discrete_update_equations(dae_model)?;
     let structural_bindings = compile_time::structural_bindings(dae_model);
     Ok(rumoca_eval_solve::to_scalar_program_block(
         &expression_rows::lower_expression_rows_with_mode(
@@ -172,6 +189,7 @@ pub fn lower_discrete_rhs(
                 triggered_clock_conditions: &dae_model.clocks.triggered_conditions,
                 discrete_valued_names: &dae_model.variables.discrete_valued,
                 variable_starts: &dae_model.metadata.variable_starts,
+                dae_variables: Some(&dae_model.variables),
                 structural_bindings: Some(&structural_bindings),
                 guard_target_start_before_first_clock_tick: true,
             },
@@ -198,6 +216,7 @@ pub(crate) fn lower_runtime_assignment_rhs(
                 triggered_clock_conditions: &dae_model.clocks.triggered_conditions,
                 discrete_valued_names: &dae_model.variables.discrete_valued,
                 variable_starts: &dae_model.metadata.variable_starts,
+                dae_variables: Some(&dae_model.variables),
                 structural_bindings: Some(&structural_bindings),
                 guard_target_start_before_first_clock_tick: true,
             },
@@ -217,10 +236,16 @@ pub(crate) fn lower_dynamic_time_event_rhs(
         expressions,
         layout,
         &dae_model.symbols.functions,
-        &dae_model.clocks.intervals,
-        &dae_model.clocks.timings,
-        &dae_model.metadata.variable_starts,
-        &structural_bindings,
+        expression_rows::RuntimeRowMetadata {
+            clock_intervals: &dae_model.clocks.intervals,
+            clock_timings: &dae_model.clocks.timings,
+            triggered_clock_conditions: &[],
+            discrete_valued_names: &dae_model.variables.discrete_valued,
+            variable_starts: &dae_model.metadata.variable_starts,
+            dae_variables: Some(&dae_model.variables),
+            structural_bindings: Some(&structural_bindings),
+            guard_target_start_before_first_clock_tick: false,
+        },
     )
 }
 
@@ -234,10 +259,16 @@ pub fn lower_observation_rhs(
         expressions,
         layout,
         &dae_model.symbols.functions,
-        &dae_model.clocks.intervals,
-        &dae_model.clocks.timings,
-        &dae_model.metadata.variable_starts,
-        &structural_bindings,
+        expression_rows::RuntimeRowMetadata {
+            clock_intervals: &dae_model.clocks.intervals,
+            clock_timings: &dae_model.clocks.timings,
+            triggered_clock_conditions: &[],
+            discrete_valued_names: &dae_model.variables.discrete_valued,
+            variable_starts: &dae_model.metadata.variable_starts,
+            dae_variables: Some(&dae_model.variables),
+            structural_bindings: Some(&structural_bindings),
+            guard_target_start_before_first_clock_tick: false,
+        },
     )
 }
 
@@ -251,7 +282,7 @@ pub fn lower_root_conditions(
 pub fn lower_root_relation_memory_targets(
     dae_model: &dae::Dae,
     layout: &VarLayout,
-) -> Vec<Option<ScalarSlot>> {
+) -> Result<Vec<Option<ScalarSlot>>, LowerError> {
     root_conditions::lower_root_relation_memory_targets(dae_model, layout)
 }
 
@@ -263,6 +294,7 @@ struct LowerBuilder<'a> {
     triggered_clock_conditions: Option<&'a [rumoca_core::Expression]>,
     discrete_valued_names: Option<&'a IndexMap<rumoca_core::VarName, dae::Variable>>,
     variable_starts: Option<&'a IndexMap<String, rumoca_core::Expression>>,
+    dae_variables: Option<&'a dae::DaeVariables>,
     structural_bindings: IndexMap<String, f64>,
     direct_assignments: IndexMap<String, DirectAssignmentValue>,
     direct_assignment_stack: Vec<String>,
@@ -271,7 +303,7 @@ struct LowerBuilder<'a> {
     local_binding_dims: IndexMap<String, Vec<i64>>,
     known_empty_local_arrays: IndexSet<String>,
     local_const_bindings: IndexMap<String, f64>,
-    function_closures: IndexMap<ComponentPath, FunctionClosure>,
+    function_closures: IndexMap<ComponentReferenceKey, FunctionClosure>,
     is_initial_mode: bool,
     value_mode: ValueMode,
     current_update_target: Option<ScalarSlot>,
@@ -289,6 +321,7 @@ pub(super) struct LowerBuilderMetadata<'a> {
     pub(super) triggered_clock_conditions: Option<&'a [rumoca_core::Expression]>,
     pub(super) discrete_valued_names: Option<&'a IndexMap<rumoca_core::VarName, dae::Variable>>,
     pub(super) variable_starts: Option<&'a IndexMap<String, rumoca_core::Expression>>,
+    pub(super) dae_variables: Option<&'a dae::DaeVariables>,
     pub(super) indexed_bindings: Option<&'a IndexedBindingMap>,
     pub(super) is_initial_mode: bool,
 }
@@ -297,18 +330,6 @@ pub(super) struct LowerBuilderMetadata<'a> {
 enum ValueMode {
     Current,
     Pre,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DynamicSubscriptSemantics {
-    VarRef,
-    Index,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubscriptEvalMode {
-    Truncate,
-    Round,
 }
 
 impl<'a> LowerBuilder<'a> {
@@ -337,6 +358,7 @@ impl<'a> LowerBuilder<'a> {
                 triggered_clock_conditions: Some(triggered_clock_conditions),
                 discrete_valued_names: None,
                 variable_starts: Some(variable_starts),
+                dae_variables: None,
                 indexed_bindings: None,
                 is_initial_mode,
             },
@@ -356,6 +378,7 @@ impl<'a> LowerBuilder<'a> {
             triggered_clock_conditions: metadata.triggered_clock_conditions,
             discrete_valued_names: metadata.discrete_valued_names,
             variable_starts: metadata.variable_starts,
+            dae_variables: metadata.dae_variables,
             structural_bindings: IndexMap::new(),
             direct_assignments: IndexMap::new(),
             direct_assignment_stack: Vec::new(),
@@ -414,6 +437,7 @@ impl<'a> LowerBuilder<'a> {
             triggered_clock_conditions: self.triggered_clock_conditions,
             discrete_valued_names: self.discrete_valued_names,
             variable_starts: self.variable_starts,
+            dae_variables: self.dae_variables,
             structural_bindings: self.structural_bindings.clone(),
             direct_assignments: IndexMap::new(),
             direct_assignment_stack: Vec::new(),
@@ -434,60 +458,6 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 
-    pub(super) fn lower_current_update_target_start_before_first_clock_tick(
-        &mut self,
-        value: Reg,
-        expression: &rumoca_core::Expression,
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        let Some(target_name) = self.current_update_target_start_guard_name() else {
-            return Ok(value);
-        };
-        let Some(phase_seconds) = self.start_guard_phase_seconds(target_name.as_str(), expression)
-        else {
-            return Ok(value);
-        };
-        let Some(start_expr) = self
-            .variable_starts
-            .and_then(|starts| starts.get(target_name.as_str()))
-            .cloned()
-        else {
-            return Ok(value);
-        };
-
-        let time = self.emit_load_time();
-        let phase = self.emit_const(phase_seconds);
-        let tol = self.emit_const(1.0e-9);
-        let first_tick_boundary = self.emit_binary(BinaryOp::Sub, phase, tol);
-        let before_first_tick = self.emit_compare(CompareOp::Lt, time, first_tick_boundary);
-        let start_value = self.lower_expr(&start_expr, scope, call_depth)?;
-        Ok(self.emit_select(before_first_tick, start_value, value))
-    }
-
-    fn current_update_target_start_guard_name(&self) -> Option<String> {
-        let target = self.current_update_target?;
-        let starts = self.variable_starts?;
-        self.layout.bindings().iter().find_map(|(name, slot)| {
-            (*slot == target && starts.contains_key(name.as_str())).then(|| name.clone())
-        })
-    }
-
-    fn start_guard_phase_seconds(
-        &self,
-        target_name: &str,
-        expression: &rumoca_core::Expression,
-    ) -> Option<f64> {
-        let timings = self.clock_timings?;
-        if let Some(timing) = timings.get(target_name) {
-            return Some(timing.phase_seconds);
-        }
-        let source_name = binding_base_key(expression).ok()?;
-        timings
-            .get(source_name.as_str())
-            .map(|timing| timing.phase_seconds)
-    }
-
     fn lower_expr_in_mode(
         &mut self,
         expr: &rumoca_core::Expression,
@@ -502,6 +472,66 @@ impl<'a> LowerBuilder<'a> {
         result
     }
 
+    pub(in crate::lower) fn scope_key_from_reference(
+        &self,
+        name: &rumoca_core::Reference,
+        span: rumoca_core::Span,
+    ) -> Result<ComponentReferenceKey, LowerError> {
+        if self.lookup_function_output_projection(name).is_some() {
+            return Ok(ComponentReferenceKey::generated(name.as_str()));
+        }
+        if name.is_generated() || name.component_ref().is_some() || self.dae_variables.is_none() {
+            return scope_key_from_reference(name, span);
+        }
+        let Some(variable) = self
+            .dae_variables
+            .and_then(|variables| dae_variable(variables, name.var_name()))
+        else {
+            #[cfg(test)]
+            if let Some(generated) = self.test_fixture_generated_scope_key(name, span) {
+                return Ok(generated);
+            }
+            return Err(LowerError::ContractViolation {
+                reason: format!(
+                    "Solve lowering synthesized source reference `{}` that is not a DAE variable",
+                    name.as_str()
+                ),
+                span,
+            });
+        };
+        match variable.origin {
+            dae::VariableOrigin::Generated => Ok(ComponentReferenceKey::generated(name.as_str())),
+            dae::VariableOrigin::Source => {
+                #[cfg(test)]
+                if let Some(key) =
+                    crate::test_support::fixture_key_for_variable(name.as_str(), variable)
+                {
+                    return Ok(key);
+                }
+                let component_ref =
+                    variable
+                        .component_ref
+                        .as_ref()
+                        .ok_or_else(|| LowerError::ContractViolation {
+                            reason: format!(
+                                "source DAE variable `{}` lost structured component-reference metadata before Solve lowering",
+                                name.as_str()
+                            ),
+                            span,
+                        })?;
+                ComponentReferenceKey::from_component_reference(component_ref).map_err(|err| {
+                    LowerError::ContractViolation {
+                        reason: format!(
+                            "Solve lowering requires static component-reference metadata for `{}`",
+                            name.as_str()
+                        ),
+                        span: err.span,
+                    }
+                })
+            }
+        }
+    }
+
     fn lower_expr(
         &mut self,
         expr: &rumoca_core::Expression,
@@ -513,8 +543,10 @@ impl<'a> LowerBuilder<'a> {
                 Ok(self.emit_const(eval_literal(lit)))
             }
             rumoca_core::Expression::VarRef {
-                name, subscripts, ..
-            } => self.lower_var_ref(name, subscripts, scope, call_depth),
+                name,
+                subscripts,
+                span,
+            } => self.lower_var_ref(name, subscripts, *span, scope, call_depth),
             rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
                 if matches!(op, rumoca_core::OpBinary::Mul) {
                     self.lower_multiplication_expr(lhs, rhs, *span, scope, call_depth)
@@ -556,23 +588,36 @@ impl<'a> LowerBuilder<'a> {
             rumoca_core::Expression::Index {
                 base, subscripts, ..
             } => self.lower_index(base, subscripts, scope, call_depth),
-            rumoca_core::Expression::Empty { .. } => Ok(self.emit_const(0.0)),
-            rumoca_core::Expression::Array { elements, .. } => {
-                if let Some(first) = elements.first() {
-                    self.lower_expr(first, scope, call_depth)
-                } else {
-                    Ok(self.emit_const(0.0))
-                }
-            }
-            rumoca_core::Expression::Tuple { elements, .. } => {
-                if let Some(first) = elements.first() {
-                    self.lower_expr(first, scope, call_depth)
-                } else {
-                    Ok(self.emit_const(0.0))
-                }
-            }
-            rumoca_core::Expression::Range { .. }
-            | rumoca_core::Expression::ArrayComprehension { .. } => Ok(self.emit_const(0.0)),
+            // SPEC_0008: aggregates in scalar position must fail loudly.
+            // Lowering them to a constant 0.0 (or silently taking the first
+            // element) turns upstream type errors into wrong simulations.
+            rumoca_core::Expression::Empty { .. } => Err(LowerError::Unsupported {
+                reason: "empty expression has no scalar value".to_string(),
+            }),
+            rumoca_core::Expression::Array { elements, .. } => match elements.as_slice() {
+                [single] => self.lower_expr(single, scope, call_depth),
+                _ => Err(LowerError::Unsupported {
+                    reason: format!(
+                        "array expression with {} elements in scalar position",
+                        elements.len()
+                    ),
+                }),
+            },
+            rumoca_core::Expression::Tuple { elements, .. } => match elements.as_slice() {
+                [single] => self.lower_expr(single, scope, call_depth),
+                _ => Err(LowerError::Unsupported {
+                    reason: format!(
+                        "tuple expression with {} elements in scalar position",
+                        elements.len()
+                    ),
+                }),
+            },
+            rumoca_core::Expression::Range { .. } => Err(LowerError::Unsupported {
+                reason: "range expression in scalar position".to_string(),
+            }),
+            rumoca_core::Expression::ArrayComprehension { .. } => Err(LowerError::Unsupported {
+                reason: "array comprehension in scalar position".to_string(),
+            }),
         };
         if let Some(span) = expr.span() {
             result.map_err(|err| err.with_fallback_span(span))
@@ -585,45 +630,46 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
-        let name_path = ComponentPath::from_reference(name);
         if subscripts.is_empty()
-            && let Some(reg) = scope.get(&name_path).copied()
+            && let Some(reg) = scope.get(&generated_scope_key(name.as_str())).copied()
+        {
+            return Ok(reg);
+        }
+
+        if subscripts.is_empty()
+            && let Some(slot) = self.pre_mode_slot_for_key(name.as_str())
+        {
+            return self.emit_slot_load(slot);
+        }
+
+        if let Some(slot) = self.non_variable_layout_slot(name, subscripts) {
+            return self.emit_slot_load(slot);
+        }
+
+        let name_key = self.scope_key_from_reference(name, span)?;
+        if subscripts.is_empty()
+            && let Some(reg) = scope.get(&name_key).copied()
         {
             return Ok(reg);
         }
 
         if let Some(indices) = self.singleton_shape_subscript_indices(name.as_str(), subscripts)? {
             let key = format_subscript_binding_key(name.as_str(), &indices);
-            if let Some(slot) = self.pre_mode_slot_for_key(&key) {
-                return self.emit_slot_load(slot);
-            }
-            if let Some(values) =
-                self.lower_direct_assignment_values_for_key(&key, scope, call_depth)?
-                && let Some(value) = values.first().copied()
-            {
-                return Ok(value);
-            }
-            if let Some(slot) = self.layout.binding(&key) {
-                return self.emit_slot_load(slot);
+            if let Some(reg) = self.lower_var_ref_binding_key(&key, scope, call_depth)? {
+                return Ok(reg);
             }
         }
 
-        let local_static_key = static_subscript_indices(subscripts)?
-            .and_then(|indices| (!indices.is_empty()).then_some(indices))
-            .map(|indices| format_subscript_binding_key(name.as_str(), &indices));
-        if let Some(local_key) = local_static_key
-            && let Some(reg) = scope
-                .get(&ComponentPath::from_flat_path(&local_key))
-                .copied()
-        {
+        if let Some(reg) = self.generated_local_static_subscript_reg(name, subscripts, scope)? {
             return Ok(reg);
         }
 
         if !subscripts.is_empty()
-            && scope.contains_key(&name_path)
+            && scope.contains_key(&name_key)
             && !self.local_indexed_bindings.contains_key(name.as_str())
         {
             return Err(LowerError::Unsupported {
@@ -648,17 +694,8 @@ impl<'a> LowerBuilder<'a> {
                     .join(",");
                 format!("{base_name}[{suffix}]")
             };
-            if let Some(slot) = self.pre_mode_slot_for_key(&key) {
-                return self.emit_slot_load(slot);
-            }
-            if let Some(values) =
-                self.lower_direct_assignment_values_for_key(&key, scope, call_depth)?
-                && let Some(value) = values.first().copied()
-            {
-                return Ok(value);
-            }
-            if let Some(slot) = self.layout.binding(&key) {
-                return self.emit_slot_load(slot);
+            if let Some(reg) = self.lower_var_ref_binding_key(&key, scope, call_depth)? {
+                return Ok(reg);
             }
         }
 
@@ -668,27 +705,74 @@ impl<'a> LowerBuilder<'a> {
             } else {
                 format_subscript_binding_key(base_name.as_str(), &indices)
             };
-            if let Some(slot) = self.pre_mode_slot_for_key(&key) {
-                return self.emit_slot_load(slot);
-            }
-            if let Some(values) =
-                self.lower_direct_assignment_values_for_key(&key, scope, call_depth)?
-                && let Some(value) = values.first().copied()
-            {
-                return Ok(value);
-            }
-            if let Some(slot) = self.layout.binding(&key) {
-                return self.emit_slot_load(slot);
+            if let Some(reg) = self.lower_var_ref_binding_key(&key, scope, call_depth)? {
+                return Ok(reg);
             }
         }
 
+        let target = DynamicBindingTarget::source_reference(name)?;
         self.lower_dynamic_subscripted_binding(
-            base_name.as_str(),
+            target,
             subscripts,
             scope,
             call_depth,
             DynamicSubscriptSemantics::VarRef,
         )
+    }
+
+    /// Resolves a scalar binding key through the pre-mode slot, direct
+    /// assignment value, and layout binding lookups, in that order.
+    fn lower_var_ref_binding_key(
+        &mut self,
+        key: &str,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Option<Reg>, LowerError> {
+        if let Some(slot) = self.pre_mode_slot_for_key(key) {
+            return self.emit_slot_load(slot).map(Some);
+        }
+        if let Some(values) = self.lower_direct_assignment_values_for_key(key, scope, call_depth)?
+            && let Some(value) = values.first().copied()
+        {
+            return Ok(Some(value));
+        }
+        if let Some(slot) = self.layout.binding(key) {
+            return self.emit_slot_load(slot).map(Some);
+        }
+        Ok(None)
+    }
+
+    fn non_variable_layout_slot(
+        &self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) -> Option<ScalarSlot> {
+        if !subscripts.is_empty() {
+            return None;
+        }
+        if self
+            .dae_variables
+            .and_then(|variables| dae_variable(variables, name.var_name()))
+            .is_some()
+        {
+            return None;
+        }
+        self.layout.binding(name.as_str())
+    }
+
+    fn generated_local_static_subscript_reg(
+        &self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        scope: &Scope,
+    ) -> Result<Option<Reg>, LowerError> {
+        let Some(indices) = static_subscript_indices(subscripts)?
+            .and_then(|indices| (!indices.is_empty()).then_some(indices))
+        else {
+            return Ok(None);
+        };
+        let key = format_subscript_binding_key(name.as_str(), &indices);
+        Ok(scope.get(&generated_scope_key(&key)).copied())
     }
 
     fn singleton_shape_subscript_indices(
@@ -749,7 +833,7 @@ impl<'a> LowerBuilder<'a> {
         (self.layout.binding(pre_key.as_str()).is_some()
             || self
                 .indexed_bindings
-                .contains_key(&ComponentPath::from_flat_path(&pre_key)))
+                .contains_key(&ComponentReferenceKey::generated(&pre_key)))
         .then_some(pre_key)
     }
 
@@ -811,7 +895,7 @@ impl<'a> LowerBuilder<'a> {
         }
 
         if let Ok(key) = indexed_binding_key(base, subscripts)
-            && let Some(reg) = scope.get(&ComponentPath::from_flat_path(&key)).copied()
+            && let Some(reg) = scope.get(&generated_scope_key(&key)).copied()
         {
             return Ok(reg);
         }
@@ -833,8 +917,9 @@ impl<'a> LowerBuilder<'a> {
         }
 
         let base_key = dynamic_binding_base_key(base)?;
+        let source_key = component_reference_key_for_expr(base)?;
         self.lower_dynamic_subscripted_binding(
-            base_key.as_str(),
+            DynamicBindingTarget::field(base_key, source_key),
             subscripts,
             scope,
             call_depth,
@@ -844,127 +929,166 @@ impl<'a> LowerBuilder<'a> {
 
     fn lower_dynamic_subscripted_binding(
         &mut self,
-        base_key: &str,
+        target: DynamicBindingTarget,
         subscripts: &[rumoca_core::Subscript],
         scope: &Scope,
         call_depth: usize,
         semantics: DynamicSubscriptSemantics,
     ) -> Result<Reg, LowerError> {
-        let mode = match semantics {
-            DynamicSubscriptSemantics::VarRef => SubscriptEvalMode::Truncate,
-            DynamicSubscriptSemantics::Index => SubscriptEvalMode::Round,
-        };
-        let subscript_regs = self.lower_subscript_regs(subscripts, scope, call_depth, mode)?;
-        if let Some(reg) =
-            self.lower_local_dynamic_subscripted_binding(base_key, &subscript_regs, scope)
-        {
-            return Ok(reg);
+        if subscripts.is_empty() {
+            return Err(LowerError::MissingBinding {
+                name: target.display_key,
+            });
         }
+        if let Some(indices) = self.compile_time_subscript_indices(subscripts)? {
+            return self.lower_static_subscripted_binding(&target.display_key, &indices, scope);
+        }
+        let selectors = subscripts
+            .iter()
+            .map(|subscript| self.lower_structural_index_selector(subscript, scope, call_depth))
+            .collect::<Result<Vec<_>, _>>()?;
+        let fallback_span = subscript_fallback_span(subscripts);
+        let candidates = self.lower_dynamic_indexed_binding_candidates(
+            &target,
+            fallback_span,
+            scope,
+            call_depth,
+        )?;
+        let mut matched = false;
+        let mut merged = self.emit_const(0.0);
+        for (indices, value) in candidates {
+            if indices.len() != selectors.len() {
+                continue;
+            }
+            let cond = self.emit_subscript_match(&selectors, &indices);
+            merged = self.emit_select(cond, value, merged);
+            matched = true;
+        }
+        if matched {
+            return Ok(merged);
+        }
+        Err(dynamic_subscript_unsupported(
+            &target.display_key,
+            subscripts,
+            semantics,
+        ))
+    }
+
+    fn lower_dynamic_indexed_binding_candidates(
+        &mut self,
+        target: &DynamicBindingTarget,
+        fallback_span: Option<rumoca_core::Span>,
+        scope: &Scope,
+        call_depth: usize,
+    ) -> Result<Vec<(Vec<usize>, Reg)>, LowerError> {
+        let mut candidates = Vec::new();
+        if let Some(local) = self.local_indexed_bindings.get(&target.display_key) {
+            candidates.extend(local.iter().map(|entry| (entry.indices.clone(), entry.reg)));
+        }
+
+        let (entry_display_key, entries) = self.dynamic_layout_entries(target, fallback_span)?;
+        for entry in sorted_flat_entries(&entries) {
+            if entry.indices.is_empty() {
+                candidates.push((entry.indices.clone(), self.emit_slot_load(entry.slot)?));
+                continue;
+            }
+            let scalar_key = format_subscript_binding_key(&entry_display_key, &entry.indices);
+            if let Some(values) =
+                self.lower_direct_assignment_values_for_key(&scalar_key, scope, call_depth)?
+                && let Some(value) = values.first().copied()
+            {
+                candidates.push((entry.indices.clone(), value));
+                continue;
+            }
+            candidates.push((entry.indices.clone(), self.emit_slot_load(entry.slot)?));
+        }
+        candidates.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
+        Ok(candidates)
+    }
+
+    fn dynamic_layout_entries(
+        &self,
+        target: &DynamicBindingTarget,
+        fallback_span: Option<rumoca_core::Span>,
+    ) -> Result<(String, Vec<IndexedBinding>), LowerError> {
+        if let Some(pre_key) = self.pre_mode_base_key(&target.display_key)
+            && let Some(entries) = self
+                .indexed_bindings
+                .get(&ComponentReferenceKey::generated(&pre_key))
+        {
+            return Ok((pre_key, entries.clone()));
+        }
+        if let Some(source_key) = &target.source_key {
+            return Ok((
+                target.display_key.clone(),
+                self.indexed_bindings
+                    .get(source_key)
+                    .cloned()
+                    .unwrap_or_default(),
+            ));
+        }
+        let generated_key = ComponentReferenceKey::generated(&target.display_key);
+        if let Some(entries) = self.indexed_bindings.get(&generated_key) {
+            #[cfg(test)]
+            if self.test_fixture_generated_binding_available(&target.display_key, &generated_key) {
+                return Ok((target.display_key.clone(), entries.clone()));
+            }
+            if !target.generated {
+                let span = target
+                    .source_span
+                    .or(fallback_span)
+                    .ok_or_else(|| LowerError::Unsupported {
+                        reason: format!(
+                            "indexed solve-layout lookup for `{}` lost structured component-reference metadata",
+                            target.display_key
+                        ),
+                    })?;
+                return Err(LowerError::ContractViolation {
+                    reason: format!(
+                        "indexed solve-layout lookup for `{}` lost structured component-reference metadata",
+                        target.display_key
+                    ),
+                    span,
+                });
+            }
+            return Ok((target.display_key.clone(), entries.clone()));
+        }
+        Ok((target.display_key.clone(), Vec::new()))
+    }
+
+    fn lower_static_subscripted_binding(
+        &mut self,
+        base_key: &str,
+        indices: &[usize],
+        scope: &Scope,
+    ) -> Result<Reg, LowerError> {
         let binding_base_key = self
             .pre_mode_base_key(base_key)
             .unwrap_or_else(|| base_key.to_string());
-        let candidates = indexed_entries_for_key(&self.indexed_bindings, binding_base_key.as_str())
-            .into_iter()
-            .filter(|entry| entry.indices.len() == subscript_regs.len())
-            .collect::<Vec<_>>();
-
-        let fallback = match semantics {
-            DynamicSubscriptSemantics::VarRef => {
-                if let Some(slot) = self.layout.binding(binding_base_key.as_str()) {
-                    self.emit_slot_load(slot)?
-                } else if let Some(first) = candidates.first() {
-                    self.emit_slot_load(first.slot)?
-                } else {
-                    return Err(LowerError::MissingBinding {
-                        name: binding_base_key,
-                    });
-                }
-            }
-            DynamicSubscriptSemantics::Index => self.emit_const(0.0),
-        };
-
-        if candidates.is_empty() {
-            return Ok(fallback);
+        let indexed_key = dae::format_subscript_key(&binding_base_key, indices);
+        let indexed_scope_key = generated_scope_key(&indexed_key);
+        if let Some(reg) = scope.get(&indexed_scope_key) {
+            return Ok(*reg);
         }
-
-        let mut merged = fallback;
-        for candidate in candidates {
-            let cond = self.emit_subscript_match(&subscript_regs, &candidate.indices);
-            let candidate_value = self.emit_slot_load(candidate.slot)?;
-            merged = self.emit_select(cond, candidate_value, merged);
+        if let Some(reg) = self
+            .local_indexed_bindings
+            .get(base_key)
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry.indices == indices)
+                    .map(|entry| entry.reg)
+            })
+        {
+            return Ok(reg);
         }
-        Ok(merged)
-    }
-
-    fn lower_local_dynamic_subscripted_binding(
-        &mut self,
-        base_key: &str,
-        subscript_regs: &[Reg],
-        scope: &Scope,
-    ) -> Option<Reg> {
-        let base_path = ComponentPath::from_flat_path(base_key);
-        let candidates = if let Some(bindings) = scope.indexed_entries(&base_path) {
-            bindings
-                .iter()
-                .filter(|entry| entry.indices.len() == subscript_regs.len())
-                .cloned()
-                .collect::<Vec<_>>()
-        } else {
-            self.local_indexed_bindings
-                .get(base_key)?
-                .iter()
-                .filter(|entry| entry.indices.len() == subscript_regs.len())
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        if candidates.is_empty() {
-            return None;
+        if let Some(slot) = self.pre_mode_slot_for_key(&indexed_key) {
+            return self.emit_slot_load(slot);
         }
-        let mut merged = scope
-            .get(&base_path)
-            .copied()
-            .unwrap_or_else(|| self.emit_const(0.0));
-        for candidate in candidates {
-            let cond = self.emit_subscript_match(subscript_regs, &candidate.indices);
-            merged = self.emit_select(cond, candidate.reg, merged);
+        if let Some(slot) = self.layout.binding(&indexed_key) {
+            return self.emit_slot_load(slot);
         }
-        Some(merged)
-    }
-
-    fn lower_subscript_regs(
-        &mut self,
-        subscripts: &[rumoca_core::Subscript],
-        scope: &Scope,
-        call_depth: usize,
-        mode: SubscriptEvalMode,
-    ) -> Result<Vec<Reg>, LowerError> {
-        let mut regs = Vec::with_capacity(subscripts.len());
-        for sub in subscripts {
-            let reg = match sub {
-                rumoca_core::Subscript::Index { value: v, .. } if *v > 0 => {
-                    self.emit_const(*v as f64)
-                }
-                rumoca_core::Subscript::Expr { expr, .. } => {
-                    let raw = self.lower_expr(expr, scope, call_depth)?;
-                    match mode {
-                        SubscriptEvalMode::Truncate => self.emit_unary(UnaryOp::Trunc, raw),
-                        SubscriptEvalMode::Round => self.emit_round(raw),
-                    }
-                }
-                rumoca_core::Subscript::Colon { .. } => {
-                    return Err(LowerError::Unsupported {
-                        reason: "slice subscript `:` is unsupported".to_string(),
-                    });
-                }
-                _ => {
-                    return Err(LowerError::Unsupported {
-                        reason: "non-positive subscript is unsupported".to_string(),
-                    });
-                }
-            };
-            regs.push(reg);
-        }
-        Ok(regs)
+        Err(LowerError::MissingBinding { name: indexed_key })
     }
 
     fn emit_subscript_match(&mut self, lhs: &[Reg], rhs: &[usize]) -> Reg {
@@ -1063,7 +1187,7 @@ impl<'a> LowerBuilder<'a> {
         }
 
         let key = field_access_binding_key(base, field)?;
-        if let Some(reg) = scope.get(&ComponentPath::from_flat_path(&key)).copied() {
+        if let Some(reg) = scope.get(&generated_scope_key(&key)).copied() {
             return Ok(reg);
         }
         let slot = self
@@ -1125,7 +1249,7 @@ impl<'a> LowerBuilder<'a> {
             && !indices.is_empty()
         {
             let key = format_subscript_binding_key(&field_key, &indices);
-            if let Some(reg) = scope.get(&ComponentPath::from_flat_path(&key)).copied() {
+            if let Some(reg) = scope.get(&generated_scope_key(&key)).copied() {
                 return Ok(Some(reg));
             }
             if let Some(slot) = self.pre_mode_slot_for_key(&key) {
@@ -1142,14 +1266,18 @@ impl<'a> LowerBuilder<'a> {
             }
         }
 
-        let field_path = ComponentPath::from_flat_path(&field_key);
-        if !self.indexed_bindings.contains_key(&field_path)
+        let source_field_key = component_reference_key_for_field_base(base, field)?;
+        let field_key_generated = ComponentReferenceKey::generated(&field_key);
+        if !source_field_key
+            .as_ref()
+            .is_some_and(|key| self.indexed_bindings.contains_key(key))
+            && !self.indexed_bindings.contains_key(&field_key_generated)
             && !self.local_indexed_bindings.contains_key(field_key.as_str())
         {
             return Ok(None);
         }
         self.lower_dynamic_subscripted_binding(
-            &field_key,
+            DynamicBindingTarget::field(field_key, source_field_key),
             subscripts,
             scope,
             call_depth,
@@ -1309,7 +1437,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<(Reg, Reg), LowerError> {
-        if self.requires_complex_projection(expr, scope) {
+        if self.requires_complex_projection(expr, scope)? {
             let re = self.lower_field_access(expr, "re", scope, call_depth)?;
             let im = self.lower_field_access(expr, "im", scope, call_depth)?;
             return Ok((re, im));
@@ -1320,33 +1448,49 @@ impl<'a> LowerBuilder<'a> {
         Ok((re, im))
     }
 
-    fn requires_complex_projection(&self, expr: &rumoca_core::Expression, scope: &Scope) -> bool {
+    fn requires_complex_projection(
+        &self,
+        expr: &rumoca_core::Expression,
+        scope: &Scope,
+    ) -> Result<bool, LowerError> {
         match expr {
             rumoca_core::Expression::VarRef {
                 name, subscripts, ..
             } if subscripts.is_empty() => {
-                let path = ComponentPath::from_reference(name);
-                self.component_field_available(&path, "re")
-                    || self.component_field_available(&path, "im")
-                    || scope_field_available(scope, &path, "re")
-                    || scope_field_available(scope, &path, "im")
+                let key = self.scope_key_from_reference(name, expr.span().unwrap_or_default())?;
+                Ok(self.component_field_available(&key, name, "re")
+                    || self.component_field_available(&key, name, "im")
+                    || scope_field_available(scope, &key, "re")
+                    || scope_field_available(scope, &key, "im"))
             }
             rumoca_core::Expression::FieldAccess { base, field, .. } => {
-                field_access_binding_key(base, field)
+                Ok(field_access_binding_key(base, field)
                     .ok()
                     .map(|key| {
-                        let path = ComponentPath::from_flat_path(&key);
-                        self.component_field_available(&path, "re")
-                            || self.component_field_available(&path, "im")
-                            || scope_field_available(scope, &path, "re")
-                            || scope_field_available(scope, &path, "im")
+                        let source_ref = component_reference_for_field_base(base, field)
+                            .ok()
+                            .flatten();
+                        let scope_key = source_ref
+                            .as_ref()
+                            .map(|component_ref| component_reference_key(component_ref.clone()))
+                            .transpose()
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| generated_scope_key(&key));
+                        self.component_field_key_available(&scope_key, "re")
+                            || self
+                                .component_reference_field_available_opt(source_ref.as_ref(), "re")
+                            || self.component_field_key_available(&scope_key, "im")
+                            || self
+                                .component_reference_field_available_opt(source_ref.as_ref(), "im")
+                            || scope_field_available(scope, &scope_key, "re")
+                            || scope_field_available(scope, &scope_key, "im")
                     })
-                    .unwrap_or(false)
+                    .unwrap_or(false))
             }
-            rumoca_core::Expression::Binary { lhs, rhs, .. } => {
-                self.requires_complex_projection(lhs, scope)
-                    || self.requires_complex_projection(rhs, scope)
-            }
+            rumoca_core::Expression::Binary { lhs, rhs, .. } => Ok(self
+                .requires_complex_projection(lhs, scope)?
+                || self.requires_complex_projection(rhs, scope)?),
             rumoca_core::Expression::Unary {
                 op: rumoca_core::OpUnary::Minus,
                 rhs,
@@ -1356,29 +1500,91 @@ impl<'a> LowerBuilder<'a> {
                 name,
                 is_constructor,
                 ..
-            } => {
-                complex_operator_call_op(name.as_str()).is_some()
-                    || self.function_call_returns_complex_parts(name, *is_constructor)
-            }
+            } => Ok(complex_operator_call_op(name.as_str()).is_some()
+                || self.function_call_returns_complex_parts(name, *is_constructor)),
             rumoca_core::Expression::If {
                 branches,
                 else_branch,
                 ..
-            } => {
-                branches
-                    .iter()
-                    .any(|(_, value)| self.requires_complex_projection(value, scope))
-                    || self.requires_complex_projection(else_branch, scope)
-            }
-            _ => false,
+            } => Ok(self.branches_require_complex_projection(branches, scope)?
+                || self.requires_complex_projection(else_branch, scope)?),
+            _ => Ok(false),
         }
     }
 
-    fn component_field_available(&self, base_path: &ComponentPath, field: &str) -> bool {
-        let field_path = component_field_path(base_path, field);
-        self.layout.binding(field_path.as_str()).is_some()
-            || self.direct_assignments.contains_key(field_path.as_str())
-            || self.indexed_bindings.contains_key(&field_path)
+    fn branches_require_complex_projection(
+        &self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        scope: &Scope,
+    ) -> Result<bool, LowerError> {
+        for (_, value) in branches {
+            if self.requires_complex_projection(value, scope)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn component_field_available(
+        &self,
+        base_key: &ComponentReferenceKey,
+        reference: &rumoca_core::Reference,
+        field: &str,
+    ) -> bool {
+        self.component_field_key_available(base_key, field)
+            || self.component_reference_field_available(reference, field)
+    }
+
+    fn component_field_key_available(&self, base_key: &ComponentReferenceKey, field: &str) -> bool {
+        let Some(field_key) = component_field_key(base_key, field) else {
+            return false;
+        };
+        let generated_name = match &field_key {
+            ComponentReferenceKey::Generated { name } => Some(name.as_str()),
+            ComponentReferenceKey::Source { .. } => None,
+        };
+        generated_name.is_some_and(|name| self.layout.binding(name).is_some())
+            || generated_name.is_some_and(|name| self.direct_assignments.contains_key(name))
+            || self.indexed_bindings.contains_key(&field_key)
+    }
+
+    fn component_reference_field_available(
+        &self,
+        reference: &rumoca_core::Reference,
+        field: &str,
+    ) -> bool {
+        let Some(source_ref) = component_reference_for_source_reference(reference) else {
+            return false;
+        };
+        self.component_reference_field_available_opt(Some(&source_ref), field)
+    }
+
+    fn component_reference_field_available_opt(
+        &self,
+        reference: Option<&rumoca_core::ComponentReference>,
+        field: &str,
+    ) -> bool {
+        let Some(mut component_ref) = reference.cloned() else {
+            return false;
+        };
+        component_ref.parts.push(rumoca_core::ComponentRefPart {
+            ident: field.to_string(),
+            span: component_ref.span,
+            subs: Vec::new(),
+        });
+        #[cfg(test)]
+        {
+            let display_name = rumoca_core::ComponentPath::from_component_reference(&component_ref)
+                .to_flat_string();
+            if let Some(key) =
+                crate::test_support::fixture_key_for_component_ref(&component_ref, &display_name)
+            {
+                return self.indexed_bindings.contains_key(&key);
+            }
+        }
+        ComponentReferenceKey::from_component_reference(&component_ref)
+            .ok()
+            .is_some_and(|key| self.indexed_bindings.contains_key(&key))
     }
 
     fn function_call_returns_complex_parts(
@@ -1441,9 +1647,13 @@ impl<'a> LowerBuilder<'a> {
             } else if let Some(default_expr) = input.default.as_ref() {
                 self.lower_expr(default_expr, &local_scope, call_depth + 1)?
             } else {
-                self.emit_const(0.0)
+                return Err(LowerError::MissingActualArgument {
+                    function: name.as_str().to_string(),
+                    what: "constructor input",
+                    input: input.name.clone(),
+                });
             };
-            local_scope.insert(ComponentPath::from_flat_path(&input.name), reg);
+            local_scope.insert(generated_scope_key(&input.name), reg);
             input_regs.insert(input.name.clone(), reg);
         }
 
@@ -1460,10 +1670,7 @@ impl<'a> LowerBuilder<'a> {
                 let reg = self.lower_expr(default_expr, &local_scope, call_depth + 1)?;
                 return Ok(Some(reg));
             }
-            if let Some(reg) = local_scope
-                .get(&ComponentPath::from_flat_path(&output.name))
-                .copied()
-            {
+            if let Some(reg) = local_scope.get(&generated_scope_key(&output.name)).copied() {
                 return Ok(Some(reg));
             }
         }
@@ -1529,6 +1736,7 @@ impl<'a> LowerBuilder<'a> {
         args: &[rumoca_core::Expression],
         scope: &Scope,
         call_depth: usize,
+        span: rumoca_core::Span,
     ) -> Option<Result<Reg, LowerError>> {
         let arg = |builder: &mut Self, idx: usize| -> Result<Reg, LowerError> {
             let expr = args.get(idx).ok_or_else(|| LowerError::ContractViolation {
@@ -1599,16 +1807,19 @@ impl<'a> LowerBuilder<'a> {
             | rumoca_core::BuiltinFunction::Skew
             | rumoca_core::BuiltinFunction::OuterProduct
             | rumoca_core::BuiltinFunction::Symmetric => {
-                self.lower_builtin_first_array_like_value(function, args, scope, call_depth)
+                self.lower_builtin_first_array_like_value(function, args, scope, call_depth, span)
             }
-            rumoca_core::BuiltinFunction::Ndims => Ok(self.emit_const(
-                self.infer_expr_dims(
+            rumoca_core::BuiltinFunction::Ndims => {
+                let dims = match self.infer_expr_dims(
                     args.first()
                         .expect("ndims() requires exactly 1 argument — malformed Solve-IR"),
                     scope,
-                )
-                .len() as f64,
-            )),
+                ) {
+                    Ok(dims) => dims,
+                    Err(err) => return Some(Err(err)),
+                };
+                Ok(self.emit_const(dims.len() as f64))
+            }
             rumoca_core::BuiltinFunction::Identity => Ok(self.emit_const(1.0)),
             _ => return None,
         };
@@ -1666,7 +1877,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
-        if let Some(result) = self.lower_simple_builtin(function, args, scope, call_depth) {
+        if let Some(result) = self.lower_simple_builtin(function, args, scope, call_depth, span) {
             return result;
         }
 
@@ -1744,233 +1955,6 @@ impl<'a> LowerBuilder<'a> {
             )),
             _ => unreachable!("simple builtin handled before detailed lowering"),
         }
-    }
-
-    fn lower_sample_builtin(
-        &mut self,
-        args: &[rumoca_core::Expression],
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        match args {
-            [] => Ok(self.emit_const(0.0)),
-            [value] => self.lower_clocked_sample_value(value, scope, call_depth),
-            [_internal_id, start, interval, ..] => {
-                if self.value_mode == ValueMode::Pre {
-                    return Ok(self.emit_const(0.0));
-                }
-                let phase = self.lower_expr(start, scope, call_depth)?;
-                let period = self.lower_expr(interval, scope, call_depth)?;
-                Ok(self.emit_periodic_tick(phase, period))
-            }
-            [value, clock_or_interval] => {
-                if let Some(tick) =
-                    self.lower_clock_tick_expr(clock_or_interval, scope, call_depth)?
-                {
-                    return self.lower_clocked_sample_with_tick(value, tick, scope, call_depth);
-                }
-                if self.current_update_target.is_some()
-                    && self.is_dynamic_clock_var_ref(clock_or_interval)
-                {
-                    let tick = self.lower_expr(clock_or_interval, scope, call_depth)?;
-                    return self.lower_clocked_sample_with_tick(value, tick, scope, call_depth);
-                }
-                if self.value_mode == ValueMode::Pre {
-                    return Ok(self.emit_const(0.0));
-                }
-                let phase = self.lower_expr(value, scope, call_depth)?;
-                let period = self.lower_expr(clock_or_interval, scope, call_depth)?;
-                Ok(self.emit_periodic_tick(phase, period))
-            }
-        }
-    }
-
-    fn is_dynamic_clock_var_ref(&self, expr: &rumoca_core::Expression) -> bool {
-        let rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } = expr
-        else {
-            return false;
-        };
-
-        subscripts.is_empty()
-            && self
-                .discrete_valued_names
-                .is_some_and(|names| names.contains_key(name.var_name()))
-    }
-
-    fn lower_clocked_sample_with_tick(
-        &mut self,
-        value: &rumoca_core::Expression,
-        tick: Reg,
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        // MLS §16.5.1: sample(u, clock) samples the left limit at the clock
-        // tick and holds the target value at unrelated events in the same
-        // clocked partition.
-        let sampled = self.lower_clocked_sample_value(value, scope, call_depth)?;
-        let Some(target) = self.current_update_target else {
-            return Ok(sampled);
-        };
-        let held = self.emit_slot_load(target)?;
-        Ok(self.emit_select(tick, sampled, held))
-    }
-
-    fn lower_clocked_sample_value(
-        &mut self,
-        value: &rumoca_core::Expression,
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        if is_time_var_ref(value) {
-            self.lower_expr(value, scope, call_depth)
-        } else {
-            let sampled_pre = self.lower_expr_in_mode(value, scope, call_depth, ValueMode::Pre)?;
-            let sampled_initial = self.lower_expr(value, scope, call_depth)?;
-            let initial = self.lower_initial_builtin()?;
-            Ok(self.emit_select(initial, sampled_initial, sampled_pre))
-        }
-    }
-
-    fn lower_initial_builtin(&mut self) -> Result<Reg, LowerError> {
-        if self.value_mode == ValueMode::Pre {
-            return Ok(self.emit_const(0.0));
-        }
-        if self.is_initial_mode {
-            return Ok(self.emit_const(1.0));
-        }
-        let slot = self
-            .layout
-            .binding(INITIAL_EVENT_PARAMETER_NAME)
-            .ok_or_else(|| LowerError::MissingBinding {
-                name: INITIAL_EVENT_PARAMETER_NAME.to_string(),
-            })?;
-        self.emit_slot_load(slot)
-    }
-
-    fn lower_edge_builtin(
-        &mut self,
-        args: &[rumoca_core::Expression],
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        let Some(expr) = args.first() else {
-            return Ok(self.emit_const(0.0));
-        };
-        // MLS §8.3.5.1 / §8.6: edge(b) is true when b is true and pre(b) is
-        // false. Keep this in solve-IR so backend event iteration does not
-        // need access to DAE expressions.
-        let current = self.lower_expr(expr, scope, call_depth)?;
-        let previous = self.lower_expr_in_mode(expr, scope, call_depth, ValueMode::Pre)?;
-        let not_previous = self.emit_unary(UnaryOp::Not, previous);
-        Ok(self.emit_binary(BinaryOp::And, current, not_previous))
-    }
-
-    fn lower_change_builtin(
-        &mut self,
-        args: &[rumoca_core::Expression],
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        let Some(expr) = args.first() else {
-            return Ok(self.emit_const(0.0));
-        };
-        let current = self.lower_expr(expr, scope, call_depth)?;
-        let previous = self.lower_expr_in_mode(expr, scope, call_depth, ValueMode::Pre)?;
-        Ok(self.emit_compare(CompareOp::Ne, current, previous))
-    }
-
-    fn lower_sum_builtin(
-        &mut self,
-        args: &[rumoca_core::Expression],
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        if args.is_empty() {
-            return Ok(self.emit_const(0.0));
-        }
-        if args.len() == 1 {
-            if let Some(reg) = self.lower_sum_range(&args[0], scope, call_depth)? {
-                return Ok(reg);
-            }
-            let values = self.lower_array_like_values(&args[0], scope, call_depth)?;
-            if values.is_empty() {
-                return Ok(self.emit_const(0.0));
-            }
-            let mut acc = self.emit_const(0.0);
-            for value in values {
-                acc = self.emit_binary(BinaryOp::Add, acc, value);
-            }
-            return Ok(acc);
-        }
-
-        let mut acc = self.emit_const(0.0);
-        for expr in args {
-            let value = self.lower_expr(expr, scope, call_depth)?;
-            acc = self.emit_binary(BinaryOp::Add, acc, value);
-        }
-        Ok(acc)
-    }
-
-    fn lower_product_builtin(
-        &mut self,
-        args: &[rumoca_core::Expression],
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        if args.is_empty() {
-            return Ok(self.emit_const(1.0));
-        }
-        if args.len() == 1 {
-            let values = self.lower_array_like_values(&args[0], scope, call_depth)?;
-            if values.is_empty() {
-                return Ok(self.emit_const(1.0));
-            }
-            let mut acc = self.emit_const(1.0);
-            for value in values {
-                acc = self.emit_binary(BinaryOp::Mul, acc, value);
-            }
-            return Ok(acc);
-        }
-
-        let mut acc = self.emit_const(1.0);
-        for expr in args {
-            let value = self.lower_expr(expr, scope, call_depth)?;
-            acc = self.emit_binary(BinaryOp::Mul, acc, value);
-        }
-        Ok(acc)
-    }
-
-    fn lower_size_builtin(
-        &mut self,
-        args: &[rumoca_core::Expression],
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Reg, LowerError> {
-        let Some(base_expr) = args.first() else {
-            return Ok(self.emit_const(1.0));
-        };
-        let inferred_dims = self.infer_expr_dims(base_expr, scope);
-        if !inferred_dims.is_empty() && inferred_dims.iter().all(|dim| *dim > 0) {
-            return self.lower_size_from_dims(&inferred_dims, args, scope, call_depth);
-        }
-
-        let base_key = dynamic_binding_base_key(base_expr).map_err(|err| {
-            err.with_fallback_span(base_expr.span().unwrap_or(rumoca_core::Span::DUMMY))
-        })?;
-
-        let dims = infer_indexed_dims(
-            self.indexed_bindings
-                .get(&ComponentPath::from_flat_path(&base_key))
-                .map(Vec::as_slice)
-                .unwrap_or(&[]),
-        );
-        if dims.is_empty() {
-            return Ok(self.emit_const(1.0));
-        }
-
-        self.lower_size_from_dims(&dims, args, scope, call_depth)
     }
 }
 

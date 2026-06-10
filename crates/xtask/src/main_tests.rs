@@ -792,7 +792,7 @@ fn completion_install_plan_for_bash_targets_user_completion_dir() {
         completion_install_plan(ShellKind::Bash, Path::new("/home/tester")).expect("bash plan");
     assert_eq!(
         plan.script_path,
-        Path::new("/home/tester/.local/share/bash-completion/completions/rum")
+        Path::new("/home/tester/.local/share/bash-completion/completions/xtask")
     );
     let profile_update = plan.profile_update.expect("bash profile update");
     assert_eq!(profile_update.path, Path::new("/home/tester/.bashrc"));
@@ -805,7 +805,7 @@ fn completion_install_plan_for_fish_needs_no_profile_update() {
         completion_install_plan(ShellKind::Fish, Path::new("/home/tester")).expect("fish plan");
     assert_eq!(
         plan.script_path,
-        Path::new("/home/tester/.config/fish/completions/rum.fish")
+        Path::new("/home/tester/.config/fish/completions/xtask.fish")
     );
     assert!(plan.profile_update.is_none());
     assert!(plan.script_contents.contains("complete -c xtask"));

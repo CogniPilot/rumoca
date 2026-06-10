@@ -33,20 +33,20 @@ pub(in crate::lower) fn scalarized_rhs_expressions(
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
 ) -> Result<Vec<rumoca_core::Expression>, LowerError> {
-    if let Some(keys) = expression_binding_keys(expr, dae_model, structural_bindings)?
-        && keys.len() == expected
+    if let Some(values) = function_call_projected_scalars(expr, dae_model, structural_bindings)?
+        && values.len() == expected
     {
-        return Ok(keys.into_iter().map(scalar_key_expr).collect());
+        return Ok(values);
+    }
+    if let Some(expressions) = expression_binding_expressions(expr, dae_model, structural_bindings)?
+        && expressions.len() == expected
+    {
+        return Ok(expressions);
     }
     if let Some(elements) = literal_array_elements(expr)
         && elements.len() == expected
     {
         return Ok(elements);
-    }
-    if let Some(values) = function_call_projected_scalars(expr, dae_model, structural_bindings)
-        && values.len() == expected
-    {
-        return Ok(values);
     }
     if expected == 1 {
         return Ok(vec![expr.clone()]);
@@ -118,11 +118,11 @@ fn project_expression_scalar_ctx(
 ) -> Result<Option<rumoca_core::Expression>, LowerError> {
     match expr {
         rumoca_core::Expression::VarRef { .. } | rumoca_core::Expression::Index { .. } => {
-            if let Some(keys) =
-                expression_binding_keys(expr, ctx.dae_model, ctx.structural_bindings)?
-                && let Some(key) = keys.get(ctx.flat_index)
+            if let Some(expressions) =
+                expression_binding_expressions(expr, ctx.dae_model, ctx.structural_bindings)?
+                && let Some(expr) = expressions.get(ctx.flat_index)
             {
-                return Ok(Some(scalar_key_expr(key.clone())));
+                return Ok(Some(expr.clone()));
             }
             Ok(None)
         }
@@ -170,7 +170,7 @@ fn project_expression_scalar_ctx(
             .first()
             .map(|value| project_operand_scalar_ctx(value, ctx))
             .unwrap_or(Ok(None)),
-        rumoca_core::Expression::FunctionCall { .. } => Ok(project_function_call_scalar(expr, ctx)),
+        rumoca_core::Expression::FunctionCall { .. } => project_function_call_scalar(expr, ctx),
         rumoca_core::Expression::Binary { op, lhs, rhs, span } if is_mul(op) => {
             if let Some(product) = project_tensor_product_scalar(lhs, rhs, *span, ctx)? {
                 return Ok(Some(product));
@@ -191,8 +191,72 @@ fn project_expression_scalar_ctx(
             else_branch,
             span,
         } => project_if_scalar_expr(branches, else_branch, *span, ctx),
+        rumoca_core::Expression::FieldAccess { base, field, span } => {
+            project_record_array_field_scalar(base, field, *span, ctx)
+        }
         _ => Ok(None),
     }
+}
+
+/// Projects one element of a record-array member slice such as
+/// `ac.pin[:].v`: element `k` resolves to the scalarized component variable
+/// `ac.pin[k].v`. Declines when the selection is not a full one-dimensional
+/// colon slice over a structured base or the element variable does not
+/// exist.
+fn project_record_array_field_scalar(
+    base: &rumoca_core::Expression,
+    field: &str,
+    span: rumoca_core::Span,
+    ctx: &ProjectionContext<'_>,
+) -> Result<Option<rumoca_core::Expression>, LowerError> {
+    let rumoca_core::Expression::Index {
+        base: inner,
+        subscripts,
+        ..
+    } = base
+    else {
+        return Ok(None);
+    };
+    let rumoca_core::Expression::VarRef {
+        name,
+        subscripts: ref_subscripts,
+        ..
+    } = inner.as_ref()
+    else {
+        return Ok(None);
+    };
+    if !ref_subscripts.is_empty()
+        || ctx.dims.len() != 1
+        || subscripts.len() != 1
+        || !matches!(subscripts[0], rumoca_core::Subscript::Colon { .. })
+    {
+        return Ok(None);
+    }
+    let Some(component_ref) = name.component_ref() else {
+        return Ok(None);
+    };
+    let mut element_ref = component_ref.clone();
+    let Some(last) = element_ref.parts.last_mut() else {
+        return Ok(None);
+    };
+    last.subs = vec![rumoca_core::Subscript::generated_index(
+        ctx.flat_index as i64 + 1,
+        span,
+    )];
+    element_ref.parts.push(rumoca_core::ComponentRefPart {
+        ident: field.to_string(),
+        span,
+        subs: Vec::new(),
+    });
+    let reference = rumoca_core::Reference::from_component_reference(element_ref);
+    if variable_by_name(ctx.dae_model, reference.as_str()).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(rumoca_core::Expression::VarRef {
+        name: reference,
+        subscripts: vec![],
+        span,
+    }))
 }
 
 fn project_literal_array_scalar(
@@ -214,9 +278,9 @@ fn real_literal_expr(value: f64, expr: &rumoca_core::Expression) -> rumoca_core:
 fn project_function_call_scalar(
     expr: &rumoca_core::Expression,
     ctx: &ProjectionContext<'_>,
-) -> Option<rumoca_core::Expression> {
-    function_call_projected_scalars(expr, ctx.dae_model, ctx.structural_bindings)
-        .and_then(|values| values.get(ctx.flat_index).cloned())
+) -> Result<Option<rumoca_core::Expression>, LowerError> {
+    let values = function_call_projected_scalars(expr, ctx.dae_model, ctx.structural_bindings)?;
+    Ok(values.and_then(|values| values.get(ctx.flat_index).cloned()))
 }
 
 fn project_if_scalar_expr(
@@ -490,11 +554,14 @@ pub(in crate::lower) fn expression_result_dims(
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Der,
             args,
-            ..
-        } => args
-            .first()
-            .map(|arg| expression_result_dims(arg, dae_model, structural_bindings))
-            .unwrap_or_else(|| Ok(Vec::new())),
+            span,
+        } => {
+            let arg = args.first().ok_or_else(|| LowerError::ContractViolation {
+                reason: "der() in derivative projection requires one argument".to_string(),
+                span: *span,
+            })?;
+            expression_result_dims(arg, dae_model, structural_bindings)
+        }
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Zeros | rumoca_core::BuiltinFunction::Ones,
             args,
@@ -503,8 +570,19 @@ pub(in crate::lower) fn expression_result_dims(
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Fill,
             args,
-            ..
-        } => builtin_size_args_dims(args.get(1..).unwrap_or_default(), structural_bindings),
+            span,
+        } => {
+            let size_args = args
+                .get(1..)
+                .filter(|args| !args.is_empty())
+                .ok_or_else(|| LowerError::ContractViolation {
+                    reason:
+                        "fill() in derivative projection requires at least one dimension argument"
+                            .to_string(),
+                    span: *span,
+                })?;
+            builtin_size_args_dims(size_args, structural_bindings)
+        }
         rumoca_core::Expression::Unary { rhs, .. } => {
             expression_result_dims(rhs, dae_model, structural_bindings)
         }
@@ -587,7 +665,7 @@ pub(in crate::lower) fn declared_function_output_dims(
     output
         .dims
         .iter()
-        .map(|dim| usize::try_from(*dim).ok().filter(|value| *value > 0))
+        .map(|dim| usize::try_from(*dim).ok())
         .collect::<Option<Vec<_>>>()
         .filter(|dims| !dims.is_empty())
 }
@@ -631,33 +709,167 @@ pub(in crate::lower) fn binary_mul_result_dims(
     })
 }
 
-pub(in crate::lower) fn expression_binding_keys(
+pub(in crate::lower) fn expression_binding_expressions(
     expr: &rumoca_core::Expression,
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
-) -> Result<Option<Vec<String>>, LowerError> {
+) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
     match expr {
         rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } => Ok(Some(binding_keys_for_subscripted_name(
-            name.as_str(),
+            name,
             subscripts,
+            span,
+        } => Ok(Some(binding_expressions_for_subscripted_reference(
+            name,
+            subscripts,
+            *span,
             dae_model,
             structural_bindings,
         )?)),
         rumoca_core::Expression::Index {
-            base, subscripts, ..
+            base,
+            subscripts,
+            span,
         } => {
-            let base = binding_base_name(base)?;
-            Ok(Some(binding_keys_for_subscripted_name(
-                &base,
+            let name = binding_base_reference(base)?;
+            Ok(Some(binding_expressions_for_subscripted_reference(
+                name,
                 subscripts,
+                *span,
                 dae_model,
                 structural_bindings,
             )?))
         }
         _ => Ok(None),
     }
+}
+
+fn binding_base_reference(
+    expr: &rumoca_core::Expression,
+) -> Result<&rumoca_core::Reference, LowerError> {
+    match expr {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => Ok(name),
+        _ => Err(LowerError::Unsupported {
+            reason: "unsupported sliced derivative binding base".to_string(),
+        }),
+    }
+}
+
+fn binding_expressions_for_subscripted_reference(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+    dae_model: &dae::Dae,
+    structural_bindings: &IndexMap<String, f64>,
+) -> Result<Vec<rumoca_core::Expression>, LowerError> {
+    if let Some(dims) = variable_dims(dae_model, name.as_str()) {
+        let selections = if subscripts.is_empty() {
+            dims.iter().map(|dim| (1..=*dim).collect()).collect()
+        } else {
+            slice_selections(subscripts, &dims, structural_bindings)?
+        };
+        let mut expressions = Vec::new();
+        collect_slice_reference_expressions(
+            name,
+            span,
+            &selections,
+            0,
+            &mut Vec::new(),
+            &mut expressions,
+        );
+        return Ok(expressions);
+    }
+
+    if subscripts.is_empty() {
+        let variable = variable_by_name(dae_model, name.as_str()).ok_or_else(|| {
+            LowerError::MissingBinding {
+                name: name.as_str().to_string(),
+            }
+        })?;
+        return Ok(vec![dae_variable_ref_expr(
+            name.as_str(),
+            variable,
+            span,
+            Vec::new(),
+        )?]);
+    }
+
+    let indices = compile_time_subscript_indices(subscripts, structural_bindings)?;
+    let scalarized_key = dae::format_subscript_key(name.as_str(), &indices);
+    let variable =
+        variable_by_name(dae_model, &scalarized_key).ok_or_else(|| LowerError::MissingBinding {
+            name: scalarized_key.clone(),
+        })?;
+    Ok(vec![dae_variable_ref_expr(
+        &scalarized_key,
+        variable,
+        span,
+        Vec::new(),
+    )?])
+}
+
+fn collect_slice_reference_expressions(
+    name: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+    selections: &[Vec<usize>],
+    depth: usize,
+    current: &mut Vec<usize>,
+    expressions: &mut Vec<rumoca_core::Expression>,
+) {
+    if depth == selections.len() {
+        expressions.push(rumoca_core::Expression::VarRef {
+            name: name.clone(),
+            subscripts: current
+                .iter()
+                .map(|index| rumoca_core::Subscript::index(*index as i64, span))
+                .collect(),
+            span,
+        });
+        return;
+    }
+    for &index in &selections[depth] {
+        current.push(index);
+        collect_slice_reference_expressions(
+            name,
+            span,
+            selections,
+            depth + 1,
+            current,
+            expressions,
+        );
+        current.pop();
+    }
+}
+
+pub(in crate::lower) fn dae_variable_ref_expr(
+    key: &str,
+    variable: &dae::Variable,
+    span: rumoca_core::Span,
+    subscripts: Vec<rumoca_core::Subscript>,
+) -> Result<rumoca_core::Expression, LowerError> {
+    let name = match variable.origin {
+        dae::VariableOrigin::Generated => rumoca_core::Reference::generated(key),
+        dae::VariableOrigin::Source => {
+            let component_ref =
+                variable
+                    .component_ref
+                    .clone()
+                    .ok_or_else(|| LowerError::ContractViolation {
+                        reason: format!(
+                            "source DAE variable `{key}` lost structured component-reference metadata before derivative projection"
+                        ),
+                        span,
+                    })?;
+            rumoca_core::Reference::from_component_reference(component_ref)
+        }
+    };
+    Ok(rumoca_core::Expression::VarRef {
+        name,
+        subscripts,
+        span,
+    })
 }
 
 pub(in crate::lower) fn binding_base_name(
@@ -739,7 +951,7 @@ pub(in crate::lower) fn variable_dims(dae_model: &dae::Dae, base: &str) -> Optio
     }
     var.dims
         .iter()
-        .map(|dim| usize::try_from(*dim).ok().filter(|value| *value > 0))
+        .map(|dim| usize::try_from(*dim).ok())
         .collect()
 }
 
@@ -1016,10 +1228,42 @@ pub(in crate::lower) fn result_dims_for_subscripted_binding(
         .collect())
 }
 
-pub(in crate::lower) fn scalar_key_expr(key: String) -> rumoca_core::Expression {
-    rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::new(key),
-        subscripts: Vec::new(),
-        span: rumoca_core::Span::DUMMY,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expression_result_dims_rejects_der_without_argument() {
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(11), 3, 8);
+        let expr = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args: Vec::new(),
+            span,
+        };
+
+        let err = expression_result_dims(&expr, &dae::Dae::new(), &IndexMap::new())
+            .expect_err("der() without an argument is malformed IR");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
+    }
+
+    #[test]
+    fn expression_result_dims_rejects_fill_without_dimension_argument() {
+        let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(12), 5, 14);
+        let expr = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args: vec![rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span,
+            }],
+            span,
+        };
+
+        let err = expression_result_dims(&expr, &dae::Dae::new(), &IndexMap::new())
+            .expect_err("fill() without dimension arguments is malformed IR");
+
+        assert_eq!(err.source_span(), Some(span));
+        assert!(matches!(err, LowerError::ContractViolation { .. }));
     }
 }

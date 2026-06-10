@@ -461,12 +461,19 @@ fn collect_active_refs_from_flat_when_equation(
             value.collect_var_refs(&mut refs);
             active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         }
-        flat::WhenEquation::Assert { condition, .. } => {
+        flat::WhenEquation::Assert {
+            condition, message, ..
+        } => {
             let mut refs = HashSet::new();
             condition.collect_var_refs(&mut refs);
+            message.collect_var_refs(&mut refs);
             active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         }
-        flat::WhenEquation::Terminate { .. } => {}
+        flat::WhenEquation::Terminate { message, .. } => {
+            let mut refs = HashSet::new();
+            message.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        }
         flat::WhenEquation::Conditional {
             branches,
             else_branch,
@@ -533,12 +540,12 @@ fn dae_compilation_result_from_artifact(
     artifact: DaeModelArtifactData,
     experiment_settings: ExperimentSettings,
     source_map: SourceMap,
-) -> DaeCompilationResult {
+) -> Result<DaeCompilationResult, rumoca_phase_dae::BalanceError> {
     let has_unbound_fixed_parameters = artifact.flat.has_unbound_fixed_parameters();
     let active_discrete_scalar_count = active_discrete_scalar_count(&artifact.flat, &artifact.dae);
-    let balance_detail = rumoca_phase_dae::balance_detail(&artifact.dae);
+    let balance_detail = rumoca_phase_dae::balance_detail(&artifact.dae)?;
 
-    DaeCompilationResult {
+    Ok(DaeCompilationResult {
         flat: artifact.flat,
         dae: artifact.dae,
         source_map: Some(source_map),
@@ -550,7 +557,7 @@ fn dae_compilation_result_from_artifact(
         experiment_tolerance: experiment_settings.tolerance,
         experiment_interval: experiment_settings.interval,
         experiment_solver: experiment_settings.solver,
-    }
+    })
 }
 
 pub(super) fn dae_phase_result_from_dae(
@@ -561,13 +568,19 @@ pub(super) fn dae_phase_result_from_dae(
     let experiment_settings = experiment_settings_for_model(tree, model_name);
 
     match dae_outcome {
-        DaeModelOutcome::Success(artifact) => {
-            DaePhaseResult::Success(Box::new(dae_compilation_result_from_artifact(
-                *artifact,
-                experiment_settings,
-                tree.source_map.clone(),
-            )))
-        }
+        DaeModelOutcome::Success(artifact) => match dae_compilation_result_from_artifact(
+            *artifact,
+            experiment_settings,
+            tree.source_map.clone(),
+        ) {
+            Ok(result) => DaePhaseResult::Success(Box::new(result)),
+            Err(error) => DaePhaseResult::Failed {
+                phase: FailedPhase::ToDae,
+                error: format!("{error}"),
+                error_code: None,
+                diagnostics: Vec::new(),
+            },
+        },
         DaeModelOutcome::NeedsInner {
             missing_inners,
             missing_spans,
@@ -582,10 +595,11 @@ pub(super) fn dae_phase_result_from_dae(
                 phase: FailedPhase::Instantiate,
                 error: format!("{error}"),
                 error_code: error.code().map(|code| code.to_string()),
+                diagnostics: Vec::new(),
             }
         }
         DaeModelOutcome::TypecheckError(diags) => {
-            let diagnostics = diagnostics_from_vec(diags);
+            let diagnostics = diagnostics_from_vec(diags.clone());
             DaePhaseResult::Failed {
                 phase: FailedPhase::Typecheck,
                 error: diagnostics
@@ -594,6 +608,7 @@ pub(super) fn dae_phase_result_from_dae(
                     .collect::<Vec<_>>()
                     .join("; "),
                 error_code: summarize_typecheck_error_code(&diagnostics),
+                diagnostics: diags,
             }
         }
         DaeModelOutcome::FlattenError { error, .. } => {
@@ -602,6 +617,7 @@ pub(super) fn dae_phase_result_from_dae(
                 phase: FailedPhase::Flatten,
                 error: format!("{error}"),
                 error_code: error.code().map(|code| code.to_string()),
+                diagnostics: Vec::new(),
             }
         }
         DaeModelOutcome::ToDaeError { error, .. } => {
@@ -610,6 +626,7 @@ pub(super) fn dae_phase_result_from_dae(
                 phase: FailedPhase::ToDae,
                 error: format!("{error}"),
                 error_code: error.code().map(|code| code.to_string()),
+                diagnostics: Vec::new(),
             }
         }
     }
@@ -641,10 +658,11 @@ pub(super) fn compile_phase_result_from_dae(
                 phase: FailedPhase::Instantiate,
                 error: format!("{}", error),
                 error_code,
+                diagnostics: Vec::new(),
             };
         }
         DaeModelOutcome::TypecheckError(diags) => {
-            let diagnostics = diagnostics_from_vec(diags);
+            let diagnostics = diagnostics_from_vec(diags.clone());
             return PhaseResult::Failed {
                 phase: FailedPhase::Typecheck,
                 error: diagnostics
@@ -653,6 +671,7 @@ pub(super) fn compile_phase_result_from_dae(
                     .collect::<Vec<_>>()
                     .join("; "),
                 error_code: summarize_typecheck_error_code(&diagnostics),
+                diagnostics: diags,
             };
         }
         DaeModelOutcome::FlattenError { error, .. } => {
@@ -662,6 +681,7 @@ pub(super) fn compile_phase_result_from_dae(
                 phase: FailedPhase::Flatten,
                 error: format!("{}", error),
                 error_code,
+                diagnostics: Vec::new(),
             };
         }
         DaeModelOutcome::ToDaeError { error, .. } => {
@@ -671,6 +691,19 @@ pub(super) fn compile_phase_result_from_dae(
                 phase: FailedPhase::ToDae,
                 error: format!("{}", error),
                 error_code,
+                diagnostics: Vec::new(),
+            };
+        }
+    };
+
+    let balance_detail = match rumoca_phase_dae::balance_detail(&artifact.dae) {
+        Ok(detail) => detail,
+        Err(error) => {
+            return PhaseResult::Failed {
+                phase: FailedPhase::ToDae,
+                error: format!("{error}"),
+                error_code: None,
+                diagnostics: Vec::new(),
             };
         }
     };
@@ -678,6 +711,7 @@ pub(super) fn compile_phase_result_from_dae(
     PhaseResult::Success(Box::new(CompilationResult {
         flat: unwrap_or_clone_arc(artifact.flat),
         dae: unwrap_or_clone_arc(artifact.dae),
+        balance_detail,
         experiment_start_time: experiment_settings.start_time,
         experiment_stop_time: experiment_settings.stop_time,
         experiment_tolerance: experiment_settings.tolerance,
@@ -689,23 +723,15 @@ pub(super) fn compile_phase_result_from_dae(
 pub(super) fn finalize_strict_compile_report(
     tree: &ast::ClassTree,
     requested_model: &str,
-    target_has_resolve_failures: bool,
     mut failures: Vec<ModelFailureDiagnostic>,
     results: Vec<(String, PhaseResult)>,
 ) -> StrictCompileReport {
-    finalize_strict_compile_report_from_results(
-        tree,
-        requested_model,
-        target_has_resolve_failures,
-        &mut failures,
-        results,
-    )
+    finalize_strict_compile_report_from_results(tree, requested_model, &mut failures, results)
 }
 
 pub(super) fn finalize_strict_compile_report_from_results<I>(
     tree: &ast::ClassTree,
     requested_model: &str,
-    target_has_resolve_failures: bool,
     failures: &mut Vec<ModelFailureDiagnostic>,
     results: I,
 ) -> StrictCompileReport
@@ -717,10 +743,8 @@ where
 
     for (name, result) in results {
         summary.add_result(&result);
-        if let Some(failure) = phase_result_to_failure(tree, &name, &result) {
-            failures.push(failure);
-        }
-        if name == requested_model && !target_has_resolve_failures {
+        failures.extend(phase_result_to_failures(tree, &name, &result));
+        if name == requested_model {
             requested_result = Some(result);
         }
     }
@@ -737,7 +761,6 @@ where
 pub(super) fn finalize_strict_compile_report_from_uncached_targets(
     tree: &ast::ClassTree,
     requested_model: &str,
-    target_has_resolve_failures: bool,
     failures: Vec<ModelFailureDiagnostic>,
     targets: &[String],
     instantiation_options: InstantiateOptions,
@@ -745,7 +768,6 @@ pub(super) fn finalize_strict_compile_report_from_uncached_targets(
     finalize_strict_compile_report_from_uncached_targets_impl(
         tree,
         requested_model,
-        target_has_resolve_failures,
         failures,
         targets,
         instantiation_options,
@@ -756,7 +778,6 @@ pub(super) fn finalize_strict_compile_report_from_uncached_targets(
 fn finalize_strict_compile_report_from_uncached_targets_impl(
     tree: &ast::ClassTree,
     requested_model: &str,
-    target_has_resolve_failures: bool,
     failures: Vec<ModelFailureDiagnostic>,
     targets: &[String],
     instantiation_options: InstantiateOptions,
@@ -768,20 +789,13 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
             compile_model_internal_with_options(tree, name, instantiation_options),
         )
     });
-    finalize_strict_compile_report_from_results(
-        tree,
-        requested_model,
-        target_has_resolve_failures,
-        &mut failures,
-        results,
-    )
+    finalize_strict_compile_report_from_results(tree, requested_model, &mut failures, results)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn finalize_strict_compile_report_from_uncached_targets_impl(
     tree: &ast::ClassTree,
     requested_model: &str,
-    target_has_resolve_failures: bool,
     failures: Vec<ModelFailureDiagnostic>,
     targets: &[String],
     instantiation_options: InstantiateOptions,
@@ -794,7 +808,6 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
             finalize_strict_compile_report_from_results(
                 tree,
                 requested_model,
-                target_has_resolve_failures,
                 &mut failures,
                 result_rx,
             )

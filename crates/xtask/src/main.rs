@@ -527,7 +527,7 @@ fn cmd_coverage(args: CoverageArgs) -> Result<()> {
 fn cmd_repo(args: RepoArgs) -> Result<()> {
     match args.command {
         RepoCommand::Cli(args) => match args.command {
-            RepoCliCommand::Install(args) => repo_cli_cmd::cmd_install_rum_cli(args),
+            RepoCliCommand::Install(args) => repo_cli_cmd::cmd_install_xtask_cli(args),
         },
         RepoCommand::Ubuntu(args) => match args.command {
             RepoUbuntuCommand::InstallVscodeSmokePrereqs(args) => {

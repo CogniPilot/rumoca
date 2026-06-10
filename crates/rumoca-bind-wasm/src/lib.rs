@@ -850,7 +850,8 @@ pub fn render_target(
 ) -> Result<JsValue, JsValue> {
     let mut dae = serde_json::from_str::<rumoca_compile::compile::Dae>(dae_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid DAE JSON: {e}")))?;
-    rumoca_compile::phase_structural::scalarize_equations(&mut dae);
+    rumoca_compile::phase_structural::scalarize_equations(&mut dae)
+        .map_err(|e| JsValue::from_str(&format!("Structural scalarization failed: {e}")))?;
 
     let custom_templates: BTreeMap<String, String> = serde_json::from_str(templates_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid target template map: {e}")))?;

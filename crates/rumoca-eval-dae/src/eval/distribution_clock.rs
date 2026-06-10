@@ -12,23 +12,33 @@ fn shift_signal_state_key<T: SimFloat>(
     short_name: &str,
     args: &[Expression],
     env: &VarEnv<T>,
-) -> String {
-    let source = args
-        .first()
-        .and_then(|arg| eval_field_access_path(arg, env))
-        .unwrap_or_else(|| format!("{:?}", args.first()));
-    let shift = optional_real_arg(args, 1, env, 0.0).round() as i64;
-    let resolution = (optional_real_arg(args, 2, env, 1.0).round() as i64).max(1);
-    format!("{short_name}|{source}|{shift}|{resolution}")
+) -> Result<String, EvalError> {
+    let source_arg = required_shift_source_arg(args)?;
+    let source =
+        try_eval_field_access_path(source_arg, env)?.ok_or(EvalError::UnsupportedExpression {
+            kind: "shift/back sample source path",
+        })?;
+    let shift = optional_real_arg(args, 1, env, 0.0)?.round() as i64;
+    let resolution = (optional_real_arg(args, 2, env, 1.0)?.round() as i64).max(1);
+    Ok(format!("{short_name}|{source}|{shift}|{resolution}"))
 }
 
-fn shift_startup_ticks<T: SimFloat>(args: &[Expression], env: &VarEnv<T>) -> usize {
-    let shift = optional_real_arg(args, 1, env, 0.0).max(0.0);
-    let resolution = optional_real_arg(args, 2, env, 1.0);
+fn required_shift_source_arg(args: &[Expression]) -> Result<&Expression, EvalError> {
+    args.first().ok_or(EvalError::UnsupportedExpression {
+        kind: "shift/back sample source argument",
+    })
+}
+
+fn shift_startup_ticks<T: SimFloat>(
+    args: &[Expression],
+    env: &VarEnv<T>,
+) -> Result<usize, EvalError> {
+    let shift = optional_real_arg(args, 1, env, 0.0)?.max(0.0);
+    let resolution = optional_real_arg(args, 2, env, 1.0)?;
     if !resolution.is_finite() || resolution <= 0.0 {
-        return 0;
+        return Ok(0);
     }
-    (shift / resolution).ceil().max(0.0) as usize
+    Ok((shift / resolution).ceil().max(0.0) as usize)
 }
 
 fn update_shift_signal_state(
@@ -68,12 +78,12 @@ fn eval_shift_sample_signal<T: SimFloat>(
     short_name: &str,
     args: &[Expression],
     env: &VarEnv<T>,
-) -> T {
-    let key = shift_signal_state_key(short_name, args, env);
-    let startup_ticks = shift_startup_ticks(args, env);
-    let input_value = optional_real_arg(args, 0, env, 0.0);
-    let time = eval_time_seconds(env);
-    let implicit_clock_active = env.get(IMPLICIT_CLOCK_ACTIVE_ENV_KEY).to_bool();
+) -> Result<T, EvalError> {
+    let key = shift_signal_state_key(short_name, args, env)?;
+    let startup_ticks = shift_startup_ticks(args, env)?;
+    let input_value = eval_expr::<T>(required_shift_source_arg(args)?, env)?.real();
+    let time = eval_time_seconds(env)?;
+    let implicit_clock_active = env.require(IMPLICIT_CLOCK_ACTIVE_ENV_KEY)?.to_bool();
     let tick_tol = 1.0e-12;
 
     let mut states = env
@@ -90,7 +100,7 @@ fn eval_shift_sample_signal<T: SimFloat>(
         startup_ticks,
         tick_tol,
     );
-    T::from_f64(state.last_output)
+    Ok(T::from_f64(state.last_output))
 }
 
 fn optional_real_arg<T: SimFloat>(
@@ -98,10 +108,10 @@ fn optional_real_arg<T: SimFloat>(
     index: usize,
     env: &VarEnv<T>,
     default: f64,
-) -> f64 {
+) -> Result<f64, EvalError> {
     match args.get(index) {
-        Some(arg) => eval_expr_or_default::<T>(arg, env).real(),
-        None => default,
+        Some(arg) => Ok(eval_expr::<T>(arg, env)?.real()),
+        None => Ok(default),
     }
 }
 
@@ -190,15 +200,17 @@ fn erf_approx(x: f64) -> f64 {
     sign * (1.0 - poly * (-x_abs * x_abs).exp())
 }
 
-fn normal_quantile_unit(p: f64) -> f64 {
+fn normal_quantile_unit(p: f64) -> Result<f64, EvalError> {
     if p.is_nan() || !(0.0..=1.0).contains(&p) {
-        return f64::NAN;
+        return Err(EvalError::UnsupportedExpression {
+            kind: "normal quantile domain",
+        });
     }
     if p == 0.0 {
-        return f64::NEG_INFINITY;
+        return Ok(f64::NEG_INFINITY);
     }
     if p == 1.0 {
-        return f64::INFINITY;
+        return Ok(f64::INFINITY);
     }
 
     const P_LOW: f64 = 0.02425;
@@ -234,18 +246,18 @@ fn normal_quantile_unit(p: f64) -> f64 {
 
     if p < P_LOW {
         let q = (-2.0 * p.ln()).sqrt();
-        return rational_tail(q, C, D);
+        return Ok(rational_tail(q, C, D));
     }
     if p > 1.0 - P_LOW {
         let q = (-2.0 * (1.0 - p).ln()).sqrt();
-        return -rational_tail(q, C, D);
+        return Ok(-rational_tail(q, C, D));
     }
 
     let q = p - 0.5;
     let r = q * q;
     let num = (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q;
     let den = ((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0;
-    num / den
+    Ok(num / den)
 }
 
 fn rational_tail(q: f64, c: [f64; 6], d: [f64; 4]) -> f64 {
@@ -266,16 +278,20 @@ fn eval_distribution_uniform_quantile<T: SimFloat>(u: T, y_min: T, y_max: T) -> 
     y_min + u * (y_max - y_min)
 }
 
-fn eval_distribution_normal_quantile<T: SimFloat>(u: T, mu: T, sigma: T) -> T {
-    T::from_f64(mu.real() + sigma.real() * normal_quantile_unit(u.real()))
+fn eval_distribution_normal_quantile<T: SimFloat>(u: T, mu: T, sigma: T) -> Result<T, EvalError> {
+    Ok(T::from_f64(
+        mu.real() + sigma.real() * normal_quantile_unit(u.real())?,
+    ))
 }
 
-fn eval_distribution_weibull_quantile<T: SimFloat>(u: T, lambda: T, k: T) -> T {
+fn eval_distribution_weibull_quantile<T: SimFloat>(u: T, lambda: T, k: T) -> Result<T, EvalError> {
     let u_real = u.real();
     if !(0.0..1.0).contains(&u_real) || lambda.real() <= 0.0 || k.real() <= 0.0 {
-        return T::nan();
+        return Err(EvalError::UnsupportedExpression {
+            kind: "weibull quantile domain",
+        });
     }
-    lambda * (-(T::one() - u).ln()).powf(T::one() / k)
+    Ok(lambda * (-(T::one() - u).ln()).powf(T::one() / k))
 }
 
 fn eval_distribution_truncated_normal_quantile<T: SimFloat>(
@@ -284,23 +300,43 @@ fn eval_distribution_truncated_normal_quantile<T: SimFloat>(
     y_max: T,
     mu: T,
     sigma: T,
-) -> T {
+) -> Result<T, EvalError> {
     let cdf_min = eval_distribution_normal_cumulative(y_min, mu, sigma);
     let cdf_max = eval_distribution_normal_cumulative(y_max, mu, sigma);
     eval_distribution_normal_quantile(cdf_min + u * (cdf_max - cdf_min), mu, sigma)
 }
 
-fn erf_inv_value(u: f64) -> f64 {
+fn erf_inv_value(u: f64) -> Result<f64, EvalError> {
     if u.is_nan() || !(-1.0..=1.0).contains(&u) {
-        return f64::NAN;
+        return Err(EvalError::UnsupportedExpression {
+            kind: "inverse error function domain",
+        });
     }
-    normal_quantile_unit(0.5 * (u + 1.0)) / std::f64::consts::SQRT_2
+    Ok(normal_quantile_unit(0.5 * (u + 1.0))? / std::f64::consts::SQRT_2)
 }
 
-fn eval_arg_or<T: SimFloat>(args: &[Expression], idx: usize, env: &VarEnv<T>, default: f64) -> T {
+fn eval_required_arg<T: SimFloat>(
+    args: &[Expression],
+    idx: usize,
+    env: &VarEnv<T>,
+    kind: &'static str,
+) -> Result<T, EvalError> {
+    eval_expr::<T>(
+        args.get(idx)
+            .ok_or(EvalError::UnsupportedExpression { kind })?,
+        env,
+    )
+}
+
+fn eval_optional_arg_or<T: SimFloat>(
+    args: &[Expression],
+    idx: usize,
+    env: &VarEnv<T>,
+    default: f64,
+) -> Result<T, EvalError> {
     args.get(idx)
-        .map(|arg| eval_expr_or_default::<T>(arg, env))
-        .unwrap_or_else(|| T::from_f64(default))
+        .map(|arg| eval_expr::<T>(arg, env))
+        .unwrap_or_else(|| Ok(T::from_f64(default)))
 }
 
 pub(super) fn is_qualified_distribution_function_name(name: &str) -> bool {
@@ -323,40 +359,85 @@ pub(super) fn eval_qualified_distribution_function<T: SimFloat>(
     name: &str,
     args: &[Expression],
     env: &VarEnv<T>,
-) -> Option<T> {
-    let u = eval_arg_or(args, 0, env, 0.0);
-    let p2 = eval_arg_or(args, 1, env, 0.0);
-    let p3 = eval_arg_or(args, 2, env, 1.0);
-    let p4 = eval_arg_or(args, 3, env, 0.0);
-    let p5 = eval_arg_or(args, 4, env, 1.0);
-
+) -> Result<Option<T>, EvalError> {
     match name {
-        "Modelica.Math.Distributions.Uniform.density" => Some(eval_distribution_uniform(u, p2, p3)),
-        "Modelica.Math.Distributions.Normal.density" => Some(eval_distribution_normal(u, p2, p3)),
-        "Modelica.Math.Distributions.Weibull.density" => Some(eval_distribution_weibull(u, p2, p3)),
+        "Modelica.Math.Distributions.Uniform.density" => {
+            eval_qualified_distribution3(args, env, |u, p2, p3| {
+                Ok(eval_distribution_uniform(u, p2, p3))
+            })
+            .map(Some)
+        }
+        "Modelica.Math.Distributions.Normal.density" => {
+            eval_qualified_distribution3(args, env, |u, p2, p3| {
+                Ok(eval_distribution_normal(u, p2, p3))
+            })
+            .map(Some)
+        }
+        "Modelica.Math.Distributions.Weibull.density" => {
+            eval_qualified_distribution3(args, env, |u, p2, p3| {
+                Ok(eval_distribution_weibull(u, p2, p3))
+            })
+            .map(Some)
+        }
         "Modelica.Math.Distributions.Uniform.cumulative" => {
-            Some(eval_distribution_uniform_cumulative(u, p2, p3))
+            eval_qualified_distribution3(args, env, |u, p2, p3| {
+                Ok(eval_distribution_uniform_cumulative(u, p2, p3))
+            })
+            .map(Some)
         }
         "Modelica.Math.Distributions.Normal.cumulative" => {
-            Some(eval_distribution_normal_cumulative(u, p2, p3))
+            eval_qualified_distribution3(args, env, |u, p2, p3| {
+                Ok(eval_distribution_normal_cumulative(u, p2, p3))
+            })
+            .map(Some)
         }
         "Modelica.Math.Distributions.Weibull.cumulative" => {
-            Some(eval_distribution_weibull_cumulative(u, p2, p3))
+            eval_qualified_distribution3(args, env, |u, p2, p3| {
+                Ok(eval_distribution_weibull_cumulative(u, p2, p3))
+            })
+            .map(Some)
         }
         "Modelica.Math.Distributions.Uniform.quantile" => {
-            Some(eval_distribution_uniform_quantile(u, p2, p3))
+            eval_qualified_distribution3(args, env, |u, p2, p3| {
+                Ok(eval_distribution_uniform_quantile(u, p2, p3))
+            })
+            .map(Some)
         }
         "Modelica.Math.Distributions.Normal.quantile" => {
-            Some(eval_distribution_normal_quantile(u, p2, p3))
+            eval_qualified_distribution3(args, env, |u, p2, p3| {
+                eval_distribution_normal_quantile(u, p2, p3)
+            })
+            .map(Some)
         }
         "Modelica.Math.Distributions.Weibull.quantile" => {
-            Some(eval_distribution_weibull_quantile(u, p2, p3))
+            eval_qualified_distribution3(args, env, |u, p2, p3| {
+                eval_distribution_weibull_quantile(u, p2, p3)
+            })
+            .map(Some)
         }
-        "Modelica.Math.Distributions.TruncatedNormal.quantile" => Some(
-            eval_distribution_truncated_normal_quantile(u, p2, p3, p4, p5),
-        ),
-        _ => None,
+        "Modelica.Math.Distributions.TruncatedNormal.quantile" => {
+            let u = eval_required_arg(args, 0, env, "distribution argument")?;
+            let p2 = eval_required_arg(args, 1, env, "distribution argument")?;
+            let p3 = eval_required_arg(args, 2, env, "distribution argument")?;
+            let p4 = eval_optional_arg_or(args, 3, env, 0.0)?;
+            let p5 = eval_optional_arg_or(args, 4, env, 1.0)?;
+            Ok(Some(eval_distribution_truncated_normal_quantile(
+                u, p2, p3, p4, p5,
+            )?))
+        }
+        _ => Ok(None),
     }
+}
+
+fn eval_qualified_distribution3<T: SimFloat>(
+    args: &[Expression],
+    env: &VarEnv<T>,
+    eval: impl FnOnce(T, T, T) -> Result<T, EvalError>,
+) -> Result<T, EvalError> {
+    let u = eval_required_arg(args, 0, env, "distribution argument")?;
+    let p2 = eval_required_arg(args, 1, env, "distribution argument")?;
+    let p3 = eval_required_arg(args, 2, env, "distribution argument")?;
+    eval(u, p2, p3)
 }
 
 pub(super) fn is_qualified_math_special_function_name(name: &str) -> bool {
@@ -370,12 +451,17 @@ pub(super) fn eval_qualified_math_special_function<T: SimFloat>(
     name: &str,
     args: &[Expression],
     env: &VarEnv<T>,
-) -> Option<T> {
-    let u = eval_arg_or(args, 0, env, 0.0).real();
+) -> Result<Option<T>, EvalError> {
     match name {
-        "Modelica.Math.Special.erfInv" => Some(T::from_f64(erf_inv_value(u))),
-        "Modelica.Math.Special.erfcInv" => Some(T::from_f64(erf_inv_value(1.0 - u))),
-        _ => None,
+        "Modelica.Math.Special.erfInv" => {
+            let u = eval_required_arg(args, 0, env, "math special argument")?.real();
+            Ok(Some(T::from_f64(erf_inv_value(u)?)))
+        }
+        "Modelica.Math.Special.erfcInv" => {
+            let u = eval_required_arg(args, 0, env, "math special argument")?.real();
+            Ok(Some(T::from_f64(erf_inv_value(1.0 - u)?)))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -383,59 +469,52 @@ fn distribution_arg_hint(expr: Option<&Expression>) -> Option<String> {
     let Expression::VarRef { name, .. } = expr? else {
         return None;
     };
-    let tail = rumoca_core::top_level_last_segment(name.as_str())
-        .split('[')
-        .next()
-        .unwrap_or(name.as_str());
+    let tail = rumoca_core::top_level_last_segment(name.as_str());
+    let tail =
+        rumoca_core::split_trailing_subscript_suffix(tail).map_or(tail, |(base, _subscript)| base);
     Some(tail.to_ascii_lowercase())
 }
 
 pub(super) fn eval_distribution_function<T: SimFloat>(
     args: &[Expression],
     env: &VarEnv<T>,
-) -> Option<T> {
+) -> Result<Option<T>, EvalError> {
     match args.len() {
         // Overloaded MSL density helpers imported as `distribution(...)`.
         3 => {
-            let u = eval_expr_or_default::<T>(&args[0], env);
-            let p2 = eval_expr_or_default::<T>(&args[1], env);
-            let p3 = eval_expr_or_default::<T>(&args[2], env);
+            let u = eval_expr::<T>(&args[0], env)?;
+            let p2 = eval_expr::<T>(&args[1], env)?;
+            let p3 = eval_expr::<T>(&args[2], env)?;
             let h2 = distribution_arg_hint(args.get(1));
             let h3 = distribution_arg_hint(args.get(2));
 
             if matches!(h2.as_deref(), Some("u_min" | "y_min"))
                 && matches!(h3.as_deref(), Some("u_max" | "y_max"))
             {
-                return Some(eval_distribution_uniform(u, p2, p3));
+                return Ok(Some(eval_distribution_uniform(u, p2, p3)));
             }
             if matches!(h2.as_deref(), Some("mu")) && matches!(h3.as_deref(), Some("sigma")) {
-                return Some(eval_distribution_normal(u, p2, p3));
+                return Ok(Some(eval_distribution_normal(u, p2, p3)));
             }
             if matches!(h2.as_deref(), Some("lambda"))
                 && matches!(h3.as_deref(), Some("k" | "shape"))
             {
-                return Some(eval_distribution_weibull(u, p2, p3));
+                return Ok(Some(eval_distribution_weibull(u, p2, p3)));
             }
 
-            // Fallback when hints are unavailable.
-            if p2.real() < 0.0 && p2.real() < p3.real() {
-                Some(eval_distribution_uniform(u, p2, p3))
-            } else if p2.real() > 0.0 && p3.real() > 0.0 && p2.real() > p3.real() {
-                Some(eval_distribution_weibull(u, p2, p3))
-            } else {
-                Some(eval_distribution_normal(u, p2, p3))
-            }
+            Err(EvalError::UnsupportedExpression {
+                kind: "ambiguous distribution helper",
+            })
         }
-        // Truncated distribution helper; if unresolved, keep finite bounded mapping.
         5 => {
-            let r = eval_expr_or_default::<T>(&args[0], env);
-            let y_min = eval_expr_or_default::<T>(&args[1], env);
-            let y_max = eval_expr_or_default::<T>(&args[2], env);
+            let r = eval_expr::<T>(&args[0], env)?;
+            let y_min = eval_expr::<T>(&args[1], env)?;
+            let y_max = eval_expr::<T>(&args[2], env)?;
             let span = y_max - y_min;
             let r_clamped = r.max(T::zero()).min(T::one());
-            Some(y_min + span * r_clamped)
+            Ok(Some(y_min + span * r_clamped))
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -443,37 +522,41 @@ pub(super) fn eval_clock_special_function<T: SimFloat>(
     short_name: &str,
     args: &[Expression],
     env: &VarEnv<T>,
-) -> Option<T> {
+) -> Result<Option<T>, EvalError> {
     match short_name {
         "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample" => {
             if short_name == "Clock" && args.is_empty() {
-                return Some(T::from_bool(
-                    env.get(IMPLICIT_CLOCK_ACTIVE_ENV_KEY).to_bool(),
-                ));
+                return Ok(Some(T::from_bool(
+                    env.require(IMPLICIT_CLOCK_ACTIVE_ENV_KEY)?.to_bool(),
+                )));
             }
-            if let Some(timing) = infer_clock_timing_from_call(short_name, args, env) {
-                return Some(clock_tick_value(env, timing));
+            if let Some(timing) = infer_clock_timing_from_call(short_name, args, env)? {
+                return Ok(Some(clock_tick_value(env, timing)?));
             }
             if matches!(short_name, "shiftSample" | "backSample") {
-                return Some(eval_shift_sample_signal(short_name, args, env));
+                return eval_shift_sample_signal(short_name, args, env).map(Some);
             }
-            Some(
-                args.first()
-                    .map(|a| eval_expr_or_default::<T>(a, env))
-                    .unwrap_or_else(T::zero),
-            )
+            let Some(arg) = args.first() else {
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "clock argument",
+                });
+            };
+            eval_expr::<T>(arg, env).map(Some)
         }
-        "hold" | "noClock" => Some(
-            args.first()
-                .map(|a| eval_expr_or_default::<T>(a, env))
-                .unwrap_or_else(T::zero),
-        ),
-        "previous" => Some(eval_builtin_previous(args, env)),
+        "hold" | "noClock" => {
+            let Some(arg) = args.first() else {
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "clocked value argument",
+                });
+            };
+            eval_expr::<T>(arg, env).map(Some)
+        }
+        "previous" => eval_builtin_previous(args, env).map(Some),
         "interval" => {
             if let Some(arg) = args.first()
-                && let Some(timing) = infer_clock_timing_from_expr(arg, env)
+                && let Some(timing) = infer_clock_timing_from_expr(arg, env)?
             {
-                return Some(T::from_f64(timing.period));
+                return Ok(Some(T::from_f64(timing.period)));
             }
             // MLS §16 (synchronous language elements): interval(v) returns the
             // period of the clock associated with v. For implicit-clock lowering,
@@ -484,14 +567,14 @@ pub(super) fn eval_clock_special_function<T: SimFloat>(
                 && subscripts.is_empty()
                 && let Some(interval) = env.clock_intervals.get(name.as_str())
             {
-                return Some(T::from_f64(*interval));
+                return Ok(Some(T::from_f64(*interval)));
             }
-            Some(T::one())
+            Ok(Some(T::one()))
         }
         "firstTick" => {
             let tol = 1e-12;
-            Some(T::from_bool(eval_time_seconds(env).abs() <= tol))
+            Ok(Some(T::from_bool(eval_time_seconds(env)?.abs() <= tol)))
         }
-        _ => None,
+        _ => Ok(None),
     }
 }

@@ -150,6 +150,50 @@ pub fn lower_record_function_params_dae(dae: &mut Dae) {
     }
 }
 
+pub(crate) fn lower_enum_literal_refs_to_ordinals(dae: &mut Dae) {
+    if dae.symbols.enum_literal_ordinals.is_empty() {
+        return;
+    }
+    let ordinals = dae.symbols.enum_literal_ordinals.clone();
+    EnumLiteralOrdinalLowerer {
+        ordinals: &ordinals,
+    }
+    .rewrite_dae(dae);
+    for function in dae.symbols.functions.values_mut() {
+        function.body = EnumLiteralOrdinalLowerer {
+            ordinals: &ordinals,
+        }
+        .rewrite_statements(&function.body);
+    }
+}
+
+struct EnumLiteralOrdinalLowerer<'a> {
+    ordinals: &'a IndexMap<String, i64>,
+}
+
+impl ExpressionRewriter for EnumLiteralOrdinalLowerer<'_> {
+    fn rewrite_var_ref_expression(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        if subscripts.is_empty()
+            && let Some(ordinal) = self.ordinals.get(name.as_str())
+        {
+            return rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(*ordinal),
+                span,
+            };
+        }
+        self.walk_var_ref_expression(name, subscripts, span)
+    }
+}
+
+impl StatementRewriter for EnumLiteralOrdinalLowerer<'_> {}
+
+impl DaeExpressionRewriter for EnumLiteralOrdinalLowerer<'_> {}
+
 fn decompose_record_args_dae_stmt(stmt: &mut rumoca_core::Statement, map: &RecordArgMap) {
     *stmt = DaeRecordArgDecomposer { map }.rewrite_statement(stmt);
 }
@@ -745,8 +789,22 @@ impl ExpressionRewriter for EmbeddedSubscriptCanonicalizer<'_> {
             && let Some(scalar_name) = rumoca_core::parse_scalar_name(name.as_str())
             && self.array_dims.contains_key(scalar_name.base)
         {
+            let base_name = if let Some(component_ref) = name.component_ref() {
+                rumoca_core::Reference::with_component_reference(
+                    scalar_name.base,
+                    component_ref.clone(),
+                )
+            } else if name.is_generated() {
+                rumoca_core::Reference::generated(scalar_name.base)
+            } else {
+                return rumoca_core::Expression::VarRef {
+                    name: name.clone(),
+                    subscripts: self.rewrite_subscripts(subscripts),
+                    span,
+                };
+            };
             return rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new(scalar_name.base.to_string()),
+                name: base_name,
                 subscripts: scalar_name
                     .indices
                     .into_iter()
@@ -1419,7 +1477,7 @@ fn scalarized_equation_at(
         return dae::Equation::residual(scalar_rhs, eq.span, origin);
     };
     dae::Equation::explicit(
-        scalarize_lhs_name_at(lhs, k, phantom_map, array_dims),
+        scalarize_lhs_name_at(lhs.var_name(), k, phantom_map, array_dims),
         scalar_rhs,
         eq.span,
         origin,

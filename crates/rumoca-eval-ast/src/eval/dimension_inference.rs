@@ -19,6 +19,8 @@ pub fn infer_dimensions_from_binding_with_scope(
     scope: &str,
 ) -> Option<Vec<usize>> {
     match expr {
+        Expression::Terminal { .. } => Some(Vec::new()),
+
         Expression::Array {
             elements,
             is_matrix,
@@ -52,8 +54,12 @@ pub fn infer_dimensions_from_binding_with_scope(
                 .map(|p| p.ident.text.as_ref())
                 .collect::<Vec<_>>()
                 .join(".");
-            let base_dims =
-                lookup_structural_with_scope(&unindexed_path, scope, &ctx.dimensions)?.clone();
+            let Some(base_dims) =
+                lookup_structural_with_scope(&unindexed_path, scope, &ctx.dimensions)
+            else {
+                return scalar_value_known_with_scope(&unindexed_path, ctx, scope).then(Vec::new);
+            };
+            let base_dims = base_dims.clone();
             Some(apply_component_subscripts_to_dims(
                 base_dims, cr, ctx, scope,
             ))
@@ -94,6 +100,14 @@ pub fn infer_dimensions_from_binding_with_scope(
 
         _ => None,
     }
+}
+
+fn scalar_value_known_with_scope(name: &str, ctx: &TypeCheckEvalContext, scope: &str) -> bool {
+    lookup_with_scope(name, scope, &ctx.integers).is_some()
+        || lookup_with_scope(name, scope, &ctx.reals).is_some()
+        || lookup_with_scope(name, scope, &ctx.booleans).is_some()
+        || lookup_with_scope(name, scope, &ctx.enums).is_some()
+        || lookup_with_scope(name, scope, &ctx.enum_ordinals).is_some()
 }
 
 /// Apply component-reference subscripts to a base dimension vector.

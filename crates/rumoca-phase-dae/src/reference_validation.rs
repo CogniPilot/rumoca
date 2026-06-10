@@ -76,23 +76,7 @@ fn build_dae_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> Ha
 }
 
 pub(crate) fn build_enum_literal_query_set(ordinals: &IndexMap<String, i64>) -> HashSet<String> {
-    let mut queries = HashSet::with_capacity(ordinals.len().saturating_mul(2));
-    for literal in ordinals.keys() {
-        queries.insert(literal.clone());
-        if let Some(alias) = alternate_enum_literal_alias(literal) {
-            queries.insert(alias);
-        }
-    }
-    queries
-}
-
-fn alternate_enum_literal_alias(name: &str) -> Option<String> {
-    let (prefix, literal) = rumoca_core::split_last_top_level(name)?;
-    if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
-        let unquoted = &literal[1..literal.len() - 1];
-        return Some(format!("{prefix}.{unquoted}"));
-    }
-    Some(format!("{prefix}.'{literal}'"))
+    ordinals.keys().cloned().collect()
 }
 
 fn insert_reference_query_alias(queries: &mut HashSet<String>, name: &str) {
@@ -116,16 +100,6 @@ fn insert_ancestor_reference_queries(queries: &mut HashSet<String>, name: &str) 
 
 fn short_leaf_matches(candidate: &str, short: &str) -> bool {
     rumoca_core::top_level_last_segment(candidate) == short
-}
-
-fn enum_literal_alias_matches(candidate: &str, raw: &str) -> bool {
-    let raw_literal = rumoca_core::top_level_last_segment(raw);
-    let candidate_literal = rumoca_core::top_level_last_segment(candidate);
-    raw_literal == candidate_literal && is_quoted_enum_literal(raw_literal)
-}
-
-fn is_quoted_enum_literal(segment: &str) -> bool {
-    segment.len() >= 2 && segment.starts_with('\'') && segment.ends_with('\'')
 }
 
 fn validate_constructor_field_selection(
@@ -1065,13 +1039,6 @@ fn is_known_dae_reference(name: &rumoca_core::Reference, known_refs: &KnownRefer
     if known_refs.enum_literal_queries.contains(raw) {
         return true;
     }
-    if known_refs
-        .enum_literal_queries
-        .iter()
-        .any(|candidate| enum_literal_alias_matches(candidate, raw))
-    {
-        return true;
-    }
     if known_refs.flat_queries.contains(raw) || known_refs.dae_queries.contains(raw) {
         return true;
     }
@@ -1119,10 +1086,12 @@ mod tests {
     }
 
     #[test]
-    fn enum_literal_queries_accept_quoted_and_unquoted_aliases() {
+    fn enum_literal_queries_preserve_flattened_aliases() {
         let mut ordinals = IndexMap::new();
         ordinals.insert("StateSelect.prefer".to_string(), 4);
+        ordinals.insert("StateSelect.'prefer'".to_string(), 4);
         ordinals.insert("Color.'deep red'".to_string(), 7);
+        ordinals.insert("Color.deep red".to_string(), 7);
 
         let queries = build_enum_literal_query_set(&ordinals);
 
@@ -1159,6 +1128,11 @@ mod tests {
             "Modelica.Electrical.Digital.Interfaces.Logic.'U'".to_string(),
             0,
         );
+        ordinals.insert(
+            "Modelica.Electrical.Digital.Interfaces.Logic.U".to_string(),
+            0,
+        );
+        ordinals.insert("gate.L.'U'".to_string(), 0);
 
         let known = KnownReferenceIndex {
             flat_queries: HashSet::new(),

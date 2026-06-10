@@ -37,8 +37,11 @@ pub(super) fn canonicalize_record_alias_when_equations(
             flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
                 canonicalize_record_alias_expr(value, ctx, known_variables);
             }
-            flat::WhenEquation::Assert { condition, .. } => {
+            flat::WhenEquation::Assert {
+                condition, message, ..
+            } => {
                 canonicalize_record_alias_expr(condition, ctx, known_variables);
+                canonicalize_record_alias_expr(message, ctx, known_variables);
             }
             flat::WhenEquation::Conditional {
                 branches,
@@ -58,7 +61,9 @@ pub(super) fn canonicalize_record_alias_when_equations(
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 canonicalize_record_alias_expr(function, ctx, known_variables);
             }
-            flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::Terminate { message, .. } => {
+                canonicalize_record_alias_expr(message, ctx, known_variables);
+            }
         }
     }
 }

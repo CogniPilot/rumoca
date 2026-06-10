@@ -51,10 +51,9 @@ mod clock_eval;
 mod distribution_clock;
 use array_helpers::{
     array_values_from_env_name, array_values_from_env_name_generic, encoded_slice_field_values,
-    eval_field_access_array_values, eval_unary_builtin_array_values, flattened_field_access_name,
-    infer_dims_from_values, try_eval_field_access_array_values,
+    eval_unary_builtin_array_values, flattened_field_access_name, infer_dims_from_values,
+    try_eval_field_access_array_values,
 };
-use builtin_table::{eval_builtin_product, eval_builtin_sum};
 // Public for `rumoca-jit-dae` — the JIT emits calls into these runtime
 // helpers when generating machine code for table-lookup expressions.
 pub use builtin_table::{
@@ -86,6 +85,10 @@ mod builtin_runtime;
 mod table_eval;
 
 mod special;
+use special::{
+    copy_record_function_output_fields, eval_function_call, function_closure_from_arg,
+    resolve_user_function_target,
+};
 pub use special::{
     deterministic_automatic_global_seed, eval_builtin_pub, eval_condition_as_root,
     eval_function_call_pub, eval_function_call_pub_dae, eval_selected_function_output_pub,
@@ -94,17 +97,14 @@ pub use special::{
     is_runtime_special_function_short_name, modelica_strings_hash_string,
     resolve_function_call_outputs_pub, resolve_function_call_outputs_pub_dae,
 };
-use special::{eval_function_call, eval_if, function_closure_from_arg};
 mod eval_expr_impl;
 use array_eval::{
-    declared_dims_or_scalar, eval_array_like_f64_values, eval_array_like_values,
-    eval_binary_array_values, eval_cat_f64_values, eval_columns_arg, eval_cross_values,
-    eval_linspace_values, eval_matrix_index, eval_matrix_literal_rows, eval_outer_product_values,
-    eval_skew_values, eval_symmetric_values, eval_transpose_values, infer_runtime_expr_dims,
-    reshape_flat_matrix, try_eval_array_like_values,
+    declared_dims, eval_array_like_f64_values, eval_array_like_values, eval_binary_array_values,
+    eval_columns_arg, eval_cross_values, eval_linspace_values, eval_matrix_index,
+    eval_matrix_literal_rows, eval_outer_product_values, eval_skew_values, eval_symmetric_values,
+    eval_transpose_values, reshape_flat_matrix, try_eval_cat_values, try_infer_runtime_expr_dims,
 };
 pub use array_eval::{eval_array_values, eval_matrix_values, eval_shaped_array_values};
-pub(crate) use eval_expr_impl::eval_expr_or_default;
 use eval_expr_impl::*;
 pub use eval_expr_impl::{EvalError, eval_expr};
 mod runtime_env;
@@ -238,7 +238,11 @@ fn cached_indexed_keys(runtime: &EvalRuntimeState, name: &str, count: usize) -> 
             name: name.to_string(),
             count,
         },
-        || (1..=count).map(|idx| format!("{name}[{idx}]")).collect(),
+        || {
+            (1..=count)
+                .map(|idx| dae::format_subscript_key(name, &[idx]))
+                .collect()
+        },
     )
 }
 
@@ -257,7 +261,7 @@ fn cached_indexed_field_keys(
         },
         || {
             (1..=count)
-                .map(|idx| format!("{base}[{idx}].{field}"))
+                .map(|idx| format!("{}.{}", dae::format_subscript_key(base, &[idx]), field))
                 .collect()
         },
     )
@@ -278,7 +282,7 @@ fn cached_field_indexed_keys(
         },
         || {
             (1..=count)
-                .map(|idx| format!("{base}.{field}[{idx}]"))
+                .map(|idx| dae::format_subscript_key(&format!("{base}.{field}"), &[idx]))
                 .collect()
         },
     )
@@ -547,8 +551,15 @@ impl<T: SimFloat> VarEnv<T> {
         self
     }
 
-    pub fn get(&self, name: &str) -> T {
-        self.vars.get(name).copied().unwrap_or(T::zero())
+    pub fn get_optional(&self, name: &str) -> Option<T> {
+        self.vars.get(name).copied()
+    }
+
+    pub fn require(&self, name: &str) -> Result<T, EvalError> {
+        self.get_optional(name)
+            .ok_or_else(|| EvalError::MissingBinding {
+                name: name.to_string(),
+            })
     }
 
     pub fn set(&mut self, name: &str, value: T) {
@@ -594,13 +605,16 @@ fn set_env_key<T: SimFloat>(env: &mut VarEnv<T>, key: &str, value: T) {
 /// MLS §8.3.5 permits vectorized when-conditions; Rumoca lowers
 /// `when {c1, c2, ...}` into `Array` / `Tuple` guards that are active when any
 /// listed condition is true.
+#[cfg(test)]
 pub fn eval_condition_truth<T: SimFloat>(expr: &rumoca_core::Expression, env: &VarEnv<T>) -> bool {
     match expr {
         rumoca_core::Expression::Array { elements, .. }
         | rumoca_core::Expression::Tuple { elements, .. } => elements
             .iter()
             .any(|element| eval_condition_truth(element, env)),
-        _ => eval_expr_or_default::<T>(expr, env).to_bool(),
+        _ => eval_expr::<T>(expr, env)
+            .expect("test condition should evaluate")
+            .to_bool(),
     }
 }
 
@@ -626,22 +640,7 @@ pub(crate) fn eval_statement_value<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Result<T, EvalError> {
-    match eval_expr(expr, env) {
-        Ok(value) => Ok(value),
-        Err(_) if is_constructor_selection_value(expr) => Ok(eval_expr_or_default(expr, env)),
-        Err(err) => Err(err),
-    }
-}
-
-fn is_constructor_selection_value(expr: &rumoca_core::Expression) -> bool {
-    matches!(
-        expr,
-        rumoca_core::Expression::FunctionCall {
-            name,
-            is_constructor: true,
-            ..
-        } if name.as_str() == "Complex"
-    )
+    eval_expr(expr, env)
 }
 
 /// Internal runtime environment key used to evaluate implicit `Clock()`
@@ -651,35 +650,26 @@ pub const IMPLICIT_CLOCK_ACTIVE_ENV_KEY: &str = "__rumoca_implicit_clock_active"
 pub(super) fn previous_start_or_default<T: SimFloat>(
     arg: &rumoca_core::Expression,
     env: &VarEnv<T>,
-) -> T {
+) -> Result<T, EvalError> {
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
     } = arg
     else {
-        return T::zero();
+        return Ok(T::zero());
     };
 
-    let key = if subscripts.is_empty() {
-        name.as_str().to_string()
-    } else {
-        let indices = eval_subscript_indices(subscripts, env);
-        format!("{}[{}]", name.as_str(), indices.join(","))
-    };
-
-    if let Some(start) = env.start_exprs.get(key.as_str()) {
-        return eval_expr_or_default::<T>(start, env);
+    if let Some(start) = env.start_exprs.get(name.as_str()) {
+        if !subscripts.is_empty() {
+            let indexed_start = rumoca_core::Expression::Index {
+                base: Box::new(start.clone()),
+                subscripts: subscripts.to_vec(),
+                span: arg.span().unwrap_or(rumoca_core::Span::DUMMY),
+            };
+            return eval_expr::<T>(&indexed_start, env);
+        }
+        return eval_expr::<T>(start, env);
     }
-    if let Some(normalized) = normalize_var_name::<T>(&key, env)
-        && let Some(start) = env.start_exprs.get(normalized.as_str())
-    {
-        return eval_expr_or_default::<T>(start, env);
-    }
-    if let Some(base_name) = unity_subscript_base_name(&key)
-        && let Some(start) = env.start_exprs.get(base_name.as_str())
-    {
-        return eval_expr_or_default::<T>(start, env);
-    }
-    T::zero()
+    Ok(T::zero())
 }
 
 fn lowered_pre_parameter_target(name: &str) -> Option<&str> {
@@ -715,25 +705,24 @@ fn try_seed_lowered_pre_parameter_from_store(
     for flat_idx in 0..size {
         let key = dae::scalar_name_text_for_flat_index(target_name, &var.dims, flat_idx);
         if let Some(value) = lookup_pre_value_in(&env.runtime, &key) {
-            values.push(value);
+            values.push(Some(value));
             found_any = true;
         } else {
-            values.push(f64::NAN);
+            values.push(None);
         }
     }
 
     let fallback = lookup_pre_value_in(&env.runtime, target_name)
-        .or_else(|| values.iter().copied().find(|v| v.is_finite()));
+        .or_else(|| values.iter().copied().flatten().next());
     if !found_any && fallback.is_none() {
         return false;
     }
 
     let fill = fallback.unwrap_or_else(pre_store_array_fill_default);
-    for value in &mut values {
-        if !value.is_finite() {
-            *value = fill;
-        }
-    }
+    let values = values
+        .into_iter()
+        .map(|value| value.unwrap_or(fill))
+        .collect::<Vec<_>>();
     set_array_entries(env, name, &var.dims, &values);
     true
 }
@@ -904,7 +893,13 @@ pub fn try_build_partial_runtime_parameter_tail_env_with_runtime(
 ) -> Result<VarEnv<f64>, EvalError> {
     let mut env = VarEnv::new();
     env.runtime = runtime;
-    try_populate_runtime_parameter_tail_env_values(dae, p, t, &mut env)?;
+    try_populate_partial_runtime_parameter_tail_env_values(
+        dae,
+        p,
+        t,
+        &mut env,
+        ParameterSlotPolicy::Numeric,
+    )?;
     Ok(env)
 }
 
@@ -916,7 +911,7 @@ pub fn try_build_partial_runtime_parameter_tail_env_with_declared_slots_and_runt
 ) -> Result<VarEnv<f64>, EvalError> {
     let mut env = VarEnv::new();
     env.runtime = runtime;
-    try_populate_runtime_parameter_tail_env_values_with_policy(
+    try_populate_partial_runtime_parameter_tail_env_values(
         dae,
         p,
         t,
@@ -924,6 +919,20 @@ pub fn try_build_partial_runtime_parameter_tail_env_with_declared_slots_and_runt
         ParameterSlotPolicy::Declared,
     )?;
     Ok(env)
+}
+
+fn try_populate_partial_runtime_parameter_tail_env_values(
+    dae: &Dae,
+    p: &[f64],
+    t: f64,
+    env: &mut VarEnv<f64>,
+    parameter_slot_policy: ParameterSlotPolicy,
+) -> Result<(), EvalError> {
+    env.set("time", t);
+    configure_env_metadata(env, dae);
+    map_parameter_vector_into_env(env, dae, p, parameter_slot_policy);
+    inject_modelica_constants(env);
+    bind_constants(env, dae)
 }
 
 fn populate_runtime_parameter_tail_env(dae: &Dae, p: &[f64], t: f64, env: &mut VarEnv<f64>) {
@@ -1079,11 +1088,13 @@ fn bind_start_value(
         // aggregate values in the environment instead of collapsing the binding
         // to one scalar placeholder.
         let values = if var.dims.len() >= 2 {
-            eval_matrix_values(start, env)
-                .map(|matrix| matrix.into_iter().flatten().collect())
-                .unwrap_or_else(|| eval_array_values::<f64>(start, env))
+            match eval_matrix_values(start, env) {
+                Ok(Some(matrix)) => matrix.into_iter().flatten().collect(),
+                Ok(None) => eval_array_values::<f64>(start, env)?,
+                Err(err) => return Err(err),
+            }
         } else {
-            eval_array_values::<f64>(start, env)
+            eval_array_values::<f64>(start, env)?
         };
         if !values.is_empty() {
             set_array_entries(env, name, &var.dims, &values);
@@ -1282,7 +1293,7 @@ fn bind_start_values_until_stable(
                         .as_ref()
                         .and_then(|expr| expr.span())
                         .unwrap_or(var.source_span);
-                    return Err(err.with_fallback_span(span));
+                    return Err(err.with_span_if_missing(span));
                 }
             }
             changed |= env.vars.len() != before_len || env.vars.contains_key(name.as_str());

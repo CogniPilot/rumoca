@@ -26,6 +26,7 @@ mod appendix_b_validation;
 mod discrete_pre_modes;
 mod dummy_derivative;
 mod dynamic_events;
+mod event_actions;
 mod initial_values;
 pub mod layout;
 pub mod lower;
@@ -33,6 +34,9 @@ mod observation_refresh;
 mod projection_suffix;
 mod runtime_assignments;
 pub mod solve_model;
+#[cfg(test)]
+#[path = "tests/test_support.rs"]
+mod test_support;
 
 pub use ad::{
     lower_compute_block_jvp, lower_initial_residual_ad, lower_initial_residual_full_ad,
@@ -44,8 +48,9 @@ use discrete_pre_modes::discrete_pre_mode_for_equation;
 pub(crate) use discrete_pre_modes::expression_contains_event_entry_pre_operator;
 use layout::INITIAL_EVENT_PARAMETER_NAME;
 pub use layout::{build_var_layout, build_var_layout_with_solver_len};
+pub use lower::LowerError;
 use lower::{
-    LowerError, lower_discrete_rhs, lower_initial_residual, lower_initial_update_rhs,
+    lower_discrete_rhs, lower_initial_residual, lower_initial_update_rhs,
     lower_residual_rows_and_targets_from_equations, lower_root_conditions,
 };
 use lower::{
@@ -72,9 +77,14 @@ type ImplicitRowsAndTargets = (LinearOpRows, Vec<Option<solve::ScalarSlot>>);
 /// each lowering request, so there is no process-global state to clear here.
 pub fn clear_solve_lowering_runtime_state() {}
 
-pub fn lower_solve_layout(dae_model: &dae::Dae, solver_len: usize) -> solve::SolveLayout {
-    let layout = build_var_layout_with_solver_len(dae_model, solver_len);
-    lower_solve_layout_with_var_layout(dae_model, solver_len, &layout)
+pub fn lower_solve_layout(
+    dae_model: &dae::Dae,
+    solver_len: usize,
+) -> Result<solve::SolveLayout, LowerError> {
+    let layout = build_var_layout_with_solver_len(dae_model, solver_len)?;
+    Ok(lower_solve_layout_with_var_layout(
+        dae_model, solver_len, &layout,
+    ))
 }
 
 fn lower_solve_layout_with_var_layout(
@@ -182,14 +192,15 @@ pub fn lower_solve_problem_with_solver_len(
     // scalarization pass here for vector-only solver renderers. The existing
     // `phase_structural::scalarize` pass intentionally remains DAE-to-DAE so
     // DAE templates can request scalarized equation form before rendering.
-    let layout = build_var_layout_with_solver_len(dae_model, solver_len);
+    let layout = build_var_layout_with_solver_len(dae_model, solver_len)?;
     let solver_len = layout.y_scalars();
     let solve_layout = lower_solve_layout_with_var_layout(dae_model, solver_len, &layout);
 
-    let runtime_tail_updates = runtime_tail_update_names(dae_model);
+    let runtime_tail_updates = runtime_tail_update_names(dae_model)?;
     let runtime_assignment_equations =
-        runtime_assignment_equations(dae_model, &runtime_tail_updates);
-    let derivative_analysis = lower::analyze_derivative_rhs(dae_model);
+        runtime_assignment_equations(dae_model, &runtime_tail_updates)?;
+    let derivative_analysis = lower::analyze_derivative_rhs(dae_model)
+        .map_err(|err| lower_problem_context(err, "analyze derivative RHS rows"))?;
     let state_derivative_rows = derivative_analysis.equation_flags().to_vec();
     let residual_equations =
         solver_residual_equations(dae_model, &runtime_tail_updates, &state_derivative_rows);
@@ -260,7 +271,8 @@ pub fn lower_solve_problem_with_solver_len(
             ),
             update_targets: lower_discrete_update_targets(dae_model, &layout)
                 .map_err(|err| lower_problem_context(err, "lower discrete update targets"))?,
-            pre_modes: lower_discrete_pre_modes(dae_model),
+            pre_modes: lower_discrete_pre_modes(dae_model)
+                .map_err(|err| lower_problem_context(err, "lower discrete pre modes"))?,
             observation_refresh: discrete_observation_refresh,
         },
         events: solve::SolveEventPartition {
@@ -270,7 +282,8 @@ pub fn lower_solve_problem_with_solver_len(
             ),
             root_relation_memory_targets: lower::lower_root_relation_memory_targets(
                 dae_model, &layout,
-            ),
+            )
+            .map_err(|err| lower_problem_context(err, "lower root relation memory targets"))?,
             scheduled_time_events: dae_model.events.scheduled_time_events.clone(),
             dynamic_time_event_names: dynamic_events::collect_dynamic_time_event_names(dae_model),
             dynamic_time_event_rhs: solve::ScalarProgramBlock::new(
@@ -278,7 +291,7 @@ pub fn lower_solve_problem_with_solver_len(
                     .map_err(|err| lower_problem_context(err, "lower dynamic time event rows"))?,
             ),
             action_conditions: solve::ScalarProgramBlock::with_program_spans(
-                lower_event_action_conditions(dae_model, &layout)
+                event_actions::lower_event_action_conditions(dae_model, &layout)
                     .map_err(|err| lower_problem_context(err, "lower event action rows"))?,
                 dae_model
                     .events
@@ -287,7 +300,8 @@ pub fn lower_solve_problem_with_solver_len(
                     .map(|action| action.span)
                     .collect(),
             ),
-            actions: lower_event_actions(dae_model),
+            actions: event_actions::lower_event_actions(dae_model, &layout)
+                .map_err(|err| lower_problem_context(err, "lower event actions"))?,
         },
         clocks: solve::SolveClockPartition {
             periodic_event_schedules: lower_periodic_event_schedules(dae_model),
@@ -316,44 +330,6 @@ fn ir_boundary_validation_enabled() -> bool {
     ))
 }
 
-fn lower_event_action_conditions(
-    dae_model: &dae::Dae,
-    layout: &solve::VarLayout,
-) -> Result<Vec<Vec<solve::LinearOp>>, LowerError> {
-    let conditions = dae_model
-        .events
-        .event_actions
-        .iter()
-        .map(|action| action.condition.clone())
-        .collect::<Vec<_>>();
-    lower::lower_expression_rows_from_expressions(&conditions, layout, &dae_model.symbols.functions)
-}
-
-fn lower_event_actions(dae_model: &dae::Dae) -> Vec<solve::SolveEventAction> {
-    dae_model
-        .events
-        .event_actions
-        .iter()
-        .map(|action| {
-            let (kind, message) = match &action.kind {
-                dae::DaeEventActionKind::Assert { message } => {
-                    (solve::SolveEventActionKind::Assert, Some(message.clone()))
-                }
-                dae::DaeEventActionKind::Terminate { message } => (
-                    solve::SolveEventActionKind::Terminate,
-                    Some(message.clone()),
-                ),
-            };
-            solve::SolveEventAction {
-                kind,
-                message,
-                span: action.span,
-                origin: action.origin.clone(),
-            }
-        })
-        .collect()
-}
-
 fn program_spans_for_equations(equations: &[(usize, &dae::Equation)]) -> Vec<rumoca_core::Span> {
     equations
         .iter()
@@ -366,7 +342,8 @@ fn lower_initialization_system(
     layout: &solve::VarLayout,
     solve_layout: &solve::SolveLayout,
 ) -> Result<solve::InitializationSolveSystem, LowerError> {
-    let residual_equations = lower::initial_residual_equations(dae_model, layout);
+    let residual_equations = lower::initial_residual_equations(dae_model, layout)
+        .map_err(|err| lower_problem_context(err, "collect initial residual equations"))?;
     let row_targets =
         lower_continuous_row_targets(dae_model, residual_equations.iter().copied(), layout)
             .map_err(|err| lower_problem_context(err, "lower initial row targets"))?;
@@ -492,20 +469,15 @@ fn lower_periodic_event_schedules(dae_model: &dae::Dae) -> Vec<solve::PeriodicEv
 
 fn lower_problem_context(err: LowerError, context: &str) -> LowerError {
     match err {
-        err @ (LowerError::Unsupported { .. } | LowerError::UnsupportedAt { .. }) => {
-            err.with_context(context)
-        }
-        err @ LowerError::Spanned { .. } => err.with_context(context),
+        // A contract violation's message is already precise; adding lowering
+        // context buries the invariant that was broken.
         err @ LowerError::ContractViolation { .. } => err,
-        LowerError::MissingBinding { name } => LowerError::Unsupported {
-            reason: format!("{context}: missing variable binding `{name}`"),
-        },
-        LowerError::MissingFunction { name } => LowerError::Unsupported {
-            reason: format!("{context}: missing function `{name}`"),
-        },
-        LowerError::InvalidFunction { name, reason } => LowerError::Unsupported {
-            reason: format!("{context}: invalid function `{name}`: {reason}"),
-        },
+        // Keeps its identity so the outermost projection boundary can still
+        // recover it as a decline.
+        err @ LowerError::ProjectionBudgetExceeded { .. } => err,
+        // `with_context` preserves every variant's typed identity, so no
+        // error needs to be re-encoded as a reason string here.
+        err => err.with_context(context),
     }
 }
 
@@ -1096,7 +1068,7 @@ fn lower_continuous_row_targets_for_equation(
         return Ok(targets);
     }
     for flat_index in 0..row_count {
-        let Some(name) = continuous_row_target_name(dae_model, eq, layout, flat_index, row_count)
+        let Some(name) = continuous_row_target_name(dae_model, eq, layout, flat_index, row_count)?
         else {
             targets.push(None);
             continue;
@@ -1161,13 +1133,23 @@ fn continuous_row_target_name(
     layout: &solve::VarLayout,
     flat_index: usize,
     scalar_count: usize,
-) -> Option<String> {
-    eq.lhs
-        .as_ref()
-        .map(|lhs| continuous_equation_scalar_name(dae_model, lhs, flat_index, scalar_count))
-        .or_else(|| {
-            residual_expression_target_name(dae_model, layout, &eq.rhs, flat_index, scalar_count)
-        })
+) -> Result<Option<String>, LowerError> {
+    if let Some(lhs) = eq.lhs.as_ref() {
+        return continuous_equation_scalar_name(
+            dae_model,
+            lhs.var_name(),
+            flat_index,
+            scalar_count,
+            eq.span,
+        );
+    }
+    Ok(residual_expression_target_name(
+        dae_model,
+        layout,
+        &eq.rhs,
+        flat_index,
+        scalar_count,
+    ))
 }
 
 fn continuous_equation_scalar_name(
@@ -1175,12 +1157,42 @@ fn continuous_equation_scalar_name(
     lhs: &rumoca_core::VarName,
     flat_index: usize,
     scalar_count: usize,
-) -> String {
+    span: rumoca_core::Span,
+) -> Result<Option<String>, LowerError> {
     if scalar_count <= 1 {
-        return lhs.as_str().to_string();
+        return Ok(Some(lhs.as_str().to_string()));
     }
-    let dims = continuous_equation_dims(dae_model, lhs).unwrap_or(&[]);
-    dae::scalar_name_text_for_flat_index(lhs.as_str(), dims, flat_index)
+    let Some(dims) = continuous_equation_dims(dae_model, lhs) else {
+        if continuous_equation_known_non_target_dims(dae_model, lhs).is_some() {
+            return Ok(None);
+        }
+        return Err(LowerError::ContractViolation {
+            reason: format!(
+                "continuous equation array LHS `{}` must be a known DAE variable",
+                lhs.as_str()
+            ),
+            span,
+        });
+    };
+    Ok(Some(dae::scalar_name_text_for_flat_index(
+        lhs.as_str(),
+        dims,
+        flat_index,
+    )))
+}
+
+fn continuous_equation_known_non_target_dims<'a>(
+    dae_model: &'a dae::Dae,
+    lhs: &rumoca_core::VarName,
+) -> Option<&'a [i64]> {
+    dae_model
+        .variables
+        .inputs
+        .get(lhs)
+        .or_else(|| dae_model.variables.discrete_reals.get(lhs))
+        .or_else(|| dae_model.variables.discrete_valued.get(lhs))
+        .or_else(|| dae_model.variables.parameters.get(lhs))
+        .map(|var| var.dims.as_slice())
 }
 
 fn residual_expression_target_name(
@@ -1468,11 +1480,23 @@ fn var_ref_target_name(
         let indices = literal_positive_indices(subscripts)?;
         return Some(dae::format_subscript_key(name.as_str(), &indices));
     }
-    Some(continuous_equation_scalar_name(
-        dae_model,
-        name.var_name(),
+    continuous_equation_scalar_name_if_known(dae_model, name.var_name(), flat_index, scalar_count)
+}
+
+fn continuous_equation_scalar_name_if_known(
+    dae_model: &dae::Dae,
+    lhs: &rumoca_core::VarName,
+    flat_index: usize,
+    scalar_count: usize,
+) -> Option<String> {
+    if scalar_count <= 1 {
+        return Some(lhs.as_str().to_string());
+    }
+    let dims = continuous_equation_dims(dae_model, lhs)?;
+    Some(dae::scalar_name_text_for_flat_index(
+        lhs.as_str(),
+        dims,
         flat_index,
-        scalar_count,
     ))
 }
 
@@ -1569,8 +1593,11 @@ fn continuous_equation_dims<'a>(
         .map(|var| var.dims.as_slice())
 }
 
-pub fn solver_vector_names(dae_model: &dae::Dae, n_total: usize) -> Vec<String> {
-    lower_solve_layout(dae_model, n_total).solver_maps.names
+pub fn solver_vector_names(
+    dae_model: &dae::Dae,
+    n_total: usize,
+) -> Result<Vec<String>, LowerError> {
+    Ok(lower_solve_layout(dae_model, n_total)?.solver_maps.names)
 }
 
 pub fn build_solver_name_index_maps(
@@ -1636,7 +1663,7 @@ fn lower_discrete_update_targets(
     dae_model: &dae::Dae,
     layout: &solve::VarLayout,
 ) -> Result<Vec<solve::ScalarSlot>, LowerError> {
-    let equations = normalized_discrete_update_equations(dae_model);
+    let equations = normalized_discrete_update_equations(dae_model)?;
     lower_update_targets_from_equations(dae_model, layout, &equations)
 }
 
@@ -1654,7 +1681,13 @@ fn lower_update_targets_from_equations(
         };
         let scalar_count = eq.scalar_count.max(1);
         for flat_index in 0..scalar_count {
-            let name = discrete_update_scalar_name(dae_model, lhs, flat_index, scalar_count);
+            let name = discrete_update_scalar_name(
+                dae_model,
+                lhs.var_name(),
+                flat_index,
+                scalar_count,
+                eq.span,
+            )?;
             let Some(slot) = layout.binding(name.as_str()) else {
                 return Err(LowerError::MissingBinding { name });
             };
@@ -1664,14 +1697,16 @@ fn lower_update_targets_from_equations(
     Ok(targets)
 }
 
-fn lower_discrete_pre_modes(dae_model: &dae::Dae) -> Vec<solve::DiscreteEventPreMode> {
+fn lower_discrete_pre_modes(
+    dae_model: &dae::Dae,
+) -> Result<Vec<solve::DiscreteEventPreMode>, LowerError> {
     let mut modes = Vec::new();
-    for eq in normalized_discrete_update_equations(dae_model) {
+    for eq in normalized_discrete_update_equations(dae_model)? {
         let scalar_count = eq.scalar_count.max(1);
         let mode = discrete_pre_mode_for_equation(dae_model, &eq);
         modes.extend(std::iter::repeat_n(mode, scalar_count));
     }
-    modes
+    Ok(modes)
 }
 
 fn collect_expression_read_slots(
@@ -1784,12 +1819,24 @@ fn discrete_update_scalar_name(
     lhs: &rumoca_core::VarName,
     flat_index: usize,
     scalar_count: usize,
-) -> String {
+    span: rumoca_core::Span,
+) -> Result<String, LowerError> {
     if scalar_count <= 1 {
-        return lhs.as_str().to_string();
+        return Ok(lhs.as_str().to_string());
     }
-    let dims = discrete_update_dims(dae_model, lhs).unwrap_or(&[]);
-    dae::scalar_name_text_for_flat_index(lhs.as_str(), dims, flat_index)
+    let dims =
+        discrete_update_dims(dae_model, lhs).ok_or_else(|| LowerError::ContractViolation {
+            reason: format!(
+                "discrete update array LHS `{}` must be a known DAE variable",
+                lhs.as_str()
+            ),
+            span,
+        })?;
+    Ok(dae::scalar_name_text_for_flat_index(
+        lhs.as_str(),
+        dims,
+        flat_index,
+    ))
 }
 
 fn discrete_update_dims<'a>(
@@ -1853,15 +1900,8 @@ fn insert_solver_name_aliases(
                 continue;
             }
             name_to_idx
-                .entry(format!("{name}[{}]", flat_idx + 1))
+                .entry(canonical_name)
                 .or_insert(offset + flat_idx);
-            if let Some(subs) = dae::flat_index_to_subscripts(&var.dims, flat_idx)
-                && subs.len() > 1
-            {
-                name_to_idx
-                    .entry(dae::format_subscript_key(name.as_str(), &subs))
-                    .or_insert(offset + flat_idx);
-            }
         }
         offset += size;
     }

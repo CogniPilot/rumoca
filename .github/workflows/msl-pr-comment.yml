@@ -5,11 +5,14 @@ on:
     workflows: ['CI']
     types: [completed]
 
+# Commenting on a pull request through the issues API requires
+# `pull-requests: write` (GitHub returns 403 "Resource not accessible by
+# integration" with only `issues: write` when the target issue is a PR).
 permissions:
   actions: read
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   publish:

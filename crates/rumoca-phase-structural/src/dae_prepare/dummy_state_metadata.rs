@@ -272,7 +272,7 @@ fn equation_linear_row(dae: &Dae, eq: &Equation) -> Option<LinearRow> {
     }
     if let Some(lhs) = &eq.lhs {
         let lhs_expr = Expression::VarRef {
-            name: rumoca_core::Reference::from_var_name(lhs.clone()),
+            name: lhs.clone(),
             subscripts: Vec::new(),
             span: rumoca_core::Span::DUMMY,
         };

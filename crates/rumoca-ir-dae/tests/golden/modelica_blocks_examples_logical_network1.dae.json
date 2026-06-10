@@ -37,7 +37,8 @@
       "state_select": "Default",
       "description": "Periodic Boolean sample interval",
       "causality": "calculatedParameter",
-      "is_tunable": false
+      "is_tunable": false,
+      "origin": "source"
     }
   },
   "constants": {},
@@ -74,7 +75,8 @@
       "state_select": "Default",
       "description": "Latched numeric visualization of logical state",
       "causality": "local",
-      "is_tunable": false
+      "is_tunable": false,
+      "origin": "source"
     }
   },
   "m": {
@@ -110,7 +112,8 @@
       "state_select": "Default",
       "description": "Logical block output",
       "causality": "local",
-      "is_tunable": false
+      "is_tunable": false,
+      "origin": "source"
     },
     "not1.y": {
       "name": "not1.y",
@@ -144,7 +147,8 @@
       "state_select": "Default",
       "description": "Logical inversion output",
       "causality": "local",
-      "is_tunable": false
+      "is_tunable": false,
+      "origin": "source"
     }
   },
   "f_x": [],
@@ -393,6 +397,7 @@
     "interface_flow_count": 0,
     "overconstrained_interface_count": 0,
     "oc_break_edge_scalar_count": 0,
-    "model_description": "Schema golden derived from Modelica.Blocks.Examples.LogicalNetwork1 surface: Boolean network with timed trigger"
+    "model_description": "Schema golden derived from Modelica.Blocks.Examples.LogicalNetwork1 surface: Boolean network with timed trigger",
+    "symbol_ancestry": {}
   }
 }

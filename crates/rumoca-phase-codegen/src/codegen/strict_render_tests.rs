@@ -163,22 +163,66 @@ fn test_render_smooth_requires_expression_argument() {
 }
 
 #[test]
-fn test_render_sample_requires_start_and_interval() {
+fn test_render_inferred_clock_sample_renders_sampled_value() {
     let dae = dae::Dae::new();
     let template = r#"
 {{ render_expr({
     "BuiltinCall": {
         "function": "Sample",
-        "args": [{"Literal": {"value": {"Real": 0.0}}}]
+        "args": [{"VarRef": {"name": "sampled.u", "subscripts": []}}]
     }
 }, {}) }}
 "#;
-    let err = render_template(&dae, template).expect_err("incomplete sample call must fail");
+    let out = render_template(&dae, template).expect("sample(u) should render sampled value");
+    assert!(
+        out.contains("sampled_u"),
+        "expected sample(u) to render its sampled expression, got: {out}"
+    );
+}
+
+#[test]
+fn test_render_sample_requires_argument() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{{ render_expr({
+    "BuiltinCall": {
+        "function": "Sample",
+        "args": []
+    }
+}, {}) }}
+"#;
+    let err = render_template(&dae, template).expect_err("empty sample call must fail");
     assert_miette_template_span(&err);
     let msg = format!("{err}");
     assert!(
-        msg.contains("BuiltinCall Sample expected at least 2 argument"),
+        msg.contains("BuiltinCall Sample missing required argument 0"),
         "expected strict sample diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_render_periodic_sample_requires_prior_lowering() {
+    let dae = dae::Dae::new();
+    let template = r#"
+{{ render_expr({
+    "BuiltinCall": {
+        "function": "Sample",
+        "args": [
+            {"Literal": {"value": {"Real": 0.0}}},
+            {"Literal": {"value": {"Real": 0.1}}}
+        ]
+    }
+}, {}) }}
+"#;
+    let err = render_template(&dae, template)
+        .expect_err("periodic sample call must be lowered before rendering");
+    assert_miette_template_span(&err);
+    let msg = format!("{err}");
+    assert!(
+        msg.contains(
+            "BuiltinCall Sample with 2 arguments must be lowered before template rendering"
+        ),
+        "expected strict periodic sample diagnostic, got: {msg}"
     );
 }
 

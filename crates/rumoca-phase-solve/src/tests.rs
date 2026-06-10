@@ -5,6 +5,7 @@ mod projection_plan_more;
 fn array_var(name: &str, dims: &[i64]) -> dae::Variable {
     dae::Variable {
         name: rumoca_core::VarName::new(name),
+        component_ref: Some(test_component_ref_from_name(name)),
         dims: dims.to_vec(),
         ..Default::default()
     }
@@ -13,8 +14,57 @@ fn array_var(name: &str, dims: &[i64]) -> dae::Variable {
 fn scalar_var(name: &str) -> dae::Variable {
     dae::Variable {
         name: rumoca_core::VarName::new(name),
+        component_ref: Some(test_component_ref_from_name(name)),
         ..Default::default()
     }
+}
+
+fn test_component_ref_from_name(name: &str) -> rumoca_core::ComponentReference {
+    crate::test_support::component_ref_from_name(name)
+}
+
+#[test]
+fn continuous_equation_scalar_name_reports_missing_array_lhs_with_span() {
+    let dae_model = dae::Dae::new();
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(9), 13, 21);
+
+    let err = super::continuous_equation_scalar_name(
+        &dae_model,
+        &rumoca_core::VarName::new("missingArray"),
+        0,
+        2,
+        span,
+    )
+    .expect_err("array continuous equation target must resolve to a DAE variable");
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(matches!(err, LowerError::ContractViolation { .. }));
+    assert!(
+        err.reason()
+            .contains("continuous equation array LHS `missingArray`")
+    );
+}
+
+#[test]
+fn discrete_update_scalar_name_reports_missing_array_lhs_with_span() {
+    let dae_model = dae::Dae::new();
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId(10), 23, 31);
+
+    let err = super::discrete_update_scalar_name(
+        &dae_model,
+        &rumoca_core::VarName::new("missingDiscreteArray"),
+        0,
+        2,
+        span,
+    )
+    .expect_err("array discrete update target must resolve to a DAE variable");
+
+    assert_eq!(err.source_span(), Some(span));
+    assert!(matches!(err, LowerError::ContractViolation { .. }));
+    assert!(
+        err.reason()
+            .contains("discrete update array LHS `missingDiscreteArray`")
+    );
 }
 
 #[test]
@@ -226,7 +276,7 @@ fn algebraic_projection_plan_merges_blocks_that_share_row_targets() {
 
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::VarName::new(name).into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
         subscripts: Vec::new(),
         span: rumoca_core::Span::DUMMY,
     }
@@ -234,7 +284,7 @@ fn var(name: &str) -> rumoca_core::Expression {
 
 fn indexed_var(name: &str, subscripts: Vec<rumoca_core::Subscript>) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::VarName::new(name).into(),
+        name: rumoca_core::Reference::from_component_reference(test_component_ref_from_name(name)),
         subscripts,
         span: rumoca_core::Span::DUMMY,
     }
@@ -609,7 +659,7 @@ fn solve_appendix_b_validation_rejects_invalid_random_state_register_range() {
 }
 
 #[test]
-fn solver_name_index_maps_include_matrix_aliases() {
+fn solver_name_index_maps_use_canonical_matrix_subscripts() {
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -626,10 +676,10 @@ fn solver_name_index_maps_include_matrix_aliases() {
         ]
     );
     assert_eq!(maps.name_to_idx.get("M"), Some(&0));
-    assert_eq!(maps.name_to_idx.get("M[1]"), Some(&0));
+    assert_eq!(maps.name_to_idx.get("M[1]"), None);
     assert_eq!(maps.name_to_idx.get("M[1,1]"), Some(&0));
     assert_eq!(maps.name_to_idx.get("M[1,2]"), Some(&1));
-    assert_eq!(maps.name_to_idx.get("M[5]"), Some(&4));
+    assert_eq!(maps.name_to_idx.get("M[5]"), None);
     assert_eq!(maps.name_to_idx.get("M[2,1]"), Some(&4));
     assert_eq!(maps.name_to_idx.get("M[3,4]"), Some(&11));
     assert_eq!(
@@ -643,7 +693,7 @@ fn solver_name_index_maps_include_matrix_aliases() {
 }
 
 #[test]
-fn solver_name_index_aliases_respect_truncated_solver_len() {
+fn solver_name_index_canonical_names_respect_truncated_solver_len() {
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -653,11 +703,11 @@ fn solver_name_index_aliases_respect_truncated_solver_len() {
     let maps = build_solver_name_index_maps(&dae_model, 3);
 
     assert_eq!(maps.names, vec!["M[1,1]", "M[1,2]", "M[2,1]"]);
-    assert_eq!(maps.name_to_idx.get("M[1]"), Some(&0));
+    assert_eq!(maps.name_to_idx.get("M[1]"), None);
     assert_eq!(maps.name_to_idx.get("M[1,1]"), Some(&0));
-    assert_eq!(maps.name_to_idx.get("M[2]"), Some(&1));
+    assert_eq!(maps.name_to_idx.get("M[2]"), None);
     assert_eq!(maps.name_to_idx.get("M[1,2]"), Some(&1));
-    assert_eq!(maps.name_to_idx.get("M[3]"), Some(&2));
+    assert_eq!(maps.name_to_idx.get("M[3]"), None);
     assert_eq!(maps.name_to_idx.get("M[2,1]"), Some(&2));
     assert_eq!(maps.name_to_idx.get("M[2,2]"), None);
 }
@@ -682,8 +732,10 @@ fn solver_name_index_aliases_do_not_reintroduce_runtime_discrete_names() {
         .discrete_valued
         .insert(rumoca_core::VarName::new("dup"), scalar_var("dup"));
 
-    let layout = layout::build_var_layout_with_solver_len(&dae_model, 2);
-    let solve_layout = lower_solve_layout(&dae_model, 2);
+    let layout = layout::build_var_layout_with_solver_len(&dae_model, 2)
+        .expect("test DAE layout should build");
+    let solve_layout =
+        lower_solve_layout(&dae_model, 2).expect("test DAE solve layout should build");
 
     assert_eq!(solve_layout.solver_maps.names, vec!["a", "b"]);
     assert_eq!(solve_layout.solver_maps.name_to_idx.get("a"), Some(&0));

@@ -24,6 +24,7 @@ struct RowLoweringContext<'a> {
     triggered_clock_conditions: Option<&'a [rumoca_core::Expression]>,
     discrete_valued_names: Option<&'a IndexMap<rumoca_core::VarName, dae::Variable>>,
     variable_starts: Option<&'a IndexMap<String, rumoca_core::Expression>>,
+    dae_variables: Option<&'a dae::DaeVariables>,
     structural_bindings: Option<&'a IndexMap<String, f64>>,
     direct_assignments: Option<&'a IndexMap<String, DirectAssignmentValue>>,
     indexed_bindings: IndexedBindingMap,
@@ -37,6 +38,7 @@ pub(super) struct RuntimeRowMetadata<'a> {
     pub(super) triggered_clock_conditions: &'a [rumoca_core::Expression],
     pub(super) discrete_valued_names: &'a IndexMap<rumoca_core::VarName, dae::Variable>,
     pub(super) variable_starts: &'a IndexMap<String, rumoca_core::Expression>,
+    pub(super) dae_variables: Option<&'a dae::DaeVariables>,
     pub(super) structural_bindings: Option<&'a IndexMap<String, f64>>,
     pub(super) guard_target_start_before_first_clock_tick: bool,
 }
@@ -57,6 +59,7 @@ pub fn lower_expression_rows_from_expressions(
             triggered_clock_conditions: None,
             discrete_valued_names: None,
             variable_starts: None,
+            dae_variables: None,
             structural_bindings: None,
             direct_assignments: None,
             indexed_bindings,
@@ -82,6 +85,7 @@ pub fn lower_initial_expression_rows_from_expressions(
             triggered_clock_conditions: None,
             discrete_valued_names: None,
             variable_starts: None,
+            dae_variables: None,
             structural_bindings: None,
             direct_assignments: None,
             indexed_bindings,
@@ -110,6 +114,7 @@ pub fn lower_expression_rows_from_expressions_with_runtime_metadata(
             triggered_clock_conditions: None,
             discrete_valued_names: None,
             variable_starts: Some(variable_starts),
+            dae_variables: None,
             structural_bindings: None,
             direct_assignments: None,
             indexed_bindings,
@@ -138,6 +143,7 @@ pub fn lower_initial_expression_rows_from_expressions_with_runtime_metadata(
             triggered_clock_conditions: None,
             discrete_valued_names: None,
             variable_starts: Some(variable_starts),
+            dae_variables: None,
             structural_bindings: None,
             direct_assignments: None,
             indexed_bindings,
@@ -151,10 +157,7 @@ pub(super) fn lower_expression_rows_from_expressions_with_structural_bindings(
     expressions: &[rumoca_core::Expression],
     layout: &VarLayout,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-    clock_intervals: &IndexMap<String, f64>,
-    clock_timings: &IndexMap<String, dae::ClockSchedule>,
-    variable_starts: &IndexMap<String, rumoca_core::Expression>,
-    structural_bindings: &IndexMap<String, f64>,
+    metadata: RuntimeRowMetadata<'_>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
     lower_expression_rows_from_expressions_with_context(
@@ -162,16 +165,18 @@ pub(super) fn lower_expression_rows_from_expressions_with_structural_bindings(
         RowLoweringContext {
             layout,
             functions,
-            clock_intervals: Some(clock_intervals),
-            clock_timings: Some(clock_timings),
+            clock_intervals: Some(metadata.clock_intervals),
+            clock_timings: Some(metadata.clock_timings),
             triggered_clock_conditions: None,
             discrete_valued_names: None,
-            variable_starts: Some(variable_starts),
-            structural_bindings: Some(structural_bindings),
+            variable_starts: Some(metadata.variable_starts),
+            dae_variables: metadata.dae_variables,
+            structural_bindings: metadata.structural_bindings,
             direct_assignments: None,
             indexed_bindings,
             is_initial_mode: false,
-            guard_target_start_before_first_clock_tick: false,
+            guard_target_start_before_first_clock_tick: metadata
+                .guard_target_start_before_first_clock_tick,
         },
     )
 }
@@ -180,10 +185,7 @@ pub(super) fn lower_observation_rows_from_expressions_with_structural_bindings(
     expressions: &[rumoca_core::Expression],
     layout: &VarLayout,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-    clock_intervals: &IndexMap<String, f64>,
-    clock_timings: &IndexMap<String, dae::ClockSchedule>,
-    variable_starts: &IndexMap<String, rumoca_core::Expression>,
-    structural_bindings: &IndexMap<String, f64>,
+    metadata: RuntimeRowMetadata<'_>,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
     let indexed_bindings = Arc::new(build_indexed_binding_map(layout));
     lower_observation_rows_from_expressions_with_context(
@@ -191,16 +193,18 @@ pub(super) fn lower_observation_rows_from_expressions_with_structural_bindings(
         RowLoweringContext {
             layout,
             functions,
-            clock_intervals: Some(clock_intervals),
-            clock_timings: Some(clock_timings),
+            clock_intervals: Some(metadata.clock_intervals),
+            clock_timings: Some(metadata.clock_timings),
             triggered_clock_conditions: None,
             discrete_valued_names: None,
-            variable_starts: Some(variable_starts),
-            structural_bindings: Some(structural_bindings),
+            variable_starts: Some(metadata.variable_starts),
+            dae_variables: metadata.dae_variables,
+            structural_bindings: metadata.structural_bindings,
             direct_assignments: None,
             indexed_bindings,
             is_initial_mode: false,
-            guard_target_start_before_first_clock_tick: false,
+            guard_target_start_before_first_clock_tick: metadata
+                .guard_target_start_before_first_clock_tick,
         },
     )
 }
@@ -286,6 +290,7 @@ pub(super) fn lower_expression_rows_with_mode<'a>(
         triggered_clock_conditions: Some(runtime.triggered_clock_conditions),
         discrete_valued_names: Some(runtime.discrete_valued_names),
         variable_starts: Some(runtime.variable_starts),
+        dae_variables: runtime.dae_variables,
         structural_bindings: runtime.structural_bindings,
         direct_assignments: None,
         indexed_bindings,
@@ -329,8 +334,8 @@ fn lower_equation_expression_rows(
         span,
     } = &equation.rhs
     {
-        let lhs_dims = builder.infer_expr_dims(lhs, &scope);
-        let rhs_dims = builder.infer_expr_dims(rhs, &scope);
+        let lhs_dims = builder.infer_expr_dims(lhs, &scope)?;
+        let rhs_dims = builder.infer_expr_dims(rhs, &scope)?;
         if let Some(shape) =
             super::array_values::matmul_shape_from_dims(&lhs_dims, &rhs_dims, scalar_count)
         {
@@ -635,7 +640,7 @@ fn lower_array_sample_expression_rows(
 
     let probe = lower_builder_for_context(ctx, row_namespace);
     let scope = Scope::new();
-    let dims = probe.infer_expr_dims(&args[0], &scope);
+    let dims = probe.infer_expr_dims(&args[0], &scope)?;
     if dims.iter().product::<usize>() != scalar_count {
         return Err(unsupported_at(
             format!(
@@ -843,7 +848,7 @@ fn lower_residual_rows_from_equations_core<'a>(
         &state_names,
         layout,
         &structural_bindings,
-    );
+    )?;
     let equations: Vec<(usize, &dae::Equation)> = equations.into_iter().collect();
     let mut rows = Vec::with_capacity(equations.len());
     for (row_idx, eq) in equations {
@@ -856,6 +861,7 @@ fn lower_residual_rows_from_equations_core<'a>(
             triggered_clock_conditions: Some(&dae_model.clocks.triggered_conditions),
             discrete_valued_names: Some(&dae_model.variables.discrete_valued),
             variable_starts: Some(&dae_model.metadata.variable_starts),
+            dae_variables: Some(&dae_model.variables),
             structural_bindings: Some(&structural_bindings),
             direct_assignments: Some(&direct_assignments),
             indexed_bindings: Arc::clone(&indexed_bindings),
@@ -917,7 +923,7 @@ fn lower_equation_residual_rows(
         residual_expr = rumoca_core::Expression::Binary {
             op: OpBinary::Sub,
             lhs: Box::new(rumoca_core::Expression::VarRef {
-                name: lhs.clone().into(),
+                name: lhs.clone(),
                 subscripts: Vec::new(),
                 span: eq.span,
             }),
@@ -977,7 +983,7 @@ fn lower_scalarized_record_residual_rows(
     {
         let residuals = fields.iter().map(|field| {
             let lhs_base = rumoca_core::Expression::VarRef {
-                name: lhs.clone().into(),
+                name: lhs.clone(),
                 subscripts: Vec::new(),
                 span: eq.span,
             };
@@ -1054,22 +1060,12 @@ fn residual_row_context(err: LowerError, row_idx: usize, eq: &dae::Equation) -> 
         eq.origin, eq.scalar_count
     );
     match err.with_fallback_span(eq.span) {
-        err @ (LowerError::Unsupported { .. } | LowerError::UnsupportedAt { .. }) => {
-            err.with_context(context)
-        }
-        err @ LowerError::Spanned { .. } => err.with_context(context),
-        err @ LowerError::ContractViolation { .. } => err.with_context(context),
-        LowerError::MissingBinding { name } => {
-            unsupported_at(format!("missing variable binding `{name}`"), eq.span)
-                .with_context(context)
-        }
-        LowerError::MissingFunction { name } => {
-            unsupported_at(format!("missing function `{name}`"), eq.span).with_context(context)
-        }
-        LowerError::InvalidFunction { name, reason } => {
-            unsupported_at(format!("invalid function `{name}`: {reason}"), eq.span)
-                .with_context(context)
-        }
+        // Keeps its identity so the outermost projection boundary can still
+        // recover it as a decline.
+        err @ LowerError::ProjectionBudgetExceeded { .. } => err,
+        // `with_context` preserves every variant's typed identity, so no
+        // error needs to be re-encoded as a reason string here.
+        err => err.with_context(context),
     }
 }
 
@@ -1107,6 +1103,7 @@ fn lower_builder_for_context<'a>(
             triggered_clock_conditions: ctx.triggered_clock_conditions,
             discrete_valued_names: ctx.discrete_valued_names,
             variable_starts: ctx.variable_starts,
+            dae_variables: ctx.dae_variables,
             indexed_bindings: Some(&ctx.indexed_bindings),
             is_initial_mode: ctx.is_initial_mode,
         },

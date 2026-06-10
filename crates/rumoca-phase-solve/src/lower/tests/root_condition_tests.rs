@@ -24,7 +24,7 @@ fn lower_discrete_rhs_skips_untargeted_condition_rows() {
         "targetless relation row",
     ));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_discrete_rhs(&dae_model, &layout)
         .expect("targetless relation rows should not be discrete assignments");
 
@@ -59,7 +59,7 @@ fn lower_root_conditions_emit_unbiased_relation_surface() {
         "condition memory",
     ));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_root_conditions(&dae_model, &layout).expect("root lowering should succeed");
 
     assert_eq!(rows.len(), 1);
@@ -136,7 +136,7 @@ fn lower_root_conditions_emit_unbiased_aggregate_relation_surfaces() {
             2,
         ));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_root_conditions(&dae_model, &layout).expect("root lowering should succeed");
     assert_eq!(rows.len(), 2);
 
@@ -192,7 +192,7 @@ fn lower_root_conditions_keep_enum_literal_relations_active() {
         var("LimiterHomotopy.LowerLimit"),
     ));
 
-    let layout = build_var_layout(&dae_model);
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let rows = lower_root_conditions(&dae_model, &layout)
         .expect("enum-literal relation should lower as an active root");
 

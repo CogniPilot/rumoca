@@ -429,7 +429,7 @@ fn validate_condition_partition(dae_model: &dae::Dae) -> Result<(), ToDaeError> 
         .enumerate()
     {
         let expected_lhs = rumoca_core::VarName::new(format!("{}[{}]", condition_name, index + 1));
-        if equation.lhs.as_ref() != Some(&expected_lhs) {
+        if equation.lhs.as_ref().map(rumoca_core::Reference::var_name) != Some(&expected_lhs) {
             return Err(ToDaeError::condition_partition_violation(format!(
                 "f_c[{index}] must define `{expected_lhs}` but found lhs={:?}",
                 equation.lhs
@@ -469,14 +469,14 @@ fn validate_discrete_valued_solved_form(dae_model: &dae::Dae) -> Result<(), ToDa
             )
         })?;
 
-        if !is_discrete_valued_name(dae_model, lhs) {
+        if !is_discrete_valued_name(dae_model, lhs.var_name()) {
             return Err(ToDaeError::discrete_solved_form_violation(
                 format!("f_m lhs `{lhs}` is not a discrete-valued variable"),
                 equation.span,
             ));
         }
 
-        if let Some(previous) = assignments.insert(lhs.clone(), equation) {
+        if let Some(previous) = assignments.insert(lhs.var_name().clone(), equation) {
             return Err(ToDaeError::discrete_solved_form_violation(
                 format!(
                     "duplicate f_m assignment target `{lhs}` (new origin='{}', prior origin='{}')",
@@ -541,13 +541,13 @@ fn validate_discrete_real_solved_form(dae_model: &dae::Dae) -> Result<(), ToDaeE
             continue;
         };
 
-        if !is_discrete_real_or_state_name(dae_model, lhs) {
+        if !is_discrete_real_or_state_name(dae_model, lhs.var_name()) {
             return Err(ToDaeError::runtime_contract_violation(format!(
                 "f_z lhs `{lhs}` is not an event-updated Real target (state or discrete Real)"
             )));
         }
 
-        if let Some(previous) = assignments.insert(lhs.clone(), equation) {
+        if let Some(previous) = assignments.insert(lhs.var_name().clone(), equation) {
             return Err(ToDaeError::runtime_contract_violation(format!(
                 "duplicate f_z assignment target `{lhs}` (new origin='{}', prior origin='{}')",
                 equation.origin, previous.origin
@@ -844,6 +844,13 @@ mod tests {
     fn lit(value: f64) -> rumoca_core::Expression {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(value),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn lit_string(value: &str) -> rumoca_core::Expression {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(value.to_string()),
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -1220,7 +1227,7 @@ mod tests {
         dae_model.events.event_actions.push(dae::DaeEventAction {
             condition: var_ref("failed"),
             kind: dae::DaeEventActionKind::Assert {
-                message: "failed".to_string(),
+                message: lit_string("failed"),
             },
             span: rumoca_core::Span::DUMMY,
             origin: "assert action".to_string(),
@@ -1228,7 +1235,7 @@ mod tests {
         dae_model.events.event_actions.push(dae::DaeEventAction {
             condition: var_ref("done"),
             kind: dae::DaeEventActionKind::Terminate {
-                message: "done".to_string(),
+                message: lit_string("done"),
             },
             span: rumoca_core::Span::DUMMY,
             origin: "terminate action".to_string(),

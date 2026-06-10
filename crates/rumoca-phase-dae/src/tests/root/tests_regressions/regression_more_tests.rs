@@ -23,7 +23,7 @@ fn test_anchored_expandable_member_via_input_alias_is_not_interface_input() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 variability: rumoca_core::Variability::Empty,
                 causality,
@@ -31,7 +31,7 @@ fn test_anchored_expandable_member_via_input_alias_is_not_interface_input() {
                 connected: true,
                 from_expandable_connector,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -126,11 +126,11 @@ fn test_infer_scalar_count_arithmetic_subscript_does_not_inflate() {
     for name in ["pc[1].i", "pc[2].i"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -152,12 +152,12 @@ fn test_extract_lhs_var_size_keeps_symbolic_tail_subscript_scalar_equation() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("medium_T[1].X"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("medium_T[1].X"),
             dims: vec![2],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let residual = Expression::Binary {
@@ -190,12 +190,12 @@ fn test_extract_lhs_var_size_multilayer_subscript_fallback_is_scalar() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("bus.signal"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("bus.signal"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let residual = Expression::Binary {
@@ -230,31 +230,31 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("add.y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("add.y"),
             dims: vec![],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("add.k"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("add.k"),
             dims: vec![2],
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("add.u"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("add.u"),
             dims: vec![2],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let residual = Expression::If {
@@ -349,7 +349,7 @@ fn test_overconstrained_interface_uses_optional_edges_for_rooted_component() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 dims,
                 variability: rumoca_core::Variability::Empty,
@@ -358,7 +358,7 @@ fn test_overconstrained_interface_uses_optional_edges_for_rooted_component() {
                 oc_record_path: Some(rec_path.to_string()),
                 oc_eq_constraint_size: Some(3),
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -440,7 +440,7 @@ fn test_overconstrained_interface_skips_internally_defined_record_paths() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 dims,
                 variability: rumoca_core::Variability::Empty,
@@ -449,7 +449,7 @@ fn test_overconstrained_interface_skips_internally_defined_record_paths() {
                 oc_record_path: Some(rec_path.to_string()),
                 oc_eq_constraint_size: Some(3),
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -504,7 +504,7 @@ fn test_overconstrained_interface_counts_only_top_level_records() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 dims,
                 variability: rumoca_core::Variability::Empty,
@@ -513,7 +513,7 @@ fn test_overconstrained_interface_counts_only_top_level_records() {
                 oc_record_path: Some(rec_path.to_string()),
                 oc_eq_constraint_size: Some(3),
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -524,7 +524,7 @@ fn test_overconstrained_interface_counts_only_top_level_records() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 dims,
                 variability: rumoca_core::Variability::Empty,
@@ -533,7 +533,7 @@ fn test_overconstrained_interface_counts_only_top_level_records() {
                 oc_record_path: Some(rec_path.to_string()),
                 oc_eq_constraint_size: Some(3),
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -555,30 +555,30 @@ fn test_infer_scalar_count_function_lhs_uses_function_output_dims() {
     // Record-like argument prefix with scalar size 12 (9 + 3).
     flat.add_variable(
         VarName::new("R_b.T"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("R_b.T"),
             dims: vec![3, 3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("R_b.w"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("R_b.w"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("w_rel_b"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("w_rel_b"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let mut f = rumoca_core::Function::new("Frames.angularVelocity2", Span::DUMMY);
@@ -621,12 +621,12 @@ fn test_infer_scalar_count_single_element_array_lhs_is_scalar() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("body.Q"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("body.Q"),
             dims: vec![4],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let residual = Expression::Binary {
@@ -668,30 +668,30 @@ fn test_infer_scalar_count_array_lhs_der_array_plus_scalar() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("x"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("x"),
             dims: vec![10],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("xn"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("xn"),
             dims: vec![],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("x1dot"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("x1dot"),
             dims: vec![],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let lhs = Expression::Array {
@@ -767,12 +767,12 @@ fn test_infer_scalar_count_varref_subscripts_use_element_size() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("line.i"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("line.i"),
             dims: vec![4],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     // Reproduces Electrical M_OLine-style references where scalarized element access
@@ -797,12 +797,12 @@ fn test_infer_scalar_count_varref_subscripts_zero_sized_dim_is_zero() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("line.i"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("line.i"),
             dims: vec![0],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let expr = Expression::VarRef {
@@ -825,12 +825,12 @@ fn test_infer_varref_form_multilayer_embedded_subscript_is_scalar() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("bus.signal"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("bus.signal"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -843,12 +843,12 @@ fn test_infer_scalar_count_multilayer_embedded_subscript_varref_is_scalar() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("bus.signal"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("bus.signal"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     let expr = Expression::VarRef {
@@ -866,30 +866,30 @@ fn test_infer_scalar_count_function_lhs_supports_alias_suffix_lookup() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("R_b.T"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("R_b.T"),
             dims: vec![3, 3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("R_b.w"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("R_b.w"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("w_rel_b"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("w_rel_b"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     // Store function under a fully-qualified name, but call through a short alias.
@@ -935,30 +935,30 @@ fn test_infer_scalar_count_function_lhs_uses_rhs_unknown_size_when_signature_is_
     // Record-like argument prefix with scalar size 12.
     flat.add_variable(
         VarName::new("R_b.T"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("R_b.T"),
             dims: vec![3, 3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("R_b.w"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("R_b.w"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("w_rel_b"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("w_rel_b"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     // No function definition added on purpose: scalar inference should use the
@@ -1004,12 +1004,12 @@ fn test_infer_scalar_count_function_lhs_skips_rhs_function_arg_records() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 dims,
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1077,12 +1077,12 @@ fn test_infer_scalar_count_vector_dot_residual_is_scalar() {
     for name in ["a", "b", "s"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 dims: if name == "s" { vec![] } else { vec![3] },
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1132,30 +1132,30 @@ fn test_infer_scalar_count_vector_matrix_vector_residual_is_scalar() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("constraint.ex_a"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("constraint.ex_a"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("constraint.R_rel.T"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("constraint.R_rel.T"),
             dims: vec![3, 3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("constraint.e"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("constraint.e"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     // Residual for equation:
@@ -1205,12 +1205,12 @@ fn test_infer_scalar_count_zero_equals_vector_stays_vector() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("v"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("v"),
             dims: vec![3],
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     // Residual for equation: 0 = v
@@ -1248,11 +1248,11 @@ fn test_infer_scalar_count_record_constructor_lhs_uses_constructor_fields() {
     for name in ["pin_p.i.re", "pin_p.i.im", "pin_n.i.re", "pin_n.i.im"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1298,12 +1298,12 @@ fn test_infer_scalar_count_elementwise_mul_residual_is_vector() {
     for name in ["a", "b", "c"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 dims: vec![3],
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1361,11 +1361,11 @@ fn test_build_prefix_counts_normalizes_embedded_subscripts() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1390,11 +1390,11 @@ fn test_infer_equation_scalar_count_connector_field_array_alias() {
     ] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1427,21 +1427,21 @@ fn test_infer_equation_scalar_count_record_prefix_uses_scalarized_children() {
 
     flat.add_variable(
         VarName::new("state"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("state"),
             is_primitive: false,
             ..Default::default()
-        },
+        }),
     );
 
     for name in ["state.p", "state.T"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1475,7 +1475,7 @@ fn test_infer_equation_scalar_count_record_array_range_lhs_uses_full_slice_size(
 
     flat.add_variable(
         VarName::new("pipe.n"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("pipe.n"),
             is_primitive: true,
             binding: Some(Expression::Literal {
@@ -1483,19 +1483,19 @@ fn test_infer_equation_scalar_count_record_array_range_lhs_uses_full_slice_size(
                 span: rumoca_core::Span::DUMMY,
             }),
             ..Default::default()
-        },
+        }),
     );
 
     // Record array fields for an array of 2 state records with 5 scalar members.
     for field in ["T", "d", "h", "p", "phase"] {
         flat.add_variable(
             VarName::new(format!("pipe.statesFM.{field}")),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(format!("pipe.statesFM.{field}")),
                 dims: vec![2],
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1524,13 +1524,103 @@ fn test_infer_equation_scalar_count_record_array_range_lhs_uses_full_slice_size(
 }
 
 #[test]
+fn test_infer_equation_scalar_count_structured_range_subscript_uses_slice_size() {
+    let mut flat = Model::new();
+    let transformer_i_ref = rumoca_core::ComponentReference {
+        local: false,
+        span: rumoca_core::Span::DUMMY,
+        parts: vec![
+            rumoca_core::ComponentRefPart {
+                ident: "transformerL".to_string(),
+                span: rumoca_core::Span::DUMMY,
+                subs: vec![],
+            },
+            rumoca_core::ComponentRefPart {
+                ident: "i".to_string(),
+                span: rumoca_core::Span::DUMMY,
+                subs: vec![],
+            },
+        ],
+        def_id: None,
+    };
+
+    flat.add_variable(
+        VarName::new("m"),
+        crate::test_support::with_component_ref(flat::Variable {
+            name: VarName::new("m"),
+            is_primitive: true,
+            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            binding: Some(Expression::Literal {
+                value: Literal::Integer(3),
+                span: rumoca_core::Span::DUMMY,
+            }),
+            ..Default::default()
+        }),
+    );
+    flat.add_variable(
+        VarName::new("transformerL.i"),
+        flat::Variable {
+            name: VarName::new("transformerL.i"),
+            component_ref: Some(transformer_i_ref.clone()),
+            dims: vec![3],
+            is_primitive: true,
+            ..Default::default()
+        },
+    );
+
+    let residual = Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                "transformerL.i",
+                transformer_i_ref,
+            ),
+            subscripts: vec![rumoca_core::Subscript::expr(
+                Box::new(Expression::Range {
+                    start: Box::new(Expression::Literal {
+                        value: Literal::Integer(1),
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    step: None,
+                    end: Box::new(Expression::VarRef {
+                        name: VarName::new("m").into(),
+                        subscripts: vec![],
+                        span: rumoca_core::Span::DUMMY,
+                    }),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                rumoca_core::Span::DUMMY,
+            )],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        rhs: Box::new(Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Zeros,
+            args: vec![Expression::VarRef {
+                name: VarName::new("m").into(),
+                subscripts: vec![],
+                span: rumoca_core::Span::DUMMY,
+            }],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let prefix_counts = build_prefix_counts(&flat);
+    let scalar_count = infer_equation_scalar_count(&residual, &flat, &prefix_counts);
+    assert_eq!(
+        scalar_count, 3,
+        "structured range subscripts should count as vector slices"
+    );
+}
+
+#[test]
 fn test_infer_equation_scalar_count_record_array_range_uses_parameter_start_fallback() {
     let mut flat = Model::new();
 
     // Parameter without explicit binding (value available via start).
     flat.add_variable(
         VarName::new("pipe.n"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("pipe.n"),
             is_primitive: true,
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
@@ -1540,19 +1630,19 @@ fn test_infer_equation_scalar_count_record_array_range_uses_parameter_start_fall
             }),
             binding: None,
             ..Default::default()
-        },
+        }),
     );
 
     // Record array fields for an array of 2 state records with 5 scalar members.
     for field in ["T", "d", "h", "p", "phase"] {
         flat.add_variable(
             VarName::new(format!("pipe.statesFM.{field}")),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(format!("pipe.statesFM.{field}")),
                 dims: vec![2],
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1588,12 +1678,12 @@ fn test_infer_equation_scalar_count_record_array_range_uses_known_lower_bound_wh
     for field in ["T", "d", "h", "p", "phase"] {
         flat.add_variable(
             VarName::new(format!("pipe.statesFM.{field}")),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(format!("pipe.statesFM.{field}")),
                 dims: vec![2],
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1627,7 +1717,7 @@ fn test_infer_equation_scalar_count_record_array_range_with_scalarized_field_ind
 
     flat.add_variable(
         VarName::new("pipe.n"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("pipe.n"),
             is_primitive: true,
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
@@ -1636,7 +1726,7 @@ fn test_infer_equation_scalar_count_record_array_range_with_scalarized_field_ind
                 span: rumoca_core::Span::DUMMY,
             }),
             ..Default::default()
-        },
+        }),
     );
 
     // Record fields already scalarized into indexed names (dims = []).
@@ -1645,11 +1735,11 @@ fn test_infer_equation_scalar_count_record_array_range_with_scalarized_field_ind
             let name = format!("pipe.statesFM[{idx}].{field}");
             flat.add_variable(
                 VarName::new(name.clone()),
-                flat::Variable {
+                crate::test_support::with_component_ref(flat::Variable {
                     name: VarName::new(name),
                     is_primitive: true,
                     ..Default::default()
-                },
+                }),
             );
         }
     }
@@ -1682,12 +1772,12 @@ fn test_todae_inactive_ordinary_when_equation_uses_pre_during_initialization() {
     for name in ["trigger", "y"] {
         flat.add_variable(
             VarName::new(name),
-            flat::Variable {
+            crate::test_support::with_component_ref(flat::Variable {
                 name: VarName::new(name),
                 is_discrete_type: true,
                 is_primitive: true,
                 ..Default::default()
-            },
+            }),
         );
     }
 
@@ -1715,7 +1805,7 @@ fn test_todae_inactive_ordinary_when_equation_uses_pre_during_initialization() {
         .discrete
         .valued_updates
         .iter()
-        .find(|eq| eq.lhs.as_ref() == Some(&rumoca_core::VarName::new("y")))
+        .find(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "y"))
         .expect("expected guarded ordinary when update for y");
     let rumoca_core::Expression::If { else_branch, .. } = &eq.rhs else {
         panic!("expected guarded ordinary when update to lower to an If expression");

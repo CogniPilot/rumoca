@@ -1113,7 +1113,7 @@ fn instantiate_effective_components(
             continue;
         }
 
-        let type_info = lookup_type_info(tree, comp, &type_name);
+        let type_info = lookup_type_info(tree, comp, &type_name)?;
         let should_expand = !type_info.is_primitive && dims.as_ref().is_some_and(|d| !d.is_empty());
 
         if should_expand {
@@ -1573,7 +1573,7 @@ fn instantiate_component(
     merge_type_hierarchy_string_attributes(tree, class_def, &mut attrs);
 
     let (dims, dims_expr) =
-        resolve_component_shape(tree, comp, ctx, class_def, effective_components, imports);
+        resolve_component_shape(tree, comp, ctx, class_def, effective_components, imports)?;
 
     let type_id = if is_primitive {
         resolve_primitive_type_id(tree, &type_name, class_def)
@@ -1661,7 +1661,7 @@ fn validated_component_type_info<'a>(
     qualified_name: &ast::QualifiedName,
     type_name: &str,
 ) -> InstantiateResult<TypeInfo<'a>> {
-    let type_info = lookup_type_info(tree, comp, type_name);
+    let type_info = lookup_type_info(tree, comp, type_name)?;
     validate_partial_component_instantiation(
         tree,
         comp,
@@ -1680,17 +1680,17 @@ fn resolve_component_shape(
     class_def: Option<&ast::ClassDef>,
     effective_components: &IndexMap<String, ast::Component>,
     imports: &[(String, String)],
-) -> (Vec<i64>, Vec<ast::Subscript>) {
+) -> InstantiateResult<(Vec<i64>, Vec<ast::Subscript>)> {
     let type_dims =
-        resolve_type_alias_dimensions(tree, class_def, ctx.mod_env(), effective_components);
-    resolve_component_dimensions(
+        resolve_type_alias_dimensions(tree, class_def, ctx.mod_env(), effective_components)?;
+    Ok(resolve_component_dimensions(
         comp,
         &type_dims,
         ctx.mod_env(),
         effective_components,
         tree,
         imports,
-    )
+    ))
 }
 
 struct ComponentBindingInfo {
@@ -1708,8 +1708,19 @@ fn prepare_component_binding_info(
     effective_components: &IndexMap<String, ast::Component>,
     is_discrete_type: bool,
 ) -> InstantiateResult<ComponentBindingInfo> {
-    let (mut attrs, mut binding, binding_source, binding_source_scope, binding_from_modification) =
-        extract_component_attrs_and_binding(comp, ctx.mod_env());
+    let eval_ctx = InstantiateEvalCtx {
+        tree,
+        mod_env: ctx.mod_env(),
+        effective_components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    };
+    let ComponentAttrsAndBinding {
+        mut attrs,
+        mut binding,
+        binding_source,
+        binding_source_scope,
+        binding_from_modification,
+    } = extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx)?;
     infer_local_attribute_source_scopes(ctx, comp, &mut attrs);
     let start_from_declaration_binding =
         !binding_from_modification && binding.is_some() && attrs.start == binding;
@@ -1888,7 +1899,7 @@ fn instantiate_nested_class(
             binding_scope_for_record_expansion.cloned(),
             nested_class,
             &targeted_keys,
-        );
+        )?;
     }
 
     // Step 2.6: Scope the mod_env to only contain entries relevant to this nested class.

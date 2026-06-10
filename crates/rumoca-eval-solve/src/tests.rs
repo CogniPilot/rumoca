@@ -71,6 +71,50 @@ fn time_table() -> (f64, Vec<rumoca_core::ExternalTableData>) {
 }
 
 #[test]
+fn apply_discrete_slot_value_reports_out_of_bounds_target() {
+    let mut y = [0.0];
+    let mut p = [];
+
+    let err = apply_discrete_slot_value(
+        rumoca_ir_solve::ScalarSlot::Y {
+            index: 2,
+            byte_offset: 16,
+        },
+        1.0,
+        &mut y,
+        &mut p,
+        1e-12,
+    )
+    .expect_err("out-of-bounds discrete target must be reported");
+
+    assert_eq!(
+        err,
+        EvalSolveError::MissingInput {
+            vector: "y",
+            index: 2,
+            len: 1,
+        }
+    );
+}
+
+#[test]
+fn projected_random_value_reports_missing_state_lane() {
+    let err = projected_random_value(&[10.0, 20.0], 2)
+        .expect_err("missing random state lane must be reported");
+    assert_eq!(
+        err,
+        EvalSolveError::RandomStateProjectionOutOfBounds { index: 2, len: 2 }
+    );
+
+    let err =
+        projected_random_value(&[], 0).expect_err("empty random state projection must be reported");
+    assert_eq!(
+        err,
+        EvalSolveError::RandomStateProjectionOutOfBounds { index: 0, len: 0 }
+    );
+}
+
+#[test]
 fn eval_row_compare_equality_is_exact_not_epsilon_based() {
     let row = vec![
         LinearOp::Const { dst: 0, value: 0.0 },
@@ -102,6 +146,41 @@ fn eval_row_compare_equality_is_exact_not_epsilon_based() {
     let output = eval_row(&row, &[], &[], 0.0, None).expect("compare row evaluates");
 
     assert_eq!(output, 1.0);
+}
+
+#[test]
+fn eval_event_action_message_concatenates_text_and_numeric_parts() {
+    let events = rumoca_ir_solve::SolveEventPartition {
+        action_conditions: ScalarProgramBlock::new(vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]),
+        actions: vec![rumoca_ir_solve::SolveEventAction {
+            kind: SolveEventActionKind::Assert,
+            message: rumoca_ir_solve::SolveEventMessage {
+                parts: vec![
+                    rumoca_ir_solve::SolveEventMessagePart::Text("value = ".to_string()),
+                    rumoca_ir_solve::SolveEventMessagePart::Number(vec![
+                        LinearOp::LoadY { dst: 0, index: 0 },
+                        LinearOp::StoreOutput { src: 0 },
+                    ]),
+                ],
+            },
+            span: rumoca_core::Span::DUMMY,
+            origin: "assert".to_string(),
+        }],
+        ..Default::default()
+    };
+
+    let request = eval_event_action_request(&events, &[3.5], &[], 0.0, RowEvalContext::default())
+        .expect("event action should evaluate");
+
+    assert_eq!(
+        request,
+        EventActionRequest::AssertionFailed {
+            message: "value = 3.5".to_string()
+        }
+    );
 }
 
 #[test]

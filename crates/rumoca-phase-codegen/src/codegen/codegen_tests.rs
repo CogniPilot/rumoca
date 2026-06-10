@@ -846,7 +846,7 @@ fn test_target_symbols_use_short_readable_names_without_collisions() {
     }
     let template = r#"
 {% set policy = {"separator": "_", "reserved": [], "generated_prefixes": []} %}
-{% set symbols = target_symbols(dae.symbol_refs, policy) %}
+{% set symbols = target_symbols(dae.symbol_refs, policy, dae.symbol_aliases) %}
 {{ symbol(symbols, "body.x") }} {{ symbol(symbols, "other.x") }} {{ symbol(symbols, "body_x") }}
 "#;
     let rendered = render_template(&dae, template).unwrap();
@@ -873,7 +873,7 @@ fn test_target_symbols_scalarize_array_refs_readably_and_without_collision() {
     );
     let template = r#"
 {% set policy = {"separator": "_", "reserved": [], "generated_prefixes": []} %}
-{% set symbols = target_symbols(dae.symbol_refs, policy) %}
+{% set symbols = target_symbols(dae.symbol_refs, policy, dae.symbol_aliases) %}
 {{ symbol(symbols, "plant.leg_f_b[2,1]") }}
 "#;
     let rendered = render_template(&dae, template).unwrap();

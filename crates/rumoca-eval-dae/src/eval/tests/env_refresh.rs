@@ -21,11 +21,11 @@ fn refresh_env_solver_and_parameter_values_updates_runtime_slots_only() {
 
     refresh_env_solver_and_parameter_values(&mut env, &dae, &[4.0, 5.0], &[6.0], 0.75);
 
-    assert_eq!(env.get("time"), 0.75);
-    assert_eq!(env.get("x"), 4.0);
-    assert_eq!(env.get("y"), 5.0);
-    assert_eq!(env.get("p"), 6.0);
-    assert_eq!(env.get("d"), 9.0);
+    assert_eq!(env_value(&env, "time"), 0.75);
+    assert_eq!(env_value(&env, "x"), 4.0);
+    assert_eq!(env_value(&env, "y"), 5.0);
+    assert_eq!(env_value(&env, "p"), 6.0);
+    assert_eq!(env_value(&env, "d"), 9.0);
 }
 
 #[test]
@@ -87,9 +87,9 @@ fn try_refresh_env_solver_and_parameter_values_rejects_short_vectors_before_muta
             actual: 0,
         }
     );
-    assert_eq!(env.get("time"), 0.25);
-    assert_eq!(env.get("x"), 1.0);
-    assert_eq!(env.get("p"), 2.0);
+    assert_eq!(env_value(&env, "time"), 0.25);
+    assert_eq!(env_value(&env, "x"), 1.0);
+    assert_eq!(env_value(&env, "p"), 2.0);
 }
 
 #[test]
@@ -140,10 +140,10 @@ fn build_runtime_parameter_tail_env_populates_inputs_and_discretes_without_solve
 
     let env = build_runtime_parameter_tail_env(&dae, &[3.0], 0.25);
 
-    assert_eq!(env.get("time"), 0.25);
-    assert_eq!(env.get("p"), 3.0);
-    assert_eq!(env.get("u"), 4.0);
-    assert_eq!(env.get("d"), 6.0);
+    assert_eq!(env_value(&env, "time"), 0.25);
+    assert_eq!(env_value(&env, "p"), 3.0);
+    assert_eq!(env_value(&env, "u"), 4.0);
+    assert_eq!(env_value(&env, "d"), 6.0);
     assert!(!env.vars.contains_key("x"));
 }
 
@@ -249,7 +249,7 @@ fn try_build_runtime_parameter_tail_env_rejects_bad_array_start_shape() {
             expected: 3,
             actual: 2,
         }
-        .with_fallback_span(span)
+        .with_span_if_missing(span)
     );
 }
 
@@ -278,9 +278,9 @@ fn build_runtime_parameter_tail_env_binds_vector_builtin_array_start() {
     let env = try_build_runtime_parameter_tail_env(&dae, &[], 0.0)
         .expect("vector(array) start should populate discrete array values");
 
-    assert_eq!(env.get("buf[1]"), 6.5);
-    assert_eq!(env.get("buf[2]"), 0.0);
-    assert_eq!(env.get("buf[3]"), 0.0);
+    assert_eq!(env_value(&env, "buf[1]"), 6.5);
+    assert_eq!(env_value(&env, "buf[2]"), 0.0);
+    assert_eq!(env_value(&env, "buf[3]"), 0.0);
 }
 
 #[test]
@@ -304,8 +304,8 @@ fn build_runtime_parameter_tail_env_uses_default_discrete_start_dependencies() {
     let env = try_build_runtime_parameter_tail_env(&dae, &[], 0.0)
         .expect("discrete defaults should be available to dependent starts");
 
-    assert_eq!(env.get("condition"), 0.0);
-    assert_eq!(env.get("localCondition"), 0.0);
+    assert_eq!(env_value(&env, "condition"), 0.0);
+    assert_eq!(env_value(&env, "localCondition"), 0.0);
 }
 
 #[test]
@@ -360,8 +360,8 @@ fn build_runtime_parameter_tail_env_binds_constants_before_parameter_starts() {
 
     let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
 
-    assert_eq!(env.get("clock.conversionTable[6]"), 1_000.0);
-    assert_eq!(env.get("clock.resolutionFactor"), 1_000.0);
+    assert_eq!(env_value(&env, "clock.conversionTable[6]"), 1_000.0);
+    assert_eq!(env_value(&env, "clock.resolutionFactor"), 1_000.0);
 }
 
 #[test]
@@ -369,11 +369,7 @@ fn build_runtime_parameter_tail_env_resolves_forward_parameter_array_dependency(
     let mut dae = dae::Dae::default();
 
     let mut selected = dae::Variable::new(VarName::new("body.I_11"));
-    selected.start = Some(rumoca_core::Expression::VarRef {
-        name: Reference::new("body.I[1,1]"),
-        subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
-    });
+    selected.start = Some(indexed_var("body.I", &[1, 1]));
     dae.variables
         .parameters
         .insert(VarName::new("body.I_11"), selected);
@@ -393,8 +389,8 @@ fn build_runtime_parameter_tail_env_resolves_forward_parameter_array_dependency(
 
     let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
 
-    assert_eq!(env.get("body.I[1,1]"), 1.0);
-    assert_eq!(env.get("body.I_11"), 1.0);
+    assert_eq!(env_value(&env, "body.I[1,1]"), 1.0);
+    assert_eq!(env_value(&env, "body.I_11"), 1.0);
 }
 
 #[test]
@@ -419,7 +415,7 @@ fn build_runtime_parameter_tail_env_prefers_pre_store_for_lowered_pre_parameters
     set_pre_value_in_env(&seed_env, "reset", 1.0);
     let env = build_runtime_parameter_tail_env_with_runtime(&dae, &[0.0], 0.0, runtime);
 
-    assert_eq!(env.get("__pre__.reset"), 1.0);
+    assert_eq!(env_value(&env, "__pre__.reset"), 1.0);
 
     clear_pre_values();
 }
@@ -450,8 +446,8 @@ fn build_runtime_parameter_tail_env_keeps_pre_store_runtime_local() {
     let built_a = build_runtime_parameter_tail_env_with_runtime(&dae, &[0.0], 0.0, runtime_a);
     let built_b = build_runtime_parameter_tail_env_with_runtime(&dae, &[0.0], 0.0, runtime_b);
 
-    assert_eq!(built_a.get("__pre__.reset"), 1.0);
-    assert_eq!(built_b.get("__pre__.reset"), 2.0);
+    assert_eq!(env_value(&built_a, "__pre__.reset"), 1.0);
+    assert_eq!(env_value(&built_b, "__pre__.reset"), 2.0);
 
     clear_pre_values();
 }
@@ -509,8 +505,8 @@ fn refresh_env_solver_and_parameter_values_refreshes_lowered_pre_parameters_from
     set_pre_value_in_env(&env, "reset", 2.0);
     refresh_env_solver_and_parameter_values(&mut env, &dae, &[1.0], &[0.0], 0.5);
 
-    assert_eq!(env.get("x"), 1.0);
-    assert_eq!(env.get("__pre__.reset"), 2.0);
+    assert_eq!(env_value(&env, "x"), 1.0);
+    assert_eq!(env_value(&env, "__pre__.reset"), 2.0);
 
     clear_pre_values();
 }
@@ -532,7 +528,7 @@ fn build_runtime_parameter_tail_env_skips_zero_sized_parameter_slots() {
 
     let env = build_runtime_parameter_tail_env(&dae, &[4.0], 0.0);
 
-    assert_eq!(env.get("table_id"), 4.0);
+    assert_eq!(env_value(&env, "table_id"), 4.0);
     assert!(!env.vars.contains_key("dyn_arr"));
 }
 
@@ -578,9 +574,9 @@ fn build_runtime_parameter_tail_env_binds_enum_parameters_without_numeric_slots(
 
     let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
 
-    assert_eq!(env.get("before"), 2.0);
-    assert_eq!(env.get("after"), 3.0);
-    assert_eq!(env.get("u"), 2.0);
+    assert_eq!(env_value(&env, "before"), 2.0);
+    assert_eq!(env_value(&env, "after"), 3.0);
+    assert_eq!(env_value(&env, "u"), 2.0);
 }
 
 #[test]
@@ -626,9 +622,9 @@ fn build_runtime_parameter_tail_env_binds_qualified_enum_parameters_without_nume
 
     let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
 
-    assert_eq!(env.get("Enable.before"), 3.0);
-    assert_eq!(env.get("Enable.after"), 4.0);
-    assert_eq!(env.get("Enable.stepTime"), 1.0);
+    assert_eq!(env_value(&env, "Enable.before"), 3.0);
+    assert_eq!(env_value(&env, "Enable.after"), 4.0);
+    assert_eq!(env_value(&env, "Enable.stepTime"), 1.0);
 }
 
 #[test]
@@ -671,9 +667,9 @@ fn build_runtime_parameter_tail_env_binds_counter_like_enum_parameter_chain() {
 
     let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
 
-    assert_eq!(env.get("Counter.q0"), 3.0);
-    assert_eq!(env.get("Counter.FF[1].q0"), 3.0);
-    assert_eq!(env.get("Counter.FF[1].RS1.TD1.y0"), 3.0);
+    assert_eq!(env_value(&env, "Counter.q0"), 3.0);
+    assert_eq!(env_value(&env, "Counter.FF[1].q0"), 3.0);
+    assert_eq!(env_value(&env, "Counter.FF[1].RS1.TD1.y0"), 3.0);
 }
 
 #[test]
@@ -697,9 +693,9 @@ fn build_runtime_parameter_tail_env_broadcasts_enum_literal_to_discrete_array_st
 
     let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
 
-    assert_eq!(env.get("auxiliary[1]"), 1.0);
-    assert_eq!(env.get("auxiliary[2]"), 1.0);
-    assert_eq!(env.get("auxiliary[3]"), 1.0);
+    assert_eq!(env_value(&env, "auxiliary[1]"), 1.0);
+    assert_eq!(env_value(&env, "auxiliary[2]"), 1.0);
+    assert_eq!(env_value(&env, "auxiliary[3]"), 1.0);
 }
 
 #[test]
@@ -722,8 +718,8 @@ fn build_runtime_parameter_tail_env_binds_singleton_parameter_array_index_entrie
 
     let env = build_runtime_parameter_tail_env(&dae, &[], 0.0);
 
-    assert_eq!(env.get("a.t"), 1.0);
-    assert_eq!(env.get("a.t[1]"), 1.0);
+    assert_eq!(env_value(&env, "a.t"), 1.0);
+    assert_eq!(env_value(&env, "a.t[1]"), 1.0);
 }
 
 #[test]
@@ -741,6 +737,6 @@ fn build_env_skips_zero_sized_solver_slots() {
 
     let env = build_env(&dae, &[7.0], &[], 0.0);
 
-    assert_eq!(env.get("y"), 7.0);
+    assert_eq!(env_value(&env, "y"), 7.0);
     assert!(!env.vars.contains_key("dyn_out"));
 }

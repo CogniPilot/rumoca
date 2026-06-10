@@ -19,6 +19,7 @@ pub(crate) fn compute_var_size(dims: &[i64]) -> usize {
 /// Each `Index` or `Expr` subscript reduces one dimension (selects a single element),
 /// while `Colon` preserves the dimension. The result is the product of remaining dimensions.
 /// For example, `M[1]` where M is `[2,3]` gives `3` (one row of a 2×3 matrix).
+#[cfg(test)]
 pub(crate) fn compute_subscripted_size(
     dims: &[i64],
     subscripts: &[rumoca_core::Subscript],
@@ -48,6 +49,106 @@ pub(crate) fn compute_subscripted_size(
     // Add any unsubscripted trailing dimensions
     remaining_dims.extend_from_slice(&dims[dim_idx..]);
     compute_var_size(&remaining_dims)
+}
+
+/// Compute scalar count for a structured subscripted access.
+///
+/// MLS §10.5: vector-valued subscripts, including range expressions, preserve a
+/// dimension with the vector length; scalar subscripts consume a dimension.
+pub(crate) fn compute_subscripted_size_with_context(
+    dims: &[i64],
+    subscripts: &[rumoca_core::Subscript],
+    flat: &flat::Model,
+) -> Option<usize> {
+    apply_subscripts_to_dims_with_context(dims, subscripts, flat)
+        .map(|dims| compute_var_size(&dims))
+}
+
+pub(crate) fn apply_subscripts_to_dims_with_context(
+    dims: &[i64],
+    subscripts: &[rumoca_core::Subscript],
+    flat: &flat::Model,
+) -> Option<Vec<i64>> {
+    let mut remaining_dims = Vec::new();
+    let mut dim_idx = 0usize;
+    for sub in subscripts {
+        if dim_idx >= dims.len() {
+            break;
+        }
+        match sub {
+            rumoca_core::Subscript::Index { .. } => {
+                if dims[dim_idx] <= 0 {
+                    return Some(vec![0]);
+                }
+                dim_idx += 1;
+            }
+            rumoca_core::Subscript::Expr { expr, .. } => {
+                if dims[dim_idx] <= 0 {
+                    return Some(vec![0]);
+                }
+                if let Some(selected_dim) = structured_subscript_dimension(expr, flat)? {
+                    remaining_dims.push(selected_dim);
+                }
+                dim_idx += 1;
+            }
+            rumoca_core::Subscript::Colon { .. } => {
+                remaining_dims.push(dims[dim_idx]);
+                dim_idx += 1;
+            }
+        }
+    }
+    remaining_dims.extend_from_slice(&dims[dim_idx..]);
+    Some(remaining_dims)
+}
+
+fn structured_subscript_dimension(
+    expr: &rumoca_core::Expression,
+    flat: &flat::Model,
+) -> Option<Option<i64>> {
+    match expr {
+        rumoca_core::Expression::Range {
+            start, step, end, ..
+        } => structured_range_size(start, step.as_deref(), end, flat).map(Some),
+        rumoca_core::Expression::Array { elements, .. } => Some(Some(elements.len() as i64)),
+        rumoca_core::Expression::VarRef { name, .. } => {
+            let var = flat.variables.get(name.var_name())?;
+            match var.dims.as_slice() {
+                [] => Some(None),
+                [dim] => Some(Some(*dim)),
+                _ => None,
+            }
+        }
+        _ => Some(None),
+    }
+}
+
+fn structured_range_size(
+    start: &rumoca_core::Expression,
+    step: Option<&rumoca_core::Expression>,
+    end: &rumoca_core::Expression,
+    flat: &flat::Model,
+) -> Option<i64> {
+    let start = try_eval_flat_expr_i64(start, flat, 0)?;
+    let step = match step {
+        Some(step) => try_eval_flat_expr_i64(step, flat, 0)?,
+        None => 1,
+    };
+    let end = try_eval_flat_expr_i64(end, flat, 0)?;
+    if step == 0 {
+        return None;
+    }
+    let size = if step > 0 {
+        if start > end {
+            0
+        } else {
+            ((end - start) / step) + 1
+        }
+    } else if start < end {
+        0
+    } else {
+        ((start - end) / -step) + 1
+    };
+    Some(size)
 }
 
 /// Check if a bracket-enclosed subscript content is evaluable integer arithmetic.

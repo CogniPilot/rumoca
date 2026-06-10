@@ -143,6 +143,34 @@ pub enum FlattenError {
         #[label("function output may be unassigned here")]
         span: SourceSpan,
     },
+
+    /// A variable reached flattening without a resolvable type name.
+    #[error("unresolved variable type for `{name}`")]
+    #[diagnostic(
+        code(rumoca::flatten::EF014),
+        help(
+            "instantiate/typecheck must preserve a structured type id or type name before flattening variables"
+        )
+    )]
+    UnresolvedVariableType {
+        name: String,
+        #[label("variable declared here")]
+        span: SourceSpan,
+    },
+
+    /// A resolved class reached flattening without the DefId metadata required
+    /// for scope-based lookup.
+    #[error("missing resolved class metadata for `{name}`")]
+    #[diagnostic(
+        code(rumoca::flatten::EF015),
+        help("name resolution must assign and preserve DefId metadata before flattening")
+    )]
+    MissingResolvedClassMetadata {
+        name: String,
+        context: String,
+        #[label("class used here")]
+        span: SourceSpan,
+    },
 }
 
 impl FlattenError {
@@ -237,6 +265,27 @@ impl FlattenError {
         Self::FunctionOutputUnassigned {
             function: function.into(),
             output: output.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create an UnresolvedVariableType error.
+    pub fn unresolved_variable_type(name: impl Into<String>, span: rumoca_core::Span) -> Self {
+        Self::UnresolvedVariableType {
+            name: name.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
+
+    /// Create a MissingResolvedClassMetadata error.
+    pub fn missing_resolved_class_metadata(
+        name: impl Into<String>,
+        context: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::MissingResolvedClassMetadata {
+            name: name.into(),
+            context: context.into(),
             span: rumoca_core::span_to_source_span(span),
         }
     }

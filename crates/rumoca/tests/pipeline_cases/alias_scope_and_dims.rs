@@ -71,9 +71,9 @@ end UsesForwardedMedium;
     );
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "Model should remain balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -401,9 +401,9 @@ end UsesMedium;
     let result = session.compile_model("UsesMedium").expect("compile failed");
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "Model should be balanced when fixedX=false disables the no-else branch: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -684,9 +684,9 @@ end UsesRangeInBaseProperties;
     );
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "Model should remain balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 

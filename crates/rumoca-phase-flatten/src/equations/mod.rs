@@ -18,7 +18,7 @@ use crate::boolean_eval::{
 };
 use crate::errors::FlattenError;
 use crate::static_subscripts::try_constant_integer;
-use crate::{Context, qualify_expression_imports_with_def_map};
+use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
 mod conditional_and_eval;
 mod connections_graph;
@@ -448,7 +448,7 @@ pub(crate) fn flatten_equation_with_def_map(
 
             // Preserve simple equations as a single residual equation.
             // Array scalarization and counting are handled downstream.
-            let residual = make_residual(&lhs, &rhs, prefix, &ctx.current_imports, def_map)?;
+            let residual = make_residual(ctx, &lhs, &rhs, prefix, def_map)?;
             let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, prefix, ctx);
             if scalar_count == 0 {
                 return Ok(FlattenedEquations::default());
@@ -496,51 +496,68 @@ pub(crate) fn flatten_equation_with_def_map(
         }
 
         ast::Equation::FunctionCall { comp, args } => {
-            flatten_function_call_equation(comp, args, prefix, span, &ctx.current_imports, def_map)
+            flatten_function_call_equation(ctx, comp, args, prefix, span, def_map)
         }
 
         ast::Equation::Assert {
             condition,
             message,
             level,
-        } => {
-            // MLS §8.3.7: preserve assert-equations for runtime checks in flat output.
-            // They do not contribute to the DAE residual equation system.
-            let imports = &ctx.current_imports;
-            let assert_eq = flat::AssertEquation::new(
-                qualify_expression_imports_with_def_map(condition, prefix, imports, def_map)?,
-                qualify_expression_imports_with_def_map(message, prefix, imports, def_map)?,
-                level
-                    .as_ref()
-                    .map(|expr| {
-                        qualify_expression_imports_with_def_map(expr, prefix, imports, def_map)
-                    })
-                    .transpose()?,
-                span,
-            );
-            Ok(FlattenedEquations {
-                equations: vec![],
-                for_equations: vec![],
-                assert_equations: vec![assert_eq],
-                when_clauses: vec![],
-                definite_roots: vec![],
-                branches: vec![],
-                potential_roots: vec![],
-            })
-        }
+        } => flatten_assert_equation(
+            ctx,
+            condition,
+            message,
+            level.as_ref(),
+            prefix,
+            span,
+            def_map,
+        ),
     }
 }
 
+fn flatten_assert_equation(
+    ctx: &Context,
+    condition: &ast::Expression,
+    message: &ast::Expression,
+    level: Option<&ast::Expression>,
+    prefix: &ast::QualifiedName,
+    span: rumoca_core::Span,
+    def_map: Option<&crate::ResolveDefMap>,
+) -> Result<FlattenedEquations, FlattenError> {
+    // MLS §8.3.7: preserve assert-equations for runtime checks in flat output.
+    // They do not contribute to the DAE residual equation system.
+    let imports = &ctx.current_imports;
+    let assert_eq = flat::AssertEquation::new(
+        qualify_expression_imports_with_def_map_ctx(condition, prefix, imports, def_map, ctx)?,
+        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx)?,
+        level
+            .map(|expr| {
+                qualify_expression_imports_with_def_map_ctx(expr, prefix, imports, def_map, ctx)
+            })
+            .transpose()?,
+        span,
+    );
+    Ok(FlattenedEquations {
+        equations: vec![],
+        for_equations: vec![],
+        assert_equations: vec![assert_eq],
+        when_clauses: vec![],
+        definite_roots: vec![],
+        branches: vec![],
+        potential_roots: vec![],
+    })
+}
+
 fn flatten_function_call_equation(
+    ctx: &Context,
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
-    imports: &crate::qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<FlattenedEquations, FlattenError> {
     if is_assert_function_call(comp) {
-        return flatten_assert_function_call(args, prefix, span, imports, def_map);
+        return flatten_assert_function_call(ctx, args, prefix, span, def_map);
     }
     extract_vcg_data_from_function_call(comp, args, prefix)
 }
@@ -553,10 +570,10 @@ fn is_assert_function_call(comp: &ast::ComponentReference) -> bool {
 }
 
 fn flatten_assert_function_call(
+    ctx: &Context,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
-    imports: &crate::qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<FlattenedEquations, FlattenError> {
     let positional: Vec<&ast::Expression> = args
@@ -577,11 +594,14 @@ fn flatten_assert_function_call(
         }
     };
 
+    let imports = &ctx.current_imports;
     let assert_eq = flat::AssertEquation::new(
-        qualify_expression_imports_with_def_map(condition, prefix, imports, def_map)?,
-        qualify_expression_imports_with_def_map(message, prefix, imports, def_map)?,
+        qualify_expression_imports_with_def_map_ctx(condition, prefix, imports, def_map, ctx)?,
+        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx)?,
         level
-            .map(|expr| qualify_expression_imports_with_def_map(expr, prefix, imports, def_map))
+            .map(|expr| {
+                qualify_expression_imports_with_def_map_ctx(expr, prefix, imports, def_map, ctx)
+            })
             .transpose()?,
         span,
     );
@@ -615,10 +635,10 @@ fn named_call_arg<'a>(args: &'a [ast::Expression], name: &str) -> Option<&'a ast
 
 /// Create a residual expression: lhs - rhs
 fn make_residual(
+    ctx: &Context,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     prefix: &ast::QualifiedName,
-    imports: &crate::qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     // Create: lhs - rhs
@@ -629,7 +649,13 @@ fn make_residual(
         span: lhs.span(),
     };
 
-    qualify_expression_imports_with_def_map(&residual, prefix, imports, def_map)
+    qualify_expression_imports_with_def_map_ctx(
+        &residual,
+        prefix,
+        &ctx.current_imports,
+        def_map,
+        ctx,
+    )
 }
 
 /// Expand array comprehensions in equation expressions when index ranges are structural.
@@ -1247,7 +1273,11 @@ fn find_array_ref_in_component(
                     .join(",")
             )
         };
-        (formatted, None, !subs.is_empty() || name.contains('['))
+        (
+            formatted,
+            None,
+            !subs.is_empty() || rumoca_core::split_trailing_subscript_suffix(name).is_some(),
+        )
     });
     let component_parts = cr.parts.iter().enumerate().map(|(index, part)| {
         (
@@ -1560,6 +1590,7 @@ fn expand_if_equation(
         // Fast path: position-based matching (original behavior)
         let mut result = FlattenedEquations::default();
         let eq_context = ConditionalEquationContext {
+            ctx,
             prefix,
             span,
             origin,

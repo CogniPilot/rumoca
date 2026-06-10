@@ -1,5 +1,9 @@
 //! Type checking phase for the Rumoca compiler.
 //!
+//! SPEC_0021 file-size exception: this facade still owns late type inference,
+//! modifier validation, and scoped instance assembly. split plan: move those
+//! concerns behind focused modules as follow-up compiler hardening work.
+//!
 //! This phase has two entry points. `typecheck` walks a resolved `ClassTree`
 //! and returns a `TypedTree`. The production compiled-model pipeline uses
 //! `typecheck_instanced` after instantiation so modifier-dependent dimensions
@@ -26,11 +30,12 @@
 //! - Structural parameters are identified before Flat is produced
 //! - Array sizes for for-loops can be computed at compile time
 
+mod enum_context;
 mod instanced;
 mod modifier_targets;
 mod typechecker;
 
-use rumoca_core::{DefId, ScopeId, Span, TypeId};
+use rumoca_core::{ComponentPath, DefId, ScopeId, Span, TypeId};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics, PhaseError, PrimaryLabel, SourceMap,
     find_last_top_level_dot, has_top_level_dot, parent_scope, split_first_top_level,
@@ -284,19 +289,32 @@ impl TypeChecker {
             .iter()
             .map(|(def_id, name)| (*def_id, name.clone()))
             .collect();
-        let (type_table, type_ids_by_def_id) = Self::build_type_context(tree);
+        let (type_table, type_ids_by_def_id) = match self.build_type_context(tree) {
+            Ok(context) => context,
+            Err(error) => {
+                self.emit_typecheck_error(*error);
+                return;
+            }
+        };
         tree.type_table = type_table;
         self.type_ids_by_def_id = type_ids_by_def_id;
         self.type_suffix_index = Self::build_type_suffix_index(&tree.type_table);
         self.rebuild_type_roots(tree, &tree.type_table);
         self.component_modifier_targets = modifier_targets::build_component_modifier_targets(tree);
         self.component_modifier_member_types =
-            modifier_targets::build_component_modifier_member_types(
+            match modifier_targets::build_component_modifier_member_types(
                 tree,
                 &tree.type_table,
                 &self.type_ids_by_def_id,
                 &self.type_suffix_index,
-            );
+                &self.source_map,
+            ) {
+                Ok(member_types) => member_types,
+                Err(error) => {
+                    self.emit_typecheck_error(*error);
+                    return;
+                }
+            };
         self.check_stored_definition(&mut tree.definitions, &mut tree.type_table);
         self.flush_eval_warnings();
     }
@@ -544,7 +562,10 @@ impl TypeChecker {
     }
 
     /// Build a type context that includes user-defined classes, enums, and aliases.
-    fn build_type_context(tree: &ClassTree) -> (TypeTable, HashMap<DefId, TypeId>) {
+    fn build_type_context(
+        &self,
+        tree: &ClassTree,
+    ) -> TypeCheckResult<(TypeTable, HashMap<DefId, TypeId>)> {
         let mut type_table = tree.type_table.clone();
         let mut type_ids_by_def_id = HashMap::new();
 
@@ -610,13 +631,13 @@ impl TypeChecker {
                 continue;
             };
             let aliased =
-                Self::resolve_alias_target_type_id(class, &type_table, &type_ids_by_def_id);
+                self.resolve_alias_target_type_id(class, &type_table, &type_ids_by_def_id)?;
             if let Some(Type::Alias(alias)) = type_table.get_mut(alias_id) {
                 alias.aliased = aliased;
             }
         }
 
-        (type_table, type_ids_by_def_id)
+        Ok((type_table, type_ids_by_def_id))
     }
 
     fn build_type_suffix_index(type_table: &TypeTable) -> HashMap<String, Option<TypeId>> {
@@ -715,25 +736,81 @@ impl TypeChecker {
     }
 
     fn resolve_alias_target_type_id(
+        &self,
         class: &ClassDef,
         type_table: &TypeTable,
         type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    ) -> TypeId {
+    ) -> TypeCheckResult<TypeId> {
         let Some(ext) = class.extends.first() else {
-            return TypeId::UNKNOWN;
+            return Err(Box::new(TypeCheckError::phase_diagnostic(
+                "ET001",
+                format!(
+                    "type alias `{}` does not extend a base type",
+                    class.name.text
+                ),
+                "type alias declaration here",
+                self.location_span(&class.location),
+            )));
         };
 
         if let Some(base_def_id) = ext.base_def_id
             && let Some(&target) = type_ids_by_def_id.get(&base_def_id)
         {
-            return target;
+            return Ok(target);
+        }
+
+        let base_name = ext.base_name.to_string();
+        Self::try_resolve_alias_target_type_id(class, type_table, type_ids_by_def_id).ok_or_else(
+            || {
+                Box::new(TypeCheckError::undefined_type(
+                    base_name,
+                    self.name_span(&ext.base_name),
+                ))
+            },
+        )
+    }
+
+    fn try_resolve_alias_target_type_id(
+        class: &ClassDef,
+        type_table: &TypeTable,
+        type_ids_by_def_id: &HashMap<DefId, TypeId>,
+    ) -> Option<TypeId> {
+        let ext = class.extends.first()?;
+        if let Some(base_def_id) = ext.base_def_id
+            && let Some(&target) = type_ids_by_def_id.get(&base_def_id)
+        {
+            return Some(target);
         }
 
         let base_name = ext.base_name.to_string();
         type_table
             .lookup(&base_name)
             .or_else(|| type_table.lookup(top_level_last_segment(&base_name)))
-            .unwrap_or(TypeId::UNKNOWN)
+    }
+
+    fn name_span(&self, name: &rumoca_ir_ast::Name) -> Span {
+        let Some(first) = name.name.first() else {
+            return Span::DUMMY;
+        };
+        let last = name.name.last().unwrap_or(first);
+        let file_name = if !first.location.file_name.is_empty() {
+            first.location.file_name.as_str()
+        } else {
+            last.location.file_name.as_str()
+        };
+        self.source_map.location_to_span(
+            file_name,
+            first.location.start as usize,
+            last.location.end as usize,
+        )
+    }
+
+    fn location_span(&self, location: &rumoca_core::Location) -> Span {
+        self.source_map.location_to_span(
+            &location.file_name,
+            location.start as usize,
+            location.end as usize,
+        )
     }
 
     /// Resolve and populate component type ids in the instance overlay.
@@ -837,11 +914,7 @@ impl TypeChecker {
                 if !is_wrapper {
                     return None;
                 }
-                Some(Self::resolve_alias_target_type_id(
-                    class,
-                    type_table,
-                    type_ids_by_def_id,
-                ))
+                Self::try_resolve_alias_target_type_id(class, type_table, type_ids_by_def_id)
             }
             _ => None,
         }
@@ -867,105 +940,6 @@ impl TypeChecker {
             && class.initial_equations.is_empty()
             && class.algorithms.is_empty()
             && class.initial_algorithms.is_empty()
-    }
-
-    /// Collect enumeration type sizes from the class tree (MLS §10.5).
-    ///
-    /// Scans the class tree for enumeration type definitions and populates
-    /// the eval context's `enum_sizes` map with type name → literal count mappings.
-    /// Also resolves import aliases so that `import L = ...Logic` makes `L` usable
-    /// as a dimension.
-    fn collect_enum_sizes(tree: &ClassTree, ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext) {
-        // Scan all classes in the name_map for enumeration types
-        for (name, &def_id) in &tree.name_map {
-            let size = Self::enum_literal_count(tree, def_id);
-            if size == 0 {
-                continue;
-            }
-            ctx.enum_sizes.insert(name.clone(), size);
-            // Also add short name (last segment after dot)
-            let short = top_level_last_segment(name);
-            ctx.enum_sizes.entry(short.to_string()).or_insert(size);
-            // Populate enum ordinals (MLS §4.9.5: ordinal is 1-based position)
-            Self::collect_enum_ordinals(tree, def_id, name, ctx);
-        }
-
-        // Scan all scope imports for aliases that resolve to enum types
-        for idx in 0..tree.scope_tree.len() {
-            let scope_id = ScopeId::new(idx as u32);
-            let Some(scope) = tree.scope_tree.get(scope_id) else {
-                continue;
-            };
-            for import in &scope.imports {
-                Self::collect_enum_from_import(tree, import, ctx);
-            }
-        }
-    }
-
-    /// Return the number of enum literals for a class, or 0 if not an enum type.
-    fn enum_literal_count(tree: &ClassTree, def_id: rumoca_core::DefId) -> usize {
-        tree.get_class_by_def_id(def_id)
-            .map(|c| c.enum_literals.len())
-            .unwrap_or(0)
-    }
-
-    /// Populate enum ordinals for all literals of an enumeration type.
-    ///
-    /// For `type Logic = enumeration('U', 'X', ...)`, this adds:
-    ///
-    /// - `"Modelica.Electrical.Digital.Interfaces.Logic.'U'"` → 1
-    /// - `"Modelica.Electrical.Digital.Interfaces.Logic.'X'"` → 2
-    ///
-    /// Also adds short forms without the full prefix.
-    fn collect_enum_ordinals(
-        tree: &ClassTree,
-        def_id: rumoca_core::DefId,
-        type_name: &str,
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        let Some(class) = tree.get_class_by_def_id(def_id) else {
-            return;
-        };
-        for (i, literal) in class.enum_literals.iter().enumerate() {
-            let ordinal = (i + 1) as i64; // 1-based per MLS §4.9.5
-            let lit_name = &*literal.ident.text;
-            // Full qualified: "TypeName.LiteralName"
-            let full = format!("{}.{}", type_name, lit_name);
-            ctx.enum_ordinals.insert(full, ordinal);
-            // Short form: just the literal name (for unqualified references)
-            // Only insert if not already present (avoid conflicts)
-            ctx.enum_ordinals
-                .entry(lit_name.to_string())
-                .or_insert(ordinal);
-        }
-    }
-
-    /// Check if an import resolves to an enumeration type and add it to enum_sizes.
-    fn collect_enum_from_import(
-        tree: &ClassTree,
-        import: &ScopeImport,
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        // Extract (alias_name, def_id) pairs from the import.
-        // For renamed/qualified imports, include both import alias and full path
-        // so strict structural lookups can resolve either spelling.
-        let pairs: Vec<(String, rumoca_core::DefId)> = match import {
-            ScopeImport::Renamed { .. } | ScopeImport::Qualified { .. } => {
-                Self::import_constant_prefixes(import)
-            }
-            ScopeImport::Unqualified { names, .. } => names
-                .iter()
-                .map(|(n, &d)| (n.as_str().to_string(), d))
-                .collect(),
-        };
-        for (name, def_id) in pairs {
-            let size = Self::enum_literal_count(tree, def_id);
-            if size > 0 {
-                ctx.enum_sizes.entry(name.clone()).or_insert(size);
-                // Also populate ordinals for import aliases
-                Self::collect_enum_ordinals(tree, def_id, &name, ctx);
-            }
-        }
     }
 
     /// Collect integer/real/boolean constants from classes referenced by import aliases.
@@ -1292,6 +1266,111 @@ impl TypeChecker {
         }
     }
 
+    /// Re-evaluate component-scoped extends modifiers inside the dimension fixpoint.
+    ///
+    /// MLS §7.2/§7.3 modifications are part of instantiation. When an extends
+    /// modifier depends on a sibling array dimension, such as
+    /// `extends SIMO(final nout=size(columns, 1))`, it cannot be evaluated until
+    /// colon dimensions for `columns[:]` have been inferred.
+    fn reevaluate_component_scoped_extends_modification_constants(
+        tree: &ClassTree,
+        overlay: &InstanceOverlay,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) -> bool {
+        let mut progress = false;
+        for instance_data in overlay.components.values() {
+            let comp_scope = instance_data.qualified_name.to_component_path();
+            if comp_scope.is_root() {
+                continue;
+            }
+            let type_name = instance_data.type_name.as_str();
+            if type_name.is_empty() {
+                continue;
+            }
+
+            for ancestor in Self::collect_ancestor_classes(tree, type_name) {
+                progress |= Self::reevaluate_class_extends_modification_constants_for_scope(
+                    &comp_scope,
+                    ancestor,
+                    ctx,
+                );
+            }
+        }
+        progress
+    }
+
+    fn reevaluate_class_extends_modification_constants_for_scope(
+        comp_scope: &ComponentPath,
+        class_def: &ClassDef,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) -> bool {
+        let mut progress = false;
+        for ext in &class_def.extends {
+            for ext_mod in ext
+                .modifications
+                .iter()
+                .filter(|ext_mod| !ext_mod.redeclare)
+            {
+                progress |=
+                    Self::reevaluate_extends_modification_expr(comp_scope, &ext_mod.expr, ctx);
+            }
+        }
+        progress
+    }
+
+    fn reevaluate_extends_modification_expr(
+        comp_scope: &ComponentPath,
+        expr: &Expression,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) -> bool {
+        let Expression::Modification { target, value, .. } = expr else {
+            return false;
+        };
+        let Some(target_path) = Self::component_reference_path(target) else {
+            return false;
+        };
+        let full_path = comp_scope.join(&target_path).to_flat_string();
+        let scope_name = comp_scope.to_flat_string();
+
+        let mut progress = false;
+        if let Some(val) = rumoca_eval_ast::eval::eval_integer_with_scope(value, ctx, &scope_name)
+            && ctx.integers.get(full_path.as_str()).copied() != Some(val)
+        {
+            ctx.integers.insert(full_path.clone(), val);
+            progress = true;
+        }
+        if let Some(val) = rumoca_eval_ast::eval::eval_boolean_with_scope(value, ctx, &scope_name)
+            && ctx.booleans.get(full_path.as_str()).copied() != Some(val)
+        {
+            ctx.booleans.insert(full_path.clone(), val);
+            progress = true;
+        }
+        if let Some(val) =
+            rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(value, ctx, &scope_name)
+            && ctx.dimensions.get(full_path.as_str()) != Some(&val)
+        {
+            ctx.dimensions.insert(full_path, val);
+            progress = true;
+        }
+        progress
+    }
+
+    fn component_reference_path(
+        reference: &rumoca_ir_ast::ComponentReference,
+    ) -> Option<ComponentPath> {
+        if reference.parts.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::with_capacity(reference.parts.len());
+        for part in &reference.parts {
+            if part.subs.as_ref().is_some_and(|subs| !subs.is_empty()) {
+                return None;
+            }
+            parts.push(part.ident.text.to_string());
+        }
+        Some(ComponentPath::from_parts(parts))
+    }
+
     /// Walk an extends-modification expression and record scalar/dimension overrides.
     fn extract_extends_modification_expr(
         alias: &str,
@@ -1522,7 +1601,7 @@ impl TypeChecker {
 
         let ancestors = Self::collect_ancestor_classes(tree, type_name);
         for ancestor in ancestors {
-            Self::extract_class_extends_redeclare_constants_for_scope(
+            Self::extract_class_extends_constants_for_scope(
                 tree,
                 ancestor,
                 &comp_scope,
@@ -1545,7 +1624,7 @@ impl TypeChecker {
     /// `comp_scope = voltage.term`, class has
     /// `extends Interfaces.TerminalDC(redeclare package PhaseSystem = ...);`
     /// -> populate `voltage.term.PhaseSystem.*`.
-    fn extract_class_extends_redeclare_constants_for_scope(
+    fn extract_class_extends_constants_for_scope(
         tree: &ClassTree,
         class_def: &ClassDef,
         comp_scope: &str,
@@ -1553,6 +1632,7 @@ impl TypeChecker {
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         for ext in &class_def.extends {
+            Self::extract_extends_modification_constants(comp_scope, ext, ctx);
             Self::extract_nested_extends_redeclare_constants(
                 tree,
                 comp_scope,
@@ -1779,6 +1859,7 @@ impl TypeChecker {
     /// 4. Re-evaluates boolean and real parameters
     fn evaluate_all_dimensions_multi_pass(
         &mut self,
+        tree: &ClassTree,
         overlay: &mut InstanceOverlay,
         record_aliases: &[(String, String)],
     ) {
@@ -1792,17 +1873,26 @@ impl TypeChecker {
             // Pass 2: Infer colon dimensions from bindings
             let colon_progress = self.infer_colon_dimensions_single_pass(overlay);
 
-            // Pass 3: Re-evaluate integer parameters that may now be computable
+            // Pass 3: Re-evaluate inherited extends modifier parameters that
+            // may depend on dimensions inferred earlier in this pass.
+            let extends_progress = Self::reevaluate_component_scoped_extends_modification_constants(
+                tree,
+                overlay,
+                &mut self.eval_ctx,
+            );
+
+            // Pass 4: Re-evaluate integer parameters that may now be computable
             // This handles cases like `n = size(table, 1)` after table dims are known
             let int_progress = self.reevaluate_integer_parameters(overlay);
 
-            // Pass 4: Re-evaluate boolean, real, and enum parameters that may now be computable
+            // Pass 5: Re-evaluate boolean, real, and enum parameters that may now be computable
             // This enables if-expression evaluation for dimension inference
             let value_progress = self.reevaluate_boolean_real_and_enum_parameters(overlay);
 
             let made_progress = alias_progress
                 || explicit_progress
                 || colon_progress
+                || extends_progress
                 || int_progress
                 || value_progress;
             if !made_progress {

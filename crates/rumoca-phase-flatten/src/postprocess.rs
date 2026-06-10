@@ -155,8 +155,11 @@ impl ConstructorMarker<'_> {
             match equation {
                 rumoca_ir_flat::WhenEquation::Assign { value, .. }
                 | rumoca_ir_flat::WhenEquation::Reinit { value, .. } => self.mark_expr(value),
-                rumoca_ir_flat::WhenEquation::Assert { condition, .. } => {
+                rumoca_ir_flat::WhenEquation::Assert {
+                    condition, message, ..
+                } => {
                     self.mark_expr(condition);
+                    self.mark_expr(message);
                 }
                 rumoca_ir_flat::WhenEquation::Conditional {
                     branches,
@@ -166,7 +169,7 @@ impl ConstructorMarker<'_> {
                 rumoca_ir_flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                     self.mark_expr(function);
                 }
-                rumoca_ir_flat::WhenEquation::Terminate { .. } => {}
+                rumoca_ir_flat::WhenEquation::Terminate { message, .. } => self.mark_expr(message),
             }
         }
     }
@@ -490,8 +493,11 @@ fn collapse_index_when_equations(
             | rumoca_ir_flat::WhenEquation::Reinit { value, .. } => {
                 collapse_index_expr(value, known_flat_vars);
             }
-            rumoca_ir_flat::WhenEquation::Assert { condition, .. } => {
+            rumoca_ir_flat::WhenEquation::Assert {
+                condition, message, ..
+            } => {
                 collapse_index_expr(condition, known_flat_vars);
+                collapse_index_expr(message, known_flat_vars);
             }
             rumoca_ir_flat::WhenEquation::Conditional {
                 branches,
@@ -507,7 +513,9 @@ fn collapse_index_when_equations(
             rumoca_ir_flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 collapse_index_expr(function, known_flat_vars);
             }
-            rumoca_ir_flat::WhenEquation::Terminate { .. } => {}
+            rumoca_ir_flat::WhenEquation::Terminate { message, .. } => {
+                collapse_index_expr(message, known_flat_vars)
+            }
         }
     }
 }
@@ -1829,9 +1837,15 @@ fn substitute_known_constants_when_equation(
         flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
             *value = substitute_known_constants_expr(value.clone(), ctx, live_vars, locals, "");
         }
-        flat::WhenEquation::Assert { condition, .. } => {
+        flat::WhenEquation::Assert {
+            condition, message, ..
+        } => {
             *condition =
                 substitute_known_constants_expr(condition.clone(), ctx, live_vars, locals, "");
+            *message = substitute_known_constants_expr(message.clone(), ctx, live_vars, locals, "");
+        }
+        flat::WhenEquation::Terminate { message, .. } => {
+            *message = substitute_known_constants_expr(message.clone(), ctx, live_vars, locals, "");
         }
         flat::WhenEquation::Conditional {
             branches,
@@ -1853,22 +1867,18 @@ fn substitute_known_constants_when_equation(
             *function =
                 substitute_known_constants_expr(function.clone(), ctx, live_vars, locals, "");
         }
-        flat::WhenEquation::Terminate { .. } => {}
     }
 }
 
 /// Drop FieldAccess bindings whose targets don't exist in the flat model.
-///
 /// During modifier propagation, record bindings like `x = someRecord.field` may reference
 /// internal component structure that was eliminated during flattening. These dangling
 /// FieldAccess bindings would cause incorrect equation generation in todae if kept.
 pub(super) fn drop_invalid_field_access_bindings(flat: &mut flat::Model) {
     use std::collections::HashSet;
 
-    // Collect the set of all variable names for lookup
     let all_names: HashSet<rumoca_core::VarName> = flat.variables.keys().cloned().collect();
 
-    // Find variables with FieldAccess bindings pointing to non-existent targets
     let to_clear: Vec<rumoca_core::VarName> = flat
         .variables
         .iter()

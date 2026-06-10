@@ -23,10 +23,21 @@ impl<'a> LowerBuilder<'a> {
                 // field unless a projection selects another component.
                 return self.lower_expr(expr, caller_scope, call_depth + 1);
             }
-            return Ok(self.emit_const(0.0));
+            if let Some(default_expr) = self
+                .lookup_function(name)
+                .and_then(|constructor| constructor.inputs.first())
+                .and_then(|input| input.default.as_ref())
+            {
+                return self.lower_expr(default_expr, caller_scope, call_depth + 1);
+            }
+            return Err(LowerError::InvalidFunction {
+                name: name.as_str().to_string(),
+                reason: "record constructor scalar projection requires a first field argument or default binding"
+                    .to_string(),
+            });
         }
 
-        if let Some(reg) = self.lower_runtime_string_special_intrinsic(name.as_str(), args)? {
+        if let Some(reg) = self.lower_runtime_string_special_intrinsic(name.as_str(), args, span)? {
             return Ok(reg);
         }
 
@@ -62,7 +73,7 @@ impl<'a> LowerBuilder<'a> {
                 caller_scope,
                 call_depth,
             );
-        } else if let Some(closure) = self.lookup_function_closure(name).cloned() {
+        } else if let Some(closure) = self.lookup_function_closure(name, span)?.cloned() {
             return self.lower_function_closure_call(
                 &closure,
                 args,
@@ -103,31 +114,33 @@ impl<'a> LowerBuilder<'a> {
 
             let _returned = this.lower_statements(&function.body, &mut scope, call_depth + 1)?;
 
-            if let Some(output) = function.outputs.first()
-                && let Some(reg) = scope
-                    .get(&ComponentPath::from_flat_path(&output.name))
-                    .copied()
-            {
-                return Ok(reg);
-            }
-
-            Ok(this.emit_const(0.0))
+            this.lower_scalar_function_output_value(name.as_str(), &function, &scope)
         })
     }
 
     pub(super) fn lookup_function_closure(
         &self,
         name: &rumoca_core::Reference,
-    ) -> Option<&FunctionClosure> {
-        self.function_closures
-            .get(&ComponentPath::from_reference(name))
+        span: rumoca_core::Span,
+    ) -> Result<Option<&FunctionClosure>, LowerError> {
+        if !name.is_generated()
+            && name.component_ref().is_none()
+            && self
+                .dae_variables
+                .and_then(|variables| dae_variable(variables, name.var_name()))
+                .is_none()
+        {
+            return Ok(None);
+        }
+        let key = self.scope_key_from_reference(name, span)?;
+        Ok(self.function_closures.get(&key))
     }
 
     pub(super) fn lower_function_closure_call(
         &mut self,
         closure: &FunctionClosure,
         args: &[rumoca_core::Expression],
-        _span: rumoca_core::Span,
+        span: rumoca_core::Span,
         caller_scope: &Scope,
         call_depth: usize,
     ) -> Result<Reg, LowerError> {
@@ -167,16 +180,38 @@ impl<'a> LowerBuilder<'a> {
 
             let _returned = this.lower_statements(&function.body, &mut scope, call_depth + 1)?;
 
-            if let Some(output) = function.outputs.first()
-                && let Some(reg) = scope
-                    .get(&ComponentPath::from_flat_path(&output.name))
-                    .copied()
-            {
-                return Ok(reg);
-            }
-
-            Ok(this.emit_const(0.0))
+            this.lower_scalar_function_output_value(closure.target_name.as_str(), &function, &scope)
+                .map_err(|err| err.with_fallback_span(span))
         })
+    }
+
+    fn lower_scalar_function_output_value(
+        &self,
+        function_name: &str,
+        function: &rumoca_core::Function,
+        scope: &Scope,
+    ) -> Result<Reg, LowerError> {
+        let Some(output) = function.outputs.first() else {
+            return Err(LowerError::InvalidFunction {
+                name: function_name.to_string(),
+                reason: "function call used in scalar expression has no output".to_string(),
+            });
+        };
+        let values = self.scoped_function_output_values(output, scope)?;
+        match values.as_slice() {
+            [value] => Ok(*value),
+            [] => Err(LowerError::InvalidFunction {
+                name: function_name.to_string(),
+                reason: format!("output `{}` was not assigned", output.name),
+            }),
+            values => Err(LowerError::Unsupported {
+                reason: format!(
+                    "array-valued output `{}` of function `{function_name}` has {} scalar values in scalar context",
+                    output.name,
+                    values.len()
+                ),
+            }),
+        }
     }
 
     pub(super) fn lookup_function(

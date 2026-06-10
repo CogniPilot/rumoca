@@ -46,23 +46,23 @@ fn test_classify_equations_skips_subscripted_output_input_connection_when_output
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("table.y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("table.y"),
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("gain.u"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("gain.u"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     // Component equation for one output element.
@@ -120,32 +120,32 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("gain.y"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("gain.y"),
             causality: rumoca_core::Causality::Output(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("gain.u"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("gain.u"),
             causality: rumoca_core::Causality::Input(rumoca_core::Token::default()),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("outBus.x"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("outBus.x"),
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     // Output has an explicit component equation.
@@ -210,7 +210,7 @@ fn test_classify_equations_skips_unconnected_flow_for_top_level_overconstrained_
 
     flat.add_variable(
         VarName::new("port.reference.gamma"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("port.reference.gamma"),
             variability: rumoca_core::Variability::Empty,
             is_primitive: true,
@@ -218,16 +218,16 @@ fn test_classify_equations_skips_unconnected_flow_for_top_level_overconstrained_
             oc_record_path: Some("port.reference".to_string()),
             oc_eq_constraint_size: Some(0),
             ..Default::default()
-        },
+        }),
     );
     flat.add_variable(
         VarName::new("port.Phi.re"),
-        flat::Variable {
+        crate::test_support::with_component_ref(flat::Variable {
             name: VarName::new("port.Phi.re"),
             flow: true,
             is_primitive: true,
             ..Default::default()
-        },
+        }),
     );
 
     flat.add_equation(rumoca_ir_flat::Equation {

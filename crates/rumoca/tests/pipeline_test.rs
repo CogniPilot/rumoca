@@ -114,10 +114,13 @@ end Empty;
 
     let dae = result.unwrap();
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&dae),
+        rumoca_phase_dae::balance::is_balanced(&dae).expect("valid DAE balance fixture"),
         "Empty model should be balanced"
     );
-    assert_eq!(rumoca_phase_dae::balance::balance(&dae), 0);
+    assert_eq!(
+        rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
+        0
+    );
 }
 
 #[test]
@@ -139,7 +142,7 @@ end SimpleParam;
         "SimpleParam: params={}, algebraics={}, balance={}",
         dae.variables.parameters.len(),
         dae.variables.algebraics.len(),
-        rumoca_phase_dae::balance::balance(&dae)
+        rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -165,7 +168,7 @@ end SimpleVar;
         "SimpleVar: {} states, {} algebraics, balance = {}",
         dae.variables.states.len(),
         dae.variables.algebraics.len(),
-        rumoca_phase_dae::balance::balance(&dae)
+        rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -191,7 +194,7 @@ end SimpleEq;
         dae.variables.states.len(),
         dae.variables.algebraics.len(),
         dae.continuous.equations.len(),
-        rumoca_phase_dae::balance::balance(&dae)
+        rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -222,7 +225,7 @@ end InverseLike;
         "both equations should be preserved, including input alias constraint"
     );
     assert_eq!(
-        rumoca_phase_dae::balance::balance(&dae),
+        rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
         0,
         "model should be structurally balanced"
     );
@@ -410,7 +413,7 @@ end SimpleODE;
         dae.variables.states.len(),
         dae.variables.algebraics.len(),
         dae.continuous.equations.len(),
-        rumoca_phase_dae::balance::balance(&dae)
+        rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture")
     );
 
     // Should have 1 state (x) and 1 continuous equation
@@ -453,7 +456,7 @@ end Oscillator;
         dae.variables.algebraics.len(),
         dae.variables.parameters.len(),
         dae.continuous.equations.len(),
-        rumoca_phase_dae::balance::balance(&dae)
+        rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture")
     );
 
     // State detection works - variables appearing in der() are states
@@ -798,7 +801,7 @@ end KeepBindingWithSubscriptedUnknown;
     };
 
     assert_eq!(
-        rumoca_phase_dae::balance::balance(&result.dae),
+        rumoca_phase_dae::balance::balance(&result.dae).expect("valid DAE balance fixture"),
         0,
         "model should remain balanced when declaration binding and explicit equation both contribute constraints"
     );
@@ -858,7 +861,7 @@ end ModifierBindingScope;
         "component modifier a(x=2) must not become a declaration binding on nested member a.c.x"
     );
     assert_eq!(
-        rumoca_phase_dae::balance::balance(&result.dae),
+        rumoca_phase_dae::balance::balance(&result.dae).expect("valid DAE balance fixture"),
         0,
         "model should stay balanced without nested binding leakage"
     );
@@ -1254,11 +1257,14 @@ end MyMedium;
 
     // Model should be balanced: 4 unknowns (d, T, state.p, state.T), 4 equations
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "Model should be balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
-    assert_eq!(rumoca_phase_dae::balance::balance(&result.dae), 0);
+    assert_eq!(
+        rumoca_phase_dae::balance::balance(&result.dae).expect("valid DAE balance fixture"),
+        0
+    );
 }
 
 /// MLS §7.3: Record redeclarations inherited through package extends-chains
@@ -1331,9 +1337,9 @@ end TwoPhaseWater;
     );
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "Model should remain balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -1420,9 +1426,9 @@ end DottedStateInputs;
     );
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "Model should remain balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -1493,9 +1499,9 @@ end UsesBaseProperties;
     );
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "Model should remain balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 
@@ -1558,9 +1564,9 @@ end UsesConstrainedBaseProperties;
     );
 
     assert!(
-        rumoca_phase_dae::balance::is_balanced(&result.dae),
+        rumoca_phase_dae::balance::is_balanced(&result.dae).expect("valid DAE balance fixture"),
         "Model should remain balanced: {}",
-        rumoca_phase_dae::balance::balance_detail(&result.dae)
+        rumoca_phase_dae::balance::balance_detail(&result.dae).expect("valid DAE balance fixture")
     );
 }
 

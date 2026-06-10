@@ -30,6 +30,9 @@ fn namespace_class_names(session: &mut Session) -> Vec<String> {
 
 #[test]
 fn session_cache_stats_track_session_events() {
+    // The cache-stats counters are process-global; serialize with every other
+    // test that reads or resets them so parallel tests cannot clamp deltas.
+    let _guard = crate::session::tests::session_stats_test_guard();
     let before = session_cache_stats();
     let mut session = Session::new(SessionConfig::default());
 
@@ -97,6 +100,9 @@ end Lib;
 
 #[test]
 fn session_cache_stats_track_query_caches() {
+    // See session_cache_stats_track_session_events: the reset below would
+    // clamp a concurrently running stats test's deltas to zero.
+    let _guard = crate::session::tests::session_stats_test_guard();
     let before = {
         reset_session_cache_stats();
         session_cache_stats()

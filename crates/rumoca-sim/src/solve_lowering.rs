@@ -249,7 +249,8 @@ pub fn structural_report_for_dae(
     // Report on the same prepared system the simulator matches, so the analysis
     // reflects reality (e.g. `der(x)` references in non-ODE rows are resolved).
     let mut prepared = dae_model.clone();
-    prepare_dae_for_structural_analysis(&mut prepared, opts);
+    prepare_dae_for_structural_analysis(&mut prepared, opts)
+        .map_err(SimulationDiagnosticError::SolveLowering)?;
     rumoca_phase_structural::build_structural_report(&prepared).map_err(|error| {
         SimulationDiagnosticError::Solver(format!("structural analysis failed: {error}"))
     })
@@ -262,17 +263,23 @@ pub fn structural_report_for_dae(
 ///
 /// Keeping this in one place ensures the structural report and the simulator
 /// agree on the matched system, and that fixes apply to both paths at once.
-pub(crate) fn prepare_dae_for_structural_analysis(lowered: &mut dae::Dae, opts: &SimOptions) {
+pub(crate) fn prepare_dae_for_structural_analysis(
+    lowered: &mut dae::Dae,
+    opts: &SimOptions,
+) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
     if opts.scalarize {
-        rumoca_phase_structural::scalarize::scalarize_equations(lowered);
+        rumoca_phase_structural::scalarize::scalarize_equations(lowered)
+            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     }
     rumoca_phase_structural::dae_prepare::demote_exact_alias_component_states(lowered);
     rumoca_phase_structural::dae_prepare::demote_direct_assigned_states(lowered);
     rumoca_phase_structural::dae_prepare::reduce_constrained_dummy_derivatives(lowered);
-    rumoca_phase_structural::dae_prepare::index_reduce_missing_state_derivatives(lowered);
+    rumoca_phase_structural::dae_prepare::index_reduce_missing_state_derivatives(lowered)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     rumoca_phase_structural::dae_prepare::demote_states_without_assignable_derivative_rows(lowered);
     rumoca_phase_structural::dae_prepare::eliminate_derivative_aliases(lowered);
-    rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(lowered);
+    rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(lowered)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     // After demotion, any `der(<algebraic>)` (a differentiated algebraic such as
     // `a_rel = der(w_rel)`, or successive `Der` blocks) is expanded symbolically
     // via the chain rule, leaving only `der(state)`. Running this after demotion
@@ -287,6 +294,7 @@ pub(crate) fn prepare_dae_for_structural_analysis(lowered: &mut dae::Dae, opts: 
     rumoca_phase_structural::dae_prepare::substitute_standalone_state_derivatives_in_non_ode_rows(
         lowered,
     );
+    Ok(())
 }
 
 /// Structured triage of a structural singularity, so failures can be classified
@@ -315,12 +323,13 @@ pub struct UnmatchedUnknownDiagnosis {
 pub fn diagnose_structural_singularity(
     dae_model: &dae::Dae,
     opts: &SimOptions,
-) -> Option<SingularityDiagnosis> {
+) -> Result<Option<SingularityDiagnosis>, SimulationDiagnosticError> {
     let mut prepared = dae_model.clone();
-    prepare_dae_for_structural_analysis(&mut prepared, opts);
+    prepare_dae_for_structural_analysis(&mut prepared, opts)
+        .map_err(SimulationDiagnosticError::SolveLowering)?;
 
     let error = match rumoca_phase_structural::build_structural_report(&prepared) {
-        Ok(_) => return None,
+        Ok(_) => return Ok(None),
         Err(error) => error,
     };
     let rumoca_phase_structural::StructuralError::Singular {
@@ -331,7 +340,7 @@ pub fn diagnose_structural_singularity(
         ..
     } = error
     else {
-        return None;
+        return Ok(None);
     };
 
     let unknowns = unmatched_unknowns
@@ -347,12 +356,12 @@ pub fn diagnose_structural_singularity(
         })
         .collect();
 
-    Some(SingularityDiagnosis {
+    Ok(Some(SingularityDiagnosis {
         n_equations,
         n_unknowns,
         n_matched,
         unknowns,
-    })
+    }))
 }
 
 fn unmatched_base_name(name: &str) -> &str {
@@ -403,7 +412,8 @@ fn unknown_referencing_rows(dae: &dae::Dae, name: &str, der_inner: Option<&str>)
             if der_inner.is_some() {
                 dae::expr_contains_der_of(&eq.rhs, &key)
             } else {
-                eq.lhs.as_ref() == Some(&key) || dae::expr_contains_var(&eq.rhs, &key)
+                eq.lhs.as_ref().map(rumoca_core::Reference::var_name) == Some(&key)
+                    || dae::expr_contains_var(&eq.rhs, &key)
             }
         })
         .map(|(index, _)| index)
@@ -444,11 +454,21 @@ pub(crate) fn structurally_lower_dae_for_simulation(
     dae_model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<StructurallyLoweredDae, rumoca_phase_solve::SolveModelLowerError> {
-    let mut lowered = dae_model.clone();
-    prepare_dae_for_structural_analysis(&mut lowered, opts);
+    let mut source_dae = dae_model.clone();
+    rumoca_phase_dae::attach_dae_reference_metadata(&mut source_dae).map_err(|err| {
+        rumoca_phase_solve::SolveModelLowerError::Lower(
+            rumoca_phase_solve::lower::LowerError::ContractViolation {
+                reason: format!("DAE reference metadata attachment failed: {err}"),
+                span: rumoca_core::Span::DUMMY,
+            },
+        )
+    })?;
+    let mut lowered = source_dae.clone();
+    prepare_dae_for_structural_analysis(&mut lowered, opts)?;
     remove_duplicate_continuous_equations(&mut lowered);
     let mut metadata_dae = lowered.clone();
-    let elimination = rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered);
+    let elimination = rumoca_phase_structural::eliminate::eliminate_trivial(&mut lowered)
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     if let Some(source) = elimination.blt_error {
         if dae_model.variables.states.is_empty() {
             validate_residual_shapes_for_simulation(dae_model)?;
@@ -457,7 +477,8 @@ pub(crate) fn structurally_lower_dae_for_simulation(
     }
     rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(
         &mut lowered,
-    );
+    )
+    .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     rumoca_phase_structural::eliminate::apply_elimination_substitutions_to_dae(
         &mut lowered,
         &elimination.substitutions,
@@ -469,11 +490,13 @@ pub(crate) fn structurally_lower_dae_for_simulation(
     );
     rumoca_phase_structural::dae_prepare::demote_states_without_retained_derivative_rows(
         &mut state_selection_dae,
-    );
+    )
+    .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     mark_constrained_dummy_states_in_metadata(&state_selection_dae, &mut metadata_dae);
-    let mut observation_dae = dae_model.clone();
+    let mut observation_dae = source_dae.clone();
     if opts.scalarize {
-        rumoca_phase_structural::scalarize::scalarize_equations(&mut observation_dae);
+        rumoca_phase_structural::scalarize::scalarize_equations(&mut observation_dae)
+            .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     }
     if !elimination.substitutions.is_empty() {
         for eq in &mut observation_dae.continuous.equations {
@@ -483,7 +506,8 @@ pub(crate) fn structurally_lower_dae_for_simulation(
             );
         }
     }
-    let mut visible_expressions = rumoca_phase_solve::visible_expressions_for_dae(&observation_dae);
+    let mut visible_expressions = rumoca_phase_solve::visible_expressions_for_dae(&observation_dae)
+        .map_err(rumoca_phase_solve::SolveModelLowerError::Lower)?;
     if !elimination.substitutions.is_empty() {
         for visible in &mut visible_expressions {
             visible.expr = rumoca_phase_structural::eliminate::resolve_substitutions_in_expr(
@@ -576,7 +600,7 @@ fn expression_key(expr: &rumoca_core::Expression) -> String {
 fn validate_residual_shapes_for_simulation(
     dae_model: &dae::Dae,
 ) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
-    let layout = rumoca_phase_solve::build_var_layout(dae_model);
+    let layout = rumoca_phase_solve::build_var_layout(dae_model)?;
     rumoca_phase_solve::lower::lower_residual(dae_model, &layout)?;
     Ok(())
 }
@@ -634,10 +658,16 @@ mod tests {
             scalar_count: 1,
         });
 
+        let mut dae = dae;
+        rumoca_phase_dae::attach_dae_reference_metadata(&mut dae)
+            .expect("fixture DAE reference metadata should normalize");
         let err = lower_dae_for_simulation(&dae, &SimOptions::default())
             .expect_err("BLT singularity must not be silently skipped");
 
-        assert!(err.to_string().contains("structural lowering failed"));
+        assert!(
+            err.to_string().contains("structural lowering failed"),
+            "got: {err}"
+        );
         assert!(err.to_string().contains("structurally singular system"));
     }
 
@@ -663,6 +693,9 @@ mod tests {
             span: Span::DUMMY,
         }));
 
+        let mut dae = dae;
+        rumoca_phase_dae::attach_dae_reference_metadata(&mut dae)
+            .expect("fixture DAE reference metadata should normalize");
         let err = lower_dae_for_simulation(&dae, &SimOptions::default())
             .expect_err("singular system should error");
         assert_eq!(
@@ -674,7 +707,9 @@ mod tests {
 
     #[test]
     fn simulation_structural_lowering_demotes_unresolved_derivative_alias_state() {
-        let dae = derivative_alias_state_dae();
+        let mut dae = derivative_alias_state_dae();
+        rumoca_phase_dae::attach_dae_reference_metadata(&mut dae)
+            .expect("fixture DAE reference metadata should normalize");
         let model = lower_dae_for_simulation(&dae, &SimOptions::default())
             .expect("derivative alias state should lower without an underdetermined solver slot");
 
@@ -820,6 +855,9 @@ mod tests {
             scalar_count: 9,
         });
 
+        let mut model = model;
+        rumoca_phase_dae::attach_dae_reference_metadata(&mut model)
+            .expect("fixture DAE reference metadata should normalize");
         let err = lower_dae_for_simulation(&model, &SimOptions::default())
             .expect_err("shape mismatch should fail during simulation lowering");
         assert_eq!(err.source_span(), Some(span), "unexpected error: {err:?}");

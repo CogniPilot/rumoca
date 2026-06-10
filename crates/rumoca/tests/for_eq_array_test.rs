@@ -86,7 +86,8 @@ end TestPkg;
     match source_root.compile_model_phases("TestPkg.Dimmer") {
         PhaseResult::Success(result) => {
             println!("Success!");
-            let balance = rumoca_phase_dae::balance::balance(&result.dae);
+            let balance =
+                rumoca_phase_dae::balance::balance(&result.dae).expect("valid DAE balance fixture");
             println!("Balance: {}", balance);
 
             // List all variables

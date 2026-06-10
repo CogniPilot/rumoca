@@ -39,7 +39,44 @@ fn append_enclosing_package_constant_imports(
     let Some(parent_class) = tree.get_class_by_def_id(parent_def_id) else {
         return;
     };
-    append_package_constant_imports(tree, parent_class, parent_name, imports);
+    // MLS §5.3.2: members declared by the nested class (or its bases) shadow
+    // enclosing-class names; an enclosing-class alias for them would
+    // misresolve local references to the enclosing instance's member.
+    let shadowed = class_member_names_with_bases(tree, class);
+    append_package_constant_imports_shadowed(tree, parent_class, parent_name, imports, &shadowed);
+}
+
+fn class_member_names_with_bases(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+) -> rustc_hash::FxHashSet<String> {
+    let mut names = rustc_hash::FxHashSet::default();
+    let mut visited = rustc_hash::FxHashSet::default();
+    collect_class_member_names_recursive(tree, class, &mut names, &mut visited);
+    names
+}
+
+fn collect_class_member_names_recursive(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+    names: &mut rustc_hash::FxHashSet<String>,
+    visited: &mut rustc_hash::FxHashSet<rumoca_core::DefId>,
+) {
+    if let Some(def_id) = class.def_id
+        && !visited.insert(def_id)
+    {
+        return;
+    }
+    names.extend(class.components.keys().cloned());
+    for ext in &class.extends {
+        let base_class = ext
+            .base_def_id
+            .and_then(|def_id| tree.get_class_by_def_id(def_id))
+            .or_else(|| tree.get_class_by_qualified_name(&ext.base_name.to_string()));
+        if let Some(base_class) = base_class {
+            collect_class_member_names_recursive(tree, base_class, names, visited);
+        }
+    }
 }
 
 fn enclosing_class_def_id(
@@ -87,6 +124,22 @@ fn append_package_constant_imports(
     package_name: &str,
     imports: &mut Vec<(String, String)>,
 ) {
+    append_package_constant_imports_shadowed(
+        tree,
+        package_class,
+        package_name,
+        imports,
+        &rustc_hash::FxHashSet::default(),
+    );
+}
+
+fn append_package_constant_imports_shadowed(
+    tree: &ast::ClassTree,
+    package_class: &ast::ClassDef,
+    package_name: &str,
+    imports: &mut Vec<(String, String)>,
+    shadowed: &rustc_hash::FxHashSet<String>,
+) {
     let mut package_constant_names = Vec::new();
     let mut visited = rustc_hash::FxHashSet::default();
     append_package_constant_imports_recursive(
@@ -96,6 +149,7 @@ fn append_package_constant_imports(
         imports,
         &mut package_constant_names,
         &mut visited,
+        shadowed,
     );
 }
 
@@ -106,6 +160,7 @@ fn append_package_constant_imports_recursive(
     imports: &mut Vec<(String, String)>,
     package_constant_names: &mut Vec<String>,
     visited: &mut rustc_hash::FxHashSet<rumoca_core::DefId>,
+    shadowed: &rustc_hash::FxHashSet<String>,
 ) {
     if let Some(def_id) = package_class.def_id
         && !visited.insert(def_id)
@@ -125,15 +180,23 @@ fn append_package_constant_imports_recursive(
                 imports,
                 package_constant_names,
                 visited,
+                shadowed,
             );
         }
     }
+    // MLS §5.3.2: enclosing-scope lookup reaches class constants (and, for
+    // package enclosers, package members). A non-package enclosing class's
+    // parameters are instance members and must never become class-qualified
+    // alias targets.
+    let is_package = matches!(package_class.class_type, rumoca_core::ClassType::Package);
     for (name, component) in &package_class.components {
-        if matches!(
-            component.variability,
-            rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
-        ) {
-            if package_constant_names.contains(name) {
+        let alias_visible = match component.variability {
+            rumoca_core::Variability::Constant(_) => true,
+            rumoca_core::Variability::Parameter(_) => is_package,
+            _ => false,
+        };
+        if alias_visible {
+            if shadowed.contains(name) || package_constant_names.contains(name) {
                 continue;
             }
             package_constant_names.push(name.clone());

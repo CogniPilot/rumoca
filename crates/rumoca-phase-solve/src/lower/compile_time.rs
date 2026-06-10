@@ -108,12 +108,7 @@ fn insert_scalarized_bindings(
     };
     bindings.insert(name.to_string(), first);
     for (idx, value) in values.iter().copied().enumerate() {
-        bindings.insert(format!("{name}[{}]", idx + 1), value);
-        if let Some(subs) = dae::flat_index_to_subscripts(dims, idx)
-            && subs.len() > 1
-        {
-            bindings.insert(dae::format_subscript_key(name, &subs), value);
-        }
+        bindings.insert(dae::scalar_name_text_for_flat_index(name, dims, idx), value);
     }
 }
 

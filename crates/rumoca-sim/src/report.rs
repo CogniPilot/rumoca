@@ -58,6 +58,42 @@ pub fn write_html_report(
     Ok(document)
 }
 
+/// Write simulation results as CSV: a `time` column followed by one column
+/// per variable, one row per output time point.
+pub fn write_csv_results(result: &SimResult, path: &Path) -> io::Result<()> {
+    let mut out = String::new();
+    out.push_str("time");
+    for name in &result.names {
+        out.push(',');
+        out.push_str(&csv_escape(name));
+    }
+    out.push('\n');
+    for (row, time) in result.times.iter().enumerate() {
+        out.push_str(&format!("{time}"));
+        for series in &result.data {
+            let Some(value) = series.get(row) else {
+                return Err(io::Error::other(format!(
+                    "simulation series is shorter than the time vector \
+                     ({} < {}) — refusing to write a truncated CSV",
+                    series.len(),
+                    result.times.len()
+                )));
+            };
+            out.push_str(&format!(",{value}"));
+        }
+        out.push('\n');
+    }
+    fs::write(path, out)
+}
+
+fn csv_escape(field: &str) -> String {
+    if field.contains([',', '"', '\n']) {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
 fn load_views_value(model_name: &str, workspace_root: Option<&Path>) -> io::Result<Value> {
     let Some(workspace_root) = workspace_root else {
         return Ok(default_visualization_views_value());
@@ -142,5 +178,45 @@ mod tests {
         assert!(document.html.contains("RumocaResultsApp.createResultsApp"));
         assert_eq!(document.payload["nStates"], 1);
         assert_eq!(document.views[0]["id"], "states_time");
+    }
+
+    #[test]
+    fn writes_csv_results_with_header_and_rows() {
+        let sim = SimResult {
+            times: vec![0.0, 0.5],
+            names: vec!["x".to_string(), "with,comma".to_string()],
+            data: vec![vec![1.0, 2.0], vec![3.0, 4.0]],
+            n_states: 1,
+            termination: None,
+            variable_meta: Vec::new(),
+        };
+        let dir = std::env::temp_dir().join(format!("rumoca-csv-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("out.csv");
+        write_csv_results(&sim, &path).expect("csv written");
+        let contents = fs::read_to_string(&path).expect("csv readable");
+        assert_eq!(
+            contents, "time,x,\"with,comma\"\n0,1,3\n0.5,2,4\n",
+            "CSV must be time column + one column per variable"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn csv_results_reject_truncated_series() {
+        let sim = SimResult {
+            times: vec![0.0, 0.5],
+            names: vec!["x".to_string()],
+            data: vec![vec![1.0]],
+            n_states: 1,
+            termination: None,
+            variable_meta: Vec::new(),
+        };
+        let dir = std::env::temp_dir().join(format!("rumoca-csv-trunc-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("out.csv");
+        let err = write_csv_results(&sim, &path).expect_err("short series must be an error");
+        assert!(err.to_string().contains("truncated"), "{err}");
+        fs::remove_dir_all(&dir).ok();
     }
 }

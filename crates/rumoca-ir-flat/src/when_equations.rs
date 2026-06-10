@@ -54,13 +54,13 @@ pub enum WhenEquation {
     /// Runtime assertion: `assert(condition, message, level)`
     Assert {
         condition: Expression,
-        message: String,
+        message: Expression,
         span: Span,
         origin: String,
     },
     /// Terminate simulation: `terminate(message)`
     Terminate {
-        message: String,
+        message: Expression,
         span: Span,
         origin: String,
     },
@@ -124,7 +124,7 @@ impl WhenEquation {
     /// Create a new assert when equation.
     pub fn assert(
         condition: Expression,
-        message: String,
+        message: Expression,
         span: Span,
         origin: impl Into<String>,
     ) -> Self {
@@ -137,7 +137,7 @@ impl WhenEquation {
     }
 
     /// Create a new terminate when equation.
-    pub fn terminate(message: String, span: Span, origin: impl Into<String>) -> Self {
+    pub fn terminate(message: Expression, span: Span, origin: impl Into<String>) -> Self {
         Self::Terminate {
             message,
             span,

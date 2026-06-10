@@ -23,6 +23,20 @@ mod string_specials;
 mod table_ad_edges;
 mod vector_binary_ops;
 
+fn eval_expr_value<T: SimFloat>(expr: &rumoca_core::Expression, env: &VarEnv<T>) -> T {
+    match eval_expr(expr, env) {
+        Ok(value) => value,
+        Err(err) => panic!("test expression should evaluate: {err}"),
+    }
+}
+
+fn env_value<T: SimFloat>(env: &VarEnv<T>, name: &str) -> T {
+    match env.require(name) {
+        Ok(value) => value,
+        Err(err) => panic!("test env binding should exist: {err}"),
+    }
+}
+
 fn lit(v: f64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(v),
@@ -96,6 +110,18 @@ fn var(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn indexed_var(name: &str, indices: &[i64]) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new(name),
+        subscripts: indices
+            .iter()
+            .copied()
+            .map(|index| rumoca_core::Subscript::generated_index(index, rumoca_core::Span::DUMMY))
+            .collect(),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn comp_ref(name: &str) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,
@@ -163,9 +189,7 @@ fn builtin(
 }
 
 fn set_vector_var<T: SimFloat>(env: &mut VarEnv<T>, name: &str, values: &[T]) {
-    for (idx, value) in values.iter().enumerate() {
-        env.set(&format!("{name}[{}]", idx + 1), *value);
-    }
+    set_array_entries(env, name, &[values.len() as i64], values);
     env.dims = Arc::new(IndexMap::from([(
         name.to_string(),
         vec![values.len() as i64],
@@ -263,8 +287,8 @@ fn function_record_output_field_array_preserves_constructor_matrix() {
                                         lhs: Box::new(lit(2.0)),
                                         rhs: Box::new(Expression::Binary {
                                             op: OpBinary::Mul,
-                                            lhs: Box::new(var("Q[4]")),
-                                            rhs: Box::new(var("Q[4]")),
+                                            lhs: Box::new(indexed_var("Q", &[4])),
+                                            rhs: Box::new(indexed_var("Q", &[4])),
                                             span: rumoca_core::Span::DUMMY,
                                         }),
                                         span: rumoca_core::Span::DUMMY,
@@ -330,7 +354,7 @@ fn test_eval_cat_respects_matrix_column_dimension() {
     // MLS §10.4.2.1: cat(2, A, B) concatenates along matrix columns.
     assert_eq!(
         eval_array_values::<f64>(&expr, &VarEnv::new()),
-        vec![1.0, 2.0, 5.0, 3.0, 4.0, 6.0]
+        Ok(vec![1.0, 2.0, 5.0, 3.0, 4.0, 6.0])
     );
 }
 
@@ -613,11 +637,11 @@ fn eval_table1d_dual(u: Dual, extrapolation: i64) -> Dual {
             int_lit(extrapolation),
         ],
     );
-    let table_id = eval_expr_or_default::<Dual>(&constructor, &env).real();
+    let table_id = eval_expr_value::<Dual>(&constructor, &env).real();
     assert!(table_id > 0.0);
     env.set("table_id", Dual::from_f64(table_id));
     env.set("u", u);
-    eval_expr_or_default::<Dual>(
+    eval_expr_value::<Dual>(
         &fn_call(
             "getTable1DValueNoDer",
             vec![var("table_id"), int_lit(1), var("u")],
@@ -640,11 +664,11 @@ fn eval_timetable_dual(t: Dual, extrapolation: i64) -> Dual {
             int_lit(extrapolation),
         ],
     );
-    let table_id = eval_expr_or_default::<Dual>(&constructor, &env).real();
+    let table_id = eval_expr_value::<Dual>(&constructor, &env).real();
     assert!(table_id > 0.0);
     env.set("table_id", Dual::from_f64(table_id));
     env.set("t", t);
-    eval_expr_or_default::<Dual>(
+    eval_expr_value::<Dual>(
         &fn_call(
             "getTimeTableValueNoDer",
             vec![var("table_id"), int_lit(1), var("t"), lit(0.0), lit(0.0)],
@@ -664,7 +688,7 @@ fn test_eval_index_on_matrix_literal() {
         ],
         span: rumoca_core::Span::DUMMY,
     };
-    let value = eval_expr_or_default::<f64>(&expr, &env);
+    let value = eval_expr_value::<f64>(&expr, &env);
     assert!((value - 2.0).abs() < 1e-12);
 }
 
@@ -684,7 +708,7 @@ fn test_eval_index_on_flattened_env_array_with_dims() {
         ],
         span: rumoca_core::Span::DUMMY,
     };
-    let value = eval_expr_or_default::<f64>(&expr, &env);
+    let value = eval_expr_value::<f64>(&expr, &env);
     assert!((value - 6.0).abs() < 1e-12);
 }
 
@@ -711,7 +735,7 @@ fn test_eval_index_on_transposed_env_matrix_with_dims() {
         ],
         span: rumoca_core::Span::DUMMY,
     };
-    let value = eval_expr_or_default::<f64>(&expr, &env);
+    let value = eval_expr_value::<f64>(&expr, &env);
     assert!((value - 8.0).abs() < 1e-12);
 }
 
@@ -741,8 +765,8 @@ fn test_eval_array_values_transposed_matrix_vector_product() {
         span: rumoca_core::Span::DUMMY,
     };
     let values = eval_array_values::<f64>(&expr, &env);
-    assert_eq!(values, vec![300.0, 360.0, 420.0]);
-    assert!((eval_expr_or_default::<f64>(&expr, &env) - 300.0).abs() < 1e-12);
+    assert_eq!(values, Ok(vec![300.0, 360.0, 420.0]));
+    assert!((eval_expr_value::<f64>(&expr, &env) - 300.0).abs() < 1e-12);
 }
 
 #[test]
@@ -762,8 +786,8 @@ fn test_eval_array_values_matrix_matrix_product() {
         span: rumoca_core::Span::DUMMY,
     };
     let values = eval_array_values::<f64>(&expr, &env);
-    assert_eq!(values, vec![58.0, 64.0, 139.0, 154.0]);
-    assert!((eval_expr_or_default::<f64>(&expr, &env) - 58.0).abs() < 1e-12);
+    assert_eq!(values, Ok(vec![58.0, 64.0, 139.0, 154.0]));
+    assert!((eval_expr_value::<f64>(&expr, &env) - 58.0).abs() < 1e-12);
 }
 
 #[test]
@@ -780,7 +804,7 @@ fn test_eval_array_values_diagonal_preserves_matrix_shape() {
 
     assert_eq!(
         eval_array_values::<f64>(&expr, &VarEnv::new()),
-        vec![1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0]
+        Ok(vec![1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0])
     );
     assert_eq!(
         eval_shaped_array_values::<f64>(&expr, &VarEnv::new(), 9)
@@ -804,7 +828,7 @@ fn test_eval_array_values_does_not_promote_scalar_start_expr_to_array() {
     )]));
     set_array_entries(&mut env, "v", &[3], &[1.0, 2.0, 3.0]);
 
-    assert_eq!(eval_array_values::<f64>(&var("s"), &env), vec![2.0]);
+    assert_eq!(eval_array_values::<f64>(&var("s"), &env), Ok(vec![2.0]));
 }
 
 #[test]
@@ -823,7 +847,7 @@ fn test_eval_array_values_vector_arithmetic_preserves_shape() {
         binop(OpBinary::Sub, var("b"), lit(1.0)),
     );
     let values = eval_array_values::<f64>(&expr, &env);
-    assert_eq!(values, vec![5.0, 8.0, 11.0]);
+    assert_eq!(values, Ok(vec![5.0, 8.0, 11.0]));
     assert_eq!(
         eval_shaped_array_values(&expr, &env, 3).expect("vector expression should keep shape"),
         vec![5.0, 8.0, 11.0]
@@ -843,7 +867,7 @@ fn test_eval_array_values_unary_vector_arithmetic_preserves_shape() {
 
     assert_eq!(
         eval_array_values::<f64>(&expr, &env),
-        vec![-2.0, -4.0, -6.0]
+        Ok(vec![-2.0, -4.0, -6.0])
     );
     assert_eq!(
         eval_shaped_array_values::<f64>(&expr, &env, 3)
@@ -871,7 +895,10 @@ fn test_eval_array_values_vectorizes_scalar_function_call() {
     env.functions = Arc::new(IndexMap::from([("Pkg.toUnit".to_string(), f)]));
 
     let expr = fn_call("Pkg.toUnit", vec![binop(OpBinary::Sub, var("a"), var("b"))]);
-    assert_eq!(eval_array_values::<f64>(&expr, &env), vec![3.0, 3.0, 3.0]);
+    assert_eq!(
+        eval_array_values::<f64>(&expr, &env),
+        Ok(vec![3.0, 3.0, 3.0])
+    );
     assert_eq!(
         eval_shaped_array_values(&expr, &env, 3).expect("vectorized scalar function should shape"),
         vec![3.0, 3.0, 3.0]
@@ -948,7 +975,10 @@ fn test_eval_array_values_dynamic_function_output_uses_shape_expr() {
     )]));
 
     let call = fn_call("Pkg.dynamicVector", vec![int_lit(3)]);
-    assert_eq!(eval_array_values::<f64>(&call, &env), vec![1.0, 2.0, 3.0]);
+    assert_eq!(
+        eval_array_values::<f64>(&call, &env),
+        Ok(vec![1.0, 2.0, 3.0])
+    );
 
     let negated = unary(rumoca_core::OpUnary::Minus, call);
     assert_eq!(
@@ -1017,8 +1047,8 @@ fn test_eval_array_values_cross_product() {
         span: rumoca_core::Span::DUMMY,
     };
     let values = eval_array_values::<f64>(&expr, &env);
-    assert_eq!(values, vec![-3.0, 6.0, -3.0]);
-    assert!((eval_expr_or_default::<f64>(&expr, &env) + 3.0).abs() < 1e-12);
+    assert_eq!(values, Ok(vec![-3.0, 6.0, -3.0]));
+    assert!((eval_expr_value::<f64>(&expr, &env) + 3.0).abs() < 1e-12);
 }
 
 #[test]
@@ -1039,8 +1069,8 @@ fn test_eval_array_values_expands_range() {
 
     let up = eval_array_values::<f64>(&ascending, &env);
     let down = eval_array_values::<f64>(&descending, &env);
-    assert_eq!(up, vec![1.0, 2.0, 3.0, 4.0]);
-    assert_eq!(down, vec![4.0, 3.0, 2.0, 1.0]);
+    assert_eq!(up, Ok(vec![1.0, 2.0, 3.0, 4.0]));
+    assert_eq!(down, Ok(vec![4.0, 3.0, 2.0, 1.0]));
 }
 
 fn user_function_with_default_output(name: &str, output_value: f64) -> rumoca_core::Function {
@@ -1081,28 +1111,19 @@ fn unary(op: rumoca_core::OpUnary, rhs: rumoca_core::Expression) -> rumoca_core:
 
 #[test]
 fn test_eval_literal_real() {
-    assert_eq!(
-        eval_expr_or_default::<f64>(&lit(3.125), &VarEnv::new()),
-        3.125
-    );
+    assert_eq!(eval_expr_value::<f64>(&lit(3.125), &VarEnv::new()), 3.125);
 }
 
 #[test]
 fn test_eval_literal_integer() {
-    assert_eq!(
-        eval_expr_or_default::<f64>(&int_lit(42), &VarEnv::new()),
-        42.0
-    );
+    assert_eq!(eval_expr_value::<f64>(&int_lit(42), &VarEnv::new()), 42.0);
 }
 
 #[test]
 fn test_eval_literal_boolean() {
+    assert_eq!(eval_expr_value::<f64>(&bool_lit(true), &VarEnv::new()), 1.0);
     assert_eq!(
-        eval_expr_or_default::<f64>(&bool_lit(true), &VarEnv::new()),
-        1.0
-    );
-    assert_eq!(
-        eval_expr_or_default::<f64>(&bool_lit(false), &VarEnv::new()),
+        eval_expr_value::<f64>(&bool_lit(false), &VarEnv::new()),
         0.0
     );
 }
@@ -1111,14 +1132,16 @@ fn test_eval_literal_boolean() {
 fn test_eval_var_ref() {
     let mut env = VarEnv::<f64>::new();
     env.set("x", 2.5);
-    assert_eq!(eval_expr_or_default::<f64>(&var("x"), &env), 2.5);
+    assert_eq!(eval_expr_value::<f64>(&var("x"), &env), 2.5);
 }
 
 #[test]
 fn test_eval_var_ref_missing() {
     assert_eq!(
-        eval_expr_or_default::<f64>(&var("missing"), &VarEnv::new()),
-        0.0
+        eval_expr::<f64>(&var("missing"), &VarEnv::new()),
+        Err(EvalError::MissingBinding {
+            name: "missing".to_string()
+        })
     );
 }
 
@@ -1154,7 +1177,7 @@ fn test_eval_var_ref_resolves_enum_literal_ordinal() {
         4,
     )]));
     assert_eq!(
-        eval_expr_or_default::<f64>(
+        eval_expr_value::<f64>(
             &var("Modelica.Electrical.Digital.Interfaces.Logic.'1'"),
             &env
         ),
@@ -1170,7 +1193,7 @@ fn test_eval_var_ref_resolves_enum_literal_ordinal_without_quotes_in_table() {
         4,
     )]));
     assert_eq!(
-        eval_expr_or_default::<f64>(
+        eval_expr_value::<f64>(
             &var("Modelica.Electrical.Digital.Interfaces.Logic.'1'"),
             &env
         ),
@@ -1186,7 +1209,7 @@ fn test_eval_var_ref_resolves_enum_literal_ordinal_with_quotes_in_table() {
         4,
     )]));
     assert_eq!(
-        eval_expr_or_default::<f64>(&var("Modelica.Electrical.Digital.Interfaces.Logic.1"), &env),
+        eval_expr_value::<f64>(&var("Modelica.Electrical.Digital.Interfaces.Logic.1"), &env),
         4.0
     );
 }
@@ -1207,7 +1230,7 @@ fn test_eval_var_ref_resolves_unambiguous_local_enum_alias_literal() {
         ("UX01.'U'".to_string(), 1),
     ]));
     assert_eq!(
-        eval_expr_or_default::<f64>(&var("iNV3S.inertialDelaySensitive.L.'U'"), &env),
+        eval_expr_value::<f64>(&var("iNV3S.inertialDelaySensitive.L.'U'"), &env),
         1.0
     );
 }
@@ -1235,8 +1258,8 @@ fn test_map_var_to_env_size1_array_populates_indexed_alias() {
     arr1.dims = vec![1];
     map_var_to_env(&mut env, "arr1", &arr1, &[2.5], &mut idx);
     assert_eq!(idx, 1);
-    assert!((env.get("arr1") - 2.5).abs() < 1e-12);
-    assert!((env.get("arr1[1]") - 2.5).abs() < 1e-12);
+    assert!((env_value(&env, "arr1") - 2.5).abs() < 1e-12);
+    assert!((env_value(&env, "arr1[1]") - 2.5).abs() < 1e-12);
 }
 
 #[test]
@@ -1255,8 +1278,8 @@ fn test_build_env_seeds_discrete_start_values() {
         .insert(rumoca_core::VarName::new("z"), z);
 
     let env = build_env(&dae, &[], &[], 0.0);
-    assert_eq!(env.get("off"), 1.0);
-    assert!((env.get("z") - 2.5).abs() < 1e-12);
+    assert_eq!(env_value(&env, "off"), 1.0);
+    assert!((env_value(&env, "z") - 2.5).abs() < 1e-12);
 }
 
 #[test]
@@ -1335,8 +1358,8 @@ fn test_build_env_discrete_start_forward_ref_re_evaluates_and_preserves_pre_seed
         .insert(rumoca_core::VarName::new("b"), b);
 
     let env = build_env(&dae, &[], &[], 0.0);
-    assert_eq!(env.get("b"), 1.0);
-    assert_eq!(env.get("a"), 1.0);
+    assert_eq!(env_value(&env, "b"), 1.0);
+    assert_eq!(env_value(&env, "a"), 1.0);
 
     // Pre-seeded values must take precedence over start expressions.
     let mut pre_env = VarEnv::<f64>::new();
@@ -1345,8 +1368,8 @@ fn test_build_env_discrete_start_forward_ref_re_evaluates_and_preserves_pre_seed
     seed_pre_values_from_env(&pre_env);
 
     let env_from_pre = build_env_with_runtime(&dae, &[], &[], 1.0, pre_env.runtime.clone());
-    assert_eq!(env_from_pre.get("a"), 0.0);
-    assert_eq!(env_from_pre.get("b"), 0.0);
+    assert_eq!(env_value(&env_from_pre, "a"), 0.0);
+    assert_eq!(env_value(&env_from_pre, "b"), 0.0);
 
     clear_pre_values();
 }

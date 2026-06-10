@@ -66,6 +66,14 @@ fn sample_with_clock_call(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn inferred_clock_sample_call(name: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Sample,
+        args: vec![var_ref(name)],
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn discrete_valued_var(name: &str) -> dae::Variable {
     dae::Variable {
         name: rumoca_core::VarName::new(name),
@@ -86,7 +94,80 @@ fn discrete_valued_var(name: &str) -> dae::Variable {
         description: None,
         causality: dae::VariableCausality::Local,
         is_tunable: false,
+        origin: dae::VariableOrigin::Source,
     }
+}
+
+#[test]
+fn test_lower_pre_rewrites_inferred_clock_sample_to_left_limit() -> Result<(), ToDaeError> {
+    let mut dae = dae::Dae::new();
+    dae.variables.discrete_valued.insert(
+        rumoca_core::VarName::new("sampled.u"),
+        discrete_valued_var("sampled.u"),
+    );
+    dae.discrete.valued_updates.push(dae::Equation::explicit(
+        rumoca_core::VarName::new("sampled.y"),
+        inferred_clock_sample_call("sampled.u"),
+        rumoca_core::Span::default(),
+        "inferred clock sample update".to_string(),
+    ));
+
+    lower_pre_operator(&mut dae)?;
+
+    assert!(
+        dae.variables
+            .parameters
+            .contains_key(&rumoca_core::VarName::new("__pre__.sampled.u")),
+        "sample(u) must sample the tick left limit of u"
+    );
+    assert!(
+        matches!(
+            &dae.discrete.valued_updates[0].rhs,
+            rumoca_core::Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "__pre__.sampled.u" && subscripts.is_empty()
+        ),
+        "sample(u) must lower to the sampled value's pre slot"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_lower_pre_is_idempotent_for_generated_pre_parameters() -> Result<(), ToDaeError> {
+    let mut dae = dae::Dae::new();
+    dae.variables
+        .discrete_reals
+        .insert(rumoca_core::VarName::new("x"), discrete_valued_var("x"));
+    dae.discrete.real_updates.push(dae::Equation::explicit(
+        rumoca_core::VarName::new("y"),
+        pre_call("x"),
+        rumoca_core::Span::default(),
+        "pre value update".to_string(),
+    ));
+
+    lower_pre_operator(&mut dae)?;
+    lower_pre_operator(&mut dae)?;
+
+    assert!(
+        dae.variables
+            .parameters
+            .contains_key(&rumoca_core::VarName::new("__pre__.x")),
+        "first pre-lowering pass should allocate __pre__.x"
+    );
+    assert!(
+        !dae.variables
+            .parameters
+            .contains_key(&rumoca_core::VarName::new("__pre__.__pre__.x")),
+        "second pre-lowering pass must not allocate nested pre parameters"
+    );
+    assert!(
+        matches!(
+            &dae.discrete.real_updates[0].rhs,
+            rumoca_core::Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "__pre__.x" && subscripts.is_empty()
+        ),
+        "second pre-lowering pass must preserve the existing pre parameter reference"
+    );
+    Ok(())
 }
 
 #[test]
@@ -277,7 +358,7 @@ fn test_lower_pre_rewrites_relation_edge_to_condition_memory() -> Result<(), ToD
     };
     dae.conditions.relations.push(relation.clone());
     dae.conditions.equations.push(dae::Equation {
-        lhs: Some(rumoca_core::VarName::new("c")),
+        lhs: Some(rumoca_core::VarName::new("c").into()),
         rhs: relation.clone(),
         span: rumoca_core::Span::DUMMY,
         origin: "condition variable".to_string(),
@@ -290,7 +371,10 @@ fn test_lower_pre_rewrites_relation_edge_to_condition_memory() -> Result<(), ToD
             span: rumoca_core::Span::DUMMY,
         },
         kind: dae::DaeEventActionKind::Terminate {
-            message: "edge fired".to_string(),
+            message: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String("edge fired".to_string()),
+                span: rumoca_core::Span::DUMMY,
+            },
         },
         span: rumoca_core::Span::DUMMY,
         origin: "when x < 0".to_string(),
@@ -385,6 +469,7 @@ fn test_lower_pre_creates_parameter() -> Result<(), ToDaeError> {
             description: None,
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.continuous.equations.push(dae::Equation::residual(
@@ -517,6 +602,7 @@ fn test_lower_pre_normalizes_encoded_integer_subscript_target() -> Result<(), To
             description: None,
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.continuous.equations.push(dae::Equation::residual(
@@ -676,6 +762,7 @@ fn test_lower_pre_keeps_existing_pre_parameter_metadata() -> Result<(), ToDaeErr
             description: None,
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.variables.parameters.insert(
@@ -702,6 +789,7 @@ fn test_lower_pre_keeps_existing_pre_parameter_metadata() -> Result<(), ToDaeErr
             description: Some("first pass metadata".to_string()),
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.continuous.equations.push(dae::Equation::residual(
@@ -780,6 +868,7 @@ fn test_lower_pre_rewrites_expression_variables_to_pre_parameters() -> Result<()
                 description: None,
                 causality: dae::VariableCausality::Local,
                 is_tunable: false,
+                origin: dae::VariableOrigin::Source,
             },
         );
     }
@@ -924,6 +1013,7 @@ fn test_lower_pre_preserves_index_subscripts() -> Result<(), ToDaeError> {
             description: None,
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.discrete.real_updates.push(dae::Equation::residual(
@@ -1091,6 +1181,7 @@ fn test_lower_pre_rewrites_record_field_target() -> Result<(), ToDaeError> {
             description: None,
             causality: dae::VariableCausality::Local,
             is_tunable: false,
+            origin: dae::VariableOrigin::Source,
         },
     );
     dae.discrete.valued_updates.push(dae::Equation::residual(

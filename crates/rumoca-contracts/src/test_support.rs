@@ -154,7 +154,8 @@ fn error_code_matches(actual: &str, expected: &str) -> bool {
 /// Panics if compilation fails or the system is not balanced.
 pub fn expect_balanced(source: &str, model: &str) -> CompilationResult {
     let result = expect_success(source, model);
-    let balance = dae_balance(&result.dae);
+    let balance =
+        dae_balance(&result.dae).expect("balanced test support requires valid DAE metadata");
     assert_eq!(
         balance, 0,
         "Expected balanced system for {model}, got balance={balance}"

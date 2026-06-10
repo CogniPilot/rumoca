@@ -1,7 +1,8 @@
 use super::*;
 use rumoca_core::ExpressionVisitor;
-use std::fmt::Write as _;
 
+mod checked_eval;
+pub use checked_eval::eval_expr;
 mod builtin_eval;
 pub(super) use builtin_eval::*;
 
@@ -20,6 +21,10 @@ pub enum EvalError {
         context: &'static str,
         expected: usize,
         actual: usize,
+    },
+    InvalidShape {
+        context: &'static str,
+        reason: String,
     },
     StatementIterationLimit {
         statement: &'static str,
@@ -52,6 +57,9 @@ impl std::fmt::Display for EvalError {
                 f,
                 "shape mismatch in DAE evaluation for {context}: expected {expected} value(s), got {actual}"
             ),
+            Self::InvalidShape { context, reason } => {
+                write!(f, "invalid DAE evaluation shape for {context}: {reason}")
+            }
             Self::StatementIterationLimit {
                 statement,
                 max_iterations,
@@ -84,7 +92,7 @@ impl EvalError {
         }
     }
 
-    pub fn with_fallback_span(self, span: rumoca_core::Span) -> Self {
+    pub fn with_span_if_missing(self, span: rumoca_core::Span) -> Self {
         if span.is_dummy() || self.source_span().is_some() {
             return self;
         }
@@ -100,62 +108,6 @@ impl EvalError {
             Self::Spanned { source, .. } => source.missing_binding_name(),
             _ => None,
         }
-    }
-}
-
-/// Evaluate a scalar expression, returning an error for missing bindings or
-/// expression forms that the DAE evaluator cannot safely reduce to a scalar.
-pub fn eval_expr<T: SimFloat>(
-    expr: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> Result<T, EvalError> {
-    validate_expr(expr, env)?;
-    Ok(eval_expr_or_default(expr, env))
-}
-
-/// Evaluate a rumoca_core::Expression to a value of type T.
-pub(crate) fn eval_expr_or_default<T: SimFloat>(
-    expr: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> T {
-    match expr {
-        rumoca_core::Expression::Literal { value: lit, .. } => eval_literal::<T>(lit),
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } => eval_var_ref::<T>(name.var_name(), subscripts, env),
-        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => eval_binary::<T>(op, lhs, rhs, env),
-        rumoca_core::Expression::Unary { op, rhs, .. } => eval_unary::<T>(op, rhs, env),
-        rumoca_core::Expression::BuiltinCall { function, args, .. } => {
-            eval_builtin::<T>(*function, args, env)
-        }
-        rumoca_core::Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-            ..
-        } => eval_function_call::<T>(name.var_name(), args, *is_constructor, env),
-        rumoca_core::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => eval_if::<T>(branches, else_branch, env),
-        rumoca_core::Expression::Array { elements, .. } => {
-            if let Some(first) = elements.first() {
-                eval_expr_or_default::<T>(first, env)
-            } else {
-                T::zero()
-            }
-        }
-        rumoca_core::Expression::Index {
-            base, subscripts, ..
-        } => eval_index_expr::<T>(base, subscripts, env),
-        rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            eval_field_access::<T>(base, field, env)
-        }
-        rumoca_core::Expression::Empty { .. } => T::zero(),
-        rumoca_core::Expression::Range { .. }
-        | rumoca_core::Expression::Tuple { .. }
-        | rumoca_core::Expression::ArrayComprehension { .. } => T::zero(),
     }
 }
 
@@ -187,30 +139,7 @@ fn validate_expr<T: SimFloat>(
             args,
             is_constructor,
             ..
-        } => {
-            if let Some(result) = validate_external_table_call(name.as_str(), args, env) {
-                return result;
-            }
-            if *is_constructor || name.as_str() == "Complex" {
-                return validate_expr_slice_checked(args, env);
-            }
-            if is_runtime_special_function_name(name.as_str()) {
-                // Runtime special functions own aggregate argument semantics
-                // such as table matrices and clock constructors. The scalar
-                // validator cannot recursively validate those arguments
-                // without rejecting valid non-scalar Modelica expressions.
-                return Ok(());
-            }
-            if let Some(function) = env.functions.get(name.as_str()) {
-                return validate_user_function_call_args(name.as_str(), function, args, env);
-            }
-            validate_expr_slice_checked(args, env)?;
-            function_call_supported(name.as_str(), env)
-                .then_some(())
-                .ok_or_else(|| EvalError::MissingFunction {
-                    name: name.to_string(),
-                })
-        }
+        } => validate_function_call_expr(name, args, *is_constructor, env),
         rumoca_core::Expression::If {
             branches,
             else_branch,
@@ -246,6 +175,66 @@ fn validate_expr<T: SimFloat>(
             })
         }
     }
+}
+
+fn validate_function_call_expr<T: SimFloat>(
+    name: &rumoca_core::Reference,
+    args: &[rumoca_core::Expression],
+    is_constructor: bool,
+    env: &VarEnv<T>,
+) -> Result<(), EvalError> {
+    if let Some(result) = validate_external_table_call(name.as_str(), args, env) {
+        return result;
+    }
+    if is_constructor || name.as_str() == "Complex" {
+        return validate_expr_slice_checked(args, env);
+    }
+    if is_runtime_special_function_name(name.as_str()) {
+        // Runtime special functions own aggregate argument semantics such as
+        // table matrices and clock constructors.
+        return Ok(());
+    }
+    if validate_function_closure_call(name, args, env)? {
+        return Ok(());
+    }
+    if let Some(function) = env.functions.get(name.as_str()) {
+        return validate_user_function_call_args(name.as_str(), function, args, env);
+    }
+    if let Some((resolved_name, _selection)) = resolve_user_function_target(name.as_str(), env)
+        && let Some(function) = env.functions.get(resolved_name.as_str())
+    {
+        return validate_user_function_call_args(resolved_name.as_str(), function, args, env);
+    }
+    if let Some(function) = builtin_function_from_call_name(name.as_str()) {
+        return validate_builtin_call(function, args, env);
+    }
+    validate_expr_slice_checked(args, env)?;
+    function_call_supported(name.as_str(), env)
+        .then_some(())
+        .ok_or_else(|| EvalError::MissingFunction {
+            name: name.to_string(),
+        })
+}
+
+fn validate_function_closure_call<T: SimFloat>(
+    name: &rumoca_core::Reference,
+    args: &[rumoca_core::Expression],
+    env: &VarEnv<T>,
+) -> Result<bool, EvalError> {
+    let Some(closure) = env.function_closures.get(name.as_str()) else {
+        return Ok(false);
+    };
+    let function = env
+        .functions
+        .get(closure.target_name.as_str())
+        .ok_or_else(|| EvalError::MissingFunction {
+            name: closure.target_name.to_string(),
+        })?;
+    let mut merged_args = Vec::with_capacity(args.len() + closure.bound_args.len());
+    merged_args.extend(args.iter().cloned());
+    merged_args.extend(closure.bound_args.iter().cloned());
+    validate_user_function_call_args(closure.target_name.as_str(), function, &merged_args, env)?;
+    Ok(true)
 }
 
 fn validate_literal(lit: &rumoca_core::Literal) -> Result<(), EvalError> {
@@ -301,7 +290,7 @@ fn validate_scalar_array_product<T: SimFloat>(
         return Ok(true);
     }
     Ok(
-        eval_binary_array_values(&rumoca_core::OpBinary::Mul, lhs, rhs, env)
+        eval_binary_array_values(&rumoca_core::OpBinary::Mul, lhs, rhs, env)?
             .is_some_and(|values| values.len() == 1),
     )
 }
@@ -384,6 +373,9 @@ fn validate_external_table_constructor<T: SimFloat>(
 
     let columns_idx = if is_time_table { 4 } else { 3 };
     if let Some(columns) = external_table_constructor_arg(args, "columns", columns_idx) {
+        if matches!(columns, rumoca_core::Expression::Empty { .. }) {
+            return Ok(());
+        }
         validate_array_argument(columns, env)?;
         validate_external_table_columns_arg(columns, env, table_matrix[0].len())?;
     }
@@ -442,7 +434,13 @@ fn validate_user_function_call_args<T: SimFloat>(
             next
         });
         if let Some(arg) = arg {
-            if bind_user_function_input_for_validation(&mut local_env, input, arg, env)? {
+            if bind_user_function_input_for_validation(
+                &mut local_env,
+                function_name,
+                input,
+                arg,
+                env,
+            )? {
                 continue;
             }
             if !copy_selected_input_fields_for_validation(&mut local_env, &input.name, arg, env)? {
@@ -462,6 +460,7 @@ fn validate_user_function_call_args<T: SimFloat>(
 
 fn bind_user_function_input_for_validation<T: SimFloat>(
     local_env: &mut VarEnv<T>,
+    function_name: &str,
     input: &rumoca_core::FunctionParam,
     arg: &rumoca_core::Expression,
     env: &VarEnv<T>,
@@ -471,24 +470,42 @@ fn bind_user_function_input_for_validation<T: SimFloat>(
     {
         local_env
             .function_closures
-            .insert(input.name.clone(), closure);
+            .insert(input.name.clone(), closure.clone());
+        local_env
+            .function_closures
+            .insert(format!("{function_name}.{}", input.name), closure);
         return Ok(true);
     }
     if function_param_is_aggregate(input) {
         validate_array_argument(arg, env)?;
-        let values = if let Some(expected_len) = concrete_function_param_size(&input.dims) {
+        let values = if input.shape_expr.is_empty()
+            && let Some(expected_len) = concrete_function_param_size(&input.dims)
+        {
             eval_shaped_array_values::<T>(arg, env, expected_len)?
         } else {
-            eval_array_values::<T>(arg, env)
+            eval_array_values::<T>(arg, env)?
         };
-        bind_aggregate_input_for_validation(local_env, &input.name, &input.dims, values);
+        bind_aggregate_input_for_validation(local_env, &input.name, &input.dims, values)?;
+        return Ok(true);
+    }
+    if copy_record_function_output_fields(local_env, input, arg, env)? {
         return Ok(true);
     }
     if let Ok(value) = eval_expr::<T>(arg, env) {
-        local_env.set(&input.name, value);
+        bind_function_scalar_input(local_env, function_name, &input.name, value);
         return Ok(true);
     }
     Ok(false)
+}
+
+pub(super) fn bind_function_scalar_input<T: SimFloat>(
+    local_env: &mut VarEnv<T>,
+    function_name: &str,
+    input_name: &str,
+    value: T,
+) {
+    local_env.set(input_name, value);
+    local_env.set(&format!("{function_name}.{input_name}"), value);
 }
 
 fn function_param_is_function(input: &rumoca_core::FunctionParam) -> bool {
@@ -506,7 +523,6 @@ fn concrete_function_param_size(dims: &[i64]) -> Option<usize> {
     dims.iter().try_fold(1usize, |acc, dim| {
         usize::try_from(*dim)
             .ok()
-            .filter(|dim| *dim > 0)
             .and_then(|dim| acc.checked_mul(dim))
     })
 }
@@ -516,17 +532,22 @@ fn bind_aggregate_input_for_validation<T: SimFloat>(
     input_name: &str,
     declared_dims: &[i64],
     values: Vec<T>,
-) {
+) -> Result<(), EvalError> {
     if values.is_empty() {
-        return;
+        return Ok(());
     }
-    let inferred_dims = infer_dims_from_values(declared_dims, values.len());
+    let inferred_dims = infer_dims_from_values(declared_dims, values.len())?;
     let dims = inferred_dims
         .iter()
-        .map(|dim| i64::try_from(*dim).unwrap_or(i64::MAX))
-        .collect::<Vec<_>>();
+        .map(|dim| {
+            i64::try_from(*dim).map_err(|_| EvalError::UnsupportedExpression {
+                kind: "array dimensions",
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     set_array_entries(local_env, input_name, &dims, &values);
     std::sync::Arc::make_mut(&mut local_env.dims).insert(input_name.to_string(), dims);
+    Ok(())
 }
 
 fn copy_selected_input_fields_for_validation<T: SimFloat>(
@@ -535,7 +556,7 @@ fn copy_selected_input_fields_for_validation<T: SimFloat>(
     arg: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Result<bool, EvalError> {
-    let Some(arg_path) = eval_field_access_path(arg, env) else {
+    let Some(arg_path) = try_eval_field_access_path(arg, env)? else {
         return Ok(false);
     };
     let src_prefix = format!("{arg_path}.");
@@ -573,7 +594,7 @@ fn validate_external_table_data_arg<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> Result<Vec<Vec<f64>>, EvalError> {
     let table_matrix =
-        eval_table_matrix_arg(table_arg, env).ok_or(EvalError::UnsupportedExpression {
+        eval_table_matrix_arg(table_arg, env)?.ok_or(EvalError::UnsupportedExpression {
             kind: "external table data",
         })?;
     validate_external_table_matrix(&table_matrix)?;
@@ -585,7 +606,7 @@ fn validate_external_table_columns_arg<T: SimFloat>(
     env: &VarEnv<T>,
     data_col_count: usize,
 ) -> Result<(), EvalError> {
-    for column in eval_array_like_f64_values(columns_arg, env) {
+    for column in eval_array_like_f64_values(columns_arg, env)? {
         let rounded = column.round();
         if !rounded.is_finite()
             || (rounded - column).abs() > 1.0e-9
@@ -692,10 +713,18 @@ fn validate_external_table_lookup_column<T: SimFloat>(
     let raw_col = eval_expr::<T>(col_arg, env)?.real();
     let rounded = raw_col.round();
     let output_count = if spec.columns.is_empty() {
-        spec.data
-            .first()
-            .map(|row| row.len().saturating_sub(1))
-            .unwrap_or(0)
+        let first_row = spec.data.first().ok_or(EvalError::ShapeMismatch {
+            context: "external table lookup",
+            expected: 1,
+            actual: 0,
+        })?;
+        first_row
+            .len()
+            .checked_sub(1)
+            .filter(|count| *count > 0)
+            .ok_or(EvalError::UnsupportedExpression {
+                kind: "external table lookup output column",
+            })?
     } else {
         spec.columns.len()
     };
@@ -781,7 +810,7 @@ fn builtin_accepts_array_argument(function: rumoca_core::BuiltinFunction) -> boo
     )
 }
 
-fn validate_array_argument<T: SimFloat>(
+pub(in crate::eval) fn validate_array_argument<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Result<(), EvalError> {
@@ -833,13 +862,18 @@ fn validate_array_argument<T: SimFloat>(
         }
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
+        } if subscripts.is_empty() && encoded_slice_field_values(name.as_str(), env)?.is_some() => {
+            Ok(())
+        }
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
         } if subscripts.is_empty()
-            && array_values_from_env_name_generic::<T>(name.as_str(), env).is_some() =>
+            && array_values_from_env_name_generic::<T>(name.as_str(), env)?.is_some() =>
         {
             Ok(())
         }
         rumoca_core::Expression::FieldAccess { base, field, .. }
-            if eval_field_access_array_values(base, field, env).is_some() =>
+            if try_eval_field_access_array_values(base, field, env).is_ok() =>
         {
             Ok(())
         }
@@ -860,8 +894,8 @@ fn validate_matrix_literal_interleaving<T: SimFloat>(
     }
     let column_lengths = elements
         .iter()
-        .map(|element| eval_array_like_values::<T>(element, env).len())
-        .collect::<Vec<_>>();
+        .map(|element| eval_array_like_values::<T>(element, env).map(|values| values.len()))
+        .collect::<Result<Vec<_>, EvalError>>()?;
     let Some(row_count) = column_lengths.iter().copied().max() else {
         return Ok(());
     };
@@ -903,31 +937,17 @@ fn validate_range_argument<T: SimFloat>(
 }
 
 fn function_call_supported<T: SimFloat>(name: &str, env: &VarEnv<T>) -> bool {
-    let short_name = rumoca_core::top_level_last_segment(name);
     name == "Complex"
-        || rumoca_core::BuiltinFunction::from_name(short_name).is_some()
-        || rumoca_core::BuiltinFunction::from_name(&short_name.to_ascii_lowercase()).is_some()
+        || builtin_function_from_call_name(name).is_some()
         || env.function_closures.contains_key(name)
         || is_runtime_special_function_name(name)
         || env.functions.contains_key(name)
 }
 
-pub(super) fn eval_index_expr<T: SimFloat>(
-    base: &rumoca_core::Expression,
-    subscripts: &[rumoca_core::Subscript],
-    env: &VarEnv<T>,
-) -> T {
-    let Some(indices) = eval_index_subscripts(subscripts, env) else {
-        return T::zero();
-    };
-
-    if let Some(path) = eval_field_access_path(base, env)
-        && let Some(value) = eval_index_from_env_path(&path, &indices, env)
-    {
-        return value;
-    }
-
-    eval_index_from_nested_expr(base, &indices, env).unwrap_or_else(T::zero)
+fn builtin_function_from_call_name(name: &str) -> Option<rumoca_core::BuiltinFunction> {
+    let short_name = rumoca_core::top_level_last_segment(name);
+    rumoca_core::BuiltinFunction::from_name(short_name)
+        .or_else(|| rumoca_core::BuiltinFunction::from_name(&short_name.to_ascii_lowercase()))
 }
 
 fn try_eval_index_expr<T: SimFloat>(
@@ -942,10 +962,62 @@ fn try_eval_index_expr<T: SimFloat>(
     {
         return Ok(value);
     }
+    if let Some(value) = try_eval_index_from_array_like_expr(base, &indices, env)? {
+        return Ok(value);
+    }
 
     try_eval_index_from_nested_expr(base, &indices, env).ok_or_else(|| EvalError::MissingBinding {
         name: checked_index_missing_name(base, &indices, env),
     })
+}
+
+fn try_eval_index_from_array_like_expr<T: SimFloat>(
+    base: &rumoca_core::Expression,
+    indices: &[usize],
+    env: &VarEnv<T>,
+) -> Result<Option<T>, EvalError> {
+    if indices.is_empty() {
+        return Ok(None);
+    }
+    let values = eval_array_like_values(base, env)?;
+    let dims = array_like_index_dims(base, &values, indices, env)?;
+    let Some(flat_index) = flat_index_from_dims(&dims, indices) else {
+        return Ok(None);
+    };
+    Ok(values.get(flat_index).copied())
+}
+
+fn array_like_index_dims<T: SimFloat>(
+    base: &rumoca_core::Expression,
+    values: &[T],
+    indices: &[usize],
+    env: &VarEnv<T>,
+) -> Result<Vec<usize>, EvalError> {
+    let dims = try_infer_runtime_expr_dims(base, env)?;
+    if !dims.is_empty() {
+        Ok(dims)
+    } else if indices.len() == 1 {
+        Ok(vec![values.len()])
+    } else {
+        Err(EvalError::UnsupportedExpression {
+            kind: "array-like index shape",
+        })
+    }
+}
+
+fn flat_index_from_dims(dims: &[usize], indices: &[usize]) -> Option<usize> {
+    if dims.len() != indices.len() {
+        return None;
+    }
+    let mut flat_index = 0usize;
+    for (dim, index) in dims.iter().zip(indices.iter()) {
+        if *dim == 0 || *index == 0 || *index > *dim {
+            return None;
+        }
+        flat_index = flat_index.saturating_mul(*dim);
+        flat_index = flat_index.saturating_add(index.saturating_sub(1));
+    }
+    Some(flat_index)
 }
 
 fn try_eval_index_subscripts<T: SimFloat>(
@@ -973,27 +1045,6 @@ fn try_eval_index_subscripts<T: SimFloat>(
     Ok(indices)
 }
 
-pub(super) fn eval_index_subscripts<T: SimFloat>(
-    subscripts: &[rumoca_core::Subscript],
-    env: &VarEnv<T>,
-) -> Option<Vec<usize>> {
-    let mut indices = Vec::with_capacity(subscripts.len());
-    for subscript in subscripts {
-        let raw = match subscript {
-            rumoca_core::Subscript::Index { value: i, .. } => *i as f64,
-            rumoca_core::Subscript::Expr { expr, .. } => {
-                eval_expr_or_default::<T>(expr, env).real().round()
-            }
-            rumoca_core::Subscript::Colon { .. } => return None,
-        };
-        if !raw.is_finite() || raw < 1.0 {
-            return None;
-        }
-        indices.push(raw as usize);
-    }
-    Some(indices)
-}
-
 pub(super) fn eval_index_from_env_path<T: SimFloat>(
     base_path: &str,
     indices: &[usize],
@@ -1003,33 +1054,17 @@ pub(super) fn eval_index_from_env_path<T: SimFloat>(
         return env.vars.get(base_path).copied();
     }
 
-    let mut direct_key = String::with_capacity(base_path.len() + indices.len() * 4 + 2);
-    direct_key.push_str(base_path);
-    direct_key.push('[');
-    append_indices(&mut direct_key, indices);
-    direct_key.push(']');
-    if let Some(value) = env.vars.get(&direct_key).copied() {
-        return Some(value);
-    }
-
     let dims = env.dims.get(base_path)?;
     if dims.len() != indices.len() {
         return None;
     }
-
-    let mut flat_index = 0usize;
-    for (dim, index) in dims.iter().zip(indices.iter()) {
-        let dim_usize = usize::try_from(*dim).ok()?;
-        if dim_usize == 0 || *index > dim_usize {
-            return None;
-        }
-        flat_index = flat_index.saturating_mul(dim_usize);
-        flat_index = flat_index.saturating_add(index.saturating_sub(1));
-    }
-    direct_key.clear();
-    write!(direct_key, "{base_path}[{}]", flat_index + 1).expect("write to String never fails");
-    let flat_key = direct_key;
-    env.vars.get(&flat_key).copied()
+    let dims = dims
+        .iter()
+        .map(|dim| usize::try_from(*dim).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let flat_index = flat_index_from_dims(&dims, indices)?;
+    let values = array_values_from_env_name_generic(base_path, env).ok()??;
+    values.get(flat_index).copied()
 }
 
 fn checked_index_missing_name<T: SimFloat>(
@@ -1038,24 +1073,9 @@ fn checked_index_missing_name<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> String {
     if let Ok(Some(path)) = try_eval_field_access_path(base, env) {
-        return format!("{}[{}]", path, index_list(indices));
+        return dae::format_subscript_key(&path, indices);
     }
     "indexed expression".to_string()
-}
-
-fn index_list(indices: &[usize]) -> String {
-    let mut out = String::new();
-    append_indices(&mut out, indices);
-    out
-}
-
-fn append_indices(buffer: &mut String, indices: &[usize]) {
-    for (pos, index) in indices.iter().enumerate() {
-        if pos > 0 {
-            buffer.push(',');
-        }
-        write!(buffer, "{index}").expect("write to String never fails");
-    }
 }
 
 fn try_eval_index_from_nested_expr<T: SimFloat>(
@@ -1077,43 +1097,12 @@ fn try_eval_index_from_nested_expr<T: SimFloat>(
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Transpose,
             ..
-        } => eval_matrix_index(expr, indices, env),
+        } => eval_matrix_index(expr, indices, env).ok().flatten(),
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() => eval_index_from_env_path(name.as_str(), indices, env),
         _ if indices.len() == 1 => {
-            let values = eval_array_like_values::<T>(expr, env);
-            values.get(indices[0].checked_sub(1)?).copied()
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn eval_index_from_nested_expr<T: SimFloat>(
-    expr: &rumoca_core::Expression,
-    indices: &[usize],
-    env: &VarEnv<T>,
-) -> Option<T> {
-    if indices.is_empty() {
-        return Some(eval_expr_or_default::<T>(expr, env));
-    }
-
-    match expr {
-        rumoca_core::Expression::Array { elements, .. }
-        | rumoca_core::Expression::Tuple { elements, .. } => {
-            let idx0 = indices[0].checked_sub(1)?;
-            let element = elements.get(idx0)?;
-            eval_index_from_nested_expr(element, &indices[1..], env)
-        }
-        rumoca_core::Expression::BuiltinCall {
-            function: rumoca_core::BuiltinFunction::Transpose,
-            ..
-        } => eval_matrix_index(expr, indices, env),
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => eval_index_from_env_path(name.as_str(), indices, env),
-        _ if indices.len() == 1 => {
-            let values = eval_array_like_values::<T>(expr, env);
+            let values = eval_array_like_values::<T>(expr, env).ok()?;
             values.get(indices[0].checked_sub(1)?).copied()
         }
         _ => None,
@@ -1148,47 +1137,51 @@ pub(super) fn current_function_call_name(runtime: &EvalRuntimeState) -> Option<S
         .cloned()
 }
 
-pub(super) fn eval_subscript_indices<T: SimFloat>(
+fn eval_subscript_indices<T: SimFloat>(
     subscripts: &[rumoca_core::Subscript],
     env: &VarEnv<T>,
-) -> Vec<String> {
+) -> Result<Vec<usize>, EvalError> {
     subscripts
         .iter()
         .map(|sub| match sub {
-            rumoca_core::Subscript::Index { value: i, .. } => i.to_string(),
-            rumoca_core::Subscript::Expr { expr, .. } => eval_expr_or_default::<T>(expr, env)
-                .real()
-                .round()
-                .to_string(),
-            rumoca_core::Subscript::Colon { .. } => ":".to_string(),
+            rumoca_core::Subscript::Index { value, span } => {
+                positive_subscript_index(*value, *span)
+            }
+            rumoca_core::Subscript::Expr { expr, span } => {
+                let value = eval_expr::<T>(expr, env)?.real();
+                finite_integer_subscript_index(value, *span)
+            }
+            rumoca_core::Subscript::Colon { span } => Err(EvalError::UnsupportedExpression {
+                kind: "colon subscript",
+            }
+            .with_span_if_missing(*span)),
         })
         .collect()
 }
 
-pub(super) fn eval_field_access_path<T: SimFloat>(
-    expr: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> Option<String> {
-    match expr {
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } => {
-            if subscripts.is_empty() {
-                Some(name.as_str().to_string())
-            } else {
-                let idx = eval_subscript_indices(subscripts, env);
-                Some(format!("{}[{}]", name.as_str(), idx.join(",")))
+fn positive_subscript_index(index: i64, span: rumoca_core::Span) -> Result<usize, EvalError> {
+    usize::try_from(index)
+        .ok()
+        .filter(|index| *index > 0)
+        .ok_or_else(|| {
+            EvalError::UnsupportedExpression {
+                kind: "subscript index",
             }
-        }
-        rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            let prefix = eval_field_access_path(base, env)?;
-            Some(format!("{prefix}.{field}"))
-        }
-        _ => None,
-    }
+            .with_span_if_missing(span)
+        })
 }
 
-fn try_eval_field_access_path<T: SimFloat>(
+fn finite_integer_subscript_index(value: f64, span: rumoca_core::Span) -> Result<usize, EvalError> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "subscript expression",
+        }
+        .with_span_if_missing(span));
+    }
+    positive_subscript_index(value as i64, span)
+}
+
+pub(super) fn try_eval_field_access_path<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Result<Option<String>, EvalError> {
@@ -1199,7 +1192,8 @@ fn try_eval_field_access_path<T: SimFloat>(
             if subscripts.is_empty() {
                 Ok(Some(name.as_str().to_string()))
             } else {
-                build_indexed_name(name.as_str(), subscripts, env).map(Some)
+                let indices = eval_subscript_indices(subscripts, env)?;
+                Ok(Some(dae::format_subscript_key(name.as_str(), &indices)))
             }
         }
         rumoca_core::Expression::FieldAccess { base, field, .. } => {
@@ -1253,28 +1247,35 @@ pub(super) fn bind_constructor_inputs<T: SimFloat>(
     constructor: &rumoca_core::Function,
     args: &[rumoca_core::Expression],
     env: &VarEnv<T>,
-) -> (VarEnv<T>, Vec<T>) {
+) -> Result<(VarEnv<T>, Vec<T>), EvalError> {
     let mut local_env = env.clone();
     let mut input_values = Vec::with_capacity(constructor.inputs.len());
     let (named_args, positional_args) = split_named_and_positional_call_args(args);
     let mut positional_idx = 0usize;
     for input in &constructor.inputs {
         let value = if let Some(arg_expr) = named_args.get(input.name.as_str()) {
-            eval_expr_or_default::<T>(arg_expr, &local_env)
+            eval_expr::<T>(arg_expr, &local_env)?
         } else if let Some(arg_expr) = positional_args.get(positional_idx) {
             positional_idx += 1;
-            eval_expr_or_default::<T>(arg_expr, &local_env)
+            eval_expr::<T>(arg_expr, &local_env)?
         } else if let Some(default_expr) = &input.default {
-            eval_expr_or_default::<T>(default_expr, &local_env)
+            eval_expr::<T>(default_expr, &local_env)?
         } else if let Some(existing) = local_env.vars.get(&input.name).copied() {
             existing
         } else {
-            T::zero()
+            return Err(EvalError::MissingBinding {
+                name: input.name.clone(),
+            });
         };
-        local_env.set(&input.name, value);
+        bind_function_scalar_input(
+            &mut local_env,
+            constructor.name.as_str(),
+            &input.name,
+            value,
+        );
         input_values.push(value);
     }
-    (local_env, input_values)
+    Ok((local_env, input_values))
 }
 
 pub(super) fn eval_field_access_constructor_by_signature<T: SimFloat>(
@@ -1282,9 +1283,11 @@ pub(super) fn eval_field_access_constructor_by_signature<T: SimFloat>(
     args: &[rumoca_core::Expression],
     field: &str,
     env: &VarEnv<T>,
-) -> Option<T> {
-    let constructor = env.functions.get(base_name.as_str())?;
-    let (local_env, input_values) = bind_constructor_inputs(constructor, args, env);
+) -> Result<Option<T>, EvalError> {
+    let Some(constructor) = env.functions.get(base_name.as_str()) else {
+        return Ok(None);
+    };
+    let (local_env, input_values) = bind_constructor_inputs(constructor, args, env)?;
 
     if let Some((idx, _)) = constructor
         .inputs
@@ -1292,7 +1295,7 @@ pub(super) fn eval_field_access_constructor_by_signature<T: SimFloat>(
         .enumerate()
         .find(|(_, input)| input.name == field)
     {
-        return input_values.get(idx).copied();
+        return Ok(input_values.get(idx).copied());
     }
 
     if let Some(output) = constructor
@@ -1301,67 +1304,14 @@ pub(super) fn eval_field_access_constructor_by_signature<T: SimFloat>(
         .find(|output| output.name == field)
     {
         if let Some(default_expr) = &output.default {
-            return Some(eval_expr_or_default::<T>(default_expr, &local_env));
+            return eval_expr::<T>(default_expr, &local_env).map(Some);
         }
         if let Some(value) = local_env.vars.get(&output.name).copied() {
-            return Some(value);
+            return Ok(Some(value));
         }
     }
 
-    None
-}
-
-pub(super) fn eval_field_access<T: SimFloat>(
-    base: &rumoca_core::Expression,
-    field: &str,
-    env: &VarEnv<T>,
-) -> T {
-    if let rumoca_core::Expression::Index {
-        base, subscripts, ..
-    } = base
-        && let Some(value) = eval_indexed_field_access(base, subscripts, field, env)
-    {
-        return value;
-    }
-
-    if let Some(path) = eval_field_access_path(base, env) {
-        let key = format!("{path}.{field}");
-        if let Some(value) = env.vars.get(&key).copied() {
-            return value;
-        }
-    }
-
-    if let rumoca_core::Expression::FunctionCall {
-        name,
-        args,
-        is_constructor,
-        ..
-    } = base
-    {
-        if *is_constructor
-            && let Some(value) =
-                eval_field_access_constructor_by_signature(name.var_name(), args, field, env)
-        {
-            return value;
-        }
-        match try_eval_function_record_scalar_field(name, args, field, env) {
-            Ok(Some(value)) => return value,
-            Ok(None) => {}
-            Err(EvalError::UnsupportedExpression {
-                kind: "record function output field shape",
-            })
-            | Err(EvalError::ShapeMismatch { .. }) => {}
-            Err(_) => {}
-        }
-
-        let selected = rumoca_core::VarName::new(format!("{}.{}", name.as_str(), field));
-        let value = eval_function_call::<T>(&selected, args, false, env);
-        if value.real().is_finite() {
-            return value;
-        }
-    }
-
-    T::zero()
+    Ok(None)
 }
 
 fn try_eval_field_access<T: SimFloat>(
@@ -1374,7 +1324,7 @@ fn try_eval_field_access<T: SimFloat>(
     } = base
     {
         let indices = try_eval_index_subscripts(subscripts, env)?;
-        if let Some(value) = eval_indexed_field_from_nested_expr(base, &indices, field, env) {
+        if let Some(value) = eval_indexed_field_from_nested_expr(base, &indices, field, env)? {
             return Ok(value);
         }
         return Err(EvalError::MissingBinding {
@@ -1399,7 +1349,7 @@ fn try_eval_field_access<T: SimFloat>(
     {
         if *is_constructor
             && let Some(value) =
-                eval_field_access_constructor_by_signature(name.var_name(), args, field, env)
+                eval_field_access_constructor_by_signature(name.var_name(), args, field, env)?
         {
             return Ok(value);
         }
@@ -1410,7 +1360,7 @@ fn try_eval_field_access<T: SimFloat>(
         let selected = rumoca_core::VarName::new(format!("{}.{}", name.as_str(), field));
         if function_call_supported(selected.as_str(), env) {
             validate_expr_slice_checked(args, env)?;
-            return Ok(eval_function_call::<T>(&selected, args, false, env));
+            return eval_function_call::<T>(&selected, args, false, env);
         }
     }
 
@@ -1435,7 +1385,7 @@ fn try_eval_function_record_scalar_field<T: SimFloat>(
         return Ok(None);
     }
 
-    if let Some(value) =
+    if let Ok(Some(value)) =
         super::special::eval_state_accessor_from_set_state(name.as_str(), args, field, env)
     {
         return Ok(Some(value));
@@ -1460,9 +1410,9 @@ fn try_eval_function_record_scalar_field<T: SimFloat>(
     };
     match eval_user_function_output_path_pub(name.var_name(), args, output_path.as_str(), env) {
         Ok(value) => Ok(Some(value)),
-        Err(EvalError::MissingBinding { .. }) => Ok(
-            super::special::eval_state_accessor_from_set_state(name.as_str(), args, field, env),
-        ),
+        Err(EvalError::MissingBinding { .. }) => {
+            super::special::eval_state_accessor_from_set_state(name.as_str(), args, field, env)
+        }
         Err(err) => Err(err),
     }
 }
@@ -1474,19 +1424,9 @@ fn checked_indexed_field_missing_name<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> String {
     if let Ok(Some(path)) = try_eval_field_access_path(base, env) {
-        return format!("{}[{}].{}", path, index_list(indices), field);
+        return format!("{}.{}", dae::format_subscript_key(&path, indices), field);
     }
     "indexed field expression".to_string()
-}
-
-fn eval_indexed_field_access<T: SimFloat>(
-    base: &rumoca_core::Expression,
-    subscripts: &[rumoca_core::Subscript],
-    field: &str,
-    env: &VarEnv<T>,
-) -> Option<T> {
-    let indices = eval_index_subscripts(subscripts, env)?;
-    eval_indexed_field_from_nested_expr(base, &indices, field, env)
 }
 
 fn eval_indexed_field_from_nested_expr<T: SimFloat>(
@@ -1494,9 +1434,9 @@ fn eval_indexed_field_from_nested_expr<T: SimFloat>(
     indices: &[usize],
     field: &str,
     env: &VarEnv<T>,
-) -> Option<T> {
+) -> Result<Option<T>, EvalError> {
     if indices.is_empty() {
-        return Some(eval_field_access(expr, field, env));
+        return try_eval_field_access(expr, field, env).map(Some);
     }
 
     match expr {
@@ -1504,19 +1444,20 @@ fn eval_indexed_field_from_nested_expr<T: SimFloat>(
         // component selection, so array/tuple literals must recurse first.
         rumoca_core::Expression::Array { elements, .. }
         | rumoca_core::Expression::Tuple { elements, .. } => {
-            let idx0 = indices[0].checked_sub(1)?;
-            let element = elements.get(idx0)?;
+            let Some(idx0) = indices[0].checked_sub(1) else {
+                return Ok(None);
+            };
+            let Some(element) = elements.get(idx0) else {
+                return Ok(None);
+            };
             eval_indexed_field_from_nested_expr(element, &indices[1..], field, env)
         }
         _ => {
-            let path = eval_field_access_path(expr, env)?;
-            let joined = indices
-                .iter()
-                .map(|idx| idx.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            let key = format!("{path}[{joined}].{field}");
-            env.vars.get(&key).copied()
+            let Some(path) = try_eval_field_access_path(expr, env)? else {
+                return Ok(None);
+            };
+            let key = format!("{}.{field}", dae::format_subscript_key(&path, indices));
+            Ok(env.vars.get(&key).copied())
         }
     }
 }
@@ -1530,129 +1471,71 @@ pub(super) fn eval_literal<T: SimFloat>(lit: &rumoca_core::Literal) -> T {
     }
 }
 
-/// Build the full variable name from a base name and subscripts.
-///
-/// Returns the base name unchanged when subscripts are empty; otherwise
-/// appends evaluated subscript indices (e.g. `x` + `[1,2]` → `x[1,2]`).
-fn build_indexed_name<T: SimFloat>(
-    name: &str,
-    subscripts: &[rumoca_core::Subscript],
-    env: &VarEnv<T>,
-) -> Result<String, EvalError> {
-    if subscripts.is_empty() {
-        return Ok(name.to_string());
-    }
-    let mut indexed = String::with_capacity(name.len() + subscripts.len() * 4 + 2);
-    indexed.push_str(name);
-    indexed.push('[');
-    for (pos, subscript) in subscripts.iter().enumerate() {
-        if pos > 0 {
-            indexed.push(',');
-        }
-        match subscript {
-            rumoca_core::Subscript::Index { value: i, .. } => {
-                write!(indexed, "{i}").expect("write to String never fails");
-            }
-            rumoca_core::Subscript::Expr { expr, .. } => {
-                let index = eval_expr::<T>(expr, env)?.real() as i64;
-                write!(indexed, "{index}").expect("write to String never fails");
-            }
-            rumoca_core::Subscript::Colon { .. } => {
-                return Err(EvalError::UnsupportedExpression {
-                    kind: "colon subscript",
-                });
-            }
-        }
-    }
-    indexed.push(']');
-    Ok(indexed)
-}
-
-pub(super) fn eval_var_ref<T: SimFloat>(
-    name: &rumoca_core::VarName,
-    subscripts: &[rumoca_core::Subscript],
-    env: &VarEnv<T>,
-) -> T {
-    try_eval_var_ref(name, subscripts, env).unwrap_or_else(|_| T::zero())
-}
-
 fn try_eval_var_ref<T: SimFloat>(
     name: &rumoca_core::VarName,
     subscripts: &[rumoca_core::Subscript],
     env: &VarEnv<T>,
 ) -> Result<T, EvalError> {
     if subscripts.is_empty() {
-        return try_eval_var_ref_no_subscripts(name.as_str(), env).ok_or_else(|| {
+        return eval_var_ref_no_subscripts(name.as_str(), env)?.ok_or_else(|| {
             EvalError::MissingBinding {
                 name: name.to_string(),
             }
         });
     }
-    let indexed_name = build_indexed_name(name.as_str(), subscripts, env)?;
-    env.vars
-        .get(&indexed_name)
-        .copied()
-        .or_else(|| try_eval_var_ref_no_subscripts(name.as_str(), env))
-        .ok_or(EvalError::MissingBinding { name: indexed_name })
+    if subscripts
+        .iter()
+        .any(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
+    {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "colon subscript",
+        });
+    }
+    let indices = try_eval_index_subscripts(subscripts, env)?;
+    if let Some(value) = eval_index_from_env_path(name.as_str(), &indices, env) {
+        return Ok(value);
+    }
+    Err(EvalError::MissingBinding {
+        name: name.to_string(),
+    })
 }
 
 /// Look up a variable with no explicit subscripts.
-/// Handles names with embedded subscript expressions like `x[(2-1)]`.
-#[cfg(test)]
-pub(super) fn eval_var_ref_no_subscripts<T: SimFloat>(raw: &str, env: &VarEnv<T>) -> T {
-    try_eval_var_ref_no_subscripts(raw, env).unwrap_or_else(T::zero)
-}
-
-fn try_eval_var_ref_no_subscripts<T: SimFloat>(raw: &str, env: &VarEnv<T>) -> Option<T> {
-    if let Some(value) = lowered_pre_parameter_value(raw, env) {
-        return Some(value);
+pub(super) fn eval_var_ref_no_subscripts<T: SimFloat>(
+    raw: &str,
+    env: &VarEnv<T>,
+) -> Result<Option<T>, EvalError> {
+    if let Some(value) = lowered_pre_parameter_value(raw, env)? {
+        return Ok(Some(value));
     }
     if let Some(&v) = env.vars.get(raw) {
-        return Some(v);
+        return Ok(Some(v));
     }
     if let Some(caller) = current_function_call_name(&env.runtime)
         && let Some(field) = complex_field_selection_from_path(&caller)
     {
         let selected_key = format!("{raw}.{field}");
         if let Some(&v) = env.vars.get(selected_key.as_str()) {
-            return Some(v);
-        }
-    }
-    // If name contains brackets with expressions, try normalizing.
-    if raw.contains('[') {
-        if let Some(v) =
-            normalize_var_name::<T>(raw, env).and_then(|n| env.vars.get(n.as_str()).copied())
-        {
-            return Some(v);
-        }
-        if let Some(base_name) = unity_subscript_base_name(raw)
-            && let Some(&v) = env.vars.get(base_name.as_str())
-        {
-            return Some(v);
+            return Ok(Some(v));
         }
     }
     if let Some(ordinal) = lookup_enum_literal_ordinal(raw, &env.enum_literal_ordinals) {
-        return Some(T::from_f64(ordinal as f64));
+        return Ok(Some(T::from_f64(ordinal as f64)));
     }
-    None
+    Ok(None)
 }
 
-fn lowered_pre_parameter_value<T: SimFloat>(raw: &str, env: &VarEnv<T>) -> Option<T> {
-    let target = raw.strip_prefix("__pre__.")?;
+fn lowered_pre_parameter_value<T: SimFloat>(
+    raw: &str,
+    env: &VarEnv<T>,
+) -> Result<Option<T>, EvalError> {
+    let Some(target) = raw.strip_prefix("__pre__.") else {
+        return Ok(None);
+    };
     if let Some(value) = lookup_pre_value_in(&env.runtime, target) {
-        return Some(T::from_f64(value));
+        return Ok(Some(T::from_f64(value)));
     }
-    if let Some(normalized) = normalize_var_name::<T>(target, env)
-        && let Some(value) = lookup_pre_value_in(&env.runtime, normalized.as_str())
-    {
-        return Some(T::from_f64(value));
-    }
-    if let Some(base_name) = unity_subscript_base_name(target)
-        && let Some(value) = lookup_pre_value_in(&env.runtime, base_name.as_str())
-    {
-        return Some(T::from_f64(value));
-    }
-    None
+    Ok(None)
 }
 
 pub(super) fn lookup_enum_literal_ordinal(
@@ -1711,167 +1594,28 @@ fn canonical_enum_literal_segment(segment: &str) -> &str {
     strip_quoted_identifier(segment).unwrap_or(segment)
 }
 
-pub(super) fn unity_subscript_base_name(name: &str) -> Option<String> {
-    let mut base = String::with_capacity(name.len());
-    let mut depth = 0usize;
-    let mut current = String::new();
-    let mut saw_subscript = false;
-
-    for ch in name.chars() {
-        match ch {
-            '[' => {
-                depth += 1;
-                if depth == 1 {
-                    current.clear();
-                    saw_subscript = true;
-                } else {
-                    current.push(ch);
-                }
-            }
-            ']' => {
-                if depth == 1 {
-                    let trimmed = current.trim();
-                    validate_unity_subscript_text(trimmed)?;
-                    current.clear();
-                } else if depth > 1 {
-                    current.push(ch);
-                }
-                depth = depth.saturating_sub(1);
-            }
-            _ if depth == 0 => base.push(ch),
-            _ => current.push(ch),
-        }
-    }
-
-    (saw_subscript && depth == 0).then_some(base)
-}
-
-pub(super) fn is_unity_subscript_text(text: &str) -> bool {
-    text == "1"
-        || text
-            .parse::<f64>()
-            .ok()
-            .is_some_and(|v| v.is_finite() && v == 1.0)
-}
-
-pub(super) fn validate_unity_subscript_text(text: &str) -> Option<()> {
-    is_unity_subscript_text(text).then_some(())
-}
-
-/// Normalize a variable name by evaluating constant subscript expressions.
-///
-/// For example: `"x[(2 - 1)]"` → `"x[1]"`, `"a[(3 + 1)].b"` → `"a[4].b"`
-pub(super) fn normalize_var_name<T: SimFloat>(name: &str, env: &VarEnv<T>) -> Option<String> {
-    let mut result = String::with_capacity(name.len());
-    let mut chars = name.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch != '[' {
-            result.push(ch);
-            continue;
-        }
-        let subscript_str = collect_bracketed(&mut chars);
-        let val = subscript_str
-            .trim()
-            .parse::<i64>()
-            .map(|v| v as f64)
-            .unwrap_or_else(|_| eval_simple_int_expr(&subscript_str, env));
-        result.push('[');
-        result.push_str(&(val as i64).to_string());
-        result.push(']');
-    }
-
-    if result != name { Some(result) } else { None }
-}
-
-/// Collect characters between `[` and matching `]`, handling nesting.
-pub(super) fn collect_bracketed(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
-    let mut depth = 1;
-    let mut s = String::new();
-    for c in chars.by_ref() {
-        match c {
-            '[' => depth += 1,
-            ']' if depth == 1 => break,
-            ']' => depth -= 1,
-            _ => {}
-        }
-        s.push(c);
-    }
-    s
-}
-
-/// Evaluate a simple integer expression from a subscript string.
-/// Handles: integer literals, parenthesized expressions, +, -, *, and variable references.
-pub(super) fn eval_simple_int_expr<T: SimFloat>(s: &str, env: &VarEnv<T>) -> f64 {
-    let s = s.trim();
-    if let Ok(v) = s.parse::<i64>() {
-        return v as f64;
-    }
-    if s.chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
-    {
-        return env.get(s).real();
-    }
-    if s.starts_with('(') && s.ends_with(')') {
-        return eval_simple_int_expr(&s[1..s.len() - 1], env);
-    }
-    // Try binary ops: scan right-to-left for +/- then * (respecting parens)
-    if let Some(v) = try_split_binop(s, b"+-", env) {
-        return v;
-    }
-    if let Some(v) = try_split_binop(s, b"*", env) {
-        return v;
-    }
-    0.0
-}
-
-/// Try splitting `s` at a binary operator (rightmost, outside parens).
-pub(super) fn try_split_binop<T: SimFloat>(s: &str, ops: &[u8], env: &VarEnv<T>) -> Option<f64> {
-    let bytes = s.as_bytes();
-    let mut depth = 0i32;
-    for i in (1..bytes.len()).rev() {
-        match bytes[i] {
-            b')' => depth += 1,
-            b'(' => depth -= 1,
-            op if depth == 0 && ops.contains(&op) => {
-                let left = s[..i].trim();
-                if left.is_empty() {
-                    continue;
-                }
-                let l = eval_simple_int_expr(left, env);
-                let r = eval_simple_int_expr(&s[i + 1..], env);
-                return Some(match op {
-                    b'+' => l + r,
-                    b'-' => l - r,
-                    b'*' => l * r,
-                    _ => 0.0,
-                });
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-pub(super) fn eval_vector_values<T: SimFloat>(
+pub(super) fn try_eval_vector_values<T: SimFloat>(
     expr: &rumoca_core::Expression,
     env: &VarEnv<T>,
-) -> Option<Vec<T>> {
+) -> Result<Option<Vec<T>>, EvalError> {
     match expr {
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() => {
-            let dims = env.dims.get(name.as_str())?;
+            let Some(dims) = env.dims.get(name.as_str()) else {
+                return Ok(None);
+            };
             if dims.len() != 1 || dims[0] <= 1 {
-                return None;
+                return Ok(None);
             }
-            array_values_from_env_name_generic(name.as_str(), env).filter(|values| values.len() > 1)
+            Ok(array_values_from_env_name_generic(name.as_str(), env)?
+                .filter(|values| values.len() > 1))
         }
         rumoca_core::Expression::Array { is_matrix, .. } if !*is_matrix => {
-            let values = eval_array_values(expr, env);
-            (values.len() > 1).then_some(values)
+            let values = eval_array_values(expr, env)?;
+            Ok((values.len() > 1).then_some(values))
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -1880,80 +1624,28 @@ pub(super) fn eval_vector_dot_product<T: SimFloat>(
     rhs: &rumoca_core::Expression,
     env: &VarEnv<T>,
 ) -> Option<T> {
-    let lhs_values = eval_vector_values(lhs, env)?;
-    let rhs_values = eval_vector_values(rhs, env)?;
+    try_eval_vector_dot_product(lhs, rhs, env).ok().flatten()
+}
+
+pub(super) fn try_eval_vector_dot_product<T: SimFloat>(
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<Option<T>, EvalError> {
+    let Some(lhs_values) = try_eval_vector_values(lhs, env)? else {
+        return Ok(None);
+    };
+    let Some(rhs_values) = try_eval_vector_values(rhs, env)? else {
+        return Ok(None);
+    };
     if lhs_values.len() != rhs_values.len() || lhs_values.is_empty() {
-        return None;
+        return Ok(None);
     }
 
-    Some(
+    Ok(Some(
         lhs_values
             .iter()
             .zip(rhs_values.iter())
             .fold(T::zero(), |acc, (l, r)| acc + (*l * *r)),
-    )
-}
-
-pub(super) fn eval_binary<T: SimFloat>(
-    op: &rumoca_core::OpBinary,
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> T {
-    if matches!(op, rumoca_core::OpBinary::Mul)
-        && let Some(dot) = eval_vector_dot_product(lhs, rhs, env)
-    {
-        return dot;
-    }
-    if matches!(op, rumoca_core::OpBinary::Mul)
-        && let Some(values) = eval_binary_array_values(op, lhs, rhs, env)
-        && let Some(first) = values.first().copied()
-    {
-        return first;
-    }
-
-    let l = eval_expr_or_default::<T>(lhs, env);
-    let r = eval_expr_or_default::<T>(rhs, env);
-    match op {
-        rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => l + r,
-        rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => l - r,
-        rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => l * r,
-        rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
-            if r.real() == 0.0 {
-                // 0/0 = 0 (simulation convention, avoids NaN propagation);
-                // nonzero/0 = infinity (IEEE 754 convention).
-                if l.real() == 0.0 {
-                    T::zero()
-                } else {
-                    T::infinity()
-                }
-            } else {
-                l / r
-            }
-        }
-        rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem => l.powf(r),
-        rumoca_core::OpBinary::And => T::from_bool(l.to_bool() && r.to_bool()),
-        rumoca_core::OpBinary::Or => T::from_bool(l.to_bool() || r.to_bool()),
-        rumoca_core::OpBinary::Lt => T::from_bool(l.lt(r)),
-        rumoca_core::OpBinary::Le => T::from_bool(l.le(r)),
-        rumoca_core::OpBinary::Gt => T::from_bool(l.gt(r)),
-        rumoca_core::OpBinary::Ge => T::from_bool(l.ge(r)),
-        rumoca_core::OpBinary::Eq => T::from_bool(l.eq_approx(r)),
-        rumoca_core::OpBinary::Neq => T::from_bool(!l.eq_approx(r)),
-        rumoca_core::OpBinary::Empty | rumoca_core::OpBinary::Assign => T::zero(),
-    }
-}
-
-pub(super) fn eval_unary<T: SimFloat>(
-    op: &rumoca_core::OpUnary,
-    rhs: &rumoca_core::Expression,
-    env: &VarEnv<T>,
-) -> T {
-    let r = eval_expr_or_default::<T>(rhs, env);
-    match op {
-        rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => -r,
-        rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => r,
-        rumoca_core::OpUnary::Not => T::from_bool(!r.to_bool()),
-        rumoca_core::OpUnary::Empty => r,
-    }
+    ))
 }
