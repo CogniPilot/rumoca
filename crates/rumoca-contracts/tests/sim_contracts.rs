@@ -695,3 +695,153 @@ fn sim_009_unresolved_reference_rejected_in_multi_document_resolve() {
         diagnostics.diagnostics
     );
 }
+
+// =============================================================================
+// SIM-006: Solved variable must appear uniquely as term (no multiplicative
+// factor) on either side
+// =============================================================================
+
+#[test]
+fn sim_006_nonlinear_discrete_when_equation_rejected() {
+    rumoca_contracts::test_support::expect_failure_in_phase_with_code(
+        r#"
+        model M
+            Integer n(start = 0);
+            Boolean c = time > 1;
+        equation
+            when c then
+                n * n = 4;
+            end when;
+        end M;
+    "#,
+        "M",
+        rumoca_compile::compile::FailedPhase::Flatten,
+        "EF004",
+    );
+}
+
+// =============================================================================
+// SIM-007: Non-Integer equations require at most flipping sides to obtain
+// assignment form
+// =============================================================================
+
+#[test]
+fn sim_007_when_equation_not_in_assignment_form_rejected() {
+    rumoca_contracts::test_support::expect_failure_in_phase_with_code(
+        r#"
+        model M
+            discrete Real x(start = 0);
+            Boolean c = time > 1;
+        equation
+            when c then
+                x + 1 = time;
+            end when;
+        end M;
+    "#,
+        "M",
+        rumoca_compile::compile::FailedPhase::Flatten,
+        "EF004",
+    );
+}
+
+// =============================================================================
+// SIM-001: Iterate solving equations until z == pre(z) and m == pre(m)
+// =============================================================================
+
+#[test]
+fn sim_001_event_iteration_reaches_fixpoint() {
+    // The first when-clause fires at t=1 and sets i=1; event iteration must
+    // re-evaluate the second when-clause in the same event instant so j
+    // settles at i+1 before integration resumes.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Real x(start = 0, fixed = true);
+            discrete Integer i(start = 0, fixed = true);
+            discrete Integer j(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+            when time > 1 then
+                i = 1;
+            end when;
+            when i > 0 then
+                j = i + 1;
+            end when;
+        end M;
+    "#,
+        "M",
+        2.0,
+    );
+    assert_eq!(trace.final_value("i"), 1.0, "first when must fire");
+    assert_eq!(
+        trace.final_value("j"),
+        2.0,
+        "event iteration must settle j in the same event instant"
+    );
+}
+
+// =============================================================================
+// SIM-008: Values of conditions c, z, and m only changed at event instant,
+// constant during continuous integration
+// =============================================================================
+
+#[test]
+fn sim_008_discrete_values_constant_between_events() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Real t(start = 0, fixed = true);
+            discrete Integer n(start = 0, fixed = true);
+        equation
+            der(t) = 1;
+            when time > 1 then
+                n = 1;
+            end when;
+        end M;
+    "#,
+        "M",
+        2.0,
+    );
+    let n = trace.channel("n");
+    // n is piecewise constant: only the values 0 and 1 appear, with a single
+    // monotone step at the event instant.
+    assert!(
+        n.iter().all(|&v| v == 0.0 || v == 1.0),
+        "discrete variable must hold piecewise-constant values, got {n:?}"
+    );
+    assert!(
+        n.windows(2).all(|w| w[0] <= w[1]),
+        "discrete variable changed outside the single event instant: {n:?}"
+    );
+}
+
+// =============================================================================
+// EQN-035: Before start of integration, for all variables v, v = pre(v) must
+// be guaranteed
+// =============================================================================
+
+#[test]
+fn eqn_035_initialization_pre_consistency() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Real t(start = 0, fixed = true);
+            discrete Real x(start = 5, fixed = true);
+        equation
+            der(t) = 1;
+            when time > 1 then
+                x = pre(x) + 1;
+            end when;
+        end M;
+    "#,
+        "M",
+        2.0,
+    );
+    let x = trace.channel("x");
+    assert_eq!(
+        x.first().copied(),
+        Some(5.0),
+        "x = pre(x) = start must hold before integration starts"
+    );
+    assert_eq!(trace.final_value("x"), 6.0);
+}

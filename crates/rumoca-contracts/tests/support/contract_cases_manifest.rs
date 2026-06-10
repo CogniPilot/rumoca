@@ -11,6 +11,8 @@ pub(crate) enum ContractCaseKind {
     Parse,
     Compile,
     Balance,
+    /// Compile + simulate, asserting runtime-semantic behavior.
+    Sim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

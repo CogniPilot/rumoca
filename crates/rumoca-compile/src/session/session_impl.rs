@@ -323,11 +323,14 @@ impl Session {
             evaluate_scope_is_error: self.evaluate_scope_is_error,
             when_single_assign_is_error: self.when_single_assign_is_error,
         };
-        let (resolved, diagnostics) = if mode == ResolveBuildMode::StrictCompileRecovery {
-            resolve_with_options_collect(parsed, resolve_options)
-        } else {
-            let resolved = resolve_with_options(parsed, resolve_options)?;
-            (resolved, CommonDiagnostics::new())
+        let (resolved, diagnostics) = {
+            let (resolved, diagnostics) = resolve_with_options_collect(parsed, resolve_options);
+            // Standard mode fails on errors; warning-severity diagnostics
+            // (advisory contract rules) are preserved on success.
+            if mode != ResolveBuildMode::StrictCompileRecovery && diagnostics.has_errors() {
+                return Err(diagnostics);
+            }
+            (resolved, diagnostics)
         };
         let model_names = collect_model_names(&resolved.0.definitions);
         Ok((Arc::new(resolved), diagnostics, model_names))

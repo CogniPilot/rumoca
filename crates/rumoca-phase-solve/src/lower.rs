@@ -65,7 +65,7 @@ const MAX_FUNCTION_INLINE_DEPTH: usize = 64;
 /// inlining duplicates argument expressions per use, which grows
 /// exponentially across nested array-valued calls without a size cutoff.
 const MAX_FUNCTION_PROJECTION_NODES: usize = 4096;
-pub(crate) const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
+pub(crate) use rumoca_core::NAMED_FUNCTION_ARG_PREFIX;
 pub(super) const SIZE_BINDING_PREFIX: &str = "__rumoca_size__.";
 const RETURN_FLAG_BINDING: &str = "__rumoca_returned__";
 pub(super) const BREAK_FLAG_BINDING: &str = "__rumoca_break__";

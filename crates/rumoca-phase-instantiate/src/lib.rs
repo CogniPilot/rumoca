@@ -37,6 +37,7 @@
 
 mod array_expansion;
 mod attributes;
+mod component_loop;
 mod connections;
 mod dims;
 mod errors;
@@ -46,6 +47,7 @@ mod instance_sections;
 mod mod_env;
 mod nested_scope;
 mod package_constant_imports;
+mod plug_compat;
 mod source_scope;
 mod templates;
 mod traversal_adapter;
@@ -65,6 +67,9 @@ use rumoca_ir_ast::AstIndexMap as IndexMap;
 
 use array_expansion::{ArrayExpansionScope, expand_array_component};
 use attributes::*;
+use component_loop::{
+    ComponentImports, component_flow_stream, component_type_id, instantiate_effective_components,
+};
 use dims::{
     qualify_shape_subscripts_imports, resolve_component_dimensions, resolve_type_alias_dimensions,
 };
@@ -794,7 +799,7 @@ fn retry_with_synthetic_inners(
             &mut overlay,
             &empty_siblings,
             &empty_type_overrides,
-            &[],
+            ComponentImports::EMPTY,
         )
         .is_err()
         {
@@ -1004,7 +1009,10 @@ fn instantiate_class(
             &type_overrides,
             ctx,
             overlay,
-            &component_imports,
+            ComponentImports {
+                qualification: &component_imports,
+                attributes: &resolved_imports,
+            },
         )?;
 
         // Rebuild merged integer params after nested component instantiation so that
@@ -1070,77 +1078,6 @@ fn instantiate_class(
     ctx.exit_instantiation_class(class);
 
     result
-}
-
-fn instantiate_effective_components(
-    tree: &ast::ClassTree,
-    effective_components: &IndexMap<String, ast::Component>,
-    type_overrides: &TypeOverrideMap,
-    ctx: &mut InstantiateContext,
-    overlay: &mut ast::InstanceOverlay,
-    imports: &[(String, String)],
-) -> InstantiateResult<()> {
-    let array_expansion_scope = ArrayExpansionScope {
-        tree,
-        effective_components,
-        type_overrides,
-        imports,
-    };
-
-    for (name, comp) in effective_components {
-        if mark_disabled_component_if_needed(comp, name, ctx, effective_components, tree, overlay) {
-            continue;
-        }
-
-        // MLS §7.3: Apply type override for replaceable type redeclarations.
-        let comp_ref = apply_type_override(tree, comp, type_overrides, Some(ctx.mod_env()));
-        let comp = comp_ref.as_ref();
-        let type_name = comp.type_name.to_string();
-
-        let qualified_shape_expr = qualify_shape_subscripts_imports(&comp.shape_expr, imports);
-        let dims = evaluate_array_dimensions(
-            &comp.shape,
-            &qualified_shape_expr,
-            ctx.mod_env(),
-            effective_components,
-            tree,
-            resolve_effective_components_for_eval,
-        );
-        if let Some(dims) = dims.as_ref()
-            && dims.contains(&0)
-        {
-            register_zero_sized_array_component(ctx, overlay, name, dims);
-            continue;
-        }
-
-        let type_info = lookup_type_info(tree, comp, &type_name)?;
-        let should_expand = !type_info.is_primitive && dims.as_ref().is_some_and(|d| !d.is_empty());
-
-        if should_expand {
-            expand_array_component(
-                &array_expansion_scope,
-                name,
-                comp,
-                dims.as_ref().unwrap(),
-                ctx,
-                overlay,
-            )?;
-            continue;
-        }
-
-        ctx.push_path(name);
-        instantiate_component(
-            tree,
-            comp,
-            ctx,
-            overlay,
-            effective_components,
-            type_overrides,
-            imports,
-        )?;
-        ctx.pop_path();
-    }
-    Ok(())
 }
 
 fn mark_disabled_component_if_needed(
@@ -1523,14 +1460,6 @@ fn validate_partial_component_instantiation(
     )))
 }
 
-///
-/// Note (MLS §4.8): Conditional components are handled in `instantiate_class`.
-/// Components whose condition evaluates to false are skipped and recorded
-/// in `overlay.disabled_components`. The flatten phase filters out connections
-/// and equations involving disabled components.
-///
-/// MLS §10.1: Array components of structured types (connectors, models) are expanded
-/// to indexed instances. For example, `Resistor r[3]` becomes `r[1]`, `r[2]`, `r[3]`.
 fn instantiate_component(
     tree: &ast::ClassTree,
     comp: &ast::Component,
@@ -1538,7 +1467,7 @@ fn instantiate_component(
     overlay: &mut ast::InstanceOverlay,
     effective_components: &IndexMap<String, ast::Component>,
     type_overrides: &TypeOverrideMap,
-    imports: &[(String, String)],
+    imports: ComponentImports<'_>,
 ) -> InstantiateResult<()> {
     let type_name = comp.type_name.to_string();
 
@@ -1559,27 +1488,30 @@ fn instantiate_component(
         binding_source,
         binding_source_scope,
         binding_from_modification,
-    } = prepare_component_binding_info(tree, comp, ctx, effective_components, is_discrete_type)?;
+    } = prepare_component_binding_info(
+        tree,
+        comp,
+        ctx,
+        effective_components,
+        is_discrete_type,
+        imports.attributes,
+    )?;
 
-    // Extract flow/stream from connection prefix (MLS §9.3)
-    // Also inherit from parent for record fields (e.g., `flow Complex i` → i.re and i.im are flow)
-    let (flow, stream) = match &comp.connection {
-        rumoca_ir_ast::Connection::Flow(_) => (true, false),
-        rumoca_ir_ast::Connection::Stream(_) => (false, true),
-        rumoca_ir_ast::Connection::Empty => (ctx.inherited_flow(), ctx.inherited_stream()),
-    };
+    let (flow, stream) = component_flow_stream(comp, ctx);
 
     validate_final_type_attribute_overrides(tree, class_def, comp, ctx.mod_env())?;
     merge_type_hierarchy_string_attributes(tree, class_def, &mut attrs);
 
-    let (dims, dims_expr) =
-        resolve_component_shape(tree, comp, ctx, class_def, effective_components, imports)?;
+    let (dims, dims_expr) = resolve_component_shape(
+        tree,
+        comp,
+        ctx,
+        class_def,
+        effective_components,
+        imports.qualification,
+    )?;
 
-    let type_id = if is_primitive {
-        resolve_primitive_type_id(tree, &type_name, class_def)
-    } else {
-        TypeId::UNKNOWN
-    };
+    let type_id = component_type_id(tree, &type_name, class_def, is_primitive);
     let declaration_source_scope = component_declaration_source_scope(ctx, comp);
     let binding_scope_for_record_expansion = binding_scope_for_record_expansion(
         &qualified_name,
@@ -1707,6 +1639,7 @@ fn prepare_component_binding_info(
     ctx: &mut InstantiateContext,
     effective_components: &IndexMap<String, ast::Component>,
     is_discrete_type: bool,
+    imports: &[(String, String)],
 ) -> InstantiateResult<ComponentBindingInfo> {
     let eval_ctx = InstantiateEvalCtx {
         tree,
@@ -1720,7 +1653,7 @@ fn prepare_component_binding_info(
         binding_source,
         binding_source_scope,
         binding_from_modification,
-    } = extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx)?;
+    } = extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx, imports)?;
     infer_local_attribute_source_scopes(ctx, comp, &mut attrs);
     let start_from_declaration_binding =
         !binding_from_modification && binding.is_some() && attrs.start == binding;

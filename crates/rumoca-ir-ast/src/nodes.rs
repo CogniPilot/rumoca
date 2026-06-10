@@ -421,6 +421,10 @@ pub struct ClassDef {
     /// Only meaningful for function classes. Functions are pure by default.
     /// Set to false when declared with `impure` keyword.
     pub pure: bool,
+    /// True when the source declared `pure` or `impure` explicitly
+    /// (MLS §12.3; external functions without an explicit declaration are
+    /// deprecated, FUNC-032).
+    pub purity_declared: bool,
     /// Causality from type alias definition (e.g., `connector RealInput = input Real`)
     /// Components of this type inherit this causality
     pub causality: Causality,
@@ -489,6 +493,7 @@ impl Default for ClassDef {
             expandable: false,
             operator_record: false,
             pure: false,
+            purity_declared: false,
             causality: Causality::Empty,
             description: Vec::new(),
             location: Location::default(),

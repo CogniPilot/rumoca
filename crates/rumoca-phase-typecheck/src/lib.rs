@@ -34,6 +34,7 @@ mod enum_context;
 mod instanced;
 mod modifier_targets;
 mod typechecker;
+pub mod unit_syntax;
 
 use rumoca_core::{ComponentPath, DefId, ScopeId, Span, TypeId};
 use rumoca_core::{
@@ -248,6 +249,13 @@ pub struct TypeChecker {
     type_roots: HashMap<TypeId, TypeId>,
     /// Component type ids visible in the current class scope.
     current_component_types: HashMap<String, TypeId>,
+    /// Component shapes visible in the current class scope.
+    ///
+    /// `Some(shape)` is a known shape (empty = scalar); `None` means the
+    /// component declares dimensions that are not evaluated here. Per
+    /// SPEC_0008, an absent or `None` entry must be treated as unknown,
+    /// never as scalar.
+    current_component_shapes: HashMap<String, Option<Vec<usize>>>,
     /// Allowed first-segment modifier targets per class DefId.
     ///
     /// Includes direct and inherited members (components and nested classes),
@@ -272,6 +280,7 @@ impl TypeChecker {
             type_suffix_index: HashMap::new(),
             type_roots: HashMap::new(),
             current_component_types: HashMap::new(),
+            current_component_shapes: HashMap::new(),
             component_modifier_targets: HashMap::new(),
             component_modifier_member_types: HashMap::new(),
         }
@@ -515,11 +524,10 @@ impl TypeChecker {
     /// Build lookup keys for top-level model components from instanced overlay data.
     fn build_instanced_component_type_scope(
         overlay: &InstanceOverlay,
-        model_name: &str,
+        full_prefix: &str,
+        short_model: &str,
     ) -> HashMap<String, TypeId> {
         let mut out = HashMap::new();
-        let full_prefix = format!("{model_name}.");
-        let short_model = top_level_last_segment(model_name);
         let short_prefix = format!("{short_model}.");
 
         for data in overlay.components.values() {
@@ -530,7 +538,7 @@ impl TypeChecker {
                 .copied()
                 .unwrap_or(data.type_id);
             out.insert(qn.clone(), canonical_type);
-            if let Some(rest) = qn.strip_prefix(&full_prefix) {
+            if let Some(rest) = qn.strip_prefix(full_prefix) {
                 Self::insert_instanced_aliases(&mut out, rest, canonical_type, Some(short_model));
                 continue;
             }
@@ -544,6 +552,42 @@ impl TypeChecker {
         }
 
         out
+    }
+
+    /// Shape map keyed like `build_instanced_component_type_scope`. The model
+    /// prefixes are passed in so the textual-path handling stays in one place.
+    fn build_instanced_component_shape_scope(
+        overlay: &InstanceOverlay,
+        full_prefix: &str,
+        short_model: &str,
+    ) -> HashMap<String, Option<Vec<usize>>> {
+        let mut out = HashMap::new();
+        let short_prefix = format!("{short_model}.");
+        for data in overlay.components.values() {
+            let shape = if !data.dims.is_empty() {
+                Some(data.dims.iter().map(|&d| d as usize).collect::<Vec<_>>())
+            } else if data.dims_expr.is_empty() {
+                Some(Vec::new())
+            } else {
+                None
+            };
+            let qn = data.qualified_name.to_flat_string();
+            if let Some(rest) = qn.strip_prefix(full_prefix) {
+                out.insert(rest.to_string(), shape.clone());
+            } else if let Some(rest) = qn.strip_prefix(&short_prefix) {
+                out.insert(rest.to_string(), shape.clone());
+            }
+            out.insert(qn, shape);
+        }
+        out
+    }
+
+    /// Model-name prefix and short model name shared by the instanced scope
+    /// builders, so the textual-path handling happens exactly once.
+    fn instanced_scope_prefixes(model_name: &str) -> (String, String) {
+        let full_prefix = format!("{model_name}.");
+        let short_model = top_level_last_segment(model_name).to_string();
+        (full_prefix, short_model)
     }
 
     fn insert_instanced_aliases(

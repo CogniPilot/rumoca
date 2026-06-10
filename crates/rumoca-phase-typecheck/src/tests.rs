@@ -1898,7 +1898,9 @@ fn test_build_instanced_component_type_scope_keeps_subscript_dot_single_segment(
         },
     );
 
-    let scope_map = TypeChecker::build_instanced_component_type_scope(&overlay, "Top.Model");
+    let (full_prefix, short_model) = TypeChecker::instanced_scope_prefixes("Top.Model");
+    let scope_map =
+        TypeChecker::build_instanced_component_type_scope(&overlay, &full_prefix, &short_model);
     assert_eq!(
         scope_map.get("plug[data.medium]"),
         Some(&TypeId::new(11)),

@@ -36,6 +36,20 @@ fn collect_constructor_params(
     }
 
     for (comp_name, component) in &class_def.components {
+        // MLS §12.6.1 / FUNC-029: a record constructor cannot be formed for a
+        // record with conditional components.
+        if component.condition.is_some() {
+            let span = source_map.location_to_span(
+                &class_def.location.file_name,
+                class_def.location.start as usize,
+                class_def.location.end as usize,
+            );
+            return Err(FlattenError::ConditionalComponentConstructor {
+                record: class_def.name.text.to_string(),
+                component: comp_name.clone(),
+                span: rumoca_core::span_to_source_span(span),
+            });
+        }
         let param = convert_component_to_param(
             class_index,
             comp_name,

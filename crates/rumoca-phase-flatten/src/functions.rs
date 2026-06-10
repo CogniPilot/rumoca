@@ -1966,6 +1966,9 @@ fn active_constant_def_overrides(
         .collect()
 }
 
+mod call_args;
+pub(crate) use call_args::validate_flat_function_call_args;
+
 mod constructor_signature;
 use constructor_signature::{convert_constructor_signature, normalize_function_local_references};
 

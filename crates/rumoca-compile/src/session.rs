@@ -20,7 +20,7 @@ use rumoca_phase_instantiate::{
     InstantiateError, InstantiateOptions, InstantiationOutcome,
     instantiate_model_with_outcome_options,
 };
-use rumoca_phase_resolve::{ResolveOptions, resolve_with_options, resolve_with_options_collect};
+use rumoca_phase_resolve::{ResolveOptions, resolve_with_options_collect};
 use rumoca_phase_typecheck::typecheck_instanced;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

@@ -981,6 +981,8 @@ pub(crate) fn finalize_flat_model(
     functions::canonicalize_collected_function_calls(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
+    functions::validate_flat_function_call_args(flat)?;
+    validate_overconstrained_roots(flat)?;
 
     ctx.refresh_enum_parameter_lookup(flat);
     enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
@@ -989,6 +991,37 @@ pub(crate) fn finalize_flat_model(
         name_simplify::simplify_flat_names(flat)?;
     }
 
+    Ok(())
+}
+
+/// MLS §9.4 / CONN-013: every subgraph of the virtual connection graph needs
+/// at least one definite or potential root. Tier-1 check: a model that uses
+/// Connections.branch() but declares no root anywhere cannot satisfy this.
+fn validate_overconstrained_roots(flat: &flat::Model) -> Result<(), FlattenError> {
+    if !flat.branches.is_empty()
+        && flat.definite_roots.is_empty()
+        && flat.potential_roots.is_empty()
+    {
+        let (from, to) = &flat.branches[0];
+        // Point the user at the branch endpoint: branch names are connector
+        // paths, so the variable declared under that prefix carries the span.
+        let span = flat
+            .variables
+            .values()
+            .find(|var| {
+                var.name.as_str().starts_with(from.as_str())
+                    || var.name.as_str().starts_with(to.as_str())
+            })
+            .map(|var| var.source_span)
+            .unwrap_or(rumoca_core::Span::DUMMY);
+        return Err(FlattenError::UnsupportedEquation {
+            description: format!(
+                "Connections.branch({from}, {to}) is used but no Connections.root() or \
+                 Connections.potentialRoot() is declared; every subgraph needs a root (MLS §9.4)"
+            ),
+            span: rumoca_core::span_to_source_span(span),
+        });
+    }
     Ok(())
 }
 

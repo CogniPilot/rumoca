@@ -20,7 +20,7 @@ enum ModifierPathAdvance {
     Invalid,
 }
 
-struct MissingComponentMember {
+pub(in crate::typechecker) struct MissingComponentMember {
     owner_type: TypeId,
     member_name: String,
     reference: String,
@@ -42,6 +42,8 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
 
     fn on_simple_equation(&mut self, lhs: &Expression, rhs: &Expression, type_table: &TypeTable) {
         self.check_equation_type_compatibility(lhs, rhs, type_table);
+        self.check_power_operators(lhs, type_table);
+        self.check_power_operators(rhs, type_table);
     }
 
     fn on_expression_function_call(
@@ -51,6 +53,49 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
         type_table: &TypeTable,
     ) {
         self.check_builtin_function_call(comp, args, type_table);
+    }
+
+    /// MLS §8.3.5: the condition of a when-equation must be a Boolean
+    /// expression (ALG-011/EQN side).
+    fn on_when_condition(&mut self, condition: &Expression, type_table: &TypeTable) {
+        let Some(found) = self.infer_expression_type(condition, type_table) else {
+            return;
+        };
+        if found.is_unknown() {
+            return;
+        }
+        let root = self.resolve_type_root(type_table, found);
+        if matches!(
+            type_table.get(root),
+            Some(Type::Builtin(rumoca_ir_ast::BuiltinType::Boolean))
+        ) {
+            return;
+        }
+        // Arrays of Boolean are also allowed (vector when-conditions); only
+        // flag clearly non-Boolean roots.
+        if !matches!(
+            type_table.get(root),
+            Some(Type::Builtin(
+                rumoca_ir_ast::BuiltinType::Real
+                    | rumoca_ir_ast::BuiltinType::Integer
+                    | rumoca_ir_ast::BuiltinType::String
+            ))
+        ) {
+            return;
+        }
+        let Some(loc) = condition.get_location() else {
+            return;
+        };
+        let span =
+            self.source_map
+                .location_to_span(&loc.file_name, loc.start as usize, loc.end as usize);
+        let found_name = Self::format_type_name(type_table, found);
+        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+            "ET002",
+            format!("when-equation condition must be Boolean, found `{found_name}` (MLS §8.3.5)"),
+            "when condition here",
+            span,
+        ));
     }
 }
 
@@ -690,6 +735,18 @@ impl TypeChecker {
             );
         }
         self.current_component_types = scope_types;
+        let mut scope_shapes = HashMap::new();
+        for (name, comp) in &class.components {
+            let shape = if !comp.shape.is_empty() {
+                Some(comp.shape.clone())
+            } else if comp.shape_expr.is_empty() {
+                Some(Vec::new())
+            } else {
+                None
+            };
+            scope_shapes.insert(name.clone(), shape);
+        }
+        self.current_component_shapes = scope_shapes;
 
         // Validate known builtin modifier value types now that local component
         // types are available in scope (e.g., `Real x(start = y)`).
@@ -1026,6 +1083,9 @@ impl TypeChecker {
         }
 
         for (modifier_name, modifier_expr) in &comp.modifications {
+            if matches!(modifier_name.as_str(), "unit" | "displayUnit") {
+                self.validate_unit_modifier_syntax(comp_name, modifier_name, modifier_expr);
+            }
             if !Self::is_allowed_builtin_modifier(modifier_name) {
                 continue;
             }
@@ -1085,6 +1145,38 @@ impl TypeChecker {
             "modifier value here",
             span,
         ));
+    }
+
+    /// MLS Chapter 19: a non-empty `unit`/`displayUnit` string literal must
+    /// match the unit-expression grammar.
+    fn validate_unit_modifier_syntax(
+        &mut self,
+        comp_name: &str,
+        modifier_name: &str,
+        modifier_expr: &Expression,
+    ) {
+        let Expression::Terminal {
+            terminal_type: rumoca_ir_ast::TerminalType::String,
+            token,
+            ..
+        } = modifier_expr
+        else {
+            return;
+        };
+        let unit = token.text.trim_matches('"');
+        if let Err(error) = crate::unit_syntax::validate_unit_expression(unit) {
+            let span = self.source_map.location_to_span(
+                &token.location.file_name,
+                token.location.start as usize,
+                token.location.end as usize,
+            );
+            self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+                "ET010",
+                format!("invalid {modifier_name} for `{comp_name}`: {error}"),
+                "unit string here",
+                span,
+            ));
+        }
     }
 
     pub(crate) fn builtin_modifier_expected_type(
@@ -1493,58 +1585,6 @@ impl TypeChecker {
         }
     }
 
-    /// Check assignment compatibility for a simple equation.
-    ///
-    /// This currently targets scalar/component identity checks needed for
-    /// user-defined type mismatch diagnostics in equations.
-    pub(crate) fn check_equation_type_compatibility(
-        &mut self,
-        lhs: &Expression,
-        rhs: &Expression,
-        type_table: &TypeTable,
-    ) {
-        let lhs_ty = self.infer_expression_type(lhs, type_table);
-        let rhs_ty = self.infer_expression_type(rhs, type_table);
-
-        let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty) else {
-            return;
-        };
-        if lhs_ty.is_unknown() || rhs_ty.is_unknown() {
-            return;
-        }
-        let lhs_root = self.resolve_type_root(type_table, lhs_ty);
-        let rhs_root = self.resolve_type_root(type_table, rhs_ty);
-        if lhs_root == rhs_root {
-            self.check_equation_shape_compatibility(lhs, rhs, type_table);
-            return;
-        }
-        if Self::is_unresolved_alias_root(type_table, lhs_root)
-            || Self::is_unresolved_alias_root(type_table, rhs_root)
-        {
-            return;
-        }
-        if !Self::is_user_defined_compatibility_type(type_table, lhs_root)
-            || !Self::is_user_defined_compatibility_type(type_table, rhs_root)
-        {
-            return;
-        }
-
-        let Some(loc) = lhs.get_location().or_else(|| rhs.get_location()) else {
-            return;
-        };
-        let span =
-            self.source_map
-                .location_to_span(&loc.file_name, loc.start as usize, loc.end as usize);
-        let expected = Self::format_type_name(type_table, lhs_ty);
-        let found = Self::format_type_name(type_table, rhs_ty);
-        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
-            "ET002",
-            format!("type mismatch: expected `{expected}`, found `{found}`"),
-            "equation assignment here",
-            span,
-        ));
-    }
-
     pub(crate) fn infer_expression_type(
         &self,
         expr: &Expression,
@@ -1568,6 +1608,12 @@ impl TypeChecker {
             Expression::Parenthesized { inner, .. } => {
                 self.infer_expression_type(inner, type_table)
             }
+            // An array's value type is its element type (uniformity of the
+            // elements is the shape check's concern).
+            Expression::Array { elements, .. } => elements
+                .first()
+                .and_then(|element| self.infer_expression_type(element, type_table)),
+            Expression::Range { start, .. } => self.infer_expression_type(start, type_table),
             _ => None,
         }
     }
@@ -1632,17 +1678,6 @@ impl TypeChecker {
             .and_then(|ty| Self::filter_non_value_component_type(type_table, ty))
     }
 
-    fn validate_component_reference(
-        &mut self,
-        comp: &rumoca_ir_ast::ComponentReference,
-        type_table: &TypeTable,
-    ) {
-        let Err(missing) = self.resolve_component_reference_type(comp, type_table) else {
-            return;
-        };
-        self.emit_unknown_component_member(missing, type_table);
-    }
-
     fn validate_field_access(&mut self, base: &Expression, field: &str, type_table: &TypeTable) {
         let Some(base_type) = self.infer_expression_type(base, type_table) else {
             return;
@@ -1675,7 +1710,7 @@ impl TypeChecker {
         );
     }
 
-    fn resolve_component_reference_type(
+    pub(in crate::typechecker) fn resolve_component_reference_type(
         &self,
         comp: &rumoca_ir_ast::ComponentReference,
         type_table: &TypeTable,
@@ -1798,7 +1833,7 @@ impl TypeChecker {
         )
     }
 
-    fn emit_unknown_component_member(
+    pub(in crate::typechecker) fn emit_unknown_component_member(
         &mut self,
         missing: MissingComponentMember,
         type_table: &TypeTable,

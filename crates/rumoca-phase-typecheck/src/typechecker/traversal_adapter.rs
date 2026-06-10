@@ -31,6 +31,9 @@ pub(crate) trait TypeCheckTraversalCallbacks {
         _type_table: &TypeTable,
     ) {
     }
+
+    /// Called for every when-equation branch condition.
+    fn on_when_condition(&mut self, _condition: &Expression, _type_table: &TypeTable) {}
 }
 
 struct TypeCheckTraversal<'a, C> {
@@ -57,6 +60,16 @@ impl<C: TypeCheckTraversalCallbacks> Visitor for TypeCheckTraversal<'_, C> {
         self.visit_component_reference(comp)
     }
 
+    fn visit_equation(&mut self, equation: &ast::Equation) -> ControlFlow<()> {
+        if let ast::Equation::When(blocks) = equation {
+            for block in blocks {
+                self.callbacks
+                    .on_when_condition(&block.cond, self.type_table);
+            }
+        }
+        ast::visitor::walk_equation_default(self, equation)
+    }
+
     fn visit_simple_equation(&mut self, lhs: &Expression, rhs: &Expression) -> ControlFlow<()> {
         self.visit_expression(lhs)?;
         self.visit_expression(rhs)?;
@@ -70,7 +83,14 @@ impl<C: TypeCheckTraversalCallbacks> Visitor for TypeCheckTraversal<'_, C> {
         args: &[Expression],
         ctx: ast::FunctionCallContext,
     ) -> ControlFlow<()> {
-        if matches!(ctx, ast::FunctionCallContext::Expression) {
+        // Equation/statement-form calls (`reinit(x, e)`, `assert(...)`) get
+        // the same argument checks as expression-form calls.
+        if matches!(
+            ctx,
+            ast::FunctionCallContext::Expression
+                | ast::FunctionCallContext::Equation
+                | ast::FunctionCallContext::Statement
+        ) {
             self.visit_each(args, Self::visit_expression)?;
             self.callbacks
                 .on_expression_function_call(comp, args, self.type_table);

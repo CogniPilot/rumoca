@@ -512,6 +512,7 @@ fn validate_connections(
 
             // Validate array dimension compatibility (CONN-008)
             validate_dimension_compatibility(flat, &var_a, &var_b, span)?;
+            validate_quantity_compatibility(flat, &var_a, &var_b, span)?;
             continue;
         }
 
@@ -538,6 +539,7 @@ struct ValidationVarInfo {
     flow: bool,
     type_id: TypeId,
     dims: Vec<i64>,
+    quantity: Option<String>,
 }
 
 struct ExpandedValidationCtx<'a> {
@@ -558,6 +560,7 @@ fn get_validation_var_info(
             flow: v.flow,
             type_id: v.type_id,
             dims: v.dims.clone(),
+            quantity: v.quantity.clone(),
         });
     }
 
@@ -580,6 +583,7 @@ fn get_validation_var_info(
         // MLS array indexing semantics: indexing a subset of dimensions
         // preserves remaining dimensions (e.g., A[1] for A[2,3] yields [3]).
         dims,
+        quantity: base_var.quantity.clone(),
     })
 }
 
@@ -614,6 +618,32 @@ fn validate_flow_consistency(
                 var_b.as_str(),
                 if is_flow_b { "flow" } else { "non-flow" }
             ),
+            span,
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that connected variables agree on the quantity attribute.
+///
+/// Per CONN-005 (MLS §9.2): variables with non-empty quantity attributes
+/// must match.
+fn validate_quantity_compatibility(
+    flat: &flat::Model,
+    var_a: &rumoca_core::VarName,
+    var_b: &rumoca_core::VarName,
+    span: Span,
+) -> Result<(), FlattenError> {
+    let quantity_a = get_validation_var_info(flat, var_a).and_then(|v| v.quantity);
+    let quantity_b = get_validation_var_info(flat, var_b).and_then(|v| v.quantity);
+    if let (Some(qa), Some(qb)) = (&quantity_a, &quantity_b)
+        && !qa.is_empty()
+        && !qb.is_empty()
+        && qa != qb
+    {
+        return Err(FlattenError::incompatible_connectors(
+            format!("{} (quantity: {qa})", var_a.as_str()),
+            format!("{} (quantity: {qb})", var_b.as_str()),
             span,
         ));
     }
@@ -710,6 +740,7 @@ fn validate_expanded_connector_connection(
         validate_flow_consistency(ctx.flat, sub_a, &var_b_match, ctx.span)?;
         validate_type_compatibility(ctx.flat, ctx.type_roots, sub_a, &var_b_match, ctx.span)?;
         validate_dimension_compatibility(ctx.flat, sub_a, &var_b_match, ctx.span)?;
+        validate_quantity_compatibility(ctx.flat, sub_a, &var_b_match, ctx.span)?;
     }
     Ok(())
 }
@@ -1460,12 +1491,15 @@ fn append_stream_connection_sets_for_group(
 ///
 /// Potential (equality) connection sets use a global union-find since
 /// N-1 equality equations give the same count whether split or merged.
+/// Connection sets plus the raw stream groups (the semantic stream
+/// connection sets used for the MLS §15.2 inStream rewrite, independent of
+/// the balance-oriented stream ConnectionSets).
 fn build_connection_sets(
     connections: &[&ast::InstanceConnection],
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) -> Vec<ConnectionSet> {
+) -> (Vec<ConnectionSet>, Vec<Vec<rumoca_core::VarName>>) {
     let mut potential_uf = UnionFind::new();
     let mut stream_uf = UnionFind::new();
     let mut result = Vec::new();
@@ -1560,10 +1594,12 @@ fn build_connection_sets(
     }
 
     let stream_sets = stream_uf.get_sets();
+    let mut raw_stream_groups: Vec<Vec<rumoca_core::VarName>> = Vec::new();
     if !stream_sets.is_empty() {
         let existing_lhs_vars = collect_existing_lhs_vars(flat);
         let mut existing_var_refs: Option<std::collections::HashSet<rumoca_core::VarName>> = None;
         for (_root, vars) in stream_sets {
+            raw_stream_groups.push(vars.clone());
             let span = representative_span(&vars, &var_first_span);
             append_stream_connection_sets_for_group(
                 flat,
@@ -1576,7 +1612,7 @@ fn build_connection_sets(
         }
     }
 
-    result
+    (result, raw_stream_groups)
 }
 
 // =============================================================================

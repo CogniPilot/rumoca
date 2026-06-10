@@ -399,6 +399,7 @@ fn finalize_lowered_dae(
         // MLS §4.7 / §4.8 / §9.4: propagate interface counts from flatten.
         dae.metadata.interface_flow_count = count_interface_flows(flat);
         dae.metadata.oc_break_edge_scalar_count = flat.oc_break_edge_scalar_count;
+        overconstrained_interface::validate_connection_graph(flat)?;
         let oc_correction = count_overconstrained_interface(flat, state_vars)?;
         if oc_correction >= 0 {
             dae.metadata.overconstrained_interface_count = oc_correction;

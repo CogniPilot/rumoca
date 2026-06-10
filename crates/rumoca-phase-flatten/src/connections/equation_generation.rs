@@ -337,7 +337,7 @@ pub(crate) fn process_connections(
         collect_interface_flow_vars_by_scope(&all_connections, flat, &prefix_children, &var_index);
 
     // Build connection sets (variables connected together)
-    let connection_sets =
+    let (connection_sets, raw_stream_groups) =
         build_connection_sets(&all_connections, flat, &prefix_children, &var_index);
 
     // Generate equations for each connection set
@@ -356,6 +356,13 @@ pub(crate) fn process_connections(
             ConnectionKind::Stream => mark_stream_connection_set(flat, &set.variables),
         }
     }
+
+    // MLS §15.2: rewrite inStream() over connected stream variables. For a
+    // two-connector set, inStream of one side is exactly the other side's
+    // stream value; singleton sets keep the identity. Larger mixing sets need
+    // the positive-flow weighted formula and are left to the runtime
+    // passthrough until that lowering exists.
+    rewrite_instream_for_pairs(flat, &raw_stream_groups);
 
     // MLS §9.2: Generate equations for unconnected flow variables.
     // Flow variables not in any connection set get `flow_var = 0` equations.
@@ -511,6 +518,63 @@ fn collect_interface_flow_vars_by_scope(
     }
 
     result
+}
+
+/// MLS §15.2 inStream() rewrite for two-connector stream connection sets.
+fn rewrite_instream_for_pairs(flat: &mut flat::Model, stream_sets: &[Vec<rumoca_core::VarName>]) {
+    use rumoca_core::ExpressionRewriter;
+
+    let mut peer_of: std::collections::HashMap<String, rumoca_core::VarName> =
+        std::collections::HashMap::new();
+    for set in stream_sets {
+        if let [a, b] = set.as_slice() {
+            peer_of.insert(a.as_str().to_string(), b.clone());
+            peer_of.insert(b.as_str().to_string(), a.clone());
+        }
+    }
+    if peer_of.is_empty() {
+        return;
+    }
+
+    let mut rewriter = InStreamPairRewriter { peer_of: &peer_of };
+    for eq in flat
+        .equations
+        .iter_mut()
+        .chain(flat.initial_equations.iter_mut())
+    {
+        eq.residual = rewriter.rewrite_expression(&eq.residual);
+    }
+    for var in flat.variables.values_mut() {
+        if let Some(binding) = var.binding.take() {
+            var.binding = Some(rewriter.rewrite_expression(&binding));
+        }
+    }
+}
+
+struct InStreamPairRewriter<'a> {
+    peer_of: &'a std::collections::HashMap<String, rumoca_core::VarName>,
+}
+
+impl rumoca_core::ExpressionRewriter for InStreamPairRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::FunctionCall { name, args, .. } = expr
+            && name.as_str() == "inStream"
+            && let Some(rumoca_core::Expression::VarRef {
+                name: arg_name,
+                subscripts,
+                span,
+            }) = args.first()
+            && subscripts.is_empty()
+            && let Some(peer) = self.peer_of.get(arg_name.as_str())
+        {
+            return rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(peer.as_str()),
+                subscripts: Vec::new(),
+                span: *span,
+            };
+        }
+        self.walk_expression(expr)
+    }
 }
 
 #[cfg(test)]

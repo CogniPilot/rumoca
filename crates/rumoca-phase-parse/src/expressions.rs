@@ -810,6 +810,11 @@ fn convert_element_modification(
                 }
             }
         },
+        // An element modification without a modification (a bare name,
+        // MLS §18.2) is dropped here: representing it as a ComponentReference
+        // corrupts modification consumers that treat entries as values
+        // (dimension evaluation of MSL table blocks). Preserving it needs a
+        // dedicated AST node (see ANN-002 blocker note).
         None => Ok(empty_expr()),
     }
 }

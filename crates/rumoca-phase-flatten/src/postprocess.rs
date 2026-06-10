@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_core::{ExpressionRewriter, ExpressionVisitor, StatementRewriter};
+use rumoca_core::{ExpressionRewriter, StatementRewriter};
 
 #[path = "postprocess_record_alias.rs"]
 mod record_alias;
@@ -782,7 +782,7 @@ pub(super) fn substitute_known_constants_in_flat(flat: &mut flat::Model, ctx: &C
     substitute_algorithms(&mut flat.initial_algorithms, ctx, &live_vars, &no_locals);
     substitute_variable_annotations(&mut flat.variables, ctx, &live_vars, &no_locals);
     substitute_function_bodies(&mut flat.functions, ctx, &live_vars);
-    materialize_referenced_zero_sized_array_variables(flat, ctx);
+    crate::zero_sized_arrays::materialize_referenced_zero_sized_array_variables(flat, ctx);
 }
 
 fn equation_origin_scope(origin: &flat::EquationOrigin) -> String {
@@ -1326,94 +1326,6 @@ fn constant_expr_preserves_array_shape(expr: &rumoca_core::Expression) -> bool {
                 ..
             }
     )
-}
-
-fn materialize_referenced_zero_sized_array_variables(flat: &mut flat::Model, ctx: &Context) {
-    let mut collector = MissingZeroSizedArrayRefCollector {
-        flat,
-        ctx,
-        refs: Vec::new(),
-    };
-    collector.collect();
-
-    for name in collector.refs {
-        let Some(dims) = zero_sized_array_dims_for_ref(&name, ctx) else {
-            continue;
-        };
-        let var_name = name.var_name().clone();
-        if flat.variables.contains_key(&var_name) {
-            continue;
-        }
-        let variable = flat::Variable {
-            name: var_name.clone(),
-            component_ref: name.component_ref().cloned(),
-            dims,
-            variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-            is_primitive: true,
-            is_protected: true,
-            ..Default::default()
-        };
-        flat.variable_type_names
-            .entry(var_name.clone())
-            .or_insert_with(|| "Real".to_string());
-        flat.add_variable(var_name, variable);
-    }
-}
-
-struct MissingZeroSizedArrayRefCollector<'a> {
-    flat: &'a flat::Model,
-    ctx: &'a Context,
-    refs: Vec<rumoca_core::Reference>,
-}
-
-impl MissingZeroSizedArrayRefCollector<'_> {
-    fn collect(&mut self) {
-        for equation in &self.flat.equations {
-            self.visit_expression(&equation.residual);
-        }
-        for equation in &self.flat.initial_equations {
-            self.visit_expression(&equation.residual);
-        }
-        for assertion in &self.flat.assert_equations {
-            self.visit_expression(&assertion.condition);
-            self.visit_expression(&assertion.message);
-            if let Some(level) = &assertion.level {
-                self.visit_expression(level);
-            }
-        }
-        for assertion in &self.flat.initial_assert_equations {
-            self.visit_expression(&assertion.condition);
-            self.visit_expression(&assertion.message);
-            if let Some(level) = &assertion.level {
-                self.visit_expression(level);
-            }
-        }
-    }
-}
-
-impl rumoca_core::ExpressionVisitor for MissingZeroSizedArrayRefCollector<'_> {
-    fn visit_var_ref(
-        &mut self,
-        name: &rumoca_core::Reference,
-        subscripts: &[rumoca_core::Subscript],
-    ) {
-        if subscripts.is_empty()
-            && !self.flat.variables.contains_key(name.var_name())
-            && zero_sized_array_dims_for_ref(name, self.ctx).is_some()
-        {
-            self.refs.push(name.clone());
-        }
-        self.walk_var_ref(name, subscripts);
-    }
-}
-
-fn zero_sized_array_dims_for_ref(name: &rumoca_core::Reference, ctx: &Context) -> Option<Vec<i64>> {
-    let dims = ctx.array_dimensions.get(name.as_str()).or_else(|| {
-        name.target_def_id()
-            .and_then(|def_id| ctx.target_def_names.get(&def_id))
-            .and_then(|target_name| ctx.array_dimensions.get(target_name))
-    })?;
-    (!dims.is_empty() && dims.iter().any(|dim| *dim <= 0)).then(|| dims.clone())
 }
 
 fn scalar_parameter_literal(

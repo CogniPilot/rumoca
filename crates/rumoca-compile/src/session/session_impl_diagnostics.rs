@@ -5,6 +5,9 @@ struct InterfaceSemanticDiagnosticsResult {
     resolved: Arc<ast::ResolvedTree>,
     fingerprint: Fingerprint,
     class_type: Option<rumoca_core::ClassType>,
+    /// Warning-severity resolve diagnostics scoped to the model's source
+    /// files (advisory contract rules survive a successful resolve).
+    warnings: Vec<CommonDiagnostic>,
 }
 
 #[derive(Debug, Clone)]
@@ -227,6 +230,34 @@ impl Session {
         Ok((resolved, diagnostics))
     }
 
+    /// Warning-severity resolve diagnostics scoped to the model's source
+    /// files; errors are handled by the save-mode gate / resolve failure path.
+    fn target_resolve_warnings(
+        &mut self,
+        tree: &ast::ClassTree,
+        resolve_diagnostics: &CommonDiagnostics,
+        model_name: &str,
+    ) -> Vec<CommonDiagnostic> {
+        if resolve_diagnostics.is_empty() {
+            return Vec::new();
+        }
+        let closure = self.reachable_model_closure_query(
+            tree,
+            ResolveBuildMode::StrictCompileRecovery,
+            model_name,
+        );
+        let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
+        if target_source_files.is_empty() {
+            return Vec::new();
+        }
+        resolve_diagnostics
+            .iter()
+            .filter(|diag| !diag.is_error())
+            .filter(|diag| resolve_diagnostic_in_target_files(tree, &target_source_files, diag))
+            .cloned()
+            .collect()
+    }
+
     fn save_mode_target_resolve_diagnostics(
         &mut self,
         tree: &ast::ClassTree,
@@ -300,6 +331,7 @@ impl Session {
             }
         };
 
+        let warnings = self.target_resolve_warnings(&resolved.0, &resolve_diagnostics, model_name);
         if mode == SemanticDiagnosticsMode::Save {
             let target_resolve_diagnostics = self.save_mode_target_resolve_diagnostics(
                 &resolved.0,
@@ -325,6 +357,7 @@ impl Session {
                 resolved,
                 fingerprint,
                 class_type,
+                warnings,
             });
         }
 
@@ -341,6 +374,7 @@ impl Session {
             resolved,
             fingerprint,
             class_type,
+            warnings,
         })
     }
 
@@ -409,6 +443,7 @@ impl Session {
         };
 
         let tree = &interface.resolved.0;
+        let warnings = model_diagnostics_for_tree(tree, interface.warnings.clone());
         let body =
             self.body_semantic_diagnostics_query(tree, model_name, mode, interface.fingerprint);
         if interface
@@ -416,10 +451,10 @@ impl Session {
             .as_ref()
             .is_some_and(|class_type| !is_simulatable_class_type(class_type))
         {
-            return body.diagnostics;
+            return merge_model_diagnostics(warnings, body.diagnostics);
         }
         if body.blocks_model_stage {
-            return body.diagnostics;
+            return merge_model_diagnostics(warnings, body.diagnostics);
         }
 
         let model_stage = self.model_stage_semantic_diagnostics_query(
@@ -428,7 +463,10 @@ impl Session {
             mode,
             interface.fingerprint,
         );
-        merge_model_diagnostics(body.diagnostics, model_stage)
+        merge_model_diagnostics(
+            warnings,
+            merge_model_diagnostics(body.diagnostics, model_stage),
+        )
     }
 
     /// Compile a model and collect all diagnostics from the first failing phase.

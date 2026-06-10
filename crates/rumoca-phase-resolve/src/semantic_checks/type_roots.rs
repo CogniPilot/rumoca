@@ -12,6 +12,14 @@ pub(super) fn resolve_component_type_root<'a>(
     resolve_type_root(comp.type_def_id, &comp.type_name, def)
 }
 
+pub(super) fn resolve_named_type_root<'a>(
+    type_def_id: Option<DefId>,
+    type_name: &ast::Name,
+    def: &'a StoredDefinition,
+) -> Option<ResolvedTypeRoot<'a>> {
+    resolve_type_root(type_def_id, type_name, def)
+}
+
 fn resolve_type_root<'a>(
     type_def_id: Option<DefId>,
     type_name: &ast::Name,

@@ -731,3 +731,262 @@ fn expr_015_unary_minus_ok() {
         "Test",
     );
 }
+
+// =============================================================================
+// EXPR-023: String significantDigits
+// "Specifying significantDigits is error when first argument of String is
+//  Integer" (MLS §3.7.1)
+// =============================================================================
+
+#[test]
+fn expr_023_significant_digits_for_real_accepted() {
+    expect_success(
+        r#"
+        model Test
+            Real r = 1.5;
+            String s = String(r, significantDigits = 3);
+            Real x(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn expr_023_significant_digits_for_integer_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            String s;
+            Real x(start = 0);
+        equation
+            s = String(42, significantDigits = 3);
+            der(x) = 1;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET009",
+    );
+}
+
+// =============================================================================
+// EXPR-022: String no coercion
+// "Standard type coercion shall not be applied for first argument of
+//  String()" (MLS §3.7.1)
+// =============================================================================
+
+#[test]
+fn expr_022_string_of_string_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            String a = "abc";
+            String s;
+            Real x(start = 0);
+        equation
+            s = String(a);
+            der(x) = 1;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET002",
+    );
+}
+
+// =============================================================================
+// EXPR-034: homotopy types
+// "Scalar expressions actual and simplified are subtypes of Real"
+// (MLS §3.7.2.4)
+// =============================================================================
+
+#[test]
+fn expr_034_homotopy_of_real_accepted() {
+    expect_success(
+        r#"
+        model Test
+            Real x(start = 1, fixed = true);
+        equation
+            der(x) = homotopy(x^2, x);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn expr_034_homotopy_of_boolean_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            Real x(start = 0);
+            Boolean b = true;
+        equation
+            der(x) = homotopy(b, x);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET002",
+    );
+}
+
+// =============================================================================
+// EXPR-007: 0 <= delayTime <= delayMax must hold
+// =============================================================================
+
+#[test]
+fn expr_007_delay_time_exceeds_delay_max_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model M
+            Real x = time;
+            Real y;
+        equation
+            y = delay(x, 2.0, 1.0);
+        end M;
+    "#,
+        "M",
+        "ER096",
+    );
+}
+
+// =============================================================================
+// EXPR-021: Error to attempt to convert values of i that do not correspond to
+// enumeration values
+// =============================================================================
+
+#[test]
+fn expr_021_enum_conversion_out_of_range_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model M
+            type E = enumeration(a, b);
+            E e = E(5);
+        end M;
+    "#,
+        "M",
+        "ER107",
+    );
+}
+
+// =============================================================================
+// EXPR-032: Should only be used in condition of assert and if-statements
+// without connect
+// =============================================================================
+
+#[test]
+fn expr_032_cardinality_in_plain_equation_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model M
+            connector C
+                Real e;
+                flow Real f;
+            end C;
+            C c1;
+            Real x;
+        equation
+            x = cardinality(c1) * time;
+            c1.e = 0;
+        end M;
+    "#,
+        "M",
+        "ER099",
+    );
+}
+
+// =============================================================================
+// EXPR-038: smooth(p, expr) treats expression as p times continuously
+// differentiable
+// =============================================================================
+
+#[test]
+fn expr_038_smooth_expression_accepted() {
+    expect_success(
+        r#"
+        model M
+            Real x = time;
+            Real y = smooth(1, if x > 0 then x ^ 2 else 0);
+        end M;
+    "#,
+        "M",
+    );
+}
+
+// =============================================================================
+// EXPR-010/011/030/031: spatialDistribution restrictions. The operator is not
+// supported yet; every use (and therefore every violation) is rejected at the
+// DAE boundary as an unresolved function call.
+// =============================================================================
+
+#[test]
+fn expr_010_spatial_distribution_rejected_as_unsupported() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model M
+            Real x = time;
+            Real y;
+        equation
+            y = spatialDistribution(x, x, 0.5, true, {1.0, 0.5}, {0.0, 0.0});
+        end M;
+    "#,
+        "M",
+        FailedPhase::ToDae,
+        "ED005",
+    );
+}
+
+#[test]
+fn expr_011_spatial_distribution_unsorted_points_rejected_as_unsupported() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model M
+            Real x = time;
+            Real y;
+        equation
+            y = spatialDistribution(x, x, 0.5, true, {0.7, 0.3, 1.0}, {0.0, 0.0, 0.0});
+        end M;
+    "#,
+        "M",
+        FailedPhase::ToDae,
+        "ED005",
+    );
+}
+
+#[test]
+fn expr_030_spatial_distribution_size_mismatch_rejected_as_unsupported() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model M
+            Real x = time;
+            Real y;
+        equation
+            y = spatialDistribution(x, x, 0.5, true, {0.0, 1.0}, {0.0, 0.0, 0.0});
+        end M;
+    "#,
+        "M",
+        FailedPhase::ToDae,
+        "ED005",
+    );
+}
+
+#[test]
+fn expr_031_spatial_distribution_vectorized_rejected_as_unsupported() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model M
+            Real x[2] = {time, time};
+            Real y[2];
+        equation
+            y = spatialDistribution(x, x, 0.5, true, {0.0, 1.0}, {0.0, 0.0});
+        end M;
+    "#,
+        "M",
+        FailedPhase::ToDae,
+        "ED005",
+    );
+}

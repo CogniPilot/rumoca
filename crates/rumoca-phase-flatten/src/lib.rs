@@ -55,6 +55,7 @@ mod static_subscripts;
 mod variables;
 mod vcg;
 mod when_equations;
+mod zero_sized_arrays;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
