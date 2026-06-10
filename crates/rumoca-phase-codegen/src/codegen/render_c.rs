@@ -20,13 +20,44 @@
 
 use super::{ExprConfig, RenderResult};
 use minijinja::Value;
-use render_expr::{get_field, render_expression};
+use render_expr::{
+    get_field, is_variant, render_expression, render_serialized_name, subscript_index_value,
+};
 use rumoca_core::{parent_scope, split_last_top_level, top_level_last_segment};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use super::render_expr;
+
+type LinearDerivativeRow = (BTreeMap<usize, String>, String);
+type MaybeLinearDerivativeRow = Result<Option<LinearDerivativeRow>, minijinja::Error>;
+
+fn no_render_match<T>() -> Result<Option<T>, minijinja::Error> {
+    Ok(None)
+}
+
+fn equation_residual_or_rhs(eq: &Value) -> Result<Option<Value>, minijinja::Error> {
+    if let Ok(rhs) = get_field(eq, "rhs") {
+        return Ok(Some(rhs));
+    }
+    if let Ok(residual) = get_field(eq, "residual") {
+        return Ok(Some(residual));
+    }
+    no_render_match()
+}
+
+fn required_equation_residual_or_rhs(
+    eq: &Value,
+    context: &'static str,
+) -> Result<Value, minijinja::Error> {
+    equation_residual_or_rhs(eq)?.ok_or_else(|| {
+        minijinja::Error::new(
+            minijinja::ErrorKind::InvalidOperation,
+            format!("{context} missing required `rhs`/`residual` field"),
+        )
+    })
+}
 
 thread_local! {
     static ALG_EQUATION_CANDIDATE_INDEX: RefCell<Option<AlgEquationCandidateIndex>> = const { RefCell::new(None) };
@@ -570,6 +601,10 @@ fn collect_array_elements_flat(expr: &Value, out: &mut Vec<Value>) {
     out.push(expr.clone());
 }
 
+fn c_ode_rhs_is_supported(rhs: &str) -> bool {
+    c_rhs_is_supported(rhs) || rhs.contains("__rumoca_solve_linear_component(")
+}
+
 fn c_rhs_is_supported(rhs: &str) -> bool {
     c_rhs_is_supported_with_options(rhs, false)
 }
@@ -683,8 +718,8 @@ pub(super) fn expr_has_dynamic_multidim_index_function(expr: Value) -> String {
 pub(super) fn has_complex_params_function(func: Value) -> String {
     if let Ok(inputs) = get_field(&func, "inputs")
         && list_any(&inputs, |param| {
-            get_field(&param, "type_name")
-                .map(|type_name| type_name.to_string().trim_matches('"') == "Complex")
+            get_field(&param, "type_class")
+                .map(|type_class| type_class.to_string().trim_matches('"') == "Record")
                 .unwrap_or(false)
         })
     {
@@ -714,7 +749,7 @@ pub(super) fn initial_rhs_for_var_function(
         let Ok(eq) = initial_equations.get_item(&Value::from(i)) else {
             continue;
         };
-        if let Some(rhs) = find_algebraic_rhs(&eq, &name, &cfg) {
+        if let Ok(Some(rhs)) = find_algebraic_rhs(&eq, &name, &cfg) {
             let rhs = c_rhs_with_equation_context(rhs, &initial_equations);
             if c_rhs_is_supported(&rhs) {
                 return Ok(rhs);
@@ -728,7 +763,7 @@ pub(super) fn initial_rhs_for_var_function(
                 let Ok(eq) = initial_equations.get_item(&Value::from(i)) else {
                     continue;
                 };
-                if let Some(rhs) = find_algebraic_rhs(&eq, &active_name, &cfg) {
+                if let Ok(Some(rhs)) = find_algebraic_rhs(&eq, &active_name, &cfg) {
                     let rhs = c_rhs_with_equation_context(rhs, &initial_equations);
                     if c_rhs_is_supported(&rhs) {
                         return Ok(rhs);
@@ -878,16 +913,14 @@ fn is_colon_subscript(sub: &Value) -> bool {
 pub(super) fn ode_rhs_function(eq: Value, config: Value) -> RenderResult {
     let cfg = ExprConfig::from_value(&config);
 
-    let rhs = eq.get_attr("rhs")?;
+    let rhs = required_equation_residual_or_rhs(&eq, "ode_rhs equation")?;
 
     // Residual form: rhs is Binary { Sub, lhs: der(x), rhs: expr }
     // We want to return just `expr`
     if let Ok(binary) = get_field(&rhs, "Binary")
         && is_sub_op(&binary)
     {
-        let rhs_expr = get_field(&binary, "rhs")
-            .and_then(|v| render_expression(&v, &cfg))
-            .unwrap_or_else(|_| String::new());
+        let rhs_expr = get_field(&binary, "rhs").and_then(|v| render_expression(&v, &cfg))?;
         return Ok(rhs_expr);
     }
 
@@ -922,11 +955,20 @@ pub(super) fn ode_rhs_for_state_function(
         return Ok("0.0".to_string());
     };
     for eq in iter {
-        if let Some(rhs_expr) = find_derivative_rhs(&eq, &name_str, &cfg) {
+        if let Some(rhs_expr) = find_derivative_rhs(&eq, &name_str, &cfg)? {
             let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
-            if c_rhs_is_supported(&rhs_expr) {
+            if c_ode_rhs_is_supported(&rhs_expr) {
                 return Ok(rhs_expr);
             }
+        }
+    }
+
+    if let Some(rhs_expr) =
+        find_linear_derivative_system_rhs_in_equations(&equations, &name_str, &cfg)?
+    {
+        let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
+        if c_ode_rhs_is_supported(&rhs_expr) {
+            return Ok(rhs_expr);
         }
     }
 
@@ -1107,6 +1149,27 @@ fn alg_rhs_for_var_with_aliases(
     {
         return Ok(rhs_expr);
     }
+    if let Ok(iter) = equations.try_iter() {
+        for eq in iter {
+            if let Some(rhs_expr) = find_algebraic_rhs_direct(&eq, &name_str, &cfg)? {
+                let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
+                if c_rhs_is_supported(&rhs_expr) {
+                    return Ok(rhs_expr);
+                }
+            }
+        }
+    }
+    if let Ok(iter) = equations.try_iter() {
+        for eq in iter {
+            if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name_str, &cfg)? {
+                let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
+                if c_rhs_is_supported(&rhs_expr) {
+                    return Ok(rhs_expr);
+                }
+            }
+        }
+    }
+
     let Some(candidate_equations) = alg_equation_candidates_for_var(&equations, &name_str) else {
         if let Some(rhs_expr) = synthesize_fluid_sensor_mnor_flow_rhs(&name_str) {
             return Ok(rhs_expr);
@@ -1178,7 +1241,7 @@ fn alg_rhs_for_var_with_aliases(
     let mut best_supported_rhs: Option<(isize, String)> = None;
     let prefer_conditional_rhs = is_logical_switch_output_var(&name_str);
     for eq in candidate_equations {
-        if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name_str, &cfg) {
+        if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name_str, &cfg)? {
             let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
             if is_fluid_connector_flow_var(&name_str)
                 && rhs_is_internal_fluid_volume_alias(&rhs_expr, &name_str)
@@ -1567,7 +1630,7 @@ fn synthesize_indexed_stream_from_h_outflow_rhs(
     let candidate_equations = alg_equation_candidates_for_var(equations, &h_var)?;
     let mut best_supported_rhs: Option<(isize, String)> = None;
     for eq in candidate_equations {
-        let Some(rhs_expr) = find_algebraic_rhs(&eq, &h_var, cfg) else {
+        let Some(rhs_expr) = find_algebraic_rhs(&eq, &h_var, cfg).ok().flatten() else {
             continue;
         };
         let rhs_expr = c_rhs_with_equation_context(rhs_expr, equations);
@@ -6101,7 +6164,7 @@ pub(super) fn alg_rhs_for_var_or_self_function(
         return Ok(var_name_to_c_alias(&name_str));
     };
     for eq in candidate_equations {
-        if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name_str, &cfg) {
+        if let Ok(Some(rhs_expr)) = find_algebraic_rhs(&eq, &name_str, &cfg) {
             let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations);
             if c_rhs_is_supported(&rhs_expr) {
                 return Ok(rhs_expr);
@@ -6134,7 +6197,7 @@ pub(super) fn discrete_rhs_for_var_function(
 
     if let Ok(iter) = equations_z.try_iter() {
         for eq in iter {
-            if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name, &cfg) {
+            if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name, &cfg)? {
                 let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations_z);
                 if c_event_or_discrete_rhs_is_supported(&rhs_expr) {
                     if rhs_is_simple_self_alias(&rhs_expr, &name) {
@@ -6148,7 +6211,7 @@ pub(super) fn discrete_rhs_for_var_function(
     }
     if let Ok(iter) = equations_m.try_iter() {
         for eq in iter {
-            if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name, &cfg) {
+            if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name, &cfg)? {
                 let rhs_expr = c_rhs_with_equation_context(rhs_expr, &equations_m);
                 if c_event_or_discrete_rhs_is_supported(&rhs_expr) {
                     if rhs_is_simple_self_alias(&rhs_expr, &name) {
@@ -6832,17 +6895,291 @@ fn collect_list_var_refs(list: &Value, out: &mut HashSet<String>) {
 ///
 /// Matches both scalar (`der(x)`) and indexed (`der(x[1])`) forms via `is_der_of`,
 /// which reconstructs the full VarRef name including subscripts.
-fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option<String> {
-    let rhs = eq.get_attr("rhs").ok()?;
+fn find_derivative_rhs(
+    eq: &Value,
+    state_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Some(rhs) = equation_residual_or_rhs(eq)? else {
+        return Ok(Option::None);
+    };
 
     // Try direct Binary{Sub} first, then try unwrapping Unary{Minus}.
     // 0 = -(A - B) is equivalent to 0 = B - A, so we swap lhs/rhs.
     let (binary, swapped) = if let Ok(b) = get_field(&rhs, "Binary") {
         (b, false)
     } else if let Ok(unary) = get_field(&rhs, "Unary") {
-        let op = get_field(&unary, "op")
-            .ok()
-            .map_or(String::new(), |v| v.to_string());
+        let Some(op) = get_field(&unary, "op").ok().map(|v| v.to_string()) else {
+            return no_render_match();
+        };
+        if op.contains("Minus") || op.contains("Neg") {
+            let Ok(inner) = get_field(&unary, "rhs") else {
+                return no_render_match();
+            };
+            let Ok(b) = get_field(&inner, "Binary") else {
+                return no_render_match();
+            };
+            (b, true)
+        } else {
+            return no_render_match();
+        }
+    } else {
+        return no_render_match();
+    };
+
+    if !is_sub_op(&binary) {
+        return no_render_match();
+    }
+    let (lhs, rhs_val) = if swapped {
+        // -(A - B) = B - A: swap the operands
+        let Ok(rhs) = get_field(&binary, "rhs") else {
+            return no_render_match();
+        };
+        let Ok(lhs) = get_field(&binary, "lhs") else {
+            return no_render_match();
+        };
+        (rhs, lhs)
+    } else {
+        let Ok(lhs) = get_field(&binary, "lhs") else {
+            return no_render_match();
+        };
+        let Ok(rhs) = get_field(&binary, "rhs") else {
+            return no_render_match();
+        };
+        (lhs, rhs)
+    };
+
+    // Case 1: 0 = der(x) - expr → der(x) = expr
+    if is_der_of(&lhs, state_name) {
+        let rhs_expr = render_expression(&rhs_val, cfg)?;
+        return Ok(Some(rhs_expr));
+    }
+
+    // Case 2: 0 = expr - der(x) → der(x) = expr
+    if is_der_of(&rhs_val, state_name) {
+        let lhs_expr = render_expression(&lhs, cfg)?;
+        return Ok(Some(lhs_expr));
+    }
+
+    // Case 3: 0 = k*der(x) - expr or 0 = der(x)*k - expr → der(x) = expr / k
+    if let Some(coeff) = extract_der_coefficient(&lhs, state_name, cfg)? {
+        let rhs_expr = render_expression(&rhs_val, cfg)?;
+        return Ok(Some(format!("({rhs_expr}) / ({coeff})")));
+    }
+
+    // Case 4: 0 = expr - k*der(x) or 0 = expr - der(x)*k → der(x) = expr / k
+    if let Some(coeff) = extract_der_coefficient(&rhs_val, state_name, cfg)? {
+        let lhs_expr = render_expression(&lhs, cfg)?;
+        return Ok(Some(format!("({lhs_expr}) / ({coeff})")));
+    }
+
+    // Case 5: 0 = A * der(x_vec) - b_vec, with the equation preserved as a
+    // vector residual. Emit a small dense linear solve for the requested
+    // component instead of silently dropping the derivative.
+    let scalar_count = eq
+        .get_attr("scalar_count")
+        .ok()
+        .and_then(|v| v.as_usize())
+        .unwrap_or(1);
+    if let Some(rhs_expr) =
+        find_linear_derivative_system_rhs(&lhs, &rhs_val, state_name, scalar_count, cfg)?
+    {
+        return Ok(Some(rhs_expr));
+    }
+
+    no_render_match()
+}
+
+fn find_linear_derivative_system_rhs(
+    lhs: &Value,
+    rhs: &Value,
+    state_name: &str,
+    scalar_count: usize,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Some((state_base, component)) = parse_indexed_ref(state_name) else {
+        return no_render_match();
+    };
+    let n = scalar_count.max(component);
+    if component == 0 || component > n {
+        return no_render_match();
+    }
+
+    if let Some(product) = extract_matrix_derivative_product(lhs, &state_base)
+        && !contains_der(rhs)
+    {
+        return render_linear_solve_component(&product, rhs, n, component, cfg);
+    }
+
+    if let Some(product) = extract_matrix_derivative_product(rhs, &state_base)
+        && !contains_der(lhs)
+    {
+        return render_linear_solve_component(&product, lhs, n, component, cfg);
+    }
+
+    no_render_match()
+}
+
+fn find_linear_derivative_system_rhs_in_equations(
+    equations: &Value,
+    state_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Some((state_base, component)) = parse_indexed_ref(state_name) else {
+        return no_render_match();
+    };
+    let mut rows = Vec::new();
+    let mut n = component;
+
+    let Ok(iter) = equations.try_iter() else {
+        return no_render_match();
+    };
+    for eq in iter {
+        if let Some((coefficients, rhs)) = extract_linear_derivative_row(&eq, &state_base, cfg)? {
+            if let Some(max_col) = coefficients.keys().next_back().copied() {
+                n = n.max(max_col);
+            }
+            rows.push((coefficients, rhs));
+        }
+    }
+
+    if rows.len() < n || component == 0 || component > n {
+        return no_render_match();
+    }
+
+    let mut matrix_entries = Vec::with_capacity(n * n);
+    let mut rhs_entries = Vec::with_capacity(n);
+    for (coefficients, rhs) in rows.iter().take(n) {
+        for col in 1..=n {
+            matrix_entries.push(
+                coefficients
+                    .get(&col)
+                    .cloned()
+                    .unwrap_or_else(|| "0.0".to_string()),
+            );
+        }
+        rhs_entries.push(rhs.clone());
+    }
+
+    Ok(Some(format!(
+        "__rumoca_solve_linear_component((double[]){{{}}}, (double[]){{{}}}, {}, {})",
+        matrix_entries.join(", "),
+        rhs_entries.join(", "),
+        n,
+        component - 1
+    )))
+}
+
+fn extract_linear_derivative_row(
+    eq: &Value,
+    state_base: &str,
+    cfg: &ExprConfig,
+) -> MaybeLinearDerivativeRow {
+    let Some(rhs) = equation_residual_or_rhs(eq)? else {
+        return Ok(Option::None);
+    };
+    let Some((lhs, rhs_val)) = decompose_subtraction(&rhs) else {
+        return no_render_match();
+    };
+
+    if contains_der_of_base(&lhs, state_base) && !contains_der(&rhs_val) {
+        let Some(coefficients) = extract_linear_derivative_coefficients(&lhs, state_base, cfg)?
+        else {
+            return no_render_match();
+        };
+        let rhs_rendered = render_expression(&rhs_val, cfg)?;
+        return Ok(Some((coefficients, rhs_rendered)));
+    }
+
+    if contains_der_of_base(&rhs_val, state_base) && !contains_der(&lhs) {
+        let Some(coefficients) = extract_linear_derivative_coefficients(&rhs_val, state_base, cfg)?
+        else {
+            return no_render_match();
+        };
+        let lhs_rendered = render_expression(&lhs, cfg)?;
+        return Ok(Some((coefficients, lhs_rendered)));
+    }
+
+    no_render_match()
+}
+
+fn extract_linear_derivative_coefficients(
+    expr: &Value,
+    state_base: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<BTreeMap<usize, String>>, minijinja::Error> {
+    let mut terms = Vec::new();
+    flatten_value_add_terms(expr, true, &mut terms);
+
+    let mut coefficients: BTreeMap<usize, String> = BTreeMap::new();
+    for (positive, term) in terms {
+        if !contains_der_of_base(&term, state_base) {
+            return no_render_match();
+        }
+        let Some((component, coefficient)) =
+            extract_derivative_term_coefficient(&term, state_base, cfg)?
+        else {
+            return no_render_match();
+        };
+        let signed = if positive {
+            coefficient
+        } else {
+            format!("(-({coefficient}))")
+        };
+        coefficients
+            .entry(component)
+            .and_modify(|existing| *existing = format!("({existing} + {signed})"))
+            .or_insert(signed);
+    }
+
+    if coefficients.is_empty() {
+        no_render_match()
+    } else {
+        Ok(Some(coefficients))
+    }
+}
+
+fn extract_derivative_term_coefficient(
+    expr: &Value,
+    state_base: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<(usize, String)>, minijinja::Error> {
+    if let Some(component) = der_index_of_base(expr, state_base) {
+        return Ok(Some((component, "1.0".to_string())));
+    }
+
+    let Ok(binary) = get_field(expr, "Binary") else {
+        return no_render_match();
+    };
+    if !is_mul_op(&binary) {
+        return no_render_match();
+    }
+    let Ok(lhs) = get_field(&binary, "lhs") else {
+        return no_render_match();
+    };
+    let Ok(rhs) = get_field(&binary, "rhs") else {
+        return no_render_match();
+    };
+
+    if let Some(component) = der_index_of_base(&rhs, state_base)
+        && !contains_der(&lhs)
+    {
+        return Ok(Some((component, render_expression(&lhs, cfg)?)));
+    }
+    if let Some(component) = der_index_of_base(&lhs, state_base)
+        && !contains_der(&rhs)
+    {
+        return Ok(Some((component, render_expression(&rhs, cfg)?)));
+    }
+
+    no_render_match()
+}
+
+fn decompose_subtraction(expr: &Value) -> Option<(Value, Value)> {
+    let (binary, swapped) = if let Ok(b) = get_field(expr, "Binary") {
+        (b, false)
+    } else if let Ok(unary) = get_field(expr, "Unary") {
+        let op = get_field(&unary, "op").ok().map(|v| v.to_string())?;
         if op.contains("Minus") || op.contains("Neg") {
             let inner = get_field(&unary, "rhs").ok()?;
             let b = get_field(&inner, "Binary").ok()?;
@@ -6857,41 +7194,211 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
     if !is_sub_op(&binary) {
         return None;
     }
-    let (lhs, rhs_val) = if swapped {
-        // -(A - B) = B - A: swap the operands
-        (
+
+    if swapped {
+        Some((
             get_field(&binary, "rhs").ok()?,
             get_field(&binary, "lhs").ok()?,
-        )
+        ))
     } else {
-        (
+        Some((
             get_field(&binary, "lhs").ok()?,
             get_field(&binary, "rhs").ok()?,
-        )
-    };
+        ))
+    }
+}
 
-    // Case 1: 0 = der(x) - expr → der(x) = expr
-    if is_der_of(&lhs, state_name) {
-        let rhs_expr = render_expression(&rhs_val, cfg).unwrap_or_else(|_| String::new());
-        return Some(rhs_expr);
+struct MatrixDerivativeProduct {
+    matrix: Value,
+    transpose: bool,
+}
+
+fn extract_matrix_derivative_product(
+    expr: &Value,
+    state_base: &str,
+) -> Option<MatrixDerivativeProduct> {
+    let binary = get_field(expr, "Binary").ok()?;
+    if !is_mul_op(&binary) {
+        return None;
+    }
+    let lhs = get_field(&binary, "lhs").ok()?;
+    let rhs = get_field(&binary, "rhs").ok()?;
+
+    if is_der_of_whole(&rhs, state_base) {
+        return Some(MatrixDerivativeProduct {
+            matrix: lhs,
+            transpose: false,
+        });
+    }
+    if is_der_of_whole(&lhs, state_base) {
+        return Some(MatrixDerivativeProduct {
+            matrix: rhs,
+            transpose: true,
+        });
     }
 
-    // Case 2: 0 = expr - der(x) → der(x) = expr
-    if is_der_of(&rhs_val, state_name) {
-        let lhs_expr = render_expression(&lhs, cfg).unwrap_or_else(|_| String::new());
-        return Some(lhs_expr);
+    None
+}
+
+fn render_linear_solve_component(
+    product: &MatrixDerivativeProduct,
+    rhs: &Value,
+    n: usize,
+    component: usize,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    if n == 0 {
+        return no_render_match();
     }
 
-    // Case 3: 0 = k*der(x) - expr or 0 = der(x)*k - expr → der(x) = expr / k
-    if let Some(coeff) = extract_der_coefficient(&lhs, state_name, cfg) {
-        let rhs_expr = render_expression(&rhs_val, cfg).unwrap_or_else(|_| String::new());
-        return Some(format!("({rhs_expr}) / ({coeff})"));
+    let mut matrix_entries = Vec::with_capacity(n * n);
+    for row in 1..=n {
+        for col in 1..=n {
+            let (source_row, source_col) = if product.transpose {
+                (col, row)
+            } else {
+                (row, col)
+            };
+            let Some(entry) =
+                render_matrix_expr_at_indices(&product.matrix, source_row, source_col, n, cfg)?
+            else {
+                return no_render_match();
+            };
+            matrix_entries.push(entry);
+        }
     }
 
-    // Case 4: 0 = expr - k*der(x) or 0 = expr - der(x)*k → der(x) = expr / k
-    if let Some(coeff) = extract_der_coefficient(&rhs_val, state_name, cfg) {
-        let lhs_expr = render_expression(&lhs, cfg).unwrap_or_else(|_| String::new());
-        return Some(format!("({lhs_expr}) / ({coeff})"));
+    let mut rhs_entries = Vec::with_capacity(n);
+    for idx in 1..=n {
+        let Some(entry) = render_array_expr_at_index_or_scalar_checked(rhs, idx, cfg)? else {
+            return no_render_match();
+        };
+        rhs_entries.push(entry);
+    }
+
+    Ok(Some(format!(
+        "__rumoca_solve_linear_component((double[]){{{}}}, (double[]){{{}}}, {}, {})",
+        matrix_entries.join(", "),
+        rhs_entries.join(", "),
+        n,
+        component - 1
+    )))
+}
+
+fn render_matrix_expr_at_indices(
+    expr: &Value,
+    row: usize,
+    col: usize,
+    columns: usize,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    if let Ok(var_ref) = get_field(expr, "VarRef") {
+        return Ok(render_var_ref_with_indices(&var_ref, &[row, col], cfg));
+    }
+
+    if get_field(expr, "Array").is_ok() {
+        return render_array_expr_at_index_checked(expr, (row - 1) * columns + col, cfg);
+    }
+
+    if let Ok(binary) = get_field(expr, "Binary") {
+        let Ok(lhs) = get_field(&binary, "lhs") else {
+            return no_render_match();
+        };
+        let Ok(rhs) = get_field(&binary, "rhs") else {
+            return no_render_match();
+        };
+        let Some(lhs_render) =
+            render_matrix_expr_at_indices_or_scalar(&lhs, row, col, columns, cfg)?
+        else {
+            return no_render_match();
+        };
+        let Some(rhs_render) =
+            render_matrix_expr_at_indices_or_scalar(&rhs, row, col, columns, cfg)?
+        else {
+            return no_render_match();
+        };
+        let Ok(op) = get_field(&binary, "op") else {
+            return no_render_match();
+        };
+        let op_str = render_expr::get_binop_string(&op, cfg)?;
+        return Ok(Some(format!("({lhs_render} {op_str} {rhs_render})")));
+    }
+
+    if let Ok(unary) = get_field(expr, "Unary") {
+        let Ok(rhs) = get_field(&unary, "rhs") else {
+            return no_render_match();
+        };
+        let Some(rhs_render) =
+            render_matrix_expr_at_indices_or_scalar(&rhs, row, col, columns, cfg)?
+        else {
+            return no_render_match();
+        };
+        let Ok(op) = get_field(&unary, "op") else {
+            return no_render_match();
+        };
+        let op_str = render_expr::get_unop_string(&op, cfg)?;
+        return Ok(Some(format!("({op_str}{rhs_render})")));
+    }
+
+    render_expression(expr, cfg).map(Some)
+}
+
+fn render_matrix_expr_at_indices_or_scalar(
+    expr: &Value,
+    row: usize,
+    col: usize,
+    columns: usize,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    if let Some(rendered) = render_matrix_expr_at_indices(expr, row, col, columns, cfg)? {
+        return Ok(Some(rendered));
+    }
+    render_expression(expr, cfg).map(Some)
+}
+
+fn render_var_ref_with_indices(
+    var_ref: &Value,
+    indices: &[usize],
+    cfg: &ExprConfig,
+) -> Option<String> {
+    let subscripts = get_field(var_ref, "subscripts").ok()?;
+    if subscripts.len().unwrap_or(0) != 0 {
+        return None;
+    }
+
+    let raw_name = var_ref_base_name(var_ref);
+    if raw_name.is_empty() {
+        return None;
+    }
+
+    let index_text = indices
+        .iter()
+        .map(|idx| idx.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let indexed_ref = format!("{raw_name}[{index_text}]");
+    if let Some(symbol) = super::lookup_symbol_value(cfg.symbols.as_ref(), &indexed_ref) {
+        return Some(symbol);
+    }
+
+    let name = super::emitted_symbol_or_fallback(&raw_name, cfg);
+    if cfg.subscript_underscore {
+        return Some(format!(
+            "{}_{}",
+            name,
+            indices
+                .iter()
+                .map(|idx| idx.to_string())
+                .collect::<Vec<_>>()
+                .join("_")
+        ));
+    }
+    if cfg.one_based_index {
+        return Some(format!("{name}[{index_text}]"));
+    }
+
+    if indices.len() == 1 {
+        return Some(format!("{}[{}]", name, indices[0] - 1));
     }
 
     None
@@ -6902,31 +7409,135 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
 ///
 /// Matches both scalar (`y`) and indexed (`y[1]`) forms via `is_var_ref_of`,
 /// which reconstructs the full VarRef name including subscripts.
-fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+fn find_algebraic_rhs(
+    eq: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
     // Try direct assignment form first: lhs = rhs
-    if let Some(result) = find_algebraic_rhs_assignment(eq, var_name, cfg) {
-        return Some(result);
+    if let Some(result) = find_algebraic_rhs_assignment(eq, var_name, cfg)? {
+        return Ok(Some(result));
     }
 
-    let rhs = eq.get_attr("rhs").ok()?;
+    let Some(rhs) = equation_residual_or_rhs(eq)? else {
+        return Ok(Option::None);
+    };
 
     // Try subtraction form first: 0 = var - expr or 0 = -(var - expr)
-    if let Some(result) = find_algebraic_rhs_subtraction(&rhs, var_name, cfg) {
-        return Some(result);
+    if let Some(result) = find_algebraic_rhs_subtraction(&rhs, var_name, cfg)? {
+        return Ok(Some(result));
     }
 
     // Try additive form: 0 = a + b + c (connection equations)
-    if let Some(result) = find_algebraic_rhs_additive(&rhs, var_name, cfg) {
-        return Some(result);
+    if let Some(result) = find_algebraic_rhs_additive(&rhs, var_name, cfg)? {
+        return Ok(Some(result));
     }
 
     // Try array-level binding: searching for "v[i]" but equation has "v" (whole array)
     // with an Array RHS. Extract element i from the array.
-    if let Some(result) = find_algebraic_rhs_array_element(&rhs, var_name, cfg) {
-        return Some(result);
+    if let Some(result) = find_algebraic_rhs_array_element(&rhs, var_name, cfg)? {
+        return Ok(Some(result));
     }
 
-    None
+    no_render_match()
+}
+
+/// Extract only direct defining equations for `var_name`.
+///
+/// This pass intentionally ignores equations where the target appears on the
+/// RHS of another variable's equation. For example, in
+/// `omega_error = omega_cmd - omega`, `omega_cmd` is algebraically solvable, but
+/// if a later connection equation directly defines `omega_cmd`, that direct
+/// equation is the correct explicit assignment for generated C.
+fn find_algebraic_rhs_direct(
+    eq: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    if let Some(result) = find_algebraic_rhs_assignment_direct(eq, var_name, cfg)? {
+        return Ok(Some(result));
+    }
+
+    let Some(rhs) = equation_residual_or_rhs(eq)? else {
+        return Ok(Option::None);
+    };
+    find_algebraic_rhs_subtraction_direct(&rhs, var_name, cfg)
+}
+
+fn find_algebraic_rhs_assignment_direct(
+    eq: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(lhs) = eq.get_attr("lhs") else {
+        return no_render_match();
+    };
+    let Ok(rhs) = eq.get_attr("rhs") else {
+        return no_render_match();
+    };
+    render_direct_rhs_for_lhs(&lhs, &rhs, var_name, cfg)
+}
+
+fn find_algebraic_rhs_subtraction_direct(
+    rhs: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(binary) = get_field(rhs, "Binary") else {
+        return no_render_match();
+    };
+    if !is_sub_op(&binary) {
+        return no_render_match();
+    }
+    let Ok(lhs_side) = get_field(&binary, "lhs") else {
+        return no_render_match();
+    };
+    let Ok(rhs_side) = get_field(&binary, "rhs") else {
+        return no_render_match();
+    };
+    if contains_der(&rhs_side) {
+        return no_render_match();
+    }
+    render_direct_rhs_for_lhs(&lhs_side, &rhs_side, var_name, cfg)
+}
+
+fn render_direct_rhs_for_lhs(
+    lhs: &Value,
+    rhs: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    if is_var_ref_of(lhs, var_name) {
+        return render_expression(rhs, cfg).map(Some);
+    }
+    if let Some(index) = array_lhs_element_index(lhs, var_name) {
+        return render_array_expr_at_index_or_scalar_checked(rhs, index, cfg);
+    }
+    if let Some(index) = whole_array_lhs_index(lhs, var_name) {
+        return render_array_expr_at_index_or_scalar_checked(rhs, index, cfg);
+    }
+    no_render_match()
+}
+
+fn array_lhs_element_index(lhs: &Value, var_name: &str) -> Option<usize> {
+    if get_field(lhs, "Array").is_err() {
+        return None;
+    }
+    let mut elements = Vec::new();
+    collect_array_elements_flat(lhs, &mut elements);
+    elements
+        .iter()
+        .position(|elem| is_var_ref_of(elem, var_name))
+        .map(|idx| idx + 1)
+}
+
+fn whole_array_lhs_index(lhs: &Value, var_name: &str) -> Option<usize> {
+    let (base_name, index) = parse_indexed_ref(var_name)?;
+    if is_var_ref_of(lhs, &base_name) {
+        Some(index)
+    } else {
+        None
+    }
 }
 
 /// Try assignment form: `lhs = rhs` where lhs is the target variable.
@@ -6936,8 +7547,14 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
 /// For guarded when-sample equations, the RHS is an If-expression with a sample()
 /// condition. Extract the state update from the true branch (condition=[sample(...), expr]).
 /// The false branch (pre(var)) is implicit in the solver's discrete semantics.
-fn find_algebraic_rhs_assignment(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
-    let lhs = eq.get_attr("lhs").ok()?;
+fn find_algebraic_rhs_assignment(
+    eq: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(lhs) = eq.get_attr("lhs") else {
+        return no_render_match();
+    };
 
     // Handle two forms:
     // 1. lhs is a VarRef object: { "VarRef": { "name": "x" } }
@@ -6953,7 +7570,9 @@ fn find_algebraic_rhs_assignment(eq: &Value, var_name: &str, cfg: &ExprConfig) -
     };
 
     if lhs_matches {
-        let rhs = eq.get_attr("rhs").ok()?;
+        let Ok(rhs) = eq.get_attr("rhs") else {
+            return no_render_match();
+        };
 
         // If the RHS is an If-expression with sample() guard (when-statement),
         // extract the update expression from the true branch, not the full ternary.
@@ -6964,131 +7583,153 @@ fn find_algebraic_rhs_assignment(eq: &Value, var_name: &str, cfg: &ExprConfig) -
         {
             // branches is a list of [condition, expression] pairs.
             let items: Vec<_> = branch_array.take(2).collect();
-            if items
-                .first()
-                .is_some_and(|condition| expression_contains_builtin(condition, "Sample"))
-            {
-                if let Some(rendered) = items
-                    .get(1)
-                    .and_then(|update_expr| render_expression(update_expr, cfg).ok())
-                {
-                    return Some(rendered);
-                }
+            if let Some(update_expr) = items.get(1) {
+                return render_expression(update_expr, cfg).map(Some);
             }
         }
 
         // Fall back to rendering the entire RHS (for non-guarded cases)
-        return render_expression(&rhs, cfg).ok();
+        return render_expression(&rhs, cfg).map(Some);
     }
 
     // Array-level assignment support: searching for "v[i]" while equation lhs is
     // the whole array "v" and rhs is Array{...}.
-    let bracket_pos = var_name.find('[')?;
-    let base_name = &var_name[..bracket_pos];
-    let subscript_str = var_name[bracket_pos + 1..].trim_end_matches(']');
-    let index: usize = subscript_str.parse().ok()?;
-    if index < 1 {
-        return None;
-    }
-    if !is_var_ref_of(&lhs, base_name) {
-        return None;
+    let Some((base_name, index)) = parse_indexed_ref(var_name) else {
+        return no_render_match();
+    };
+    if !is_var_ref_of(&lhs, &base_name) {
+        return no_render_match();
     }
 
-    let rhs = eq.get_attr("rhs").ok()?;
-    let array = get_field(&rhs, "Array").ok()?;
-    let elements = get_field(&array, "elements").ok()?;
-    let len = elements.len()?;
+    let Ok(rhs) = eq.get_attr("rhs") else {
+        return no_render_match();
+    };
+    let Ok(array) = get_field(&rhs, "Array") else {
+        return no_render_match();
+    };
+    let Ok(elements) = get_field(&array, "elements") else {
+        return no_render_match();
+    };
+    let Some(len) = elements.len() else {
+        return no_render_match();
+    };
     if index > len {
-        return None;
+        return no_render_match();
     }
-    let elem = elements.get_item(&Value::from(index - 1)).ok()?;
-    render_expression(&elem, cfg).ok()
+    let Ok(elem) = elements.get_item(&Value::from(index - 1)) else {
+        return no_render_match();
+    };
+    render_expression(&elem, cfg).map(Some)
 }
 
 /// Try subtraction form: 0 = var - expr, 0 = expr - var, 0 = -(A - B)
-fn find_algebraic_rhs_subtraction(rhs: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+fn find_algebraic_rhs_subtraction(
+    rhs: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
     // Try direct Binary{Sub} first, then try unwrapping Unary{Minus}.
     let (binary, swapped) = if let Ok(b) = get_field(rhs, "Binary") {
         (b, false)
     } else if let Ok(unary) = get_field(rhs, "Unary") {
-        let op = get_field(&unary, "op")
-            .ok()
-            .map_or(String::new(), |v| v.to_string());
+        let Some(op) = get_field(&unary, "op").ok().map(|v| v.to_string()) else {
+            return no_render_match();
+        };
         if op.contains("Minus") || op.contains("Neg") {
-            let inner = get_field(&unary, "rhs").ok()?;
-            let b = get_field(&inner, "Binary").ok()?;
+            let Ok(inner) = get_field(&unary, "rhs") else {
+                return no_render_match();
+            };
+            let Ok(b) = get_field(&inner, "Binary") else {
+                return no_render_match();
+            };
             (b, true)
         } else {
-            return None;
+            return no_render_match();
         }
     } else {
-        return None;
+        return no_render_match();
     };
 
     if !is_sub_op(&binary) {
-        return None;
+        return no_render_match();
     }
 
     let (lhs_side, rhs_side) = if swapped {
-        (
-            get_field(&binary, "rhs").ok()?,
-            get_field(&binary, "lhs").ok()?,
-        )
+        let Ok(rhs) = get_field(&binary, "rhs") else {
+            return no_render_match();
+        };
+        let Ok(lhs) = get_field(&binary, "lhs") else {
+            return no_render_match();
+        };
+        (rhs, lhs)
     } else {
-        (
-            get_field(&binary, "lhs").ok()?,
-            get_field(&binary, "rhs").ok()?,
-        )
+        let Ok(lhs) = get_field(&binary, "lhs") else {
+            return no_render_match();
+        };
+        let Ok(rhs) = get_field(&binary, "rhs") else {
+            return no_render_match();
+        };
+        (lhs, rhs)
     };
 
     // Case 1: 0 = var - expr → var = expr
     if is_var_ref_of(&lhs_side, var_name) && !contains_der(&rhs_side) {
-        let rhs_expr = render_expression(&rhs_side, cfg).unwrap_or_else(|_| String::new());
-        return Some(rhs_expr);
+        let rhs_expr = render_expression(&rhs_side, cfg)?;
+        return Ok(Some(rhs_expr));
     }
 
     // Case 2: 0 = expr - var → var = expr
     if is_var_ref_of(&rhs_side, var_name) && !contains_der(&lhs_side) {
-        let lhs_expr = render_expression(&lhs_side, cfg).unwrap_or_else(|_| String::new());
-        return Some(lhs_expr);
+        let lhs_expr = render_expression(&lhs_side, cfg)?;
+        return Ok(Some(lhs_expr));
     }
 
     // Case 3: 0 = coeff * var - expr → var = expr / coeff
     if !contains_der(&lhs_side) && !contains_der(&rhs_side) {
-        if let Some(coeff) = extract_mul_coefficient(&lhs_side, var_name, cfg) {
-            let rhs_expr = render_expression(&rhs_side, cfg).unwrap_or_else(|_| String::new());
-            return Some(format!("({rhs_expr}) / ({coeff})"));
+        if let Some(coeff) = extract_mul_coefficient(&lhs_side, var_name, cfg)? {
+            let rhs_expr = render_expression(&rhs_side, cfg)?;
+            return Ok(Some(format!("({rhs_expr}) / ({coeff})")));
         }
         // Case 4: 0 = expr - coeff * var → var = expr / coeff
-        if let Some(coeff) = extract_mul_coefficient(&rhs_side, var_name, cfg) {
-            let lhs_expr = render_expression(&lhs_side, cfg).unwrap_or_else(|_| String::new());
-            return Some(format!("({lhs_expr}) / ({coeff})"));
+        if let Some(coeff) = extract_mul_coefficient(&rhs_side, var_name, cfg)? {
+            let lhs_expr = render_expression(&lhs_side, cfg)?;
+            return Ok(Some(format!("({lhs_expr}) / ({coeff})")));
         }
     }
 
-    None
+    no_render_match()
 }
 
 /// Extract the coefficient from a `coeff * var` or `var * coeff` expression.
 /// Returns the rendered coefficient string if the expression is a Mul with one
 /// side being a VarRef to the target variable.
-fn extract_mul_coefficient(expr: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
-    let binary = get_field(expr, "Binary").ok()?;
+fn extract_mul_coefficient(
+    expr: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(binary) = get_field(expr, "Binary") else {
+        return no_render_match();
+    };
     if !is_mul_op(&binary) {
-        return None;
+        return no_render_match();
     }
-    let lhs = get_field(&binary, "lhs").ok()?;
-    let rhs = get_field(&binary, "rhs").ok()?;
+    let Ok(lhs) = get_field(&binary, "lhs") else {
+        return no_render_match();
+    };
+    let Ok(rhs) = get_field(&binary, "rhs") else {
+        return no_render_match();
+    };
 
     // coeff * var
     if is_var_ref_of(&rhs, var_name) && !contains_var_ref(&lhs, var_name) {
-        return render_expression(&lhs, cfg).ok();
+        return render_expression(&lhs, cfg).map(Some);
     }
     // var * coeff
     if is_var_ref_of(&lhs, var_name) && !contains_var_ref(&rhs, var_name) {
-        return render_expression(&rhs, cfg).ok();
+        return render_expression(&rhs, cfg).map(Some);
     }
-    None
+    no_render_match()
 }
 
 /// Check if an expression tree contains a VarRef matching the given name.
@@ -7109,88 +7750,24 @@ fn contains_var_ref(expr: &Value, var_name: &str) -> bool {
     false
 }
 
-fn expression_contains_builtin(expr: &Value, builtin_name: &str) -> bool {
-    if let Ok(builtin) = get_field(expr, "BuiltinCall") {
-        let function = get_field(&builtin, "function")
-            .ok()
-            .map_or(String::new(), |value| value.to_string());
-        if function == builtin_name {
-            return true;
-        }
-        if let Ok(args) = get_field(&builtin, "args")
-            && let Ok(mut iter) = args.try_iter()
-        {
-            return iter.any(|arg| expression_contains_builtin(&arg, builtin_name));
-        }
-    }
-    if let Ok(func_call) = get_field(expr, "FunctionCall")
-        && let Ok(args) = get_field(&func_call, "args")
-        && let Ok(mut iter) = args.try_iter()
-    {
-        return iter.any(|arg| expression_contains_builtin(&arg, builtin_name));
-    }
-    if let Ok(binary) = get_field(expr, "Binary")
-        && let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs"))
-    {
-        return expression_contains_builtin(&lhs, builtin_name)
-            || expression_contains_builtin(&rhs, builtin_name);
-    }
-    if let Ok(unary) = get_field(expr, "Unary")
-        && let Ok(inner) = get_field(&unary, "rhs")
-    {
-        return expression_contains_builtin(&inner, builtin_name);
-    }
-    if let Ok(if_expr) = get_field(expr, "If") {
-        if let Ok(branches) = get_field(&if_expr, "branches")
-            && let Ok(iter) = branches.try_iter()
-        {
-            for branch in iter {
-                if let Ok(items) = branch.try_iter() {
-                    for item in items {
-                        if expression_contains_builtin(&item, builtin_name) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        if let Ok(else_branch) = get_field(&if_expr, "else_branch") {
-            return expression_contains_builtin(&else_branch, builtin_name);
-        }
-    }
-    if let Ok(array) = get_field(expr, "Array")
-        && let Ok(elements) = get_field(&array, "elements")
-        && let Ok(mut iter) = elements.try_iter()
-    {
-        return iter.any(|element| expression_contains_builtin(&element, builtin_name));
-    }
-    if let Ok(index) = get_field(expr, "Index")
-        && let Ok(base) = get_field(&index, "base")
-    {
-        return expression_contains_builtin(&base, builtin_name);
-    }
-    if let Ok(field_access) = get_field(expr, "FieldAccess")
-        && let Ok(base) = get_field(&field_access, "base")
-    {
-        return expression_contains_builtin(&base, builtin_name);
-    }
-    false
-}
-
 /// Try to extract algebraic RHS from an additive equation (connection equation form).
 /// Handles `0 = a + b + c` where exactly one term is the target variable.
 /// Returns `var = -(other_terms)`.
-fn find_algebraic_rhs_additive(rhs: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+fn find_algebraic_rhs_additive(
+    rhs: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
     // Flatten the Add/Sub tree into signed terms
     let mut terms: Vec<(bool, Value)> = Vec::new();
     flatten_value_add_terms(rhs, true, &mut terms);
     if terms.len() < 2 {
-        return None;
+        return no_render_match();
     }
 
     // Skip if any term contains der()
     if terms.iter().any(|(_, t)| contains_der(t)) {
-        return None;
+        return no_render_match();
     }
 
     // Find which term is the target variable
@@ -7198,12 +7775,14 @@ fn find_algebraic_rhs_additive(rhs: &Value, var_name: &str, cfg: &ExprConfig) ->
     for (i, (_, term)) in terms.iter().enumerate() {
         if is_var_ref_of(term, var_name) {
             if var_idx.is_some() {
-                return None; // multiple occurrences
+                return no_render_match(); // multiple occurrences
             }
             var_idx = Some(i);
         }
     }
-    let var_idx = var_idx?;
+    let Some(var_idx) = var_idx else {
+        return no_render_match();
+    };
     let var_positive = terms[var_idx].0;
 
     // Build negation of other terms: var = -(other_terms) or var = other_terms
@@ -7223,7 +7802,7 @@ fn find_algebraic_rhs_additive(rhs: &Value, var_name: &str, cfg: &ExprConfig) ->
     // Render the sum of other terms
     let mut parts: Vec<String> = Vec::new();
     for (i, (positive, term)) in other_terms.iter().enumerate() {
-        let rendered = render_expression(term, cfg).ok()?;
+        let rendered = render_expression(term, cfg)?;
         if i == 0 {
             if *positive {
                 parts.push(rendered);
@@ -7241,7 +7820,7 @@ fn find_algebraic_rhs_additive(rhs: &Value, var_name: &str, cfg: &ExprConfig) ->
     } else {
         format!("({})", parts.join(""))
     };
-    Some(expr)
+    Ok(Some(expr))
 }
 
 /// Handle array-level binding equations when searching for a subscripted variable.
@@ -7253,35 +7832,175 @@ fn find_algebraic_rhs_array_element(
     rhs: &Value,
     var_name: &str,
     cfg: &ExprConfig,
-) -> Option<String> {
+) -> Result<Option<String>, minijinja::Error> {
     // Only applies when var_name has a subscript, e.g. "error_dot[2]"
-    let bracket_pos = var_name.find('[')?;
-    let base_name = &var_name[..bracket_pos];
-    let subscript_str = var_name[bracket_pos + 1..].trim_end_matches(']');
-    let index: usize = subscript_str.parse().ok()?;
-    if index < 1 {
-        return None;
-    }
+    let Some((base_name, index)) = parse_indexed_ref(var_name) else {
+        return no_render_match();
+    };
 
     // Try subtraction form: 0 = base_var - Array{...}
-    let binary = get_field(rhs, "Binary").ok()?;
+    let Ok(binary) = get_field(rhs, "Binary") else {
+        return no_render_match();
+    };
     if !is_sub_op(&binary) {
-        return None;
+        return no_render_match();
     }
-    let lhs_side = get_field(&binary, "lhs").ok()?;
-    let rhs_side = get_field(&binary, "rhs").ok()?;
+    let Ok(lhs_side) = get_field(&binary, "lhs") else {
+        return no_render_match();
+    };
+    let Ok(rhs_side) = get_field(&binary, "rhs") else {
+        return no_render_match();
+    };
 
     // Check if one side is a VarRef matching the base name (no subscripts)
     // and the other side is an array-valued expression.
-    let array_expr = if is_var_ref_of(&lhs_side, base_name) {
+    let array_expr = if is_var_ref_of(&lhs_side, &base_name) {
         &rhs_side
-    } else if is_var_ref_of(&rhs_side, base_name) {
+    } else if is_var_ref_of(&rhs_side, &base_name) {
         &lhs_side
     } else {
-        return None;
+        return no_render_match();
     };
 
-    render_array_expr_at_index(array_expr, index, cfg)
+    render_array_expr_at_index_checked(array_expr, index, cfg)
+}
+// ── Upstream-aligned derivative/algebraic helper support ──
+
+fn der_ref_name(expr: &Value) -> Option<String> {
+    let Ok(builtin) = get_field(expr, "BuiltinCall") else {
+        return None;
+    };
+    let Ok(func) = get_field(&builtin, "function") else {
+        return None;
+    };
+    let func_str = func.to_string();
+    if func_str != "Der" && func_str != "\"Der\"" {
+        return None;
+    }
+    let Ok(args) = get_field(&builtin, "args") else {
+        return None;
+    };
+    let Ok(first_arg) = args.get_item(&Value::from(0)) else {
+        return None;
+    };
+    let Ok(var_ref) = get_field(&first_arg, "VarRef") else {
+        return None;
+    };
+    Some(var_ref_full_name(&var_ref))
+}
+
+fn der_index_of_base(expr: &Value, state_base: &str) -> Option<usize> {
+    let name = der_ref_name(expr)?;
+    let (base, index) = parse_indexed_ref(&name)?;
+    if base == state_base {
+        Some(index)
+    } else {
+        None
+    }
+}
+
+fn is_der_of_whole(expr: &Value, state_base: &str) -> bool {
+    let state_base = state_base.trim_matches('"');
+    der_ref_name(expr).is_some_and(|name| name == state_base)
+}
+
+fn extract_der_coefficient(
+    expr: &Value,
+    state_name: &str,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(binary) = get_field(expr, "Binary") else {
+        return no_render_match();
+    };
+    if !is_mul_op(&binary) {
+        return no_render_match();
+    }
+    let Ok(lhs) = get_field(&binary, "lhs") else {
+        return no_render_match();
+    };
+    let Ok(rhs) = get_field(&binary, "rhs") else {
+        return no_render_match();
+    };
+
+    if is_der_of(&rhs, state_name) {
+        // k * der(x) → coefficient is k
+        return Ok(Some(render_expression(&lhs, cfg)?));
+    }
+    if is_der_of(&lhs, state_name) {
+        // der(x) * k → coefficient is k
+        return Ok(Some(render_expression(&rhs, cfg)?));
+    }
+    no_render_match()
+}
+
+fn contains_der_of_base(expr: &Value, state_base: &str) -> bool {
+    if der_index_of_base(expr, state_base).is_some() || is_der_of_whole(expr, state_base) {
+        return true;
+    }
+    if let Ok(builtin) = get_field(expr, "BuiltinCall") {
+        if let Ok(args) = get_field(&builtin, "args") {
+            return any_arg_matches_with_state_base(&args, state_base, contains_der_of_base);
+        }
+        return false;
+    }
+    if let Ok(binary) = get_field(expr, "Binary") {
+        if let Ok(lhs) = get_field(&binary, "lhs")
+            && contains_der_of_base(&lhs, state_base)
+        {
+            return true;
+        }
+        if let Ok(rhs) = get_field(&binary, "rhs")
+            && contains_der_of_base(&rhs, state_base)
+        {
+            return true;
+        }
+        return false;
+    }
+    if let Ok(unary) = get_field(expr, "Unary")
+        && let Ok(inner) = get_field(&unary, "rhs")
+    {
+        return contains_der_of_base(&inner, state_base);
+    }
+    false
+}
+
+fn any_arg_matches_with_state_base(
+    args: &Value,
+    state_base: &str,
+    predicate: fn(&Value, &str) -> bool,
+) -> bool {
+    let Some(len) = args.len() else {
+        return false;
+    };
+    for i in 0..len {
+        if let Ok(arg) = args.get_item(&Value::from(i))
+            && predicate(&arg, state_base)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn var_ref_base_name(var_ref: &Value) -> String {
+    let Ok(name) = get_field(var_ref, "name") else {
+        return String::new();
+    };
+    render_serialized_name(&name)
+}
+
+fn parse_indexed_ref(name: &str) -> Option<(String, usize)> {
+    let trimmed = name.trim_matches('"');
+    let (base, subscripts) = rumoca_core::split_trailing_subscript_suffix(trimmed)?;
+    let mut parts = subscripts.split(',');
+    let first = parts.next()?.trim().parse::<usize>().ok()?;
+    if first < 1 {
+        return None;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((base.to_string(), first))
 }
 
 fn render_array_expr_at_index(expr: &Value, index: usize, cfg: &ExprConfig) -> Option<String> {
@@ -7343,6 +8062,28 @@ fn render_array_expr_at_index_or_scalar(
     cfg: &ExprConfig,
 ) -> Option<String> {
     render_array_expr_at_index(expr, index, cfg).or_else(|| render_expression(expr, cfg).ok())
+}
+
+fn render_array_expr_at_index_checked(
+    expr: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    match render_array_expr_at_index(expr, index, cfg) {
+        Some(rendered) => Ok(Some(rendered)),
+        None => no_render_match(),
+    }
+}
+
+fn render_array_expr_at_index_or_scalar_checked(
+    expr: &Value,
+    index: usize,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    if let Some(rendered) = render_array_expr_at_index(expr, index, cfg) {
+        return Ok(Some(rendered));
+    }
+    render_expression(expr, cfg).map(Some)
 }
 
 fn render_indexed_var_ref(var_ref: &Value, index: usize, cfg: &ExprConfig) -> Option<String> {
@@ -7472,26 +8213,7 @@ fn flatten_value_add_terms(expr: &Value, positive: bool, terms: &mut Vec<(bool, 
 /// (`der(x[1])` matches `"x[1]"`) forms.
 fn is_der_of(expr: &Value, state_name: &str) -> bool {
     let state_name = state_name.trim_matches('"');
-    let Ok(builtin) = get_field(expr, "BuiltinCall") else {
-        return false;
-    };
-    let Ok(func) = get_field(&builtin, "function") else {
-        return false;
-    };
-    let func_str = func.to_string();
-    if func_str != "Der" && func_str != "\"Der\"" {
-        return false;
-    }
-    let Ok(args) = get_field(&builtin, "args") else {
-        return false;
-    };
-    let Ok(first_arg) = args.get_item(&Value::from(0)) else {
-        return false;
-    };
-    let Ok(var_ref) = get_field(&first_arg, "VarRef") else {
-        return false;
-    };
-    var_ref_full_name(&var_ref) == state_name
+    der_ref_name(expr).is_some_and(|name| name == state_name)
 }
 
 /// Check if an expression is `VarRef { name, subscripts }` matching the given variable name.
@@ -7506,33 +8228,10 @@ fn is_var_ref_of(expr: &Value, target_name: &str) -> bool {
     var_ref_full_name(&var_ref) == target_name
 }
 
-/// Extract the coefficient from a `k*der(x)` or `der(x)*k` expression.
-///
-/// If `expr` is `Binary { Mul, lhs: k, rhs: der(x) }` or `Binary { Mul, lhs: der(x), rhs: k }`,
-/// returns the rendered `k`. Otherwise returns None.
-fn extract_der_coefficient(expr: &Value, state_name: &str, cfg: &ExprConfig) -> Option<String> {
-    let binary = get_field(expr, "Binary").ok()?;
-    if !is_mul_op(&binary) {
-        return None;
-    }
-    let lhs = get_field(&binary, "lhs").ok()?;
-    let rhs = get_field(&binary, "rhs").ok()?;
-
-    if is_der_of(&rhs, state_name) {
-        // k * der(x) → coefficient is k
-        return render_expression(&lhs, cfg).ok();
-    }
-    if is_der_of(&lhs, state_name) {
-        // der(x) * k → coefficient is k
-        return render_expression(&rhs, cfg).ok();
-    }
-    None
-}
-
 /// Check if a Binary expression's op is Mul or MulElem.
 fn is_mul_op(binary: &Value) -> bool {
     if let Ok(op) = get_field(binary, "op") {
-        return get_field(&op, "Mul").is_ok() || get_field(&op, "MulElem").is_ok();
+        return is_variant(&op, "Mul") || is_variant(&op, "MulElem");
     }
     false
 }
@@ -7540,7 +8239,7 @@ fn is_mul_op(binary: &Value) -> bool {
 /// Check if a Binary expression's op is Sub or SubElem.
 fn is_sub_op(binary: &Value) -> bool {
     if let Ok(op) = get_field(binary, "op") {
-        return get_field(&op, "Sub").is_ok() || get_field(&op, "SubElem").is_ok();
+        return is_variant(&op, "Sub") || is_variant(&op, "SubElem");
     }
     false
 }
@@ -7548,7 +8247,7 @@ fn is_sub_op(binary: &Value) -> bool {
 /// Check if a Binary expression's op is Add or AddElem.
 fn is_add_op(binary: &Value) -> bool {
     if let Ok(op) = get_field(binary, "op") {
-        return get_field(&op, "Add").is_ok() || get_field(&op, "AddElem").is_ok();
+        return is_variant(&op, "Add") || is_variant(&op, "AddElem");
     }
     false
 }
@@ -7614,13 +8313,10 @@ fn contains_der(expr: &Value) -> bool {
 /// `VarRef { name: "x", subscripts: [Index(1)] }` → `"x[1]"`
 /// `VarRef { name: "x", subscripts: [Index(1), Index(2)] }` → `"x[1,2]"`
 fn var_ref_full_name(var_ref: &Value) -> String {
-    let Ok(name) = get_field(var_ref, "name") else {
+    let base_name = var_ref_base_name(var_ref);
+    if base_name.is_empty() {
         return String::new();
-    };
-    let base_name = get_field(&name, "0")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| name.to_string());
-    let base_name = base_name.trim_matches('"').to_string();
+    }
 
     // Check for subscripts
     let Ok(subs) = get_field(var_ref, "subscripts") else {
@@ -7638,7 +8334,7 @@ fn var_ref_full_name(var_ref: &Value) -> String {
     for i in 0..len {
         if let Ok(sub) = subs.get_item(&Value::from(i))
             && let Ok(idx) = get_field(&sub, "Index")
-            && let Some(val) = idx.as_i64()
+            && let Ok(val) = subscript_index_value(&idx)
         {
             sub_parts.push(val.to_string());
         }

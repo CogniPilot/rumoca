@@ -274,29 +274,30 @@ jobs:
   template-runtime-tests:
     name: Template Runtime Tests
     runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/climamind/rumoca-dev:main
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
         with:
           token: ${{ github.token }}
           persist-credentials: true
 
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
       - name: Install system dependencies
         run: |
-          apt-get update
-          apt-get install -y libudev-dev
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
 
       - name: Cache cargo
         uses: actions/cache@v5
         continue-on-error: true
         with:
           path: |
-            /opt/rumoca/cargo/registry
-            /opt/rumoca/cargo/git
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
           key: template-runtime-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run template runtime checks

@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(target_os = "linux")]
+use std::collections::BTreeSet;
 
 // =============================================================================
 // Focused simulation target selection and subset controls
