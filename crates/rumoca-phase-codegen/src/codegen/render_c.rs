@@ -34,7 +34,7 @@ type LinearDerivativeRow = (BTreeMap<usize, String>, String);
 type MaybeLinearDerivativeRow = Result<Option<LinearDerivativeRow>, minijinja::Error>;
 
 fn no_render_match<T>() -> Result<Option<T>, minijinja::Error> {
-    Ok(None)
+    Ok(Option::None)
 }
 
 fn equation_residual_or_rhs(eq: &Value) -> Result<Option<Value>, minijinja::Error> {
