@@ -25,7 +25,8 @@ impl Resolver {
         let max_depth = self.compute_max_nesting_depth_stored(def);
 
         for depth in 0..=max_depth {
-            self.resolve_extends_at_depth(def, prefix, 0, depth);
+            self.resolve_extends_at_depth(def, prefix, 0, depth, false, true);
+            self.resolve_extends_at_depth(def, prefix, 0, depth, true, false);
         }
     }
 
@@ -59,6 +60,8 @@ impl Resolver {
         prefix: &str,
         current_depth: usize,
         target_depth: usize,
+        allow_inherited_lookup: bool,
+        resolve_imports: bool,
     ) {
         for (name, class) in def.classes.iter_mut() {
             let qualified_name = if prefix.is_empty() {
@@ -71,6 +74,8 @@ impl Resolver {
                 &qualified_name,
                 current_depth,
                 target_depth,
+                allow_inherited_lookup,
+                resolve_imports,
             );
         }
     }
@@ -82,10 +87,17 @@ impl Resolver {
         qualified_name: &str,
         current_depth: usize,
         target_depth: usize,
+        allow_inherited_lookup: bool,
+        resolve_imports: bool,
     ) {
         if current_depth == target_depth {
             // At target depth - resolve imports and extends for this class
-            self.resolve_extends_single(class, qualified_name);
+            self.resolve_extends_single(
+                class,
+                qualified_name,
+                allow_inherited_lookup,
+                resolve_imports,
+            );
         } else if current_depth < target_depth {
             // Not deep enough yet - recurse into nested classes
             for (nested_name, nested) in class.classes.iter_mut() {
@@ -95,6 +107,8 @@ impl Resolver {
                     &nested_qualified,
                     current_depth + 1,
                     target_depth,
+                    allow_inherited_lookup,
+                    resolve_imports,
                 );
             }
         }
@@ -102,7 +116,13 @@ impl Resolver {
     }
 
     /// Resolve imports and extends for a single class (no recursion).
-    fn resolve_extends_single(&mut self, class: &mut ast::ClassDef, qualified_name: &str) {
+    fn resolve_extends_single(
+        &mut self,
+        class: &mut ast::ClassDef,
+        qualified_name: &str,
+        allow_inherited_lookup: bool,
+        resolve_imports: bool,
+    ) {
         let class_scope = class
             .scope_id
             .expect("Class scope should be set in registration phase");
@@ -111,8 +131,10 @@ impl Resolver {
             .expect("Class DefId should be set in registration phase");
 
         // Resolve imports first (MLS §13.2) - they may be needed for extends resolution
-        for import in &class.imports {
-            self.resolve_import(import, class_scope);
+        if resolve_imports {
+            for import in &class.imports {
+                self.resolve_import(import, class_scope);
+            }
         }
 
         // Add this class to the resolving set for circular inheritance detection
@@ -123,7 +145,16 @@ impl Resolver {
         // The `exclude` parameter in resolve_qualified_name_excluding handles self-references
         // (e.g., `record ThermodynamicState extends ThermodynamicState` won't find itself).
         for extend in class.extends.iter_mut() {
-            self.resolve_extends(extend, class_scope, qualified_name, class_def_id);
+            if extend.base_def_id.is_some() {
+                continue;
+            }
+            self.resolve_extends(
+                extend,
+                class_scope,
+                qualified_name,
+                class_def_id,
+                allow_inherited_lookup,
+            );
         }
 
         // Remove from resolving set after extends are processed
@@ -141,6 +172,7 @@ impl Resolver {
         scope: ScopeId,
         class_name: &str,
         current_class_def_id: DefId,
+        allow_inherited_lookup: bool,
     ) {
         let base_name = &extend.base_name;
 
@@ -186,6 +218,10 @@ impl Resolver {
                 }
             }
             None => {
+                if !allow_inherited_lookup {
+                    return;
+                }
+
                 // Normal lookup failed - try inherited member lookup for simple names
                 if let Some(inherited_def_id) =
                     self.try_inherited_member_lookup(base_name, class_name)

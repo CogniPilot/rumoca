@@ -384,6 +384,10 @@ fn finalize_lowered_dae(
         sort_parameters_by_start_dependency(dae);
         Ok::<(), ToDaeError>(())
     })?;
+    run_todae_phase(todae_subphase_timing, "dedupe_discrete_assignments", || {
+        dedupe_equivalent_explicit_assignments(&mut dae.discrete.real_updates);
+        dedupe_equivalent_explicit_assignments(&mut dae.discrete.valued_updates);
+    });
     run_todae_phase(todae_subphase_timing, "appendix_b_validation", || {
         appendix_b_validation::validate_appendix_b_invariants(dae)
     })?;
@@ -438,6 +442,89 @@ fn ir_boundary_validation_enabled() -> bool {
         test,
         feature = "strict-ir-validation"
     ))
+}
+
+fn dedupe_equivalent_explicit_assignments(equations: &mut Vec<dae::Equation>) {
+    let debug_duplicates = std::env::var("RUMOCA_TODAE_DUP_DEBUG").is_ok();
+    let mut retained = Vec::with_capacity(equations.len());
+    for equation in std::mem::take(equations) {
+        if let Some(existing) = retained.iter_mut().find(|existing: &&mut dae::Equation| {
+            existing.lhs == equation.lhs
+                && existing.origin == equation.origin
+                && existing.scalar_count == equation.scalar_count
+                && existing
+                    .origin
+                    .starts_with("guarded when equation assignment to ")
+        }) && let Some(merged) =
+            merge_guarded_if_assignment_rhs(existing.rhs.clone(), equation.rhs.clone())
+        {
+            existing.rhs = merged;
+            continue;
+        }
+        if debug_duplicates
+            && let Some(lhs) = equation.lhs.as_ref()
+            && let Some(existing) = retained
+                .iter()
+                .find(|existing: &&dae::Equation| existing.lhs.as_ref() == Some(lhs))
+        {
+            eprintln!(
+                "ToDae duplicate explicit assignment candidate lhs={lhs} existing_origin='{}' new_origin='{}' existing_rhs={} new_rhs={}",
+                existing.origin,
+                equation.origin,
+                short_dae_expr(&existing.rhs, 260),
+                short_dae_expr(&equation.rhs, 260),
+            );
+        }
+        let duplicate = equation.lhs.as_ref().is_some_and(|lhs| {
+            retained.iter().any(|existing: &dae::Equation| {
+                existing.lhs.as_ref() == Some(lhs)
+                    && existing.rhs == equation.rhs
+                    && existing.origin == equation.origin
+                    && existing.scalar_count == equation.scalar_count
+            })
+        });
+        if !duplicate {
+            retained.push(equation);
+        }
+    }
+    *equations = retained;
+}
+
+fn merge_guarded_if_assignment_rhs(
+    existing: Expression,
+    incoming: Expression,
+) -> Option<Expression> {
+    let Expression::If {
+        branches: mut existing_branches,
+        else_branch: _,
+        ..
+    } = existing
+    else {
+        return None;
+    };
+    let Expression::If {
+        branches: incoming_branches,
+        else_branch: incoming_else,
+        span,
+    } = incoming
+    else {
+        return None;
+    };
+    existing_branches.extend(incoming_branches);
+    Some(Expression::If {
+        branches: existing_branches,
+        else_branch: incoming_else,
+        span,
+    })
+}
+
+fn short_dae_expr(expr: &Expression, max_len: usize) -> String {
+    let rendered = format!("{expr:?}");
+    if rendered.len() <= max_len {
+        rendered
+    } else {
+        format!("{}...", &rendered[..max_len])
+    }
 }
 
 /// Determine if an algebraic variable should be stored as discrete or regular algebraic.

@@ -905,6 +905,11 @@ impl PrimaryLabel {
         }
     }
 
+    /// Source span covered by this label.
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
     /// Attach a human-readable message to the label.
     pub fn with_message(mut self, msg: impl Into<String>) -> Self {
         self.message = Some(msg.into());

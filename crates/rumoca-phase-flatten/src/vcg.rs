@@ -49,7 +49,6 @@ pub(crate) fn pre_collect_vcg_data(
         branches: Vec::new(),
         potential_roots: Vec::new(),
     };
-
     for (_def_id, class_data) in &overlay.classes {
         if crate::is_in_disabled_component(&class_data.qualified_name, &overlay.disabled_components)
         {

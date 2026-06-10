@@ -81,6 +81,9 @@ pub(crate) fn render_expression(expr: &Value, cfg: &ExprConfig) -> RenderResult 
     if let Ok(field_access) = get_field(expr, "FieldAccess") {
         return render_field_access(&field_access, cfg);
     }
+    if let Ok(named) = get_field(expr, "NamedArgument") {
+        return render_named_argument(&named, cfg);
+    }
     // Unit variants (e.g. Empty) serialize as plain strings, not objects,
     // so get_field() won't match them — check string representation instead.
     let s = expr.to_string();
@@ -88,6 +91,14 @@ pub(crate) fn render_expression(expr: &Value, cfg: &ExprConfig) -> RenderResult 
         return Ok("0".to_string());
     }
     Err(render_err(format!("unhandled Expression variant: {expr}")))
+}
+
+fn render_named_argument(named: &Value, cfg: &ExprConfig) -> RenderResult {
+    let value = get_field(named, "value")
+        .or_else(|_| get_field(named, "expr"))
+        .or_else(|_| get_field(named, "arg"))
+        .map_err(|_| render_err("NamedArgument expression missing value field"))?;
+    render_expression(&value, cfg)
 }
 
 fn render_binary(binary: &Value, cfg: &ExprConfig) -> RenderResult {

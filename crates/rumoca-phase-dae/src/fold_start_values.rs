@@ -229,17 +229,15 @@ pub(crate) fn sort_algebraics_by_equation_deps(dae: &mut Dae) -> Result<(), ToDa
     for eq in &dae.continuous.equations {
         let refs = collect_param_refs(&eq.rhs, &alg_names);
         // This equation may define one of our algebraic vars.
-        // Try to identify which variable this equation defines
-        // by checking if it matches the pattern `0 = var - expr` or additive form.
-        for alg_name in &alg_names {
-            if equation_defines_var(&eq.rhs, alg_name) {
-                let deps: Vec<String> = refs
-                    .iter()
-                    .filter(|r| r.as_str() != alg_name.as_str())
-                    .cloned()
-                    .collect();
-                eq_deps.insert(alg_name.clone(), deps);
-            }
+        // Identify candidate definitions once per equation instead of scanning
+        // every algebraic/output name against the same expression tree.
+        for alg_name in collect_defined_var_refs(&eq.rhs, &alg_names) {
+            let deps: Vec<String> = refs
+                .iter()
+                .filter(|r| r.as_str() != alg_name.as_str())
+                .cloned()
+                .collect();
+            eq_deps.insert(alg_name, deps);
         }
     }
 
@@ -250,49 +248,26 @@ pub(crate) fn sort_algebraics_by_equation_deps(dae: &mut Dae) -> Result<(), ToDa
     Ok(())
 }
 
-/// Check if an equation's RHS defines a given variable (appears as LHS of subtraction
-/// or as a term in an additive equation).
-fn equation_defines_var(rhs: &Expression, var_name: &str) -> bool {
-    match rhs {
-        Expression::Binary {
-            op,
-            lhs,
-            rhs: rhs_inner,
-            ..
-        } => {
-            if matches!(op, rumoca_core::OpBinary::Sub) {
-                // 0 = var - expr or 0 = expr - var
-                if is_var_ref_named(lhs, var_name) || is_var_ref_named(rhs_inner, var_name) {
-                    return true;
-                }
-            }
-            if matches!(op, rumoca_core::OpBinary::Add) {
-                // Check additive terms
-                let terms = collect_additive_var_refs(rhs);
-                if terms.iter().any(|t| t == var_name) {
-                    return true;
-                }
-            }
-            false
-        }
-        Expression::Unary {
-            op: rumoca_core::OpUnary::Minus,
-            rhs: inner,
-            ..
-        } => equation_defines_var(inner, var_name),
-        Expression::VarRef { name, .. } => name.as_str() == var_name,
-        _ => false,
-    }
+#[cfg(test)]
+fn is_var_ref_named(expr: &Expression, name: &str) -> bool {
+    matches!(expr, Expression::VarRef { name: n, .. } if n.as_str() == name || var_base_name(n.as_str()) == name)
+}
+
+fn collect_defined_var_refs(
+    rhs: &Expression,
+    alg_names: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    collect_additive_var_refs(rhs)
+        .into_iter()
+        .filter(|name| alg_names.contains(name) && seen.insert(name.clone()))
+        .collect()
 }
 
 /// Extract the base name from a possibly-subscripted variable name.
 /// E.g., `"e[1]"` → `"e"`, `"q_err_w"` → `"q_err_w"`.
 fn var_base_name(name: &str) -> &str {
     rumoca_core::strip_scalar_name_subscripts(name).unwrap_or(name)
-}
-
-fn is_var_ref_named(expr: &Expression, name: &str) -> bool {
-    matches!(expr, Expression::VarRef { name: n, .. } if n.as_str() == name || var_base_name(n.as_str()) == name)
 }
 
 /// Collect all VarRef names from an additive expression tree.

@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use rumoca::{CompilationResult, TemplateIr};
+use rumoca_compile::codegen::{DaeTemplateContext, dae_to_template_json};
 use rumoca_compile::codegen::targets::{
     TargetBuildKind, TargetBundle, TargetCapabilities, TargetFile, TargetManifest,
     TargetTemplateIr, TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
@@ -122,8 +123,25 @@ fn compile_manifest_target(
         eprintln!("  {description}");
     }
 
+    let dae_context = if manifest.ir == TargetTemplateIr::Dae {
+        let template_dae = result.scalarized_template_dae();
+        let template_json = dae_to_template_json(&template_dae)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Some(DaeTemplateContext::from_dae_json(&template_json))
+    } else {
+        None
+    };
+
     for file in &manifest.files {
-        write_manifest_file(result, bundle, manifest, file, &out_dir, &model_identifier)?;
+        write_manifest_file(
+            result,
+            dae_context.as_ref(),
+            bundle,
+            manifest,
+            file,
+            &out_dir,
+            &model_identifier,
+        )?;
     }
 
     // The target.toml `build` field decides whether to package the rendered
@@ -225,18 +243,28 @@ fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) 
 
 fn write_manifest_file(
     result: &CompilationResult,
+    dae_context: Option<&DaeTemplateContext>,
     bundle: &TargetBundle,
     manifest: &TargetManifest,
     file: &TargetFile,
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
-    let rendered_rel_path = result
-        .render_template_str_with_name_and_ir(
-            &file.path,
-            model_identifier,
-            template_ir_to_cli(manifest.ir),
-        )
+    let ir = template_ir_to_cli(manifest.ir);
+    let render_template = |template: &str| -> Result<String> {
+        if ir == TemplateIr::Dae {
+            if let Some(context) = dae_context {
+                return context
+                    .render_with_name(template, model_identifier)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()));
+            }
+        }
+        result
+            .render_template_str_with_name_and_ir(template, model_identifier, ir)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+    };
+
+    let rendered_rel_path = render_template(&file.path)
         .with_context(|| format!("Render target output path '{}'", file.path))?;
     let output_path = safe_target_join(out_dir, rendered_rel_path.trim())?;
     if let Some(parent) = output_path.parent() {
@@ -244,12 +272,7 @@ fn write_manifest_file(
     }
 
     let template = bundle.template_source(&file.template)?;
-    let rendered = result
-        .render_template_str_with_name_and_ir(
-            template.as_ref(),
-            model_identifier,
-            template_ir_to_cli(manifest.ir),
-        )
+    let rendered = render_template(template.as_ref())
         .with_context(|| format!("Render target template '{}'", file.template))?;
     std::fs::write(&output_path, rendered)?;
     apply_manifest_file_mode(&output_path, file.mode.as_deref())?;

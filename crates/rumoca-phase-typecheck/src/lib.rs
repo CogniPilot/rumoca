@@ -520,6 +520,10 @@ impl TypeChecker {
                 Self::insert_instanced_aliases(&mut out, rest, canonical_type, None);
                 continue;
             }
+            if has_top_level_dot(&qn) {
+                out.insert(qn, canonical_type);
+                continue;
+            }
             if !has_top_level_dot(&qn) {
                 out.insert(qn, canonical_type);
             }

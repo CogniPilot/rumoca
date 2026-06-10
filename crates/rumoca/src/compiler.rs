@@ -370,6 +370,10 @@ impl CompilationResult {
         }
     }
 
+    pub fn scalarized_template_dae(&self) -> Dae {
+        scalarized_dae(&self.dae)
+    }
+
     /// Equation balance (equations - unknowns).
     pub fn balance(&self) -> i64 {
         dae_analysis::balance(&self.dae)

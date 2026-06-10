@@ -125,6 +125,7 @@ pub mod codegen {
         render_dae_template_with_name, render_flat_template_with_name,
         render_solve_template_with_name,
     };
+    pub use rumoca_phase_codegen::DaeTemplateContext;
     pub mod targets {
         pub use crate::codegen_target::{
             BuiltinTargetDescriptor, RenderedTargetFile, TargetBuildKind, TargetBundle,

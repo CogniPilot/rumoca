@@ -475,7 +475,7 @@ fn test_todae_ignores_unreachable_function_without_body() {
 }
 
 #[test]
-fn test_todae_rejects_member_style_function_call_without_resolved_name() {
+fn test_todae_accepts_unique_member_style_function_call_by_leaf() {
     let mut flat = Model::new();
     add_primitive_real(&mut flat, "x");
 
@@ -490,13 +490,38 @@ fn test_todae_rejects_member_style_function_call_without_resolved_name() {
 
     add_scalar_ode_with_rhs_call(&mut flat, "x", "world.gravityAcceleration");
 
+    to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("unique leaf match should resolve member-style call for codegen export");
+}
+
+#[test]
+fn test_todae_rejects_ambiguous_member_style_function_call_by_leaf() {
+    let mut flat = Model::new();
+    add_primitive_real(&mut flat, "x");
+
+    for name in [
+        "Modelica.Mechanics.MultiBody.World.gravityAcceleration",
+        "Modelica.Mechanics.MultiBody.Examples.gravityAcceleration",
+    ] {
+        let mut fn_def = rumoca_ir_flat::Function::new(name, Span::DUMMY);
+        fn_def.body.push(rumoca_ir_flat::Statement::Return);
+        flat.add_function(fn_def);
+    }
+
+    add_scalar_ode_with_rhs_call(&mut flat, "x", "world.gravityAcceleration");
+
     let err = to_dae_with_options(
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
         },
     )
-    .expect_err("member-style call should fail without prior name resolution");
+    .expect_err("ambiguous leaf match should fail closed");
 
     assert!(
         matches!(
@@ -504,7 +529,7 @@ fn test_todae_rejects_member_style_function_call_without_resolved_name() {
             ToDaeError::UnresolvedFunctionCall { ref name, .. }
                 if name == "world.gravityAcceleration"
         ),
-        "expected unresolved function diagnostic for member-style call, got {err:?}"
+        "expected unresolved function diagnostic for ambiguous member-style call, got {err:?}"
     );
 }
 

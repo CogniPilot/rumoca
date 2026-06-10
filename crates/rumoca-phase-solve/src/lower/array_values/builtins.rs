@@ -120,25 +120,29 @@ impl<'a> LowerBuilder<'a> {
                 .get(1)
                 .map(|arg| self.lower_array_like_values(arg, scope, call_depth))
                 .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)])),
-            function if let Some(op) = unary_array_builtin_op(&function) => args
-                .first()
-                .map(|arg| {
-                    self.lower_array_like_values(arg, scope, call_depth)
-                        .map(|values| {
-                            values
-                                .into_iter()
-                                .map(|value| self.emit_unary(op, value))
-                                .collect()
-                        })
-                })
-                .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)])),
             rumoca_core::BuiltinFunction::Sample if is_array_like_sample_value_form(args) => args
                 .first()
                 .map(|arg| {
                     self.lower_array_like_values_in_mode(arg, scope, call_depth, ValueMode::Pre)
                 })
                 .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)])),
-            _ => unreachable!("non-array builtin handled by scalar fallback"),
+            function => {
+                if let Some(op) = unary_array_builtin_op(&function) {
+                    args.first()
+                        .map(|arg| {
+                            self.lower_array_like_values(arg, scope, call_depth)
+                                .map(|values| {
+                                    values
+                                        .into_iter()
+                                        .map(|value| self.emit_unary(op, value))
+                                        .collect()
+                                })
+                        })
+                        .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)]))
+                } else {
+                    unreachable!("non-array builtin handled by scalar fallback")
+                }
+            }
         }
     }
 

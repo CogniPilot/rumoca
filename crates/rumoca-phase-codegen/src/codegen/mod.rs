@@ -88,6 +88,52 @@ pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenErr
     Ok(value)
 }
 
+/// Reusable Minijinja context for rendering multiple templates from one DAE.
+pub struct DaeTemplateContext {
+    dae_value: Value,
+}
+
+impl DaeTemplateContext {
+    pub fn from_dae_json(dae_json: &serde_json::Value) -> Self {
+        Self {
+            dae_value: Value::from_serialize(dae_json),
+        }
+    }
+
+    pub fn from_dae(dae: &dae::Dae) -> Result<Self, CodegenError> {
+        Ok(Self::from_dae_json(&dae_template_json(dae)?))
+    }
+
+    pub fn render(&self, template: &str) -> Result<String, CodegenError> {
+        let mut env = create_environment();
+        env.add_template("inline", template)?;
+        let tmpl = env.get_template("inline")?;
+        let rendered = tmpl.render(minijinja::context! {
+            dae => self.dae_value.clone(),
+            ir => self.dae_value.clone(),
+            ir_kind => "dae",
+        })?;
+        Ok(rendered)
+    }
+
+    pub fn render_with_name(
+        &self,
+        template: &str,
+        model_name: &str,
+    ) -> Result<String, CodegenError> {
+        let mut env = create_environment();
+        env.add_template("inline", template)?;
+        let tmpl = env.get_template("inline")?;
+        let rendered = tmpl.render(minijinja::context! {
+            dae => self.dae_value.clone(),
+            ir => self.dae_value.clone(),
+            ir_kind => "dae",
+            model_name => model_name,
+        })?;
+        Ok(rendered)
+    }
+}
+
 fn condition_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, serde_json::Error> {
     dae.conditions
         .equations
@@ -1111,8 +1157,20 @@ fn create_environment() -> Environment<'static> {
     // Custom function for flat equation rendering (Model residual equations)
     env.add_function("render_flat_equation", render_flat_equation_function);
 
+    // Render the symbolic scalar name for an array element. DAE residuals keep
+    // Modelica multi-dimensional subscripts while codegen iterates linear slots.
+    env.add_function("array_scalar_name", array_scalar_name_function);
+
     // Custom function for detecting self-referential (builtin alias) functions
     env.add_function("is_self_call", is_self_call_function);
+    env.add_function(
+        "unsupported_c_function_body",
+        unsupported_c_function_body_function,
+    );
+    env.add_function(
+        "unsupported_c_function_name",
+        unsupported_c_function_name_function,
+    );
     env.add_function("fail", fail_function);
 
     // Extract explicit ODE rhs from residual equation: 0 = der(x) - expr → expr
@@ -1123,6 +1181,10 @@ fn create_environment() -> Environment<'static> {
     // Find explicit RHS for an algebraic variable from residual: 0 = y - expr → expr
     env.add_function("alg_rhs_for_var", render_c::alg_rhs_for_var_function);
     env.add_function(
+        "alg_rhs_for_var_with_dae",
+        render_c::alg_rhs_for_var_with_dae_function,
+    );
+    env.add_function(
         "alg_rhs_for_var_or_self",
         render_c::alg_rhs_for_var_or_self_function,
     );
@@ -1130,15 +1192,32 @@ fn create_environment() -> Environment<'static> {
         "discrete_rhs_for_var",
         render_c::discrete_rhs_for_var_function,
     );
+    env.add_function(
+        "event_indicator_expr",
+        render_c::event_indicator_expr_function,
+    );
 
     // Index into an array expression to render element i (1-based)
     env.add_function(
         "render_expr_at_index",
         render_c::render_expr_at_index_function,
     );
+    env.add_function(
+        "parameter_binding_rhs",
+        render_c::parameter_binding_rhs_function,
+    );
 
     // Check if an expression is a string literal for scalar templates.
     env.add_function("is_string_literal", render_c::is_string_literal_function);
+    env.add_function("expr_has_var_ref", render_c::expr_has_var_ref_function);
+    env.add_function(
+        "expr_has_dynamic_multidim_index",
+        render_c::expr_has_dynamic_multidim_index_function,
+    );
+    env.add_function(
+        "initial_rhs_for_var",
+        render_c::initial_rhs_for_var_function,
+    );
 
     // Check if a function has record-typed parameters
     env.add_function("has_complex_params", render_c::has_complex_params_function);
@@ -1212,6 +1291,139 @@ fn product_filter(value: Value) -> Value {
         }
     }
     Value::from(result)
+}
+
+fn array_scalar_name_function(base_name: Value, dims: Value, linear_index: Value) -> RenderResult {
+    let name = base_name
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| base_name.to_string().trim_matches('"').to_string());
+    let dims = array_dims_from_value(dims)?;
+    let Some(linear_index) = linear_index.as_usize() else {
+        return Err(render_err(format!(
+            "array scalar index for {name} must be a positive integer"
+        )));
+    };
+    render_array_scalar_name(&name, &dims, linear_index)
+}
+
+fn array_dims_from_value(dims: Value) -> Result<Vec<usize>, minijinja::Error> {
+    let Some(len) = dims.len() else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let item = dims.get_item(&Value::from(i))?;
+        let Some(dim) = item.as_usize() else {
+            return Err(render_err(format!(
+                "array dimension at index {i} is not an integer"
+            )));
+        };
+        if dim == 0 {
+            return Err(render_err(format!("array dimension at index {i} is zero")));
+        }
+        out.push(dim);
+    }
+    Ok(out)
+}
+
+fn render_array_scalar_name(name: &str, dims: &[usize], linear_index: usize) -> RenderResult {
+    if dims.is_empty() {
+        return Ok(name.to_string());
+    }
+    if linear_index == 0 {
+        return Err(render_err(format!(
+            "array scalar index for {name} is one-based and cannot be zero"
+        )));
+    }
+    let total = dims
+        .iter()
+        .try_fold(1usize, |acc, dim| acc.checked_mul(*dim));
+    let Some(total) = total else {
+        return Err(render_err(format!(
+            "array dimensions for {name} overflow usize"
+        )));
+    };
+    if linear_index > total {
+        return Err(render_err(format!(
+            "array scalar index {linear_index} for {name} exceeds scalar size {total}"
+        )));
+    }
+
+    let mut remainder = linear_index - 1;
+    let mut subscripts = vec![0usize; dims.len()];
+    for (slot, dim) in subscripts.iter_mut().rev().zip(dims.iter().rev()) {
+        *slot = (remainder % *dim) + 1;
+        remainder /= *dim;
+    }
+    let rendered = subscripts
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!("{name}[{rendered}]"))
+}
+
+fn unsupported_c_function_body_function(func: Value) -> Result<bool, minijinja::Error> {
+    use render_expr::get_field;
+
+    if let Ok(external) = get_field(&func, "external")
+        && !external.is_undefined()
+    {
+        return Ok(true);
+    }
+
+    if let Ok(inputs) = get_field(&func, "inputs")
+        && let Some(len) = inputs.len()
+    {
+        for i in 0..len {
+            let Ok(input) = inputs.get_item(&Value::from(i)) else {
+                continue;
+            };
+            if let Ok(dims) = get_field(&input, "dims")
+                && dims.len().unwrap_or(0) > 0
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    if let Ok(locals) = get_field(&func, "locals")
+        && let Some(len) = locals.len()
+    {
+        for i in 0..len {
+            let Ok(local) = locals.get_item(&Value::from(i)) else {
+                continue;
+            };
+            if let Ok(dims) = get_field(&local, "dims")
+                && dims.len().unwrap_or(0) > 0
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    let Ok(body) = get_field(&func, "body") else {
+        return Ok(false);
+    };
+    let body_debug = body.to_string();
+    Ok(body_debug.contains("NamedArgument")
+        || body_debug.contains("FieldAccess")
+        || body_debug.contains("Assert")
+        || body_debug.contains("outputs")
+        || body_debug.contains("String(")
+        || body_debug.contains("Modelica.Utilities.Strings")
+        || body_debug.contains("Modelica_Utilities_Strings"))
+}
+
+fn unsupported_c_function_name_function(func_name: Value) -> Result<bool, minijinja::Error> {
+    let name = func_name.to_string().replace('"', "");
+    Ok(
+        name.contains("Modelica.Media.Interfaces.PartialSimpleMedium")
+            || name.contains("Modelica_Media_Interfaces_PartialSimpleMedium")
+            || name.contains("Modelica.Media.Interfaces.PartialMedium")
+            || name.contains("Modelica_Media_Interfaces_PartialMedium"),
+    )
 }
 
 fn value_to_string(value: &Value) -> String {
