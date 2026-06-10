@@ -3,6 +3,7 @@ use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 thread_local! {
     static ACTIVE_SEMANTIC_SOURCE_IDS: RefCell<Option<HashMap<String, SourceId>>> = const { RefCell::new(None) };
+    static ACTIVE_SEMANTIC_SOURCE_NAMES: RefCell<Option<HashMap<SourceId, String>>> = const { RefCell::new(None) };
     static ACTIVE_SEMANTIC_LOOKUP: RefCell<Option<SemanticLookupIndex>> = const { RefCell::new(None) };
 }
 
@@ -57,6 +58,9 @@ impl Drop for ActiveSemanticContextGuard {
         ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
             *slot.borrow_mut() = None;
         });
+        ACTIVE_SEMANTIC_SOURCE_NAMES.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
         ACTIVE_SEMANTIC_LOOKUP.with(|slot| {
             *slot.borrow_mut() = None;
         });
@@ -68,7 +72,15 @@ pub(super) fn activate_semantic_context(
     source_map: &SourceMap,
 ) -> ActiveSemanticContextGuard {
     ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
-        *slot.borrow_mut() = Some(source_map.source_ids());
+        let ids = source_map.source_ids();
+        ACTIVE_SEMANTIC_SOURCE_NAMES.with(|names_slot| {
+            *names_slot.borrow_mut() = Some(
+                ids.iter()
+                    .map(|(name, source_id)| (*source_id, name.clone()))
+                    .collect(),
+            );
+        });
+        *slot.borrow_mut() = Some(ids);
     });
     ACTIVE_SEMANTIC_LOOKUP.with(|slot| {
         *slot.borrow_mut() = Some(SemanticLookupIndex::build(def));
@@ -92,6 +104,14 @@ pub(super) fn source_id_for(file_name: &str) -> Option<SourceId> {
         let ids_ref = slot.borrow();
         let ids = ids_ref.as_ref()?;
         ids.get(file_name).copied()
+    })
+}
+
+pub(super) fn source_name_for(source_id: SourceId) -> Option<String> {
+    ACTIVE_SEMANTIC_SOURCE_NAMES.with(|slot| {
+        let names_ref = slot.borrow();
+        let names = names_ref.as_ref()?;
+        names.get(&source_id).cloned()
     })
 }
 

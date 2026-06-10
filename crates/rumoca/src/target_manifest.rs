@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use rumoca::CompilationResult;
+use rumoca_compile::codegen::{DaeTemplateContext, dae_to_template_json};
 use serde::Deserialize;
 
 pub(crate) fn compile_target(
@@ -164,8 +165,12 @@ fn compile_manifest_target(
         eprintln!("  {description}");
     }
 
+    let template_dae = result.scalarized_template_dae();
+    let template_json = dae_to_template_json(&template_dae);
+    let template_context = DaeTemplateContext::from_dae_json(&template_json);
+
     for file in &manifest.files {
-        write_manifest_file(result, bundle, file, &out_dir, &model_identifier)?;
+        write_manifest_file(&template_context, bundle, file, &out_dir, &model_identifier)?;
     }
 
     if build {
@@ -235,14 +240,15 @@ fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) 
 }
 
 fn write_manifest_file(
-    result: &CompilationResult,
+    template_context: &DaeTemplateContext,
     bundle: &TargetBundle,
     file: &TargetFile,
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
-    let rendered_rel_path = result
-        .render_template_str_with_name(&file.path, model_identifier)
+    let rendered_rel_path = template_context
+        .render_with_name(&file.path, model_identifier)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
         .with_context(|| format!("Render target output path '{}'", file.path))?;
     let output_path = safe_join(out_dir, rendered_rel_path.trim())?;
     if let Some(parent) = output_path.parent() {
@@ -250,8 +256,9 @@ fn write_manifest_file(
     }
 
     let template = bundle.template_source(&file.template)?;
-    let rendered = result
-        .render_template_str_with_name(template.as_ref(), model_identifier)
+    let rendered = template_context
+        .render_with_name(template.as_ref(), model_identifier)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
         .with_context(|| format!("Render target template '{}'", file.template))?;
     std::fs::write(&output_path, rendered)?;
     apply_manifest_file_mode(&output_path, file.mode.as_deref())?;

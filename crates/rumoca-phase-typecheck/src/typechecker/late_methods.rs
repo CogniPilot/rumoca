@@ -204,17 +204,51 @@ impl TypeChecker {
     /// through the type scope when instance-scope lookup is insufficient.
     pub(crate) fn build_type_scope_hints(overlay: &InstanceOverlay) -> HashMap<String, String> {
         let mut hints = HashMap::new();
+        let component_index: HashMap<String, &rumoca_ir_ast::InstanceData> = overlay
+            .components
+            .values()
+            .map(|data| (data.qualified_name.to_flat_string(), data))
+            .collect();
         for (_def_id, instance_data) in &overlay.components {
             let Some(pos) = find_last_top_level_dot(&instance_data.type_name) else {
                 continue;
             };
             let component_name = instance_data.qualified_name.to_flat_string();
-            let type_scope = &instance_data.type_name[..pos];
+            let mut type_scope = instance_data.type_name[..pos].to_string();
+            if let Some(instance_scope) = Self::resolve_instance_type_scope_hint(
+                &component_name,
+                &type_scope,
+                &component_index,
+            ) {
+                type_scope = instance_scope;
+            }
             if !type_scope.is_empty() {
-                hints.insert(component_name, type_scope.to_string());
+                hints.insert(component_name, type_scope);
             }
         }
         hints
+    }
+
+    fn resolve_instance_type_scope_hint(
+        component_name: &str,
+        type_scope: &str,
+        component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
+    ) -> Option<String> {
+        if type_scope.is_empty() || has_top_level_dot(type_scope) {
+            return None;
+        }
+
+        let mut current = parent_scope(component_name);
+        while let Some(scope) = current {
+            if let Some(data) = component_index.get(scope)
+                && data.class_overrides.contains_key(type_scope)
+            {
+                return Some(format!("{scope}.{type_scope}"));
+            }
+            current = parent_scope(scope);
+        }
+
+        None
     }
 
     /// Fallback dimension evaluation using enclosing component type scopes.
@@ -408,6 +442,13 @@ impl TypeChecker {
                 scope,
             )
         {
+            let dims = self.recover_over_indexed_binding_dims(
+                binding,
+                scope,
+                dims,
+                instance_data.dims_expr.len(),
+            );
+            let dims = trim_inferred_dims_to_declared_rank(dims, instance_data.dims_expr.len());
             instance_data.dims = dims.iter().map(|&d| d as i64).collect();
             self.eval_ctx.add_dimensions(&name, dims);
             return true;
@@ -421,12 +462,42 @@ impl TypeChecker {
                 scope,
             )
         {
+            let dims = trim_inferred_dims_to_declared_rank(dims, instance_data.dims_expr.len());
             instance_data.dims = dims.iter().map(|&d| d as i64).collect();
             self.eval_ctx.add_dimensions(&name, dims);
             return true;
         }
 
         false
+    }
+
+    fn recover_over_indexed_binding_dims(
+        &self,
+        binding: &Expression,
+        scope: &str,
+        dims: Vec<usize>,
+        declared_rank: usize,
+    ) -> Vec<usize> {
+        if declared_rank == 0 || dims.len() >= declared_rank {
+            return dims;
+        }
+        let Expression::ComponentReference(cr) = binding else {
+            return dims;
+        };
+        if !cr.parts.iter().any(|part| part.subs.is_some()) {
+            return dims;
+        }
+        let mut unindexed = cr.clone();
+        for part in &mut unindexed.parts {
+            part.subs = None;
+        }
+        let expr = Expression::ComponentReference(unindexed);
+        rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
+            &expr,
+            &self.eval_ctx,
+            scope,
+        )
+        .unwrap_or(dims)
     }
 
     /// Validate that all array dimensions have been evaluated (MLS §10.1).
@@ -1838,4 +1909,12 @@ impl TypeChecker {
     pub fn take_diagnostics(self) -> Diagnostics {
         self.diagnostics
     }
+}
+
+fn trim_inferred_dims_to_declared_rank(mut dims: Vec<usize>, declared_rank: usize) -> Vec<usize> {
+    if declared_rank == 0 || dims.len() <= declared_rank {
+        return dims;
+    }
+    dims.drain(0..dims.len() - declared_rank);
+    dims
 }

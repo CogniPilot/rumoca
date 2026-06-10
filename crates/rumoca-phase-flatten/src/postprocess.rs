@@ -519,42 +519,129 @@ pub(super) fn substitute_known_constants_in_flat(flat: &mut flat::Model, ctx: &C
         .map(|name| name.as_str().to_string())
         .collect();
     let no_locals: HashSet<String> = HashSet::new();
+    let sub_ctx = SubstitutionContext::new(ctx);
 
     for eq in &mut flat.equations {
         eq.residual =
-            substitute_known_constants_expr(eq.residual.clone(), ctx, &live_vars, &no_locals);
+            substitute_known_constants_expr(eq.residual.clone(), &sub_ctx, &live_vars, &no_locals);
     }
     for eq in &mut flat.initial_equations {
         eq.residual =
-            substitute_known_constants_expr(eq.residual.clone(), ctx, &live_vars, &no_locals);
+            substitute_known_constants_expr(eq.residual.clone(), &sub_ctx, &live_vars, &no_locals);
     }
-    substitute_assert_equations(&mut flat.assert_equations, ctx, &live_vars, &no_locals);
+    substitute_assert_equations(&mut flat.assert_equations, &sub_ctx, &live_vars, &no_locals);
     substitute_assert_equations(
         &mut flat.initial_assert_equations,
-        ctx,
+        &sub_ctx,
         &live_vars,
         &no_locals,
     );
     for when_clause in &mut flat.when_clauses {
         when_clause.condition = substitute_known_constants_expr(
             when_clause.condition.clone(),
-            ctx,
+            &sub_ctx,
             &live_vars,
             &no_locals,
         );
         for equation in &mut when_clause.equations {
-            substitute_known_constants_when_equation(equation, ctx, &live_vars, &no_locals);
+            substitute_known_constants_when_equation(equation, &sub_ctx, &live_vars, &no_locals);
         }
     }
-    substitute_algorithms(&mut flat.algorithms, ctx, &live_vars, &no_locals);
-    substitute_algorithms(&mut flat.initial_algorithms, ctx, &live_vars, &no_locals);
-    substitute_variable_annotations(&mut flat.variables, ctx, &live_vars, &no_locals);
-    substitute_function_bodies(&mut flat.functions, ctx, &live_vars);
+    substitute_algorithms(&mut flat.algorithms, &sub_ctx, &live_vars, &no_locals);
+    substitute_algorithms(
+        &mut flat.initial_algorithms,
+        &sub_ctx,
+        &live_vars,
+        &no_locals,
+    );
+    substitute_variable_annotations(&mut flat.variables, &sub_ctx, &live_vars, &no_locals);
+    substitute_function_bodies(&mut flat.functions, &sub_ctx, &live_vars);
+}
+
+struct SubstitutionContext<'a> {
+    ctx: &'a Context,
+    constant_suffixes: UniqueSuffixIndex,
+    real_suffixes: UniqueSuffixIndex,
+    integer_suffixes: UniqueSuffixIndex,
+    boolean_suffixes: UniqueSuffixIndex,
+    enum_suffixes: UniqueSuffixIndex,
+}
+
+impl<'a> SubstitutionContext<'a> {
+    fn new(ctx: &'a Context) -> Self {
+        Self {
+            ctx,
+            constant_suffixes: UniqueSuffixIndex::from_keys(ctx.constant_values.keys()),
+            real_suffixes: UniqueSuffixIndex::from_keys(ctx.real_parameter_values.keys()),
+            integer_suffixes: UniqueSuffixIndex::from_keys(ctx.parameter_values.keys()),
+            boolean_suffixes: UniqueSuffixIndex::from_keys(ctx.boolean_parameter_values.keys()),
+            enum_suffixes: UniqueSuffixIndex::from_keys(ctx.enum_parameter_values.keys()),
+        }
+    }
+}
+
+struct UniqueSuffixIndex {
+    keys: rustc_hash::FxHashMap<String, UniqueSuffixEntry>,
+}
+
+enum UniqueSuffixEntry {
+    Unique(String),
+    Ambiguous,
+}
+
+fn upsert_unique_suffix_entry(
+    entry: std::collections::hash_map::Entry<'_, String, UniqueSuffixEntry>,
+    key: &str,
+) {
+    match entry {
+        std::collections::hash_map::Entry::Vacant(vacant) => {
+            vacant.insert(UniqueSuffixEntry::Unique(key.to_string()));
+        }
+        std::collections::hash_map::Entry::Occupied(mut occupied) => {
+            if matches!(occupied.get(), UniqueSuffixEntry::Unique(prev) if prev == key) {
+                return;
+            }
+            occupied.insert(UniqueSuffixEntry::Ambiguous);
+        }
+    }
+}
+
+impl UniqueSuffixIndex {
+    fn from_keys<'a>(keys: impl Iterator<Item = &'a String>) -> Self {
+        let mut index = Self {
+            keys: rustc_hash::FxHashMap::default(),
+        };
+        for key in keys {
+            index.insert_key(key);
+        }
+        index
+    }
+
+    fn insert_key(&mut self, key: &str) {
+        let parts = rumoca_core::split_path_with_indices(key);
+        for suffix_len in 2..=3 {
+            if parts.len() <= suffix_len {
+                continue;
+            }
+            let suffix = parts[parts.len() - suffix_len..].join(".");
+            upsert_unique_suffix_entry(self.keys.entry(suffix), key);
+        }
+    }
+
+    fn lookup(&self, name: &str) -> Option<&str> {
+        if !should_try_unique_dotted_suffix(name) {
+            return None;
+        }
+        match self.keys.get(name)? {
+            UniqueSuffixEntry::Unique(key) => Some(key.as_str()),
+            UniqueSuffixEntry::Ambiguous => None,
+        }
+    }
 }
 
 fn substitute_assert_equations(
     equations: &mut [flat::AssertEquation],
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) {
@@ -569,7 +656,7 @@ fn substitute_assert_equations(
 
 fn substitute_algorithms(
     algorithms: &mut [flat::Algorithm],
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) {
@@ -582,7 +669,7 @@ fn substitute_algorithms(
 
 fn substitute_variable_annotations(
     variables: &mut indexmap::IndexMap<flat::VarName, flat::Variable>,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) {
@@ -597,7 +684,7 @@ fn substitute_variable_annotations(
 
 fn substitute_function_bodies(
     functions: &mut indexmap::IndexMap<flat::VarName, flat::Function>,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
 ) {
     for function in functions.values_mut() {
@@ -625,7 +712,7 @@ fn substitute_function_bodies(
 
 fn substitute_opt_expr(
     expr: &mut Option<flat::Expression>,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) {
@@ -636,7 +723,7 @@ fn substitute_opt_expr(
 
 fn substitute_known_constants_expr(
     expr: flat::Expression,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) -> flat::Expression {
@@ -651,7 +738,7 @@ fn substitute_known_constants_expr(
 fn substitute_known_constants_var_ref(
     name: flat::VarName,
     subscripts: Vec<flat::Subscript>,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) -> flat::Expression {
@@ -685,14 +772,14 @@ fn substitute_known_constants_var_ref(
 fn substitute_indexed_constant_var_ref(
     name: &flat::VarName,
     subscripts: Vec<flat::Subscript>,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
 ) -> Option<flat::Expression> {
     if live_vars.contains(name.as_str()) {
         return None;
     }
 
-    let constant_expr = ctx.constant_values.get(name.as_str())?.clone();
+    let constant_expr = ctx.ctx.constant_values.get(name.as_str())?.clone();
     Some(flat::Expression::Index {
         base: Box::new(constant_expr),
         subscripts,
@@ -701,7 +788,7 @@ fn substitute_indexed_constant_var_ref(
 
 fn substitute_scalar_var_ref(
     name: &flat::VarName,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) -> Option<flat::Expression> {
@@ -712,23 +799,52 @@ fn substitute_scalar_var_ref(
     if inline_index_base_is_live_or_local(key, live_vars, locals) {
         return None;
     }
-    if let Some(v) = resolve_constant_value_expr(key, ctx) {
+    if let Some(v) = resolve_constant_value_expr(key, ctx.ctx) {
         return Some(v.clone());
     }
-    if let Some(v) = ctx.real_parameter_values.get(key)
+    if let Some(v) = resolve_constant_value_expr_by_unique_suffix(key, ctx) {
+        return Some(v.clone());
+    }
+    if let Some(v) = ctx.ctx.real_parameter_values.get(key)
         && v.is_finite()
     {
         return Some(flat::Expression::Literal(flat::Literal::Real(*v)));
     }
-    if let Some(v) = ctx.parameter_values.get(key) {
+    if let Some(v) =
+        lookup_unique_dotted_suffix(key, &ctx.ctx.real_parameter_values, &ctx.real_suffixes)
+        && v.is_finite()
+    {
+        return Some(flat::Expression::Literal(flat::Literal::Real(v)));
+    }
+    if let Some(v) = ctx.ctx.parameter_values.get(key) {
         return Some(flat::Expression::Literal(flat::Literal::Integer(*v)));
     }
-    if let Some(v) = ctx.boolean_parameter_values.get(key) {
+    if let Some(v) =
+        lookup_unique_dotted_suffix(key, &ctx.ctx.parameter_values, &ctx.integer_suffixes)
+    {
+        return Some(flat::Expression::Literal(flat::Literal::Integer(v)));
+    }
+    if let Some(v) = ctx.ctx.boolean_parameter_values.get(key) {
         return Some(flat::Expression::Literal(flat::Literal::Boolean(*v)));
     }
-    if let Some(v) = ctx.enum_parameter_values.get(key) {
+    if let Some(v) = lookup_unique_dotted_suffix(
+        key,
+        &ctx.ctx.boolean_parameter_values,
+        &ctx.boolean_suffixes,
+    ) {
+        return Some(flat::Expression::Literal(flat::Literal::Boolean(v)));
+    }
+    if let Some(v) = ctx.ctx.enum_parameter_values.get(key) {
         return Some(flat::Expression::VarRef {
             name: flat::VarName::new(v.clone()),
+            subscripts: vec![],
+        });
+    }
+    if let Some(v) =
+        lookup_unique_dotted_suffix(key, &ctx.ctx.enum_parameter_values, &ctx.enum_suffixes)
+    {
+        return Some(flat::Expression::VarRef {
+            name: flat::VarName::new(v),
             subscripts: vec![],
         });
     }
@@ -739,21 +855,21 @@ fn substitute_scalar_var_ref(
     if let Some(resolved_key) = resolve_varref_through_constant_aliases(key, ctx)
         && resolved_key != key
     {
-        if let Some(v) = resolve_constant_value_expr(&resolved_key, ctx) {
+        if let Some(v) = resolve_constant_value_expr(&resolved_key, ctx.ctx) {
             return Some(v.clone());
         }
-        if let Some(v) = ctx.real_parameter_values.get(&resolved_key)
+        if let Some(v) = ctx.ctx.real_parameter_values.get(&resolved_key)
             && v.is_finite()
         {
             return Some(flat::Expression::Literal(flat::Literal::Real(*v)));
         }
-        if let Some(v) = ctx.parameter_values.get(&resolved_key) {
+        if let Some(v) = ctx.ctx.parameter_values.get(&resolved_key) {
             return Some(flat::Expression::Literal(flat::Literal::Integer(*v)));
         }
-        if let Some(v) = ctx.boolean_parameter_values.get(&resolved_key) {
+        if let Some(v) = ctx.ctx.boolean_parameter_values.get(&resolved_key) {
             return Some(flat::Expression::Literal(flat::Literal::Boolean(*v)));
         }
-        if let Some(v) = ctx.enum_parameter_values.get(&resolved_key) {
+        if let Some(v) = ctx.ctx.enum_parameter_values.get(&resolved_key) {
             return Some(flat::Expression::VarRef {
                 name: flat::VarName::new(v.clone()),
                 subscripts: vec![],
@@ -804,7 +920,34 @@ fn resolve_constant_value_expr<'a>(name: &str, ctx: &'a Context) -> Option<&'a f
     }
 }
 
-fn resolve_varref_through_constant_aliases(name: &str, ctx: &Context) -> Option<String> {
+fn resolve_constant_value_expr_by_unique_suffix<'a>(
+    name: &str,
+    ctx: &'a SubstitutionContext<'_>,
+) -> Option<&'a flat::Expression> {
+    let resolved_name = ctx.constant_suffixes.lookup(name)?;
+    resolve_constant_value_expr(resolved_name, ctx.ctx)
+}
+
+fn lookup_unique_dotted_suffix<V: Clone + PartialEq>(
+    name: &str,
+    map: &rustc_hash::FxHashMap<String, V>,
+    index: &UniqueSuffixIndex,
+) -> Option<V> {
+    let key = index.lookup(name)?;
+    map.get(key).cloned()
+}
+
+fn should_try_unique_dotted_suffix(name: &str) -> bool {
+    if !crate::path_utils::has_top_level_dot(name) {
+        return false;
+    }
+    rumoca_core::split_path_with_indices(name).len() <= 3
+}
+
+fn resolve_varref_through_constant_aliases(
+    name: &str,
+    ctx: &SubstitutionContext<'_>,
+) -> Option<String> {
     let mut current = name.to_string();
     let mut visited = rustc_hash::FxHashSet::default();
     loop {
@@ -819,7 +962,7 @@ fn resolve_varref_through_constant_aliases(name: &str, ctx: &Context) -> Option<
             }
             let prefix = &current[..idx];
             let suffix = &current[idx..];
-            let Some(alias_expr) = ctx.constant_values.get(prefix) else {
+            let Some(alias_expr) = ctx.ctx.constant_values.get(prefix) else {
                 continue;
             };
             let flat::Expression::VarRef {
@@ -843,7 +986,10 @@ fn resolve_varref_through_constant_aliases(name: &str, ctx: &Context) -> Option<
     }
 }
 
-fn resolve_inline_indexed_constant(name: &str, ctx: &Context) -> Option<flat::Expression> {
+fn resolve_inline_indexed_constant(
+    name: &str,
+    ctx: &SubstitutionContext<'_>,
+) -> Option<flat::Expression> {
     let (base, indices) = split_inline_indexed_name(name)?;
     let index_text = indices.trim();
     let indices: Vec<i64> = index_text
@@ -857,7 +1003,7 @@ fn resolve_inline_indexed_constant(name: &str, ctx: &Context) -> Option<flat::Ex
         return None;
     }
 
-    let base_expr = resolve_constant_value_expr(base, ctx)?.clone();
+    let base_expr = resolve_constant_value_expr(base, ctx.ctx)?.clone();
     Some(flat::Expression::Index {
         base: Box::new(base_expr),
         subscripts: indices
@@ -882,7 +1028,7 @@ fn split_inline_indexed_name(name: &str) -> Option<(&str, &str)> {
 
 fn substitute_known_constants_subscripts(
     subscripts: Vec<flat::Subscript>,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) -> Vec<flat::Subscript> {
@@ -899,7 +1045,7 @@ fn substitute_known_constants_subscripts(
 
 fn substitute_known_constants_non_var_expr(
     expr: flat::Expression,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) -> flat::Expression {
@@ -912,7 +1058,7 @@ fn substitute_known_constants_non_var_expr(
 
 fn substitute_known_constants_non_field_expr(
     expr: flat::Expression,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) -> flat::Expression {
@@ -991,7 +1137,7 @@ fn substitute_known_constants_non_field_expr(
 fn rewrite_field_access_expr(
     base: flat::Expression,
     field: String,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) -> flat::Expression {
@@ -1002,14 +1148,14 @@ fn rewrite_field_access_expr(
         is_constructor: true,
     } = &rewritten_base
         && args.is_empty()
-        && let Some(resolved) = resolve_constant_field_access(name.as_str(), &field, ctx)
+        && let Some(resolved) = resolve_constant_field_access(name.as_str(), &field, ctx.ctx)
     {
         return resolved;
     }
     if let flat::Expression::VarRef { name, subscripts } = &rewritten_base
         && subscripts.is_empty()
         && !live_vars.contains(name.as_str())
-        && let Some(resolved) = resolve_constant_field_access(name.as_str(), &field, ctx)
+        && let Some(resolved) = resolve_constant_field_access(name.as_str(), &field, ctx.ctx)
     {
         return resolved;
     }
@@ -1065,7 +1211,7 @@ fn resolve_constant_field_access(
 
 fn substitute_known_constants_statement(
     statement: &mut flat::Statement,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) {
@@ -1144,7 +1290,7 @@ fn substitute_known_constants_statement(
 
 fn substitute_known_constants_when_equation(
     equation: &mut flat::WhenEquation,
-    ctx: &Context,
+    ctx: &SubstitutionContext<'_>,
     live_vars: &rustc_hash::FxHashSet<String>,
     locals: &HashSet<String>,
 ) {

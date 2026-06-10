@@ -626,6 +626,7 @@ fn convert_function(
     let effective_components = context.components;
     let mut import_map = qualify::ImportMap::default();
     qualify::collect_lexical_package_aliases(tree, qualified_name, &mut import_map);
+    qualify::collect_lexical_class_aliases(tree, qualified_name, &mut import_map);
     collect_lexical_constant_aliases(tree, qualified_name, &mut import_map);
     collect_lexical_ancestor_imports(tree, qualified_name, &mut import_map);
     import_map.extend(context.imports);

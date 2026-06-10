@@ -126,7 +126,7 @@ fn collect_nested_overrides_in_extends_chain(
                 continue;
             }
 
-            insert_nested_class_overrides(class, overrides);
+            insert_nested_class_overrides(tree, class, overrides);
             insert_extends_redeclare_overrides(tree, class, mod_env, overrides);
             next.extend(extends_base_classes(tree, class));
         }
@@ -162,13 +162,46 @@ fn is_visited_class(
     }
 }
 
-fn insert_nested_class_overrides(class: &ast::ClassDef, overrides: &mut IndexMap<String, DefId>) {
+fn insert_nested_class_overrides(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+    overrides: &mut IndexMap<String, DefId>,
+) {
     walk_nested_classes(class, |name, nested| {
         if let Some(def_id) = nested.def_id {
             // Keep nearest declaration if names repeat in deeper bases.
             overrides.entry(name.to_string()).or_insert(def_id);
+            insert_redeclared_base_type_aliases(tree, class, name, nested, def_id, overrides);
         }
     });
+}
+
+fn insert_redeclared_base_type_aliases(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+    name: &str,
+    nested: &ast::ClassDef,
+    redeclared_def_id: DefId,
+    overrides: &mut IndexMap<String, DefId>,
+) {
+    for ext in &nested.extends {
+        if let Some(base_name) = ext
+            .base_def_id
+            .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+        {
+            overrides.entry(base_name).or_insert(redeclared_def_id);
+        }
+    }
+
+    for base_class in extends_base_classes(tree, class) {
+        if let Some(base_nested) = base_class.classes.get(name)
+            && let Some(base_name) = base_nested
+                .def_id
+                .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+        {
+            overrides.entry(base_name).or_insert(redeclared_def_id);
+        }
+    }
 }
 
 fn extends_base_classes<'a>(

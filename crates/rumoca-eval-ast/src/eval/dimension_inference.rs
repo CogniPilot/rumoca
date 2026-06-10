@@ -200,6 +200,11 @@ fn infer_range_length(
 ) -> Option<usize> {
     if let Expression::Range { start, step, end } = range {
         infer_range_len_numeric(start, step.as_deref(), end, ctx, scope)
+    } else if let Expression::FunctionCall { comp, args } = range
+        && comp.to_string() == "linspace"
+        && args.len() == 3
+    {
+        eval_integer_with_scope(&args[2], ctx, scope).map(|n| n as usize)
     } else {
         eval_integer_with_scope(range, ctx, scope).map(|n| n as usize)
     }

@@ -10,6 +10,8 @@
 //!
 //! These functions are used for compile-time constant evaluation per MLS §4.4.
 
+use std::cell::RefCell;
+
 use rustc_hash::FxHashMap;
 
 use rumoca_core::{IntegerBinaryOperator, eval_integer_binary, eval_integer_div_builtin};
@@ -1190,7 +1192,7 @@ fn eval_user_func_integer(
 
     // Try to find and evaluate the user-defined function using rumoca_eval_const
     let func = ctx.functions.get(&name_str)?;
-    let eval_ctx = build_user_func_eval_ctx(ctx);
+    let eval_ctx = build_user_func_eval_ctx(ctx, func);
     let arg_values = eval_func_args(args, ctx)?;
 
     let result = rumoca_eval_flat::constant::function_eval::eval_function(
@@ -1216,7 +1218,7 @@ pub(crate) fn eval_user_func_real(
 ) -> Option<f64> {
     let name_str = name.to_string();
     let func = ctx.functions.get(&name_str)?;
-    let eval_ctx = build_user_func_eval_ctx(ctx);
+    let eval_ctx = build_user_func_eval_ctx(ctx, func);
     let arg_values = eval_func_args(args, ctx)?;
 
     let result = rumoca_eval_flat::constant::function_eval::eval_function(
@@ -1237,20 +1239,10 @@ pub(crate) fn eval_user_func_real(
 }
 
 /// Build an EvalContext for user function evaluation.
-fn build_user_func_eval_ctx(ctx: &ParamEvalContext) -> EvalContext {
+fn build_user_func_eval_ctx(ctx: &ParamEvalContext, func: &flat::Function) -> EvalContext {
+    let _ = ctx;
     let mut eval_ctx = EvalContext::new();
-    for (param_name, value) in ctx.known_ints {
-        eval_ctx.add_parameter(param_name.clone(), Value::Integer(*value));
-    }
-    for (param_name, value) in ctx.known_reals {
-        eval_ctx.add_parameter(param_name.clone(), Value::Real(*value));
-    }
-    for (param_name, value) in ctx.known_bools {
-        eval_ctx.add_parameter(param_name.clone(), Value::Bool(*value));
-    }
-    for func_def in ctx.functions.values() {
-        eval_ctx.add_function(func_def.clone());
-    }
+    eval_ctx.add_function(func.clone());
     eval_ctx
 }
 
@@ -1446,6 +1438,49 @@ fn enum_values_equivalent(lhs: &str, rhs: &str, known_enums: &FxHashMap<String, 
 ///
 /// This preserves MLS §4.9.5 enum identity across equivalent qualification paths.
 pub(crate) fn canonicalize_enum_literal(
+    literal: &str,
+    known_enums: &FxHashMap<String, String>,
+) -> String {
+    if !crate::path_utils::has_top_level_dot(literal) {
+        return literal.to_string();
+    }
+
+    let map_id = known_enums as *const _ as usize;
+    let map_len = known_enums.len();
+    if let Some(cached) = ENUM_CANON_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        (cache.map_id == map_id && cache.map_len == map_len)
+            .then(|| cache.values.get(literal).cloned())
+            .flatten()
+    }) {
+        return cached;
+    }
+
+    let canonical = canonicalize_enum_literal_uncached(literal, known_enums);
+    ENUM_CANON_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.map_id != map_id || cache.map_len != map_len {
+            cache.map_id = map_id;
+            cache.map_len = map_len;
+            cache.values.clear();
+        }
+        cache.values.insert(literal.to_string(), canonical.clone());
+    });
+    canonical
+}
+
+thread_local! {
+    static ENUM_CANON_CACHE: RefCell<EnumCanonCache> = RefCell::new(EnumCanonCache::default());
+}
+
+#[derive(Default)]
+struct EnumCanonCache {
+    map_id: usize,
+    map_len: usize,
+    values: FxHashMap<String, String>,
+}
+
+fn canonicalize_enum_literal_uncached(
     literal: &str,
     known_enums: &FxHashMap<String, String>,
 ) -> String {

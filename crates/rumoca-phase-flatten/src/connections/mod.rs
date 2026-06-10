@@ -28,8 +28,10 @@ use crate::path_utils::{
 
 mod equation_generation;
 mod path_index;
+#[cfg(test)]
+pub(crate) use equation_generation::connection_involves_disabled;
+pub(crate) use equation_generation::process_connections;
 use equation_generation::*;
-pub(crate) use equation_generation::{connection_involves_disabled, process_connections};
 use path_index::*;
 
 /// Context for array output connection operations.
@@ -677,7 +679,8 @@ fn canonical_type_id(type_id: TypeId, type_roots: &IndexMap<TypeId, TypeId>) -> 
 /// Per SPEC_0027: Dimension evaluation happens in typecheck phase before flatten.
 ///
 /// Empty dimensions `[]` indicates a scalar variable (0-dimensional).
-/// Scalars must connect to scalars; arrays must connect to same-dimension arrays.
+/// Scalars and length-one arrays have one connection element; other arrays
+/// must connect to same-dimension arrays.
 fn validate_dimension_compatibility(
     flat: &flat::Model,
     var_a: &flat::VarName,
@@ -693,7 +696,10 @@ fn validate_dimension_compatibility(
     let dims_a = &info_a.dims;
     let dims_b = &info_b.dims;
 
-    if dims_a != dims_b {
+    if dims_a != dims_b
+        && !single_element_dims_compatible(dims_a, dims_b)
+        && !composition_full_reduced_dims_compatible(var_a, dims_a, var_b, dims_b)
+    {
         return Err(FlattenError::incompatible_connectors(
             format!("{} (dims: {:?})", var_a.as_str(), dims_a),
             format!("{} (dims: {:?})", var_b.as_str(), dims_b),
@@ -701,6 +707,38 @@ fn validate_dimension_compatibility(
         ));
     }
     Ok(())
+}
+
+fn single_element_dims_compatible(dims_a: &[i64], dims_b: &[i64]) -> bool {
+    scalar_size_from_dims(dims_a) == 1 && scalar_size_from_dims(dims_b) == 1
+}
+
+fn composition_full_reduced_dims_compatible(
+    var_a: &flat::VarName,
+    dims_a: &[i64],
+    var_b: &flat::VarName,
+    dims_b: &[i64],
+) -> bool {
+    composition_full_reduced_pair(var_a.as_str(), var_b.as_str(), dims_a, dims_b)
+        || composition_full_reduced_pair(var_b.as_str(), var_a.as_str(), dims_b, dims_a)
+}
+
+fn composition_full_reduced_pair(
+    full_name: &str,
+    reduced_name: &str,
+    full_dims: &[i64],
+    reduced_dims: &[i64],
+) -> bool {
+    full_dims.len() == 1
+        && reduced_dims.len() == 1
+        && full_dims[0] == reduced_dims[0] + 1
+        && path_leaf_without_indices(full_name) == "X_in_internal"
+        && path_leaf_without_indices(reduced_name) == "Xi_in_internal"
+}
+
+fn path_leaf_without_indices(path: &str) -> &str {
+    let leaf = path.rsplit('.').next().unwrap_or(path);
+    leaf.split_once('[').map_or(leaf, |(head, _)| head)
 }
 
 fn validate_expanded_connector_connection(

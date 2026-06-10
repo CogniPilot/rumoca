@@ -281,6 +281,10 @@ impl CompilationResult {
             .map_err(CompilerError::TemplateError)
     }
 
+    pub fn scalarized_template_dae(&self) -> Dae {
+        scalarized_dae(&self.dae)
+    }
+
     /// Equation balance (equations - unknowns).
     pub fn balance(&self) -> i64 {
         dae_balance(&self.dae)

@@ -968,6 +968,7 @@ fn instantiate_class(
         let comp_ref =
             apply_type_override(tree, comp, &type_overrides, &type_name, Some(ctx.mod_env()));
         let comp = comp_ref.as_ref();
+        let type_name = comp.type_name.to_string();
 
         // MLS §10.1: Array component expansion
         // For structured types (models, connectors, blocks), expand array components

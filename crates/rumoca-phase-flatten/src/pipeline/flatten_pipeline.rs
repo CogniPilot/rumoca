@@ -32,8 +32,9 @@ pub(crate) fn process_component_instances_for_flatten(
     tree: &ast::ClassTree,
     global_imports: &qualify::ImportMap,
 ) -> Result<(), FlattenError> {
+    let disabled_matcher = DisabledComponentMatcher::new(&overlay.disabled_components);
     for instance_data in overlay.components.values() {
-        if is_in_disabled_component(&instance_data.qualified_name, &overlay.disabled_components) {
+        if disabled_matcher.matches(&instance_data.qualified_name) {
             continue;
         }
         process_component_instance(
@@ -119,8 +120,9 @@ pub(crate) fn process_class_instances_for_flatten(
     component_override_map: &ComponentOverrideMap,
     tree: &ast::ClassTree,
 ) -> Result<(), FlattenError> {
+    let disabled_matcher = DisabledComponentMatcher::new(&overlay.disabled_components);
     for class_data in overlay.classes.values() {
-        if is_in_disabled_component(&class_data.qualified_name, &overlay.disabled_components) {
+        if disabled_matcher.matches(&class_data.qualified_name) {
             continue;
         }
         process_class_instance(ctx, flat, class_data, component_override_map, tree)?;
@@ -167,6 +169,7 @@ pub(crate) fn finalize_flat_model(
     substitute_known_constants_in_flat(flat, ctx);
     functions::collect_functions(flat, tree)?;
     mark_record_constructor_calls(flat, tree);
+    inject_referenced_qualified_class_constants(tree, model_name, flat, ctx);
     substitute_known_constants_in_flat(flat, ctx);
 
     ctx.refresh_enum_parameter_lookup(flat);

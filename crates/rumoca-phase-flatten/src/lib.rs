@@ -189,20 +189,61 @@ pub fn flatten_phase_timing_stats() -> FlattenPhaseTimingSnapshot {
 }
 
 /// Check if a qualified name belongs to a disabled conditional component (MLS §4.8).
-fn is_in_disabled_component(
+#[cfg(test)]
+pub(crate) fn is_in_disabled_component(
     qn: &ast::QualifiedName,
     disabled_components: &std::collections::HashSet<String>,
 ) -> bool {
-    let parts: Vec<&str> = qn.parts.iter().map(|(name, _)| name.as_str()).collect();
-    for disabled in disabled_components {
-        let disabled_parts = crate::path_utils::split_path_with_indices(disabled);
-        if parts.len() >= disabled_parts.len()
-            && parts[..disabled_parts.len()] == disabled_parts[..]
-        {
-            return true;
+    DisabledComponentMatcher::new(disabled_components).matches(qn)
+}
+
+pub(crate) struct DisabledComponentMatcher {
+    prefixes_by_first: rustc_hash::FxHashMap<String, Vec<Vec<String>>>,
+}
+
+impl DisabledComponentMatcher {
+    pub(crate) fn new(disabled_components: &std::collections::HashSet<String>) -> Self {
+        let mut prefixes_by_first: rustc_hash::FxHashMap<String, Vec<Vec<String>>> =
+            rustc_hash::FxHashMap::default();
+        for disabled in disabled_components {
+            let disabled_parts: Vec<String> = crate::path_utils::split_path_with_indices(disabled)
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            let Some(first) = disabled_parts.first() else {
+                continue;
+            };
+            prefixes_by_first
+                .entry(first.clone())
+                .or_default()
+                .push(disabled_parts);
         }
+        Self { prefixes_by_first }
     }
-    false
+
+    pub(crate) fn matches(&self, qn: &ast::QualifiedName) -> bool {
+        if self.prefixes_by_first.is_empty() {
+            return false;
+        }
+        let parts: Vec<&str> = qn.parts.iter().map(|(name, _)| name.as_str()).collect();
+        let Some(candidates) = parts
+            .first()
+            .and_then(|first| self.prefixes_by_first.get(*first))
+        else {
+            return false;
+        };
+        candidates
+            .iter()
+            .any(|disabled_parts| path_starts_with_disabled_parts(&parts, disabled_parts))
+    }
+}
+
+fn path_starts_with_disabled_parts(parts: &[&str], disabled_parts: &[String]) -> bool {
+    parts.len() >= disabled_parts.len()
+        && parts
+            .iter()
+            .zip(disabled_parts.iter())
+            .all(|(part, disabled)| *part == disabled)
 }
 
 /// Choose the better (more complete) of two optional dimension vectors.
@@ -270,7 +311,7 @@ pub fn flatten_ref_with_options(
     let mut ctx = Context::new();
     let mut flat = flat::Model::new();
     let global_imports = collect_global_imports(overlay);
-    let component_override_map = build_component_override_map(overlay, tree);
+    let component_override_map = build_component_override_map(overlay, tree, model_name);
 
     initialize_flat_metadata(&mut flat, overlay);
     process_component_instances_for_flatten(
@@ -346,9 +387,10 @@ fn collect_enum_literal_ordinals(tree: &ast::ClassTree) -> IndexMap<String, i64>
 
 /// if-equation conditions can be evaluated at compile time.
 fn compute_cardinality_counts(ctx: &mut Context, overlay: &ast::InstanceOverlay) {
+    let disabled_matcher = DisabledComponentMatcher::new(&overlay.disabled_components);
     for (_def_id, class_data) in &overlay.classes {
         for conn in &class_data.connections {
-            if connections::connection_involves_disabled(conn, &overlay.disabled_components) {
+            if disabled_matcher.matches(&conn.a) || disabled_matcher.matches(&conn.b) {
                 continue;
             }
             let a_path = conn.a.to_flat_string();
@@ -727,8 +769,8 @@ fn inject_referenced_qualified_class_constants(
     for _ in 0..MAX_PASSES {
         let prev = context_constant_footprint(ctx);
         let mut scopes = HashSet::new();
-        collect_referenced_class_scopes(flat, &live_vars, &mut scopes);
-        collect_context_constant_class_scopes(ctx, &live_vars, &mut scopes);
+        collect_referenced_class_scopes(tree, flat, &live_vars, &mut scopes);
+        collect_context_constant_class_scopes(tree, ctx, &live_vars, &mut scopes);
         for package in WELL_KNOWN_CONSTANT_PACKAGES {
             scopes.insert((*package).to_string());
         }
@@ -773,15 +815,16 @@ fn resolve_referenced_scope_class<'a>(
 }
 
 fn collect_context_constant_class_scopes(
+    tree: &ClassTree,
     ctx: &Context,
     live_vars: &HashSet<String>,
     scopes: &mut HashSet<String>,
 ) {
     for value in ctx.constant_values.values() {
-        collect_expression_class_scopes(value, live_vars, scopes);
+        collect_expression_class_scopes(tree, value, live_vars, scopes);
     }
     for value in ctx.enum_parameter_values.values() {
-        maybe_add_referenced_class_scope(value, live_vars, scopes);
+        maybe_add_referenced_class_scope(tree, value, live_vars, scopes);
     }
 }
 
@@ -823,45 +866,46 @@ fn context_constant_footprint(ctx: &Context) -> usize {
 }
 
 fn collect_referenced_class_scopes(
+    tree: &ClassTree,
     flat: &Model,
     live_vars: &HashSet<String>,
     scopes: &mut HashSet<String>,
 ) {
     for eq in &flat.equations {
-        collect_expression_class_scopes(&eq.residual, live_vars, scopes);
+        collect_expression_class_scopes(tree, &eq.residual, live_vars, scopes);
     }
     for eq in &flat.initial_equations {
-        collect_expression_class_scopes(&eq.residual, live_vars, scopes);
+        collect_expression_class_scopes(tree, &eq.residual, live_vars, scopes);
     }
 
     for when in &flat.when_clauses {
-        collect_expression_class_scopes(&when.condition, live_vars, scopes);
+        collect_expression_class_scopes(tree, &when.condition, live_vars, scopes);
         for eq in &when.equations {
-            collect_when_equation_class_scopes(eq, live_vars, scopes);
+            collect_when_equation_class_scopes(tree, eq, live_vars, scopes);
         }
     }
 
     for alg in &flat.algorithms {
         for stmt in &alg.statements {
-            collect_statement_class_scopes(stmt, live_vars, scopes);
+            collect_statement_class_scopes(tree, stmt, live_vars, scopes);
         }
     }
 
     for var in flat.variables.values() {
         if let Some(binding) = &var.binding {
-            collect_expression_class_scopes(binding, live_vars, scopes);
+            collect_expression_class_scopes(tree, binding, live_vars, scopes);
         }
         if let Some(start) = &var.start {
-            collect_expression_class_scopes(start, live_vars, scopes);
+            collect_expression_class_scopes(tree, start, live_vars, scopes);
         }
         if let Some(min) = &var.min {
-            collect_expression_class_scopes(min, live_vars, scopes);
+            collect_expression_class_scopes(tree, min, live_vars, scopes);
         }
         if let Some(max) = &var.max {
-            collect_expression_class_scopes(max, live_vars, scopes);
+            collect_expression_class_scopes(tree, max, live_vars, scopes);
         }
         if let Some(nominal) = &var.nominal {
-            collect_expression_class_scopes(nominal, live_vars, scopes);
+            collect_expression_class_scopes(tree, nominal, live_vars, scopes);
         }
     }
 
@@ -873,16 +917,17 @@ fn collect_referenced_class_scopes(
             .chain(function.locals.iter())
         {
             if let Some(default_expr) = &param.default {
-                collect_expression_class_scopes(default_expr, live_vars, scopes);
+                collect_expression_class_scopes(tree, default_expr, live_vars, scopes);
             }
         }
         for statement in &function.body {
-            collect_statement_class_scopes(statement, live_vars, scopes);
+            collect_statement_class_scopes(tree, statement, live_vars, scopes);
         }
     }
 }
 
 fn collect_expression_class_scopes(
+    tree: &ClassTree,
     expr: &Expression,
     live_vars: &HashSet<String>,
     scopes: &mut HashSet<String>,
@@ -890,12 +935,14 @@ fn collect_expression_class_scopes(
     let mut refs = HashSet::new();
     expr.collect_var_refs(&mut refs);
     for name in refs {
-        maybe_add_referenced_class_scope(name.as_str(), live_vars, scopes);
+        maybe_add_referenced_class_scope(tree, name.as_str(), live_vars, scopes);
     }
-    collect_constructor_class_scopes(expr, live_vars, scopes);
+    collect_constructor_class_scopes(tree, expr, live_vars, scopes);
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn collect_constructor_class_scopes(
+    tree: &ClassTree,
     expr: &Expression,
     live_vars: &HashSet<String>,
     scopes: &mut HashSet<String>,
@@ -913,48 +960,48 @@ fn collect_constructor_class_scopes(
                 }
             }
             for arg in args {
-                collect_constructor_class_scopes(arg, live_vars, scopes);
+                collect_constructor_class_scopes(tree, arg, live_vars, scopes);
             }
         }
         Expression::BuiltinCall { args, .. } => {
             for arg in args {
-                collect_constructor_class_scopes(arg, live_vars, scopes);
+                collect_constructor_class_scopes(tree, arg, live_vars, scopes);
             }
         }
         Expression::Binary { lhs, rhs, .. } => {
-            collect_constructor_class_scopes(lhs, live_vars, scopes);
-            collect_constructor_class_scopes(rhs, live_vars, scopes);
+            collect_constructor_class_scopes(tree, lhs, live_vars, scopes);
+            collect_constructor_class_scopes(tree, rhs, live_vars, scopes);
         }
         Expression::Unary { rhs, .. } => {
-            collect_constructor_class_scopes(rhs, live_vars, scopes);
+            collect_constructor_class_scopes(tree, rhs, live_vars, scopes);
         }
         Expression::If {
             branches,
             else_branch,
         } => {
             for (cond, value) in branches {
-                collect_constructor_class_scopes(cond, live_vars, scopes);
-                collect_constructor_class_scopes(value, live_vars, scopes);
+                collect_constructor_class_scopes(tree, cond, live_vars, scopes);
+                collect_constructor_class_scopes(tree, value, live_vars, scopes);
             }
-            collect_constructor_class_scopes(else_branch, live_vars, scopes);
+            collect_constructor_class_scopes(tree, else_branch, live_vars, scopes);
         }
         Expression::Array { elements, .. } | Expression::Tuple { elements } => {
             for element in elements {
-                collect_constructor_class_scopes(element, live_vars, scopes);
+                collect_constructor_class_scopes(tree, element, live_vars, scopes);
             }
         }
         Expression::Range { start, step, end } => {
-            collect_constructor_class_scopes(start, live_vars, scopes);
+            collect_constructor_class_scopes(tree, start, live_vars, scopes);
             if let Some(step) = step {
-                collect_constructor_class_scopes(step, live_vars, scopes);
+                collect_constructor_class_scopes(tree, step, live_vars, scopes);
             }
-            collect_constructor_class_scopes(end, live_vars, scopes);
+            collect_constructor_class_scopes(tree, end, live_vars, scopes);
         }
         Expression::Index { base, subscripts } => {
-            collect_constructor_class_scopes(base, live_vars, scopes);
+            collect_constructor_class_scopes(tree, base, live_vars, scopes);
             for subscript in subscripts {
                 if let Subscript::Expr(expr) = subscript {
-                    collect_constructor_class_scopes(expr, live_vars, scopes);
+                    collect_constructor_class_scopes(tree, expr, live_vars, scopes);
                 }
             }
         }
@@ -963,32 +1010,33 @@ fn collect_constructor_class_scopes(
             indices,
             filter,
         } => {
-            collect_constructor_class_scopes(expr, live_vars, scopes);
+            collect_constructor_class_scopes(tree, expr, live_vars, scopes);
             for index in indices {
-                collect_constructor_class_scopes(&index.range, live_vars, scopes);
+                collect_constructor_class_scopes(tree, &index.range, live_vars, scopes);
             }
             if let Some(filter_expr) = filter {
-                collect_constructor_class_scopes(filter_expr, live_vars, scopes);
+                collect_constructor_class_scopes(tree, filter_expr, live_vars, scopes);
             }
         }
         Expression::FieldAccess { base, .. } => {
-            collect_constructor_class_scopes(base, live_vars, scopes);
+            collect_constructor_class_scopes(tree, base, live_vars, scopes);
         }
         _ => {}
     }
 }
 
 fn collect_when_equation_class_scopes(
+    tree: &ClassTree,
     eq: &flat::WhenEquation,
     live_vars: &HashSet<String>,
     scopes: &mut HashSet<String>,
 ) {
     match eq {
         flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
-            collect_expression_class_scopes(value, live_vars, scopes)
+            collect_expression_class_scopes(tree, value, live_vars, scopes)
         }
         flat::WhenEquation::Assert { condition, .. } => {
-            collect_expression_class_scopes(condition, live_vars, scopes)
+            collect_expression_class_scopes(tree, condition, live_vars, scopes)
         }
         flat::WhenEquation::Terminate { .. } => {}
         flat::WhenEquation::Conditional {
@@ -997,42 +1045,43 @@ fn collect_when_equation_class_scopes(
             ..
         } => {
             for (cond, eqs) in branches {
-                collect_expression_class_scopes(cond, live_vars, scopes);
+                collect_expression_class_scopes(tree, cond, live_vars, scopes);
                 for nested in eqs {
-                    collect_when_equation_class_scopes(nested, live_vars, scopes);
+                    collect_when_equation_class_scopes(tree, nested, live_vars, scopes);
                 }
             }
             for nested in else_branch {
-                collect_when_equation_class_scopes(nested, live_vars, scopes);
+                collect_when_equation_class_scopes(tree, nested, live_vars, scopes);
             }
         }
         flat::WhenEquation::FunctionCallOutputs { function, .. } => {
-            collect_expression_class_scopes(function, live_vars, scopes)
+            collect_expression_class_scopes(tree, function, live_vars, scopes)
         }
     }
 }
 
 fn collect_statement_class_scopes(
+    tree: &ClassTree,
     stmt: &flat::Statement,
     live_vars: &HashSet<String>,
     scopes: &mut HashSet<String>,
 ) {
     match stmt {
         flat::Statement::Assignment { value, .. } => {
-            collect_expression_class_scopes(value, live_vars, scopes)
+            collect_expression_class_scopes(tree, value, live_vars, scopes)
         }
         flat::Statement::For { indices, equations } => {
             for idx in indices {
-                collect_expression_class_scopes(&idx.range, live_vars, scopes);
+                collect_expression_class_scopes(tree, &idx.range, live_vars, scopes);
             }
             for nested in equations {
-                collect_statement_class_scopes(nested, live_vars, scopes);
+                collect_statement_class_scopes(tree, nested, live_vars, scopes);
             }
         }
         flat::Statement::While(block) => {
-            collect_expression_class_scopes(&block.cond, live_vars, scopes);
+            collect_expression_class_scopes(tree, &block.cond, live_vars, scopes);
             for nested in &block.stmts {
-                collect_statement_class_scopes(nested, live_vars, scopes);
+                collect_statement_class_scopes(tree, nested, live_vars, scopes);
             }
         }
         flat::Statement::If {
@@ -1040,45 +1089,45 @@ fn collect_statement_class_scopes(
             else_block,
         } => {
             for block in cond_blocks {
-                collect_expression_class_scopes(&block.cond, live_vars, scopes);
+                collect_expression_class_scopes(tree, &block.cond, live_vars, scopes);
                 for nested in &block.stmts {
-                    collect_statement_class_scopes(nested, live_vars, scopes);
+                    collect_statement_class_scopes(tree, nested, live_vars, scopes);
                 }
             }
             if let Some(else_block) = else_block {
                 for nested in else_block {
-                    collect_statement_class_scopes(nested, live_vars, scopes);
+                    collect_statement_class_scopes(tree, nested, live_vars, scopes);
                 }
             }
         }
         flat::Statement::When(blocks) => {
             for block in blocks {
-                collect_expression_class_scopes(&block.cond, live_vars, scopes);
+                collect_expression_class_scopes(tree, &block.cond, live_vars, scopes);
                 for nested in &block.stmts {
-                    collect_statement_class_scopes(nested, live_vars, scopes);
+                    collect_statement_class_scopes(tree, nested, live_vars, scopes);
                 }
             }
         }
         flat::Statement::FunctionCall { args, outputs, .. } => {
             for arg in args {
-                collect_expression_class_scopes(arg, live_vars, scopes);
+                collect_expression_class_scopes(tree, arg, live_vars, scopes);
             }
             for output in outputs {
-                collect_expression_class_scopes(output, live_vars, scopes);
+                collect_expression_class_scopes(tree, output, live_vars, scopes);
             }
         }
         flat::Statement::Reinit { value, .. } => {
-            collect_expression_class_scopes(value, live_vars, scopes)
+            collect_expression_class_scopes(tree, value, live_vars, scopes)
         }
         flat::Statement::Assert {
             condition,
             message,
             level,
         } => {
-            collect_expression_class_scopes(condition, live_vars, scopes);
-            collect_expression_class_scopes(message, live_vars, scopes);
+            collect_expression_class_scopes(tree, condition, live_vars, scopes);
+            collect_expression_class_scopes(tree, message, live_vars, scopes);
             if let Some(level) = level {
-                collect_expression_class_scopes(level, live_vars, scopes);
+                collect_expression_class_scopes(tree, level, live_vars, scopes);
             }
         }
         flat::Statement::Empty | flat::Statement::Return | flat::Statement::Break => {}
@@ -1086,6 +1135,7 @@ fn collect_statement_class_scopes(
 }
 
 fn maybe_add_referenced_class_scope(
+    tree: &ClassTree,
     name: &str,
     live_vars: &HashSet<String>,
     scopes: &mut HashSet<String>,
@@ -1108,7 +1158,20 @@ fn maybe_add_referenced_class_scope(
         return;
     }
 
+    for candidate in parent_scopes_from_longest(scope) {
+        if tree.get_class_by_qualified_name(&candidate).is_some() {
+            scopes.insert(candidate);
+            return;
+        }
+    }
+
     scopes.insert(scope.to_string());
+}
+
+fn parent_scopes_from_longest(scope: &str) -> impl Iterator<Item = String> + '_ {
+    std::iter::successors(Some(scope.to_string()), |current| {
+        path_utils::parent_scope(current).map(str::to_string)
+    })
 }
 
 /// Inject constants from the enclosing class into the flatten context (MLS §7.3).
@@ -1542,6 +1605,16 @@ fn extract_constants_from_class_with_prefix(
     class_def: &ast::ClassDef,
     ctx: &mut Context,
 ) {
+    let cache_key = constant_prefix_class_cache_key(prefix, class_def);
+    let footprint = constant_extraction_footprint(ctx);
+    if ctx
+        .extracted_constant_prefix_class_footprints
+        .get(&cache_key)
+        == Some(&footprint)
+    {
+        return;
+    }
+
     for (name, comp) in &class_def.components {
         if !matches!(
             comp.variability,
@@ -1567,6 +1640,28 @@ fn extract_constants_from_class_with_prefix(
         let full_name = make_prefixed_name(prefix, name);
         extract_single_constant_with_prefix(prefix, name, &full_name, comp, expr, ctx);
     }
+
+    ctx.extracted_constant_prefix_class_footprints
+        .insert(cache_key, constant_extraction_footprint(ctx));
+}
+
+fn constant_prefix_class_cache_key(prefix: &str, class_def: &ast::ClassDef) -> String {
+    let class_key = class_def
+        .def_id
+        .map(|def_id| format!("{def_id:?}"))
+        .unwrap_or_else(|| format!("{class_def:p}"));
+    format!("{prefix}\0{class_key}")
+}
+
+fn constant_extraction_footprint(ctx: &Context) -> usize {
+    ctx.parameter_values.len()
+        + ctx.real_parameter_values.len()
+        + ctx.boolean_parameter_values.len()
+        + ctx.enum_parameter_values.len()
+        + ctx.constant_values.len()
+        + ctx.array_dimensions.len()
+        + ctx.modified_constant_keys.len()
+        + ctx.record_aliases.len()
 }
 
 /// Extract a single constant value (integer or array dims) into the context.
@@ -1739,8 +1834,8 @@ fn insert_with_prefix<V: Clone>(
 ) {
     map.insert(full_name.to_string(), value.clone());
     let expose_unprefixed = !prefix.is_empty()
-        && !crate::path_utils::has_top_level_dot(prefix)
-        && prefix.chars().next().is_some_and(char::is_uppercase);
+        && prefix.chars().next().is_some_and(char::is_uppercase)
+        && !crate::path_utils::has_top_level_dot(prefix);
     if expose_unprefixed {
         map.entry(name.to_string()).or_insert(value);
     }

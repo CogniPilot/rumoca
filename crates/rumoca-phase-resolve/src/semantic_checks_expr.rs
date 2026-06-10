@@ -637,10 +637,10 @@ impl ast::Visitor for ExprTypeIssuesVisitor<'_> {
             // TYPE-005: Class name used as value in equation
             Expression::ComponentReference(cref) if cref.parts.len() == 1 => {
                 let name = &*cref.parts[0].ident.text;
-                if !self.class.components.contains_key(name)
+                if !component_visible_in_class_or_base(self.def, self.class, name)
                     && find_class_by_name(self.def, name).is_some()
                 {
-                    self.diags.push(semantic_error(
+                    self.diags.push(semantic_error_or_external_compat_warning(
                         ER011_CLASS_USED_AS_VALUE,
                         format!(
                             "'{}' is a class, not a variable; cannot be used as a value (MLS §4.4)",
@@ -658,6 +658,45 @@ impl ast::Visitor for ExprTypeIssuesVisitor<'_> {
         }
         walk_expression_default(self, expr)
     }
+}
+
+fn component_visible_in_class_or_base(
+    def: &StoredDefinition,
+    class: &ClassDef,
+    name: &str,
+) -> bool {
+    component_visible_in_class_or_base_inner(def, class, name, &mut HashSet::new())
+}
+
+fn component_visible_in_class_or_base_inner(
+    def: &StoredDefinition,
+    class: &ClassDef,
+    name: &str,
+    visited: &mut HashSet<DefId>,
+) -> bool {
+    if class.components.contains_key(name) {
+        return true;
+    }
+
+    for ext in &class.extends {
+        if ext.break_names.iter().any(|break_name| break_name == name) {
+            continue;
+        }
+        let Some(base_def_id) = ext.base_def_id else {
+            continue;
+        };
+        if !visited.insert(base_def_id) {
+            continue;
+        }
+        let Some(base_class) = find_class_by_def_id(def, base_def_id) else {
+            continue;
+        };
+        if component_visible_in_class_or_base_inner(def, base_class, name, visited) {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn emit_non_boolean_if_condition(cond: &Expression, diags: &mut Vec<Diagnostic>) {

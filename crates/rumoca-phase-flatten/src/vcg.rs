@@ -11,9 +11,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
-use crate::Context;
 use crate::equations::build_qualified_name;
 use crate::path_utils::{find_last_top_level_dot, split_path_with_indices, strip_array_index};
+use crate::{Context, DisabledComponentMatcher};
 
 /// Result of the VCG spanning tree computation.
 pub(crate) struct VcgResult {
@@ -47,10 +47,10 @@ pub(crate) fn pre_collect_vcg_data(
         branches: Vec::new(),
         potential_roots: Vec::new(),
     };
+    let disabled_matcher = DisabledComponentMatcher::new(&overlay.disabled_components);
 
     for (_def_id, class_data) in &overlay.classes {
-        if crate::is_in_disabled_component(&class_data.qualified_name, &overlay.disabled_components)
-        {
+        if disabled_matcher.matches(&class_data.qualified_name) {
             continue;
         }
 
@@ -283,10 +283,10 @@ pub(crate) fn derive_optional_edges(
     let suffixes = extract_overconstrained_suffixes(&vcg_nodes);
     let mut optional_edges = Vec::new();
     let mut seen_edges: FxHashSet<(String, String)> = FxHashSet::default();
+    let disabled_matcher = DisabledComponentMatcher::new(&overlay.disabled_components);
 
     for (_def_id, class_data) in &overlay.classes {
-        if crate::is_in_disabled_component(&class_data.qualified_name, &overlay.disabled_components)
-        {
+        if disabled_matcher.matches(&class_data.qualified_name) {
             continue;
         }
         collect_optional_edges_from_connections(
@@ -307,6 +307,7 @@ fn collect_vcg_node_set<'a>(
     overlay: &'a ast::InstanceOverlay,
 ) -> FxHashSet<&'a str> {
     let mut nodes: FxHashSet<&'a str> = FxHashSet::default();
+    let disabled_matcher = DisabledComponentMatcher::new(&overlay.disabled_components);
     for (a, b) in &vcg_data.branches {
         nodes.insert(a.as_str());
         nodes.insert(b.as_str());
@@ -321,8 +322,7 @@ fn collect_vcg_node_set<'a>(
     // Include all instantiated overconstrained record paths so connect() edges can
     // map through alias connectors that do not appear in branch/root pre-scan data.
     for (_instance_id, component) in &overlay.components {
-        if crate::is_in_disabled_component(&component.qualified_name, &overlay.disabled_components)
-        {
+        if disabled_matcher.matches(&component.qualified_name) {
             continue;
         }
         if let Some(path) = &component.oc_record_path {

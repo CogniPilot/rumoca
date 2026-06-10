@@ -65,7 +65,7 @@ pub(super) fn is_side_effect_only_function(comp: &ast::ComponentReference) -> bo
     // Check for specific side-effect-only functions.
     matches!(
         func_name,
-        "assert" | "terminate" | "print" | "close" | "readLine" | "error"
+        "assert" | "terminate" | "print" | "close" | "readLine" | "error" | "checkBoundary"
     ) || is_streams_utility_function(comp)
         || is_connections_graph_function(comp)
 }
@@ -202,6 +202,9 @@ mod tests {
         assert!(is_side_effect_only_function(&cref("Connections.root")));
         assert!(is_side_effect_only_function(&cref(
             "Modelica.Utilities.Streams.print"
+        )));
+        assert!(is_side_effect_only_function(&cref(
+            "Modelica.Fluid.Utilities.checkBoundary"
         )));
         assert!(is_side_effect_only_function(&cref("print")));
         assert!(!is_side_effect_only_function(&cref("sin")));

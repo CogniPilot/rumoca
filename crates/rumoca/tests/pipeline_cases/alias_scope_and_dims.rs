@@ -1683,6 +1683,1113 @@ end UsesTableBasedState;
     );
 }
 
+/// MLS §5.3 + §7.3: A `redeclare record extends T` inside a package whose base
+/// package is reached by a fully-qualified `extends` clause must find the
+/// inherited replaceable type. This is the compact form of the Buildings
+/// `Media.Air` pattern used by Kelvin's BOPTEST parity artifact export.
+#[test]
+fn test_fully_qualified_package_extends_redeclare_record_extends_inherited_type() {
+    let source = r#"
+package Modelica
+  package Icons
+    package Package
+    end Package;
+  end Icons;
+
+  package Media
+    package Interfaces
+      partial package PartialMedium
+        replaceable record ThermodynamicState
+          Real x;
+        end ThermodynamicState;
+
+        replaceable model BaseProperties
+          input Real p;
+          input Real T;
+          ThermodynamicState state;
+        end BaseProperties;
+      end PartialMedium;
+
+      partial package PartialCondensingGases
+        extends Modelica.Media.Interfaces.PartialMedium;
+      end PartialCondensingGases;
+    end Interfaces;
+  end Media;
+end Modelica;
+
+package Buildings
+  package Media
+    package Air
+      extends Modelica.Media.Interfaces.PartialCondensingGases;
+      extends Modelica.Icons.Package;
+
+      redeclare record extends ThermodynamicState
+        Real p;
+        Real T;
+      end ThermodynamicState;
+
+      redeclare model extends BaseProperties
+      equation
+        state.p = p;
+        state.T = T;
+      end BaseProperties;
+    end Air;
+  end Media;
+end Buildings;
+
+model UsesAir
+  package Medium = Buildings.Media.Air;
+  Medium.BaseProperties medium;
+equation
+  medium.p = 101325;
+  medium.T = 295.15;
+end UsesAir;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("fully-qualified redeclare fixture should parse");
+
+    let result = session
+        .compile_model("UsesAir")
+        .expect("fully-qualified package extends must expose inherited redeclare target");
+
+    let flat_var_names: Vec<_> = result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert!(
+        flat_var_names.iter().any(|n| n == "medium.state.p"),
+        "medium.state.p should come from the Air ThermodynamicState redeclare; vars={flat_var_names:?}"
+    );
+    assert!(
+        flat_var_names.iter().any(|n| n == "medium.state.T"),
+        "medium.state.T should come from the Air ThermodynamicState redeclare; vars={flat_var_names:?}"
+    );
+}
+
+/// MLS §5.3 + §7.3: A redeclared class body in the derived package uses that
+/// package's active inherited/redeclared type members for short type names.
+/// Buildings `Media.Air` declares `redeclare replaceable model BaseProperties`
+/// with `ThermodynamicState state` in this form.
+#[test]
+fn test_redeclared_model_body_uses_sibling_redeclared_record_type() {
+    let source = r#"
+package BaseMedium
+  replaceable record ThermodynamicState
+    Real x;
+  end ThermodynamicState;
+
+  replaceable model BaseProperties
+    input Real p;
+    input Real T;
+    ThermodynamicState state;
+  end BaseProperties;
+end BaseMedium;
+
+package Air
+  extends BaseMedium;
+
+  redeclare record extends ThermodynamicState
+    Real p;
+    Real T;
+  end ThermodynamicState;
+
+  redeclare replaceable model BaseProperties
+    input Real p;
+    input Real T;
+    ThermodynamicState state;
+  equation
+    state.p = p;
+    state.T = T;
+  end BaseProperties;
+end Air;
+
+model UsesAir
+  Air.BaseProperties medium;
+equation
+  medium.p = 101325;
+  medium.T = 295.15;
+end UsesAir;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("sibling redeclare fixture should parse");
+
+    let result = session
+        .compile_model("UsesAir")
+        .expect("redeclared model body must use sibling redeclared record type");
+
+    let flat_var_names: Vec<_> = result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert!(
+        flat_var_names.iter().any(|n| n == "medium.state.p"),
+        "medium.state.p should come from sibling redeclared ThermodynamicState; vars={flat_var_names:?}"
+    );
+    assert!(
+        flat_var_names.iter().any(|n| n == "medium.state.T"),
+        "medium.state.T should come from sibling redeclared ThermodynamicState; vars={flat_var_names:?}"
+    );
+}
+
+/// MLS §5.3 + §7.3: inherited replaceable record/function members remain
+/// visible through intermediate package extends. Buildings media packages use
+/// this for `redeclare record extends ThermodynamicState` and
+/// `redeclare function extends dynamicViscosity` through
+/// `PartialCondensingGases -> PartialMixtureMedium`.
+#[test]
+fn test_redeclare_extends_finds_replaceable_members_through_intermediate_package_extends() {
+    let source = r#"
+package Modelica
+  package Media
+    package Interfaces
+      partial package PartialMedium
+        replaceable record ThermodynamicState
+          Real x;
+        end ThermodynamicState;
+
+        replaceable partial function dynamicViscosity
+          input ThermodynamicState state;
+          output Real eta;
+        end dynamicViscosity;
+
+        replaceable partial function temperature
+          input ThermodynamicState state;
+          output Real T;
+        end temperature;
+
+        replaceable partial function specificEnthalpy
+          input ThermodynamicState state;
+          output Real h;
+        end specificEnthalpy;
+      end PartialMedium;
+
+      partial package PartialMixtureMedium
+        extends Modelica.Media.Interfaces.PartialMedium;
+      end PartialMixtureMedium;
+
+      partial package PartialCondensingGases
+        extends Modelica.Media.Interfaces.PartialMixtureMedium;
+      end PartialCondensingGases;
+    end Interfaces;
+  end Media;
+end Modelica;
+
+package Buildings
+  package Media
+    package Air
+      extends Modelica.Media.Interfaces.PartialCondensingGases;
+
+      redeclare record extends ThermodynamicState
+        Real p;
+        Real T;
+      end ThermodynamicState;
+
+      redeclare function extends dynamicViscosity
+      algorithm
+        eta := state.p + state.T;
+      end dynamicViscosity;
+
+      redeclare function extends temperature
+      algorithm
+        T := state.T;
+      end temperature;
+
+      redeclare replaceable function extends specificEnthalpy
+      algorithm
+        h := state.p + state.T;
+      end specificEnthalpy;
+    end Air;
+  end Media;
+end Buildings;
+
+model UsesAirFunctions
+  Buildings.Media.Air.ThermodynamicState state;
+  Real eta;
+  Real T;
+  Real h;
+equation
+  state.p = 101325;
+  state.T = 295.15;
+  eta = Buildings.Media.Air.dynamicViscosity(state);
+  T = Buildings.Media.Air.temperature(state);
+  h = Buildings.Media.Air.specificEnthalpy(state);
+end UsesAirFunctions;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("intermediate package extends fixture should parse");
+
+    let result = session
+        .compile_model("UsesAirFunctions")
+        .expect("redeclare extends must find inherited members through intermediate packages");
+
+    let flat_var_names: Vec<_> = result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert!(
+        flat_var_names.iter().any(|n| n == "state.p"),
+        "state.p should come from the Air ThermodynamicState redeclare; vars={flat_var_names:?}"
+    );
+    assert!(
+        flat_var_names.iter().any(|n| n == "state.T"),
+        "state.T should come from the Air ThermodynamicState redeclare; vars={flat_var_names:?}"
+    );
+}
+
+/// Buildings.Media.Air redeclares `ThermodynamicState` with an empty
+/// `record extends` body. The inherited record fields and inherited functions
+/// must remain visible for later `redeclare function extends ...` clauses.
+#[test]
+fn test_empty_redeclare_record_extends_preserves_inherited_function_members() {
+    let source = r#"
+package Modelica
+  package Media
+    package Interfaces
+      partial package PartialMedium
+        replaceable record ThermodynamicState
+          Real p;
+          Real T;
+        end ThermodynamicState;
+
+        replaceable partial function temperature
+          input ThermodynamicState state;
+          output Real T;
+        end temperature;
+      end PartialMedium;
+
+      partial package PartialMixtureMedium
+        extends Modelica.Media.Interfaces.PartialMedium;
+      end PartialMixtureMedium;
+
+      partial package PartialCondensingGases
+        extends Modelica.Media.Interfaces.PartialMixtureMedium;
+      end PartialCondensingGases;
+    end Interfaces;
+  end Media;
+end Modelica;
+
+package Buildings
+  package Media
+    package Air
+      extends Modelica.Media.Interfaces.PartialCondensingGases;
+
+      redeclare record extends ThermodynamicState
+      end ThermodynamicState;
+
+      redeclare function extends temperature
+      algorithm
+        T := state.T;
+      end temperature;
+    end Air;
+  end Media;
+end Buildings;
+
+model UsesAirTemperature
+  Buildings.Media.Air.ThermodynamicState state;
+  Real T;
+equation
+  state.p = 101325;
+  state.T = 295.15;
+  T = Buildings.Media.Air.temperature(state);
+end UsesAirTemperature;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("empty record extends fixture should parse");
+
+    let result = session
+        .compile_model("UsesAirTemperature")
+        .expect("empty redeclare record extends must preserve inherited function members");
+
+    let flat_var_names: Vec<_> = result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert!(
+        flat_var_names.iter().any(|n| n == "state.T"),
+        "state.T should remain inherited through empty record extends; vars={flat_var_names:?}"
+    );
+}
+
+/// A class modification on the package extends must not hide inherited
+/// replaceable function members from later `redeclare function extends ...`
+/// lookup. Buildings.Media.Air uses a heavily modified
+/// `extends PartialCondensingGases(...)` clause before its function redeclares.
+#[test]
+fn test_class_modified_package_extends_preserves_inherited_function_members() {
+    let source = r#"
+package BaseMedium
+  constant Boolean flag = false;
+
+  replaceable record ThermodynamicState
+    Real T;
+  end ThermodynamicState;
+
+  replaceable partial function temperature
+    input ThermodynamicState state;
+    output Real T;
+  end temperature;
+end BaseMedium;
+
+package MixtureMedium
+  extends BaseMedium;
+end MixtureMedium;
+
+package CondensingGases
+  extends MixtureMedium;
+end CondensingGases;
+
+package Air
+  extends CondensingGases(flag = true);
+
+  redeclare record extends ThermodynamicState
+  end ThermodynamicState;
+
+  redeclare function extends temperature
+  algorithm
+    T := state.T;
+  end temperature;
+end Air;
+
+model UsesAirTemperature
+  Air.ThermodynamicState state;
+  Real T;
+equation
+  state.T = 295.15;
+  T = Air.temperature(state);
+end UsesAirTemperature;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("class-modified function redeclare fixture should parse");
+
+    session
+        .compile_model("UsesAirTemperature")
+        .expect("class-modified package extends must preserve inherited function members");
+}
+
+/// Buildings library layout declares the concrete medium in a separate file as
+/// `within Buildings.Media; package Air ...`. Inherited `redeclare function
+/// extends ...` lookup must use the fully-qualified enclosing package name,
+/// not the local file-root name.
+#[test]
+fn test_within_package_redeclare_extends_finds_inherited_function_members() {
+    let modelica_source = r#"
+package Modelica
+  package Media
+    package Interfaces
+      partial package PartialMedium
+        replaceable record ThermodynamicState
+          Real T;
+        end ThermodynamicState;
+
+        replaceable partial function temperature
+          input ThermodynamicState state;
+          output Real T;
+        end temperature;
+      end PartialMedium;
+
+      partial package PartialMixtureMedium
+        extends Modelica.Media.Interfaces.PartialMedium;
+      end PartialMixtureMedium;
+
+      partial package PartialCondensingGases
+        extends Modelica.Media.Interfaces.PartialMixtureMedium;
+      end PartialCondensingGases;
+    end Interfaces;
+  end Media;
+end Modelica;
+
+package Buildings
+  package Media
+  end Media;
+end Buildings;
+"#;
+
+    let air_source = r#"
+within Buildings.Media;
+package Air
+  extends Modelica.Media.Interfaces.PartialCondensingGases;
+
+  redeclare record extends ThermodynamicState
+  end ThermodynamicState;
+
+  redeclare function extends temperature
+  algorithm
+    T := state.T;
+  end temperature;
+end Air;
+"#;
+
+    let probe_source = r#"
+model UsesWithinAirTemperature
+  Buildings.Media.Air.ThermodynamicState state;
+  Real T;
+equation
+  state.T = 295.15;
+  T = Buildings.Media.Air.temperature(state);
+end UsesWithinAirTemperature;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("modelica.mo", modelica_source)
+        .expect("modelica fixture should parse");
+    session
+        .add_document("Air.mo", air_source)
+        .expect("within Air fixture should parse");
+    session
+        .add_document("probe.mo", probe_source)
+        .expect("probe fixture should parse");
+
+    session
+        .compile_model("UsesWithinAirTemperature")
+        .expect("within package redeclare extends must find inherited function members");
+}
+
+/// Plant performance records use a colon-sized abscissa and sibling arrays
+/// sized by `size(V_flow, 1)`, with the concrete abscissa supplied through a
+/// record modification. Buildings mover and cooling-tower curves use this
+/// pattern for pump pressure/efficiency and fan-power data.
+#[test]
+fn test_record_modification_array_dims_feed_sibling_size_dimensions() {
+    let source = r#"
+record FlowParameters
+  parameter Real V_flow[:] = {0.0, 1.0};
+  parameter Real dp[size(V_flow, 1)] = {1.0, 0.0};
+end FlowParameters;
+
+record PerformanceData
+  parameter FlowParameters pressure(
+    V_flow = {0.0, 1.0, 2.0},
+    dp = {2.0, 1.0, 0.0});
+end PerformanceData;
+
+model Pump
+  parameter PerformanceData per;
+  parameter Real curveDer[size(per.pressure.V_flow, 1)] = {0.0, 0.0, 0.0};
+end Pump;
+
+model UsesPumpRecordCurves
+  Pump pump;
+end UsesPumpRecordCurves;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("record curve fixture should parse");
+
+    let result = session
+        .compile_model("UsesPumpRecordCurves")
+        .expect("record modifications should drive sibling size() dimensions");
+
+    let pump_der_dims = result
+        .flat
+        .variables
+        .iter()
+        .find_map(|(name, var)| (name.to_string() == "pump.curveDer").then_some(var.dims.clone()))
+        .expect("pump.curveDer should be present");
+    assert_eq!(
+        pump_der_dims,
+        vec![3],
+        "pump.der should use modified per.pressure.V_flow length"
+    );
+
+    let pressure_dp_dims = result
+        .flat
+        .variables
+        .iter()
+        .find_map(|(name, var)| {
+            (name.to_string() == "pump.per.pressure.dp").then_some(var.dims.clone())
+        })
+        .expect("pump.per.pressure.dp should be present");
+    assert_eq!(
+        pressure_dp_dims,
+        vec![3],
+        "record field dp should use sibling V_flow length from record modification"
+    );
+}
+
+/// Array component modifications distribute over component elements. For a
+/// component array `pump[n](VolFloCur=VolFloCur)` where the modifier expression
+/// is `VolFloCur[n,:]`, each `pump[i].VolFloCur[:]` receives row `i`; downstream
+/// record curves sized by `size(V_flow, 1)` must see that row length.
+#[test]
+fn test_array_component_row_modification_feeds_record_size_dimensions() {
+    let source = r#"
+record FlowParameters
+  parameter Real V_flow[:] = {0.0, 1.0};
+  parameter Real dp[size(V_flow, 1)] = {1.0, 0.0};
+end FlowParameters;
+
+record PerformanceData
+  parameter FlowParameters pressure(
+    V_flow = {0.0, 1.0},
+    dp = {1.0, 0.0});
+end PerformanceData;
+
+model WithoutMotor
+  parameter Real VolFloCur[:];
+  parameter Real PreCur[:];
+  parameter PerformanceData per(
+    pressure(V_flow = VolFloCur, dp = PreCur));
+end WithoutMotor;
+
+model PumpSystem
+  parameter Integer n = 2;
+  parameter Real VolFloCur[n, :] = {{0.0, 1.0, 2.0} for i in linspace(1, n, n)};
+  parameter Real PreCur[n, :] = {{2.0, 1.0, 0.0} for i in linspace(1, n, n)};
+  WithoutMotor pump[n](
+    VolFloCur = VolFloCur,
+    PreCur = PreCur);
+end PumpSystem;
+
+model UsesPumpSystemRecordCurves
+  PumpSystem sys;
+end UsesPumpSystemRecordCurves;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("array component row fixture should parse");
+
+    let result = session
+        .compile_model("UsesPumpSystemRecordCurves")
+        .expect("array component row modifiers should drive record curve dimensions");
+
+    let dims = result
+        .flat
+        .variables
+        .iter()
+        .find_map(|(name, var)| {
+            (name.to_string() == "sys.pump[1].per.pressure.dp").then_some(var.dims.clone())
+        })
+        .expect("sys.pump[1].per.pressure.dp should be present");
+    assert_eq!(
+        dims,
+        vec![3],
+        "array component row modifier should provide one VolFloCur row"
+    );
+}
+
+/// Buildings air-side heat exchangers redeclare `Medium2 = MediumAir`, where
+/// `MediumAir` is a package alias with class modifications. The active medium's
+/// inherited `ThermodynamicState.X[nX]` must evaluate `nX` in the concrete
+/// medium package scope, not in the component instance scope.
+#[test]
+fn test_redeclared_modified_medium_alias_drives_thermodynamic_state_nx() {
+    let source = r#"
+package PartialMedium
+  constant String substanceNames[:] = {"base"};
+  final constant Integer nS = size(substanceNames, 1);
+  final constant Integer nX = nS;
+  constant String extraPropertiesNames[:] = fill("", 0);
+
+  replaceable record ThermodynamicState
+    Real X[nX];
+  end ThermodynamicState;
+end PartialMedium;
+
+package MixtureMedium
+  extends PartialMedium(substanceNames = {"water", "air"});
+
+  redeclare replaceable record extends ThermodynamicState
+    Real p;
+    Real T;
+  end ThermodynamicState;
+end MixtureMedium;
+
+package Air
+  extends MixtureMedium(extraPropertiesNames = {"CO2"});
+
+  redeclare record extends ThermodynamicState
+  end ThermodynamicState;
+end Air;
+
+model Coil
+  replaceable package Medium2 = PartialMedium;
+  Medium2.ThermodynamicState state_a2_inflow;
+end Coil;
+
+model UsesModifiedAirMedium
+  package MediumAir = Air(extraPropertiesNames = {"CO2"});
+  Coil coil(redeclare package Medium2 = MediumAir);
+end UsesModifiedAirMedium;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("modified medium alias fixture should parse");
+
+    let result = session
+        .compile_model("UsesModifiedAirMedium")
+        .expect("modified medium alias should provide ThermodynamicState.nX");
+
+    let dims = result
+        .flat
+        .variables
+        .iter()
+        .find_map(|(name, var)| {
+            (name.to_string() == "coil.state_a2_inflow.X").then_some(var.dims.clone())
+        })
+        .expect("coil.state_a2_inflow.X should be present");
+    assert_eq!(dims, vec![2], "state X should use Air.nX=2");
+}
+
+/// MLS §7.2 + §7.3: a package redeclare with class modifications must still
+/// replace the package used by inherited component types. Buildings media
+/// examples use `extends PartialProperties(redeclare package Medium =
+/// Buildings.Media.Steam(p_default=...))` before accessing
+/// `basPro.state.p/T`.
+#[test]
+fn test_inherited_component_type_uses_redeclared_package_with_class_modification() {
+    let source = r#"
+package BaseMedium
+  constant Real p_default = 1;
+
+  replaceable record ThermodynamicState
+    Real x;
+  end ThermodynamicState;
+
+  replaceable model BaseProperties
+    input Real p;
+    input Real T;
+    ThermodynamicState state;
+  end BaseProperties;
+end BaseMedium;
+
+package Steam
+  extends BaseMedium;
+  constant Real p_default = 2;
+
+  redeclare record ThermodynamicState
+    Real p;
+    Real T;
+  end ThermodynamicState;
+
+  redeclare replaceable model extends BaseProperties
+  equation
+    state.p = p;
+    state.T = T;
+  end BaseProperties;
+end Steam;
+
+partial model PartialProperties
+  replaceable package Medium = BaseMedium;
+  parameter Real p = Medium.p_default;
+  Medium.BaseProperties basPro;
+end PartialProperties;
+
+model SteamProperties
+  extends PartialProperties(
+    redeclare package Medium = Steam(p_default = 200000),
+    p = 200000);
+equation
+  basPro.p = p;
+  basPro.T = 295.15;
+  basPro.state.p = p;
+  basPro.state.T = 295.15;
+end SteamProperties;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("class-modified package redeclare fixture should parse");
+
+    let result = session
+        .compile_model("SteamProperties")
+        .expect("class-modified package redeclare must control inherited component type");
+
+    let flat_var_names: Vec<_> = result
+        .flat
+        .variables
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
+    assert!(
+        flat_var_names.iter().any(|n| n == "basPro.state.p"),
+        "basPro.state.p should come from redeclared package Medium; vars={flat_var_names:?}"
+    );
+    assert!(
+        flat_var_names.iter().any(|n| n == "basPro.state.T"),
+        "basPro.state.T should come from redeclared package Medium; vars={flat_var_names:?}"
+    );
+}
+
+/// MLS §5.3 + §7.3: unqualified constants from the enclosing package of a
+/// redeclared member model remain visible after instantiation. Buildings
+/// `Media.Steam.BaseProperties` uses this as `MM = steam.MM` where `steam` is a
+/// package-level constant record.
+#[test]
+fn test_redeclared_member_model_reads_enclosing_package_record_constant_field() {
+    let source = r#"
+package BaseMedium
+  replaceable model BaseProperties
+    Real MM;
+  end BaseProperties;
+end BaseMedium;
+
+package Data
+  record Species
+    Real MM;
+    Real R_s;
+  end Species;
+
+  constant Species H2O(MM=18.01528, R_s=461.5);
+end Data;
+
+package Steam
+  extends BaseMedium;
+
+protected
+  record GasProperties
+    Real MM;
+    Real R;
+  end GasProperties;
+
+  constant GasProperties steam(MM=Data.H2O.MM, R=Data.H2O.R_s);
+
+public
+  redeclare replaceable model extends BaseProperties
+  equation
+    MM = steam.MM;
+  end BaseProperties;
+end Steam;
+
+partial model PartialProperties
+  replaceable package Medium = BaseMedium;
+  Medium.BaseProperties basPro;
+end PartialProperties;
+
+model SteamProperties
+  extends PartialProperties(redeclare package Medium = Steam);
+equation
+  basPro.MM = 18.01528;
+end SteamProperties;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("record constant field fixture should parse");
+
+    let phase_result = session
+        .compile_model_phases("SteamProperties")
+        .expect("redeclared member model should compile through DAE lowering");
+    assert!(
+        matches!(phase_result, PhaseResult::Success(_)),
+        "record constant field should not remain as unresolved basPro.steam.MM; got {phase_result:?}"
+    );
+}
+
+/// MLS §5.3: sibling functions can read constant fields from a lexical nested
+/// record class namespace. MSL IF97 uses `data.RH2O` inside functions nested
+/// under `BaseIF97.Basic`, where `data` is a record class in `BaseIF97`.
+#[test]
+fn test_function_body_reads_lexical_nested_record_class_constant_field() {
+    let source = r#"
+package IF97
+  record data
+    constant Real RH2O = 461.526;
+  end data;
+
+  package Basic
+    function g2
+      input Real p;
+      output Real r;
+    algorithm
+      r := data.RH2O * p;
+    end g2;
+  end Basic;
+end IF97;
+
+model UsesIF97
+  Real y;
+equation
+  y = IF97.Basic.g2(2.0);
+end UsesIF97;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("lexical record class constant fixture should parse");
+
+    let phase_result = session
+        .compile_model_phases("UsesIF97")
+        .expect("lexical record class constant fixture should compile");
+    assert!(
+        matches!(phase_result, PhaseResult::Success(_)),
+        "function body should qualify and substitute data.RH2O; got {phase_result:?}"
+    );
+}
+
+/// MLS §5.3: lexical nested record class constants must also be substituted
+/// when they appear in function-body branch conditions. MSL IF97 uses
+/// `if T < data.TLIMIT1 then ...` in nested utility functions.
+#[test]
+fn test_function_body_if_condition_reads_lexical_nested_record_class_constant_field() {
+    let source = r#"
+package IF97
+  record data
+    constant Real TLIMIT1 = 623.15;
+  end data;
+
+  package Basic
+    function region
+      input Real T;
+      output Real r;
+    algorithm
+      if T < data.TLIMIT1 then
+        r := 1.0;
+      else
+        r := 2.0;
+      end if;
+    end region;
+  end Basic;
+end IF97;
+
+model UsesIF97
+  Real y;
+equation
+  y = IF97.Basic.region(300.0);
+end UsesIF97;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("lexical record class branch constant fixture should parse");
+
+    let phase_result = session
+        .compile_model_phases("UsesIF97")
+        .expect("lexical record class branch constant fixture should compile");
+    assert!(
+        matches!(phase_result, PhaseResult::Success(_)),
+        "function branch condition should substitute data.TLIMIT1; got {phase_result:?}"
+    );
+}
+
+/// MLS §5.3: lexical class aliases must climb from a nested package function
+/// to an ancestor package sibling record. This mirrors
+/// `IF97_Utilities.BaseIF97.Basic.region_*` reading `BaseIF97.data.TLIMIT1`.
+#[test]
+fn test_nested_package_function_reads_ancestor_sibling_record_constant_field() {
+    let source = r#"
+package IF97_Utilities
+  package BaseIF97
+    record data
+      constant Real TLIMIT1 = 623.15;
+    end data;
+
+    package Basic
+      function region
+        input Real T;
+        output Real r;
+      algorithm
+        if T < data.TLIMIT1 then
+          r := 1.0;
+        else
+          r := 2.0;
+        end if;
+      end region;
+    end Basic;
+  end BaseIF97;
+end IF97_Utilities;
+
+model UsesIF97
+  Real y;
+equation
+  y = IF97_Utilities.BaseIF97.Basic.region(300.0);
+end UsesIF97;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("ancestor sibling record constant fixture should parse");
+
+    let phase_result = session
+        .compile_model_phases("UsesIF97")
+        .expect("ancestor sibling record constant fixture should compile");
+    assert!(
+        matches!(phase_result, PhaseResult::Success(_)),
+        "nested package function should substitute ancestor sibling data.TLIMIT1; got {phase_result:?}"
+    );
+}
+
+/// MLS §5.3: constants in assertion messages and builtin String arguments must
+/// use the same lexical class alias substitution as numeric branch conditions.
+/// MSL IF97 emits messages like `String(data.TLIMIT1)`.
+#[test]
+fn test_assert_message_string_reads_ancestor_sibling_record_constant_field() {
+    let source = r#"
+package IF97_Utilities
+  package BaseIF97
+    record data
+      constant Real TLIMIT1 = 623.15;
+    end data;
+
+    package Basic
+      function bounded
+        input Real T;
+        output Real r;
+      algorithm
+        assert(T >= data.TLIMIT1, "T < " + String(data.TLIMIT1));
+        r := T;
+      end bounded;
+    end Basic;
+  end BaseIF97;
+end IF97_Utilities;
+
+model UsesIF97
+  Real y;
+equation
+  y = IF97_Utilities.BaseIF97.Basic.bounded(700.0);
+end UsesIF97;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("assert message record constant fixture should parse");
+
+    let phase_result = session
+        .compile_model_phases("UsesIF97")
+        .expect("assert message record constant fixture should compile");
+    assert!(
+        matches!(phase_result, PhaseResult::Success(_)),
+        "assert message should substitute data.TLIMIT1 in String(); got {phase_result:?}"
+    );
+}
+
+/// MLS §5.3: dependency functions collected from another function call keep
+/// the lexical class aliases of their own package scope. MSL SteamProperties
+/// reaches IF97 helpers through a chain of function dependencies.
+#[test]
+fn test_dependency_function_reads_ancestor_sibling_record_constant_field() {
+    let source = r#"
+package IF97_Utilities
+  package BaseIF97
+    record data
+      constant Real TLIMIT1 = 623.15;
+    end data;
+
+    package Inverses
+      function bounded
+        input Real T;
+        output Real r;
+      algorithm
+        assert(T >= data.TLIMIT1, "T < " + String(data.TLIMIT1));
+        r := T - data.TLIMIT1;
+      end bounded;
+    end Inverses;
+
+    package Regions
+      function region
+        input Real T;
+        output Real r;
+      algorithm
+        r := Inverses.bounded(T);
+      end region;
+    end Regions;
+  end BaseIF97;
+end IF97_Utilities;
+
+model UsesIF97
+  Real y;
+equation
+  y = IF97_Utilities.BaseIF97.Regions.region(700.0);
+end UsesIF97;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("dependency function record constant fixture should parse");
+
+    let phase_result = session
+        .compile_model_phases("UsesIF97")
+        .expect("dependency function record constant fixture should compile");
+    assert!(
+        matches!(phase_result, PhaseResult::Success(_)),
+        "dependency function should substitute ancestor sibling data.TLIMIT1; got {phase_result:?}"
+    );
+}
+
+/// MLS §5.3 + §7.3: function bodies can read fields from a fully-qualified
+/// package-level constant record. Buildings.Media.Steam uses
+/// `Buildings.Media.Steam.steam.MM` in a function body; the referenced class
+/// scope is `Buildings.Media.Steam`, not the constant record instance
+/// `Buildings.Media.Steam.steam`.
+#[test]
+fn test_function_body_reads_fully_qualified_package_record_constant_field() {
+    let source = r#"
+package Buildings
+  package Media
+    package Steam
+      record GasProperties
+        Real MM;
+        Real R;
+      end GasProperties;
+
+      constant GasProperties steam(MM=18.01528, R=461.5);
+
+      function molarMass
+        output Real MM;
+      algorithm
+        MM := Buildings.Media.Steam.steam.MM;
+      end molarMass;
+    end Steam;
+  end Media;
+end Buildings;
+
+model UsesSteam
+  Real y;
+equation
+  y = Buildings.Media.Steam.molarMass();
+end UsesSteam;
+"#;
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("fully-qualified package record constant fixture should parse");
+
+    let phase_result = session
+        .compile_model_phases("UsesSteam")
+        .expect("fully-qualified package record constant fixture should compile");
+    assert!(
+        matches!(phase_result, PhaseResult::Success(_)),
+        "function body should substitute Buildings.Media.Steam.steam.MM; got {phase_result:?}"
+    );
+}
+
 /// MLS §5.3 + §7.3: model-level `extends(... redeclare package Medium=...)`
 /// must override unrelated import aliases, and short member types inside
 /// `Medium.BaseProperties` (e.g. `ThermodynamicState state`) must resolve to

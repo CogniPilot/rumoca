@@ -229,34 +229,72 @@ fn is_outside_flow_var_for_scope(
 /// This means unconnected flow variables get `flow_var = 0` equations.
 /// Check if a connection involves a disabled component.
 /// MLS §4.8: Conditional components with false conditions are disabled.
+#[cfg(test)]
 pub(crate) fn connection_involves_disabled(
     conn: &ast::InstanceConnection,
     disabled_components: &std::collections::HashSet<String>,
 ) -> bool {
-    // Get the qualified names of both connection ends (first element of tuple is the name)
-    let a_parts: Vec<_> = conn.a.parts.iter().map(|(name, _)| name.as_str()).collect();
-    let b_parts: Vec<_> = conn.b.parts.iter().map(|(name, _)| name.as_str()).collect();
+    DisabledConnectionMatcher::new(disabled_components).matches(conn)
+}
 
-    // Check if any prefix of the connection path matches a disabled component
-    for disabled in disabled_components {
-        let disabled_parts = split_path_with_indices(disabled);
+struct DisabledConnectionMatcher {
+    prefixes_by_first: rustc_hash::FxHashMap<String, Vec<Vec<String>>>,
+}
 
-        // Check if 'a' starts with this disabled component
-        if a_parts.len() >= disabled_parts.len()
-            && a_parts[..disabled_parts.len()] == disabled_parts[..]
-        {
-            return true;
+impl DisabledConnectionMatcher {
+    fn new(disabled_components: &std::collections::HashSet<String>) -> Self {
+        let mut prefixes_by_first: rustc_hash::FxHashMap<String, Vec<Vec<String>>> =
+            rustc_hash::FxHashMap::default();
+        for disabled in disabled_components {
+            let disabled_parts: Vec<String> = split_path_with_indices(disabled)
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            let Some(first) = disabled_parts.first() else {
+                continue;
+            };
+            prefixes_by_first
+                .entry(first.clone())
+                .or_default()
+                .push(disabled_parts);
         }
-
-        // Check if 'b' starts with this disabled component
-        if b_parts.len() >= disabled_parts.len()
-            && b_parts[..disabled_parts.len()] == disabled_parts[..]
-        {
-            return true;
-        }
+        Self { prefixes_by_first }
     }
 
-    false
+    fn matches(&self, conn: &ast::InstanceConnection) -> bool {
+        if self.prefixes_by_first.is_empty() {
+            return false;
+        }
+        // Get the qualified names of both connection ends (first element of tuple is the name)
+        let a_parts: Vec<_> = conn.a.parts.iter().map(|(name, _)| name.as_str()).collect();
+        let b_parts: Vec<_> = conn.b.parts.iter().map(|(name, _)| name.as_str()).collect();
+
+        path_matches_disabled_prefix(&a_parts, &self.prefixes_by_first)
+            || path_matches_disabled_prefix(&b_parts, &self.prefixes_by_first)
+    }
+}
+
+fn path_matches_disabled_prefix(
+    parts: &[&str],
+    prefixes_by_first: &rustc_hash::FxHashMap<String, Vec<Vec<String>>>,
+) -> bool {
+    let Some(candidates) = parts
+        .first()
+        .and_then(|first| prefixes_by_first.get(*first))
+    else {
+        return false;
+    };
+    candidates
+        .iter()
+        .any(|disabled_parts| path_starts_with_disabled_parts(parts, disabled_parts))
+}
+
+fn path_starts_with_disabled_parts(parts: &[&str], disabled_parts: &[String]) -> bool {
+    parts.len() >= disabled_parts.len()
+        && parts
+            .iter()
+            .zip(disabled_parts.iter())
+            .all(|(part, disabled)| *part == disabled)
 }
 
 /// Build a prefix-to-children index for O(1) sub-variable lookups.
@@ -293,11 +331,12 @@ pub(crate) fn process_connections(
     // Collect all connections from class instances, excluding disabled components.
     // MLS §5.4: Redirect outer-prefixed connection paths to their inner equivalents.
     let mut owned_connections: Vec<ast::InstanceConnection> = Vec::new();
+    let disabled_matcher = DisabledConnectionMatcher::new(&overlay.disabled_components);
 
     for (_def_id, class_data) in &overlay.classes {
         for conn in &class_data.connections {
             // MLS §4.8: Skip connections involving disabled conditional components
-            if connection_involves_disabled(conn, &overlay.disabled_components) {
+            if disabled_matcher.matches(conn) {
                 continue;
             }
             let redirected = redirect_connection_for_inner_outer(conn, overlay);

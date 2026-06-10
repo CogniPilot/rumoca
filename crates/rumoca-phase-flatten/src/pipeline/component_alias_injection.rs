@@ -17,12 +17,14 @@ pub(crate) fn inject_component_instance_nested_class_constants(
         .values()
         .map(|comp| (comp.qualified_name.to_flat_string(), comp))
         .collect();
+    let disabled_matcher = DisabledComponentMatcher::new(&overlay.disabled_components);
     for _pass in 0..MAX_PASSES {
-        let prev = ctx.parameter_values.len()
-            + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+        let prev = component_constant_footprint(ctx);
 
         for comp in overlay.components.values() {
+            if disabled_matcher.matches(&comp.qualified_name) {
+                continue;
+            }
             let comp_scope = comp.qualified_name.to_flat_string();
             if comp_scope.is_empty() {
                 continue;
@@ -76,13 +78,20 @@ pub(crate) fn inject_component_instance_nested_class_constants(
             }
         }
 
-        let new = ctx.parameter_values.len()
-            + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+        let new = component_constant_footprint(ctx);
         if new == prev {
             break;
         }
     }
+}
+
+fn component_constant_footprint(ctx: &Context) -> usize {
+    ctx.parameter_values.len()
+        + ctx.real_parameter_values.len()
+        + ctx.boolean_parameter_values.len()
+        + ctx.enum_parameter_values.len()
+        + ctx.constant_values.len()
+        + ctx.array_dimensions.len()
 }
 
 pub(crate) fn inject_component_declared_class_overrides(
@@ -105,6 +114,7 @@ pub(crate) fn inject_component_declared_class_overrides(
         let alias_resolve_context = tree.def_map.get(def_id).map(String::as_str).unwrap_or("");
 
         let alias_scope = format!("{comp_scope}.{alias_name}");
+        inject_referenced_constant_scopes(tree, alias_class, ctx);
         extract_constants_from_class_with_prefix(&alias_scope, alias_class, ctx);
         for ext in &alias_class.extends {
             apply_extends_constants_for_scope(tree, &alias_scope, ext, alias_resolve_context, ctx);
@@ -118,6 +128,7 @@ pub(crate) fn inject_component_declared_class_overrides(
             continue;
         }
 
+        inject_referenced_constant_scopes(tree, alias_class, ctx);
         extract_constants_from_class_with_prefix(comp_scope, alias_class, ctx);
         for ext in &alias_class.extends {
             apply_extends_constants_for_scope(tree, comp_scope, ext, alias_resolve_context, ctx);
@@ -145,9 +156,7 @@ pub(crate) fn inject_component_enclosing_class_constants(
 
     const MAX_PASSES: usize = 5;
     for _pass in 0..MAX_PASSES {
-        let prev = ctx.parameter_values.len()
-            + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+        let prev = component_constant_footprint(ctx);
 
         for ancestor in &ancestors {
             let resolve_context = ancestor
@@ -157,15 +166,118 @@ pub(crate) fn inject_component_enclosing_class_constants(
             for ext in &ancestor.extends {
                 apply_extends_constants_for_scope(tree, comp_scope, ext, &resolve_context, ctx);
             }
+            inject_referenced_constant_scopes(tree, ancestor, ctx);
             extract_constants_from_class_with_prefix(comp_scope, ancestor, ctx);
         }
 
-        let new = ctx.parameter_values.len()
-            + ctx.array_dimensions.len()
-            + ctx.boolean_parameter_values.len();
+        let new = component_constant_footprint(ctx);
         if new == prev {
             break;
         }
+    }
+}
+
+fn inject_referenced_constant_scopes(tree: &ClassTree, class_def: &ClassDef, ctx: &mut Context) {
+    let mut scopes = rustc_hash::FxHashSet::default();
+    for comp in class_def.components.values() {
+        if let Some(binding) = &comp.binding {
+            collect_qualified_constant_scopes(tree, binding, &mut scopes);
+        }
+        if !matches!(comp.start, rumoca_ir_ast::Expression::Empty) {
+            collect_qualified_constant_scopes(tree, &comp.start, &mut scopes);
+        }
+        for modification in comp.modifications.values() {
+            collect_qualified_constant_scopes(tree, modification, &mut scopes);
+        }
+    }
+
+    for scope in scopes {
+        if !ctx
+            .injected_referenced_constant_scopes
+            .insert(scope.clone())
+        {
+            continue;
+        }
+        let Some(scope_class) = tree.get_class_by_qualified_name(&scope) else {
+            continue;
+        };
+        extract_constants_from_class_with_prefix(&scope, scope_class, ctx);
+    }
+}
+
+fn collect_qualified_constant_scopes(
+    tree: &ClassTree,
+    expr: &rumoca_ir_ast::Expression,
+    scopes: &mut rustc_hash::FxHashSet<String>,
+) {
+    match expr {
+        rumoca_ir_ast::Expression::ComponentReference(cr) => {
+            let parts = cr
+                .parts
+                .iter()
+                .map(|part| part.ident.text.as_ref())
+                .collect::<Vec<_>>();
+            if parts.len() < 3 {
+                return;
+            }
+            for prefix_len in (1..=parts.len() - 2).rev() {
+                let candidate = parts[..prefix_len].join(".");
+                if tree.get_class_by_qualified_name(&candidate).is_some() {
+                    scopes.insert(candidate);
+                    break;
+                }
+            }
+        }
+        rumoca_ir_ast::Expression::ClassModification { modifications, .. }
+        | rumoca_ir_ast::Expression::Array {
+            elements: modifications,
+            ..
+        }
+        | rumoca_ir_ast::Expression::Tuple {
+            elements: modifications,
+        } => {
+            for child in modifications {
+                collect_qualified_constant_scopes(tree, child, scopes);
+            }
+        }
+        rumoca_ir_ast::Expression::NamedArgument { value, .. }
+        | rumoca_ir_ast::Expression::Parenthesized { inner: value }
+        | rumoca_ir_ast::Expression::Unary { rhs: value, .. } => {
+            collect_qualified_constant_scopes(tree, value, scopes);
+        }
+        rumoca_ir_ast::Expression::Modification { value, .. } => {
+            collect_qualified_constant_scopes(tree, value, scopes);
+        }
+        rumoca_ir_ast::Expression::Binary { lhs, rhs, .. } => {
+            collect_qualified_constant_scopes(tree, lhs, scopes);
+            collect_qualified_constant_scopes(tree, rhs, scopes);
+        }
+        rumoca_ir_ast::Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_qualified_constant_scopes(tree, arg, scopes);
+            }
+        }
+        rumoca_ir_ast::Expression::FieldAccess { base, .. } => {
+            collect_qualified_constant_scopes(tree, base, scopes);
+        }
+        rumoca_ir_ast::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, value) in branches {
+                collect_qualified_constant_scopes(tree, cond, scopes);
+                collect_qualified_constant_scopes(tree, value, scopes);
+            }
+            collect_qualified_constant_scopes(tree, else_branch, scopes);
+        }
+        rumoca_ir_ast::Expression::Range { start, step, end } => {
+            collect_qualified_constant_scopes(tree, start, scopes);
+            if let Some(step) = step {
+                collect_qualified_constant_scopes(tree, step, scopes);
+            }
+            collect_qualified_constant_scopes(tree, end, scopes);
+        }
+        _ => {}
     }
 }
 

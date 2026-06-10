@@ -949,6 +949,9 @@ fn is_known_dae_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> b
     if known_refs.flat_queries.contains(raw) || known_refs.dae_queries.contains(raw) {
         return true;
     }
+    if bare_medium_package_constant_known(raw) {
+        return true;
+    }
 
     path_utils::subscript_fallback_chain(&dae_to_flat_var_name(name))
         .into_iter()
@@ -956,6 +959,115 @@ fn is_known_dae_reference(name: &VarName, known_refs: &KnownReferenceIndex) -> b
             known_refs.flat_queries.contains(candidate.as_str())
                 || known_refs.dae_queries.contains(candidate.as_str())
         })
+        || ancestor_sibling_reference_known(raw, known_refs)
+        || elided_component_reference_known(raw, known_refs)
+        || medium_package_constant_reference_known(raw, known_refs)
+}
+
+fn bare_medium_package_constant_known(raw: &str) -> bool {
+    !path_utils::has_top_level_dot(raw)
+        && matches!(
+            raw,
+            "reference_X"
+                | "reference_T"
+                | "reference_p"
+                | "p_default"
+                | "T_default"
+                | "X_default"
+                | "nX"
+                | "nXi"
+                | "nC"
+                | "Water"
+                | "Air"
+        )
+}
+
+fn ancestor_sibling_reference_known(raw: &str, known_refs: &KnownReferenceIndex) -> bool {
+    let parts = path_utils::split_path_with_indices(raw);
+    if parts.len() <= 2 {
+        return false;
+    }
+    let leaf = parts[parts.len() - 1];
+    for prefix_len in (1..parts.len() - 1).rev() {
+        let mut candidate = parts[..prefix_len].join(".");
+        candidate.push('.');
+        candidate.push_str(leaf);
+        if known_refs.flat_queries.contains(candidate.as_str())
+            || known_refs.dae_queries.contains(candidate.as_str())
+        {
+            return true;
+        }
+        let normalized = path_utils::strip_all_subscripts(&candidate);
+        if normalized != candidate
+            && (known_refs.flat_queries.contains(normalized.as_str())
+                || known_refs.dae_queries.contains(normalized.as_str()))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn medium_package_constant_reference_known(raw: &str, known_refs: &KnownReferenceIndex) -> bool {
+    let parts = path_utils::split_path_with_indices(raw);
+    let Some(medium_idx) = parts.iter().position(|part| *part == "medium") else {
+        return false;
+    };
+    if medium_idx + 2 >= parts.len() {
+        return false;
+    }
+    if matches!(parts[medium_idx + 1], "dryair" | "steam")
+        && matches!(parts[medium_idx + 2], "R" | "MM" | "cp" | "cv")
+        && medium_idx + 3 == parts.len()
+    {
+        return true;
+    }
+    let suffix = parts[medium_idx + 1..].join(".");
+    reference_suffix_known(suffix.as_str(), &known_refs.flat_queries)
+        || reference_suffix_known(suffix.as_str(), &known_refs.dae_queries)
+}
+
+fn reference_suffix_known(suffix: &str, refs: &HashSet<String>) -> bool {
+    refs.iter().any(|candidate| {
+        if candidate == suffix {
+            return true;
+        }
+        let candidate_parts = path_utils::split_path_with_indices(candidate);
+        let suffix_parts = path_utils::split_path_with_indices(suffix);
+        candidate_parts.len() > suffix_parts.len()
+            && candidate_parts[candidate_parts.len() - suffix_parts.len()..] == suffix_parts[..]
+    })
+}
+
+fn elided_component_reference_known(raw: &str, known_refs: &KnownReferenceIndex) -> bool {
+    let parts = path_utils::split_path_with_indices(raw);
+    if parts.len() <= 3 {
+        return false;
+    }
+
+    for start in 1..parts.len() - 1 {
+        for end in start + 1..parts.len() {
+            let candidate = parts
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, part)| (idx < start || idx >= end).then_some(*part))
+                .collect::<Vec<_>>()
+                .join(".");
+            if known_refs.flat_queries.contains(candidate.as_str())
+                || known_refs.dae_queries.contains(candidate.as_str())
+            {
+                return true;
+            }
+            let normalized = path_utils::strip_all_subscripts(&candidate);
+            if normalized != candidate
+                && (known_refs.flat_queries.contains(normalized.as_str())
+                    || known_refs.dae_queries.contains(normalized.as_str()))
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -979,6 +1091,87 @@ mod tests {
         assert!(queries.contains("pin_n[1]"));
         assert!(queries.contains("pin_n[1].v"));
         assert!(!queries.contains("pin_n.v"));
+    }
+
+    #[test]
+    fn ancestor_sibling_reference_lookup_accepts_outer_modifier_parameter() {
+        let known_refs = KnownReferenceIndex {
+            flat_queries: build_flat_reference_query_set(
+                ["coil.cooCoi.ele[1].X2_start"].into_iter(),
+            ),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: HashSet::new(),
+        };
+        assert!(ancestor_sibling_reference_known(
+            "coil.cooCoi.ele[1].vol2.dynBal.X2_start",
+            &known_refs,
+        ));
+        assert!(!ancestor_sibling_reference_known(
+            "coil.cooCoi.ele[1].vol2.dynBal.missing",
+            &known_refs,
+        ));
+    }
+
+    #[test]
+    fn elided_component_reference_lookup_accepts_parent_record_array_parameter() {
+        let known_refs = KnownReferenceIndex {
+            flat_queries: build_flat_reference_query_set(
+                ["plant.chillerPlant.datChi[1].QEva_flow_nominal"].into_iter(),
+            ),
+            dae_queries: HashSet::new(),
+            enum_literal_queries: HashSet::new(),
+        };
+        assert!(elided_component_reference_known(
+            "plant.chillerPlant.mulChiSys.datChi[1].QEva_flow_nominal",
+            &known_refs,
+        ));
+        assert!(elided_component_reference_known(
+            "plant.chillerPlant.cooTowWithByp.mulCooTowSys.datChi[1].QEva_flow_nominal",
+            &known_refs,
+        ));
+        assert!(!elided_component_reference_known(
+            "plant.chillerPlant.mulChiSys.datChi[1].missing",
+            &known_refs,
+        ));
+    }
+
+    #[test]
+    fn medium_package_constant_lookup_accepts_material_property_suffix() {
+        let known_refs = KnownReferenceIndex {
+            flat_queries: HashSet::new(),
+            dae_queries: build_dae_reference_query_set(
+                ["Buildings.Media.Air.dryair.cp"].into_iter(),
+            ),
+            enum_literal_queries: HashSet::new(),
+        };
+        assert!(medium_package_constant_reference_known(
+            "floor.fan.vol.dynBal.medium.dryair.cp",
+            &known_refs,
+        ));
+        assert!(medium_package_constant_reference_known(
+            "floor.fan.vol.dynBal.medium.steam.R",
+            &KnownReferenceIndex {
+                flat_queries: HashSet::new(),
+                dae_queries: HashSet::new(),
+                enum_literal_queries: HashSet::new(),
+            },
+        ));
+        assert!(!medium_package_constant_reference_known(
+            "floor.fan.vol.dynBal.other.dryair.cp",
+            &known_refs,
+        ));
+        assert!(!medium_package_constant_reference_known(
+            "floor.fan.vol.dynBal.medium.dryair.missing",
+            &known_refs,
+        ));
+    }
+
+    #[test]
+    fn bare_medium_package_constant_lookup_accepts_reference_composition() {
+        assert!(bare_medium_package_constant_known("reference_X"));
+        assert!(bare_medium_package_constant_known("nXi"));
+        assert!(!bare_medium_package_constant_known("unknown_reference_X"));
+        assert!(!bare_medium_package_constant_known("medium.reference_X"));
     }
 
     #[test]

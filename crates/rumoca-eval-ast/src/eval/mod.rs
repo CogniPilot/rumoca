@@ -66,6 +66,9 @@ fn lookup_with_scope<'a, T: PartialEq>(
     if let Some(val) = lookup_by_scope(name, scope, map) {
         return Some(val);
     }
+    if !scope.is_empty() {
+        return None;
+    }
 
     // Suffix fallback for package constants (MLS §7.3).
     // For bare names like "nX", look for any entry ending in ".nX".
@@ -96,6 +99,9 @@ fn lookup_structural_with_scope<'a, T: PartialEq>(
 ) -> Option<&'a T> {
     if let Some(value) = lookup_by_scope(name, scope, map) {
         return Some(value);
+    }
+    if !scope.is_empty() {
+        return None;
     }
 
     if has_top_level_dot(name) {
@@ -258,12 +264,26 @@ pub struct TypeCheckEvalContext {
     pub enum_sizes: FxHashMap<String, usize>,
     pub enum_ordinals: FxHashMap<String, i64>,
     suffix_index: Option<SuffixIndex>,
+    suffix_index_fingerprint: Option<SuffixIndexFingerprint>,
 }
 
 struct SuffixIndex {
     keys: Vec<String>,
+    key_set: FxHashSet<String>,
     keys_by_suffix: FxHashMap<String, Vec<usize>>,
     keys_by_dotted_suffix: FxHashMap<String, Vec<usize>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SuffixIndexFingerprint {
+    integers: usize,
+    reals: usize,
+    booleans: usize,
+    enums: usize,
+    dimensions: usize,
+    functions: usize,
+    enum_ordinals: usize,
+    enum_sizes: usize,
 }
 
 impl SuffixIndex {
@@ -272,7 +292,7 @@ impl SuffixIndex {
     }
 
     fn insert_key(&mut self, key: String) {
-        if self.keys.iter().any(|existing| existing == &key) {
+        if !self.key_set.insert(key.clone()) {
             return;
         }
         let key_idx = self.keys.len();
@@ -342,10 +362,16 @@ impl TypeCheckEvalContext {
             enum_sizes: FxHashMap::default(),
             enum_ordinals: FxHashMap::default(),
             suffix_index: None,
+            suffix_index_fingerprint: None,
         }
     }
 
     pub fn build_suffix_index(&mut self) {
+        let fingerprint = self.suffix_index_fingerprint();
+        if self.suffix_index.is_some() && self.suffix_index_fingerprint == Some(fingerprint) {
+            return;
+        }
+
         let mut keys_by_suffix: FxHashMap<String, Vec<usize>> = FxHashMap::default();
         let mut keys_by_dotted_suffix: FxHashMap<String, Vec<usize>> = FxHashMap::default();
         let mut seen: FxHashSet<String> = FxHashSet::default();
@@ -380,9 +406,24 @@ impl TypeCheckEvalContext {
 
         self.suffix_index = Some(SuffixIndex {
             keys,
+            key_set: seen,
             keys_by_suffix,
             keys_by_dotted_suffix,
         });
+        self.suffix_index_fingerprint = Some(fingerprint);
+    }
+
+    fn suffix_index_fingerprint(&self) -> SuffixIndexFingerprint {
+        SuffixIndexFingerprint {
+            integers: self.integers.len(),
+            reals: self.reals.len(),
+            booleans: self.booleans.len(),
+            enums: self.enums.len(),
+            dimensions: self.dimensions.len(),
+            functions: self.functions.len(),
+            enum_ordinals: self.enum_ordinals.len(),
+            enum_sizes: self.enum_sizes.len(),
+        }
     }
 
     pub fn add_integer(&mut self, name: impl Into<String>, value: i64) {

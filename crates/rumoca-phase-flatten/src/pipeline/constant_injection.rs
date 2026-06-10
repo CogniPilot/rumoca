@@ -20,6 +20,12 @@ pub(crate) fn apply_extends_constants_for_scope(
     resolve_context: &str,
     ctx: &mut Context,
 ) {
+    let cache_key = extends_constant_cache_key(scope, ext, resolve_context);
+    let footprint = 0;
+    if ctx.applied_extends_constant_footprints.get(&cache_key) == Some(&footprint) {
+        return;
+    }
+
     extract_extends_modification_constants(tree, scope, ext, resolve_context, ctx);
     if let Some(base_qname) =
         resolve_extends_base_qname(tree, &ext.base_name.to_string(), resolve_context)
@@ -35,6 +41,16 @@ pub(crate) fn apply_extends_constants_for_scope(
         resolve_context,
         ctx,
     );
+    ctx.applied_extends_constant_footprints
+        .insert(cache_key, footprint);
+}
+
+fn extends_constant_cache_key(
+    scope: &str,
+    ext: &rumoca_ir_ast::Extend,
+    resolve_context: &str,
+) -> String {
+    format!("{scope}\0{}\0{resolve_context}", ext.base_name)
 }
 
 pub(crate) fn inject_nested_class_constants(
@@ -268,13 +284,14 @@ pub(crate) fn extract_constants_from_class(class_def: &ClassDef, ctx: &mut Conte
 /// Lookup helper with lexical scope traversal.
 ///
 /// Tries `scope.name`, then progressively shorter scopes, then bare `name`.
-/// For dotted names only, a final unique full-suffix lookup is allowed
-/// (e.g. `medium.nXi` can match `source.medium.nXi` when unique).
+/// For dotted names without a lexical scope, a final unique full-suffix lookup
+/// is allowed (e.g. `medium.nXi` can match `source.medium.nXi` when unique).
 pub(crate) fn lookup_with_scope<V: Clone + PartialEq>(
     name: &str,
     scope: &str,
     map: &rustc_hash::FxHashMap<String, V>,
 ) -> Option<V> {
+    let original_scope = scope;
     let mut current_scope = scope;
     loop {
         let qualified = if current_scope.is_empty() {
@@ -296,7 +313,7 @@ pub(crate) fn lookup_with_scope<V: Clone + PartialEq>(
     if let Some(val) = map.get(name) {
         return Some(val.clone());
     }
-    if crate::path_utils::has_top_level_dot(name) {
+    if original_scope.is_empty() && crate::path_utils::has_top_level_dot(name) {
         return lookup_unique_dotted_suffix(name, map);
     }
     None
@@ -885,6 +902,7 @@ pub(crate) fn lookup_constant_expr_with_scope(
     scope: &str,
     map: &rustc_hash::FxHashMap<String, rumoca_ir_flat::Expression>,
 ) -> Option<rumoca_ir_flat::Expression> {
+    let original_scope = scope;
     let mut current_scope = scope;
     loop {
         let qualified = if current_scope.is_empty() {
@@ -906,18 +924,18 @@ pub(crate) fn lookup_constant_expr_with_scope(
     if let Some(val) = map.get(name) {
         return Some(val.clone());
     }
-    if crate::path_utils::has_top_level_dot(name) {
+    if original_scope.is_empty() && crate::path_utils::has_top_level_dot(name) {
         let suffix = format!(".{name}");
-        let mut matched: Option<rumoca_ir_flat::Expression> = None;
+        let mut matched: Option<&rumoca_ir_flat::Expression> = None;
         for (key, val) in map {
             if !key.ends_with(&suffix) {
                 continue;
             }
-            if matched.replace(val.clone()).is_some() {
+            if matched.replace(val).is_some() {
                 return None;
             }
         }
-        return matched;
+        return matched.cloned();
     }
     None
 }
@@ -1585,6 +1603,21 @@ pub(crate) struct Context {
     /// Current import map for the class instance being processed (MLS §13.2).
     /// Set before processing each class instance's equations, cleared after.
     pub current_imports: crate::qualify::ImportMap,
+    /// Last context footprint observed after extracting constants for a
+    /// `(prefix, class)` pair. Re-scan when the footprint changes so multi-pass
+    /// constant dependencies can still converge.
+    pub(crate) extracted_constant_prefix_class_footprints: rustc_hash::FxHashMap<String, usize>,
+    /// Referenced package/class scopes already injected through
+    /// `inject_referenced_constant_scopes`. These scopes are independent of the
+    /// component prefix and otherwise get rediscovered for many component
+    /// instances of the same library classes.
+    pub(crate) injected_referenced_constant_scopes: rustc_hash::FxHashSet<String>,
+    /// Last context footprint observed after applying an extends constant chain
+    /// for a `(scope, base, resolve context)` tuple.
+    pub(crate) applied_extends_constant_footprints: rustc_hash::FxHashMap<String, usize>,
+    /// Enum parameter bindings that failed to resolve at a given lookup
+    /// fingerprint. They should be retried only after the lookup maps grow.
+    pub(crate) enum_binding_failure_fingerprints: rustc_hash::FxHashMap<String, usize>,
 }
 
 #[cfg(test)]

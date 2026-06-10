@@ -1,15 +1,19 @@
 use super::ToDaeError;
 use super::{eval_scalar_const_expr, extract_time_event_instant};
 use indexmap::IndexMap;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::{ExpressionVisitor, ImplicitSampleChecker, VarRefWithSubscriptsCollector};
 
+type ClockTimingCache = HashMap<(String, usize), Option<(f64, f64)>>;
+
 struct SourceMap<'a> {
     forward: HashMap<String, Vec<&'a dae::Expression>>,
     reverse_alias: HashMap<String, Vec<String>>,
+    clock_timing_cache: RefCell<ClockTimingCache>,
 }
 
 impl<'a> SourceMap<'a> {
@@ -17,6 +21,7 @@ impl<'a> SourceMap<'a> {
         Self {
             forward,
             reverse_alias: HashMap::new(),
+            clock_timing_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -1110,6 +1115,10 @@ fn infer_clock_timing_from_var_ref(
     visiting: &mut HashSet<String>,
 ) -> Option<(f64, f64)> {
     let key = canonical_var_ref_key(name, subscripts, constants)?;
+    let cache_key = (key.clone(), remaining_depth);
+    if let Some(cached) = sources.clock_timing_cache.borrow().get(&cache_key).copied() {
+        return cached;
+    }
     if !visiting.insert(key.clone()) {
         return None;
     }
@@ -1141,6 +1150,10 @@ fn infer_clock_timing_from_var_ref(
         )
     });
     visiting.remove(&key);
+    sources
+        .clock_timing_cache
+        .borrow_mut()
+        .insert(cache_key, inferred);
     inferred
 }
 

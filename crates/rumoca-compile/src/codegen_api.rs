@@ -2,6 +2,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use serde_json::Value;
 
+pub use rumoca_phase_codegen::DaeTemplateContext;
+
 pub fn dae_to_template_json(dae_model: &dae::Dae) -> Value {
     rumoca_phase_codegen::dae_template_json(dae_model)
 }

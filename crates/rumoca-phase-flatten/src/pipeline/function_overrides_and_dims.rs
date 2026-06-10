@@ -1,4 +1,5 @@
 use super::*;
+use crate::path_utils::top_level_last_segment;
 
 pub(crate) type ComponentOverrideMap =
     rustc_hash::FxHashMap<String, rustc_hash::FxHashMap<String, String>>;
@@ -130,8 +131,9 @@ pub(crate) fn component_overrides(
 pub(crate) fn build_component_override_map(
     overlay: &InstanceOverlay,
     tree: &ClassTree,
+    model_name: &str,
 ) -> ComponentOverrideMap {
-    overlay
+    let mut map: ComponentOverrideMap = overlay
         .components
         .values()
         .map(|instance| {
@@ -140,7 +142,114 @@ pub(crate) fn build_component_override_map(
                 component_overrides(instance, tree),
             )
         })
-        .collect()
+        .collect();
+
+    for class_data in overlay.classes.values() {
+        let scope = class_data.qualified_name.to_flat_string();
+        let class_name = if scope.is_empty() {
+            Some(model_name.to_string())
+        } else {
+            class_scope_name_for_override_context(class_data)
+        };
+        let Some(class_name) = class_name else {
+            continue;
+        };
+        let class_overrides = class_redeclare_package_overrides(tree, &class_name);
+        if class_overrides.is_empty() {
+            continue;
+        }
+        map.entry(scope).or_default().extend(class_overrides);
+    }
+
+    map
+}
+
+fn class_scope_name_for_override_context(class_data: &ClassInstanceData) -> Option<String> {
+    class_data
+        .equations
+        .first()
+        .map(|eq| eq.origin.to_flat_string())
+        .or_else(|| {
+            class_data
+                .initial_equations
+                .first()
+                .map(|eq| eq.origin.to_flat_string())
+        })
+        .or_else(|| {
+            class_data
+                .algorithms
+                .first()
+                .and_then(|alg| alg.first().map(|stmt| stmt.origin.to_flat_string()))
+        })
+        .or_else(|| {
+            class_data
+                .initial_algorithms
+                .first()
+                .and_then(|alg| alg.first().map(|stmt| stmt.origin.to_flat_string()))
+        })
+}
+
+fn class_redeclare_package_overrides(
+    tree: &ClassTree,
+    class_name: &str,
+) -> rustc_hash::FxHashMap<String, String> {
+    let mut overrides = rustc_hash::FxHashMap::default();
+    let class = tree
+        .get_class_by_qualified_name(class_name)
+        .or_else(|| tree.get_class_by_qualified_name(top_level_last_segment(class_name)));
+    let Some(class) = class else {
+        return overrides;
+    };
+    let resolve_context = class
+        .def_id
+        .and_then(|id| tree.def_map.get(&id).map(String::as_str))
+        .unwrap_or(class_name);
+
+    for ext in &class.extends {
+        for ext_mod in &ext.modifications {
+            let Some((alias, package_name)) =
+                resolve_extends_redeclare_package_override(tree, resolve_context, ext_mod)
+            else {
+                continue;
+            };
+            overrides.insert(alias, package_name);
+        }
+    }
+
+    overrides
+}
+
+fn resolve_extends_redeclare_package_override(
+    tree: &ClassTree,
+    resolve_context: &str,
+    ext_mod: &rumoca_ir_ast::ExtendModification,
+) -> Option<(String, String)> {
+    if !ext_mod.redeclare {
+        return None;
+    }
+    let rumoca_ir_ast::Expression::Modification { target, value } = &ext_mod.expr else {
+        return None;
+    };
+    if target.parts.len() != 1 {
+        return None;
+    }
+    let alias = target.parts[0].ident.text.to_string();
+    let package_name = match value.as_ref() {
+        rumoca_ir_ast::Expression::ClassModification { target, .. } => target.to_string(),
+        rumoca_ir_ast::Expression::ComponentReference(cr) => cr.to_string(),
+        _ => return None,
+    };
+    let package_class = resolve_class_in_scope(tree, &package_name, resolve_context)
+        .0
+        .or_else(|| tree.get_class_by_qualified_name(&package_name))?;
+    if !matches!(package_class.class_type, rumoca_ir_ast::ClassType::Package) {
+        return None;
+    }
+    let resolved_package_name = package_class
+        .def_id
+        .and_then(|id| tree.def_map.get(&id).cloned())
+        .unwrap_or(package_name);
+    Some((alias, resolved_package_name))
 }
 
 pub(crate) fn override_context_for_scope(

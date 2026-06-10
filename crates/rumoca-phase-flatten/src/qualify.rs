@@ -51,6 +51,35 @@ pub(crate) fn collect_lexical_package_aliases(
     }
 }
 
+/// Add lexical nested class aliases visible from `class_name` into the import map.
+///
+/// This covers non-package class namespaces such as MSL IF97's
+/// `BaseIF97.data.RH2O`, where `data` is a nested record class containing
+/// constant fields and is referenced unqualified from sibling functions.
+pub(crate) fn collect_lexical_class_aliases(
+    tree: &ast::ClassTree,
+    class_name: &str,
+    imports: &mut ImportMap,
+) {
+    let mut ancestors = Vec::new();
+    let mut scope = class_name;
+    while let Some((parent, _)) = scope.rsplit_once('.') {
+        ancestors.push(parent.to_string());
+        scope = parent;
+    }
+
+    for ancestor in ancestors {
+        let Some(ancestor_class) = tree.get_class_by_qualified_name(&ancestor) else {
+            continue;
+        };
+        for name in ancestor_class.classes.keys() {
+            imports
+                .entry(name.clone())
+                .or_insert_with(|| format!("{ancestor}.{name}"));
+        }
+    }
+}
+
 /// Options for component reference qualification.
 #[derive(Default, Clone, Copy)]
 pub struct QualifyOptions {

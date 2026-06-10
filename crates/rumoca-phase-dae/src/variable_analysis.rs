@@ -723,12 +723,44 @@ fn is_builtin_or_runtime_intrinsic_function(name: &VarName) -> bool {
     BuiltinFunction::from_name(short_name).is_some()
         || BuiltinFunction::from_name(&short_name.to_ascii_lowercase()).is_some()
         || is_runtime_intrinsic_function_short_name(short_name)
+        || is_external_object_constructor_name(name.as_str())
+}
+
+fn is_external_object_constructor_name(name: &str) -> bool {
+    name.ends_with(".SpawnExternalObject") || name == "SpawnExternalObject"
 }
 
 pub(crate) fn resolve_flat_function<'a>(name: &VarName, flat: &'a Model) -> Option<&'a Function> {
-    // Strict lookup only: function calls must already be fully resolved during
-    // compile/lower phases. No suffix/name heuristics here.
-    flat.functions.get(name)
+    if let Some(func) = flat.functions.get(name)
+        && function_is_executable(func)
+    {
+        return Some(func);
+    }
+    let leaf = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+    let mut found = None;
+    for func in flat.functions.values() {
+        if !function_is_executable(func) {
+            continue;
+        }
+        if func
+            .name
+            .as_str()
+            .rsplit('.')
+            .next()
+            .unwrap_or(func.name.as_str())
+            != leaf
+        {
+            continue;
+        }
+        if found.replace(func).is_some() {
+            return flat.functions.get(name);
+        }
+    }
+    found.or_else(|| flat.functions.get(name))
+}
+
+fn function_is_executable(func: &Function) -> bool {
+    func.external.is_some() || !func.body.is_empty()
 }
 
 fn validate_function_call_name(name: &VarName, flat: &Model, span: Span) -> Result<(), ToDaeError> {
@@ -740,7 +772,7 @@ fn validate_function_call_name(name: &VarName, flat: &Model, span: Span) -> Resu
         return Err(ToDaeError::unresolved_function_call(name.as_str(), span));
     };
 
-    if func.external.is_none() && func.body.is_empty() {
+    if !function_is_executable(func) {
         let short_name = func
             .name
             .as_str()

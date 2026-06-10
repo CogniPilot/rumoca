@@ -121,10 +121,9 @@ fn insert_compile_time_scalar(values: &mut HashMap<String, f64>, name: &str, val
         values.insert(name.to_string(), value);
         changed = true;
     }
-    if let Some(base) = dae::component_base_name(name)
-        && values
-            .get(base.as_str())
-            .is_none_or(|existing| (existing - value).abs() > 1.0e-12)
+    if name.contains('[')
+        && let Some(base) = component_base_name_fast(name)
+        && !values.contains_key(base.as_str())
     {
         values.insert(base, value);
         changed = true;
@@ -135,13 +134,13 @@ fn insert_compile_time_scalar(values: &mut HashMap<String, f64>, name: &str, val
 fn collect_array_elements_scalar_entries(
     name: &dae::VarName,
     elements: &[dae::Expression],
-    values: &HashMap<String, f64>,
+    values: &ScalarConstLookup<'_>,
 ) -> Vec<(String, f64)> {
     elements
         .iter()
         .enumerate()
         .filter_map(|(index, element)| {
-            eval_scalar_const_expr(element, values)
+            eval_scalar_const_expr_with_lookup(element, values)
                 .map(|value| (format!("{}[{}]", name.as_str(), index + 1), value))
         })
         .collect()
@@ -152,16 +151,16 @@ fn collect_range_scalar_entries(
     start: &dae::Expression,
     step: Option<&dae::Expression>,
     end: &dae::Expression,
-    values: &HashMap<String, f64>,
+    values: &ScalarConstLookup<'_>,
 ) -> Vec<(String, f64)> {
-    let Some(mut current) = eval_scalar_const_expr(start, values) else {
+    let Some(mut current) = eval_scalar_const_expr_with_lookup(start, values) else {
         return Vec::new();
     };
-    let Some(end_value) = eval_scalar_const_expr(end, values) else {
+    let Some(end_value) = eval_scalar_const_expr_with_lookup(end, values) else {
         return Vec::new();
     };
     let step_value = step
-        .and_then(|expr| eval_scalar_const_expr(expr, values))
+        .and_then(|expr| eval_scalar_const_expr_with_lookup(expr, values))
         .unwrap_or(1.0);
     if step_value.abs() <= f64::EPSILON {
         return Vec::new();
@@ -188,7 +187,7 @@ fn collect_range_scalar_entries(
 fn collect_array_scalar_entries(
     name: &dae::VarName,
     start: &dae::Expression,
-    values: &HashMap<String, f64>,
+    values: &ScalarConstLookup<'_>,
 ) -> Vec<(String, f64)> {
     match start {
         dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
@@ -218,10 +217,12 @@ fn collect_compile_time_scalars(dae_model: &dae::Dae) -> HashMap<String, f64> {
     for _ in 0..max_passes {
         let mut changed = false;
         for (name, start) in &bindings {
-            if let Some(value) = eval_scalar_const_expr(start, &values) {
+            let lookup = ScalarConstLookup::new(&values);
+            if let Some(value) = eval_scalar_const_expr_with_lookup(start, &lookup) {
                 changed |= insert_compile_time_scalar(&mut values, name.as_str(), value);
             }
-            for (indexed_name, indexed_value) in collect_array_scalar_entries(name, start, &values)
+            let lookup = ScalarConstLookup::new(&values);
+            for (indexed_name, indexed_value) in collect_array_scalar_entries(name, start, &lookup)
             {
                 changed |= insert_compile_time_scalar(&mut values, &indexed_name, indexed_value);
             }
@@ -246,31 +247,106 @@ fn scalar_almost_eq(lhs: f64, rhs: f64) -> bool {
     (lhs - rhs).abs() <= 1.0e-12 * (1.0 + lhs.abs().max(rhs.abs()))
 }
 
+fn component_base_name_fast(name: &str) -> Option<String> {
+    let mut output = String::with_capacity(name.len());
+    let mut segment_start = 0usize;
+    let mut depth = 0i32;
+    let mut wrote_any = false;
+
+    for (idx, ch) in name.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            '.' if depth == 0 => {
+                if segment_start >= idx {
+                    return None;
+                }
+                let segment = &name[segment_start..idx];
+                let base = segment
+                    .split_once('[')
+                    .map(|(base, _)| base)
+                    .unwrap_or(segment);
+                if base.is_empty() {
+                    return None;
+                }
+                if wrote_any {
+                    output.push('.');
+                }
+                output.push_str(base);
+                wrote_any = true;
+                segment_start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+
+    if depth != 0 || segment_start >= name.len() {
+        return None;
+    }
+    let tail = &name[segment_start..];
+    let base = tail.split_once('[').map(|(base, _)| base).unwrap_or(tail);
+    if base.is_empty() {
+        return None;
+    }
+    if wrote_any {
+        output.push('.');
+    }
+    output.push_str(base);
+    Some(output)
+}
+
+struct ScalarConstLookup<'a> {
+    values: &'a HashMap<String, f64>,
+}
+
+impl<'a> ScalarConstLookup<'a> {
+    fn new(values: &'a HashMap<String, f64>) -> Self {
+        Self { values }
+    }
+
+    fn get(&self, key: &str) -> Option<f64> {
+        self.values
+            .get(key)
+            .copied()
+            .or_else(|| self.get_indexed_base(key))
+    }
+
+    fn get_indexed_base(&self, key: &str) -> Option<f64> {
+        if !key.contains('[') {
+            return None;
+        }
+        if let Some(base) = component_base_name_fast(key) {
+            return self.values.get(base.as_str()).copied();
+        }
+        None
+    }
+}
+
 fn lookup_scalar_const_var_ref(
     name: &dae::VarName,
     subscripts: &[dae::Subscript],
-    constants: &HashMap<String, f64>,
+    constants: &ScalarConstLookup<'_>,
 ) -> Option<f64> {
     if subscripts.is_empty() {
-        return constants.get(name.as_str()).copied().or_else(|| {
-            dae::component_base_name(name.as_str()).and_then(|base| constants.get(&base).copied())
-        });
+        return constants.get(name.as_str());
     }
-    let key = clock::canonical_var_ref_key(name, subscripts, constants)?;
-    constants
-        .get(&key)
-        .copied()
-        .or_else(|| dae::component_base_name(&key).and_then(|base| constants.get(&base).copied()))
+    let key = clock::canonical_var_ref_key(name, subscripts, constants.values)?;
+    constants.get(&key)
 }
 
 fn eval_scalar_named_function(
     short_name: &str,
     args: &[dae::Expression],
-    constants: &HashMap<String, f64>,
+    constants: &ScalarConstLookup<'_>,
 ) -> Option<f64> {
     let arg = |i: usize| -> Option<f64> {
         args.get(i)
-            .and_then(|value| eval_scalar_const_expr(value, constants))
+            .and_then(|value| eval_scalar_const_expr_with_lookup(value, constants))
     };
     match short_name {
         "Integer" | "integer" | "floor" => arg(0).map(f64::floor),
@@ -302,9 +378,9 @@ fn eval_scalar_named_function(
 fn eval_scalar_unary(
     op: &rumoca_ir_core::OpUnary,
     rhs: &dae::Expression,
-    constants: &HashMap<String, f64>,
+    constants: &ScalarConstLookup<'_>,
 ) -> Option<f64> {
-    let value = eval_scalar_const_expr(rhs, constants)?;
+    let value = eval_scalar_const_expr_with_lookup(rhs, constants)?;
     match op {
         rumoca_ir_core::OpUnary::Plus(_) | rumoca_ir_core::OpUnary::DotPlus(_) => Some(value),
         rumoca_ir_core::OpUnary::Minus(_) | rumoca_ir_core::OpUnary::DotMinus(_) => Some(-value),
@@ -345,10 +421,10 @@ fn eval_scalar_binary(
     op: &rumoca_ir_core::OpBinary,
     lhs: &dae::Expression,
     rhs: &dae::Expression,
-    constants: &HashMap<String, f64>,
+    constants: &ScalarConstLookup<'_>,
 ) -> Option<f64> {
-    let lhs_value = eval_scalar_const_expr(lhs, constants)?;
-    let rhs_value = eval_scalar_const_expr(rhs, constants)?;
+    let lhs_value = eval_scalar_const_expr_with_lookup(lhs, constants)?;
+    let rhs_value = eval_scalar_const_expr_with_lookup(rhs, constants)?;
     match op {
         rumoca_ir_core::OpBinary::Add(_) | rumoca_ir_core::OpBinary::AddElem(_) => {
             Some(lhs_value + rhs_value)
@@ -381,11 +457,11 @@ fn eval_scalar_binary(
 fn eval_scalar_builtin(
     function: dae::BuiltinFunction,
     args: &[dae::Expression],
-    constants: &HashMap<String, f64>,
+    constants: &ScalarConstLookup<'_>,
 ) -> Option<f64> {
     let arg = |i: usize| -> Option<f64> {
         args.get(i)
-            .and_then(|value| eval_scalar_const_expr(value, constants))
+            .and_then(|value| eval_scalar_const_expr_with_lookup(value, constants))
     };
     match function {
         dae::BuiltinFunction::NoEvent => arg(0),
@@ -417,6 +493,14 @@ fn eval_scalar_builtin(
 }
 
 fn eval_scalar_const_expr(expr: &dae::Expression, constants: &HashMap<String, f64>) -> Option<f64> {
+    let lookup = ScalarConstLookup::new(constants);
+    eval_scalar_const_expr_with_lookup(expr, &lookup)
+}
+
+fn eval_scalar_const_expr_with_lookup(
+    expr: &dae::Expression,
+    constants: &ScalarConstLookup<'_>,
+) -> Option<f64> {
     match expr {
         dae::Expression::Literal(dae::Literal::Integer(value)) => Some(*value as f64),
         dae::Expression::Literal(dae::Literal::Real(value)) => Some(*value),

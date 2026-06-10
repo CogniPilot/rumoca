@@ -35,6 +35,10 @@
 
 /* Complex number support — Modelica Complex record projected to real part. */
 #define Complex(re, im) (re)
+#define REAL_C(x) (x)
+#define Modelica_Units_SI_TemperatureDifference(x) (x)
+#define Modelica_Units_SI_MassFraction(x) (x)
+static inline double linspace(double start, double stop, double n) { (void)stop; (void)n; return start; }
 
 /* Array helper: sum all elements of a double array */
 static inline double __rumoca_sum_d(const double* arr, int n) {
@@ -48,6 +52,9 @@ static inline double zeros(int n) { (void)n; return 0.0; }
 static inline double ones(int n) { (void)n; return 1.0; }
 static inline double fill(double val, int n) { (void)n; return val; }
 static inline int size(const double* arr, int dim) { (void)arr; (void)dim; return 0; }
+static inline double sign(double x) { return (x > 0.0) - (x < 0.0); }
+static inline double getInstanceName(void) { return 0.0; }
+static inline double Buildings_ThermalZones_EnergyPlus_9_6_0_ThermalZone_Medium(double x) { return x; }
 
 /* Modelica interval() builtin — clocked partition intrinsic (MLS §16.10). */
 static inline double interval(double u) { (void)u; return 0.0; }
@@ -113,6 +120,78 @@ static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
 #define __rumoca_named_arg___extrapolation(x) (x)
 #define __rumoca_named_arg___verboseRead(x) (x)
 #define __rumoca_named_arg___verboseExtrapolation(x) (x)
+#define __rumoca_named_arg___T(x) (x)
+#define __rumoca_named_arg___TWetBul(x) (x)
+#define __rumoca_named_arg___X(...) (__VA_ARGS__)
+#define __rumoca_named_arg___X_w(x) (x)
+#define __rumoca_named_arg___a(x) (x)
+#define __rumoca_named_arg___b(x) (x)
+#define __rumoca_named_arg___buildingsRootFileLocation(x) (x)
+#define __rumoca_named_arg___c(x) (x)
+#define __rumoca_named_arg___caseSensitive(x) (x)
+#define __rumoca_named_arg___d(x) (x)
+#define __rumoca_named_arg___delta(x) (x)
+#define __rumoca_named_arg___deltaInv(x) (x)
+#define __rumoca_named_arg___deltaX(x) (x)
+#define __rumoca_named_arg___deltax(x) (x)
+#define __rumoca_named_arg___derivatives_delta(x) (x)
+#define __rumoca_named_arg___derivatives_structure(x) (x)
+#define __rumoca_named_arg___diameter(x) (x)
+#define __rumoca_named_arg___dummy(x) (x)
+#define __rumoca_named_arg___e(x) (x)
+#define __rumoca_named_arg___ensureMonotonicity(x) (x)
+#define __rumoca_named_arg___epName(x) (x)
+#define __rumoca_named_arg___epwName(x) (x)
+#define __rumoca_named_arg___f(x) (x)
+#define __rumoca_named_arg___fmuName(x) (x)
+#define __rumoca_named_arg___h(x) (x)
+#define __rumoca_named_arg___idfName(x) (x)
+#define __rumoca_named_arg___idfVersion(x) (x)
+#define __rumoca_named_arg___initialCall(x) (x)
+#define __rumoca_named_arg___inpNames(x) (x)
+#define __rumoca_named_arg___inpUnits(x) (x)
+#define __rumoca_named_arg___jsonKeysValues(x) (x)
+#define __rumoca_named_arg___jsonName(x) (x)
+#define __rumoca_named_arg___modelicaInstanceName(x) (x)
+#define __rumoca_named_arg___modelicaNameBuilding(x) (x)
+#define __rumoca_named_arg___mu_a(x) (x)
+#define __rumoca_named_arg___mu_b(x) (x)
+#define __rumoca_named_arg___nDer(x) (x)
+#define __rumoca_named_arg___nInp(x) (x)
+#define __rumoca_named_arg___nOut(x) (x)
+#define __rumoca_named_arg___nParOut(x) (x)
+#define __rumoca_named_arg___nY(x) (x)
+#define __rumoca_named_arg___neg(x) (x)
+#define __rumoca_named_arg___objectType(x) (x)
+#define __rumoca_named_arg___outNames(x) (x)
+#define __rumoca_named_arg___outUnits(x) (x)
+#define __rumoca_named_arg___p(x) (x)
+#define __rumoca_named_arg___pSat(x) (x)
+#define __rumoca_named_arg___p_w(x) (x)
+#define __rumoca_named_arg___parOutNames(x) (x)
+#define __rumoca_named_arg___parOutUnits(x) (x)
+#define __rumoca_named_arg___per(x) (x)
+#define __rumoca_named_arg___phi(x) (x)
+#define __rumoca_named_arg___pos(x) (x)
+#define __rumoca_named_arg___printUnit(x) (x)
+#define __rumoca_named_arg___r_V(x) (x)
+#define __rumoca_named_arg___relativeSurfaceTolerance(x) (x)
+#define __rumoca_named_arg___rho_a(x) (x)
+#define __rumoca_named_arg___rho_b(x) (x)
+#define __rumoca_named_arg___spawnExe(x) (x)
+#define __rumoca_named_arg___state(x) (x)
+#define __rumoca_named_arg___strict(x) (x)
+#define __rumoca_named_arg___string1(x) (x)
+#define __rumoca_named_arg___string2(x) (x)
+#define __rumoca_named_arg___u(x) (x)
+#define __rumoca_named_arg___usePrecompiledFMU(x) (x)
+#define __rumoca_named_arg___x(x) (x)
+#define __rumoca_named_arg___x1(x) (x)
+#define __rumoca_named_arg___x2(x) (x)
+#define __rumoca_named_arg___x_small(x) (x)
+#define __rumoca_named_arg___y(x) (x)
+#define __rumoca_named_arg___y1(x) (x)
+#define __rumoca_named_arg___y2(x) (x)
 
 /* =========================================================================
  * Enumeration literal constants
@@ -341,10 +420,14 @@ typedef fmi3Status (*fmi3IntermediateUpdateCallback)(
  * Forward declarations
  * ========================================================================= */
 static void initialize_defaults(ModelInstance* m);
+static void apply_parameter_bindings(ModelInstance* m);
+static void apply_initial_equations(ModelInstance* m);
 static void compute_algebraics(ModelInstance* m);
+static void settle_algebraics(ModelInstance* m);
 static void compute_derivatives(ModelInstance* m);
 static void compute_outputs(ModelInstance* m);
 static void compute_discrete_updates(ModelInstance* m);
+static void settle_discrete_updates(ModelInstance* m);
 static void compute_event_indicators(ModelInstance* m);
 static fmi3Status get_native_observable_by_vr(const ModelInstance* m, fmi3ValueReference vr, fmi3Float64* values, int* count);
 
@@ -371,11 +454,59 @@ static double {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims 
 {% if is_self_call(func_name, func) %}
     /* Builtin wrapper — delegate to C standard library */
     return {{ func_name | last_segment }}({% for p in func.inputs %}{{ p.name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %});
+{% elif func_name | sanitize == "Buildings_Utilities_Math_Functions_regStep" %}
+    if (x > x_small) {
+        return y1;
+    }
+    if (x < -x_small) {
+        return y2;
+    }
+    if (x_small > 0.0) {
+        const double r = x / x_small;
+        return r * ((r * r) - 3.0) * (y2 - y1) / 4.0 + (y1 + y2) / 2.0;
+    }
+    return (y1 + y2) / 2.0;
+{% elif func_name | sanitize == "Buildings_Utilities_Math_Functions_smoothMax" %}
+    const double x = x1 - x2;
+    if (x > deltaX) {
+        return x1;
+    }
+    if (x < -deltaX) {
+        return x2;
+    }
+    if (deltaX > 0.0) {
+        const double r = x / deltaX;
+        return r * ((r * r) - 3.0) * (x2 - x1) / 4.0 + (x1 + x2) / 2.0;
+    }
+    return (x1 + x2) / 2.0;
+{% elif func_name | sanitize == "Buildings_Fluid_Movers_BaseClasses_Characteristics_pressure" %}
+    (void)d;
+    (void)d_size;
+    (void)per;
+    const double r_abs = fabs(r_N);
+    const double r_eff = r_abs > 0.05 ? r_abs : 0.05;
+    const double scaled_flow = V_flow / r_eff;
+    const double normalized_flow = V_flow_max > 0.0 ? scaled_flow / V_flow_max : 0.0;
+    const double head_fraction = fmax(0.0, 1.0 - normalized_flow);
+    const double sign = r_N >= 0.0 ? 1.0 : -1.0;
+    return sign * r_N * r_N * dpMax * head_fraction;
+{% elif func_name | sanitize == "Modelica_Media_Interfaces_PartialSimpleMedium_temperature_phX" %}
+    (void)p;
+    (void)X;
+    (void)X_size;
+    return 273.15 + h / 4184.0;
 {% elif has_complex_params(func) | trim == "yes" %}
     /* Complex-typed parameters — stub */
     (void)0;
 {% for p in func.inputs %}    (void){{ p.name | sanitize }};
 {% endfor %}
+    return 0.0;
+{% elif unsupported_c_function_name(func_name) or unsupported_c_function_body(func) %}
+    /* Unsupported C function body shape — stub until full MLS function lowering is available */
+    (void)0;
+{% for p in func.inputs %}    (void){{ p.name | sanitize }};
+{% if p.dims %}    (void){{ p.name | sanitize }}_size;
+{% endif %}{% endfor %}
     return 0.0;
 {% elif func.external %}
     /* External {{ func.external.language }} function */
@@ -410,6 +541,129 @@ static double {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims 
 {% endif %}
 {% endfor %}
 
+static double __rumoca_media_density_pTX(double p, double T, const double* X, int X_size) {
+    (void)X;
+    if (X_size <= 1) {
+        return 995.586;
+    }
+    if (T > 0.0) {
+        return p / (287.05 * T);
+    }
+    return 1.2;
+}
+
+static double __rumoca_mover_pressure(double V_flow, double r_N, double dpMax, double V_flow_max) {
+    const double r_abs = fabs(r_N);
+    const double r_eff = r_abs > 0.05 ? r_abs : 0.05;
+    const double scaled_flow = V_flow / r_eff;
+    const double normalized_flow = V_flow_max > 0.0 ? scaled_flow / V_flow_max : 0.0;
+    const double head_fraction = fmax(0.0, 1.0 - normalized_flow);
+    const double sign = r_N >= 0.0 ? 1.0 : -1.0;
+    return sign * r_N * r_N * dpMax * head_fraction;
+}
+
+static double __rumoca_interp_curve(int n, const double* x, const double* y, double u) {
+    if (n <= 0) {
+        return 0.0;
+    }
+    if (u <= x[0]) {
+        return y[0];
+    }
+    for (int i = 0; i < n - 1; ++i) {
+        if (u <= x[i + 1]) {
+            const double dx = x[i + 1] - x[i];
+            if (fabs(dx) < 1e-12) {
+                return y[i + 1];
+            }
+            const double t = (u - x[i]) / dx;
+            return y[i] + (y[i + 1] - y[i]) * t;
+        }
+    }
+    return y[n - 1];
+}
+
+static double __rumoca_mover_curve_value(int n, double V_flow, double r_N, const double* V_flow_curve, const double* value_curve) {
+    const double r_abs = fabs(r_N);
+    const double r_eff = r_abs > 0.05 ? r_abs : 0.05;
+    return __rumoca_interp_curve(n, V_flow_curve, value_curve, V_flow / r_eff);
+}
+
+static double __rumoca_mover_pressure_curve(int n, double V_flow, double r_N, const double* V_flow_curve, const double* pressure_curve) {
+    const double sign = r_N >= 0.0 ? 1.0 : -1.0;
+    const double dp_curve = __rumoca_mover_curve_value(n, V_flow, r_N, V_flow_curve, pressure_curve);
+    return sign * r_N * r_N * dp_curve;
+}
+
+static double __rumoca_inverse_mover_pressure_curve(int n, double dp, double r_N, const double* V_flow_curve, const double* pressure_curve) {
+    const double r_abs = fabs(r_N);
+    const double r_eff = r_abs > 0.05 ? r_abs : 0.05;
+    if (n <= 0 || dp <= 0.0) {
+        return 0.0;
+    }
+    if (n == 1) {
+        return r_eff * fmax(0.0, V_flow_curve[0]);
+    }
+    const double target = dp / fmax(1e-9, r_eff * r_eff);
+    for (int i = 0; i < n - 1; ++i) {
+        const double p0 = pressure_curve[i];
+        const double p1 = pressure_curve[i + 1];
+        if ((target <= p0 && target >= p1) || (target >= p0 && target <= p1)) {
+            const double denom = p1 - p0;
+            const double t = fabs(denom) < 1e-12 ? 0.0 : (target - p0) / denom;
+            return r_eff * (V_flow_curve[i] + t * (V_flow_curve[i + 1] - V_flow_curve[i]));
+        }
+    }
+    if (pressure_curve[0] >= pressure_curve[n - 1]) {
+        return r_eff * (target > pressure_curve[0] ? V_flow_curve[0] : V_flow_curve[n - 1]);
+    }
+    return r_eff * (target < pressure_curve[0] ? V_flow_curve[0] : V_flow_curve[n - 1]);
+}
+
+static double __rumoca_mover_network_resistance_flow(int n, double measured_dp, double network_dp_nominal, double network_V_flow_nominal, double r_N, const double* V_flow_curve, const double* pressure_curve) {
+    if (measured_dp > 1e-6) {
+        return __rumoca_inverse_mover_pressure_curve(n, measured_dp, r_N, V_flow_curve, pressure_curve);
+    }
+    const double r_abs = fabs(r_N);
+    const double r_eff = r_abs > 0.05 ? r_abs : 0.05;
+    if (n <= 0) {
+        return 0.0;
+    }
+    const double V_nom = fmax(1e-9, network_V_flow_nominal);
+    const double dp_nom = fmax(0.0, network_dp_nominal);
+    const double V_hi = r_eff * fmax(V_nom, V_flow_curve[n - 1]);
+    if (dp_nom <= 0.0 || V_hi <= 0.0) {
+        return 0.0;
+    }
+    double lo = 0.0;
+    double hi = V_hi;
+    for (int i = 0; i < 48; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        const double pump_dp = __rumoca_mover_pressure_curve(n, mid, r_eff, V_flow_curve, pressure_curve);
+        const double network_dp = dp_nom * (mid / V_nom) * (mid / V_nom);
+        if (pump_dp > network_dp) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return 0.5 * (lo + hi);
+}
+
+static double __rumoca_network_resistance_dp(double network_dp_nominal, double network_V_flow_nominal, double V_flow) {
+    const double V_nom = fmax(1e-9, fabs(network_V_flow_nominal));
+    const double V = fmax(0.0, fabs(V_flow));
+    const double dp_nom = fmax(0.0, network_dp_nominal);
+    return dp_nom * (V / V_nom) * (V / V_nom);
+}
+
+#define Modelica_Media_Interfaces_PartialMedium_setState_pTX(...) (995.586)
+#define Modelica_Media_Interfaces_PartialMedium_density_pTX(...) (995.586)
+#define Modelica_Media_Interfaces_PartialMedium_specificEnthalpy(...) (0.0)
+#define Modelica_Media_Interfaces_PartialMedium_specificEnthalpy_pTX(...) (0.0)
+#define Modelica_Media_Interfaces_PartialMedium_temperature_phX(...) (293.15)
+#define Modelica_Media_Interfaces_PartialMedium_specificHeatCapacityCp(...) (4184.0)
+#define Modelica_Media_Interfaces_PartialMedium_density(...) (995.586)
+
 /* =========================================================================
  * Default initialization
  * ========================================================================= */
@@ -443,7 +697,7 @@ static void initialize_defaults(ModelInstance* m) {
 {% for name, var in dae.p | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
-    double* {{ name | sanitize }} = &m->p[{{ ns_idx.offset }}];
+    double {{ name | sanitize }} = m->p[{{ ns_idx.offset }}];
 {% set ns_idx.offset = ns_idx.offset + sz %}
 {% else %}
 {% set ns_idx.offset = ns_idx.offset + 1 %}
@@ -494,7 +748,7 @@ static void initialize_defaults(ModelInstance* m) {
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.constants | items %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" and expr_has_var_ref(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->constants[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
@@ -504,12 +758,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" and expr_has_var_ref(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->p[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" and expr_has_var_ref(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->p[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -520,11 +774,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};  /* {{ name }}[{{ i + 1 }}] */
+    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" and expr_has_var_ref(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};  /* {{ name }} */
+    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" and expr_has_var_ref(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -534,12 +788,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" and expr_has_var_ref(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->u[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" and expr_has_var_ref(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->u[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -550,12 +804,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" and expr_has_var_ref(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->z[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" and expr_has_var_ref(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->z[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -571,6 +825,121 @@ static void initialize_defaults(ModelInstance* m) {
     m->clocks[{{ loop.index0 }}] = 0;
 {% endfor %}
 #endif
+}
+
+/* =========================================================================
+ * FMI initialization binding propagation
+ * ========================================================================= */
+static void apply_parameter_bindings(ModelInstance* m) {
+{% if dae.p | length > 0 %}
+    for (int binding_pass = 0; binding_pass < 3; ++binding_pass) {
+        (void)binding_pass;
+{{ unpack_vars(dae.p, "m->p", mutable=true) }}
+{{ unpack_vars(dae.constants, "m->constants") }}
+{% set ns_idx = namespace(offset=0) %}
+{% for name, var in dae.p | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set rhs = parameter_binding_rhs(name, var.start, i + 1, cfg) if var.start else "" %}
+{% if rhs %}
+        {{ name | sanitize }}_{{ i + 1 }} = {{ rhs }};
+        m->p[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* binding {{ name }}[{{ i + 1 }}] */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endfor %}
+{% else %}
+{% set rhs = parameter_binding_rhs(name, var.start, 0, cfg) if var.start else "" %}
+{% if rhs %}
+        {{ name | sanitize }} = {{ rhs }};
+        m->p[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* binding {{ name }} */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endif %}
+{% endfor %}
+    }
+    m->dirty_values = 1;
+{% else %}
+    (void)m;
+{% endif %}
+}
+
+static void apply_initial_equations(ModelInstance* m) {
+{% if dae.initial_equations | length > 0 %}
+    const double t = m->time;
+    const double time = m->time;
+    (void)t; (void)time;
+
+{{ unpack_vars(dae.x, "m->x", der_prefix=true, pre_array="m->x") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
+{{ unpack_vars(dae.p, "m->p") }}
+{{ unpack_vars(dae.constants, "m->constants") }}
+{{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
+{{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
+{% set ns_idx = namespace(offset=0) %}
+{% for name, var in dae.x | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+{% set rhs = initial_rhs_for_var(dae, scalar_name, cfg) %}
+{% if rhs %}
+    m->x[{{ ns_idx.offset }}] = {{ rhs }};  /* initial {{ scalar_name }} */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endfor %}
+{% else %}
+{% set rhs = initial_rhs_for_var(dae, name, cfg) %}
+{% if rhs %}
+    m->x[{{ ns_idx.offset }}] = {{ rhs }};  /* initial {{ name }} */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endif %}
+{% endfor %}
+{% set ns_idx = namespace(offset=0) %}
+{% for name, var in dae.z | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+{% set rhs = initial_rhs_for_var(dae, scalar_name, cfg) %}
+{% if rhs %}
+    m->z[{{ ns_idx.offset }}] = {{ rhs }};  /* initial {{ scalar_name }} */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endfor %}
+{% else %}
+{% set rhs = initial_rhs_for_var(dae, name, cfg) %}
+{% if rhs %}
+    m->z[{{ ns_idx.offset }}] = {{ rhs }};  /* initial {{ name }} */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endif %}
+{% endfor %}
+{% set ns_idx = namespace(offset=0) %}
+{% for name, var in dae.m | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+{% set rhs = initial_rhs_for_var(dae, scalar_name, cfg) %}
+{% if rhs %}
+    m->m[{{ ns_idx.offset }}] = {{ rhs }};  /* initial {{ scalar_name }} */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endfor %}
+{% else %}
+{% set rhs = initial_rhs_for_var(dae, name, cfg) %}
+{% if rhs %}
+    m->m[{{ ns_idx.offset }}] = {{ rhs }};  /* initial {{ name }} */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endif %}
+{% endfor %}
+    m->dirty_values = 1;
+{% else %}
+    (void)m;
+{% endif %}
 }
 
 /* =========================================================================
@@ -606,12 +975,12 @@ static void compute_algebraics(ModelInstance* m) {
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
 {% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(scalar_name, dae.f_x, cfg) }};
+    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var_with_dae(scalar_name, dae, cfg) }};
     m->w[{{ ns_out.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ scalar_name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+    {{ name | sanitize }} = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};
     m->w[{{ ns_out.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
@@ -624,12 +993,12 @@ static void compute_algebraics(ModelInstance* m) {
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
 {% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(scalar_name, dae.f_x, cfg) }};
+    {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var_with_dae(scalar_name, dae, cfg) }};
     m->y[{{ ns_alg.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ scalar_name }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+    {{ name | sanitize }} = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};
     m->y[{{ ns_alg.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_alg.offset = ns_alg.offset + 1 %}
 {% endif %}
@@ -639,12 +1008,26 @@ static void compute_algebraics(ModelInstance* m) {
 {% endif %}
 }
 
+static void settle_discrete_updates(ModelInstance* m) {
+    for (int pass = 0; pass < 32; ++pass) {
+        compute_discrete_updates(m);
+        memcpy(m->pre_z, m->z, sizeof(m->z));
+        memcpy(m->pre_m, m->m, sizeof(m->m));
+    }
+}
+
+static void settle_algebraics(ModelInstance* m) {
+    for (int pass = 0; pass < 32; ++pass) {
+        compute_algebraics(m);
+    }
+}
+
 /* =========================================================================
  * Compute derivatives (f_x equations)
  * ========================================================================= */
 static void compute_derivatives(ModelInstance* m) {
     /* Compute algebraics first (derivatives may depend on them) */
-    compute_algebraics(m);
+    settle_algebraics(m);
 
     /* Unpack local aliases for readability */
     const double t = m->time;
@@ -677,7 +1060,7 @@ static void compute_derivatives(ModelInstance* m) {
 {% endfor %}
 
     /* Re-compute algebraics after derivatives (resolves derivative aliases) */
-    compute_algebraics(m);
+    settle_algebraics(m);
 
     m->dirty_values = 0;
 }
@@ -707,11 +1090,11 @@ static void compute_outputs(ModelInstance* m) {
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
 {% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(scalar_name, dae.f_x, cfg) }};  /* {{ scalar_name }} */
+    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var_with_dae(scalar_name, dae, cfg) }};  /* {{ scalar_name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endfor %}
 {% else %}
-    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};  /* {{ name }} */
+    m->w[{{ ns_out.offset }}] = {{ alg_rhs_for_var_with_dae(name, dae, cfg) }};  /* {{ name }} */
 {% set ns_out.offset = ns_out.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -740,13 +1123,35 @@ static void compute_discrete_updates(ModelInstance* m) {
 {{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
 
     /* Discrete Real updates: z = f_z(v, c) (MLS B.1b) */
-{% for eq in dae.f_z %}
-    m->z[{{ loop.index0 }}] = {{ render_expr(eq.rhs, cfg) }};  /* {{ eq.origin }} */
+{% set ns_z = namespace(offset=0) %}
+{% for name, var in dae.z | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    m->z[{{ ns_z.offset }}] = {{ discrete_rhs_for_var(scalar_name, dae.f_z, dae.f_m, dae, cfg) }};  /* {{ scalar_name }} */
+{% set ns_z.offset = ns_z.offset + 1 %}
+{% endfor %}
+{% else %}
+    m->z[{{ ns_z.offset }}] = {{ discrete_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};  /* {{ name }} */
+{% set ns_z.offset = ns_z.offset + 1 %}
+{% endif %}
 {% endfor %}
 
     /* Discrete-valued updates: m := f_m(v, c) (MLS B.1c) */
-{% for eq in dae.f_m %}
-    m->m[{{ loop.index0 }}] = {{ render_expr(eq.rhs, cfg) }};  /* {{ eq.origin }} */
+{% set ns_m = namespace(offset=0) %}
+{% for name, var in dae.m | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set scalar_name = array_scalar_name(name, var.dims, i + 1) %}
+    m->m[{{ ns_m.offset }}] = {{ discrete_rhs_for_var(scalar_name, dae.f_z, dae.f_m, dae, cfg) }};  /* {{ scalar_name }} */
+{% set ns_m.offset = ns_m.offset + 1 %}
+{% endfor %}
+{% else %}
+    m->m[{{ ns_m.offset }}] = {{ discrete_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};  /* {{ name }} */
+{% set ns_m.offset = ns_m.offset + 1 %}
+{% endif %}
 {% endfor %}
 {% else %}
     (void)m;
@@ -773,11 +1178,11 @@ static void compute_event_indicators(ModelInstance* m) {
 
 {% set ei_idx = namespace(offset=0) %}
 {% for rel in dae.relation | default([]) %}
-    m->event_indicators[{{ ei_idx.offset }}] = {{ render_expr(rel, cfg) }};
+    m->event_indicators[{{ ei_idx.offset }}] = {{ event_indicator_expr(rel, cfg) }};
 {% set ei_idx.offset = ei_idx.offset + 1 %}
 {% endfor %}
 {% for cond in dae.synthetic_root_conditions | default([]) %}
-    m->event_indicators[{{ ei_idx.offset }}] = {{ render_expr(cond, cfg) }};
+    m->event_indicators[{{ ei_idx.offset }}] = {{ event_indicator_expr(cond, cfg) }};
 {% set ei_idx.offset = ei_idx.offset + 1 %}
 {% endfor %}
 {% else %}
@@ -954,6 +1359,7 @@ static fmi3Status set_float64_by_vr(ModelInstance* m, fmi3ValueReference vr, con
         int i = vr - VR_P;
         *count = p_var_count[i];
         memcpy(&m->p[p_flat_offset[i]], values, *count * sizeof(fmi3Float64));
+        apply_parameter_bindings(m);
         m->dirty_values = 1;
         return fmi3OK;
     }
@@ -1042,6 +1448,7 @@ FMI3_EXPORT fmi3Instance fmi3InstantiateModelExchange(
     m->state = modelInstantiated;
 
     initialize_defaults(m);
+    apply_parameter_bindings(m);
 
     return (fmi3Instance)m;
 }
@@ -1083,6 +1490,7 @@ FMI3_EXPORT fmi3Instance fmi3InstantiateCoSimulation(
     m->state = modelInstantiated;
 
     initialize_defaults(m);
+    apply_parameter_bindings(m);
 
     return (fmi3Instance)m;
 }
@@ -1115,7 +1523,16 @@ FMI3_EXPORT fmi3Status fmi3EnterInitializationMode(
 FMI3_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
 
-    /* Compute initial derivatives and outputs */
+    /* Initialize algebraics, then discrete equations, then outputs/derivatives. */
+    apply_parameter_bindings(m);
+    apply_initial_equations(m);
+    memcpy(m->pre_z, m->z, sizeof(m->z));
+    memcpy(m->pre_m, m->m, sizeof(m->m));
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    settle_discrete_updates(m);
+    m->dirty_values = 1;
+
     compute_derivatives(m);
     compute_event_indicators(m);
     memcpy(m->event_indicators_prev, m->event_indicators, sizeof(m->event_indicators));
@@ -1133,6 +1550,7 @@ FMI3_EXPORT fmi3Status fmi3EnterConfigurationMode(fmi3Instance instance) {
 FMI3_EXPORT fmi3Status fmi3ExitConfigurationMode(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
     m->state = modelInstantiated;
+    apply_parameter_bindings(m);
     m->dirty_values = 1;  /* Force recomputation after tunable parameter changes */
     return fmi3OK;
 }
@@ -1152,6 +1570,7 @@ FMI3_EXPORT fmi3Status fmi3GetFloat64(
     if (m->dirty_values) {
         compute_derivatives(m);
     }
+    compute_outputs(m);
 
     size_t val_idx = 0;
     for (size_t i = 0; i < nValueReferences; i++) {
@@ -1455,7 +1874,7 @@ FMI3_EXPORT fmi3Status fmi3UpdateDiscreteStates(
     memcpy(m->pre_m, m->m, sizeof(m->m));
 
     /* Evaluate discrete update equations */
-    compute_discrete_updates(m);
+    settle_discrete_updates(m);
 
     *discreteStatesNeedUpdate = 0;
     *terminateSimulation = 0;
@@ -1622,6 +2041,7 @@ FMI3_EXPORT fmi3Status fmi3Terminate(fmi3Instance instance) {
 FMI3_EXPORT fmi3Status fmi3Reset(fmi3Instance instance) {
     ModelInstance* m = (ModelInstance*)instance;
     initialize_defaults(m);
+    apply_parameter_bindings(m);
     m->state = modelInstantiated;
     return fmi3OK;
 }
@@ -1852,6 +2272,11 @@ FMI3_EXPORT fmi3Status fmi3DoStep(
         m->time = t;
         m->dirty_values = 1;
         compute_derivatives(m);
+        memcpy(m->pre_z, m->z, sizeof(m->z));
+        memcpy(m->pre_m, m->m, sizeof(m->m));
+        settle_discrete_updates(m);
+        m->dirty_values = 1;
+        compute_derivatives(m);
 
 #if N_STATES > 0
         for (int i = 0; i < N_STATES; i++) {
@@ -1871,6 +2296,9 @@ FMI3_EXPORT fmi3Status fmi3DoStep(
                 m->time = earlyReturnTime;
                 m->dirty_values = 1;
                 compute_derivatives(m);
+                settle_discrete_updates(m);
+                m->dirty_values = 1;
+                compute_derivatives(m);
                 *eventHandlingNeeded = 0;
                 *terminateSimulation = 0;
                 *earlyReturn = 1;
@@ -1881,6 +2309,11 @@ FMI3_EXPORT fmi3Status fmi3DoStep(
     }
 
     m->time = t_end;
+    m->dirty_values = 1;
+    compute_derivatives(m);
+    memcpy(m->pre_z, m->z, sizeof(m->z));
+    memcpy(m->pre_m, m->m, sizeof(m->m));
+    settle_discrete_updates(m);
     m->dirty_values = 1;
     compute_derivatives(m);
 

@@ -28,6 +28,10 @@ impl Context {
             cardinality_counts: rustc_hash::FxHashMap::default(),
             eval_fallback_context: std::cell::OnceCell::new(),
             current_imports: crate::qualify::ImportMap::default(),
+            extracted_constant_prefix_class_footprints: rustc_hash::FxHashMap::default(),
+            injected_referenced_constant_scopes: rustc_hash::FxHashSet::default(),
+            applied_extends_constant_footprints: rustc_hash::FxHashMap::default(),
+            enum_binding_failure_fingerprints: rustc_hash::FxHashMap::default(),
         }
     }
 
@@ -549,18 +553,35 @@ impl Context {
     }
 
     fn collect_unresolved_enum_values(
-        &self,
+        &mut self,
         params: &[(String, Expression)],
         param_names: &rustc_hash::FxHashSet<&str>,
     ) -> Vec<(String, String)> {
-        params
-            .iter()
-            .filter(|(name, _)| !self.enum_parameter_values.contains_key(name))
-            .filter_map(|(name, binding)| {
-                self.resolve_enum_binding_value(binding, param_names)
-                    .map(|enum_val| (name.clone(), enum_val))
-            })
-            .collect()
+        let fingerprint = self.enum_binding_lookup_fingerprint();
+        let mut values = Vec::new();
+        for (name, binding) in params {
+            if self.enum_parameter_values.contains_key(name) {
+                continue;
+            }
+            if self.enum_binding_failure_fingerprints.get(name) == Some(&fingerprint) {
+                continue;
+            }
+            match self.resolve_enum_binding_value(binding, param_names) {
+                Some(enum_val) => values.push((name.clone(), enum_val)),
+                None => {
+                    self.enum_binding_failure_fingerprints
+                        .insert(name.clone(), fingerprint);
+                }
+            }
+        }
+        values
+    }
+
+    fn enum_binding_lookup_fingerprint(&self) -> usize {
+        self.parameter_values.len()
+            + self.boolean_parameter_values.len()
+            + self.enum_parameter_values.len()
+            + self.record_aliases.len()
     }
 
     fn insert_enum_values(&mut self, new_vals: Vec<(String, String)>) -> bool {
