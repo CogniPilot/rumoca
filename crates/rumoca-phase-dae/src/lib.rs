@@ -445,7 +445,6 @@ fn ir_boundary_validation_enabled() -> bool {
 }
 
 fn dedupe_equivalent_explicit_assignments(equations: &mut Vec<dae::Equation>) {
-    let debug_duplicates = std::env::var("RUMOCA_TODAE_DUP_DEBUG").is_ok();
     let mut retained = Vec::with_capacity(equations.len());
     for equation in std::mem::take(equations) {
         if let Some(existing) = retained.iter_mut().find(|existing: &&mut dae::Equation| {
@@ -460,20 +459,6 @@ fn dedupe_equivalent_explicit_assignments(equations: &mut Vec<dae::Equation>) {
         {
             existing.rhs = merged;
             continue;
-        }
-        if debug_duplicates
-            && let Some(lhs) = equation.lhs.as_ref()
-            && let Some(existing) = retained
-                .iter()
-                .find(|existing: &&dae::Equation| existing.lhs.as_ref() == Some(lhs))
-        {
-            eprintln!(
-                "ToDae duplicate explicit assignment candidate lhs={lhs} existing_origin='{}' new_origin='{}' existing_rhs={} new_rhs={}",
-                existing.origin,
-                equation.origin,
-                short_dae_expr(&existing.rhs, 260),
-                short_dae_expr(&equation.rhs, 260),
-            );
         }
         let duplicate = equation.lhs.as_ref().is_some_and(|lhs| {
             retained.iter().any(|existing: &dae::Equation| {
@@ -516,15 +501,6 @@ fn merge_guarded_if_assignment_rhs(
         else_branch: incoming_else,
         span,
     })
-}
-
-fn short_dae_expr(expr: &Expression, max_len: usize) -> String {
-    let rendered = format!("{expr:?}");
-    if rendered.len() <= max_len {
-        rendered
-    } else {
-        format!("{}...", &rendered[..max_len])
-    }
 }
 
 /// Determine if an algebraic variable should be stored as discrete or regular algebraic.

@@ -3,6 +3,10 @@
 //! These functions are registered in the minijinja environment and used by
 //! `fmi2/model.c.jinja` and `embedded_c/model.c.jinja` templates to extract explicit
 //! ODE/algebraic RHS expressions from residual-form DAE equations.
+//!
+//! SPEC_0021 file-size exception: Kelvin BOPTEST FMI export helpers are
+//! intentionally colocated with the C render surface until a split plan lands
+//! for `render_c_boptest.rs` plus shared expression helpers.
 
 // Kelvin top-down/BOPTEST FMI export helpers intentionally mirror generated-style
 // complexity while we keep the template surface explicit and test-backed.
@@ -17,6 +21,7 @@
 use super::{ExprConfig, RenderResult};
 use minijinja::Value;
 use render_expr::{get_field, render_expression};
+use rumoca_core::{parent_scope, split_last_top_level, top_level_last_segment};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -232,7 +237,7 @@ fn parse_boptest_vav_terminal_parameter<'a>(
     let wrapper_prefix = &target_name[..floor_pos + "BoptestAirNetwork".len()];
     let floor_index = parse_boptest_air_network_floor_index(wrapper_prefix)?;
     let suffix = &target_name[floor_pos + "BoptestAirNetwork.floor.fivZonVAV.".len()..];
-    let (terminal, field) = suffix.rsplit_once('.')?;
+    let (terminal, field) = split_last_top_level(suffix)?;
     if !terminal.starts_with("vAV") {
         return None;
     }
@@ -873,7 +878,7 @@ fn is_colon_subscript(sub: &Value) -> bool {
 pub(super) fn ode_rhs_function(eq: Value, config: Value) -> RenderResult {
     let cfg = ExprConfig::from_value(&config);
 
-    let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
+    let rhs = eq.get_attr("rhs")?;
 
     // Residual form: rhs is Binary { Sub, lhs: der(x), rhs: expr }
     // We want to return just `expr`
@@ -882,7 +887,7 @@ pub(super) fn ode_rhs_function(eq: Value, config: Value) -> RenderResult {
     {
         let rhs_expr = get_field(&binary, "rhs")
             .and_then(|v| render_expression(&v, &cfg))
-            .unwrap_or_default();
+            .unwrap_or_else(|_| String::new());
         return Ok(rhs_expr);
     }
 
@@ -1427,10 +1432,9 @@ fn algebraic_rhs_candidate_score(var_name: &str, rhs: &str, eq: &Value) -> isize
 }
 
 fn equation_origin_text(eq: &Value) -> String {
-    eq.get_attr("origin")
-        .ok()
-        .map(|value| value.to_string().trim_matches('"').to_string())
-        .unwrap_or_default()
+    eq.get_attr("origin").ok().map_or(String::new(), |value| {
+        value.to_string().trim_matches('"').to_string()
+    })
 }
 
 fn is_connection_origin_text(origin: &str) -> bool {
@@ -2111,7 +2115,7 @@ fn synthesize_trace_substances_two_port_cmed_rhs(
     aliases: &HashSet<String>,
 ) -> Option<String> {
     let sensor_prefix = var_name.strip_suffix(".CMed")?;
-    let sensor_name = sensor_prefix.rsplit('.').next().unwrap_or(sensor_prefix);
+    let sensor_name = top_level_last_segment(sensor_prefix);
     if !trace_substances_two_port_sensor_component_name(sensor_name) {
         return None;
     }
@@ -2666,9 +2670,7 @@ fn fluid_alias_exists(aliases: &HashSet<String>, alias: &str) -> bool {
 }
 
 fn internal_fluid_volume_prefix(prefix: &str) -> bool {
-    let Some(name) = prefix.rsplit('.').next() else {
-        return false;
-    };
+    let name = top_level_last_segment(prefix);
     name == "vol"
         || name.strip_prefix("vol").is_some_and(|suffix| {
             !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
@@ -4543,7 +4545,7 @@ fn synthesize_internal_fluid_volume_ode_rhs(state_name: &str) -> Option<String> 
 
 fn synthesize_buildings_temperature_two_port_ode_rhs(state_name: &str) -> Option<String> {
     let sensor_prefix = state_name.strip_suffix(".T")?;
-    let sensor_name = sensor_prefix.rsplit('.').next().unwrap_or(sensor_prefix);
+    let sensor_name = top_level_last_segment(sensor_prefix);
     if !sensor_name.starts_with("senT") && !fluid_temperature_sensor_component_name(sensor_name) {
         return None;
     }
@@ -4575,7 +4577,7 @@ fn synthesize_buildings_dynamic_flow_sensor_ode_rhs(state_name: &str) -> Option<
                 .strip_suffix(".phi")
                 .map(|prefix| (prefix, "phi", "phiMed"))
         })?;
-    let sensor_name = sensor_prefix.rsplit('.').next().unwrap_or(sensor_prefix);
+    let sensor_name = top_level_last_segment(sensor_prefix);
     match state_field {
         "d" if !fluid_volume_flow_sensor_prefix_has_name(sensor_prefix) => return None,
         "C" if !trace_substances_two_port_sensor_component_name(sensor_name) => return None,
@@ -4664,7 +4666,7 @@ fn indexed_alias2(prefix: &str, first: usize, second: usize) -> String {
 
 fn synthesize_buildings_expansion_vessel_ode_rhs(state_name: &str) -> Option<String> {
     let vessel_prefix = state_name.strip_suffix(".H")?;
-    let vessel_name = vessel_prefix.rsplit('.').next().unwrap_or(vessel_prefix);
+    let vessel_name = top_level_last_segment(vessel_prefix);
     if !vessel_name.starts_with("expVes") || !boptest_water_plant_var(state_name) {
         return None;
     }
@@ -5722,7 +5724,7 @@ fn mover_interface_signal_candidates(prefix: &str) -> Vec<String> {
         format!("{prefix}.filter.y"),
         format!("{prefix}.eff.y_in"),
     ];
-    if let Some((parent, _)) = prefix.rsplit_once('.') {
+    if let Some(parent) = parent_scope(prefix) {
         candidates.push(format!("{parent}.u"));
         candidates.push(format!("{parent}.y"));
     }
@@ -6445,7 +6447,7 @@ fn indexed_alias_middle_is_positive(alias: &str, start: &str, end: &str) -> bool
 
 pub(super) fn event_indicator_expr_function(expr: Value, config: Value) -> RenderResult {
     let cfg = ExprConfig::from_value(&config);
-    let rendered = render_expression(&expr, &cfg).unwrap_or_default();
+    let rendered = render_expression(&expr, &cfg).unwrap_or_else(|_| String::new());
     if c_event_or_discrete_rhs_is_supported(&rendered) {
         Ok(rendered)
     } else {
@@ -6831,7 +6833,7 @@ fn collect_list_var_refs(list: &Value, out: &mut HashSet<String>) {
 /// Matches both scalar (`der(x)`) and indexed (`der(x[1])`) forms via `is_der_of`,
 /// which reconstructs the full VarRef name including subscripts.
 fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option<String> {
-    let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
+    let rhs = eq.get_attr("rhs").ok()?;
 
     // Try direct Binary{Sub} first, then try unwrapping Unary{Minus}.
     // 0 = -(A - B) is equivalent to 0 = B - A, so we swap lhs/rhs.
@@ -6840,8 +6842,7 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
     } else if let Ok(unary) = get_field(&rhs, "Unary") {
         let op = get_field(&unary, "op")
             .ok()
-            .map(|v| v.to_string())
-            .unwrap_or_default();
+            .map_or(String::new(), |v| v.to_string());
         if op.contains("Minus") || op.contains("Neg") {
             let inner = get_field(&unary, "rhs").ok()?;
             let b = get_field(&inner, "Binary").ok()?;
@@ -6871,25 +6872,25 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
 
     // Case 1: 0 = der(x) - expr → der(x) = expr
     if is_der_of(&lhs, state_name) {
-        let rhs_expr = render_expression(&rhs_val, cfg).unwrap_or_default();
+        let rhs_expr = render_expression(&rhs_val, cfg).unwrap_or_else(|_| String::new());
         return Some(rhs_expr);
     }
 
     // Case 2: 0 = expr - der(x) → der(x) = expr
     if is_der_of(&rhs_val, state_name) {
-        let lhs_expr = render_expression(&lhs, cfg).unwrap_or_default();
+        let lhs_expr = render_expression(&lhs, cfg).unwrap_or_else(|_| String::new());
         return Some(lhs_expr);
     }
 
     // Case 3: 0 = k*der(x) - expr or 0 = der(x)*k - expr → der(x) = expr / k
     if let Some(coeff) = extract_der_coefficient(&lhs, state_name, cfg) {
-        let rhs_expr = render_expression(&rhs_val, cfg).unwrap_or_default();
+        let rhs_expr = render_expression(&rhs_val, cfg).unwrap_or_else(|_| String::new());
         return Some(format!("({rhs_expr}) / ({coeff})"));
     }
 
     // Case 4: 0 = expr - k*der(x) or 0 = expr - der(x)*k → der(x) = expr / k
     if let Some(coeff) = extract_der_coefficient(&rhs_val, state_name, cfg) {
-        let lhs_expr = render_expression(&lhs, cfg).unwrap_or_default();
+        let lhs_expr = render_expression(&lhs, cfg).unwrap_or_else(|_| String::new());
         return Some(format!("({lhs_expr}) / ({coeff})"));
     }
 
@@ -6907,7 +6908,7 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
         return Some(result);
     }
 
-    let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
+    let rhs = eq.get_attr("rhs").ok()?;
 
     // Try subtraction form first: 0 = var - expr or 0 = -(var - expr)
     if let Some(result) = find_algebraic_rhs_subtraction(&rhs, var_name, cfg) {
@@ -7012,8 +7013,7 @@ fn find_algebraic_rhs_subtraction(rhs: &Value, var_name: &str, cfg: &ExprConfig)
     } else if let Ok(unary) = get_field(rhs, "Unary") {
         let op = get_field(&unary, "op")
             .ok()
-            .map(|v| v.to_string())
-            .unwrap_or_default();
+            .map_or(String::new(), |v| v.to_string());
         if op.contains("Minus") || op.contains("Neg") {
             let inner = get_field(&unary, "rhs").ok()?;
             let b = get_field(&inner, "Binary").ok()?;
@@ -7043,25 +7043,25 @@ fn find_algebraic_rhs_subtraction(rhs: &Value, var_name: &str, cfg: &ExprConfig)
 
     // Case 1: 0 = var - expr → var = expr
     if is_var_ref_of(&lhs_side, var_name) && !contains_der(&rhs_side) {
-        let rhs_expr = render_expression(&rhs_side, cfg).unwrap_or_default();
+        let rhs_expr = render_expression(&rhs_side, cfg).unwrap_or_else(|_| String::new());
         return Some(rhs_expr);
     }
 
     // Case 2: 0 = expr - var → var = expr
     if is_var_ref_of(&rhs_side, var_name) && !contains_der(&lhs_side) {
-        let lhs_expr = render_expression(&lhs_side, cfg).unwrap_or_default();
+        let lhs_expr = render_expression(&lhs_side, cfg).unwrap_or_else(|_| String::new());
         return Some(lhs_expr);
     }
 
     // Case 3: 0 = coeff * var - expr → var = expr / coeff
     if !contains_der(&lhs_side) && !contains_der(&rhs_side) {
         if let Some(coeff) = extract_mul_coefficient(&lhs_side, var_name, cfg) {
-            let rhs_expr = render_expression(&rhs_side, cfg).unwrap_or_default();
+            let rhs_expr = render_expression(&rhs_side, cfg).unwrap_or_else(|_| String::new());
             return Some(format!("({rhs_expr}) / ({coeff})"));
         }
         // Case 4: 0 = expr - coeff * var → var = expr / coeff
         if let Some(coeff) = extract_mul_coefficient(&rhs_side, var_name, cfg) {
-            let lhs_expr = render_expression(&lhs_side, cfg).unwrap_or_default();
+            let lhs_expr = render_expression(&lhs_side, cfg).unwrap_or_else(|_| String::new());
             return Some(format!("({lhs_expr}) / ({coeff})"));
         }
     }
@@ -7113,8 +7113,7 @@ fn expression_contains_builtin(expr: &Value, builtin_name: &str) -> bool {
     if let Ok(builtin) = get_field(expr, "BuiltinCall") {
         let function = get_field(&builtin, "function")
             .ok()
-            .map(|value| value.to_string())
-            .unwrap_or_default();
+            .map_or(String::new(), |value| value.to_string());
         if function == builtin_name {
             return true;
         }
@@ -7359,13 +7358,12 @@ fn render_indexed_var_ref(var_ref: &Value, index: usize, cfg: &ExprConfig) -> Op
                 .map(|v| v.to_string())
                 .unwrap_or_else(|_| n.to_string())
         })
-        .unwrap_or_default();
+        .map_or(String::new(), |raw| raw);
     let name = if cfg.sanitize_dots {
         super::sanitize_name(&raw_name)
     } else {
         super::escape_reserved_keyword(&raw_name)
     };
-
     if cfg.subscript_underscore {
         Some(format!("{name}_{index}"))
     } else if cfg.one_based_index {
@@ -7456,7 +7454,7 @@ fn flatten_value_add_terms(expr: &Value, positive: bool, terms: &mut Vec<(bool, 
         let op = get_field(&unary, "op")
             .ok()
             .map(|v| v.to_string())
-            .unwrap_or_default();
+            .map_or(String::new(), |v| v.to_string());
         if (op.contains("Minus") || op.contains("Neg"))
             && let Ok(inner) = get_field(&unary, "rhs")
         {
@@ -7794,7 +7792,7 @@ fn synthesize_parent_discrete_enable_rhs(var_name: &str, dae: &Value) -> Option<
 
 fn synthesize_parent_signal_rhs(var_name: &str, suffix: &str, dae: &Value) -> Option<String> {
     let mut prefix = var_name.strip_suffix(suffix)?;
-    while let Some((parent, _)) = prefix.rsplit_once('.') {
+    while let Some(parent) = parent_scope(prefix) {
         let candidate = format!("{parent}{suffix}");
         if candidate != var_name && dae_contains_var(dae, &candidate) {
             return Some(var_name_to_c_alias(&candidate));

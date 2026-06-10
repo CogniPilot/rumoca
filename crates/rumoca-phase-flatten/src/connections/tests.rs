@@ -866,9 +866,9 @@ fn test_validate_dimension_compatibility_mismatch() {
 fn test_validate_dimension_compatibility_scalar_accepts_length_one_array() {
     let mut flat = flat::Model::new();
 
-    flat.add_variable(flat::VarName::new("y"), flat::Variable::default());
+    flat.add_variable(rumoca_core::VarName::new("y"), flat::Variable::default());
     flat.add_variable(
-        flat::VarName::new("u"),
+        rumoca_core::VarName::new("u"),
         flat::Variable {
             dims: vec![1],
             ..Default::default()
@@ -877,8 +877,8 @@ fn test_validate_dimension_compatibility_scalar_accepts_length_one_array() {
 
     let result = validate_dimension_compatibility(
         &flat,
-        &flat::VarName::new("y"),
-        &flat::VarName::new("u"),
+        &rumoca_core::VarName::new("y"),
+        &rumoca_core::VarName::new("u"),
         Span::DUMMY,
     );
     assert!(
@@ -892,14 +892,14 @@ fn test_validate_dimension_compatibility_accepts_full_reduced_composition_pair()
     let mut flat = flat::Model::new();
 
     flat.add_variable(
-        flat::VarName::new("src.X_in_internal"),
+        rumoca_core::VarName::new("src.X_in_internal"),
         flat::Variable {
             dims: vec![2],
             ..Default::default()
         },
     );
     flat.add_variable(
-        flat::VarName::new("src.Xi_in_internal"),
+        rumoca_core::VarName::new("src.Xi_in_internal"),
         flat::Variable {
             dims: vec![1],
             ..Default::default()
@@ -908,8 +908,8 @@ fn test_validate_dimension_compatibility_accepts_full_reduced_composition_pair()
 
     let result = validate_dimension_compatibility(
         &flat,
-        &flat::VarName::new("src.X_in_internal"),
-        &flat::VarName::new("src.Xi_in_internal"),
+        &rumoca_core::VarName::new("src.X_in_internal"),
+        &rumoca_core::VarName::new("src.Xi_in_internal"),
         Span::DUMMY,
     );
     assert!(

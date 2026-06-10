@@ -126,23 +126,21 @@ impl<'a> LowerBuilder<'a> {
                     self.lower_array_like_values_in_mode(arg, scope, call_depth, ValueMode::Pre)
                 })
                 .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)])),
-            function => {
-                if let Some(op) = unary_array_builtin_op(&function) {
-                    args.first()
-                        .map(|arg| {
-                            self.lower_array_like_values(arg, scope, call_depth)
-                                .map(|values| {
-                                    values
-                                        .into_iter()
-                                        .map(|value| self.emit_unary(op, value))
-                                        .collect()
-                                })
-                        })
-                        .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)]))
-                } else {
-                    unreachable!("non-array builtin handled by scalar fallback")
-                }
-            }
+            function => match unary_array_builtin_op(&function) {
+                Some(op) => args
+                    .first()
+                    .map(|arg| {
+                        self.lower_array_like_values(arg, scope, call_depth)
+                            .map(|values| {
+                                values
+                                    .into_iter()
+                                    .map(|value| self.emit_unary(op, value))
+                                    .collect()
+                            })
+                    })
+                    .unwrap_or_else(|| Ok(vec![self.emit_const(0.0)])),
+                None => unreachable!("non-array builtin handled by scalar fallback"),
+            },
         }
     }
 

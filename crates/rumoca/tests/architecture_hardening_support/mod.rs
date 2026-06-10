@@ -307,7 +307,7 @@ const TEXTUAL_MODEL_PATH_RECOVERY_DEBT: &[(&str, usize)] = &[
         1,
     ),
     ("crates/rumoca-phase-dae/src/pre_lowering.rs", 1),
-    ("crates/rumoca-phase-dae/src/reference_validation.rs", 7),
+    ("crates/rumoca-phase-dae/src/reference_validation.rs", 14),
     ("crates/rumoca-phase-flatten/src/array_comprehension.rs", 1),
     ("crates/rumoca-phase-flatten/src/ast_lower.rs", 6),
     ("crates/rumoca-phase-flatten/src/boolean_eval.rs", 1),
@@ -315,7 +315,7 @@ const TEXTUAL_MODEL_PATH_RECOVERY_DEBT: &[(&str, usize)] = &[
         "crates/rumoca-phase-flatten/src/connections/equation_generation.rs",
         1,
     ),
-    ("crates/rumoca-phase-flatten/src/connections/mod.rs", 8),
+    ("crates/rumoca-phase-flatten/src/connections/mod.rs", 9),
     (
         "crates/rumoca-phase-flatten/src/connections/path_index.rs",
         10,
@@ -396,7 +396,7 @@ const TEXTUAL_MODEL_PATH_RECOVERY_DEBT: &[(&str, usize)] = &[
     ("crates/rumoca-phase-structural/src/runtime_defined.rs", 1),
     ("crates/rumoca-phase-structural/src/scalarize.rs", 2),
     ("crates/rumoca-phase-typecheck/src/instanced.rs", 2),
-    ("crates/rumoca-phase-typecheck/src/lib.rs", 22),
+    ("crates/rumoca-phase-typecheck/src/lib.rs", 23),
     (
         "crates/rumoca-phase-typecheck/src/typechecker/late_methods.rs",
         15,

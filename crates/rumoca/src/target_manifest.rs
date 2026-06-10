@@ -4,12 +4,12 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use rumoca::{CompilationResult, TemplateIr};
-use rumoca_compile::codegen::{DaeTemplateContext, dae_to_template_json};
 use rumoca_compile::codegen::targets::{
     TargetBuildKind, TargetBundle, TargetCapabilities, TargetFile, TargetManifest,
     TargetTemplateIr, TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
     safe_target_join, validate_dae_target_capabilities,
 };
+use rumoca_compile::codegen::{DaeTemplateContext, dae_to_template_json};
 
 pub(crate) fn compile_target(
     result: &CompilationResult,
@@ -252,16 +252,14 @@ fn write_manifest_file(
 ) -> Result<()> {
     let ir = template_ir_to_cli(manifest.ir);
     let render_template = |template: &str| -> Result<String> {
-        if ir == TemplateIr::Dae {
-            if let Some(context) = dae_context {
-                return context
-                    .render_with_name(template, model_identifier)
-                    .map_err(|error| anyhow::anyhow!(error.to_string()));
-            }
+        match (ir, dae_context) {
+            (TemplateIr::Dae, Some(context)) => context
+                .render_with_name(template, model_identifier)
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
+            _ => result
+                .render_template_str_with_name_and_ir(template, model_identifier, ir)
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
         }
-        result
-            .render_template_str_with_name_and_ir(template, model_identifier, ir)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))
     };
 
     let rendered_rel_path = render_template(&file.path)

@@ -721,7 +721,7 @@ fn composition_full_reduced_pair(
 }
 
 fn path_leaf_without_indices(path: &str) -> &str {
-    let leaf = path.rsplit('.').next().unwrap_or(path);
+    let leaf = rumoca_core::top_level_last_segment(path);
     leaf.split_once('[').map_or(leaf, |(head, _)| head)
 }
 

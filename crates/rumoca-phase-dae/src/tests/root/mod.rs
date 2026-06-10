@@ -508,8 +508,10 @@ fn test_todae_rejects_ambiguous_member_style_function_call_by_leaf() {
         "Modelica.Mechanics.MultiBody.World.gravityAcceleration",
         "Modelica.Mechanics.MultiBody.Examples.gravityAcceleration",
     ] {
-        let mut fn_def = rumoca_ir_flat::Function::new(name, Span::DUMMY);
-        fn_def.body.push(rumoca_ir_flat::Statement::Return);
+        let mut fn_def = rumoca_core::Function::new(name, Span::DUMMY);
+        fn_def.body.push(rumoca_core::Statement::Return {
+            span: rumoca_core::Span::DUMMY,
+        });
         flat.add_function(fn_def);
     }
 

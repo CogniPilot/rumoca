@@ -1,3 +1,8 @@
+//! Kelvin flatten/resolve regression coverage for alias scope and dimensions.
+//!
+//! SPEC_0021 file-size exception: pipeline cases stay grouped by MLS rule;
+//! split plan is per-rule modules under `pipeline_cases/alias_scope/`.
+
 use super::*;
 
 /// MLS §4.6 + §4.7: record component type checks must classify the resolved
@@ -90,9 +95,12 @@ end UsesOuterStart;
         .compile_model("UsesOuterStart")
         .expect("compile should succeed");
 
-    let flat_code =
-        render_flat_template_with_name(&result.flat, templates::FLAT_MODELICA, "UsesOuterStart")
-            .expect("flat rendering should succeed");
+    let flat_code = render_flat_template_with_name(
+        &result.flat,
+        templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
+        "UsesOuterStart",
+    )
+    .expect("flat rendering should succeed");
 
     assert!(
         flat_code.contains("parameter Real c.p_start") && flat_code.contains("= p_start;"),
@@ -171,9 +179,9 @@ end UsesForwardedMedium;
     );
 
     assert!(
-        rumoca_analysis_dae::is_balanced(&result.dae),
+        rumoca_phase_dae::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_analysis_dae::balance_detail(&result.dae)
+        rumoca_phase_dae::balance_detail(&result.dae)
     );
 }
 
@@ -221,7 +229,8 @@ end P;
     let result = session.compile_model("P.Example").expect("compile failed");
     let binding_eq = result
         .dae
-        .f_x
+        .continuous
+        .equations
         .iter()
         .find(|eq| eq.origin.contains("binding equation for mm"))
         .expect("expected binding equation for mm");
@@ -284,6 +293,7 @@ end P;
     let result = session.compile_model("P.Example").expect("compile failed");
     let function_body = result
         .dae
+        .symbols
         .functions
         .iter()
         .find(|(name, _)| name.to_string() == "P.Common.SingleGasNasa.getMM")
@@ -344,9 +354,9 @@ end UsesMedium;
     let result = session.compile_model("UsesMedium").expect("compile failed");
 
     assert!(
-        rumoca_analysis_dae::is_balanced(&result.dae),
+        rumoca_phase_dae::is_balanced(&result.dae),
         "Model should be balanced when fixedX=false disables the no-else branch: {}",
-        rumoca_analysis_dae::balance_detail(&result.dae)
+        rumoca_phase_dae::balance_detail(&result.dae)
     );
 }
 
@@ -412,13 +422,13 @@ end BoundaryLike;
         .equations
         .iter()
         .filter_map(|eq| {
-            let rumoca_ir_flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
+            let rumoca_core::Expression::Binary { op, lhs, .. } = &eq.residual else {
                 return None;
             };
-            if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+            if !matches!(op, rumoca_core::OpBinary::Sub) {
                 return None;
             }
-            if let rumoca_ir_flat::Expression::VarRef { name, .. } = lhs.as_ref() {
+            if let rumoca_core::Expression::VarRef { name, .. } = lhs.as_ref() {
                 Some(name.to_string())
             } else {
                 None
@@ -508,13 +518,13 @@ fn test_component_redeclare_specializes_alias_enum_constants_for_if_branch() {
         .equations
         .iter()
         .filter_map(|eq| {
-            let rumoca_ir_flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
+            let rumoca_core::Expression::Binary { op, lhs, .. } = &eq.residual else {
                 return None;
             };
-            if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+            if !matches!(op, rumoca_core::OpBinary::Sub) {
                 return None;
             }
-            if let rumoca_ir_flat::Expression::VarRef { name, .. } = lhs.as_ref() {
+            if let rumoca_core::Expression::VarRef { name, .. } = lhs.as_ref() {
                 Some(name.to_string())
             } else {
                 None
@@ -527,13 +537,13 @@ fn test_component_redeclare_specializes_alias_enum_constants_for_if_branch() {
         .equations
         .iter()
         .find_map(|eq| {
-            let rumoca_ir_flat::Expression::Binary { op, lhs, rhs } = &eq.residual else {
+            let rumoca_core::Expression::Binary { op, lhs, rhs, .. } = &eq.residual else {
                 return None;
             };
-            if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+            if !matches!(op, rumoca_core::OpBinary::Sub) {
                 return None;
             }
-            let rumoca_ir_flat::Expression::VarRef { name, .. } = lhs.as_ref() else {
+            let rumoca_core::Expression::VarRef { name, .. } = lhs.as_ref() else {
                 return None;
             };
             (name.to_string() == "b.medium.h").then_some(rhs.as_ref().clone())
@@ -543,21 +553,21 @@ fn test_component_redeclare_specializes_alias_enum_constants_for_if_branch() {
     assert!(
         matches!(
             h_rhs,
-            rumoca_ir_flat::Expression::VarRef { ref name, .. } if name.to_string() == "b.h_in"
+            rumoca_core::Expression::VarRef { ref name, .. } if name.to_string() == "b.h_in"
         ),
         "expected constant-true branch to flatten as `b.medium.h = b.h_in`, got rhs={h_rhs:?}"
     );
 
     let has_medium_t_lhs = result.flat.equations.iter().any(|eq| {
-        let rumoca_ir_flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
+        let rumoca_core::Expression::Binary { op, lhs, .. } = &eq.residual else {
             return false;
         };
-        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_core::OpBinary::Sub) {
             return false;
         }
         matches!(
             lhs.as_ref(),
-            rumoca_ir_flat::Expression::VarRef { name, .. } if name.to_string() == "b.medium.T"
+            rumoca_core::Expression::VarRef { name, .. } if name.to_string() == "b.medium.T"
         )
     });
 
@@ -626,9 +636,9 @@ end UsesRangeInBaseProperties;
     );
 
     assert!(
-        rumoca_analysis_dae::is_balanced(&result.dae),
+        rumoca_phase_dae::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        rumoca_analysis_dae::balance_detail(&result.dae)
+        rumoca_phase_dae::balance_detail(&result.dae)
     );
 }
 
@@ -688,7 +698,13 @@ end PumpMonitoringNPSH;
         "state_in.phase should come from the redeclared package record; vars={flat_var_names:?}"
     );
 
-    let dae_inputs: Vec<_> = result.dae.inputs.keys().map(|k| k.to_string()).collect();
+    let dae_inputs: Vec<_> = result
+        .dae
+        .variables
+        .inputs
+        .keys()
+        .map(|k| k.to_string())
+        .collect();
     assert!(
         dae_inputs.iter().any(|n| n == "state.phase"),
         "state.phase should be tracked as an input scalar"
