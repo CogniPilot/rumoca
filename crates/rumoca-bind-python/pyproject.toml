@@ -25,9 +25,9 @@ classifiers = [
 requires-python = ">=3.10"
 
 [project.urls]
-Homepage = "https://github.com/cognipilot/rumoca"
-Repository = "https://github.com/cognipilot/rumoca"
-Issues = "https://github.com/cognipilot/rumoca/issues"
+Homepage = "https://github.com/climamind/rumoca"
+Repository = "https://github.com/climamind/rumoca"
+Issues = "https://github.com/climamind/rumoca/issues"
 
 [tool.maturin]
 manifest-path = "Cargo.toml"

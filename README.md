@@ -2,12 +2,16 @@
 
 <img src="editors/icons/rumoca.png" alt="Rumoca Logo" width="128" align="right">
 
-[![CI](https://github.com/cognipilot/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/cognipilot/rumoca/actions/workflows/ci.yml)
-[![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-live-2ea44f?logo=github)](https://cognipilot.github.io/rumoca/)
+[![CI](https://github.com/climamind/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/climamind/rumoca/actions/workflows/ci.yml)
+[![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-live-2ea44f?logo=github)](https://climamind.github.io/rumoca/)
 [![PyPI](https://img.shields.io/pypi/v/rumoca)](https://pypi.org/project/rumoca/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**[Try Rumoca in your browser](https://cognipilot.github.io/rumoca/)** (no installation required).
+**[Try Rumoca in your browser](https://climamind.github.io/rumoca/)** (no installation required).
+
+This repository is the ClimaMind-maintained Rumoca line. Rumoca originated in
+the CogniPilot community; see [NOTICE](NOTICE) for attribution and third-party
+license notes.
 
 Rumoca is a modern **Modelica compiler and symbolic interoperability platform** written in Rust.
 
@@ -15,7 +19,7 @@ Rumoca’s goal is not only to compile and simulate Modelica models, but to turn
 
 > **Rumoca turns Modelica package trees into modern symbolic systems.**
 
-> **Project status:** Rumoca is in active development. You should expect bugs and rough edges; please file issues at https://github.com/cognipilot/rumoca/issues.
+> **Project status:** Rumoca is in active development. You should expect bugs and rough edges; please file issues at https://github.com/climamind/rumoca/issues.
 
 ## Why Rumoca Exists
 
@@ -299,9 +303,9 @@ After that, the main command groups are:
 
 ## Documentation
 
-- Playground: <https://cognipilot.github.io/rumoca/>
-- User book: <https://cognipilot.github.io/rumoca/user-guide/> (`docs/user-guide/`)
-- Developer book: <https://cognipilot.github.io/rumoca/dev-guide/> (`docs/dev-guide/`)
+- Playground: <https://climamind.github.io/rumoca/>
+- User book: <https://climamind.github.io/rumoca/user-guide/> (`docs/user-guide/`)
+- Developer book: <https://climamind.github.io/rumoca/dev-guide/> (`docs/dev-guide/`)
 - Normative design rules: `spec/`
 
 The books explain how to use Rumoca and how the implementation is organized.

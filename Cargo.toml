@@ -55,8 +55,8 @@ members = [
 version = "0.8.13"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/cognipilot/rumoca"
-homepage = "https://github.com/cognipilot/rumoca"
+repository = "https://github.com/climamind/rumoca"
+homepage = "https://github.com/climamind/rumoca"
 
 [workspace.dependencies]
 # Internal crates
