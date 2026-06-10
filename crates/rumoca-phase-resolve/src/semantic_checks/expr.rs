@@ -621,8 +621,10 @@ impl ast::Visitor for ExprTypeIssuesVisitor<'_> {
                     .and_then(|def_id| find_class_by_def_id(self.def, def_id))
                     .is_some()
                     || bare_name_resolves_to_local_or_top_level_class(self.class, self.def, name);
-                if !self.class.components.contains_key(name) && refers_to_class {
-                    self.diags.push(semantic_error(
+                if !component_visible_in_class_or_base(self.def, self.class, name)
+                    && refers_to_class
+                {
+                    self.diags.push(semantic_error_or_external_compat_warning(
                         ER011_CLASS_USED_AS_VALUE,
                         format!(
                             "'{}' is a class, not a variable; cannot be used as a value (MLS §4.4)",
@@ -640,6 +642,45 @@ impl ast::Visitor for ExprTypeIssuesVisitor<'_> {
         }
         walk_expression_default(self, expr)
     }
+}
+
+fn component_visible_in_class_or_base(
+    def: &StoredDefinition,
+    class: &ClassDef,
+    name: &str,
+) -> bool {
+    component_visible_in_class_or_base_inner(def, class, name, &mut HashSet::new())
+}
+
+fn component_visible_in_class_or_base_inner(
+    def: &StoredDefinition,
+    class: &ClassDef,
+    name: &str,
+    visited: &mut HashSet<DefId>,
+) -> bool {
+    if class.components.contains_key(name) {
+        return true;
+    }
+
+    for ext in &class.extends {
+        if ext.break_names.iter().any(|break_name| break_name == name) {
+            continue;
+        }
+        let Some(base_def_id) = ext.base_def_id else {
+            continue;
+        };
+        if !visited.insert(base_def_id) {
+            continue;
+        }
+        let Some(base_class) = find_class_by_def_id(def, base_def_id) else {
+            continue;
+        };
+        if component_visible_in_class_or_base_inner(def, base_class, name, visited) {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn bare_name_resolves_to_local_or_top_level_class(

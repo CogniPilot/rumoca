@@ -209,6 +209,25 @@ fn semantic_error(
     Diagnostic::error(code, message, primary_label)
 }
 
+fn semantic_error_or_external_compat_warning(
+    code: &str,
+    message: impl Into<String>,
+    primary_label: PrimaryLabel,
+) -> Diagnostic {
+    let message = message.into();
+    if is_external_library_span(primary_label.span()) {
+        Diagnostic::warning(code, message, primary_label)
+    } else {
+        Diagnostic::error(code, message, primary_label)
+    }
+}
+
+fn is_external_library_span(span: Span) -> bool {
+    source_name_for(span.source).is_some_and(|name| {
+        name.contains("modelica-buildings") || name.contains("ModelicaStandardLibrary")
+    })
+}
+
 /// Run all semantic checks on a StoredDefinition and collect diagnostics.
 pub fn check_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
     let _context = activate_semantic_context(def, source_map);
@@ -1104,7 +1123,7 @@ fn check_block_connector_causality_restrictions(
                 // prefixes on the block member itself.
                 && !connector_members_define_causality(tc)
         {
-            diags.push(semantic_error(
+            diags.push(semantic_error_or_external_compat_warning(
                 ER020_BLOCK_CONNECTOR_MISSING_IO_PREFIX,
                 format!(
                     "public connector component '{}' in block '{}' must \

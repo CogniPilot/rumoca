@@ -64,6 +64,10 @@
 
 /* Complex number support — Modelica Complex record projected to real part. */
 #define Complex(re, im) (re)
+#define REAL_C(x) (x)
+#define Modelica_Units_SI_TemperatureDifference(x) (x)
+#define Modelica_Units_SI_MassFraction(x) (x)
+static inline double linspace(double start, double stop, double n) { (void)stop; (void)n; return start; }
 
 /* Array helper: sum all elements of a double array */
 static inline double __rumoca_sum_d(const double* arr, int n) {
@@ -159,6 +163,9 @@ static inline double zeros(int n) { (void)n; return 0.0; }
 static inline double ones(int n) { (void)n; return 1.0; }
 static inline double fill(double val, int n) { (void)n; return val; }
 static inline int size(const double* arr, int dim) { (void)arr; (void)dim; return 0; }
+static inline double sign(double x) { return (x > 0.0) - (x < 0.0); }
+static inline double getInstanceName(void) { return 0.0; }
+static inline double Buildings_ThermalZones_EnergyPlus_9_6_0_ThermalZone_Medium(double x) { return x; }
 
 /* Modelica interval() builtin — clocked partition intrinsic (MLS §16.10). */
 static inline double interval(double u) { (void)u; return 0.0; }
@@ -234,6 +241,78 @@ static double __rumoca_solve_external_call_default(const char* function, int out
 #define __rumoca_named_arg___extrapolation(x) (x)
 #define __rumoca_named_arg___verboseRead(x) (x)
 #define __rumoca_named_arg___verboseExtrapolation(x) (x)
+#define __rumoca_named_arg___T(x) (x)
+#define __rumoca_named_arg___TWetBul(x) (x)
+#define __rumoca_named_arg___X(...) (__VA_ARGS__)
+#define __rumoca_named_arg___X_w(x) (x)
+#define __rumoca_named_arg___a(x) (x)
+#define __rumoca_named_arg___b(x) (x)
+#define __rumoca_named_arg___buildingsRootFileLocation(x) (x)
+#define __rumoca_named_arg___c(x) (x)
+#define __rumoca_named_arg___caseSensitive(x) (x)
+#define __rumoca_named_arg___d(x) (x)
+#define __rumoca_named_arg___delta(x) (x)
+#define __rumoca_named_arg___deltaInv(x) (x)
+#define __rumoca_named_arg___deltaX(x) (x)
+#define __rumoca_named_arg___deltax(x) (x)
+#define __rumoca_named_arg___derivatives_delta(x) (x)
+#define __rumoca_named_arg___derivatives_structure(x) (x)
+#define __rumoca_named_arg___diameter(x) (x)
+#define __rumoca_named_arg___dummy(x) (x)
+#define __rumoca_named_arg___e(x) (x)
+#define __rumoca_named_arg___ensureMonotonicity(x) (x)
+#define __rumoca_named_arg___epName(x) (x)
+#define __rumoca_named_arg___epwName(x) (x)
+#define __rumoca_named_arg___f(x) (x)
+#define __rumoca_named_arg___fmuName(x) (x)
+#define __rumoca_named_arg___h(x) (x)
+#define __rumoca_named_arg___idfName(x) (x)
+#define __rumoca_named_arg___idfVersion(x) (x)
+#define __rumoca_named_arg___initialCall(x) (x)
+#define __rumoca_named_arg___inpNames(x) (x)
+#define __rumoca_named_arg___inpUnits(x) (x)
+#define __rumoca_named_arg___jsonKeysValues(x) (x)
+#define __rumoca_named_arg___jsonName(x) (x)
+#define __rumoca_named_arg___modelicaInstanceName(x) (x)
+#define __rumoca_named_arg___modelicaNameBuilding(x) (x)
+#define __rumoca_named_arg___mu_a(x) (x)
+#define __rumoca_named_arg___mu_b(x) (x)
+#define __rumoca_named_arg___nDer(x) (x)
+#define __rumoca_named_arg___nInp(x) (x)
+#define __rumoca_named_arg___nOut(x) (x)
+#define __rumoca_named_arg___nParOut(x) (x)
+#define __rumoca_named_arg___nY(x) (x)
+#define __rumoca_named_arg___neg(x) (x)
+#define __rumoca_named_arg___objectType(x) (x)
+#define __rumoca_named_arg___outNames(x) (x)
+#define __rumoca_named_arg___outUnits(x) (x)
+#define __rumoca_named_arg___p(x) (x)
+#define __rumoca_named_arg___pSat(x) (x)
+#define __rumoca_named_arg___p_w(x) (x)
+#define __rumoca_named_arg___parOutNames(x) (x)
+#define __rumoca_named_arg___parOutUnits(x) (x)
+#define __rumoca_named_arg___per(x) (x)
+#define __rumoca_named_arg___phi(x) (x)
+#define __rumoca_named_arg___pos(x) (x)
+#define __rumoca_named_arg___printUnit(x) (x)
+#define __rumoca_named_arg___r_V(x) (x)
+#define __rumoca_named_arg___relativeSurfaceTolerance(x) (x)
+#define __rumoca_named_arg___rho_a(x) (x)
+#define __rumoca_named_arg___rho_b(x) (x)
+#define __rumoca_named_arg___spawnExe(x) (x)
+#define __rumoca_named_arg___state(x) (x)
+#define __rumoca_named_arg___strict(x) (x)
+#define __rumoca_named_arg___string1(x) (x)
+#define __rumoca_named_arg___string2(x) (x)
+#define __rumoca_named_arg___u(x) (x)
+#define __rumoca_named_arg___usePrecompiledFMU(x) (x)
+#define __rumoca_named_arg___x(x) (x)
+#define __rumoca_named_arg___x1(x) (x)
+#define __rumoca_named_arg___x2(x) (x)
+#define __rumoca_named_arg___x_small(x) (x)
+#define __rumoca_named_arg___y(x) (x)
+#define __rumoca_named_arg___y1(x) (x)
+#define __rumoca_named_arg___y2(x) (x)
 
 /* =========================================================================
  * Enumeration literal constants
@@ -744,6 +823,8 @@ static void snapshot_pre_parameters(ModelInstance* m) {
 {% for p in func.inputs %}    (void){{ symbol(symbols, p.name) }};
 {% endfor %}
     return 0.0;
+{% elif unsupported_c_function_name(func_name) or unsupported_c_function_body(func) %}
+{{ unsupported_c_function_body(func) | indent(4) }}
 {% elif func.external %}
     /* External {{ func.external.language }} function */
 {% if func.external.output_name %}
@@ -883,7 +964,7 @@ static void initialize_defaults(ModelInstance* m) {
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.constants | items %}
-    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->constants[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
@@ -893,12 +974,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->p[{{ ns_idx.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->p[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -909,11 +990,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};  /* {{ name }}[{{ i + 1 }}] */
+    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};  /* {{ name }} */
+    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -923,12 +1004,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->u[{{ ns_idx.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->u[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -939,12 +1020,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->z[{{ ns_idx.offset }}] = {{ symbol(symbols, source_ref(name, var.dims, i + 1)) }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ symbol(symbols, name) }} = {% if var.start and is_string_literal(var.start) != "yes" and expr_has_dynamic_multidim_index(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->z[{{ ns_idx.offset }}] = {{ symbol(symbols, name) }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -960,6 +1041,45 @@ static void initialize_defaults(ModelInstance* m) {
     m->clocks[{{ loop.index0 }}] = 0;
 {% endfor %}
 #endif
+}
+
+/* =========================================================================
+ * FMI initialization binding propagation
+ * ========================================================================= */
+static void apply_parameter_bindings(ModelInstance* m) {
+{% if dae.p | length > 0 %}
+    const double t = m->time;
+    const double time = m->time;
+    (void)t; (void)time;
+
+{{ unpack_vars(dae.constants, "m->constants") }}
+{{ unpack_vars(dae.p, "m->p", mutable=true) }}
+{% set ns_idx = namespace(offset=0) %}
+{% for name, var in dae.p | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{% set binding_name = source_ref(name, var.dims, i + 1) %}
+{% set rhs = parameter_binding_rhs(name, var.start, i + 1, cfg) if var.start else "" %}
+{% if rhs %}
+    {{ binding_name | sanitize }} = {{ rhs }};
+    m->p[{{ ns_idx.offset }}] = {{ binding_name | sanitize }};  /* binding {{ binding_name }} */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endfor %}
+{% else %}
+{% set rhs = parameter_binding_rhs(name, var.start, 0, cfg) if var.start else "" %}
+{% if rhs %}
+    {{ name | sanitize }} = {{ rhs }};
+    m->p[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* binding {{ name }} */
+{% endif %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endif %}
+{% endfor %}
+    m->dirty_values = 1;
+{% else %}
+    (void)m;
+{% endif %}
 }
 
 /* =========================================================================
@@ -1593,6 +1713,7 @@ FMI3_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
     snapshot_pre_parameters(m);
 
     /* Compute initial derivatives and outputs */
+    apply_parameter_bindings(m);
     compute_initial_updates(m);
     compute_derivatives(m);
     compute_event_indicators(m);

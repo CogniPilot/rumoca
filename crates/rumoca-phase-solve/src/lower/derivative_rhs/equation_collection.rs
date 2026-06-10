@@ -1183,7 +1183,7 @@ pub(in crate::lower) fn matrix_times_derivative_coefficients(
     }
     let matrix_span = derivative_expr_span_or_owner(matrix, owner_span)?;
     let Some(matrix_coefficients) =
-        expression_binding_expressions(matrix, dae_model, structural_bindings, matrix_span)?
+        matrix_coefficient_expressions(matrix, dae_model, structural_bindings, matrix_span)?
     else {
         return Ok(None);
     };
@@ -1214,7 +1214,7 @@ pub(in crate::lower) fn derivative_times_matrix_coefficients(
     }
     let matrix_span = derivative_expr_span_or_owner(matrix, owner_span)?;
     let Some(matrix_coefficients) =
-        expression_binding_expressions(matrix, dae_model, structural_bindings, matrix_span)?
+        matrix_coefficient_expressions(matrix, dae_model, structural_bindings, matrix_span)?
     else {
         return Ok(None);
     };
@@ -1262,6 +1262,26 @@ pub(in crate::lower) fn build_matrix_derivative_equations(
         });
     }
     Ok(Some(equations))
+}
+
+fn matrix_coefficient_expressions(
+    matrix: &rumoca_core::Expression,
+    dae_model: &dae::Dae,
+    structural_bindings: &IndexMap<String, f64>,
+    span: rumoca_core::Span,
+) -> Result<Option<Vec<rumoca_core::Expression>>, LowerError> {
+    if let Some(coefficients) =
+        expression_binding_expressions(matrix, dae_model, structural_bindings, span)?
+    {
+        return Ok(Some(coefficients));
+    }
+    match matrix {
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. } => {
+            literal_array_elements_flat(elements, span).map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 fn matrix_derivative_coefficient_rows(

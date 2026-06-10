@@ -322,6 +322,24 @@ fn insert_final_type_attribute_name(
     }
 }
 
+fn extract_numeric_attr_source_from_modifications(
+    comp: &ast::Component,
+    attr_name: &str,
+) -> Option<ast::Expression> {
+    comp.source_modifications
+        .iter()
+        .find_map(|expr| match expr {
+            ast::Expression::Modification { target, value, .. } => {
+                let target_name = target.parts.last()?.ident.text.as_ref();
+                (target_name == attr_name).then(|| value.as_ref().clone())
+            }
+            ast::Expression::NamedArgument { name, value, .. } => {
+                (name.text.as_ref() == attr_name).then(|| value.as_ref().clone())
+            }
+            _ => None,
+        })
+}
+
 fn type_attribute_modification_name(expr: &ast::Expression) -> Option<String> {
     match expr {
         ast::Expression::Modification { target, .. }
@@ -384,11 +402,15 @@ pub(super) fn extract_attributes_in_scope(
 ) -> InstantiateResult<ExtractedAttributes> {
     let mut source_scopes = IndexMap::default();
     let start_path = ast::QualifiedName::from_ident(comp_name).child("start");
+    let start_from_source = extract_numeric_attr_source_from_modifications(comp, "start");
     let start_from_mod_env = mod_env.get(&start_path).map(|value| {
         if let Some(scope) = value.source_scope.clone() {
             source_scopes.insert("start".to_string(), scope);
         }
-        value.value.clone()
+        start_from_source
+            .clone()
+            .or_else(|| value.source.clone())
+            .unwrap_or_else(|| value.value.clone())
     });
     let mut attr_from_mod_env = |attr_name: &str| {
         let path = ast::QualifiedName::from_ident(comp_name).child(attr_name);
@@ -396,7 +418,11 @@ pub(super) fn extract_attributes_in_scope(
         if let Some(scope) = value.source_scope.clone() {
             source_scopes.insert(attr_name.to_string(), scope);
         }
-        Some(value.value.clone())
+        Some(
+            extract_numeric_attr_source_from_modifications(comp, attr_name)
+                .or_else(|| value.source.clone())
+                .unwrap_or_else(|| value.value.clone()),
+        )
     };
 
     let state_select_path = ast::QualifiedName::from_ident(comp_name).child("stateSelect");
@@ -433,13 +459,31 @@ pub(super) fn extract_attributes_in_scope(
     for (name, value) in &comp.modifications {
         match name.as_str() {
             "start" if attrs.start.is_none() => {
-                attrs.start = Some(value.clone());
+                attrs.start = Some(
+                    extract_numeric_attr_source_from_modifications(comp, "start")
+                        .unwrap_or_else(|| value.clone()),
+                );
                 attrs.start_is_explicit = true;
             }
             "fixed" if attrs.fixed.is_none() => attrs.fixed = expr_to_bool(value),
-            "min" if attrs.min.is_none() => attrs.min = Some(value.clone()),
-            "max" if attrs.max.is_none() => attrs.max = Some(value.clone()),
-            "nominal" if attrs.nominal.is_none() => attrs.nominal = Some(value.clone()),
+            "min" if attrs.min.is_none() => {
+                attrs.min = Some(
+                    extract_numeric_attr_source_from_modifications(comp, "min")
+                        .unwrap_or_else(|| value.clone()),
+                )
+            }
+            "max" if attrs.max.is_none() => {
+                attrs.max = Some(
+                    extract_numeric_attr_source_from_modifications(comp, "max")
+                        .unwrap_or_else(|| value.clone()),
+                )
+            }
+            "nominal" if attrs.nominal.is_none() => {
+                attrs.nominal = Some(
+                    extract_numeric_attr_source_from_modifications(comp, "nominal")
+                        .unwrap_or_else(|| value.clone()),
+                )
+            }
             "quantity" if attrs.quantity.is_none() => attrs.quantity = expr_to_string(value),
             "unit" if attrs.unit.is_none() => attrs.unit = expr_to_string(value),
             "displayUnit" if attrs.display_unit.is_none() => {

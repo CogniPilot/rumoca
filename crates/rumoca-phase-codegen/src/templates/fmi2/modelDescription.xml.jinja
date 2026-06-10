@@ -58,8 +58,13 @@
 {%- endmacro -%}
 {#- Macro: emit a <ScalarVariable> element -#}
 {%- macro scalar_var(name, vr, causality, variability, var, initial) -%}
+{%- set start_binding_rhs = initial_rhs_for_var(dae, name, cfg) -%}
+{%- if not start_binding_rhs -%}
+{%- set start_binding_rhs = alg_rhs_for_var_with_dae(name, dae, cfg) -%}
+{%- endif -%}
+{%- set has_symbolic_start_binding = start_binding_rhs and not ("WARNING:" in start_binding_rhs) -%}
     <ScalarVariable name="{{ xml_escape(name) }}" valueReference="{{ vr }}" causality="{{ causality }}" variability="{{ variability }}"{% if var.description %} description="{{ xml_escape(var.description) }}"{% endif %}{% if initial %} initial="{{ initial }}"{% endif %}>
-      <Real{% if var.start is not none and expr_has_var_ref(var.start) != "yes" %} start="{{ render_xml_attr_expr(var.start, cfg) }}"{% endif %}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{% if var.nominal is not none %} nominal="{{ render_xml_attr_expr(var.nominal, cfg) }}"{% endif %}{% if var.min is not none %} min="{{ render_xml_attr_expr(var.min, cfg) }}"{% endif %}{% if var.max is not none %} max="{{ render_xml_attr_expr(var.max, cfg) }}"{% endif %}/>
+      <Real{% if var.start is not none and expr_has_var_ref(var.start) != "yes" and not has_symbolic_start_binding %} start="{{ render_xml_attr_expr(var.start, cfg) }}"{% endif %}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{% if var.nominal is not none %} nominal="{{ render_xml_attr_expr(var.nominal, cfg) }}"{% endif %}{% if var.min is not none %} min="{{ render_xml_attr_expr(var.min, cfg) }}"{% endif %}{% if var.max is not none %} max="{{ render_xml_attr_expr(var.max, cfg) }}"{% endif %}/>
     </ScalarVariable>
 {%- endmacro -%}
 {#- Macro: emit ScalarVariable for a derivative -#}

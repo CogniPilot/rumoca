@@ -561,6 +561,54 @@ fn template_emits_simulation_function_bodies(template: &str) -> bool {
             || template.contains("step("))
 }
 
+/// Reusable Minijinja context for rendering multiple templates from one DAE.
+pub struct DaeTemplateContext {
+    dae_value: Value,
+}
+
+impl DaeTemplateContext {
+    pub fn from_dae_json(dae_json: &serde_json::Value) -> Self {
+        Self {
+            dae_value: Value::from_serialize(dae_json),
+        }
+    }
+
+    pub fn from_dae(dae: &dae::Dae) -> Result<Self, CodegenError> {
+        Ok(Self {
+            dae_value: dae_template_value(dae)?,
+        })
+    }
+
+    pub fn render(&self, template: &str) -> Result<String, CodegenError> {
+        let mut env = create_environment();
+        env.add_template("inline", template)?;
+        let tmpl = env.get_template("inline")?;
+        let rendered = tmpl.render(minijinja::context! {
+            dae => self.dae_value.clone(),
+            ir => self.dae_value.clone(),
+            ir_kind => "dae",
+        })?;
+        Ok(rendered)
+    }
+
+    pub fn render_with_name(
+        &self,
+        template: &str,
+        model_name: &str,
+    ) -> Result<String, CodegenError> {
+        let mut env = create_environment();
+        env.add_template("inline", template)?;
+        let tmpl = env.get_template("inline")?;
+        let rendered = tmpl.render(minijinja::context! {
+            dae => self.dae_value.clone(),
+            ir => self.dae_value.clone(),
+            ir_kind => "dae",
+            model_name => model_name,
+        })?;
+        Ok(rendered)
+    }
+}
+
 fn render_with_input_context(
     tmpl: &minijinja::Template<'_, '_>,
     input: CodegenInput<'_>,
@@ -1445,6 +1493,14 @@ fn add_statement_template_helpers(env: &mut Environment<'static>) {
 
     // Custom function for detecting self-referential (builtin alias) functions
     env.add_function("is_self_call", is_self_call_function);
+    env.add_function(
+        "unsupported_c_function_body",
+        unsupported_c_function_body_function,
+    );
+    env.add_function(
+        "unsupported_c_function_name",
+        unsupported_c_function_name_function,
+    );
 }
 
 fn add_rhs_template_helpers(env: &mut Environment<'static>) {
@@ -1471,19 +1527,35 @@ fn add_rhs_template_helpers(env: &mut Environment<'static>) {
         "discrete_rhs_for_var",
         render_c::discrete_rhs_for_var_function,
     );
+    env.add_function(
+        "event_indicator_expr",
+        render_c::event_indicator_expr_function,
+    );
 
     // Index into an array expression to render element i (1-based)
     env.add_function(
         "render_expr_at_index",
         render_c::render_expr_at_index_function,
     );
+    env.add_function(
+        "parameter_binding_rhs",
+        render_c::parameter_binding_rhs_function,
+    );
 
     // Check if an expression is a string literal for scalar templates.
     env.add_function("is_string_literal", render_c::is_string_literal_function);
     env.add_function("expr_has_var_ref", render_c::expr_has_var_ref_function);
     env.add_function(
+        "expr_has_dynamic_multidim_index",
+        render_c::expr_has_dynamic_multidim_index_function,
+    );
+    env.add_function(
         "initial_rhs_for_var",
         render_c::initial_rhs_for_var_function,
+    );
+    env.add_function(
+        "initial_runtime_rhs_for_var",
+        render_c::initial_runtime_rhs_for_var_function,
     );
 
     // Check if a function has record-typed parameters
@@ -1989,6 +2061,68 @@ fn is_self_call_function(func_name: Value, func: Value) -> Result<bool, minijinj
         return Ok(call_name == name_str);
     }
     Ok(false)
+}
+
+fn unsupported_c_function_body_function(func: Value) -> Result<bool, minijinja::Error> {
+    use render_expr::get_field;
+
+    if let Ok(external) = get_field(&func, "external")
+        && !external.is_undefined()
+    {
+        return Ok(true);
+    }
+
+    if let Ok(inputs) = get_field(&func, "inputs")
+        && let Some(len) = inputs.len()
+    {
+        for i in 0..len {
+            let Ok(input) = inputs.get_item(&Value::from(i)) else {
+                continue;
+            };
+            if let Ok(dims) = get_field(&input, "dims")
+                && dims.len().unwrap_or(0) > 0
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    if let Ok(locals) = get_field(&func, "locals")
+        && let Some(len) = locals.len()
+    {
+        for i in 0..len {
+            let Ok(local) = locals.get_item(&Value::from(i)) else {
+                continue;
+            };
+            if let Ok(dims) = get_field(&local, "dims")
+                && dims.len().unwrap_or(0) > 0
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    let Ok(body) = get_field(&func, "body") else {
+        return Ok(false);
+    };
+    let body_debug = body.to_string();
+    Ok(body_debug.contains("NamedArgument")
+        || body_debug.contains("FieldAccess")
+        || body_debug.contains("Assert")
+        || body_debug.contains("outputs")
+        || body_debug.contains("String(")
+        || body_debug.contains("Modelica.Utilities.Strings")
+        || body_debug.contains("Modelica_Utilities_Strings"))
+}
+
+fn unsupported_c_function_name_function(func_name: Value) -> Result<bool, minijinja::Error> {
+    let name = func_name.to_string().replace('"', "");
+    Ok(
+        name.contains("Modelica.Media.Interfaces.PartialSimpleMedium")
+            || name.contains("Modelica_Media_Interfaces_PartialSimpleMedium")
+            || name.contains("Modelica.Media.Interfaces.PartialMedium")
+            || name.contains("Modelica_Media_Interfaces_PartialMedium"),
+    )
 }
 
 /// Built-in expression renderer function.

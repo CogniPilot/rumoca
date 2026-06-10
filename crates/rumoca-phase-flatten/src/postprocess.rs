@@ -809,22 +809,24 @@ pub(super) fn substitute_known_constants_in_flat(
 
     for eq in &mut flat.equations {
         let scope = equation_origin_scope(&eq.origin);
-        eq.residual = substitute_known_constants_expr(
+        eq.residual = substitute_known_constants_expr_with_options(
             eq.residual.clone(),
             ctx,
             &live_vars,
             &no_locals,
             &scope,
+            true,
         )?;
     }
     for eq in &mut flat.initial_equations {
         let scope = equation_origin_scope(&eq.origin);
-        eq.residual = substitute_known_constants_expr(
+        eq.residual = substitute_known_constants_expr_with_options(
             eq.residual.clone(),
             ctx,
             &live_vars,
             &no_locals,
             &scope,
+            true,
         )?;
     }
     substitute_assert_equations(&mut flat.assert_equations, ctx, &live_vars, &no_locals)?;
@@ -933,17 +935,29 @@ fn substitute_variable_annotations(
 ) -> Result<(), FlattenError> {
     for (name, var) in &mut flat.variables {
         let scope = parent_component_scope(var.name.as_str());
-        substitute_opt_expr(&mut var.binding, ctx, live_vars, locals, &scope)?;
-        substitute_opt_expr(&mut var.start, ctx, live_vars, locals, &scope)?;
-        substitute_opt_expr(&mut var.min, ctx, live_vars, locals, &scope)?;
-        substitute_opt_expr(&mut var.max, ctx, live_vars, locals, &scope)?;
-        substitute_opt_expr(&mut var.nominal, ctx, live_vars, locals, &scope)?;
+        if !is_runtime_parameter_modifier_binding(var) {
+            substitute_opt_expr(&mut var.binding, ctx, live_vars, locals, &scope)?;
+        }
+        substitute_opt_expr_with_options(&mut var.start, ctx, live_vars, locals, &scope, true)?;
+        substitute_opt_expr_with_options(&mut var.min, ctx, live_vars, locals, &scope, true)?;
+        substitute_opt_expr_with_options(&mut var.max, ctx, live_vars, locals, &scope, true)?;
+        substitute_opt_expr_with_options(&mut var.nominal, ctx, live_vars, locals, &scope, true)?;
         if variable_is_string_type(var, flat.variable_type_names.get(name)) {
             recover_string_literal_opt_expr(&mut var.binding, &scope);
             recover_string_literal_opt_expr(&mut var.start, &scope);
         }
     }
     Ok(())
+}
+
+fn is_runtime_parameter_modifier_binding(var: &flat::Variable) -> bool {
+    matches!(
+        var.variability,
+        rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+    ) && var.binding_from_modification
+        && !var.evaluate
+        && !var.is_discrete_type
+        && var.binding.is_some()
 }
 
 fn variable_is_string_type(var: &flat::Variable, type_name: Option<&String>) -> bool {
@@ -1395,6 +1409,9 @@ fn substitute_scalar_var_ref(
     if inline_index_base_is_live_or_local(key, env.live_vars, env.locals) {
         return Ok(None);
     }
+    if let Some(scoped_live_ref) = scoped_live_var_ref(key, span, env) {
+        return Ok(Some(scoped_live_ref));
+    }
     let has_array_shape = reference_has_array_shape(name, key, env.ctx, env.scope);
     if env.prefer_scoped_parameters
         && !env.scope.is_empty()
@@ -1432,6 +1449,25 @@ fn substitute_scalar_var_ref(
     }
 
     substitute_alias_resolved_scalar_var_ref(key, span, env)
+}
+
+fn scoped_live_var_ref(
+    key: &str,
+    span: rumoca_core::Span,
+    env: ConstantSubstitutionEnv<'_>,
+) -> Option<rumoca_core::Expression> {
+    if env.scope.is_empty() || key.contains('.') {
+        return None;
+    }
+    let scoped_key = format!("{}.{}", env.scope, key);
+    if !env.live_vars.contains(&scoped_key) {
+        return None;
+    }
+    Some(rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new(scoped_key),
+        subscripts: vec![],
+        span,
+    })
 }
 
 fn substitute_alias_resolved_scalar_var_ref(

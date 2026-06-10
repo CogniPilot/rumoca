@@ -224,7 +224,7 @@ fn collect_nested_overrides_in_extends_chain(
                 continue;
             }
 
-            insert_nested_class_overrides(class, overrides);
+            insert_nested_class_overrides(tree, class, overrides);
             insert_extends_redeclare_overrides(tree, class, mod_env, overrides);
             next.extend(extends_base_classes(tree, class));
         }
@@ -266,14 +266,49 @@ fn is_visited_class(
     }
 }
 
-fn insert_nested_class_overrides(class: &ast::ClassDef, overrides: &mut TypeOverrideMap) {
+fn insert_nested_class_overrides(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+    overrides: &mut TypeOverrideMap,
+) {
     walk_nested_classes(class, |name, nested| {
         if let Some(def_id) = nested.def_id {
             let alias_path = ast::QualifiedName::from_ident(name);
             let target_def_id = overrides.target_for_path(&alias_path).unwrap_or(def_id);
             overrides.insert_alias_if_absent(alias_path, Some(def_id), target_def_id);
+            insert_redeclared_base_type_aliases(tree, class, name, nested, def_id, overrides);
         }
     });
+}
+
+fn insert_redeclared_base_type_aliases(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+    name: &str,
+    nested: &ast::ClassDef,
+    redeclared_def_id: DefId,
+    overrides: &mut TypeOverrideMap,
+) {
+    for ext in &nested.extends {
+        if let Some(base_name) = ext
+            .base_def_id
+            .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+        {
+            let alias_path = ast::QualifiedName::from_dotted(&base_name);
+            overrides.insert_alias_if_absent(alias_path, ext.base_def_id, redeclared_def_id);
+        }
+    }
+
+    for base_class in extends_base_classes(tree, class) {
+        if let Some(base_nested) = base_class.classes.get(name)
+            && let Some(base_name) = base_nested
+                .def_id
+                .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+        {
+            let alias_path = ast::QualifiedName::from_dotted(&base_name);
+            overrides.insert_alias_if_absent(alias_path, base_nested.def_id, redeclared_def_id);
+        }
+    }
 }
 
 fn extends_base_classes<'a>(

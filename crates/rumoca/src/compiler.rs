@@ -2128,7 +2128,7 @@ mod tests {
             "FMI2 C must re-evaluate modifier-derived child.p from root after setReal; got:\n{rendered}"
         );
         assert!(
-            rendered.contains("m->x[0] = child_p;  /* initial child.x */"),
+            rendered.contains("m->x[0] = child_p;  /* initial equation: child.x */"),
             "FMI2 C must apply direct initial equation x = p after parameter bindings; got:\n{rendered}"
         );
         assert!(
@@ -2136,7 +2136,9 @@ mod tests {
             "fmi2ExitInitializationMode must apply parameter bindings before initial equations; got:\n{rendered}"
         );
         assert!(
-            rendered.contains("apply_parameter_bindings(m);\n    return fmi2OK;"),
+            rendered.contains(
+                "apply_parameter_bindings(m);\n    m->dirty_values = 1;\n    return fmi2OK;"
+            ),
             "fmi2SetReal must re-apply dependent parameter bindings after batched writes; got:\n{rendered}"
         );
     }
@@ -2225,7 +2227,7 @@ mod tests {
             "array component modifier bindings must preserve element-wise source dependencies; got:\n{rendered}"
         );
         assert!(
-            rendered.contains("m->x[0] = child_1_p;  /* initial child[1].x */"),
+            rendered.contains("m->x[0] = child_1_p;  /* initial equation: child[1].x */"),
             "initial equations must use the dependent array modifier parameter; got:\n{rendered}"
         );
     }

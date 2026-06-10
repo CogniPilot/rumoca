@@ -3,6 +3,7 @@ use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 thread_local! {
     static ACTIVE_SEMANTIC_SOURCE_IDS: RefCell<Option<HashMap<String, SourceId>>> = const { RefCell::new(None) };
+    static ACTIVE_SEMANTIC_SOURCE_NAMES: RefCell<Option<HashMap<SourceId, String>>> = const { RefCell::new(None) };
     static ACTIVE_SEMANTIC_LOOKUP: RefCell<Option<SemanticLookupIndex>> = const { RefCell::new(None) };
 }
 
@@ -52,6 +53,7 @@ impl SemanticLookupIndex {
 
 pub(super) struct ActiveSemanticContextGuard {
     previous_source_ids: Option<HashMap<String, SourceId>>,
+    previous_source_names: Option<HashMap<SourceId, String>>,
     previous_lookup: Option<SemanticLookupIndex>,
 }
 
@@ -59,6 +61,9 @@ impl Drop for ActiveSemanticContextGuard {
     fn drop(&mut self) {
         ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
             *slot.borrow_mut() = self.previous_source_ids.take();
+        });
+        ACTIVE_SEMANTIC_SOURCE_NAMES.with(|slot| {
+            *slot.borrow_mut() = self.previous_source_names.take();
         });
         ACTIVE_SEMANTIC_LOOKUP.with(|slot| {
             *slot.borrow_mut() = self.previous_lookup.take();
@@ -70,12 +75,20 @@ pub(super) fn activate_semantic_context(
     def: &StoredDefinition,
     source_map: &SourceMap,
 ) -> ActiveSemanticContextGuard {
+    let source_ids = source_map.source_ids();
+    let source_names = source_ids
+        .iter()
+        .map(|(name, source_id)| (*source_id, name.clone()))
+        .collect();
     let previous_source_ids =
-        ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| slot.borrow_mut().replace(source_map.source_ids()));
+        ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| slot.borrow_mut().replace(source_ids));
+    let previous_source_names =
+        ACTIVE_SEMANTIC_SOURCE_NAMES.with(|slot| slot.borrow_mut().replace(source_names));
     let previous_lookup = ACTIVE_SEMANTIC_LOOKUP
         .with(|slot| slot.borrow_mut().replace(SemanticLookupIndex::build(def)));
     ActiveSemanticContextGuard {
         previous_source_ids,
+        previous_source_names,
         previous_lookup,
     }
 }
@@ -98,6 +111,14 @@ pub(super) fn source_id_for(file_name: &str) -> SourceId {
             .as_ref()
             .and_then(|ids| ids.get(file_name).copied())
             .unwrap_or_else(|| SourceId::from_source_name(file_name))
+    })
+}
+
+pub(super) fn source_name_for(source_id: SourceId) -> Option<String> {
+    ACTIVE_SEMANTIC_SOURCE_NAMES.with(|slot| {
+        let names_ref = slot.borrow();
+        let names = names_ref.as_ref()?;
+        names.get(&source_id).cloned()
     })
 }
 
