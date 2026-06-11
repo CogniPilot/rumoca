@@ -18,6 +18,7 @@ model MiniGear
   parameter Real J1 = 1;
   parameter Real J2 = 1;
   parameter Real tau = 1;
+  parameter Real d = 0.1;
   Real w1;
   Real w2(start = 0, fixed = true);
   Real a2;
@@ -31,7 +32,7 @@ equation
   J1 * der(w1) = fa + fb;
   0 = ratio * ga + gb;
   fb + ga = 0;
-  gb + J2 * a2 = 0;
+  gb + J2 * a2 + d * w2 = 0;
   fa = tau;
 end MiniGear;
 "#;
@@ -55,11 +56,16 @@ fn gear_torque_loop_converges_to_physical_solution() {
         .position(|name| name == "w2")
         .expect("w2 in outputs");
     let w2_end = *sim.data[w2_idx].last().expect("samples");
-    // a2 = ratio*tau/(ratio^2*J1 + J2) = 2/5; w2(1) = 0.4.
-    let expected = 0.4;
+    // (ratio^2*J1 + J2)*a2 = ratio*tau - (ratio/2)*d*w2 reduces to
+    // w2' = 0.4 - 0.02*w2, so w2(t) = 20*(1 - exp(-0.02*t)). The damping
+    // term keeps the state Jacobian honestly nonzero (a constant-derivative
+    // model trips the known BDF zero-Jacobian issue, which is not what this
+    // test pins). With the old mis-paired refresh the gear amplification was
+    // lost (a2 -> tau/4 family), which this trajectory detects at >1e-2.
+    let expected = 20.0 * (1.0 - (-0.02_f64).exp());
     assert!(
         (w2_end - expected).abs() < 1.0e-6,
         "w2(1) = {w2_end}, expected {expected}: the gear torque amplification \
-         must survive lowering (a2 = 2*tau/5, not tau/4)"
+         must survive lowering"
     );
 }
