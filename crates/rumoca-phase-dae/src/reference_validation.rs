@@ -435,11 +435,44 @@ pub(super) fn validate_dae_references(
     known_flat_var_names: &HashSet<String>,
 ) -> Result<(), ToDaeError> {
     let known_refs = KnownReferenceIndex::build(dae, known_flat_var_names);
+    validate_variable_provenance(dae)?;
     validate_variable_reference_attributes(dae, &known_refs)?;
     validate_equation_rhs_references(dae, &known_refs)?;
     validate_relation_references(dae, &known_refs)?;
     validate_function_references(dae, &known_refs)?;
     Ok(())
+}
+
+/// Phase contract: every DAE variable carries a structured component
+/// reference. Source variables keep the reference produced by flatten;
+/// generated variables (event conditions, `__pre__` parameters) attach a
+/// generated reference at their creation site. Downstream passes consume this
+/// provenance instead of re-deriving structure from rendered names.
+fn validate_variable_provenance(dae: &Dae) -> Result<(), ToDaeError> {
+    struct ProvenanceValidator {
+        result: Result<(), ToDaeError>,
+    }
+    impl rumoca_ir_dae::DaeVisitor for ProvenanceValidator {
+        fn visit_variable(
+            &mut self,
+            _partition: rumoca_ir_dae::DaeVariablePartition,
+            name: &rumoca_core::VarName,
+            variable: &rumoca_ir_dae::Variable,
+        ) {
+            if self.result.is_ok() && variable.component_ref.is_none() {
+                self.result = Err(ToDaeError::runtime_contract_violation_at(
+                    format!(
+                        "DAE variable `{}` has no structured component reference; its producer must attach one (generated variables included)",
+                        name.as_str()
+                    ),
+                    variable.source_span,
+                ));
+            }
+        }
+    }
+    let mut validator = ProvenanceValidator { result: Ok(()) };
+    validator.visit_variables(&dae.variables);
+    validator.result
 }
 
 fn validate_variable_reference_attributes(

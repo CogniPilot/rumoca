@@ -374,6 +374,12 @@ fn variable_component_key(
     name: &str,
     var: &dae::Variable,
 ) -> Result<ComponentReferenceKey, LowerError> {
+    // Generated DAE variables (event conditions, `__pre__` parameters) carry
+    // explicit compiler identity; their structured reference exists for
+    // provenance, not for source-layout keying.
+    if source_free_layout_name(name, var) {
+        return Ok(ComponentReferenceKey::generated(name));
+    }
     if let Some(component_ref) = var.component_ref.as_ref() {
         #[cfg(test)]
         if let Some(key) = crate::test_support::fixture_key_for_component_ref(component_ref, name) {
@@ -387,9 +393,6 @@ fn variable_component_key(
                 span: err.span,
             }
         });
-    }
-    if source_free_layout_name(name, var) {
-        return Ok(ComponentReferenceKey::generated(name));
     }
     #[cfg(test)]
     if let Some(key) = crate::test_support::fixture_key_for_variable(name, var) {

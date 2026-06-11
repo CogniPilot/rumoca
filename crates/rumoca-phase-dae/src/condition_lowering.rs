@@ -98,6 +98,46 @@ fn build_condition_equation(
     )
 }
 
+fn generated_single_part_ref(ident: &str) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference {
+        local: false,
+        span: rumoca_core::Span::DUMMY,
+        parts: vec![rumoca_core::ComponentRefPart {
+            ident: ident.to_string(),
+            span: rumoca_core::Span::DUMMY,
+            subs: Vec::new(),
+        }],
+        def_id: None,
+    }
+}
+
+/// Structured reference for a generated `__pre__.<source>` variable: the
+/// `__pre__` namespace part followed by the source variable's own parts.
+pub(crate) fn generated_pre_component_ref(
+    source: Option<&rumoca_core::ComponentReference>,
+    source_name: &str,
+) -> rumoca_core::ComponentReference {
+    let mut parts = vec![rumoca_core::ComponentRefPart {
+        ident: "__pre__".to_string(),
+        span: rumoca_core::Span::DUMMY,
+        subs: Vec::new(),
+    }];
+    match source {
+        Some(reference) => parts.extend(reference.parts.iter().cloned()),
+        None => parts.push(rumoca_core::ComponentRefPart {
+            ident: source_name.to_string(),
+            span: rumoca_core::Span::DUMMY,
+            subs: Vec::new(),
+        }),
+    }
+    rumoca_core::ComponentReference {
+        local: false,
+        span: rumoca_core::Span::DUMMY,
+        parts,
+        def_id: None,
+    }
+}
+
 fn declare_condition_variable(dae_model: &mut dae::Dae, condition_name: &str) {
     // MLS Appendix B: event-generating relations are represented by Boolean
     // condition variables c(t_e) that are updated only at event instants.
@@ -105,6 +145,7 @@ fn declare_condition_variable(dae_model: &mut dae::Dae, condition_name: &str) {
         rumoca_core::VarName::new(condition_name),
         dae::Variable {
             name: rumoca_core::VarName::new(condition_name),
+            component_ref: Some(generated_single_part_ref(condition_name)),
             dims: vec![dae_model.conditions.relations.len() as i64],
             start: Some(rumoca_core::Expression::Array {
                 elements: vec![
@@ -129,13 +170,14 @@ fn declare_condition_pre_parameter(dae_model: &mut dae::Dae, condition_name: &st
         return;
     };
     let pre_name = rumoca_core::VarName::new(format!("__pre__.{condition_name}"));
+    let pre_ref = generated_pre_component_ref(condition_var.component_ref.as_ref(), condition_name);
     dae_model
         .variables
         .parameters
         .entry(pre_name.clone())
         .or_insert_with(|| dae::Variable {
             name: pre_name,
-            component_ref: None,
+            component_ref: Some(pre_ref),
             source_span: condition_var.source_span,
             dims: condition_var.dims.clone(),
             start: condition_var.start.clone(),
