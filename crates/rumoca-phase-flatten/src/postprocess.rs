@@ -216,11 +216,7 @@ impl ExpressionRewriter for ConstructorMarker<'_> {
 impl StatementRewriter for ConstructorMarker<'_> {}
 
 pub(super) fn collapse_index_refs_to_known_varrefs(flat: &mut flat::Model) {
-    let known_flat_vars: HashSet<String> = flat
-        .variables
-        .keys()
-        .map(|name| name.as_str().to_string())
-        .collect();
+    let known_flat_vars = KnownFlatVars::build(flat);
 
     for eq in &mut flat.equations {
         collapse_index_expr(&mut eq.residual, &known_flat_vars);
@@ -485,7 +481,7 @@ fn should_replace_dims(current: &[i64], recovered: &[i64]) -> bool {
 
 fn collapse_index_when_equations(
     equations: &mut [rumoca_ir_flat::WhenEquation],
-    known_flat_vars: &HashSet<String>,
+    known_flat_vars: &KnownFlatVars,
 ) {
     for equation in equations {
         match equation {
@@ -522,19 +518,68 @@ fn collapse_index_when_equations(
 
 fn collapse_index_statements(
     statements: &mut [rumoca_core::Statement],
-    known_flat_vars: &HashSet<String>,
+    known_flat_vars: &KnownFlatVars,
 ) {
     for statement in statements {
         *statement = CollapseIndexRewriter { known_flat_vars }.rewrite_statement(statement);
     }
 }
 
-fn collapse_index_expr(expr: &mut rumoca_core::Expression, known_flat_vars: &HashSet<String>) {
+fn collapse_index_expr(expr: &mut rumoca_core::Expression, known_flat_vars: &KnownFlatVars) {
     *expr = CollapseIndexRewriter { known_flat_vars }.rewrite_expression(expr);
 }
 
+/// Flat variable lookup for the collapse pass: exact names plus enough
+/// structure to recover a scalarized record base (`comp[1].port_p.Phi` whose
+/// only flat variables are the `.re`/`.im` leaves).
+struct KnownFlatVars {
+    names: std::collections::BTreeMap<String, Option<rumoca_core::ComponentReference>>,
+}
+
+impl KnownFlatVars {
+    fn build(flat: &flat::Model) -> Self {
+        let names = flat
+            .variables
+            .iter()
+            .map(|(name, var)| (name.as_str().to_string(), var.component_ref.clone()))
+            .collect();
+        Self { names }
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.names.contains_key(name)
+    }
+
+    /// Structured reference for a scalarized record base: `path` names no flat
+    /// variable itself, but at least one leaf variable renders as
+    /// `path.<field>...`. The base reference is recovered by truncating that
+    /// leaf's component reference to the parts that render exactly `path`, so
+    /// part identity (spans, subscripts) is owned by the leaf metadata rather
+    /// than re-parsed from text.
+    fn record_base_reference(&self, path: &str) -> Option<rumoca_core::ComponentReference> {
+        let prefix = format!("{path}.");
+        let (leaf_name, leaf_ref) = self.names.range(prefix.clone()..).next()?;
+        if !leaf_name.starts_with(&prefix) {
+            return None;
+        }
+        let leaf_ref = leaf_ref.as_ref()?;
+        for depth in (1..leaf_ref.parts.len()).rev() {
+            let truncated = rumoca_core::ComponentReference {
+                local: leaf_ref.local,
+                span: leaf_ref.span,
+                parts: leaf_ref.parts[..depth].to_vec(),
+                def_id: None,
+            };
+            if truncated.to_var_name().as_str() == path {
+                return Some(truncated);
+            }
+        }
+        None
+    }
+}
+
 struct CollapseIndexRewriter<'a> {
-    known_flat_vars: &'a HashSet<String>,
+    known_flat_vars: &'a KnownFlatVars,
 }
 
 impl ExpressionRewriter for CollapseIndexRewriter<'_> {
@@ -592,7 +637,7 @@ fn collapse_indexed_var_ref_to_known_var(
     base_subscripts: &[rumoca_core::Subscript],
     subscripts: &[rumoca_core::Subscript],
     span: rumoca_core::Span,
-    known_flat_vars: &HashSet<String>,
+    known_flat_vars: &KnownFlatVars,
 ) -> Option<rumoca_core::Expression> {
     let mut merged = base_subscripts.to_vec();
     merged.extend_from_slice(subscripts);
@@ -601,6 +646,16 @@ fn collapse_indexed_var_ref_to_known_var(
         if known_flat_vars.contains(candidate.as_str()) {
             return Some(rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::new(candidate),
+                subscripts: vec![],
+                span,
+            });
+        }
+        // Element of a scalarized record array (`r[2]` whose flat variables
+        // are the field leaves `r[2].a`...): same record-base collapse as for
+        // field accesses.
+        if let Some(reference) = known_flat_vars.record_base_reference(&candidate) {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(&candidate, reference),
                 subscripts: vec![],
                 span,
             });
@@ -620,16 +675,29 @@ fn collapse_field_access_to_known_var(
     base: &rumoca_core::Expression,
     field: &str,
     span: rumoca_core::Span,
-    known_flat_vars: &HashSet<String>,
+    known_flat_vars: &KnownFlatVars,
 ) -> Option<rumoca_core::Expression> {
-    if let Some(candidate) = field_access_flat_path(base, field)
-        && known_flat_vars.contains(candidate.as_str())
-    {
-        return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(candidate),
-            subscripts: vec![],
-            span,
-        });
+    if let Some(candidate) = field_access_flat_path(base, field) {
+        if known_flat_vars.contains(candidate.as_str()) {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new(candidate),
+                subscripts: vec![],
+                span,
+            });
+        }
+        // Scalarized record base (`comp[1].port_p.Phi` where only the
+        // `.re`/`.im` leaves exist as flat variables): collapse to a single
+        // structured VarRef so downstream record-equation expansion sees the
+        // record reference instead of an Index/FieldAccess tree it cannot
+        // match (and shape inference does not inflate the equation to the
+        // whole component array).
+        if let Some(reference) = known_flat_vars.record_base_reference(&candidate) {
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(&candidate, reference),
+                subscripts: vec![],
+                span,
+            });
+        }
     }
 
     match base {
@@ -687,7 +755,7 @@ fn collapse_var_field_access(
     subscripts: &[rumoca_core::Subscript],
     field: &str,
     span: rumoca_core::Span,
-    known_flat_vars: &HashSet<String>,
+    known_flat_vars: &KnownFlatVars,
 ) -> Option<rumoca_core::Expression> {
     let subscript_suffix = subscript_suffix(subscripts)?;
     for candidate in [
