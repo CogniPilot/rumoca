@@ -466,7 +466,7 @@ fn scalarized_record_fields(base: &str, layout: &VarLayout) -> Option<Vec<Scalar
         let Some(suffix) = name.strip_prefix(prefix.as_str()) else {
             continue;
         };
-        if rumoca_core::has_top_level_dot(suffix) {
+        if crate::path_utils::is_nested_name(suffix) {
             continue;
         }
         if !fields

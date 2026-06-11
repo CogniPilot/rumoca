@@ -113,7 +113,7 @@ impl ExpressionVisitor for ClockedValueSourceCollector<'_> {
             }
             Expression::FunctionCall { name, args, .. } => {
                 if matches!(
-                    crate::runtime_defined::clocked_or_event_function_short_name(name.as_str()),
+                    crate::runtime_defined::clocked_or_event_function_short_name(name),
                     Some(
                         "hold"
                             | "previous"

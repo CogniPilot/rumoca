@@ -1050,7 +1050,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &mut Scope,
         call_depth: usize,
     ) -> Result<bool, LowerError> {
-        if rumoca_core::top_level_last_segment(function_name) != "rawRealFFT" {
+        if crate::path_utils::leaf_segment(function_name) != "rawRealFFT" {
             return Ok(false);
         }
         let [input] = args else {
@@ -1089,7 +1089,7 @@ impl<'a> LowerBuilder<'a> {
         scope: &mut Scope,
         call_depth: usize,
     ) -> Result<bool, LowerError> {
-        if rumoca_core::top_level_last_segment(function_name) != "realFFT" {
+        if crate::path_utils::leaf_segment(function_name) != "realFFT" {
             return Ok(false);
         }
         let Some(samples_expr) = args.first() else {

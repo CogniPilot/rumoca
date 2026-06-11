@@ -41,7 +41,7 @@ fn override_target_with_active(
     active: bool,
 ) -> OverrideTarget {
     OverrideTarget {
-        alias: top_level_last_segment(name).to_string(),
+        alias: leaf_segment(name).to_string(),
         name: name.to_string(),
         def_id,
         class_type,

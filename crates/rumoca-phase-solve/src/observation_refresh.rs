@@ -430,5 +430,5 @@ fn function_call_is_clock_expr(
 }
 
 fn function_short_name(name: &str) -> &str {
-    rumoca_core::top_level_last_segment(name)
+    crate::path_utils::leaf_segment(name)
 }

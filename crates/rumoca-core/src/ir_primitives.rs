@@ -398,6 +398,35 @@ impl VarName {
             .unwrap_or_else(|| self.as_str())
     }
 
+    /// Split into `(enclosing scope, last segment)` when the name is nested.
+    ///
+    /// Subscript brackets keep their embedded dots: `a.b[c.d].e` splits into
+    /// `("a.b[c.d]", "e")`.
+    pub fn scope_split(&self) -> Option<(&str, &str)> {
+        crate::split_last_top_level(self.as_str())
+    }
+
+    /// The enclosing scope prefix (everything before the last segment).
+    pub fn enclosing_scope(&self) -> Option<&str> {
+        self.scope_split().map(|(scope, _)| scope)
+    }
+
+    /// True when the name is nested inside a component scope.
+    pub fn is_nested(&self) -> bool {
+        crate::has_top_level_dot(self.as_str())
+    }
+
+    /// Split into `(root segment, remainder)` when the name is nested.
+    pub fn root_split(&self) -> Option<(&str, &str)> {
+        crate::split_first_top_level(self.as_str())
+    }
+
+    /// Top-level segments of the name; subscript brackets keep their embedded
+    /// dots (`bus[data.medium].pin.v` yields `["bus[data.medium]", "pin", "v"]`).
+    pub fn segments(&self) -> Vec<&str> {
+        crate::split_path_with_indices(self.as_str())
+    }
+
     /// Get the compact process-local interned identity.
     pub fn id(&self) -> VarNameId {
         self.id
@@ -572,6 +601,21 @@ impl Reference {
 
     pub fn as_str(&self) -> &str {
         self.name.as_str()
+    }
+
+    /// Split into `(enclosing scope, last segment)` when the name is nested.
+    pub fn scope_split(&self) -> Option<(&str, &str)> {
+        self.name.scope_split()
+    }
+
+    /// True when the referenced name is nested inside a component scope.
+    pub fn is_nested(&self) -> bool {
+        self.name.is_nested()
+    }
+
+    /// Top-level segments of the referenced name (see [`VarName::segments`]).
+    pub fn segments(&self) -> Vec<&str> {
+        self.name.segments()
     }
 
     pub fn var_name(&self) -> &VarName {

@@ -4,7 +4,8 @@
 //! ensuring inheritance edges are complete before nested class resolution.
 
 use crate::Resolver;
-use rumoca_core::{ComponentPath, DefId, ScopeId, parent_scope};
+use crate::path_utils;
+use rumoca_core::{ComponentPath, DefId, ScopeId};
 use rumoca_core::{Diagnostic, PrimaryLabel};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -237,7 +238,7 @@ impl Resolver {
         let member_name = &base_name.name[0].text;
 
         // Get the containing class's qualified name (parent of current class)
-        let container_name = parent_scope(class_name)?;
+        let container_name = path_utils::enclosing_class_scope(class_name)?;
 
         self.lookup_inherited_member(container_name, member_name)
     }

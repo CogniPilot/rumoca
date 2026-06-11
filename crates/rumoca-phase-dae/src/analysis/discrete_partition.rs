@@ -306,7 +306,7 @@ impl ExpressionVisitor for ClockedOperatorChecker {
         args: &[rumoca_core::Expression],
         is_constructor: bool,
     ) {
-        let short_name = rumoca_core::top_level_last_segment(name.as_str());
+        let short_name = name.last_segment();
         if is_clock_intrinsic_short_name(short_name) {
             self.found = true;
             return;

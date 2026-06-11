@@ -560,7 +560,7 @@ pub(super) fn function_lexical_package_def_id(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
 ) -> Result<Option<rumoca_core::DefId>, FlattenError> {
-    let Some(package_name) = parent_scope(function_name) else {
+    let Some(package_name) = enclosing_scope(function_name) else {
         return Ok(None);
     };
     let Some(class_def) = class_index.get_by_qualified_name(package_name) else {
@@ -580,7 +580,7 @@ pub(super) fn function_package_override_chain(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
 ) -> Result<Vec<OverrideTarget>, FlattenError> {
-    let Some(package_name) = parent_scope(function_name) else {
+    let Some(package_name) = enclosing_scope(function_name) else {
         return Ok(Vec::new());
     };
     let Some(class_def) = class_index.get_by_qualified_name(package_name) else {
@@ -601,7 +601,7 @@ pub(super) fn function_package_override_chain(
         )
     })?;
     Ok(vec![OverrideTarget {
-        alias: top_level_last_segment(package_name).to_string(),
+        alias: leaf_segment(package_name).to_string(),
         name: name.to_string(),
         def_id,
         class_type: class_def.class_type.clone(),

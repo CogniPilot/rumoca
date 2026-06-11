@@ -282,11 +282,11 @@ fn fft_projection_kind(projection: &FunctionOutputProjection) -> Option<FftOutpu
 }
 
 fn is_real_fft_name(name: &str) -> bool {
-    rumoca_core::top_level_last_segment(name) == "realFFT"
+    crate::path_utils::leaf_segment(name) == "realFFT"
 }
 
 fn is_raw_real_fft_name(name: &str) -> bool {
-    rumoca_core::top_level_last_segment(name) == "rawRealFFT"
+    crate::path_utils::leaf_segment(name) == "rawRealFFT"
 }
 
 fn real_fft_sample_points(f_max: f64, f_resolution: f64, f_max_factor: f64) -> i64 {

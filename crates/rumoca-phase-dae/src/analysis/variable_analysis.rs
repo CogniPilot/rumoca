@@ -9,7 +9,7 @@ use crate::errors::ToDaeError;
 use crate::name_resolution;
 use crate::overconstrained_interface;
 use crate::path_utils::{
-    get_top_level_prefix, has_top_level_dot, normalized_top_level_names, path_is_in_top_level_set,
+    get_top_level_prefix, is_nested_name, normalized_top_level_names, path_is_in_top_level_set,
     subscript_fallback_chain,
 };
 use crate::scalar_inference::{collect_var_refs, compute_embedded_range_size};
@@ -347,9 +347,9 @@ fn is_internal_input_var(name: &VarName, var: &flat::Variable, flat: &Model) -> 
     // prefix is a top-level connector (interface inputs stay as inputs)
     // or the top-level parent is itself declared as input (e.g.,
     // `input Record state;` → `state.field` stays external).
-    if has_top_level_dot(name.as_str()) {
+    if is_nested_name(name.as_str()) {
         let prefix = get_top_level_prefix(name.as_str())
-            .expect("has_top_level_dot guarantees a dot is present, so prefix must be extractable");
+            .expect("a nested name has a dot, so the prefix must be extractable");
         if flat.top_level_connectors.contains(&prefix) {
             return false;
         }
@@ -799,7 +799,7 @@ fn check_rhs_intra_component_alias(
     // For `volume.vessel_ps_static = volume.medium.p` (from Volume), the input
     // `volume.medium.p` has parent `volume.medium` but the equation origin is
     // `volume` → no match (the Volume model is using medium.p, not defining it).
-    let input_parent = rumoca_core::parent_scope(resolved.as_str()).unwrap_or("");
+    let input_parent = resolved.enclosing_scope().unwrap_or("");
     let eq_component = origin.component_name().unwrap_or_default();
     if !input_parent.is_empty() && input_parent == eq_component {
         Some(resolved)
@@ -965,8 +965,8 @@ fn is_runtime_intrinsic_function_short_name(short_name: &str) -> bool {
     )
 }
 
-fn is_builtin_or_runtime_intrinsic_function(name: &str) -> bool {
-    let short_name = rumoca_core::top_level_last_segment(name);
+fn is_builtin_or_runtime_intrinsic_function(name: &VarName) -> bool {
+    let short_name = name.last_segment();
     BuiltinFunction::from_name(short_name).is_some()
         || BuiltinFunction::from_name(&short_name.to_ascii_lowercase()).is_some()
         || is_runtime_intrinsic_function_short_name(short_name)
@@ -980,7 +980,7 @@ pub(crate) fn resolve_flat_function<'a>(name: &str, flat: &'a Model) -> Option<&
 }
 
 fn validate_function_call_name(
-    name: &str,
+    name: &VarName,
     flat: &Model,
     span: Span,
     callable_formals: Option<&HashSet<VarName>>,
@@ -988,13 +988,12 @@ fn validate_function_call_name(
     if is_builtin_or_runtime_intrinsic_function(name) {
         return Ok(());
     }
-    let lookup_name = VarName::new(name);
-    if callable_formals.is_some_and(|formals| formals.contains(&lookup_name)) {
+    if callable_formals.is_some_and(|formals| formals.contains(name)) {
         return Ok(());
     }
 
-    let Some(func) = resolve_flat_function(name, flat) else {
-        return Err(ToDaeError::unresolved_function_call(name, span));
+    let Some(func) = resolve_flat_function(name.as_str(), flat) else {
+        return Err(ToDaeError::unresolved_function_call(name.as_str(), span));
     };
 
     if func.is_constructor {
@@ -1002,7 +1001,7 @@ fn validate_function_call_name(
     }
 
     if func.external.is_none() && func.body.is_empty() {
-        let short_name = rumoca_core::top_level_last_segment(func.name.as_str());
+        let short_name = func.name.last_segment();
         if !is_runtime_intrinsic_function_short_name(short_name) {
             return Err(ToDaeError::function_without_body(func.name.as_str(), span));
         }
@@ -1042,7 +1041,7 @@ fn validate_field_access_functions(
         };
         let Some(constructor) = resolve_flat_function(name.as_str(), flat) else {
             if crate::todae_debug_enabled() {
-                let short_name = rumoca_core::top_level_last_segment(name.as_str()).to_string();
+                let short_name = name.last_segment().to_string();
                 let total_functions = flat.functions.len();
                 crate::log_todae_debug(format!(
                     "DEBUG TODAE missing constructor={} field={} short_name={} total_functions={}",
@@ -1134,14 +1133,14 @@ impl FallibleExpressionVisitor for FlatFunctionCallValidator<'_> {
     ) -> Result<(), Self::Error> {
         if !is_constructor {
             validate_function_call_name(
-                name.as_str(),
+                name.var_name(),
                 self.flat,
                 self.inherited_span,
                 self.callable_formals,
             )?;
         }
         if !is_constructor
-            && !is_builtin_or_runtime_intrinsic_function(name.as_str())
+            && !is_builtin_or_runtime_intrinsic_function(name.var_name())
             && !self
                 .callable_formals
                 .is_some_and(|formals| formals.contains(name.var_name()))
@@ -1211,13 +1210,8 @@ impl FallibleStatementVisitor for FlatFunctionCallValidator<'_> {
         _outputs: &[ComponentReference],
     ) -> Result<(), Self::Error> {
         let name = comp.to_var_name();
-        validate_function_call_name(
-            name.as_str(),
-            self.flat,
-            self.inherited_span,
-            self.callable_formals,
-        )?;
-        if !is_builtin_or_runtime_intrinsic_function(name.as_str())
+        validate_function_call_name(&name, self.flat, self.inherited_span, self.callable_formals)?;
+        if !is_builtin_or_runtime_intrinsic_function(&name)
             && !self
                 .callable_formals
                 .is_some_and(|formals| formals.contains(&name))

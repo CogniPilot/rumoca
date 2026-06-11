@@ -200,7 +200,7 @@ fn collect_indexed_record_field_keys(
 }
 
 fn record_field_array_key(key: &str) -> Option<(&str, &str)> {
-    let (base_key, field) = rumoca_core::split_last_top_level(key)?;
+    let (base_key, field) = crate::path_utils::scope_split(key)?;
     (!base_key.is_empty() && !field.is_empty()).then_some((base_key, field))
 }
 

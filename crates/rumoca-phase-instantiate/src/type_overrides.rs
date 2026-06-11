@@ -3,8 +3,9 @@ use super::traversal_adapter::{
     redeclare_target_value, walk_class_extends_modifications, walk_nested_classes,
 };
 use super::type_lookup::find_member_type_in_class;
+use crate::path_utils;
 use crate::{InstantiateError, InstantiateResult, location_to_span};
-use rumoca_core::{DefId, parent_scope};
+use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 
@@ -160,7 +161,7 @@ fn collect_enclosing_type_overrides(
     let Some(qualified_name) = tree.def_map.get(&class_def_id) else {
         return;
     };
-    let Some(parent_name) = parent_scope(qualified_name) else {
+    let Some(parent_name) = path_utils::enclosing_class_scope(qualified_name) else {
         return;
     };
     let Some(parent_class) = tree.get_class_by_qualified_name(parent_name) else {
@@ -667,13 +668,7 @@ mod tests {
     }
 
     fn make_name(text: &str) -> ast::Name {
-        ast::Name {
-            name: rumoca_core::split_path_with_indices(text)
-                .into_iter()
-                .map(make_token)
-                .collect(),
-            def_id: None,
-        }
+        ast::Name::from_string(text)
     }
 
     #[test]

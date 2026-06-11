@@ -31,6 +31,7 @@ mod initial_values;
 pub mod layout;
 pub mod lower;
 mod observation_refresh;
+mod path_utils;
 mod projection_suffix;
 mod runtime_assignments;
 pub mod solve_model;

@@ -25,6 +25,7 @@ mod cycles;
 mod errors;
 mod extends;
 mod lookup;
+mod path_utils;
 mod registration;
 pub mod semantic_checks;
 mod traversal_adapter;
@@ -364,7 +365,7 @@ impl Resolver {
 
         // Register as child of parent package for O(1) unqualified import lookup.
         // Must do this before moving `name` into the maps.
-        if let Some((parent, child_name)) = rumoca_core::split_last_top_level(&name) {
+        if let Some((parent, child_name)) = path_utils::class_scope_split(&name) {
             self.package_children
                 .entry(parent.to_string())
                 .or_default()
@@ -669,32 +670,17 @@ fn emit_unresolved_symbol_diagnostics(
 }
 
 fn unresolved_is_within_encapsulated_scope(resolver: &Resolver, scope_path: &str) -> bool {
-    let mut path = scope_path;
-    loop {
-        if resolver.encapsulated_class_names.contains(path) {
-            return true;
-        }
-        let Some(parent) = rumoca_core::parent_scope(path) else {
-            return false;
-        };
-        path = parent;
-    }
+    std::iter::once(scope_path)
+        .chain(path_utils::enclosing_class_scopes(scope_path))
+        .any(|path| resolver.encapsulated_class_names.contains(path))
 }
 
 /// Check whether an unresolved simple name can be found in inherited members of
 /// the current class or any enclosing class.
 fn has_inherited_match(resolver: &Resolver, location: &str, name: &str) -> bool {
-    let mut container = location;
-    loop {
-        if resolver.lookup_inherited_member(container, name).is_some() {
-            return true;
-        }
-        let Some(parent) = rumoca_core::parent_scope(container) else {
-            break;
-        };
-        container = parent;
-    }
-    false
+    std::iter::once(location)
+        .chain(path_utils::enclosing_class_scopes(location))
+        .any(|container| resolver.lookup_inherited_member(container, name).is_some())
 }
 
 #[cfg(test)]

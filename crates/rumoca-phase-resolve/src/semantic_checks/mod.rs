@@ -1100,7 +1100,7 @@ fn is_bus_like_connector(connector: &ClassDef, type_name: &str) -> bool {
 }
 
 fn is_bus_like_connector_name(name: &str) -> bool {
-    let leaf = rumoca_core::top_level_last_segment(name);
+    let leaf = crate::path_utils::class_name_leaf(name);
     leaf.ends_with("Bus") || leaf.ends_with("BusArrays")
 }
 

@@ -225,9 +225,9 @@ impl TypeChecker {
         model_name: &str,
         type_table: &TypeTable,
     ) {
-        let model_class = tree
-            .get_class_by_qualified_name(model_name)
-            .or_else(|| tree.get_class_by_qualified_name(top_level_last_segment(model_name)));
+        let model_class = tree.get_class_by_qualified_name(model_name).or_else(|| {
+            tree.get_class_by_qualified_name(crate::path_utils::class_name_leaf(model_name))
+        });
         let Some(model_class) = model_class else {
             return;
         };
@@ -257,9 +257,9 @@ impl TypeChecker {
         model_name: &str,
         type_table: &TypeTable,
     ) {
-        let model_class = tree
-            .get_class_by_qualified_name(model_name)
-            .or_else(|| tree.get_class_by_qualified_name(top_level_last_segment(model_name)));
+        let model_class = tree.get_class_by_qualified_name(model_name).or_else(|| {
+            tree.get_class_by_qualified_name(crate::path_utils::class_name_leaf(model_name))
+        });
         let Some(model_class) = model_class else {
             return;
         };

@@ -324,7 +324,7 @@ pub fn flatten_ref_with_options(
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
     if !model_name.is_empty() {
-        ctx.simulated_root_name = Some(rumoca_core::top_level_last_segment(model_name).to_string());
+        ctx.simulated_root_name = Some(crate::path_utils::leaf_segment(model_name).to_string());
     }
     let class_index = ast::ClassDefIndex::from_tree(tree);
     ctx.class_def_ids = std::sync::Arc::new(class_index.def_ids().collect());
@@ -423,7 +423,7 @@ fn collect_enum_literal_ordinals(tree: &ast::ClassTree) -> IndexMap<String, i64>
         if class_def.enum_literals.is_empty() {
             continue;
         }
-        let short_name = crate::path_utils::top_level_last_segment(qualified_name);
+        let short_name = crate::path_utils::leaf_segment(qualified_name);
         for (idx, literal) in class_def.enum_literals.iter().enumerate() {
             let ordinal = (idx + 1) as i64;
             let ident = literal.ident.text.clone();
@@ -687,7 +687,7 @@ fn insert_with_prefix<V: Clone>(
 
 fn exposes_unprefixed_prefix(prefix: &str) -> bool {
     !prefix.is_empty()
-        && !crate::path_utils::has_top_level_dot(prefix)
+        && !crate::path_utils::is_nested_name(prefix)
         && prefix.chars().next().is_some_and(char::is_uppercase)
 }
 

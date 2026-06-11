@@ -1157,7 +1157,7 @@ fn start_expr_is_nonnumeric_inner(
             .iter()
             .any(|arg| start_expr_is_nonnumeric_inner(arg, env, visited)),
         rumoca_core::Expression::FunctionCall { name, args, .. } => {
-            !is_runtime_special_function_name(name.as_str())
+            !is_runtime_special_function_name(name.var_name())
                 && args
                     .iter()
                     .any(|arg| start_expr_is_nonnumeric_inner(arg, env, visited))

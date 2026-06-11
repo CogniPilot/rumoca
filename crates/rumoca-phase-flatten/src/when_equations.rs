@@ -650,10 +650,11 @@ mod tests {
     fn comp_ref(path: &str) -> ast::ComponentReference {
         ast::ComponentReference {
             local: false,
-            parts: rumoca_core::split_path_with_indices(path)
+            parts: rumoca_core::ComponentPath::from_flat_path(path)
+                .into_parts()
                 .into_iter()
                 .map(|part| ast::ComponentRefPart {
-                    ident: token(part),
+                    ident: token(&part),
                     subs: None,
                 })
                 .collect(),

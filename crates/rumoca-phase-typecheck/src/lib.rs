@@ -34,14 +34,13 @@ mod constant_collection;
 mod enum_context;
 mod instanced;
 mod modifier_targets;
+mod path_utils;
 mod typechecker;
 pub mod unit_syntax;
 
 use rumoca_core::{ComponentPath, DefId, ScopeId, Span, TypeId};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics, PhaseError, PrimaryLabel, SourceMap,
-    find_last_top_level_dot, has_top_level_dot, parent_scope, split_first_top_level,
-    top_level_last_segment,
 };
 use rumoca_ir_ast::{
     ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceOverlay,
@@ -448,15 +447,15 @@ impl TypeChecker {
         let Some(def_qname) = tree.def_map.get(&def_id) else {
             return false;
         };
-        if top_level_last_segment(def_qname) != alias {
+        if path_utils::class_name_leaf(def_qname) != alias {
             return false;
         }
 
-        let parent_scope = Self::parent_scope(comp_scope);
-        if parent_scope.is_empty() {
+        let enclosing = Self::enclosing_scope_or_root(comp_scope);
+        if enclosing.is_empty() {
             return false;
         }
-        let Some(parent_data) = component_index.get(parent_scope) else {
+        let Some(parent_data) = component_index.get(enclosing) else {
             return false;
         };
         if Self::class_override_by_alias(parent_data, alias).is_none() {
@@ -464,7 +463,7 @@ impl TypeChecker {
         }
 
         let source_alias = format!("{comp_scope}.{alias}");
-        let target_alias = format!("{parent_scope}.{alias}");
+        let target_alias = format!("{enclosing}.{alias}");
         let alias_pair = [(source_alias, target_alias.clone())];
         Self::propagate_alias_values_in_ctx(&alias_pair, ctx);
 
@@ -496,7 +495,7 @@ impl TypeChecker {
             return Some(class_override.alias.clone());
         }
 
-        if let Some((head, _tail)) = split_first_top_level(&data.type_name)
+        if let Some((head, _tail)) = path_utils::class_root_split(&data.type_name)
             && Self::class_override_by_alias(data, head).is_some()
         {
             return Some(head.to_string());
@@ -547,7 +546,7 @@ impl TypeChecker {
                 Self::insert_instanced_aliases(&mut out, rest, canonical_type, None);
                 continue;
             }
-            if !has_top_level_dot(&qn) {
+            if !path_utils::is_qualified_class_name(&qn) {
                 out.insert(qn, canonical_type);
             }
         }
@@ -587,7 +586,7 @@ impl TypeChecker {
     /// builders, so the textual-path handling happens exactly once.
     fn instanced_scope_prefixes(model_name: &str) -> (String, String) {
         let full_prefix = format!("{model_name}.");
-        let short_model = top_level_last_segment(model_name).to_string();
+        let short_model = path_utils::class_name_leaf(model_name).to_string();
         (full_prefix, short_model)
     }
 
@@ -597,7 +596,7 @@ impl TypeChecker {
         type_id: TypeId,
         short_model: Option<&str>,
     ) {
-        if has_top_level_dot(rest) {
+        if path_utils::is_qualified_class_name(rest) {
             return;
         }
         out.insert(rest.to_string(), type_id);
@@ -830,7 +829,7 @@ impl TypeChecker {
         let base_name = ext.base_name.to_string();
         type_table
             .lookup(&base_name)
-            .or_else(|| type_table.lookup(top_level_last_segment(&base_name)))
+            .or_else(|| type_table.lookup(path_utils::class_name_leaf(&base_name)))
     }
 
     fn name_span(&self, name: &rumoca_ir_ast::Name) -> Span {
@@ -1037,10 +1036,8 @@ impl TypeChecker {
             return (Some(cls), Some(name.to_string()));
         }
         // Try prepending scope prefixes from context
-        let mut scope = context;
-        while let Some(parent_scope) = parent_scope(scope) {
-            scope = parent_scope;
-            let qualified = format!("{}.{}", scope, name);
+        for scope in path_utils::enclosing_class_scopes(context) {
+            let qualified = format!("{scope}.{name}");
             if let Some(cls) = tree.get_class_by_qualified_name(&qualified) {
                 return (Some(cls), Some(qualified));
             }

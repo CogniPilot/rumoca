@@ -123,7 +123,7 @@ pub(crate) fn count_overconstrained_interface(
         for (rec_path, &comp_id) in &comp_of {
             let matches = rec_path.starts_with(pot_root.as_str())
                 || pot_root.starts_with(*rec_path)
-                || crate::path_utils::rendered_top_level_segment(rec_path)
+                || crate::path_utils::first_rendered_segment(rec_path)
                     .is_some_and(|prefix| pot_root.starts_with(prefix));
             if matches && !has_root[comp_id] {
                 // Select this potential root (first one encountered per component)

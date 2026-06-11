@@ -38,6 +38,26 @@ impl ComponentReference {
     pub fn last_ident(&self) -> Option<&str> {
         self.parts.last().map(|part| part.ident.as_str())
     }
+
+    /// Build a reference from a rendered flat declaration path.
+    ///
+    /// Each top-level segment becomes one part; subscript text (if any) stays
+    /// embedded in the ident, matching how declaration paths are rendered.
+    pub fn from_flat_segments(path: &str, span: Span, def_id: Option<DefId>) -> Self {
+        Self {
+            local: false,
+            span,
+            parts: split_path_with_indices(path)
+                .into_iter()
+                .map(|segment| ComponentRefPart {
+                    ident: segment.to_string(),
+                    span,
+                    subs: Vec::new(),
+                })
+                .collect(),
+            def_id,
+        }
+    }
 }
 
 pub fn component_reference_from_flat_name(
@@ -191,6 +211,10 @@ impl ComponentPath {
 
     pub fn parts(&self) -> &[String] {
         &self.parts
+    }
+
+    pub fn into_parts(self) -> Vec<String> {
+        self.parts
     }
 
     pub fn parent(&self) -> Option<Self> {

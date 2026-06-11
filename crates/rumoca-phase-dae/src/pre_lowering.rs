@@ -389,7 +389,7 @@ fn singleton_scalarized_field_name(
     target_name: &rumoca_core::VarName,
     require_discrete: bool,
 ) -> Option<rumoca_core::VarName> {
-    let (prefix, field) = rumoca_core::split_last_top_level(target_name.as_str())?;
+    let (prefix, field) = target_name.scope_split()?;
     let mut collector = ScalarizedFieldCandidateCollector {
         prefix,
         field,

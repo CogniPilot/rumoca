@@ -636,7 +636,7 @@ fn lookup_enum_literal_ordinal(raw: &str, ordinals: &IndexMap<String, i64>) -> O
 }
 
 fn alternate_enum_literal_key(raw: &str) -> Option<String> {
-    let (prefix, literal) = rumoca_core::split_last_top_level(raw)?;
+    let (prefix, literal) = crate::path_utils::scope_split(raw)?;
     if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
         return Some(format!("{prefix}.{}", &literal[1..literal.len() - 1]));
     }

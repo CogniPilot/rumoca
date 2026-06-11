@@ -36,9 +36,9 @@ impl TypeChecker {
         model_name: &str,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        let model_class = tree
-            .get_class_by_qualified_name(model_name)
-            .or_else(|| tree.get_class_by_qualified_name(top_level_last_segment(model_name)));
+        let model_class = tree.get_class_by_qualified_name(model_name).or_else(|| {
+            tree.get_class_by_qualified_name(crate::path_utils::class_name_leaf(model_name))
+        });
         let Some(model_class) = model_class else {
             return;
         };
@@ -819,10 +819,9 @@ impl TypeChecker {
         model_name: &str,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        let Some(pos) = find_last_top_level_dot(model_name) else {
+        let Some(enclosing_name) = crate::path_utils::enclosing_class_scope(model_name) else {
             return;
         };
-        let enclosing_name = &model_name[..pos];
         // Collect all ancestor classes (enclosing + full extends chain)
         let ancestors = Self::collect_ancestor_classes(tree, enclosing_name);
         if ancestors.is_empty() {

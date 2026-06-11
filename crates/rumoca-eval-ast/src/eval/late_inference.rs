@@ -261,10 +261,11 @@ mod tests {
     fn make_dotted_comp_ref(path: &str) -> Expression {
         Expression::ComponentReference(ComponentReference {
             local: false,
-            parts: crate::path_utils::split_path_with_indices(path)
+            parts: rumoca_core::ComponentPath::from_flat_path(path)
+                .into_parts()
                 .into_iter()
                 .map(|part| ComponentRefPart {
-                    ident: make_token(part),
+                    ident: make_token(&part),
                     subs: None,
                 })
                 .collect(),

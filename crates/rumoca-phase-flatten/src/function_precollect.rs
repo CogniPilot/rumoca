@@ -113,7 +113,7 @@ fn add_function_to_context(
 }
 
 fn add_function_short_name(func_name: &str, func: &rumoca_core::Function, ctx: &mut Context) {
-    let short_name = crate::path_utils::top_level_last_segment(func_name);
+    let short_name = crate::path_utils::leaf_segment(func_name);
     if short_name != func_name && !ctx.functions.contains_key(short_name) {
         ctx.functions.insert(short_name.to_string(), func.clone());
     }

@@ -145,7 +145,7 @@ pub(crate) fn inject_alias_component_package_constants(
         &alias_context,
         ctx,
     );
-    let type_alias = rumoca_core::top_level_last_segment(&alias_context);
+    let type_alias = crate::path_utils::leaf_segment(&alias_context);
     let type_alias_scope = (!type_alias.is_empty() && type_alias != alias_name)
         .then(|| format!("{comp_scope}.{type_alias}"));
     if let Some(type_alias_scope) = &type_alias_scope {
@@ -288,10 +288,8 @@ pub(crate) fn resolve_class_in_scope_indexed<'a>(
             return (Some(cls), Some(qualified));
         }
     }
-    let mut scope = context;
-    while let Some(parent_scope) = crate::path_utils::parent_scope(scope) {
-        scope = parent_scope;
-        let qualified = format!("{}.{}", scope, name);
+    for scope in crate::path_utils::enclosing_scopes(context) {
+        let qualified = format!("{scope}.{name}");
         if let Some(cls) = class_index.get_by_qualified_name(&qualified) {
             return (Some(cls), Some(qualified));
         }

@@ -4,11 +4,12 @@
 //! component start/modification expressions.
 
 use crate::Resolver;
+use crate::path_utils;
 use crate::traversal_adapter::{
     ResolveTraversalCallbacks, walk_equations, walk_expression, walk_expressions, walk_statements,
     walk_subscripts,
 };
-use rumoca_core::{ComponentPath, DefId, ScopeId, parent_scope};
+use rumoca_core::{ComponentPath, DefId, ScopeId};
 use rumoca_ir_ast as ast;
 
 type ClassDef = ast::ClassDef;
@@ -18,9 +19,8 @@ type ScopeKind = ast::ScopeKind;
 type StoredDefinition = ast::StoredDefinition;
 
 impl ResolveTraversalCallbacks for Resolver {
-    fn create_loop_scope(&mut self, parent_scope: ScopeId) -> ScopeId {
-        self.scope_tree
-            .create_scope(parent_scope, ScopeKind::ForLoop)
+    fn create_loop_scope(&mut self, enclosing: ScopeId) -> ScopeId {
+        self.scope_tree.create_scope(enclosing, ScopeKind::ForLoop)
     }
 
     fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str) {
@@ -63,7 +63,7 @@ impl Resolver {
     pub(crate) fn resolve_contents_class(
         &mut self,
         class: &mut ClassDef,
-        _parent_scope: ScopeId,
+        _enclosing_scope: ScopeId,
         qualified_name: &str,
     ) {
         let class_scope = class
@@ -206,15 +206,8 @@ impl Resolver {
         }
 
         // Walk up the enclosing class hierarchy
-        let mut container = qualified_name;
-        while let Some(parent) = parent_scope(container) {
-            container = parent;
-            if let Some(def_id) = self.lookup_inherited_member(container, type_name) {
-                return Some(def_id);
-            }
-        }
-
-        None
+        path_utils::enclosing_class_scopes(qualified_name)
+            .find_map(|container| self.lookup_inherited_member(container, type_name))
     }
 
     /// Resolve references in a list of expressions.
@@ -329,14 +322,10 @@ impl Resolver {
             return Some(def_id);
         }
 
-        let mut container = self.enclosing_class_qualified_name(scope);
-        while let Some(container_name) = container {
-            if let Some(def_id) = self.lookup_inherited_member(container_name, first_part) {
-                return Some(def_id);
-            }
-            container = parent_scope(container_name);
-        }
-        None
+        let start = self.enclosing_class_qualified_name(scope)?;
+        std::iter::once(start)
+            .chain(path_utils::enclosing_class_scopes(start))
+            .find_map(|container| self.lookup_inherited_member(container, first_part))
     }
 
     fn resolve_component_reference_full_path(

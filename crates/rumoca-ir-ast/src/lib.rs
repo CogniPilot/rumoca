@@ -51,7 +51,7 @@ pub mod visitor;
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
     Causality, ClassType, DefId, Location, OpBinary, OpUnary, ScopeId, Span, StateSelect, Token,
-    TypeId, Variability, split_path_with_indices, visit_top_level_path_segments,
+    TypeId, Variability, visit_top_level_path_segments,
 };
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};

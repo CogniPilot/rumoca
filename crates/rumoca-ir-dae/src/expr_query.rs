@@ -3,10 +3,7 @@ use std::cell::RefCell;
 use crate::component_base_name;
 use indexmap::IndexSet;
 use rumoca_core::ExpressionVisitor;
-use rumoca_core::{
-    BuiltinFunction, Expression, Literal, Reference, Subscript, VarName, VarNameId,
-    split_last_top_level,
-};
+use rumoca_core::{BuiltinFunction, Expression, Literal, Reference, Subscript, VarName, VarNameId};
 
 pub fn parse_embedded_subscripts(name: &str) -> Option<Vec<i64>> {
     rumoca_core::parse_scalar_name(name).map(|scalar| scalar.indices)
@@ -53,8 +50,13 @@ pub fn subscripts_match_indices(subscripts: &[Subscript], expected: &[i64]) -> b
 }
 
 pub fn split_complex_field_suffix(name: &str) -> Option<(&str, &str)> {
-    let (base, field) = split_last_top_level(name)?;
-    matches!(field, "re" | "im").then_some((base, field))
+    // `.re`/`.im` at the very end of a name is always a top-level field
+    // suffix: a bracket-embedded dot cannot be final (a `]` would follow).
+    let base_len = name.len().checked_sub(3)?;
+    match &name[base_len..] {
+        ".re" | ".im" => Some((&name[..base_len], &name[base_len + 1..])),
+        _ => None,
+    }
 }
 
 pub fn complex_base_alias_match(base_or_field: &str, other: &str) -> bool {

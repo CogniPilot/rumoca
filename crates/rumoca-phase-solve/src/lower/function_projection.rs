@@ -346,7 +346,7 @@ pub(super) fn clear_indexed_scope_bindings(scope: &mut Scope, target: &str) {
 }
 
 fn output_is_complex_record(output: &rumoca_core::FunctionParam) -> bool {
-    rumoca_core::top_level_last_segment(&output.type_name) == "Complex"
+    rumoca_core::qualified_type_name_matches(&output.type_name, "Complex")
 }
 
 fn output_has_dynamic_dims(output: &rumoca_core::FunctionParam) -> bool {

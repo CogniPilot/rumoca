@@ -1,4 +1,5 @@
-use rumoca_core::{DefId, parent_scope, top_level_last_segment};
+use crate::path_utils;
+use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::collections::HashSet;
@@ -120,12 +121,9 @@ fn collect_lexical_ancestor_imports(
     class_name: &str,
     pairs: &mut Vec<(String, String)>,
 ) {
-    let mut ancestors = Vec::new();
-    let mut scope = class_name;
-    while let Some(parent) = parent_scope(scope) {
-        ancestors.push(parent.to_string());
-        scope = parent;
-    }
+    let mut ancestors: Vec<String> = path_utils::enclosing_class_scopes(class_name)
+        .map(str::to_string)
+        .collect();
     ancestors.reverse();
     for ancestor in ancestors {
         let Some(ancestor_class) = tree.get_class_by_qualified_name(&ancestor) else {
@@ -177,8 +175,12 @@ fn resolve_single_import(
 ) {
     match import {
         ast::Import::Qualified { path, .. } => {
-            let fqn = path.to_string();
-            pairs.push((top_level_last_segment(&fqn).to_string(), fqn));
+            let alias = path
+                .name
+                .last()
+                .map(|token| token.text.to_string())
+                .unwrap_or_default();
+            pairs.push((alias, path.to_string()));
         }
         ast::Import::Renamed { alias, path, .. } => {
             pairs.push((alias.text.to_string(), path.to_string()));

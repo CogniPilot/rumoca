@@ -148,7 +148,7 @@ pub(in crate::lower) fn random_generator_state_len(generator: RandomGenerator) -
 }
 
 pub(in crate::lower) fn is_complex_param(param: &rumoca_core::FunctionParam) -> bool {
-    rumoca_core::top_level_last_segment(&param.type_name) == "Complex"
+    rumoca_core::qualified_type_name_matches(&param.type_name, "Complex")
 }
 
 pub(in crate::lower) fn parse_complex_sum_projection_field(call_name: &str) -> Option<&str> {
@@ -164,7 +164,7 @@ pub(in crate::lower) fn parse_complex_sum_projection_field(call_name: &str) -> O
 pub(in crate::lower) fn parse_complex_operator_projection(
     call_name: &str,
 ) -> Option<(BinaryOp, &str)> {
-    let (base, field) = rumoca_core::split_last_top_level(call_name)?;
+    let (base, field) = crate::path_utils::scope_split(call_name)?;
     let op = match base {
         "Complex.'+'" => BinaryOp::Add,
         "Complex.'-'" => BinaryOp::Sub,

@@ -2,8 +2,8 @@ use super::find_class_in_tree;
 use super::inheritance::location_to_span;
 use super::inheritance::resolve_effective_components_for_eval;
 use super::{InstantiateError, InstantiateResult};
+use rumoca_core::DefId;
 use rumoca_core::is_builtin_type;
-use rumoca_core::{DefId, split_path_with_indices};
 use rumoca_eval_ast::eval_instantiate::{evaluate_array_dimensions, try_eval_integer_shape_expr};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -314,11 +314,12 @@ fn qualify_component_ref_imports(
         return cref.clone();
     };
 
-    let mut parts = split_path_with_indices(target)
+    let mut parts = rumoca_core::ComponentPath::from_flat_path(target)
+        .into_parts()
         .into_iter()
         .map(|segment| ast::ComponentRefPart {
             ident: rumoca_core::Token {
-                text: Arc::from(segment),
+                text: Arc::from(segment.as_str()),
                 ..rumoca_core::Token::default()
             },
             subs: None,
@@ -372,10 +373,11 @@ mod tests {
         ast::Subscript::Expression(ast::Expression::ComponentReference(
             ast::ComponentReference {
                 local: false,
-                parts: rumoca_core::split_path_with_indices(path)
+                parts: rumoca_core::ComponentPath::from_flat_path(path)
+                    .into_parts()
                     .into_iter()
                     .map(|part| ast::ComponentRefPart {
-                        ident: make_token(part),
+                        ident: make_token(&part),
                         subs: None,
                     })
                     .collect(),

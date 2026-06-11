@@ -5,8 +5,8 @@ use rumoca_ir_dae as dae;
 
 use crate::StructuralError;
 
-fn extract_first_component_index(name: &str) -> Option<usize> {
-    for segment in rumoca_core::split_path_with_indices(name) {
+fn extract_first_component_index(name: &rumoca_core::VarName) -> Option<usize> {
+    for segment in name.segments() {
         if let Some(scalar) = rumoca_core::parse_scalar_name(segment) {
             let first_index = scalar.indices.first().copied()?;
             return usize::try_from(first_index).ok().filter(|index| *index > 0);
@@ -43,7 +43,7 @@ pub fn build_component_index_projection_map(
         if base == raw {
             continue;
         }
-        let Some(idx) = extract_first_component_index(raw) else {
+        let Some(idx) = extract_first_component_index(name) else {
             continue;
         };
         map.entry(base)
@@ -75,7 +75,7 @@ pub fn output_scalar_count(dims: &[i64], span: Span) -> Result<usize, Structural
 }
 
 pub fn output_is_complex_record(output: &rumoca_core::FunctionParam) -> bool {
-    rumoca_core::top_level_last_segment(&output.type_name) == "Complex"
+    rumoca_core::qualified_type_name_matches(&output.type_name, "Complex")
 }
 
 fn push_projection_entry(
@@ -203,19 +203,36 @@ mod tests {
 
     #[test]
     fn first_component_index_uses_structured_scalar_name_segments() {
-        assert_eq!(extract_first_component_index("plug.pin[1].v"), Some(1));
-        assert_eq!(extract_first_component_index("plug.pin[2, 3].v"), Some(2));
         assert_eq!(
-            extract_first_component_index("plug[index.with.dot].pin[2].v"),
+            extract_first_component_index(&rumoca_core::VarName::new("plug.pin[1].v")),
+            Some(1)
+        );
+        assert_eq!(
+            extract_first_component_index(&rumoca_core::VarName::new("plug.pin[2, 3].v")),
+            Some(2)
+        );
+        assert_eq!(
+            extract_first_component_index(&rumoca_core::VarName::new(
+                "plug[index.with.dot].pin[2].v"
+            )),
             None
         );
         assert_eq!(
-            extract_first_component_index("plug.selector.pin[2].v"),
+            extract_first_component_index(&rumoca_core::VarName::new("plug.selector.pin[2].v")),
             Some(2)
         );
-        assert_eq!(extract_first_component_index("plug.pin[0].v"), None);
-        assert_eq!(extract_first_component_index("plug.pin[-1].v"), None);
-        assert_eq!(extract_first_component_index("plug.pin[1.v"), None);
+        assert_eq!(
+            extract_first_component_index(&rumoca_core::VarName::new("plug.pin[0].v")),
+            None
+        );
+        assert_eq!(
+            extract_first_component_index(&rumoca_core::VarName::new("plug.pin[-1].v")),
+            None
+        );
+        assert_eq!(
+            extract_first_component_index(&rumoca_core::VarName::new("plug.pin[1.v")),
+            None
+        );
     }
 
     #[test]

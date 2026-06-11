@@ -42,7 +42,7 @@ impl Resolver {
     pub(crate) fn register_class(
         &mut self,
         class: &mut ast::ClassDef,
-        parent_scope: ScopeId,
+        enclosing: ScopeId,
         qualified_name: &str,
     ) {
         // Create a scope for this class
@@ -51,7 +51,7 @@ impl Resolver {
         } else {
             ast::ScopeKind::Class
         };
-        let class_scope = self.scope_tree.create_scope(parent_scope, scope_kind);
+        let class_scope = self.scope_tree.create_scope(enclosing, scope_kind);
         class.scope_id = Some(class_scope);
         if class.encapsulated {
             self.encapsulated_class_names

@@ -469,7 +469,7 @@ fn distribution_arg_hint(expr: Option<&Expression>) -> Option<String> {
     let Expression::VarRef { name, .. } = expr? else {
         return None;
     };
-    let tail = rumoca_core::top_level_last_segment(name.as_str());
+    let tail = name.last_segment();
     let tail =
         rumoca_core::split_trailing_subscript_suffix(tail).map_or(tail, |(base, _subscript)| base);
     Some(tail.to_ascii_lowercase())

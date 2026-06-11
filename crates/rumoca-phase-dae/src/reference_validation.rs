@@ -65,7 +65,7 @@ fn build_dae_reference_query_set<'a>(names: impl Iterator<Item = &'a str>) -> Ha
     for name in names {
         queries.insert(name.to_string());
         insert_ancestor_reference_queries(&mut queries, name);
-        if !path_utils::has_top_level_dot(name) && path_utils::has_top_level_subscript(name) {
+        if !path_utils::is_nested_name(name) && path_utils::has_top_level_subscript(name) {
             insert_reference_query_alias(
                 &mut queries,
                 path_utils::normalize_top_level_segment(name),
@@ -99,7 +99,7 @@ fn insert_ancestor_reference_queries(queries: &mut HashSet<String>, name: &str) 
 }
 
 fn short_leaf_matches(candidate: &str, short: &str) -> bool {
-    rumoca_core::top_level_last_segment(candidate) == short
+    path_utils::leaf_segment(candidate) == short
 }
 
 fn validate_constructor_field_selection(
@@ -125,7 +125,7 @@ fn validate_constructor_field_selection(
                 let mut candidates: Vec<String> =
                     functions.keys().map(|f| f.as_str().to_string()).collect();
                 candidates.sort();
-                let short = rumoca_core::top_level_last_segment(name.as_str()).to_string();
+                let short = name.last_segment().to_string();
                 let mut short_matches: Vec<String> = candidates
                     .iter()
                     .filter(|candidate| short_leaf_matches(candidate, &short))
@@ -1045,7 +1045,7 @@ fn is_known_dae_reference(name: &rumoca_core::Reference, known_refs: &KnownRefer
     // Accept short leaf-name aliases for enum literals. General variable
     // references must already be resolved/qualified by earlier phases; accepting
     // arbitrary leaf matches lets typos like `x` bind to unrelated `comp.x`.
-    if !path_utils::has_top_level_dot(raw)
+    if !path_utils::is_nested_name(raw)
         && known_refs
             .enum_literal_queries
             .iter()

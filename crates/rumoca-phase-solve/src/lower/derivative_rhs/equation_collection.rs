@@ -97,7 +97,7 @@ pub(in crate::lower) fn collect_missing_indexed_record_field_assignments(
 }
 
 pub(in crate::lower) fn has_indexed_record_field_segment(key: &str) -> bool {
-    rumoca_core::split_path_with_indices(key)
+    crate::path_utils::segments(key)
         .iter()
         .any(|segment| rumoca_core::split_trailing_subscript_suffix(segment).is_some())
 }
