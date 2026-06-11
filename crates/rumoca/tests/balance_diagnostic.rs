@@ -674,3 +674,59 @@ end Volume;
         }
     }
 }
+
+/// Record-level equations inside an array component instance must collapse
+/// to structured record references and balance exactly (PR #202 regression:
+/// `comp[k].x` stayed an Index/FieldAccess tree, so shape inference counted
+/// the whole component array per equation — MSL PolyphaseInductance reported
+/// balance 2010, BalancingDelta 7371).
+#[test]
+fn test_balance_record_equation_in_component_array() {
+    let source = r#"
+package P
+  record R
+    Real a;
+    Real b;
+  end R;
+
+  model Comp
+    R x;
+    R y;
+  equation
+    x = y;
+    y.a = 1;
+    y.b = 2;
+  end Comp;
+
+  model Top
+    Comp comp[2];
+  end Top;
+end P;
+"#;
+
+    let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
+
+    match source_root.compile_model_phases("P.Top") {
+        PhaseResult::Success(result) => {
+            let dae = &result.dae;
+            assert_eq!(
+                rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture"),
+                0,
+                "record equations from an array component must not inflate the balance"
+            );
+            assert!(
+                dae.variables
+                    .algebraics
+                    .contains_key(&VarName::new("comp[2].x.b")),
+                "record fields should scalarize per element"
+            );
+        }
+        PhaseResult::NeedsInner { missing_inners, .. } => {
+            panic!("Model needs inner declarations: {:?}", missing_inners);
+        }
+        PhaseResult::Failed { phase, error, .. } => {
+            panic!("Compilation failed at {:?}: {}", phase, error);
+        }
+    }
+}
