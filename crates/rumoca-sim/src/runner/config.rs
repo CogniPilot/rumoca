@@ -200,6 +200,163 @@ pub struct ViewerConfig {
     pub show_armed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controls: Option<ViewerControlsConfig>,
+    /// Named kinematic frames driven by viewer signals ([[viewer.frame]]).
+    #[serde(default, rename = "frame", skip_serializing_if = "Vec::is_empty")]
+    pub frames: Vec<ViewerFrameConfig>,
+    /// Cameras mounted on frames ([[viewer.camera]]); the C key cycles
+    /// between the scene-controlled camera and these.
+    #[serde(default, rename = "camera", skip_serializing_if = "Vec::is_empty")]
+    pub cameras: Vec<ViewerCameraConfig>,
+    /// Opt-in heads-up overlay ([viewer.hud]); absent means no HUD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hud: Option<ViewerHudConfig>,
+}
+
+/// A kinematic frame driven by viewer signals, expressed in model FLU
+/// coordinates (x forward, y left, z up). The viewer owns the single
+/// FLU-to-renderer conversion; scenes receive the resolved matrices.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ViewerFrameConfig {
+    pub name: String,
+    /// Position coordinates: signal names or numeric constants. Two entries
+    /// mean planar `[x, y]` with `z = 0`.
+    pub position: Vec<SignalOrConst>,
+    /// Scalar-first body-to-world quaternion signal names `[q0, q1, q2, q3]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quaternion: Option<[String; 4]>,
+    /// Planar yaw signal (radians about model +z). Mutually exclusive with
+    /// `quaternion`; omitting both leaves the frame unrotated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heading: Option<String>,
+}
+
+/// A signal name or a numeric constant.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum SignalOrConst {
+    Const(f64),
+    Signal(String),
+}
+
+/// A camera rigidly mounted on a frame ([[viewer.camera]]). All vectors are
+/// in the frame's model (FLU) coordinates.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ViewerCameraConfig {
+    pub name: String,
+    /// Frame the camera is mounted on; must name a [[viewer.frame]].
+    pub frame: String,
+    /// Mount offset (default the frame origin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount: Option<[f64; 3]>,
+    /// View direction (default `[1, 0, 0]`, along frame forward).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<[f64; 3]>,
+    /// Camera up (default `[0, 0, 1]`, frame up).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up: Option<[f64; 3]>,
+}
+
+/// Opt-in HUD overlay. The only built-in mode is "flight" (attitude ladder,
+/// altitude/speed readouts, stick echo). Models that are not aircraft simply
+/// omit this table.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ViewerHudConfig {
+    pub mode: String,
+    /// Frame supplying roll/pitch; must name a [[viewer.frame]].
+    pub frame: String,
+    /// Altitude readout signal (row hidden when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub altitude: Option<String>,
+    /// Velocity component signals for the speed readout (hidden when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<Vec<String>>,
+    /// Stick echo signals (row hidden when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sticks: Option<ViewerHudSticks>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ViewerHudSticks {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yaw: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub throttle: Option<String>,
+}
+
+impl ViewerFrameConfig {
+    /// Shape-check one frame and collect its unrouted signal references.
+    fn validate(
+        &self,
+        signal_routed: &dyn Fn(&str) -> bool,
+        missing: &mut Vec<String>,
+    ) -> anyhow::Result<()> {
+        if self.position.is_empty() || self.position.len() > 3 {
+            anyhow::bail!(
+                "[[viewer.frame]] '{}' position needs 1-3 entries, got {}",
+                self.name,
+                self.position.len()
+            );
+        }
+        if self.quaternion.is_some() && self.heading.is_some() {
+            anyhow::bail!(
+                "[[viewer.frame]] '{}' sets both quaternion and heading; pick one",
+                self.name
+            );
+        }
+        let position_signals = self.position.iter().filter_map(|coord| match coord {
+            SignalOrConst::Signal(name) => Some(name),
+            SignalOrConst::Const(_) => None,
+        });
+        missing.extend(
+            position_signals
+                .chain(self.quaternion.iter().flatten())
+                .chain(self.heading.iter())
+                .filter(|name| !signal_routed(name))
+                .cloned(),
+        );
+        Ok(())
+    }
+}
+
+impl ViewerHudConfig {
+    /// Check the HUD mode/frame and collect unrouted signal references.
+    fn validate(
+        &self,
+        frame_names: &[&str],
+        signal_routed: &dyn Fn(&str) -> bool,
+        missing: &mut Vec<String>,
+    ) -> anyhow::Result<()> {
+        if self.mode != "flight" {
+            anyhow::bail!(
+                "[viewer.hud] mode '{}' is not supported; the built-in mode is 'flight'",
+                self.mode
+            );
+        }
+        if !frame_names.contains(&self.frame.as_str()) {
+            anyhow::bail!(
+                "[viewer.hud] references unknown frame '{}'; declare it as [[viewer.frame]]",
+                self.frame
+            );
+        }
+        let stick_signals = self.sticks.iter().flat_map(|sticks| {
+            [&sticks.roll, &sticks.pitch, &sticks.yaw, &sticks.throttle]
+                .into_iter()
+                .flatten()
+        });
+        missing.extend(
+            self.altitude
+                .iter()
+                .chain(self.speed.iter().flatten())
+                .chain(stick_signals)
+                .filter(|name| !signal_routed(name))
+                .cloned(),
+        );
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -298,7 +455,58 @@ impl SimulationConfig {
                  and vehicle in a Modelica model, then point [model] at that top-level class."
             );
         }
+        self.validate_viewer_presentation()?;
         Ok(())
+    }
+
+    /// Cross-check [[viewer.frame]], [[viewer.camera]], and [viewer.hud]:
+    /// frame names are unique, orientation is at most one parametrization,
+    /// camera/HUD frame references resolve, and every referenced signal is
+    /// routed under [signals.viewer].
+    fn validate_viewer_presentation(&self) -> anyhow::Result<()> {
+        let Some(viewer) = self.viewer.as_ref() else {
+            return Ok(());
+        };
+        let signal_routed = |name: &str| {
+            self.signals
+                .as_ref()
+                .is_some_and(|signals| signals.viewer.contains_key(name))
+        };
+        let mut missing: Vec<String> = Vec::new();
+        let mut frame_names: Vec<&str> = Vec::new();
+        for frame in &viewer.frames {
+            if frame_names.contains(&frame.name.as_str()) {
+                anyhow::bail!("[[viewer.frame]] name '{}' is declared twice", frame.name);
+            }
+            frame_names.push(frame.name.as_str());
+            frame.validate(&signal_routed, &mut missing)?;
+        }
+        let mut camera_names: Vec<&str> = Vec::new();
+        for camera in &viewer.cameras {
+            if camera_names.contains(&camera.name.as_str()) {
+                anyhow::bail!("[[viewer.camera]] name '{}' is declared twice", camera.name);
+            }
+            camera_names.push(camera.name.as_str());
+            if !frame_names.contains(&camera.frame.as_str()) {
+                anyhow::bail!(
+                    "[[viewer.camera]] '{}' references unknown frame '{}'; declare it as [[viewer.frame]]",
+                    camera.name,
+                    camera.frame
+                );
+            }
+        }
+        if let Some(hud) = &viewer.hud {
+            hud.validate(&frame_names, &signal_routed, &mut missing)?;
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        missing.sort();
+        missing.dedup();
+        anyhow::bail!(
+            "[viewer] frame/hud references signal(s) not routed under [signals.viewer]: {}",
+            missing.join(", ")
+        );
     }
 
     /// True when configured for external coupling (all FB sections present).
@@ -356,8 +564,22 @@ mod tests {
         let sig = cfg.signals.as_ref().expect("[signals]");
         assert_eq!(sig.stepper_inputs.len(), 2, "steering + throttle");
         let viewer = cfg.viewer.as_ref().expect("[viewer]");
-        assert_eq!(viewer.status_title.as_deref(), Some("Vehicle"));
+        assert_eq!(viewer.status_title.as_deref(), Some("Rover"));
         assert_eq!(viewer.show_armed, Some(false));
+        let chassis = viewer
+            .frames
+            .iter()
+            .find(|frame| frame.name == "chassis")
+            .expect("rover declares the chassis frame");
+        assert!(chassis.heading.is_some(), "planar rover uses heading");
+        assert!(
+            viewer
+                .cameras
+                .iter()
+                .any(|camera| camera.frame == "chassis"),
+            "onboard camera mounts on the chassis frame"
+        );
+        cfg.validate().expect("rover viewer config validates");
         let controls = viewer.controls.as_ref().expect("[viewer.controls]");
         assert!(
             controls
@@ -431,6 +653,125 @@ port = 8091
         let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
         assert_eq!(cfg.http_port(), 8090);
         assert_eq!(cfg.websocket_port(), 8091);
+    }
+
+    #[test]
+    fn validates_viewer_frame_and_camera_references() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[[viewer.frame]]
+name = "chassis"
+position = ["x", "y"]
+heading = "theta"
+
+[[viewer.camera]]
+name = "onboard"
+frame = "chassis"
+mount = [0.95, 0.0, 0.24]
+
+[signals.viewer]
+x = "stepper:x"
+y = "stepper:y"
+theta = "stepper:theta"
+"#;
+        let cfg = toml::from_str::<SimulationConfig>(text).unwrap();
+        cfg.validate()
+            .expect("frame signals routed and camera frame resolves");
+    }
+
+    #[test]
+    fn rejects_viewer_frame_with_unrouted_signal() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[[viewer.frame]]
+name = "chassis"
+position = ["x", "y_typo"]
+heading = "theta"
+
+[signals.viewer]
+x = "stepper:x"
+y = "stepper:y"
+theta = "stepper:theta"
+"#;
+        let err = toml::from_str::<SimulationConfig>(text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("y_typo") && err.to_string().contains("[signals.viewer]"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_camera_on_unknown_frame() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[[viewer.camera]]
+name = "onboard"
+frame = "missing"
+"#;
+        let err = toml::from_str::<SimulationConfig>(text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("missing") && err.to_string().contains("[[viewer.frame]]"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_frame_with_both_orientations() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[[viewer.frame]]
+name = "body"
+position = [0.0, 0.0, 0.0]
+heading = "theta"
+quaternion = ["q0", "q1", "q2", "q3"]
+
+[signals.viewer]
+theta = "stepper:theta"
+q0 = "stepper:q0"
+q1 = "stepper:q1"
+q2 = "stepper:q2"
+q3 = "stepper:q3"
+"#;
+        let err = toml::from_str::<SimulationConfig>(text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(err.to_string().contains("pick one"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_hud_with_unknown_mode_or_frame() {
+        let text = r#"
+[sim]
+dt = 0.01
+
+[[viewer.frame]]
+name = "body"
+position = [0.0, 0.0, 0.0]
+
+[viewer.hud]
+mode = "flight"
+frame = "wing"
+"#;
+        let err = toml::from_str::<SimulationConfig>(text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(err.to_string().contains("wing"), "got: {err}");
     }
 
     #[test]

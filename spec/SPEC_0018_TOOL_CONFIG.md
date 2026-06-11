@@ -18,10 +18,9 @@ Tools need configurable behavior:
 
 Configuration and behavior knobs MUST reach the code through a discoverable,
 self-documenting channel. The `RUMOCA_*` environment-variable surface is
-**literal zero** and is enforced by an architecture test that scans **all
-first-party source — Rust and editor/JS alike** (`*.rs`, `*.ts`, `*.mjs`,
-`*.cjs`, `*.js`); any `RUMOCA_*` env-var use (a quoted `"RUMOCA_…"` literal or a
-`…env.RUMOCA_…` access) fails the build.
+**literal zero** across first-party Rust and editor/JS source (`*.rs`, `*.ts`,
+`*.mjs`, `*.cjs`, `*.js`); quoted `"RUMOCA_…"` literals or `…env.RUMOCA_…`
+accesses fail the build.
 
 | Need | Required channel | Why |
 |---|---|---|
@@ -36,22 +35,17 @@ first-party source — Rust and editor/JS alike** (`*.rs`, `*.ts`, `*.mjs`,
   configuration or behavior — in Rust **or** in editor/JS code. Pick a channel
   from the table above.
 - A child process that genuinely cannot accept argv gets a fixed-path file, not
-  an environment variable. Examples: `cargo xtask verify msl-parity` serializes
-  its flags to `target/msl/parity-config.json` for the `rumoca-test-msl` libtest
-  harness; the VS Code smoke runners write their parameters into the launched
-  `.code-workspace` settings (`rumoca.benchmark.*`), which the extension-host
-  test suites read via `getConfiguration` and the extension forwards to
-  `rumoca-lsp` as CLI flags.
+  an environment variable. Examples: `cargo xtask verify msl-parity` writes
+  `target/msl/parity-config.json` for libtest; VS Code smoke runners write
+  `.code-workspace` settings that the extension forwards to `rumoca-lsp` flags.
 - Standard, non-Rumoca environment variables a tool merely passes through
   (`MODELICAPATH`, `GITHUB_ACTIONS`, `ELECTRON_DISABLE_SANDBOX`, …) are not
   configuration knobs and are out of scope for this rule.
 
 **Enforcement:** `crates/rumoca/tests/architecture_hardening/env_var_registry.rs`
-(`test_rumoca_env_vars_are_registered`) scans every source file under the
-workspace (excluding build output, dependencies, and vendored trees). Adding a
-`RUMOCA_*` name to its `REGISTERED_ENV_VARS` allowlist is a deliberate,
-reviewable policy exception with written rationale — not the default escape
-hatch.
+(`test_rumoca_env_vars_are_registered`) scans workspace source files, excluding
+build output, dependencies, and vendored trees. Adding a `RUMOCA_*` name to its
+allowlist is a deliberate, reviewable policy exception with written rationale.
 
 ### Model / Simulation / Visualization Configuration
 
@@ -137,8 +131,7 @@ Editor run controls MUST operate on `rum.toml` scenario files, not on Modelica
 source files. A play/run action executes the scenario's declared task. A
 settings action edits the same scenario. Separate editor toolbar actions for
 simulation versus template generation are intentionally avoided; the task owns
-that
-choice.
+that choice.
 
 Simulation scenarios choose their presentation separately from solver pacing:
 
@@ -148,21 +141,29 @@ Simulation scenarios choose their presentation separately from solver pacing:
   batch simulation and renders configured `[[plot.views]]` in the editor
   results panel. `external_web` starts the interactive runner and opens the
   HTTP/WebSocket viewer for scenarios with keyboard/gamepad/input routing.
-- `[viewer].prefer_external` is an editor presentation hint. When false or
-  omitted, editors should prefer embedded VS Code panels for both results and
-  interactive HTTP viewers. When true, editors should open the relevant
-  viewer/report in the system browser. Command-line tools ignore this hint.
-- Interactive viewer presentation settings live in the scenario `rum.toml` file.
-  `[viewer].status_title` sets the status panel title, `[viewer].show_armed`
-  controls whether the standard armed row is visible, and
-  `[[viewer.controls.keyboard]]` / `[[viewer.controls.gamepad]]` entries
-  describe control help rows with `keys` and `action` strings. These fields are
-  presentation metadata only; actual signal routing stays under `[input]`,
-  `[locals]`, `[derived]`, and `[signals]`.
+- `[viewer].prefer_external` is an editor presentation hint: false/omitted
+  prefers embedded VS Code panels; true opens the system browser.
+  Command-line tools ignore it.
+- Interactive viewer presentation settings live in the scenario `rum.toml`:
+  `[viewer].status_title` (status panel title), `[viewer].show_armed` (armed
+  row visibility), and `[[viewer.controls.keyboard]]`/`[[...gamepad]]` help
+  rows (`keys` + `action`). Presentation metadata only; signal routing stays
+  under `[input]`, `[locals]`, `[derived]`, and `[signals]`.
+- The viewer is model-agnostic — nothing vehicle-specific is built in:
+
+  | Table | Rule | Why |
+  |---|---|---|
+  | `[[viewer.frame]]` | Named frame in model FLU coordinates (x forward, y left, z up); `position` entries are `[signals.viewer]` names or numeric constants (2 entries = planar); orientation is `quaternion = [q0..q3]` (scalar-first) XOR `heading = "yaw_signal"`, else fixed | One signal-driven pose source per moving part; the viewer owns the single FLU→renderer conversion (renderer `X = -y`, `Y = z`, `Z = x`), so cameras, HUD, and scene placement cannot drift apart |
+  | `[[viewer.camera]]` | `name` + `frame` + optional frame-local FLU `mount`/`look`/`up`; the C key cycles scene camera → configured cameras | Cameras hook onto any model part (rover hood, arm end-effector, wing tip) without viewer code changes |
+  | `[viewer.hud]` | Opt-in; `mode = "flight"` with `frame` for attitude and optional `altitude`/`speed`/`sticks` signal names | Reusable feature, off by default — a robot arm scenario simply omits it |
+
+  Signal references MUST be routed under `[signals.viewer]` and frame
+  references MUST resolve (`sim check` rejects violations). Scenes receive
+  the resolved matrices (`api.frames`) and SHOULD place meshes from them
+  (meshes authored nose `+Z`, up `+Y`, matching frame identity).
 - If `[viewer].mode` is omitted, editors infer `external_web` only when the
-  scenario contains an HTTP transport, explicit input routing, signals, locals,
-  derived signals, reset behavior, or external-interface coupling. Otherwise
-  the default is `results_panel`.
+  scenario has an HTTP transport, input routing, signals, locals, derived
+  signals, reset behavior, or external coupling; else `results_panel`.
 
 Codegen/template runs MUST materialize the target renderer's returned files
 under `[codegen].output_dir` when present, or under a deterministic colocated

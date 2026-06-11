@@ -67,7 +67,7 @@
     <span class="label">rate:</span> <span class="val" id="v-simrate">—</span>x<br>
     <span class="label">realtime:</span> <span class="val" id="v-realtime">ON</span><br>
     <span class="label">cam:</span> <span class="val" id="v-camera-mode">CHASE</span><br>
-    <span class="label">hud:</span> <span class="val" id="v-hud-visible">ON</span><br>
+    <span class="label">hud:</span> <span class="val" id="v-hud-visible">OFF</span><br>
     <span class="label">ws:</span> <span class="val" id="v-ws-state">pending</span>
     <span class="label">hz:</span> <span class="val" id="v-wsHz">—</span><br>
     <span class="label">msgs:</span> <span class="val" id="v-msgs">0</span>
@@ -257,8 +257,73 @@ window.addEventListener("resize", () => {
 
 // Camera orbit state (mutable — scene script and mouse events update these)
 const cam = { angle: -Math.PI / 2, elev: 0.35, dist: 4, target: new THREE.Vector3(0, 1, 0) };
-let cameraMode = "chase";
-let flightHudVisible = true;
+
+// ── Model frames and cameras (generic, config-driven) ─────────────
+// [[viewer.frame]] entries are kinematic frames in model FLU coordinates
+// (x forward, y left, z up) driven by viewer signals. The single
+// FLU-to-renderer conversion lives in updateFrameMatrices: renderer
+// X = -y, Y = z, Z = x. At identity orientation a frame's axes coincide
+// with renderer axes, so frame-mounted meshes are authored nose +Z, up +Y.
+const VIEWER_FRAMES = VIEWER_CONFIG?.frame ?? [];
+const VIEWER_CAMERAS = VIEWER_CONFIG?.camera ?? [];
+const frameMatrices = new Map(VIEWER_FRAMES.map(f => [f.name, new THREE.Matrix4()]));
+
+function fluVector(value, fallback) {
+  const a = Array.isArray(value) && value.length === 3 && value.every(Number.isFinite)
+    ? value : fallback;
+  return new THREE.Vector3(-a[1], a[2], a[0]);
+}
+
+const configuredCameras = VIEWER_CAMERAS.map(c => ({
+  name: c.name,
+  frame: c.frame,
+  mount: fluVector(c.mount, [0, 0, 0]),
+  look: fluVector(c.look, [1, 0, 0]).normalize(),
+  up: fluVector(c.up, [0, 0, 1]).normalize(),
+}));
+
+function signalCoord(state, ref) {
+  if (typeof ref === "number") return ref;
+  const v = Number(state[ref]);
+  return Number.isFinite(v) ? v : 0;
+}
+
+function updateFrameMatrices(state) {
+  for (const f of VIEWER_FRAMES) {
+    const m = frameMatrices.get(f.name);
+    const p = f.position ?? [];
+    const px = signalCoord(state, p[0] ?? 0);
+    const py = signalCoord(state, p[1] ?? 0);
+    const pz = signalCoord(state, p[2] ?? 0);
+    let q0 = 1, q1 = 0, q2 = 0, q3 = 0;
+    if (f.quaternion) {
+      q0 = signalCoord(state, f.quaternion[0]);
+      q1 = signalCoord(state, f.quaternion[1]);
+      q2 = signalCoord(state, f.quaternion[2]);
+      q3 = signalCoord(state, f.quaternion[3]);
+      if (q0 === 0 && q1 === 0 && q2 === 0 && q3 === 0) q0 = 1;
+    } else if (f.heading !== undefined && f.heading !== null) {
+      const psi = signalCoord(state, f.heading);
+      q0 = Math.cos(psi / 2);
+      q3 = Math.sin(psi / 2);
+    }
+    const R11 = 1-2*(q2*q2+q3*q3), R12 = 2*(q1*q2-q0*q3), R13 = 2*(q1*q3+q0*q2);
+    const R21 = 2*(q1*q2+q0*q3), R22 = 1-2*(q1*q1+q3*q3), R23 = 2*(q2*q3-q0*q1);
+    const R31 = 2*(q1*q3-q0*q2), R32 = 2*(q2*q3+q0*q1), R33 = 1-2*(q1*q1+q2*q2);
+    m.set(
+      R22,  -R23, -R21, -py,
+     -R32,   R33,  R31,  pz,
+     -R12,   R13,  R11,  px,
+        0,     0,    0,   1
+    );
+  }
+}
+
+// "scene" hands the camera to the scene script; other entries are the
+// configured [[viewer.camera]] names.
+const cameraModes = ["scene", ...configuredCameras.map(c => c.name)];
+let cameraMode = cameraModes[0];
+let flightHudVisible = Boolean(VIEWER_CONFIG?.hud);
 const MIN_CAMERA_ELEV = 0.08;
 const MAX_CAMERA_ELEV = 1.5;
 container.addEventListener("wheel", (e) => {
@@ -284,7 +349,7 @@ try {
   const ctx = {};
   new Function("ctx", scriptText)(ctx);
   if (ctx.onInit) {
-    await ctx.onInit({ THREE, GLTFLoader, scene, renderer, state: sceneState, camera, cam });
+    await ctx.onInit({ THREE, GLTFLoader, scene, renderer, state: sceneState, camera, cam, frames: frameMatrices });
   }
   sceneOnFrame = ctx.onFrame || null;
   pipeline.scene = true;
@@ -372,8 +437,9 @@ document.addEventListener("keydown", (event) => {
   }
   event.preventDefault();
   if (event.code === "KeyC") {
-    if (!event.repeat) {
-      cameraMode = cameraMode === "onboard" ? "chase" : "onboard";
+    if (!event.repeat && cameraModes.length > 1) {
+      const next = (cameraModes.indexOf(cameraMode) + 1) % cameraModes.length;
+      cameraMode = cameraModes[next];
       echoKey(`camera ${cameraMode}`);
     }
     return;
@@ -386,7 +452,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (event.code === "KeyH") {
-    if (!event.repeat) {
+    if (!event.repeat && VIEWER_CONFIG?.hud) {
       flightHudVisible = !flightHudVisible;
       flightHud.style.display = flightHudVisible ? "" : "none";
       document.getElementById("v-hud-visible").textContent = flightHudVisible ? "ON" : "OFF";
@@ -478,7 +544,7 @@ function connectWs() {
 
       if (msgCount % 60 === 1) {
         const s = latestState;
-        dbg(`ws: ${wsHz.toFixed(0)}Hz latency=${latency}ms dropped=${droppedFrames} t=${s.t?.toFixed(1)} alt=${(s.pz ?? 0).toFixed(2)}`);
+        dbg(`ws: ${wsHz.toFixed(0)}Hz latency=${latency}ms dropped=${droppedFrames} t=${s.t?.toFixed(1)}`);
       }
     } catch (_) {}
   };
@@ -504,7 +570,7 @@ connectWs();
 document.addEventListener("keydown", (e) => {
   if (DEBUG && e.code === "KeyP" && window._renderLog) {
     const lines = window._renderLog.map(r =>
-      `t=${r.renderTime.toFixed(1)} age=${r.stateAge.toFixed(1)}ms frame=${r.frame} raw_pz=${r.raw_pz?.toFixed(4)} render_pz=${r.render_pz?.toFixed(4)} vz=${r.vz?.toFixed(4)} q0=${r.q0?.toFixed(6)}`
+      `t=${r.renderTime.toFixed(1)} age=${r.stateAge.toFixed(1)}ms frame=${r.frame} sim_t=${r.t?.toFixed(4)}`
     );
     const blob = new Blob([lines.join("\n")], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
@@ -524,7 +590,7 @@ let firstStateWallMs = null;
 const speedWindowSamples = [];
 const SPEED_WINDOW_MS = 5000;
 
-function drawFlightHud(state, roll, pitch, speed) {
+function drawFlightHud(state, hud, roll, pitch, speed) {
   const ctx = flightHudCtx;
   const w = innerWidth;
   const h = innerHeight;
@@ -617,38 +683,23 @@ function drawFlightHud(state, roll, pitch, speed) {
     ctx.fillText(text, x, y);
   }
 
-  const alt = Number(state.pz ?? 0);
-  const throttle = Number(state.stick_throttle ?? state.rc_throttle ?? 0);
-  const aileron = Number(state.stick_roll ?? 0);
-  const elevator = Number(state.stick_pitch ?? 0);
-  const rudder = Number(state.stick_yaw ?? 0);
-  hudText(`ALT ${alt.toFixed(1)} m`, w - 34, cy - 40, "right");
-  hudText(`SPD ${speed.toFixed(1)} m/s`, 34, cy - 40);
+  if (hud.altitude) {
+    hudText(`ALT ${Number(state[hud.altitude] ?? 0).toFixed(1)} m`, w - 34, cy - 40, "right");
+  }
+  if (Array.isArray(hud.speed) && hud.speed.length > 0) {
+    hudText(`SPD ${speed.toFixed(1)} m/s`, 34, cy - 40);
+  }
   hudText(`ROLL ${(roll * 180 / Math.PI).toFixed(1)}°`, 34, cy + 44);
   hudText(`PITCH ${(pitch * 180 / Math.PI).toFixed(1)}°`, w - 34, cy + 44, "right");
-  hudText(
-    `AIL ${aileron.toFixed(2)}  ELE ${elevator.toFixed(2)}  RUD ${rudder.toFixed(2)}  THR ${throttle.toFixed(2)}`,
-    cx,
-    h - 44,
-    "center"
-  );
-}
-
-function vehicleThreeMatrix(state) {
-  const px = state.px ?? 0, py = state.py ?? 0, pz = state.pz ?? 0;
-  const q0 = state.q0 ?? 1, q1 = state.q1 ?? 0, q2 = state.q2 ?? 0, q3 = state.q3 ?? 0;
-
-  const R11 = 1-2*(q2*q2+q3*q3), R12 = 2*(q1*q2-q0*q3), R13 = 2*(q1*q3+q0*q2);
-  const R21 = 2*(q1*q2+q0*q3), R22 = 1-2*(q1*q1+q3*q3), R23 = 2*(q2*q3-q0*q1);
-  const R31 = 2*(q1*q3-q0*q2), R32 = 2*(q2*q3+q0*q1), R33 = 1-2*(q1*q1+q2*q2);
-  const m = new THREE.Matrix4();
-  m.set(
-    R22,  -R23, -R21, -py,
-   -R32,   R33,  R31,  pz,
-   -R12,   R13,  R11,  px,
-      0,     0,    0,   1
-  );
-  return m;
+  if (hud.sticks) {
+    const stick = (name) => Number(state[name] ?? 0).toFixed(2);
+    const rows = [];
+    if (hud.sticks.roll) rows.push(`AIL ${stick(hud.sticks.roll)}`);
+    if (hud.sticks.pitch) rows.push(`ELE ${stick(hud.sticks.pitch)}`);
+    if (hud.sticks.yaw) rows.push(`RUD ${stick(hud.sticks.yaw)}`);
+    if (hud.sticks.throttle) rows.push(`THR ${stick(hud.sticks.throttle)}`);
+    if (rows.length > 0) hudText(rows.join("  "), cx, h - 44, "center");
+  }
 }
 
 function visualAttitudeFromMatrix(m) {
@@ -661,14 +712,22 @@ function visualAttitudeFromMatrix(m) {
   };
 }
 
-function applyOnboardCamera(state) {
-  const m = vehicleThreeMatrix(state);
-  const mount = new THREE.Vector3(0.95, 0.18, 0).applyMatrix4(m);
-  const forward = new THREE.Vector3(1, 0, 0).transformDirection(m);
-  const up = new THREE.Vector3(0, 1, 0).transformDirection(m);
+const cameraScratch = {
+  mount: new THREE.Vector3(),
+  look: new THREE.Vector3(),
+  up: new THREE.Vector3(),
+  target: new THREE.Vector3(),
+};
+
+function applyConfiguredCamera(config) {
+  const m = frameMatrices.get(config.frame);
+  if (!m) return;
+  const mount = cameraScratch.mount.copy(config.mount).applyMatrix4(m);
+  const look = cameraScratch.look.copy(config.look).transformDirection(m);
+  const up = cameraScratch.up.copy(config.up).transformDirection(m);
   camera.position.copy(mount);
   camera.up.copy(up);
-  camera.lookAt(mount.clone().add(forward));
+  camera.lookAt(cameraScratch.target.copy(mount).add(look));
 }
 
 function rollingRealtimeSpeed(wallMs, simTime) {
@@ -716,18 +775,16 @@ function animate() {
   // Record render positions for debugging (debug mode only)
   if (DEBUG) {
     if (!window._renderLog) window._renderLog = [];
-    const _rpz = getAuthoritative("pz");
     window._renderLog.push({
       renderTime: now,
       stateAge: dtExtrap * 1000,
       frame: s.frame,
-      raw_pz: s.pz,
-      render_pz: _rpz,
-      vz: s.vz,
-      q0: s.q0,
+      t: s.t,
     });
     if (window._renderLog.length > 600) window._renderLog.shift();
   }
+
+  updateFrameMatrices(s);
 
   // Call scene script with authoritative state
   if (sceneOnFrame) {
@@ -738,6 +795,7 @@ function animate() {
         motors: s,
         camera, cam,
         cameraMode,
+        frames: frameMatrices,
       });
     } catch (e) {
       dbg(`Scene error: ${e}`);
@@ -746,14 +804,7 @@ function animate() {
     }
   }
 
-  // HUD
-  const pz = s.pz ?? 0;
-  const vx = s.vx ?? 0, vy = s.vy ?? 0, vz = s.vz ?? 0;
-
   document.getElementById("v-t").textContent = (s.t ?? 0).toFixed(2);
-  const attitude = visualAttitudeFromMatrix(vehicleThreeMatrix(s));
-  const hudRoll = attitude.roll;
-  const hudPitch = attitude.pitch;
   document.getElementById("v-armed").textContent = controlSignalOn(s.armed) ? "YES" : "no";
   if (Number.isFinite(s.wall_ms) && Number.isFinite(s.t)) {
     if (firstStateWallMs === null) {
@@ -773,13 +824,22 @@ function animate() {
     echoKey(s.input_message);
   }
 
-  if (cameraMode === "onboard") {
-    applyOnboardCamera(s);
+  const activeCamera = configuredCameras.find(c => c.name === cameraMode);
+  if (activeCamera) {
+    applyConfiguredCamera(activeCamera);
   } else {
     camera.up.set(0, 1, 0);
   }
-  if (flightHudVisible) {
-    drawFlightHud(s, hudRoll, hudPitch, Math.sqrt(vx*vx + vy*vy + vz*vz));
+  const hud = VIEWER_CONFIG?.hud;
+  if (hud && flightHudVisible) {
+    const frame = frameMatrices.get(hud.frame);
+    const attitude = frame ? visualAttitudeFromMatrix(frame) : { roll: 0, pitch: 0 };
+    const speedSignals = Array.isArray(hud.speed) ? hud.speed : [];
+    const speed = Math.sqrt(speedSignals.reduce((sum, name) => {
+      const v = Number(s[name] ?? 0);
+      return sum + v * v;
+    }, 0));
+    drawFlightHud(s, hud, attitude.roll, attitude.pitch, speed);
   }
 
   renderer.render(scene, camera);
