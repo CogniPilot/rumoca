@@ -266,6 +266,13 @@ pub struct TypeChecker {
     /// Keys are class DefIds; values map component member names to their TypeIds
     /// (including inherited members, with extends `break` names removed).
     component_modifier_member_types: HashMap<DefId, HashMap<String, TypeId>>,
+    /// Type aliases whose targets could not be resolved during type-table
+    /// construction (e.g. an MSL alias into a library that is not loaded).
+    ///
+    /// The error is deferred and surfaced only when the alias is actually
+    /// used by the model being checked, so unrelated broken library classes
+    /// cannot fail every compile in the session (strict-reachable semantics).
+    deferred_alias_errors: HashMap<TypeId, (String, Span)>,
 }
 
 impl TypeChecker {
@@ -283,6 +290,7 @@ impl TypeChecker {
             current_component_shapes: HashMap::new(),
             component_modifier_targets: HashMap::new(),
             component_modifier_member_types: HashMap::new(),
+            deferred_alias_errors: HashMap::new(),
         }
     }
 
@@ -607,7 +615,7 @@ impl TypeChecker {
 
     /// Build a type context that includes user-defined classes, enums, and aliases.
     fn build_type_context(
-        &self,
+        &mut self,
         tree: &ClassTree,
     ) -> TypeCheckResult<(TypeTable, HashMap<DefId, TypeId>)> {
         let mut type_table = tree.type_table.clone();
@@ -675,7 +683,21 @@ impl TypeChecker {
                 continue;
             };
             let aliased =
-                self.resolve_alias_target_type_id(class, &type_table, &type_ids_by_def_id)?;
+                match self.resolve_alias_target_type_id(class, &type_table, &type_ids_by_def_id) {
+                    Ok(aliased) => aliased,
+                    // An unresolvable alias target anywhere in the tree (an
+                    // MSL alias into a library that is not loaded) must not
+                    // fail every model in the session. Defer the error; it is
+                    // surfaced when the alias is actually used.
+                    Err(error) => {
+                        if let TypeCheckError::UndefinedType { name, span } = error.as_ref() {
+                            self.deferred_alias_errors
+                                .insert(alias_id, (name.clone(), *span));
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                };
             if let Some(Type::Alias(alias)) = type_table.get_mut(alias_id) {
                 alias.aliased = aliased;
             }
@@ -867,6 +889,10 @@ impl TypeChecker {
     ) {
         for (_instance_id, data) in overlay.components.iter_mut() {
             let resolved = self.resolve_type_name(&data.type_name, data.type_def_id, type_table);
+            if let Some((missing, span)) = self.deferred_alias_errors.get(&resolved) {
+                let error = TypeCheckError::undefined_type(missing.clone(), *span);
+                self.emit_typecheck_error(error);
+            }
             if resolved.is_unknown() {
                 let instance_name = data.qualified_name.to_flat_string();
                 let span = self.source_map.location_to_span(
