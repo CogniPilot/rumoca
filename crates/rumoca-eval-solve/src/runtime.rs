@@ -361,7 +361,14 @@ impl SolveRuntime {
             delta: 0.0,
             target: None,
         };
+        // A coupled cycle with gain > 1 (any geared torque loop) makes the
+        // sweep delta grow monotonically; burning the full iteration budget
+        // before falling back is pure waste, so bail to Newton after a few
+        // consecutive growing sweeps.
+        const MAX_GROWING_SWEEPS: usize = 3;
+        let mut growing_sweeps = 0usize;
         for iter_idx in 0..max_iters {
+            let previous_delta = last_max.delta;
             match self.refresh_slots_iteration(rows, t, solver_y, params) {
                 Ok(iteration_max) => last_max = iteration_max,
                 Err(error) => {
@@ -375,6 +382,11 @@ impl SolveRuntime {
             self.trace_refresh_iteration(iter_idx, &last_max);
             if last_max.delta <= tol {
                 return Ok(());
+            }
+            let growing = iter_idx > 0 && last_max.delta > previous_delta;
+            growing_sweeps = if growing { growing_sweeps + 1 } else { 0 };
+            if growing_sweeps >= MAX_GROWING_SWEEPS {
+                break;
             }
         }
         let convergence_error = self.refresh_convergence_error(max_iters, &last_max);
